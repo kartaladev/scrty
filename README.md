@@ -1085,8 +1085,8 @@ foreign page can hold open uses up the victim's places.
 ### The `EventSource` client (cookie session)
 
 `EventSource` gives up for good on any answer other than a 200 stream, and cannot read a status. So
-a cap or a dependency failure answers 200 with only a longer `retry`, and the browser comes back
-later on its own, while 401, 403, 400, 405 and 501 stop it.
+a cap, a dependency failure or a throttled sign-in answers 200 with only a longer `retry`, and the
+browser comes back later on its own, while 401, 403, 400, 405 and 501 stop it.
 
 ```js
 // Use a module script (<script type="module">), so these names stay out of the page's globals.
@@ -1256,7 +1256,7 @@ Your `handle` should abort `signal` on `session_ended`, because otherwise the cl
 
 Read the current credential on every attempt: reconnecting with a token captured before a renewal
 presents a superseded token, which revokes the sign-in's whole family. A 200 with a `retry` and no
-`session` event is a cap or a dependency failure, so the client waits and tries again. Fall back to
+`session` event is a cap, a dependency failure or a throttle, so the client waits and tries again. Fall back to
 polling if the first `session` event does not arrive. Whether `stopFor(401)` should first try to
 renew the token is yours to decide.
 
@@ -1282,7 +1282,7 @@ refused when the chain is built.
 | `Users` | the built-in bearer's user loader; a chain with no built-in bearer must set it |
 | `ReloadContext` | none: reads run on a context with none of the request's values |
 | `ReloadTimeout` | half of `Heartbeat`, within 2 to 10 seconds |
-| `RetryableError` | none: every failure the chain would answer with a 5xx on `Path` is retried |
+| `RetryableError` | none: every failure the chain would answer with a 5xx on `Path`, and a per-request policy's throttle, is retried |
 | `Bus` | in-process, so with several replicas `session_ended` arrives within a heartbeat and half a second, and other signals reach only the replica that raised them |
 | `BusQueue` | 1024, for a consumer's `Bus` only |
 | `BusTimeout` | 5 seconds, for a consumer's `Bus` only |
@@ -1348,6 +1348,12 @@ type, phase, family and frames, and never its value. The stream then closes and 
 | `credential_changed` | `kind`: `password`, `passkey` or `second_factor` | the user's credentials changed, and this stream's sign-in did not end with it |
 | `app.<name>` | your own JSON | you publish it |
 
+`logout` means a logout: the chain's own, or your call to `Sessions.Logout`, which ends the whole
+sign-in, a renewal's successor included. `ended` names no one's fault: it is what a sign-in revoked by
+an administrator says, what `Sessions.Delete` says, since one deleted session has no reason anyone
+named, and what a stream says with no report at all. So a logout of your own calls `Logout` and not
+`Delete`, or other tabs hear `ended`.
+
 A stream never carries the audit feed, and no option makes it: no failed sign-ins, lockouts,
 rate-limit, CSRF, host or DPoP refusals, no client addresses, and nothing about another user. Those
 belong to `WithSecurityEvents`, which is the operator's.
@@ -1381,6 +1387,11 @@ at most 8 KiB, valid UTF-8, on one line, so compact it and do not `MarshalIndent
 byte for byte. Anything else returns `ErrInvalidSignal` and sends nothing. A client's `?signals=`
 narrowing applies. A user with no open stream is not an error.
 
+Both calls route by `UserID` alone, so a `UserID` must be unique across one chain, as the session store
+and the lockout store already assume. A multi-tenant consumer encodes its tenant into it: two tenants
+sharing a `UserID` hear each other's signals, whatever `ReloadContext` carries. A session's end routes
+by its family and is not affected.
+
 A stream can follow a thief who holds the session, so put nothing sensitive in the data: send a
 pointer, and let the client fetch the details through its own authorised request. A signal that is
 dropped is gone, and the default bus reaches only this replica's streams, so never rely on one alone.
@@ -1393,6 +1404,16 @@ reads and 670 user reads per second on one replica. Jitter of ±10% spreads them
 go to 60 seconds, which is about 170 of each. A shared bus lets you lengthen it without delaying
 `session_ended`, because a signal wakes the stream at once. Without one, a sign-in ended on another
 replica takes up to a heartbeat and half a second to arrive.
+
+The session read is one sign-in's, not the user's. A store may offer `session.FamilyReader`
+(`ListByFamily(ctx, user, family, now)`), which is optional: a store without it is read through
+`ListByUser`, and nothing breaks. With it, a read costs one family's rows, and another family's row that
+will not decode cannot fail it. Every store in this repository offers it, and the sealing store does
+whatever it wraps. The memory store has no index, so its `ListByFamily` saves copying the user's other
+sign-ins and still scans every record. A store of yours that embeds a concrete store, such as
+`*session.MemoryStore`, and overrides `ListByUser` inherits the embedded `ListByFamily`, which does not
+read the override: override both reads, or embed the `session.Store` interface, which hides the family
+read.
 
 Keep 1.1 × `Heartbeat` below the shortest idle timeout on the path. The longest gap between two bytes
 is 1.1 × `Heartbeat` plus the time of a write, because a comment goes out when its beat falls due,
@@ -1477,6 +1498,7 @@ untrusted caller.
 | `Open` | streams holding a place on this replica |
 | `RefusedByCap` | requests a cap answered with only a `retry` |
 | `ReloadFailures` | reads on open streams that failed, timed out or panicked, and requests a failing dependency answered with only a `retry`, which is where a tenant-scoped store with no `ReloadContext` shows |
+| `Throttled` | requests a per-request policy's throttle answered with only a `retry`; no dependency failed, so they are not in `ReloadFailures` |
 | `ConsecutiveReloadFailures` | reads in a row that failed, added up over the open streams, so judge it against `Open` |
 | `BusSubscribed` | a consumer's bus has its subscription up |
 | `BusDropped` | signals a consumer's bus could not take, its queue being full |
@@ -1503,6 +1525,16 @@ untrusted caller.
   for a browser, so return false only for what a retry would not change. `authenticate.ErrUnavailable`
   maps to 401, not a 5xx, so it is not retried and an `EventSource` stops on it: an authenticator of
   your own that wants a browser to retry through an outage returns an error that maps to a 5xx here.
+- **A throttled sign-in.** A policy denying with `ratelimit.ErrThrottled` at the chain's per-request
+  phase, about the sign-in it judged, answers 200 with only a longer `retry`, logged with sampling and
+  counted in `Throttled`, because a 401 would end an `EventSource` that a retry would satisfy. Only that
+  throttle retries. Any other `ErrThrottled`, as from Basic, an API key or a concealed lock, keeps the
+  chain's mapping, because a session on the request says who is signed in, not whose credential was
+  refused. A per-request throttle fires only after a credential succeeded, so a policy used as a guess
+  throttle over a password verified on every request answers a right password with 200 and a wrong one
+  with 401 on this path. A limit on guesses belongs at pre-authentication or stateless, where it fires
+  before the credential is judged. `RetryableError` is asked about the throttle, with the policy's own
+  reason, and returning false sends it through the chain's mapping.
 - **A provider's logout.** A back-channel logout that ends sessions through the session manager
   reaches their streams as `session_ended` with the reason `provider_logout`. One that names no
   upstream session, under `BackchannelLogoutScopeAll`, ends every session of the user, and says
@@ -1510,7 +1542,20 @@ untrusted caller.
   values stay out of a stream, the bus and the logs. On another replica with no shared bus, it arrives within a heartbeat and half a second.
 - **Logs.** Everything the stream logs goes to the logger given to the chain (`httpsec.WithLogger`),
   never with a token or session identifier. The exception is an adapter's own recover, for a consumer
-  who calls `Stream` directly, which writes to `slog.Default`.
+  who calls `Stream` directly, which writes to `slog.Default`. A panic's record holds its type and at
+  most 32 frames, never its value. A stream holds the request's `Origin` cut to 256 bytes, the same as
+  a cross-site refusal's record, since `Sec-Fetch-Site: none` passes with one of any size. Only logs
+  read it, so a longer origin is named in part.
+- **An adapter of your own.** `ResponseWriter.Stream(ctx, contentType, body)` takes the stream's type,
+  and sets it only when the head is committed, so a refusal has nothing of it to take back: an error
+  from `Stream` leaves `Content-Type` as it found it, and your own type set before a refused `Stream`
+  stays on the refusal. An empty `contentType` sets none. An adapter over a framework that cannot
+  deliver an open response returns `httpsec.ErrStreamingUnsupported`, without running `body`. One
+  refusal cannot be helped: a response-writer wrapper above the bottom of the `Unwrap` chain can be
+  asked whether it flushes only once the status is named, and if it then says
+  `http.ErrNotSupported`, `Stream` still refuses, but a real server has already copied the headers, so
+  the client receives 200 with the stream's type, and on gin with what the refusal renders. No real
+  library is known to have that shape.
 - **The chain's authorizer.** It runs above the stream's slot, so it is not consulted for the stream
   at all. What runs below the slot, including an interceptor you register there to gate the stream, is
   not run again until the client reconnects, which `MaxAge` bounds.

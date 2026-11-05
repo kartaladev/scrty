@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/x509"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"mime"
@@ -14,8 +13,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"runtime"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -23,6 +20,7 @@ import (
 	"github.com/valyala/fasthttp"
 
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/internal/diag"
 )
 
 // request implements httpsec.Request directly over fiber's own context.
@@ -551,7 +549,7 @@ func (r *streamRun) run(bw *bufio.Writer) {
 
 		defer endStreamBody(&returned, nil, bw, pipe)
 
-		_ = r.body(ctx, endedWriter{ctx: ctx})
+		_ = r.body(ctx, diag.NewEndedWriter(ctx))
 		returned = true
 
 		return
@@ -601,16 +599,6 @@ func (s *streamReader) Read(p []byte) (int, error) {
 
 	return n, err
 }
-
-// endedWriter is what a body gets when there is nothing to stream to. Whatever it
-// writes goes nowhere, and each call returns why, so a body that checks stops.
-type endedWriter struct {
-	ctx context.Context //nolint:containedctx // what its calls report, and it lives no longer than the body
-}
-
-func (e endedWriter) Write([]byte) (int, error) { return 0, e.ctx.Err() }
-
-func (e endedWriter) Flush() error { return e.ctx.Err() }
 
 // watchClient reads conn until it ends, which is how a stream learns its client
 // has gone, and then calls left. Whatever a client sends meanwhile is discarded.
@@ -662,19 +650,17 @@ const watchClientBuffer = 256
 // close that follow the writer, so the response would never end and the client would
 // hang. So it does both here: what the body wrote goes on, and the pipe closes.
 //
-// What it logs is that a body panicked, the panic value's type, and the function,
-// file and line of each frame. It logs nothing of the value, which is the body's and
-// can be a secret, and not debug.Stack's text either, which quotes the arguments of
-// the frames it lists. It writes to slog's default logger, because a writer has no
+// What it logs is that a body panicked, and what diag.PanicAttrs records: the panic
+// value's type, and the function, file and line of up to 32 frames. It logs nothing of
+// the value, which is the body's and can be a secret, and not debug.Stack's text either,
+// which quotes the arguments of the frames it lists. It writes to slog's default logger, because a writer has no
 // way to reach the logger its chain was given (httpsec.WithLogger).
 func endStreamBody(returned *bool, cut *atomic.Bool, bw *bufio.Writer, pipe io.Closer) {
 	r := recover()
 
 	switch {
 	case r != nil:
-		slog.Error("fibersec: the body of a stream panicked",
-			"panic_type", fmt.Sprintf("%T", r),
-			"frames", panicFrames())
+		slog.LogAttrs(context.Background(), slog.LevelError, "fibersec: the body of a stream panicked", diag.PanicAttrs(r)...)
 	case *returned:
 		return
 	default:
@@ -688,27 +674,6 @@ func endStreamBody(returned *bool, cut *atomic.Bool, bw *bufio.Writer, pipe io.C
 	if r == nil {
 		_ = bw.Flush()
 		_ = pipe.Close()
-	}
-}
-
-// panicFrames lists the frames of the panic being recovered, innermost first, as
-// "function file:line". Its caller's frame and its own are left out.
-func panicFrames() string {
-	var pcs [64]uintptr
-
-	frames := runtime.CallersFrames(pcs[:runtime.Callers(2, pcs[:])])
-
-	var out strings.Builder
-
-	for {
-		frame, more := frames.Next()
-		if frame.Function != "" {
-			fmt.Fprintf(&out, "%s %s:%d\n", frame.Function, frame.File, frame.Line)
-		}
-
-		if !more {
-			return out.String()
-		}
 	}
 }
 

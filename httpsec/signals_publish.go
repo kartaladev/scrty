@@ -35,6 +35,10 @@ const (
 // A signal that is dropped is gone, and the default bus reaches only this replica's streams, so
 // a consumer must not rely on it alone: the notice sent out of band stays the record.
 //
+// A UserID must be unique across one chain, because it is all this routes by, so a multi-tenant
+// consumer encodes its tenant into it: two tenants sharing a UserID both hear this signal. A session's
+// end routes by its family and is not affected. See SessionSignals.ReloadContext.
+//
 // By default a chain's set lacks credential_changed (SessionSignals.Signals), and then nothing is
 // raised at all: no stream of the chain can send it, so a consumer's bus is handed nothing, and nil is
 // returned whether or not that bus could have taken it. Put the signal in the set to send it. Every
@@ -135,6 +139,11 @@ func (ex *Exchange) credentialsRemoved(user identity.UserID, removed []recovery.
 // '_' or '-'. data is the consumer's own JSON, of at most 8 KiB, valid UTF-8, with no raw line
 // break between its tokens (compact it, do not indent it), and it reaches the browser byte for
 // byte. The library does not interpret either. Nothing is sent for a refused signal.
+//
+// A UserID must be unique across one chain, because it is all this routes by, so a multi-tenant
+// consumer encodes its tenant into it: two tenants sharing a UserID both hear this signal, whatever
+// ctx or SessionSignals.ReloadContext carries. A session's end routes by its family and is not
+// affected.
 //
 // A stream can follow a thief who holds the session, so put nothing in data the signed-in user
 // should not hand to whoever holds that session: send a pointer to what changed, such as a

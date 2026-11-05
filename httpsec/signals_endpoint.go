@@ -14,9 +14,19 @@ import (
 // no-transform asks an intermediary not to compress it, and X-Accel-Buffering asks a
 // proxy that honours it not to hold it back.
 const (
-	signalsContentType  = "text/event-stream"
-	signalsCacheControl = "no-store, no-transform"
+	signalsContentType    = "text/event-stream"
+	signalsCacheControl   = "no-store, no-transform"
+	signalsAccelBuffering = "X-Accel-Buffering"
 )
+
+// startStream answers with the stream's three headers and has body write the rest. Stream sets the
+// type, and only when it commits the head. It returns what Stream returned.
+func startStream(ex *Exchange, body func(ctx context.Context, w EventWriter) error) error {
+	ex.Writer.SetHeader("Cache-Control", signalsCacheControl)
+	ex.Writer.SetHeader(signalsAccelBuffering, "no")
+
+	return ex.Writer.Stream(cancelOnly{ex.Context()}, signalsContentType, body)
+}
 
 // Intercept answers the stream's path and passes everything else through. The
 // endpoint is terminal: nothing behind it runs for that path, whatever the answer.
@@ -73,11 +83,9 @@ func (e *sessionSignals) Intercept(ex *Exchange, next Next) error {
 		return err
 	}
 
-	ex.Writer.SetHeader("X-Accel-Buffering", "no")
-
 	e.hub.start()
 
-	err = ex.Writer.Stream(cancelOnly{ex.Context()}, signalsContentType, func(ctx context.Context, w EventWriter) error {
+	err = startStream(ex, func(ctx context.Context, w EventWriter) error {
 		defer release()
 
 		e.runStream(ctx, w, start)

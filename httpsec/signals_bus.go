@@ -6,13 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/session"
@@ -36,9 +36,6 @@ const (
 	// busFlow is the flow attribute of the bus's records, and what their sampling keys
 	// start with. No key holds anything from an envelope, which a bus's sender chooses.
 	busFlow = "session-signals-bus"
-
-	// panicFrameLimit bounds the frames a panic's record names.
-	panicFrameLimit = 32
 
 	// panicPhaseBus is the phase of a panic in a consumer's bus, or on the hub's goroutines.
 	panicPhaseBus = "bus"
@@ -522,28 +519,8 @@ func (h *signalHub) panicTime() (now time.Time) {
 }
 
 // panicAttrs says where a panic happened from within the deferred call that recovered it: the
-// phase, the value's type, and the frames as function, file and line. It never holds the value,
-// which can quote a secret from a consumer's bus or loader, nor debug.Stack, whose output
-// quotes arguments.
+// phase, and what diag.PanicAttrs records. It never holds the value, which can quote a secret from
+// a consumer's bus or loader.
 func panicAttrs(phase string, value any) []slog.Attr {
-	pcs := make([]uintptr, panicFrameLimit)
-
-	frames := runtime.CallersFrames(pcs[:runtime.Callers(2, pcs)])
-
-	var named []string
-
-	for {
-		frame, more := frames.Next()
-		named = append(named, fmt.Sprintf("%s %s:%d", frame.Function, frame.File, frame.Line))
-
-		if !more {
-			break
-		}
-	}
-
-	return []slog.Attr{
-		slog.String("phase", phase),
-		slog.String("panic_type", fmt.Sprintf("%T", value)),
-		slog.String("frames", strings.Join(named, "; ")),
-	}
+	return append([]slog.Attr{slog.String("phase", phase)}, diag.PanicAttrs(value)...)
 }

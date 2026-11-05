@@ -264,6 +264,12 @@ type SessionSignals struct {
 	// request's context holds the session and its raw identifier, so returning it keeps
 	// them for the stream's life.
 	//
+	// It carries a tenant to the stream's reads and does not separate tenants on the stream: a
+	// UserID must be unique across one chain, as Store.ListByUser and DeleteByUser already assume,
+	// so a multi-tenant consumer encodes its tenant into it. Chain.PublishSignal and
+	// Chain.ReportCredentialChange route by UserID alone, and two tenants sharing one hear each
+	// other's signals. A session's end routes by its family and is not affected.
+	//
 	// Default: nil, a context with none of the request's values, so a store that needs
 	// a tenant fails at admission, where it can be seen, and reads no other tenant's
 	// data.
@@ -911,15 +917,14 @@ func (e *sessionSignals) wire(c *config, ch *Chain) {
 	_ = e.sessions.AddEndObserver(e.hub)
 }
 
-// signalsEndpoint is the chain's stream endpoint, and nil on a chain without one.
+// signalsEndpoint is the chain's stream endpoint, and nil on a chain without one, a zero-value
+// Chain included, which has no per-request phase.
 func (c *Chain) signalsEndpoint() *sessionSignals {
-	for _, r := range c.registrations {
-		if e, ok := r.interceptor.(*sessionSignals); ok {
-			return e
-		}
+	if c.perRequest == nil {
+		return nil
 	}
 
-	return nil
+	return c.perRequest.signals
 }
 
 // The reasons a session_ended names on the wire.

@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -1909,44 +1910,96 @@ func TestFiber_StreamPanicLog(t *testing.T) {
 	const (
 		panicValue = "session-token-abc123"
 		argument   = uint64(0xdeadbeefcafe)
+
+		// agreedFrames is the limit the library's panic records share, written out because
+		// changing it is a decision.
+		agreedFrames = 32
 	)
 
-	var buf lockedBuffer
+	type testCase struct {
+		name   string
+		body   func()
+		assert func(t *testing.T, logged string)
+	}
 
-	old := slog.Default()
+	cases := []testCase{
+		{
+			name: "says where it happened and nothing of what it held",
+			body: func() { panicHolding(argument, panicValue) },
+			assert: func(t *testing.T, logged string) {
+				assert.NotContains(t, logged, panicValue, "the panic's value is the body's, and can be a secret")
+				assert.NotContains(t, logged, "deadbeefcafe", "a stack quotes the arguments of the frames it lists")
+				assert.Contains(t, logged, "panicHolding", "the log still says where it happened")
+			},
+		},
+		{
+			name: "keeps its message and keys, and names the agreed frames on one line",
+			body: func() { panicBelow(4*agreedFrames, panicValue) },
+			assert: func(t *testing.T, logged string) {
+				var record map[string]any
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
-	t.Cleanup(func() { slog.SetDefault(old) })
+				require.NoError(t, json.Unmarshal([]byte(logged), &record))
 
-	app := fiber.New()
-	app.Get("/stream", func(fc fiber.Ctx) error {
-		return fibersec.NewResponseWriter(fc).Stream(fc.Context(), "", func(context.Context, httpsec.EventWriter) error {
-			panicHolding(argument, panicValue)
+				assert.Equal(t, "fibersec: the body of a stream panicked", record["msg"])
+				assert.Equal(t, "string", record["panic_type"])
 
-			return nil
+				frames, ok := record["frames"].(string)
+				require.True(t, ok, "frames is one string: %v", record["frames"])
+
+				assert.NotContains(t, frames, "\n", "a record's frames are on one line")
+				assert.Len(t, strings.Split(frames, "; "), agreedFrames)
+				assert.NotContains(t, logged, panicValue)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf lockedBuffer
+
+			old := slog.Default()
+
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+			t.Cleanup(func() { slog.SetDefault(old) })
+
+			app := fiber.New()
+			app.Get("/stream", func(fc fiber.Ctx) error {
+				return fibersec.NewResponseWriter(fc).Stream(fc.Context(), "", func(context.Context, httpsec.EventWriter) error {
+					tc.body()
+
+					return nil
+				})
+			})
+
+			conn := serveRaw(t, app, false)()
+			require.NoError(t, conn.SetDeadline(time.Now().Add(streamBound)))
+
+			_, err := io.WriteString(conn, rawStreamRequest)
+			require.NoError(t, err)
+
+			_, _ = io.Copy(io.Discard, conn)
+
+			require.Eventually(t, func() bool { return strings.Contains(buf.String(), "panicked") },
+				streamBound, 10*time.Millisecond, "the panic was not logged")
+
+			tc.assert(t, buf.String())
 		})
-	})
-
-	conn := serveRaw(t, app, false)()
-	require.NoError(t, conn.SetDeadline(time.Now().Add(streamBound)))
-
-	_, err := io.WriteString(conn, rawStreamRequest)
-	require.NoError(t, err)
-
-	_, _ = io.Copy(io.Discard, conn)
-
-	require.Eventually(t, func() bool { return strings.Contains(buf.String(), "panicked") },
-		streamBound, 10*time.Millisecond, "the panic was not logged")
-
-	logged := buf.String()
-
-	assert.NotContains(t, logged, panicValue, "the panic's value is the body's, and can be a secret")
-	assert.NotContains(t, logged, "deadbeefcafe", "a stack quotes the arguments of the frames it lists")
-	assert.Contains(t, logged, "panicHolding", "the log still says where it happened")
+	}
 }
 
 //go:noinline
 func panicHolding(_ uint64, value string) { panic(value) }
+
+//go:noinline
+func panicBelow(depth int, value string) {
+	if depth > 0 {
+		panicBelow(depth-1, value)
+
+		return
+	}
+
+	panic(value)
+}
 
 // lockedBuffer is the log's sink, which the server writes while the test reads.
 type lockedBuffer struct {

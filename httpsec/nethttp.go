@@ -15,6 +15,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/clock"
 )
 
@@ -466,7 +467,7 @@ func (h *httpResponseWriter) Stream(ctx context.Context, contentType string, bod
 		}
 
 		// The connection has gone. The failure has ended ctx.
-		ew.runBody(ctx, endedWriter{ctx: ctx}, body)
+		ew.runBody(ctx, diag.NewEndedWriter(ctx), body)
 
 		return nil
 	}
@@ -615,16 +616,6 @@ func canFlush(w http.ResponseWriter) bool {
 		return false
 	}
 }
-
-// endedWriter is what a body gets when there is nothing to stream to. Whatever it
-// writes goes nowhere, and each call returns why, so a body that checks stops.
-type endedWriter struct {
-	ctx context.Context //nolint:containedctx // what its calls report, and it lives no longer than the body
-}
-
-func (e endedWriter) Write([]byte) (int, error) { return 0, e.ctx.Err() }
-
-func (e endedWriter) Flush() error { return e.ctx.Err() }
 
 // httpEventWriter is what the body of a net/http stream writes through.
 type httpEventWriter struct {

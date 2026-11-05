@@ -142,13 +142,10 @@ func (e *sessionSignals) closingRetry() time.Duration {
 // streamOnlyRetry answers with the stream's headers and a body of one retry, and then the response
 // ends. It returns what Stream returned.
 func (e *sessionSignals) streamOnlyRetry(ex *Exchange, delay time.Duration) error {
-	ex.Writer.SetHeader("Cache-Control", signalsCacheControl)
-	ex.Writer.SetHeader("X-Accel-Buffering", "no")
-
 	// The context can have ended without the client leaving: an interceptor's deferred cancel, or a
 	// deadline a server set. So the body writes whatever it says. Where nothing can be written, a client
 	// gone or a chain on fiber that refused after this, the writer fails and this stops.
-	return ex.Writer.Stream(cancelOnly{ex.Context()}, signalsContentType, func(_ context.Context, w EventWriter) error {
+	return startStream(ex, func(_ context.Context, w EventWriter) error {
 		if err := writeRetry(w, delay); err != nil {
 			return nil //nolint:nilerr // the client has gone, and it was only ever told when to come back
 		}

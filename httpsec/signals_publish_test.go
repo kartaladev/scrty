@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -567,4 +568,158 @@ func TestSessionSignals_CredentialChanged_FromABusOnADefaultSet(t *testing.T) {
 
 		assert.Equal(t, []string{"session"}, s.sent())
 	})
+}
+
+// TestChain_ZeroValueAnswersSignalsDisabled pins that a Chain nobody built, which has no per-request
+// phase, answers as a chain without signals does, rather than panicking.
+func TestChain_ZeroValueAnswersSignalsDisabled(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		assert func(t *testing.T, c *httpsec.Chain)
+	}
+
+	cases := []testCase{
+		{
+			name: "report credential change",
+			assert: func(t *testing.T, c *httpsec.Chain) {
+				err := c.ReportCredentialChange(t.Context(), "u", httpsec.CredentialPassword)
+				assert.ErrorIs(t, err, httpsec.ErrSessionSignalsDisabled)
+			},
+		},
+		{
+			name: "publish signal",
+			assert: func(t *testing.T, c *httpsec.Chain) {
+				err := c.PublishSignal(t.Context(), "u", "app.notice", json.RawMessage(`{}`))
+				assert.ErrorIs(t, err, httpsec.ErrSessionSignalsDisabled)
+			},
+		},
+		{
+			name: "close session signals",
+			assert: func(t *testing.T, c *httpsec.Chain) {
+				assert.ErrorIs(t, c.CloseSessionSignals(t.Context()), httpsec.ErrSessionSignalsDisabled)
+			},
+		},
+		{
+			name: "session signal stats are the zero value",
+			assert: func(t *testing.T, c *httpsec.Chain) {
+				assert.Equal(t, httpsec.SessionSignalStats{}, c.SessionSignalStats())
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, &httpsec.Chain{})
+		})
+	}
+}
+
+// signalTenantKey is where these rows' requests carry a tenant, as a multi-tenant consumer's do.
+type signalTenantKey struct{}
+
+// TestSessionSignals_UserIDIsUniqueAcrossOneChain pins the stated rule: a UserID is the only key a
+// consumer's signal or a credential change routes by, whatever tenant a request or ReloadContext
+// carries, so a multi-tenant consumer encodes its tenant into the UserID. A session's end routes by
+// its family, so it is not affected.
+func TestSessionSignals_UserIDIsUniqueAcrossOneChain(t *testing.T) {
+	t.Parallel()
+
+	type openFunc func(tenant, sid string) *riggedStream
+
+	type testCase struct {
+		name   string
+		assert func(t *testing.T, r *streamRig, open openFunc)
+	}
+
+	cases := []testCase{
+		{
+			name: "two tenants sharing a user id hear each other's signal",
+			assert: func(t *testing.T, r *streamRig, open openFunc) {
+				a, b := open("A", r.signIn(t).ID), open("B", r.signIn(t).ID)
+
+				r.act(func() {
+					ctx := context.WithValue(t.Context(), signalTenantKey{}, "B")
+					require.NoError(t, r.chain.PublishSignal(ctx, "u-1", "app.invoice", json.RawMessage(`{"for":"B"}`)))
+				})
+
+				assert.Len(t, b.events("app.invoice"), 1, "the tenant it was meant for")
+				assert.Len(t, a.events("app.invoice"), 1, "a tenant on the context separates nothing: the user id is the key")
+			},
+		},
+		{
+			name: "a tenant encoded in the user id hears only its own signal",
+			assert: func(t *testing.T, r *streamRig, open openFunc) {
+				a, b := open("A", r.signInOf(t, "A/u-1").ID), open("B", r.signInOf(t, "B/u-1").ID)
+
+				r.act(func() {
+					require.NoError(t, r.chain.PublishSignal(t.Context(), "B/u-1", "app.invoice", json.RawMessage(`{"for":"B"}`)))
+				})
+
+				assert.Len(t, b.events("app.invoice"), 1, "the tenant it was meant for")
+				assert.Empty(t, a.events("app.invoice"), "tenant B's signal reached tenant A")
+			},
+		},
+		{
+			name: "a tenant encoded in the user id hears only its own credential change",
+			assert: func(t *testing.T, r *streamRig, open openFunc) {
+				a, b := open("A", r.signInOf(t, "A/u-1").ID), open("B", r.signInOf(t, "B/u-1").ID)
+
+				r.act(func() {
+					require.NoError(t, r.chain.ReportCredentialChange(t.Context(), "B/u-1", httpsec.CredentialPassword))
+				})
+
+				assert.Len(t, b.events(string(httpsec.SignalCredentialChanged)), 1, "the tenant it was meant for")
+				assert.Empty(t, a.events(string(httpsec.SignalCredentialChanged)), "tenant B's change reached tenant A")
+			},
+		},
+		{
+			name: "a session's end routes by family, so a shared user id does not carry it across",
+			assert: func(t *testing.T, r *streamRig, open openFunc) {
+				ended := r.signIn(t)
+				a, b := open("A", ended.ID), open("B", r.signIn(t).ID)
+
+				r.act(func() {
+					_, err := r.sessions.Logout(t.Context(), ended.UserID, ended.FamilyID)
+					require.NoError(t, err)
+				})
+
+				require.Len(t, a.events(string(httpsec.SignalSessionEnded)), 1)
+				assert.JSONEq(t, `{"reason":"logout"}`, a.events(string(httpsec.SignalSessionEnded))[0].Data)
+				assert.Empty(t, b.events(string(httpsec.SignalSessionEnded)), "tenant A's end reached tenant B")
+				assert.False(t, b.closed(), "tenant A's end closed tenant B's stream")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				var tenant atomic.Value
+
+				r := newStreamRig(t, streamSetup{
+					signals: httpsec.SessionSignals{
+						Signals: withCredentialChanged,
+						ReloadContext: func(ctx context.Context) context.Context {
+							return context.WithValue(context.Background(), signalTenantKey{}, ctx.Value(signalTenantKey{}))
+						},
+					},
+					requestCtx: func(ctx context.Context) context.Context {
+						return context.WithValue(ctx, signalTenantKey{}, tenant.Load())
+					},
+				})
+
+				tc.assert(t, r, func(name, sid string) *riggedStream {
+					tenant.Store(name)
+
+					return r.open(t, sid)
+				})
+			})
+		})
+	}
 }
