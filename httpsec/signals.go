@@ -447,11 +447,10 @@ type SignalEnvelope struct {
 // that one: a session on the request says who is signed in, not whose credential was refused, so any
 // other ErrThrottled keeps the chain's mapping, or a caller with a sign-in of their own could tell a
 // locked account or a right password from a 401. It is counted in SessionSignalStats.Throttled, since
-// nothing failed. An answer begun before the failure
-// is not written over. It takes no place, closes no stream and charges nothing, and only GET
-// on the stream's path is answered so, so every other 5xx of the chain stands. A fetch() client
-// sees a 200 with no session event. It hides from a dashboard of statuses, so it is logged
-// at WARN with sampling, and counted in Chain.SessionSignalStats.
+// nothing failed. An answer begun before the failure is not written over. It takes no place, closes no
+// stream and charges nothing, and only GET on the stream's path is answered so, so every other 5xx of
+// the chain stands. A fetch() client sees a 200 with no session event. It hides from a dashboard of
+// statuses, so it is logged at WARN with sampling, and counted in Chain.SessionSignalStats.
 //
 // The caps and the default bus are per replica: with N replicas a user can hold N times
 // SessionSignals.MaxPerUser streams, and a signal other than session_ended reaches only the
@@ -1017,6 +1016,10 @@ func envelopeForEnd(r session.EndReport) (SignalEnvelope, bool) {
 //     that no read has tied to it. A real all_ended whose report follows its write is named the same way.
 //   - It arrives while a read it cannot take back is in flight: a read that failed, or timed out, leaves
 //     the notice, as does one begun before the notice.
+//   - It arrives in the wake gap just before this sign-in's own deadline, and the deadline passes before
+//     the next read: the end is named with the report's reason, such as provider_logout, and not
+//     expired. A passed deadline is not preferred to a report, because the deadlines held can be a
+//     heartbeat stale, and a real all_ended would then say expired, which is false.
 //
 // A user-wide report does not replace a notice naming the family or the upstream session while that notice
 // is inside its window, since such a report is about this stream. Once the window is over it may. A report

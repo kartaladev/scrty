@@ -233,6 +233,12 @@ type ResponseWriter interface {
 	// On every adapter body's context carries ctx's values, and nothing else: read what
 	// the chain resolved through it, not through the exchange.
 	//
+	// Stream is called on the chain's own goroutine, before the chain returns. That is a stated
+	// limit: a writer handed to another goroutine while the chain unwinds is not safe to call on
+	// fiber, where the writer reaches a fiber context the framework releases and reuses, and no lock
+	// in the writer could make that safe. The one call promised from elsewhere is the refusal a
+	// Stream makes once its chain has returned (ErrStreamingStarted).
+	//
 	// A body that does not return, through a panic or runtime.Goexit, has run, and must
 	// not leave a response a client can take for a complete one:
 	//   - net/http and gin cut the connection and let the panic go on unchanged, to a
@@ -261,8 +267,8 @@ type ResponseWriter interface {
 	// ErrStreamingUnsupported. In particular, it must:
 	//   - set contentType only once nothing can refuse the stream any more, or put back what
 	//     was there when it is refused, for a writer whose flush is both the question and the
-	//     head, and set none for an empty one. If it runs body after its chain has returned, that is when the chain
-	//     did not refuse;
+	//     head, and set none for an empty one. If it runs body after its chain has returned, that
+	//     is when the chain did not refuse;
 	//   - keep the server's write deadline from ending the stream, moving it by
 	//     StreamWriteWindow where a deadline exists, and end body's context when the client
 	//     leaves, including with nothing written. The signal stream counts on both: a

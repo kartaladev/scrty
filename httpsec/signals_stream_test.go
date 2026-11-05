@@ -1957,6 +1957,43 @@ func TestSessionSignals_BusWakeUp_UserWideReport(t *testing.T) {
 			},
 		},
 		{
+			// A stated limit (endNotice): the notice is kept until a read begun after it answers, and the
+			// deadline is not preferred to it, because a deadline held can be a heartbeat stale.
+			//
+			// The idle deadline comes before the earliest jittered heartbeat, 54 seconds, because a beat
+			// landing between the second report and the deadline would read, answer alive and take the
+			// notice back. So the only reads here are the first report's wake and the deadline's.
+			name: "a provider logout of another sign-in landing in the wake gap before this one's deadline names the logout",
+			setup: streamSetup{
+				sameClock: true,
+				idle:      30 * time.Second,
+				signals:   httpsec.SessionSignals{Signals: endedOnly, Heartbeat: time.Minute},
+			},
+			assert: func(t *testing.T, r *streamRig) {
+				const other = "https://idp-b.example"
+
+				r.signIn(t, session.WithExternalSession("idp", issuer, "upstream-a", "id-token"))
+				r.signIn(t, session.WithExternalSession("idp", other, "upstream-b", "id-token"))
+				stream := r.open(t, r.signIn(t).ID)
+
+				end := func(from string) {
+					r.act(func() {
+						_, err := r.sessions.DeleteByUserAndExternalIssuer(t.Context(), "u-1", from)
+						require.NoError(t, err)
+					})
+				}
+
+				advance(30*time.Second - 500*time.Millisecond)
+				end(issuer) // its wake reads, answers alive, takes this notice back, and starts the one-second gap
+				advance(100 * time.Millisecond)
+				r.requireLive(t, stream)
+				end(other) // inside the gap: no read begins until the timer armed for the deadline
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "provider_logout")
+			},
+		},
+		{
 			name:  "a provider logout of another sign-in does not name an end nobody reported",
 			setup: setup,
 			assert: func(t *testing.T, r *streamRig) {

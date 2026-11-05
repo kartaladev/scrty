@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -388,10 +389,193 @@ func TestSessionSignals_Caps_ThrottledCookie(t *testing.T) {
 	type testCase struct {
 		name    string
 		signals httpsec.SessionSignals
-		assert  func(t *testing.T, f *signalsFixture, resp *http.Response)
+		// cors is the chain's CORS policy. Default: none, which trusts no origin.
+		cors *httpsec.CORSPolicy
+		// csrf turns the chain's CSRF protection on. Default: off.
+		csrf bool
+		// bearer presents the sign-in as a bearer credential and not as the consumer's cookie.
+		bearer bool
+		// observed takes the chain's log and security events. Default: neither is kept.
+		observed *crossSiteObserved
+		// change adjusts the request first.
+		change []func(*http.Request)
+		assert func(t *testing.T, f *signalsFixture, resp *http.Response)
+	}
+
+	fromAnotherSite := func(origin string) []func(*http.Request) {
+		return []func(*http.Request){func(r *http.Request) {
+			r.Header.Set("Sec-Fetch-Site", "cross-site")
+			r.Header.Set("Origin", origin)
+		}}
+	}
+
+	refused := func(t *testing.T, f *signalsFixture, resp *http.Response) {
+		t.Helper()
+
+		requireNoStream(t, resp, http.StatusForbidden)
+		assert.Zero(t, f.chain.SessionSignalStats().Throttled, "a refused request is no throttle to report")
+	}
+
+	// send builds the row's chain, with or without the throttle, and sends the row's request to it.
+	send := func(t *testing.T, tc testCase, throttled bool) (*signalsFixture, *http.Response) {
+		t.Helper()
+
+		f := newSignalsFixture(t, signalsSetup{
+			withoutBearer: !tc.bearer,
+			signals:       tc.signals,
+			opts: func(f *signalsFixture) []httpsec.Option {
+				opts := []httpsec.Option{httpsec.WithSessions(f.sessions), httpsec.WithoutCSRFProtection()}
+
+				if tc.csrf {
+					opts[1] = httpsec.EnableCSRFProtection()
+				}
+
+				if throttled {
+					opts = append(opts, httpsec.WithPolicyEngine(
+						engineOf(t, phasePolicy(t, policy.Decision{Outcome: policy.Deny, Reason: ratelimit.ErrThrottled}, policy.PerRequest))))
+				}
+
+				if tc.cors != nil {
+					opts = append(opts, httpsec.EnableCORS(*tc.cors))
+				}
+
+				if tc.observed != nil {
+					opts = append(opts, httpsec.WithLogger(slog.New(&tc.observed.logs)), httpsec.EnableSecurityEvents(tc.observed.events.sink))
+				}
+
+				if !tc.bearer {
+					opts = append(opts, httpsec.RegisterInterceptor(cookieJudgedPerRequest{consumerSessionCookie{sessions: f.sessions}}, httpsec.OrderBearerToken))
+				}
+
+				return opts
+			},
+		})
+
+		own := f.signIn(t, "u-1").ID
+		credential, change := "", append([]func(*http.Request){withSignalsCookie(own)}, tc.change...)
+
+		if tc.bearer {
+			credential, change = own, tc.change
+		}
+
+		resp, _ := f.openStream(t, credential, change...)
+
+		return f, resp
+	}
+
+	// refusedAsUnthrottled makes tc assert that the refusal is the one the same request gets with no
+	// throttle, to the last header and byte, so that a page cannot tell one from the other.
+	refusedAsUnthrottled := func(tc testCase) testCase {
+		tc.assert = func(t *testing.T, f *signalsFixture, resp *http.Response) {
+			t.Helper()
+
+			refused(t, f, resp)
+
+			_, plain := send(t, tc, false) //nolint:bodyclose // the fixture closes it when the test ends
+			requireNoStream(t, plain, http.StatusForbidden)
+
+			throttledBody, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			plainBody, err := io.ReadAll(plain.Body)
+			require.NoError(t, err)
+
+			resp.Header.Del("Date")
+			plain.Header.Del("Date")
+
+			assert.Equal(t, plain.Header, resp.Header)
+			assert.Equal(t, plainBody, throttledBody)
+		}
+
+		return tc
+	}
+
+	flood := &crossSiteObserved{}
+	bearerFromWildcard := testCase{
+		bearer: true,
+		cors:   &httpsec.CORSPolicy{AllowedOrigins: []string{"*"}},
+		change: fromAnotherSite("https://evil.example"),
 	}
 
 	cases := []testCase{
+		{
+			// The policy runs before the cross-site rule, so its denial's event is out by the time the rule
+			// refuses. What the rule can stop, the log and the count, it stops.
+			name:     "a flood of throttled streams from another site logs once and counts nothing, and each emits its denial's event",
+			observed: flood,
+			change:   fromAnotherSite("https://evil.example"),
+			assert: func(t *testing.T, f *signalsFixture, resp *http.Response) {
+				refused(t, f, resp)
+
+				for range 4 {
+					again, _ := f.openStream(t, "", append([]func(*http.Request){withSignalsCookie(f.signIn(t, "u-1").ID)}, fromAnotherSite("https://evil.example")...)...)
+					refused(t, f, again)
+				}
+
+				assert.Len(t, flood.refusalRecords(), 1)
+				assert.Len(t, flood.logs.records(), 1)
+				assert.Equal(t, []string{"authz_fail", "authz_fail", "authz_fail", "authz_fail", "authz_fail"}, flood.events.names())
+			},
+		},
+		refusedAsUnthrottled(testCase{
+			name:   "a throttled cookie stream from another site is refused as any other is",
+			change: fromAnotherSite("https://evil.example"),
+		}),
+		refusedAsUnthrottled(testCase{
+			name:   "a throttled cookie stream from another site, with CSRF protection on, is refused as any other is",
+			csrf:   true,
+			change: fromAnotherSite("https://evil.example"),
+		}),
+		refusedAsUnthrottled(testCase{
+			name:   "a throttled cookie stream from an origin the CORS policy does not name is refused as any other is",
+			cors:   &httpsec.CORSPolicy{AllowedOrigins: []string{"https://app.example"}, AllowCredentials: true},
+			change: fromAnotherSite("https://evil.example"),
+		}),
+		refusedAsUnthrottled(testCase{
+			name:   "a throttled cookie stream from another site, with a CORS wildcard, is refused: a cookie needs a named origin",
+			cors:   &httpsec.CORSPolicy{AllowedOrigins: []string{"*"}},
+			change: fromAnotherSite("https://evil.example"),
+		}),
+		{
+			name:   "a throttled cookie stream from an allowed origin is told to retry",
+			cors:   &httpsec.CORSPolicy{AllowedOrigins: []string{"https://app.example"}, AllowCredentials: true},
+			change: fromAnotherSite("https://app.example"),
+			assert: func(t *testing.T, f *signalsFixture, resp *http.Response) {
+				requireOnlyRetryResponse(t, resp, busyLeast, busyMost)
+				assert.EqualValues(t, 1, f.chain.SessionSignalStats().Throttled)
+			},
+		},
+		{
+			name: "a throttled cookie stream from its own site is told to retry",
+			change: []func(*http.Request){func(r *http.Request) {
+				r.Header.Set("Sec-Fetch-Site", "same-origin")
+			}},
+			assert: func(t *testing.T, f *signalsFixture, resp *http.Response) {
+				requireOnlyRetryResponse(t, resp, busyLeast, busyMost)
+				assert.EqualValues(t, 1, f.chain.SessionSignalStats().Throttled)
+			},
+		},
+		{
+			// The throttle runs before the session bearer records its credential, so the stream is judged
+			// by the stricter cookie rule, where an unthrottled one would be allowed. Recording it there, a
+			// small change in session_bearer.go, would let this stream retry. The stricter answer is the
+			// safe default, so this pins it, and that change is left for the maintainer to decide.
+			name:   "a throttled bearer stream is judged by the cookie rule, as its credential is not yet recorded",
+			bearer: bearerFromWildcard.bearer,
+			cors:   bearerFromWildcard.cors,
+			change: bearerFromWildcard.change,
+			assert: func(t *testing.T, f *signalsFixture, resp *http.Response) {
+				refused(t, f, resp)
+
+				_, plain := send(t, bearerFromWildcard, false) //nolint:bodyclose // the fixture closes it when the test ends
+				require.Equal(t, http.StatusOK, plain.StatusCode, "with no throttle the bearer rule allows it")
+				assert.Equal(t, "text/event-stream", plain.Header.Get("Content-Type"))
+			},
+		},
+		refusedAsUnthrottled(testCase{
+			name:   "a throttled bearer stream from an origin nothing trusts is refused as any other is",
+			bearer: true,
+			change: fromAnotherSite("https://evil.example"),
+		}),
 		{
 			name: "the default is told to retry",
 			assert: func(t *testing.T, f *signalsFixture, resp *http.Response) {
@@ -425,22 +609,7 @@ func TestSessionSignals_Caps_ThrottledCookie(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			engine := engineOf(t, phasePolicy(t, policy.Decision{Outcome: policy.Deny, Reason: ratelimit.ErrThrottled}, policy.PerRequest))
-
-			f := newSignalsFixture(t, signalsSetup{
-				withoutBearer: true,
-				signals:       tc.signals,
-				opts: func(f *signalsFixture) []httpsec.Option {
-					return []httpsec.Option{
-						httpsec.WithSessions(f.sessions),
-						httpsec.WithoutCSRFProtection(),
-						httpsec.WithPolicyEngine(engine),
-						httpsec.RegisterInterceptor(cookieJudgedPerRequest{consumerSessionCookie{sessions: f.sessions}}, httpsec.OrderBearerToken),
-					}
-				},
-			})
-
-			resp, _ := f.openStream(t, "", withSignalsCookie(f.signIn(t, "u-1").ID))
+			f, resp := send(t, tc, true) //nolint:bodyclose // the fixture closes it when the test ends
 
 			tc.assert(t, f, resp)
 		})

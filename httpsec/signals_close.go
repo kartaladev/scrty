@@ -24,9 +24,10 @@ type SessionSignalStats struct {
 	// SessionSignals.ReloadContext shows, since no stream of that chain ever opens.
 	ReloadFailures uint64
 
-	// Throttled is how many requests for the stream a ratelimit.ErrThrottled from the chain's per-request policy phase
-	// answered with only a retry. Such a request is 200 on every dashboard that counts statuses, and
-	// no dependency failed, so it is not in ReloadFailures.
+	// Throttled is how many requests for the stream a ratelimit.ErrThrottled from the chain's per-request
+	// policy phase answered with 200 and only a retry. That is 200 on every dashboard that counts statuses,
+	// and no dependency failed, so it is not in ReloadFailures. A throttled request the cross-site rule
+	// refuses is answered 403, and is not counted.
 	Throttled uint64
 
 	// ConsecutiveReloadFailures is the reads in a row that failed, added up over the streams now open,

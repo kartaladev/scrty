@@ -74,6 +74,26 @@ func (e *sessionSignals) answerRetryOnly(entered context.Context, ex *Exchange, 
 	closing, overCap := errors.Is(err, errStreamsClosed), errors.Is(err, ErrTooManyStreams)
 	throttled := e.isThrottledSignIn(entered, ex, err)
 
+	if throttled {
+		// This slot is above the endpoint, so the cross-site rule has not run, and neither has the line
+		// that sets the endpoint's Cache-Control. A throttled request from a site nothing trusts is refused
+		// as an unthrottled one is, before it is counted or answered, so that a foreign page cannot tell a
+		// signed-in browser by a 200, or make the library log or count a throttle. It cannot stop the event:
+		// the policy has already run, so such a request has emitted its one unsampled authz_fail, as any
+		// per-request denial does, where an unthrottled refusal emits none.
+		//
+		// The throttle runs before the session bearer records its credential, so a throttled bearer stream
+		// is judged by the stricter cookie rule: from a CORS wildcard's origin it is refused, where an
+		// unthrottled one is allowed. Recording it there, a small change in session_bearer.go, would let
+		// that stream retry. The stricter answer is the safe default, so it stands, and that change is left
+		// for the maintainer to decide.
+		if refused := e.crossSiteAllowed(ex, streamByCookie(ex)); refused != nil { //nolint:contextcheck // the refusal is logged on the exchange's current context; entered only classifies the failure
+			ex.Writer.SetHeader("Cache-Control", signalsCacheControl)
+
+			return refused
+		}
+	}
+
 	if !closing && !overCap && !throttled && !e.isDependencyFailure(entered, ex, err) {
 		return err
 	}

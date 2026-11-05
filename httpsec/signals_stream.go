@@ -373,8 +373,9 @@ func (e *sessionSignals) readStream(ctx context.Context, user identity.UserID, f
 // failed read of the user is answered as the authenticators answer one (classifyReload), behind
 // fixed text with the cause reachable; the session read's error is already fixed text of
 // Sessions.SignInState's. It is classified on reload, which carries none of the request's
-// cancellation, so that a client's leaving is never what a failed read is taken for. It takes the user and the family and not the session, as a body must be able
-// to. A panic in a consumer's store or loader is logged as a stream's is, without its value.
+// cancellation, so that a client's leaving is never what a failed read is taken for. It takes the user
+// and the family and not the session, as a body must be able to. A panic in a consumer's store or
+// loader is logged as a stream's is, without its value.
 //
 // It runs on the request's goroutine, as every read of a request's authentication does. So a store
 // that ignores its context holds this request until it returns, even once its client has left. The
@@ -762,8 +763,9 @@ func (l *streamLoop) armBeat() {
 
 // armTimer arms the one timer for the earliest of what is left. A timer armed before is dropped,
 // and the runtime collects it. What is left of the wake gap and of a wait for a report is cut back to
-// its own length, so that a clock with no monotonic reading stepped back holds a pending wake for at most two gaps,
-// and not until that clock catches up. clock.System's monotonic reading sees no such step.
+// its own length, so that a clock with no monotonic reading stepped back holds a pending wake for at
+// most two gaps, and not until that clock catches up. clock.System's monotonic reading sees no such
+// step.
 func (l *streamLoop) armTimer(now time.Time) {
 	if l.wake == nil {
 		switch {

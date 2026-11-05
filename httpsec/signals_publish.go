@@ -47,11 +47,12 @@ const (
 // replica sharing a bus is expected to run the same set, because a replica lacking the signal raises
 // none, and its streams send none that another replica raised.
 //
-// It returns ErrSessionSignalsDisabled on a chain without EnableSessionSignals, ErrInvalidSignal
-// for a kind other than the three above, and ErrSignalsBusy when a consumer's bus could not take
-// the signal, or, on either bus, after CloseSessionSignals, since nil would say it was sent. A user
-// with no open stream is not an error. The signal is raised on a detached context, since a bus
-// outlives the request, and ctx is not used.
+// It returns ErrSessionSignalsDisabled on a chain without EnableSessionSignals, and ErrInvalidSignal
+// for a kind other than the three above. With credential_changed in the set, it returns ErrSignalsBusy
+// when a consumer's bus could not take the signal, or, on either bus, after CloseSessionSignals, since
+// nil would say it was sent. Without it in the set, the default, a close changes nothing: nothing is
+// raised, and nil is returned. A user with no open stream is not an error. The signal is raised on a
+// detached context, since a bus outlives the request, and ctx is not used.
 func (c *Chain) ReportCredentialChange(_ context.Context, user identity.UserID, kind CredentialKind) error {
 	e := c.signalsEndpoint()
 	if e == nil {

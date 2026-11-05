@@ -1351,8 +1351,8 @@ type, phase, family and frames, and never its value. The stream then closes and 
 `logout` means a logout: the chain's own, or your call to `Sessions.Logout`, which ends the whole
 sign-in, a renewal's successor included. `ended` names no one's fault: it is what a sign-in revoked by
 an administrator says, what `Sessions.Delete` says, since one deleted session has no reason anyone
-named, and what a stream says with no report at all and no deadline passed (with one passed, it says `expired`). So a logout of your own calls `Logout` and not
-`Delete`, or other tabs hear `ended`.
+named, and what a stream says with no report at all and no deadline passed (with one passed, it says
+`expired`). So a logout of your own calls `Logout` and not `Delete`, or other tabs hear `ended`.
 
 A stream never carries the audit feed, and no option makes it: no failed sign-ins, lockouts,
 rate-limit, CSRF, host or DPoP refusals, no client addresses, and nothing about another user. Those

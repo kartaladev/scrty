@@ -349,8 +349,9 @@ type responseWriter struct {
 	streamType string
 
 	// chainDone is whether the chain that built this writer has returned, after which
-	// its fiber context is not this request's to touch. It is atomic because a writer
-	// kept past its chain can be called from any goroutine.
+	// its fiber context is not this request's to touch. It is atomic because a Stream
+	// made once the chain has returned, which refuses, may be called from another goroutine. Every
+	// other call is made on the chain's own goroutine (see httpsec.ResponseWriter.Stream).
 	chainDone atomic.Bool
 
 	// streamWindow replaces httpsec.StreamWriteWindow in a test, and is zero
@@ -580,8 +581,9 @@ func (r *streamRun) run(bw *bufio.Writer) {
 //
 // The failure comes after everything the body wrote, so it arrives in order: head,
 // events, end of connection. A pipe closed by endStreamBody still gives up what it holds
-// before it reports its end, so a runtime.Goexit keeps that order too. Closing the connection from the body's goroutine instead
-// could outrun fasthttp's write of the head, and a client would be left with nothing.
+// before it reports its end, so a runtime.Goexit keeps that order too. Closing the connection from the
+// body's goroutine instead could outrun fasthttp's write of the head, and a client would be left with
+// nothing.
 //
 // io.ErrUnexpectedEOF says what happened, and is one fasthttp does not log as a
 // server's failure: the panic has its own log line.

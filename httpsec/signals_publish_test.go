@@ -136,6 +136,24 @@ func TestSessionSignals_ReportCredentialChange(t *testing.T) {
 				assert.ErrorIs(t, err, httpsec.ErrSessionSignalsDisabled)
 			},
 		},
+		{
+			name:  "after a close, a set holding credential_changed answers busy",
+			setup: enabled,
+			assert: func(t *testing.T, r *streamRig) {
+				require.NoError(t, r.chain.CloseSessionSignals(t.Context()))
+
+				err := r.chain.ReportCredentialChange(t.Context(), "u-1", httpsec.CredentialPassword)
+				assert.ErrorIs(t, err, httpsec.ErrSignalsBusy)
+			},
+		},
+		{
+			name: "after a close, the default set answers nil, as it raises nothing",
+			assert: func(t *testing.T, r *streamRig) {
+				require.NoError(t, r.chain.CloseSessionSignals(t.Context()))
+
+				require.NoError(t, r.chain.ReportCredentialChange(t.Context(), "u-1", httpsec.CredentialPassword))
+			},
+		},
 	}
 
 	for _, tc := range cases {
