@@ -42,13 +42,15 @@ const streamWriteTimeout = 3 * time.Second
 func serveFiber(t *testing.T, app *fiber.App) string {
 	t.Helper()
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 
-	done := make(chan error, 1)
+	done := make(chan struct{})
 
 	go func() {
-		done <- app.Listener(ln, fiber.ListenConfig{DisableStartupMessage: true})
+		defer close(done)
+
+		_ = app.Listener(ln, fiber.ListenConfig{DisableStartupMessage: true})
 	}()
 
 	t.Cleanup(func() {
@@ -175,7 +177,7 @@ func TestFiber_StreamOutlivesWriteTimeout(t *testing.T) {
 
 			got.elapsed = time.Since(start)
 
-			if got.err == io.EOF {
+			if errors.Is(got.err, io.EOF) {
 				got.err = nil
 			}
 
@@ -235,6 +237,10 @@ func streaming(serve func(ex *httpsec.Exchange) error) httpsec.Option {
 // openStream sends the request on ctx, leaving the body for the row to read. The
 // whole exchange is bounded by streamBound, so a response that never comes or
 // never ends fails the row instead of hanging it.
+//
+// The body is closed when the test ends, which the bodyclose linter cannot see, so the
+// directive below marks the response as handled.
+// bodyclose:handled
 func openStream(ctx context.Context, t *testing.T, url string) *http.Response {
 	t.Helper()
 
@@ -242,6 +248,10 @@ func openStream(ctx context.Context, t *testing.T, url string) *http.Response {
 }
 
 // openStreamWithin is openStream for a row that lasts longer than streamBound.
+//
+// The body is closed when the test ends, which the bodyclose linter cannot see, so the
+// directive below marks the response as handled.
+// bodyclose:handled
 func openStreamWithin(ctx context.Context, t *testing.T, url string, bound time.Duration) *http.Response {
 	t.Helper()
 
@@ -703,7 +713,7 @@ func TestFiber_Stream(t *testing.T) {
 				ended := make(chan struct{})
 				live, wrote := make(chan error, 1), make(chan error, 1)
 
-				ln, err := net.Listen("tcp", "127.0.0.1:0")
+				ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 				require.NoError(t, err)
 
 				accepted := &recordingListener{Listener: ln, conns: make(chan net.Conn, 1)}
@@ -1307,7 +1317,7 @@ func selfSignedTLS(t *testing.T) *tls.Config {
 func serveRaw(t *testing.T, app *fiber.App, overTLS bool) func() net.Conn {
 	t.Helper()
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 
 	addr := ln.Addr().String()
@@ -1322,10 +1332,10 @@ func serveRaw(t *testing.T, app *fiber.App, overTLS bool) func() net.Conn {
 	return func() net.Conn {
 		t.Helper()
 
-		raw, err := net.Dial("tcp", addr)
+		raw, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", addr)
 		require.NoError(t, err)
 
-		var conn net.Conn = raw
+		conn := net.Conn(raw)
 
 		if overTLS {
 			client := tls.Client(raw, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec // the test's own certificate
@@ -1348,7 +1358,7 @@ func serveOn(t *testing.T, app *fiber.App, ln net.Listener) func() net.Conn {
 	return func() net.Conn {
 		t.Helper()
 
-		conn, err := net.Dial("tcp", ln.Addr().String())
+		conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", ln.Addr().String())
 		require.NoError(t, err)
 
 		t.Cleanup(func() { _ = conn.Close() })
@@ -1361,10 +1371,12 @@ func serveOn(t *testing.T, app *fiber.App, ln net.Listener) func() net.Conn {
 func serveListener(t *testing.T, app *fiber.App, ln net.Listener) {
 	t.Helper()
 
-	done := make(chan error, 1)
+	done := make(chan struct{})
 
 	go func() {
-		done <- app.Listener(ln, fiber.ListenConfig{DisableStartupMessage: true})
+		defer close(done)
+
+		_ = app.Listener(ln, fiber.ListenConfig{DisableStartupMessage: true})
 	}()
 
 	t.Cleanup(func() {
@@ -1414,7 +1426,7 @@ type stallListener struct {
 func newStallListener(t *testing.T) *stallListener {
 	t.Helper()
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 
 	return &stallListener{Listener: ln, stalled: make(chan struct{}), release: make(chan struct{})}
@@ -1639,8 +1651,7 @@ func TestFiber_StreamNoFalseAlarm(t *testing.T) {
 			_, err := io.WriteString(conn, "GET /ordinary HTTP/1.1\r\nHost: stream\r\n\r\n")
 			require.NoError(t, err)
 
-			resp, err := http.ReadResponse(r, nil)
-			require.NoError(t, err)
+			resp := readResponse(t, r, nil)
 
 			_, err = io.ReadAll(resp.Body)
 			require.NoError(t, err)
@@ -1649,8 +1660,7 @@ func TestFiber_StreamNoFalseAlarm(t *testing.T) {
 		_, err := io.WriteString(conn, rawStreamRequest)
 		require.NoError(t, err)
 
-		resp, err := http.ReadResponse(r, nil)
-		require.NoError(t, err)
+		resp := readResponse(t, r, nil)
 
 		waitFor(t, opened, "the stream to open")
 
@@ -1762,8 +1772,7 @@ func TestFiber_StreamOverTLSBesideReads(t *testing.T) {
 		}
 	}()
 
-	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
-	require.NoError(t, err)
+	resp := readResponse(t, bufio.NewReader(conn), nil)
 
 	events, err := countEvents(resp.Body)
 	require.NoError(t, err)
@@ -1799,8 +1808,7 @@ func TestFiber_StreamConnectionCloses(t *testing.T) {
 
 				r := bufio.NewReader(conn)
 
-				resp, err := http.ReadResponse(r, nil)
-				require.NoError(t, err)
+				resp := readResponse(t, r, nil)
 				assert.True(t, resp.Close, "the response says the connection closes")
 
 				events, err := countEvents(resp.Body)
@@ -1832,8 +1840,7 @@ func TestFiber_StreamConnectionCloses(t *testing.T) {
 				head, err := http.NewRequestWithContext(t.Context(), http.MethodHead, "/", http.NoBody)
 				require.NoError(t, err)
 
-				resp, err := http.ReadResponse(r, head)
-				require.NoError(t, err)
+				resp := readResponse(t, r, head)
 				assert.Equal(t, http.StatusOK, resp.StatusCode)
 				assert.True(t, resp.Close, "the response says the connection closes")
 
@@ -1850,8 +1857,7 @@ func TestFiber_StreamConnectionCloses(t *testing.T) {
 				_, err = io.WriteString(next, "GET /ordinary HTTP/1.1\r\nHost: stream\r\n\r\n")
 				require.NoError(t, err)
 
-				resp, err = http.ReadResponse(bufio.NewReader(next), nil)
-				require.NoError(t, err)
+				resp = readResponse(t, bufio.NewReader(next), nil)
 
 				body, err := io.ReadAll(resp.Body)
 				require.NoError(t, err)
@@ -2323,7 +2329,7 @@ func TestFiber_StreamWatcherExits(t *testing.T) {
 			assert: func(t *testing.T) {
 				ended := make(chan struct{})
 
-				ln, err := net.Listen("tcp", "127.0.0.1:0")
+				ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 				require.NoError(t, err)
 
 				accepted := &recordingListener{Listener: ln, conns: make(chan net.Conn, 1)}
@@ -2450,7 +2456,7 @@ func TestFiber_StreamBodyMustNotReadExchange(t *testing.T) {
 	for range reuseWorkers {
 		workers.Go(func() {
 			for time.Now().Before(stopAt) {
-				if !assert.NoError(t, requestAndReset(addr, bobby)) {
+				if !assert.NoError(t, requestAndReset(t.Context(), addr, bobby)) {
 					return
 				}
 			}
@@ -2474,8 +2480,8 @@ func TestFiber_StreamBodyMustNotReadExchange(t *testing.T) {
 // instead of closing it. A closed one would leave its port in TIME_WAIT for half a
 // minute, and a test running at this rate would use up the machine's ephemeral ports,
 // failing whatever else on it binds or dials.
-func requestAndReset(addr, who string) error {
-	conn, err := net.Dial("tcp", addr)
+func requestAndReset(ctx context.Context, addr, who string) error {
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return err
 	}
@@ -2724,16 +2730,34 @@ func TestFiber_StreamFirstDeadline(t *testing.T) {
 	time.Sleep(2 * writeTimeout)
 	close(ln.release)
 
-	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
-	require.NoError(t, err, "the first event was cut under the server's write timeout")
+	resp := readResponse(t, bufio.NewReader(conn), nil)
 
 	events, err := countEvents(resp.Body)
 	require.NoError(t, err, "the first event was cut under the server's write timeout")
 	assert.Equal(t, 1, events)
 }
 
+// readResponse reads a response head from r, for the request req (nil for a GET). The body is
+// closed when the test ends, which the bodyclose linter cannot see, so the directive below
+// marks the response as handled.
+// bodyclose:handled
+func readResponse(t *testing.T, r *bufio.Reader, req *http.Request) *http.Response {
+	t.Helper()
+
+	resp, err := http.ReadResponse(r, req)
+	require.NoError(t, err, "reading the response head")
+
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	return resp
+}
+
 // getWith sends a request on client, reporting through reused whether it went on
 // a connection that was already open.
+//
+// The body is closed when the test ends, which the bodyclose linter cannot see, so the
+// directive below marks the response as handled.
+// bodyclose:handled
 func getWith(t *testing.T, client *http.Client, url string, reused *bool) *http.Response {
 	t.Helper()
 

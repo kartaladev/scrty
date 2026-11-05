@@ -107,7 +107,7 @@ func newSignalsFixture(t *testing.T, setup signalsSetup) *signalsFixture {
 	f.chain, err = httpsec.New(opts...)
 	require.NoError(t, err)
 
-	var handler http.Handler = f.chain.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := f.chain.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(signalsDownstreamStatus)
 	}))
 	if setup.wrapHandler != nil {
@@ -173,8 +173,12 @@ func (f *signalsFixture) signIn(t *testing.T, user identity.UserID) *session.Ses
 // send sends method on target to the server, presenting credential as a session reference
 // when it is not empty. change, when given, adjusts the request first. The response's body
 // is closed when the test ends, which is how a stream it opened is left.
+//
+// The body is closed when the test ends, which the bodyclose linter cannot see, so the
+// directive below marks the response as handled.
+// bodyclose:handled
 func (f *signalsFixture) send(
-	t *testing.T, ctx context.Context, method, target, credential string, change ...func(*http.Request),
+	ctx context.Context, t *testing.T, method, target, credential string, change ...func(*http.Request),
 ) *http.Response {
 	t.Helper()
 
@@ -198,7 +202,10 @@ func (f *signalsFixture) send(
 }
 
 // openStream asks for the stream at its default path on a context the test can end, and
-// returns the response and that context's cancel.
+// returns the response and that context's cancel. The body is closed when the test ends,
+// which the bodyclose linter cannot see, so the directive below marks the response as
+// handled.
+// bodyclose:handled
 func (f *signalsFixture) openStream(
 	t *testing.T, credential string, change ...func(*http.Request),
 ) (*http.Response, context.CancelFunc) {
@@ -207,7 +214,7 @@ func (f *signalsFixture) openStream(
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 
-	return f.send(t, ctx, http.MethodGet, httpsec.DefaultSessionSignalsPath, credential, change...), cancel
+	return f.send(ctx, t, http.MethodGet, httpsec.DefaultSessionSignalsPath, credential, change...), cancel
 }
 
 // waitDone waits for one request's handler to have returned on the server.

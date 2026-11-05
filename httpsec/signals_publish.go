@@ -53,7 +53,7 @@ func (c *Chain) ReportCredentialChange(_ context.Context, user identity.UserID, 
 		return fmt.Errorf("%w: unknown credential kind", ErrInvalidSignal)
 	}
 
-	return e.raiseCredentialChange(user, kind)
+	return e.raiseCredentialChange(user, kind) //nolint:contextcheck // detached on purpose: a bus outlives the request, and ctx is documented as unused
 }
 
 // raiseCredentialChange hands a credential_changed of a known kind to the hub, which never blocks.

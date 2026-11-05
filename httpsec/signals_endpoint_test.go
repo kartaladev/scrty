@@ -83,7 +83,7 @@ func TestSessionSignals_Endpoint(t *testing.T) {
 			assert: func(t *testing.T, f *signalsFixture) {
 				s := f.signIn(t, "u-1")
 
-				resp := f.send(t, t.Context(), http.MethodGet, "/session/signals/more", s.ID)
+				resp := f.send(t.Context(), t, http.MethodGet, "/session/signals/more", s.ID)
 				assert.Equal(t, signalsDownstreamStatus, resp.StatusCode)
 			},
 		},
@@ -93,7 +93,7 @@ func TestSessionSignals_Endpoint(t *testing.T) {
 				s := f.signIn(t, "u-1")
 
 				for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch, http.MethodHead, http.MethodOptions} {
-					resp := f.send(t, t.Context(), method, httpsec.DefaultSessionSignalsPath, s.ID)
+					resp := f.send(t.Context(), t, method, httpsec.DefaultSessionSignalsPath, s.ID)
 					requireNoStream(t, resp, http.StatusMethodNotAllowed)
 					assert.Equal(t, http.MethodGet, resp.Header.Get("Allow"), method)
 					assert.Contains(t, resp.Header.Get("Cache-Control"), "no-store", method)
@@ -104,7 +104,7 @@ func TestSessionSignals_Endpoint(t *testing.T) {
 		{
 			name: "another method is judged before the credential",
 			assert: func(t *testing.T, f *signalsFixture) {
-				resp := f.send(t, t.Context(), http.MethodPost, httpsec.DefaultSessionSignalsPath, "")
+				resp := f.send(t.Context(), t, http.MethodPost, httpsec.DefaultSessionSignalsPath, "")
 				requireNoStream(t, resp, http.StatusMethodNotAllowed)
 			},
 		},
@@ -114,7 +114,7 @@ func TestSessionSignals_Endpoint(t *testing.T) {
 			assert: func(t *testing.T, f *signalsFixture) {
 				s := f.signIn(t, "u-1")
 
-				requireStreamHead(t, f.send(t, t.Context(), http.MethodGet, "/api/me/signals", s.ID))
+				requireStreamHead(t, f.send(t.Context(), t, http.MethodGet, "/api/me/signals", s.ID))
 
 				resp, _ := f.openStream(t, s.ID)
 				assert.Equal(t, signalsDownstreamStatus, resp.StatusCode)
@@ -253,7 +253,7 @@ func (a consumerSessionCookie) Intercept(ex *httpsec.Exchange, next httpsec.Next
 
 // withSignalsCookie presents sid as the consumer's cookie.
 func withSignalsCookie(sid string) func(*http.Request) {
-	return func(req *http.Request) { req.AddCookie(&http.Cookie{Name: signalsCookie, Value: sid}) }
+	return func(req *http.Request) { req.AddCookie(&http.Cookie{Name: signalsCookie, Value: sid}) } //nolint:gosec // a request's cookie in a test: attributes belong to a Set-Cookie, which a client does not send
 }
 
 // listSpyStore is a session store whose listing calls see before it answers, and fail
@@ -337,7 +337,7 @@ func TestSessionSignals_Admission(t *testing.T) {
 				s := f.signIn(t, "u-1")
 
 				for _, name := range []string{"session", "access_token", "token", "authorization", "id"} {
-					resp := f.send(t, t.Context(), http.MethodGet, httpsec.DefaultSessionSignalsPath+"?"+name+"="+s.ID, "")
+					resp := f.send(t.Context(), t, http.MethodGet, httpsec.DefaultSessionSignalsPath+"?"+name+"="+s.ID, "")
 					requireNoStream(t, resp, http.StatusUnauthorized)
 				}
 			},
@@ -936,7 +936,7 @@ func TestSessionSignals_NoActivity(t *testing.T) {
 
 				f.clk.Advance(2 * touchInterval)
 
-				resp := f.send(t, t.Context(), http.MethodGet, "/orders", s.ID)
+				resp := f.send(t.Context(), t, http.MethodGet, "/orders", s.ID)
 				require.Equal(t, signalsDownstreamStatus, resp.StatusCode)
 				f.waitDone(t)
 
@@ -965,7 +965,7 @@ func TestSessionSignals_NoActivity(t *testing.T) {
 				require.NotNil(t, answers.Load())
 				assert.False(t, *answers.Load(), "the stream's path records no activity")
 
-				resp = f.send(t, t.Context(), http.MethodGet, "/orders", s.ID)
+				resp = f.send(t.Context(), t, http.MethodGet, "/orders", s.ID)
 				require.Equal(t, signalsDownstreamStatus, resp.StatusCode)
 				assert.True(t, *answers.Load(), "another path records activity")
 			},
@@ -1193,6 +1193,10 @@ func TestSessionSignals_Admission_ByCookie(t *testing.T) {
 }
 
 // firstOf drops openStream's cancel, for a row that leaves its stream to the test's end.
+//
+// The body is closed when the test ends, which the bodyclose linter cannot see, so the
+// directive below marks the response as handled.
+// bodyclose:handled
 func firstOf(resp *http.Response, _ context.CancelFunc) *http.Response { return resp }
 
 // bodyContextWriter records the context the endpoint hands Stream, and streams nothing.

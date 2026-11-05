@@ -53,7 +53,7 @@ func (s sessionSignalsRetry) Intercept(ex *Exchange, next Next) error {
 		return nil
 	}
 
-	return s.e.answerRetryOnly(ex, entered, err)
+	return s.e.answerRetryOnly(entered, ex, err)
 }
 
 // answerRetryOnly answers err with 200 and only a retry when a retry could fix it, because an
@@ -64,13 +64,13 @@ func (s sessionSignalsRetry) Intercept(ex *Exchange, next Next) error {
 // Stream is what guards a response that has begun: it refuses, having written nothing, and err is
 // left to the chain's mapping, whose status a writer ignores by then. A writer that cannot stream never
 // could, so that stays 501: no retry would change it.
-func (e *sessionSignals) answerRetryOnly(ex *Exchange, entered context.Context, err error) error {
+func (e *sessionSignals) answerRetryOnly(entered context.Context, ex *Exchange, err error) error {
 	if errors.Is(err, ErrStreamingUnsupported) || errors.Is(err, ErrStreamingStarted) {
 		return err
 	}
 
 	closing, overCap := errors.Is(err, errStreamsClosed), errors.Is(err, ErrTooManyStreams)
-	if !closing && !overCap && !e.isDependencyFailure(ex, entered, err) {
+	if !closing && !overCap && !e.isDependencyFailure(entered, ex, err) {
 		return err
 	}
 
@@ -80,17 +80,17 @@ func (e *sessionSignals) answerRetryOnly(ex *Exchange, entered context.Context, 
 		// reconnect over it to the replica it is leaving.
 		ex.Writer.SetHeader("Connection", "close")
 
-		return e.retryOnlyOr(err, e.streamOnlyRetry(ex, e.closingRetry()))
+		return e.retryOnlyOr(err, e.streamOnlyRetry(ex, e.closingRetry())) //nolint:contextcheck // the answer and its records go on the exchange's current context; entered only classifies the failure
 	}
 
 	delay := jittered(e.cfg.BusyDelay, streamRetryJitter, rand.Float64()) //nolint:gosec // jitter, not a secret
 
-	if streamErr := e.streamOnlyRetry(ex, delay); streamErr != nil {
+	if streamErr := e.streamOnlyRetry(ex, delay); streamErr != nil { //nolint:contextcheck // the answer and its records go on the exchange's current context; entered only classifies the failure
 		return e.retryOnlyOr(err, streamErr)
 	}
 
 	if overCap {
-		e.logRetryOnly(ex.Context(), "cap-reached", msgStreamCapReached)
+		e.logRetryOnly(ex.Context(), "cap-reached", msgStreamCapReached) //nolint:contextcheck // the answer and its records go on the exchange's current context; entered only classifies the failure
 
 		return nil
 	}
@@ -98,7 +98,7 @@ func (e *sessionSignals) answerRetryOnly(ex *Exchange, entered context.Context, 
 	// It hides from a status-code dashboard, and a tenant-scoped store with no hook fails here and
 	// never as a reload, so this is where an operator sees either.
 	e.reloads.failures.Add(1)
-	e.logRetryOnly(ex.Context(), "dependency-failed", msgStreamDependencyFailed,
+	e.logRetryOnly(ex.Context(), "dependency-failed", msgStreamDependencyFailed, //nolint:contextcheck // the answer and its records go on the exchange's current context; entered only classifies the failure
 		slog.String("error_type", fmt.Sprintf("%T", err)))
 
 	return nil
@@ -170,12 +170,12 @@ func (e *sessionSignals) streamOnlyRetry(ex *Exchange, delay time.Duration) erro
 //
 // A consumer's error the mapping does not know is taken for a failure, so an interceptor refusing with
 // one of its own answers the request itself, sets RetryableError, or the client is told to come back.
-func (e *sessionSignals) isDependencyFailure(ex *Exchange, entered context.Context, err error) bool {
+func (e *sessionSignals) isDependencyFailure(entered context.Context, ex *Exchange, err error) bool {
 	if errors.Is(entered.Err(), context.Canceled) {
 		return false
 	}
 
-	return StatusForError(err) >= http.StatusInternalServerError && e.retryable(ex, err)
+	return StatusForError(err) >= http.StatusInternalServerError && e.retryable(ex, err) //nolint:contextcheck // only the classification above reads entered; a panic in RetryableError is logged on the exchange's current context
 }
 
 // retryable asks a consumer's SessionSignals.RetryableError about err. A panic in it is logged as a

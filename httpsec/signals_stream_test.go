@@ -2496,7 +2496,7 @@ func TestSessionSignals_BusWakeUp_QueueHold(t *testing.T) {
 				// Every read is overtaken by another notice, so that no read answers the latest.
 				hub := httpsec.SignalHubProbeOf(r.chain)
 				flood := func(context.Context) error {
-					hub.Deliver(httpsec.SignalEnvelope{User: s.UserID, Family: s.FamilyID, Name: string(httpsec.SignalSessionEnded), Reason: "logout"})
+					hub.Deliver(httpsec.SignalEnvelope{User: s.UserID, Family: s.FamilyID, Name: string(httpsec.SignalSessionEnded), Reason: "logout"}) //nolint:contextcheck // the hub logs a panic on its own context, detached from any request
 
 					return nil
 				}
@@ -2522,7 +2522,7 @@ func TestSessionSignals_BusWakeUp_QueueHold(t *testing.T) {
 				// Past the bound on a hold, as a flood takes it.
 				hub := httpsec.SignalHubProbeOf(r.chain)
 				flood := func(context.Context) error {
-					hub.Deliver(httpsec.SignalEnvelope{User: s.UserID, Family: s.FamilyID, Name: string(httpsec.SignalSessionEnded), Reason: "logout"})
+					hub.Deliver(httpsec.SignalEnvelope{User: s.UserID, Family: s.FamilyID, Name: string(httpsec.SignalSessionEnded), Reason: "logout"}) //nolint:contextcheck // the hub logs a panic on its own context, detached from any request
 
 					return nil
 				}
@@ -2759,7 +2759,7 @@ func TestSessionSignals_BusWakeUp_QueueHold(t *testing.T) {
 				hub := httpsec.SignalHubProbeOf(r.chain)
 				flood := func(context.Context) error {
 					reads.Add(1)
-					hub.Deliver(httpsec.SignalEnvelope{User: s.UserID, Family: s.FamilyID, Name: string(httpsec.SignalSessionEnded), Reason: "logout"})
+					hub.Deliver(httpsec.SignalEnvelope{User: s.UserID, Family: s.FamilyID, Name: string(httpsec.SignalSessionEnded), Reason: "logout"}) //nolint:contextcheck // the hub logs a panic on its own context, detached from any request
 
 					return nil
 				}
@@ -3531,7 +3531,7 @@ func (r *realStreams) open(t *testing.T) (*session.Session, <-chan string, conte
 	req := must.Must(http.NewRequestWithContext(ctx, http.MethodGet, r.srv.URL+httpsec.DefaultSessionSignalsPath, nil))
 	req.Header.Set("Authorization", "Bearer "+s.ID)
 
-	resp, err := r.srv.Client().Do(req)
+	resp, err := r.srv.Client().Do(req) //nolint:bodyclose // the reading goroutine below closes the body when the stream ends
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
@@ -4922,7 +4922,11 @@ func TestSessionSignals_Heartbeat_Admission(t *testing.T) {
 		return resp
 	}
 
-	refused := func(status int) func(t *testing.T, f *signalsFixture, resp *http.Response) {
+	// answerCheck is a row's assertion on the response it opened. It is a named type so that a
+	// call returning one is not mistaken for a call returning a response.
+	type answerCheck func(t *testing.T, f *signalsFixture, resp *http.Response)
+
+	refused := func(status int) answerCheck {
 		return func(t *testing.T, f *signalsFixture, resp *http.Response) {
 			t.Helper()
 
@@ -5060,7 +5064,7 @@ func TestSessionSignals_Heartbeat_Admission(t *testing.T) {
 
 			f := newSignalsFixture(t, tc.setup(t))
 
-			tc.assert(t, f, tc.open(t, f))
+			tc.assert(t, f, tc.open(t, f)) //nolint:bodyclose // open is f.openStream, which closes the body when the test ends
 		})
 	}
 }

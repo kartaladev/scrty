@@ -46,7 +46,7 @@ const (
 
 	// SignalCredentialChanged says the user's password, a passkey or a second
 	// factor changed, naming only the kind.
-	SignalCredentialChanged Signal = "credential_changed"
+	SignalCredentialChanged Signal = "credential_changed" //nolint:gosec // G101: the name of a signal, not a credential
 )
 
 // DefaultSessionSignalsPath is where the stream answers when

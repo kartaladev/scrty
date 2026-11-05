@@ -348,7 +348,7 @@ func TestSessionSignals_Caps_ConsumersAdapterTakesTheTypeBack(t *testing.T) {
 }
 
 // firstReadSecret is text a dependency's error carries that no returned error may.
-const firstReadSecret = "dial tcp 10.0.0.9: password=hunter2"
+const firstReadSecret = "dial tcp 10.0.0.9: password=hunter2" //nolint:gosec // G101: a fixture standing in for text that must not leak, not a credential
 
 // stubUsers is a UserLoader that answers every read with load.
 type stubUsers struct {

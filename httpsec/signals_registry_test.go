@@ -1140,7 +1140,7 @@ func TestSessionSignals_Close(t *testing.T) {
 				releaseFirst := admitted(t, r, first)
 				releaseSecond := admitted(t, r, second)
 
-				result := closing(t.Context(), r)
+				result := closing(ctx, r)
 
 				synctest.Wait()
 				assert.True(t, first.Closing())
@@ -1192,12 +1192,12 @@ func TestSessionSignals_Close(t *testing.T) {
 			assert: func(t *testing.T, ctx context.Context, r *httpsec.SignalRegistryProbe) {
 				release := admitted(t, r, stream())
 
-				first, cancelFirst := context.WithTimeout(t.Context(), time.Second)
+				first, cancelFirst := context.WithTimeout(ctx, time.Second)
 				defer cancelFirst()
 
 				require.ErrorIs(t, r.Close(first), context.DeadlineExceeded)
 
-				result := closing(t.Context(), r) // Would panic, closing a closed channel.
+				result := closing(ctx, r) // Would panic, closing a closed channel.
 
 				synctest.Wait()
 				assert.Empty(t, result, "a stream the first call timed out on is still open")
@@ -1213,11 +1213,11 @@ func TestSessionSignals_Close(t *testing.T) {
 			assert: func(t *testing.T, ctx context.Context, r *httpsec.SignalRegistryProbe) {
 				admitted(t, r, stream())
 
-				first, cancelFirst := context.WithCancel(t.Context())
+				first, cancelFirst := context.WithCancel(ctx)
 				cancelFirst()
 				require.ErrorIs(t, r.Close(first), context.Canceled)
 
-				second, cancelSecond := context.WithTimeout(t.Context(), time.Second)
+				second, cancelSecond := context.WithTimeout(ctx, time.Second)
 				defer cancelSecond()
 				require.ErrorIs(t, r.Close(second), context.DeadlineExceeded)
 			},
@@ -1233,7 +1233,7 @@ func TestSessionSignals_Close(t *testing.T) {
 			assert: func(t *testing.T, ctx context.Context, r *httpsec.SignalRegistryProbe) {
 				release := admitted(t, r, stream())
 
-				result := closing(t.Context(), r)
+				result := closing(t.Context(), r) //nolint:contextcheck // the row's ctx is already cancelled, and this close has to run on a live one
 				synctest.Wait()
 				release()
 				require.NoError(t, <-result)
@@ -1249,7 +1249,7 @@ func TestSessionSignals_Close(t *testing.T) {
 			assert: func(t *testing.T, ctx context.Context, r *httpsec.SignalRegistryProbe) {
 				release := admitted(t, r, stream())
 
-				results := []<-chan error{closing(t.Context(), r), closing(t.Context(), r), closing(t.Context(), r)}
+				results := []<-chan error{closing(ctx, r), closing(ctx, r), closing(ctx, r)}
 
 				synctest.Wait()
 
@@ -1271,21 +1271,21 @@ func TestSessionSignals_Close(t *testing.T) {
 			assert: func(t *testing.T, ctx context.Context, r *httpsec.SignalRegistryProbe) {
 				release := admitted(t, r, stream())
 
-				ctx, cancel := context.WithCancel(t.Context())
+				ended, cancel := context.WithCancel(ctx)
 				cancel()
-				require.ErrorIs(t, r.Close(ctx), context.Canceled)
+				require.ErrorIs(t, r.Close(ended), context.Canceled)
 
 				release()
 				release()
 
-				require.NoError(t, r.Close(t.Context()))
+				require.NoError(t, r.Close(ctx))
 				assert.Equal(t, httpsec.RegistryKeys{}, r.Keys())
 			},
 		},
 		{
 			name: "an admit afterwards is refused, and registers nothing",
 			assert: func(t *testing.T, ctx context.Context, r *httpsec.SignalRegistryProbe) {
-				require.NoError(t, r.Close(t.Context()))
+				require.NoError(t, r.Close(ctx))
 
 				late := stream()
 				release, err := r.Admit(late)
@@ -1311,7 +1311,7 @@ func TestSessionSignals_Close(t *testing.T) {
 				open := stream()
 				release := admitted(t, r, open)
 
-				result := closing(t.Context(), r)
+				result := closing(ctx, r)
 				synctest.Wait()
 
 				_, err := r.Admit(stream())
@@ -1332,7 +1332,7 @@ func TestSessionSignals_Close(t *testing.T) {
 				openNow, _ := r.Stats()
 				assert.Equal(t, 1, openNow)
 
-				result := closing(t.Context(), r)
+				result := closing(ctx, r)
 				synctest.Wait()
 
 				openNow, _ = r.Stats()

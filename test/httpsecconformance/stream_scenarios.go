@@ -129,6 +129,10 @@ func streamingChain(serve func(ex *httpsec.Exchange) error) ChainSpec {
 // openStream sends one request on ctx, on a connection of its own, leaving the
 // body for the row to read. The whole exchange is bounded by streamBound, so a
 // response that never comes or never ends fails the row instead of hanging it.
+//
+// The body is closed when the test ends, which the bodyclose linter cannot see, so the
+// directive below marks the response as handled.
+// bodyclose:handled
 func openStream(ctx context.Context, t *testing.T, url string) *http.Response {
 	t.Helper()
 
@@ -136,6 +140,10 @@ func openStream(ctx context.Context, t *testing.T, url string) *http.Response {
 }
 
 // openStreamWithin is openStream for a row that lasts longer than streamBound.
+//
+// The body is closed when the test ends, which the bodyclose linter cannot see, so the
+// directive below marks the response as handled.
+// bodyclose:handled
 func openStreamWithin(ctx context.Context, t *testing.T, url string, bound time.Duration) *http.Response {
 	t.Helper()
 
@@ -445,6 +453,8 @@ func clientThatHalfClosesHasLeft(t *testing.T, listen func(ChainSpec) StreamServ
 
 	resp, err := http.ReadResponse(r, nil)
 	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = resp.Body.Close() })
 
 	line, err := bufio.NewReader(resp.Body).ReadString('\n')
 	require.NoError(t, err)

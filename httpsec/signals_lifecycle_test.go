@@ -458,6 +458,21 @@ func (s *failingLoadStore) Load(ctx context.Context, sid string) (*session.Sessi
 	return s.Store.Load(ctx, sid)
 }
 
+// downAt asks method on target with a credential while the store is down.
+//
+// The body is closed when the test ends, which the bodyclose linter cannot see, so the
+// directive below marks the response as handled.
+// bodyclose:handled
+func downAt(t *testing.T, f *signalsFixture, store *failingLoadStore, method, target string) *http.Response {
+	t.Helper()
+
+	sid := f.signIn(t, "u-1").ID
+
+	store.fail.Store(true)
+
+	return f.send(t.Context(), t, method, target, sid)
+}
+
 // TestSessionSignals_Caps_OtherAnswersStand is what the answer above must not reach: any other path,
 // a chain with no stream, any answer a retry would not change, what a consumer answers, and a
 // response already begun.
@@ -468,17 +483,6 @@ func TestSessionSignals_Caps_OtherAnswersStand(t *testing.T) {
 		name   string
 		setup  signalsSetup
 		assert func(t *testing.T, f *signalsFixture, store *failingLoadStore)
-	}
-
-	// downAt asks method on target with a credential while the store is down.
-	downAt := func(t *testing.T, f *signalsFixture, store *failingLoadStore, method, target string) *http.Response {
-		t.Helper()
-
-		sid := f.signIn(t, "u-1").ID
-
-		store.fail.Store(true)
-
-		return f.send(t, t.Context(), method, target, sid)
 	}
 
 	refuser := func(fn func(*httpsec.Exchange) error, at httpsec.Order) func(*signalsFixture) []httpsec.Option {
@@ -1151,7 +1155,7 @@ func TestSessionSignals_Caps_Stats(t *testing.T) {
 			var leave context.CancelFunc
 
 			r := newStreamRig(t, streamSetup{requestCtx: func(ctx context.Context) context.Context {
-				ctx, leave = context.WithCancel(ctx)
+				ctx, leave = context.WithCancel(ctx) //nolint:gosec // leave is called by the hook below, which is how the client leaves
 
 				return ctx
 			}})
@@ -1359,7 +1363,7 @@ func TestSessionSignals_Bus_Stream(t *testing.T) {
 				_, err := r.sessions.Logout(t.Context(), f.one.UserID, f.one.FamilyID)
 				require.NoError(t, err)
 			},
-			assert: func(t *testing.T, r *streamRig, f *fixture) {
+			assert: func(t *testing.T, _ *streamRig, f *fixture) {
 				assert.Equal(t, []string{"session", "session_ended"}, f.oneStream.sent())
 				assert.Equal(t, []string{"session"}, f.twoStream.sent())
 				assert.Equal(t, []string{"session"}, f.otherStream.sent())
@@ -1373,7 +1377,7 @@ func TestSessionSignals_Bus_Stream(t *testing.T) {
 				_, err := r.sessions.RevokeFamily(t.Context(), f.one.FamilyID)
 				require.NoError(t, err)
 			},
-			assert: func(t *testing.T, r *streamRig, f *fixture) {
+			assert: func(t *testing.T, _ *streamRig, f *fixture) {
 				assert.Equal(t, []string{"session", "session_ended"}, f.oneStream.sent())
 				assert.False(t, f.twoStream.closed())
 			},
@@ -1397,7 +1401,7 @@ func TestSessionSignals_Bus_Stream(t *testing.T) {
 			end: func(t *testing.T, r *streamRig, f *fixture) {
 				require.NoError(t, r.sessions.DeleteByUser(t.Context(), f.one.UserID))
 			},
-			assert: func(t *testing.T, r *streamRig, f *fixture) {
+			assert: func(t *testing.T, _ *streamRig, f *fixture) {
 				requireEndReason(t, f.oneStream, "all_ended")
 				requireEndReason(t, f.twoStream, "all_ended")
 				assert.Equal(t, []string{"session"}, f.otherStream.sent())
@@ -1418,7 +1422,7 @@ func TestSessionSignals_Bus_Stream(t *testing.T) {
 		},
 		{
 			name: "once every stream has left, no registry key remains",
-			end: func(t *testing.T, r *streamRig, f *fixture) {
+			end: func(_ *testing.T, _ *streamRig, f *fixture) {
 				f.oneStream.cancel()
 				f.twoStream.cancel()
 				f.otherStream.cancel()
@@ -2129,7 +2133,7 @@ func TestSessionSignals_Caps_RetryableError(t *testing.T) {
 			refuse:    errGeoBlocked,
 			retryable: always,
 			assert: func(t *testing.T, f *signalsFixture, w *watched) {
-				resp := f.send(t, t.Context(), http.MethodGet, "/orders", f.signIn(t, "u-1").ID)
+				resp := f.send(t.Context(), t, http.MethodGet, "/orders", f.signIn(t, "u-1").ID)
 
 				requireNoStream(t, resp, http.StatusForbidden)
 				assert.Zero(t, w.asked.Load())
@@ -2339,8 +2343,8 @@ func closedOverAServer(t *testing.T, h2 bool, downstream http.Handler) (*httptes
 	if h2 {
 		srv.EnableHTTP2 = true
 		srv.StartTLS()
-		srv.Client().Transport.(*http.Transport).TLSClientConfig = &tls.Config{ //nolint:gosec // the test's own server
-			InsecureSkipVerify: true, NextProtos: []string{"h2"},
+		srv.Client().Transport.(*http.Transport).TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: true, NextProtos: []string{"h2"}, //nolint:gosec // the test's own server, on a certificate nothing else trusts
 		}
 	} else {
 		srv.Start()

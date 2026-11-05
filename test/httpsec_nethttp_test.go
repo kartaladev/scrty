@@ -114,7 +114,7 @@ func (nethttpAdapter) Listen(
 		httpsecconformance.WriteSlowly(w)
 	})
 
-	var handler http.Handler = spec.NewChain(t).Middleware()(mux)
+	handler := spec.NewChain(t).Middleware()(mux)
 	if spec.Compress {
 		handler = httpsecconformance.Gzip(handler)
 	}

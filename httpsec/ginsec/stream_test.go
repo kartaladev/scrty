@@ -63,6 +63,10 @@ func serveStream(t *testing.T, serve func(ex *httpsec.Exchange) error) *httptest
 // openStream sends the request on ctx, leaving the body for the row to read. The
 // whole exchange is bounded by streamBound, so a response that never comes or never
 // ends fails the row instead of hanging it.
+//
+// The body is closed when the test ends, which the bodyclose linter cannot see, so the
+// directive below marks the response as handled.
+// bodyclose:handled
 func openStream(ctx context.Context, t *testing.T, srv *httptest.Server) *http.Response {
 	t.Helper()
 
@@ -70,6 +74,10 @@ func openStream(ctx context.Context, t *testing.T, srv *httptest.Server) *http.R
 }
 
 // openStreamWithin is openStream for a row that lasts longer than streamBound.
+//
+// The body is closed when the test ends, which the bodyclose linter cannot see, so the
+// directive below marks the response as handled.
+// bodyclose:handled
 func openStreamWithin(ctx context.Context, t *testing.T, srv *httptest.Server, bound time.Duration) *http.Response {
 	t.Helper()
 
@@ -784,7 +792,7 @@ func (h hookedUnwrappingWriter) Unwrap() http.ResponseWriter { return h.Response
 type flushErrorOverGin struct{ gin.ResponseWriter }
 
 func (f flushErrorOverGin) FlushError() error {
-	f.ResponseWriter.Flush()
+	f.Flush()
 
 	return nil
 }

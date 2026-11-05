@@ -63,6 +63,10 @@ func startStreamServer(t *testing.T, overHTTP2 bool, h http.HandlerFunc) streamS
 // get opens a request on ctx, leaving the body for the row to read. The whole
 // exchange is bounded by streamBound, so a response that never comes or never ends
 // fails the row instead of hanging it.
+//
+// The body is closed when the test ends, which the bodyclose linter cannot see, so the
+// directive below marks the response as handled.
+// bodyclose:handled
 func (s streamServer) get(ctx context.Context, t *testing.T, wantProto int) *http.Response {
 	t.Helper()
 
@@ -70,6 +74,10 @@ func (s streamServer) get(ctx context.Context, t *testing.T, wantProto int) *htt
 }
 
 // getWithin is get for a row that lasts longer than streamBound.
+//
+// The body is closed when the test ends, which the bodyclose linter cannot see, so the
+// directive below marks the response as handled.
+// bodyclose:handled
 func (s streamServer) getWithin(ctx context.Context, t *testing.T, wantProto int, bound time.Duration) *http.Response {
 	t.Helper()
 
@@ -271,7 +279,7 @@ func TestHTTPResponseWriter_Stream(t *testing.T) {
 				srv := startStreamServer(t, false, func(w http.ResponseWriter, r *http.Request) {
 					defer close(returned)
 
-					_ = httpsec.NewHTTPResponseWriter(w).Stream(r.Context(), func(ctx context.Context, ew httpsec.EventWriter) error {
+					_ = httpsec.NewHTTPResponseWriter(w).Stream(r.Context(), func(_ context.Context, ew httpsec.EventWriter) error {
 						if err := writeAndFlush(ew); err != nil {
 							return err
 						}

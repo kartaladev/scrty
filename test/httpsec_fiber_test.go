@@ -139,10 +139,12 @@ func (fiberAdapter) Listen(
 	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 
-	done := make(chan error, 1)
+	done := make(chan struct{})
 
 	go func() {
-		done <- app.Listener(ln, fiber.ListenConfig{DisableStartupMessage: true})
+		defer close(done)
+
+		_ = app.Listener(ln, fiber.ListenConfig{DisableStartupMessage: true})
 	}()
 
 	t.Cleanup(func() {

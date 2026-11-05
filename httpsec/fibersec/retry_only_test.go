@@ -108,7 +108,10 @@ func newRetryOnlyRig(t *testing.T) retryOnlyRig {
 	return retryOnlyRig{chain: chain, url: retryOnlyURL(t, chain), sid: s.ID, down: down}
 }
 
-// ask asks for the stream cross-origin, with the headers named set.
+// ask asks for the stream cross-origin, with the headers named set. The body is closed when
+// the test ends, which the bodyclose linter cannot see, so the directive below marks the
+// response as handled.
+// bodyclose:handled
 func (r retryOnlyRig) ask(ctx context.Context, t *testing.T, headers ...string) *http.Response {
 	t.Helper()
 
@@ -125,6 +128,8 @@ func (r retryOnlyRig) ask(ctx context.Context, t *testing.T, headers ...string) 
 
 	resp, err := client.Do(req)
 	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = resp.Body.Close() })
 
 	return resp
 }

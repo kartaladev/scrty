@@ -95,6 +95,10 @@ func (c crossSiteChain) setup() signalsSetup {
 }
 
 // present opens the stream for a sign-in of u-1, by whichever credential the chain reads.
+//
+// The body is closed when the test ends, which the bodyclose linter cannot see, so the
+// directive below marks the response as handled.
+// bodyclose:handled
 func (c crossSiteChain) present(
 	t *testing.T, f *signalsFixture, change ...func(*http.Request),
 ) *http.Response {
@@ -782,7 +786,7 @@ func TestSessionSignals_EarlySlots(t *testing.T) {
 			assert: func(t *testing.T, f *signalsFixture, _ crossSiteChain) {
 				t.Helper()
 
-				resp := f.send(t, t.Context(), http.MethodOptions, httpsec.DefaultSessionSignalsPath, "",
+				resp := f.send(t.Context(), t, http.MethodOptions, httpsec.DefaultSessionSignalsPath, "",
 					func(req *http.Request) {
 						req.Header.Set("Origin", crossSiteTrusted)
 						req.Header.Set("Sec-Fetch-Site", "cross-site")
@@ -811,7 +815,7 @@ func TestSessionSignals_EarlySlots(t *testing.T) {
 			assert: func(t *testing.T, f *signalsFixture, _ crossSiteChain) {
 				t.Helper()
 
-				resp := f.send(t, t.Context(), http.MethodPost, httpsec.DefaultSessionSignalsPath,
+				resp := f.send(t.Context(), t, http.MethodPost, httpsec.DefaultSessionSignalsPath,
 					f.signIn(t, "u-1").ID, fetchHeaders("same-origin", f.server.URL))
 
 				requireNoStream(t, resp, http.StatusMethodNotAllowed)
@@ -824,7 +828,7 @@ func TestSessionSignals_EarlySlots(t *testing.T) {
 			assert: func(t *testing.T, f *signalsFixture, _ crossSiteChain) {
 				t.Helper()
 
-				resp := f.send(t, t.Context(), http.MethodPost, httpsec.DefaultSessionSignalsPath,
+				resp := f.send(t.Context(), t, http.MethodPost, httpsec.DefaultSessionSignalsPath,
 					f.signIn(t, "u-1").ID, fetchHeaders("cross-site", crossSiteForeign))
 
 				requireNoStream(t, resp, http.StatusForbidden)
