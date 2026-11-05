@@ -48,24 +48,27 @@ type ClientToNotify struct {
 // The same end asked for twice returns nothing the second time, so a client is told once.
 //
 // A selector of no valid shape is refused with an error matching ErrConfig, before anything is read
-// or written. Each store is written whatever became of the other, and neither depends on the caller
-// still listening, and each has a budget of its own. A failure of either matches ErrDependency, with the clients of whatever did end
-// still returned and handed on, and asking again finishes the work and tells no one twice. It has no
-// override: what ends is decided per client, by [Client].EndGrantsWithSignIn.
+// or written. The browser sessions go first and the grants and codes after, which is what lets no code
+// escape an end in progress: a request writes its code and then looks at its browser session, so a look
+// after the delete withholds the code, and a look before it means the code was written before the sweep,
+// which finds it. Each store is written whatever became of the other, neither depends on the caller still
+// listening, and each has a budget of its own. A failure of either matches ErrDependency, with the clients
+// of whatever did end still returned and handed on, and asking again finishes the work and tells no one
+// twice. It has no override: what ends is decided per client, by [Client].EndGrantsWithSignIn.
 func (p *Provider) EndSignIn(ctx context.Context, sel SignInSelector) ([]ClientToNotify, error) {
 	if err := sel.Validate(); err != nil {
 		return nil, err
 	}
-	// Each store spends a budget of its own, so that one hanging until its budget ends leaves the other a
-	// live context. Both come before anything that reports, so that nothing a report does can leave the
-	// browser sessions of an ended sign-in valid.
-	grantCtx, endGrants := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
-	ended, grantErr := p.stores.grants.EndSignIns(grantCtx, sel, p.cfg.clock.Now())
-	endGrants()
-
+	// The browser sessions go before the sweep, for the reason above. Each store spends a budget of its
+	// own, so that one hanging until its budget ends leaves the other a live context. Both come before
+	// anything that reports, so that nothing a report does can leave either undone.
 	browserCtx, endBrowsers := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	_, browserErr := p.stores.browserSessions.DeleteBySignIn(browserCtx, sel)
 	endBrowsers()
+
+	grantCtx, endGrants := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
+	ended, grantErr := p.stores.grants.EndSignIns(grantCtx, sel, p.cfg.clock.Now())
+	endGrants()
 
 	clients := clientsToNotify(ended)
 	// The budget here is for the test seam, the only thing on this context to wait: a delivery drops it.
@@ -74,12 +77,13 @@ func (p *Provider) EndSignIn(ctx context.Context, sel SignInSelector) ([]ClientT
 	endHandOn()
 	p.reportEnded(ctx, ended)
 
-	return clients, dependencyFailure(ctx, errors.Join(grantErr, browserErr), "oidcprovider: end the sign-ins")
+	return clients, dependencyFailure(ctx, errors.Join(browserErr, grantErr), "oidcprovider: end the sign-ins")
 }
 
-// endGrantsOf is EndSignIn up to, and not including, the browser sessions, for a request made from the
-// browser. Its browser session is what lets that browser ask again, so a failure here, or in deleting
-// the first-party sessions that follow, has to leave it. Asked again, it tells no one twice.
+// endGrantsOf is EndSignIn's sweep alone, for a request made from the browser. Its browser session is
+// what lets that browser ask again, so a failure here, or in deleting the first-party sessions that
+// follow, has to leave it. Asked again, it tells no one twice. A code written while that session still
+// answers misses this sweep, and the EndSignIn that finishes the end reaches it.
 func (p *Provider) endGrantsOf(ctx context.Context, sel SignInSelector) error {
 	grantCtx, endGrants := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	ended, err := p.stores.grants.EndSignIns(grantCtx, sel, p.cfg.clock.Now())

@@ -629,9 +629,9 @@ func TestProvider_EndSignIn(t *testing.T) {
 }
 
 // TestProvider_EndSignIn_BudgetsApart is apart because it runs in a synctest bubble, where the
-// budget of ten seconds passes in no time and the clock cannot differ between two reads. A grant
-// store hanging until its budget ends must leave the browser sessions' store a live context with
-// time still to run, which one budget shared by both would not.
+// budget of ten seconds passes in no time and the clock cannot differ between two reads. A browser
+// store hanging until its budget ends must leave the grant store a live context with time still to
+// run, which one budget shared by both would not.
 func TestProvider_EndSignIn_BudgetsApart(t *testing.T) {
 	t.Parallel()
 
@@ -640,13 +640,13 @@ func TestProvider_EndSignIn_BudgetsApart(t *testing.T) {
 		signIn := e.signInOf("u-1", "", "")
 		grant, digest := e.online(t, signIn), e.browserOf(t, signIn)
 
-		var browserErr error
-		var browserLeft time.Duration
-		e.grants.sawBulk = func(ctx context.Context) { <-ctx.Done() }
-		e.browsers.sawDelete = func(ctx context.Context) {
-			browserErr = ctx.Err()
+		var grantErr error
+		var grantLeft time.Duration
+		e.browsers.sawDelete = func(ctx context.Context) { <-ctx.Done() }
+		e.grants.sawBulk = func(ctx context.Context) {
+			grantErr = ctx.Err()
 			if by, ok := ctx.Deadline(); ok {
-				browserLeft = time.Until(by)
+				grantLeft = time.Until(by)
 			}
 		}
 
@@ -654,11 +654,11 @@ func TestProvider_EndSignIn_BudgetsApart(t *testing.T) {
 		_, err := e.p.EndSignIn(t.Context(), oidcprovider.SignInSelector{Family: signIn.Family})
 
 		assertDependencyFailure(t, err)
-		assert.GreaterOrEqual(t, time.Since(started), 10*time.Second, "the grant store spent its whole budget")
-		require.NoError(t, browserErr, "the browser sessions' store was given a live context")
-		assert.Positive(t, browserLeft, "with a budget of its own to spend")
-		assert.False(t, e.browserHeld(t, digest), "and the browser sessions ended")
-		assert.False(t, e.grantStands(t, grant).Revoked, "while the grant store, which hung, ended nothing")
+		assert.GreaterOrEqual(t, time.Since(started), 10*time.Second, "the browser store spent its whole budget")
+		require.NoError(t, grantErr, "the grant store was given a live context")
+		assert.Positive(t, grantLeft, "with a budget of its own to spend")
+		assert.True(t, e.grantStands(t, grant).Revoked, "and the grants ended")
+		assert.True(t, e.browserHeld(t, digest), "while the browser store, which hung, ended nothing")
 	})
 }
 

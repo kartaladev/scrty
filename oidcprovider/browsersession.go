@@ -120,8 +120,9 @@ func (p *Provider) userActive(ctx context.Context, user identity.UserID) (bool, 
 
 // issueFromSession answers with a code for everything the request asked. The session is
 // touched only once the code is written, which makes it the last look at the session: one
-// gone by then has ended, so the code is not released, and no one ever holds its secret. Any
-// other failure to touch only shortens the session, and is logged.
+// gone by then has ended, so this answers as no session. A look that fails could not exclude
+// an end, so it is a dependency failure, as at the consent stage. Either way the code is one
+// no one was given, which expires.
 func (p *Provider) issueFromSession(
 	ctx context.Context, in AuthorizeInput, req *PendingRequest, rc *RegisteredClient, s SignIn, digest []byte, now time.Time,
 ) (AuthorizeResult, bool, error) {
@@ -130,12 +131,12 @@ func (p *Provider) issueFromSession(
 		return AuthorizeResult{}, false, err
 	}
 
-	err = p.stores.browserSessions.Touch(ctx, digest, now.Add(browserSessionIdle(in.IdleTimeout)))
+	err = p.confirmBrowserSession(ctx, digest, in.IdleTimeout, now)
 	switch {
-	case errors.Is(err, ErrNotFound):
+	case errors.Is(err, ErrReauthenticate):
 		return AuthorizeResult{}, false, nil
 	case err != nil:
-		p.logFailedAfterSpend(ctx, "oidcprovider: a browser session's use could not be recorded", err)
+		return AuthorizeResult{}, false, err
 	}
 
 	return AuthorizeResult{Location: target}, true, nil

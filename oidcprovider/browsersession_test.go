@@ -938,6 +938,15 @@ func TestProvider_BrowserSession_Failures(t *testing.T) {
 		assert.NotContains(t, f.logs.String(), errOutage.Error())
 		assert.Contains(t, f.logs.String(), "error_type")
 	}
+	// codeWithheld asserts the answer an outage at the last look gets: the end it could not exclude
+	// keeps the code from anyone, though it is written, and expires.
+	codeWithheld := func(t *testing.T, f *sessionFixture, res oidcprovider.AuthorizeResult, err error) {
+		t.Helper()
+		failing(t, f, res, err)
+		assert.NotContains(t, f.logs.String(), sessionSecret)
+		assert.Equal(t, 1, codesHeld(t, f.parkFixture, "u-1", "billing-web"),
+			"the look comes after the code is written, so that an end after it reaches the code; this one is never given to anyone")
+	}
 	loginPage := func(t *testing.T, _ *sessionFixture, res oidcprovider.AuthorizeResult, err error) {
 		t.Helper()
 		require.NoError(t, err)
@@ -955,6 +964,13 @@ func TestProvider_BrowserSession_Failures(t *testing.T) {
 		t.Helper()
 		store := sessionStore(t)
 		store.EXPECT().Load(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, errOutage)
+
+		return []oidcprovider.Option{oidcprovider.WithBrowserSessionStore(store)}
+	}
+	touchDown := func(t *testing.T) []oidcprovider.Option {
+		t.Helper()
+		store := holding(t)
+		store.EXPECT().Touch(gomock.Any(), gomock.Any(), gomock.Any()).Return(errOutage)
 
 		return []oidcprovider.Option{oidcprovider.WithBrowserSessionStore(store)}
 	}
@@ -1068,22 +1084,39 @@ func TestProvider_BrowserSession_Failures(t *testing.T) {
 			assert: loginRequired,
 		},
 		{
-			name:    "a touch failing costs no answer, and is logged without its words",
+			name:    "a touch failing is the last look failing, so the code is withheld and nothing is parked",
+			consent: true,
+			wire:    touchDown,
+			assert:  codeWithheld,
+		},
+		{
+			name:    "a touch failing, prompt=none, withholds the code too",
+			consent: true,
+			params:  silent,
+			wire:    touchDown,
+			assert:  codeWithheld,
+		},
+		{
+			name:    "a caller who left while the session was looked at matches its own context, and no code leaves",
 			consent: true,
 			wire: func(t *testing.T) []oidcprovider.Option {
 				t.Helper()
 				store := holding(t)
-				store.EXPECT().Touch(gomock.Any(), gomock.Any(), gomock.Any()).Return(errOutage)
+				store.EXPECT().Touch(gomock.Any(), gomock.Any(), gomock.Any()).Return(context.Canceled)
 
 				return []oidcprovider.Option{oidcprovider.WithBrowserSessionStore(store)}
 			},
-			assert: func(t *testing.T, f *sessionFixture, res oidcprovider.AuthorizeResult, err error) {
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cctx
+			},
+			assert: func(t *testing.T, _ *sessionFixture, res oidcprovider.AuthorizeResult, err error) {
 				t.Helper()
-				require.NoError(t, err)
-				assert.NotEmpty(t, queryOf(t, res.Location).Get("code"))
-				assert.Contains(t, f.logs.String(), "browser session")
-				assert.NotContains(t, f.logs.String(), errOutage.Error())
-				assert.NotContains(t, f.logs.String(), sessionSecret)
+				require.ErrorIs(t, err, context.Canceled)
+				require.NotErrorIs(t, err, oidcprovider.ErrDependency)
+				assert.Equal(t, oidcprovider.AuthorizeResult{}, res)
 			},
 		},
 		{

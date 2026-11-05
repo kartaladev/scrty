@@ -451,7 +451,8 @@ func WithClock(clk clock.Clock) Option {
 // WithIDGenerator replaces the generator that names the records the provider creates: pending
 // requests, grant families, access-token records and the tokens' identifiers. The default is
 // id.NewV7Generator over the provider's clock and randomness, and the generator must not be
-// nil. Identifiers are not secrets, and the provider never relies on one to be unguessable.
+// nil. The identifiers it generates must be non-zero and unique. Identifiers are not secrets,
+// and the provider never relies on one to be unguessable.
 func WithIDGenerator(g id.Generator) Option {
 	return func(c *config) { c.idsGiven = g; c.idsSet = true }
 }
