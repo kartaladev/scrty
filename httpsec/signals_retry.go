@@ -81,12 +81,6 @@ func (e *sessionSignals) answerRetryOnly(entered context.Context, ex *Exchange, 
 		// signed-in browser by a 200, or make the library log or count a throttle. It cannot stop the event:
 		// the policy has already run, so such a request has emitted its one unsampled authz_fail, as any
 		// per-request denial does, where an unthrottled refusal emits none.
-		//
-		// The throttle runs before the session bearer records its credential, so a throttled bearer stream
-		// is judged by the stricter cookie rule: from a CORS wildcard's origin it is refused, where an
-		// unthrottled one is allowed. Recording it there, a small change in session_bearer.go, would let
-		// that stream retry. The stricter answer is the safe default, so it stands, and that change is left
-		// for the maintainer to decide.
 		if refused := e.crossSiteAllowed(ex, streamByCookie(ex)); refused != nil { //nolint:contextcheck // the refusal is logged on the exchange's current context; entered only classifies the failure
 			ex.Writer.SetHeader("Cache-Control", signalsCacheControl)
 
@@ -204,6 +198,20 @@ func (ex *Exchange) markPerRequestThrottle(err error) error {
 	}
 
 	return &perRequestThrottle{err}
+}
+
+// recordThrottledBearer records presented, the credential a built-in bearer read from the request, when
+// err carries the mark of a per-request throttle, so that the stream's cross-site rule judges the request
+// as a bearer, as it judges the same request unthrottled (streamByCookie).
+//
+// The mark says the credential verified and its caller was published, so what is recorded is a credential
+// the chain accepted. Every other refusal records nothing: other code reads what is recorded, and a
+// credential that failed has no business being there.
+func (ex *Exchange) recordThrottledBearer(err error, presented string) {
+	var throttle *perRequestThrottle
+	if errors.As(err, &throttle) {
+		ex.RecordPresentedToken(presented)
+	}
 }
 
 // onStreamPath reports whether ex asks for the stream, the only request sessionSignalsRetry answers.

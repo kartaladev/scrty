@@ -380,8 +380,10 @@ type Exchange struct {
 	// bearerCredential is the credential the chain's bearer authenticated on
 	// this request, as it was presented: a signed token or a session
 	// reference, under whatever scheme the bearer reads. It is set only once
-	// the bearer has resolved it, and "" on a request no bearer
-	// authenticated. A DPoP proof beside it carries ath over it.
+	// the bearer has resolved it, or once resolution has ended in a per-request
+	// throttle of the stream, where the credential has verified
+	// (recordThrottledBearer), and "" on a request no bearer authenticated. A
+	// DPoP proof beside it carries ath over it.
 	bearerCredential string
 
 	ctx context.Context
