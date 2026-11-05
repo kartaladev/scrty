@@ -28,6 +28,10 @@ The manager SHALL answer whether it reports to a given end observer, comparing o
 - **WHEN** a manager was built with observer `o`, and a caller asks whether it reports to `o`
 - **THEN** the answer is yes
 
+#### Scenario: Observer added to a built manager
+- **WHEN** `AddEndObserver(o)` has run on a built manager
+- **THEN** the manager answers yes for `o`
+
 #### Scenario: Observer not wired
 - **WHEN** a manager was built without observer `o`, and a caller asks whether it reports to `o`
 - **THEN** the answer is no
