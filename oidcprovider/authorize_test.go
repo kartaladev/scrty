@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
@@ -852,7 +853,7 @@ func TestValidateAuthorizationRequest(t *testing.T) {
 			assert.Empty(t, r.IDTokenHintSubject)
 		})},
 		{
-			name: "a key source outage is no refusal, and no redirect",
+			name: "a key source outage is answered at the redirect URI as server_error",
 			deps: func(t *testing.T, d *oidcprovider.Deps) {
 				t.Helper()
 				keys := NewMockKeySource(gomock.NewController(t))
@@ -862,14 +863,12 @@ func TestValidateAuthorizationRequest(t *testing.T) {
 			params: set("id_token_hint", signed(t, "RS256", hints.private, idHeader, hintClaims(nil))),
 			assert: func(t *testing.T, f *authzFixture, res oidcprovider.AuthorizeResult, err error) {
 				t.Helper()
-				require.ErrorIs(t, err, oidcprovider.ErrDependency)
-				assert.NotContains(t, err.Error(), "key service secret text")
-				assert.Empty(t, res.Location)
-				assert.Empty(t, f.parked)
+				refused("server_error")(t, f, res, err)
+				assert.NotContains(t, res.Location, "key service secret text")
 			},
 		},
 		{
-			name: "a published key of no usable type is an outage, not a refusal",
+			name: "a published key of no usable type is answered as server_error, not as a refused hint",
 			deps: func(t *testing.T, d *oidcprovider.Deps) {
 				t.Helper()
 				keys := NewMockKeySource(gomock.NewController(t))
@@ -879,15 +878,10 @@ func TestValidateAuthorizationRequest(t *testing.T) {
 				d.Keys = keys
 			},
 			params: set("id_token_hint", signed(t, "RS256", hints.private, idHeader, hintClaims(nil))),
-			assert: func(t *testing.T, f *authzFixture, res oidcprovider.AuthorizeResult, err error) {
-				t.Helper()
-				require.ErrorIs(t, err, oidcprovider.ErrDependency)
-				assert.Empty(t, res.Location)
-				assert.Empty(t, f.parked)
-			},
+			assert: refused("server_error"),
 		},
 		{
-			name: "a published key under no known algorithm is an outage, not a refusal",
+			name: "a published key under no known algorithm is answered as server_error, not as a refused hint",
 			deps: func(t *testing.T, d *oidcprovider.Deps) {
 				t.Helper()
 				keys := NewMockKeySource(gomock.NewController(t))
@@ -897,12 +891,7 @@ func TestValidateAuthorizationRequest(t *testing.T) {
 				d.Keys = keys
 			},
 			params: set("id_token_hint", signed(t, "RS256", hints.private, idHeader, hintClaims(nil))),
-			assert: func(t *testing.T, f *authzFixture, res oidcprovider.AuthorizeResult, err error) {
-				t.Helper()
-				require.ErrorIs(t, err, oidcprovider.ErrDependency)
-				assert.Empty(t, res.Location)
-				assert.Empty(t, f.parked)
-			},
+			assert: refused("server_error"),
 		},
 		{
 			name: "a caller leaving during the key lookup is no outage",
@@ -1081,6 +1070,105 @@ func TestValidateAuthorizationRequest(t *testing.T) {
 			res, err := p.Authorize(ctx, oidcprovider.AuthorizeInput{Params: params})
 
 			tc.assert(t, f, res, err)
+		})
+	}
+}
+
+func TestAuthorize_HintKeysUnavailable(t *testing.T) {
+	t.Parallel()
+
+	hints := newHintFixture(t)
+	hint := signed(t, "RS256", hints.private, map[string]any{"kid": publishedKid, "typ": "JWT"}, hintClaims(nil))
+	const secretText = "key service secret text"
+
+	cancelled := func(ctx context.Context) context.Context {
+		cctx, cancel := context.WithCancel(ctx)
+		cancel()
+
+		return cctx
+	}
+
+	type testCase struct {
+		name   string
+		params func(url.Values)
+		ctx    func(context.Context) context.Context
+		assert func(t *testing.T, f *authzFixture, res oidcprovider.AuthorizeResult, err error, logs string)
+	}
+
+	serverError := func(t *testing.T, f *authzFixture, res oidcprovider.AuthorizeResult, err error, logs string) {
+		t.Helper()
+		redirected(authzRedirect, "server_error", authzState)(t, f, res, err)
+		assert.Contains(t, logs, "error_type")
+		assert.NotContains(t, logs, secretText)
+	}
+
+	cases := []testCase{
+		{
+			name:   "a valid client is answered at its redirect URI",
+			params: set("id_token_hint", hint),
+			assert: serverError,
+		},
+		{
+			name: "prompt=none is answered the same",
+			params: func(v url.Values) {
+				v.Set("id_token_hint", hint)
+				v.Set("prompt", "none")
+			},
+			assert: serverError,
+		},
+		{
+			name: "an unknown client gets no redirect",
+			params: func(v url.Values) {
+				v.Set("id_token_hint", hint)
+				v.Set("client_id", "nobody")
+			},
+			assert: func(t *testing.T, f *authzFixture, res oidcprovider.AuthorizeResult, err error, _ string) {
+				t.Helper()
+				unredirectable(t, f, res, err)
+			},
+		},
+		{
+			name:   "a caller leaving during the read answers its own context error",
+			params: set("id_token_hint", hint),
+			ctx:    cancelled,
+			assert: func(t *testing.T, f *authzFixture, res oidcprovider.AuthorizeResult, err error, logs string) {
+				t.Helper()
+				require.ErrorIs(t, err, context.Canceled)
+				require.NotErrorIs(t, err, oidcprovider.ErrDependency)
+				assert.Empty(t, res.Location)
+				assert.Empty(t, f.parked)
+				assert.NotContains(t, logs, "error_type", "a hang-up is no outage")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			keys := NewMockKeySource(gomock.NewController(t))
+			keys.EXPECT().VerificationKeys(gomock.Any()).DoAndReturn(
+				func(ctx context.Context) ([]signingkey.PublicKey, error) {
+					if err := ctx.Err(); err != nil {
+						return nil, err
+					}
+
+					return nil, errors.New(secretText)
+				},
+			).AnyTimes()
+			logs := &lockedBuffer{}
+			p, f := newAuthzProvider(t, keys, nil,
+				oidcprovider.WithLogger(slog.New(slog.NewTextHandler(logs, nil))))
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+			params := authzParams()
+			tc.params(params)
+			res, err := p.Authorize(ctx, oidcprovider.AuthorizeInput{Params: params})
+
+			tc.assert(t, f, res, err, logs.String())
 		})
 	}
 }

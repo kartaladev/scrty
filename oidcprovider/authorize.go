@@ -128,11 +128,11 @@ func (AuthorizeResult) LogValue() slog.Value { return slog.StringValue(redacted)
 
 // Authorize answers an authorization request. It refuses with ErrInvalidAuthorization
 // when the client or the redirect URI cannot be trusted, which the chain reports with no
-// redirect whatever else the request holds, and fails with a dependency failure when a
-// store, registry, key source or user loader does. A negative IdleTimeout is refused with
-// an error matching ErrConfig. Once the client and redirect URI are valid, every other
-// refusal comes back as a Location at that redirect URI carrying error, the request's state
-// and iss, and no error_description.
+// redirect whatever else the request holds, and fails with a dependency failure when the
+// client cannot be read. A negative IdleTimeout is refused with an error matching ErrConfig.
+// Once the client and redirect URI are valid, every other refusal, and a failing store, key
+// source or user loader as server_error, comes back as a Location at that redirect URI
+// carrying error, the request's state and iss, and no error_description.
 //
 // A valid request is answered from the browser's session when it holds one that can answer:
 //
@@ -266,6 +266,14 @@ func (p *Provider) validate(ctx context.Context, params url.Values) (*PendingReq
 	}
 	code, err := p.readRequest(ctx, reading)
 	switch {
+	case errors.Is(err, ErrDependency):
+		// The client and redirect URI are valid, so a key outage judging the hint is
+		// answered where the requester can hear it, like any later outage. A caller who
+		// left matches its own context error instead, and takes the next case.
+		p.cfg.logger.LogAttrs(ctx, slog.LevelError, "oidcprovider: the authorization request could not be answered",
+			slog.String("error_type", fmt.Sprintf("%T", err)))
+
+		return nil, nil, &redirectRefusal{code: codeServerError, redirectURI: redirectURI, state: reading.reflectableState()}
 	case err != nil:
 		return nil, nil, err
 	case code != "":

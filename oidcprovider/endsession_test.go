@@ -302,6 +302,24 @@ func TestProvider_EndSession_Dependencies(t *testing.T) {
 	}
 }
 
+func TestEndSession_HintKeysUnavailable(t *testing.T) {
+	t.Parallel()
+
+	f := newLogoutFixture(t)
+	in := f.matching(t)
+	f.keys.down.Store(true)
+
+	res, err := f.p.EndSession(t.Context(), in)
+
+	require.ErrorIs(t, err, oidcprovider.ErrDependency)
+	require.NotErrorIs(t, err, oidcprovider.ErrInvalidEndSession)
+	if res != nil {
+		assert.Empty(t, res.Location)
+	}
+	f.keys.down.Store(false)
+	f.assertStands(t)
+}
+
 func TestProvider_ConfirmLogout_Dependencies(t *testing.T) {
 	t.Parallel()
 
