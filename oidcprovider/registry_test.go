@@ -1041,3 +1041,63 @@ func TestSecrets_NeverPrinted(t *testing.T) {
 		})
 	}
 }
+
+// A registry answering with another client than the one asked for must not put the asked-for
+// identifier, which a stranger chose, into the log: the line names the record the registry held.
+func TestProvider_ClientFromRegistry_LogsTheRecordNotThePresentedID(t *testing.T) {
+	t.Parallel()
+
+	const presented = "presented-by-a-stranger-7c1e"
+
+	type testCase struct {
+		name string
+		// held is the identifier the registry's record carries.
+		held string
+		// assert gets the answer and the log it left.
+		assert func(t *testing.T, err error, logs string)
+	}
+
+	cases := []testCase{
+		{
+			name: "a record of another client",
+			held: "crm-web",
+			assert: func(t *testing.T, err error, logs string) {
+				t.Helper()
+				require.ErrorIs(t, err, oidcprovider.ErrClientNotFound)
+				assert.Contains(t, logs, "client=crm-web", "the record's own identifier is logged")
+				assert.NotContains(t, logs, presented, "what was presented is not")
+			},
+		},
+		{
+			name: "a record with no identifier",
+			held: "",
+			assert: func(t *testing.T, err error, logs string) {
+				t.Helper()
+				require.ErrorIs(t, err, oidcprovider.ErrClientNotFound)
+				assert.NotContains(t, logs, presented)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := webClient()
+			c.Secret = nil
+			c.ID = tc.held
+			rc := oidcprovider.RegisteredClient{
+				Client:  c,
+				Secrets: []oidcprovider.ClientSecret{{Digest: digest(suppliedSecret)}},
+			}
+
+			var logs bytes.Buffer
+			p := providerOver(t, &logs, func(m *MockClientRegistry) {
+				m.EXPECT().Client(gomock.Any(), presented).Return(&rc, nil)
+			})
+
+			_, err := p.ClientForTest(t.Context(), presented)
+			tc.assert(t, err, logs.String())
+		})
+	}
+}

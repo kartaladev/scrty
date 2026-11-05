@@ -362,7 +362,7 @@ func (p *Provider) client(ctx context.Context, id string) (*RegisteredClient, er
 
 	checked, err := p.checkRead(rc, id)
 	if err != nil {
-		p.logInvalidClient(ctx, id, err)
+		p.logInvalidClient(ctx, rc.ID, err)
 
 		return nil, ErrClientNotFound
 	}
@@ -386,8 +386,10 @@ func (p *Provider) checkRead(rc *RegisteredClient, id string) (*RegisteredClient
 	return checked, nil
 }
 
-func (p *Provider) logInvalidClient(ctx context.Context, id string, err error) {
-	attrs := []slog.Attr{slog.String("client", id)}
+// logInvalidClient logs a registered record that failed validation under the record's
+// own identifier, never the one presented, which a stranger chose.
+func (p *Provider) logInvalidClient(ctx context.Context, recordID string, err error) {
+	attrs := []slog.Attr{slog.String("client", recordID)}
 
 	var refused *clientError
 	if errors.As(err, &refused) {

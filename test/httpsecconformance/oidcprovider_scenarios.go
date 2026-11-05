@@ -356,7 +356,7 @@ func opSignedIn(t *testing.T, spec ChainSpec, send func(RequestSpec) Result) (op
 
 	browser, handle, _ := opStartAuthorize(t, send, opFirstParty)
 
-	res := opResume(spec, send, browser, `{"req":`+quote(handle)+`}`)
+	res := opResume(spec, send, browser, opDoc(t, map[string]any{"req": handle}))
 	require.Equal(t, http.StatusOK, res.Status, res.Body)
 
 	browser.learn(res)
@@ -370,9 +370,13 @@ func opSignedIn(t *testing.T, spec ChainSpec, send func(RequestSpec) Result) (op
 	return browser, res, code
 }
 
-// quote is v as a JSON string.
-func quote(v string) string {
-	b, _ := json.Marshal(v)
+// opDoc is doc as a JSON document, marshalled whole, so no value is spliced into
+// the text by hand.
+func opDoc(t *testing.T, doc map[string]any) string {
+	t.Helper()
+
+	b, err := json.Marshal(doc)
+	require.NoError(t, err)
 
 	return string(b)
 }
@@ -453,7 +457,7 @@ func opResumeAnswersJSON() Scenario {
 		Steps: func(t *testing.T, spec ChainSpec, send func(RequestSpec) Result) {
 			browser, handle, _ := opStartAuthorize(t, send, opFirstParty)
 
-			res := opResume(spec, send, browser, `{"req":`+quote(handle)+`}`)
+			res := opResume(spec, send, browser, opDoc(t, map[string]any{"req": handle}))
 
 			require.NoError(t, res.Refusal)
 			require.Equal(t, http.StatusOK, res.Status, res.Body)
@@ -637,7 +641,7 @@ func opLogoutConfirmationAnswersJSON() Scenario {
 				Method:        http.MethodPost,
 				Path:          opConfirmPath,
 				Header:        browser.with(map[string]string{"Content-Type": "application/json"}, spec, false),
-				Body:          `{"req":` + quote(handle) + `,"confirmed":true}`,
+				Body:          opDoc(t, map[string]any{"req": handle, "confirmed": true}),
 				ClientAddress: ClientAddress,
 			})
 
