@@ -5,7 +5,7 @@
 **Goal:** An opt-in `text/event-stream` endpoint that tells a front end about the signed-in user's own session, through an allowlisted set of signals, on net/http, gin and fiber.
 
 **Architecture:**
-- The adapters gain `ResponseWriter.Stream(ctx, body)`. The body runs inline on net/http and gin, and through `SendStreamWriter` on fiber.
+- The adapters gain `ResponseWriter.Stream(ctx, contentType, body)`. The body runs inline on net/http and gin, and through `SendStreamWriter` on fiber.
 - The endpoint is a terminal interceptor at `OrderSessionSignals` (673): after authentication and the pending-session gates, and below session touch (800), so it never records activity. It refuses cross-site requests by Fetch Metadata and `Origin` itself.
 - Each stream reads its sign-in by user and family through `Sessions.SignInState`, and its user, at every heartbeat, and never through `Sessions.Load`. The store is the truth. Signals from the session manager's end observer, the chain's endpoints and the consumer reach streams through a bus. There is one subscription per replica, and a local registry by user and family. A bus message only wakes a stream.
 
@@ -121,7 +121,7 @@
 **Interfaces produced:**
 ```go
 // httpsec
-type ResponseWriter interface { /* SetHeader, AddHeader, SetCookie, WriteHeader, Write */; Stream(ctx context.Context, body func(ctx context.Context, w EventWriter) error) error }
+type ResponseWriter interface { /* SetHeader, AddHeader, SetCookie, WriteHeader, Write */; Stream(ctx context.Context, contentType string, body func(ctx context.Context, w EventWriter) error) error }
 type EventWriter interface { io.Writer; Flush() error }
 var ErrStreamingUnsupported = errors.New("httpsec: response writer cannot stream")
 var ErrStreamingStarted = errors.New("httpsec: response already started")
@@ -373,3 +373,54 @@ const RecoveryKindName = "passkey"
 - [ ] **8.1:** `test/httpsecconformance/signals_scenarios.go`, with scenarios named `signals: …` covering everything listed in `tasks.md` 8.1, on all three adapters.
 - [ ] **8.2:** Run every module's suite one at a time with `-race`, then `govulncheck ./...`, `gofmt -l .` and `go vet ./...` per module. All output must be clean.
 - [ ] **8.3:** An Opus reviewer checks the branch against every requirement in the five spec deltas, every decision D1–D10, and each row of the security review table. Each finding is REPRODUCED with a failing test or labelled UNREPRODUCED (`.claude/rules/defect-claims.md`). Findings go back to a fresh dispatch.
+
+### Tasks 9.1–9.11: Findings from reviewing the pull request (design R1–R12)
+
+The failing tests already exist, in the session's disposable copies under its scratchpad: `triage-a/httpsec/triage_{t1,t2,t4,t5t6}_test.go` and `triage-b/httpsec/triage_{origin,credchange,tenant,zero}_test.go`. Each dispatch brings its own in under behaviour names, and sees them fail on the tree before fixing. They are not committed as they stand.
+
+**Dispatches.** Writers in one package each get a worktree. 9.7 changes a signature every test compiles against, so it lands before anything else in `httpsec`.
+
+| Wave | Dispatch | Tasks | Owns | Model, and why |
+|---|---|---|---|---|
+| 1 (parallel) | E1 | 9.7 | `httpsec/exchange.go`, `nethttp.go`, `signals_endpoint.go`, `signals_retry.go`, `httpsec/ginsec`, `httpsec/fibersec`, `test/httpsecconformance`, every `ResponseWriter` double | Opus: an interface other lanes compile against, on three adapters |
+| 1 (parallel) | E2 | 9.6 | `session/`, `store/{sqlstore,pgxstore,gormstore}`, `internal/pgschema`, `test/storetest` | Opus: several packages, and a read whose mistake would pass the tests and still be wrong |
+| 2 (parallel) | E3 | 9.1, 9.2, 9.3, 9.5 | `signals_retry.go`, `signals_endpoint.go`, `signals_publish.go`, `signals.go`, `session/sessions.go` godoc, their tests | Opus: which refusals are final is security-critical |
+| 2 (parallel) | E4 | 9.4 | `signals_stream.go`, the notice's type in `signals.go`, their tests | Opus: ordering in the stream's loop |
+| 3 | E5 | 9.8, 9.9 | `signals.go`'s lookup, `signals_bus.go`, `nethttp.go`, `fibersec/exchange.go`, `internal/diag`, `README.md` | Opus: a refactor that must keep behaviour |
+| 4 | main, one reviewer | 9.11, then 9.10 | — | Opus reviewer. The review runs before the gate, as `subagent-delegation.md` requires |
+
+Each dispatch gets a fresh reviewer that edits nothing, on Opus. Findings go to a fresh dispatch of that lane. **Run `make lint` in every dispatch's verification:** it stops at the first failing module, so run `golangci-lint run ./...` in each module a dispatch changed.
+
+**Interfaces produced:**
+```go
+// httpsec
+Stream(ctx context.Context, contentType string, body func(ctx context.Context, w EventWriter) error) error // on ResponseWriter
+type SessionSignalStats struct { /* existing */; Throttled uint64 }
+// session
+type FamilyReader interface {
+    ListByFamily(ctx context.Context, user identity.UserID, family id.ID, now time.Time) ([]*Session, error)
+}
+// internal/diag: the frame walk, 32 frames, empty functions skipped, "; " between frames; and endedWriter
+```
+
+**Decisions the implementer cannot make alone:**
+- 9.1: only `ratelimit.ErrThrottled`, and only with `ex.Session` set. 429 stays final, and two existing rows pin that. It answers at `BusyDelay` ±30%, counts `Throttled`, and never `ReloadFailures`. `RetryableError` is asked about it.
+- 9.2: cut at `crossSiteOriginLogLimit` before the clone, in `newStreamStart`.
+- 9.3: the guard goes in `raiseCredentialChange`, so every raise passes it. A later row must still show a set holding the signal publishes.
+- 9.4: mark a notice `broad` in `deliverEnd`'s user branch. Clear only a broad one, when a read begun after it answers alive. Clearing every notice breaks the pinned row `a kept reason within its window names the end`.
+- 9.5: `EndDeleted` → `ended` in `endReason`. Change `Construction_EndReports` and `Heartbeat_Ends`' rows to `ended`, and leave `TestLogout_ReportsLogoutCause` as it is.
+- 9.6: `ListByFamily` has `ListByUser`'s contract narrowed to one family: live, not superseded, no sealed field opened. The manager keeps its own filtering over either. The sealing decorator asserts the optional interface on what it wraps, and falls back to listing. No migration.
+- 9.7: fiber holds the type and sets it in `chainReturned` when not refused, replacing its delete. `Cache-Control` and `X-Accel-Buffering` still go before `Stream`. A consumer's refusal over a begun response keeps its own headers.
+- 9.8: `signalsEndpoint` guards `c.perRequest == nil`, so a zero-value `Chain` answers `ErrSessionSignalsDisabled`. The fiber backstop's record changes to the agreed frames, and each line keeps its message and keys.
+- `ErrUnavailable` does not change (R2).
+
+**Review Focus for this group:**
+1. A concealed lock on the stream's path, under Basic. Expected: 401, the same as any wrong password, never the throttle's retry. Task 9.1.
+2. A consumer's own 429 on the stream's path. Expected: that 429. Task 9.1.
+3. A chain's own logout after 9.5. Expected: other tabs still hear `logout`. Task 9.5.
+4. A store whose `ListByFamily` and `ListByUser` disagree. Expected: conformance rows fail on any backend where they do. Task 9.6.
+5. A stream refused on fiber after `Stream`, with a consumer's error handler setting a type. Expected: the handler's type. Task 9.7.
+
+- [ ] **9.1–9.9:** per the table above, each test-first, verifying with each task's command in `tasks.md`, with `-v`, and `golangci-lint run ./...` in every module changed.
+- [ ] **9.11:** an Opus reviewer checks group 9 against R1–R12 and the scenarios they added, rerunning the real-library and README harnesses, since 9.7 changes what they drive.
+- [ ] **9.10:** on the tree rebased onto `main`, `make lint fmt-check vet generate-check pincheck tools-check`, every module's suite with `-race` at `-parallel 4`, `govulncheck`, `go mod tidy -diff`, 16 copies of the signal conformance rows for 3 rounds, and CI green on the pull request.

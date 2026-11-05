@@ -1,6 +1,6 @@
 # Handoff: session-signals
 
-Written 2026-11-05, for a fresh session. `/opsx:apply session-signals` is at its end.
+Written 2026-11-05, for a fresh session. `/opsx:apply session-signals` reached its end, and group 9 then reopened it: every finding from reviewing #73, with its proof in the design's "Review of the pull request".
 
 ## Where things are
 
@@ -24,7 +24,7 @@ The user let the two sessions decide. Whichever of #72 and #73 is ready first me
 
 ## Decisions the user may overrule
 
-All made while the user was away; the design records each. `RetryableError`; the limit on a recovery failing partway; `authenticate.ErrUnavailable` staying 401; the 500 ms wait for an end report; ready-first.
+Made while the user was away; the design records each. `RetryableError`; the limit on a recovery failing partway; the 500 ms wait for an end report; ready-first. `authenticate.ErrUnavailable` staying 401 is settled by `http-error-propagation`, and `oidc-provider` confirmed no decision for 503 was made there.
 
 ## What this run learned
 

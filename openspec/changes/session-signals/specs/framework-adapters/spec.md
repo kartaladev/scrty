@@ -39,6 +39,14 @@ Starting a stream SHALL send the status and every header set before it, on every
 - **WHEN** an interceptor has already written a body and then starts a stream
 - **THEN** starting the stream fails and nothing more is written
 
+#### Scenario: The content type goes with the stream
+- **WHEN** an interceptor starts a stream with a content type, on any of the three adapters
+- **THEN** the client receives that type with the streamed response
+
+#### Scenario: A refusal carries no stream type
+- **WHEN** starting a stream is refused, or on fiber the chain refuses after starting one
+- **THEN** the refusal does not carry the stream's content type, and a type the framework or the error handler sets is what the client receives
+
 ### Requirement: A streamed response is not ended by the server's write deadline
 While a response is streamed, each adapter SHALL keep a configured write deadline from ending it, by extending the deadline as each write is made. A response that is not streamed SHALL keep the deadline as configured.
 

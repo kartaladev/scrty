@@ -149,6 +149,18 @@ When a stream's sign-in ends, by logout on any device, an ended sign-in, the rev
 - **WHEN** a client opened the stream with `?signals=session_expiring` and its sign-in is ended from another device
 - **THEN** the stream still sends `session_ended` and closes
 
+#### Scenario: A session deleted by the consumer
+- **WHEN** a stream is open and the consumer deletes its sign-in's current session by identifier, as an administrator's tool might
+- **THEN** the stream sends `session_ended` with the reason `ended`, and not `logout`
+
+#### Scenario: Every session ended by a provider's logout
+- **WHEN** a stream is open for a federated sign-in, and a provider's logout under the scope that ends every session of the user names no upstream session
+- **THEN** the stream sends `session_ended` with the reason `all_ended`
+
+#### Scenario: Another sign-in's provider logout
+- **WHEN** a user has a federated sign-in and a password sign-in, the user's sessions from that provider are ended, and the password sign-in then reaches its deadline
+- **THEN** the password sign-in's stream sends `session_ended` with the reason `expired`, and not `provider_logout`
+
 ### Requirement: A stream follows its sign-in and never harms it
 A stream SHALL check its sign-in without presenting a credential: it SHALL hold no session identifier or credential, record no presentation, and never cause reuse handling or a family revocation. A renewal, a rotation or a step-up on its sign-in SHALL NOT end the stream.
 
@@ -390,6 +402,10 @@ With `credential_changed` in its set, every stream of the user still open after 
 - **WHEN** the consumer reports a credential change of a kind other than password, passkey or second factor
 - **THEN** reporting fails and no stream sends anything
 
+#### Scenario: Not in the chain's set
+- **WHEN** a chain's set does not hold `credential_changed`, it has a shared bus, and the user changes their password
+- **THEN** nothing is handed to the bus, and reporting such a change does not fail
+
 #### Scenario: A recovery that leaves sign-ins open
 - **WHEN** `credential_changed` is enabled, the consumer keeps other sessions on recovery, and a recovery removes a second factor and a passkey
 - **THEN** a stream of the user still open sends `credential_changed` with the kind `second_factor` and with the kind `passkey`, once each
@@ -447,6 +463,10 @@ A panic in the stream's own code, or in a consumer's bus or loader it calls, SHA
 ### Requirement: A stream's lifecycle and refusals can be seen
 A stream's open and close SHALL be logged with its user, family, client address, origin and reason, and never a token or session identifier. A cap refusal and a cross-site refusal SHALL be logged with sampling. The chain SHALL report drops and failures of a consumer's bus with its other counts, and failures of checks in a row.
 
+#### Scenario: An origin of any size
+- **WHEN** a signed-in client opens a stream with a very long `Origin` that passes the cross-site check
+- **THEN** the stream holds and logs at most 256 bytes of it
+
 #### Scenario: A refused cross-site stream
 - **WHEN** a request for the stream is refused as cross-site
 - **THEN** it is logged with sampling, and no CSRF attack is reported
@@ -484,6 +504,18 @@ The chain SHALL cap open streams at 4 per sign-in, 16 per user and 10 000 in tot
 #### Scenario: A consumer's own refusal, by default
 - **WHEN** a consumer's interceptor refuses a stream with an error the chain maps to a server failure, and the consumer has not said which failures to retry
 - **THEN** the response is 200 with only a longer reconnection delay, and no stream opens
+
+#### Scenario: A throttled sign-in
+- **WHEN** a consumer's policy throttles a request for the stream that carries a sign-in
+- **THEN** the response is 200 with only a longer reconnection delay, and the chain's counts show it as throttled, not as a failed check
+
+#### Scenario: A throttle before any sign-in
+- **WHEN** a request for the stream is throttled before any sign-in is known
+- **THEN** it is refused as any such request is, so a lock stays concealed
+
+#### Scenario: A consumer's own 429
+- **WHEN** a consumer's policy or interceptor refuses a request for the stream with an error the chain maps to 429
+- **THEN** the response is that 429
 
 #### Scenario: A consumer says a failure is final
 - **WHEN** the consumer's function says that error is not to be retried

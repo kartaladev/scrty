@@ -128,6 +128,14 @@ The manager SHALL answer, for a user and a family, the deadlines and authenticat
 - **WHEN** the read names a family that belongs to another user
 - **THEN** the read answers not found
 
+#### Scenario: A store that can read one family
+- **WHEN** a store offers a read of one family, and another sign-in of the same user holds a row it cannot decode
+- **THEN** the read answers for the family it was asked about
+
+#### Scenario: A store that can only list
+- **WHEN** a consumer's store offers no read of one family
+- **THEN** the read answers from the user's listing, as it would otherwise
+
 ### Requirement: An observer cannot change an end's outcome
 The observer SHALL be called only after the write succeeded, and a panicking observer SHALL NOT change the outcome of the call that ended the sessions.
 
