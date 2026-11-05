@@ -440,39 +440,6 @@ func TestNew_Construction(t *testing.T) {
 	}
 }
 
-func TestProvider_SignsWith(t *testing.T) {
-	t.Parallel()
-
-	keys := plainKeys(t)
-	d := validDeps(t)
-	d.Keys = keys
-	p, err := oidcprovider.New(d)
-	require.NoError(t, err)
-
-	type testCase struct {
-		name   string
-		other  any
-		assert func(t *testing.T, same bool)
-	}
-
-	yes := func(t *testing.T, same bool) { t.Helper(); assert.True(t, same) }
-	no := func(t *testing.T, same bool) { t.Helper(); assert.False(t, same) }
-
-	cases := []testCase{
-		{name: "the same manager", other: keys, assert: yes},
-		{name: "another manager", other: plainKeys(t), assert: no},
-		{name: "an incomparable value", other: func() {}, assert: no},
-		{name: "nil", other: nil, assert: no},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			tc.assert(t, p.SignsWith(tc.other))
-		})
-	}
-}
-
 func TestError_Text(t *testing.T) {
 	t.Parallel()
 

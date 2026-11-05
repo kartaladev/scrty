@@ -13,9 +13,9 @@ const claimSub = "sub"
 
 // UserInfo answers what the token at, read by VerifyAccessToken, may know of its user.
 //
-// It takes only a token for the issuer (R4), so an API a token was also meant for cannot replay one
-// meant for it alone here, and a token asked for a named resource has no issuer and is refused
-// (R15). A token past its expiry, and one whose grant is revoked, expired or gone, read again here
+// It takes only a token for the issuer, so an API a token was also meant for cannot replay one
+// meant for it alone here, and a token asked for a named resource has no issuer and is refused.
+// A token past its expiry, and one whose grant is revoked, expired or gone, read again here
 // as a token verified a moment ago may have lost it, is refused too. Each of those is invalid_token.
 // A token good in every other way lacking openid is insufficient_scope. A missing or disabled user
 // is invalid_token, and nothing is revoked: this answers a read, and a refresh is what revokes.

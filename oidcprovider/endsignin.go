@@ -18,7 +18,7 @@ import (
 
 // ClientToNotify is one client to tell that one sign-in has ended, with what its logout token states.
 // A client holding several grants from a sign-in is told once, and a client holding grants from two
-// ended sign-ins is told of each (oidc-provider-logout).
+// ended sign-ins is told of each.
 //
 // It lists a client holding a grant from that sign-in, whether or not the client registered a
 // back-channel logout URI: that is read as the client stands when the token is delivered, so that a
@@ -41,9 +41,9 @@ type ClientToNotify struct {
 // A grant without offline_access ends with its sign-in, and so does any grant of a client registered
 // with [Client].EndGrantsWithSignIn. A grant with offline_access otherwise survives, marked as having
 // outlived its sign-in, and its client is told all the same, as it held a grant from that sign-in. An
-// outstanding code is treated as the grant it would become (R7). The browser sessions of the sign-ins
-// go too, through their own store (R2). Grants report their client until their own deadline, a lineage
-// gone idle or not, since nothing removes a grant earlier (R19).
+// outstanding code is treated as the grant it would become. The browser sessions of the sign-ins
+// go too, through their own store. Grants report their client until their own deadline, a lineage
+// gone idle or not, since nothing removes a grant earlier.
 //
 // The same end asked for twice returns nothing the second time, so a client is told once.
 //

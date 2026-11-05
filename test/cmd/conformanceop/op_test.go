@@ -418,6 +418,12 @@ func TestConformanceConfig_MatchesTheProvider(t *testing.T) {
 
 	var entries []map[string]any
 	require.NoError(t, json.Unmarshal(expected, &entries))
-	require.Len(t, entries, 1)
-	assert.Equal(t, "oidcc-ensure-request-without-nonce-succeeds-for-code-flow", entries[0]["test-name"])
+	names := make([]any, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e["test-name"])
+	}
+	assert.Equal(t, []any{
+		"oidcc-ensure-request-without-nonce-succeeds-for-code-flow",
+		"oidcc-claims-essential",
+	}, names, "every expected failure is named, so a new one is a decision")
 }

@@ -37,7 +37,7 @@ const (
 // first, and its family deleted next. A row that cannot be marked leaves the family alone, as a
 // family gone would answer the retry success with the row still live, and a family that cannot be
 // deleted leaves the row marked: either failure is a dependency failure, and presenting the token
-// again finishes the work. Nothing here has an override, since each is the standard's or R8's.
+// again finishes the work. Nothing here has an override, since each is the standard's, or follows from a grant's family identifier not being a credential.
 func (p *Provider) Revoke(ctx context.Context, c ClientCredentials, form url.Values) error {
 	rc, raw, err := p.readTokenRequest(ctx, c, form, false)
 	if err != nil {

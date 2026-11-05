@@ -101,8 +101,6 @@ type oidcMetadataGroup struct {
 	document map[string]json.RawMessage
 }
 
-var _ oidcWellKnownPaths = (*oidcMetadataGroup)(nil)
-
 // issuerPath is the issuer's path without a terminating slash, empty for none.
 func (g *oidcMetadataGroup) issuerPath() string {
 	u, err := url.Parse(g.op.provider.Issuer())

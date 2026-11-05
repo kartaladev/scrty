@@ -120,8 +120,10 @@ type config struct {
 	logger *slog.Logger
 	random io.Reader
 	// ids names the records the provider creates. validate builds it, over the clock and
-	// randomness the options gave.
-	ids id.Generator
+	// randomness the options gave, unless the consumer gave a generator in idsGiven.
+	ids      id.Generator
+	idsGiven id.Generator
+	idsSet   bool
 }
 
 // The defaults New applies and the bounds it enforces, each named on its option.
@@ -239,10 +241,16 @@ func (c *config) validate() error {
 	if c.logger == nil {
 		return fmt.Errorf("%w: WithLogger: must not be nil", ErrConfig)
 	}
+	if c.idsSet && nilcheck.IsNil(c.idsGiven) {
+		return fmt.Errorf("%w: WithIDGenerator: must not be nil", ErrConfig)
+	}
 	if nilcheck.IsNil(c.random) {
 		return fmt.Errorf("%w: WithRandom: must not be nil", ErrConfig)
 	}
 	c.ids = id.NewV7Generator(id.WithClock(c.clock), id.WithRandom(c.random))
+	if c.idsSet {
+		c.ids = c.idsGiven
+	}
 	if err := c.drawSuccessorKey(); err != nil {
 		return err
 	}
@@ -438,6 +446,14 @@ func WithLogoutDeliveryTimeout(d time.Duration) Option {
 // not be nil.
 func WithClock(clk clock.Clock) Option {
 	return func(c *config) { c.clock = clk }
+}
+
+// WithIDGenerator replaces the generator that names the records the provider creates: pending
+// requests, grant families, access-token records and the tokens' identifiers. The default is
+// id.NewV7Generator over the provider's clock and randomness, and the generator must not be
+// nil. Identifiers are not secrets, and the provider never relies on one to be unguessable.
+func WithIDGenerator(g id.Generator) Option {
+	return func(c *config) { c.idsGiven = g; c.idsSet = true }
 }
 
 // WithLogger replaces the logger. The default is slog.Default(), and it must not

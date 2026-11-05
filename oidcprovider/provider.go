@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
-	"reflect"
 	"strings"
 
 	"github.com/kartaladev/scrty/identity"
@@ -322,17 +321,4 @@ func isLoopbackHost(host string) bool {
 	addr, err := netip.ParseAddr(host)
 
 	return err == nil && addr.Unmap().IsLoopback()
-}
-
-// SignsWith reports whether keys is the very key source the provider signs with,
-// so the chain can check that the JWKS endpoint publishes what the provider
-// signs with (R6). A wrapped source is a different value and answers false, so
-// the check is only as good as what it can see. A value that cannot be compared
-// answers false rather than panicking.
-func (p *Provider) SignsWith(keys any) bool {
-	if keys == nil || !reflect.ValueOf(keys).Comparable() {
-		return false
-	}
-
-	return any(p.keys) == keys
 }

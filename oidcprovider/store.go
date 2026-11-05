@@ -522,7 +522,7 @@ type AccessTokenStore interface {
 }
 
 // BrowserSession is what the provider remembers of a browser that signed in, so it can
-// answer later requests from it (R2). It holds the digest of the cookie's secret, and
+// answer later requests from it. It holds the digest of the cookie's secret, and
 // never the secret. It is read only by the provider, and no sign-in path reads it. It
 // does not see a marker placed on the sign-in afterwards, such as a required password
 // change: an administrator's change that matters ends the sign-in, which reaches it.

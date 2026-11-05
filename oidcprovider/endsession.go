@@ -3,6 +3,8 @@ package oidcprovider
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/url"
 	"slices"
 
@@ -20,7 +22,8 @@ const paramPostLogoutRedirectURI = "post_logout_redirect_uri"
 // not acted on, so how often they are given changes nothing.
 var endSessionSingleParams = []string{paramIDTokenHint, paramClientID, paramPostLogoutRedirectURI, paramState}
 
-// EndSessionInput is one request to the end-session endpoint.
+// EndSessionInput is one request to the end-session endpoint. It holds the browser's secrets and
+// an ID token hint, so it prints and logs redacted; read its fields to use it.
 type EndSessionInput struct {
 	// Params are the request's parameters: a GET's query or a POST's form.
 	Params url.Values
@@ -29,7 +32,15 @@ type EndSessionInput struct {
 	FlowSecret, BrowserSessionSecret string
 }
 
-// EndSessionResult is what an end-session request is answered with.
+// Format writes the redacted form under every verb.
+func (EndSessionInput) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(redacted)) }
+
+// LogValue is the redacted form.
+func (EndSessionInput) LogValue() slog.Value { return slog.StringValue(redacted) }
+
+// EndSessionResult is what an end-session request is answered with. It can hold the flow cookie's
+// secret and a location carrying a request handle, so it prints and logs redacted; read its fields
+// to use it.
 type EndSessionResult struct {
 	// Location is where the browser goes, by 303.
 	Location string
@@ -42,6 +53,12 @@ type EndSessionResult struct {
 	// User is the ended sign-in's user, and empty when Ended is nil.
 	User identity.UserID
 }
+
+// Format writes the redacted form under every verb.
+func (EndSessionResult) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(redacted)) }
+
+// LogValue is the redacted form.
+func (EndSessionResult) LogValue() slog.Value { return slog.StringValue(redacted) }
 
 // LogoutResult is what a logout page's answer is answered with.
 type LogoutResult struct {

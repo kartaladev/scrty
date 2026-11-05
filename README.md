@@ -487,9 +487,13 @@ option that changes it:
 | A sign-in ends (logout, end-session, session management, a deletion) | grants without offline access end | none: it is what an end means |
 | Session management ends every other sign-in | grants survive | the request body `{"revoke_application_access":true}` revokes every grant, offline access and the current sign-in's included |
 | Account recovery completes | all the user's grants revoked, through the chain's provider | `recovery.WithoutRecoveryGrantRevocation` keeps them; `recovery.WithGrantRevoker` names another revoker |
-| Second-factor enrolment reset (`mfa.ResetEnrolment`) | all revoked when `ResetDeps.Grants` is given | `mfa.WithoutResetGrantRevocation` keeps them |
+| Second-factor enrolment reset (`mfa.ResetEnrolment`) | all revoked when `ResetDeps.Grants` is given; with it nil, **none**, since the package cannot see a provider, so a consumer using the provider must set it | `mfa.WithoutResetGrantRevocation` keeps them |
 | A suspected passkey clone suspends a credential | none until decided: the chain refuses a manager told neither | `passkey.WithGrantRevoker(op)` revokes all; `passkey.WithoutCloneGrantRevocation` keeps them |
 | Password change | grants kept | `httpsec.WithPasswordChangeGrantRevocation` revokes all before the new password is written |
+
+`mfa.ResetEnrolment` revokes nothing when `ResetDeps.Grants` is nil, because it cannot see a provider and
+no change is wanted where none is in use. A consumer using the provider sets `Grants` to `op`, or a reset
+leaves the user's refresh tokens working.
 
 A clone's revocation that fails leaves the refusal standing, is logged every time, and is reported as
 `scrty_grant_revoke_failed` on a request a chain watches: suspending happens once, so nothing asks again.

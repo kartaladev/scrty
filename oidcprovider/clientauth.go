@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 )
@@ -16,16 +18,23 @@ const (
 	paramClientAssertionType = "client_assertion_type"
 )
 
-// ClientCredentials is what a request presented to authenticate its client.
+// ClientCredentials is what a request presented to authenticate its client. It holds the
+// client's secret, so it prints and logs redacted; read its fields to use it.
 type ClientCredentials struct {
 	// Authorization is the request's Authorization header.
 	Authorization string
 	// Form is the parsed request body. A parameter with no value counts as omitted.
 	Form url.Values
-	// Query is the parsed query string. It may name no credential (R11), so a caller
+	// Query is the parsed query string. It may name no credential, since a secret in a URL is logged, so a caller
 	// hands it over for that check, and nothing is read from it otherwise.
 	Query url.Values
 }
+
+// Format writes the redacted form under every verb.
+func (ClientCredentials) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(redacted)) }
+
+// LogValue is the redacted form.
+func (ClientCredentials) LogValue() slog.Value { return slog.StringValue(redacted) }
 
 // presented is what a request says about its client, before anything is looked up.
 type presented struct {

@@ -35,13 +35,6 @@ var oidcCORSBrowserEndpoints = []OIDCEndpoint{OIDCAuthorize, OIDCResume, OIDCEnd
 // oidcCORSClientEndpoints are the endpoints a browser client's script may call.
 var oidcCORSClientEndpoints = []OIDCEndpoint{OIDCToken, OIDCUserInfo, OIDCRevoke, OIDCIntrospect}
 
-// oidcWellKnownPaths is implemented by the metadata group once it serves the issuer's
-// two documents, so the CORS layer treats them as the provider's client endpoints. Until
-// then no group implements it, and those paths are not recognised.
-type oidcWellKnownPaths interface {
-	wellKnownPaths() []string
-}
-
 // corsScope reports how the CORS layer treats path. It reads the paths the provider
 // settled on each call, so it follows WithOIDCProviderPrefix and WithOIDCProviderPath, and
 // treats every path as the consumer's when op is nil.
@@ -62,7 +55,7 @@ func (op *oidcEndpoints) corsScope(path string) corsScope {
 		}
 	}
 
-	if m, ok := any(&op.metadata).(oidcWellKnownPaths); ok && slices.Contains(m.wellKnownPaths(), path) {
+	if slices.Contains(op.metadata.wellKnownPaths(), path) {
 		return corsScopeClient
 	}
 

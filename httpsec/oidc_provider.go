@@ -239,9 +239,13 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 //     (WithOIDCEndSessionLimiter, or the chain's WithRateLimiterFactory).
 //   - Logout confirmation throttle: 30 unknown handles per source a minute
 //     (WithOIDCLogoutConfirmLimiter, or the chain's WithRateLimiterFactory).
+//   - Revocation and introspection throttles: 10 failed client authentications per
+//     source in 15 minutes, each endpoint counted on its own (WithOIDCRevokeLimiter,
+//     WithOIDCIntrospectLimiter, or the chain's WithRateLimiterFactory).
 //   - Request bodies: DefaultLoginBodyLimit (WithOIDCAuthorizeBodyLimit,
 //     WithOIDCResumeBodyLimit, WithOIDCTokenBodyLimit, WithOIDCEndSessionBodyLimit,
-//     WithOIDCLogoutConfirmBodyLimit).
+//     WithOIDCLogoutConfirmBodyLimit, WithOIDCRevokeBodyLimit,
+//     WithOIDCIntrospectBodyLimit, WithOIDCUserInfoBodyLimit).
 //   - Cross-site requests: POST to the authorization, token, revocation,
 //     introspection and end-session endpoints skips CSRF protection, at the
 //     paths the provider serves them (see "Cross-site requests", below). No

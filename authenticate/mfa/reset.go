@@ -63,7 +63,10 @@ type ResetDeps struct {
 	// Grants revokes the user's application grants. Nil means no provider is in
 	// use and the reset revokes none, which is the one field where absence is
 	// not an ErrConfig: nothing else in the reset depends on a provider. A typed
-	// nil is an ErrConfig. It is needed whatever Sessions is: a raw session.Store
+	// nil is an ErrConfig. A consumer running the OpenID provider must set it
+	// (the provider's Provider.RevokeUserGrants satisfies it): this package
+	// cannot see a provider, so with Grants nil a reset revokes no grant, and
+	// the user's refresh tokens keep working after it. It is needed whatever Sessions is: a raw session.Store
 	// ends sessions with no report a provider could see, so the provider learns
 	// of the reset through this field alone.
 	Grants GrantRevoker
@@ -223,7 +226,9 @@ func defaultResetMessage(at time.Time) (subject, body string) {
 //     the lost authenticator ends (default; WithoutResetSessionRevocation keeps
 //     them);
 //  3. revokes every application grant of the user, when ResetDeps.Grants is
-//     given (default; WithoutResetGrantRevocation keeps them);
+//     given (default; WithoutResetGrantRevocation keeps them). With Grants nil
+//     it revokes none, since this package cannot see a provider: a consumer
+//     using the OpenID provider must set it;
 //  4. notifies the user at the address the contact resolver gives, by default
 //     the username (default; WithoutResetNotification turns it off).
 //
