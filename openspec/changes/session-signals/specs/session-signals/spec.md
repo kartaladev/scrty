@@ -506,8 +506,12 @@ The chain SHALL cap open streams at 4 per sign-in, 16 per user and 10 000 in tot
 - **THEN** the response is 200 with only a longer reconnection delay, and no stream opens
 
 #### Scenario: A throttled sign-in
-- **WHEN** a consumer's policy throttles a request for the stream that carries a sign-in
+- **WHEN** a consumer's policy, in the chain's per-request phase, throttles a request for the stream that carries a sign-in
 - **THEN** the response is 200 with only a longer reconnection delay, and the chain's counts show it as throttled, not as a failed check
+
+#### Scenario: A throttle beside a sign-in judges no one
+- **WHEN** a caller with a sign-in of their own sends a request for the stream whose other credential is throttled outside the per-request phase, for an account or a password
+- **THEN** a known and an unknown account, or a right and a wrong password, answer alike, through the chain's mapping
 
 #### Scenario: A throttle before any sign-in
 - **WHEN** a request for the stream is throttled before any sign-in is known

@@ -384,7 +384,7 @@ The failing tests already exist, in the session's disposable copies under its sc
 |---|---|---|---|---|
 | 1 (parallel) | E1 | 9.7 | `httpsec/exchange.go`, `nethttp.go`, `signals_endpoint.go`, `signals_retry.go`, `httpsec/ginsec`, `httpsec/fibersec`, `test/httpsecconformance`, every `ResponseWriter` double | Opus: an interface other lanes compile against, on three adapters |
 | 1 (parallel) | E2 | 9.6 | `session/`, `store/{sqlstore,pgxstore,gormstore}`, `internal/pgschema`, `test/storetest` | Opus: several packages, and a read whose mistake would pass the tests and still be wrong |
-| 2 (parallel) | E3 | 9.1, 9.2, 9.3, 9.5 | `signals_retry.go`, `signals_endpoint.go`, `signals_publish.go`, `signals.go`, `session/sessions.go` godoc, their tests | Opus: which refusals are final is security-critical |
+| 2 (parallel) | E3 | 9.1, 9.2, 9.3, 9.5 | `signals_retry.go`, `signals_endpoint.go`, `signals_publish.go`, `signals.go`, `signals_close.go`, `resolve.go`, `session/sessions.go` godoc, their tests | Opus: which refusals are final is security-critical |
 | 2 (parallel) | E4 | 9.4 | `signals_stream.go`, the notice's type in `signals.go`, `signals_bus.go`'s `deliverEnd`, their tests | Opus: ordering in the stream's loop |
 | 3 | E5 | 9.8, 9.9 | `signals.go`'s lookup, `signals_bus.go`, `nethttp.go`, `fibersec/exchange.go`, `internal/diag`, `README.md` | Opus: a refactor that must keep behaviour |
 | 4 | main, one reviewer | 9.11, then 9.10 | — | Opus reviewer. The review runs before the gate, as `subagent-delegation.md` requires |
@@ -404,7 +404,7 @@ type FamilyReader interface {
 ```
 
 **Decisions the implementer cannot make alone:**
-- 9.1: only `ratelimit.ErrThrottled`, and only with `ex.Session` set. 429 stays final, and two existing rows pin that. It answers at `BusyDelay` ±30%, counts `Throttled`, and never `ReloadFailures`. `RetryableError` is asked about it.
+- 9.1: only `ratelimit.ErrThrottled`, and only from the chain's per-request policy evaluation of the published sign-in (corrected by review: `ex.Session` alone reopened the oracle; design R1). 429 stays final, and two existing rows pin that. It answers at `BusyDelay` ±30%, counts `Throttled`, and never `ReloadFailures`. `RetryableError` is asked about it.
 - 9.2: cut at `crossSiteOriginLogLimit` before the clone, in `newStreamStart`.
 - 9.3: the guard goes in `raiseCredentialChange`, so every raise passes it. A later row must still show a set holding the signal publishes.
 - 9.4: mark a notice `broad` in `deliverEnd`'s user branch. Clear only a broad one, when a read begun after it answers alive. Clearing every notice breaks the pinned row `a kept reason within its window names the end`. A broad notice does not replace a family-naming one within its window, and every report with a known reason holds the queue, kept or refused (design R5).
