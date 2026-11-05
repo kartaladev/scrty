@@ -483,7 +483,8 @@ func (e *Exchange) PublishSession(a *authenticate.Authentication, s *session.Ses
 // challenge handling the built-in authenticators apply, and returns their
 // refusal or nil.
 //
-// A denial is returned as the policy's reason. A challenge of a kind nothing
+// A denial is returned as the policy's reason. On the signal stream's own path, a throttle
+// matches it through errors.Is, and is not that very value. A challenge of a kind nothing
 // on the chain enforces is refused with a configuration error. Any other
 // challenge is marked where the gate enforcing it reads it, and nil is
 // returned so the request goes on to that gate: a built-in kind is marked on

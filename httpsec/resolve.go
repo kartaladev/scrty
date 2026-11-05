@@ -289,7 +289,9 @@ type perRequestPhase struct {
 
 // evaluatePerRequest runs the per-request phase for s and p on ex under ph,
 // at now, and applies its outcome: a denial is returned, a challenge is
-// marked where its gate reads it, and an allow returns nil.
+// marked where its gate reads it, and an allow returns nil. A denial is the
+// policy's reason, which a throttle on the signal stream's own path carries a
+// mark on (markPerRequestThrottle).
 func (ex *Exchange) evaluatePerRequest(
 	ph *perRequestPhase,
 	s *session.Session,
@@ -316,7 +318,7 @@ func (ex *Exchange) evaluatePerRequest(
 		err := policyDenyReason(d)
 		emitPerRequestDenial(ctx, err, s)
 
-		return err
+		return ex.markPerRequestThrottle(err)
 	case policy.Challenge:
 		// A kind nothing on the chain enforces is refused before anything is
 		// marked, whatever state the session is in; see refuseUnenforced.

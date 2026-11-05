@@ -44,7 +44,7 @@ type sessionSignalsRetry struct{ e *sessionSignals }
 // because whether the client has left is a question about it: one read after next can have been ended
 // by an interceptor inside this slot, with its client still there.
 func (s sessionSignalsRetry) Intercept(ex *Exchange, next Next) error {
-	if ex.Request.Method() != http.MethodGet || ex.Request.Path() != s.e.cfg.Path {
+	if !s.e.onStreamPath(ex) {
 		return next(ex)
 	}
 
@@ -159,17 +159,57 @@ func (e *sessionSignals) streamOnlyRetry(ex *Exchange, delay time.Duration) erro
 	})
 }
 
-// isThrottledSignIn reports whether err is a throttle on a sign-in that has been published, which a
-// retry could fix, unless SessionSignals.RetryableError says otherwise. A policy cannot write an answer
-// of its own, so its ratelimit.ErrThrottled would otherwise be a 401 that ends an EventSource for good.
+// perRequestThrottle marks a ratelimit.ErrThrottled as the answer of the chain's per-request policy
+// phase about the sign-in it judged. It reads as what it wraps, to errors.Is, errors.As and in its text.
 //
-// Only a published sign-in qualifies. Before one, a request has proved nothing, and an answer that told
-// Basic over its limit from a wrong password would sit beside a concealed lock as an oracle, so those
-// keep the 401 every refused credential gets. Only what the chain's mapping answers 401 qualifies, so
-// that an outage that also wraps a throttle stays an outage, and an error mapping to a 429 is not this:
-// a consumer chose that answer. A client that has left is told nothing, as isDependencyFailure says.
+// The mark is on the error, and not on the exchange, because the question is about this refusal: a
+// consumer's interceptor may be told of a throttle and go on to another credential, whose own refusal
+// then carries no mark and cannot be read as this one. It is a pointer so that errors.Is can compare it
+// whatever the reason it wraps is made of.
+type perRequestThrottle struct{ error }
+
+// Unwrap returns the policy's reason.
+func (t *perRequestThrottle) Unwrap() error { return t.error }
+
+// markPerRequestThrottle is what evaluatePerRequest returns for a denial with reason err: err itself,
+// unless it is a throttle isThrottledSignIn could answer on this very request. So every other path of
+// the chain, and every other denial, gets the policy's reason as the very value it gave. What the mapping
+// answers otherwise than 401 is not marked either, so that a record naming an outage's type names the
+// outage's.
+func (ex *Exchange) markPerRequestThrottle(err error) error {
+	ph := ex.perRequest
+	if ph == nil || ph.signals == nil || !ph.signals.onStreamPath(ex) {
+		return err
+	}
+
+	if !errors.Is(err, ratelimit.ErrThrottled) || StatusForError(err) != http.StatusUnauthorized {
+		return err
+	}
+
+	return &perRequestThrottle{err}
+}
+
+// onStreamPath reports whether ex asks for the stream, the only request sessionSignalsRetry answers.
+func (e *sessionSignals) onStreamPath(ex *Exchange) bool {
+	return ex.Request.Method() == http.MethodGet && ex.Request.Path() == e.cfg.Path
+}
+
+// isThrottledSignIn reports whether err is the chain's per-request policy throttling the sign-in it just
+// judged, which a retry could fix, unless SessionSignals.RetryableError says otherwise. A policy cannot
+// write an answer of its own, so its ratelimit.ErrThrottled would otherwise be a 401 that ends an
+// EventSource for good.
+//
+// Only that throttle qualifies, and a session on the exchange does not: it says who is signed in, not
+// whose credential was refused. A caller with a sign-in of their own can present another account's
+// password, key or name beside it, and an answer telling that refusal's throttle from any other refusal
+// would be an oracle on that credential. So every other ErrThrottled keeps what the chain's mapping
+// answers, a source guard's and a pre-authentication or stateless policy's as a consumer's interceptor's,
+// which a consumer can answer itself. Only what the mapping answers 401 qualifies, so that an outage
+// that also wraps a throttle stays an outage, and an error mapping to a 429 is not this: a consumer chose
+// that answer. A client that has left is told nothing, as isDependencyFailure says.
 func (e *sessionSignals) isThrottledSignIn(entered context.Context, ex *Exchange, err error) bool {
-	if ex.Session == nil || !errors.Is(err, ratelimit.ErrThrottled) || errors.Is(entered.Err(), context.Canceled) {
+	var throttle *perRequestThrottle
+	if !errors.As(err, &throttle) || errors.Is(entered.Err(), context.Canceled) {
 		return false
 	}
 

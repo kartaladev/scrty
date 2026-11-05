@@ -38,6 +38,19 @@ func deniedPerRequest(t *testing.T, reason error) func(*streamRig) []httpsec.Opt
 	return func(*streamRig) []httpsec.Option { return []httpsec.Option{httpsec.WithPolicyEngine(engine)} }
 }
 
+// policyDeciding is a policy of one phase that answers with decide.
+func policyDeciding(t *testing.T, phase policy.Phase, decide func(*policy.Input) policy.Decision) policy.Policy {
+	t.Helper()
+
+	p := NewMockPolicy(gomock.NewController(t))
+	p.EXPECT().Name().Return("test: decides by its input").AnyTimes()
+	p.EXPECT().Phases().Return([]policy.Phase{phase}).AnyTimes()
+	p.EXPECT().Evaluate(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, in *policy.Input) policy.Decision { return decide(in) }).AnyTimes()
+
+	return p
+}
+
 // refusedOnThePath is a consumer's interceptor at the given slot, refusing the stream's path with err.
 func refusedOnThePath(err error, at httpsec.Order) httpsec.Option {
 	return httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
@@ -70,13 +83,17 @@ func TestSessionSignals_Caps_Throttled(t *testing.T) {
 		assert.Empty(t, stream.w.header.Get("WWW-Authenticate"), "a retry asks for no credential")
 
 		stats := r.chain.SessionSignalStats()
-		assert.Equal(t, count, httpsec.ThrottledSignInsOf(r.chain))
+		assert.Equal(t, count, r.chain.SessionSignalStats().Throttled)
 		assert.Zero(t, stats.ReloadFailures, "no dependency failed")
 		assert.Zero(t, stats.RefusedByCap, "no cap was reached")
 		assert.Zero(t, stats.Open, "a throttled request holds no place")
 	}
 
-	var hungUp atomic.Pointer[context.CancelFunc]
+	var (
+		hungUp        atomic.Pointer[context.CancelFunc]
+		matched       atomic.Bool
+		consumerAsked atomic.Int64
+	)
 
 	cases := []streamCase{
 		{
@@ -106,7 +123,7 @@ func TestSessionSignals_Caps_Throttled(t *testing.T) {
 				}
 
 				assert.Equal(t, 1, strings.Count(r.logs.String(), throttledRecord), "the record is not sampled")
-				assert.EqualValues(t, 8, httpsec.ThrottledSignInsOf(r.chain))
+				assert.EqualValues(t, 8, r.chain.SessionSignalStats().Throttled)
 			},
 		},
 		{
@@ -117,12 +134,41 @@ func TestSessionSignals_Caps_Throttled(t *testing.T) {
 			},
 		},
 		{
-			name: "a consumer's own interceptor throttling a published sign-in is the same throttle",
-			setup: streamSetup{opts: func(*streamRig) []httpsec.Option {
-				return []httpsec.Option{refusedOnThePath(ratelimit.ErrThrottled, httpsec.After(httpsec.OrderBearerToken))}
+			name: "a consumer wrapping the throttle on its way out keeps it a throttle, and can still match it",
+			setup: streamSetup{opts: func(r *streamRig) []httpsec.Option {
+				return append(throttled(r), httpsec.RegisterInterceptor(httpsec.InterceptorFunc(
+					func(ex *httpsec.Exchange, next httpsec.Next) error {
+						err := next(ex)
+						matched.Store(errors.Is(err, ratelimit.ErrThrottled))
+
+						return fmt.Errorf("consumer: %w", err)
+					}), httpsec.After(httpsec.OrderCSRF)))
 			}},
 			assert: func(t *testing.T, r *streamRig) {
 				aThrottleAnswered(t, r, r.open(t, r.signIn(t).ID), 1)
+				assert.True(t, matched.Load(), "a consumer's errors.Is no longer finds the throttle")
+			},
+		},
+		{
+			name: "a consumer's own interceptor throttling beside a published sign-in answers what the chain's mapping answers",
+			setup: streamSetup{
+				signals: httpsec.SessionSignals{RetryableError: func(error) bool {
+					consumerAsked.Add(1)
+
+					return true
+				}},
+				opts: func(*streamRig) []httpsec.Option {
+					return []httpsec.Option{refusedOnThePath(ratelimit.ErrThrottled, httpsec.After(httpsec.OrderBearerToken))}
+				},
+			},
+			assert: func(t *testing.T, r *streamRig) {
+				stream := r.open(t, r.signIn(t).ID)
+
+				assert.Equal(t, http.StatusUnauthorized, stream.status())
+				assert.Empty(t, stream.frames())
+				assert.Zero(t, consumerAsked.Load(), "RetryableError was asked about the consumer's own answer")
+				assert.Zero(t, r.chain.SessionSignalStats().Throttled)
+				assert.NotContains(t, r.logs.String(), throttledRecord)
 			},
 		},
 		{
@@ -135,7 +181,7 @@ func TestSessionSignals_Caps_Throttled(t *testing.T) {
 
 				assert.Equal(t, http.StatusUnauthorized, stream.status())
 				assert.Empty(t, stream.frames())
-				assert.Zero(t, httpsec.ThrottledSignInsOf(r.chain))
+				assert.Zero(t, r.chain.SessionSignalStats().Throttled)
 			},
 		},
 		{
@@ -153,7 +199,7 @@ func TestSessionSignals_Caps_Throttled(t *testing.T) {
 
 				assert.Equal(t, http.StatusUnauthorized, stream.status())
 				assert.Empty(t, stream.frames())
-				assert.Zero(t, httpsec.ThrottledSignInsOf(r.chain))
+				assert.Zero(t, r.chain.SessionSignalStats().Throttled)
 				assert.NotContains(t, r.logs.String(), throttledRecord)
 			},
 		},
@@ -175,12 +221,12 @@ func TestSessionSignals_Caps_Throttled(t *testing.T) {
 					return ctx
 				},
 				opts: func(*streamRig) []httpsec.Option {
-					return []httpsec.Option{httpsec.RegisterInterceptor(httpsec.InterceptorFunc(
-						func(*httpsec.Exchange, httpsec.Next) error {
+					return []httpsec.Option{httpsec.WithPolicyEngine(engineOf(t, policyDeciding(t, policy.PerRequest,
+						func(*policy.Input) policy.Decision {
 							(*hungUp.Load())()
 
-							return ratelimit.ErrThrottled
-						}), httpsec.After(httpsec.OrderBearerToken))}
+							return policy.Decision{Outcome: policy.Deny, Reason: ratelimit.ErrThrottled}
+						})))}
 				},
 			},
 			assert: func(t *testing.T, r *streamRig) {
@@ -188,7 +234,7 @@ func TestSessionSignals_Caps_Throttled(t *testing.T) {
 
 				assert.Equal(t, http.StatusUnauthorized, stream.status())
 				assert.Empty(t, stream.frames())
-				assert.Zero(t, httpsec.ThrottledSignInsOf(r.chain))
+				assert.Zero(t, r.chain.SessionSignalStats().Throttled)
 				assert.NotContains(t, r.logs.String(), throttledRecord)
 			},
 		},
@@ -203,7 +249,7 @@ func TestSessionSignals_Caps_Throttled(t *testing.T) {
 
 				requireOnlyRetry(t, stream, time.Second, 15*time.Second)
 				assert.Equal(t, "close", stream.w.header.Get("Connection"))
-				assert.Zero(t, httpsec.ThrottledSignInsOf(r.chain))
+				assert.Zero(t, r.chain.SessionSignalStats().Throttled)
 				assert.NotContains(t, r.logs.String(), "refused", "a closing replica is not a problem to report")
 			},
 		},
@@ -224,7 +270,7 @@ func TestSessionSignals_Caps_Throttled(t *testing.T) {
 				requireOnlyRetry(t, r.open(t, r.signIn(t).ID), busyLeast, busyMost)
 
 				assert.EqualValues(t, 1, r.chain.SessionSignalStats().ReloadFailures)
-				assert.Zero(t, httpsec.ThrottledSignInsOf(r.chain))
+				assert.Zero(t, r.chain.SessionSignalStats().Throttled)
 			},
 		},
 		{
@@ -235,7 +281,9 @@ func TestSessionSignals_Caps_Throttled(t *testing.T) {
 				requireOnlyRetry(t, r.open(t, r.signIn(t).ID), busyLeast, busyMost)
 
 				assert.EqualValues(t, 1, r.chain.SessionSignalStats().ReloadFailures)
-				assert.Zero(t, httpsec.ThrottledSignInsOf(r.chain))
+				assert.Zero(t, r.chain.SessionSignalStats().Throttled)
+				assert.Equal(t, "*fmt.wrapErrors", streamLogRecord(t, r.logs.String(), "a dependency failed")["error_type"],
+					"the record names the policy's error, not anything the chain put around it")
 			},
 		},
 	}
@@ -256,7 +304,7 @@ func TestSessionSignals_Caps_PolicyDenials(t *testing.T) {
 			assert.Equal(t, status, stream.status())
 			assert.Empty(t, stream.frames())
 			assert.Zero(t, asked.Load(), "RetryableError was asked about an answer")
-			assert.Zero(t, httpsec.ThrottledSignInsOf(r.chain))
+			assert.Zero(t, r.chain.SessionSignalStats().Throttled)
 			assert.Zero(t, r.chain.SessionSignalStats().ReloadFailures)
 		}
 	}
@@ -268,7 +316,7 @@ func TestSessionSignals_Caps_PolicyDenials(t *testing.T) {
 			requireOnlyRetry(t, stream, busyLeast, busyMost)
 			assert.EqualValues(t, 1, asked.Load())
 			assert.Equal(t, reloadFailures, r.chain.SessionSignalStats().ReloadFailures)
-			assert.Equal(t, throttled, httpsec.ThrottledSignInsOf(r.chain))
+			assert.Equal(t, throttled, r.chain.SessionSignalStats().Throttled)
 		}
 	}
 
@@ -347,7 +395,7 @@ func TestSessionSignals_Caps_ThrottledCookie(t *testing.T) {
 			assert: func(t *testing.T, f *signalsFixture, resp *http.Response) {
 				requireOnlyRetryResponse(t, resp, busyLeast, busyMost)
 				assert.Empty(t, resp.Header.Get("WWW-Authenticate"), "a retry asks for no credential")
-				assert.EqualValues(t, 1, httpsec.ThrottledSignInsOf(f.chain))
+				assert.EqualValues(t, 1, f.chain.SessionSignalStats().Throttled)
 				assert.Zero(t, f.chain.SessionSignalStats().ReloadFailures)
 			},
 		},
@@ -356,7 +404,7 @@ func TestSessionSignals_Caps_ThrottledCookie(t *testing.T) {
 			signals: httpsec.SessionSignals{RetryableError: func(error) bool { return false }},
 			assert: func(t *testing.T, f *signalsFixture, resp *http.Response) {
 				requireNoStream(t, resp, http.StatusUnauthorized)
-				assert.Zero(t, httpsec.ThrottledSignInsOf(f.chain))
+				assert.Zero(t, f.chain.SessionSignalStats().Throttled)
 			},
 		},
 	}
@@ -394,9 +442,9 @@ type basicAnswer struct {
 	body      string
 }
 
-// TestSessionSignals_Caps_BasicStays is Basic on the stream's path, where no sign-in is published and
-// a retry would be a lock oracle: over its limit or on a concealed lock, a client hears what any wrong
-// password hears.
+// TestSessionSignals_Caps_BasicStays is Basic on the stream's path, where a retry would be a lock oracle,
+// with or without a sign-in of the caller's own beside it: over its limit or on a concealed lock, a client
+// hears what any wrong password hears.
 func TestSessionSignals_Caps_BasicStays(t *testing.T) {
 	t.Parallel()
 
@@ -474,6 +522,15 @@ func TestSessionSignals_Caps_BasicStays(t *testing.T) {
 			assert: likeAWrongPassword,
 		},
 		{
+			name: "a source over its limit beside a published sign-in",
+			wiring: func(t *testing.T) wiring {
+				t.Helper()
+
+				return wiring{cookie: true, basic: []httpsec.BasicAuthOption{httpsec.WithBasicAuthLimiter(limiterThrottling(t))}}
+			},
+			assert: likeAWrongPassword,
+		},
+		{
 			name: "a concealed lock",
 			wiring: func(t *testing.T) wiring {
 				t.Helper()
@@ -515,7 +572,7 @@ func TestSessionSignals_Caps_BasicStays(t *testing.T) {
 			got, f := answer(t, tc.wiring(t))
 
 			tc.assert(t, got, wrongPassword)
-			assert.Zero(t, httpsec.ThrottledSignInsOf(f.chain))
+			assert.Zero(t, f.chain.SessionSignalStats().Throttled)
 		})
 	}
 }
@@ -611,6 +668,313 @@ func TestSessionSignals_Caps_CredentialsAnswerAlike(t *testing.T) {
 
 			assert.Equal(t, http.StatusUnauthorized, unknown.status)
 			assert.Equal(t, unknown, known, "the answer tells a known account from an unknown one")
+		})
+	}
+}
+
+// cookieThrottlePassedOver is a consumer's cookie authenticator that asks the chain's per-request phase
+// about its sign-in, is told it is throttled, and lets the request go on to the next credential.
+type cookieThrottlePassedOver struct{ consumerSessionCookie }
+
+func (a cookieThrottlePassedOver) Intercept(ex *httpsec.Exchange, next httpsec.Next) error {
+	return a.consumerSessionCookie.Intercept(ex, func(ex *httpsec.Exchange) error {
+		if ex.Session == nil {
+			return next(ex)
+		}
+
+		if err := ex.EvaluatePerRequest(ex.Session, ex.Authentication.Principal); !errors.Is(err, ratelimit.ErrThrottled) {
+			return fmt.Errorf("this row needs the per-request phase to throttle, and it answered %w", err)
+		}
+
+		return next(ex)
+	})
+}
+
+// TestSessionSignals_Caps_ThrottleBesideASignIn is a caller signed in as themselves who presents another
+// credential on the stream's path. Being signed in says who the caller is and nothing of the credential
+// refused, so two presentations a refusal should not tell apart stay alike: any other answer is an oracle
+// for an account, a password or a key, open to anyone with a sign-in of their own.
+func TestSessionSignals_Caps_ThrottleBesideASignIn(t *testing.T) {
+	t.Parallel()
+
+	basic := func(user, password string) func(*http.Request) {
+		return func(r *http.Request) { r.SetBasicAuth(user, password) }
+	}
+
+	header := func(name, value string) func(*http.Request) {
+		return func(r *http.Request) { r.Header.Set(name, value) }
+	}
+
+	throttlingUsername := func(t *testing.T, name string) *policy.Engine {
+		t.Helper()
+
+		return engineOf(t, policyDeciding(t, policy.PreAuthentication, func(in *policy.Input) policy.Decision {
+			if in.Username == name {
+				return policy.Decision{Outcome: policy.Deny, Reason: ratelimit.ErrThrottled}
+			}
+
+			return policy.Decision{Outcome: policy.Allow}
+		}))
+	}
+
+	throttlingAt := func(t *testing.T, phases ...policy.Phase) *policy.Engine {
+		t.Helper()
+
+		return engineOf(t, phasePolicy(t, policy.Decision{Outcome: policy.Deny, Reason: ratelimit.ErrThrottled}, phases...))
+	}
+
+	basicAuth := func(t *testing.T) httpsec.Option {
+		t.Helper()
+
+		authn := NewMockAuthenticator(gomock.NewController(t))
+		authn.EXPECT().Authenticate(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(
+			func(_ context.Context, c identity.Credentials) (*authenticate.Authentication, error) {
+				if up, ok := c.(*identity.UsernamePassword); ok && string(up.Password) == "right" {
+					return &authenticate.Authentication{Principal: identity.PrincipalFromDetails(storedUser())}, nil
+				}
+
+				return nil, authenticate.ErrAuthenticationFailed
+			})
+
+		attempts := NewMockAttemptStore(gomock.NewController(t))
+		attempts.EXPECT().RecordFailure(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+		attempts.EXPECT().Reset(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+		return httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: authn, Attempts: attempts})
+	}
+
+	cookieAt := func(f *signalsFixture, at httpsec.Order) []httpsec.Option {
+		return []httpsec.Option{
+			httpsec.WithoutCSRFProtection(),
+			httpsec.WithSessions(f.sessions),
+			httpsec.RegisterInterceptor(consumerSessionCookie{sessions: f.sessions}, at),
+		}
+	}
+
+	// namingAnAccount is a consumer's credential naming an account in a header of its own, throttling one
+	// of them. The library cannot see that it names anything.
+	namingAnAccount := httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+		switch ex.Request.Header("X-Username") {
+		case "":
+			return next(ex)
+		case "throttled":
+			return ratelimit.ErrThrottled
+		default:
+			return authenticate.ErrAuthenticationFailed
+		}
+	})
+
+	apiKeys := newAPIKeyHarness(t)
+
+	alikeAnd401 := func(t *testing.T, first, second basicAnswer) {
+		t.Helper()
+
+		assert.Equal(t, http.StatusUnauthorized, second.status)
+		assert.Equal(t, second, first, "the two presentations can be told apart")
+	}
+
+	type testCase struct {
+		name string
+		// bearer signs the caller in with the session bearer, and otherwise with the consumer's cookie.
+		bearer bool
+		// signedOut presents no sign-in of the caller's own.
+		signedOut     bool
+		opts          func(t *testing.T, f *signalsFixture) []httpsec.Option
+		first, second func(*http.Request)
+		assert        func(t *testing.T, first, second basicAnswer)
+	}
+
+	cases := []testCase{
+		{
+			name: "Basic naming a throttled username, a cookie before Basic",
+			opts: func(t *testing.T, f *signalsFixture) []httpsec.Option {
+				t.Helper()
+
+				return append(cookieAt(f, httpsec.Before(httpsec.OrderBasicAuth)),
+					basicAuth(t), httpsec.WithPolicyEngine(throttlingUsername(t, "victim")))
+			},
+			first: basic("victim", "x"), second: basic("nobody", "x"),
+			assert: alikeAnd401,
+		},
+		{
+			name: "Basic with the right password under a stateless throttle, a cookie before Basic",
+			opts: func(t *testing.T, f *signalsFixture) []httpsec.Option {
+				t.Helper()
+
+				return append(cookieAt(f, httpsec.Before(httpsec.OrderBasicAuth)),
+					basicAuth(t), httpsec.WithPolicyEngine(throttlingAt(t, policy.StatelessAuthentication)))
+			},
+			first: basic("victim", "right"), second: basic("victim", "wrong"),
+			assert: alikeAnd401,
+		},
+		{
+			name: "a valid API key under a stateless throttle, a cookie before the key",
+			opts: func(t *testing.T, f *signalsFixture) []httpsec.Option {
+				t.Helper()
+
+				return append(cookieAt(f, httpsec.Before(httpsec.OrderBasicAuth)),
+					httpsec.EnableAPIKey(apiKeys.keys), httpsec.WithPolicyEngine(throttlingAt(t, policy.StatelessAuthentication)))
+			},
+			first: header("Authorization", "ApiKey "+apiKeys.valid), second: header("Authorization", "ApiKey "+unknownAPIKey),
+			assert: alikeAnd401,
+		},
+		{
+			name:   "a consumer's account-naming credential after the session bearer",
+			bearer: true,
+			opts: func(*testing.T, *signalsFixture) []httpsec.Option {
+				return []httpsec.Option{httpsec.RegisterInterceptor(namingAnAccount, httpsec.After(httpsec.OrderBearerToken))}
+			},
+			first: header("X-Username", "throttled"), second: header("X-Username", "other"),
+			assert: alikeAnd401,
+		},
+		{
+			name: "a per-request throttle evaluated and passed over is not what a later credential's refusal reads",
+			opts: func(t *testing.T, f *signalsFixture) []httpsec.Option {
+				t.Helper()
+
+				return []httpsec.Option{
+					httpsec.WithoutCSRFProtection(),
+					httpsec.WithSessions(f.sessions),
+					httpsec.RegisterInterceptor(cookieThrottlePassedOver{consumerSessionCookie{sessions: f.sessions}},
+						httpsec.Before(httpsec.OrderBasicAuth)),
+					basicAuth(t),
+					httpsec.WithPolicyEngine(throttlingAt(t, policy.PerRequest, policy.StatelessAuthentication)),
+				}
+			},
+			first: basic("victim", "right"), second: basic("victim", "wrong"),
+			assert: alikeAnd401,
+		},
+		{
+			name:      "with no sign-in at all",
+			signedOut: true,
+			opts: func(t *testing.T, f *signalsFixture) []httpsec.Option {
+				t.Helper()
+
+				return []httpsec.Option{
+					httpsec.WithSessions(f.sessions), basicAuth(t), httpsec.WithPolicyEngine(throttlingUsername(t, "victim")),
+				}
+			},
+			first: basic("victim", "x"), second: basic("nobody", "x"),
+			assert: alikeAnd401,
+		},
+		{
+			name: "with the cookie at its usual slot, inside Basic",
+			opts: func(t *testing.T, f *signalsFixture) []httpsec.Option {
+				t.Helper()
+
+				return append(cookieAt(f, httpsec.OrderBearerToken),
+					basicAuth(t), httpsec.WithPolicyEngine(throttlingUsername(t, "victim")))
+			},
+			first: basic("victim", "x"), second: basic("nobody", "x"),
+			assert: alikeAnd401,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newSignalsFixture(t, signalsSetup{withoutBearer: !tc.bearer, opts: func(f *signalsFixture) []httpsec.Option {
+				return tc.opts(t, f)
+			}})
+
+			own := f.signIn(t, "u-1").ID
+
+			answer := func(presenting func(*http.Request)) basicAnswer {
+				changes, credential := []func(*http.Request){presenting}, ""
+
+				switch {
+				case tc.signedOut:
+				case tc.bearer:
+					credential = own
+				default:
+					changes = append(changes, withSignalsCookie(own))
+				}
+
+				resp := f.send(t.Context(), t, http.MethodGet, httpsec.DefaultSessionSignalsPath, credential, changes...)
+
+				body, err := io.ReadAll(resp.Body)
+				require.NoError(t, err)
+
+				return basicAnswer{resp.StatusCode, resp.Header.Get("WWW-Authenticate"), string(body)}
+			}
+
+			first, second := answer(tc.first), answer(tc.second)
+
+			tc.assert(t, first, second)
+			assert.Zero(t, f.chain.SessionSignalStats().Throttled)
+		})
+	}
+}
+
+// TestSessionSignals_Caps_ThrottleWhatTheChainSees is what the per-request phase's throttle is to whatever
+// reads it. Away from the stream it is the policy's reason itself, the very value, so nothing else a chain
+// answers changes; on the stream's path it reads as that reason, to errors.Is and in its text.
+func TestSessionSignals_Caps_ThrottleWhatTheChainSees(t *testing.T) {
+	t.Parallel()
+
+	theReasonItself := func(t *testing.T, got error) {
+		t.Helper()
+
+		assert.Same(t, ratelimit.ErrThrottled, got)
+	}
+
+	type testCase struct {
+		name           string
+		method, target string
+		setup          signalsSetup
+		assert         func(t *testing.T, got error)
+	}
+
+	cases := []testCase{
+		{name: "a GET of another path", method: http.MethodGet, target: "/elsewhere", assert: theReasonItself},
+		{name: "another method on the stream's path", method: http.MethodPost, target: httpsec.DefaultSessionSignalsPath, assert: theReasonItself},
+		{
+			name: "a chain with no stream", method: http.MethodGet, target: httpsec.DefaultSessionSignalsPath,
+			setup: signalsSetup{withoutSignals: true}, assert: theReasonItself,
+		},
+		{
+			name: "the stream's own path, refused by the consumer's choice", method: http.MethodGet, target: httpsec.DefaultSessionSignalsPath,
+			setup: signalsSetup{signals: httpsec.SessionSignals{RetryableError: func(error) bool { return false }}},
+			assert: func(t *testing.T, got error) {
+				t.Helper()
+
+				require.ErrorIs(t, got, ratelimit.ErrThrottled)
+				assert.EqualError(t, got, ratelimit.ErrThrottled.Error())
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var seen atomic.Pointer[error]
+
+			setup := tc.setup
+			setup.opts = func(*signalsFixture) []httpsec.Option {
+				return []httpsec.Option{
+					httpsec.WithPolicyEngine(engineOf(t, phasePolicy(t,
+						policy.Decision{Outcome: policy.Deny, Reason: ratelimit.ErrThrottled}, policy.PerRequest))),
+					httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+						err := next(ex)
+						seen.Store(&err)
+
+						return err
+					}), httpsec.After(httpsec.OrderCSRF)),
+				}
+			}
+
+			f := newSignalsFixture(t, setup)
+
+			resp := f.send(t.Context(), t, tc.method, tc.target, f.signIn(t, "u-1").ID)
+
+			assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+
+			got := seen.Load()
+			require.NotNil(t, got, "the request reached no interceptor")
+
+			tc.assert(t, *got)
 		})
 	}
 }

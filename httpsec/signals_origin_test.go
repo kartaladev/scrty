@@ -61,17 +61,30 @@ func TestSessionSignals_Caps_Origin(t *testing.T) {
 
 	origin := func(size int) string { return "http://" + strings.Repeat("a", size-len("http://")) }
 
+	// quoted asserts what the open and close records say of the origin, and that neither says more.
+	quoted := func(held string) func(t *testing.T, logs string) {
+		return func(t *testing.T, logs string) {
+			t.Helper()
+
+			for _, msg := range []string{"stream opened", "stream closed"} {
+				assert.Equal(t, held, streamLogRecord(t, logs, msg)["origin"], msg)
+			}
+
+			assert.NotContains(t, logs, held+"a", "a record quotes more than the limit")
+		}
+	}
+
 	type testCase struct {
 		name   string
 		origin string
-		want   string
+		assert func(t *testing.T, logs string)
 	}
 
 	cases := []testCase{
-		{name: "a real origin is held whole", origin: "http://example.com", want: "http://example.com"},
-		{name: "one at the limit is held whole", origin: origin(originLimit), want: origin(originLimit)},
-		{name: "one over the limit is cut to it", origin: origin(originLimit + 1), want: origin(originLimit)},
-		{name: "a mebibyte is cut to it", origin: origin(1 << 20), want: origin(originLimit)},
+		{name: "a real origin is held whole", origin: "http://example.com", assert: quoted("http://example.com")},
+		{name: "one at the limit is held whole", origin: origin(originLimit), assert: quoted(origin(originLimit))},
+		{name: "one over the limit is cut to it", origin: origin(originLimit + 1), assert: quoted(origin(originLimit))},
+		{name: "a mebibyte is cut to it", origin: origin(1 << 20), assert: quoted(origin(originLimit))},
 	}
 
 	for _, tc := range cases {
@@ -87,11 +100,7 @@ func TestSessionSignals_Caps_Origin(t *testing.T) {
 				s.cancel()
 				synctest.Wait()
 
-				for _, msg := range []string{"stream opened", "stream closed"} {
-					assert.Equal(t, tc.want, streamLogRecord(t, r.logs.String(), msg)["origin"], msg)
-				}
-
-				assert.NotContains(t, r.logs.String(), tc.want+"a", "a record quotes more than the limit")
+				tc.assert(t, r.logs.String())
 			})
 		})
 	}

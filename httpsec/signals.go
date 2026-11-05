@@ -271,7 +271,7 @@ type SessionSignals struct {
 
 	// RetryableError decides whether a failure on the stream's path is one a client should
 	// come back from. It is asked about an error StatusForError maps to a 5xx, and about a
-	// ratelimit.ErrThrottled once a sign-in is published, returned to the chain on GET at Path,
+	// ratelimit.ErrThrottled from the chain's per-request policy phase, returned to the chain on GET at Path,
 	// and not about what a client's hang-up or a writer that cannot stream returned. Returning
 	// true answers 200 with only a retry, counted in SessionSignalStats.ReloadFailures for a
 	// failure and in SessionSignalStats.Throttled for a throttle. Returning false sends the
@@ -423,10 +423,12 @@ type SignalEnvelope struct {
 // So a consumer's interceptor that refuses this path with an error of its own that
 // StatusForError does not know is taken for a failure, and should write its answer itself;
 // a rate limit answered that way stays the consumer's, as does an error mapping to a 429,
-// which is an answer it chose. A ratelimit.ErrThrottled, which is how a policy says the same,
-// is told to retry too once a sign-in is published, and only then: before one, Basic over its
-// limit keeps the 401 of any wrong password, and a retry there would be a lock oracle. It is
-// counted in SessionSignalStats.Throttled, since nothing failed. An answer begun before the failure
+// which is an answer it chose. A ratelimit.ErrThrottled from the chain's per-request policy phase,
+// about the published sign-in it judged, is how a policy says the same, and is told to retry too. Only
+// that one: a session on the request says who is signed in, not whose credential was refused, so any
+// other ErrThrottled keeps the chain's mapping, or a caller with a sign-in of their own could tell a
+// locked account or a right password from a 401. It is counted in SessionSignalStats.Throttled, since
+// nothing failed. An answer begun before the failure
 // is not written over. It takes no place, closes no stream and charges nothing, and only GET
 // on the stream's path is answered so, so every other 5xx of the chain stands. A fetch() client
 // sees a 200 with no session event. It hides from a dashboard of statuses, so it is logged

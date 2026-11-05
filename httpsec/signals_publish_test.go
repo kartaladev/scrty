@@ -422,19 +422,31 @@ func TestSessionSignals_CredentialChanged_OnlyWhenTheSetHoldsIt(t *testing.T) {
 		require.Equal(t, http.StatusNoContent, r.callAs(t, r.signIn(t).ID, changePath, "change"))
 	}
 
+	nothing := func(t *testing.T, published []string) {
+		t.Helper()
+
+		assert.Empty(t, published)
+	}
+
+	theSignal := func(t *testing.T, published []string) {
+		t.Helper()
+
+		assert.Equal(t, []string{"credential_changed"}, published)
+	}
+
 	type testCase struct {
-		name string
-		set  []httpsec.Signal
-		act  func(t *testing.T, r *streamRig)
-		want []string
+		name   string
+		set    []httpsec.Signal
+		act    func(t *testing.T, r *streamRig)
+		assert func(t *testing.T, published []string)
 	}
 
 	cases := []testCase{
-		{name: "a report on the default set publishes nothing", act: report},
-		{name: "an endpoint on the default set publishes nothing", act: endpoint},
-		{name: "a report on a set without it publishes nothing", set: endedOnly, act: report},
-		{name: "a report on a set holding it publishes", set: withCredentialChanged, act: report, want: []string{"credential_changed"}},
-		{name: "an endpoint on a set holding it publishes", set: withCredentialChanged, act: endpoint, want: []string{"credential_changed"}},
+		{name: "a report on the default set publishes nothing", act: report, assert: nothing},
+		{name: "an endpoint on the default set publishes nothing", act: endpoint, assert: nothing},
+		{name: "a report on a set without it publishes nothing", set: endedOnly, act: report, assert: nothing},
+		{name: "a report on a set holding it publishes", set: withCredentialChanged, act: report, assert: theSignal},
+		{name: "an endpoint on a set holding it publishes", set: withCredentialChanged, act: endpoint, assert: theSignal},
 	}
 
 	for _, tc := range cases {
@@ -471,7 +483,7 @@ func TestSessionSignals_CredentialChanged_OnlyWhenTheSetHoldsIt(t *testing.T) {
 				mu.Lock()
 				defer mu.Unlock()
 
-				assert.Equal(t, tc.want, published)
+				tc.assert(t, published)
 			})
 		})
 	}
