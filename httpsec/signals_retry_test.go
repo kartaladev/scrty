@@ -231,8 +231,8 @@ func TestSessionSignals_Heartbeat_ReportAtTheWaitsEnd(t *testing.T) {
 	}
 }
 
-// TestSessionSignals_Caps_RefusalOfAWriterThatCannotStream is what a refusal's answer is labelled once
-// the stream's own type is taken back: as any other refusal's, with no empty header line.
+// TestSessionSignals_Caps_RefusalOfAWriterThatCannotStream is what a refusal's answer is labelled when
+// the stream's own type never went on: as any other refusal's, with no empty header line.
 func TestSessionSignals_Caps_RefusalOfAWriterThatCannotStream(t *testing.T) {
 	t.Parallel()
 
@@ -325,26 +325,51 @@ func TestSessionSignals_Caps_RefusalOfAWriterThatCannotStream(t *testing.T) {
 	}
 }
 
-// TestSessionSignals_Caps_ConsumersAdapterTakesTheTypeBack is a consumer's own writer that cannot
-// stream, which has no way to remove a header: the type it was told is taken back with an empty value,
-// as ResponseWriter's godoc says.
-func TestSessionSignals_Caps_ConsumersAdapterTakesTheTypeBack(t *testing.T) {
+// TestSessionSignals_EndpointGivesAnAdapterTheType is a consumer's own writer that cannot stream, on both
+// the stream's path and a retry's: it is told the type by Stream and through no header, so its refusal
+// has nothing to take back.
+func TestSessionSignals_EndpointGivesAnAdapterTheType(t *testing.T) {
 	t.Parallel()
 
-	f := newSignalsFixture(t, signalsSetup{})
-	s := f.signIn(t, "u-1")
-	w := &stubWriter{}
+	type testCase struct {
+		name  string
+		setup signalsSetup
+	}
 
-	run := f.chain.Assemble(func(*httpsec.Exchange) error { return nil })
+	cases := []testCase{
+		{name: "the stream itself"},
+		{
+			name: "a retry after a dependency failed",
+			setup: signalsSetup{opts: func(*signalsFixture) []httpsec.Option {
+				return []httpsec.Option{httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(*httpsec.Exchange, httpsec.Next) error {
+					return errors.New(storeDownText)
+				}), httpsec.After(httpsec.OrderCSRF))}
+			}},
+		},
+	}
 
-	require.ErrorIs(t, run(httpsec.NewExchange(t.Context(), stubRequest{
-		method:   http.MethodGet,
-		path:     httpsec.DefaultSessionSignalsPath,
-		clientIP: "198.51.100.7",
-		headers:  map[string]string{"Authorization": "Bearer " + s.ID},
-	}, w)), httpsec.ErrStreamingUnsupported)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	assert.Equal(t, []string{""}, w.header["Content-Type"])
+			f := newSignalsFixture(t, tc.setup)
+			s := f.signIn(t, "u-1")
+			w := &stubWriter{}
+
+			run := f.chain.Assemble(func(*httpsec.Exchange) error { return nil })
+
+			require.ErrorIs(t, run(httpsec.NewExchange(t.Context(), stubRequest{
+				method:   http.MethodGet,
+				path:     httpsec.DefaultSessionSignalsPath,
+				clientIP: "198.51.100.7",
+				headers:  map[string]string{"Authorization": "Bearer " + s.ID},
+			}, w)), httpsec.ErrStreamingUnsupported)
+
+			assert.Equal(t, "text/event-stream", w.streamType)
+			assert.NotContains(t, w.header, "Content-Type", "not even a blank one")
+			assert.Contains(t, w.header.Get("Cache-Control"), "no-store", "a refusal is never cached")
+		})
+	}
 }
 
 // firstReadSecret is text a dependency's error carries that no returned error may.

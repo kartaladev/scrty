@@ -138,7 +138,7 @@ func TestGin_Stream(t *testing.T) {
 				srv := serveStream(t, func(ex *httpsec.Exchange) error {
 					defer close(returned)
 
-					return ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+					return ex.Writer.Stream(ex.Context(), "", func(_ context.Context, w httpsec.EventWriter) error {
 						if err := writeAndFlush(w); err != nil {
 							return err
 						}
@@ -171,7 +171,7 @@ func TestGin_Stream(t *testing.T) {
 			name: "a stream lives through gaps longer than the write timeout",
 			assert: func(t *testing.T) {
 				srv := serveStream(t, func(ex *httpsec.Exchange) error {
-					return ex.Writer.Stream(ex.Context(), func(ctx context.Context, w httpsec.EventWriter) error {
+					return ex.Writer.Stream(ex.Context(), "", func(ctx context.Context, w httpsec.EventWriter) error {
 						for i := 0; ; i++ {
 							if err := writeAndFlush(w); err != nil {
 								return err
@@ -244,7 +244,7 @@ func TestGin_Stream(t *testing.T) {
 			assert: func(t *testing.T) {
 				ended := make(chan struct{})
 				srv := serveStream(t, func(ex *httpsec.Exchange) error {
-					return ex.Writer.Stream(ex.Context(), func(ctx context.Context, w httpsec.EventWriter) error {
+					return ex.Writer.Stream(ex.Context(), "", func(ctx context.Context, w httpsec.EventWriter) error {
 						if err := writeAndFlush(w); err != nil {
 							return err
 						}
@@ -280,7 +280,7 @@ func TestGin_Stream(t *testing.T) {
 					ex.Writer.SetHeader("Cache-Control", "no-store")
 					ex.Writer.SetHeader("Access-Control-Allow-Origin", "https://app.example")
 
-					return ex.Writer.Stream(ex.Context(), func(context.Context, httpsec.EventWriter) error {
+					return ex.Writer.Stream(ex.Context(), "", func(context.Context, httpsec.EventWriter) error {
 						ex.Writer.SetHeader("X-Too-Late", "yes")
 						hold(t, release, "the row's release")
 
@@ -316,7 +316,7 @@ func TestGin_Stream(t *testing.T) {
 				srv := serveStream(t, func(ex *httpsec.Exchange) error {
 					_, _ = io.WriteString(ex.Writer, "written")
 
-					got <- ex.Writer.Stream(ex.Context(), func(context.Context, httpsec.EventWriter) error {
+					got <- ex.Writer.Stream(ex.Context(), "", func(context.Context, httpsec.EventWriter) error {
 						return errors.New("this body must not run")
 					})
 
@@ -334,13 +334,13 @@ func TestGin_Stream(t *testing.T) {
 			assert: func(t *testing.T) {
 				second, write := make(chan error, 1), make(chan error, 1)
 				srv := serveStream(t, func(ex *httpsec.Exchange) error {
-					if err := ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+					if err := ex.Writer.Stream(ex.Context(), "", func(_ context.Context, w httpsec.EventWriter) error {
 						return writeAndFlush(w)
 					}); err != nil {
 						return err
 					}
 
-					second <- ex.Writer.Stream(ex.Context(), func(context.Context, httpsec.EventWriter) error {
+					second <- ex.Writer.Stream(ex.Context(), "", func(context.Context, httpsec.EventWriter) error {
 						return errors.New("this body must not run")
 					})
 
@@ -430,7 +430,7 @@ func TestGin_StreamContract(t *testing.T) {
 			got := make(chan error, 1)
 			opts := []httpsec.Option{httpsec.RegisterInterceptor(
 				httpsec.InterceptorFunc(func(ex *httpsec.Exchange, _ httpsec.Next) error {
-					err := ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+					err := ex.Writer.Stream(ex.Context(), "", func(_ context.Context, w httpsec.EventWriter) error {
 						runs.Add(1)
 
 						return tc.body(w)
@@ -528,7 +528,7 @@ func TestGin_StreamCannotFlush(t *testing.T) {
 
 			chain, err := httpsec.New(httpsec.RegisterInterceptor(
 				httpsec.InterceptorFunc(func(ex *httpsec.Exchange, _ httpsec.Next) error {
-					err := ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+					err := ex.Writer.Stream(ex.Context(), "", func(_ context.Context, w httpsec.EventWriter) error {
 						return writeAndFlush(w)
 					})
 					got <- err
@@ -685,7 +685,7 @@ func TestGin_StreamBeneathTheEngine(t *testing.T) {
 
 			chain, err := httpsec.New(httpsec.RegisterInterceptor(
 				httpsec.InterceptorFunc(func(ex *httpsec.Exchange, _ httpsec.Next) error {
-					err := ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+					err := ex.Writer.Stream(ex.Context(), "", func(_ context.Context, w httpsec.EventWriter) error {
 						got <- nil
 
 						if err := writeAndFlush(w); err != nil {
@@ -892,7 +892,7 @@ func TestGin_StreamBeneathMiddlewareWrappers(t *testing.T) {
 
 			chain, err := httpsec.New(httpsec.RegisterInterceptor(
 				httpsec.InterceptorFunc(func(ex *httpsec.Exchange, _ httpsec.Next) error {
-					return ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+					return ex.Writer.Stream(ex.Context(), "", func(_ context.Context, w httpsec.EventWriter) error {
 						if err := writeAndFlush(w); err != nil {
 							return err
 						}
@@ -994,7 +994,7 @@ func TestGin_StreamBodyEndsEarly(t *testing.T) {
 
 			chain, err := httpsec.New(httpsec.RegisterInterceptor(
 				httpsec.InterceptorFunc(func(ex *httpsec.Exchange, _ httpsec.Next) error {
-					return ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+					return ex.Writer.Stream(ex.Context(), "", func(_ context.Context, w httpsec.EventWriter) error {
 						if err := writeAndFlush(w); err != nil {
 							return err
 						}
@@ -1040,6 +1040,199 @@ func TestGin_StreamBodyEndsEarly(t *testing.T) {
 			if tc.assert != nil {
 				tc.assert(t, <-recovered)
 			}
+		})
+	}
+}
+
+// TestGin_StreamContentType is the type Stream is given, through the middleware on a real server. gin
+// holds the head until something writes, and its render fills a type only where none is set, so a type
+// left on a refusal would be what the client receives in place of the render's.
+func TestGin_StreamContentType(t *testing.T) {
+	t.Parallel()
+
+	const (
+		eventStream  = "text/event-stream"
+		consumerType = "text/x-consumer"
+		renderedType = "application/json; charset=utf-8"
+	)
+
+	wrap := func(wrapper func(http.ResponseWriter) http.ResponseWriter) func(http.Handler) http.Handler {
+		return func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(wrapper(w), r)
+			})
+		}
+	}
+
+	timeoutHandler := func(next http.Handler) http.Handler {
+		return http.TimeoutHandler(next, streamBound, "timed out")
+	}
+
+	bare := wrap(func(w http.ResponseWriter) http.ResponseWriter { return bareWriter{w} })
+	lateNo := wrap(func(w http.ResponseWriter) http.ResponseWriter { return notSupportedAtRunTime{w} })
+
+	stream := func(contentType string) func(ex *httpsec.Exchange) error {
+		return func(ex *httpsec.Exchange) error {
+			return ex.Writer.Stream(ex.Context(), contentType, func(_ context.Context, w httpsec.EventWriter) error {
+				return writeAndFlush(w)
+			})
+		}
+	}
+
+	consumersThenStream := func(ex *httpsec.Exchange) error {
+		ex.Writer.SetHeader("Content-Type", consumerType)
+
+		return stream(eventStream)(ex)
+	}
+
+	carriesNone := func(t *testing.T, resp *http.Response, _ string) {
+		t.Helper()
+
+		assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
+		assert.NotContains(t, resp.Header, "Content-Type", "a refusal carries no type, not even a blank one")
+	}
+
+	rendered := func(t *testing.T, resp *http.Response, body string) {
+		t.Helper()
+
+		assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
+		assert.JSONEq(t, `{"error":"refused"}`, body)
+		assert.Equal(t, []string{renderedType}, resp.Header["Content-Type"])
+	}
+
+	cases := []struct {
+		name   string
+		serve  func(ex *httpsec.Exchange) error
+		mount  func(http.Handler) http.Handler
+		render bool
+		assert func(t *testing.T, resp *http.Response, body string)
+	}{
+		{
+			name:  "the type arrives with the stream",
+			serve: stream(eventStream),
+			assert: func(t *testing.T, resp *http.Response, body string) {
+				t.Helper()
+
+				assert.Equal(t, http.StatusOK, resp.StatusCode)
+				assert.Equal(t, []string{eventStream}, resp.Header["Content-Type"])
+				assert.Equal(t, streamEvent, body)
+			},
+		},
+		{
+			name:  "an empty type sets none",
+			serve: stream(""),
+			assert: func(t *testing.T, resp *http.Response, body string) {
+				t.Helper()
+
+				assert.Equal(t, http.StatusOK, resp.StatusCode)
+				assert.NotContains(t, resp.Header, "Content-Type")
+				assert.Equal(t, streamEvent, body)
+			},
+		},
+		{
+			name:   "behind http.TimeoutHandler a refusal carries none",
+			serve:  stream(eventStream),
+			mount:  timeoutHandler,
+			assert: carriesNone,
+		},
+		{
+			name:   "behind a wrapper that cannot flush a refusal carries none",
+			serve:  stream(eventStream),
+			mount:  bare,
+			assert: carriesNone,
+		},
+		{
+			name:   "beneath a wrapper that refuses only when asked to flush a refusal carries none",
+			serve:  stream(eventStream),
+			mount:  lateNo,
+			assert: carriesNone,
+		},
+		{
+			name:   "gin's render is what the client receives behind http.TimeoutHandler",
+			serve:  stream(eventStream),
+			mount:  timeoutHandler,
+			render: true,
+			assert: rendered,
+		},
+		{
+			name:   "gin's render is what the client receives beneath a wrapper that refuses when asked",
+			serve:  stream(eventStream),
+			mount:  lateNo,
+			render: true,
+			assert: rendered,
+		},
+		{
+			name:  "a refusal leaves the type a consumer named",
+			serve: consumersThenStream,
+			mount: bare,
+			assert: func(t *testing.T, resp *http.Response, _ string) {
+				t.Helper()
+
+				assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
+				assert.Equal(t, []string{consumerType}, resp.Header["Content-Type"])
+			},
+		},
+		{
+			name: "ErrStreamingStarted leaves a consumer's headers alone, though gin still holds them",
+			serve: func(ex *httpsec.Exchange) error {
+				ex.Writer.SetHeader("Content-Type", consumerType)
+				ex.Writer.SetHeader("Cache-Control", "max-age=60")
+				ex.Writer.WriteHeader(http.StatusServiceUnavailable)
+
+				if err := stream(eventStream)(ex); !errors.Is(err, httpsec.ErrStreamingStarted) {
+					t.Errorf("Stream after a status returned %v", err)
+				}
+
+				return nil
+			},
+			assert: func(t *testing.T, resp *http.Response, _ string) {
+				t.Helper()
+
+				assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+				assert.Equal(t, []string{consumerType}, resp.Header["Content-Type"])
+				assert.Equal(t, "max-age=60", resp.Header.Get("Cache-Control"))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			chain, err := httpsec.New(httpsec.RegisterInterceptor(
+				httpsec.InterceptorFunc(func(ex *httpsec.Exchange, _ httpsec.Next) error { return tc.serve(ex) }),
+				httpsec.OrderBearerToken))
+			require.NoError(t, err)
+
+			engine := gin.New()
+
+			if tc.render {
+				engine.Use(func(gc *gin.Context) {
+					gc.Next()
+
+					if len(gc.Errors) > 0 {
+						gc.JSON(http.StatusNotImplemented, gin.H{"error": "refused"})
+					}
+				})
+			}
+
+			engine.Use(ginsec.Middleware(chain))
+			engine.GET("/stream", func(*gin.Context) {})
+
+			var handler http.Handler = engine
+			if tc.mount != nil {
+				handler = tc.mount(handler)
+			}
+
+			srv := httptest.NewServer(handler)
+			t.Cleanup(srv.Close)
+
+			resp := openStream(t.Context(), t, srv)
+
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+
+			tc.assert(t, resp, string(body))
 		})
 	}
 }

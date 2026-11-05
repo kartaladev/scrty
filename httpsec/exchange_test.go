@@ -154,7 +154,7 @@ func (r *miniRequest) ClientCertificate() *x509.Certificate { return nil }
 type miniWriter struct{ ex *miniExchange }
 
 // Stream reports what a consumer's framework with no streaming path reports.
-func (*miniWriter) Stream(context.Context, func(context.Context, httpsec.EventWriter) error) error {
+func (*miniWriter) Stream(context.Context, string, func(context.Context, httpsec.EventWriter) error) error {
 	return httpsec.ErrStreamingUnsupported
 }
 

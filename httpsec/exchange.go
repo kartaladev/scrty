@@ -151,13 +151,8 @@ type Cookie = http.Cookie
 type ResponseWriter interface {
 	// SetHeader replaces every value of the response header name with value. Once
 	// the response has begun, by WriteHeader, Write or Stream, it has no effect on the
-	// writers the library provides, whether or not the framework has yet sent the head.
-	//
-	// An empty value is what the library sets to take back a Content-Type when Stream
-	// refused, because this interface has no way to remove a header. A consumer's adapter
-	// either sends it as it is, which no client takes for an event stream, or removes the
-	// header, which a framework that fills in a missing type needs. The writers the library
-	// provides over net/http and gin remove it themselves, and so never see one from it.
+	// writers the library provides, whether or not the framework has yet sent the head. The
+	// library sets no stream's type through it: Stream is given that.
 	SetHeader(name, value string)
 
 	// AddHeader adds value to the response header name, keeping the values
@@ -173,11 +168,20 @@ type ResponseWriter interface {
 	WriteHeader(status int)
 	Write(b []byte) (int, error)
 
-	// Stream sends the status and every header set so far, then has body write
-	// the rest of the response, each EventWriter.Flush reaching the client while
-	// the response stays open. The status is 200: a response that wants another
-	// answers with WriteHeader and does not stream. Headers and cookies set after
-	// Stream have no effect.
+	// Stream sends the status, every header set so far and contentType as the
+	// Content-Type, then has body write the rest of the response, each
+	// EventWriter.Flush reaching the client while the response stays open. The status
+	// is 200: a response that wants another answers with WriteHeader and does not
+	// stream. Headers and cookies set after Stream have no effect.
+	//
+	// The type is set only when the adapter commits the head, so a refusal carries none
+	// of it and has nothing to take back: an error from Stream, and a chain that refuses
+	// on fiber after Stream returned, leave Content-Type as they found it, for what answers
+	// the refusal to name, or for a framework or net/http to fill in. A response that had
+	// already begun keeps the headers it chose. contentType replaces a Content-Type set
+	// earlier when the stream goes out. An empty contentType sets none, so what was set
+	// earlier stands, and otherwise the response has whatever its framework gives one no
+	// one named a type for: nothing on net/http and gin, and fasthttp's default on fiber.
 	//
 	// It returns ErrStreamingStarted, writing nothing and not running body, when
 	// the response has begun: after WriteHeader, after Write, or on a second call.
@@ -245,6 +249,9 @@ type ResponseWriter interface {
 	//
 	// All of this is the contract, and a consumer's adapter keeps it or returns
 	// ErrStreamingUnsupported. In particular, it must:
+	//   - set contentType only once nothing can refuse the stream any more, and set none for
+	//     an empty one. If it runs body after its chain has returned, that is when the chain
+	//     did not refuse;
 	//   - keep the server's write deadline from ending the stream, moving it by
 	//     StreamWriteWindow where a deadline exists, and end body's context when the client
 	//     leaves, including with nothing written. The signal stream counts on both: a
@@ -269,7 +276,7 @@ type ResponseWriter interface {
 	// other requests, and body could read another user's request. net/http and gin do
 	// not reuse them that way, and the rule is the same so that a stream written on one
 	// adapter is safe on the others.
-	Stream(ctx context.Context, body func(ctx context.Context, w EventWriter) error) error
+	Stream(ctx context.Context, contentType string, body func(ctx context.Context, w EventWriter) error) error
 }
 
 // Exchange is one request passing through the chain.

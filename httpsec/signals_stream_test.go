@@ -5081,7 +5081,7 @@ func (w *endedContextWriter) Write(p []byte) (int, error) { return w.wrote.Write
 
 func (*endedContextWriter) Flush() error { return nil }
 
-func (w *endedContextWriter) Stream(ctx context.Context, body func(context.Context, httpsec.EventWriter) error) error {
+func (w *endedContextWriter) Stream(ctx context.Context, _ string, body func(context.Context, httpsec.EventWriter) error) error {
 	ended, cancel := context.WithCancel(ctx)
 	cancel()
 

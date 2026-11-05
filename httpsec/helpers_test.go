@@ -123,6 +123,9 @@ type stubWriter struct {
 	status int
 	body   []byte
 	cookie []*httpsec.Cookie
+
+	// streamType is the type the last Stream was given.
+	streamType string
 }
 
 func (w *stubWriter) SetHeader(n, v string) {
@@ -141,7 +144,9 @@ func (w *stubWriter) AddHeader(n, v string) {
 
 func (w *stubWriter) SetCookie(c *httpsec.Cookie) { w.cookie = append(w.cookie, c) }
 
-func (*stubWriter) Stream(context.Context, func(context.Context, httpsec.EventWriter) error) error {
+func (w *stubWriter) Stream(_ context.Context, contentType string, _ func(context.Context, httpsec.EventWriter) error) error {
+	w.streamType = contentType
+
 	return httpsec.ErrStreamingUnsupported
 }
 

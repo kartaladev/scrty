@@ -1206,7 +1206,7 @@ type bodyContextWriter struct {
 	got context.Context //nolint:containedctx // what the test is about
 }
 
-func (w *bodyContextWriter) Stream(ctx context.Context, _ func(context.Context, httpsec.EventWriter) error) error {
+func (w *bodyContextWriter) Stream(ctx context.Context, _ string, _ func(context.Context, httpsec.EventWriter) error) error {
 	w.got = ctx
 
 	return httpsec.ErrStreamingUnsupported

@@ -3019,7 +3019,7 @@ func (brokenWriter) SetCookie(*httpsec.Cookie) {}
 func (brokenWriter) WriteHeader(int)           {}
 func (brokenWriter) Write([]byte) (int, error) { return 0, errTransportReset }
 
-func (brokenWriter) Stream(context.Context, func(context.Context, httpsec.EventWriter) error) error {
+func (brokenWriter) Stream(context.Context, string, func(context.Context, httpsec.EventWriter) error) error {
 	return errTransportReset
 }
 

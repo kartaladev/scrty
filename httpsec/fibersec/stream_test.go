@@ -351,7 +351,7 @@ func TestFiber_Stream(t *testing.T) {
 			assert: func(t *testing.T) {
 				release, returned := make(chan struct{}), make(chan struct{})
 				url, _ := serveStreamChain(t, streaming(func(ex *httpsec.Exchange) error {
-					return ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+					return ex.Writer.Stream(ex.Context(), "", func(_ context.Context, w httpsec.EventWriter) error {
 						defer close(returned)
 
 						if err := writeAndFlush(w); err != nil {
@@ -386,7 +386,7 @@ func TestFiber_Stream(t *testing.T) {
 			name: "a stream lives through gaps longer than the write timeout",
 			assert: func(t *testing.T) {
 				url, _ := serveStreamChain(t, streaming(func(ex *httpsec.Exchange) error {
-					return ex.Writer.Stream(ex.Context(), func(ctx context.Context, w httpsec.EventWriter) error {
+					return ex.Writer.Stream(ex.Context(), "", func(ctx context.Context, w httpsec.EventWriter) error {
 						for i := 0; ; i++ {
 							if err := writeAndFlush(w); err != nil {
 								return err
@@ -434,7 +434,7 @@ func TestFiber_Stream(t *testing.T) {
 				url, _ := serveStreamChain(t, streaming(func(ex *httpsec.Exchange) error {
 					ctx := context.WithValue(ex.Context(), streamCtxKey{}, "from the chain")
 
-					return ex.Writer.Stream(ctx, func(ctx context.Context, _ httpsec.EventWriter) error {
+					return ex.Writer.Stream(ctx, "", func(ctx context.Context, _ httpsec.EventWriter) error {
 						body <- ctx
 						hold(t, proceed, "the row to proceed")
 
@@ -483,7 +483,7 @@ func TestFiber_Stream(t *testing.T) {
 				}), httpsec.OrderJWKS)
 
 				url, _ := serveStreamChain(t, outer, streaming(func(ex *httpsec.Exchange) error {
-					return ex.Writer.Stream(ex.Context(), func(context.Context, httpsec.EventWriter) error {
+					return ex.Writer.Stream(ex.Context(), "", func(context.Context, httpsec.EventWriter) error {
 						close(started)
 
 						return nil
@@ -519,7 +519,7 @@ func TestFiber_Stream(t *testing.T) {
 					// can answer a refusal, and freed when the body returns.
 					places.Add(1)
 
-					return ex.Writer.Stream(ex.Context(), func(ctx context.Context, w httpsec.EventWriter) error {
+					return ex.Writer.Stream(ex.Context(), "", func(ctx context.Context, w httpsec.EventWriter) error {
 						defer close(ended)
 						defer places.Add(-1)
 
@@ -561,9 +561,7 @@ func TestFiber_Stream(t *testing.T) {
 				}), httpsec.OrderJWKS)
 
 				url, _ := serveStreamChain(t, outer, streaming(func(ex *httpsec.Exchange) error {
-					ex.Writer.SetHeader("Content-Type", "text/event-stream")
-
-					return ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+					return ex.Writer.Stream(ex.Context(), "text/event-stream", func(_ context.Context, w httpsec.EventWriter) error {
 						return writeAndFlush(w)
 					})
 				}))
@@ -578,12 +576,10 @@ func TestFiber_Stream(t *testing.T) {
 			},
 		},
 		{
-			name: "a stream nothing refused keeps the Content-Type it set",
+			name: "a stream nothing refused goes out with its Content-Type",
 			assert: func(t *testing.T) {
 				url, _ := serveStreamChain(t, streaming(func(ex *httpsec.Exchange) error {
-					ex.Writer.SetHeader("Content-Type", "text/event-stream")
-
-					return ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+					return ex.Writer.Stream(ex.Context(), "text/event-stream", func(_ context.Context, w httpsec.EventWriter) error {
 						return writeAndFlush(w)
 					})
 				}))
@@ -610,7 +606,7 @@ func TestFiber_Stream(t *testing.T) {
 						return httpsec.ErrRequestTooLarge
 					}), httpsec.OrderJWKS),
 					streaming(func(ex *httpsec.Exchange) error {
-						return ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+						return ex.Writer.Stream(ex.Context(), "", func(_ context.Context, w httpsec.EventWriter) error {
 							defer close(ended)
 
 							return writeAndFlush(w)
@@ -646,7 +642,7 @@ func TestFiber_Stream(t *testing.T) {
 
 				started := make(chan struct{})
 				url, _ := serveStreamChain(t, outer, streaming(func(ex *httpsec.Exchange) error {
-					return ex.Writer.Stream(ex.Context(), func(context.Context, httpsec.EventWriter) error {
+					return ex.Writer.Stream(ex.Context(), "", func(context.Context, httpsec.EventWriter) error {
 						close(started)
 						panic("a body's own bug")
 					})
@@ -678,7 +674,7 @@ func TestFiber_Stream(t *testing.T) {
 						panic("an interceptor's own bug")
 					}), httpsec.OrderJWKS),
 					streaming(func(ex *httpsec.Exchange) error {
-						return ex.Writer.Stream(ex.Context(), func(ctx context.Context, _ httpsec.EventWriter) error {
+						return ex.Writer.Stream(ex.Context(), "", func(ctx context.Context, _ httpsec.EventWriter) error {
 							defer close(ended)
 
 							runs.Add(1)
@@ -719,7 +715,7 @@ func TestFiber_Stream(t *testing.T) {
 				accepted := &recordingListener{Listener: ln, conns: make(chan net.Conn, 1)}
 
 				chain, err := httpsec.New(streaming(func(ex *httpsec.Exchange) error {
-					err := ex.Writer.Stream(ex.Context(), func(ctx context.Context, w httpsec.EventWriter) error {
+					err := ex.Writer.Stream(ex.Context(), "", func(ctx context.Context, w httpsec.EventWriter) error {
 						defer close(ended)
 
 						runs.Add(1)
@@ -761,7 +757,7 @@ func TestFiber_Stream(t *testing.T) {
 				got := make(chan error, 1)
 				url, _ := serveStreamChain(t, streaming(func(ex *httpsec.Exchange) error {
 					ex.Writer.WriteHeader(http.StatusNoContent)
-					got <- ex.Writer.Stream(ex.Context(), notThisBody)
+					got <- ex.Writer.Stream(ex.Context(), "", notThisBody)
 
 					return nil
 				}))
@@ -778,7 +774,7 @@ func TestFiber_Stream(t *testing.T) {
 					ex.Writer.SetHeader("Cache-Control", "no-store")
 					ex.Writer.SetHeader("Access-Control-Allow-Origin", "https://app.example")
 
-					err := ex.Writer.Stream(ex.Context(), func(context.Context, httpsec.EventWriter) error {
+					err := ex.Writer.Stream(ex.Context(), "", func(context.Context, httpsec.EventWriter) error {
 						hold(t, release, "the row's release")
 
 						return nil
@@ -820,7 +816,7 @@ func TestFiber_Stream(t *testing.T) {
 				got := make(chan error, 1)
 				url, _ := serveStreamChain(t, streaming(func(ex *httpsec.Exchange) error {
 					_, _ = io.WriteString(ex.Writer, "written")
-					got <- ex.Writer.Stream(ex.Context(), notThisBody)
+					got <- ex.Writer.Stream(ex.Context(), "", notThisBody)
 
 					return nil
 				}))
@@ -837,7 +833,7 @@ func TestFiber_Stream(t *testing.T) {
 				got := make(chan error, 1)
 				url, _ := serveStreamChain(t, streaming(func(ex *httpsec.Exchange) error {
 					ex.Writer.WriteHeader(http.StatusTeapot)
-					got <- ex.Writer.Stream(ex.Context(), notThisBody)
+					got <- ex.Writer.Stream(ex.Context(), "", notThisBody)
 
 					return nil
 				}))
@@ -856,13 +852,13 @@ func TestFiber_Stream(t *testing.T) {
 			assert: func(t *testing.T) {
 				second, write := make(chan error, 1), make(chan error, 1)
 				url, _ := serveStreamChain(t, streaming(func(ex *httpsec.Exchange) error {
-					if err := ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+					if err := ex.Writer.Stream(ex.Context(), "", func(_ context.Context, w httpsec.EventWriter) error {
 						return writeAndFlush(w)
 					}); err != nil {
 						return err
 					}
 
-					second <- ex.Writer.Stream(ex.Context(), notThisBody)
+					second <- ex.Writer.Stream(ex.Context(), "", notThisBody)
 
 					ex.Writer.WriteHeader(http.StatusTeapot)
 
@@ -890,7 +886,7 @@ func TestFiber_Stream(t *testing.T) {
 				var endedWith atomic.Value
 
 				url, app := serveStreamChain(t, streaming(func(ex *httpsec.Exchange) error {
-					return ex.Writer.Stream(ex.Context(), func(ctx context.Context, w httpsec.EventWriter) error {
+					return ex.Writer.Stream(ex.Context(), "", func(ctx context.Context, w httpsec.EventWriter) error {
 						defer close(ended)
 
 						if err := writeAndFlush(w); err != nil {
@@ -931,7 +927,7 @@ func TestFiber_Stream(t *testing.T) {
 						return nil
 					}
 
-					return ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+					return ex.Writer.Stream(ex.Context(), "", func(_ context.Context, w httpsec.EventWriter) error {
 						if err := writeAndFlush(w); err != nil {
 							return err
 						}
@@ -957,7 +953,7 @@ func TestFiber_Stream(t *testing.T) {
 			assert: func(t *testing.T) {
 				panicked := make(chan struct{})
 				chain, err := httpsec.New(streaming(func(ex *httpsec.Exchange) error {
-					return ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+					return ex.Writer.Stream(ex.Context(), "", func(_ context.Context, w httpsec.EventWriter) error {
 						if err := writeAndFlush(w); err != nil {
 							return err
 						}
@@ -1005,7 +1001,7 @@ func TestFiber_Stream(t *testing.T) {
 						return nil
 					}
 
-					return ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+					return ex.Writer.Stream(ex.Context(), "", func(_ context.Context, w httpsec.EventWriter) error {
 						if err := writeAndFlush(w); err != nil {
 							return err
 						}
@@ -1033,7 +1029,7 @@ func TestFiber_Stream(t *testing.T) {
 			name: "a body that calls runtime.Goexit on a refused stream does not hang the refusal",
 			assert: func(t *testing.T) {
 				chain, err := httpsec.New(streaming(func(ex *httpsec.Exchange) error {
-					if err := ex.Writer.Stream(ex.Context(), func(context.Context, httpsec.EventWriter) error {
+					if err := ex.Writer.Stream(ex.Context(), "", func(context.Context, httpsec.EventWriter) error {
 						runtime.Goexit()
 
 						return nil
@@ -1060,7 +1056,7 @@ func TestFiber_Stream(t *testing.T) {
 			name: "fiber middleware outside the chain that fails after it returned cannot take the stream back",
 			assert: func(t *testing.T) {
 				chain, err := httpsec.New(streaming(func(ex *httpsec.Exchange) error {
-					return ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+					return ex.Writer.Stream(ex.Context(), "", func(_ context.Context, w httpsec.EventWriter) error {
 						return writeAndFlush(w)
 					})
 				}))
@@ -1173,7 +1169,7 @@ func TestFiber_StreamAfterChainReturned(t *testing.T) {
 			var runs atomic.Int64
 
 			tc.assert(t, func(w httpsec.ResponseWriter) error {
-				return w.Stream(t.Context(), func(context.Context, httpsec.EventWriter) error {
+				return w.Stream(t.Context(), "", func(context.Context, httpsec.EventWriter) error {
 					runs.Add(1)
 
 					return nil
@@ -1202,7 +1198,7 @@ func TestFiber_StreamUnderAppTest(t *testing.T) {
 			name: "a stream's context ends at once",
 			mount: func(_ *testing.T, app *fiber.App, body func(ctx context.Context, w httpsec.EventWriter) error) {
 				app.Get("/stream", func(fc fiber.Ctx) error {
-					return fibersec.NewResponseWriter(fc).Stream(fc.Context(), body)
+					return fibersec.NewResponseWriter(fc).Stream(fc.Context(), "", body)
 				})
 			},
 			assert: func(t *testing.T, resp *http.Response) {
@@ -1220,7 +1216,7 @@ func TestFiber_StreamUnderAppTest(t *testing.T) {
 
 						return httpsec.ErrRequestTooLarge
 					}), httpsec.OrderJWKS),
-					streaming(func(ex *httpsec.Exchange) error { return ex.Writer.Stream(ex.Context(), body) }))
+					streaming(func(ex *httpsec.Exchange) error { return ex.Writer.Stream(ex.Context(), "", body) }))
 				require.NoError(t, err)
 
 				app.Use(fibersec.Middleware(chain))
@@ -1278,7 +1274,7 @@ func TestFiber_StreamStatusIsOK(t *testing.T) {
 	app.Get("/stream", func(fc fiber.Ctx) error {
 		fc.Status(http.StatusTeapot)
 
-		return fibersec.NewResponseWriter(fc).Stream(fc.Context(),
+		return fibersec.NewResponseWriter(fc).Stream(fc.Context(), "",
 			func(_ context.Context, w httpsec.EventWriter) error { return writeAndFlush(w) })
 	})
 
@@ -1545,7 +1541,7 @@ func TestFiber_StreamClientLeaves(t *testing.T) {
 
 				app := fiber.New()
 				app.Get("/stream", func(fc fiber.Ctx) error {
-					return fibersec.NewResponseWriter(fc).Stream(fc.Context(), func(ctx context.Context, w httpsec.EventWriter) error {
+					return fibersec.NewResponseWriter(fc).Stream(fc.Context(), "", func(ctx context.Context, w httpsec.EventWriter) error {
 						defer func() { ended <- time.Now() }()
 
 						first := true
@@ -1623,7 +1619,7 @@ func TestFiber_StreamNoFalseAlarm(t *testing.T) {
 		app := fiber.New(config)
 		app.Get("/ordinary", func(fc fiber.Ctx) error { return fc.SendString("ordinary") })
 		app.Get("/stream", func(fc fiber.Ctx) error {
-			return fibersec.NewResponseWriter(fc).Stream(fc.Context(), func(ctx context.Context, w httpsec.EventWriter) error {
+			return fibersec.NewResponseWriter(fc).Stream(fc.Context(), "", func(ctx context.Context, w httpsec.EventWriter) error {
 				if err := writeAndFlush(w); err != nil {
 					return err
 				}
@@ -1743,7 +1739,7 @@ func TestFiber_StreamOverTLSBesideReads(t *testing.T) {
 
 	app := fiber.New()
 	app.Get("/stream", func(fc fiber.Ctx) error {
-		return fibersec.NewResponseWriter(fc).Stream(fc.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+		return fibersec.NewResponseWriter(fc).Stream(fc.Context(), "", func(_ context.Context, w httpsec.EventWriter) error {
 			for range bursts {
 				if err := writeAndFlush(w); err != nil {
 					return err
@@ -1877,7 +1873,7 @@ func TestFiber_StreamConnectionCloses(t *testing.T) {
 
 			app := fiber.New()
 			app.Get("/stream", func(fc fiber.Ctx) error {
-				return fibersec.NewResponseWriterWithStreamWindow(fc, window).Stream(fc.Context(),
+				return fibersec.NewResponseWriterWithStreamWindow(fc, window).Stream(fc.Context(), "",
 					func(ctx context.Context, w httpsec.EventWriter) error {
 						defer close(ended)
 
@@ -1924,7 +1920,7 @@ func TestFiber_StreamPanicLog(t *testing.T) {
 
 	app := fiber.New()
 	app.Get("/stream", func(fc fiber.Ctx) error {
-		return fibersec.NewResponseWriter(fc).Stream(fc.Context(), func(context.Context, httpsec.EventWriter) error {
+		return fibersec.NewResponseWriter(fc).Stream(fc.Context(), "", func(context.Context, httpsec.EventWriter) error {
 			panicHolding(argument, panicValue)
 
 			return nil
@@ -2109,7 +2105,7 @@ func TestFiber_StreamWatcherExits(t *testing.T) {
 			name: "the body returning",
 			assert: func(t *testing.T) {
 				url, _ := serveStreamChain(t, streaming(func(ex *httpsec.Exchange) error {
-					return ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+					return ex.Writer.Stream(ex.Context(), "", func(_ context.Context, w httpsec.EventWriter) error {
 						return writeAndFlush(w)
 					})
 				}))
@@ -2125,7 +2121,7 @@ func TestFiber_StreamWatcherExits(t *testing.T) {
 			assert: func(t *testing.T) {
 				app := fiber.New()
 				app.Get("/stream", func(fc fiber.Ctx) error {
-					return fibersec.NewResponseWriter(fc).Stream(fc.Context(), func(context.Context, httpsec.EventWriter) error {
+					return fibersec.NewResponseWriter(fc).Stream(fc.Context(), "", func(context.Context, httpsec.EventWriter) error {
 						panic("a body's own bug")
 					})
 				})
@@ -2139,7 +2135,7 @@ func TestFiber_StreamWatcherExits(t *testing.T) {
 			assert: func(t *testing.T) {
 				app := fiber.New()
 				app.Get("/stream", func(fc fiber.Ctx) error {
-					return fibersec.NewResponseWriter(fc).Stream(fc.Context(), func(context.Context, httpsec.EventWriter) error {
+					return fibersec.NewResponseWriter(fc).Stream(fc.Context(), "", func(context.Context, httpsec.EventWriter) error {
 						runtime.Goexit()
 
 						return nil
@@ -2156,7 +2152,7 @@ func TestFiber_StreamWatcherExits(t *testing.T) {
 				ended := make(chan struct{})
 				app := fiber.New()
 				app.Get("/stream", func(fc fiber.Ctx) error {
-					return fibersec.NewResponseWriterWithStreamWindow(fc, window).Stream(fc.Context(),
+					return fibersec.NewResponseWriterWithStreamWindow(fc, window).Stream(fc.Context(), "",
 						func(ctx context.Context, w httpsec.EventWriter) error {
 							defer close(ended)
 
@@ -2193,7 +2189,7 @@ func TestFiber_StreamWatcherExits(t *testing.T) {
 				opened := make(chan struct{})
 				app := fiber.New()
 				app.Get("/stream", func(fc fiber.Ctx) error {
-					return fibersec.NewResponseWriter(fc).Stream(fc.Context(), func(ctx context.Context, w httpsec.EventWriter) error {
+					return fibersec.NewResponseWriter(fc).Stream(fc.Context(), "", func(ctx context.Context, w httpsec.EventWriter) error {
 						if err := writeAndFlush(w); err != nil {
 							return err
 						}
@@ -2221,7 +2217,7 @@ func TestFiber_StreamWatcherExits(t *testing.T) {
 			assert: func(t *testing.T) {
 				opened := make(chan struct{})
 				url, app := serveStreamChain(t, streaming(func(ex *httpsec.Exchange) error {
-					return ex.Writer.Stream(ex.Context(), func(ctx context.Context, w httpsec.EventWriter) error {
+					return ex.Writer.Stream(ex.Context(), "", func(ctx context.Context, w httpsec.EventWriter) error {
 						if err := writeAndFlush(w); err != nil {
 							return err
 						}
@@ -2255,7 +2251,7 @@ func TestFiber_StreamWatcherExits(t *testing.T) {
 				}), httpsec.OrderJWKS)
 
 				url, _ := serveStreamChain(t, outer, streaming(func(ex *httpsec.Exchange) error {
-					return ex.Writer.Stream(ex.Context(), func(context.Context, httpsec.EventWriter) error { return nil })
+					return ex.Writer.Stream(ex.Context(), "", func(context.Context, httpsec.EventWriter) error { return nil })
 				}))
 
 				_, err := io.ReadAll(openStream(t.Context(), t, url).Body)
@@ -2272,7 +2268,7 @@ func TestFiber_StreamWatcherExits(t *testing.T) {
 				returned := make(chan struct{})
 				app := fiber.New()
 				app.Get("/stream", func(fc fiber.Ctx) error {
-					return fibersec.NewResponseWriter(fc).Stream(fc.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+					return fibersec.NewResponseWriter(fc).Stream(fc.Context(), "", func(_ context.Context, w httpsec.EventWriter) error {
 						defer close(returned)
 
 						return writeAndFlush(w)
@@ -2308,7 +2304,7 @@ func TestFiber_StreamWatcherExits(t *testing.T) {
 				}), httpsec.OrderJWKS)
 
 				url, _ := serveStreamChain(t, outer, streaming(func(ex *httpsec.Exchange) error {
-					return ex.Writer.Stream(ex.Context(), func(ctx context.Context, _ httpsec.EventWriter) error {
+					return ex.Writer.Stream(ex.Context(), "", func(ctx context.Context, _ httpsec.EventWriter) error {
 						defer close(ended)
 
 						hold(t, ctx.Done(), "its context to have ended already")
@@ -2335,7 +2331,7 @@ func TestFiber_StreamWatcherExits(t *testing.T) {
 				accepted := &recordingListener{Listener: ln, conns: make(chan net.Conn, 1)}
 
 				chain, err := httpsec.New(streaming(func(ex *httpsec.Exchange) error {
-					err := ex.Writer.Stream(ex.Context(), func(ctx context.Context, _ httpsec.EventWriter) error {
+					err := ex.Writer.Stream(ex.Context(), "", func(ctx context.Context, _ httpsec.EventWriter) error {
 						defer close(ended)
 
 						hold(t, ctx.Done(), "its context to have ended already")
@@ -2398,7 +2394,7 @@ func TestFiber_StreamBodyMustNotReadExchange(t *testing.T) {
 
 			who := strings.Clone(ex.Request.Header("X-Who"))
 
-			return ex.Writer.Stream(ex.Context(), func(ctx context.Context, w httpsec.EventWriter) error {
+			return ex.Writer.Stream(ex.Context(), "", func(ctx context.Context, w httpsec.EventWriter) error {
 				if err := writeAndFlush(w); err != nil {
 					return err
 				}
@@ -2536,7 +2532,7 @@ func TestFiber_StreamDeadline(t *testing.T) {
 		{
 			name: "each Flush moves the deadline: an event is written, and flushed after the window",
 			serve: func(fc fiber.Ctx) error {
-				return fibersec.NewResponseWriterWithStreamWindow(fc, window).Stream(fc.Context(),
+				return fibersec.NewResponseWriterWithStreamWindow(fc, window).Stream(fc.Context(), "",
 					func(ctx context.Context, w httpsec.EventWriter) error {
 						for range events {
 							if _, err := io.WriteString(w, streamEvent); err != nil {
@@ -2569,7 +2565,7 @@ func TestFiber_StreamDeadline(t *testing.T) {
 			serve: func(fc fiber.Ctx) error {
 				event := strings.Repeat(streamEvent, large/len(streamEvent))
 
-				return fibersec.NewResponseWriterWithStreamWindow(fc, window).Stream(fc.Context(),
+				return fibersec.NewResponseWriterWithStreamWindow(fc, window).Stream(fc.Context(), "",
 					func(ctx context.Context, w httpsec.EventWriter) error {
 						for range events {
 							select {
@@ -2668,7 +2664,7 @@ func TestFiber_StreamDeadline(t *testing.T) {
 
 func streamOneEvent(window time.Duration) fiber.Handler {
 	return func(fc fiber.Ctx) error {
-		return fibersec.NewResponseWriterWithStreamWindow(fc, window).Stream(fc.Context(),
+		return fibersec.NewResponseWriterWithStreamWindow(fc, window).Stream(fc.Context(), "",
 			func(_ context.Context, w httpsec.EventWriter) error { return writeAndFlush(w) })
 	}
 }
@@ -2692,7 +2688,7 @@ func TestFiber_StreamFirstDeadline(t *testing.T) {
 	flushed := make(chan struct{})
 
 	chain, err := httpsec.New(streaming(func(ex *httpsec.Exchange) error {
-		return ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+		return ex.Writer.Stream(ex.Context(), "", func(_ context.Context, w httpsec.EventWriter) error {
 			if err := writeAndFlush(w); err != nil {
 				return err
 			}
@@ -2777,4 +2773,220 @@ func getWith(t *testing.T, client *http.Client, url string, reused *bool) *http.
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
 	return resp
+}
+
+// TestFiber_StreamContentType is the type Stream is given, on a real server. fiber's Stream returns
+// before the chain does, so the type is held until the chain has returned, and a refusal never holds it.
+func TestFiber_StreamContentType(t *testing.T) {
+	t.Parallel()
+
+	const (
+		eventStream  = "text/event-stream"
+		consumerType = "text/x-consumer"
+		handlerType  = "application/problem+json"
+
+		// fasthttpDefaultType is what fasthttp writes on a response no one named a type for. It is not
+		// the adapter's, and the adapter has no say over it short of fiber's own configuration.
+		fasthttpDefaultType = "text/plain; charset=utf-8"
+	)
+
+	stream := func(contentType string) func(ex *httpsec.Exchange) error {
+		return func(ex *httpsec.Exchange) error {
+			return ex.Writer.Stream(ex.Context(), contentType, func(_ context.Context, w httpsec.EventWriter) error {
+				return writeAndFlush(w)
+			})
+		}
+	}
+
+	consumersThenStream := func(contentType string) func(ex *httpsec.Exchange) error {
+		return func(ex *httpsec.Exchange) error {
+			ex.Writer.SetHeader("Content-Type", consumerType)
+
+			return stream(contentType)(ex)
+		}
+	}
+
+	// refusesAfter is a chain that refuses once what is inside it has returned.
+	refusesAfter := httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+		if err := next(ex); err != nil {
+			return err
+		}
+
+		return httpsec.ErrRequestTooLarge
+	}), httpsec.OrderJWKS)
+
+	// panicsAfter is a chain that panics once what is inside it has returned.
+	panicsAfter := httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+		if err := next(ex); err != nil {
+			return err
+		}
+
+		panic("the chain panicked after Stream")
+	}), httpsec.OrderJWKS)
+
+	// namingHandler names its type whatever is there, and fillingHandler only where none is, as a
+	// render on another framework does. fasthttp reports its default where no one named a type.
+	namingHandler := func(fc fiber.Ctx, _ error) error {
+		fc.Set(fiber.HeaderContentType, handlerType)
+
+		return fc.SendStatus(http.StatusRequestEntityTooLarge)
+	}
+
+	fillingHandler := func(fc fiber.Ctx, _ error) error {
+		if string(fc.Response().Header.ContentType()) == fasthttpDefaultType {
+			fc.Set(fiber.HeaderContentType, handlerType)
+		}
+
+		return fc.SendStatus(http.StatusRequestEntityTooLarge)
+	}
+
+	cases := []struct {
+		name    string
+		opts    []httpsec.Option
+		handler fiber.ErrorHandler
+		recover bool
+		assert  func(t *testing.T, resp *http.Response, body string)
+	}{
+		{
+			name: "an empty type sets none, and fasthttp's default is what goes out",
+			opts: []httpsec.Option{streaming(stream(""))},
+			assert: func(t *testing.T, resp *http.Response, body string) {
+				t.Helper()
+
+				assert.Equal(t, http.StatusOK, resp.StatusCode)
+				assert.Equal(t, []string{fasthttpDefaultType}, resp.Header["Content-Type"])
+				assert.Contains(t, body, streamEvent)
+			},
+		},
+		{
+			name: "an empty type leaves the one a consumer named",
+			opts: []httpsec.Option{streaming(consumersThenStream(""))},
+			assert: func(t *testing.T, resp *http.Response, _ string) {
+				t.Helper()
+
+				assert.Equal(t, []string{consumerType}, resp.Header["Content-Type"])
+			},
+		},
+		{
+			name: "the type replaces one a consumer named",
+			opts: []httpsec.Option{streaming(consumersThenStream(eventStream))},
+			assert: func(t *testing.T, resp *http.Response, _ string) {
+				t.Helper()
+
+				assert.Equal(t, []string{eventStream}, resp.Header["Content-Type"])
+			},
+		},
+		{
+			name:    "a handler that names a type after a refusal is what the client receives",
+			opts:    []httpsec.Option{refusesAfter, streaming(stream(eventStream))},
+			handler: namingHandler,
+			assert: func(t *testing.T, resp *http.Response, _ string) {
+				t.Helper()
+
+				assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
+				assert.Equal(t, []string{handlerType}, resp.Header["Content-Type"])
+			},
+		},
+		{
+			name:    "a handler that fills in a missing type finds none after a refusal",
+			opts:    []httpsec.Option{refusesAfter, streaming(stream(eventStream))},
+			handler: fillingHandler,
+			assert: func(t *testing.T, resp *http.Response, _ string) {
+				t.Helper()
+
+				assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
+				assert.Equal(t, []string{handlerType}, resp.Header["Content-Type"])
+			},
+		},
+		{
+			name: "a refusal after Stream leaves the type a consumer named",
+			opts: []httpsec.Option{refusesAfter, streaming(consumersThenStream(eventStream))},
+			assert: func(t *testing.T, resp *http.Response, _ string) {
+				t.Helper()
+
+				assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
+				assert.Equal(t, []string{consumerType}, resp.Header["Content-Type"])
+			},
+		},
+		{
+			name:    "a chain that panics after Stream sends no stream's type",
+			opts:    []httpsec.Option{panicsAfter, streaming(stream(eventStream))},
+			recover: true,
+			assert: func(t *testing.T, resp *http.Response, _ string) {
+				t.Helper()
+
+				assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+				assert.NotContains(t, resp.Header.Get("Content-Type"), eventStream)
+			},
+		},
+		{
+			name: "ErrStreamingStarted leaves a consumer's headers alone",
+			opts: []httpsec.Option{streaming(func(ex *httpsec.Exchange) error {
+				ex.Writer.SetHeader("Content-Type", consumerType)
+				ex.Writer.SetHeader("Cache-Control", "max-age=60")
+				ex.Writer.WriteHeader(http.StatusServiceUnavailable)
+
+				if err := stream(eventStream)(ex); !errors.Is(err, httpsec.ErrStreamingStarted) {
+					t.Errorf("Stream after a status returned %v", err)
+				}
+
+				return nil
+			})},
+			assert: func(t *testing.T, resp *http.Response, _ string) {
+				t.Helper()
+
+				assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+				assert.Equal(t, []string{consumerType}, resp.Header["Content-Type"])
+				assert.Equal(t, "max-age=60", resp.Header.Get("Cache-Control"))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			chain, err := httpsec.New(tc.opts...)
+			require.NoError(t, err)
+
+			handler := tc.handler
+			if handler == nil {
+				handler = fibersec.ErrorHandler
+			}
+
+			app := fiber.New(fiber.Config{ErrorHandler: handler})
+
+			if tc.recover {
+				app.Use(recoverer.New())
+			}
+
+			app.Use(fibersec.Middleware(chain))
+			app.Get("/stream", func(fiber.Ctx) error { return nil })
+
+			resp := openStream(t.Context(), t, "http://"+serveFiber(t, app)+"/stream")
+
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+
+			tc.assert(t, resp, string(body))
+		})
+	}
+}
+
+// TestFiber_StreamContentTypeOutsideAChain is the writer no chain built, which has no chain to wait
+// for, so the type goes on as Stream is called.
+func TestFiber_StreamContentTypeOutsideAChain(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	app.Get("/stream", func(fc fiber.Ctx) error {
+		return fibersec.NewResponseWriter(fc).Stream(fc.Context(), "text/event-stream",
+			func(_ context.Context, w httpsec.EventWriter) error { return writeAndFlush(w) })
+	})
+
+	resp := openStream(t.Context(), t, "http://"+serveFiber(t, app)+"/stream")
+
+	_, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"text/event-stream"}, resp.Header["Content-Type"])
 }

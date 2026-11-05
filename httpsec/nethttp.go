@@ -402,12 +402,6 @@ func (h *httpResponseWriter) SetCookie(c *Cookie) {
 	http.SetCookie(h.w, c)
 }
 
-// removeHeader removes the header, for what must leave none behind: gin's render fills a type only
-// where the key is absent, and net/http detects one only then. It looks at nothing the writer has
-// done, so what calls it has already asked whether the header is its own to remove: see
-// unsetStreamType.
-func (h *httpResponseWriter) removeHeader(n string) { h.w.Header().Del(n) }
-
 // WriteHeader sends the status, and ignores a second call. An interceptor that
 // answered the request itself keeps the status it chose: a later stage that
 // also wants to write one would otherwise turn a deliberate 401 into whatever
@@ -431,9 +425,9 @@ func (h *httpResponseWriter) Write(b []byte) (int, error) {
 	return h.w.Write(b)
 }
 
-// Stream runs body inline, once the head has been flushed, and returns nil when it
-// has. ctx is what body's context derives from, and the chain's own is derived from
-// the request's, so body's ends when the client leaves. See ResponseWriter.Stream for
+// Stream runs body inline, once the head has been flushed with contentType on it, and
+// returns nil when it has. ctx is what body's context derives from, and the chain's own
+// is derived from the request's, so body's ends when the client leaves. See ResponseWriter.Stream for
 // the contract.
 //
 // What body returned is dropped, as it is on fiber, where it has nowhere to go: an
@@ -444,7 +438,7 @@ func (h *httpResponseWriter) Write(b []byte) (int, error) {
 // Unwrap method, which is how gin's writer is reached. A wrapper that can flush
 // but neither moves a deadline nor unwraps still streams, under whatever deadline
 // its server set: nothing can tell that from a server that set none.
-func (h *httpResponseWriter) Stream(ctx context.Context, body func(ctx context.Context, w EventWriter) error) error {
+func (h *httpResponseWriter) Stream(ctx context.Context, contentType string, body func(ctx context.Context, w EventWriter) error) error {
 	if h.wrote {
 		return ErrStreamingStarted
 	}
@@ -466,7 +460,7 @@ func (h *httpResponseWriter) Stream(ctx context.Context, body func(ctx context.C
 		ew.window = StreamWriteWindow
 	}
 
-	if err := h.sendHead(ew); err != nil {
+	if err := h.sendHead(ew, contentType); err != nil {
 		if errors.Is(err, http.ErrNotSupported) {
 			return ErrStreamingUnsupported
 		}
@@ -482,9 +476,10 @@ func (h *httpResponseWriter) Stream(ctx context.Context, body func(ctx context.C
 	return nil
 }
 
-// sendHead moves the deadline and sends the status and headers, or returns an error
-// that says http.ErrNotSupported. The deadline comes first, because a chain may have
-// taken longer than the server's write timeout to get here.
+// sendHead moves the deadline and sends the status and headers, contentType among them,
+// or returns an error that says http.ErrNotSupported, which leaves the type as it found it.
+// The deadline comes first, because a chain may have taken longer than the server's write
+// timeout to get here.
 //
 // The status is named before the flush, because wrappers have their say on the way (a
 // session or metrics wrapper's WriteHeader, say), and because gin's writer holds 404 for
@@ -499,12 +494,21 @@ func (h *httpResponseWriter) Stream(ctx context.Context, body func(ctx context.C
 // possible. It costs what ErrStreamingUnsupported says. Below other wrappers the status
 // is still named after it says yes, so that gin's writer does not hold 404, which is one
 // line of net/http's superfluous WriteHeader log per stream.
-func (h *httpResponseWriter) sendHead(ew *httpEventWriter) error {
+//
+// The type goes on after the deadline, which can fail with nothing sent, and before the first
+// thing that can send the head: that FlushError can, and a real server copies the headers when
+// a status is named. So the two answers of "not supported" that come after it take it back. The
+// second comes from a wrapper above the bottom, and once the status has been named: what holds
+// the head, as gin's writer does, sends what is left, and a server that has copied the headers
+// has already answered 200, so the refusal cannot reach its client either way.
+func (h *httpResponseWriter) sendHead(ew *httpEventWriter, contentType string) error {
 	if err := ew.extend(); err != nil {
 		h.wrote, h.streaming = true, true
 
 		return err
 	}
+
+	takeBackType := h.setStreamType(contentType)
 
 	bottom, depth := bottomWriter(h.w)
 	_, moves := bottom.(interface{ SetWriteDeadline(time.Time) error })
@@ -512,6 +516,8 @@ func (h *httpResponseWriter) sendHead(ew *httpEventWriter) error {
 	if reporter, ok := bottom.(flushErrorer); ok && !moves {
 		err := reporter.FlushError()
 		if errors.Is(err, http.ErrNotSupported) {
+			takeBackType()
+
 			return err
 		}
 
@@ -533,9 +539,34 @@ func (h *httpResponseWriter) sendHead(ew *httpEventWriter) error {
 	err := ew.Flush()
 	if errors.Is(err, http.ErrNotSupported) {
 		h.streaming = false
+
+		takeBackType()
 	}
 
 	return err
+}
+
+// setStreamType puts a stream's type on the response, and returns what puts back the type that was
+// there, which may be a consumer's. An empty type sets none, so there is nothing to put back.
+func (h *httpResponseWriter) setStreamType(contentType string) (takeBack func()) {
+	if contentType == "" {
+		return func() {}
+	}
+
+	const name = "Content-Type"
+
+	header := h.w.Header()
+	before, had := header[name]
+
+	header.Set(name, contentType)
+
+	return func() {
+		if had {
+			header[name] = before
+		} else {
+			delete(header, name)
+		}
+	}
 }
 
 // maxResponseWrappers is how many layers of a writer are looked at. A chain longer than

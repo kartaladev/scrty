@@ -346,6 +346,10 @@ type responseWriter struct {
 	inChain bool
 	gate    *streamGate
 
+	// streamType is the type a Stream that started was given, held for chainReturned
+	// to set when the chain did not refuse. A writer with no chain sets it at once.
+	streamType string
+
 	// chainDone is whether the chain that built this writer has returned, after which
 	// its fiber context is not this request's to touch. It is atomic because a writer
 	// kept past its chain can be called from any goroutine.
@@ -406,7 +410,13 @@ func (w *responseWriter) Write(b []byte) (int, error) {
 // fasthttp starts the goroutine that runs it before this returns, and every path
 // through that goroutine reaches body.
 //
-// Seven things here differ from what SendStreamWriter alone gives.
+// Eight things here differ from what SendStreamWriter alone gives.
+//
+// A chain can still refuse once this has returned, so contentType waits until it has
+// (chainReturned), and a refusal never carries it. A writer built outside a chain has
+// nothing to wait for. fiber's error handler then labels the refusal as it would any other.
+// An empty contentType sets none, and fasthttp fills in its default type on the response, as
+// it does on any response no one named a type for.
 //
 // fasthttp starts the writer on a goroutine as soon as it is registered, while the
 // handlers are still running, so the body waits at a gate the chain opens on its
@@ -440,7 +450,7 @@ func (w *responseWriter) Write(b []byte) (int, error) {
 // The stream reaches fasthttp through streamReader, which is how a body that panics
 // or calls runtime.Goexit cuts the response without touching the connection
 // (endStreamBody).
-func (w *responseWriter) Stream(ctx context.Context, body func(ctx context.Context, w httpsec.EventWriter) error) error {
+func (w *responseWriter) Stream(ctx context.Context, contentType string, body func(ctx context.Context, w httpsec.EventWriter) error) error {
 	if w.chainDone.Load() || w.wrote {
 		return httpsec.ErrStreamingStarted
 	}
@@ -465,6 +475,9 @@ func (w *responseWriter) Stream(ctx context.Context, body func(ctx context.Conte
 	if w.inChain {
 		gate = &streamGate{returned: make(chan struct{})}
 		w.gate = gate
+		w.streamType = contentType
+	} else {
+		w.setStreamType(contentType)
 	}
 
 	w.c.Status(http.StatusOK)
@@ -709,20 +722,26 @@ type streamGate struct {
 // chainReturned opens the gate of a stream started on this writer, if any. A
 // refused chain answers through fiber's error handler, so the response is the
 // refusal: the body still runs, because Stream returned nil, but on a context
-// already ended and a writer that reaches nothing. Its Content-Type is the one thing taken back
-// of the stream's head, because that head was never sent and a refusal is no event stream: the
-// status and the other headers stay for fiber's error handler to answer over, as the Middleware
-// godoc says.
+// already ended and a writer that reaches nothing. The stream's type goes on only when the chain
+// did not refuse, because a refusal is no event stream. The status and the other headers stay for
+// fiber's error handler to answer over, as the Middleware godoc says.
 func (w *responseWriter) chainReturned(refused bool) {
 	w.chainDone.Store(true)
 
 	if w.gate != nil {
-		if refused {
-			w.c.Response().Header.Del(fiber.HeaderContentType)
+		if !refused {
+			w.setStreamType(w.streamType)
 		}
 
 		w.gate.refused = refused
 		close(w.gate.returned)
+	}
+}
+
+// setStreamType puts a stream's type on the response. An empty type sets none.
+func (w *responseWriter) setStreamType(contentType string) {
+	if contentType != "" {
+		w.c.Set(fiber.HeaderContentType, contentType)
 	}
 }
 

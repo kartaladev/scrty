@@ -176,7 +176,7 @@ func TestHTTPResponseWriter_Stream(t *testing.T) {
 		t.Helper()
 
 		srv := startStreamServer(t, overHTTP2, func(w http.ResponseWriter, r *http.Request) {
-			_ = httpsec.NewHTTPResponseWriter(w).Stream(r.Context(), func(ctx context.Context, ew httpsec.EventWriter) error {
+			_ = httpsec.NewHTTPResponseWriter(w).Stream(r.Context(), "", func(ctx context.Context, ew httpsec.EventWriter) error {
 				for i := 0; ; i++ {
 					if err := writeAndFlush(ew); err != nil {
 						return err
@@ -217,7 +217,7 @@ func TestHTTPResponseWriter_Stream(t *testing.T) {
 	idleAfterEvent := func(window, gap time.Duration) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			_ = httpsec.NewHTTPResponseWriterWithStreamWindow(w, window).
-				Stream(r.Context(), func(ctx context.Context, ew httpsec.EventWriter) error {
+				Stream(r.Context(), "", func(ctx context.Context, ew httpsec.EventWriter) error {
 					if err := writeAndFlush(ew); err != nil {
 						return err
 					}
@@ -239,7 +239,7 @@ func TestHTTPResponseWriter_Stream(t *testing.T) {
 
 		ended := make(chan struct{})
 		srv := startStreamServer(t, overHTTP2, func(w http.ResponseWriter, r *http.Request) {
-			_ = httpsec.NewHTTPResponseWriter(w).Stream(r.Context(), func(ctx context.Context, ew httpsec.EventWriter) error {
+			_ = httpsec.NewHTTPResponseWriter(w).Stream(r.Context(), "", func(ctx context.Context, ew httpsec.EventWriter) error {
 				if err := writeAndFlush(ew); err != nil {
 					return err
 				}
@@ -279,7 +279,7 @@ func TestHTTPResponseWriter_Stream(t *testing.T) {
 				srv := startStreamServer(t, false, func(w http.ResponseWriter, r *http.Request) {
 					defer close(returned)
 
-					_ = httpsec.NewHTTPResponseWriter(w).Stream(r.Context(), func(_ context.Context, ew httpsec.EventWriter) error {
+					_ = httpsec.NewHTTPResponseWriter(w).Stream(r.Context(), "", func(_ context.Context, ew httpsec.EventWriter) error {
 						if err := writeAndFlush(ew); err != nil {
 							return err
 						}
@@ -315,7 +315,7 @@ func TestHTTPResponseWriter_Stream(t *testing.T) {
 			assert: func(t *testing.T) {
 				got := make(chan error, 1)
 				srv := startStreamServer(t, false, func(w http.ResponseWriter, r *http.Request) {
-					got <- httpsec.NewHTTPResponseWriter(w).Stream(r.Context(), func(context.Context, httpsec.EventWriter) error {
+					got <- httpsec.NewHTTPResponseWriter(w).Stream(r.Context(), "", func(context.Context, httpsec.EventWriter) error {
 						return errors.New("the body's own failure")
 					})
 				})
@@ -372,7 +372,7 @@ func TestHTTPResponseWriter_Stream(t *testing.T) {
 			assert: func(t *testing.T) {
 				srv := startStreamServer(t, false, func(w http.ResponseWriter, r *http.Request) {
 					_ = httpsec.NewHTTPResponseWriterWithStreamWindow(w, window).
-						Stream(r.Context(), func(ctx context.Context, ew httpsec.EventWriter) error {
+						Stream(r.Context(), "", func(ctx context.Context, ew httpsec.EventWriter) error {
 							for range steps {
 								if _, err := io.WriteString(ew, streamEvent); err != nil {
 									return err
@@ -405,7 +405,7 @@ func TestHTTPResponseWriter_Stream(t *testing.T) {
 				event := strings.Repeat(streamEvent, large/len(streamEvent))
 				srv := startStreamServer(t, false, func(w http.ResponseWriter, r *http.Request) {
 					_ = httpsec.NewHTTPResponseWriterWithStreamWindow(w, window).
-						Stream(r.Context(), func(ctx context.Context, ew httpsec.EventWriter) error {
+						Stream(r.Context(), "", func(ctx context.Context, ew httpsec.EventWriter) error {
 							for range steps {
 								select {
 								case <-ctx.Done():
@@ -472,7 +472,7 @@ func TestHTTPResponseWriter_Stream(t *testing.T) {
 					rw.SetHeader("Cache-Control", "no-store")
 					rw.SetHeader("Access-Control-Allow-Origin", "https://app.example")
 
-					_ = rw.Stream(r.Context(), func(context.Context, httpsec.EventWriter) error {
+					_ = rw.Stream(r.Context(), "", func(context.Context, httpsec.EventWriter) error {
 						rw.SetHeader("X-Too-Late", "yes")
 						hold(t, release, "the row's release")
 
@@ -536,7 +536,7 @@ func TestHTTPResponseWriter_StreamStartedGuard(t *testing.T) {
 			serve: func(ctx context.Context, rw httpsec.ResponseWriter) error {
 				_, _ = io.WriteString(rw, "written")
 
-				return rw.Stream(ctx, noBody)
+				return rw.Stream(ctx, "", noBody)
 			},
 			assert: func(t *testing.T, _ *http.Response, body string, err error) {
 				require.ErrorIs(t, err, httpsec.ErrStreamingStarted)
@@ -548,7 +548,7 @@ func TestHTTPResponseWriter_StreamStartedGuard(t *testing.T) {
 			serve: func(ctx context.Context, rw httpsec.ResponseWriter) error {
 				rw.WriteHeader(http.StatusTeapot)
 
-				return rw.Stream(ctx, noBody)
+				return rw.Stream(ctx, "", noBody)
 			},
 			assert: func(t *testing.T, res *http.Response, body string, err error) {
 				require.ErrorIs(t, err, httpsec.ErrStreamingStarted)
@@ -559,13 +559,13 @@ func TestHTTPResponseWriter_StreamStartedGuard(t *testing.T) {
 		{
 			name: "a second Stream fails and adds nothing",
 			serve: func(ctx context.Context, rw httpsec.ResponseWriter) error {
-				if err := rw.Stream(ctx, func(_ context.Context, ew httpsec.EventWriter) error {
+				if err := rw.Stream(ctx, "", func(_ context.Context, ew httpsec.EventWriter) error {
 					return writeAndFlush(ew)
 				}); err != nil {
 					return err
 				}
 
-				return rw.Stream(ctx, noBody)
+				return rw.Stream(ctx, "", noBody)
 			},
 			assert: func(t *testing.T, _ *http.Response, body string, err error) {
 				require.ErrorIs(t, err, httpsec.ErrStreamingStarted)
@@ -577,12 +577,12 @@ func TestHTTPResponseWriter_StreamStartedGuard(t *testing.T) {
 			serve: func(ctx context.Context, rw httpsec.ResponseWriter) error {
 				var inner error
 
-				if err := rw.Stream(ctx, func(ctx context.Context, ew httpsec.EventWriter) error {
+				if err := rw.Stream(ctx, "", func(ctx context.Context, ew httpsec.EventWriter) error {
 					if err := writeAndFlush(ew); err != nil {
 						return err
 					}
 
-					inner = rw.Stream(ctx, noBody)
+					inner = rw.Stream(ctx, "", noBody)
 
 					return nil
 				}); err != nil {
@@ -601,7 +601,7 @@ func TestHTTPResponseWriter_StreamStartedGuard(t *testing.T) {
 			serve: func(ctx context.Context, rw httpsec.ResponseWriter) error {
 				var inside error
 
-				err := rw.Stream(ctx, func(_ context.Context, ew httpsec.EventWriter) error {
+				err := rw.Stream(ctx, "", func(_ context.Context, ew httpsec.EventWriter) error {
 					rw.WriteHeader(http.StatusTeapot)
 
 					if n, err := io.WriteString(rw, "inside"); n != 0 || !errors.Is(err, httpsec.ErrStreamingStarted) {
@@ -729,7 +729,7 @@ func TestHTTPResponseWriter_StreamDeadline(t *testing.T) {
 			name: "the start, each write and each flush move the deadline before reaching the connection",
 			w:    func() http.ResponseWriter { return &recordingWriter{} },
 			serve: func(ctx context.Context, rw httpsec.ResponseWriter) error {
-				return rw.Stream(ctx, func(_ context.Context, ew httpsec.EventWriter) error {
+				return rw.Stream(ctx, "", func(_ context.Context, ew httpsec.EventWriter) error {
 					return writeAndFlush(ew)
 				})
 			},
@@ -767,7 +767,7 @@ func TestHTTPResponseWriter_StreamDeadline(t *testing.T) {
 			name: "a writer that cannot move the deadline still streams",
 			w:    func() http.ResponseWriter { return &flushOnly{} },
 			serve: func(ctx context.Context, rw httpsec.ResponseWriter) error {
-				return rw.Stream(ctx, func(_ context.Context, ew httpsec.EventWriter) error {
+				return rw.Stream(ctx, "", func(_ context.Context, ew httpsec.EventWriter) error {
 					return writeAndFlush(ew)
 				})
 			},
@@ -783,7 +783,7 @@ func TestHTTPResponseWriter_StreamDeadline(t *testing.T) {
 			name: "a Flush reaches the connection once, through a wrapper that has its own",
 			w:    func() http.ResponseWriter { return passesFlushOn{&recordingWriter{}} },
 			serve: func(ctx context.Context, rw httpsec.ResponseWriter) error {
-				return rw.Stream(ctx, func(_ context.Context, ew httpsec.EventWriter) error {
+				return rw.Stream(ctx, "", func(_ context.Context, ew httpsec.EventWriter) error {
 					return writeAndFlush(ew)
 				})
 			},
@@ -802,7 +802,7 @@ func TestHTTPResponseWriter_StreamDeadline(t *testing.T) {
 			name: "a writer that cannot flush reports that it cannot stream, and writes nothing",
 			w:    func() http.ResponseWriter { return &noFlush{header: http.Header{}} },
 			serve: func(ctx context.Context, rw httpsec.ResponseWriter) error {
-				err := rw.Stream(ctx, func(context.Context, httpsec.EventWriter) error {
+				err := rw.Stream(ctx, "", func(context.Context, httpsec.EventWriter) error {
 					return errors.New("this body must not run")
 				})
 				if !errors.Is(err, httpsec.ErrStreamingUnsupported) {
@@ -846,7 +846,7 @@ func TestHTTPResponseWriter_StreamFlushFailureEndsContext(t *testing.T) {
 
 	var flushErr error
 
-	err := httpsec.NewHTTPResponseWriter(w).Stream(t.Context(), func(ctx context.Context, ew httpsec.EventWriter) error {
+	err := httpsec.NewHTTPResponseWriter(w).Stream(t.Context(), "", func(ctx context.Context, ew httpsec.EventWriter) error {
 		live = ctx.Err() == nil
 		flushErr = ew.Flush()
 		ended = ctx.Err() != nil
@@ -984,7 +984,7 @@ func TestHTTPResponseWriter_StreamContract(t *testing.T) {
 
 			var got outcome
 
-			got.err = httpsec.NewHTTPResponseWriter(tc.w).Stream(t.Context(), body(&got))
+			got.err = httpsec.NewHTTPResponseWriter(tc.w).Stream(t.Context(), "", body(&got))
 			tc.assert(t, tc.w, got)
 		})
 	}
@@ -1059,7 +1059,7 @@ func TestHTTPResponseWriter_StreamThroughChain(t *testing.T) {
 						return next(ex)
 					}
 
-					return ex.Writer.Stream(ex.Context(), func(ctx context.Context, ew httpsec.EventWriter) error {
+					return ex.Writer.Stream(ex.Context(), "", func(ctx context.Context, ew httpsec.EventWriter) error {
 						runs.Add(1)
 
 						return tc.body(ctx, ew)
@@ -1123,7 +1123,7 @@ func TestHTTPResponseWriter_StreamCannotFlush(t *testing.T) {
 		return func(w http.ResponseWriter, r *http.Request) {
 			rw := httpsec.NewHTTPResponseWriter(w)
 
-			err := rw.Stream(r.Context(), func(_ context.Context, ew httpsec.EventWriter) error {
+			err := rw.Stream(r.Context(), "", func(_ context.Context, ew httpsec.EventWriter) error {
 				return writeAndFlush(ew)
 			})
 			got <- err
@@ -1414,7 +1414,7 @@ func TestHTTPResponseWriter_StreamBeneathWrappers(t *testing.T) {
 
 			srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				_ = httpsec.NewHTTPResponseWriter(tc.wrap(w, &hooks)).
-					Stream(r.Context(), func(_ context.Context, ew httpsec.EventWriter) error {
+					Stream(r.Context(), "", func(_ context.Context, ew httpsec.EventWriter) error {
 						if err := writeAndFlush(ew); err != nil {
 							return err
 						}
@@ -1519,7 +1519,7 @@ func TestHTTPResponseWriter_StreamWrapperWalkEnds(t *testing.T) {
 			ctx := t.Context()
 
 			go func() {
-				done <- httpsec.NewHTTPResponseWriter(w).Stream(ctx, func(context.Context, httpsec.EventWriter) error {
+				done <- httpsec.NewHTTPResponseWriter(w).Stream(ctx, "", func(context.Context, httpsec.EventWriter) error {
 					return nil
 				})
 			}()
@@ -1609,7 +1609,7 @@ func TestHTTPResponseWriter_StreamBodyEndsEarly(t *testing.T) {
 					recovered <- nil
 				}
 
-				_ = httpsec.NewHTTPResponseWriter(w).Stream(r.Context(), func(_ context.Context, ew httpsec.EventWriter) error {
+				_ = httpsec.NewHTTPResponseWriter(w).Stream(r.Context(), "", func(_ context.Context, ew httpsec.EventWriter) error {
 					if err := writeAndFlush(ew); err != nil {
 						return err
 					}
@@ -1634,6 +1634,291 @@ func TestHTTPResponseWriter_StreamBodyEndsEarly(t *testing.T) {
 			assert.Equal(t, 1, events, "the event flushed before the end was lost")
 
 			tc.assert(t, <-recovered)
+		})
+	}
+}
+
+// TestHTTPResponseWriter_StreamContentType is the type Stream is given, on a real server: it goes out
+// with the stream's head and on nothing else. A refusal's answer is labelled by whatever labels any
+// other answer, which here is the handler or net/http's detection.
+func TestHTTPResponseWriter_StreamContentType(t *testing.T) {
+	t.Parallel()
+
+	const (
+		eventStream  = "text/event-stream"
+		consumerType = "text/x-consumer"
+	)
+
+	wrap := func(wrapper func(http.ResponseWriter) http.ResponseWriter) func(http.Handler) http.Handler {
+		return func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(wrapper(w), r)
+			})
+		}
+	}
+
+	cannotFlush := wrap(func(w http.ResponseWriter) http.ResponseWriter { return bareWriter{w} })
+
+	// consumersType is a consumer's interceptor that named a type first.
+	consumersType := func(w httpsec.ResponseWriter) { w.SetHeader("Content-Type", consumerType) }
+
+	refused := func(t *testing.T, resp *http.Response, err error) {
+		t.Helper()
+
+		require.ErrorIs(t, err, httpsec.ErrStreamingUnsupported)
+		assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
+	}
+
+	carriesNone := func(t *testing.T, resp *http.Response, _ string, err error) {
+		t.Helper()
+
+		refused(t, resp, err)
+		assert.NotContains(t, resp.Header, "Content-Type", "a refusal carries no type, not even a blank one")
+	}
+
+	keepsConsumers := func(t *testing.T, resp *http.Response, _ string, err error) {
+		t.Helper()
+
+		refused(t, resp, err)
+		assert.Equal(t, []string{consumerType}, resp.Header["Content-Type"])
+	}
+
+	cases := []struct {
+		name string
+
+		// mount wraps the handler. Default: none.
+		mount func(http.Handler) http.Handler
+
+		// before runs ahead of Stream, as an earlier interceptor does.
+		before func(w httpsec.ResponseWriter)
+
+		contentType string
+
+		// answer is written after a refusal. Default: nothing, only the status.
+		answer string
+
+		assert func(t *testing.T, resp *http.Response, body string, err error)
+	}{
+		{
+			name:        "the type arrives with the stream",
+			contentType: eventStream,
+			assert: func(t *testing.T, resp *http.Response, body string, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				assert.Equal(t, http.StatusOK, resp.StatusCode)
+				assert.Equal(t, []string{eventStream}, resp.Header["Content-Type"])
+				assert.Equal(t, streamEvent, body)
+			},
+		},
+		{
+			name:        "the type arrives under a wrapper whose flush is what sends the head",
+			mount:       wrap(func(w http.ResponseWriter) http.ResponseWriter { return hookedWriter{w, &atomic.Int64{}} }),
+			contentType: eventStream,
+			assert: func(t *testing.T, resp *http.Response, _ string, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				assert.Equal(t, []string{eventStream}, resp.Header["Content-Type"])
+			},
+		},
+		{
+			name:        "the type replaces one a consumer named first",
+			before:      consumersType,
+			contentType: eventStream,
+			assert: func(t *testing.T, resp *http.Response, _ string, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				assert.Equal(t, []string{eventStream}, resp.Header["Content-Type"])
+			},
+		},
+		{
+			name: "an empty type sets none",
+			assert: func(t *testing.T, resp *http.Response, body string, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				assert.NotContains(t, resp.Header, "Content-Type")
+				assert.Equal(t, streamEvent, body)
+			},
+		},
+		{
+			name:   "an empty type leaves the one a consumer named",
+			before: consumersType,
+			assert: func(t *testing.T, resp *http.Response, _ string, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				assert.Equal(t, []string{consumerType}, resp.Header["Content-Type"])
+			},
+		},
+		{
+			name:        "a wrapper that cannot flush refuses with no type",
+			mount:       cannotFlush,
+			contentType: eventStream,
+			assert:      carriesNone,
+		},
+		{
+			name: "http.TimeoutHandler refuses with no type",
+			mount: func(next http.Handler) http.Handler {
+				return http.TimeoutHandler(next, streamBound, "timed out")
+			},
+			contentType: eventStream,
+			assert:      carriesNone,
+		},
+		{
+			name:        "a refusal's answer gets net/http's detected type",
+			mount:       cannotFlush,
+			contentType: eventStream,
+			answer:      "<html></html>",
+			assert: func(t *testing.T, resp *http.Response, body string, err error) {
+				t.Helper()
+
+				refused(t, resp, err)
+				assert.Equal(t, "<html></html>", body)
+				assert.Equal(t, []string{"text/html; charset=utf-8"}, resp.Header["Content-Type"])
+			},
+		},
+		{
+			name:        "a refusal leaves the type a consumer named",
+			mount:       cannotFlush,
+			before:      consumersType,
+			contentType: eventStream,
+			assert:      keepsConsumers,
+		},
+		{
+			name:        "a wrapper that refuses only when asked to flush leaves no type",
+			mount:       wrap(func(w http.ResponseWriter) http.ResponseWriter { return notSupportedAtRunTime{w} }),
+			contentType: eventStream,
+			assert:      carriesNone,
+		},
+		{
+			name: "the same wrapper, beneath one that has only Unwrap, leaves no type",
+			mount: wrap(func(w http.ResponseWriter) http.ResponseWriter {
+				return unwrappingWriter{notSupportedAtRunTime{w}}
+			}),
+			contentType: eventStream,
+			assert:      carriesNone,
+		},
+		{
+			name:        "a wrapper that refuses only when asked to flush restores the type a consumer named",
+			mount:       wrap(func(w http.ResponseWriter) http.ResponseWriter { return notSupportedAtRunTime{w} }),
+			before:      consumersType,
+			contentType: eventStream,
+			assert:      keepsConsumers,
+		},
+		{
+			name: "ErrStreamingStarted leaves a consumer's headers alone",
+			before: func(w httpsec.ResponseWriter) {
+				consumersType(w)
+				w.WriteHeader(http.StatusServiceUnavailable)
+			},
+			contentType: eventStream,
+			assert: func(t *testing.T, resp *http.Response, _ string, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, httpsec.ErrStreamingStarted)
+				assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+				assert.Equal(t, []string{consumerType}, resp.Header["Content-Type"])
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := make(chan error, 1)
+
+			var handler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				rw := httpsec.NewHTTPResponseWriter(w)
+
+				if tc.before != nil {
+					tc.before(rw)
+				}
+
+				err := rw.Stream(r.Context(), tc.contentType, func(_ context.Context, ew httpsec.EventWriter) error {
+					return writeAndFlush(ew)
+				})
+				got <- err
+
+				if err != nil {
+					rw.WriteHeader(http.StatusNotImplemented)
+
+					if tc.answer != "" {
+						_, _ = io.WriteString(rw, tc.answer)
+					}
+				}
+			})
+
+			if tc.mount != nil {
+				handler = tc.mount(handler)
+			}
+
+			srv := httptest.NewServer(handler)
+			t.Cleanup(srv.Close)
+
+			ctx, cancel := context.WithTimeout(t.Context(), streamBound)
+			defer cancel()
+
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, http.NoBody)
+			require.NoError(t, err)
+
+			resp, err := srv.Client().Do(req)
+			require.NoError(t, err)
+
+			defer func() { _ = resp.Body.Close() }()
+
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+
+			tc.assert(t, resp, string(body), <-got)
+		})
+	}
+}
+
+// lateRefusal says it cannot flush only after the status has been named, because the writer below it
+// can flush and moves a deadline, so nothing asks it sooner. Its head is held by what it wraps, here a
+// recorder, so what the header holds afterwards is still what a client would be sent.
+type lateRefusal struct{ *recordingWriter }
+
+func (l lateRefusal) Unwrap() http.ResponseWriter { return l.recordingWriter }
+
+func (lateRefusal) FlushError() error { return http.ErrNotSupported }
+
+// TestHTTPResponseWriter_StreamContentTypeLateRefusal is the one refusal that comes after the type had
+// to be set: the writer puts back what was there.
+func TestHTTPResponseWriter_StreamContentTypeLateRefusal(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		before []string
+	}{
+		{name: "no type was there, and none is left"},
+		{name: "a consumer's type was there, and it is left", before: []string{"text/x-consumer"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			below := &recordingWriter{}
+
+			if tc.before != nil {
+				below.Header()["Content-Type"] = tc.before
+			}
+
+			err := httpsec.NewHTTPResponseWriter(lateRefusal{below}).Stream(t.Context(), "text/event-stream",
+				func(context.Context, httpsec.EventWriter) error {
+					t.Error("Stream refused, and its body ran")
+
+					return nil
+				})
+
+			require.ErrorIs(t, err, httpsec.ErrStreamingUnsupported)
+			assert.Equal(t, tc.before, below.Header()["Content-Type"])
 		})
 	}
 }

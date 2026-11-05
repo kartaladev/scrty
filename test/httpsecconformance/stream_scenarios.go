@@ -41,6 +41,11 @@ const (
 	streamEvent     = "data: e\n\n"
 	streamEventLine = "data: e\n"
 
+	// streamContentType is the type the rows' streams are given, and consumerContentType one a
+	// consumer's interceptor names for itself.
+	streamContentType   = "text/event-stream"
+	consumerContentType = "text/x-consumer"
+
 	// streamBound fails a row that would otherwise wait for ever. No row waits for
 	// it to pass.
 	streamBound = 10 * time.Second
@@ -100,6 +105,10 @@ func streamScenarios() []Scenario {
 		{Name: "stream: a flushed event arrives while the response is open", Stream: flushedEventArrivesWhileOpen},
 		{Name: "stream: headers set before streaming are sent", Stream: headersSetBeforeStreamingAreSent},
 		{Name: "stream: a stream after the response began fails", Stream: streamAfterResponseBeganFails},
+		{Name: "stream: the type arrives with the stream", Stream: typeArrivesWithStream},
+		{Name: "stream: an empty type leaves the one a consumer named", Stream: emptyTypeLeavesConsumers},
+		{Name: "stream: a stream after the response began leaves a consumer's headers alone", Stream: streamStartedLeavesConsumersHeaders},
+		{Name: "stream: a refusal after Stream carries no type on a framework that can still refuse", Stream: refusalAfterStreamCarriesNoType},
 		{Name: "stream: a stream outlives a 3-second write timeout", Stream: streamOutlivesWriteTimeout},
 		{Name: "stream: an ordinary response keeps the deadline", Stream: ordinaryResponseKeepsDeadline},
 		{Name: "stream: a client that leaves stops the stream within a heartbeat", Stream: clientThatLeavesStopsStreamWithinHeartbeat},
@@ -197,7 +206,7 @@ func holdStream(t *testing.T, ch <-chan struct{}, what string) {
 func flushedEventArrivesWhileOpen(t *testing.T, listen func(ChainSpec) StreamServer) {
 	release, returned := make(chan struct{}), make(chan struct{})
 	srv := listen(streamingChain(func(ex *httpsec.Exchange) error {
-		return ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+		return ex.Writer.Stream(ex.Context(), "", func(_ context.Context, w httpsec.EventWriter) error {
 			defer close(returned)
 
 			if err := writeStreamEvent(w); err != nil {
@@ -234,7 +243,7 @@ func headersSetBeforeStreamingAreSent(t *testing.T, listen func(ChainSpec) Strea
 		ex.Writer.SetHeader("Cache-Control", "no-store")
 		ex.Writer.SetHeader("Access-Control-Allow-Origin", "https://app.example")
 
-		err := ex.Writer.Stream(ex.Context(), func(context.Context, httpsec.EventWriter) error {
+		err := ex.Writer.Stream(ex.Context(), "", func(context.Context, httpsec.EventWriter) error {
 			holdStream(t, release, "the row's release")
 
 			return nil
@@ -271,7 +280,7 @@ func streamAfterResponseBeganFails(t *testing.T, listen func(ChainSpec) StreamSe
 	srv := listen(streamingChain(func(ex *httpsec.Exchange) error {
 		_, _ = io.WriteString(ex.Writer, "written")
 
-		got <- ex.Writer.Stream(ex.Context(), func(context.Context, httpsec.EventWriter) error {
+		got <- ex.Writer.Stream(ex.Context(), "", func(context.Context, httpsec.EventWriter) error {
 			return errors.New("this body must not run")
 		})
 
@@ -282,6 +291,96 @@ func streamAfterResponseBeganFails(t *testing.T, listen func(ChainSpec) StreamSe
 	require.NoError(t, err)
 	assert.Equal(t, "written", string(body), "nothing more was written")
 	require.ErrorIs(t, <-got, httpsec.ErrStreamingStarted)
+}
+
+func typeArrivesWithStream(t *testing.T, listen func(ChainSpec) StreamServer) {
+	srv := listen(streamingChain(func(ex *httpsec.Exchange) error {
+		return ex.Writer.Stream(ex.Context(), streamContentType, func(_ context.Context, w httpsec.EventWriter) error {
+			return writeStreamEvent(w)
+		})
+	}))
+
+	resp := openStream(t.Context(), t, srv.URL+streamPath)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, []string{streamContentType}, resp.Header["Content-Type"])
+	assert.Contains(t, string(body), streamEventLine)
+}
+
+func emptyTypeLeavesConsumers(t *testing.T, listen func(ChainSpec) StreamServer) {
+	srv := listen(streamingChain(func(ex *httpsec.Exchange) error {
+		ex.Writer.SetHeader("Content-Type", consumerContentType)
+
+		return ex.Writer.Stream(ex.Context(), "", func(_ context.Context, w httpsec.EventWriter) error {
+			return writeStreamEvent(w)
+		})
+	}))
+
+	resp := openStream(t.Context(), t, srv.URL+streamPath)
+
+	_, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, []string{consumerContentType}, resp.Header["Content-Type"])
+}
+
+func streamStartedLeavesConsumersHeaders(t *testing.T, listen func(ChainSpec) StreamServer) {
+	got := make(chan error, 1)
+	srv := listen(streamingChain(func(ex *httpsec.Exchange) error {
+		ex.Writer.SetHeader("Content-Type", consumerContentType)
+		ex.Writer.WriteHeader(http.StatusServiceUnavailable)
+
+		got <- ex.Writer.Stream(ex.Context(), streamContentType, func(context.Context, httpsec.EventWriter) error {
+			return errors.New("this body must not run")
+		})
+
+		return nil
+	}))
+
+	resp := openStream(t.Context(), t, srv.URL+streamPath)
+
+	_, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.ErrorIs(t, <-got, httpsec.ErrStreamingStarted)
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	assert.Equal(t, []string{consumerContentType}, resp.Header["Content-Type"])
+}
+
+// refusalAfterStreamCarriesNoType has a chain refuse once Stream has returned. Where the body ran inline
+// the stream has gone out, its type with it, and the refusal changes nothing the client received. Where
+// it runs later the response is the refusal, and it carries no stream's type.
+func refusalAfterStreamCarriesNoType(t *testing.T, listen func(ChainSpec) StreamServer) {
+	refusing := httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+		if err := next(ex); err != nil {
+			return err
+		}
+
+		return httpsec.ErrRequestTooLarge
+	}), httpsec.OrderJWKS)
+
+	spec := streamingChain(func(ex *httpsec.Exchange) error {
+		return ex.Writer.Stream(ex.Context(), streamContentType, func(_ context.Context, w httpsec.EventWriter) error {
+			return writeStreamEvent(w)
+		})
+	})
+	spec.Options = append(spec.Options, refusing)
+
+	srv := listen(spec)
+	resp := openStream(t.Context(), t, srv.URL+streamPath)
+
+	_, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	if srv.BodyRunsLater {
+		assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
+		assert.NotContains(t, resp.Header.Get("Content-Type"), streamContentType, "a refusal is no event stream")
+
+		return
+	}
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, []string{streamContentType}, resp.Header["Content-Type"])
 }
 
 // streamOutlivesWriteTimeout is the scenario as the specification states it. The
@@ -297,7 +396,7 @@ func streamOutlivesWriteTimeout(t *testing.T, listen func(ChainSpec) StreamServe
 	)
 
 	srv := listen(streamingChain(func(ex *httpsec.Exchange) error {
-		return ex.Writer.Stream(ex.Context(), func(ctx context.Context, w httpsec.EventWriter) error {
+		return ex.Writer.Stream(ex.Context(), "", func(ctx context.Context, w httpsec.EventWriter) error {
 			for i := range beats {
 				if i > 0 {
 					select {
@@ -358,7 +457,7 @@ func clientThatLeavesStopsStreamWithinHeartbeat(t *testing.T, listen func(ChainS
 	var once sync.Once
 
 	srv := listen(streamingChain(func(ex *httpsec.Exchange) error {
-		return ex.Writer.Stream(ex.Context(), func(ctx context.Context, w httpsec.EventWriter) error {
+		return ex.Writer.Stream(ex.Context(), "", func(ctx context.Context, w httpsec.EventWriter) error {
 			defer func() { ended <- time.Now() }()
 
 			for {
@@ -398,7 +497,7 @@ func clientThatLeavesStopsStreamWithinHeartbeat(t *testing.T, listen func(ChainS
 func clientThatLeavesEndsContext(t *testing.T, listen func(ChainSpec) StreamServer) {
 	ended := make(chan time.Time, 1)
 	srv := listen(streamingChain(func(ex *httpsec.Exchange) error {
-		return ex.Writer.Stream(ex.Context(), func(ctx context.Context, w httpsec.EventWriter) error {
+		return ex.Writer.Stream(ex.Context(), "", func(ctx context.Context, w httpsec.EventWriter) error {
 			if err := writeStreamEvent(w); err != nil {
 				return err
 			}
@@ -428,7 +527,7 @@ func clientThatLeavesEndsContext(t *testing.T, listen func(ChainSpec) StreamServ
 func clientThatHalfClosesHasLeft(t *testing.T, listen func(ChainSpec) StreamServer) {
 	ended := make(chan time.Time, 1)
 	srv := listen(streamingChain(func(ex *httpsec.Exchange) error {
-		return ex.Writer.Stream(ex.Context(), func(ctx context.Context, w httpsec.EventWriter) error {
+		return ex.Writer.Stream(ex.Context(), "", func(ctx context.Context, w httpsec.EventWriter) error {
 			if err := writeStreamEvent(w); err != nil {
 				return err
 			}
@@ -486,7 +585,7 @@ func assertEndsWithinHeartbeat(t *testing.T, ended <-chan time.Time, at time.Tim
 func serverShutdownEndsStream(t *testing.T, listen func(ChainSpec) StreamServer) {
 	opened, ended := make(chan struct{}), make(chan struct{})
 	srv := listen(streamingChain(func(ex *httpsec.Exchange) error {
-		return ex.Writer.Stream(ex.Context(), func(ctx context.Context, w httpsec.EventWriter) error {
+		return ex.Writer.Stream(ex.Context(), "", func(ctx context.Context, w httpsec.EventWriter) error {
 			defer close(ended)
 
 			if err := writeStreamEvent(w); err != nil {
@@ -522,7 +621,7 @@ func serverShutdownEndsStream(t *testing.T, listen func(ChainSpec) StreamServer)
 func bodyErrorIsNotStreamError(t *testing.T, listen func(ChainSpec) StreamServer) {
 	got, ran := make(chan error, 1), make(chan struct{})
 	srv := listen(streamingChain(func(ex *httpsec.Exchange) error {
-		err := ex.Writer.Stream(ex.Context(), func(context.Context, httpsec.EventWriter) error {
+		err := ex.Writer.Stream(ex.Context(), "", func(context.Context, httpsec.EventWriter) error {
 			close(ran)
 
 			return errors.New("the body's own failure")
@@ -547,7 +646,7 @@ func refusedStreamRunsBodyOnce(t *testing.T, listen func(ChainSpec) StreamServer
 
 	ended := make(chan struct{})
 	spec := streamingChain(func(ex *httpsec.Exchange) error {
-		return ex.Writer.Stream(ex.Context(), func(context.Context, httpsec.EventWriter) error {
+		return ex.Writer.Stream(ex.Context(), "", func(context.Context, httpsec.EventWriter) error {
 			defer close(ended)
 
 			runs.Add(1)
@@ -583,7 +682,7 @@ func bodyThatExitsItsGoroutineLeavesCutResponse(t *testing.T, listen func(ChainS
 			return nil
 		}
 
-		return ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+		return ex.Writer.Stream(ex.Context(), "", func(_ context.Context, w httpsec.EventWriter) error {
 			runs.Add(1)
 
 			if err := writeStreamEvent(w); err != nil {
@@ -618,7 +717,7 @@ func panickingBodyLeavesServerRunning(t *testing.T, listen func(ChainSpec) Strea
 			return nil
 		}
 
-		return ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+		return ex.Writer.Stream(ex.Context(), "", func(_ context.Context, w httpsec.EventWriter) error {
 			runs.Add(1)
 
 			if err := writeStreamEvent(w); err != nil {
