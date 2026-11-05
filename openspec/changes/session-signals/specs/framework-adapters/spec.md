@@ -47,6 +47,14 @@ Starting a stream SHALL send the status and every header set before it, on every
 - **WHEN** starting a stream is refused, or on fiber the chain refuses after starting one
 - **THEN** the refusal does not carry the stream's content type, and a type the framework or the error handler sets is what the client receives
 
+#### Scenario: A consumer's own type stays on a refusal
+- **WHEN** a consumer sets `Content-Type` itself and starting a stream is then refused
+- **THEN** the refusal carries the consumer's type, not the stream's
+
+#### Scenario: A refusal after the head has gone carries the stream's type
+- **WHEN** on net/http or gin a wrapper above the bottom of the writer chain refuses to flush only once the status has been named
+- **THEN** the client has received status 200 and the stream's type, because the head was sent before the refusal could be known
+
 ### Requirement: A streamed response is not ended by the server's write deadline
 While a response is streamed, each adapter SHALL keep a configured write deadline from ending it, by extending the deadline as each write is made. A response that is not streamed SHALL keep the deadline as configured.
 
