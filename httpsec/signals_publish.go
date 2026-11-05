@@ -36,8 +36,10 @@ const (
 // a consumer must not rely on it alone: the notice sent out of band stays the record.
 //
 // A UserID must be unique across one chain, because it is all this routes by, so a multi-tenant
-// consumer encodes its tenant into it: two tenants sharing a UserID both hear this signal. A session's
-// end routes by its family and is not affected. See SessionSignals.ReloadContext.
+// consumer encodes its tenant into it: two tenants sharing a UserID both hear this signal. An end naming
+// one sign-in routes by its family and is not affected; a user-wide end crosses tenants, as the store's
+// own delete does, which is one more reason to encode the tenant into the UserID. See
+// SessionSignals.ReloadContext.
 //
 // By default a chain's set lacks credential_changed (SessionSignals.Signals), and then nothing is
 // raised at all: no stream of the chain can send it, so a consumer's bus is handed nothing, and nil is
@@ -142,8 +144,9 @@ func (ex *Exchange) credentialsRemoved(user identity.UserID, removed []recovery.
 //
 // A UserID must be unique across one chain, because it is all this routes by, so a multi-tenant
 // consumer encodes its tenant into it: two tenants sharing a UserID both hear this signal, whatever
-// ctx or SessionSignals.ReloadContext carries. A session's end routes by its family and is not
-// affected.
+// ctx or SessionSignals.ReloadContext carries. An end naming one sign-in routes by its family and is
+// not affected; a user-wide end crosses tenants, as the store's own delete does, which is one more
+// reason to encode the tenant into the UserID.
 //
 // A stream can follow a thief who holds the session, so put nothing in data the signed-in user
 // should not hand to whoever holds that session: send a pointer to what changed, such as a

@@ -268,7 +268,8 @@ type SessionSignals struct {
 	// UserID must be unique across one chain, as Store.ListByUser and DeleteByUser already assume,
 	// so a multi-tenant consumer encodes its tenant into it. Chain.PublishSignal and
 	// Chain.ReportCredentialChange route by UserID alone, and two tenants sharing one hear each
-	// other's signals. A session's end routes by its family and is not affected.
+	// other's signals. An end naming one sign-in routes by its family and is not affected; a user-wide
+	// end crosses tenants, as the store's own delete does, which is one more reason to encode the tenant.
 	//
 	// Default: nil, a context with none of the request's values, so a store that needs
 	// a tenant fails at admission, where it can be seen, and reads no other tenant's

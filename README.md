@@ -1256,9 +1256,9 @@ Your `handle` should abort `signal` on `session_ended`, because otherwise the cl
 
 Read the current credential on every attempt: reconnecting with a token captured before a renewal
 presents a superseded token, which revokes the sign-in's whole family. A 200 with a `retry` and no
-`session` event is a cap, a dependency failure or a throttle, so the client waits and tries again. Fall back to
-polling if the first `session` event does not arrive. Whether `stopFor(401)` should first try to
-renew the token is yours to decide.
+`session` event is a cap, a dependency failure, a throttle or a closing replica, so the client waits
+and tries again. Fall back to polling if the first `session` event does not arrive. Whether
+`stopFor(401)` should first try to renew the token is yours to decide.
 
 ### Defaults
 
@@ -1351,14 +1351,16 @@ type, phase, family and frames, and never its value. The stream then closes and 
 `logout` means a logout: the chain's own, or your call to `Sessions.Logout`, which ends the whole
 sign-in, a renewal's successor included. `ended` names no one's fault: it is what a sign-in revoked by
 an administrator says, what `Sessions.Delete` says, since one deleted session has no reason anyone
-named, and what a stream says with no report at all. So a logout of your own calls `Logout` and not
+named, and what a stream says with no report at all and no deadline passed (with one passed, it says `expired`). So a logout of your own calls `Logout` and not
 `Delete`, or other tabs hear `ended`.
 
 A stream never carries the audit feed, and no option makes it: no failed sign-ins, lockouts,
 rate-limit, CSRF, host or DPoP refusals, no client addresses, and nothing about another user. Those
 belong to `WithSecurityEvents`, which is the operator's.
 
-The chain raises `credential_changed` itself after a password change, a passkey registered or removed,
+`credential_changed` is not in the default set: add `SignalCredentialChanged` to `SessionSignals.Signals` to
+have it raised. With it out of the set the chain raises and publishes nothing, and `ReportCredentialChange`
+returns nil. With it in, the chain raises it itself after a password change, a passkey registered or removed,
 and a second factor enrolled. A recovery raises it for the second factors and passkeys it removed, for
 a stream still open: by default a recovery ends the user's other sign-ins, so their streams hear
 `session_ended` instead, and only `recovery.WithoutSessionRevocation` leaves one to hear this. A
@@ -1373,8 +1375,9 @@ err := chain.ReportCredentialChange(ctx, userID, httpsec.CredentialPassword)
 ```
 
 It names only the kind. It returns `ErrSessionSignalsDisabled` without `EnableSessionSignals`,
-`ErrInvalidSignal` for another kind, and `ErrSignalsBusy` if your bus's queue is full or the streams
-have closed.
+`ErrInvalidSignal` for another kind, and, with `credential_changed` in the set, `ErrSignalsBusy` if your
+bus's queue is full or the streams have closed. With it out of the set it returns nil whatever the bus
+could take.
 
 To send a signal of your own to every open stream of a user:
 
@@ -1389,8 +1392,9 @@ narrowing applies. A user with no open stream is not an error.
 
 Both calls route by `UserID` alone, so a `UserID` must be unique across one chain, as the session store
 and the lockout store already assume. A multi-tenant consumer encodes its tenant into it: two tenants
-sharing a `UserID` hear each other's signals, whatever `ReloadContext` carries. A session's end routes
-by its family and is not affected.
+sharing a `UserID` hear each other's signals, whatever `ReloadContext` carries. An end naming one
+sign-in routes by its family and is not affected; a user-wide end crosses tenants, as the store's own
+delete does, which is one more reason to encode the tenant into the `UserID`.
 
 A stream can follow a thief who holds the session, so put nothing sensitive in the data: send a
 pointer, and let the client fetch the details through its own authorised request. A signal that is
@@ -1518,7 +1522,8 @@ untrusted caller.
   because a browser gives up for good on a 5xx. Only `GET` on `Path` is answered so, and every other
   5xx of the chain stands. It takes the same WARN, and counts in `ReloadFailures`. A rate limit of
   yours on this path stays yours when it writes its own answer, or returns an error
-  `httpsec.StatusForError` maps below a 5xx. Any other error is taken for a failing dependency,
+  `httpsec.StatusForError` maps below a 5xx, except a per-request policy's `ErrThrottled`, which maps to
+  401 and answers 200 as the throttle bullet below says. Any other error is taken for a failing dependency,
   because a store failing inside your authenticator must not end an `EventSource` for good. A
   refusal of your own that maps to a 5xx can say so through `RetryableError`: returning false sends
   it through the chain's error mapping and your error handler, and counts no failure. A 5xx is final

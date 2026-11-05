@@ -677,7 +677,7 @@ func TestSessionSignals_UserIDIsUniqueAcrossOneChain(t *testing.T) {
 			},
 		},
 		{
-			name: "a session's end routes by family, so a shared user id does not carry it across",
+			name: "one tenant's logout, naming a family, does not end the other's stream",
 			assert: func(t *testing.T, r *streamRig, open openFunc) {
 				ended := r.signIn(t)
 				a, b := open("A", ended.ID), open("B", r.signIn(t).ID)

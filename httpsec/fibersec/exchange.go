@@ -653,8 +653,8 @@ const watchClientBuffer = 256
 // What it logs is that a body panicked, and what diag.PanicAttrs records: the panic
 // value's type, and the function, file and line of up to 32 frames. It logs nothing of
 // the value, which is the body's and can be a secret, and not debug.Stack's text either,
-// which quotes the arguments of the frames it lists. It writes to slog's default logger, because a writer has no
-// way to reach the logger its chain was given (httpsec.WithLogger).
+// which quotes the arguments of the frames it lists. It writes to slog's default logger, because a
+// writer has no way to reach the logger its chain was given (httpsec.WithLogger).
 func endStreamBody(returned *bool, cut *atomic.Bool, bw *bufio.Writer, pipe io.Closer) {
 	r := recover()
 
