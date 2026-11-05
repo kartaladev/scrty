@@ -180,8 +180,18 @@ type ResponseWriter interface {
 	// the refusal to name, or for a framework or net/http to fill in. A response that had
 	// already begun keeps the headers it chose. contentType replaces a Content-Type set
 	// earlier when the stream goes out. An empty contentType sets none, so what was set
-	// earlier stands, and otherwise the response has whatever its framework gives one no
-	// one named a type for: nothing on net/http and gin, and fasthttp's default on fiber.
+	// earlier stands, and a consumer who names the type themselves and passes "" has it on
+	// a refusal too: a Content-Type set before a refused Stream stays on the refusal.
+	// Otherwise the response has whatever its framework gives one no one named a type for:
+	// nothing on net/http and gin, and fasthttp's default on fiber.
+	//
+	// One refusal carries the type to the client, and that is a stated limit. A wrapper above
+	// the bottom of the Unwrap chain can be asked whether it flushes only once the status is
+	// named, and asking sooner can itself send the head. If such a wrapper then says
+	// http.ErrNotSupported, Stream returns ErrStreamingUnsupported and puts the header back,
+	// but a real server has copied the headers at WriteHeader(200): the client receives
+	// status 200 with the stream's type, and whatever answers the refusal writes after it
+	// (under gin, a render) goes out under that status and that type.
 	//
 	// It returns ErrStreamingStarted, writing nothing and not running body, when
 	// the response has begun: after WriteHeader, after Write, or on a second call.
@@ -249,8 +259,9 @@ type ResponseWriter interface {
 	//
 	// All of this is the contract, and a consumer's adapter keeps it or returns
 	// ErrStreamingUnsupported. In particular, it must:
-	//   - set contentType only once nothing can refuse the stream any more, and set none for
-	//     an empty one. If it runs body after its chain has returned, that is when the chain
+	//   - set contentType only once nothing can refuse the stream any more, or put back what
+	//     was there when it is refused, for a writer whose flush is both the question and the
+	//     head, and set none for an empty one. If it runs body after its chain has returned, that is when the chain
 	//     did not refuse;
 	//   - keep the server's write deadline from ending the stream, moving it by
 	//     StreamWriteWindow where a deadline exists, and end body's context when the client

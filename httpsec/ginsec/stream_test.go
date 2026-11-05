@@ -1071,6 +1071,9 @@ func TestGin_StreamContentType(t *testing.T) {
 	bare := wrap(func(w http.ResponseWriter) http.ResponseWriter { return bareWriter{w} })
 	lateNo := wrap(func(w http.ResponseWriter) http.ResponseWriter { return notSupportedAtRunTime{w} })
 
+	// lateNoAbove has an Unwrap, so nothing asks it until a status is named.
+	lateNoAbove := wrap(func(w http.ResponseWriter) http.ResponseWriter { return unwrappingRefuser{w} })
+
 	stream := func(contentType string) func(ex *httpsec.Exchange) error {
 		return func(ex *httpsec.Exchange) error {
 			return ex.Writer.Stream(ex.Context(), contentType, func(_ context.Context, w httpsec.EventWriter) error {
@@ -1173,6 +1176,21 @@ func TestGin_StreamContentType(t *testing.T) {
 			},
 		},
 		{
+			// A stated limit of ErrStreamingUnsupported: the wrapper is asked once the status is named, and
+			// the server has copied the headers by then, so gin's render goes out under the stream's type.
+			name:   "a refusal after the status was named carries the stream's type under gin's render",
+			serve:  stream(eventStream),
+			mount:  lateNoAbove,
+			render: true,
+			assert: func(t *testing.T, resp *http.Response, body string) {
+				t.Helper()
+
+				assert.Equal(t, http.StatusOK, resp.StatusCode)
+				assert.Equal(t, []string{eventStream}, resp.Header["Content-Type"])
+				assert.JSONEq(t, `{"error":"refused"}`, body)
+			},
+		},
+		{
 			name: "ErrStreamingStarted leaves a consumer's headers alone, though gin still holds them",
 			serve: func(ex *httpsec.Exchange) error {
 				ex.Writer.SetHeader("Content-Type", consumerType)
@@ -1236,3 +1254,10 @@ func TestGin_StreamContentType(t *testing.T) {
 		})
 	}
 }
+
+// unwrappingRefuser unwraps to the connection and says it cannot flush only when asked.
+type unwrappingRefuser struct{ http.ResponseWriter }
+
+func (u unwrappingRefuser) Unwrap() http.ResponseWriter { return u.ResponseWriter }
+
+func (unwrappingRefuser) FlushError() error { return http.ErrNotSupported }

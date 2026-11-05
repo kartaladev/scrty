@@ -1809,6 +1809,22 @@ func TestHTTPResponseWriter_StreamContentType(t *testing.T) {
 			assert:      keepsConsumers,
 		},
 		{
+			// A wrapper above the bottom is asked only once the status is named, and a real server has
+			// copied the headers by then: the client gets 200 with the stream's type, and the refusal's
+			// own status and body never arrive. A stated limit of ErrStreamingUnsupported.
+			name:        "a refusal after the status was named reaches a real client as 200 with the stream's type",
+			mount:       wrap(func(w http.ResponseWriter) http.ResponseWriter { return unwrappingRefuser{w} }),
+			contentType: eventStream,
+			assert: func(t *testing.T, resp *http.Response, body string, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, httpsec.ErrStreamingUnsupported)
+				assert.Equal(t, http.StatusOK, resp.StatusCode)
+				assert.Equal(t, []string{eventStream}, resp.Header["Content-Type"])
+				assert.Empty(t, body)
+			},
+		},
+		{
 			name: "ErrStreamingStarted leaves a consumer's headers alone",
 			before: func(w httpsec.ResponseWriter) {
 				consumersType(w)
@@ -1878,6 +1894,14 @@ func TestHTTPResponseWriter_StreamContentType(t *testing.T) {
 	}
 }
 
+// unwrappingRefuser unwraps to the connection and says it cannot flush only when asked, so nothing asks
+// it before a status is named.
+type unwrappingRefuser struct{ http.ResponseWriter }
+
+func (u unwrappingRefuser) Unwrap() http.ResponseWriter { return u.ResponseWriter }
+
+func (unwrappingRefuser) FlushError() error { return http.ErrNotSupported }
+
 // lateRefusal says it cannot flush only after the status has been named, because the writer below it
 // can flush and moves a deadline, so nothing asks it sooner. Its head is held by what it wraps, here a
 // recorder, so what the header holds afterwards is still what a client would be sent.
@@ -1887,8 +1911,9 @@ func (l lateRefusal) Unwrap() http.ResponseWriter { return l.recordingWriter }
 
 func (lateRefusal) FlushError() error { return http.ErrNotSupported }
 
-// TestHTTPResponseWriter_StreamContentTypeLateRefusal is the one refusal that comes after the type had
-// to be set: the writer puts back what was there.
+// TestHTTPResponseWriter_StreamContentTypeLateRefusal is the second of the two refusals that come after
+// the type had to be set (the first is a FlushError at the bottom of the chain): the writer puts back
+// what was there.
 func TestHTTPResponseWriter_StreamContentTypeLateRefusal(t *testing.T) {
 	t.Parallel()
 
@@ -1919,6 +1944,44 @@ func TestHTTPResponseWriter_StreamContentTypeLateRefusal(t *testing.T) {
 
 			require.ErrorIs(t, err, httpsec.ErrStreamingUnsupported)
 			assert.Equal(t, tc.before, below.Header()["Content-Type"])
+		})
+	}
+}
+
+// TestHTTPResponseWriter_StreamStartedLeavesTheHeldHead runs Stream over a writer that holds the head, as
+// gin's does, so a header set after the response began would still be sent. A real server copies the
+// headers at WriteHeader and could not show it.
+func TestHTTPResponseWriter_StreamStartedLeavesTheHeldHead(t *testing.T) {
+	t.Parallel()
+
+	const consumerType = "text/x-consumer"
+
+	cases := []struct {
+		name  string
+		begin func(w httpsec.ResponseWriter)
+	}{
+		{name: "after a status", begin: func(w httpsec.ResponseWriter) { w.WriteHeader(http.StatusServiceUnavailable) }},
+		{name: "after a write", begin: func(w httpsec.ResponseWriter) { _, _ = io.WriteString(w, "begun") }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			below := &recordingWriter{}
+			rw := httpsec.NewHTTPResponseWriter(below)
+
+			rw.SetHeader("Content-Type", consumerType)
+			tc.begin(rw)
+
+			err := rw.Stream(t.Context(), "text/event-stream", func(context.Context, httpsec.EventWriter) error {
+				t.Error("Stream refused, and its body ran")
+
+				return nil
+			})
+
+			require.ErrorIs(t, err, httpsec.ErrStreamingStarted)
+			assert.Equal(t, []string{consumerType}, below.Header()["Content-Type"])
 		})
 	}
 }

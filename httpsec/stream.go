@@ -51,7 +51,10 @@ const StreamWriteWindow = 2 * time.Minute
 // A FlushError anywhere else is reached only after a status has been named: one above an
 // Unwrap, and a writer with a SetWriteDeadline and no Unwrap, which is taken for the
 // connection. If one of those says so, the body still does not run and this is still
-// returned, but a status has been sent, and the deadline has been moved.
+// returned, but a status has been sent, and the deadline has been moved. The stream's
+// Content-Type is put back in the header, but a server that copies the headers when a status
+// is named has copied it already, so the client receives status 200 with the stream's type,
+// and an answer written after the refusal goes out under both.
 //
 // A chain of 32 wrappers or more, or one whose Unwrap never ends, counts as unable to
 // flush.

@@ -498,9 +498,10 @@ func (h *httpResponseWriter) Stream(ctx context.Context, contentType string, bod
 // The type goes on after the deadline, which can fail with nothing sent, and before the first
 // thing that can send the head: that FlushError can, and a real server copies the headers when
 // a status is named. So the two answers of "not supported" that come after it take it back. The
-// second comes from a wrapper above the bottom, and once the status has been named: what holds
-// the head, as gin's writer does, sends what is left, and a server that has copied the headers
-// has already answered 200, so the refusal cannot reach its client either way.
+// second comes from a wrapper above the bottom, and once the status has been named: a consumer's
+// wrapper that holds the head sends what is left, and a server that has copied the headers has
+// already answered 200, so the refusal cannot reach its client either way. Gin's writer holds
+// no head here: its FlushError calls WriteHeaderNow before it asks.
 func (h *httpResponseWriter) sendHead(ew *httpEventWriter, contentType string) error {
 	if err := ew.extend(); err != nil {
 		h.wrote, h.streaming = true, true
