@@ -362,7 +362,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
 
 ## 11. Logout, consents and grant revocation across the chain
 
-- [ ] 11.1 Serve the end-session endpoint, test-first (R3):
+- [x] 11.1 Serve the end-session endpoint, test-first (R3):
   - GET and form POST, with `logout_hint` accepted and not acted on;
   - `id_token_hint` verified by type, signature and issuer with expiry ignored, and its audience matched to `client_id`;
   - a valid hint naming the browser session's sign-in ends it as a logout does, without asking; `WithLogoutConfirmation` asks anyway;
@@ -371,24 +371,24 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - an exactly registered `post_logout_redirect_uri` with a valid hint gets `state`, and every other case the logged-out page, including `client_id` with no hint.
 
   Verify: `go test -run 'TestOIDCEndSession' -count=1 ./httpsec/`.
-- [ ] 11.8 Serve the logout confirmation, test-first (R3): a POST with the handle and flow cookie, answering 200 with `redirect_to` and `Cache-Control: no-store`; it ends the browser session's sign-in and never the one a hint names, unless browser sessions are off; a browser with no session ends nothing, and is no error; a declined answer ends nothing; CSRF protection stays on. Verify: `go test -run 'TestOIDCLogoutConfirm' -count=1 ./httpsec/`.
-- [ ] 11.2 Make the chain's logout end the sign-in through the provider before deleting its sessions, test-first. A grant-store failure answers 500 and leaves the session loadable, a retry succeeds, and a failed notification does not fail the logout. Verify: `go test -run 'TestLogout_EndsProviderGrants' -count=1 ./httpsec/`.
-- [ ] 11.3 Prove that the other ends reach the provider through the session end observer, test-first:
+- [x] 11.8 Serve the logout confirmation, test-first (R3): a POST with the handle and flow cookie, answering 200 with `redirect_to` and `Cache-Control: no-store`; it ends the browser session's sign-in and never the one a hint names, unless browser sessions are off; a browser with no session ends nothing, and is no error; a declined answer ends nothing; CSRF protection stays on. Verify: `go test -run 'TestOIDCLogoutConfirm' -count=1 ./httpsec/`.
+- [x] 11.2 Make the chain's logout end the sign-in through the provider before deleting its sessions, test-first. A grant-store failure answers 500 and leaves the session loadable, a retry succeeds, and a failed notification does not fail the logout. Verify: `go test -run 'TestLogout_EndsProviderGrants' -count=1 ./httpsec/`.
+- [x] 11.3 Prove that the other ends reach the provider through the session end observer, test-first:
   - reuse revocation, `EndSignIn`, ending other sessions (D12), passkey removal ending other sessions, and `DeleteByUser`;
   - each also ending the sign-in's browser sessions (R2);
   - their failures logged and reported, never undoing the end;
   - a sign-in that expires sending nothing.
 
   Verify: `go test -run 'TestOIDCProvider_SignInEnds' -count=1 ./httpsec/`.
-- [ ] 11.4 Make an upstream back-channel logout end the provider grants of the sessions it ends, with its response unchanged, test-first. Verify: `go test -run 'TestOIDCBackchannel_EndsProviderGrants' -count=1 ./httpsec/`.
-- [ ] 11.5 Serve `/consents`, test-first:
+- [x] 11.4 Make an upstream back-channel logout end the provider grants of the sessions it ends, with its response unchanged, test-first. Verify: `go test -run 'TestOIDCBackchannel_EndsProviderGrants' -count=1 ./httpsec/`.
+- [x] 11.5 Serve `/consents`, test-first:
   - the signed-in user lists their own consents, with names, scopes, offline access and when consent was last given;
   - revoking one's own consent revokes that user's and client's grants;
   - another user's consent is a 404 refusal;
   - CSRF protection stays on.
 
   Verify: `go test -run 'TestOIDCConsents' -count=1 ./httpsec/`.
-- [ ] 11.6 Revoke grants through T8's ports, test-first:
+- [x] 11.6 Revoke grants through T8's ports, test-first:
   - recovery completion, with a failure returned;
   - an MFA reset, with a failure returned after the removals;
   - passkey clone suspension;
@@ -396,7 +396,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - D12's "revoke application access" choice.
 
   Each event has an option to keep grants, with no change when the provider is not in use. Verify: `go test -run 'TestRecoverer_RevokesGrants|TestResetEnrolment_RevokesGrants' -count=1 ./recovery/ ./authenticate/mfa/`, and `go test -run 'TestPasskey_CloneRevokesGrants|TestPasswordChange_RevokesGrants|TestSessionManagement_RevokeApplicationAccess' -count=1 ./httpsec/`.
-- [ ] 11.7 Exempt the authorization, token, revocation, introspection and end-session endpoints from the cross-site check, while resume, the logout confirmation and `/consents` stay protected, test-first, with a cross-site consent answer and a cross-site confirmation as the red cases. Document logout, consents and the event options in godoc and the README. Verify: `go test -run 'TestCSRF_OIDCProviderExemptions' -count=1 ./httpsec/`, and `go doc ./httpsec` names the new options' defaults.
+- [x] 11.7 Exempt the authorization, token, revocation, introspection and end-session endpoints from the cross-site check, while resume, the logout confirmation and `/consents` stay protected, test-first, with a cross-site consent answer and a cross-site confirmation as the red cases. Document logout, consents and the event options in godoc and the README. Verify: `go test -run 'TestCSRF_OIDCProviderExemptions' -count=1 ./httpsec/`, and `go doc ./httpsec` names the new options' defaults.
 
 ## 12. Durable stores, migration and sweeping (`schema-migrations`, `security-state-stores`, `expiry-sweeping`)
 
@@ -416,7 +416,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
 
 ## 13. Framework adapters (`framework-adapters`)
 
-- [ ] 13.1 Run the provider scenarios on net/http, gin and fiber in `test/httpsecconformance`, test-first:
+- [x] 13.1 Run the provider scenarios on net/http, gin and fiber in `test/httpsecconformance`, test-first:
   - authorize redirect and flow cookie, and the browser-session cookie's attributes;
   - resume JSON;
   - token JSON with `no-store`;
