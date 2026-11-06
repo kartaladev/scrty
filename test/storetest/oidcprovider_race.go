@@ -326,6 +326,13 @@ func RunGrantOrderRaces(t *testing.T, h DurableHarness[oidcprovider.GrantStore])
 }
 
 const (
+	// orderRaceTimeout bounds the racing of each pair of RunGrantOrderRaces, in place of
+	// the default a race of a few rows is held to. Each call writes many rows and queues
+	// behind the other, and a starved database server takes more than the default over
+	// it. On PostgreSQL a lock cycle does not wait for this bound, because the server ends
+	// it with 40P01 within deadlock_timeout. A call that stays slower than this still fails.
+	orderRaceTimeout = 2 * time.Minute
+
 	// orderRaceRecords is how many meetings a pair of RunGrantOrderRaces runs.
 	orderRaceRecords = 32
 
@@ -353,6 +360,7 @@ func grantOrderRace(
 ) Race[oidcprovider.GrantStore] {
 	return Race[oidcprovider.GrantStore]{
 		Records: orderRaceRecords,
+		Timeout: orderRaceTimeout,
 		Seed: func(ctx context.Context, t *testing.T, s oidcprovider.GrantStore, i int) string {
 			t.Helper()
 			n := firstFamily + i*orderRaceFamilies
@@ -396,6 +404,7 @@ func grantOrderSetsRace(firstFamily int, first, second func(ctx context.Context,
 
 	return Race[oidcprovider.GrantStore]{
 		Records: orderSetsRaceRecords,
+		Timeout: orderRaceTimeout,
 		Seed: func(ctx context.Context, t *testing.T, s oidcprovider.GrantStore, i int) string {
 			t.Helper()
 			n := firstFamily + i*orderSetsRaceFamilies

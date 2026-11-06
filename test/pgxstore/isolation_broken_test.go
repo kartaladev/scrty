@@ -3,6 +3,7 @@ package pgxstore_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,6 +43,24 @@ var isolationBrokenVariants = []storefix.BrokenVariant{
 				s, err := pgxstore.NewAttemptStore(pool)
 				require.NoError(t, err)
 				return inheritingStreaks{AttemptStore: s, pool: pool}
+			}
+			t.Run("pgx", func(t *testing.T) { storetest.RunIsolationSuite(t, f) })
+		},
+		FailsCase: "concurrent failures of one username all count",
+	},
+	{
+		// The same defect, with the racers kept from ever overlapping by
+		// chance. It pins the guard not depending on racers happening to
+		// overlap: a conflict at REPEATABLE READ needs a statement whose
+		// snapshot predates another's commit, so a guard that only releases
+		// its racers together passes this store.
+		Name: "streak-inherits-default-one-at-a-time",
+		Run: func(t *testing.T) {
+			f, pool := isolationFixture(t)
+			f.Streaks = func(t *testing.T) lockout.FailureStreakStore {
+				s, err := pgxstore.NewAttemptStore(pool)
+				require.NoError(t, err)
+				return &oneAtATimeStreaks{inheritingStreaks: inheritingStreaks{AttemptStore: s, pool: pool}}
 			}
 			t.Run("pgx", func(t *testing.T) { storetest.RunIsolationSuite(t, f) })
 		},
@@ -93,6 +112,26 @@ func (s inheritingStreaks) AddStreakFailure(
 		return got, setHold, err
 	}
 	return lockout.FailureStreak{}, false, errors.New("streak contended")
+}
+
+// oneAtATimeStreaks is inheritingStreaks with its calls run strictly one after
+// another, so no two of them overlap in the database. A call in the caller's
+// transaction stays out of the queue: the suite makes it to hold a lock for
+// the others to wait behind, and it is not one of them.
+type oneAtATimeStreaks struct {
+	inheritingStreaks
+
+	mu sync.Mutex
+}
+
+func (s *oneAtATimeStreaks) AddStreakFailure(
+	ctx context.Context, username string, at, since time.Time, limit int,
+) (lockout.FailureStreak, bool, error) {
+	if _, inCallerTx := ctx.Value(callerTxKey{}).(pgx.Tx); !inCallerTx {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+	}
+	return s.inheritingStreaks.AddStreakFailure(ctx, username, at, since, limit)
 }
 
 // inheritingCodes replaces saved-code sets as the store did before it pinned
