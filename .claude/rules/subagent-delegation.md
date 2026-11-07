@@ -119,9 +119,11 @@ the user can overrule it.
 
 A subagent does not reliably inherit this directory, so each prompt states for itself:
 
-- the rules that bind it — test-first (`golang-tdd.md`), library design, defect claims, the
-  read-only reference — and the skills it must read (`table-test`, `use-mockgen`,
-  `use-testcontainers`);
+- the rules that bind it — test-first (`golang-tdd.md`), library design, defect claims, defensive
+  coding (`defensive-coding.md`), the read-only reference — and the skills it must read
+  (`table-test`, `use-mockgen`, `use-testcontainers`);
+- the failure modes the design lists for the work, and, for a reviewer, the instruction to
+  enumerate how the change fails before judging whether it works;
 - the files it owns, and the ones another agent is holding;
 - the test-first order in full: write the failing test, run it, confirm it fails **for the intended
   reason**, then implement. A compile error is not a red step;
