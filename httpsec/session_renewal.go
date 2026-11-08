@@ -121,6 +121,8 @@ type RenewalResponder func(ex *Exchange, r RenewalResult) error
 // sessionRenewal answers POST on its path by rotating the request's session
 // with a grace window, and passes everything else through.
 type sessionRenewal struct {
+	pathDeclarations
+
 	sessions *session.Sessions
 	users    identity.UserLoader
 	tokens   token.Generator
@@ -140,9 +142,12 @@ type sessionRenewal struct {
 	limiter ratelimit.Limiter
 	logger  *slog.Logger
 
-	path    string
-	grace   time.Duration
-	respond RenewalResponder
+	// declaredPath is where the options placed the endpoint, without the base
+	// path; path is where it answers, settled by resolvePaths.
+	declaredPath string
+	path         string
+	grace        time.Duration
+	respond      RenewalResponder
 
 	// lifetime chooses the successor's absolute lifetime, and nil carries the
 	// predecessor's deadline over.
@@ -607,13 +612,13 @@ func EnableSessionRenewal(d SessionRenewalDeps, opts ...SessionRenewalOption) Op
 
 	return func(c *config) error {
 		r := &sessionRenewal{
-			sessions: d.Sessions,
-			users:    d.Users,
-			tokens:   d.Tokens,
-			now:      c.now,
-			path:     DefaultSessionRenewalPath,
-			grace:    defaultRenewalGrace,
-			respond:  writeRenewalResult,
+			sessions:     d.Sessions,
+			users:        d.Users,
+			tokens:       d.Tokens,
+			now:          c.now,
+			declaredPath: DefaultSessionRenewalPath,
+			grace:        defaultRenewalGrace,
+			respond:      writeRenewalResult,
 		}
 
 		for _, opt := range opts {
@@ -750,12 +755,12 @@ func WithRenewalLimiter(l ratelimit.Limiter) SessionRenewalOption {
 // client that renews posts to the path chosen here, so change it on both sides.
 func WithRenewalPath(path string) SessionRenewalOption {
 	return func(r *sessionRenewal) error {
-		if path == "" {
-			return newConfigError("WithRenewalPath was given no path, so the renewal endpoint " +
-				"would answer nothing")
+		if err := checkEndpointPath("WithRenewalPath", path); err != nil {
+			return err
 		}
 
-		r.path = path
+		r.declaredPath = path
+		r.declare("WithRenewalPath", path)
 
 		return nil
 	}

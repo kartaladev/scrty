@@ -421,14 +421,14 @@ func mfaVerifyRefusesFullSession() Scenario {
 // exact path is accepted": a prefix beneath the login path builds, and each
 // endpoint is answered by its own feature.
 func reauthPrefixUnderFormLogin() Scenario {
-	const prefix = "/login/reauth"
+	const prefix = httpsec.DefaultLoginPath + "/reauth"
 
 	return Scenario{
 		Name: "a re-authentication prefix under the form login path builds and both answer",
 		Build: func(t *testing.T) ChainSpec {
 			t.Helper()
 
-			return newReauthSpec(t, reauthWiring{login: true, prefix: "/login/reauth"})
+			return newReauthSpec(t, reauthWiring{login: true, prefix: prefix})
 		},
 		Steps: func(t *testing.T, spec ChainSpec, send func(RequestSpec) Result) {
 			stale := issuedTokenFor(string(UserID), spec.Effects.SessionID)
@@ -442,7 +442,7 @@ func reauthPrefixUnderFormLogin() Scenario {
 			require.NoError(t, methods.Refusal)
 			assert.Equal(t, http.StatusOK, methods.Status, "body: %q", methods.Body)
 
-			login := send(formPost("/login", stale, url.Values{
+			login := send(formPost(httpsec.DefaultLoginPath, stale, url.Values{
 				"username": {Username},
 				"password": {Password},
 			}))

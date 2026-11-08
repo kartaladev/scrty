@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate/factor"
@@ -61,6 +60,8 @@ const DefaultMFAVerifyPrefix = "/mfa/verify"
 // session resolves its challenge at, and the gate that holds every other
 // request that session makes.
 type mfaInterceptor struct {
+	pathDeclarations
+
 	// methods are the configured methods in the order EnableMFA was given
 	// them, byName indexes them by the path segment that names each, and
 	// lookups are the same methods as the policies consult them.
@@ -87,7 +88,12 @@ type mfaInterceptor struct {
 
 	now func() time.Time
 
-	verifyPrefix string
+	// declaredVerifyPrefix and declaredBeginPrefix are where the options placed
+	// the endpoints, without the base path; verifyPrefix and beginPrefix are
+	// where they answer, settled by resolvePaths.
+	declaredVerifyPrefix string
+	declaredBeginPrefix  string
+	verifyPrefix         string
 
 	// beginPrefix is where a challenge method's pending challenge is issued,
 	// beginRespond answers a successful begin, and challengeTTL and
@@ -805,8 +811,13 @@ type MFAListingResponder func(ex *Exchange, methods []MFAMethod) error
 // unexported, so its settings can be written only through the ListingSetting
 // values WithMFAMethodListing applies, and nowhere else.
 type listingConfig struct {
-	path    string
-	respond MFAListingResponder
+	// declaredPath is where the options placed the endpoint, without the base
+	// path, and pathGiven tells a path the consumer set from the default;
+	// path is where it answers, settled by resolvePaths.
+	declaredPath string
+	pathGiven    bool
+	path         string
+	respond      MFAListingResponder
 }
 
 // ListingSetting configures the method-listing endpoint. Each replaces one of
@@ -823,16 +834,12 @@ type ListingSetting func(*listingConfig) error
 // verify or begin prefix, since each of those endpoints claims its path.
 func ListingPath(path string) ListingSetting {
 	return func(l *listingConfig) error {
-		switch {
-		case path == "":
-			return newConfigError("ListingPath was given no path; omit the setting to keep %q",
-				DefaultMFAMethodListingPath)
-		case !strings.HasPrefix(path, "/"):
-			return newConfigError("ListingPath was given %q, which does not start with \"/\" "+
-				"and so matches no request path", path)
+		if err := checkEndpointPath("ListingPath", path); err != nil {
+			return err
 		}
 
-		l.path = path
+		l.declaredPath = path
+		l.pathGiven = true
 
 		return nil
 	}
@@ -882,7 +889,7 @@ func ListingResponder(fn MFAListingResponder) ListingSetting {
 // written only here; an explicitly empty path or absent responder is refused.
 func WithMFAMethodListing(settings ...ListingSetting) MFAOption {
 	return func(i *mfaInterceptor) error {
-		l := &listingConfig{path: DefaultMFAMethodListingPath, respond: writeMethodListing}
+		l := &listingConfig{declaredPath: DefaultMFAMethodListingPath, respond: writeMethodListing}
 
 		for _, set := range settings {
 			if set == nil {
@@ -895,7 +902,32 @@ func WithMFAMethodListing(settings ...ListingSetting) MFAOption {
 
 		i.listing = l
 
+		// The last WithMFAMethodListing is the one that applies, so a path an
+		// earlier call declared is withdrawn when this one keeps the default.
+		i.undeclare("ListingPath")
+
+		if l.pathGiven {
+			i.declare("ListingPath", l.declaredPath)
+		}
+
 		return nil
+	}
+}
+
+// undeclare withdraws the path setting declared, so a path an earlier call of
+// the option that set it no longer counts once a later call replaced it.
+func (d *pathDeclarations) undeclare(setting string) {
+	*d = slices.DeleteFunc(*d, func(p declaredPath) bool { return p.setting == setting })
+}
+
+// resolvePaths places the verify and begin endpoints and the listing under
+// base, from the paths the options declared.
+func (i *mfaInterceptor) resolvePaths(base string) {
+	i.verifyPrefix = joinBase(base, i.declaredVerifyPrefix)
+	i.beginPrefix = joinBase(base, i.declaredBeginPrefix)
+
+	if i.listing != nil {
+		i.listing.path = joinBase(base, i.listing.declaredPath)
 	}
 }
 
@@ -908,12 +940,12 @@ func (i *mfaInterceptor) checkListing(option string) error {
 	}
 
 	for _, p := range []struct{ name, prefix string }{
-		{"verify", i.verifyPrefix},
-		{"begin", i.beginPrefix},
+		{"verify", i.declaredVerifyPrefix},
+		{"begin", i.declaredBeginPrefix},
 	} {
-		if underPrefix(i.listing.path, p.prefix) {
+		if underPrefix(i.listing.declaredPath, p.prefix) {
 			return newConfigError("%s's WithMFAMethodListing path %q is under the %s prefix %q, "+
-				"which that endpoint claims", option, i.listing.path, p.name, p.prefix)
+				"which that endpoint claims", option, i.listing.declaredPath, p.name, p.prefix)
 		}
 	}
 

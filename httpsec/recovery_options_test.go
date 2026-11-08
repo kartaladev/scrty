@@ -115,8 +115,6 @@ func TestEnableAccountRecovery_Config(t *testing.T) {
 		},
 		pathCase("the start path is the logout path", httpsec.WithRecoveryStartPath(httpsec.DefaultLogoutPath)),
 		pathCase("the complete path is the login path", httpsec.WithRecoveryCompletePath(httpsec.DefaultLoginPath)),
-		pathCase("an empty finish path", httpsec.WithRecoveryFinishPath("")),
-		pathCase("a cancel path with no leading slash", httpsec.WithRecoveryCancelPath("recovery/cancel")),
 		pathCase("the codes path is the complete path",
 			httpsec.WithRecoveryCodesPath(httpsec.DefaultRecoveryCompletePath)),
 		pathCase("the start path is the finish path",

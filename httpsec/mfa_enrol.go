@@ -30,6 +30,8 @@ import (
 // enrolmentInterceptor is the enrolment path: the gate that confines an
 // enrolment-only session, and the endpoints that session may reach.
 type enrolmentInterceptor struct {
+	pathDeclarations
+
 	users  identity.UserLoader
 	sender notify.Sender
 
@@ -41,9 +43,16 @@ type enrolmentInterceptor struct {
 	logoutPath string
 	log        *slog.Logger
 
-	beginPrefix   string
-	confirmPrefix string
-	emailPrefix   string
+	// declaredBeginPrefix, declaredConfirmPrefix and declaredEmailPrefix are
+	// where the options placed the endpoints, without the base path; the
+	// prefixes without "declared" are where they answer, settled by
+	// resolvePaths.
+	declaredBeginPrefix   string
+	declaredConfirmPrefix string
+	declaredEmailPrefix   string
+	beginPrefix           string
+	confirmPrefix         string
+	emailPrefix           string
 
 	// names are the methods WithEnrolmentMethods named, nil when it was not
 	// given.
@@ -142,6 +151,14 @@ func (i *enrolmentInterceptor) checkPrefixes(option string) error {
 // overlap reports whether one of two prefixes is the other or lies below it.
 func overlap(a, b string) bool {
 	return underPrefix(a, b) || underPrefix(b, a)
+}
+
+// resolvePaths places the three enrolment endpoints under base, from the
+// prefixes the options declared.
+func (i *enrolmentInterceptor) resolvePaths(base string) {
+	i.beginPrefix = joinBase(base, i.declaredBeginPrefix)
+	i.confirmPrefix = joinBase(base, i.declaredConfirmPrefix)
+	i.emailPrefix = joinBase(base, i.declaredEmailPrefix)
 }
 
 // prefixes is every enrolment endpoint's prefix. The emailed-code endpoint's

@@ -2894,7 +2894,7 @@ func newTestOIDCManager(t *testing.T, brokerOpts ...oidc.BrokerOption) *oidc.Rel
 		Issuer:                "https://idp.example.com",
 		ClientID:              "app",
 		ClientSecret:          "secret-" + testOIDCProvider,
-		RedirectURL:           "https://app.example.com" + "/login/oauth2/callback/" + testOIDCProvider,
+		RedirectURL:           "https://app.example.com" + "/sso/callback/" + testOIDCProvider,
 		AuthorizationEndpoint: "https://idp.example.com/authorize",
 		TokenEndpoint:         "https://idp.example.com/token",
 		JWKSURI:               "https://idp.example.com/jwks",

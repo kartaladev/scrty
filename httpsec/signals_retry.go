@@ -216,7 +216,7 @@ func (ex *Exchange) recordThrottledBearer(err error, presented string) {
 
 // onStreamPath reports whether ex asks for the stream, the only request sessionSignalsRetry answers.
 func (e *sessionSignals) onStreamPath(ex *Exchange) bool {
-	return ex.Request.Method() == http.MethodGet && ex.Request.Path() == e.cfg.Path
+	return ex.Request.Method() == http.MethodGet && ex.Request.Path() == e.path
 }
 
 // isThrottledSignIn reports whether err is the chain's per-request policy throttling the sign-in it just

@@ -344,8 +344,8 @@ func Example_recovery() {
 }
 
 // Example_chain serves passkeys on a chain: registration and management at
-// their default paths (/passkey/register, /passkey/credentials), passwordless
-// login at /passkey/login, and the passkey as a second factor beside TOTP.
+// their default paths (/passkeys/register, /passkeys), passwordless
+// login at /sign-in/passkey, and the passkey as a second factor beside TOTP.
 func Example_chain() {
 	verifier := exampleVerifier{rp: passkey.RelyingParty{
 		ID: "example.com", Name: "Example Co", Origins: []string{"https://example.com"},

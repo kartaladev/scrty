@@ -209,7 +209,7 @@ func TestGinRefusal(t *testing.T) {
 			},
 			req: func(ctx context.Context) *http.Request {
 				return httptest.NewRequestWithContext(
-					ctx, http.MethodGet, "/oauth2/authorization/nope", nil)
+					ctx, http.MethodGet, "/sso/login/nope", nil)
 			},
 			assert: func(t *testing.T, out *served) {
 				assert.Equal(t, http.StatusNotFound, out.rec.Code)
@@ -264,7 +264,7 @@ func TestGinRefusal(t *testing.T) {
 			},
 			req: func(ctx context.Context) *http.Request {
 				return httptest.NewRequestWithContext(
-					ctx, http.MethodGet, "/oauth2/authorization/nope", nil)
+					ctx, http.MethodGet, "/sso/login/nope", nil)
 			},
 			assert: func(t *testing.T, out *served) {
 				res := out.rec.Result()

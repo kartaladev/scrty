@@ -106,20 +106,20 @@ func EnableOIDCLogin(d OIDCDeps, opts ...OIDCOption) Option {
 		}
 
 		i := &oidcInterceptor{
-			manager:         d.RelyingParty,
-			handoffs:        d.Handoff,
-			now:             c.now,
-			authorizePath:   DefaultOIDCAuthorizePath,
-			callbackPath:    DefaultOIDCCallbackPath,
-			handoffPath:     DefaultOIDCHandoffPath,
-			backchannelPath: DefaultOIDCBackchannelPath,
-			cookieName:      DefaultOIDCFlowCookieName,
-			bodyLimit:       DefaultLoginBodyLimit,
-			limit:           defaultHandoffFailureLimit,
-			window:          defaultHandoffFailureWindow,
-			countRefusals:   true,
-			scope:           BackchannelLogoutScopeIssuer,
-			rpLogout:        true,
+			manager:             d.RelyingParty,
+			handoffs:            d.Handoff,
+			now:                 c.now,
+			declaredAuthorize:   DefaultOIDCAuthorizePath,
+			declaredCallback:    DefaultOIDCCallbackPath,
+			declaredHandoff:     DefaultOIDCHandoffPath,
+			declaredBackchannel: DefaultOIDCBackchannelPath,
+			cookieName:          DefaultOIDCFlowCookieName,
+			bodyLimit:           DefaultLoginBodyLimit,
+			limit:               defaultHandoffFailureLimit,
+			window:              defaultHandoffFailureWindow,
+			countRefusals:       true,
+			scope:               BackchannelLogoutScopeIssuer,
+			rpLogout:            true,
 		}
 
 		for _, opt := range opts {
@@ -403,7 +403,8 @@ func WithOIDCAuthorizePath(prefix string) OIDCOption {
 			return err
 		}
 
-		i.authorizePath = p
+		i.declaredAuthorize = p
+		i.declare("WithOIDCAuthorizePath", prefix)
 
 		return nil
 	}
@@ -425,7 +426,8 @@ func WithOIDCCallbackPath(prefix string) OIDCOption {
 			return err
 		}
 
-		i.callbackPath = p
+		i.declaredCallback = p
+		i.declare("WithOIDCCallbackPath", prefix)
 
 		return nil
 	}
@@ -441,11 +443,12 @@ func WithOIDCCallbackPath(prefix string) OIDCOption {
 // govern, it is refused.
 func WithOIDCHandoffPath(path string) OIDCOption {
 	return func(i *oidcInterceptor) error {
-		if err := oidcPath("WithOIDCHandoffPath", path); err != nil {
+		if err := checkEndpointPath("WithOIDCHandoffPath", path); err != nil {
 			return err
 		}
 
-		i.handoffPath = path
+		i.declaredHandoff = path
+		i.declare("WithOIDCHandoffPath", path)
 		i.handoffPathSet = true
 
 		return nil
@@ -467,39 +470,22 @@ func WithOIDCBackchannelLogoutPath(prefix string) OIDCOption {
 			return err
 		}
 
-		i.backchannelPath = p
+		i.declaredBackchannel = p
+		i.declare("WithOIDCBackchannelLogoutPath", prefix)
 
 		return nil
 	}
 }
 
-// oidcPath refuses a path no request could ever be matched against.
-func oidcPath(option, path string) error {
-	switch {
-	case path == "":
-		return newConfigError("%s was given no path, so the endpoint would answer nothing", option)
-	case !strings.HasPrefix(path, "/"):
-		return newConfigError("%s was given %q, which does not start with \"/\" and so "+
-			"matches no request path", option, path)
-	}
-
-	return nil
-}
-
 // oidcPrefix validates a provider-prefixed path and returns it with the
 // trailing slash the provider segment follows.
 func oidcPrefix(option, prefix string) (string, error) {
-	if err := oidcPath(option, prefix); err != nil {
+	if err := checkEndpointPath(option, prefix); err != nil {
 		return "", err
 	}
 
 	if !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
-	}
-
-	if prefix == "/" {
-		return "", newConfigError("%s was given the root path %q, which would claim every "+
-			"one-segment path of the application", option, prefix)
 	}
 
 	return prefix, nil
@@ -735,3 +721,14 @@ func WithOIDCRPInitiatedLogout(on bool) OIDCOption {
 
 // Compile-time proof that the default redeemer satisfies the port.
 var _ HandoffRedeemer = (*oidc.Handoff)(nil)
+
+// resolvePaths places the four endpoints under base. Each is computed from the
+// path its option declared, never from the previous result, so resolving twice
+// cannot prefix twice. The flow cookie and the callback's other derived values
+// read callbackPath, so they follow the placed endpoint.
+func (i *oidcInterceptor) resolvePaths(base string) {
+	i.authorizePath = joinBase(base, i.declaredAuthorize)
+	i.callbackPath = joinBase(base, i.declaredCallback)
+	i.handoffPath = joinBase(base, i.declaredHandoff)
+	i.backchannelPath = joinBase(base, i.declaredBackchannel)
+}

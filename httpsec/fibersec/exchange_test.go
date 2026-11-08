@@ -101,14 +101,14 @@ func TestFiberExchange(t *testing.T) {
 		{
 			name: "method, path, header and query",
 			request: func(ctx context.Context) *http.Request {
-				req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/login?next=/home", nil)
+				req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/sign-in/password?next=/home", nil)
 				req.Header.Set("Authorization", "Bearer abc")
 
 				return req
 			},
 			assert: func(t *testing.T, got observed) {
 				assert.Equal(t, http.MethodPost, got.method)
-				assert.Equal(t, "/login", got.path)
+				assert.Equal(t, "/sign-in/password", got.path)
 				assert.Equal(t, "Bearer abc", got.header)
 				assert.Equal(t, "/home", got.query)
 			},
@@ -134,10 +134,10 @@ func TestFiberExchange(t *testing.T) {
 		{
 			name: "the path is decoded as net/http decodes it, an encoded slash included",
 			request: func(ctx context.Context) *http.Request {
-				return httptest.NewRequestWithContext(ctx, http.MethodGet, "/oauth2/authorization/corp%2F..", nil)
+				return httptest.NewRequestWithContext(ctx, http.MethodGet, "/sso/login/corp%2F..", nil)
 			},
 			assert: func(t *testing.T, got observed) {
-				assert.Equal(t, "/oauth2/authorization/corp/..", got.path)
+				assert.Equal(t, "/sso/login/corp/..", got.path)
 			},
 		},
 		{
@@ -162,7 +162,7 @@ func TestFiberExchange(t *testing.T) {
 		{
 			name: "every value of a repeated query parameter, in order",
 			request: func(ctx context.Context) *http.Request {
-				return httptest.NewRequestWithContext(ctx, http.MethodGet, "/login?state=a&next=/home&state=b", nil)
+				return httptest.NewRequestWithContext(ctx, http.MethodGet, "/sign-in/password?state=a&next=/home&state=b", nil)
 			},
 			assert: func(t *testing.T, got observed) {
 				assert.Equal(t, []string{"a", "b"}, got.states)
@@ -172,7 +172,7 @@ func TestFiberExchange(t *testing.T) {
 		{
 			name: "a cookie the client sent",
 			request: func(ctx context.Context) *http.Request {
-				req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/login", nil)
+				req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/sign-in/password", nil)
 				req.Header.Set("Cookie", "sid=abc")
 
 				return req
@@ -185,7 +185,7 @@ func TestFiberExchange(t *testing.T) {
 		{
 			name: "a cookie nobody sent is absent",
 			request: func(ctx context.Context) *http.Request {
-				return httptest.NewRequestWithContext(ctx, http.MethodPost, "/login", nil)
+				return httptest.NewRequestWithContext(ctx, http.MethodPost, "/sign-in/password", nil)
 			},
 			assert: func(t *testing.T, got observed) {
 				assert.False(t, got.cookieFound)
@@ -218,7 +218,7 @@ func TestFiberExchange(t *testing.T) {
 		{
 			name: "a field only in the query is read",
 			request: func(ctx context.Context) *http.Request {
-				req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/login?x=query", nil)
+				req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/sign-in/password?x=query", nil)
 				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 				return req
@@ -234,7 +234,7 @@ func TestFiberExchange(t *testing.T) {
 			request: func(ctx context.Context) *http.Request {
 				body, contentType := multipartField("x", "body")
 
-				req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/login?x=query", strings.NewReader(body))
+				req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/sign-in/password?x=query", strings.NewReader(body))
 				req.Header.Set("Content-Type", contentType)
 
 				return req
@@ -248,7 +248,7 @@ func TestFiberExchange(t *testing.T) {
 			// only POST, PUT and PATCH carry a form, matching net/http.
 			name: "a GET with a body reads the query",
 			request: func(ctx context.Context) *http.Request {
-				req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/login?x=query", strings.NewReader("x=body"))
+				req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/sign-in/password?x=query", strings.NewReader("x=body"))
 				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 				return req
@@ -260,7 +260,7 @@ func TestFiberExchange(t *testing.T) {
 		{
 			name: "a DELETE with a body reads the query",
 			request: func(ctx context.Context) *http.Request {
-				req := httptest.NewRequestWithContext(ctx, http.MethodDelete, "/login?x=query", strings.NewReader("x=body"))
+				req := httptest.NewRequestWithContext(ctx, http.MethodDelete, "/sign-in/password?x=query", strings.NewReader("x=body"))
 				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 				return req
@@ -272,7 +272,7 @@ func TestFiberExchange(t *testing.T) {
 		{
 			name: "a PUT with a body reads the body",
 			request: func(ctx context.Context) *http.Request {
-				req := httptest.NewRequestWithContext(ctx, http.MethodPut, "/login?x=query", strings.NewReader("x=body"))
+				req := httptest.NewRequestWithContext(ctx, http.MethodPut, "/sign-in/password?x=query", strings.NewReader("x=body"))
 				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 				return req
@@ -284,7 +284,7 @@ func TestFiberExchange(t *testing.T) {
 		{
 			name: "a PATCH with a body reads the body",
 			request: func(ctx context.Context) *http.Request {
-				req := httptest.NewRequestWithContext(ctx, http.MethodPatch, "/login?x=query", strings.NewReader("x=body"))
+				req := httptest.NewRequestWithContext(ctx, http.MethodPatch, "/sign-in/password?x=query", strings.NewReader("x=body"))
 				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 				return req
@@ -597,7 +597,7 @@ func TestFiberRequestBodyCopy(t *testing.T) {
 	)
 
 	app := fiber.New()
-	app.Post("/login", func(fc fiber.Ctx) error {
+	app.Post("/sign-in/password", func(fc fiber.Ctx) error {
 		handed, bodyErr = fibersec.NewRequest(fc).Body(loginBodyLimit)
 
 		// fiber's own buffer, which every accessor hands out a view of.
@@ -870,7 +870,7 @@ func TestFiberResponseWriter(t *testing.T) {
 // bodyRequest is a POST carrying body as a form-encoded document, which is what
 // a login submits.
 func bodyRequest(ctx context.Context, body string) *http.Request {
-	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/login", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/sign-in/password", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	return req

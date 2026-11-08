@@ -35,7 +35,7 @@ import (
 // same thing this package does.
 const (
 	// DefaultLoginPath is the path form login answers POST requests on.
-	DefaultLoginPath = "/login"
+	DefaultLoginPath = "/sign-in/password"
 
 	// DefaultLoginUsernameParam is the form field, and JSON member, the
 	// submitted identifier is read from.
@@ -105,6 +105,8 @@ type LoginResponder func(ex *Exchange, result LoginResult) error
 // formLogin answers a login on its own path and passes everything else
 // through.
 type formLogin struct {
+	pathDeclarations
+
 	authn    authenticate.Authenticator
 	sessions *session.Sessions
 	tokens   token.Generator
@@ -158,6 +160,9 @@ type formLogin struct {
 
 	now func() time.Time
 
+	// declaredPath is where the options placed the endpoint, without the base
+	// path; path is where it answers, settled by resolvePaths.
+	declaredPath  string
 	path          string
 	usernameParam string
 	passwordParam string

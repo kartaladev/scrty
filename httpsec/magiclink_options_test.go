@@ -77,26 +77,14 @@ func TestEnableMagicLink(t *testing.T) {
 			assert:  configError,
 		},
 		{
-			name:    "an empty request path",
-			manager: configured,
-			opts:    []httpsec.MagicLinkOption{httpsec.WithMagicLinkRequestPath("")},
-			assert:  configError,
-		},
-		{
-			name:    "an empty consume path",
-			manager: configured,
-			opts:    []httpsec.MagicLinkOption{httpsec.WithMagicLinkConsumePath("")},
-			assert:  configError,
-		},
-		{
 			// Not in the spec, but a contradictory configuration: one path
 			// cannot both ask for a link and redeem one, and whichever branch
 			// matched first would silently swallow the other endpoint.
 			name:    "the request and consume paths collide",
 			manager: configured,
 			opts: []httpsec.MagicLinkOption{
-				httpsec.WithMagicLinkRequestPath("/login/magic"),
-				httpsec.WithMagicLinkConsumePath("/login/magic"),
+				httpsec.WithMagicLinkRequestPath("/sign-in/magic-link"),
+				httpsec.WithMagicLinkConsumePath("/sign-in/magic-link"),
 			},
 			assert: configError,
 		},

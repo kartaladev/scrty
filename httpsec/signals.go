@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -510,8 +509,13 @@ func RecordsSessionActivity(ex *Exchange) bool {
 
 // sessionSignals is the stream's endpoint, and what the rest of the feature hangs from.
 type sessionSignals struct {
-	// cfg is what the consumer gave, with every default filled by settle.
+	// cfg is what the consumer gave, with every default filled by settle. Its
+	// Path is where the stream is placed without the base path.
 	cfg SessionSignals
+
+	// path is where the stream answers: cfg.Path, or its default, under the base
+	// path. It is settled by resolvePaths.
+	path string
 
 	// set is the chain's set of library signals, from cfg.Signals.
 	set map[Signal]bool
@@ -603,14 +607,11 @@ func (e *sessionSignals) settlePath(c *config, option string) error {
 		e.cfg.Path = DefaultSessionSignalsPath
 	}
 
-	path := e.cfg.Path
-	if path[0] != '/' || strings.HasSuffix(path, "/") || strings.ContainsAny(path, "?#% \t\r\n") {
-		return newConfigError("%s was given SessionSignals.Path %q: a path starts with \"/\", does "+
-			"not end with one, and holds no \"?\", \"#\", \"%%\" or white space, or it would never be served",
-			option, path)
+	if err := checkEndpointPath(option+": SessionSignals.Path", e.cfg.Path); err != nil {
+		return err
 	}
 
-	own := claimedPath{name: "the signal stream", path: path}
+	own := claimedPath{name: "the signal stream", path: e.path}
 
 	taken := claimedPaths(c, c.mfaOf(), c.formLogin())
 
@@ -629,7 +630,7 @@ func (e *sessionSignals) settlePath(c *config, option string) error {
 	for _, other := range taken {
 		if collides(own, other) {
 			return newConfigError("%s was given SessionSignals.Path %q, which %s %q already answers: "+
-				"whichever endpoint matched first would swallow the other", option, path, other.name, other.path)
+				"whichever endpoint matched first would swallow the other", option, e.cfg.Path, other.name, other.path)
 		}
 	}
 
@@ -911,7 +912,7 @@ func (e *sessionSignals) wire(c *config, ch *Chain) {
 		return nil
 	})
 
-	ch.perRequest.signalsPath = e.cfg.Path
+	ch.perRequest.signalsPath = e.path
 	ch.perRequest.signals = e
 
 	// It refuses only a nil observer, and the hub is not one.
@@ -1167,4 +1168,14 @@ func (s *signalStream) offer(sig queuedSignal) bool {
 	default:
 		return false
 	}
+}
+
+// declaredPaths reports the stream path the consumer gave. It is judged before
+// settle fills the default, so an empty path is the default and is not declared.
+func (e *sessionSignals) declaredPaths() []declaredPath {
+	if e.cfg.Path == "" {
+		return nil
+	}
+
+	return []declaredPath{{setting: "EnableSessionSignals: SessionSignals.Path", path: e.cfg.Path}}
 }

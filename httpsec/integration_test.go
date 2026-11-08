@@ -1261,7 +1261,7 @@ func TestHTTPSecFailureRecords(t *testing.T) {
 				)
 				require.NoError(t, err)
 
-				out := serve(t, chain, formRequest(t.Context(), "/login", "username=carol&password=wrong"))
+				out := serve(t, chain, formRequest(t.Context(), httpsec.DefaultLoginPath, "username=carol&password=wrong"))
 				require.Error(t, out.err)
 
 				return h.logs.records()
@@ -1284,7 +1284,7 @@ func TestHTTPSecFailureRecords(t *testing.T) {
 				)
 				require.NoError(t, err)
 
-				out := serve(t, chain, formRequest(t.Context(), "/login", "username=carol&password=s3cret"))
+				out := serve(t, chain, formRequest(t.Context(), httpsec.DefaultLoginPath, "username=carol&password=s3cret"))
 				require.NoError(t, out.err)
 
 				return h.logs.records()
@@ -2709,7 +2709,7 @@ func oidcManagerOver(t *testing.T, flows oidc.FlowStore) *oidc.RelyingParty {
 		Issuer:                "https://idp.example.com",
 		ClientID:              "app",
 		ClientSecret:          "secret-" + testOIDCProvider,
-		RedirectURL:           "https://app.example.com/login/oauth2/callback/" + testOIDCProvider,
+		RedirectURL:           "https://app.example.com/sso/callback/" + testOIDCProvider,
 		AuthorizationEndpoint: "https://idp.example.com/authorize",
 		TokenEndpoint:         "https://idp.example.com/token",
 		JWKSURI:               "https://idp.example.com/jwks",
@@ -2878,7 +2878,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 	loginRequest := func(t *testing.T) *http.Request {
 		t.Helper()
 
-		return formRequest(t.Context(), "/login", "username=carol&password=s3cret")
+		return formRequest(t.Context(), httpsec.DefaultLoginPath, "username=carol&password=s3cret")
 	}
 
 	// formLogin wires h for a login that authenticates and reaches the tail.

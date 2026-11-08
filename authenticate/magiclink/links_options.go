@@ -14,7 +14,7 @@ type Option func(*Links)
 // WithConfirmPath sets the path on the link base URL that the emailed link
 // points at — the page that posts the token back.
 //
-// The default is "/login/magic/confirm". The path must be host-relative:
+// The default is "/sign-in/magic-link/confirm". The path must be host-relative:
 // anything absolute or protocol-relative would send the recipient of a live
 // sign-in link somewhere other than the consumer's own application, so it
 // fails construction with ErrConfig.

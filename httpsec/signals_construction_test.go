@@ -439,49 +439,11 @@ func TestSessionSignals_Construction(t *testing.T) {
 			}),
 		},
 		{
-			name:    "a path with no leading slash is refused",
-			signals: httpsec.SessionSignals{Path: "session/signals"},
-			assert:  refusedNamingField("SessionSignals.Path"),
-		},
-		{
-			name:    "a path ending in a slash is refused",
+			name:    "a path ending in a slash is matched as given",
 			signals: httpsec.SessionSignals{Path: "/session/signals/"},
-			assert:  refusedNamingField("SessionSignals.Path"),
-		},
-		{
-			name:    "the root path is refused",
-			signals: httpsec.SessionSignals{Path: "/"},
-			assert:  refusedNamingField("SessionSignals.Path"),
-		},
-		{
-			name:    "a path holding a query is refused",
-			signals: httpsec.SessionSignals{Path: "/session/signals?x=1"},
-			assert:  refusedNamingField("SessionSignals.Path"),
-		},
-		{
-			name:    "a path holding a fragment is refused",
-			signals: httpsec.SessionSignals{Path: "/session/signals#x"},
-			assert:  refusedNamingField("SessionSignals.Path"),
-		},
-		{
-			name:    "a path holding a space is refused",
-			signals: httpsec.SessionSignals{Path: "/session /signals"},
-			assert:  refusedNamingField("SessionSignals.Path"),
-		},
-		{
-			name:    "a path holding a tab is refused",
-			signals: httpsec.SessionSignals{Path: "/session\t/signals"},
-			assert:  refusedNamingField("SessionSignals.Path"),
-		},
-		{
-			name:    "a path holding a line break is refused",
-			signals: httpsec.SessionSignals{Path: "/session\n/signals"},
-			assert:  refusedNamingField("SessionSignals.Path"),
-		},
-		{
-			name:    "a path holding a percent is refused, because paths are compared decoded",
-			signals: httpsec.SessionSignals{Path: "/session%20signals"},
-			assert:  refusedNamingField("SessionSignals.Path", "%"),
+			assert: resolved(func(t *testing.T, cfg httpsec.SessionSignals) {
+				assert.Equal(t, "/session/signals/", cfg.Path)
+			}),
 		},
 		{
 			name:    "a MaxAge below twice the heartbeat is refused",

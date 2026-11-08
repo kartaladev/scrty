@@ -38,11 +38,27 @@ const (
 type oidcEndpoints struct {
 	provider *oidcprovider.Provider
 
+	// prefix and overrides are where the options placed the endpoints, within
+	// the base path. The paths the consumer set are declared too, so the base
+	// path can refuse one that repeats it.
 	prefix    string
 	overrides map[OIDCEndpoint]string
+	pathDeclarations
 
-	// paths is where each endpoint answers, settled once the options have applied.
+	// paths is where each endpoint answers: the declared places under the base
+	// path, settled by resolvePaths once every option has applied.
 	paths [oidcEndpointCount]string
+
+	// outer and inner are the routers registered at the provider's two slots.
+	// They are registered empty when the provider is enabled, and resolvePaths
+	// fills them from the resolved paths.
+	outer *oidcOuterRouter
+	inner *oidcRouter
+
+	// resolved records that resolvePaths ran, and pathsErr what it refused: two
+	// endpoints on one path. check reports either before anything else.
+	resolved bool
+	pathsErr error
 
 	pagesCarryFrameAncestors bool
 
@@ -122,8 +138,8 @@ type oidcEndpointGroup interface {
 	// bind hands the group the provider's shared state, before any option runs.
 	bind(op *oidcEndpoints)
 
-	// routes names the paths the group answers, once the options have settled
-	// them. Two routes on one path refuse the chain.
+	// routes names the paths the group answers, once the paths are resolved
+	// under the base path. Two routes on one path refuse the chain.
 	routes() []oidcRoute
 
 	// settle runs during assembly, once every option has been applied and before
@@ -569,18 +585,16 @@ func EnableOIDCProvider(p *oidcprovider.Provider, opts ...OIDCProviderOption) Op
 			}
 		}
 
-		if err := op.settlePaths(); err != nil {
-			return err
-		}
-
-		outer, inner, err := op.routers()
-		if err != nil {
-			return err
-		}
+		// The routers are registered now, so they keep their place among the
+		// chain's interceptors, and filled once the base path is settled
+		// (resolvePaths), so every path in them is where the endpoint answers,
+		// whichever order WithBasePath came in.
+		op.outer = &oidcOuterRouter{op: op}
+		op.inner = &oidcRouter{}
 
 		c.oidcProvider = op
-		c.register(outer, OrderOIDCProvider)
-		c.register(inner, OrderOIDCProviderSession)
+		c.register(op.outer, OrderOIDCProvider)
+		c.register(op.inner, OrderOIDCProviderSession)
 		c.wire(op.wire)
 
 		// The token endpoint and UserInfo verify bound credentials, so DPoP has
@@ -594,15 +608,38 @@ func EnableOIDCProvider(p *oidcprovider.Provider, opts ...OIDCProviderOption) Op
 	}
 }
 
-// settlePaths works out where each endpoint answers, and refuses two on one path.
-func (op *oidcEndpoints) settlePaths() error {
+// resolvePaths settles where each endpoint answers under base, and fills the
+// routers from those paths. It works from the declared places every time, never
+// from an earlier result, so resolving twice cannot prefix twice. What it
+// refuses is kept for check, since New asks for no error here.
+func (op *oidcEndpoints) resolvePaths(base string) {
+	op.resolved = true
+	op.pathsErr = op.settlePaths(base)
+
+	if op.pathsErr == nil {
+		op.pathsErr = op.fillRouters()
+	}
+}
+
+// resolvePaths and declaredPaths stand for the provider among the chain's
+// interceptors, where the base path finds them: the outer router is the one
+// registered value that holds the provider.
+func (r *oidcOuterRouter) resolvePaths(base string) { r.op.resolvePaths(base) }
+
+func (r *oidcOuterRouter) declaredPaths() []declaredPath { return r.op.declaredPaths() }
+
+// settlePaths works out where each endpoint answers under base, and refuses two on
+// one path.
+func (op *oidcEndpoints) settlePaths(base string) error {
 	taken := make(map[string]OIDCEndpoint, oidcEndpointCount)
 
 	for e := range oidcEndpointCount {
-		path, ok := op.overrides[e]
+		declared, ok := op.overrides[e]
 		if !ok {
-			path = op.prefix + oidcEndpointNames[e].suffix
+			declared = op.prefix + oidcEndpointNames[e].suffix
 		}
+
+		path := joinBase(base, declared)
 
 		if other, clash := taken[path]; clash {
 			return newConfigError("%s serves both %s and %s on %q; give each its own path",
@@ -616,18 +653,20 @@ func (op *oidcEndpoints) settlePaths() error {
 	return nil
 }
 
-// routers gathers each group's routes into the two slots, and refuses two routes
-// on one path, a group's own included.
-func (op *oidcEndpoints) routers() (*oidcOuterRouter, *oidcRouter, error) {
-	outer := &oidcOuterRouter{oidcRouter: oidcRouter{routes: map[string]oidcHandler{}}, op: op}
-	inner := &oidcRouter{routes: map[string]oidcHandler{}}
+// fillRouters gathers each group's routes into the two registered routers, and
+// refuses two routes on one path, a group's own included. The routers are given
+// fresh maps, so filling them again replaces what an earlier fill put there.
+func (op *oidcEndpoints) fillRouters() error {
+	outer, inner := op.outer, op.inner
+	outer.routes = map[string]oidcHandler{}
+	inner.routes = map[string]oidcHandler{}
 
 	for _, g := range op.groups {
 		for _, route := range g.routes() {
 			_, atOuter := outer.routes[route.path]
 			_, atInner := inner.routes[route.path]
 			if atOuter || atInner {
-				return nil, nil, newConfigError("%s has two endpoints on %q; give each its own path",
+				return newConfigError("%s has two endpoints on %q; give each its own path",
 					optionOIDCProvider, route.path)
 			}
 
@@ -639,12 +678,25 @@ func (op *oidcEndpoints) routers() (*oidcOuterRouter, *oidcRouter, error) {
 		}
 	}
 
-	return outer, inner, nil
+	return nil
 }
 
-// check is what can be judged once every option has been applied.
+// checkPaths reports what resolvePaths refused. A provider whose paths were never
+// resolved has empty routers and would answer nothing, so it is refused rather
+// than assembled.
+func (op *oidcEndpoints) checkPaths(*config) error {
+	if !op.resolved {
+		return newConfigError("%s was assembled before its paths were resolved", optionOIDCProvider)
+	}
+
+	return op.pathsErr
+}
+
+// check is what can be judged once every option has been applied, and the paths
+// resolved under the base path.
 func (op *oidcEndpoints) check(c *config) error {
 	for _, check := range []func(*config) error{
+		op.checkPaths,
 		op.checkBearer,
 		op.checkJWKS,
 		op.checkCollisions,

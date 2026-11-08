@@ -274,7 +274,7 @@ func TestConsumerAdapter(t *testing.T) {
 			exchange: func() *miniExchange {
 				return &miniExchange{
 					method: http.MethodPost,
-					target: "/login",
+					target: httpsec.DefaultLoginPath,
 					header: map[string]string{
 						"Content-Type": "application/x-www-form-urlencoded",
 					},

@@ -262,20 +262,20 @@ func EnableAccountRecovery(deps RecoveryDeps, opts ...RecoveryOption) Option {
 
 	return func(c *config) error {
 		i := &recoveryInterceptor{
-			deps:          deps,
-			now:           c.now,
-			completePath:  DefaultRecoveryCompletePath,
-			startPath:     DefaultRecoveryStartPath,
-			finishPath:    DefaultRecoveryFinishPath,
-			cancelPath:    DefaultRecoveryCancelPath,
-			codesPath:     DefaultRecoveryCodesPath,
-			countRefusals: true,
-			logInterval:   defaultRecoveryLogInterval,
-			respond:       writeRecoveryResult,
-			respondHold:   writeRecoveryHold,
-			freshness:     defaultRegenerationFreshness,
-			respondCodes:  writeRecoveryCodes,
-			respondCount:  writeRecoveryCount,
+			deps:                 deps,
+			now:                  c.now,
+			declaredCompletePath: DefaultRecoveryCompletePath,
+			declaredStartPath:    DefaultRecoveryStartPath,
+			declaredFinishPath:   DefaultRecoveryFinishPath,
+			declaredCancelPath:   DefaultRecoveryCancelPath,
+			declaredCodesPath:    DefaultRecoveryCodesPath,
+			countRefusals:        true,
+			logInterval:          defaultRecoveryLogInterval,
+			respond:              writeRecoveryResult,
+			respondHold:          writeRecoveryHold,
+			freshness:            defaultRegenerationFreshness,
+			respondCodes:         writeRecoveryCodes,
+			respondCount:         writeRecoveryCount,
 		}
 
 		for _, opt := range opts {
@@ -333,7 +333,12 @@ func WithRecoveryCore(opts ...recovery.Option) RecoveryOption {
 // New refuses it otherwise.
 func WithRecoveryCompletePath(path string) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
-		i.completePath = path
+		if err := checkEndpointPath("WithRecoveryCompletePath", path); err != nil {
+			return err
+		}
+
+		i.declaredCompletePath = path
+		i.declare("WithRecoveryCompletePath", path)
 
 		return nil
 	}
@@ -345,7 +350,12 @@ func WithRecoveryCompletePath(path string) RecoveryOption {
 // WithRecoveryCompletePath.
 func WithRecoveryStartPath(path string) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
-		i.startPath = path
+		if err := checkEndpointPath("WithRecoveryStartPath", path); err != nil {
+			return err
+		}
+
+		i.declaredStartPath = path
+		i.declare("WithRecoveryStartPath", path)
 
 		return nil
 	}
@@ -358,7 +368,12 @@ func WithRecoveryStartPath(path string) RecoveryOption {
 // WithRecoveryCompletePath.
 func WithRecoveryFinishPath(path string) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
-		i.finishPath = path
+		if err := checkEndpointPath("WithRecoveryFinishPath", path); err != nil {
+			return err
+		}
+
+		i.declaredFinishPath = path
+		i.declare("WithRecoveryFinishPath", path)
 
 		return nil
 	}
@@ -371,7 +386,12 @@ func WithRecoveryFinishPath(path string) RecoveryOption {
 // WithRecoveryCompletePath.
 func WithRecoveryCancelPath(path string) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
-		i.cancelPath = path
+		if err := checkEndpointPath("WithRecoveryCancelPath", path); err != nil {
+			return err
+		}
+
+		i.declaredCancelPath = path
+		i.declare("WithRecoveryCancelPath", path)
 
 		return nil
 	}
@@ -383,7 +403,12 @@ func WithRecoveryCancelPath(path string) RecoveryOption {
 // WithRecoveryCompletePath.
 func WithRecoveryCodesPath(path string) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
-		i.codesPath = path
+		if err := checkEndpointPath("WithRecoveryCodesPath", path); err != nil {
+			return err
+		}
+
+		i.declaredCodesPath = path
+		i.declare("WithRecoveryCodesPath", path)
 
 		return nil
 	}

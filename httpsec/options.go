@@ -84,6 +84,13 @@ type Option func(*config) error
 type config struct {
 	registrations []registration
 
+	// basePath is what WithBasePath was given, settled by settleBasePath once
+	// every option has run: judged, with one trailing slash dropped. It is empty
+	// for none. basePathGiven tells "not given" from "given empty", which is
+	// refused.
+	basePath      string
+	basePathGiven bool
+
 	// seq counts registrations so two interceptors at one slot stay in the
 	// order they were registered in, which sorting alone would not preserve.
 	seq int
@@ -487,6 +494,16 @@ func New(opts ...Option) (*Chain, error) {
 			return nil, err
 		}
 	}
+
+	// Judged once every option has run, so where WithBasePath stands among the
+	// others changes nothing. Then every built-in's paths are resolved against
+	// it, before validate, so each check and everything wired from a path reads
+	// where the endpoint answers.
+	if err := c.settleBasePath(); err != nil {
+		return nil, err
+	}
+
+	c.resolvePaths()
 
 	if err := c.validate(); err != nil {
 		return nil, err

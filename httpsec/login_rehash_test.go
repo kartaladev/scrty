@@ -189,7 +189,7 @@ func TestLogin_Rehash(t *testing.T) {
 				}, extra...)...)
 				require.NoError(t, err)
 
-				return serve(t, chain, formRequest(t.Context(), "/login", "username=ada&password="+pw))
+				return serve(t, chain, formRequest(t.Context(), httpsec.DefaultLoginPath, "username=ada&password="+pw))
 			},
 			expectSuccess: func(r *rehashRig) {
 				r.h.attempts.EXPECT().Reset(gomock.Any(), "ada").Return(nil)
@@ -357,7 +357,7 @@ func TestLogin_Rehash(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		out := serve(t, chain, formRequest(t.Context(), "/login", "username=ada&password="+rehashPassword))
+		out := serve(t, chain, formRequest(t.Context(), httpsec.DefaultLoginPath, "username=ada&password="+rehashPassword))
 
 		var ch *httpsec.ChallengeError
 		require.ErrorAs(t, out.err, &ch, "the login was challenged")
@@ -441,7 +441,7 @@ func TestLogin_RehashEncodesOnlyForALoginThatIsNotRefused(t *testing.T) {
 			}, tc.engine(t)...)...)
 			require.NoError(t, err)
 
-			out := serve(t, chain, formRequest(t.Context(), "/login", "username=ada&password="+rehashPassword))
+			out := serve(t, chain, formRequest(t.Context(), httpsec.DefaultLoginPath, "username=ada&password="+rehashPassword))
 
 			tc.assert(t, out, r.enc.count()-before, rec.recorded())
 		})
@@ -483,10 +483,10 @@ func TestLogin_RehashRetryAfterARefusal(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	refused := serve(t, chain, formRequest(t.Context(), "/login", "username=ada&password="+rehashPassword))
+	refused := serve(t, chain, formRequest(t.Context(), httpsec.DefaultLoginPath, "username=ada&password="+rehashPassword))
 	require.ErrorIs(t, refused.err, policy.ErrTooManySessions)
 
-	retried := serve(t, chain, formRequest(t.Context(), "/login", "username=ada&password="+rehashPassword))
+	retried := serve(t, chain, formRequest(t.Context(), httpsec.DefaultLoginPath, "username=ada&password="+rehashPassword))
 	require.NoError(t, retried.err)
 	assert.Equal(t, http.StatusOK, retried.rec.Code)
 
@@ -725,7 +725,7 @@ func TestLogin_RehashConditionalWriteKeepsAConcurrentChange(t *testing.T) {
 			)
 			require.NoError(t, err)
 
-			out := serve(t, chain, formRequest(t.Context(), "/login", "username=ada&password="+rehashPassword))
+			out := serve(t, chain, formRequest(t.Context(), httpsec.DefaultLoginPath, "username=ada&password="+rehashPassword))
 			require.NoError(t, out.err)
 			assert.Equal(t, http.StatusOK, out.rec.Code, "the login still succeeds")
 			tc.assert(t, r, store.current())
@@ -798,7 +798,7 @@ func TestLogin_RehashDiscardsTheHandleWhenTheRequestEnds(t *testing.T) {
 			}, tc.engine(t)...)...)
 			require.NoError(t, err)
 
-			serve(t, chain, formRequest(t.Context(), "/login", "username=ada&password="+rehashPassword))
+			serve(t, chain, formRequest(t.Context(), httpsec.DefaultLoginPath, "username=ada&password="+rehashPassword))
 
 			seen := handles()
 			require.NotEmpty(t, seen)

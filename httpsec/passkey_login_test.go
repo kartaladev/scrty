@@ -1473,15 +1473,6 @@ func TestPasswordlessConstruction(t *testing.T) {
 			assert: refused,
 		},
 		{
-			name: "an invalid prefix",
-			setup: func(t *testing.T, d *pwlDeployment) []httpsec.Option {
-				d.passkeyOpts = append(d.passkeyOpts, httpsec.WithPasskeyPasswordlessPrefix("signin"))
-
-				return d.options(t)
-			},
-			assert: refused,
-		},
-		{
 			name: "an empty cookie name",
 			setup: func(t *testing.T, d *pwlDeployment) []httpsec.Option {
 				d.settings = append(d.settings, httpsec.PasswordlessCookieName(""))

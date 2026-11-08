@@ -382,6 +382,59 @@ func TestManagerProvidersIsTheCallersCopy(t *testing.T) {
 	assert.Equal(t, []string{"corp"}, m.Providers())
 }
 
+// TestRelyingParty_RedirectURL pins the read-only lookup the chain uses to
+// check that a provider's redirect URL can reach its callback path.
+func TestRelyingParty_RedirectURL(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name     string
+		provider string
+		assert   func(t *testing.T, url string, ok bool)
+	}
+
+	corp, partner := flushProvider(), flushProvider()
+	corp.RedirectURL = "https://app.example/login/oidc/corp/callback"
+	partner.Name = "partner"
+	partner.RedirectURL = "https://app.example/login/oidc/partner/callback"
+	reg, err := oidc.NewRegistry(corp, partner)
+	require.NoError(t, err)
+	m, err := oidc.NewRelyingParty(reg, stubBroker{})
+	require.NoError(t, err)
+
+	cases := []testCase{
+		{name: "first provider", provider: "corp",
+			assert: func(t *testing.T, url string, ok bool) {
+				assert.True(t, ok)
+				assert.Equal(t, "https://app.example/login/oidc/corp/callback", url)
+			}},
+		{name: "second provider has its own URL", provider: "partner",
+			assert: func(t *testing.T, url string, ok bool) {
+				assert.True(t, ok)
+				assert.Equal(t, "https://app.example/login/oidc/partner/callback", url)
+			}},
+		{name: "unknown name", provider: "nobody",
+			assert: func(t *testing.T, url string, ok bool) {
+				assert.False(t, ok)
+				assert.Empty(t, url)
+			}},
+		{name: "empty name", provider: "",
+			assert: func(t *testing.T, url string, ok bool) {
+				assert.False(t, ok)
+				assert.Empty(t, url)
+			}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			url, ok := m.RedirectURL(tc.provider)
+			tc.assert(t, url, ok)
+		})
+	}
+}
+
 // flushProvider is a minimal, statically valid provider: nothing in these
 // tests ever reaches discovery or the network.
 func flushProvider() oidc.Provider {

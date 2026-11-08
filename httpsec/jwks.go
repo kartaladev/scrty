@@ -40,9 +40,14 @@ type KeySetProvider interface {
 
 // jwksEndpoint serves the public key set.
 type jwksEndpoint struct {
+	pathDeclarations
+
 	keys KeySetProvider
 
-	path string
+	// declaredPath is where the options placed the endpoint, without the base
+	// path; path is where it answers, settled by resolvePaths.
+	declaredPath string
+	path         string
 }
 
 // Intercept serves the key set on its own path, and passes everything else
@@ -91,7 +96,7 @@ func EnableJWKSEndpoint(keys KeySetProvider, opts ...JWKSOption) Option {
 	const option = "EnableJWKSEndpoint"
 
 	return func(c *config) error {
-		j := &jwksEndpoint{keys: keys, path: DefaultJWKSPath}
+		j := &jwksEndpoint{keys: keys, declaredPath: DefaultJWKSPath}
 
 		for _, opt := range opts {
 			if opt == nil {
@@ -120,12 +125,12 @@ func EnableJWKSEndpoint(keys KeySetProvider, opts ...JWKSOption) Option {
 // nothing, so the endpoint the consumer asked for would silently not exist.
 func WithJWKSEndpointPath(path string) JWKSOption {
 	return func(j *jwksEndpoint) error {
-		if path == "" {
-			return newConfigError("WithJWKSEndpointPath was given no path, so the key set " +
-				"would be served nowhere")
+		if err := checkEndpointPath("WithJWKSEndpointPath", path); err != nil {
+			return err
 		}
 
-		j.path = path
+		j.declaredPath = path
+		j.declare("WithJWKSEndpointPath", path)
 
 		return nil
 	}

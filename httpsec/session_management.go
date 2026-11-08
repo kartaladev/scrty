@@ -67,6 +67,8 @@ type SignInEndResponder func(ex *Exchange) error
 // sessionManagement answers the session management endpoints and passes
 // every other request through.
 type sessionManagement struct {
+	pathDeclarations
+
 	sessions *session.Sessions
 	now      func() time.Time
 
@@ -74,26 +76,31 @@ type sessionManagement struct {
 	// chain without one, which offers no choice to revoke application access.
 	grants userGrantRevoker
 
-	prefix  string
-	window  time.Duration
-	list    SignInListResponder
-	respEnd SignInEndResponder
+	// declaredPrefix is where the options placed the endpoints, without the base
+	// path and without a trailing slash; prefix is where they answer, settled by
+	// resolvePaths.
+	declaredPrefix string
+	prefix         string
+	window         time.Duration
+	list           SignInListResponder
+	respEnd        SignInEndResponder
 }
 
 // WithSessionManagementPrefix replaces the path prefix the endpoints answer
 // under.
 //
 // Default: DefaultSessionManagementPrefix, "/sessions". The prefix must start
-// with "/", must not end with one, and must not be "/" alone; anything else is
-// refused with a configuration error.
+// with "/" and must not be "/" alone; one trailing slash is set aside, so
+// "/sessions" and "/sessions/" are the same prefix. Anything else outside the
+// endpoint path shape is refused with a configuration error.
 func WithSessionManagementPrefix(prefix string) SessionManagementOption {
 	return func(m *sessionManagement) error {
-		if prefix == "" || prefix[0] != '/' || strings.HasSuffix(prefix, "/") {
-			return newConfigError("WithSessionManagementPrefix needs a path starting with \"/\" "+
-				"and not ending with one, got %q", prefix)
+		if err := checkEndpointPath("WithSessionManagementPrefix", prefix); err != nil {
+			return err
 		}
 
-		m.prefix = prefix
+		m.declaredPrefix = strings.TrimSuffix(prefix, "/")
+		m.declare("WithSessionManagementPrefix", prefix)
 
 		return nil
 	}
@@ -216,11 +223,11 @@ func EnableSessionManagement(opts ...SessionManagementOption) Option {
 
 	return func(c *config) error {
 		m := &sessionManagement{
-			now:     c.now,
-			prefix:  DefaultSessionManagementPrefix,
-			window:  DefaultRecentAuthenticationWindow,
-			list:    writeSignInList,
-			respEnd: writeSignInsEnded,
+			now:            c.now,
+			declaredPrefix: DefaultSessionManagementPrefix,
+			window:         DefaultRecentAuthenticationWindow,
+			list:           writeSignInList,
+			respEnd:        writeSignInsEnded,
 		}
 
 		for _, opt := range opts {

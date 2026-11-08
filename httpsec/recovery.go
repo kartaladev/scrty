@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/kartaladev/scrty/event"
@@ -59,6 +58,8 @@ var recoverySingleFields = []string{
 
 // recoveryInterceptor answers the account-recovery endpoints.
 type recoveryInterceptor struct {
+	pathDeclarations
+
 	deps     RecoveryDeps
 	coreOpts []recovery.Option
 	tokens   token.Generator
@@ -71,6 +72,15 @@ type recoveryInterceptor struct {
 	// recoverer is built at assembly (resolve), from deps, coreOpts and the
 	// chain's form login.
 	recoverer *recovery.Recoverer
+
+	// the declared paths are where the options placed the endpoints, without
+	// the base path; the paths without "declared" are where they answer,
+	// settled by resolvePaths.
+	declaredCompletePath string
+	declaredStartPath    string
+	declaredFinishPath   string
+	declaredCancelPath   string
+	declaredCodesPath    string
 
 	completePath string
 	startPath    string
@@ -133,6 +143,16 @@ func (i *recoveryInterceptor) signInOptions(ctx context.Context) []session.Creat
 	return opts
 }
 
+// resolvePaths places the five endpoints under base, from the paths the
+// options declared.
+func (i *recoveryInterceptor) resolvePaths(base string) {
+	i.completePath = joinBase(base, i.declaredCompletePath)
+	i.startPath = joinBase(base, i.declaredStartPath)
+	i.finishPath = joinBase(base, i.declaredFinishPath)
+	i.cancelPath = joinBase(base, i.declaredCancelPath)
+	i.codesPath = joinBase(base, i.declaredCodesPath)
+}
+
 // check reports the wiring faults only the assembled configuration can see:
 // the paths against each other and against the chain's login and logout, a
 // chain with no way to bind the recovered session, and a recovery with no
@@ -176,9 +196,8 @@ func (i *recoveryInterceptor) endpointPaths() []struct{ name, path string } {
 	}
 }
 
-// checkPaths refuses a recovery path that is empty, lacks a leading "/", or
-// collides with another recovery path, the login path or the logout path.
-// A collision with a passkey path is the passkey endpoints' check.
+// checkPaths refuses a recovery path that collides with another recovery path,
+// the login path or the logout path. A collision with a passkey path is the passkey endpoints' check.
 func (i *recoveryInterceptor) checkPaths(c *config, option string) error {
 	paths := i.endpointPaths()
 
@@ -191,11 +210,6 @@ func (i *recoveryInterceptor) checkPaths(c *config, option string) error {
 	}
 
 	for _, p := range paths {
-		if !strings.HasPrefix(p.path, "/") {
-			return newConfigError("%s was given the %s path %q, which does not start with \"/\" "+
-				"and so matches no request", option, p.name, p.path)
-		}
-
 		if other, ok := taken[p.path]; ok {
 			return newConfigError("%s was given %q as its %s path, which is already %s: whichever "+
 				"endpoint matched first would swallow the other", option, p.path, p.name, other)

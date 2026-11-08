@@ -14,7 +14,7 @@
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
       "frontchannelLogout": false,
-      "redirectUris": ["https://app.example/login/oauth2/callback/scrty-post"],
+      "redirectUris": ["https://app.example/sso/callback/scrty-post"],
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "backchannel.logout.session.required": "true",
@@ -32,7 +32,7 @@
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
       "frontchannelLogout": false,
-      "redirectUris": ["https://app.example/login/oauth2/callback/scrty-basic"],
+      "redirectUris": ["https://app.example/sso/callback/scrty-basic"],
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "backchannel.logout.session.required": "true",

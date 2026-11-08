@@ -34,7 +34,7 @@ func startStream(ex *Exchange, body func(ctx context.Context, w EventWriter) err
 // A cap, a close and a dependency failure are returned, and answered by sessionSignalsRetry,
 // which is what also sees the same failure from the authenticators outside this slot.
 func (e *sessionSignals) Intercept(ex *Exchange, next Next) error {
-	if ex.Request.Path() != e.cfg.Path {
+	if ex.Request.Path() != e.path {
 		return next(ex)
 	}
 

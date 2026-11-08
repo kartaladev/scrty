@@ -19,7 +19,7 @@ import (
 // answer under when the consumer names none (WithReauthenticationPrefix):
 //
 //   - GET  /reauth/methods, the method listing;
-//   - POST /reauth/begin/<method>, a second-factor method's begin step;
+//   - POST /reauth/challenge/<method>, a second-factor method's begin step;
 //   - POST /reauth/verify/<method>, a second-factor re-proof;
 //   - POST /reauth/password, a password re-proof.
 //
@@ -30,7 +30,7 @@ const DefaultReauthenticationPrefix = "/reauth"
 // The paths of the re-authentication endpoints, each under the prefix.
 const (
 	reauthMethodsSuffix  = "/methods"
-	reauthBeginSuffix    = "/begin"
+	reauthBeginSuffix    = "/challenge"
 	reauthVerifySuffix   = "/verify"
 	reauthPasswordSuffix = "/password"
 )
@@ -113,8 +113,13 @@ const msgReauthMethodsUnavailable = "httpsec: the re-authentication methods coul
 // password path, so a re-proof is held to the limits that already guard the
 // same secrets.
 type reauthInterceptor struct {
-	// prefix is where the endpoints answer, with no trailing slash.
-	prefix string
+	pathDeclarations
+
+	// declaredPrefix is where the options placed the endpoints, without the base
+	// path and without a trailing slash; prefix is where they answer, settled by
+	// resolvePaths.
+	declaredPrefix string
+	prefix         string
 
 	// tokens issues the rotated session's credential in the signed-token
 	// mode, and issue is the issuer the chain's bearer mode decides on,
@@ -162,6 +167,10 @@ type reauthInterceptor struct {
 	log      *slog.Logger
 	sampler  *logsample.Sampler
 }
+
+// resolvePaths places the endpoints under base. Every sub-path is derived from
+// the prefix in paths, so the suffixes are joined once, to the settled prefix.
+func (i *reauthInterceptor) resolvePaths(base string) { i.prefix = joinBase(base, i.declaredPrefix) }
 
 // reauthPaths are the endpoints' paths under one prefix.
 type reauthPaths struct {

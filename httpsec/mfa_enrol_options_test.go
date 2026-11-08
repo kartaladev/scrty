@@ -250,27 +250,6 @@ func TestEnableMFAEnrolmentConstruction(t *testing.T) {
 			assert: refused("EnableMFAEnrolment", "user loader"),
 		},
 		{
-			name: "an empty begin prefix",
-			prepare: func(_ *testing.T, h *enrolHarness) {
-				h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithEnrolmentBeginPrefix("")}
-			},
-			assert: refused("WithEnrolmentBeginPrefix"),
-		},
-		{
-			name: "a confirm prefix that matches no request",
-			prepare: func(_ *testing.T, h *enrolHarness) {
-				h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithEnrolmentConfirmPrefix("mfa/enrol/confirm")}
-			},
-			assert: refused("WithEnrolmentConfirmPrefix"),
-		},
-		{
-			name: "the root as the emailed-code prefix",
-			prepare: func(_ *testing.T, h *enrolHarness) {
-				h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithEnrolmentEmailConfirmPrefix("/")}
-			},
-			assert: refused("WithEnrolmentEmailConfirmPrefix"),
-		},
-		{
 			name: "two enrolment endpoints on one prefix",
 			prepare: func(_ *testing.T, h *enrolHarness) {
 				h.enrolOpts = []httpsec.EnrolmentOption{

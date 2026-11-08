@@ -206,19 +206,19 @@ func EnableMFAEnrolment(d EnrolmentDeps, opts ...EnrolmentOption) Option {
 
 	return func(c *config) error {
 		i := &enrolmentInterceptor{
-			users:             d.Users,
-			sender:            d.Sender,
-			now:               c.now,
-			beginPrefix:       DefaultEnrolmentBeginPrefix,
-			confirmPrefix:     DefaultEnrolmentConfirmPrefix,
-			emailPrefix:       DefaultEnrolmentEmailConfirmPrefix,
-			lifetime:          defaultEnrolmentLifetime,
-			logInterval:       defaultEnrolmentLogInterval,
-			emailConfirmation: true,
-			notification:      true,
-			contact:           mfa.UsernameAsAddress,
-			label:             mfa.UsernameAsAddress,
-			messages:          plainEnrolmentMessages{},
+			users:                 d.Users,
+			sender:                d.Sender,
+			now:                   c.now,
+			declaredBeginPrefix:   DefaultEnrolmentBeginPrefix,
+			declaredConfirmPrefix: DefaultEnrolmentConfirmPrefix,
+			declaredEmailPrefix:   DefaultEnrolmentEmailConfirmPrefix,
+			lifetime:              defaultEnrolmentLifetime,
+			logInterval:           defaultEnrolmentLogInterval,
+			emailConfirmation:     true,
+			notification:          true,
+			contact:               mfa.UsernameAsAddress,
+			label:                 mfa.UsernameAsAddress,
+			messages:              plainEnrolmentMessages{},
 		}
 
 		for _, opt := range opts {
@@ -265,7 +265,8 @@ func WithEnrolmentBeginPrefix(prefix string) EnrolmentOption {
 			return err
 		}
 
-		i.beginPrefix = p
+		i.declaredBeginPrefix = p
+		i.declare("WithEnrolmentBeginPrefix", p)
 
 		return nil
 	}
@@ -283,7 +284,8 @@ func WithEnrolmentConfirmPrefix(prefix string) EnrolmentOption {
 			return err
 		}
 
-		i.confirmPrefix = p
+		i.declaredConfirmPrefix = p
+		i.declare("WithEnrolmentConfirmPrefix", p)
 
 		return nil
 	}
@@ -302,7 +304,8 @@ func WithEnrolmentEmailConfirmPrefix(prefix string) EnrolmentOption {
 			return err
 		}
 
-		i.emailPrefix = p
+		i.declaredEmailPrefix = p
+		i.declare("WithEnrolmentEmailConfirmPrefix", p)
 
 		return nil
 	}

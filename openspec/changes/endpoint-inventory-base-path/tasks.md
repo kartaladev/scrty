@@ -4,7 +4,7 @@ Every task is test-first: write the failing test, run it, confirm it fails for t
 
 ## 1. Reproduce the OIDC redirect gap (`oidc-login`)
 
-- [ ] 1.1 Write the reproducing test for D10 in `httpsec`:
+- [x] 1.1 Write the reproducing test for D10 in `httpsec`:
   - a chain enables OIDC login, moves the callback path with `WithOIDCCallbackPath("/federation/callback/")`, and registers provider `corp` whose redirect URL still ends in the old default callback path followed by `corp`;
   - the test expects `New` to fail with a configuration error;
   - name it after the behaviour, for example `TestOIDCLogin_RefusesRedirectURLThatCannotReachCallback`.
@@ -13,24 +13,24 @@ Every task is test-first: write the failing test, run it, confirm it fails for t
 
 ## 2. One path shape and the new defaults (`http-security-chain`, `passkey-authentication`, `multi-factor-auth`, `reauthentication`)
 
-- [ ] 2.1 Apply one shape rule to every path setting, in all four forms (`With*Path`/`With*Prefix`, `WithOIDCProviderPath`, the `SessionSignals.Path` field and the `ListingPath` setting, `WithPasswordChangeEndpoint`):
+- [x] 2.1 Apply one shape rule to every path setting, in all four forms (`With*Path`/`With*Prefix`, `WithOIDCProviderPath`, the `SessionSignals.Path` field and the `ListingPath` setting, `WithPasswordChangeEndpoint`):
   - a table test per form over `signin`, `/`, `/a/../b`, `/a//b`, `/session/sig nals`, `/a%20b` and `/a?b`, each refused with a configuration error naming the setting;
   - a trailing slash on a prefix is accepted (`/federation/callback/`), and on the signal stream path (`/session/signals/`);
   - a provider path holding `:` or `@` is refused (D13 lists both changes);
   - the per-option checks it replaces are removed, and their tests move to the table.
 
   (D4; "Every endpoint path has one shape", every scenario.) Verify with `go test -race -count=1 -run 'TestEndpointPathShape' ./httpsec/`
-- [ ] 2.2 Change the default constants and suffixes to D3's table in `httpsec` (`reauth.go`'s begin suffix included) and the magic-link confirm page default in `authenticate/magiclink` (`links.go`, and its godoc in `links_options.go`):
+- [x] 2.2 Change the default constants and suffixes to D3's table in `httpsec` (`reauth.go`'s begin suffix included) and the magic-link confirm page default in `authenticate/magiclink` (`links.go`, and its godoc in `links_options.go`):
   - red step: a table test that enables each built-in with defaults and asserts it answers at D3's path and that the old default passes through; run it and see every renamed row fail;
   - update every test, example and doc comment that names a default path: `httpsec`, `httpsec/ginsec`, `httpsec/fibersec`, `authenticate/magiclink`, `authenticate/oidc` (`doc.go`, `example_test.go`), `authenticate/passkey/example_test.go` and `policy/example_test.go`, using the constants where the literal is not the point;
   - update every old default path in `README.md`.
 
   (D3; "Built-in endpoints have documented default paths", every scenario; the MODIFIED default-path requirements of `http-security-chain`, `passkey-authentication`, `multi-factor-auth` and `reauthentication`.) Verify with `go test -race -count=1 ./httpsec/... ./authenticate/magiclink/...`
-- [ ] 2.3 Update `test/httpsecconformance` scenarios, `csrf-protection`, `framework-adapters` and `sender-constrained-tokens` tests that name a default path, so each mirrors its MODIFIED scenario, and the Keycloak test realm (`test/testdata/keycloak/realm.json`), whose registered redirect URIs end in the old callback path. Verify with `go vet ./...` and `go test -race ./...` in the `test` module.
+- [x] 2.3 Update `test/httpsecconformance` scenarios, `csrf-protection`, `framework-adapters` and `sender-constrained-tokens` tests that name a default path, so each mirrors its MODIFIED scenario, and the Keycloak test realm (`test/testdata/keycloak/realm.json`), whose registered redirect URIs end in the old callback path. Verify with `go vet ./...` and `go test -race ./...` in the `test` module.
 
 ## 3. Base path and resolution before validation (`http-security-chain`)
 
-- [ ] 3.1 `WithBasePath` and its refusals. A table test over:
+- [x] 3.1 `WithBasePath` and its refusals. A table test over:
   - `/`, `auth`, `/auth/../admin`, `/auth%20x`, each refused naming `WithBasePath`;
   - `/auth/`, accepted as `/auth`;
   - a base path on a chain that answers no built-in endpoint, refused;
@@ -38,15 +38,15 @@ Every task is test-first: write the failing test, run it, confirm it fails for t
   - given twice, the last wins.
 
   (D1, D5; "An unusable base path fails at construction", "A path that repeats the base path fails at construction", "Built-in endpoints answer under an optional base path" scenario "Given twice".) Verify with `go test -race -count=1 -run 'TestWithBasePath' ./httpsec/`
-- [ ] 3.2 Add the resolution step to `New`, between the option loop and `validate`, and resolve password sign-in, logout, the key set, session renewal, the password-change endpoint, the signal stream and session management:
+- [x] 3.2 Add the resolution step to `New`, between the option loop and `validate`, and resolve password sign-in, logout, the key set, session renewal, the password-change endpoint, the signal stream and session management:
   - each interceptor keeps its declared path and resolves it in the new step;
   - per endpoint: with `/auth` it answers under `/auth` and the unprefixed path passes through; a consumer path (`/signin`) answers `/auth/signin`; the base option given after the `Enable*` options gives the same result;
   - existing tests stay green, since with no base path every path is unchanged.
 
   (D1, D2; "Built-in endpoints answer under an optional base path", scenarios "No base path", "Base path moves the defaults", "Consumer path within the base", "Option order does not matter".) Verify with `go test -race -count=1 ./httpsec/`
-- [ ] 3.3 Resolve the MFA challenge, verify and listing paths, the three enrolment prefixes, the passkey registration, list and passwordless paths, the two magic-link paths and the five recovery paths. Same tests as 3.2, including `{method}` under `/auth/mfa/verify/`, and one test that the emailed link still points at the confirm page while redemption answers at `/auth/sign-in/magic-link/redeem`. (D1, D2; "The base path covers only the endpoints the chain answers", scenario "Emailed sign-in link unchanged".) Verify with `go test -race -count=1 ./httpsec/`
-- [ ] 3.4 Resolve the re-authentication prefix and the four OIDC login paths. Same tests as 3.2, and one test that an authorization rule for `GET /projects/{id}` still judges `/projects/42` under `/auth`. (D1, D2; scenario "Authorization rules keep the consumer's paths".) Verify with `go test -race -count=1 ./httpsec/`
-- [ ] 3.5 Resolve the provider's prefix and per-endpoint overrides, relative to the base, and move `settlePaths` and `routers` after resolution:
+- [x] 3.3 Resolve the MFA challenge, verify and listing paths, the three enrolment prefixes, the passkey registration, list and passwordless paths, the two magic-link paths and the five recovery paths. Same tests as 3.2, including `{method}` under `/auth/mfa/verify/`, and one test that the emailed link still points at the confirm page while redemption answers at `/auth/sign-in/magic-link/redeem`. (D1, D2; "The base path covers only the endpoints the chain answers", scenario "Emailed sign-in link unchanged".) Verify with `go test -race -count=1 ./httpsec/`
+- [x] 3.4 Resolve the re-authentication prefix and the four OIDC login paths. Same tests as 3.2, and one test that an authorization rule for `GET /projects/{id}` still judges `/projects/42` under `/auth`. (D1, D2; scenario "Authorization rules keep the consumer's paths".) Verify with `go test -race -count=1 ./httpsec/`
+- [x] 3.5 Resolve the provider's prefix and per-endpoint overrides, relative to the base, and move `settlePaths` and `routers` after resolution:
   - the token endpoint answers at `/auth/oauth2/token`, and with `WithOIDCProviderPath(OIDCToken, "/tokens")` at `/auth/tokens`;
   - with issuer `https://id.example.com/auth`, `token_endpoint` and `jwks_uri` name the moved paths, the OpenID configuration answers at `/auth/.well-known/openid-configuration` and the authorization server metadata at `/.well-known/oauth-authorization-server/auth`;
   - the provider options given before `WithBasePath` give the same result;
@@ -115,7 +115,7 @@ Every task is test-first: write the failing test, run it, confirm it fails for t
 
 ## 7. The OIDC redirect path check (`oidc-login`)
 
-- [ ] 7.1 In `authenticate/oidc`, give `RelyingParty` read access to each registered provider's redirect URL, alongside `Providers()`. A test registers two providers and reads both URLs back, and checks that an unknown name reports none. (D10.) Verify with `go test -race -count=1 ./authenticate/oidc/`
+- [x] 7.1 In `authenticate/oidc`, give `RelyingParty` read access to each registered provider's redirect URL, alongside `Providers()`. A test registers two providers and reads both URLs back, and checks that an unknown name reports none. (D10.) Verify with `go test -race -count=1 ./authenticate/oidc/`
 - [ ] 7.2 Check at chain assembly that each provider's decoded redirect URL path ends with the resolved callback path followed by its name, and add `WithoutOIDCRedirectPathCheck()`:
   - 1.1's test turns green;
   - tests cover each spec scenario: a matching URL, the base `/auth` not reflected, the callback moved, a prefix-stripping proxy accepted, a percent-encoded path accepted, and the waiver;

@@ -220,24 +220,6 @@ func TestEnableMFA(t *testing.T) {
 			assert: configError,
 		},
 		{
-			name:    "an empty verify prefix",
-			methods: authenticator,
-			opts:    []httpsec.MFAOption{httpsec.WithMFAVerifyPrefix("")},
-			assert:  configError,
-		},
-		{
-			name:    "the root as the verify prefix",
-			methods: authenticator,
-			opts:    []httpsec.MFAOption{httpsec.WithMFAVerifyPrefix("/")},
-			assert:  configError,
-		},
-		{
-			name:    "a verify prefix without a leading slash",
-			methods: authenticator,
-			opts:    []httpsec.MFAOption{httpsec.WithMFAVerifyPrefix("mfa")},
-			assert:  configError,
-		},
-		{
 			// The verify endpoint would answer the logout request first, so a
 			// pending session could never log out.
 			name:    "a verify prefix that is the logout path",
@@ -269,24 +251,6 @@ func TestEnableMFA(t *testing.T) {
 				httpsec.WithMFABeginResponder(func(*httpsec.Exchange, json.RawMessage) error { return nil }),
 			},
 			assert: built,
-		},
-		{
-			name:    "an empty begin prefix",
-			methods: authenticator,
-			opts:    []httpsec.MFAOption{httpsec.WithMFABeginPrefix("")},
-			assert:  configError,
-		},
-		{
-			name:    "the root as the begin prefix",
-			methods: authenticator,
-			opts:    []httpsec.MFAOption{httpsec.WithMFABeginPrefix("/")},
-			assert:  configError,
-		},
-		{
-			name:    "a begin prefix without a leading slash",
-			methods: authenticator,
-			opts:    []httpsec.MFAOption{httpsec.WithMFABeginPrefix("mfa/begin")},
-			assert:  configError,
 		},
 		{
 			// Every POST under the verify prefix is the verify endpoint's, so
@@ -472,16 +436,6 @@ func TestMFAMethodListingConstruction(t *testing.T) {
 			name:    "every default",
 			mfaOpts: with(),
 			assert:  assembles,
-		},
-		{
-			name:    "an explicitly empty path",
-			mfaOpts: with(httpsec.ListingPath("")),
-			assert:  refused("ListingPath"),
-		},
-		{
-			name:    "a path that matches no request",
-			mfaOpts: with(httpsec.ListingPath("mfa/methods")),
-			assert:  refused("ListingPath"),
 		},
 		{
 			name:    "an absent responder",

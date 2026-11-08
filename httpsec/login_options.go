@@ -151,7 +151,7 @@ func EnableFormLogin(d FormLoginDeps, opts ...LoginOption) Option {
 			tokens:        d.Tokens,
 			attempts:      d.Attempts,
 			now:           c.now,
-			path:          DefaultLoginPath,
+			declaredPath:  DefaultLoginPath,
 			usernameParam: DefaultLoginUsernameParam,
 			passwordParam: DefaultLoginPasswordParam,
 			bodyLimit:     DefaultLoginBodyLimit,
@@ -204,12 +204,12 @@ func EnableFormLogin(d FormLoginDeps, opts ...LoginOption) Option {
 // so the endpoint the consumer asked for would silently not exist.
 func WithLoginRequestPath(path string) LoginOption {
 	return func(l *formLogin) error {
-		if path == "" {
-			return newConfigError("WithLoginRequestPath was given no path, so form login " +
-				"would answer nothing")
+		if err := checkEndpointPath("WithLoginRequestPath", path); err != nil {
+			return err
 		}
 
-		l.path = path
+		l.declaredPath = path
+		l.declare("WithLoginRequestPath", path)
 		return nil
 	}
 }

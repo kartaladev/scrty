@@ -65,12 +65,17 @@ func (c *config) grantRevoker() userGrantRevoker {
 // passwordChangeGate holds every session that owes a password change, and lets
 // the consumer's resolve endpoint through so the debt can be paid.
 type passwordChangeGate struct {
+	pathDeclarations
+
 	sessions *session.Sessions
 
-	// path and change are the consumer's resolve endpoint, and are empty when
-	// they registered none. Without one, only a new login clears the challenge.
-	path   string
-	change ChangePasswordFunc
+	// declaredPath and change are the consumer's resolve endpoint, and are empty
+	// when they registered none. Without one, only a new login clears the
+	// challenge. path is where the endpoint answers, the declared path under the
+	// base path, settled by resolvePaths.
+	declaredPath string
+	path         string
+	change       ChangePasswordFunc
 
 	// logoutPath is the chain's logout endpoint, handed over at assembly and
 	// never configured here, so a consumer who moves logout moves the gate's
@@ -472,16 +477,17 @@ func (g *passwordChangeGate) checkGrantRevocation(c *config) error {
 // ChangePasswordFunc. A function that refused the request must not return nil.
 func WithPasswordChangeEndpoint(path string, fn ChangePasswordFunc) PasswordChangeOption {
 	return func(g *passwordChangeGate) error {
-		switch {
-		case path == "":
-			return newConfigError("WithPasswordChangeEndpoint was given no path, so a caller " +
-				"owing a password change would have no way to resolve it")
-		case fn == nil:
+		if err := checkEndpointPath("WithPasswordChangeEndpoint", path); err != nil {
+			return err
+		}
+
+		if fn == nil {
 			return newConfigError("WithPasswordChangeEndpoint was given no function to change "+
 				"the password with for %q", path)
 		}
 
-		g.path = path
+		g.declaredPath = path
+		g.declare("WithPasswordChangeEndpoint", path)
 		g.change = fn
 
 		return nil

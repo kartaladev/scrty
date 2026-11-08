@@ -45,14 +45,14 @@ func EnableMagicLink(m *magiclink.Links, opts ...MagicLinkOption) Option {
 		}
 
 		i := &magicLinkInterceptor{
-			manager:       m,
-			respond:       writeMagicLinkResult,
-			now:           c.now,
-			requestPath:   DefaultMagicLinkRequestPath,
-			consumePath:   DefaultMagicLinkConsumePath,
-			cookieName:    DefaultBindingCookieName,
-			bodyLimit:     DefaultLoginBodyLimit,
-			countRefusals: true,
+			manager:             m,
+			respond:             writeMagicLinkResult,
+			now:                 c.now,
+			declaredRequestPath: DefaultMagicLinkRequestPath,
+			declaredConsumePath: DefaultMagicLinkConsumePath,
+			cookieName:          DefaultBindingCookieName,
+			bodyLimit:           DefaultLoginBodyLimit,
+			countRefusals:       true,
 		}
 
 		for _, opt := range opts {
@@ -82,12 +82,12 @@ func EnableMagicLink(m *magiclink.Links, opts ...MagicLinkOption) Option {
 // other endpoint.
 func WithMagicLinkRequestPath(path string) MagicLinkOption {
 	return func(i *magicLinkInterceptor) error {
-		if path == "" {
-			return newConfigError("WithMagicLinkRequestPath was given no path, so no link " +
-				"could be asked for")
+		if err := checkEndpointPath("WithMagicLinkRequestPath", path); err != nil {
+			return err
 		}
 
-		i.requestPath = path
+		i.declaredRequestPath = path
+		i.declare("WithMagicLinkRequestPath", path)
 
 		return nil
 	}
@@ -100,12 +100,12 @@ func WithMagicLinkRequestPath(path string) MagicLinkOption {
 // path, or one equal to the request path, is refused.
 func WithMagicLinkConsumePath(path string) MagicLinkOption {
 	return func(i *magicLinkInterceptor) error {
-		if path == "" {
-			return newConfigError("WithMagicLinkConsumePath was given no path, so no link " +
-				"could be redeemed")
+		if err := checkEndpointPath("WithMagicLinkConsumePath", path); err != nil {
+			return err
 		}
 
-		i.consumePath = path
+		i.declaredConsumePath = path
+		i.declare("WithMagicLinkConsumePath", path)
 
 		return nil
 	}

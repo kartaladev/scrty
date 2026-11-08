@@ -489,94 +489,13 @@ func TestOIDCProvider_Construction(t *testing.T) {
 			assert: refused("EnableOIDCProvider", "/oauth2/token"),
 		},
 		{
-			name: "a prefix naming no path",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPrefix("op"))
-			},
-			assert: refused("WithOIDCProviderPrefix"),
-		},
-		{
-			name: "an empty prefix",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPrefix(""))
-			},
-			assert: refused("WithOIDCProviderPrefix"),
-		},
-		{
-			name: "a prefix ending in a slash",
+			name: "a prefix ending in one slash",
 			build: func(t *testing.T) []httpsec.Option {
 				t.Helper()
 
 				return withOptions(t, nil, httpsec.WithOIDCProviderPrefix("/op/"))
 			},
-			assert: refused("WithOIDCProviderPrefix"),
-		},
-		{
-			name: "a path naming no path",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPath(httpsec.OIDCToken, "token"))
-			},
-			assert: refused("WithOIDCProviderPath"),
-		},
-		{
-			name: "a path holding a query",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPath(httpsec.OIDCToken, "/tokens?x=1"))
-			},
-			assert: refused("WithOIDCProviderPath"),
-		},
-		{
-			name: "a path holding a fragment",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPath(httpsec.OIDCToken, "/tokens#x"))
-			},
-			assert: refused("WithOIDCProviderPath"),
-		},
-		{
-			name: "a path holding a percent sign",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPath(httpsec.OIDCToken, "/a%20b"))
-			},
-			assert: refused("WithOIDCProviderPath"),
-		},
-		{
-			name: "a path holding a space",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPath(httpsec.OIDCToken, "/a b"))
-			},
-			assert: refused("WithOIDCProviderPath"),
-		},
-		{
-			name: "a path holding a non-ASCII letter",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPath(httpsec.OIDCToken, "/caf\u00e9"))
-			},
-			assert: refused("WithOIDCProviderPath"),
-		},
-		{
-			name: "a prefix holding a space",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPrefix("/o p"))
-			},
-			assert: refused("WithOIDCProviderPrefix"),
+			assert: built,
 		},
 		{
 			name: "an assertion endpoint under an issuer path needing escaping, behind a stripping router, builds",
@@ -591,33 +510,6 @@ func TestOIDCProvider_Construction(t *testing.T) {
 				return append(f.wired(t, p), httpsec.EnableOIDCProvider(p))
 			},
 			assert: built,
-		},
-		{
-			name: "a prefix holding a query",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPrefix("/op?x"))
-			},
-			assert: refused("WithOIDCProviderPrefix"),
-		},
-		{
-			name: "a prefix holding a fragment",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPrefix("/op#x"))
-			},
-			assert: refused("WithOIDCProviderPrefix"),
-		},
-		{
-			name: "a prefix holding a percent sign",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPrefix("/op%20x"))
-			},
-			assert: refused("WithOIDCProviderPrefix"),
 		},
 		{
 			name: "a path for an endpoint that does not exist",
@@ -1500,7 +1392,7 @@ func TestOIDCProvider_Construction(t *testing.T) {
 		{"an OIDC login back-channel logout path", httpsec.OIDCToken, httpsec.DefaultOIDCBackchannelPath + "idp", oidcLoginOn},
 		{"the OIDC login handoff path", httpsec.OIDCToken, httpsec.DefaultOIDCHandoffPath, oidcLoginOn},
 		{"the re-authentication listing path", httpsec.OIDCToken, httpsec.DefaultReauthenticationPrefix + "/methods", reauthOn},
-		{"a re-authentication begin path", httpsec.OIDCToken, httpsec.DefaultReauthenticationPrefix + "/begin/totp", reauthOn},
+		{"a re-authentication begin path", httpsec.OIDCToken, httpsec.DefaultReauthenticationPrefix + "/challenge/totp", reauthOn},
 		{"a re-authentication verify path", httpsec.OIDCToken, httpsec.DefaultReauthenticationPrefix + "/verify/totp", reauthOn},
 		{"the re-authentication password path", httpsec.OIDCToken, httpsec.DefaultReauthenticationPrefix + "/password", reauthOn},
 		{"the session management prefix", httpsec.OIDCToken, httpsec.DefaultSessionManagementPrefix, managementOn},

@@ -270,6 +270,20 @@ func (m *RelyingParty) FlushRefusalLogs() error {
 // returned slice is the caller's own.
 func (m *RelyingParty) Providers() []string { return m.registry.Names() }
 
+// RedirectURL returns the redirect URL registered for the named provider and
+// true, or "" and false when no provider has that name, the empty name
+// included. It is read-only: it reads the registry and changes nothing.
+//
+// The chain uses it to check that the redirect URL can reach its callback
+// path.
+func (m *RelyingParty) RedirectURL(provider string) (string, bool) {
+	p, ok := m.registry.Lookup(provider)
+	if !ok {
+		return "", false
+	}
+	return p.RedirectURL, true
+}
+
 // Links returns the link store the broker resolves identities through, or nil
 // when the broker is not backed by one.
 func (m *RelyingParty) Links() LinkStore {

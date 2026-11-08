@@ -163,7 +163,7 @@ func TestCSRF_FetchMetadata(t *testing.T) {
 				return []httpsec.Option{httpsec.EnableFormLogin(h.formLoginDeps())}
 			},
 			request: func(ctx context.Context) *http.Request {
-				return csrfRequest(ctx, http.MethodPost, "https://app.example.com/login",
+				return csrfRequest(ctx, http.MethodPost, "https://app.example.com"+httpsec.DefaultLoginPath,
 					site("cross-site"), "username=ada&password=attacker")
 			},
 			oracle: true, assert: refusedCrossSite,

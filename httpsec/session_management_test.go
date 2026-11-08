@@ -454,6 +454,20 @@ func TestSessionManagement(t *testing.T) {
 			},
 		},
 		{
+			name: "a prefix given with one trailing slash answers at the trimmed prefix",
+			opts: []httpsec.SessionManagementOption{httpsec.WithSessionManagementPrefix("/account/sign-ins/")},
+			assert: func(t *testing.T, f *managementFixture) {
+				current := f.signIn(t, "u-1")
+				other := f.signIn(t, "u-1")
+
+				assert.Len(t, listedSignIns(t, f.request(t, http.MethodGet, "/account/sign-ins", current.ID)), 2)
+
+				out := f.request(t, http.MethodDelete, "/account/sign-ins/"+other.FamilyID.String(), current.ID)
+				require.NoError(t, out.err)
+				assert.False(t, f.loads(t, other))
+			},
+		},
+		{
 			name: "a refusal before the endpoints, for a deleted session reference, is not cached either",
 			assert: func(t *testing.T, f *managementFixture) {
 				gone := f.signIn(t, "u-1")
@@ -774,16 +788,10 @@ func TestEnableSessionManagement_Construction(t *testing.T) {
 			assert: refused("EnableSessionManagement"),
 		},
 		{
-			name: "a prefix ending in a slash",
+			name: "a prefix ending in one slash",
 			opts: []httpsec.Option{httpsec.WithSessions(sessions),
 				httpsec.EnableSessionManagement(httpsec.WithSessionManagementPrefix("/sessions/"))},
-			assert: refused("WithSessionManagementPrefix"),
-		},
-		{
-			name: "a relative prefix",
-			opts: []httpsec.Option{httpsec.WithSessions(sessions),
-				httpsec.EnableSessionManagement(httpsec.WithSessionManagementPrefix("sessions"))},
-			assert: refused("WithSessionManagementPrefix"),
+			assert: func(t *testing.T, err error) { require.NoError(t, err) },
 		},
 		{
 			name: "a recency window of zero",

@@ -98,7 +98,7 @@ func TestManagerAuthorize(t *testing.T) {
 
 				assert.Equal(t, "code", q.Get("response_type"))
 				assert.Equal(t, "client-corp", q.Get("client_id"))
-				assert.Equal(t, "https://app.example/login/oauth2/callback/corp", q.Get("redirect_uri"))
+				assert.Equal(t, "https://app.example/sso/callback/corp", q.Get("redirect_uri"))
 				assert.Equal(t, "openid profile email", q.Get("scope"))
 				assert.Equal(t, "S256", q.Get("code_challenge_method"))
 				sum := sha256.Sum256([]byte(f.Verifier))
@@ -1020,7 +1020,7 @@ func TestExchange(t *testing.T) {
 		code     = "the-code"
 		verifier = "the-verifier"
 		idToken  = "header.payload.signature"
-		redirect = "https://app.example/login/oauth2/callback/"
+		redirect = "https://app.example/sso/callback/"
 	)
 	okBody := `{"access_token":"at-secret","refresh_token":"rt-secret","token_type":"Bearer","id_token":"` + idToken + `"}`
 	longTail := "TAIL-BEYOND-THE-BOUND"

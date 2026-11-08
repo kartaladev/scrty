@@ -128,8 +128,8 @@ The base path SHALL NOT change the consumer's authorization rules, routes the co
 - **AND** the endpoint that redeems the link answers at `/auth/sign-in/magic-link/redeem`
 
 #### Scenario: Provider pages unchanged
-- **WHEN** a chain with the base path `/auth` enables the provider with issuer `https://id.example.com/auth` and the login page `https://app.example.com/signin`
-- **THEN** an authorization request that needs a sign-in is sent to `https://app.example.com/signin`
+- **WHEN** a chain with the base path `/auth` enables the provider with issuer `https://id.example.com/auth` and the login page `https://id.example.com/signin`
+- **THEN** an authorization request that needs a sign-in is sent to `https://id.example.com/signin`
 
 #### Scenario: Prefix stripped before the chain
 - **WHEN** a proxy strips `/auth` before requests reach a chain that has no base path

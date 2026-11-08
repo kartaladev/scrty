@@ -30,10 +30,10 @@ import (
 
 // The second-factor re-proof paths under the default prefix.
 const (
-	reauthBeginPrefix   = httpsec.DefaultReauthenticationPrefix + "/begin"
-	reauthVerifyPrefix  = httpsec.DefaultReauthenticationPrefix + "/verify"
-	reauthBeginPasskey  = reauthBeginPrefix + "/" + passkey.MethodName
-	reauthVerifyPasskey = reauthVerifyPrefix + "/" + passkey.MethodName
+	reauthChallengePrefix  = httpsec.DefaultReauthenticationPrefix + "/challenge"
+	reauthVerifyPrefix     = httpsec.DefaultReauthenticationPrefix + "/verify"
+	reauthChallengePasskey = reauthChallengePrefix + "/" + passkey.MethodName
+	reauthVerifyPasskey    = reauthVerifyPrefix + "/" + passkey.MethodName
 )
 
 // errReauthVerifyDenied is a consumer's post-authentication refusal.
@@ -95,7 +95,7 @@ func (e *reauthEnv) serve(t *testing.T, req *http.Request) served {
 func (e *reauthEnv) begin(t *testing.T, tok string) served {
 	t.Helper()
 
-	return e.serve(t, bearerPost(t.Context(), reauthBeginPasskey, tok))
+	return e.serve(t, bearerPost(t.Context(), reauthChallengePasskey, tok))
 }
 
 // begun begins a passkey re-proof with tok, requires it to succeed, and returns
@@ -1071,19 +1071,19 @@ func TestReauthBegin(t *testing.T) {
 		{
 			name:   "a begin for a method without a begin step is unknown",
 			wire:   untouched,
-			act:    beginAt(reauthBeginPrefix + "/totp"),
+			act:    beginAt(reauthChallengePrefix + "/totp"),
 			assert: refusedBegin(httpsec.ErrUnknownMFAMethod),
 		},
 		{
 			name:   "a begin for an unknown method is unknown",
 			wire:   untouched,
-			act:    beginAt(reauthBeginPrefix + "/sms"),
+			act:    beginAt(reauthChallengePrefix + "/sms"),
 			assert: refusedBegin(httpsec.ErrUnknownMFAMethod),
 		},
 		{
 			name:   "a begin path with an empty method segment is unknown",
 			wire:   untouched,
-			act:    beginAt(reauthBeginPrefix + "/"),
+			act:    beginAt(reauthChallengePrefix + "/"),
 			assert: refusedBegin(httpsec.ErrUnknownMFAMethod),
 		},
 		{
@@ -1092,7 +1092,7 @@ func TestReauthBegin(t *testing.T) {
 				untouched(h, stub)
 				stub.enrolled = false
 			},
-			act:    beginAt(reauthBeginPasskey),
+			act:    beginAt(reauthChallengePasskey),
 			assert: refusedBegin(httpsec.ErrReauthenticationMethodNotUsable),
 		},
 		{
@@ -1101,7 +1101,7 @@ func TestReauthBegin(t *testing.T) {
 				untouched(h, stub)
 				stub.enrolledErr = errors.New("reauthverify_test: enrolment store unavailable")
 			},
-			act: beginAt(reauthBeginPasskey),
+			act: beginAt(reauthChallengePasskey),
 			assert: func(t *testing.T, e *reauthEnv, out served) {
 				refusedBegin(e.stub.enrolledErr)(t, e, out)
 			},
@@ -1251,7 +1251,7 @@ func passkeyLogin(t *testing.T, d *pwlDeployment, credID string) string {
 func reauthPasskey(t *testing.T, d *pwlDeployment, tok, credID string) served {
 	t.Helper()
 
-	begun := serve(t, d.chain, bearerPost(t.Context(), reauthBeginPasskey, tok))
+	begun := serve(t, d.chain, bearerPost(t.Context(), reauthChallengePasskey, tok))
 	require.NoError(t, begun.err)
 	require.Equal(t, http.StatusOK, begun.rec.Code)
 

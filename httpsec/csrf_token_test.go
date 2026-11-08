@@ -568,7 +568,7 @@ func TestCSRF_TokenAtSignIn(t *testing.T) {
 			chain, err := httpsec.New(opts...)
 			require.NoError(t, err)
 
-			s := serve(t, chain, csrfRequest(t.Context(), http.MethodPost, "https://app.example.com/login",
+			s := serve(t, chain, csrfRequest(t.Context(), http.MethodPost, "https://app.example.com"+httpsec.DefaultLoginPath,
 				map[string]string{"Sec-Fetch-Site": "same-origin"}, "username=ada&password=s3cret"))
 			require.NoError(t, s.err)
 			require.NotEmpty(t, sid)

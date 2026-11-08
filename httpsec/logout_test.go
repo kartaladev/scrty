@@ -291,16 +291,6 @@ func TestLogoutConstruction(t *testing.T) {
 			},
 			assert: refused("EnableLogout", "session manager"),
 		},
-		{
-			name: "an empty logout path",
-			build: func(h *authHarness) []httpsec.Option {
-				return []httpsec.Option{
-					httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: h.sessions},
-						httpsec.WithLogoutRequestPath("")),
-				}
-			},
-			assert: refused("WithLogoutRequestPath"),
-		},
 	}
 
 	for _, tc := range cases {

@@ -39,7 +39,7 @@ registry, err := oidc.NewRegistry(oidc.Provider{
 	Issuer:       "https://idp.example.com",
 	ClientID:     "scrty",
 	ClientSecret: corpClientSecret,
-	RedirectURL:  "https://app.example.com/login/oauth2/callback/corp",
+	RedirectURL:  "https://app.example.com/sso/callback/corp",
 })
 
 broker, err := oidc.NewBroker(oidc.NewMemoryLinkStore(), users)
@@ -66,10 +66,10 @@ and every option names the default it replaces.
 
 | Default path | Method | Purpose | Replace with |
 |---|---|---|---|
-| `/oauth2/authorization/{provider}` | GET | starts a login | `httpsec.WithOIDCAuthorizePath` |
-| `/login/oauth2/callback/{provider}` | GET | the provider's callback | `httpsec.WithOIDCCallbackPath` |
-| `/login/oauth2/handoff` | POST | redeems the handoff code | `httpsec.WithOIDCHandoffPath` |
-| `/logout/oauth2/backchannel/{provider}` | POST | back-channel logout | `httpsec.WithOIDCBackchannelLogoutPath` |
+| `/sso/login/{provider}` | GET | starts a login | `httpsec.WithOIDCAuthorizePath` |
+| `/sso/callback/{provider}` | GET | the provider's callback | `httpsec.WithOIDCCallbackPath` |
+| `/sso/handoff` | POST | redeems the handoff code | `httpsec.WithOIDCHandoffPath` |
+| `/sso/backchannel-logout/{provider}` | POST | back-channel logout | `httpsec.WithOIDCBackchannelLogoutPath` |
 
 `{provider}` is the one path segment naming a provider registered with `oidc.NewRegistry`.
 
@@ -91,7 +91,7 @@ could read the URL through its own request or the `Referer` header):
    history.replaceState(null, "", url);
    ```
 
-and only then POST the code as the `handoff` form field to `/login/oauth2/handoff` (or your
+and only then POST the code as the `handoff` form field to `/sso/handoff` (or your
 `httpsec.WithOIDCHandoffPath`), which answers with the session's access token, refresh token and
 the destination to send the user on to. A consumer who conveys the login another way (a
 backend-for-frontend, say) replaces this whole step with `httpsec.WithOIDCCallbackSuccess`, and no
@@ -118,7 +118,7 @@ gains RP-initiated logout: ending a session that a federated login created also 
 provider's end-session URL, for the client to send the browser to next
 (`httpsec.WithOIDCRPInitiatedLogout(false)` turns this off). A provider that supports OpenID
 Connect back-channel logout can be configured with an end-session and back-channel logout URL that
-points at `/logout/oauth2/backchannel/{provider}`; scrty verifies the logout token and ends the
+points at `/sso/backchannel-logout/{provider}`; scrty verifies the logout token and ends the
 matching sessions without any browser involved.
 
 ### Second factor and provider assurance
@@ -603,7 +603,7 @@ requirement, err := policy.NewMFARequirement(requirementLookup, lookups,
 chain, err := httpsec.New(
 	// ... your other chain options (login, sessions) ...
 	httpsec.EnableMFA(methods), // each method verifies at "/mfa/verify/<name>" (httpsec.WithMFAVerifyPrefix);
-	// a challenge method also begins at "/mfa/begin/<name>" (httpsec.WithMFABeginPrefix);
+	// a challenge method also begins at "/mfa/challenge/<name>" (httpsec.WithMFABeginPrefix);
 	// httpsec.WithMFAMethodListing turns on GET /mfa/methods, off by default
 	httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{
 		Users:  users,        // identity.UserLoader
@@ -639,7 +639,7 @@ chain, err := httpsec.New(
    working credential, as at a login challenge. The same
    line as at re-authentication holds: a consumer policy that raises `policy.ChallengeMFA` without
    reading `policy.Input.MFASatisfied` hides whatever is registered after it. The begin endpoint
-   (`POST /mfa/begin/<name>`) and verification both refuse a caller other than the session's own
+   (`POST /mfa/challenge/<name>`) and verification both refuse a caller other than the session's own
    user, which only a consumer's interceptor can publish, before anything is counted or issued.
 
 Every other request a confined session makes — the password-change endpoint, a consumer route,
@@ -891,7 +891,7 @@ Everything else has a default:
 | Other sessions of the user when a passkey is removed | ended; the removing session stays | `passkey.WithoutSessionRevocationOnRemoval`, or per request the posted `other_sessions` field (`keep` or `end`; anything else, an empty value or a repeated field is a 400, `httpsec.ErrMalformedRequest`) |
 | Sessions of the user when a passkey is suspended as a clone | every session ended | `passkey.WithoutSessionRevocationOnClone` |
 | Second factor at a passwordless login | a user-verified passkey meets it | `passkey.WithoutSecondFactorAtLogin` |
-| Endpoint paths | `/passkey/register`, `/passkey/credentials`, `/passkey/login` | `httpsec.WithPasskeyRegistrationPrefix`, `WithPasskeyCredentialsPrefix`, `WithPasskeyPasswordlessPrefix` |
+| Endpoint paths | `/passkeys/register`, `/passkeys`, `/sign-in/passkey` | `httpsec.WithPasskeyRegistrationPrefix`, `WithPasskeyCredentialsPrefix`, `WithPasskeyPasswordlessPrefix` |
 | Challenge lifetime | 5 minutes (also the timeout in the creation options) | `passkey.WithChallengeTTL` |
 | Registration challenges per user | 10 per hour; the window is fixed | `passkey.WithRegistrationChallengeLimit` |
 | Passkeys per user | 25, every state counted | `passkey.WithPerUserLimit` |
@@ -1019,9 +1019,9 @@ chain, err := httpsec.New(
 ```
 
 - `EnablePasskeys` alone serves registration and management for a signed-in session:
-  `POST /passkey/register/begin` and `/finish` (plus `/confirm` and `/confirm-email`
-  for a pending passkey), and `GET /passkey/credentials` with `POST .../rename` and `.../remove`.
-- `WithPasskeyPasswordlessLogin` is off unless given. It adds `POST /passkey/login/begin` and `/finish`,
+  `POST /passkeys/register/begin` and `/finish` (plus `/confirm` and `/confirm-email`
+  for a pending passkey), and `GET /passkeys` with `POST .../rename` and `.../remove`.
+- `WithPasskeyPasswordlessLogin` is off unless given. It adds `POST /sign-in/passkey/begin` and `/finish`,
   tied together by an `HttpOnly`, `Secure`, `SameSite=Strict` ceremony cookie, and signs a user in
   with a discoverable passkey alone. `PasswordlessTokens` names the token generator, and may be
   left out when the chain has form login to take one from.
@@ -1032,7 +1032,7 @@ chain, err := httpsec.New(
   `httpsec.WithPasskeyRegistrationResolving(kinds...)`; the four registration endpoints then serve it,
   and listing, rename and removal still refuse it. See the defaults table below.
 - The passkey is a second-factor method named `passkey`, beside TOTP: `EnableMFA` serves it at
-  `/mfa/begin/passkey` and `/mfa/verify/passkey`. A user-verified passkey login already meets the
+  `/mfa/challenge/passkey` and `/mfa/verify/passkey`. A user-verified passkey login already meets the
   second factor, so it is not asked again.
 - A passkey is also a binding route for a recovered or enrolment-only session, once the passkey
   method is among the enrolling methods.
@@ -1149,7 +1149,7 @@ caller is refused as authentication required.
 | Request | What it does | Default response |
 |---|---|---|
 | `GET /reauth/methods` | how the session's user may re-prove | `{"methods":[{"name":…,"channel":…,"begins":…}],"password":…}` |
-| `POST /reauth/begin/{method}` | begins a second factor that has a begin step (a passkey) | the method's begin data as JSON |
+| `POST /reauth/challenge/{method}` | begins a second factor that has a begin step (a passkey) | the method's begin data as JSON |
 | `POST /reauth/verify/{method}` | re-proves with a second factor | the login document: `access_token`, `refresh_token`, `valid_until` |
 | `POST /reauth/password` | re-proves with the password, read from the `password` form field or JSON member | the login document |
 
@@ -2563,7 +2563,7 @@ export function Orders({ accessToken }: { accessToken: string }) {
 
 // Sign-in: the response's token_type is "DPoP".
 export async function signIn(username: string, password: string): Promise<string> {
-  const res = await dpopFetch("/login", { method: "POST", body: new URLSearchParams({ username, password }) });
+  const res = await dpopFetch("/sign-in/password", { method: "POST", body: new URLSearchParams({ username, password }) });
   return (await res.json()).access_token;
 }
 ```

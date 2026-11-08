@@ -71,6 +71,9 @@ type passwordlessInterceptor struct {
 	users    identity.UserLoader
 	sessions *session.Sessions
 
+	// prefix is where the options placed the endpoints, without the base path;
+	// beginPath and finishPath are where they answer, settled by resolvePaths.
+	prefix     string
 	beginPath  string
 	finishPath string
 
@@ -201,6 +204,7 @@ func WithPasskeyPasswordlessPrefix(prefix string) PasskeyOption {
 
 		p.loginPrefix = trimmed
 		p.loginPrefixSet = true
+		p.declare("WithPasskeyPasswordlessPrefix", trimmed)
 
 		return nil
 	}
@@ -316,17 +320,23 @@ func PasswordlessBeginResponder(fn PasskeyBeginResponder) PasswordlessSetting {
 // newPasswordless builds the passwordless endpoints p's settings describe,
 // reading the time from now.
 func (p *passkeyInterceptor) newPasswordless(now func() time.Time) *passwordlessInterceptor {
-	prefix := p.loginPrefix
-
 	return &passwordlessInterceptor{
 		passwordlessConfig: *p.passwordless,
 		manager:            p.deps.Passkeys,
 		users:              p.deps.Users,
 		sessions:           p.deps.Sessions,
-		beginPath:          prefix + passkeyBeginSegment,
-		finishPath:         prefix + passkeyFinishSegment,
+		prefix:             p.loginPrefix,
 		now:                now,
 	}
+}
+
+// resolvePaths places the begin and finish endpoints under base, from the
+// prefix the options declared.
+func (i *passwordlessInterceptor) resolvePaths(base string) {
+	prefix := joinBase(base, i.prefix)
+
+	i.beginPath = prefix + passkeyBeginSegment
+	i.finishPath = prefix + passkeyFinishSegment
 }
 
 // checkPasswordless reports what only the passkey dependencies can show

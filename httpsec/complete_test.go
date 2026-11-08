@@ -289,7 +289,7 @@ func newExchange(t *testing.T) *httpsec.Exchange {
 	t.Helper()
 
 	ex := httpsec.NewExchange(t.Context(),
-		stubRequest{method: http.MethodPost, path: "/login"}, &stubWriter{})
+		stubRequest{method: http.MethodPost, path: httpsec.DefaultLoginPath}, &stubWriter{})
 	ex.Authentication = &authenticate.Authentication{Principal: testPrincipal()}
 
 	return ex
@@ -803,7 +803,7 @@ func TestCompleteLogin_ChallengeStoredBeforeHandOut(t *testing.T) {
 			)
 			require.NoError(t, err)
 
-			out := serve(t, chain, formRequest(t.Context(), "/login", "username=ada&password=s3cret"))
+			out := serve(t, chain, formRequest(t.Context(), httpsec.DefaultLoginPath, "username=ada&password=s3cret"))
 
 			var ch *httpsec.ChallengeError
 			require.ErrorAs(t, out.err, &ch)
@@ -1056,7 +1056,7 @@ func TestCompleteLoginMFAMethods(t *testing.T) {
 			)
 			require.NoError(t, err)
 
-			tc.assert(t, serve(t, chain, formRequest(t.Context(), "/login", "username=ada&password=s3cret")))
+			tc.assert(t, serve(t, chain, formRequest(t.Context(), httpsec.DefaultLoginPath, "username=ada&password=s3cret")))
 		})
 	}
 }

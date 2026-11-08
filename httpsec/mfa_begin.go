@@ -14,8 +14,8 @@ import (
 // DefaultMFABeginPrefix is the prefix the begin endpoint answers POST requests
 // under when the consumer names none: a challenge method begins at the prefix
 // followed by "/" and the method's name, so a method named "passkey" begins at
-// "/mfa/begin/passkey" by default.
-const DefaultMFABeginPrefix = "/mfa/begin"
+// "/mfa/challenge/passkey" by default.
+const DefaultMFABeginPrefix = "/mfa/challenge"
 
 // DefaultMFAChallengeTTL is how long a pending challenge may be answered when
 // the consumer sets no lifetime: long enough for a person to complete a
@@ -233,7 +233,8 @@ func WithMFABeginPrefix(prefix string) MFAOption {
 			return err
 		}
 
-		i.beginPrefix = p
+		i.declaredBeginPrefix = p
+		i.declare("WithMFABeginPrefix", p)
 
 		return nil
 	}
@@ -375,20 +376,9 @@ func underPrefix(path, prefix string) bool {
 // matches no request path; and so is the root, which would claim every
 // one-segment path of the application as a method name.
 func mfaPrefix(option, prefix string) (string, error) {
-	switch {
-	case prefix == "":
-		return "", newConfigError("%s was given no prefix, so a session owing a second factor "+
-			"would have no way to resolve it", option)
-	case !strings.HasPrefix(prefix, "/"):
-		return "", newConfigError("%s was given %q, which does not start with \"/\" and so "+
-			"matches no request path", option, prefix)
+	if err := checkEndpointPath(option, prefix); err != nil {
+		return "", err
 	}
 
-	trimmed := strings.TrimRight(prefix, "/")
-	if trimmed == "" {
-		return "", newConfigError("%s was given the root path %q, which would claim every "+
-			"one-segment path of the application", option, prefix)
-	}
-
-	return trimmed, nil
+	return strings.TrimSuffix(prefix, "/"), nil
 }

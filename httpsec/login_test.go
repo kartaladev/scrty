@@ -1228,7 +1228,7 @@ func TestFormLogin(t *testing.T) {
 				h.expectSessionOpened("issued-token")
 			},
 			request: func(ctx context.Context) *http.Request {
-				return formRequest(ctx, "/login", "username=ada&password=s3cret")
+				return formRequest(ctx, httpsec.DefaultLoginPath, "username=ada&password=s3cret")
 			},
 			assert: func(t *testing.T, s served) {
 				require.NoError(t, s.err)
@@ -1250,7 +1250,7 @@ func TestFormLogin(t *testing.T) {
 			name: "a GET on the login path is not a login",
 			wire: func(*testing.T, *authHarness) {},
 			request: func(ctx context.Context) *http.Request {
-				return httptest.NewRequestWithContext(ctx, http.MethodGet, "/login", nil)
+				return httptest.NewRequestWithContext(ctx, http.MethodGet, httpsec.DefaultLoginPath, nil)
 			},
 			assert: func(t *testing.T, s served) {
 				require.NoError(t, s.err)
@@ -1286,7 +1286,7 @@ func TestFormLogin(t *testing.T) {
 				h.expectSessionOpened("issued-token")
 			},
 			request: func(ctx context.Context) *http.Request {
-				return formRequest(ctx, "/login", "email=ada%40example.com&secret=s3cret")
+				return formRequest(ctx, httpsec.DefaultLoginPath, "email=ada%40example.com&secret=s3cret")
 			},
 			assert: func(t *testing.T, s served) {
 				require.NoError(t, s.err)
@@ -1301,7 +1301,7 @@ func TestFormLogin(t *testing.T) {
 				h.expectSessionOpened("issued-token")
 			},
 			request: func(ctx context.Context) *http.Request {
-				return jsonRequest(ctx, "/login", `{"username":"ada","password":"s3cret"}`)
+				return jsonRequest(ctx, httpsec.DefaultLoginPath, `{"username":"ada","password":"s3cret"}`)
 			},
 			assert: func(t *testing.T, s served) {
 				require.NoError(t, s.err)
@@ -1312,7 +1312,7 @@ func TestFormLogin(t *testing.T) {
 			name: "a JSON body without a JSON content type is not read as one",
 			wire: func(*testing.T, *authHarness) {},
 			request: func(ctx context.Context) *http.Request {
-				req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/login",
+				req := httptest.NewRequestWithContext(ctx, http.MethodPost, httpsec.DefaultLoginPath,
 					strings.NewReader(`{"username":"ada","password":"s3cret"}`))
 				req.Header.Set("Content-Type", "text/plain")
 
@@ -1342,7 +1342,7 @@ func TestFormLogin(t *testing.T) {
 				h.expectSessionOpened("issued-token")
 			},
 			request: func(ctx context.Context) *http.Request {
-				return formRequest(ctx, "/login", "username=ada&password=s3cret")
+				return formRequest(ctx, httpsec.DefaultLoginPath, "username=ada&password=s3cret")
 			},
 			assert: func(t *testing.T, s served) {
 				require.NoError(t, s.err)
@@ -1356,7 +1356,7 @@ func TestFormLogin(t *testing.T) {
 			opts: []httpsec.LoginOption{httpsec.WithLoginRequestPath("/session")},
 			wire: func(*testing.T, *authHarness) {},
 			request: func(ctx context.Context) *http.Request {
-				return formRequest(ctx, "/login", "username=ada&password=s3cret")
+				return formRequest(ctx, httpsec.DefaultLoginPath, "username=ada&password=s3cret")
 			},
 			assert: func(t *testing.T, s served) {
 				require.NoError(t, s.err)
@@ -1594,7 +1594,7 @@ func TestFormLoginSequence(t *testing.T) {
 			chain, err := httpsec.New(append(opts, tc.opts...)...)
 			require.NoError(t, err)
 
-			tc.assert(t, h, serve(t, chain, formRequest(t.Context(), "/login", "username=ada&password=s3cret")))
+			tc.assert(t, h, serve(t, chain, formRequest(t.Context(), httpsec.DefaultLoginPath, "username=ada&password=s3cret")))
 		})
 	}
 }
@@ -1701,7 +1701,7 @@ func TestFormLogin_TokenCannotBeIssued(t *testing.T) {
 			}, tc.opts...)...)
 			require.NoError(t, err)
 
-			out := serve(t, chain, formRequest(t.Context(), "/login", "username=ada&password=s3cret"))
+			out := serve(t, chain, formRequest(t.Context(), httpsec.DefaultLoginPath, "username=ada&password=s3cret"))
 
 			n, err := sessions.CountActiveByUser(t.Context(), testPrincipal().ID)
 			require.NoError(t, err)
@@ -1745,7 +1745,7 @@ func TestFormLoginBody(t *testing.T) {
 			// reach a credential check at all.
 			wire: func(*testing.T, *authHarness) {},
 			request: func(ctx context.Context) *http.Request {
-				return jsonRequest(ctx, "/login", jsonLoginOfSize(1<<20))
+				return jsonRequest(ctx, httpsec.DefaultLoginPath, jsonLoginOfSize(1<<20))
 			},
 			assert: func(t *testing.T, s served) {
 				require.ErrorIs(t, s.err, httpsec.ErrRequestTooLarge)
@@ -1757,7 +1757,7 @@ func TestFormLoginBody(t *testing.T) {
 			name: "a body one byte over the default limit is refused",
 			wire: func(*testing.T, *authHarness) {},
 			request: func(ctx context.Context) *http.Request {
-				return jsonRequest(ctx, "/login", jsonLoginOfSize(int(httpsec.DefaultLoginBodyLimit)+1))
+				return jsonRequest(ctx, httpsec.DefaultLoginPath, jsonLoginOfSize(int(httpsec.DefaultLoginBodyLimit)+1))
 			},
 			assert: func(t *testing.T, s served) {
 				require.ErrorIs(t, s.err, httpsec.ErrRequestTooLarge)
@@ -1771,7 +1771,7 @@ func TestFormLoginBody(t *testing.T) {
 				h.expectSessionOpened("issued-token")
 			},
 			request: func(ctx context.Context) *http.Request {
-				return jsonRequest(ctx, "/login", jsonLoginOfSize(int(httpsec.DefaultLoginBodyLimit)-1))
+				return jsonRequest(ctx, httpsec.DefaultLoginPath, jsonLoginOfSize(int(httpsec.DefaultLoginBodyLimit)-1))
 			},
 			assert: func(t *testing.T, s served) {
 				require.NoError(t, s.err)
@@ -1787,7 +1787,7 @@ func TestFormLoginBody(t *testing.T) {
 				h.expectSessionOpened("issued-token")
 			},
 			request: func(ctx context.Context) *http.Request {
-				return jsonRequest(ctx, "/login", jsonLoginOfSize(100<<10))
+				return jsonRequest(ctx, httpsec.DefaultLoginPath, jsonLoginOfSize(100<<10))
 			},
 			assert: func(t *testing.T, s served) {
 				require.NoError(t, s.err)
@@ -1798,7 +1798,7 @@ func TestFormLoginBody(t *testing.T) {
 			name: "no credentials at all",
 			wire: func(*testing.T, *authHarness) {},
 			request: func(ctx context.Context) *http.Request {
-				return formRequest(ctx, "/login", "")
+				return formRequest(ctx, httpsec.DefaultLoginPath, "")
 			},
 			assert: func(t *testing.T, s served) {
 				require.ErrorIs(t, s.err, httpsec.ErrCredentialsMissing)
@@ -1810,7 +1810,7 @@ func TestFormLoginBody(t *testing.T) {
 			name: "an identifier with no password",
 			wire: func(*testing.T, *authHarness) {},
 			request: func(ctx context.Context) *http.Request {
-				return formRequest(ctx, "/login", "username=ada")
+				return formRequest(ctx, httpsec.DefaultLoginPath, "username=ada")
 			},
 			assert: func(t *testing.T, s served) {
 				require.ErrorIs(t, s.err, httpsec.ErrCredentialsMissing,
@@ -1821,7 +1821,7 @@ func TestFormLoginBody(t *testing.T) {
 			name: "an undecodable JSON body",
 			wire: func(*testing.T, *authHarness) {},
 			request: func(ctx context.Context) *http.Request {
-				return jsonRequest(ctx, "/login", `{"username":"ada",`)
+				return jsonRequest(ctx, httpsec.DefaultLoginPath, `{"username":"ada",`)
 			},
 			assert: func(t *testing.T, s served) {
 				require.ErrorIs(t, s.err, httpsec.ErrCredentialsMissing)
@@ -1832,7 +1832,7 @@ func TestFormLoginBody(t *testing.T) {
 			name: "a JSON body whose credential members are not strings",
 			wire: func(*testing.T, *authHarness) {},
 			request: func(ctx context.Context) *http.Request {
-				return jsonRequest(ctx, "/login", `{"username":1,"password":true}`)
+				return jsonRequest(ctx, httpsec.DefaultLoginPath, `{"username":1,"password":true}`)
 			},
 			assert: func(t *testing.T, s served) {
 				require.ErrorIs(t, s.err, httpsec.ErrCredentialsMissing,
@@ -1962,7 +1962,7 @@ func TestFormLoginResponse(t *testing.T) {
 			)
 			require.NoError(t, err)
 
-			s := serve(t, chain, formRequest(t.Context(), "/login", "username=ada&password=s3cret"))
+			s := serve(t, chain, formRequest(t.Context(), httpsec.DefaultLoginPath, "username=ada&password=s3cret"))
 			tc.assert(t, opened, s)
 		})
 	}
@@ -2013,7 +2013,7 @@ func TestFormLoginIgnoresQueryCredentials(t *testing.T) {
 			name: "credentials in the query alone do not authenticate",
 			wire: neverAuthenticates,
 			request: func(ctx context.Context) *http.Request {
-				return formRequest(ctx, "/login?username=ada&password=s3cret", "")
+				return formRequest(ctx, httpsec.DefaultLoginPath+"?username=ada&password=s3cret", "")
 			},
 			assert: refusedAsMissing,
 		},
@@ -2021,7 +2021,7 @@ func TestFormLoginIgnoresQueryCredentials(t *testing.T) {
 			name: "credentials in the body still authenticate",
 			wire: succeeds,
 			request: func(ctx context.Context) *http.Request {
-				return formRequest(ctx, "/login", "username=ada&password=s3cret")
+				return formRequest(ctx, httpsec.DefaultLoginPath, "username=ada&password=s3cret")
 			},
 			assert: loggedIn,
 		},
@@ -2029,7 +2029,7 @@ func TestFormLoginIgnoresQueryCredentials(t *testing.T) {
 			name: "a query pair cannot complete a half-filled body",
 			wire: neverAuthenticates,
 			request: func(ctx context.Context) *http.Request {
-				return formRequest(ctx, "/login?password=s3cret", "username=ada")
+				return formRequest(ctx, httpsec.DefaultLoginPath+"?password=s3cret", "username=ada")
 			},
 			assert: refusedAsMissing,
 		},
@@ -2037,7 +2037,7 @@ func TestFormLoginIgnoresQueryCredentials(t *testing.T) {
 			name: "an unrelated query parameter is harmless",
 			wire: succeeds,
 			request: func(ctx context.Context) *http.Request {
-				return formRequest(ctx, "/login?next=/home", "username=ada&password=s3cret")
+				return formRequest(ctx, httpsec.DefaultLoginPath+"?next=/home", "username=ada&password=s3cret")
 			},
 			assert: loggedIn,
 		},
@@ -2120,7 +2120,7 @@ func TestLogin_RecordsFailureOnUncancellableContext(t *testing.T) {
 			name:   "form login",
 			option: func(h *authHarness) httpsec.Option { return httpsec.EnableFormLogin(h.formLoginDeps()) },
 			request: func(ctx context.Context) *http.Request {
-				return formRequest(ctx, "/login", "username=ada&password=wrong")
+				return formRequest(ctx, httpsec.DefaultLoginPath, "username=ada&password=wrong")
 			},
 			assert: failureReachedStore,
 		},
@@ -2166,14 +2166,14 @@ func TestLoginFields_NeverShowsThePassword(t *testing.T) {
 			name:  "JSON, default parameter",
 			param: "password",
 			req: func(t *testing.T) *http.Request {
-				return jsonRequest(t.Context(), "/login", `{"username":"ada","password":"pw","remember":true}`)
+				return jsonRequest(t.Context(), httpsec.DefaultLoginPath, `{"username":"ada","password":"pw","remember":true}`)
 			},
 		},
 		{
 			name:  "form, default parameter",
 			param: "password",
 			req: func(t *testing.T) *http.Request {
-				return formRequest(t.Context(), "/login", "username=ada&password=pw&remember=true")
+				return formRequest(t.Context(), httpsec.DefaultLoginPath, "username=ada&password=pw&remember=true")
 			},
 		},
 		{
@@ -2181,7 +2181,7 @@ func TestLoginFields_NeverShowsThePassword(t *testing.T) {
 			param: "secret",
 			opts:  []httpsec.LoginOption{httpsec.WithLoginParams("who", "secret")},
 			req: func(t *testing.T) *http.Request {
-				return jsonRequest(t.Context(), "/login", `{"who":"ada","secret":"pw","remember":true}`)
+				return jsonRequest(t.Context(), httpsec.DefaultLoginPath, `{"who":"ada","secret":"pw","remember":true}`)
 			},
 		},
 		{
@@ -2189,7 +2189,7 @@ func TestLoginFields_NeverShowsThePassword(t *testing.T) {
 			param: "secret",
 			opts:  []httpsec.LoginOption{httpsec.WithLoginParams("who", "secret")},
 			req: func(t *testing.T) *http.Request {
-				return formRequest(t.Context(), "/login", "who=ada&secret=pw&remember=true")
+				return formRequest(t.Context(), httpsec.DefaultLoginPath, "who=ada&secret=pw&remember=true")
 			},
 		},
 	}

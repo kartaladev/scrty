@@ -699,27 +699,6 @@ func TestPasskeyRegistrationConstruction(t *testing.T) {
 			assert: refused,
 		},
 		{
-			name: "an empty registration prefix",
-			setup: func(_ *testing.T, h *passkeyHarness) {
-				h.passkeyOpts = append(h.passkeyOpts, httpsec.WithPasskeyRegistrationPrefix(""))
-			},
-			assert: refused,
-		},
-		{
-			name: "a registration prefix without a leading slash",
-			setup: func(_ *testing.T, h *passkeyHarness) {
-				h.passkeyOpts = append(h.passkeyOpts, httpsec.WithPasskeyRegistrationPrefix("passkey"))
-			},
-			assert: refused,
-		},
-		{
-			name: "a credentials prefix without a leading slash",
-			setup: func(_ *testing.T, h *passkeyHarness) {
-				h.passkeyOpts = append(h.passkeyOpts, httpsec.WithPasskeyCredentialsPrefix("credentials"))
-			},
-			assert: refused,
-		},
-		{
 			name: "a nil begin responder",
 			setup: func(_ *testing.T, h *passkeyHarness) {
 				h.passkeyOpts = append(h.passkeyOpts, httpsec.WithPasskeyBeginResponder(nil))

@@ -28,19 +28,19 @@ import (
 const (
 	// DefaultOIDCAuthorizePath is the prefix a login is started under, by a
 	// GET on the prefix followed by the provider's name.
-	DefaultOIDCAuthorizePath = "/oauth2/authorization/"
+	DefaultOIDCAuthorizePath = "/sso/login/"
 
 	// DefaultOIDCCallbackPath is the prefix the provider redirects back to,
 	// followed by the provider's name. A provider's registered redirect URL
 	// has to point here.
-	DefaultOIDCCallbackPath = "/login/oauth2/callback/"
+	DefaultOIDCCallbackPath = "/sso/callback/"
 
 	// DefaultOIDCHandoffPath is where a handoff code is redeemed, by POST.
-	DefaultOIDCHandoffPath = "/login/oauth2/handoff"
+	DefaultOIDCHandoffPath = "/sso/handoff"
 
 	// DefaultOIDCBackchannelPath is the prefix a provider delivers
 	// back-channel logout tokens to, by POST, followed by the provider's name.
-	DefaultOIDCBackchannelPath = "/logout/oauth2/backchannel/"
+	DefaultOIDCBackchannelPath = "/sso/backchannel-logout/"
 
 	// DefaultOIDCFlowCookieName is the cookie that binds a callback to the
 	// browser that started the login.
@@ -144,6 +144,8 @@ func (s BackchannelLogoutScope) valid() bool { return s <= BackchannelLogoutScop
 // oidcInterceptor answers the federated-login endpoints: the authorize
 // redirect, the callback, handoff redemption and back-channel logout.
 type oidcInterceptor struct {
+	pathDeclarations
+
 	manager  *oidc.RelyingParty
 	handoffs *oidc.Handoff
 
@@ -211,6 +213,13 @@ type oidcInterceptor struct {
 	allowedOrigins   []string
 
 	now func() time.Time
+
+	// The declared paths are where the options placed the endpoints, without
+	// the base path; the others are where they answer, settled by resolvePaths.
+	declaredAuthorize   string
+	declaredCallback    string
+	declaredHandoff     string
+	declaredBackchannel string
 
 	authorizePath   string
 	callbackPath    string

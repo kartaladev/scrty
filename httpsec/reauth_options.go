@@ -29,7 +29,7 @@ type ReauthenticationOption func(*reauthInterceptor) error
 //     JSON document {"methods":[{"name":…,"channel":…,"begins":…}],
 //     "password":…} marked Cache-Control: no-store, or through
 //     WithReauthenticationMethodsResponder;
-//   - POST <prefix>/begin/<method> begins a second-factor method that has a
+//   - POST <prefix>/challenge/<method> begins a second-factor method that has a
 //     begin step, answering the method's data as JSON marked Cache-Control:
 //     no-store, or through WithReauthenticationBeginResponder, for the
 //     session's own user only: a resolved caller naming another user is
@@ -171,8 +171,8 @@ type ReauthenticationOption func(*reauthInterceptor) error
 // exact paths (logout, form login, the MFA listing, session renewal, password
 // change, every account recovery path, the magic-link and passwordless passkey
 // login paths, the OIDC handoff path and the key set endpoint) collide only on
-// equality or under the begin or verify path, so "/login/reauth" is accepted
-// beside form login at "/login"; when the MFA slot was given a challenge store
+// equality or under the begin or verify path, so "/sign-in/password/reauth" is accepted
+// beside form login at "/sign-in/password"; when the MFA slot was given a challenge store
 // (WithMFAChallengeStore), has a method with a begin step, and
 // WithReauthenticationChallengeStore was not, because the re-proof challenges
 // would sit in per-process memory while the login challenges are shared (a
@@ -197,7 +197,7 @@ func EnableReauthentication(opts ...ReauthenticationOption) Option {
 		}
 
 		i := &reauthInterceptor{
-			prefix:         DefaultReauthenticationPrefix,
+			declaredPrefix: DefaultReauthenticationPrefix,
 			respond:        writeReauthResult,
 			beginRespond:   writeMFABegin,
 			methodsRespond: writeReauthMethods,
@@ -362,8 +362,8 @@ func (i *reauthInterceptor) checkPaths(c *config, option string) error {
 // claimedPaths is every path the chain's other endpoints answer, each marked
 // by how its interceptor matches it: a prefix claims every path beneath it,
 // anything else only itself. Form login and logout compare their path exactly,
-// so form login at "/login" does not stop the listing answering at
-// "/login/reauth/methods".
+// so form login at "/sign-in/password" does not stop the listing answering at
+// "/sign-in/password/reauth/methods".
 //
 // Recovery's endpoints are all listed whichever proofs are on, because which
 // of them answer is decided after the options are applied, and a path the
@@ -488,29 +488,19 @@ func collides(a, b claimedPath) bool {
 // "/account/confirm" and "/account/confirm/" are the same prefix. An empty
 // prefix is refused rather than read as the default, and so is one that does
 // not start with "/", which matches no request path, and the root "/", which
-// would claim "/methods", "/password" and everything under "/begin" and
+// would claim "/methods", "/password" and everything under "/challenge" and
 // "/verify" across the application. New also refuses a prefix whose paths
 // collide with another endpoint's (see EnableReauthentication).
 func WithReauthenticationPrefix(prefix string) ReauthenticationOption {
 	const option = "WithReauthenticationPrefix"
 
 	return func(i *reauthInterceptor) error {
-		switch {
-		case prefix == "":
-			return newConfigError("%s was given no prefix; omit the option to keep %q",
-				option, DefaultReauthenticationPrefix)
-		case !strings.HasPrefix(prefix, "/"):
-			return newConfigError("%s was given %q, which does not start with \"/\" and so "+
-				"matches no request path", option, prefix)
+		if err := checkEndpointPath(option, prefix); err != nil {
+			return err
 		}
 
-		trimmed := strings.TrimRight(prefix, "/")
-		if trimmed == "" {
-			return newConfigError("%s was given the root path %q, which would claim paths "+
-				"across the whole application", option, prefix)
-		}
-
-		i.prefix = trimmed
+		i.declaredPrefix = strings.TrimSuffix(prefix, "/")
+		i.declare(option, prefix)
 
 		return nil
 	}

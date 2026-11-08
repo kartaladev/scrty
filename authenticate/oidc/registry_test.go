@@ -25,7 +25,7 @@ func TestNewRegistry(t *testing.T) {
 	valid := func() oidc.Provider {
 		return oidc.Provider{
 			Name: "corp", Issuer: "https://idp.example", ClientID: "client",
-			ClientSecret: clientSecret, RedirectURL: "https://app.example/login/oauth2/callback/corp",
+			ClientSecret: clientSecret, RedirectURL: "https://app.example/sso/callback/corp",
 		}
 	}
 	pinned := func(p *oidc.Provider) {
@@ -117,7 +117,7 @@ func TestNewRegistry(t *testing.T) {
 		{name: "plain-text URLs are left to the manager's scheme check",
 			providers: mutate(valid, func(p *oidc.Provider) {
 				p.Issuer = "http://localhost:8080/realms/dev"
-				p.RedirectURL = "http://localhost:3000/login/oauth2/callback/corp"
+				p.RedirectURL = "http://localhost:3000/sso/callback/corp"
 				p.AuthorizationEndpoint = "http://localhost:8080/authorize"
 				p.TokenEndpoint = "http://localhost:8080/token"
 				p.JWKSURI = "http://localhost:8080/jwks"

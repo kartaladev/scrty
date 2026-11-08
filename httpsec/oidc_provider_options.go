@@ -2,7 +2,6 @@ package httpsec
 
 import (
 	"fmt"
-	"net/url"
 	"strings"
 )
 
@@ -70,35 +69,37 @@ type OIDCProviderOption func(*oidcEndpoints) error
 // WithOIDCProviderPrefix serves the provider's endpoints under prefix.
 //
 // Default: DefaultOIDCProviderPrefix, which passes through once the consumer
-// moves away from it. A prefix that is empty, does not start with "/" or ends
-// with one, or holds a character that needs escaping in a URL path (a space, "?",
-// "#" or "%", for instance), is refused: a path that needs escaping cannot be
-// published and compared unescaped.
+// moves away from it. Under WithBasePath the prefix is within the base path:
+// "/auth" with the prefix "/op" serves the token endpoint at "/auth/op/token",
+// and a prefix that repeats the base path, such as "/auth/op", fails New. One trailing slash is set aside, so "/op" and "/op/" are
+// the same prefix. A prefix that is empty, does not start with "/", is "/", or
+// holds a character that needs escaping in a URL path (a space, "?", "#" or "%",
+// for instance), is refused: a path that needs escaping cannot be published and
+// compared unescaped.
 //
 // An endpoint given its own path with WithOIDCProviderPath keeps that path.
 func WithOIDCProviderPrefix(prefix string) OIDCProviderOption {
 	const option = "WithOIDCProviderPrefix"
 
 	return func(op *oidcEndpoints) error {
-		if !strings.HasPrefix(prefix, "/") || strings.HasSuffix(prefix, "/") {
-			return newConfigError("%s was given %q: a prefix starts with \"/\" and does not end with one",
-				option, prefix)
+		if err := checkEndpointPath(option, prefix); err != nil {
+			return err
 		}
 
-		if needsEscaping(prefix) {
-			return newConfigError("%s was given %q: a prefix holds no character that needs escaping in a "+
-				"URL path (such as a space, \"?\", \"#\" or \"%%\")", option, prefix)
-		}
-
-		op.prefix = prefix
+		op.prefix = strings.TrimSuffix(prefix, "/")
+		op.declare(option, prefix)
 
 		return nil
 	}
 }
 
 // WithOIDCProviderPath serves one endpoint on path, in place of the prefix
-// followed by that endpoint's default. The path is the whole request path, and
-// the prefix does not apply to it, whichever option came first.
+// followed by that endpoint's default. The prefix does not apply to it,
+// whichever option came first. With no base path it is the whole request path;
+// under WithBasePath it is within the base path: "/auth" with
+// WithOIDCProviderPath(OIDCToken, "/tokens") serves the token endpoint at
+// "/auth/tokens", and a path that repeats the base path, such as
+// "/auth/tokens", fails New.
 //
 // Default: each endpoint at its place under the prefix, as its constant says. A
 // path not starting with "/", one holding a character that needs escaping in a URL path (a space, "?", "#"
@@ -112,16 +113,13 @@ func WithOIDCProviderPath(endpoint OIDCEndpoint, path string) OIDCProviderOption
 			return newConfigError("%s was given %s, which is no endpoint", option, endpoint)
 		}
 
-		if !strings.HasPrefix(path, "/") {
-			return newConfigError("%s was given %q for %s: a path starts with \"/\"", option, path, endpoint)
-		}
-
-		if needsEscaping(path) {
-			return newConfigError("%s was given %q for %s: a path holds no character that needs escaping "+
-				"in a URL path (such as a space, \"?\", \"#\" or \"%%\")", option, path, endpoint)
+		setting := fmt.Sprintf("%s for %s", option, endpoint)
+		if err := checkEndpointPath(setting, path); err != nil {
+			return err
 		}
 
 		op.overrides[endpoint] = path
+		op.declare(setting, path)
 
 		return nil
 	}
@@ -141,10 +139,4 @@ func WithOIDCPagesCarryFrameAncestors() OIDCProviderOption {
 
 		return nil
 	}
-}
-
-// needsEscaping reports whether p would change when escaped as a URL path, so
-// that what is served and what is published stay the same string.
-func needsEscaping(p string) bool {
-	return (&url.URL{Path: p}).EscapedPath() != p
 }

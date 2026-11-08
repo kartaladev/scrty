@@ -24,10 +24,10 @@ import (
 // proxy rule naming the same endpoint names the same thing this package does.
 const (
 	// DefaultMagicLinkRequestPath is where a link is asked for.
-	DefaultMagicLinkRequestPath = "/login/magic"
+	DefaultMagicLinkRequestPath = "/sign-in/magic-link"
 
 	// DefaultMagicLinkConsumePath is where a link is redeemed.
-	DefaultMagicLinkConsumePath = "/login/magic/consume"
+	DefaultMagicLinkConsumePath = "/sign-in/magic-link/redeem"
 
 	// DefaultBindingCookieName is the cookie the same-device binding travels
 	// in.
@@ -137,6 +137,8 @@ type Redeemer interface {
 
 // magicLinkInterceptor answers both magic-link endpoints.
 type magicLinkInterceptor struct {
+	pathDeclarations
+
 	manager  *magiclink.Links
 	redeemer Redeemer
 	respond  MagicLinkResponder
@@ -181,15 +183,28 @@ type magicLinkInterceptor struct {
 
 	now func() time.Time
 
-	requestPath   string
-	consumePath   string
-	cookieName    string
-	bodyLimit     int64
-	countRefusals bool
+	// declaredRequestPath and declaredConsumePath are where the options placed
+	// the endpoints, without the base path; requestPath and consumePath are
+	// where they answer, settled by resolvePaths.
+	declaredRequestPath string
+	declaredConsumePath string
+	requestPath         string
+	consumePath         string
+	cookieName          string
+	bodyLimit           int64
+	countRefusals       bool
 
 	// automation is the automation-challenge gate when it was selected for the
 	// link request, settled at assembly, and nil otherwise.
 	automation *challengeGate
+}
+
+// resolvePaths places the request and redeem endpoints under base, from the
+// paths the options declared. The confirm page the emailed link points at is
+// the consumer's own page, not an endpoint of the chain, and does not move.
+func (i *magicLinkInterceptor) resolvePaths(base string) {
+	i.requestPath = joinBase(base, i.declaredRequestPath)
+	i.consumePath = joinBase(base, i.declaredConsumePath)
 }
 
 // check reports the wiring faults only the assembled configuration can see:
