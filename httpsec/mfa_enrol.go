@@ -1128,14 +1128,14 @@ func (i *enrolmentInterceptor) endpoints() []Endpoint {
 
 	eps := []Endpoint{
 		declare(feature, "WithEnrolmentBeginPrefix", OperationMFAEnrolmentBegin, withSegment(i.beginPrefix, "method"),
-			MatchSubtree, PassThrough, RequiresPendingEnrolment, http.MethodPost),
+			MatchSubtree, OtherMethodsPassThrough, RequiresPendingEnrolment, http.MethodPost),
 		declare(feature, "WithEnrolmentConfirmPrefix", OperationMFAEnrolmentConfirm, withSegment(i.confirmPrefix, "method"),
-			MatchSubtree, PassThrough, RequiresPendingEnrolment, http.MethodPost),
+			MatchSubtree, OtherMethodsPassThrough, RequiresPendingEnrolment, http.MethodPost),
 	}
 
 	if i.emailConfirmation {
 		eps = append(eps, declare(feature, "WithEnrolmentEmailConfirmPrefix", OperationMFAEnrolmentConfirmEmail,
-			withSegment(i.emailPrefix, "method"), MatchSubtree, PassThrough, RequiresPendingEnrolment, http.MethodPost))
+			withSegment(i.emailPrefix, "method"), MatchSubtree, OtherMethodsPassThrough, RequiresPendingEnrolment, http.MethodPost))
 	}
 
 	return eps

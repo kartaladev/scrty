@@ -505,11 +505,11 @@ func (m *sessionManagement) endpoints() []Endpoint {
 
 	eps := []Endpoint{
 		declare(feature, placedBy, OperationSessionsList, m.prefix,
-			MatchExact, PassThrough, RequiresSession, http.MethodGet),
+			MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodGet),
 		declare(feature, placedBy, OperationSessionsEndOthers, m.prefix,
-			MatchExact, PassThrough, RequiresSession, http.MethodDelete),
+			MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodDelete),
 		declare(feature, placedBy, OperationSessionsEnd, withSegment(m.prefix, "handle"),
-			MatchSegment, PassThrough, RequiresSession, http.MethodDelete),
+			MatchSegment, OtherMethodsPassThrough, RequiresSession, http.MethodDelete),
 	}
 
 	for i := range eps {

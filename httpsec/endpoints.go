@@ -106,22 +106,22 @@ type MethodPolicy uint8
 
 // The other-method policies.
 const (
-	// PassThrough passes the request on, to the rest of the chain and the
-	// application, as though the endpoint were not there.
-	PassThrough MethodPolicy = iota + 1
+	// OtherMethodsPassThrough passes the request on, to the rest of the
+	// chain and the application, as though the endpoint were not there.
+	OtherMethodsPassThrough MethodPolicy = iota + 1
 
-	// Refused answers the request 405 Method Not Allowed. The endpoint claims
-	// its path for every method.
-	Refused
+	// OtherMethodsRefused answers the request 405 Method Not Allowed. The
+	// endpoint claims its path for every method.
+	OtherMethodsRefused
 )
 
 // String names the policy as its constant does.
 func (p MethodPolicy) String() string {
 	switch p {
-	case PassThrough:
-		return "PassThrough"
-	case Refused:
-		return "Refused"
+	case OtherMethodsPassThrough:
+		return "OtherMethodsPassThrough"
+	case OtherMethodsRefused:
+		return "OtherMethodsRefused"
 	default:
 		return fmt.Sprintf("MethodPolicy(%d)", uint8(p))
 	}
@@ -446,7 +446,7 @@ func checkDeclared(e Endpoint) error {
 		missing = append(missing, "a match kind")
 	}
 
-	if e.OtherMethods < PassThrough || e.OtherMethods > Refused {
+	if e.OtherMethods < OtherMethodsPassThrough || e.OtherMethods > OtherMethodsRefused {
 		missing = append(missing, "an other-method policy")
 	}
 

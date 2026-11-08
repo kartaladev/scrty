@@ -273,6 +273,6 @@ func streamByCookie(ex *Exchange) bool {
 func (e *sessionSignals) endpoints() []Endpoint {
 	return []Endpoint{
 		declare("EnableSessionSignals", "SessionSignals.Path", OperationSessionSignals, e.path,
-			MatchExact, Refused, RequiresSession, http.MethodGet),
+			MatchExact, OtherMethodsRefused, RequiresSession, http.MethodGet),
 	}
 }

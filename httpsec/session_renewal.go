@@ -849,6 +849,6 @@ func WithRenewalLifetime(fn func(*Exchange, *session.Session) time.Duration) Ses
 func (r *sessionRenewal) endpoints() []Endpoint {
 	return []Endpoint{
 		declare("EnableSessionRenewal", "WithRenewalPath", OperationSessionRenewal, r.path,
-			MatchExact, PassThrough, RequiresSession, http.MethodPost),
+			MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodPost),
 	}
 }

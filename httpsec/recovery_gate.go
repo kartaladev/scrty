@@ -168,9 +168,9 @@ func (g *recoveryGate) endpoints() []Endpoint {
 
 	eps := []Endpoint{
 		declare(feature, placedBy, OperationRecoveryCodesCount, g.codes.codesPath,
-			MatchExact, PassThrough, RequiresSession, http.MethodGet),
+			MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodGet),
 		declare(feature, placedBy, OperationRecoveryCodesRegenerate, g.codes.codesPath,
-			MatchExact, PassThrough, RequiresSession, http.MethodPost),
+			MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodPost),
 	}
 
 	for i := range eps {

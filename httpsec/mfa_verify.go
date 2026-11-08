@@ -806,10 +806,13 @@ type ListingSetting func(*listingConfig) error
 // ListingPath answers the listing on path instead.
 //
 // Default: DefaultMFAMethodListingPath, "/mfa/methods". The path is within the
-// base path (WithBasePath). Only GET on exactly path is the listing. An empty path is refused rather than read as the default, and so
-// is one that does not start with "/", which matches no request path. New
-// also refuses a path the chain's logout answers, or one at or under the MFA
-// verify or begin prefix, since each of those endpoints claims its path.
+// base path (WithBasePath). Only GET on exactly path is the listing. An empty
+// path is refused rather than read as the default, and so is one that does not
+// start with "/", which matches no request path. New also refuses a path the
+// chain's logout answers, or one that is exactly the MFA verify or begin
+// prefix, since each of those endpoints claims its path. A path under either
+// prefix builds: the listing answers GET only, and the prefix endpoint passes
+// other methods on.
 func ListingPath(path string) ListingSetting {
 	return func(l *listingConfig) error {
 		if err := checkEndpointPath("ListingPath", path); err != nil {
@@ -882,10 +885,10 @@ func WithMFAMethodListing(settings ...ListingSetting) MFAOption {
 
 		// The last WithMFAMethodListing is the one that applies, so a path an
 		// earlier call declared is withdrawn when this one keeps the default.
-		i.undeclare("ListingPath")
+		i.undeclare("WithMFAMethodListing")
 
 		if l.pathGiven {
-			i.declare("ListingPath", l.declaredPath)
+			i.declare("WithMFAMethodListing", l.declaredPath)
 		}
 
 		return nil
@@ -993,14 +996,14 @@ func (i *mfaInterceptor) endpoints() []Endpoint {
 
 	eps := []Endpoint{
 		declare(feature, "WithMFABeginPrefix", OperationMFAChallenge, withSegment(i.beginPrefix, "method"),
-			MatchSubtree, PassThrough, RequiresPendingSecondFactor, http.MethodPost),
+			MatchSubtree, OtherMethodsPassThrough, RequiresPendingSecondFactor, http.MethodPost),
 		declare(feature, "WithMFAVerifyPrefix", OperationMFAVerify, withSegment(i.verifyPrefix, "method"),
-			MatchSubtree, PassThrough, RequiresPendingSecondFactor, http.MethodPost),
+			MatchSubtree, OtherMethodsPassThrough, RequiresPendingSecondFactor, http.MethodPost),
 	}
 
 	if i.listing != nil {
 		eps = append(eps, declare(feature, "WithMFAMethodListing", OperationMFAMethods, i.listing.path,
-			MatchExact, PassThrough, RequiresPendingSecondFactor, http.MethodGet))
+			MatchExact, OtherMethodsPassThrough, RequiresPendingSecondFactor, http.MethodGet))
 	}
 
 	return eps

@@ -504,6 +504,6 @@ func (g *passwordChangeGate) endpoints() []Endpoint {
 
 	return []Endpoint{
 		declare("EnablePasswordChangeGate", "WithPasswordChangeEndpoint", OperationPasswordChange, g.path,
-			MatchExact, PassThrough, RequiresSession, http.MethodPost),
+			MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodPost),
 	}
 }

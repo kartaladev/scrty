@@ -1152,7 +1152,7 @@ func (op *oidcEndpoints) endpoints() (outer, inner []Endpoint) {
 	}
 
 	at := func(e OIDCEndpoint, id string, req Requirement, methods ...string) Endpoint {
-		return declare(optionOIDCProvider, placedBy(e), id, op.paths[e], MatchExact, Refused, req, methods...)
+		return declare(optionOIDCProvider, placedBy(e), id, op.paths[e], MatchExact, OtherMethodsRefused, req, methods...)
 	}
 
 	revoke := at(OIDCConsents, OperationOAuth2ConsentsRevoke, RequiresSession, http.MethodDelete)
@@ -1166,7 +1166,7 @@ func (op *oidcEndpoints) endpoints() (outer, inner []Endpoint) {
 	openid, oauth := op.metadata.servedPaths()
 
 	document := func(id, path string) Endpoint {
-		return declare(optionOIDCProvider, optionOIDCProvider, id, path, MatchExact, Refused, RequiresNothing,
+		return declare(optionOIDCProvider, optionOIDCProvider, id, path, MatchExact, OtherMethodsRefused, RequiresNothing,
 			http.MethodGet, http.MethodHead)
 	}
 

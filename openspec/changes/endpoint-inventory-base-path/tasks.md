@@ -146,7 +146,7 @@ Every task is test-first: write the failing test, run it, confirm it fails for t
 
 ## 10. Close-out
 
-- [ ] 10.1 Run the whole-workspace gate:
+- [x] 10.1 Run the whole-workspace gate:
   - `go build ./...`, `go vet ./...`, `go test -race -count=1 ./...` and `golangci-lint run ./...` in every module listed by `go list -m`;
   - `gofmt -l` empty over tracked Go files;
   - `openspec validate endpoint-inventory-base-path --strict`.

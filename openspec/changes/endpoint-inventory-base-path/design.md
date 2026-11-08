@@ -111,7 +111,7 @@ type Endpoint struct {
     Path         string       // resolved, with segments as {name}: "/auth/mfa/verify/{method}"
     Match        PathMatch    // MatchExact, MatchSegment (the path and one segment),
                               // MatchSubtree (the path and everything beneath it)
-    OtherMethods MethodPolicy // PassThrough, or Refused when the endpoint answers 405
+    OtherMethods MethodPolicy // OtherMethodsPassThrough, or OtherMethodsRefused when the endpoint answers 405
     SharesPath   string       // non-empty when the operation declares it shares its path
     OperationID  string       // stable: "scrty.sign-in.password"
     PlacedBy     string       // the option or setting that placed it: "WithMFAMethodListing"
@@ -243,6 +243,8 @@ Each relevant failure, its state (handled, tested or accepted, per `defensive-co
 | Consumer route left at a pre-base path (cool-down fails open) | Handled (D9); tested | Configuration error naming the route and the moved endpoint |
 | Cool-down route differing only in case or trailing slash (`POST /Reauth/Password/`) | Handled (D9 compares in the matcher's normal form); tested | Configuration error, as for the exact route |
 | Header-profile matcher or another function matcher compares a pre-base path | Accepted (cannot be inspected) | Documented in the godoc; `Endpoints()` gives resolved paths |
+| A wildcard cross-site exemption that also matches an endpoint's current path masks a stale route it covers (base `/sso` with `/sso/*/*`) | Accepted (D9: a route at a current path is applied; refusing it would force the waiver, which drops the check for every route) | The exemption is applied; documented in `WithoutBasePathRouteCheck`'s godoc. A missed stale exemption fails closed |
+| A back-channel logout URI registered with the identity provider does not follow the base path | Accepted (the chain cannot read what the identity provider holds; D10 checks only the redirect URL, which the relying party holds) | Logout tokens are sent to a path the chain does not answer; documented in the README's base-path section |
 | IdP redirect URL not moved with the callback or base path | Handled (D10); tested | Configuration error naming the provider and both paths |
 | Redirect URL percent-encoded | Handled (D10 compares the decoded path); tested | Assembled when the decoded path matches |
 | Pending session cannot sign out at the moved path | Handled (D11); tested | Sign-out answers at the moved path |

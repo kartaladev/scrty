@@ -677,8 +677,8 @@ func (i *passwordlessInterceptor) endpoints() []Endpoint {
 
 	return []Endpoint{
 		declare(feature, placedBy, OperationSignInPasskeyBegin, i.beginPath,
-			MatchExact, PassThrough, RequiresNothing, http.MethodPost),
+			MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodPost),
 		declare(feature, placedBy, OperationSignInPasskeyFinish, i.finishPath,
-			MatchExact, PassThrough, RequiresNothing, http.MethodPost),
+			MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodPost),
 	}
 }

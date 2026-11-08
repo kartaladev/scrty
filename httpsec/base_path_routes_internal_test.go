@@ -26,7 +26,7 @@ func TestCheckStaleRoutes(t *testing.T) {
 	}
 
 	at := func(path string, match PathMatch, methods ...string) Endpoint {
-		return declare("EnableTest", "WithTestPath", "scrty.test.op", path, match, PassThrough, RequiresNothing, methods...)
+		return declare("EnableTest", "WithTestPath", "scrty.test.op", path, match, OtherMethodsPassThrough, RequiresNothing, methods...)
 	}
 
 	cooldown := func(routes ...Route) []Option {
@@ -128,7 +128,7 @@ func TestCheckStaleRoutes(t *testing.T) {
 		{
 			name: "cool-down: a discovery document the issuer places", base: "/auth",
 			endpoints: []Endpoint{declare("EnableOIDCProvider", "EnableOIDCProvider", "scrty.provider.discovery",
-				"/auth/.well-known/openid-configuration", MatchExact, PassThrough, RequiresNothing, http.MethodGet)},
+				"/auth/.well-known/openid-configuration", MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodGet)},
 			options: cooldown(Route{http.MethodGet, "/.well-known/openid-configuration"}),
 			assert:  accepted,
 		},

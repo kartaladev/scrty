@@ -609,8 +609,8 @@ func TestChainEndpoints_PinsEveryOperation(t *testing.T) {
 		exact   = httpsec.MatchExact
 		segment = httpsec.MatchSegment
 		subtree = httpsec.MatchSubtree
-		pass    = httpsec.PassThrough
-		refused = httpsec.Refused
+		pass    = httpsec.OtherMethodsPassThrough
+		refused = httpsec.OtherMethodsRefused
 
 		nothing     = httpsec.RequiresNothing
 		authed      = httpsec.RequiresAuthentication

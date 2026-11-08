@@ -117,7 +117,7 @@ func declaredAnswer(inv []httpsec.Endpoint, method, p string) bool {
 			continue
 		}
 
-		if slices.Contains(e.Methods, method) || e.OtherMethods == httpsec.Refused {
+		if slices.Contains(e.Methods, method) || e.OtherMethods == httpsec.OtherMethodsRefused {
 			return true
 		}
 	}

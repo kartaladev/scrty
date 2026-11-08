@@ -967,6 +967,6 @@ func isChallenge(err error) bool {
 func (l *formLogin) endpoints() []Endpoint {
 	return []Endpoint{
 		declare("EnableFormLogin", "WithLoginRequestPath", OperationSignInPassword, l.path,
-			MatchExact, PassThrough, RequiresNothing, http.MethodPost),
+			MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodPost),
 	}
 }

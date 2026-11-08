@@ -777,7 +777,7 @@ func (p *passkeyInterceptor) endpoints() []Endpoint {
 	const feature, reg, cred = "EnablePasskeys", "WithPasskeyRegistrationPrefix", "WithPasskeyCredentialsPrefix"
 
 	post := func(placedBy, id, path string) Endpoint {
-		return declare(feature, placedBy, id, path, MatchExact, PassThrough, RequiresSession, http.MethodPost)
+		return declare(feature, placedBy, id, path, MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodPost)
 	}
 
 	return []Endpoint{
@@ -786,7 +786,7 @@ func (p *passkeyInterceptor) endpoints() []Endpoint {
 		post(reg, OperationPasskeysRegisterConfirm, p.regPrefix+passkeyConfirmSegment),
 		post(reg, OperationPasskeysRegisterConfirmEmail, p.regPrefix+passkeyConfirmEmailSegment),
 		declare(feature, cred, OperationPasskeysList, p.credPrefix,
-			MatchExact, PassThrough, RequiresSession, http.MethodGet),
+			MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodGet),
 		post(cred, OperationPasskeysRename, p.credPrefix+passkeyRenameSegment),
 		post(cred, OperationPasskeysRemove, p.credPrefix+passkeyRemoveSegment),
 	}

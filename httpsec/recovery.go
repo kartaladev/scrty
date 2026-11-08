@@ -880,7 +880,7 @@ func (i *recoveryInterceptor) endpoints() []Endpoint {
 	const feature = "EnableAccountRecovery"
 
 	post := func(placedBy, id, path string) Endpoint {
-		return declare(feature, placedBy, id, path, MatchExact, PassThrough, RequiresNothing, http.MethodPost)
+		return declare(feature, placedBy, id, path, MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodPost)
 	}
 
 	eps := []Endpoint{post("WithRecoveryCompletePath", OperationRecoveryComplete, i.completePath)}

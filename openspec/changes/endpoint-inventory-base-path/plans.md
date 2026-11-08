@@ -155,7 +155,7 @@ Everything but Task 15 (`authenticate/oidc`) and Tasks 4 and 18 (`test` module) 
 
 **Files:** Create `httpsec/endpoints.go`, `endpoints_test.go`; add `endpoints()` to each path-answering interceptor; modify `chain.go`, `options.go`.
 
-**Interfaces:** Produces exactly D6's `Endpoint` (with D6's declared sharers and match kinds), `PathMatch` (`MatchExact`, `MatchSegment`, `MatchSubtree`), `MethodPolicy` (`PassThrough`, `Refused`), `Requirement` (`RequiresNothing`, `RequiresPendingSecondFactor`, `RequiresPendingEnrolment`, `RequiresSession`, `RequiresBearer`, `RequiresClientAuthentication`), `func (c *Chain) Endpoints() []Endpoint`, `type endpointDeclarer interface{ endpoints() []Endpoint }`, plus an unexported `Endpoint.consequence string` used by Task 12's error.
+**Interfaces:** Produces exactly D6's `Endpoint` (with D6's declared sharers and match kinds), `PathMatch` (`MatchExact`, `MatchSegment`, `MatchSubtree`), `MethodPolicy` (`OtherMethodsPassThrough`, `OtherMethodsRefused`), `Requirement` (`RequiresNothing`, `RequiresAuthentication`, `RequiresPendingSecondFactor`, `RequiresPendingEnrolment`, `RequiresSession`, `RequiresBearer`, `RequiresClientAuthentication`), `func (c *Chain) Endpoints() []Endpoint`, `type endpointDeclarer interface{ endpoints() []Endpoint }`, plus an unexported `Endpoint.consequence string` used by Task 12's error.
 
 - [ ] **Step 1:** Write `TestChainEndpoints` covering every scenario of "The chain lists the endpoints it answers" except the last, and a table pinning every operation's identifier, methods, match, other-method policy and `Requires`; rows mutating the returned slice and an entry's `Methods[0]` leave a fresh list unchanged; Review Focus row: a chain with no built-ins returns a non-nil empty slice.
 - [ ] **Step 2:** Run `-run 'TestChainEndpoints'`. Expected: FAIL (empty list).
@@ -172,7 +172,7 @@ Everything but Task 15 (`authenticate/oidc`) and Tasks 4 and 18 (`test` module) 
 
 - [ ] **Step 1:** Write `TestChainPathCollisions` with every scenario of "Colliding endpoint paths fail at construction".
 - [ ] **Step 2:** Run `-run 'TestChainPathCollisions'`. Expected: FAIL on rows no current check covers (password sign-in vs magic-link on `/signin`, overrides on `/oauth2/me`, key set on the OpenID configuration's path).
-- [ ] **Step 3:** Implement: overlap by match kind on the path before the first `{…}`; `Refused` claims every method; exact-vs-prefix rule across features, with or without trailing slash; exemption only within one feature for equal non-empty `SharesPath` with disjoint methods or exact beside one-segment; first pair in inventory order.
+- [ ] **Step 3:** Implement: overlap by match kind on the path before the first `{…}`; `OtherMethodsRefused` claims every method; exact-vs-prefix rule across features, with or without trailing slash; exemption only within one feature for equal non-empty `SharesPath` with disjoint methods or exact beside one-segment; first pair in inventory order.
 - [ ] **Step 4:** Run `go test -race -count=1 ./httpsec/`. Expected: PASS.
 
 ### Task 13: Retire feature collision checks (5.2)

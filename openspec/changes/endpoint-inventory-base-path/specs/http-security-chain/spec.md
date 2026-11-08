@@ -485,8 +485,12 @@ The list SHALL come from the one function the security policies use to decide us
 - **THEN** construction fails with a configuration error
 
 #### Scenario: Path collides with a verify path
-- **WHEN** the listing path is set to `/mfa/verify/totp`
+- **WHEN** the listing path is set to the MFA verify prefix `/mfa/verify`
 - **THEN** chain assembly fails with a configuration error naming the listing and the MFA verify prefix
+
+#### Scenario: Listing beside the verify endpoints
+- **WHEN** the listing path is set to `/mfa/verify/totp`, under the MFA verify prefix
+- **THEN** the chain is built: the listing answers GET there and verification answers POST, so no request reaches both
 
 ### Requirement: The provider's paths are replaceable and published as used
 The provider SHALL answer the two metadata documents at the paths their standards derive from the issuer, which a base path does not change. The consumer SHALL be able to change the prefix and each endpoint path; both SHALL be relative to the chain's base path when one is set. Endpoint URLs in the metadata, `jwks_uri` included, SHALL follow the paths in use.

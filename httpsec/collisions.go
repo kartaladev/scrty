@@ -116,7 +116,7 @@ func onePath(a, b pathClaim) bool {
 // An endpoint that answers 405 to the methods it does not serve answers every
 // method.
 func methodsMeet(a, b Endpoint) bool {
-	if a.OtherMethods == Refused || b.OtherMethods == Refused {
+	if a.OtherMethods == OtherMethodsRefused || b.OtherMethods == OtherMethodsRefused {
 		return true
 	}
 
@@ -171,7 +171,7 @@ func placement(e Endpoint) string {
 	}
 
 	where := strings.Join(e.Methods, ", ")
-	if e.OtherMethods == Refused {
+	if e.OtherMethods == OtherMethodsRefused {
 		where = "every method, answering 405 to all but " + where
 	}
 

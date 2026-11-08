@@ -393,6 +393,6 @@ var clearSiteDataDirectives = []string{"cache", "cookies", "storage"}
 func (l *logout) endpoints() []Endpoint {
 	return []Endpoint{
 		declare("EnableLogout", "WithLogoutRequestPath", OperationSignOut, l.path,
-			MatchExact, PassThrough, RequiresAuthentication, http.MethodPost),
+			MatchExact, OtherMethodsPassThrough, RequiresAuthentication, http.MethodPost),
 	}
 }

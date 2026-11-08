@@ -19,7 +19,7 @@ func (d declaring) endpoints() []Endpoint { return d.declared }
 
 // declaredAt is one complete entry at path, with identifier id.
 func declaredAt(id, path string) Endpoint {
-	return declare("EnableTest", "WithTestPath", id, path, MatchExact, PassThrough, RequiresNothing, http.MethodPost)
+	return declare("EnableTest", "WithTestPath", id, path, MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodPost)
 }
 
 // TestChainEndpoints_Collect pins how New gathers the declarations: in slot
@@ -247,8 +247,8 @@ func TestEndpointEnums_String(t *testing.T) {
 		{"segment", MatchSegment, is("MatchSegment")},
 		{"subtree", MatchSubtree, is("MatchSubtree")},
 		{"no match kind", PathMatch(0), is("PathMatch(0)")},
-		{"pass through", PassThrough, is("PassThrough")},
-		{"refused", Refused, is("Refused")},
+		{"pass through", OtherMethodsPassThrough, is("OtherMethodsPassThrough")},
+		{"refused", OtherMethodsRefused, is("OtherMethodsRefused")},
 		{"no policy", MethodPolicy(9), is("MethodPolicy(9)")},
 		{"nothing", RequiresNothing, is("RequiresNothing")},
 		{"authentication", RequiresAuthentication, is("RequiresAuthentication")},

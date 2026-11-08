@@ -158,7 +158,7 @@ func featureEndpoints() []featureEndpoint {
 		mfaRow("MFA challenge", http.MethodPost, "WithMFABeginPrefix",
 			httpsec.DefaultMFABeginPrefix+"/totp", "/second-factor-begin", "/second-factor-begin/totp",
 			httpsec.WithMFABeginPrefix),
-		mfaRow("MFA method listing", http.MethodGet, "ListingPath",
+		mfaRow("MFA method listing", http.MethodGet, "WithMFAMethodListing",
 			httpsec.DefaultMFAMethodListingPath, "/second-factor-methods", "/second-factor-methods",
 			func(s string) httpsec.MFAOption { return httpsec.WithMFAMethodListing(httpsec.ListingPath(s)) },
 			httpsec.WithMFAMethodListing()),

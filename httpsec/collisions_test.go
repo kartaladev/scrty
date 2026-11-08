@@ -386,6 +386,9 @@ func TestChainPathCollisions(t *testing.T) {
 				httpsec.OperationMFAChallenge, httpsec.OperationMFAVerify, `"/mfa"`, collidesMatchesFirst),
 		},
 		{
+			// Spec scenario "Path collides with a verify path": the listing at
+			// the verify prefix itself is refused, naming the listing option
+			// and the MFA verify prefix.
 			name: "the MFA method listing on the verify prefix itself",
 			build: func(t *testing.T) []httpsec.Option {
 				return mfaChain(t, listingAt(httpsec.DefaultMFAVerifyPrefix), nil)
@@ -395,9 +398,11 @@ func TestChainPathCollisions(t *testing.T) {
 				"told apart only by method"),
 		},
 		{
-			// Changed verdict (D7). The listing answers GET on its one path,
-			// and the verify endpoint answers POST, passing every other method
-			// on, so no request is answered by both and the pair builds.
+			// Spec scenario "Listing beside the verify endpoints": the listing
+			// at /mfa/verify/totp builds. Changed verdict (D7): the listing
+			// answers GET on its one path, and the verify endpoint answers
+			// POST, passing every other method on, so no request is answered
+			// by both and the pair builds.
 			name: "the MFA method listing under the verify prefix",
 			build: func(t *testing.T) []httpsec.Option {
 				return mfaChain(t, listingAt(httpsec.DefaultMFAVerifyPrefix+"/totp"), nil)

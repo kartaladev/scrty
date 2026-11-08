@@ -609,8 +609,8 @@ func (i *magicLinkInterceptor) endpoints() []Endpoint {
 
 	return []Endpoint{
 		declare(feature, "WithMagicLinkRequestPath", OperationSignInMagicLinkRequest, i.requestPath,
-			MatchExact, PassThrough, RequiresNothing, http.MethodPost),
+			MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodPost),
 		declare(feature, "WithMagicLinkConsumePath", OperationSignInMagicLinkRedeem, i.consumePath,
-			MatchExact, PassThrough, RequiresNothing, http.MethodPost),
+			MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodPost),
 	}
 }

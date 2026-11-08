@@ -388,12 +388,12 @@ func (i *reauthInterceptor) endpoints() []Endpoint {
 
 	return []Endpoint{
 		declare(feature, placedBy, OperationReauthMethods, p.methods,
-			MatchExact, PassThrough, RequiresSession, http.MethodGet),
+			MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodGet),
 		declare(feature, placedBy, OperationReauthChallenge, withSegment(p.begin, "method"),
-			MatchSubtree, PassThrough, RequiresSession, http.MethodPost),
+			MatchSubtree, OtherMethodsPassThrough, RequiresSession, http.MethodPost),
 		declare(feature, placedBy, OperationReauthVerify, withSegment(p.verify, "method"),
-			MatchSubtree, PassThrough, RequiresSession, http.MethodPost),
+			MatchSubtree, OtherMethodsPassThrough, RequiresSession, http.MethodPost),
 		declare(feature, placedBy, OperationReauthPassword, p.password,
-			MatchExact, PassThrough, RequiresSession, http.MethodPost),
+			MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodPost),
 	}
 }

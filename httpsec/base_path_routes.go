@@ -26,8 +26,11 @@ const optionWithoutBasePathRouteCheck = "WithoutBasePathRouteCheck"
 // path, for instance a "/sign-in/password" that is exempt from CSRF protection
 // because the application answers it. What it gives up: a route that was
 // meant for a built-in endpoint and was not moved with it goes unnoticed, and
-// stays in force on nothing, until a request shows it. Without a base path
-// nothing is checked, and the option changes nothing.
+// stays in force on nothing, until a request shows it. A cross-site exemption
+// pattern that also matches an endpoint's current path is applied there, so it
+// can mask a stale route it covers; that fails closed, since the endpoint is
+// then exempt only where the pattern says so. Without a base path nothing is
+// checked, and the option changes nothing.
 //
 // Routes given as functions, such as the matcher of WithHeaderProfile, are not
 // checked either way: the library cannot read them. Chain.Endpoints lists the

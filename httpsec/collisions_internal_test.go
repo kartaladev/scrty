@@ -51,10 +51,10 @@ func TestCheckCollisions_Pairs(t *testing.T) {
 	sharedOf := func(feature string, e Endpoint) Endpoint { return shared(e, feature, path) }
 
 	exact := func(id string, methods ...string) Endpoint {
-		return op(id, path, MatchExact, PassThrough, methods...)
+		return op(id, path, MatchExact, OtherMethodsPassThrough, methods...)
 	}
 	segment := func(id string, methods ...string) Endpoint {
-		return op(id, path+"/{name}", MatchSegment, PassThrough, methods...)
+		return op(id, path+"/{name}", MatchSegment, OtherMethodsPassThrough, methods...)
 	}
 
 	cases := []testCase{
@@ -85,7 +85,7 @@ func TestCheckCollisions_Pairs(t *testing.T) {
 		{
 			name: "one feature sharing a path, a subtree over an exact path, the same method",
 			a:    sharedOf("EnableA", exact("scrty.a", http.MethodPost)),
-			b: sharedOf("EnableA", op("scrty.b", path+"/{rest...}", MatchSubtree, PassThrough,
+			b: sharedOf("EnableA", op("scrty.b", path+"/{rest...}", MatchSubtree, OtherMethodsPassThrough,
 				http.MethodPost)),
 			assert: refused,
 		},
@@ -128,7 +128,7 @@ func TestCheckCollisions_Pairs(t *testing.T) {
 		{
 			name:   "different paths and methods",
 			a:      exact("scrty.a", http.MethodGet),
-			b:      op("scrty.b", "/elsewhere", MatchExact, PassThrough, http.MethodGet),
+			b:      op("scrty.b", "/elsewhere", MatchExact, OtherMethodsPassThrough, http.MethodGet),
 			assert: allowed,
 		},
 	}

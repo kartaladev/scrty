@@ -336,16 +336,16 @@ func (i *oidcInterceptor) endpoints() []Endpoint {
 
 	eps := []Endpoint{
 		declare(feature, "WithOIDCAuthorizePath", OperationSSOLogin, withSegment(i.authorizePath, "provider"),
-			MatchSegment, PassThrough, RequiresNothing, http.MethodGet),
+			MatchSegment, OtherMethodsPassThrough, RequiresNothing, http.MethodGet),
 		declare(feature, "WithOIDCCallbackPath", OperationSSOCallback, withSegment(i.callbackPath, "provider"),
-			MatchSegment, PassThrough, RequiresNothing, http.MethodGet),
+			MatchSegment, OtherMethodsPassThrough, RequiresNothing, http.MethodGet),
 	}
 
 	if i.redeemer != nil {
 		eps = append(eps, declare(feature, "WithOIDCHandoffPath", OperationSSOHandoff, i.handoffPath,
-			MatchExact, PassThrough, RequiresNothing, http.MethodPost))
+			MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodPost))
 	}
 
 	return append(eps, declare(feature, "WithOIDCBackchannelLogoutPath", OperationSSOBackchannelLogout,
-		withSegment(i.backchannelPath, "provider"), MatchSegment, PassThrough, RequiresNothing, http.MethodPost))
+		withSegment(i.backchannelPath, "provider"), MatchSegment, OtherMethodsPassThrough, RequiresNothing, http.MethodPost))
 }

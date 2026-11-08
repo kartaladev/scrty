@@ -656,7 +656,7 @@ func (c *config) build() (*Chain, error) {
 		return nil, err
 	}
 
-	// Judged again over the full inventory: operations that wiring turns on
+	// Judged over the full inventory: operations that wiring turns on
 	// (the recovery start and saved codes, the handoff) are listed only now.
 	if err := checkCollisions(endpoints); err != nil {
 		return nil, err

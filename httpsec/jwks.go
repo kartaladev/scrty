@@ -144,6 +144,6 @@ func WithJWKSEndpointPath(path string) JWKSOption {
 func (j *jwksEndpoint) endpoints() []Endpoint {
 	return []Endpoint{
 		declare("EnableJWKSEndpoint", "WithJWKSEndpointPath", OperationKeySet, j.path,
-			MatchExact, PassThrough, RequiresNothing, http.MethodGet),
+			MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodGet),
 	}
 }
