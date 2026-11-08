@@ -21,8 +21,10 @@ The first consumer's adoption is blocked on this, whatever else is built.
   - Before tagging:
     - every module builds and tests with the workspace switched off;
     - every nested module's requirements name the release version;
-    - each module's public API change is reported.
+    - each module's public API change is reported;
+    - the vulnerability check and an SBOM per published module, through the `release-gate` target `close-security-gaps` shipped.
   - After tagging, a fresh module outside the repository fetches and builds every published module through the public proxy.
+  - The release notes carry each published module's SBOM, which the `supply-chain` spec leaves to this change (added 2026-11-09).
   - A release checklist states the order: bump, gate, tag the root and nested modules at one commit, push, probe. A published tag is never moved or deleted; a mistake is fixed by a new version, with `retract` where needed.
 - **`CHANGELOG.md`.** In Keep a Changelog format, with an `Unreleased` section, dated entries, and a `Security` section in every entry that has one. One file covers every module.
 - **`SECURITY.md`.**
@@ -74,6 +76,7 @@ The first consumer's adoption is blocked on this, whatever else is built.
   - `first-party-sessions` is implemented first, so its session store port, its security-state migration and its session features ship in `v0.1.0` and are summarised in that entry;
   - `close-security-gaps` is implemented before this change's tag (decided 2026-11-01). Its breaking items and security additions are summarised in the first changelog entry, and its supply-chain gate steps (SHA-pinned actions, SBOMs, `govulncheck` blocking) join this change's release gate;
   - `session-signals` is implemented after `close-security-gaps` and before this change's tag (decided 2026-11-02). It makes `httpsec.ResponseWriter.Stream` required (its design chose `Stream` over `Flush`, D1), which would be a breaking change after the tag, and its stream is summarised in the first changelog entry;
+  - `restructure-layout`, `reauthentication`, `key-port-context`, `bearer-stream-throttle-retry` and `endpoint-inventory-base-path` were archived after the order above was set, and are summarised in the first changelog entry too (2026-11-09);
   - `trusted-proxy-client-ip` is superseded by `close-security-gaps`;
   - `bff-resource-server` is unaffected, except that it no longer owns CSRF protection.
 - **Dependencies:** `golang.org/x/exp/cmd/gorelease` is added to the `tools` module for the API report.

@@ -6,7 +6,7 @@
 
 **Architecture:**
 - **Root-module tests.** Two new tests in `layout_test.go`, reusing `layout_guard_test.go`'s `workspaceModules`, `goCmd` and `violation` helpers, pin the requirements (no `v0.0.0` ever, the exact release version on request) and keep one list of published modules in agreement with `go.work`.
-- **Makefile targets.** `release-check` runs the gates with the workspace off, plus a `gorelease` report. `release-tags` prints the tag commands.
+- **Makefile targets.** `release-check` runs the gates with the workspace off, then the existing `release-gate` (vuln and one SBOM per module, stamped with the version), then a `gorelease` report. `release-tags` prints the tag commands.
 - **The probe.** A shell script fetches the modules through the public proxy from an empty module. Two workflows wire the gate and the probe into GitHub Actions.
 
 **Tech Stack:**
@@ -204,8 +204,16 @@ release-check: tools
 	[ -z "$$(git status --porcelain)" ] || { echo "working tree is not clean"; exit 2; }; \
 	SCRTY_RELEASE_VERSION="$(VERSION)" go test -count=1 -run 'TestNestedModulesRequireReleasedVersions|TestReleaseModuleListsAgree|TestModulesDeclareGoFloor' .; \
 	out="$$(GOWORK=off gofmt -l $(RELEASE_DIRS))"; [ -z "$$out" ] || { echo "gofmt needed:"; echo "$$out"; exit 1; }; \
-	for m in $(RELEASE_DIRS); do (cd "$$m" && echo "== $$m (GOWORK=off)" && GOWORK=off go vet ./... && GOWORK=off golangci-lint run ./... && GOWORK=off go test -race -count=1 ./... && GOWORK=off govulncheck ./...); done
+	for m in $(RELEASE_DIRS); do (cd "$$m" && echo "== $$m (GOWORK=off)" && GOWORK=off go vet ./... && GOWORK=off golangci-lint run ./... && GOWORK=off go test -race -count=1 ./...); done; \
+	$(MAKE) --no-print-directory release-gate SBOM_VERSION="$(VERSION)"; \
+	n="$$(find "$(SBOM_DIR)" -name '*.cdx.json' | wc -l | tr -d ' ')"; \
+	[ "$$n" -eq $(words $(RELEASE_DIRS)) ] || { echo "release-gate wrote $$n SBOMs, want $(words $(RELEASE_DIRS))"; exit 1; }; \
+	for f in "$(SBOM_DIR)"/*.cdx.json; do grep -q '"$(VERSION)"' "$$f" || { echo "SBOM $$f does not name $(VERSION)"; exit 1; }; done
 ```
+
+  - `GOWORK=off` is set per command only, and never exported. `release-gate`'s `MODULES` comes from `go list -m`, which lists only the root once the workspace is off, so an exported `GOWORK=off` would make vuln and sbom cover one module and pass (design: Risks). The count check is what catches that.
+  - `govulncheck` is not in the loop: `release-gate`'s `vuln` already runs it per module with `GOWORK=off`.
+  - Before writing the `grep` check, confirm with `cyclonedx-gomod`'s output for `-main-version v0.1.0` how the version appears in the JSON (e.g. `"version": "v0.1.0"` on the main component), and match that field, not any occurrence.
 
   Verify each of these:
   - `make release-check` exits 2 with the usage message;
@@ -213,7 +221,8 @@ release-check: tools
   - `v0.1.0-rc.1` passes the format check, then fails at the requirement test, which is expected;
   - `touch x.tmp && make release-check VERSION=v0.1.0` exits 2 with "working tree is not clean", then `rm x.tmp` (Review Focus 1);
   - `VERSION=v0.2.0` fails in the requirement test, naming the modules;
-  - `VERSION=v0.1.0` passes, printing `== <dir> (GOWORK=off)` for all nine.
+  - `VERSION=v0.1.0` passes, printing `== <dir> (GOWORK=off)` for all nine, `vuln: <dir>` for all nine, and leaving nine `.cdx.json` files in `.bin/sbom` that name `v0.1.0`;
+  - red step for the count check: in a temporary edit of the recipe, prefix the sub-make with `GOWORK=off`. Expected: FAIL with `release-gate wrote 1 SBOMs, want 9`. Edit the recipe back.
 - [ ] **Step 2 (3.2): the API report.** Append it to the recipe, in 1.1's form:
 
 ```make
@@ -239,8 +248,9 @@ release-tags:
   Verify: `make release-tags VERSION=v0.1.0 | wc -l` prints 9, the tags match Global Constraints, and `git tag --list` is unchanged.
 - [ ] **Step 4 (3.3): the workflow** `.github/workflows/release-check.yml`.
   - Trigger: `on: workflow_dispatch: inputs: version: {required: true, type: string}`.
-  - Use the same `permissions`, matrix, `env` and setup steps as `ci.yml`, then `run: make release-check VERSION="${{ inputs.version }}"`.
-  - Verify: `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/release-check.yml .github/workflows/ci.yml` prints nothing.
+  - Copy `ci.yml`'s `test` job: its `permissions`, its Go, PostgreSQL and Redis matrix, its `env` (`SCRTY_TEST_POSTGRES_IMAGE` and the Redis one) and its setup steps, then `run: make release-check VERSION="${{ inputs.version }}"`. Pass the input through an `env:` variable, not by interpolating `${{ inputs.version }}` into the script, so a crafted input cannot inject shell.
+  - Every `uses:` is pinned by the same full SHA, with its tag comment, that `ci.yml` uses.
+  - Verify: `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/release-check.yml .github/workflows/ci.yml` prints nothing, and `make pincheck` passes.
 - [ ] **Step 5: commit** `build: release gate and tag helper`.
 
 ---
@@ -293,8 +303,8 @@ echo "probe: $version resolves for every published module"
   - `GONOSUMDB='github.com/kartaladev/*' PROBE_RETRIES=1 scripts/release-probe.sh v0.0.1` prints an empty `GONOSUMDB` in its `go env` lines (Review Focus 4).
 - [ ] **Step 2 (4.2): the workflow** `.github/workflows/release-probe.yml`.
   - Trigger: `on: push: tags: ['v[0-9]*']`. Nested tags such as `store/pgxstore/v0.1.0` begin with their directory, so they do not match.
-  - `permissions: contents: read`, `actions/checkout@v5`, `actions/setup-go@v6` with `1.27.x`, then `run: scripts/release-probe.sh "$GITHUB_REF_NAME"`.
-  - Verify with `actionlint`, which should print nothing.
+  - `permissions: contents: read`, `actions/checkout` and `actions/setup-go` pinned by the same full SHA and tag comment `ci.yml` uses, Go `1.27.x`, then `run: scripts/release-probe.sh "$GITHUB_REF_NAME"`.
+  - Verify with `actionlint`, which should print nothing, and `make pincheck`, which should pass.
 - [ ] **Step 3: commit** `ci: probe a released version from outside the repository`.
 
 ---
@@ -323,13 +333,15 @@ echo "probe: $version resolves for every published module"
   - `make release-tags VERSION=vX.Y.Z`, then running the printed commands;
   - `git push origin <each tag>`;
   - the release-probe run;
-  - `gh release create vX.Y.Z --notes-file <entry>`.
+  - `gh release create vX.Y.Z --notes-file <entry> .bin/sbom/*.cdx.json`, which attaches the nine SBOMs that `make release-check` wrote on the tagged commit. The step says they must come from the gate run on that commit, not from an earlier run.
   - Add a "Never move a tag" section with the recovery: a new patch version, and `retract vX.Y.Z` in each affected `go.mod`.
-  - Verify that each read-only command runs (`make release-check`, `make release-tags`, the `gh api` read). Don't run the tag, push or release commands.
+  - Verify that each read-only command runs (`make release-check`, `make release-tags`, the `gh api` read), and check the `gh release create` arguments against `gh release create --help`. Don't run the tag, push or release commands.
 - [ ] **Step 4 (5.5): `README.md`.**
   - An Install section with `go get github.com/kartaladev/scrty@v0.1.0` and `go get github.com/kartaladev/scrty/store/pgxstore@v0.1.0`.
   - Links to `CHANGELOG.md` and `SECURITY.md`.
   - Keep the existing Supported Go versions section, and add that security fixes go to the latest minor release, per `SECURITY.md`.
+  - *Development*: add `make release-check VERSION=vX.Y.Z` and `make release-tags VERSION=vX.Y.Z` to the gate list, each with a one-line comment, and point to `RELEASING.md`.
+  - *Supply chain*: say that `make release-check` runs `release-gate` (vuln, then an SBOM per published module stamped with the release version), and that the SBOMs are attached to each GitHub release.
   - Verify the relative links name existing files.
 - [ ] **Step 5: commit** `docs: changelog, security policy and release procedure`.
 
@@ -337,7 +349,7 @@ echo "probe: $version resolves for every published module"
 
 ### Task 5.2, 5.5, 5.6 additions (dispatch R5, and the main session for 5.6)
 
-- [ ] **5.2:** in the `[0.1.0]` entry, add every item of `openspec/changes/archive/2026-10-24-pre-release-hardening/changelog-notes.md` under its change type, then `idiomatic-api-shape`'s breaking changes and the breaking items of `close-security-gaps`, `pre-release-api-fixes`, `session-signals` (the `ResponseWriter.Stream` break) and `oidc-provider` under **Changed**, and their new capabilities under **Added**. Summarise `oidc-provider` under **Added** as the OpenID Provider a consumer can now run, naming the four conformance plans it passes. Delete the notes file. Verify with a line-by-line check against the deleted file (`git show HEAD:<path>`).
+- [ ] **5.2:** in the `[0.1.0]` entry, add every item of `openspec/changes/archive/2026-10-24-pre-release-hardening/changelog-notes.md` under its change type, then `idiomatic-api-shape`'s breaking changes and the breaking items of `close-security-gaps`, `pre-release-api-fixes`, `session-signals` (the `ResponseWriter.Stream` break) and `oidc-provider` under **Changed**, and their new capabilities under **Added**. Do the same for the five changes archived later (2026-11-09): `restructure-layout` (the package moves), `reauthentication`, `key-port-context`, `bearer-stream-throttle-retry`, and `endpoint-inventory-base-path` (the endpoint path moves, `WithBasePath` and `Chain.Endpoints()`). Read each one's archived `proposal.md` under `openspec/changes/archive/` for its breaking items. Summarise `oidc-provider` under **Added** as the OpenID Provider a consumer can now run, naming the four conformance plans it passes. Delete the notes file. Verify with a line-by-line check against the deleted file (`git show HEAD:<path>`).
 - [ ] **5.5:** add the *Known limitations* section listed in task 5.5, each limit in one sentence that names the default and what a consumer can do about it. The two provider limits are R2's and R9's, as task 5.5 states them, and match the wording of the README's provider section; `prompt=none` is no longer a limitation of its own.
 - [ ] **5.6 (main session):** a Sonnet research agent reports, for each listed claim, the test that pins the fixed behaviour (`rg` for the claim's scenario, then `go test -run` it) or that none exists. The main session writes the outcomes into `design.md`.
 

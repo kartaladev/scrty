@@ -40,6 +40,13 @@ A failure SHALL stop the release.
 - **WHEN** the gate runs for `v0.1.0`
 - **THEN** it reports each published module's API with no previous release as base, and passes
 
+### Requirement: The release gate covers every published module's supply chain
+The release gate SHALL run the vulnerability check and produce the software bill of materials that the `supply-chain` capability requires, for every published module, with each bill of materials naming the release version. A gate that covers fewer modules than are published SHALL fail.
+
+#### Scenario: Bills of materials for the first release
+- **WHEN** the gate runs for `v0.1.0`
+- **THEN** the vulnerability check reports on each of the nine published modules, and nine bills of materials are written, each naming version `v0.1.0`
+
 ### Requirement: A release is proven from outside the repository after tagging
 After the tags are pushed, a fresh module outside the repository SHALL fetch every published module at the release version through the public module proxy, with the workspace off, and SHALL build a program importing a package from each. A failure SHALL be reported as a failed release, to be fixed by a new version.
 
@@ -82,8 +89,12 @@ The security policy SHALL state which scrty versions receive security fixes, the
 - **THEN** the policy names the repository security advisory and the Go vulnerability database
 
 ### Requirement: The release procedure is documented
-The repository SHALL document the release procedure in order: update the changelog and the nested requirements to the release version, run the release gate, tag the root and nested modules at one commit, push the tags, run the outside probe, and publish release notes. It SHALL state that pushing tags is a maintainer's action, and that a published tag is never changed.
+The repository SHALL document the release procedure in order: update the changelog and the nested requirements to the release version, run the release gate, tag the root and nested modules at one commit, push the tags, run the outside probe, and publish release notes with the software bill of materials of every published module attached, as the release gate produced them on the tagged commit. It SHALL state that pushing tags is a maintainer's action, and that a published tag is never changed.
 
 #### Scenario: Procedure followed
 - **WHEN** a maintainer follows the documented procedure for `v0.1.0`
 - **THEN** each step names the command or check it runs, and the procedure ends with the outside probe passing
+
+#### Scenario: Bills of materials published
+- **WHEN** the release notes for `v0.1.0` are published by following the procedure
+- **THEN** they carry one bill of materials for each of the nine published modules, each naming version `v0.1.0`

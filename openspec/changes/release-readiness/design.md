@@ -10,7 +10,8 @@ See `proposal.md` for the motivation. This section covers only the state of the 
   - `test` requires every sibling it imports at `v0.0.0` or the zero pseudo-version, each with its own `replace`.
 - **Gates.**
   - `make check` runs fmt-check, vet, lint, test, vuln and generate-check over `MODULES := $(shell go list -m -f '{{.Dir}}')`, which only lists every module in workspace mode.
-  - CI (`.github/workflows/ci.yml`) runs `make check` on Go `1.27.x` against PostgreSQL 15 and 18.
+  - CI (`.github/workflows/ci.yml`) runs each gate as its own job (`make fmt-check`, `make vet`, `make lint`, and so on), behind one aggregate `ci-ok` job. The `test` job runs on a matrix of Go `1.27.x`, PostgreSQL 15 and 18, and Redis (corrected 2026-11-09: CI no longer runs `make check` as one job).
+  - `make release-gate` already exists. `close-security-gaps` shipped it as a placeholder for this change's gate: it runs `vuln`, then `sbom`, which writes one CycloneDX SBOM per workspace module to `$(SBOM_DIR)` (default `.bin/sbom`), stamped with `SBOM_VERSION` when it is set. Its design states that `release-check` calls it, and the settled `supply-chain` spec requires both steps of the release gate (recorded 2026-11-09).
 - **Layout checks.** `layout_test.go` in the root module already checks the module layout by reading `go.mod` files and building a consumer module (`TestConsumerModuleGraph`). That is the established home for checks of this kind.
 - **Settings and history.**
   - The repository is public. Private vulnerability reporting is disabled (GitHub API, 2026-10-21).
@@ -65,11 +66,12 @@ None of the decisions below is library behaviour a consumer configures. They gov
 
 - **The command.** `make release-check VERSION=vX.Y.Z` runs in order, stopping at the first failure:
   1. **Requirement check:** the root-module test of decision 2, run with `SCRTY_RELEASE_VERSION` set. It then also fails unless every nested module's scrty requirements name exactly that version. Without the variable, it runs only the always-on half.
-  2. **The build gates with the workspace off:** the same fmt-check, vet, lint, test and vuln loops `make check` runs, with `GOWORK=off`, over a module list read from `go.work` rather than from `go list -m` (which lists only the root once the workspace is off). Each module is then built as its own main module, its own `replace` included. A module that only built because the workspace supplied something is caught. One pass replaces the workspace pass rather than doubling it.
-  3. **The API report:** `gorelease` in each published module. It uses `-base=none -version=v0.1.0` for the first release, and `-base=<previous> -version=<new>` after it. The report is printed. Under v0 it does not fail on an incompatible change, but it fails the gate on any error the tool reports.
+  2. **The build gates with the workspace off:** the same fmt-check, vet, lint and test loops `make check` runs, with `GOWORK=off`, over a module list read from `go.work` rather than from `go list -m` (which lists only the root once the workspace is off). Each module is then built as its own main module, its own `replace` included. A module that only built because the workspace supplied something is caught. One pass replaces the workspace pass rather than doubling it.
+  3. **The supply-chain gate:** `$(MAKE) release-gate SBOM_VERSION=$(VERSION)`. It runs the vulnerability check (already per module with `GOWORK=off`) and writes the nine SBOMs stamped with the release version, as the `supply-chain` spec requires. The vuln loop is therefore not repeated in step 2. The sub-make runs in workspace mode, so its `MODULES` lists every module (see Risks).
+  4. **The API report:** `gorelease` in each published module. It uses `-base=none -version=v0.1.0` for the first release, and `-base=<previous> -version=<new>` after it. The report is printed. Under v0 it does not fail on an incompatible change, but it fails the gate on any error the tool reports.
 - **Where it runs.**
   - The maintainer runs it before tagging.
-  - A `workflow_dispatch` CI job runs it with the version as input, on the same matrix as `ci.yml`, so a release is gated on both PostgreSQL majors.
+  - A `workflow_dispatch` CI job runs it with the version as input, on the same Go, PostgreSQL and Redis matrix as `ci.yml`'s `test` job, so a release is gated on both PostgreSQL majors.
 - **The tool.** `gorelease` is added to `tools/go.mod` as a `tool` directive, like the other tools.
 - **Alternative considered:** a separate workspace-off pass on every pull request. It would double CI time, for a failure that only matters at release. The always-on requirement check covers the cheap half of it on every run.
 
@@ -121,7 +123,8 @@ None of the decisions below is library behaviour a consumer configures. They gov
   6. create annotated tags for the root and the eight nested modules at the merged commit;
   7. push the tags;
   8. watch the probe;
-  9. publish GitHub release notes from the changelog entry.
+  9. publish GitHub release notes from the changelog entry, with the nine SBOMs the gate wrote attached (`gh release create <tag> --notes-file <entry> .bin/sbom/*.cdx.json`).
+- **The SBOMs come from the gate run on the tagged commit.** Step 4 runs on the merged commit that step 6 tags, so the files in `.bin/sbom` describe exactly what is published, stamped with its version. Attaching them is the maintainer's step, like publishing the notes. Automated publishing is a non-goal. This fills the gap `close-security-gaps` left to this change: the `supply-chain` spec makes attaching SBOMs to a release the release workflow's requirement (recorded 2026-11-09).
 - **A tag-list helper.** `make release-tags VERSION=vX.Y.Z` prints the nine `git tag -a` commands for the current commit, so the list cannot be mistyped. It never creates or pushes a tag itself.
 - **Never move a tag.** The document states it, and states the recovery: a new patch version, with a `retract` directive when the bad version must not be selected.
 
@@ -142,6 +145,8 @@ The library fixes this change used to carry (the `notify` worker replacement and
   - Mitigation: the first task runs it against one module and records the outcome.
   - If it refuses, the gate runs it on a temporary copy with the scrty `replace` lines dropped, against the workspace-built versions.
   - This is unverified, and tested first.
+- **The supply-chain sub-make could scan and stamp only the root.** `release-gate`'s `MODULES` comes from `go list -m`, which lists only the root once `GOWORK=off`. If `release-check` exported `GOWORK=off` to the sub-make, vuln and sbom would cover one module and still pass.
+  - Handled: `release-check` sets `GOWORK=off` per command, never in the environment it passes to `$(MAKE) release-gate`. Task 3.1 verifies that a `v0.1.0` run writes nine SBOM files and that vuln names nine modules.
 - **Between the bump merge and the tag push, the bump commit names a version that does not exist yet,** so a consumer pinning that commit's pseudo-version cannot resolve it.
   - Mitigation: the procedure tags the merged commit immediately after the gate passes. The window is minutes, and only pseudo-version consumers of that exact commit see it.
 - **The proxy may be slow to serve a new version.**
@@ -212,6 +217,8 @@ Open follow-ups from the archived changes that are not needed for `v0.1.0`. None
 - [opentelemetry-go RELEASING.md](https://github.com/open-telemetry/opentelemetry-go/blob/main/RELEASING.md): `gorelease` run before tagging, and the warning that a bad tag cannot be removed.
 - [Publishing a module](https://go.dev/doc/modules/publishing): prompting the public proxy with `go list -m` against a new tag, and never changing a published version.
 - [Go Modules Reference: environment variables](https://go.dev/ref/mod#environment-variables): `GOPROXY` defaults to `https://proxy.golang.org,direct`.
+
+The supply-chain step and the SBOM attachment (decisions 3 and 7, 2026-11-09) are reasoned from scrty's own settled specs (`supply-chain`) and the archived `close-security-gaps` design.
 
 ### Decisions 5 and 7: changelog and procedure
 
