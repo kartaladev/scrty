@@ -123,7 +123,7 @@ func TestDPoP_RecordedProofVector(t *testing.T) {
 					Sessions: sessions,
 					Tokens:   gen,
 					Attempts: must.Must(lockout.NewMemoryAttemptStore()),
-				}),
+				}, httpsec.WithLoginRequestPath(target.Path)), // the recorded proof is signed for this path
 				httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: gen, Sessions: sessions, Users: users}),
 				httpsec.EnableDPoP(httpsec.DPoP{PublicURL: target.Scheme + "://" + target.Host}),
 			))
