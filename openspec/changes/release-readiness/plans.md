@@ -219,7 +219,7 @@ release-check: tools
   - `GOWORK=off` is set per command only, and never exported. `release-gate`'s `MODULES` comes from `go list -m`, which lists only the root once the workspace is off, so an exported `GOWORK=off` would make vuln and sbom cover one module and pass (design: Risks). The count check is what catches that.
   - `govulncheck` is not in the loop: `release-gate`'s `vuln` already runs it per module with `GOWORK=off`.
   - The existing `fmt-check` target switches to the same `git ls-files ... | xargs -0 gofmt -l` form. Red step: put an unformatted `x.go` under `.claude/worktrees/` (git-ignored) and see `make fmt-check` fail before the change and pass after. An unformatted untracked `y.go` at the root must fail both before and after. Remove both files.
-  - Before writing the `grep` check, confirm with `cyclonedx-gomod`'s output for `-main-version v0.1.0` how the version appears in the JSON (e.g. `"version": "v0.1.0"` on the main component), and match that field, not any occurrence.
+  - **Superseded 2026-11-09 (as landed by R3):** the recipe reads `VERSION` from the environment (`$$VERSION`), never by `$(VERSION)` substitution, so a crafted value cannot run commands. `cyclonedx-gomod` has no `-main-version` flag, so lines 213–216 above move to step 2b: `release-gate` runs in the locally tagged throwaway export, and the version check is `jq -e '.metadata.component.version == $v'`.
 
   Verify each of these:
   - `make release-check` exits 2 with the usage message;
@@ -241,10 +241,18 @@ release-check: tools
     - `TestWriteProxy_GoGetResolves`: write a fixture module, then run `go get example.com/m@v0.1.0` in a fresh module with `GOPROXY=file://<out>`, `GONOSUMDB=example.com/m`, `GOFLAGS=-mod=mod`, `GOMODCACHE=<t.TempDir()>` and `GOWORK=off`. Expected: it succeeds.
   - `golang.org/x/mod` is already in `tools/go.mod` (v0.42.0). Make it a direct requirement.
   - Verify: `cd tools && GOWORK=off go test -count=1 ./cmd/releaseproxy/` passes, and `make tools-check` passes.
+- [ ] **Step 2b-0 (3.1 and 3.4 review findings, dispatch R3b, done first, test-first):**
+  - **Version handling:** `RELEASE_VERSION := $(value VERSION)`, `unexport VERSION`, `export RELEASE_VERSION`. Recipes read `$$RELEASE_VERSION` and validate it with bash `[[ $$RELEASE_VERSION =~ ^...$$ ]]`, which anchors the whole string, so a newline fails. The pattern is semver with a `v` prefix and no build metadata. Each prerelease identifier is `0|[1-9][0-9]*` or `[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*`.
+    - Red: `make release-tags VERSION='v1.0.0$(shell touch <scratch>/pwn)'` creates the file today. Afterwards it is refused and the file does not exist.
+    - Repeat that check with the value in the environment, with a value containing a newline, and with `v1.0.0-01` and `v1.0.0-..`.
+  - **Gates:** `release-check` also runs `pincheck`, `tools-check`, `generate-check` and `test-isolated`.
+  - **Format step:** `gofmt -l --` before the file list, and a failure of either `git ls-files` fails the step.
+  - **`release-check.yml`:** add `timeout-minutes: 120` and `concurrency: {group: release-check-${{ inputs.version }}, cancel-in-progress: false}`.
 - [ ] **Step 2b (3.3, dispatch R3b): the API report.** Append it to `release-check`'s recipe, after the SBOM checks:
   - Create one working directory with `mktemp -d`, and remove it on every exit through a trap. The trap first checks that the variable is non-empty and is the directory `mktemp` returned, then makes the module-cache files writable (they are read-only) and removes it.
   - Export `HEAD` with `git archive` into `<work>/src`, then `git init`, `add -A` and `commit` it there with an inline `-c user.name=release -c user.email=release@localhost`. `gorelease` fetches the base version from the proxy, so the throwaway repository needs no tags.
-  - `(cd tools && GOWORK=off go run ./cmd/releaseproxy -src <work>/src -version "$(VERSION)" -out <work>/proxy $(RELEASE_DIRS))`.
+  - Tag the export locally with the nine tags (`git -C <work>/src tag v0.1.0`, and `<dir>/v0.1.0` per line of `release-modules.txt`). Run `$(MAKE) -C <work>/src release-gate BIN=$(BIN) SBOM_DIR=$(SBOM_DIR)`, without `GOWORK` in its environment. Check that `$(SBOM_DIR)` holds as many `.cdx.json` files as `$(RELEASE_DIRS)`, each with `.metadata.component.version == $VERSION` (`jq -e`). Then delete the nine tags in the export (`git -C <work>/src tag -d ...`), so `gorelease` sees no tag at `HEAD`. Remove the `SBOM_VERSION` handling and the `jq` rewrite from the `sbom` target.
+  - `(cd tools && GOWORK=off go run ./cmd/releaseproxy -src <work>/src -version "$VERSION" -out <work>/proxy $(RELEASE_DIRS))`. The `-out` path must not exist yet; `releaseproxy` creates it.
   - For each module directory in the export, run `go mod edit -dropreplace` for every `github.com/kartaladev/scrty*` replace. Then run the command below with those variables set on that command only, never exported:
 
     ```
