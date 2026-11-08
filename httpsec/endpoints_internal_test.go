@@ -97,6 +97,21 @@ func TestChainEndpoints_Collect(t *testing.T) {
 			assert:   refused("methods"),
 		},
 		{
+			name:     "a lower-case method is refused",
+			register: broken(func(e *Endpoint) { e.Methods = []string{"get"} }),
+			assert:   refused("methods"),
+		},
+		{
+			name:     "a method that is not a token is refused",
+			register: broken(func(e *Endpoint) { e.Methods = []string{http.MethodPost, "PO ST"} }),
+			assert:   refused("methods"),
+		},
+		{
+			name:     "an exact path with a placeholder is refused",
+			register: broken(func(e *Endpoint) { e.Path = "/test/{id}" }),
+			assert:   refused("a literal path"),
+		},
+		{
 			name:     "an empty path, an endpoint nobody placed, is refused",
 			register: broken(func(e *Endpoint) { e.Path = "" }),
 			assert:   refused("a path"),
@@ -141,6 +156,23 @@ func TestChainEndpoints_Collect(t *testing.T) {
 				assert.Contains(t, err.Error(), "scrty.test")
 				assert.Contains(t, err.Error(), "WithFirstPath")
 				assert.Contains(t, err.Error(), "WithSecondPath")
+				assert.Nil(t, eps)
+			},
+		},
+		{
+			name: "an identifier listed twice by one setting names both paths",
+			register: func(c *config) {
+				first := declaredAt("scrty.test", "/one")
+				first.PlacedBy = "WithSamePath"
+				second := declaredAt("scrty.test", "/two")
+				second.PlacedBy = "WithSamePath"
+				c.register(declaring{declared: []Endpoint{first}}, OrderJWKS)
+				c.register(declaring{declared: []Endpoint{second}}, OrderLogout)
+			},
+			assert: func(t *testing.T, eps []Endpoint, err error) {
+				require.ErrorIs(t, err, ErrConfig)
+				assert.Contains(t, err.Error(), `"/one"`, "the first placement")
+				assert.Contains(t, err.Error(), `"/two"`, "the extra one")
 				assert.Nil(t, eps)
 			},
 		},

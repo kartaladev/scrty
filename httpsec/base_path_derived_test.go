@@ -293,7 +293,7 @@ func TestBasePath_CrossSiteExemptionsFollow(t *testing.T) {
 	}
 
 	oidcLogin := func(t *testing.T) *httpsec.Chain {
-		h := newOIDCHarness(t)
+		h := newOIDCHarnessAt(t, derivedBase+httpsec.DefaultOIDCCallbackPath)
 		h.chainOpts = []httpsec.Option{httpsec.EnableCSRFProtection(), httpsec.WithBasePath(derivedBase)}
 
 		return h.chain(t)
@@ -583,7 +583,7 @@ func TestBasePath_CookiesScopedToMovedPaths(t *testing.T) {
 			name:   "the OIDC flow cookie is scoped to the moved callback",
 			cookie: httpsec.DefaultOIDCFlowCookieName,
 			answer: func(t *testing.T) served {
-				h := newOIDCHarness(t)
+				h := newOIDCHarnessAt(t, derivedBase+httpsec.DefaultOIDCCallbackPath)
 				h.chainOpts = []httpsec.Option{httpsec.WithBasePath(derivedBase)}
 
 				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,

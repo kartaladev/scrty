@@ -206,7 +206,10 @@ const (
 	OperationSignInPassword = "scrty.sign-in.password" //nolint:gosec // G101: an operation identifier, not a credential
 	// OperationSignInMagicLinkRequest asks for a magic link (EnableMagicLink).
 	OperationSignInMagicLinkRequest = "scrty.sign-in.magic-link.request"
-	// OperationSignInMagicLinkRedeem redeems a magic link (EnableMagicLink).
+	// OperationSignInMagicLinkRedeem redeems a magic link (EnableMagicLink). It
+	// is the endpoint the consumer's confirm page posts the token to, which the
+	// base path moves; the confirm page itself is not an endpoint of the chain
+	// and is not listed.
 	OperationSignInMagicLinkRedeem = "scrty.sign-in.magic-link.redeem"
 	// OperationSignInPasskeyBegin begins a passwordless passkey sign-in
 	// (EnablePasskeys with WithPasskeyPasswordlessLogin).
@@ -348,7 +351,10 @@ const (
 // which the issuer places.
 //
 // Interceptors the consumer registers are not listed: the chain cannot see
-// what they answer.
+// what they answer. Nor are the pages the consumer serves, such as the
+// magic-link confirm page and the provider's login and consent pages: they are
+// not endpoints of the chain. A consumer that needs those routes in what it
+// builds from this list adds them itself.
 //
 // Each call returns a fresh copy, the Methods of every entry included, so a
 // caller may change what it was given without changing the chain or a later
@@ -382,7 +388,7 @@ type endpointDeclarer interface {
 // twice, which wraps ErrConfig and names the identifier and both settings.
 func collectEndpoints(regs []registration) ([]Endpoint, error) {
 	out := []Endpoint{}
-	placedBy := map[string]string{}
+	first := map[string]Endpoint{}
 
 	for _, r := range regs {
 		d, ok := r.interceptor.(endpointDeclarer)
@@ -395,12 +401,13 @@ func collectEndpoints(regs []registration) ([]Endpoint, error) {
 				return nil, err
 			}
 
-			if first, dup := placedBy[e.OperationID]; dup {
-				return nil, newConfigError("the operation %q would be listed twice, placed by %s and by %s; "+
-					"an operation identifier appears at most once per chain", e.OperationID, first, e.PlacedBy)
+			if prior, dup := first[e.OperationID]; dup {
+				return nil, newConfigError("the operation %q would be listed twice, placed by %s at %q and by %s at %q; "+
+					"an operation identifier appears at most once per chain, so remove one of the two",
+					e.OperationID, prior.PlacedBy, prior.Path, e.PlacedBy, e.Path)
 			}
 
-			placedBy[e.OperationID] = e.PlacedBy
+			first[e.OperationID] = e
 
 			e.Methods = slices.Clone(e.Methods)
 			out = append(out, e)
@@ -420,12 +427,19 @@ func checkDeclared(e Endpoint) error {
 		missing = append(missing, "an operation identifier")
 	}
 
-	if len(e.Methods) == 0 || slices.Contains(e.Methods, "") {
+	// A method is compared byte for byte with the request's, so one that is
+	// not upper-case letters never matches and would hide a collision.
+	if len(e.Methods) == 0 || slices.ContainsFunc(e.Methods, notUpperCaseToken) {
 		missing = append(missing, "its methods")
 	}
 
 	if !strings.HasPrefix(e.Path, "/") {
 		missing = append(missing, "a path")
+	}
+
+	// A placeholder in an exact path would be compared as literal text.
+	if e.Match == MatchExact && strings.Contains(e.Path, "{") {
+		missing = append(missing, "a literal path for an exact match")
 	}
 
 	if e.Match < MatchExact || e.Match > MatchSubtree {
@@ -450,6 +464,12 @@ func checkDeclared(e Endpoint) error {
 	}
 
 	return nil
+}
+
+// notUpperCaseToken reports whether m is empty or holds anything but the
+// upper-case letters an HTTP method the library declares is written in.
+func notUpperCaseToken(m string) bool {
+	return m == "" || strings.ContainsFunc(m, func(r rune) bool { return r < 'A' || r > 'Z' })
 }
 
 // declare builds one entry of feature, placed by placedBy.

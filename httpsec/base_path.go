@@ -36,15 +36,50 @@ import (
 // by its own path, the default or the one the consumer set, which is therefore
 // relative to the base: "/auth" with WithLoginRequestPath("/signin") answers
 // "/auth/signin", and the path without the base passes through. The exemption
-// the gates give logout follows it. The provider's discovery documents are not
-// placed by the base path: they sit at the issuer followed by their well-known
-// suffix, so the issuer decides where they answer.
+// the gates give logout follows it. The key set moves too, and so do the
+// provider's resume, consents and token endpoints; Chain.Endpoints lists every
+// endpoint at its resolved path.
 //
-// What does not move: the pages the consumer serves (the provider's login,
-// consent and logout pages, the magic-link confirm page), authorization rules,
-// the routes and interceptors the consumer supplies, and a prefix a proxy
-// already strips. The matching is on the request path the chain sees, so a
-// proxy that already strips "/auth" needs no base path.
+// The provider's two discovery documents are not placed by the base path; the
+// issuer decides where they answer. The OpenID configuration sits at the issuer
+// followed by "/.well-known/openid-configuration" (OpenID Connect Discovery 1.0
+// section 4). The authorization server metadata inserts its suffix before the
+// issuer's path (RFC 8414 section 3): for the issuer "https://id.example.com/auth"
+// it is at "/.well-known/oauth-authorization-server/auth", at the host root,
+// whatever the base path. A proxy that forwards only "/auth/*" must route that
+// path to the chain as well.
+//
+// What does not move:
+//
+//   - the pages the consumer serves: the provider's login, consent, logout and
+//     logged-out pages, redirect destinations, and the magic-link confirm page
+//     (authenticate/magiclink.WithConfirmPath), which the emailed link points at.
+//     The magic-link redeem endpoint, which that page posts to, is a chain
+//     endpoint and does move;
+//   - authorization rules, which describe the consumer's own routes and keep
+//     judging them;
+//   - the routes the consumer gives the chain (recovery cool-down routes,
+//     cross-site exemptions, header-profile matchers), which must name the
+//     moved paths;
+//   - interceptors the consumer registers, which answer where they were written to;
+//   - a prefix a proxy already strips. The matching is on the request path the
+//     chain sees, so a proxy that already strips "/auth" needs no base path, and
+//     setting one as well would answer nothing. The chain never reads
+//     X-Forwarded-Prefix.
+//
+// New refuses a base path that leaves one of these stale:
+//
+//   - with the OpenID Provider, an issuer whose path does not cover the base path
+//     (WithoutOIDCIssuerBasePathCheck waives it);
+//   - a recovery cool-down route or cross-site exemption naming a path a built-in
+//     endpoint answered at before the base moved it (WithoutBasePathRouteCheck
+//     waives it);
+//   - a federated-login provider whose registered redirect URL cannot reach the
+//     callback (WithoutOIDCRedirectPathCheck waives it).
+//
+// A base path that repeats the first segment of a default path, such as "/sso"
+// with the SSO endpoints, answers "/sso/sso/login/{provider}": that is what was
+// configured, and it is not refused.
 func WithBasePath(p string) Option {
 	return func(c *config) error {
 		c.basePath = p

@@ -328,7 +328,8 @@ func WithRecoveryCore(opts ...recovery.Option) RecoveryOption {
 
 // WithRecoveryCompletePath answers the complete endpoint on path instead.
 //
-// Default: DefaultRecoveryCompletePath. The path must start with "/" and
+// Default: DefaultRecoveryCompletePath, "/recovery/complete". The path is within
+// the base path (WithBasePath). The path must start with "/" and
 // differ from every other recovery path, the login path and the logout path;
 // New refuses it otherwise.
 func WithRecoveryCompletePath(path string) RecoveryOption {
@@ -346,7 +347,8 @@ func WithRecoveryCompletePath(path string) RecoveryOption {
 
 // WithRecoveryStartPath answers the start endpoint on path instead.
 //
-// Default: DefaultRecoveryStartPath, with the same rules as
+// Default: DefaultRecoveryStartPath, "/recovery/start", within the base path (WithBasePath), with
+// the same rules as
 // WithRecoveryCompletePath.
 func WithRecoveryStartPath(path string) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
@@ -364,7 +366,8 @@ func WithRecoveryStartPath(path string) RecoveryOption {
 // WithRecoveryFinishPath answers the finish endpoint of held recoveries on
 // path instead.
 //
-// Default: DefaultRecoveryFinishPath, with the same rules as
+// Default: DefaultRecoveryFinishPath, "/recovery/finish", within the base path (WithBasePath), with
+// the same rules as
 // WithRecoveryCompletePath.
 func WithRecoveryFinishPath(path string) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
@@ -382,7 +385,8 @@ func WithRecoveryFinishPath(path string) RecoveryOption {
 // WithRecoveryCancelPath answers the cancel endpoint of held recoveries on
 // path instead.
 //
-// Default: DefaultRecoveryCancelPath, with the same rules as
+// Default: DefaultRecoveryCancelPath, "/recovery/cancel", within the base path (WithBasePath), with
+// the same rules as
 // WithRecoveryCompletePath.
 func WithRecoveryCancelPath(path string) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
@@ -399,7 +403,8 @@ func WithRecoveryCancelPath(path string) RecoveryOption {
 
 // WithRecoveryCodesPath answers the saved-code endpoints on path instead.
 //
-// Default: DefaultRecoveryCodesPath, with the same rules as
+// Default: DefaultRecoveryCodesPath, "/recovery/codes", within the base path (WithBasePath), with
+// the same rules as
 // WithRecoveryCompletePath.
 func WithRecoveryCodesPath(path string) RecoveryOption {
 	return func(i *recoveryInterceptor) error {

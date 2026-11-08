@@ -611,7 +611,8 @@ type PasskeyRegistrationResponder func(ex *Exchange, res *passkey.RegistrationRe
 // prefix instead: POST "<prefix>/begin", "<prefix>/finish", "<prefix>/confirm"
 // and "<prefix>/confirm-email".
 //
-// Default: DefaultPasskeyRegistrationPrefix. A trailing slash is dropped. An
+// Default: DefaultPasskeyRegistrationPrefix, "/passkeys/register". The prefix is
+// within the base path (WithBasePath). A trailing slash is dropped. An
 // empty prefix, one that does not start with "/", and the root "/" are
 // refused; New also refuses a prefix whose paths collide with another
 // endpoint's (see EnablePasskeys). The recovery and enrolment gates exempt
@@ -634,7 +635,8 @@ func WithPasskeyRegistrationPrefix(prefix string) PasskeyOption {
 // instead: GET "<prefix>" lists, POST "<prefix>/rename" renames and POST
 // "<prefix>/remove" removes.
 //
-// Default: DefaultPasskeyCredentialsPrefix. It is validated as
+// Default: DefaultPasskeyCredentialsPrefix, "/passkeys". The prefix is within the
+// base path (WithBasePath). It is validated as
 // WithPasskeyRegistrationPrefix's is.
 func WithPasskeyCredentialsPrefix(prefix string) PasskeyOption {
 	return func(p *passkeyInterceptor) error {

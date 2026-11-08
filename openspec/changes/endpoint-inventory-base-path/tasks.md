@@ -81,7 +81,7 @@ Every task is test-first: write the failing test, run it, confirm it fails for t
 
 ## 5. One collision check over the inventory (`http-security-chain` and the MODIFIED collision requirements)
 
-- [ ] 5.1 Check every pair of inventoried operations in `New`, after resolution:
+- [x] 5.1 Check every pair of inventoried operations in `New`, after resolution:
   - collisions by match kind, with `Match` applied to the path before its first `{…}` segment; a path claimed for every method by an endpoint that answers 405; the exact-versus-prefix rule across features; sharing only within one feature, by matching `SharesPath` with different methods or exact beside one-segment;
   - the error names both settings, both paths and what the collision would break; the first colliding pair in inventory order is reported;
   - tests cover each spec scenario: two features on `/signin`, re-authentication under the MFA verify prefix, MFA challenge and verify on `/mfa/step`, password sign-in on `/oauth2/token` beside the provider, recovery codes shared, default session management and default consents built, two provider overrides on `/oauth2/me` refused, logout under the MFA verify prefix with its explanation, and the key set on the OpenID configuration's path under `/auth`.
@@ -101,12 +101,12 @@ Every task is test-first: write the failing test, run it, confirm it fails for t
 
 ## 6. Checks for a base path's reach (`http-security-chain`)
 
-- [ ] 6.1 Refuse an issuer that does not cover the base path, and add `WithoutOIDCIssuerBasePathCheck()`:
+- [x] 6.1 Refuse an issuer that does not cover the base path, and add `WithoutOIDCIssuerBasePathCheck()`:
   - tests cover each spec scenario: root issuer refused, issuer at the base, with a trailing slash, deeper than the endpoints refused, an endpoint override outside the issuer's path refused, and the waiver with the OpenID configuration at the root and `token_endpoint` under `/auth`;
   - one test pins that the waiver with a root issuer and a provider built with `AudienceIssuerOrTokenEndpoint` is refused by the existing assertion endpoint check.
 
   (D8; "Under a base path the provider's issuer must cover it", every scenario; "Provider wiring mistakes fail at construction" scenario "Issuer outside the base path".) Verify with `go test -race -count=1 -run 'TestOIDCProvider_IssuerBasePath' ./httpsec/`
-- [ ] 6.2 Refuse consumer routes left at a pre-base endpoint path, and add `WithoutBasePathRouteCheck()`:
+- [x] 6.2 Refuse consumer routes left at a pre-base endpoint path, and add `WithoutBasePathRouteCheck()`:
   - covers recovery cool-down routes and `WithCSRFExemption` routes, each compared in its own matcher's normal form (cool-down lower-cased and trailing-slash-trimmed; exemption patterns with `*` segments); "lies under" only for subtree and segment endpoints;
   - tests cover each spec scenario: a cool-down route at `/reauth/password` under `/auth` refused, `/Reauth/Password/` refused, the same route at `/auth/reauth/password` applied, the waiver accepting a cross-site exemption at `/sign-in/password`; plus a cross-site exemption pattern `/sso/*/x` refused under `/auth`;
   - `WithHeaderProfile`'s godoc states that its matcher is not checked.
@@ -116,7 +116,7 @@ Every task is test-first: write the failing test, run it, confirm it fails for t
 ## 7. The OIDC redirect path check (`oidc-login`)
 
 - [x] 7.1 In `authenticate/oidc`, give `RelyingParty` read access to each registered provider's redirect URL, alongside `Providers()`. A test registers two providers and reads both URLs back, and checks that an unknown name reports none. (D10.) Verify with `go test -race -count=1 ./authenticate/oidc/`
-- [ ] 7.2 Check at chain assembly that each provider's decoded redirect URL path ends with the resolved callback path followed by its name, and add `WithoutOIDCRedirectPathCheck()`:
+- [x] 7.2 Check at chain assembly that each provider's decoded redirect URL path ends with the resolved callback path followed by its name, and add `WithoutOIDCRedirectPathCheck()`:
   - 1.1's test turns green;
   - tests cover each spec scenario: a matching URL, the base `/auth` not reflected, the callback moved, a prefix-stripping proxy accepted, a percent-encoded path accepted, and the waiver;
   - existing OIDC fixtures and examples whose redirect URLs do not match their callback path are corrected, and each correction is listed in the report.
@@ -125,7 +125,7 @@ Every task is test-first: write the failing test, run it, confirm it fails for t
 
 ## 8. Documentation
 
-- [ ] 8.1 Godoc and README:
+- [x] 8.1 Godoc and README:
   - `WithBasePath` names the default (none), what it covers, what it does not (consumer pages, authorization rules, consumer routes, consumer interceptors, a prefix a proxy already strips), and its refusals;
   - every path setting, the struct fields included, says the path is relative to the base path and names its default;
   - the three waivers state what each gives up; `Endpoints()` states that consumer interceptors are not listed and documents every operation identifier;
@@ -137,7 +137,7 @@ Every task is test-first: write the failing test, run it, confirm it fails for t
 
 ## 9. Adapters and conformance
 
-- [ ] 9.1 Add base-path scenarios to `test/httpsecconformance`, run on net/http, gin and fiber:
+- [x] 9.1 Add base-path scenarios to `test/httpsecconformance`, run on net/http, gin and fiber:
   - password sign-in, the key set and the token endpoint answer under `/auth` and their unprefixed paths pass through;
   - an authorization rule keeps judging the consumer's own path;
   - a chain with no base path answers a request whose prefix a proxy removed.

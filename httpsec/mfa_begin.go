@@ -220,7 +220,8 @@ func (i *mfaInterceptor) wireChallenges(c *config) error {
 // WithMFABeginPrefix begins each challenge method under prefix instead: a
 // method begins at prefix, "/" and its name.
 //
-// Default: DefaultMFABeginPrefix. Only POST under the prefix is a begin. A
+// Default: DefaultMFABeginPrefix, "/mfa/challenge". The prefix is within the base
+// path (WithBasePath). Only POST under the prefix is a begin. A
 // trailing slash is dropped. An empty prefix, one that does not start with "/"
 // and the root "/" are refused, as they are for WithMFAVerifyPrefix; so is a
 // prefix equal to, above or below the verify prefix, since one endpoint would

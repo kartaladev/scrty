@@ -200,7 +200,9 @@ func EnableFormLogin(d FormLoginDeps, opts ...LoginOption) Option {
 
 // WithLoginRequestPath answers logins on path instead.
 //
-// Default: DefaultLoginPath. An empty path is refused: it would match nothing,
+// Default: DefaultLoginPath, "/sign-in/password". The path is within the base
+// path (WithBasePath): with a base path of "/auth", the default answers
+// "/auth/sign-in/password". An empty path is refused: it would match nothing,
 // so the endpoint the consumer asked for would silently not exist.
 func WithLoginRequestPath(path string) LoginOption {
 	return func(l *formLogin) error {

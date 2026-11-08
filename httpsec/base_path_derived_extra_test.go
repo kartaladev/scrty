@@ -210,7 +210,7 @@ func TestBasePath_ClearedCookiesCarryMovedPath(t *testing.T) {
 			name:   "the OIDC flow cookie is cleared on the moved callback",
 			cookie: httpsec.DefaultOIDCFlowCookieName,
 			clear: func(t *testing.T) served {
-				h := newOIDCHarness(t)
+				h := newOIDCHarnessAt(t, derivedBase+httpsec.DefaultOIDCCallbackPath)
 				h.chainOpts = []httpsec.Option{httpsec.WithBasePath(derivedBase)}
 
 				chain := h.chain(t)

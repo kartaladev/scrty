@@ -3,9 +3,14 @@ package httpsec_test
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/internal/must"
+	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -458,6 +463,60 @@ func TestChainPathCollisions_AuthFeatures(t *testing.T) {
 			}),
 			assert: collisionBuilt,
 		},
+		// Changed verdicts (D13): a feature claims only the paths its entries
+		// declare, not everything under its prefix.
+		{
+			// Changed verdict (D13): federated login's start answers one
+			// segment under its prefix, not "/sso/login/idp/x".
+			name:   "the provider's token under the federated-login authorize prefix, two segments down, builds",
+			build:  provider(at(httpsec.OIDCToken, httpsec.DefaultOIDCAuthorizePath+"idp/x"), oidcLoginOn),
+			assert: collisionBuilt,
+		},
+		{
+			// Changed verdict (D13): session management answers one segment
+			// under its prefix, not "/sessions/a/b".
+			name:   "the provider's token under the session management prefix, two segments down, builds",
+			build:  provider(at(httpsec.OIDCToken, httpsec.DefaultSessionManagementPrefix+"/a/b"), managementOn),
+			assert: collisionBuilt,
+		},
+		{
+			// Changed verdict (D13): re-authentication answers none of the
+			// paths under its prefix but its own four.
+			name: "the signal stream under the re-authentication prefix builds",
+			build: signalsAt(httpsec.DefaultReauthenticationPrefix+"/stream", func(t *testing.T, f *constructionFixture) []httpsec.Option {
+				return []httpsec.Option{formLogin(t, f), httpsec.EnableReauthentication()}
+			}),
+			assert: collisionBuilt,
+		},
+		{
+			// Changed verdict (D13): a recovery that issues no codes answers no
+			// start, so its path may be another endpoint's.
+			name: "the recovery start path at the logout path, with no issued codes, builds",
+			build: func(t *testing.T) []httpsec.Option {
+				h := newRecoveryHarness(t)
+				h.proofs = []recovery.ProofKind{recovery.ProofSaved, recovery.ProofPassword, recovery.ProofMFA}
+				h.recOpts = []httpsec.RecoveryOption{httpsec.WithRecoveryStartPath(httpsec.DefaultLogoutPath)}
+
+				return h.options(t)
+			},
+			assert: collisionBuilt,
+		},
+		{
+			// Changed verdict (D13): federated login without redemption has no
+			// handoff, so another endpoint may answer its default path.
+			name: "the provider's token at the handoff path, with no redemption, builds",
+			build: provider(at(httpsec.OIDCToken, httpsec.DefaultOIDCHandoffPath),
+				func(t *testing.T, m *session.Sessions) []httpsec.Option {
+					flows, err := oidc.NewMemoryFlowStore()
+					require.NoError(t, err)
+
+					return []httpsec.Option{httpsec.EnableOIDCLogin(
+						httpsec.OIDCDeps{RelyingParty: oidcManagerOver(t, flows)},
+						httpsec.WithOIDCSessions(m),
+						httpsec.WithOIDCCallbackSuccess(func(*httpsec.Exchange, oidc.CallbackResult, string) error { return nil }))}
+				}),
+			assert: collisionBuilt,
+		},
 	}
 
 	// Each endpoint family of the chain that the provider's paths must stay
@@ -489,8 +548,8 @@ func TestChainPathCollisions_AuthFeatures(t *testing.T) {
 		{"a passkey path", httpsec.OIDCToken, httpsec.DefaultPasskeyCredentialsPrefix, passkeysOn},
 		{"a second-factor begin path", httpsec.OIDCToken, httpsec.DefaultMFABeginPrefix + "/totp", mfaPrefixesOn},
 		{"a second-factor verify path", httpsec.OIDCToken, httpsec.DefaultMFAVerifyPrefix + "/totp", mfaPrefixesOn},
-		{"an enrolment begin path", httpsec.OIDCToken, httpsec.DefaultEnrolmentBeginPrefix + "/totp", enrolmentOn},
-		{"an enrolment confirm path", httpsec.OIDCToken, httpsec.DefaultEnrolmentConfirmPrefix + "/totp", enrolmentOn},
+		{"an enrolment begin path", httpsec.OIDCToken, httpsec.DefaultEnrolmentBeginPrefix + "/totp", enrolmentRaised},
+		{"an enrolment confirm path", httpsec.OIDCToken, httpsec.DefaultEnrolmentConfirmPrefix + "/totp", enrolmentRaised},
 	} {
 		cases = append(cases, testCase{
 			name:  "the provider's path at " + fam.name,
@@ -507,5 +566,22 @@ func TestChainPathCollisions_AuthFeatures(t *testing.T) {
 			c, err := httpsec.New(tc.build(t)...)
 			tc.assert(t, c, err)
 		})
+	}
+}
+
+// enrolmentRaised is the enrolment feature over a method that can enrol, with
+// the policy that raises the enrolment challenge. The chain refuses to be built
+// without either, so a collision on an enrolment path is the first thing it
+// finds wrong.
+func enrolmentRaised(t *testing.T, _ *session.Sessions) []httpsec.Option {
+	t.Helper()
+
+	return []httpsec.Option{
+		httpsec.WithPolicyEngine(collisionsEngine(t)),
+		httpsec.EnableMFA([]mfa.Method{must.Must(mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example"))}),
+		httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{
+			Users:  NewMockUserLoader(gomock.NewController(t)),
+			Sender: exampleSender{},
+		}),
 	}
 }

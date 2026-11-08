@@ -464,7 +464,8 @@ func (g *passwordChangeGate) checkGrantRevocation(c *config) error {
 // WithPasswordChangeEndpoint answers POST requests on path with fn.
 //
 // Default: no endpoint at all, under which only a new login clears the
-// challenge. Requests to path pass the gate, so the one endpoint a caller who
+// challenge. The path is within the base path (WithBasePath), and the gate
+// lets through the resolved path. Requests to path pass the gate, so the one endpoint a caller who
 // owes a password change can reach is the one that resolves it; every other
 // method on that path is gated like anything else.
 //

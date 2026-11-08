@@ -208,6 +208,9 @@ type oidcInterceptor struct {
 	handoffCountRefusalsSet bool
 	handoffPathSet          bool
 
+	// redirectCheckWaived records WithoutOIDCRedirectPathCheck.
+	redirectCheckWaived bool
+
 	redirects        *origin.Allowlist
 	allowedRedirects []string
 	allowedOrigins   []string

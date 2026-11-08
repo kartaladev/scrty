@@ -192,7 +192,8 @@ func WithPasskeyPasswordlessLogin(settings ...PasswordlessSetting) PasskeyOption
 // POST "<prefix>/begin" and "<prefix>/finish". The ceremony cookie is scoped
 // to the moved finish path.
 //
-// Default: DefaultPasswordlessPrefix. It is validated as
+// Default: DefaultPasswordlessPrefix, "/sign-in/passkey". The prefix is within the
+// base path (WithBasePath). It is validated as
 // WithPasskeyRegistrationPrefix's is, and New refuses it when passwordless
 // login is not enabled (WithPasskeyPasswordlessLogin), since it would move nothing.
 func WithPasskeyPasswordlessPrefix(prefix string) PasskeyOption {

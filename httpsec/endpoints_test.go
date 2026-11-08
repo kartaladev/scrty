@@ -78,7 +78,7 @@ func endpointsRecovery(t *testing.T) []httpsec.Option {
 }
 
 // endpointsOIDCLogin enables federated login with redemption, over a registry
-// holding the provider testOIDCProvider.
+// holding the provider testOIDCProvider, registered under the base path.
 func endpointsOIDCLogin(t *testing.T) []httpsec.Option {
 	t.Helper()
 
@@ -89,7 +89,7 @@ func endpointsOIDCLogin(t *testing.T) []httpsec.Option {
 	require.NoError(t, err)
 
 	return []httpsec.Option{httpsec.EnableOIDCLogin(
-		httpsec.OIDCDeps{RelyingParty: oidcManagerOver(t, flows), Handoff: handoffs},
+		httpsec.OIDCDeps{RelyingParty: oidcManagerAt(t, flows, endpointsBase+httpsec.DefaultOIDCCallbackPath), Handoff: handoffs},
 		httpsec.WithOIDCSessions(must.Must(session.New())),
 		httpsec.WithOIDCTokens(newMockGenerator(gomock.NewController(t))),
 	)}
@@ -717,6 +717,51 @@ func TestChainEndpoints_PinsEveryOperation(t *testing.T) {
 
 			e, listed := findEndpoint(all, tc.id)
 			tc.assert(t, e, listed)
+		})
+	}
+}
+
+// TestNew_RefusesAKeySetEnabledTwice pins that a built-in enabled twice on
+// different paths, so one operation would be listed twice, fails New and names
+// both paths.
+func TestNew_RefusesAKeySetEnabledTwice(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		build  func(t *testing.T) (*httpsec.Chain, error)
+		assert func(t *testing.T, c *httpsec.Chain, err error)
+	}
+
+	keys := func(t *testing.T, path string) httpsec.Option {
+		t.Helper()
+
+		return httpsec.EnableJWKSEndpoint(NewMockKeySetProvider(gomock.NewController(t)),
+			httpsec.WithJWKSEndpointPath(path))
+	}
+
+	cases := []testCase{
+		{
+			name: "two key sets on different paths",
+			build: func(t *testing.T) (*httpsec.Chain, error) {
+				return httpsec.New(keys(t, "/.well-known/jwks.json"), keys(t, "/keys"))
+			},
+			assert: func(t *testing.T, c *httpsec.Chain, err error) {
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.Nil(t, c)
+				assert.Contains(t, err.Error(), "WithJWKSEndpointPath")
+				assert.Contains(t, err.Error(), `"/.well-known/jwks.json"`)
+				assert.Contains(t, err.Error(), `"/keys"`)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			c, err := tc.build(t)
+			tc.assert(t, c, err)
 		})
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/internal/must"
@@ -51,12 +52,23 @@ func providerBeside(t *testing.T, f *opFixture, popts []httpsec.OIDCProviderOpti
 ) []httpsec.Option {
 	t.Helper()
 
+	return providerBesideKeys(t, f, popts, nil, others...)
+}
+
+// providerBesideKeys is providerBeside with jwksOpts given to the key set the
+// chain already serves, for a row that moves it. A second key set on the chain
+// would list one operation twice, which is its own refusal.
+func providerBesideKeys(t *testing.T, f *opFixture, popts []httpsec.OIDCProviderOption,
+	jwksOpts []httpsec.JWKSOption, others ...func(*testing.T, *session.Sessions) []httpsec.Option,
+) []httpsec.Option {
+	t.Helper()
+
 	p := f.provider(t)
 	m := reporting(t, p)
 
 	opts := []httpsec.Option{
 		f.bearer(t, m),
-		httpsec.EnableJWKSEndpoint(f.keys),
+		httpsec.EnableJWKSEndpoint(f.keys, jwksOpts...),
 		httpsec.EnableSecurityHeaders(),
 		httpsec.EnableCSRFProtection(),
 		httpsec.EnableOIDCProvider(p, popts...),
@@ -177,18 +189,61 @@ func TestChainPathCollisions(t *testing.T) {
 			assert: collisionBuilt,
 		},
 		{
-			// "Undeclared sharing". The provider refuses two of its endpoints
-			// on one path while it resolves them, so the row pins only what
-			// both checks name.
-			name: "two provider endpoints given one path",
+			// "Colliding endpoint paths fail at construction": the first pair in
+			// inventory order is the one reported, however many others collide.
+			name: "the first colliding pair in inventory order is reported",
 			build: func(t *testing.T) []httpsec.Option {
-				return providerBeside(t, f, []httpsec.OIDCProviderOption{
-					httpsec.WithOIDCProviderPath(httpsec.OIDCLogoutConfirm, "/oauth2/me"),
-					httpsec.WithOIDCProviderPath(httpsec.OIDCConsents, "/oauth2/me"),
+				return providerBesideKeys(t, f, nil, []httpsec.JWKSOption{httpsec.WithJWKSEndpointPath("/sso/handoff")},
+					oidcLoginOn, func(t *testing.T, m *session.Sessions) []httpsec.Option {
+						login := newLoginGuardHarness(t)
+						link := newMagicLinkHarness(t)
+
+						return []httpsec.Option{
+							httpsec.EnableFormLogin(httpsec.FormLoginDeps{
+								Authenticator: login.authn, Sessions: m, Attempts: login.attempts,
+							}, httpsec.WithLoginRequestPath("/signin")),
+							httpsec.EnableMagicLink(link.manager, httpsec.WithMagicLinkSessions(m),
+								httpsec.WithMagicLinkRequestPath("/signin")),
+						}
+					})
+			},
+			assert: func(t *testing.T, c *httpsec.Chain, err error) {
+				collisionRefused(httpsec.OperationSSOHandoff, "WithJWKSEndpointPath", `"/sso/handoff"`)(t, c, err)
+				assert.NotContains(t, err.Error(), httpsec.OperationSignInMagicLinkRequest)
+			},
+		},
+		{
+			// "Path under another endpoint's prefix": a subtree rooted one segment
+			// below a segment endpoint's prefix holds that endpoint's paths.
+			name: "a subtree root one segment below a segment prefix",
+			build: func(t *testing.T) []httpsec.Option {
+				return providerBeside(t, f, nil, func(t *testing.T, m *session.Sessions) []httpsec.Option {
+					flows, err := oidc.NewMemoryFlowStore()
+					require.NoError(t, err)
+
+					return []httpsec.Option{
+						httpsec.EnableOIDCLogin(httpsec.OIDCDeps{
+							RelyingParty: oidcManagerOver(t, flows), Handoff: newTestHandoffManager(t),
+						}, httpsec.WithOIDCSessions(m), httpsec.WithOIDCBackchannelLogoutPath("/mfa")),
+						mfaOn(t),
+					}
 				})
 			},
-			assert: collisionRefused("EnableOIDCProvider", httpsec.OIDCLogoutConfirm.String(),
-				httpsec.OIDCConsents.String(), `"/oauth2/me"`),
+			assert: collisionRefused(httpsec.OperationSSOBackchannelLogout, httpsec.OperationMFAChallenge),
+		},
+		{
+			// "Path under another endpoint's prefix": an endpoint that answers
+			// 405 to other methods claims its path for every method.
+			name: "the signal stream under the MFA verify prefix",
+			build: func(t *testing.T) []httpsec.Option {
+				return providerBeside(t, f, nil, formLoginOn, func(t *testing.T, _ *session.Sessions) []httpsec.Option {
+					return []httpsec.Option{
+						mfaOn(t),
+						httpsec.EnableSessionSignals(httpsec.SessionSignals{Path: httpsec.DefaultMFAVerifyPrefix + "/stream"}),
+					}
+				})
+			},
+			assert: collisionRefused(httpsec.OperationSessionSignals, httpsec.OperationMFAVerify),
 		},
 		{
 			// "The error says what would break".
@@ -242,11 +297,8 @@ func TestChainPathCollisions(t *testing.T) {
 			// trailing slash, is refused although no request reaches both.
 			name: "the key set on a federated-login prefix without its trailing slash",
 			build: func(t *testing.T) []httpsec.Option {
-				return providerBeside(t, f, nil, oidcLoginOn, func(t *testing.T, _ *session.Sessions) []httpsec.Option {
-					keys := NewMockKeySetProvider(gomock.NewController(t))
-
-					return []httpsec.Option{httpsec.EnableJWKSEndpoint(keys, httpsec.WithJWKSEndpointPath("/sso/login"))}
-				})
+				return providerBesideKeys(t, f, nil,
+					[]httpsec.JWKSOption{httpsec.WithJWKSEndpointPath("/sso/login")}, oidcLoginOn)
 			},
 			assert: collisionRefused("WithJWKSEndpointPath", "WithOIDCAuthorizePath",
 				httpsec.OperationKeySet, httpsec.OperationSSOLogin, `"/sso/login"`),
@@ -579,7 +631,7 @@ func TestChainPathCollisions(t *testing.T) {
 			build: func(t *testing.T) []httpsec.Option {
 				opts := newPwlDeployment(t)
 				o := opts.options(t)
-				o[5] = httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: opts.sessions},
+				o[6] = httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: opts.sessions},
 					httpsec.WithLogoutRequestPath(passwordlessFinishPath))
 
 				return o

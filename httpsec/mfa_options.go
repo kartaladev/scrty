@@ -243,7 +243,8 @@ func EnableMFA(methods []mfa.Method, opts ...MFAOption) Option {
 // WithMFAVerifyPrefix verifies each method under prefix instead: a method is
 // verified at prefix, "/" and its name.
 //
-// Default: DefaultMFAVerifyPrefix. Only POST under the prefix is a
+// Default: DefaultMFAVerifyPrefix, "/mfa/verify". The prefix is within the base
+// path (WithBasePath). Only POST under the prefix is a
 // verification; every other request to it is judged like any other, which for
 // a session that owes a second factor means the gate holds it. A trailing
 // slash is dropped, so "/auth/2fa" and "/auth/2fa/" are the same prefix.

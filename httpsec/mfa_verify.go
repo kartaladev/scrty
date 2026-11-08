@@ -805,8 +805,8 @@ type ListingSetting func(*listingConfig) error
 
 // ListingPath answers the listing on path instead.
 //
-// Default: DefaultMFAMethodListingPath. Only GET on exactly path is the
-// listing. An empty path is refused rather than read as the default, and so
+// Default: DefaultMFAMethodListingPath, "/mfa/methods". The path is within the
+// base path (WithBasePath). Only GET on exactly path is the listing. An empty path is refused rather than read as the default, and so
 // is one that does not start with "/", which matches no request path. New
 // also refuses a path the chain's logout answers, or one at or under the MFA
 // verify or begin prefix, since each of those endpoints claims its path.

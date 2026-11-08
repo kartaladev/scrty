@@ -11,7 +11,12 @@ import (
 // the defaults named on EnableMagicLink.
 type MagicLinkOption func(*magicLinkInterceptor) error
 
-// EnableMagicLink answers the two magic-link endpoints at the magic-link slot.
+// EnableMagicLink answers the two magic-link endpoints at the magic-link slot:
+// the request endpoint and the redeem endpoint. Both are endpoints of the chain,
+// so WithBasePath moves them. The confirm page the emailed link points at is
+// the consumer's own page: it is not an endpoint of the chain, and the base path
+// does not move it (authenticate/magiclink.WithConfirmPath). The page posts the
+// token to the redeem endpoint, at its resolved path.
 //
 // Defaults: a link is asked for by POST on DefaultMagicLinkRequestPath, which
 // reads "email" and "next" from a form body or a JSON one and always answers
@@ -76,7 +81,8 @@ func EnableMagicLink(m *magiclink.Links, opts ...MagicLinkOption) Option {
 
 // WithMagicLinkRequestPath answers link requests on path instead.
 //
-// Default: DefaultMagicLinkRequestPath. An empty path is refused, and so is
+// Default: DefaultMagicLinkRequestPath, "/sign-in/magic-link". The path is within
+// the base path (WithBasePath). An empty path is refused, and so is
 // one equal to the consume path: one path cannot both ask for a link and
 // redeem one, and whichever branch matched first would silently swallow the
 // other endpoint.
@@ -95,9 +101,15 @@ func WithMagicLinkRequestPath(path string) MagicLinkOption {
 
 // WithMagicLinkConsumePath redeems links on path instead.
 //
-// Default: DefaultMagicLinkConsumePath. It is also what the binding cookie is
-// scoped to, so moving the endpoint moves the cookie's scope with it. An empty
-// path, or one equal to the request path, is refused.
+// Default: DefaultMagicLinkConsumePath, "/sign-in/magic-link/redeem". The path is
+// within the base path (WithBasePath), and the binding cookie is scoped to the
+// resolved path, so moving the endpoint moves the cookie's scope with it. An
+// empty path, or one equal to the request path, is refused.
+//
+// This is the redeem endpoint, which the chain answers and the base path moves.
+// It is not the confirm page the emailed link points at: that page is the
+// consumer's own, is set with authenticate/magiclink.WithConfirmPath, and does
+// not move with the base path. The page posts the token here.
 func WithMagicLinkConsumePath(path string) MagicLinkOption {
 	return func(i *magicLinkInterceptor) error {
 		if err := checkEndpointPath("WithMagicLinkConsumePath", path); err != nil {

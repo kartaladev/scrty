@@ -315,7 +315,8 @@ func (i *reauthInterceptor) buildChallenges(c *config, option string) error {
 
 // WithReauthenticationPrefix answers the endpoints under prefix instead.
 //
-// Default: DefaultReauthenticationPrefix. A trailing slash is dropped, so
+// Default: DefaultReauthenticationPrefix, "/reauth". The prefix is within the base
+// path (WithBasePath). A trailing slash is dropped, so
 // "/account/confirm" and "/account/confirm/" are the same prefix. An empty
 // prefix is refused rather than read as the default, and so is one that does
 // not start with "/", which matches no request path, and the root "/", which

@@ -326,8 +326,10 @@ func EnableLogout(d LogoutDeps, opts ...LogoutOption) Option {
 
 // WithLogoutRequestPath answers logouts on path instead.
 //
-// Default: DefaultLogoutPath, which keeps passing through once the consumer
-// moves the endpoint. An empty path is refused: it would match nothing, so the
+// Default: DefaultLogoutPath, "/sign-out", which keeps passing through once the
+// consumer moves the endpoint. The path is within the base path
+// (WithBasePath): with a base path of "/auth", the default answers
+// "/auth/sign-out". An empty path is refused: it would match nothing, so the
 // endpoint the consumer asked for would silently not exist.
 func WithLogoutRequestPath(path string) LogoutOption {
 	return func(l *logout) error {

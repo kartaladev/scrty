@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/kartaladev/scrty/authorize"
@@ -144,10 +143,8 @@ func (c *oidcConsentClients) Intercept(ex *Exchange, next Next) error {
 
 	// Only the list's path and one non-empty segment is a revocation's path. A
 	// trailing slash, an empty segment and a deeper path pass on unanswered.
-	prefix := g.op.consentClientPrefix()
-
-	client, ok := strings.CutPrefix(ex.Request.Path(), prefix)
-	if !ok || client == "" || strings.Contains(client, "/") {
+	client, ok := g.op.consentClient(ex.Request.Path())
+	if !ok {
 		return next(ex)
 	}
 

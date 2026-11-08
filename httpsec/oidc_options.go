@@ -2,6 +2,7 @@ package httpsec
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -208,6 +209,43 @@ func (i *oidcInterceptor) check(c *config, option string) error {
 			"WithOIDCCallbackSuccess, or turn role sync off", option, strings.Join(syncing, ", "))
 	}
 
+	if !i.redirectCheckWaived {
+		return i.checkRedirectPaths(option)
+	}
+
+	return nil
+}
+
+// checkRedirectPaths refuses a provider whose registered redirect URL cannot
+// reach the callback endpoint. The decoded path of the URL must end with the
+// callback path as resolved (the base path included) followed by the provider's
+// name; ending with it, rather than equalling it, lets a proxy that removes a
+// public prefix through. A redirect URL that does not parse, or that the
+// registry cannot name, is refused, since either would fail every login.
+func (i *oidcInterceptor) checkRedirectPaths(option string) error {
+	for _, name := range i.manager.Providers() {
+		raw, ok := i.manager.RedirectURL(name)
+		if !ok {
+			return newConfigError("%s: provider %q has no redirect URL to check; "+
+				"WithoutOIDCRedirectPathCheck waives the check", option, name)
+		}
+
+		u, err := url.Parse(raw)
+		if err != nil {
+			return newConfigError("%s: the redirect URL of provider %q does not parse, so it "+
+				"cannot be checked against the callback path (WithoutOIDCRedirectPathCheck "+
+				"waives the check)", option, name)
+		}
+
+		want := i.callbackPath + name
+		if !strings.HasSuffix(u.Path, want) {
+			return newConfigError("%s: the redirect URL of provider %q has the path %q, which "+
+				"cannot reach the callback this chain serves at %q; register a redirect URL "+
+				"ending in that path, or waive the check with WithoutOIDCRedirectPathCheck",
+				option, name, u.Path, want)
+		}
+	}
+
 	return nil
 }
 
@@ -351,7 +389,8 @@ func WithOIDCSessions(m *session.Sessions) OIDCOption {
 // WithOIDCAuthorizePath starts logins under prefix instead: a GET on prefix
 // followed by a provider's registered name starts a login with that provider.
 //
-// Default: DefaultOIDCAuthorizePath. A prefix without a trailing slash has
+// Default: DefaultOIDCAuthorizePath, "/sso/login/". The prefix is within the base
+// path (WithBasePath). A prefix without a trailing slash has
 // one appended, since the provider's name is the one segment after it. An
 // empty prefix, one that does not start with "/", or the root path "/"
 // itself (which would claim every one-segment path of the application), is
@@ -374,7 +413,10 @@ func WithOIDCAuthorizePath(prefix string) OIDCOption {
 // provider redirects to prefix followed by its registered name, which each
 // provider's registered redirect URL has to match.
 //
-// Default: DefaultOIDCCallbackPath. It is also what the flow cookie is
+// Default: DefaultOIDCCallbackPath, "/sso/callback/". The prefix is within the
+// base path (WithBasePath), so the redirect URL registered with the provider
+// must end with the resolved prefix and the provider's name (see
+// WithoutOIDCRedirectPathCheck). It is also what the flow cookie is
 // scoped to, so moving the endpoint moves the cookie with it. A prefix without
 // a trailing slash has one appended. An empty prefix, one that does not start
 // with "/", or the root path "/" itself (which would claim every
@@ -395,7 +437,8 @@ func WithOIDCCallbackPath(prefix string) OIDCOption {
 
 // WithOIDCHandoffPath redeems handoff codes by POST on path instead.
 //
-// Default: DefaultOIDCHandoffPath. The path is matched exactly. An empty
+// Default: DefaultOIDCHandoffPath, "/sso/handoff". The path is within the base
+// path (WithBasePath), and is matched exactly. An empty
 // path, or one that does not start with "/", is refused. New refuses a path
 // that collides with another endpoint of the chain, as its collision check
 // judges every built-in: equal to an authorize, callback or back-channel
@@ -421,7 +464,9 @@ func WithOIDCHandoffPath(path string) OIDCOption {
 // prefix instead: a provider delivers to prefix followed by its registered
 // name, which is the back-channel logout URI registered with the provider.
 //
-// Default: DefaultOIDCBackchannelPath. A prefix without a trailing slash has
+// Default: DefaultOIDCBackchannelPath, "/sso/backchannel-logout/". The prefix is
+// within the base path (WithBasePath), so the URI registered with the provider
+// includes the base path. A prefix without a trailing slash has
 // one appended. An empty prefix, one that does not start with "/", or the
 // root path "/" itself (which would claim every one-segment path of the
 // application), is refused.
@@ -676,6 +721,26 @@ func WithOIDCBackchannelLogoutScope(s BackchannelLogoutScope) OIDCOption {
 func WithOIDCRPInitiatedLogout(on bool) OIDCOption {
 	return func(i *oidcInterceptor) error {
 		i.rpLogout = on
+
+		return nil
+	}
+}
+
+// WithoutOIDCRedirectPathCheck waives the check that every provider's redirect
+// URL can reach the callback endpoint.
+//
+// Default: the check is on. Assembling the chain fails with a configuration
+// error unless the decoded path of each provider's redirect URL ends with the
+// callback path the chain serves (the base path included) followed by the
+// provider's name. A path that only ends with it is accepted, so a proxy that
+// removes a public prefix needs no waiver. Waive the check for a proxy that
+// rewrites paths beyond removing a prefix. Waiving it gives up the
+// construction-time proof: a redirect URL that cannot arrive is found only when
+// a provider redirects to it, and every login through that provider then fails
+// after the user has authenticated.
+func WithoutOIDCRedirectPathCheck() OIDCOption {
+	return func(i *oidcInterceptor) error {
+		i.redirectCheckWaived = true
 
 		return nil
 	}

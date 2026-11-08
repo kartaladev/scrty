@@ -136,7 +136,8 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 			assert: built,
 		},
 		{
-			name: "every option given a consumer value",
+			name:    "every option given a consumer value",
+			manager: func(t *testing.T) *oidc.RelyingParty { return newTestOIDCManagerAt(t, "/auth/oidc/callback/") },
 			enable: with(
 				httpsec.WithOIDCAuthorizePath("/auth/oidc/start/"),
 				httpsec.WithOIDCCallbackPath("/auth/oidc/callback/"),
@@ -155,7 +156,8 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 			assert: built,
 		},
 		{
-			name: "prefixes given without a trailing slash",
+			name:    "prefixes given without a trailing slash",
+			manager: func(t *testing.T) *oidc.RelyingParty { return newTestOIDCManagerAt(t, "/auth/callback/") },
 			enable: with(
 				httpsec.WithOIDCAuthorizePath("/auth/start"),
 				httpsec.WithOIDCCallbackPath("/auth/callback"),

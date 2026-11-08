@@ -46,8 +46,18 @@ type authEndpoint struct {
 }
 
 // oidcLoginOptions enables federated login with a handoff, over a registry
-// holding the provider "corp", with the OIDC options given.
+// holding the provider "corp", with the OIDC options given. The provider's
+// redirect URL is registered under the base path /auth and the default callback
+// path, so it reaches the callback whether or not the chain has that base.
 func oidcLoginOptions(t *testing.T, opts ...httpsec.OIDCOption) []httpsec.Option {
+	t.Helper()
+
+	return oidcLoginRegisteredAt(t, "/auth"+httpsec.DefaultOIDCCallbackPath, opts...)
+}
+
+// oidcLoginRegisteredAt is oidcLoginOptions with the provider's redirect URL
+// placed under callbackPrefix, for a chain whose callback path is moved.
+func oidcLoginRegisteredAt(t *testing.T, callbackPrefix string, opts ...httpsec.OIDCOption) []httpsec.Option {
 	t.Helper()
 
 	flows, err := oidc.NewMemoryFlowStore()
@@ -65,7 +75,7 @@ func oidcLoginOptions(t *testing.T, opts ...httpsec.OIDCOption) []httpsec.Option
 	}, opts...)
 
 	return []httpsec.Option{httpsec.EnableOIDCLogin(
-		httpsec.OIDCDeps{RelyingParty: oidcManagerOver(t, flows), Handoff: handoffs}, all...)}
+		httpsec.OIDCDeps{RelyingParty: oidcManagerAt(t, flows, callbackPrefix), Handoff: handoffs}, all...)}
 }
 
 func authEndpoints() []authEndpoint {
@@ -126,7 +136,7 @@ func authEndpoints() []authEndpoint {
 					return oidcLoginOptions(t)
 				}
 
-				return oidcLoginOptions(t, httpsec.WithOIDCCallbackPath(path))
+				return oidcLoginRegisteredAt(t, "/auth"+path, httpsec.WithOIDCCallbackPath(path))
 			},
 		},
 		{

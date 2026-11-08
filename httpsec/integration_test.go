@@ -2704,12 +2704,20 @@ func allowingVerifyLimiter(t *testing.T) *MockLimiter {
 func oidcManagerOver(t *testing.T, flows oidc.FlowStore) *oidc.RelyingParty {
 	t.Helper()
 
+	return oidcManagerAt(t, flows, "/sso/callback/")
+}
+
+// oidcManagerAt is oidcManagerOver with the provider's redirect URL placed
+// under callbackPrefix, the callback path the chain under test serves.
+func oidcManagerAt(t *testing.T, flows oidc.FlowStore, callbackPrefix string) *oidc.RelyingParty {
+	t.Helper()
+
 	registry, err := oidc.NewRegistry(oidc.Provider{ //nolint:gosec // G101: a fixture, not a credential
 		Name:                  testOIDCProvider,
 		Issuer:                "https://idp.example.com",
 		ClientID:              "app",
 		ClientSecret:          "secret-" + testOIDCProvider,
-		RedirectURL:           "https://app.example.com/sso/callback/" + testOIDCProvider,
+		RedirectURL:           "https://app.example.com" + callbackPrefix + testOIDCProvider,
 		AuthorizationEndpoint: "https://idp.example.com/authorize",
 		TokenEndpoint:         "https://idp.example.com/token",
 		JWKSURI:               "https://idp.example.com/jwks",

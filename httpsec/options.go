@@ -91,6 +91,9 @@ type config struct {
 	basePath      string
 	basePathGiven bool
 
+	// routeCheckWaived records WithoutBasePathRouteCheck.
+	routeCheckWaived bool
+
 	// seq counts registrations so two interceptors at one slot stay in the
 	// order they were registered in, which sorting alone would not preserve.
 	seq int
@@ -505,13 +508,6 @@ func New(opts ...Option) (*Chain, error) {
 
 	c.resolvePaths()
 
-	// Collisions are judged on the resolved paths before any built-in's own
-	// check, so two endpoints on one path are reported as a collision, naming
-	// both settings. build judges the full inventory again once wired.
-	if err := c.checkResolvedCollisions(); err != nil {
-		return nil, err
-	}
-
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
@@ -663,6 +659,19 @@ func (c *config) build() (*Chain, error) {
 	// Judged again over the full inventory: operations that wiring turns on
 	// (the recovery start and saved codes, the handoff) are listed only now.
 	if err := checkCollisions(endpoints); err != nil {
+		return nil, err
+	}
+
+	// After the shared check, so two declared operations on one path are
+	// refused there, naming both settings; this is the provider's own backstop
+	// for a duplicate route that no declaration explains.
+	if c.oidcProvider != nil {
+		if err := c.oidcProvider.checkRoutes(); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := checkStaleRoutes(c, endpoints); err != nil {
 		return nil, err
 	}
 

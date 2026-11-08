@@ -119,9 +119,13 @@ func EnableJWKSEndpoint(keys KeySetProvider, opts ...JWKSOption) Option {
 
 // WithJWKSEndpointPath serves the key set on path instead.
 //
-// Default: DefaultJWKSPath, which keeps passing through once the consumer
-// moves the endpoint — a deployment that serves the conventional location
-// through its own route is free to. An empty path is refused: it would match
+// Default: DefaultJWKSPath, "/.well-known/jwks.json", which keeps passing
+// through once the consumer moves the endpoint — a deployment that serves the
+// conventional location through its own route is free to. The path is within
+// the base path (WithBasePath): with a base path of "/auth", the default answers
+// "/auth/.well-known/jwks.json", which is no longer a well-known URI (RFC 8615
+// roots those at the top of the path), so clients find the key set through the
+// provider's published jwks_uri. An empty path is refused: it would match
 // nothing, so the endpoint the consumer asked for would silently not exist.
 func WithJWKSEndpointPath(path string) JWKSOption {
 	return func(j *jwksEndpoint) error {

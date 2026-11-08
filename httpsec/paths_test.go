@@ -302,6 +302,11 @@ func buildOIDCLogin(t *testing.T, opts ...httpsec.OIDCOption) (*httpsec.Chain, e
 		sessions: mustSessions(t),
 	}
 
+	// These rows judge the shape of a path, and move the callback to paths the
+	// fixture's redirect URL does not follow; the redirect check is waived so
+	// a row fails only for the shape it names. The check has its own tests.
+	opts = append([]httpsec.OIDCOption{httpsec.WithoutOIDCRedirectPathCheck()}, opts...)
+
 	return httpsec.New(httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: f.manager, Handoff: f.handoffs},
 		f.required(opts...)...))
 }

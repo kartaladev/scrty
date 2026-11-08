@@ -540,6 +540,12 @@ func APIHeaders(opts ...HeaderOption) HeaderProfile {
 // Default: no profile, so every request gets the document set. A nil matcher
 // fails construction: it would select nothing, and the profile would never
 // apply.
+//
+// The matcher is a function, so New cannot read the paths it compares and does
+// not check it against WithBasePath: a matcher written for an endpoint's path
+// without the base path silently stops selecting that endpoint once a base path
+// moves it. Compare the resolved paths, which Chain.Endpoints lists
+// (WithoutBasePathRouteCheck covers only the routes given as paths).
 func WithHeaderProfile(p HeaderProfile, m RouteMatcher) HeaderOption {
 	return func(l *securityHeaders) error {
 		if err := l.layerWide("WithHeaderProfile"); err != nil {

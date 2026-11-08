@@ -746,7 +746,9 @@ func WithRenewalLimiter(l ratelimit.Limiter) SessionRenewalOption {
 
 // WithRenewalPath answers renewals on path instead.
 //
-// Default: DefaultSessionRenewalPath. An empty path is refused, because it
+// Default: DefaultSessionRenewalPath, "/session/renewal". The path is within the
+// base path (WithBasePath), and a client renews at the resolved path. An empty
+// path is refused, because it
 // would answer nothing; so is the logout path, when the chain is built. A
 // client that renews posts to the path chosen here, so change it on both sides.
 func WithRenewalPath(path string) SessionRenewalOption {

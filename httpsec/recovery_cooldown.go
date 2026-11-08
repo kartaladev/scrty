@@ -2,6 +2,7 @@ package httpsec
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -104,6 +105,7 @@ func EnableRecoveryCooldown(records recovery.RecordStore, d time.Duration, route
 		}
 
 		marked := make(map[Route]struct{}, len(routes))
+		given := slices.Clone(routes)
 
 		for _, r := range routes {
 			if r.Method == "" || r.Path == "" {
@@ -114,7 +116,7 @@ func EnableRecoveryCooldown(records recovery.RecordStore, d time.Duration, route
 			marked[normalizeRoute(r.Method, r.Path)] = struct{}{}
 		}
 
-		c.register(&recoveryCooldown{records: records, window: d, routes: marked, now: c.now},
+		c.register(&recoveryCooldown{records: records, window: d, routes: marked, given: given, now: c.now},
 			After(OrderBearerToken))
 
 		return nil
@@ -127,7 +129,11 @@ type recoveryCooldown struct {
 	records recovery.RecordStore
 	window  time.Duration
 	routes  map[Route]struct{}
-	now     func() time.Time
+
+	// given are the routes as the consumer wrote them, which the base-path
+	// route check names in its refusal.
+	given []Route
+	now   func() time.Time
 }
 
 // Intercept refuses a marked request from a session whose user completed a

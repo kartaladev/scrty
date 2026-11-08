@@ -28,6 +28,112 @@ build-environment flag.
 counter, so never use one as a credential, session token or link secret. Those come from
 `crypto/rand` in the packages that mint them.
 
+## Endpoints and the base path
+
+Every built-in endpoint answers at a default path that says what it does. Each path, and each
+option that changes it, is a documented constant (`httpsec.DefaultLoginPath` and the rest), so a
+client, a test or a proxy rule can name the same thing the library does. Nothing needs configuring.
+
+| Endpoint | Default path | Replace with |
+|---|---|---|
+| Password sign-in | `POST /sign-in/password` | `httpsec.WithLoginRequestPath` |
+| Magic link request, redeem | `POST /sign-in/magic-link`, `POST /sign-in/magic-link/redeem` | `httpsec.WithMagicLinkRequestPath`, `httpsec.WithMagicLinkConsumePath` |
+| Passwordless passkey sign-in | `POST /sign-in/passkey/{begin,finish}` | `httpsec.WithPasskeyPasswordlessPrefix` |
+| Sign-out | `POST /sign-out` | `httpsec.WithLogoutRequestPath` |
+| SSO start, callback | `GET /sso/login/{provider}`, `GET /sso/callback/{provider}` | `httpsec.WithOIDCAuthorizePath`, `httpsec.WithOIDCCallbackPath` |
+| SSO handoff, back-channel logout | `POST /sso/handoff`, `POST /sso/backchannel-logout/{provider}` | `httpsec.WithOIDCHandoffPath`, `httpsec.WithOIDCBackchannelLogoutPath` |
+| Passkey registration | `POST /passkeys/register/{begin,finish,confirm,confirm-email}` | `httpsec.WithPasskeyRegistrationPrefix` |
+| Passkey list, rename, remove | `GET /passkeys`, `POST /passkeys/rename`, `POST /passkeys/remove` | `httpsec.WithPasskeyCredentialsPrefix` |
+| Second factor: begin, verify, list methods | `POST /mfa/challenge/{method}`, `POST /mfa/verify/{method}`, `GET /mfa/methods` | `httpsec.WithMFABeginPrefix`, `httpsec.WithMFAVerifyPrefix`, `httpsec.ListingPath` |
+| Second-factor enrolment | `POST /mfa/enrol/begin/{method}`, `/mfa/enrol/confirm/{method}`, `/mfa/enrol/confirm-email/{method}` | `httpsec.WithEnrolmentBeginPrefix` and the two like it |
+| Re-authentication | `/reauth/methods`, `/reauth/challenge/{method}`, `/reauth/verify/{method}`, `/reauth/password` | `httpsec.WithReauthenticationPrefix` |
+| Session renewal, signal stream | `/session/renewal`, `GET /session/signals` | `httpsec.WithRenewalPath`, `httpsec.SessionSignals.Path` |
+| Session management | `/sessions`, `/sessions/{handle}` | `httpsec.WithSessionManagementPrefix` |
+| Account recovery | `/recovery/{start,complete,finish,cancel,codes}` | `httpsec.WithRecoveryStartPath` and the four like it |
+| Key set | `GET /.well-known/jwks.json` | `httpsec.WithJWKSEndpointPath` |
+| OpenID Provider | `/oauth2/*` | `httpsec.WithOIDCProviderPrefix`, `httpsec.WithOIDCProviderPath` |
+
+The sign-in methods sit under `/sign-in`, the relying-party (SSO) side under `/sso`, and `/oauth2`
+means only "scrty is the provider". The password-change endpoint has no default: it exists only
+when you give `httpsec.WithPasswordChangeEndpoint` a path.
+
+`Chain.Endpoints()` lists every operation the chain answers, each at its resolved path, with a
+stable `OperationID` (`scrty.sign-in.password`, `scrty.mfa.verify`, ...), the methods it answers
+and what a request needs to reach it. It does not list the interceptors you register yourself,
+or the pages you serve.
+
+### The base path
+
+`httpsec.WithBasePath("/auth")` answers every built-in endpoint under `/auth`. A path setting is
+the path within the base: with `WithBasePath("/auth")`, password sign-in answers
+`/auth/sign-in/password`, and `WithLoginRequestPath("/signin")` makes it `/auth/signin`. The
+unprefixed path passes through to your application. The default is no base path, under which
+every endpoint answers at its own path.
+
+```go
+chain, err := httpsec.New(
+	httpsec.WithBasePath("/auth"),
+	httpsec.EnableFormLogin(deps), // POST /auth/sign-in/password
+	httpsec.EnableLogout(logoutDeps), // POST /auth/sign-out
+)
+```
+
+The key set, the provider's endpoints and everything the chain derives from a path (the exemptions
+the gates give sign-out, the three cookie scopes, the CSRF and CORS exemptions, the URLs the
+provider publishes) follow the base path.
+
+**What does not move:**
+
+- **Your pages.** The magic-link confirm page (`magiclink.WithConfirmPath`), the provider's login,
+  consent, logout and logged-out pages, and every redirect destination are served by your
+  application, often on another origin. The magic-link redeem endpoint that the confirm page posts
+  to is the chain's, and does move.
+- **Authorization rules.** They describe your own routes and keep judging them.
+- **Routes you give the chain.** Recovery cool-down routes, cross-site exemptions and
+  header-profile matchers name the moved paths; see the migration steps.
+- **Interceptors you register.** They answer where you wrote them to.
+- **A prefix a proxy already strips.** The chain matches the path it receives and never reads
+  `X-Forwarded-Prefix`. If your proxy or `http.StripPrefix` removes `/auth` before the chain sees
+  the request, set no base path. Setting both answers nothing: every built-in path passes through.
+- **The authorization server metadata.** With the provider, the OpenID configuration sits at the
+  issuer followed by `/.well-known/openid-configuration`, so an issuer that includes the base path
+  keeps it under the base. The OAuth authorization server metadata is always at the host root, at
+  `/.well-known/oauth-authorization-server` followed by the issuer's path (RFC 8414 section 3). A
+  gateway that forwards only `/auth/*` must route it to the chain as well.
+
+A base path that leaves something stale fails `httpsec.New` rather than the first request: a base
+path on a chain with no built-in endpoint, a path you set that repeats the base path, an issuer
+that does not cover the base path (`httpsec.WithoutOIDCIssuerBasePathCheck` waives it, for a
+gateway that routes `/.well-known/*` to the chain), a cool-down route or cross-site exemption left
+at a pre-base path (`httpsec.WithoutBasePathRouteCheck`), and a provider whose registered redirect
+URL cannot reach the callback (`httpsec.WithoutOIDCRedirectPathCheck`). Each waiver's godoc says
+what it gives up. A base path that repeats a default's first segment, such as `/sso`, answers
+`/sso/sso/login/{provider}`: that is what was configured, and it is not refused.
+
+### Migrating
+
+Adopting a base path, or upgrading from a build that used the earlier default paths:
+
+1. Set `httpsec.WithBasePath`, and make every path you set explicitly relative to it. A path that
+   repeats the base is refused.
+2. Update each OIDC provider's registered redirect URL, now ending in `/sso/callback/{name}` under
+   the base. `httpsec.New` refuses to build until they agree. A back-channel logout URI
+   registered with a provider is not checked: update it to include the base path yourself.
+3. Give the OpenID Provider an issuer that includes the base path, or waive the check when your
+   gateway routes `/.well-known/*` to the chain.
+4. Rewrite the cool-down routes, cross-site exemptions and header-profile paths that name built-in
+   endpoints to the moved paths. `httpsec.New` finds the first two; a header-profile matcher is a
+   function it cannot read, so compare against `Chain.Endpoints()`.
+5. Point resource servers at the moved key set URL (the provider's published `jwks_uri` follows
+   it), and route `/.well-known/oauth-authorization-server/...` at the host root if you use it.
+6. Update client code that calls a built-in endpoint by its earlier default path, and consumer
+   pages that post to the provider's resume or logout-confirm endpoints. The earlier defaults were
+   `/login`, `/logout`, `/login/magic` and `/login/magic/consume`, `/passkey/login/{begin,finish}`,
+   `/passkey/register/*`, `/passkey/credentials`, `/oauth2/authorization/{provider}`,
+   `/login/oauth2/callback/{provider}`, `/login/oauth2/handoff`,
+   `/logout/oauth2/backchannel/{provider}`, `/mfa/begin/{method}` and `/reauth/begin/{method}`;
+   each is now the path in the table above. Option names did not change, only their defaults.
+
 ## OIDC
 
 `oidc` logs users in through external OpenID Connect providers; `httpsec.EnableOIDCLogin` answers

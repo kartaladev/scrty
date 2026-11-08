@@ -230,18 +230,6 @@ func passkeysOn(t *testing.T, m *session.Sessions) []httpsec.Option {
 	return []httpsec.Option{httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: pm, Sessions: m, Users: users})}
 }
 
-func enrolmentOn(t *testing.T, _ *session.Sessions) []httpsec.Option {
-	t.Helper()
-
-	return []httpsec.Option{
-		mfaOn(t),
-		httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{
-			Users:  NewMockUserLoader(gomock.NewController(t)),
-			Sender: exampleSender{},
-		}),
-	}
-}
-
 func mfaPrefixesOn(t *testing.T, _ *session.Sessions) []httpsec.Option {
 	t.Helper()
 

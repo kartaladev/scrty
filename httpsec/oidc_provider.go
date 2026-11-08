@@ -56,19 +56,20 @@ type oidcEndpoints struct {
 	inner *oidcInnerRouter
 
 	// resolved records that resolvePaths ran; check refuses a provider whose
-	// paths never were. pathsErr is what settling the paths refused, which is
-	// nothing now that the chain's collision check judges two endpoints on one
-	// path.
+	// paths never were.
 	resolved bool
-	pathsErr error
 
-	// routesErr is two routes fillRouters found on one path. A declared
-	// operation's route never gets here, as the chain's collision check refuses
-	// it first; this refuses a route nothing declared, so no handler is
-	// silently dropped.
+	// routesErr is two routes fillRouters found on one path. checkRoutes
+	// reports it after the chain's collision check, which refuses two declared
+	// operations on one path first and names both settings; this is left for a
+	// route nothing declared, so no handler is silently dropped.
 	routesErr error
 
 	pagesCarryFrameAncestors bool
+
+	// issuerBasePathWaived is WithoutOIDCIssuerBasePathCheck: under a base path,
+	// an issuer that does not cover it, or the provider's paths, is not refused.
+	issuerBasePathWaived bool
 
 	// groups is the endpoint groups, one per file, in the order they are asked.
 	groups []oidcEndpointGroup
@@ -243,8 +244,21 @@ func (r *oidcOuterRouter) flushRefusalLogs() error {
 // sign-in it judged: the resume, the consents list, and the paths under the list's. The paths are read
 // at the request, so they are final.
 func (op *oidcEndpoints) restsOnSignIn(path string) bool {
-	return path == op.paths[OIDCResume] || path == op.paths[OIDCConsents] ||
-		strings.HasPrefix(path, op.consentClientPrefix())
+	_, revocation := op.consentClient(path)
+
+	return path == op.paths[OIDCResume] || path == op.paths[OIDCConsents] || revocation
+}
+
+// consentClient returns the client identifier of path when it is one the consents answer a revocation
+// at: the list's path and one non-empty segment. The trailing slash, an empty segment and a deeper path
+// are not.
+func (op *oidcEndpoints) consentClient(path string) (string, bool) {
+	client, ok := strings.CutPrefix(path, op.consentClientPrefix())
+	if !ok || client == "" || strings.Contains(client, "/") {
+		return "", false
+	}
+
+	return client, true
 }
 
 // consentClientPrefix is what a path under the consents list begins with: the list's path and a "/".
@@ -662,10 +676,9 @@ func (op *oidcEndpoints) settlePaths(base string) {
 // fill put there.
 //
 // A path two routes name keeps the first, in group order, and is never
-// overwritten; the first such path is returned as an error, which check
-// reports. A route of a declared operation never comes to that: the chain's
-// collision check refuses two operations on one path first, naming both
-// settings. The error is the backstop for a route no operation declares.
+// overwritten; the first such path is returned as an error, which checkRoutes
+// reports once the chain's collision check has judged the declared operations.
+// The error is the backstop for a route no operation declares.
 func (op *oidcEndpoints) fillRouters() error {
 	outer, inner := op.outer, op.inner
 	outer.routes = map[string]oidcHandler{}
@@ -697,13 +710,90 @@ func (op *oidcEndpoints) fillRouters() error {
 
 // checkPaths refuses a provider whose paths were never resolved: its routers
 // are empty and would answer nothing, so it is refused rather than assembled.
-// It also reports two routes fillRouters found on one path.
 func (op *oidcEndpoints) checkPaths(*config) error {
 	if !op.resolved {
 		return newConfigError("%s was assembled before its paths were resolved", optionOIDCProvider)
 	}
 
+	return nil
+}
+
+// checkRoutes reports two routes fillRouters found on one path. It runs after
+// the chain's collision check, so two declared operations on one path are
+// refused there, naming both settings, and only a duplicate the inventory does
+// not explain comes here.
+func (op *oidcEndpoints) checkRoutes() error {
 	return op.routesErr
+}
+
+// checkIssuerBasePath refuses, under a base path, a provider whose issuer does
+// not cover what it serves. It is judged on what is served: the issuer's path,
+// one trailing slash aside, must be the base path or lie under it, and every
+// endpoint of the provider, and the key set, must lie under the issuer's path.
+//
+// Otherwise the OpenID configuration would be served at the root, outside the
+// base (servedPaths places it under the issuer only when the token endpoint is
+// there), or publicPath would put the issuer's path in front of a path that
+// already carries the base, and the metadata would name a URL the chain does not
+// serve. The issuer's path is compared decoded, as publicPath compares it.
+//
+// The OAuth authorization server metadata is not judged: RFC 8414 section 3
+// places it at the host root whatever the issuer.
+func (op *oidcEndpoints) checkIssuerBasePath(c *config) error {
+	if c.basePath == "" || op.issuerBasePathWaived {
+		return nil
+	}
+
+	issuer := op.provider.Issuer()
+
+	refuse := func(why string, args ...any) error {
+		return newConfigError("%s has the issuer %q, which under the base path %q set by WithBasePath must "+
+			"cover the base path and every path the provider serves: "+why+"; give the issuer the base path, "+
+			"as in %q, or waive the check with WithoutOIDCIssuerBasePathCheck if a gateway routes the rest",
+			append(append([]any{optionOIDCProvider, issuer, c.basePath}, args...),
+				issuerWithPath(issuer, c.basePath))...)
+	}
+
+	u, err := url.Parse(issuer)
+	if err != nil {
+		return refuse("it is no URL")
+	}
+
+	issuerPath := strings.TrimSuffix(u.Path, "/")
+	if !underPrefix(issuerPath, c.basePath) {
+		return refuse("its path is not the base path or under it, so the OpenID configuration would be " +
+			"served outside the base path")
+	}
+
+	// The token endpoint first: it decides where servedPaths puts the OpenID
+	// configuration, so it is the path a refusal is most useful naming.
+	served := make([]string, 0, len(op.paths)+2)
+	served = append(served, op.paths[OIDCToken])
+	served = append(served, op.paths[:]...)
+
+	if j, ok := findInterceptor[*jwksEndpoint](c); ok {
+		served = append(served, j.path)
+	}
+
+	for _, p := range served {
+		if p != "" && !underPrefix(p, issuerPath) {
+			return refuse("%q is served outside the issuer's path, so the metadata would name a URL the "+
+				"chain does not serve", p)
+		}
+	}
+
+	return nil
+}
+
+// issuerWithPath is issuer with its path replaced by path, for an error to
+// suggest; issuer itself when it is no URL.
+func issuerWithPath(issuer, path string) string {
+	u, err := url.Parse(issuer)
+	if err != nil {
+		return issuer
+	}
+
+	return u.Scheme + "://" + u.Host + path
 }
 
 // check is what can be judged once every option has been applied, and the paths
@@ -711,6 +801,7 @@ func (op *oidcEndpoints) checkPaths(*config) error {
 func (op *oidcEndpoints) check(c *config) error {
 	for _, check := range []func(*config) error{
 		op.checkPaths,
+		op.checkIssuerBasePath,
 		op.checkBearer,
 		op.checkJWKS,
 		op.checkDPoP,

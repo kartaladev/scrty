@@ -89,7 +89,9 @@ type sessionManagement struct {
 // WithSessionManagementPrefix replaces the path prefix the endpoints answer
 // under.
 //
-// Default: DefaultSessionManagementPrefix, "/sessions". The prefix must start
+// Default: DefaultSessionManagementPrefix, "/sessions". The prefix is within the
+// base path (WithBasePath): with a base path of "/auth", the default answers
+// under "/auth/sessions". The prefix must start
 // with "/" and must not be "/" alone; one trailing slash is set aside, so
 // "/sessions" and "/sessions/" are the same prefix. Anything else outside the
 // endpoint path shape is refused with a configuration error.

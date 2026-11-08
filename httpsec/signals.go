@@ -147,7 +147,9 @@ const (
 type SessionSignals struct {
 	// Path is where the stream answers GET.
 	//
-	// Default: DefaultSessionSignalsPath, "/session/signals". It must start with "/",
+	// Default: DefaultSessionSignalsPath, "/session/signals". The path is within the
+	// base path (WithBasePath): with a base path of "/auth", the default answers
+	// "/auth/session/signals". It must start with "/",
 	// must not end with one, must hold no "?", "#", "%" or white space, because a request's
 	// path is compared decoded and such a path would never be served, and must be a path
 	// no other enabled endpoint of the chain answers.

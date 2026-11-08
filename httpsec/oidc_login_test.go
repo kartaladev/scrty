@@ -1,6 +1,7 @@
 package httpsec_test
 
 import (
+	"cmp"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -515,9 +516,13 @@ func TestOIDCAuthorize(t *testing.T) {
 	type testCase struct {
 		name        string
 		managerOpts []oidc.Option
-		opts        []httpsec.OIDCOption
-		request     func(t *testing.T) *http.Request
-		assert      func(t *testing.T, h *oidcHarness, out served)
+
+		// callback is where the provider's redirect URL points; empty means the
+		// default callback path.
+		callback string
+		opts     []httpsec.OIDCOption
+		request  func(t *testing.T) *http.Request
+		assert   func(t *testing.T, h *oidcHarness, out served)
 	}
 
 	// notAProvider is the outcome of a path that must never start a login:
@@ -705,9 +710,10 @@ func TestOIDCAuthorize(t *testing.T) {
 			},
 		},
 		{
-			name:    "a consumer callback path scopes the cookie",
-			opts:    []httpsec.OIDCOption{httpsec.WithOIDCCallbackPath("/auth/back")},
-			request: get(corp),
+			name:     "a consumer callback path scopes the cookie",
+			callback: "/auth/back/",
+			opts:     []httpsec.OIDCOption{httpsec.WithOIDCCallbackPath("/auth/back")},
+			request:  get(corp),
 			assert: func(t *testing.T, _ *oidcHarness, out served) {
 				require.NoError(t, out.err)
 
@@ -731,7 +737,8 @@ func TestOIDCAuthorize(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			h := newOIDCHarness(t, tc.managerOpts...)
+			callback := cmp.Or(tc.callback, httpsec.DefaultOIDCCallbackPath)
+			h := newOIDCHarnessAt(t, callback, tc.managerOpts...)
 			out := serve(t, h.chain(t, tc.opts...), tc.request(t))
 			tc.assert(t, h, out)
 		})
