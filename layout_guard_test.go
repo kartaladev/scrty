@@ -13,9 +13,11 @@ import (
 	"go/version"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -658,4 +660,179 @@ func offGoMinimum(t *testing.T, root string) map[string]string {
 		}
 	}
 	return off
+}
+
+// scrtyModulePath is the path every published module of this repository starts
+// with, the core module included.
+const scrtyModulePath = "github.com/kartaladev/scrty"
+
+// scrtyRequirement is one requirement of a workspace module on a module of this
+// repository, direct or indirect.
+type scrtyRequirement struct {
+	Module   string // the requiring module's directory, e.g. "store/pgxstore"
+	Path     string // e.g. "github.com/kartaladev/scrty"
+	Version  string
+	Indirect bool
+}
+
+// modEdit is the part of `go mod edit -json` output the release checks read.
+type modEdit struct {
+	Require []struct {
+		Path     string
+		Version  string
+		Indirect bool
+	}
+	Replace []struct {
+		New struct{ Path, Version string }
+	}
+}
+
+// parseModEdit decodes the output of `go mod edit -json`. Output that is empty
+// or not that document is an error, never an empty module.
+func parseModEdit(out []byte) (modEdit, error) {
+	var mf modEdit
+	if err := json.Unmarshal(out, &mf); err != nil {
+		return modEdit{}, fmt.Errorf("decode go mod edit -json output: %w", err)
+	}
+	return mf, nil
+}
+
+// readModEdit runs `go mod edit -json` on the go.mod of dir, a directory
+// relative to root, and fails the test when the command or its output is bad.
+func readModEdit(t *testing.T, root, dir string) modEdit {
+	t.Helper()
+	out := goCmd(t, filepath.Join(root, dir), nil, "mod", "edit", "-json")
+	mf, err := parseModEdit([]byte(out))
+	require.NoError(t, err, "go mod edit -json in %s", dir)
+	return mf
+}
+
+// readScrtyRequirements returns the requirements of mf on modules of this
+// repository, direct and indirect.
+func readScrtyRequirements(dir string, mf modEdit) []scrtyRequirement {
+	var reqs []scrtyRequirement
+	for _, r := range mf.Require {
+		if r.Path == scrtyModulePath || strings.HasPrefix(r.Path, scrtyModulePath+"/") {
+			reqs = append(reqs, scrtyRequirement{Module: dir, Path: r.Path, Version: r.Version, Indirect: r.Indirect})
+		}
+	}
+	return reqs
+}
+
+// readReplaces returns the filesystem targets of the replace directives of mf,
+// as written. A replace to another module version is not a filesystem path.
+func readReplaces(mf modEdit) []string {
+	var targets []string
+	for _, r := range mf.Replace {
+		if r.New.Version == "" {
+			targets = append(targets, r.New.Path)
+		}
+	}
+	return targets
+}
+
+// zeroVersion reports whether v is v0.0.0 or the zero pseudo-version the go tool
+// writes for a requirement satisfied only by a replace.
+func zeroVersion(v string) bool {
+	return v == "v0.0.0" || strings.HasPrefix(v, "v0.0.0-00010101000000-")
+}
+
+// releaseRequirementViolations reports requirements that could never resolve
+// outside the repository (v0.0.0 or a zero pseudo-version), requirements that
+// do not name want when want is set, and replaces that leave the repository.
+// replaces maps a module's directory to the targets of its replace directives.
+func releaseRequirementViolations(reqs []scrtyRequirement, replaces map[string][]string, want string) []violation {
+	var vs []violation
+	for _, r := range reqs {
+		kind := "requires"
+		if r.Indirect {
+			kind = "indirectly requires"
+		}
+		if zeroVersion(r.Version) {
+			vs = append(vs, violation{Where: r.Module, What: fmt.Sprintf("%s %s %s, a version that resolves only through a replace", kind, r.Path, r.Version)})
+		}
+		if want != "" && r.Version != want {
+			vs = append(vs, violation{Where: r.Module, What: fmt.Sprintf("%s %s %s, not the release version %s", kind, r.Path, r.Version, want)})
+		}
+	}
+	for _, dir := range slices.Sorted(maps.Keys(replaces)) {
+		for _, target := range replaces[dir] {
+			if filepath.IsAbs(target) || strings.HasPrefix(target, "/") {
+				vs = append(vs, violation{Where: dir, What: fmt.Sprintf("replace target %s is an absolute path", target)})
+				continue
+			}
+			resolved := filepath.Clean(filepath.Join(dir, target))
+			if resolved == ".." || strings.HasPrefix(resolved, ".."+string(filepath.Separator)) {
+				vs = append(vs, violation{Where: dir, What: fmt.Sprintf("replace target %s climbs out of the repository (resolves to %s)", target, resolved)})
+			}
+		}
+	}
+	return vs
+}
+
+// releaseEntry is one line of release-modules.txt: a module directory and the
+// import path of one package in it.
+type releaseEntry struct {
+	Dir string
+	Pkg string
+}
+
+// parseReleaseModules reads release-modules.txt: one "<dir> <import path>" per
+// line, blank lines ignored. Any other line shape is an error.
+func parseReleaseModules(data []byte) ([]releaseEntry, error) {
+	var entries []releaseEntry
+	for i, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			return nil, fmt.Errorf("release-modules.txt line %d: want \"<dir> <import path>\", got %q", i+1, line)
+		}
+		entries = append(entries, releaseEntry{Dir: fields[0], Pkg: fields[1]})
+	}
+	return entries, nil
+}
+
+// releaseListViolations compares the directories release-modules.txt lists with
+// the workspace's nested modules (the workspace without the root). The list may
+// name neither the root nor tools, and names each module once.
+func releaseListViolations(listed, workspace []string) []violation {
+	const file = "release-modules.txt"
+	var vs []violation
+	seen := map[string]bool{}
+	for _, dir := range listed {
+		switch {
+		case dir == "." || dir == "tools":
+			vs = append(vs, violation{Where: file, What: fmt.Sprintf("lists %s, which is never released", dir)})
+		case seen[dir]:
+			vs = append(vs, violation{Where: file, What: fmt.Sprintf("lists %s more than once", dir)})
+		case !slices.Contains(workspace, dir):
+			vs = append(vs, violation{Where: file, What: fmt.Sprintf("lists %s, which go.work does not use", dir)})
+		}
+		seen[dir] = true
+	}
+	for _, dir := range workspace {
+		if !slices.Contains(listed, dir) {
+			vs = append(vs, violation{Where: file, What: fmt.Sprintf("does not list %s, a module go.work uses", dir)})
+		}
+	}
+	return vs
+}
+
+// goFloorPattern matches the go directive of a module that meets the repository
+// floor: 1.27 or a 1.27 patch release.
+var goFloorPattern = regexp.MustCompile(`^1\.27(\.[0-9]+)?$`)
+
+// goFloorViolations reports each module, by directory, whose go directive is not
+// 1.27 or 1.27.<n>.
+func goFloorViolations(directives map[string]string) []violation {
+	var vs []violation
+	for _, dir := range slices.Sorted(maps.Keys(directives)) {
+		if !goFloorPattern.MatchString(directives[dir]) {
+			vs = append(vs, violation{Where: dir, What: fmt.Sprintf("go directive is %q, want 1.27 or 1.27.<n>", directives[dir])})
+		}
+	}
+	return vs
 }

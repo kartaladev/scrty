@@ -6,7 +6,7 @@ require (
 	github.com/go-co-op/gocron/v2 v2.23.0
 	github.com/google/uuid v1.6.0
 	github.com/jonboulle/clockwork v0.5.0
-	github.com/kartaladev/scrty v0.0.0
+	github.com/kartaladev/scrty v0.1.0
 	github.com/stretchr/testify v1.12.1
 	go.uber.org/goleak v1.3.0
 	go.uber.org/mock v0.6.0

@@ -605,3 +605,390 @@ func TestModulesDeclareGoMinimum(t *testing.T) {
 		})
 	}
 }
+
+func TestParseModEdit(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		out    string
+		assert func(t *testing.T, mf modEdit, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "requirements and replaces are read",
+			out: `{"Module":{"Path":"m"},"Require":[{"Path":"github.com/kartaladev/scrty","Version":"v0.0.0"},` +
+				`{"Path":"example.com/x","Version":"v1.0.0","Indirect":true}],` +
+				`"Replace":[{"Old":{"Path":"github.com/kartaladev/scrty"},"New":{"Path":"../../"}},` +
+				`{"Old":{"Path":"a"},"New":{"Path":"b","Version":"v1.0.0"}}]}`,
+			assert: func(t *testing.T, mf modEdit, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []scrtyRequirement{{Module: "d", Path: "github.com/kartaladev/scrty", Version: "v0.0.0"}}, readScrtyRequirements("d", mf))
+				assert.Equal(t, []string{"../../"}, readReplaces(mf))
+			},
+		},
+		{
+			name: "an indirect scrty requirement is read",
+			out:  `{"Require":[{"Path":"github.com/kartaladev/scrty/store/pgxstore","Version":"v0.0.0","Indirect":true}]}`,
+			assert: func(t *testing.T, mf modEdit, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []scrtyRequirement{{Module: "d", Path: "github.com/kartaladev/scrty/store/pgxstore", Version: "v0.0.0", Indirect: true}}, readScrtyRequirements("d", mf))
+			},
+		},
+		{
+			name: "a module whose path only shares a prefix is not a scrty module",
+			out:  `{"Require":[{"Path":"github.com/kartaladev/scrtyfoo","Version":"v0.0.0"}]}`,
+			assert: func(t *testing.T, mf modEdit, err error) {
+				require.NoError(t, err)
+				assert.Empty(t, readScrtyRequirements("d", mf))
+			},
+		},
+		{
+			name: "empty output is an error, not an empty module",
+			out:  "",
+			assert: func(t *testing.T, _ modEdit, err error) {
+				require.Error(t, err)
+			},
+		},
+		{
+			name: "output that is not json is an error",
+			out:  "go: errors parsing go.mod",
+			assert: func(t *testing.T, _ modEdit, err error) {
+				require.Error(t, err)
+			},
+		},
+		{
+			name: "json of the wrong shape is an error",
+			out:  `["Require"]`,
+			assert: func(t *testing.T, _ modEdit, err error) {
+				require.Error(t, err)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			mf, err := parseModEdit([]byte(tc.out))
+			tc.assert(t, mf, err)
+		})
+	}
+}
+
+func TestNestedModulesRequireReleasedVersions(t *testing.T) {
+	t.Parallel()
+
+	const (
+		root    = "github.com/kartaladev/scrty"
+		sibling = "github.com/kartaladev/scrty/store/pgxstore"
+		zeroPV  = "v0.0.0-00010101000000-000000000000"
+	)
+
+	type testCase struct {
+		name     string
+		reqs     []scrtyRequirement
+		replaces map[string][]string
+		want     string
+		assert   func(t *testing.T, vs []violation)
+	}
+
+	clean := func(t *testing.T, vs []violation) {
+		t.Helper()
+		assert.Empty(t, vs)
+	}
+
+	cases := []testCase{
+		{
+			name:   "v0.0.0 direct is reported",
+			reqs:   []scrtyRequirement{{Module: "store/pgxstore", Path: root, Version: "v0.0.0"}},
+			assert: hasViolation("store/pgxstore", root+" v0.0.0"),
+		},
+		{
+			name:   "the zero pseudo-version is reported",
+			reqs:   []scrtyRequirement{{Module: "httpsec/ginsec", Path: root, Version: zeroPV}},
+			assert: hasViolation("httpsec/ginsec", root+" "+zeroPV),
+		},
+		{
+			name:   "an indirect v0.0.0 is reported",
+			reqs:   []scrtyRequirement{{Module: "test", Path: sibling, Version: "v0.0.0", Indirect: true}},
+			assert: hasViolation("test", "indirectly requires "+sibling+" v0.0.0"),
+		},
+		{
+			name:   "v0.1.0 with no release version is clean",
+			reqs:   []scrtyRequirement{{Module: "store/pgxstore", Path: root, Version: "v0.1.0"}},
+			assert: clean,
+		},
+		{
+			name:   "v0.1.0 against release version v0.1.0 is clean",
+			reqs:   []scrtyRequirement{{Module: "store/pgxstore", Path: root, Version: "v0.1.0"}},
+			want:   "v0.1.0",
+			assert: clean,
+		},
+		{
+			name:   "v0.1.0 against release version v0.2.0 is reported",
+			reqs:   []scrtyRequirement{{Module: "store/pgxstore", Path: root, Version: "v0.1.0"}},
+			want:   "v0.2.0",
+			assert: hasViolation("store/pgxstore", root+" v0.1.0, not the release version v0.2.0"),
+		},
+		{
+			name:   "an indirect requirement is held to the release version",
+			reqs:   []scrtyRequirement{{Module: "test", Path: sibling, Version: "v0.1.0", Indirect: true}},
+			want:   "v0.2.0",
+			assert: hasViolation("test", sibling+" v0.1.0, not the release version v0.2.0"),
+		},
+		{
+			name:     "a replace two levels up is clean",
+			replaces: map[string][]string{"store/pgxstore": {"../../"}},
+			assert:   clean,
+		},
+		{
+			name:     "a sibling replace inside the repository is clean",
+			replaces: map[string][]string{"test": {"../store/pgxstore"}},
+			assert:   clean,
+		},
+		{
+			name:     "an absolute replace target is reported",
+			replaces: map[string][]string{"store/pgxstore": {"/tmp/x"}},
+			assert:   hasViolation("store/pgxstore", "/tmp/x is an absolute path"),
+		},
+		{
+			name:     "a replace climbing out of the repository is reported",
+			replaces: map[string][]string{"store/pgxstore": {"../../../outside"}},
+			assert:   hasViolation("store/pgxstore", "../../../outside climbs out of the repository"),
+		},
+		{
+			name:     "a replace of a top-level module climbing one level is reported",
+			replaces: map[string][]string{"test": {"../../x"}},
+			assert:   hasViolation("test", "../../x climbs out of the repository"),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, releaseRequirementViolations(tc.reqs, tc.replaces, tc.want))
+		})
+	}
+
+	t.Run("every nested module in the real tree", func(t *testing.T) {
+		t.Parallel()
+
+		var reqs []scrtyRequirement
+		replaces := map[string][]string{}
+		for _, dir := range workspaceModules(t, ".") {
+			if dir == "." {
+				continue
+			}
+			mf := readModEdit(t, ".", dir)
+			reqs = append(reqs, readScrtyRequirements(filepath.ToSlash(dir), mf)...)
+			replaces[filepath.ToSlash(dir)] = readReplaces(mf)
+		}
+		require.NotEmpty(t, reqs, "no nested module requires a scrty module: the reader found nothing")
+
+		assert.Empty(t, releaseRequirementViolations(reqs, replaces, os.Getenv("SCRTY_RELEASE_VERSION")))
+	})
+}
+
+func TestParseReleaseModules(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		data   string
+		assert func(t *testing.T, entries []releaseEntry, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "dir and package per line, blank lines ignored",
+			data: "store/pgxstore github.com/kartaladev/scrty/store/pgxstore\n\ntest github.com/kartaladev/scrty/test/storetest\n",
+			assert: func(t *testing.T, entries []releaseEntry, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []releaseEntry{
+					{Dir: "store/pgxstore", Pkg: "github.com/kartaladev/scrty/store/pgxstore"},
+					{Dir: "test", Pkg: "github.com/kartaladev/scrty/test/storetest"},
+				}, entries)
+			},
+		},
+		{
+			name: "a line with one field is an error",
+			data: "store/pgxstore\n",
+			assert: func(t *testing.T, _ []releaseEntry, err error) {
+				require.ErrorContains(t, err, "line 1")
+			},
+		},
+		{
+			name: "a line with three fields is an error",
+			data: "a b c\n",
+			assert: func(t *testing.T, _ []releaseEntry, err error) {
+				require.Error(t, err)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			entries, err := parseReleaseModules([]byte(tc.data))
+			tc.assert(t, entries, err)
+		})
+	}
+}
+
+func TestReleaseModuleListsAgree(t *testing.T) {
+	t.Parallel()
+
+	workspace := []string{"httpsec/ginsec", "store/pgxstore", "test"}
+
+	type testCase struct {
+		name   string
+		listed []string
+		assert func(t *testing.T, vs []violation)
+	}
+
+	cases := []testCase{
+		{
+			name:   "equal sets are clean",
+			listed: []string{"test", "httpsec/ginsec", "store/pgxstore"},
+			assert: func(t *testing.T, vs []violation) {
+				assert.Empty(t, vs)
+			},
+		},
+		{
+			name:   "a workspace module missing from the list is reported",
+			listed: []string{"httpsec/ginsec", "store/pgxstore"},
+			assert: hasViolation("release-modules.txt", "does not list test"),
+		},
+		{
+			name:   "an extra entry is reported",
+			listed: []string{"httpsec/ginsec", "store/pgxstore", "test", "store/gormstore"},
+			assert: hasViolation("release-modules.txt", "lists store/gormstore, which go.work does not use"),
+		},
+		{
+			name:   "tools is reported",
+			listed: []string{"httpsec/ginsec", "store/pgxstore", "test", "tools"},
+			assert: hasViolation("release-modules.txt", "lists tools, which is never released"),
+		},
+		{
+			name:   "the root is reported",
+			listed: []string{"httpsec/ginsec", "store/pgxstore", "test", "."},
+			assert: hasViolation("release-modules.txt", "lists ., which is never released"),
+		},
+		{
+			name:   "a duplicate entry is reported",
+			listed: []string{"httpsec/ginsec", "store/pgxstore", "test", "test"},
+			assert: hasViolation("release-modules.txt", "lists test more than once"),
+		},
+		{
+			name:   "an empty list reports every module",
+			listed: nil,
+			assert: hasViolation("release-modules.txt", "does not list httpsec/ginsec"),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, releaseListViolations(tc.listed, workspace))
+		})
+	}
+
+	t.Run("release-modules.txt in the real tree", func(t *testing.T) {
+		t.Parallel()
+
+		data, err := os.ReadFile("release-modules.txt")
+		require.NoError(t, err, "the release gate, the probe and the tag helper read this file")
+		entries, err := parseReleaseModules(data)
+		require.NoError(t, err)
+
+		var nested []string
+		for _, dir := range workspaceModules(t, ".") {
+			if dir != "." {
+				nested = append(nested, filepath.ToSlash(dir))
+			}
+		}
+		listed := make([]string, 0, len(entries))
+		for _, e := range entries {
+			listed = append(listed, e.Dir)
+		}
+		assert.Empty(t, releaseListViolations(listed, nested))
+
+		abs, err := filepath.Abs("go.work")
+		require.NoError(t, err)
+		for _, e := range entries {
+			// The import path must name a package the workspace builds.
+			out := goCmd(t, ".", []string{"GOWORK=" + abs}, "list", e.Pkg)
+			assert.Equal(t, e.Pkg, strings.TrimSpace(out), "entry for %s", e.Dir)
+		}
+	})
+}
+
+func TestModulesDeclareGoFloor(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name       string
+		directives map[string]string
+		assert     func(t *testing.T, vs []violation)
+	}
+
+	cases := []testCase{
+		{
+			name:       "1.27 and 1.27 patch releases are clean",
+			directives: map[string]string{".": "1.27", "test": "1.27.3", "store/pgxstore": "1.27.0"},
+			assert: func(t *testing.T, vs []violation) {
+				assert.Empty(t, vs)
+			},
+		},
+		{
+			name:       "1.26 is reported",
+			directives: map[string]string{".": "1.27", "expiry/sweep": "1.26"},
+			assert:     hasViolation("expiry/sweep", `"1.26"`),
+		},
+		{
+			name:       "1.28 is reported",
+			directives: map[string]string{"test": "1.28"},
+			assert:     hasViolation("test", `"1.28"`),
+		},
+		{
+			name:       "1.270 is not a 1.27 patch release",
+			directives: map[string]string{"test": "1.270"},
+			assert:     hasViolation("test", `"1.270"`),
+		},
+		{
+			name:       "a pre-release suffix is reported",
+			directives: map[string]string{"test": "1.27rc1"},
+			assert:     hasViolation("test", `"1.27rc1"`),
+		},
+		{
+			name:       "an empty directive is reported",
+			directives: map[string]string{"test": ""},
+			assert:     hasViolation("test", `""`),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, goFloorViolations(tc.directives))
+		})
+	}
+
+	t.Run("every workspace module in the real tree", func(t *testing.T) {
+		t.Parallel()
+
+		directives := map[string]string{}
+		for _, dir := range workspaceModules(t, ".") {
+			directives[filepath.ToSlash(dir)] = goDirective(t, dir)
+		}
+		require.Greater(t, len(directives), 1)
+
+		assert.Empty(t, goFloorViolations(directives))
+	})
+}

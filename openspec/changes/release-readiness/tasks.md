@@ -12,14 +12,14 @@ The library fixes this change used to carry (its former groups 6–9) moved to `
 
 ## 2. Nested modules require released versions (decision 2; module-layout requirement "Published modules resolve outside the repository")
 
-- [ ] 2.1 Red: add `TestNestedModulesRequireReleasedVersions` to the root module's `layout_test.go`. It reads every module that `go.work` lists, with `go mod edit -json`. It fails, naming the module and the requirement, when any nested module requires a `github.com/kartaladev/scrty` module (direct or indirect) at `v0.0.0` or at a zero pseudo-version, or has a `replace` whose target is an absolute path or climbs out of the repository. Run it and verify it fails today, naming all eight nested modules.
-- [ ] 2.2 Red: extend the test so that, when `SCRTY_RELEASE_VERSION` is set, every scrty requirement in every nested module must equal that version exactly. Verify `SCRTY_RELEASE_VERSION=v0.1.0 go test -run TestNestedModulesRequireReleasedVersions .` fails today, for the same modules.
+- [x] 2.1 Red: add `TestNestedModulesRequireReleasedVersions` to the root module's `layout_test.go`. It reads every module that `go.work` lists, with `go mod edit -json`. It fails, naming the module and the requirement, when any nested module requires a `github.com/kartaladev/scrty` module (direct or indirect) at `v0.0.0` or at a zero pseudo-version, or has a `replace` whose target is an absolute path or climbs out of the repository. Run it and verify it fails today, naming all eight nested modules.
+- [x] 2.2 Red: extend the test so that, when `SCRTY_RELEASE_VERSION` is set, every scrty requirement in every nested module must equal that version exactly. Verify `SCRTY_RELEASE_VERSION=v0.1.0 go test -run TestNestedModulesRequireReleasedVersions .` fails today, for the same modules.
 - [ ] 2.3 Bump every nested module's scrty requirements to `v0.1.0` with `go mod edit -require`. This covers the root in all eight, and the siblings in `test`. Keep every `replace`, and run `go mod tidy` per module. Verify:
   - 2.1 and 2.2 pass (the latter with `SCRTY_RELEASE_VERSION=v0.1.0`);
   - `SCRTY_RELEASE_VERSION=v0.2.0` fails, naming every module;
   - `make check` passes.
-- [ ] 2.4 Red: add `TestReleaseModuleListsAgree`. It asserts that the published-module list used by the release gate, the probe and the tag helper (one file, `release-modules.txt` at the root) lists exactly the nested modules in `go.work`, one directory per line, and never `tools`. Verify it fails before the file exists, and again after adding a deliberately wrong entry. Then add the file and verify it passes.
-- [ ] 2.5 Red: add `TestModulesDeclareGoFloor`, asserting every workspace module's `go` directive is `1.27` or `1.27.x`. It passes on today's tree. To see it bite, temporarily change one `go.mod` to `go 1.26` and confirm it fails naming that module, then restore the file by editing it back. Verify it passes.
+- [x] 2.4 Red: add `TestReleaseModuleListsAgree`. It asserts that the published-module list used by the release gate, the probe and the tag helper (one file, `release-modules.txt` at the root) lists exactly the nested modules in `go.work`, one directory per line, and never `tools`. Verify it fails before the file exists, and again after adding a deliberately wrong entry. Then add the file and verify it passes.
+- [x] 2.5 Red: add `TestModulesDeclareGoFloor`, asserting every workspace module's `go` directive is `1.27` or `1.27.x`. It passes on today's tree. To see it bite, temporarily change one `go.mod` to `go 1.26` and confirm it fails naming that module, then restore the file by editing it back. Verify it passes.
 
 ## 3. The release gate (decision 3; release-policy requirement "A release is gated before it is tagged")
 
@@ -27,12 +27,14 @@ The library fixes this change used to carry (its former groups 6–9) moved to `
   - the requirement test with `SCRTY_RELEASE_VERSION=$(VERSION)`;
   - the fmt-check, vet, lint and test loops with `GOWORK=off`, over the modules in `release-modules.txt` plus the root;
   - `$(MAKE) release-gate SBOM_VERSION=$(VERSION)` (vuln, then sbom), with `GOWORK=off` set per command and never exported to the sub-make, whose `MODULES` would otherwise list only the root (design: Risks).
+  - Both the gate's format step and the existing `fmt-check` check the `.go` files git knows about (`git ls-files --cached --others --exclude-standard '*.go'`), not every file under the module directories. `gofmt -l <dir>` walks into git-ignored directories such as `.claude/worktrees/`, so `make check` failed on a stale file in another checkout (found 2026-11-09).
   Verify:
   - `make release-check` with no version fails with a usage message;
   - `0.1.0`, `v0.1`, `v0.1.0.1` and `latest` are refused as versions, and `v0.1.0-rc.1` is accepted;
   - a run on a working tree with uncommitted or untracked files is refused before any check runs;
   - `make release-check VERSION=v0.2.0` fails at the requirement step, naming the modules;
   - `make release-check VERSION=v0.1.0` passes, and its output shows each module built with the workspace off;
+  - with an unformatted `.go` file under a git-ignored directory, `make fmt-check` passes; with an unformatted, untracked but not ignored `.go` file, it fails, naming the file;
   - that run's vuln output names all nine modules, and `$(SBOM_DIR)` holds exactly nine `.cdx.json` files, each naming version `v0.1.0`. To see this check bite, run the target once with `GOWORK=off` exported to the sub-make in a temporary copy of the recipe: it writes one file, and the count check fails.
 - [ ] 3.2 Red, then green: add `tools/cmd/releaseproxy` (design decision 3, the local proxy). Given a source tree, a version and a list of module directories, it writes each module as a `GOPROXY` file tree (`<escaped path>/@v/list`, `<version>.info`, `<version>.mod`, `<version>.zip`), building each zip with `golang.org/x/mod/zip.CreateFromDir`. Write these tests first, each seen failing for its intended reason:
   - a module's zip leaves out a nested module's files;

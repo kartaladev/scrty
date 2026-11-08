@@ -208,7 +208,7 @@ release-check: tools
 	echo "$(VERSION)" | grep -Eq '$(SEMVER)' || { echo "not a semantic version: $(VERSION)"; exit 2; }; \
 	[ -z "$$(git status --porcelain)" ] || { echo "working tree is not clean"; exit 2; }; \
 	SCRTY_RELEASE_VERSION="$(VERSION)" go test -count=1 -run 'TestNestedModulesRequireReleasedVersions|TestReleaseModuleListsAgree|TestModulesDeclareGoFloor' .; \
-	out="$$(GOWORK=off gofmt -l $(RELEASE_DIRS))"; [ -z "$$out" ] || { echo "gofmt needed:"; echo "$$out"; exit 1; }; \
+	out="$$(git ls-files -z --cached --others --exclude-standard '*.go' | xargs -0 gofmt -l)"; [ -z "$$out" ] || { echo "gofmt needed:"; echo "$$out"; exit 1; }; \
 	for m in $(RELEASE_DIRS); do (cd "$$m" && echo "== $$m (GOWORK=off)" && GOWORK=off go vet ./... && GOWORK=off golangci-lint run ./... && GOWORK=off go test -race -count=1 ./...); done; \
 	$(MAKE) --no-print-directory release-gate SBOM_VERSION="$(VERSION)"; \
 	n="$$(find "$(SBOM_DIR)" -name '*.cdx.json' | wc -l | tr -d ' ')"; \
@@ -218,6 +218,7 @@ release-check: tools
 
   - `GOWORK=off` is set per command only, and never exported. `release-gate`'s `MODULES` comes from `go list -m`, which lists only the root once the workspace is off, so an exported `GOWORK=off` would make vuln and sbom cover one module and pass (design: Risks). The count check is what catches that.
   - `govulncheck` is not in the loop: `release-gate`'s `vuln` already runs it per module with `GOWORK=off`.
+  - The existing `fmt-check` target switches to the same `git ls-files ... | xargs -0 gofmt -l` form. Red step: put an unformatted `x.go` under `.claude/worktrees/` (git-ignored) and see `make fmt-check` fail before the change and pass after. An unformatted untracked `y.go` at the root must fail both before and after. Remove both files.
   - Before writing the `grep` check, confirm with `cyclonedx-gomod`'s output for `-main-version v0.1.0` how the version appears in the JSON (e.g. `"version": "v0.1.0"` on the main component), and match that field, not any occurrence.
 
   Verify each of these:
