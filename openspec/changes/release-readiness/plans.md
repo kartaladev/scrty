@@ -237,7 +237,7 @@ release-check: tools
   - Tests in `tools/cmd/releaseproxy/main_test.go`, table form, each seen failing for its intended reason before the code exists:
     - `TestWriteProxy_ExcludesNestedModule`: a fixture root with a nested `sub/go.mod`. The root's zip lists no `sub/` file.
     - `TestWriteProxy_EscapesPath`: module `example.com/Foo` is written under `example.com/!foo/@v/`.
-    - `TestWriteProxy_Refuses`: cases for version `0.1.0`, a missing directory, a directory without `go.mod`, and a non-empty `out`. Each returns an error naming the input, and `out` stays as it was.
+    - `TestWriteProxy_Refuses`: cases for version `0.1.0`, a missing directory, a directory without `go.mod`, an existing `out` (empty or not), a missing parent, an `out` inside `-src` and a symlinked `out`. Each returns an error naming the input, and `out` stays as it was.
     - `TestWriteProxy_GoGetResolves`: write a fixture module, then run `go get example.com/m@v0.1.0` in a fresh module with `GOPROXY=file://<out>`, `GONOSUMDB=example.com/m`, `GOFLAGS=-mod=mod`, `GOMODCACHE=<t.TempDir()>` and `GOWORK=off`. Expected: it succeeds.
   - `golang.org/x/mod` is already in `tools/go.mod` (v0.42.0). Make it a direct requirement.
   - Verify: `cd tools && GOWORK=off go test -count=1 ./cmd/releaseproxy/` passes, and `make tools-check` passes.
