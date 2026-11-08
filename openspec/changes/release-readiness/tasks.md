@@ -52,15 +52,15 @@ The library fixes this change used to carry (its former groups 6–9) moved to `
 
 ## 4. The outside probe (decision 4; release-policy requirement "A release is proven from outside the repository after tagging")
 
-- [ ] 4.1 Add `scripts/release-probe.sh VERSION`. It:
+- [x] 4.1 Add `scripts/release-probe.sh VERSION`. It:
   - creates an empty module in a temporary directory;
   - sets `GOWORK=off` and `GOPROXY=https://proxy.golang.org` (no `direct`);
   - runs `go get` for each module in `release-modules.txt` and the root at `VERSION`, retrying each fetch up to 10 times, 30 s apart;
   - writes a `main.go` that imports one package per module (a fixed map, kept beside the list and checked by `TestReleaseModuleListsAgree`), then runs `go build`.
-  - It unsets `GOFLAGS`, `GONOSUMDB`, `GONOSUMCHECK`, `GOPRIVATE`, `GOINSECURE` and `GONOPROXY`, so the public checksum database is always consulted.
+  - It unsets `GOFLAGS`, `GONOSUMDB`, `GONOSUMCHECK`, `GOPRIVATE`, `GOINSECURE`, `GONOPROXY` and `GOVCS`, and sets `GOENV=off` and `GOTOOLCHAIN=local`, so neither the environment nor settings saved with `go env -w` can bypass the public proxy and checksum database (added 2026-11-09, review of 4.1). Its failure message says the release is fixed with a new version, never a moved tag.
   - On failure it prints the module that failed.
   Verify with `scripts/release-probe.sh v0.0.1`, a version that does not exist: it fails naming the root module after its retries. Lower the retries with `PROBE_RETRIES=1` for this check. Also run `shellcheck` on the script.
-- [ ] 4.2 Add `.github/workflows/release-probe.yml`, triggered on push of tags matching `v[0-9]*` (root tags only), running `scripts/release-probe.sh "$GITHUB_REF_NAME"`. Verify with `actionlint`.
+- [x] 4.2 Add `.github/workflows/release-probe.yml`, triggered on push of tags matching `v[0-9]*` (root tags only), running `scripts/release-probe.sh "$GITHUB_REF_NAME"`. Verify with `actionlint`.
 
 ## 5. Documents and the tag helper (decisions 5, 6, 7; release-policy requirements on the changelog, the security policy and the procedure)
 

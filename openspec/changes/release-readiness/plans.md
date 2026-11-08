@@ -294,7 +294,8 @@ set -euo pipefail
 version="${1:?usage: release-probe.sh vX.Y.Z}"
 retries="${PROBE_RETRIES:-10}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
-unset GOFLAGS GONOSUMDB GONOSUMCHECK GOPRIVATE GOINSECURE GONOPROXY
+unset GOFLAGS GONOSUMDB GONOSUMCHECK GOPRIVATE GOINSECURE GONOPROXY GOVCS
+export GOENV=off GOTOOLCHAIN=local
 export GOWORK=off GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org
 go env GOPROXY GOSUMDB GONOSUMDB GOPRIVATE GOFLAGS
 
