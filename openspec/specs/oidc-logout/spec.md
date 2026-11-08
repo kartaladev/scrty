@@ -159,13 +159,14 @@ Empty values SHALL be omitted from the URL rather than sent empty. The post-logo
 
 ### Requirement: Logout wiring mistakes fail at construction
 Constructing OIDC logout SHALL fail with a configuration error when:
-- the back-channel logout path collides with the authorize, callback or redemption path;
 - the logout scope is not one of the defined scopes;
 - the post-logout redirect URL is invalid.
 
+Assembling a chain with OIDC logout SHALL fail with a configuration error when the back-channel logout path collides with another endpoint the chain answers, as the chain-wide collision requirement of `http-security-chain` judges.
+
 #### Scenario: Back-channel path shadows the callback
 - **WHEN** the back-channel logout path is configured equal to the callback path
-- **THEN** construction fails with a configuration error
+- **THEN** chain assembly fails with a configuration error naming both paths
 
 ### Requirement: The logout token maximum age is bounded
 Construction SHALL fail with a configuration error when the logout token's maximum age is longer than one hour, because the maximum age is the replay window of a captured logout token.

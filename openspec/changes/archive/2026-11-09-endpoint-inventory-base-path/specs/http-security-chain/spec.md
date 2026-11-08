@@ -177,6 +177,10 @@ When a base path is set, building a chain SHALL fail with a configuration error 
 - **WHEN** the consumer waives the check and a cross-site exemption names `/sign-in/password`, a route the consumer serves itself
 - **THEN** the chain is built
 
+#### Scenario: Waiver without a base path
+- **WHEN** the consumer waives the check and sets no base path
+- **THEN** construction fails with a configuration error naming the waiver, because without a base path there is no check to waive
+
 ### Requirement: The chain lists the endpoints it answers
 A built chain SHALL list every operation of every built-in endpoint it answers. Each entry SHALL give its methods, its path with any segment it reads written as `{name}`, how it matches, what it does with other methods, a stable operation identifier, the option that placed it, and what the request must carry. Endpoints not enabled and consumer interceptors SHALL NOT be listed.
 
@@ -282,6 +286,25 @@ When a base path is set and the provider is enabled, building a chain SHALL fail
 #### Scenario: Consumer waives the check
 - **WHEN** the consumer waives the check, the base path is `/auth` and the issuer is `https://id.example.com`
 - **THEN** the chain is built, the OpenID configuration answers at `/.well-known/openid-configuration`, and the metadata's `token_endpoint` is `https://id.example.com/auth/oauth2/token`
+
+#### Scenario: Waiver without a base path
+- **WHEN** the consumer waives the check, enables the provider and sets no base path
+- **THEN** construction fails with a configuration error naming the waiver, because without a base path there is no check to waive
+
+### Requirement: The provider's issuer path uses only endpoint-path characters
+When the provider is enabled, building a chain SHALL fail with a configuration error naming the issuer unless every character of the issuer's path is one an endpoint path may use: letters, digits, `.`, `_`, `~`, `-` and `/`. A percent-escape SHALL be refused, whether or not it encodes one of those characters, and whether or not a base path is set, so the path the issuer checks read and the path discovery is served on are always the same string.
+
+#### Scenario: Percent-encoded issuer path
+- **WHEN** the base path is `/auth` and the provider's issuer is `https://id.example.com/au%74h`
+- **THEN** construction fails with a configuration error naming the issuer
+
+#### Scenario: Percent-encoded issuer path without a base path
+- **WHEN** no base path is set and the provider's issuer is `https://id.example.com/t%65nant`
+- **THEN** construction fails with a configuration error naming the issuer
+
+#### Scenario: Plain issuer path
+- **WHEN** no base path is set, the provider's issuer is `https://id.example.com/tenant-1` and its prefix is `/tenant-1/oauth2`
+- **THEN** the chain is built and the OpenID configuration answers at `/tenant-1/.well-known/openid-configuration`
 
 ## MODIFIED Requirements
 

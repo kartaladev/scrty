@@ -74,7 +74,7 @@ One case is committed instead: a refusal mapped to 404 on a request gin matched 
 - **THEN** the response is 403 and the route handler did not run
 
 #### Scenario: Not-found refusal on an unrouted path
-- **WHEN** a gin request to `/oauth2/authorization/nope`, which no gin route matches, is refused because `nope` names no registered provider
+- **WHEN** a gin request to `/sso/login/nope`, which no gin route matches, is refused because `nope` names no registered provider
 - **THEN** the response is 404 with an empty body, as on the other adapters, and not gin's default not-found text
 
 ### Requirement: gin endpoints answered by the chain stop the gin chain

@@ -131,7 +131,7 @@ Every task is test-first: write the failing test, run it, confirm it fails for t
   - the three waivers state what each gives up; `Endpoints()` states that consumer interceptors are not listed and documents every operation identifier;
   - the magic-link godoc tells the confirm page (not moved) from the redeem endpoint (moved);
   - an `ExampleWithBasePath` shows password sign-in answering under `/auth`;
-  - README sections: the default path table, the base path and what does not move, and the migration steps of `design.md`; no old default path remains in the README.
+  - README sections: the default path table, the base path and what does not move, and the migration steps of `design.md`; no old default path remains in the README as a default; the migration step lists the earlier defaults so client code can be found and updated.
 
   Verify that `go test -run 'ExampleWithBasePath' ./httpsec/` passes and that `go doc ./httpsec WithBasePath` shows the default and the exclusions.
 
@@ -152,6 +152,69 @@ Every task is test-first: write the failing test, run it, confirm it fails for t
   - `openspec validate endpoint-inventory-base-path --strict`.
 
   Verify that every command exits 0 and record its output.
+
+## 11. Review follow-ups (`http-security-chain`, `passkey-authentication`)
+
+- [x] 11.1 Make godoc and comments match behaviour (documentation only, no red step):
+  - the `SessionSignals.Path` godoc accepts one trailing slash (D4);
+  - the recovery path options' godoc says paths are compared only while their operations are served (D13);
+  - the `settleExemptions` comment in `csrf_exemption.go` describes one OIDC login per chain (D6).
+
+  Verify with `go doc ./httpsec SessionSignals`, `go doc ./httpsec WithRecoveryCompletePath` and `go vet ./httpsec/`
+- [x] 11.2 Judge a passwordless prefix by passkeys first:
+  - red step: `WithBasePath("/auth")` with `WithPasskeyPasswordlessPrefix("/auth/pk")` and no `WithPasskeyPasswordlessLogin` expects the passkeys refusal naming `WithPasskeyPasswordlessLogin`, not a doubled-path error;
+  - record the prefix as consumer-set only when passwordless login is on.
+
+  (D5; Failure modes row "A path is set for an endpoint the configuration leaves off".) Verify with `go test -race -count=1 -run 'TestWithBasePath|TestPasskey' ./httpsec/`
+- [x] 11.3 Rewrite `TestClaimsMeet` in `collisions_internal_test.go` in the `table-test` skill's `assert` closure form. Red step: invert one row's expectation and watch it fail, then restore. Verify with `go test -race -count=1 -run 'TestClaimsMeet' ./httpsec/`
+- [x] 11.4 Close the verification report's coverage gaps, one test each, each seen failing under a temporary inversion:
+  - a cool-down route written at `POST /auth/reauth/password` applies the cool-down to that path (scenario "Route written with the base");
+  - base `/api` with the key set at `/api-keys` answers at `/api/api-keys` (scenario "Shared prefix is not a repeat");
+  - the drift guard also probes one chain with every built-in enabled (scenario "Every entry is answered");
+  - with no base path, a callback prefix of `/federation/callback/` answers `/federation/callback/corp` (scenario "Trailing slash of a prefix");
+  - `notify/smtp_test.go` uses the D3 confirm page path.
+
+  Verify with `go test -race -count=1 ./httpsec/ ./notify/`
+- [x] 11.5 Hold each built-in's path as one value (declared path, whether the consumer set it, resolved path), replacing the separate declared field, `declare` call and resolved field, and keep the signal stream's default in one place. Behaviour is kept: red step is a temporary inversion that the repeat-check and resolution tests catch, then restored. (D1 "One record per path".) Verify with `go test -race -count=1 ./httpsec/` and `golangci-lint run ./httpsec/`
+- [x] 11.6 One implementation of each match kind: the stale-route check (`base_path_routes.go`) derives its prefixes and its subtree and segment tests from the collision check's helpers, and consents and session management answer one segment under their prefix through the same helper. Behaviour is kept: the drift guard, collision and route tests stay green; same red step as 11.5. (D7 "One definition of each match kind", D9.) Verify with `go test -race -count=1 ./httpsec/` and `golangci-lint run ./httpsec/`
+- [x] 11.7 Remove the provider's unreachable backstop (`resolved` with `checkPaths`), and make the router's duplicate-route report (`routesErr`, `checkRoutes`, still run after the shared collision check) an internal invariant error, as `checkDeclared` reports one, with an internal test that provokes it. (D7 "No unreachable backstops".) Verify with `go test -race -count=1 ./httpsec/`
+- [x] 11.8 Judge every path whose endpoint is left off as 11.2 judges the passwordless prefix: a path reaches the repeat check only while the inventory lists its endpoint.
+  - red step: under `WithBasePath("/auth")`, each of `WithRecoveryStartPath("/auth/x")` without `recovery.ProofIssued`, `WithRecoveryCodesPath` without `recovery.ProofSaved`, `WithRecoveryFinishPath` and `WithRecoveryCancelPath` with no hold, and `WithEnrolmentEmailConfirmPrefix("/auth/x")` with `WithoutEnrolmentEmailConfirmation` expects the chain to build, as it does with no base; `WithOIDCHandoffPath("/auth/x")` with `WithOIDCCallbackSuccess` expects the OIDC login's own refusal, not `/auth/auth/x`;
+  - one row each where the endpoint is on keeps the doubled-path refusal, whatever the option order;
+  - the repeat check runs in two passes (D5 "When it is judged: two passes"): before `validate` for every path the options alone settle, so a doubled callback or token path is refused naming its option rather than by the redirect or assertion-endpoint check; and in `build`, once wired, for recovery's start, finish, cancel and codes paths and the OIDC handoff path, each only while served. Pin both with tests: a doubled `WithOIDCCallbackPath` with the redirect registered at the single path, and a doubled provider token path with a matching assertion endpoint, each refused naming its option.
+
+  (D5 "A path for an endpoint the configuration leaves off".) Verify with `go test -race -count=1 ./httpsec/` and `golangci-lint run ./httpsec/`
+- [x] 11.9 Re-run 10.1's whole-workspace gate and record its output.
+
+## 12. Verification follow-ups (`http-security-chain`, `multi-factor-auth`, `oidc-logout`, `framework-adapters`)
+
+Each item adds an assertion to existing behaviour, so its red step is a temporary inversion of the code or the expectation, seen failing and then restored.
+
+- [x] 12.1 Close the scenario assertions the verification report found partial, in `httpsec`:
+  - "Nothing to move": a `TestWithBasePath` row with bearer authentication, authorization and `WithBasePath("/auth")`, refused naming `WithBasePath`;
+  - "Listing beside the verify endpoints": with the listing at `/mfa/verify/totp`, a pending session's GET there gets the listing's default body, and its POST reaches verification;
+  - "Operation identifiers are stable": a provider row in `TestChainEndpoints_IdentifiersStableUnderBasePath`, issuer `https://id.example.com/auth`, comparing every provider operation with and without the base;
+  - "Back-channel path shadows the callback": the collision row asserts both resolved paths, as the handoff row does;
+  - "Passkey registration reachable" (enrolment and recovery gates): the rows assert the begin response carries a registration challenge, not only that the gate let it through;
+  - "Authorization rules keep the consumer's paths": `TestBasePath_AuthorizationRulesKeepConsumerPaths` uses a deny rule, so the outcome depends on which path the rule judges.
+
+  Verify with `go test -race -count=1 ./httpsec/` and `golangci-lint run ./httpsec/`
+- [x] 12.2 "Not-found refusal on an unrouted path" in `httpsec/ginsec`: a row that builds a real OIDC login chain with provider `corp` and sends `GET /sso/login/nope` through gin with no route matching, asserting 404, an empty body and not gin's default text. Verify with `go test -race -count=1 ./...` and `golangci-lint run ./...` in `httpsec/ginsec`
+
+## 13. Whole-branch review follow-ups (`http-security-chain`)
+
+Each item is test-first: the red step shows the gap open on the current code, the green step closes it.
+
+- [x] 13.1 Refuse a provider issuer whose path holds a character outside D4's set, a percent-escape included, with or without a base path, naming the issuer:
+  - red step: under `WithBasePath("/auth")`, issuer `https://id.example.com/au%74h` is accepted today, and `GET /auth/.well-known/openid-configuration` passes through to the handler while the root answers; the test expects `New` to fail naming the issuer;
+  - rows: that issuer under `/auth`; `https://id.example.com/t%65nant` with no base path; a plain `https://id.example.com/tenant-1` with provider prefix `/tenant-1/oauth2` and no base path, built, with the OpenID configuration answering at `/tenant-1/.well-known/openid-configuration`;
+  - godoc of the provider's issuer setting and of `WithoutOIDCIssuerBasePathCheck` states the rule.
+
+  (D8 "The issuer's path uses only endpoint-path characters"; "The provider's issuer path uses only endpoint-path characters".) Verify with `go test -race -count=1 ./httpsec/` and `golangci-lint run ./httpsec/`
+- [x] 13.2 Refuse `WithoutOIDCIssuerBasePathCheck()` and `WithoutBasePathRouteCheck()` given without `WithBasePath`, naming the waiver, one table row each; one row each that the waiver with a base path still builds, whatever the option order; update both options' godoc, which today says the option "changes nothing". Update every existing test or conformance scenario that gives a waiver without a base path. (D8, D9; scenarios "Waiver without a base path".) Verify with `go test -race -count=1 ./httpsec/` and `golangci-lint run ./httpsec/`, and `go test -race ./...` in the `test` module
+- [x] 13.3 Pin that `EnableOIDCLogin` given twice, on different prefixes, fails `New` with `ErrConfig` naming `scrty.sso.login`. Red step: a temporary inversion of the expectation. (D6 "An operation identifier appears at most once per chain".) Verify with `go test -race -count=1 ./httpsec/`
+- [x] 13.4 `TestNew_RefusesAKeySetEnabledTwice` also asserts the error names `scrty.key-set`. Red step: a temporary inversion of the expected identifier. (D6; scenario "An operation is listed once".) Verify with `go test -race -count=1 ./httpsec/`
+- [x] 13.5 Re-run 10.1's whole-workspace gate and record its output.
 
 ## Workflow follow-up
 

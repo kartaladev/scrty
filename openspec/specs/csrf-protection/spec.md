@@ -19,7 +19,7 @@ The request's own scheme and host SHALL be those the chain resolves, including t
 - **THEN** the request is refused with the cross-site-request error and the handler does not run
 
 #### Scenario: Login CSRF
-- **WHEN** a page on `https://evil.example` posts the attacker's credentials to `POST https://app.example.com/login` with `Sec-Fetch-Site: cross-site`
+- **WHEN** a page on `https://evil.example` posts the attacker's credentials to `POST https://app.example.com/sign-in/password` with `Sec-Fetch-Site: cross-site`
 - **THEN** the request is refused with the cross-site-request error, no credential is checked and no session is created
 
 #### Scenario: Older browser without Fetch Metadata

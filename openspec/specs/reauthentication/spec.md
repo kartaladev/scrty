@@ -142,7 +142,7 @@ Enabling re-authentication SHALL fail chain construction with a configuration er
 - neither the MFA slot nor form login is enabled;
 - second-factor-only re-proof is required without the MFA slot;
 - the prefix is empty;
-- a re-proof path collides with a path another enabled endpoint answers;
+- a re-proof path collides with a path another enabled endpoint answers, as the chain-wide collision requirement of `http-security-chain` judges;
 - it is enabled twice;
 - no credential can be issued for the rotated session;
 - the challenge stores are wired inconsistently, as the challenge-store requirement states.
@@ -191,19 +191,19 @@ Construction SHALL fail with a configuration error when the MFA slot was given a
 - **THEN** construction succeeds, and a re-proof begun through one server is verified through another server sharing that store
 
 ### Requirement: Re-proof paths are checked against every endpoint the chain answers
-Construction SHALL fail with a configuration error when a re-proof path collides with a path any enabled endpoint answers. Two paths collide when they are equal, or when one lies under the other and the other is matched by prefix. Each path is judged as its endpoint matches requests: re-proof begin and verify by prefix, the listing and password exactly, every other endpoint as it matches its own.
+Re-proof paths SHALL be judged by the chain-wide collision requirement of `http-security-chain`, like every built-in endpoint: re-proof begin and verify match their path and everything beneath it, and the listing and the password path match exactly. A collision SHALL fail construction with a configuration error naming both options and both paths.
 
 #### Scenario: Prefix collides with passkey registration
-- **WHEN** passkeys are enabled and the re-authentication prefix is set to `/passkey/register`
-- **THEN** construction fails with a configuration error naming the passkey registration prefix
+- **WHEN** passkeys are enabled and the passkey registration prefix is set to `/reauth/challenge`
+- **THEN** construction fails with a configuration error naming re-authentication and the passkey registration path
 
 #### Scenario: Another endpoint's exact path collides
 - **WHEN** the session renewal path is set to `/reauth/password`
 - **THEN** construction fails with a configuration error
 
 #### Scenario: A prefix under an exact path is accepted
-- **WHEN** form login answers `/login` and the re-authentication prefix is set to `/login/reauth`
-- **THEN** construction succeeds, `/login` is answered by form login and `/login/reauth/methods` by re-authentication
+- **WHEN** password sign-in answers `/sign-in/password` and the re-authentication prefix is set to `/sign-in/password/reauth`
+- **THEN** construction succeeds, `/sign-in/password` is answered by password sign-in and `/sign-in/password/reauth/methods` by re-authentication
 
 ### Requirement: Only a full session may re-prove
 Every re-proof endpoint SHALL serve only a full session: one with a resolved caller, no pending challenge of any kind, and not confined. A request with no session or no resolved caller SHALL be refused as authentication required. A session owing a challenge SHALL be refused by that challenge's gate before the endpoint. A session that is still fresh SHALL be served.
@@ -252,7 +252,7 @@ By default a user who holds a usable re-proof second factor SHALL re-prove with 
 - **THEN** the request is refused with the lookup failure and the password is not checked
 
 #### Scenario: A passkey login re-proves with the passkey
-- **WHEN** `u-3` signed in with a passkey, the passkey MFA method is configured, and `u-3` re-proves through `/reauth/begin/passkey` and `/reauth/verify/passkey`
+- **WHEN** `u-3` signed in with a passkey, the passkey MFA method is configured, and `u-3` re-proves through `/reauth/challenge/passkey` and `/reauth/verify/passkey`
 - **THEN** `u-3`'s session is re-authenticated, although the passkey shares the first factor's channel
 
 ### Requirement: Each re-proof endpoint looks up only the enrolments its decision needs
@@ -335,11 +335,11 @@ Verify SHALL refuse, before reading the body and without counting against the th
 Begin SHALL apply verify's refusals and throttle check, then issue a re-proof challenge: a one-time token of a purpose of its own per method, whose subject is the user and which is bound to the session, expiring after 5 minutes by default. A login challenge SHALL NOT answer a re-proof, nor the reverse. The lifetime, the issuance limit (10 per user and method within an hour by default) and the store SHALL be replaceable.
 
 #### Scenario: Begin
-- **WHEN** `u-3`, holding an active passkey, posts to `/reauth/begin/passkey`
+- **WHEN** `u-3`, holding an active passkey, posts to `/reauth/challenge/passkey`
 - **THEN** the response carries a challenge document and is marked not to be cached
 
 #### Scenario: A login challenge is refused
-- **WHEN** a challenge issued by `/mfa/begin/passkey` is presented to `/reauth/verify/passkey`
+- **WHEN** a challenge issued by `/mfa/challenge/passkey` is presented to `/reauth/verify/passkey`
 - **THEN** it is refused with the invalid-code error and counted
 
 #### Scenario: Another session's challenge
@@ -536,7 +536,7 @@ A second-factor re-proof SHALL refuse, as authentication required and before the
 - **THEN** it is refused as authentication required before the phase, and the session is unchanged
 
 #### Scenario: A substituted caller at begin
-- **WHEN** a consumer interceptor publishes a principal other than the session's user and that session posts to `/reauth/begin/passkey`
+- **WHEN** a consumer interceptor publishes a principal other than the session's user and that session posts to `/reauth/challenge/passkey`
 - **THEN** it is refused as authentication required, no challenge is issued and nothing is counted
 
 ### Requirement: A re-proof whose credential cannot be issued leaves the session as it was

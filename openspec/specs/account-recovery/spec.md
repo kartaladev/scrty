@@ -501,7 +501,7 @@ No recovery endpoint SHALL exist until the consumer enables recovery on the chai
 - only one proof kind is enabled, so no pair of different kinds is possible;
 - issued codes are enabled with no sender, or the password proof with no password authenticator, or the MFA-method proof with no method that can serve;
 - the reset has no authenticator kind registered;
-- any endpoint path is empty, lacks a leading `/`, or equals another recovery path, the login path or the logout path.
+- any endpoint path does not have the shape `http-security-chain` requires of endpoint paths, or collides with another recovery path or another endpoint the chain answers, as that capability's chain-wide collision requirement judges.
 
 #### Scenario: Off by default
 - **WHEN** a chain is built without enabling recovery and a POST is sent to `/recovery/complete`
@@ -512,8 +512,8 @@ No recovery endpoint SHALL exist until the consumer enables recovery on the chai
 - **THEN** construction fails with a configuration error
 
 #### Scenario: Path collision
-- **WHEN** the start path is set to the logout path
-- **THEN** construction fails with a configuration error
+- **WHEN** the start path is set to the sign-out path
+- **THEN** construction fails with a configuration error naming recovery and logout
 
 ### Requirement: The issued-code limit holds under concurrent starts
 The per-user issuance limit for issued recovery codes SHALL be decided by one atomic count-and-issue, so that no number of concurrent starts for one user issues more codes within the window than the limit allows.

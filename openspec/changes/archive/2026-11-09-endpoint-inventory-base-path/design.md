@@ -40,6 +40,7 @@ func WithBasePath(p string) Option
 - **Default:** none. With no base path, the join is the identity.
 - **Given twice.** The last call wins, as `EnableAuthorization`'s authorizer already does. That is the consumer changing their mind, not two settings disagreeing.
 - **Resolution runs in `New` between the option loop and `validate`.** Each path-answering interceptor keeps the path its option declared and gains an unexported resolve step. The provider's `settlePaths` and `routers` move after resolution, and the collision checks that ran inside options or `wire*` steps are retired into D7. Every check and everything derived from a path (D11) then reads resolved paths, so option order does not matter.
+- **One record per path.** Each built-in holds every path it answers as one value: the path its setting declared, whether the consumer set it, and where it answers once resolved. A path option sets that value and nothing else, so no option can change where an endpoint answers while escaping D5's repeat check, and a default lives in one place.
 - **Override:** each path setting, within the base. A consumer who wants one endpoint outside the base sets no base and places every endpoint individually, as today.
 - **Alternative rejected: the base applies to defaults only, and an explicit path is absolute.** A consumer reading `WithBasePath("/auth")` beside `WithLoginRequestPath("/signin")` could not tell where sign-in answers. Better Auth's `basePath` moves every route together, as this design does.
 
@@ -101,6 +102,16 @@ func WithBasePath(p string) Option
 
 - **A base path on a chain with no built-in endpoint** fails `New`: it is meaningless configuration (`library-design.md` rule 6).
 - **A per-feature path the consumer set at or under the base path**, judged on whole segments, fails `New` naming the option and the doubled result: `WithBasePath("/auth")` with `WithLoginRequestPath("/auth/sign-in/password")` would answer `/auth/auth/sign-in/password`. `/api-keys` under `/api` is not a repeat. Default paths are not judged: a base path such as `/sso` that repeats a default's first segment gives `/sso/sso/login/`, which is what the consumer configured and is documented, not refused.
+- **A path for an endpoint the configuration leaves off is not judged against the base.** `WithPasskeyPasswordlessPrefix("/auth/pk")` under `/auth` without `WithPasskeyPasswordlessLogin` is refused by passkeys' own check (the prefix moves no endpoint), not by D5, which would name a doubled path that would never be served. The rule is general: a path reaches the repeat check only while the inventory lists its endpoint.
+  - **With an own refusal.** `WithOIDCHandoffPath` while the callback conveys no handoff code is refused by the OIDC login's own check, as the passwordless prefix is.
+  - **Without one.** The recovery start path without `recovery.ProofIssued`, the codes path without `recovery.ProofSaved`, the finish and cancel paths while no recovery is held, and the enrolment email confirmation prefix with `WithoutEnrolmentEmailConfirmation` are accepted and move nothing, with or without a base, as they did before this change.
+  - **When it is judged: two passes.** A doubled path must be refused by the repeat check, which names the option, before any check in `validate` reads it. `checkRedirectPaths` or the provider's assertion-endpoint check would otherwise refuse first, and tell the consumer to register the doubled URL.
+    - **Early pass.** It runs after resolution and before `validate`, as before this task, and covers every path whose serving the options alone decide.
+    - **Late pass.** It runs in `build` once every feature is wired, before the inventory and collision check, and covers only the paths whose serving wiring settles: recovery's start, finish, cancel and codes paths (`wireAccountRecovery`), and the OIDC handoff path (`wireOIDCLogin`). Each is judged there only while served.
+    - **The handoff path stays out of the early pass entirely.** With `WithOIDCHandoffRedeemer` and `WithOIDCCallbackSuccess` both given, the OIDC login's own refusal comes first.
+    - **The "moves nothing" check** stays before resolution.
+    - **Order guards.** Every check still reads resolved paths (D1). A late-pass path judged early would be seen as off and let a served, doubled path through, which the order-guard rows pin.
+  - **Found late.** Only the passwordless prefix was covered at first; the rest was found in review, reproduced against the code, and applied in task 11.8.
 - **Override:** none for either. A base path that moves nothing does nothing; a path that repeats its own base is never intended, and the godoc of `WithBasePath` says so. A consumer who truly wants `/auth/auth/...` writes the inner `auth` into a base of `/auth/auth`.
 
 ### D6. The endpoint inventory
@@ -158,6 +169,8 @@ func (c *Chain) Endpoints() []Endpoint
   - **Kept from OIDC, for any pair that has not declared sharing.** An exact path equal to another operation's prefix, with or without its trailing slash, collides, because a reader cannot tell the two apart. It applies within one feature too (the SSO handoff path equal to the authorize prefix), as the established check does; only declared sharing exempts it.
 - **Error.** Names both options or settings that placed the paths (`WithMFAMethodListing`, `WithPasswordChangeEndpoint`, not only the `Enable*`), both resolved paths, and what the collision breaks, keeping the explanations the local checks gave ("a session owing a second factor could not sign out"). When several pairs collide, the first in inventory order is reported, so the error is deterministic.
 - **What it replaces.** Every check listed in Context: the MFA, enrolment, passkey, recovery, renewal, magic-link, signal-stream, re-authentication, OIDC and provider collision checks, `claimedPaths` and `collides` included. Their tests move to the shared check's table with their assertions kept, except the error wording. Per-option shape validation moves to D4's single rule.
+- **One definition of each match kind.** The collision check, the stale-route check (D9) and the endpoints that answer one segment under a prefix (session management, consents) share one implementation of how a path matches exactly, by one segment or by subtree, so the inventory, the checks and what actually answers cannot drift apart.
+- **No unreachable backstops.** The provider's duplicate-route report and its "assembled before resolution" check cannot fire through `New`: every route is declared, and resolution always runs. A duplicate route that does reach the provider's router is a broken library invariant, reported the way an incomplete declaration is (`checkDeclared`), not a configuration error.
 - **Changed verdicts.** Some cross-feature pairs no current check covers (password sign-in and magic-link request on one path) are refused for the first time. Unifying match kinds also accepts what was refused: re-authentication judged the passkey registration prefix as a subtree, while passkey registration matches four exact paths, so a re-authentication prefix of `/passkeys/register` now builds. Each such case is listed in D13 and pinned by a test.
 - **Override:** none. A collision means one endpoint silently swallows the other's requests, so it is never a valid configuration.
 
@@ -167,7 +180,8 @@ func (c *Chain) Endpoints() []Endpoint
 - **Default:** on whenever both a base path and the provider are set. Without a base path nothing changes.
 - **Why refuse.** A consumer adopting a base path behind a gateway that forwards only `/auth/*` would otherwise serve discovery at the root, unreachable, and find out at a client's first discovery call.
 - **What it does not cover.** The authorization server metadata is always at the host root (RFC 8414 §3). The README says a proxy must route it.
-- **Override:** `WithoutOIDCIssuerBasePathCheck()`, for a gateway that routes `/.well-known/*` to the chain. Its godoc states what it gives up: discovery may then be served outside the base. With the waiver, a root issuer and a provider built with `AudienceIssuerOrTokenEndpoint`, the assertion token endpoint (`issuer` followed by `/oauth2/token`) no longer matches the published token endpoint, and the existing assertion endpoint check refuses it; a test pins that. Under the default issuer-only audience that check does not run, and nothing is refused.
+- **The issuer's path uses only endpoint-path characters, always.** The predicate above reads the issuer's decoded path, while discovery is placed by its escaped form. An issuer such as `https://id.example.com/au%74h` passes the predicate as `/auth` and yet places discovery at the root, so `/auth/.well-known/openid-configuration` passes through. Rather than choose one form and reason about the other, `New` refuses an issuer whose path holds any character outside D4's set (`[A-Za-z0-9._~/-]`), a percent-escape included, naming the issuer. With no escapes the two forms are one string. The rule applies whether or not a base path is set, since the same split would misplace discovery for an encoded issuer at the root. Decoding instead was rejected: an encoded reserved character (`%2F`) would become indistinguishable from a real separator. There is no override: an issuer is an identifier the consumer chooses, and a plain one costs nothing.
+- **Override:** `WithoutOIDCIssuerBasePathCheck()`, for a gateway that routes `/.well-known/*` to the chain. Its godoc states what it gives up: discovery may then be served outside the base. The waiver given without a base path fails `New`, naming it (`library-design.md` rule 6): there is no check to waive, and a configuration that says otherwise is a wiring mistake. A consumer whose base path comes from deployment configuration adds the waiver only where the base is set. With the waiver, a root issuer and a provider built with `AudienceIssuerOrTokenEndpoint`, the assertion token endpoint (`issuer` followed by `/oauth2/token`) no longer matches the published token endpoint, and the existing assertion endpoint check refuses it; a test pins that. Under the default issuer-only audience that check does not run, and nothing is refused.
 
 ### D9. Consumer routes left pointing at a moved endpoint fail at construction
 
@@ -177,7 +191,7 @@ func (c *Chain) Endpoints() []Endpoint
 - **Default:** on whenever a base path is set.
 - **Why refuse.** Such a route silently stops matching. For the recovery cool-down, that fails open: a sensitive action is allowed during the cool-down.
 - **Stated limit.** Routes given as functions cannot be inspected and are not checked: header-profile matchers (`WithHeaderProfile` takes a `RouteMatcher`) and any other function matcher. Their godoc says paths they compare must be resolved ones, and `Endpoints()` gives them.
-- **Override:** `WithoutBasePathRouteCheck()`, for a consumer who serves a route of their own at such a path. Its godoc states what it gives up.
+- **Override:** `WithoutBasePathRouteCheck()`, for a consumer who serves a route of their own at such a path. Its godoc states what it gives up. Given without a base path, it fails `New` naming it, as D8's waiver does.
 
 ### D10. An OIDC redirect URL must be able to reach the callback
 
@@ -229,6 +243,7 @@ Each relevant failure, its state (handled, tested or accepted, per `defensive-co
 | A path is checked or derived before the base path is applied | Handled (D1: resolution before `validate`); tested (option-order scenarios, D11 tests) | Nothing: every check and derived value reads resolved paths |
 | Base or endpoint path is relative, root, unclean or needs escaping | Handled (D4); tested | Configuration error naming the option |
 | Base path moves nothing, or a consumer-set path repeats the base | Handled (D5); tested | Configuration error naming the option and the result |
+| A path is set for an endpoint the configuration leaves off, under a base path | Handled (D5); tested | The owning feature's own refusal where it has one (passwordless prefix, OIDC handoff path), otherwise the setting is accepted and moves nothing, as with no base; never a doubled-path error |
 | A base path repeats a default's first segment (`/sso` gives `/sso/sso/login/`) | Accepted (D5) | Served as configured; documented in `WithBasePath`'s godoc |
 | Default layouts that share a path within one feature (session management, consents, recovery codes) | Handled (D7 declared sharing); tested | The chain builds with defaults |
 | A caller mutates an entry of `Endpoints()` | Handled (D6 deep copy); tested | The chain and later lists are unchanged |
@@ -236,8 +251,11 @@ Each relevant failure, its state (handled, tested or accepted, per `defensive-co
 | Base path given twice | Handled (D1: last wins); tested | The last base path applies |
 | Two operations answer one request path, within or across features | Handled (D7); tested | Configuration error naming both settings, both paths and the consequence |
 | Two operations share a path without declaring it | Handled (D7); tested | Configuration error, although methods differ |
-| An endpoint answers a path it does not declare, or declares one it does not answer | Tested (drift guard with near-miss, parent and other-method probes) | A failing test, not a production surprise |
+| An endpoint answers a path it does not declare, or declares one it does not answer | Tested (drift guard with near-miss, parent and other-method probes); accepted that the guard proves an entry is answered by the chain, not by which endpoint, since `TestChainEndpoints_PinsEveryOperation` and each feature's tests pin that | A failing test, not a production surprise |
 | Issuer does not cover the base path | Handled (D8); tested | Configuration error naming the issuer and the base path |
+| Issuer path percent-encoded, or holding a character outside D4's set | Handled (D8: refused, with or without a base path); tested | Configuration error naming the issuer |
+| The provider's issuer is no URL when the chain checks it (the provider's own constructor already refuses one) | Handled (D8: refused as a configuration error naming the issuer); not testable through `New`, since only the provider's constructor builds a provider | Configuration error naming the issuer, if the provider's contract is ever broken |
+| A base-path waiver (`WithoutOIDCIssuerBasePathCheck`, `WithoutBasePathRouteCheck`) given without a base path | Handled (D8, D9: refused); tested | Configuration error naming the waiver |
 | D8 waived with a root issuer and `AudienceIssuerOrTokenEndpoint` | Handled by the existing assertion endpoint check; tested | Configuration error from that check |
 | Authorization server metadata outside the base path | Accepted (RFC 8414 §3) | Documented: a proxy must route `/.well-known/oauth-authorization-server/...` |
 | Consumer route left at a pre-base path (cool-down fails open) | Handled (D9); tested | Configuration error naming the route and the moved endpoint |
@@ -314,3 +332,5 @@ Nothing to migrate for consumers before the first tag. A consumer adopting a bas
 ### Primary documentation
 
 - [RFC 3986 §3.3](https://www.rfc-editor.org/rfc/rfc3986.html#section-3.3): the path component and its unreserved characters, behind D4's character set.
+- [RFC 3986 §2.2, §2.4](https://www.rfc-editor.org/rfc/rfc3986.html#section-2.2): an encoded reserved character is not equivalent to the character itself, behind D8's refusal of escaped issuer paths over decoding them.
+- [OpenID Connect Discovery 1.0 §4](https://openid.net/specs/openid-connect-discovery-1_0.html) and [RFC 8414 §3](https://www.rfc-editor.org/rfc/rfc8414.txt): discovery is located from the issuer string as written, behind D8's requirement that the issuer's escaped and decoded paths agree.
