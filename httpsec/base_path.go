@@ -28,18 +28,23 @@ import (
 // Given twice, the last call applies. The option takes effect wherever it stands
 // among the chain's options, because New judges it once every option has run.
 //
-// What it moves today: password sign-in, logout, the key set, session renewal,
-// the password-change endpoint, the session signal stream and session
-// management. Each answers at the base path followed by its own path, the
-// default or the one the consumer set, which is therefore relative to the base:
-// "/auth" with WithLoginRequestPath("/signin") answers "/auth/signin", and the
-// path without the base passes through. The exemption the gates give logout
-// follows it. The matching is on the request path the chain sees, so a proxy
-// that already strips "/auth" needs no base path.
+// Every built-in endpoint the chain answers moves under it: password sign-in,
+// logout, the key set, session renewal, the password-change endpoint, the
+// session signal stream, session management, the second factor, enrolment,
+// passkeys, the magic link, recovery, re-authentication, federated (OIDC) login
+// and the OpenID Provider's endpoints. Each answers at the base path followed
+// by its own path, the default or the one the consumer set, which is therefore
+// relative to the base: "/auth" with WithLoginRequestPath("/signin") answers
+// "/auth/signin", and the path without the base passes through. The exemption
+// the gates give logout follows it. The provider's discovery documents are not
+// placed by the base path: they sit at the issuer followed by their well-known
+// suffix, so the issuer decides where they answer.
 //
-// Not yet built: the other built-in endpoints (second factor, enrolment,
-// passkeys, magic link, recovery, re-authentication, federated login and the
-// provider) do not move yet, and still answer at their own paths.
+// What does not move: the pages the consumer serves (the provider's login,
+// consent and logout pages, the magic-link confirm page), authorization rules,
+// the routes and interceptors the consumer supplies, and a prefix a proxy
+// already strips. The matching is on the request path the chain sees, so a
+// proxy that already strips "/auth" needs no base path.
 func WithBasePath(p string) Option {
 	return func(c *config) error {
 		c.basePath = p

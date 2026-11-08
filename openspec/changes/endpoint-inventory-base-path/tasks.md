@@ -53,7 +53,7 @@ Every task is test-first: write the failing test, run it, confirm it fails for t
   - an authorization request needing a sign-in is sent to the consumer's login page unchanged.
 
   (D1, D2; "The base path covers only the endpoints the chain answers", scenario "Provider pages unchanged"; "The provider's paths are replaceable and published as used" MODIFIED, every scenario; "The public key set is served" scenario "Under a base path"; `oidc-provider-metadata` "A base path does not move the metadata documents".) Verify with `go test -race -count=1 ./httpsec/`
-- [ ] 3.6 Derive every path-derived value from resolved paths, one test each under `/auth`:
+- [x] 3.6 Derive every path-derived value from resolved paths, one test each under `/auth`:
   - a session owing a second factor, an enrolment-only session, a session owing a password change and a recovery-pending session can each post to `/auth/sign-out`;
   - the recovery gate's enrolment and passkey exemptions follow the moved paths;
   - the cross-site layer exempts `/auth/sso/backchannel-logout/{p}` and the provider's POST endpoints; the provider's CORS scope covers `/auth/oauth2/...`;

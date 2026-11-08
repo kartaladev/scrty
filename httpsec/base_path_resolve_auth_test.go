@@ -306,32 +306,60 @@ func TestBasePath_RefusesDoubledAuthPath(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name     string
-		endpoint authEndpoint
-		path     string
-		doubled  string
+		name    string
+		options func(t *testing.T) []httpsec.Option
+		assert  func(t *testing.T, c *httpsec.Chain, err error)
 	}
 
-	var cases []testCase
+	refused := func(option, doubled string) func(t *testing.T, c *httpsec.Chain, err error) {
+		return func(t *testing.T, c *httpsec.Chain, err error) {
+			t.Helper()
 
-	for i, doubled := range []string{"/auth/auth/reauth", "/auth/auth/sso/login/", "/auth/auth/sso/callback/", "/auth/auth/sso/handoff", "/auth/auth/sso/backchannel-logout/"} {
-		e := authEndpoints()[i]
-		path := doubled[len("/auth"):]
+			require.ErrorIs(t, err, httpsec.ErrConfig)
+			assert.Nil(t, c)
+			assert.ErrorContains(t, err, option)
+			assert.ErrorContains(t, err, doubled)
+		}
+	}
 
-		cases = append(cases, testCase{name: e.name, endpoint: e, path: path, doubled: doubled})
+	endpoint := func(name string) authEndpoint {
+		for _, e := range authEndpoints() {
+			if e.name == name {
+				return e
+			}
+		}
+
+		panic("no auth endpoint named " + name)
+	}
+
+	row := func(name, path, doubled string) testCase {
+		e := endpoint(name)
+
+		return testCase{
+			name: name,
+			options: func(t *testing.T) []httpsec.Option {
+				return e.options(t, path)
+			},
+			assert: refused(e.option, doubled),
+		}
+	}
+
+	cases := []testCase{
+		row("re-authentication", "/auth/reauth", "/auth/auth/reauth"),
+		row("OIDC authorize", "/auth/sso/login/", "/auth/auth/sso/login/"),
+		row("OIDC callback", "/auth/sso/callback/", "/auth/auth/sso/callback/"),
+		row("OIDC handoff", "/auth/sso/handoff", "/auth/auth/sso/handoff"),
+		row("OIDC back-channel logout", "/auth/sso/backchannel-logout/", "/auth/auth/sso/backchannel-logout/"),
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			opts := append(tc.endpoint.options(t, tc.path), httpsec.WithBasePath("/auth"))
+			opts := append(tc.options(t), httpsec.WithBasePath("/auth"))
 
 			c, err := httpsec.New(opts...)
-			require.ErrorIs(t, err, httpsec.ErrConfig)
-			assert.Nil(t, c)
-			assert.ErrorContains(t, err, tc.endpoint.option)
-			assert.ErrorContains(t, err, tc.doubled)
+			tc.assert(t, c, err)
 		})
 	}
 }
