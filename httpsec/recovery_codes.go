@@ -101,7 +101,7 @@ func WithRecoveryCountResponder(fn RecoveryCountResponder) RecoveryOption {
 // answersCodes reports whether r is a request the saved-code endpoints answer:
 // a GET or a POST on the codes path, while the core enables saved codes.
 func (i *recoveryInterceptor) answersCodes(r Request) bool {
-	if !i.codesEnabled || r.Path() != i.codesPath {
+	if !i.codesEnabled || r.Path() != i.codesPath.at() {
 		return false
 	}
 

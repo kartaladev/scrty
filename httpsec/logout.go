@@ -21,7 +21,7 @@ import (
 // consumer names none. It is a constant rather than a bare literal so a client,
 // a test or a proxy rule naming the same endpoint names the same thing this
 // package does.
-const DefaultLogoutPath = "/logout"
+const DefaultLogoutPath = "/sign-out"
 
 // EndSessionBuilder produces the identity provider's end-session URL for a
 // session that a local logout has just deleted.
@@ -56,7 +56,9 @@ type logout struct {
 	// log is the chain's logger, handed over by wire.
 	log *slog.Logger
 
-	path string
+	// path is the endpoint's path: where the options placed it, and where it
+	// answers under the base path once resolved.
+	path endpointPath
 
 	// clearSiteData is the Clear-Site-Data value sent on a secure, successful
 	// logout, or "" for none.
@@ -91,7 +93,7 @@ func (l *logout) wire(c *Chain) {
 //
 // With the OpenID Provider on the chain, the sign-in ends there first (see end).
 func (l *logout) Intercept(ex *Exchange, next Next) error {
-	if ex.Request.Method() != http.MethodPost || ex.Request.Path() != l.path {
+	if ex.Request.Method() != http.MethodPost || ex.Request.Path() != l.path.at() {
 		return next(ex)
 	}
 
@@ -283,7 +285,7 @@ func EnableLogout(d LogoutDeps, opts ...LogoutOption) Option {
 	const option = "EnableLogout"
 
 	return func(c *config) error {
-		l := &logout{sessions: d.Sessions, endSession: d.EndSession, path: DefaultLogoutPath}
+		l := &logout{sessions: d.Sessions, endSession: d.EndSession, path: defaultPath(DefaultLogoutPath)}
 
 		for _, opt := range opts {
 			if opt == nil {
@@ -298,9 +300,10 @@ func EnableLogout(d LogoutDeps, opts ...LogoutOption) Option {
 			return requireDep(option, "session manager", d.Sessions)
 		})
 
-		// Recorded for the gates, which exempt this path so a session stranded
-		// mid-challenge can still be ended. See wireMFA and wirePasswordChange.
-		c.logoutPath = l.path
+		// Kept for the gates, which exempt its path so a session stranded
+		// mid-challenge can still be ended. resolvePaths records where it
+		// answers in c.logoutPath once the base path is known. See wireMFA and
+		// wirePasswordChange.
 		c.logout = l
 
 		c.useSessions(d.Sessions)
@@ -320,17 +323,18 @@ func EnableLogout(d LogoutDeps, opts ...LogoutOption) Option {
 
 // WithLogoutRequestPath answers logouts on path instead.
 //
-// Default: DefaultLogoutPath, which keeps passing through once the consumer
-// moves the endpoint. An empty path is refused: it would match nothing, so the
+// Default: DefaultLogoutPath, "/sign-out", which keeps passing through once the
+// consumer moves the endpoint. The path is within the base path
+// (WithBasePath): with a base path of "/auth", the default answers
+// "/auth/sign-out". An empty path is refused: it would match nothing, so the
 // endpoint the consumer asked for would silently not exist.
 func WithLogoutRequestPath(path string) LogoutOption {
 	return func(l *logout) error {
-		if path == "" {
-			return newConfigError("WithLogoutRequestPath was given no path, so logout would " +
-				"answer nothing")
+		if err := checkEndpointPath("WithLogoutRequestPath", path); err != nil {
+			return err
 		}
 
-		l.path = path
+		l.path.give("WithLogoutRequestPath", path)
 
 		return nil
 	}
@@ -380,3 +384,11 @@ func WithLogoutClearSiteData(directives ...string) LogoutOption {
 // are left out: the wildcard would also reload every tab where supported and
 // drop more than a logout should unasked.
 var clearSiteDataDirectives = []string{"cache", "cookies", "storage"}
+
+// endpoints declares sign-out.
+func (l *logout) endpoints() []Endpoint {
+	return []Endpoint{
+		declare("EnableLogout", "WithLogoutRequestPath", OperationSignOut, l.path.at(),
+			MatchExact, OtherMethodsPassThrough, RequiresAuthentication, http.MethodPost),
+	}
+}

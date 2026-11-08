@@ -406,6 +406,16 @@ func TestOIDCSignInEndpoints_ChallengeStaysOnItsOwnPaths(t *testing.T) {
 		{name: "a provider path that is not a sign-in endpoint", method: http.MethodGet, path: "/oauth2/other", assert: unchallenged},
 		{name: "a path only sharing the consents list's name", method: http.MethodGet, path: consentsPath + "-other", assert: unchallenged},
 		{
+			// The consents answer the list's path and one segment below it; another endpoint of the
+			// chain under that path (a re-authentication prefix at /oauth2/consents/a) is no consent's.
+			name:   "a deeper path under the consents list, which another endpoint of the chain may answer",
+			method: http.MethodPost, path: consentsPath + "/a/challenge/totp", assert: unchallenged,
+		},
+		{
+			name:   "the consents list's path with a trailing slash",
+			method: http.MethodGet, path: consentsPath + "/", assert: unchallenged,
+		},
+		{
 			// No endpoint of the provider's outer slot calls on, and each answers its own refusals. Whatever
 			// one returned regardless is left as it came: those endpoints authenticate their own way.
 			name: "a 401 an endpoint of the outer slot returned",

@@ -2889,12 +2889,20 @@ const testOIDCProvider = "corp"
 func newTestOIDCManager(t *testing.T, brokerOpts ...oidc.BrokerOption) *oidc.RelyingParty {
 	t.Helper()
 
+	return newTestOIDCManagerAt(t, httpsec.DefaultOIDCCallbackPath, brokerOpts...)
+}
+
+// newTestOIDCManagerAt is newTestOIDCManager with the provider's redirect URL
+// placed under callbackPrefix, the callback path the chain under test serves.
+func newTestOIDCManagerAt(t *testing.T, callbackPrefix string, brokerOpts ...oidc.BrokerOption) *oidc.RelyingParty {
+	t.Helper()
+
 	registry, err := oidc.NewRegistry(oidc.Provider{ //nolint:gosec // G101: a fixture, not a credential
 		Name:                  testOIDCProvider,
 		Issuer:                "https://idp.example.com",
 		ClientID:              "app",
 		ClientSecret:          "secret-" + testOIDCProvider,
-		RedirectURL:           "https://app.example.com" + "/login/oauth2/callback/" + testOIDCProvider,
+		RedirectURL:           "https://app.example.com" + callbackPrefix + testOIDCProvider,
 		AuthorizationEndpoint: "https://idp.example.com/authorize",
 		TokenEndpoint:         "https://idp.example.com/token",
 		JWKSURI:               "https://idp.example.com/jwks",
@@ -3067,6 +3075,15 @@ type oidcHarness struct {
 func newOIDCHarness(t *testing.T, managerOpts ...oidc.Option) *oidcHarness {
 	t.Helper()
 
+	return newOIDCHarnessAt(t, httpsec.DefaultOIDCCallbackPath, managerOpts...)
+}
+
+// newOIDCHarnessAt is newOIDCHarness with the provider's redirect URL placed
+// under callbackPrefix, the callback path the chain under test serves (the base
+// path included).
+func newOIDCHarnessAt(t *testing.T, callbackPrefix string, managerOpts ...oidc.Option) *oidcHarness {
+	t.Helper()
+
 	ctrl := gomock.NewController(t)
 	p := newOIDCTestProvider(t)
 
@@ -3092,7 +3109,10 @@ func newOIDCHarness(t *testing.T, managerOpts ...oidc.Option) *oidcHarness {
 	broker, err := oidc.NewBroker(links, users)
 	require.NoError(t, err)
 
-	registry, err := oidc.NewRegistry(p.provider())
+	reg := p.provider()
+	reg.RedirectURL = "https://app.example.com" + callbackPrefix + testOIDCProvider
+
+	registry, err := oidc.NewRegistry(reg)
 	require.NoError(t, err)
 
 	client, err := outbound.New(outbound.WithHTTPClient(p.srv.Client()))

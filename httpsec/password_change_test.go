@@ -450,17 +450,6 @@ func TestPasswordChangeConstruction(t *testing.T) {
 			assert: refused("EnablePasswordChangeGate", "session manager"),
 		},
 		{
-			name: "a resolve endpoint with no path",
-			build: func(h *authHarness) []httpsec.Option {
-				return []httpsec.Option{
-					httpsec.EnablePasswordChangeGate(h.sessions,
-						httpsec.WithPasswordChangeEndpoint("",
-							func(*httpsec.Exchange) error { return nil })),
-				}
-			},
-			assert: refused("WithPasswordChangeEndpoint"),
-		},
-		{
 			name: "a resolve endpoint with no function",
 			build: func(h *authHarness) []httpsec.Option {
 				return []httpsec.Option{

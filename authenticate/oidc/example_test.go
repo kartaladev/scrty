@@ -36,7 +36,7 @@ func ExampleWithProviderAssurance() {
 		Issuer:       "https://idp.example.com",
 		ClientID:     "scrty",
 		ClientSecret: "corp-client-secret",
-		RedirectURL:  "https://app.example.com/login/oauth2/callback/corp",
+		RedirectURL:  "https://app.example.com/sso/callback/corp",
 	})
 	if err != nil {
 		panic(err)
@@ -98,7 +98,7 @@ func ExampleWithAssuranceEvaluator() {
 		Issuer:       "https://idp.example.com",
 		ClientID:     "scrty",
 		ClientSecret: "corp-client-secret",
-		RedirectURL:  "https://app.example.com/login/oauth2/callback/corp",
+		RedirectURL:  "https://app.example.com/sso/callback/corp",
 	})
 	if err != nil {
 		panic(err)

@@ -136,7 +136,8 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 			assert: built,
 		},
 		{
-			name: "every option given a consumer value",
+			name:    "every option given a consumer value",
+			manager: func(t *testing.T) *oidc.RelyingParty { return newTestOIDCManagerAt(t, "/auth/oidc/callback/") },
 			enable: with(
 				httpsec.WithOIDCAuthorizePath("/auth/oidc/start/"),
 				httpsec.WithOIDCCallbackPath("/auth/oidc/callback/"),
@@ -155,7 +156,8 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 			assert: built,
 		},
 		{
-			name: "prefixes given without a trailing slash",
+			name:    "prefixes given without a trailing slash",
+			manager: func(t *testing.T) *oidc.RelyingParty { return newTestOIDCManagerAt(t, "/auth/callback/") },
 			enable: with(
 				httpsec.WithOIDCAuthorizePath("/auth/start"),
 				httpsec.WithOIDCCallbackPath("/auth/callback"),
@@ -215,73 +217,7 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 			assert: refused("WithOIDCSessions"),
 		},
 
-		// Paths.
-		{
-			name:   "an empty authorize path",
-			enable: with(httpsec.WithOIDCAuthorizePath("")),
-			assert: refused("WithOIDCAuthorizePath"),
-		},
-		{
-			name:   "an empty callback path",
-			enable: with(httpsec.WithOIDCCallbackPath("")),
-			assert: refused("WithOIDCCallbackPath"),
-		},
-		{
-			name:   "an empty handoff path",
-			enable: with(httpsec.WithOIDCHandoffPath("")),
-			assert: refused("WithOIDCHandoffPath"),
-		},
-		{
-			name:   "an empty back-channel path",
-			enable: with(httpsec.WithOIDCBackchannelLogoutPath("")),
-			assert: refused("WithOIDCBackchannelLogoutPath"),
-		},
-		{
-			name:   "a path that is not absolute",
-			enable: with(httpsec.WithOIDCHandoffPath("login/handoff")),
-			assert: refused("WithOIDCHandoffPath", `"login/handoff"`),
-		},
-		{
-			name:   "the handoff path equal to the callback prefix",
-			enable: with(httpsec.WithOIDCHandoffPath(httpsec.DefaultOIDCCallbackPath)),
-			assert: refused("collide", httpsec.DefaultOIDCCallbackPath),
-		},
-		{
-			name:   "the handoff path answered by the authorize prefix",
-			enable: with(httpsec.WithOIDCHandoffPath(httpsec.DefaultOIDCAuthorizePath + "handoff")),
-			assert: refused("collide", httpsec.DefaultOIDCAuthorizePath+"handoff"),
-		},
-		{
-			// Spec oidc-logout, "Back-channel path shadows the callback".
-			name:   "the back-channel prefix equal to the callback prefix",
-			enable: with(httpsec.WithOIDCBackchannelLogoutPath(httpsec.DefaultOIDCCallbackPath)),
-			assert: refused("collide", httpsec.DefaultOIDCCallbackPath),
-		},
-		{
-			name:   "the authorize prefix equal to the callback prefix without its slash",
-			enable: with(httpsec.WithOIDCAuthorizePath("/login/oauth2/callback")),
-			assert: refused("collide", httpsec.DefaultOIDCCallbackPath),
-		},
-		{
-			name:   "the handoff path equal to a prefix given without its trailing slash",
-			enable: with(httpsec.WithOIDCHandoffPath("/login/oauth2/callback")),
-			assert: refused("collide", httpsec.DefaultOIDCCallbackPath),
-		},
-		{
-			name:   "the root path as the authorize prefix",
-			enable: with(httpsec.WithOIDCAuthorizePath("/")),
-			assert: refused("WithOIDCAuthorizePath", "root path", "every one-segment path"),
-		},
-		{
-			name:   "the root path as the callback prefix",
-			enable: with(httpsec.WithOIDCCallbackPath("/")),
-			assert: refused("WithOIDCCallbackPath", "root path", "every one-segment path"),
-		},
-		{
-			name:   "the root path as the back-channel prefix",
-			enable: with(httpsec.WithOIDCBackchannelLogoutPath("/")),
-			assert: refused("WithOIDCBackchannelLogoutPath", "root path", "every one-segment path"),
-		},
+		// The flow cookie.
 		{
 			name:   "an empty flow cookie name",
 			enable: with(httpsec.WithOIDCFlowCookieName("")),
@@ -440,7 +376,7 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 		},
 		{
 			name:   "a handoff path given with the consumer conveyance",
-			enable: convey(httpsec.WithOIDCHandoffPath("/login/oauth2/handoff-custom")),
+			enable: convey(httpsec.WithOIDCHandoffPath("/sso/handoff-custom")),
 			assert: refused("WithOIDCHandoffPath", "WithOIDCCallbackSuccess"),
 		},
 

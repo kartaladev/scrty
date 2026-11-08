@@ -24,10 +24,10 @@ import (
 // proxy rule naming the same endpoint names the same thing this package does.
 const (
 	// DefaultMagicLinkRequestPath is where a link is asked for.
-	DefaultMagicLinkRequestPath = "/login/magic"
+	DefaultMagicLinkRequestPath = "/sign-in/magic-link"
 
 	// DefaultMagicLinkConsumePath is where a link is redeemed.
-	DefaultMagicLinkConsumePath = "/login/magic/consume"
+	DefaultMagicLinkConsumePath = "/sign-in/magic-link/redeem"
 
 	// DefaultBindingCookieName is the cookie the same-device binding travels
 	// in.
@@ -181,8 +181,10 @@ type magicLinkInterceptor struct {
 
 	now func() time.Time
 
-	requestPath   string
-	consumePath   string
+	// requestPath and consumePath are where the options placed the endpoints,
+	// and where they answer under the base path once resolved.
+	requestPath   endpointPath
+	consumePath   endpointPath
 	cookieName    string
 	bodyLimit     int64
 	countRefusals bool
@@ -192,19 +194,26 @@ type magicLinkInterceptor struct {
 	automation *challengeGate
 }
 
+// resolvePaths places the request and redeem endpoints under base, from the
+// paths the options declared. The confirm page the emailed link points at is
+// the consumer's own page, not an endpoint of the chain, and does not move.
+func (i *magicLinkInterceptor) resolvePaths(base string) {
+	i.requestPath.resolve(base)
+	i.consumePath.resolve(base)
+}
+
+// declaredPaths reports the request and redeem paths the consumer set.
+func (i *magicLinkInterceptor) declaredPaths() []declaredPath {
+	return declarations(i.requestPath, i.consumePath)
+}
+
 // check reports the wiring faults only the assembled configuration can see:
-// two endpoints on one path, and the collaborators a redemption cannot do
-// without.
+// the collaborators a redemption cannot do without. Two endpoints on one path
+// are judged over the whole chain by the shared collision check.
 //
 // It runs once every option has been applied, so a session manager wired by
 // another built-in after EnableMagicLink still counts.
 func (i *magicLinkInterceptor) check(c *config, option string) error {
-	if i.requestPath == i.consumePath {
-		return newConfigError("%s was given one path, %q, for both asking for a link and "+
-			"redeeming one, so whichever endpoint matched first would swallow the other",
-			option, i.requestPath)
-	}
-
 	if c.sessionBearer {
 		if err := checkTokenGenerator(c, option, "WithMagicLinkTokens", i.tokens); err != nil {
 			return err
@@ -304,9 +313,9 @@ func (i *magicLinkInterceptor) Intercept(ex *Exchange, next Next) error {
 	}
 
 	switch ex.Request.Path() {
-	case i.requestPath:
+	case i.requestPath.at():
 		return i.request(ex)
-	case i.consumePath:
+	case i.consumePath.at():
 		return i.consume(ex)
 	default:
 		return next(ex)
@@ -357,7 +366,7 @@ func (i *magicLinkInterceptor) request(ex *Exchange) error {
 		ex.Writer.SetCookie(&Cookie{
 			Name:     i.cookieName,
 			Value:    result.BindingNonce,
-			Path:     i.consumePath,
+			Path:     i.consumePath.at(),
 			MaxAge:   int(i.manager.TTL().Seconds()),
 			HttpOnly: true,
 			Secure:   true,
@@ -592,4 +601,16 @@ func (i *magicLinkInterceptor) readConsume(r Request) (token, next string) {
 
 	return values.Get(DefaultMagicLinkTokenParam),
 		i.redirects.Resolve(values.Get(DefaultMagicLinkNextParam))
+}
+
+// endpoints declares asking for a link and redeeming one.
+func (i *magicLinkInterceptor) endpoints() []Endpoint {
+	const feature = "EnableMagicLink"
+
+	return []Endpoint{
+		declare(feature, "WithMagicLinkRequestPath", OperationSignInMagicLinkRequest, i.requestPath.at(),
+			MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodPost),
+		declare(feature, "WithMagicLinkConsumePath", OperationSignInMagicLinkRedeem, i.consumePath.at(),
+			MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodPost),
+	}
 }

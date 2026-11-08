@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -148,10 +147,15 @@ const (
 type SessionSignals struct {
 	// Path is where the stream answers GET.
 	//
-	// Default: DefaultSessionSignalsPath, "/session/signals". It must start with "/",
-	// must not end with one, must hold no "?", "#", "%" or white space, because a request's
-	// path is compared decoded and such a path would never be served, and must be a path
-	// no other enabled endpoint of the chain answers.
+	// Default: DefaultSessionSignalsPath, "/session/signals". The path is within the
+	// base path (WithBasePath): with a base path of "/auth", the default answers
+	// "/auth/session/signals". It must start with "/", must not be "/", and must be
+	// clean (no "." or ".." segment, no "//") once one trailing slash is set aside.
+	// One trailing slash is accepted and names that exact path: "/session/signals/"
+	// is answered, and "/session/signals" then passes through. It must hold no "?",
+	// "#", "%" or white space, because a request's path is compared decoded and such
+	// a path would never be served, and must be a path no other enabled endpoint of
+	// the chain answers.
 	Path string
 
 	// Signals is the chain's set: what a stream may send. A client can narrow it for
@@ -483,7 +487,10 @@ func EnableSessionSignals(s SessionSignals) Option {
 			return err
 		}
 
-		e := &sessionSignals{cfg: s}
+		e := &sessionSignals{cfg: s, path: defaultPath(DefaultSessionSignalsPath)}
+		if s.Path != "" {
+			e.path.give(signalsPathSetting, s.Path)
+		}
 
 		c.enable(option, func() error { return e.settle(c, option) })
 		c.register(e, OrderSessionSignals)
@@ -510,8 +517,13 @@ func RecordsSessionActivity(ex *Exchange) bool {
 
 // sessionSignals is the stream's endpoint, and what the rest of the feature hangs from.
 type sessionSignals struct {
-	// cfg is what the consumer gave, with every default filled by settle.
+	// cfg is what the consumer gave, with every default but the path filled by
+	// settle. The path is held in path alone.
 	cfg SessionSignals
+
+	// path is the stream's path: cfg.Path, or DefaultSessionSignalsPath when the
+	// consumer gave none, and where it answers under the base path once resolved.
+	path endpointPath
 
 	// set is the chain's set of library signals, from cfg.Signals.
 	set map[Signal]bool
@@ -555,7 +567,7 @@ func (e *sessionSignals) settle(c *config, option string) error {
 
 	e.clock = timed
 
-	if err := e.settlePath(c, option); err != nil {
+	if err := e.settlePath(option); err != nil {
 		return err
 	}
 
@@ -596,44 +608,16 @@ func (e *sessionSignals) settle(c *config, option string) error {
 	return nil
 }
 
-// settlePath refuses a path that could never be served, or that another endpoint of
-// the chain answers.
-func (e *sessionSignals) settlePath(c *config, option string) error {
-	if e.cfg.Path == "" {
-		e.cfg.Path = DefaultSessionSignalsPath
-	}
-
-	path := e.cfg.Path
-	if path[0] != '/' || strings.HasSuffix(path, "/") || strings.ContainsAny(path, "?#% \t\r\n") {
-		return newConfigError("%s was given SessionSignals.Path %q: a path starts with \"/\", does "+
-			"not end with one, and holds no \"?\", \"#\", \"%%\" or white space, or it would never be served",
-			option, path)
-	}
-
-	own := claimedPath{name: "the signal stream", path: path}
-
-	taken := claimedPaths(c, c.mfaOf(), c.formLogin())
-
-	_ = eachInterceptor(c, func(r *reauthInterceptor) error {
-		taken = append(taken, claimedPath{name: "the re-authentication prefix", path: r.prefix, under: true})
-
+// settlePath refuses a path that could never be served. A path another endpoint
+// of the chain answers is refused by the chain's collision check, which judges
+// every built-in's resolved paths together.
+func (e *sessionSignals) settlePath(option string) error {
+	d, ok := e.path.declaration()
+	if !ok {
 		return nil
-	})
-
-	_ = eachInterceptor(c, func(m *sessionManagement) error {
-		taken = append(taken, claimedPath{name: "the session management prefix", path: m.prefix, under: true})
-
-		return nil
-	})
-
-	for _, other := range taken {
-		if collides(own, other) {
-			return newConfigError("%s was given SessionSignals.Path %q, which %s %q already answers: "+
-				"whichever endpoint matched first would swallow the other", option, path, other.name, other.path)
-		}
 	}
 
-	return nil
+	return checkEndpointPath(option+": SessionSignals.Path", d.path)
 }
 
 // settleSignals builds the chain's set.
@@ -911,7 +895,7 @@ func (e *sessionSignals) wire(c *config, ch *Chain) {
 		return nil
 	})
 
-	ch.perRequest.signalsPath = e.cfg.Path
+	ch.perRequest.signalsPath = e.path.at()
 	ch.perRequest.signals = e
 
 	// It refuses only a nil observer, and the hub is not one.
@@ -1168,3 +1152,7 @@ func (s *signalStream) offer(sig queuedSignal) bool {
 		return false
 	}
 }
+
+// signalsPathSetting names the setting that places the stream, in the base
+// path's repeat check.
+const signalsPathSetting = "EnableSessionSignals: SessionSignals.Path"

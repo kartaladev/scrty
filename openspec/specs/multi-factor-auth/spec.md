@@ -405,11 +405,11 @@ Each enrolment prefix SHALL be replaceable by an option. There SHALL be no optio
 - **THEN** an enrolment challenge error is returned
 
 #### Scenario: Passkey registration reachable
-- **WHEN** passkey registration serves the enrolment path and an enrolment-only session posts to `/passkey/register/begin`
+- **WHEN** passkey registration serves the enrolment path and an enrolment-only session posts to `/passkeys/register/begin`
 - **THEN** a registration challenge is issued
 
 #### Scenario: Passkey listing is not reachable
-- **WHEN** an enrolment-only session sends a GET to `/passkey/credentials`
+- **WHEN** an enrolment-only session sends a GET to `/passkeys`
 - **THEN** an enrolment challenge error is returned
 
 #### Scenario: Logout
@@ -690,7 +690,7 @@ A body over the limit SHALL be refused as too large, and a body that is empty, o
 - **THEN** construction fails with a configuration error
 
 ### Requirement: A challenge method verifies only against a challenge the library issued
-A method MAY declare a begin step. For such a method the library SHALL provide a begin endpoint that matches POST requests to one path per method under a begin prefix, `/mfa/begin` by default and replaceable by an option. Begin SHALL apply the same session, method and usability refusals as verification, SHALL be refused while the user's verification is throttled, and SHALL then issue a pending challenge: a one-time token of a purpose of the method's own, whose subject is the session's user and which is bound to the session's handle, expiring after 5 minutes by default, replaceable by an option. The token string SHALL be the challenge the method builds its begin data around, and the begin data SHALL be written through a replaceable responder. The pending-challenge store SHALL default to the in-memory one-time store and be replaceable by an option, and the documentation SHALL state that the in-memory store serves a single process.
+A method MAY declare a begin step. For such a method the library SHALL provide a begin endpoint that matches POST requests to one path per method under a begin prefix, `/mfa/challenge` by default and replaceable by an option. Begin SHALL apply the same session, method and usability refusals as verification, SHALL be refused while the user's verification is throttled, and SHALL then issue a pending challenge: a one-time token of a purpose of the method's own, whose subject is the session's user and which is bound to the session's handle, expiring after 5 minutes by default, replaceable by an option. The token string SHALL be the challenge the method builds its begin data around, and the begin data SHALL be written through a replaceable responder. The pending-challenge store SHALL default to the in-memory one-time store and be replaceable by an option, and the documentation SHALL state that the in-memory store serves a single process.
 
 At verification of a challenge method, after the response is read, the library SHALL take from the response the challenge the client answered, check it against the pending challenges it issued for that session, and spend it, before the method verifies the response. A challenge SHALL be spent by any verification attempt that presents it on the session it was issued to, whether that attempt is accepted or refused. A challenge presented on another session SHALL be refused without being spent, since it matches no challenge issued to that session. A challenge that is absent, unknown, expired, already spent, or bound to another session SHALL be refused as an invalid second-factor code and counted as a failed verification. A challenge SHALL only ever be compared with one the library issued, never accepted from the request alone.
 
@@ -782,7 +782,7 @@ Chain assembly SHALL fail with a configuration error when the passkey method is 
 - **THEN** chain assembly fails with a configuration error
 
 #### Scenario: Consumer names TOTP only
-- **WHEN** the path's enrolling methods are named as `totp` only and an enrolment-only session posts to `/passkey/register/begin`
+- **WHEN** the path's enrolling methods are named as `totp` only and an enrolment-only session posts to `/passkeys/register/begin`
 - **THEN** an enrolment challenge error is returned
 
 ### Requirement: A suspected clone at verification is not counted as a failed verification
@@ -891,7 +891,7 @@ The second-factor verify and begin endpoints SHALL refuse a session that owes no
 - **THEN** it is refused with the no-MFA-challenge-pending error, the code is not checked, nothing is counted and the handle is unchanged
 
 #### Scenario: A full session begins a challenge
-- **WHEN** a session whose second factor is satisfied posts to `/mfa/begin/passkey`
+- **WHEN** a session whose second factor is satisfied posts to `/mfa/challenge/passkey`
 - **THEN** it is refused with the no-MFA-challenge-pending error and no challenge is issued
 
 #### Scenario: A session that never owed a second factor
@@ -952,7 +952,7 @@ After a valid code and before the session is rotated, verification SHALL judge t
 - **THEN** verification is refused as authentication required before the phase is judged, and the session is still pending
 
 #### Scenario: A substituted caller at begin
-- **WHEN** a consumer interceptor publishes a principal other than the pending session's user and that session posts to `/mfa/begin/passkey`
+- **WHEN** a consumer interceptor publishes a principal other than the pending session's user and that session posts to `/mfa/challenge/passkey`
 - **THEN** it is refused as authentication required, no challenge is issued and nothing is counted
 
 #### Scenario: A federated verification behind the requirement

@@ -128,8 +128,8 @@ The base path SHALL NOT change the consumer's authorization rules, routes the co
 - **AND** the endpoint that redeems the link answers at `/auth/sign-in/magic-link/redeem`
 
 #### Scenario: Provider pages unchanged
-- **WHEN** a chain with the base path `/auth` enables the provider with issuer `https://id.example.com/auth` and the login page `https://app.example.com/signin`
-- **THEN** an authorization request that needs a sign-in is sent to `https://app.example.com/signin`
+- **WHEN** a chain with the base path `/auth` enables the provider with issuer `https://id.example.com/auth` and the login page `https://id.example.com/signin`
+- **THEN** an authorization request that needs a sign-in is sent to `https://id.example.com/signin`
 
 #### Scenario: Prefix stripped before the chain
 - **WHEN** a proxy strips `/auth` before requests reach a chain that has no base path
@@ -177,6 +177,10 @@ When a base path is set, building a chain SHALL fail with a configuration error 
 - **WHEN** the consumer waives the check and a cross-site exemption names `/sign-in/password`, a route the consumer serves itself
 - **THEN** the chain is built
 
+#### Scenario: Waiver without a base path
+- **WHEN** the consumer waives the check and sets no base path
+- **THEN** construction fails with a configuration error naming the waiver, because without a base path there is no check to waive
+
 ### Requirement: The chain lists the endpoints it answers
 A built chain SHALL list every operation of every built-in endpoint it answers. Each entry SHALL give its methods, its path with any segment it reads written as `{name}`, how it matches, what it does with other methods, a stable operation identifier, the option that placed it, and what the request must carry. Endpoints not enabled and consumer interceptors SHALL NOT be listed.
 
@@ -205,19 +209,23 @@ A built chain SHALL list every operation of every built-in endpoint it answers. 
 - **WHEN** the same configuration is built with and without a base path
 - **THEN** each endpoint carries the same operation identifier in both lists
 
+#### Scenario: An operation is listed once
+- **WHEN** a chain enables the key set twice, at `/.well-known/jwks.json` and at `/keys`
+- **THEN** construction fails with a configuration error naming `scrty.key-set` and both settings
+
 #### Scenario: Every entry is answered
 - **WHEN** a chain enables every built-in endpoint and a request is sent to each listed method and path
 - **THEN** each request is answered by the endpoint the entry names and never reaches the handler
 
 ### Requirement: Colliding endpoint paths fail at construction
-Building a chain SHALL fail with a configuration error when two built-in operations would answer one resolved request path. Operations of one feature that declare a shared path are exempt if their methods differ or one matches the path and the other the path plus one segment. An exact path equal to another feature's prefix, with or without a trailing slash, SHALL collide. The error SHALL name both settings, both paths and what would break.
+Building a chain SHALL fail with a configuration error when two built-in operations would answer one resolved request path. Operations of one feature that declare a shared path are exempt if their methods differ or one matches the path and the other the path plus one segment. An exact path equal to another operation's prefix, with or without a trailing slash, SHALL collide unless the two declare that they share the path. The error SHALL name both settings, both paths and what would break.
 
 #### Scenario: Two features on one path
 - **WHEN** password sign-in and magic-link requests are both set to answer `/signin`
 - **THEN** construction fails with a configuration error naming both options and `/signin`
 
 #### Scenario: Path under another endpoint's prefix
-- **WHEN** the re-authentication prefix is set so that its password path lies under the MFA verify prefix
+- **WHEN** the re-authentication prefix is set so that its paths lie under the MFA verify prefix
 - **THEN** construction fails with a configuration error naming both options
 
 #### Scenario: Within one feature
@@ -278,6 +286,25 @@ When a base path is set and the provider is enabled, building a chain SHALL fail
 #### Scenario: Consumer waives the check
 - **WHEN** the consumer waives the check, the base path is `/auth` and the issuer is `https://id.example.com`
 - **THEN** the chain is built, the OpenID configuration answers at `/.well-known/openid-configuration`, and the metadata's `token_endpoint` is `https://id.example.com/auth/oauth2/token`
+
+#### Scenario: Waiver without a base path
+- **WHEN** the consumer waives the check, enables the provider and sets no base path
+- **THEN** construction fails with a configuration error naming the waiver, because without a base path there is no check to waive
+
+### Requirement: The provider's issuer path uses only endpoint-path characters
+When the provider is enabled, building a chain SHALL fail with a configuration error naming the issuer unless every character of the issuer's path is one an endpoint path may use: letters, digits, `.`, `_`, `~`, `-` and `/`. A percent-escape SHALL be refused, whether or not it encodes one of those characters, and whether or not a base path is set, so the path the issuer checks read and the path discovery is served on are always the same string.
+
+#### Scenario: Percent-encoded issuer path
+- **WHEN** the base path is `/auth` and the provider's issuer is `https://id.example.com/au%74h`
+- **THEN** construction fails with a configuration error naming the issuer
+
+#### Scenario: Percent-encoded issuer path without a base path
+- **WHEN** no base path is set and the provider's issuer is `https://id.example.com/t%65nant`
+- **THEN** construction fails with a configuration error naming the issuer
+
+#### Scenario: Plain issuer path
+- **WHEN** no base path is set, the provider's issuer is `https://id.example.com/tenant-1` and its prefix is `/tenant-1/oauth2`
+- **THEN** the chain is built and the OpenID configuration answers at `/tenant-1/.well-known/openid-configuration`
 
 ## MODIFIED Requirements
 
@@ -481,8 +508,12 @@ The list SHALL come from the one function the security policies use to decide us
 - **THEN** construction fails with a configuration error
 
 #### Scenario: Path collides with a verify path
-- **WHEN** the listing path is set to `/mfa/verify/totp`
+- **WHEN** the listing path is set to the MFA verify prefix `/mfa/verify`
 - **THEN** chain assembly fails with a configuration error naming the listing and the MFA verify prefix
+
+#### Scenario: Listing beside the verify endpoints
+- **WHEN** the listing path is set to `/mfa/verify/totp`, under the MFA verify prefix
+- **THEN** the chain is built: the listing answers GET there and verification answers POST, so no request reaches both
 
 ### Requirement: The provider's paths are replaceable and published as used
 The provider SHALL answer the two metadata documents at the paths their standards derive from the issuer, which a base path does not change. The consumer SHALL be able to change the prefix and each endpoint path; both SHALL be relative to the chain's base path when one is set. Endpoint URLs in the metadata, `jwks_uri` included, SHALL follow the paths in use.

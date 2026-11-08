@@ -35,7 +35,7 @@ import (
 // same thing this package does.
 const (
 	// DefaultLoginPath is the path form login answers POST requests on.
-	DefaultLoginPath = "/login"
+	DefaultLoginPath = "/sign-in/password"
 
 	// DefaultLoginUsernameParam is the form field, and JSON member, the
 	// submitted identifier is read from.
@@ -158,7 +158,9 @@ type formLogin struct {
 
 	now func() time.Time
 
-	path          string
+	// path is the endpoint's path: where the options placed it, and where it
+	// answers under the base path once resolved.
+	path          endpointPath
 	usernameParam string
 	passwordParam string
 	bodyLimit     int64
@@ -333,7 +335,7 @@ func refuseLocked(
 // Intercept answers a login on the configured path and passes everything else
 // through untouched.
 func (l *formLogin) Intercept(ex *Exchange, next Next) error {
-	if ex.Request.Method() != http.MethodPost || ex.Request.Path() != l.path {
+	if ex.Request.Method() != http.MethodPost || ex.Request.Path() != l.path.at() {
 		return next(ex)
 	}
 
@@ -956,4 +958,12 @@ func isChallenge(err error) bool {
 	var ch *ChallengeError
 
 	return errors.As(err, &ch)
+}
+
+// endpoints declares password sign-in.
+func (l *formLogin) endpoints() []Endpoint {
+	return []Endpoint{
+		declare("EnableFormLogin", "WithLoginRequestPath", OperationSignInPassword, l.path.at(),
+			MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodPost),
+	}
 }

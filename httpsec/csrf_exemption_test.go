@@ -123,39 +123,12 @@ func TestCSRF_Exemptions(t *testing.T) {
 			extra: oidcLogin(), method: http.MethodPut, path: backchannel, assert: judged,
 		},
 		{
-			name:   "a wildcard in the back-channel path widens nothing",
-			extra:  oidcLogin(httpsec.WithOIDCBackchannelLogoutPath("/idp/*/logout")),
-			method: http.MethodPost, path: "/idp/settings/logout/" + testOIDCProvider, assert: judged,
-		},
-		{
-			name:   "a back-channel path holding \"*\" is exempt as written",
-			extra:  oidcLogin(httpsec.WithOIDCBackchannelLogoutPath("/idp/*/logout")),
-			method: http.MethodPost, path: "/idp/*/logout/" + testOIDCProvider, assert: notRefusedAsCrossSite,
-		},
-		{
 			name:  "an encoded slash in the provider segment is not the back-channel endpoint",
 			extra: oidcLogin(), method: http.MethodPost, path: backchannel + "%2Fextra", assert: judged,
 		},
 		{
 			name:  "an encoded back-channel path is not the back-channel endpoint",
-			extra: oidcLogin(), method: http.MethodPost, path: "/l%6Fgout" + backchannel[len("/logout"):], assert: judged,
-		},
-		{
-			name:  "a back-channel exemption that cannot be built fails construction",
-			extra: oidcLogin(httpsec.WithOIDCBackchannelLogoutPath("/idp/../logout")),
-			assert: func(t *testing.T, _ served, err error) {
-				require.ErrorIs(t, err, httpsec.ErrConfig)
-				assert.ErrorContains(t, err, "WithOIDCBackchannelLogoutPath")
-				assert.ErrorContains(t, err, "WithoutBackchannelLogoutExemption")
-			},
-		},
-		{
-			name:  "a back-channel path that cannot be exempt builds once the exemption is removed",
-			csrf:  []httpsec.CSRFOption{httpsec.WithoutBackchannelLogoutExemption()},
-			extra: oidcLogin(httpsec.WithOIDCBackchannelLogoutPath("/idp/../logout")),
-			assert: func(t *testing.T, _ served, err error) {
-				require.NoError(t, err)
-			},
+			extra: oidcLogin(), method: http.MethodPost, path: "/sso/backchannel-l%6Fgout/" + testOIDCProvider, assert: judged,
 		},
 		{name: "without OIDC login nothing is exempt", method: http.MethodPost, path: backchannel, assert: judged},
 		{name: "an exemption without a method", csrf: []httpsec.CSRFOption{httpsec.WithCSRFExemption("", "/webhooks/payments")}, assert: misconfigured},
@@ -214,23 +187,6 @@ func TestCSRF_Exemptions(t *testing.T) {
 			name:   "an exemption with a legitimately encoded segment judges another escaping of it",
 			csrf:   []httpsec.CSRFOption{httpsec.WithCSRFExemption(http.MethodPost, "/webhooks/caf%C3%A9")},
 			method: http.MethodPost, path: "/webhooks/caf%c3%a9", assert: judged,
-		},
-		{
-			name:  "a back-channel path the request would escape fails construction",
-			extra: oidcLogin(httpsec.WithOIDCBackchannelLogoutPath("/idp/déconnexion")),
-			assert: func(t *testing.T, _ served, err error) {
-				require.ErrorIs(t, err, httpsec.ErrConfig)
-				assert.ErrorContains(t, err, "WithOIDCBackchannelLogoutPath")
-				assert.ErrorContains(t, err, "WithoutBackchannelLogoutExemption")
-			},
-		},
-		{
-			name:  "a back-channel path the request would escape builds once the exemption is removed",
-			csrf:  []httpsec.CSRFOption{httpsec.WithoutBackchannelLogoutExemption()},
-			extra: oidcLogin(httpsec.WithOIDCBackchannelLogoutPath("/idp/déconnexion")),
-			assert: func(t *testing.T, _ served, err error) {
-				require.NoError(t, err)
-			},
 		},
 	}
 

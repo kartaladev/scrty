@@ -921,7 +921,7 @@ func TestManagerPrefetch(t *testing.T) {
 		gone.Close()
 		return oidc.Provider{
 			Name: name, Issuer: gone.URL, ClientID: "client-" + name, ClientSecret: "secret-" + name,
-			RedirectURL: "https://app.example/login/oauth2/callback/" + name,
+			RedirectURL: "https://app.example/sso/callback/" + name,
 		}
 	}
 	calls := func(ps ...*testProvider) int64 {

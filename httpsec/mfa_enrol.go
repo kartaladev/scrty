@@ -41,9 +41,11 @@ type enrolmentInterceptor struct {
 	logoutPath string
 	log        *slog.Logger
 
-	beginPrefix   string
-	confirmPrefix string
-	emailPrefix   string
+	// beginPrefix, confirmPrefix and emailPrefix are where the options placed
+	// the endpoints, and where they answer under the base path once resolved.
+	beginPrefix   endpointPath
+	confirmPrefix endpointPath
+	emailPrefix   endpointPath
 
 	// names are the methods WithEnrolmentMethods named, nil when it was not
 	// given.
@@ -90,10 +92,6 @@ func (i *enrolmentInterceptor) check(option string) error {
 		return err
 	}
 
-	if err := i.checkPrefixes(option); err != nil {
-		return err
-	}
-
 	if !i.emailConfirmation && !i.notification {
 		// Nothing is sent, so no sender is needed and none is judged.
 		return nil
@@ -119,29 +117,23 @@ func (i *enrolmentInterceptor) check(option string) error {
 	return nil
 }
 
-// checkPrefixes refuses two enrolment endpoints whose prefixes overlap: every
-// POST under a prefix is that endpoint's, so whichever matched first would
-// swallow the other's requests. The logout path and the MFA endpoints are
-// compared at assembly, because they may be configured after this option.
-func (i *enrolmentInterceptor) checkPrefixes(option string) error {
-	prefixes := i.prefixes()
-
-	for a := range prefixes {
-		for b := a + 1; b < len(prefixes); b++ {
-			if overlap(prefixes[a], prefixes[b]) {
-				return newConfigError("%s was given the overlapping prefixes %q and %q for two "+
-					"enrolment endpoints, so whichever matched first would swallow the other",
-					option, prefixes[a], prefixes[b])
-			}
-		}
-	}
-
-	return nil
+// resolvePaths places the three enrolment endpoints under base, from the
+// prefixes the options declared.
+func (i *enrolmentInterceptor) resolvePaths(base string) {
+	i.beginPrefix.resolve(base)
+	i.confirmPrefix.resolve(base)
+	i.emailPrefix.resolve(base)
 }
 
-// overlap reports whether one of two prefixes is the other or lies below it.
-func overlap(a, b string) bool {
-	return underPrefix(a, b) || underPrefix(b, a)
+// declaredPaths reports the enrolment prefixes the consumer set whose endpoint
+// is served: the emailed-code prefix only while email confirmation is on, as
+// endpoints declares it.
+func (i *enrolmentInterceptor) declaredPaths() []declaredPath {
+	if !i.emailConfirmation {
+		return declarations(i.beginPrefix, i.confirmPrefix)
+	}
+
+	return declarations(i.beginPrefix, i.confirmPrefix, i.emailPrefix)
 }
 
 // prefixes is every enrolment endpoint's prefix. The emailed-code endpoint's
@@ -149,10 +141,10 @@ func overlap(a, b string) bool {
 // does not exist.
 func (i *enrolmentInterceptor) prefixes() []string {
 	if !i.emailConfirmation {
-		return []string{i.beginPrefix, i.confirmPrefix}
+		return []string{i.beginPrefix.at(), i.confirmPrefix.at()}
 	}
 
-	return []string{i.beginPrefix, i.confirmPrefix, i.emailPrefix}
+	return []string{i.beginPrefix.at(), i.confirmPrefix.at(), i.emailPrefix.at()}
 }
 
 // wire takes the settings the chain resolved, once every option has been
@@ -227,10 +219,6 @@ func (c *config) wireMFAEnrolment() error {
 				"without it (WithEnrolmentMethods)", option)
 		}
 
-		if err := i.checkClaims(option, c); err != nil {
-			return err
-		}
-
 		if c.sessions == nil {
 			return newConfigError("%s needs a session manager to confine and upgrade sessions "+
 				"in, and none of the built-ins enabled on this chain was wired to one", option)
@@ -267,36 +255,6 @@ func (c *config) wireMFAEnrolment() error {
 // declares reports whether a policy registered on the engine can raise kind.
 func (c *config) declares(kind policy.ChallengeKind) bool {
 	return c.engine != nil && slices.Contains(c.engine.DeclaredChallenges(), kind)
-}
-
-// checkClaims refuses an enrolment prefix that claims a path another endpoint
-// of the chain answers: the logout path, which an enrolment-only session must
-// always reach, and the MFA verify and begin prefixes, which it must never
-// reach. The enrolment endpoints run ahead of both for such a session, so an
-// overlap would hand one endpoint's requests to the other.
-func (i *enrolmentInterceptor) checkClaims(option string, c *config) error {
-	var others []struct{ name, prefix string }
-	if m := c.mfaOf(); m != nil {
-		others = append(others,
-			struct{ name, prefix string }{"EnableMFA's verify prefix", m.verifyPrefix},
-			struct{ name, prefix string }{"EnableMFA's begin prefix", m.beginPrefix})
-	}
-
-	for _, p := range i.prefixes() {
-		if c.logoutPath != "" && underPrefix(c.logoutPath, p) {
-			return newConfigError("%s's prefix %q claims the logout path %q, so an "+
-				"enrolment-only session could not log out", option, p, c.logoutPath)
-		}
-
-		for _, o := range others {
-			if overlap(p, o.prefix) {
-				return newConfigError("%s's prefix %q overlaps %s %q, so whichever matched "+
-					"first would swallow the other's requests", option, p, o.name, o.prefix)
-			}
-		}
-	}
-
-	return nil
 }
 
 // enrollableMethods are the MFA methods the enrolment path enrols, keyed by
@@ -482,12 +440,12 @@ func (i *enrolmentInterceptor) endpoint(ex *Exchange, s *session.Session) (bool,
 	r := ex.Request
 
 	switch {
-	case isPostUnder(r, i.beginPrefix):
-		return true, i.serve(ex, s, endpointBegin, i.beginPrefix, i.begin)
-	case isPostUnder(r, i.confirmPrefix):
-		return true, i.serve(ex, s, endpointConfirm, i.confirmPrefix, i.confirm)
-	case i.emailConfirmation && isPostUnder(r, i.emailPrefix):
-		return true, i.serve(ex, s, endpointEmail, i.emailPrefix, i.redeemEmailCode)
+	case isPostUnder(r, i.beginPrefix.at()):
+		return true, i.serve(ex, s, endpointBegin, i.beginPrefix.at(), i.begin)
+	case isPostUnder(r, i.confirmPrefix.at()):
+		return true, i.serve(ex, s, endpointConfirm, i.confirmPrefix.at(), i.confirm)
+	case i.emailConfirmation && isPostUnder(r, i.emailPrefix.at()):
+		return true, i.serve(ex, s, endpointEmail, i.emailPrefix.at(), i.redeemEmailCode)
 	}
 
 	return false, nil
@@ -505,7 +463,7 @@ func (i *enrolmentInterceptor) serve(
 	endpoint, prefix string,
 	run func(*Exchange, *session.Session, mfa.Enroller) error,
 ) error {
-	name, ok := methodSegment(ex.Request.Path(), prefix)
+	name, ok := oneSegmentBelow(ex.Request.Path(), prefix)
 	method, known := i.methods[name]
 
 	if !ok || !known {
@@ -1165,4 +1123,24 @@ func EnrolmentBeginThrottleKey(user identity.UserID) string {
 // EnrolmentBeginThrottleKey is exported.
 func EnrolmentConfirmThrottleKey(user identity.UserID) string {
 	return "mfa-enrol-confirm:" + string(user)
+}
+
+// endpoints declares the enrolment steps, each answering every POST under its
+// prefix; the emailed-code step only while email confirmation is on.
+func (i *enrolmentInterceptor) endpoints() []Endpoint {
+	const feature = "EnableMFAEnrolment"
+
+	eps := []Endpoint{
+		declare(feature, "WithEnrolmentBeginPrefix", OperationMFAEnrolmentBegin, withSegment(i.beginPrefix.at(), "method"),
+			MatchSubtree, OtherMethodsPassThrough, RequiresPendingEnrolment, http.MethodPost),
+		declare(feature, "WithEnrolmentConfirmPrefix", OperationMFAEnrolmentConfirm, withSegment(i.confirmPrefix.at(), "method"),
+			MatchSubtree, OtherMethodsPassThrough, RequiresPendingEnrolment, http.MethodPost),
+	}
+
+	if i.emailConfirmation {
+		eps = append(eps, declare(feature, "WithEnrolmentEmailConfirmPrefix", OperationMFAEnrolmentConfirmEmail,
+			withSegment(i.emailPrefix.at(), "method"), MatchSubtree, OtherMethodsPassThrough, RequiresPendingEnrolment, http.MethodPost))
+	}
+
+	return eps
 }

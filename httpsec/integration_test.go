@@ -1261,7 +1261,7 @@ func TestHTTPSecFailureRecords(t *testing.T) {
 				)
 				require.NoError(t, err)
 
-				out := serve(t, chain, formRequest(t.Context(), "/login", "username=carol&password=wrong"))
+				out := serve(t, chain, formRequest(t.Context(), httpsec.DefaultLoginPath, "username=carol&password=wrong"))
 				require.Error(t, out.err)
 
 				return h.logs.records()
@@ -1284,7 +1284,7 @@ func TestHTTPSecFailureRecords(t *testing.T) {
 				)
 				require.NoError(t, err)
 
-				out := serve(t, chain, formRequest(t.Context(), "/login", "username=carol&password=s3cret"))
+				out := serve(t, chain, formRequest(t.Context(), httpsec.DefaultLoginPath, "username=carol&password=s3cret"))
 				require.NoError(t, out.err)
 
 				return h.logs.records()
@@ -2704,12 +2704,20 @@ func allowingVerifyLimiter(t *testing.T) *MockLimiter {
 func oidcManagerOver(t *testing.T, flows oidc.FlowStore) *oidc.RelyingParty {
 	t.Helper()
 
+	return oidcManagerAt(t, flows, "/sso/callback/")
+}
+
+// oidcManagerAt is oidcManagerOver with the provider's redirect URL placed
+// under callbackPrefix, the callback path the chain under test serves.
+func oidcManagerAt(t *testing.T, flows oidc.FlowStore, callbackPrefix string) *oidc.RelyingParty {
+	t.Helper()
+
 	registry, err := oidc.NewRegistry(oidc.Provider{ //nolint:gosec // G101: a fixture, not a credential
 		Name:                  testOIDCProvider,
 		Issuer:                "https://idp.example.com",
 		ClientID:              "app",
 		ClientSecret:          "secret-" + testOIDCProvider,
-		RedirectURL:           "https://app.example.com/login/oauth2/callback/" + testOIDCProvider,
+		RedirectURL:           "https://app.example.com" + callbackPrefix + testOIDCProvider,
 		AuthorizationEndpoint: "https://idp.example.com/authorize",
 		TokenEndpoint:         "https://idp.example.com/token",
 		JWKSURI:               "https://idp.example.com/jwks",
@@ -2878,7 +2886,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 	loginRequest := func(t *testing.T) *http.Request {
 		t.Helper()
 
-		return formRequest(t.Context(), "/login", "username=carol&password=s3cret")
+		return formRequest(t.Context(), httpsec.DefaultLoginPath, "username=carol&password=s3cret")
 	}
 
 	// formLogin wires h for a login that authenticates and reaches the tail.

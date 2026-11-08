@@ -133,10 +133,10 @@ func TestFormLogin_Lifetime(t *testing.T) {
 	long := []session.Option{session.WithMaxAbsoluteLifetime(30 * day)}
 
 	json := func(body string) func(*testing.T) *http.Request {
-		return func(t *testing.T) *http.Request { return jsonRequest(t.Context(), "/login", body) }
+		return func(t *testing.T) *http.Request { return jsonRequest(t.Context(), httpsec.DefaultLoginPath, body) }
 	}
 	form := func(body string) func(*testing.T) *http.Request {
-		return func(t *testing.T) *http.Request { return formRequest(t.Context(), "/login", body) }
+		return func(t *testing.T) *http.Request { return formRequest(t.Context(), httpsec.DefaultLoginPath, body) }
 	}
 
 	lives := func(d time.Duration) func(*testing.T, served, *session.Session) {
@@ -345,15 +345,6 @@ func TestFormLoginConstruction(t *testing.T) {
 				}
 			},
 			assert: refused("WithLoginBodyLimit"),
-		},
-		{
-			name: "an empty login path",
-			build: func(_ *testing.T, h *authHarness) []httpsec.Option {
-				return []httpsec.Option{
-					httpsec.EnableFormLogin(h.formLoginDeps(), httpsec.WithLoginRequestPath("")),
-				}
-			},
-			assert: refused("WithLoginRequestPath"),
 		},
 		{
 			name: "a missing field name",

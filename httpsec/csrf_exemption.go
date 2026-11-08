@@ -235,8 +235,7 @@ func checkExemptionSegment(seg string) error {
 // by one provider segment (DefaultOIDCBackchannelPath, or the path
 // WithOIDCBackchannelLogoutPath sets) is exempt, because the identity provider
 // calls it server to server, and its signed logout token is its credential.
-// The path is compared with the path as sent, as a literal: a "*" in it is
-// that character, never a wildcard. A provider sends no Origin and no
+// The path is compared with the path as sent, as a literal, never a pattern. A provider sends no Origin and no
 // Sec-Fetch-Site, which the check passes in any case; remove the exemption to
 // have a browser's request there judged as well.
 func WithoutBackchannelLogoutExemption() CSRFOption {
@@ -250,7 +249,8 @@ func WithoutBackchannelLogoutExemption() CSRFOption {
 // settleExemptions settles the exempt routes: those WithCSRFExemption names,
 // the OpenID Provider's protocol endpoints when the chain has one (see
 // providerExemptions) and, unless WithoutBackchannelLogoutExemption was given,
-// the back-channel logout endpoint of every OIDC login on the chain. An
+// the back-channel logout endpoint of the chain's one OIDC login (a second
+// EnableOIDCLogin would list its operations twice, which New refuses). An
 // exemption that cannot be built fails construction, rather than being
 // dropped.
 func (l *csrfLayer) settleExemptions(c *config) error {
@@ -262,11 +262,11 @@ func (l *csrfLayer) settleExemptions(c *config) error {
 	}
 
 	return eachInterceptor(c, func(i *oidcInterceptor) error {
-		e, err := backchannelExemption(i.backchannelPath)
+		e, err := backchannelExemption(i.backchannelPath.at())
 		if err != nil {
 			return newConfigError("the CSRF exemption of the OIDC back-channel logout endpoint cannot be built "+
 				"from WithOIDCBackchannelLogoutPath(%q): %s; give a path a router keeps as it is, or "+
-				"judge the endpoint with WithoutBackchannelLogoutExemption", i.backchannelPath, err)
+				"judge the endpoint with WithoutBackchannelLogoutExemption", i.backchannelPath.at(), err)
 		}
 
 		l.exempt = append(l.exempt, e)

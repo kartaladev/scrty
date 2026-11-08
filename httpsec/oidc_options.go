@@ -2,6 +2,7 @@ package httpsec
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -109,10 +110,10 @@ func EnableOIDCLogin(d OIDCDeps, opts ...OIDCOption) Option {
 			manager:         d.RelyingParty,
 			handoffs:        d.Handoff,
 			now:             c.now,
-			authorizePath:   DefaultOIDCAuthorizePath,
-			callbackPath:    DefaultOIDCCallbackPath,
-			handoffPath:     DefaultOIDCHandoffPath,
-			backchannelPath: DefaultOIDCBackchannelPath,
+			authorizePath:   defaultPath(DefaultOIDCAuthorizePath),
+			callbackPath:    defaultPath(DefaultOIDCCallbackPath),
+			handoffPath:     defaultPath(DefaultOIDCHandoffPath),
+			backchannelPath: defaultPath(DefaultOIDCBackchannelPath),
 			cookieName:      DefaultOIDCFlowCookieName,
 			bodyLimit:       DefaultLoginBodyLimit,
 			limit:           defaultHandoffFailureLimit,
@@ -184,10 +185,6 @@ func (i *oidcInterceptor) check(c *config, option string) error {
 			"nor any other built-in on this chain supplied one", option)
 	}
 
-	if err := i.checkPaths(option); err != nil {
-		return err
-	}
-
 	// A policy that decides federated logins on provider assurance with no
 	// source would decide every one of them as unmet: required users whose
 	// provider asserted exactly what the deployment accepts would be
@@ -210,6 +207,43 @@ func (i *oidcInterceptor) check(c *config, option string) error {
 		return newConfigError("%s cannot keep role sync for %s with the handoff conveyance, "+
 			"which rebuilds the principal from stored roles; convey the login with "+
 			"WithOIDCCallbackSuccess, or turn role sync off", option, strings.Join(syncing, ", "))
+	}
+
+	if !i.redirectCheckWaived {
+		return i.checkRedirectPaths(option)
+	}
+
+	return nil
+}
+
+// checkRedirectPaths refuses a provider whose registered redirect URL cannot
+// reach the callback endpoint. The decoded path of the URL must end with the
+// callback path as resolved (the base path included) followed by the provider's
+// name; ending with it, rather than equalling it, lets a proxy that removes a
+// public prefix through. A redirect URL that does not parse, or that the
+// registry cannot name, is refused, since either would fail every login.
+func (i *oidcInterceptor) checkRedirectPaths(option string) error {
+	for _, name := range i.manager.Providers() {
+		raw, ok := i.manager.RedirectURL(name)
+		if !ok {
+			return newConfigError("%s: provider %q has no redirect URL to check; "+
+				"WithoutOIDCRedirectPathCheck waives the check", option, name)
+		}
+
+		u, err := url.Parse(raw)
+		if err != nil {
+			return newConfigError("%s: the redirect URL of provider %q does not parse, so it "+
+				"cannot be checked against the callback path (WithoutOIDCRedirectPathCheck "+
+				"waives the check)", option, name)
+		}
+
+		want := i.callbackPath.at() + name
+		if !strings.HasSuffix(u.Path, want) {
+			return newConfigError("%s: the redirect URL of provider %q has the path %q, which "+
+				"cannot reach the callback this chain serves at %q; register a redirect URL "+
+				"ending in that path, or waive the check with WithoutOIDCRedirectPathCheck",
+				option, name, u.Path, want)
+		}
 	}
 
 	return nil
@@ -248,51 +282,18 @@ func (i *oidcInterceptor) checkConveyance(option string) error {
 	return nil
 }
 
-// checkPaths refuses two endpoints that one request path could reach, since
-// whichever matched first would silently swallow the other.
-//
-// A prefix endpoint answers the prefix followed by exactly one non-empty
-// segment, so two different prefixes never answer the same path; the handoff
-// endpoint answers one exact path. The handoff path is also refused when it
-// names a prefix itself, with or without its trailing slash, because a reader
-// cannot tell those endpoints apart either.
-func (i *oidcInterceptor) checkPaths(option string) error {
-	prefixes := []struct{ name, path string }{
-		{"WithOIDCAuthorizePath", i.authorizePath},
-		{"WithOIDCCallbackPath", i.callbackPath},
-		{"WithOIDCBackchannelLogoutPath", i.backchannelPath},
-	}
-
-	for a := range prefixes {
-		for b := a + 1; b < len(prefixes); b++ {
-			if prefixes[a].path == prefixes[b].path {
-				return newConfigError("%s was given one path prefix, %q, through both %s and %s, "+
-					"so the two endpoints collide", option, prefixes[a].path,
-					prefixes[a].name, prefixes[b].name)
-			}
-		}
-	}
-
-	for _, p := range prefixes {
-		if i.handoffPath == p.path || i.handoffPath == strings.TrimSuffix(p.path, "/") ||
-			providerSegment(i.handoffPath, p.path) != "" {
-			return newConfigError("%s was given a handoff path, %q, that collides with the %q "+
-				"prefix of %s", option, i.handoffPath, p.path, p.name)
-		}
-	}
-
-	return nil
-}
-
 // providerSegment returns the provider name path carries after prefix, or ""
-// when path is not prefix followed by exactly one non-empty segment.
+// when path is not prefix followed by exactly one non-empty segment. prefix
+// ends in the "/" oidcPrefix guarantees; one without it matches nothing.
 func providerSegment(path, prefix string) string {
-	rest, ok := strings.CutPrefix(path, prefix)
-	if !ok || rest == "" || strings.Contains(rest, "/") {
+	base, ok := strings.CutSuffix(prefix, "/")
+	if !ok {
 		return ""
 	}
 
-	return rest
+	provider, _ := oneSegmentBelow(path, base)
+
+	return provider
 }
 
 // wireOIDCLogin builds what the federated-login endpoints cannot build until
@@ -391,7 +392,8 @@ func WithOIDCSessions(m *session.Sessions) OIDCOption {
 // WithOIDCAuthorizePath starts logins under prefix instead: a GET on prefix
 // followed by a provider's registered name starts a login with that provider.
 //
-// Default: DefaultOIDCAuthorizePath. A prefix without a trailing slash has
+// Default: DefaultOIDCAuthorizePath, "/sso/login/". The prefix is within the base
+// path (WithBasePath). A prefix without a trailing slash has
 // one appended, since the provider's name is the one segment after it. An
 // empty prefix, one that does not start with "/", or the root path "/"
 // itself (which would claim every one-segment path of the application), is
@@ -403,7 +405,7 @@ func WithOIDCAuthorizePath(prefix string) OIDCOption {
 			return err
 		}
 
-		i.authorizePath = p
+		i.authorizePath.giveAs("WithOIDCAuthorizePath", prefix, p)
 
 		return nil
 	}
@@ -413,7 +415,10 @@ func WithOIDCAuthorizePath(prefix string) OIDCOption {
 // provider redirects to prefix followed by its registered name, which each
 // provider's registered redirect URL has to match.
 //
-// Default: DefaultOIDCCallbackPath. It is also what the flow cookie is
+// Default: DefaultOIDCCallbackPath, "/sso/callback/". The prefix is within the
+// base path (WithBasePath), so the redirect URL registered with the provider
+// must end with the resolved prefix and the provider's name (see
+// WithoutOIDCRedirectPathCheck). It is also what the flow cookie is
 // scoped to, so moving the endpoint moves the cookie with it. A prefix without
 // a trailing slash has one appended. An empty prefix, one that does not start
 // with "/", or the root path "/" itself (which would claim every
@@ -425,7 +430,7 @@ func WithOIDCCallbackPath(prefix string) OIDCOption {
 			return err
 		}
 
-		i.callbackPath = p
+		i.callbackPath.giveAs("WithOIDCCallbackPath", prefix, p)
 
 		return nil
 	}
@@ -433,19 +438,22 @@ func WithOIDCCallbackPath(prefix string) OIDCOption {
 
 // WithOIDCHandoffPath redeems handoff codes by POST on path instead.
 //
-// Default: DefaultOIDCHandoffPath. The path is matched exactly. An empty
-// path, or one that does not start with "/", is refused, and so is a path
-// that collides with an authorize, callback or back-channel prefix, with or
-// without that prefix's trailing slash. This option is redemption-only:
+// Default: DefaultOIDCHandoffPath, "/sso/handoff". The path is within the base
+// path (WithBasePath), and is matched exactly. An empty
+// path, or one that does not start with "/", is refused. New refuses a path
+// that collides with another endpoint of the chain, as its collision check
+// judges every built-in: equal to an authorize, callback or back-channel
+// prefix, with or without that prefix's trailing slash, is one. This option
+// is redemption-only:
 // given beside WithOIDCCallbackSuccess, which issues no handoff code for it to
 // govern, it is refused.
 func WithOIDCHandoffPath(path string) OIDCOption {
 	return func(i *oidcInterceptor) error {
-		if err := oidcPath("WithOIDCHandoffPath", path); err != nil {
+		if err := checkEndpointPath("WithOIDCHandoffPath", path); err != nil {
 			return err
 		}
 
-		i.handoffPath = path
+		i.handoffPath.give("WithOIDCHandoffPath", path)
 		i.handoffPathSet = true
 
 		return nil
@@ -456,7 +464,9 @@ func WithOIDCHandoffPath(path string) OIDCOption {
 // prefix instead: a provider delivers to prefix followed by its registered
 // name, which is the back-channel logout URI registered with the provider.
 //
-// Default: DefaultOIDCBackchannelPath. A prefix without a trailing slash has
+// Default: DefaultOIDCBackchannelPath, "/sso/backchannel-logout/". The prefix is
+// within the base path (WithBasePath), so the URI registered with the provider
+// includes the base path. A prefix without a trailing slash has
 // one appended. An empty prefix, one that does not start with "/", or the
 // root path "/" itself (which would claim every one-segment path of the
 // application), is refused.
@@ -467,39 +477,21 @@ func WithOIDCBackchannelLogoutPath(prefix string) OIDCOption {
 			return err
 		}
 
-		i.backchannelPath = p
+		i.backchannelPath.giveAs("WithOIDCBackchannelLogoutPath", prefix, p)
 
 		return nil
 	}
 }
 
-// oidcPath refuses a path no request could ever be matched against.
-func oidcPath(option, path string) error {
-	switch {
-	case path == "":
-		return newConfigError("%s was given no path, so the endpoint would answer nothing", option)
-	case !strings.HasPrefix(path, "/"):
-		return newConfigError("%s was given %q, which does not start with \"/\" and so "+
-			"matches no request path", option, path)
-	}
-
-	return nil
-}
-
 // oidcPrefix validates a provider-prefixed path and returns it with the
 // trailing slash the provider segment follows.
 func oidcPrefix(option, prefix string) (string, error) {
-	if err := oidcPath(option, prefix); err != nil {
+	if err := checkEndpointPath(option, prefix); err != nil {
 		return "", err
 	}
 
 	if !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
-	}
-
-	if prefix == "/" {
-		return "", newConfigError("%s was given the root path %q, which would claim every "+
-			"one-segment path of the application", option, prefix)
 	}
 
 	return prefix, nil
@@ -733,5 +725,51 @@ func WithOIDCRPInitiatedLogout(on bool) OIDCOption {
 	}
 }
 
+// WithoutOIDCRedirectPathCheck waives the check that every provider's redirect
+// URL can reach the callback endpoint.
+//
+// Default: the check is on. Assembling the chain fails with a configuration
+// error unless the decoded path of each provider's redirect URL ends with the
+// callback path the chain serves (the base path included) followed by the
+// provider's name. A path that only ends with it is accepted, so a proxy that
+// removes a public prefix needs no waiver. Waive the check for a proxy that
+// rewrites paths beyond removing a prefix. Waiving it gives up the
+// construction-time proof: a redirect URL that cannot arrive is found only when
+// a provider redirects to it, and every login through that provider then fails
+// after the user has authenticated.
+func WithoutOIDCRedirectPathCheck() OIDCOption {
+	return func(i *oidcInterceptor) error {
+		i.redirectCheckWaived = true
+
+		return nil
+	}
+}
+
 // Compile-time proof that the default redeemer satisfies the port.
 var _ HandoffRedeemer = (*oidc.Handoff)(nil)
+
+// resolvePaths places the four endpoints under base. Each is computed from the
+// path its option declared, never from the previous result, so resolving twice
+// cannot prefix twice. The flow cookie and the callback's other derived values
+// read callbackPath, so they follow the placed endpoint.
+func (i *oidcInterceptor) resolvePaths(base string) {
+	i.authorizePath.resolve(base)
+	i.callbackPath.resolve(base)
+	i.handoffPath.resolve(base)
+	i.backchannelPath.resolve(base)
+}
+
+// declaredPaths reports the federated-login paths the consumer set whose
+// endpoint is served, each as its option was given it: the handoff only while
+// a redeemer is set, as endpoints declares it. The redeemer is settled by
+// resolve, in build's wiring, so the handoff is reported as settled by wiring,
+// for the repeat check's late pass alone; the other three are judged early.
+func (i *oidcInterceptor) declaredPaths() []declaredPath {
+	paths := declarations(i.authorizePath, i.callbackPath, i.backchannelPath)
+
+	if i.redeemer != nil {
+		paths = append(paths, wiringSettled(i.handoffPath)...)
+	}
+
+	return paths
+}

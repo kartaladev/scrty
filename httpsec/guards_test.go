@@ -713,7 +713,7 @@ func TestGuardBehindAuthentication(t *testing.T) {
 				return chain
 			},
 			request: func(ctx context.Context) *http.Request {
-				return formRequest(ctx, "/login", "username=ada&password=s3cret")
+				return formRequest(ctx, httpsec.DefaultLoginPath, "username=ada&password=s3cret")
 			},
 			assert: letThrough,
 		},

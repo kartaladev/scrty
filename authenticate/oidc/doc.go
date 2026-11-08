@@ -22,7 +22,7 @@
 //		Issuer:       "https://idp.example.com",
 //		ClientID:     "scrty",
 //		ClientSecret: corpClientSecret,
-//		RedirectURL:  "https://app.example.com/login/oauth2/callback/corp",
+//		RedirectURL:  "https://app.example.com/sso/callback/corp",
 //	})
 //
 //	broker, err := oidc.NewBroker(oidc.NewMemoryLinkStore(), users)

@@ -208,7 +208,7 @@ func loginUsername(first factor.Kind, p *identity.Principal) string {
 }
 
 // begin issues a re-proof challenge for a challenge method at POST
-// <prefix>/begin/<method>, and answers with the method's begin data.
+// <prefix>/challenge/<method>, and answers with the method's begin data.
 //
 // It makes verify's refusals before reading anything, and reads no body at
 // all; a path naming a method with no begin step is refused as unknown, as
@@ -269,7 +269,7 @@ func (i *reauthInterceptor) admitMethod(
 		return nil, nil, ErrUnknownMFAMethod
 	}
 
-	name, ok := methodSegment(ex.Request.Path(), prefix)
+	name, ok := oneSegmentBelow(ex.Request.Path(), prefix)
 	method, known := i.mfa.byName[name]
 	if !ok || !known || !serves(method) {
 		return nil, nil, ErrUnknownMFAMethod

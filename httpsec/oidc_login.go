@@ -43,7 +43,7 @@ func (i *oidcInterceptor) authorize(ex *Exchange, provider string) error {
 	ex.Writer.SetCookie(&Cookie{
 		Name:     i.cookieName,
 		Value:    auth.Handle,
-		Path:     i.callbackPath,
+		Path:     i.callbackPath.at(),
 		MaxAge:   flowCookieMaxAge(auth.ExpiresAt, i.now()),
 		HttpOnly: true,
 		Secure:   true,
@@ -287,7 +287,7 @@ func (i *oidcInterceptor) clearFlowCookie(ex *Exchange) {
 	ex.Writer.SetCookie(&Cookie{
 		Name:     i.cookieName,
 		Value:    "",
-		Path:     i.callbackPath,
+		Path:     i.callbackPath.at(),
 		MaxAge:   -1,
 		HttpOnly: true,
 		Secure:   true,

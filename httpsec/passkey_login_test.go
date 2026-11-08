@@ -128,8 +128,10 @@ type pwlDeployment struct {
 	passwordAge bool
 	mfaLimiter  ratelimit.Limiter
 
-	// extra are further chain options.
+	// extra are further chain options, given after the rest, and pre those given
+	// before them, by tests that build the options themselves.
 	extra []httpsec.Option
+	pre   []httpsec.Option
 
 	// responded is what a consumer's responder saw of the exchange when it
 	// ran.
@@ -1436,52 +1438,6 @@ func TestPasswordlessConstruction(t *testing.T) {
 			assert: refused,
 		},
 		{
-			name: "the finish path on the logout path",
-			setup: func(t *testing.T, d *pwlDeployment) []httpsec.Option {
-				opts := d.options(t)
-				opts[5] = httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: d.sessions},
-					httpsec.WithLogoutRequestPath(passwordlessFinishPath))
-
-				return opts
-			},
-			assert: refused,
-		},
-		{
-			name: "the begin path on the login path",
-			setup: func(t *testing.T, d *pwlDeployment) []httpsec.Option {
-				d.passkeyOpts = append(d.passkeyOpts, httpsec.WithPasskeyPasswordlessPrefix("/login"))
-				opts := d.options(t)
-
-				authn, err := authenticate.NewUsernamePasswordAuthenticator(d.users)
-				require.NoError(t, err)
-
-				opts[1] = httpsec.EnableFormLogin(httpsec.FormLoginDeps{
-					Authenticator: authn, Sessions: d.sessions, Tokens: d.tokens, Attempts: must.Must(lockout.NewMemoryAttemptStore()),
-				}, httpsec.WithLoginRequestPath("/login/begin"))
-
-				return opts
-			},
-			assert: refused,
-		},
-		{
-			name: "a passwordless path under the MFA verify prefix",
-			setup: func(t *testing.T, d *pwlDeployment) []httpsec.Option {
-				d.passkeyOpts = append(d.passkeyOpts, httpsec.WithPasskeyPasswordlessPrefix(httpsec.DefaultMFAVerifyPrefix))
-
-				return d.options(t)
-			},
-			assert: refused,
-		},
-		{
-			name: "an invalid prefix",
-			setup: func(t *testing.T, d *pwlDeployment) []httpsec.Option {
-				d.passkeyOpts = append(d.passkeyOpts, httpsec.WithPasskeyPasswordlessPrefix("signin"))
-
-				return d.options(t)
-			},
-			assert: refused,
-		},
-		{
 			name: "an empty cookie name",
 			setup: func(t *testing.T, d *pwlDeployment) []httpsec.Option {
 				d.settings = append(d.settings, httpsec.PasswordlessCookieName(""))
@@ -1815,6 +1771,106 @@ func TestPasswordless_RefusalLogsFollowPasskeyInterval(t *testing.T) {
 			d.build(t)
 			tc.drive(t, d)
 			tc.assert(t, buf.String())
+		})
+	}
+}
+
+// TestPasskeyPasswordlessPrefix_UnderBasePath pins that a passwordless prefix
+// is judged by passkeys first: without passwordless login it moves no endpoint,
+// whatever the base, and only a served prefix is checked against the base.
+func TestPasskeyPasswordlessPrefix_UnderBasePath(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		setup  func(d *pwlDeployment)
+		assert func(t *testing.T, d *pwlDeployment, err error)
+	}
+
+	base := httpsec.WithBasePath("/auth")
+	prefix := httpsec.WithPasskeyPasswordlessPrefix("/auth/pk")
+
+	// movesNoEndpoint is the passkeys' own refusal: the prefix moves nothing,
+	// and no doubled path that would never be served is named.
+	movesNoEndpoint := func(t *testing.T, _ *pwlDeployment, err error) {
+		t.Helper()
+		require.ErrorIs(t, err, httpsec.ErrConfig)
+		assert.Contains(t, err.Error(), "WithPasskeyPasswordlessLogin")
+		assert.Contains(t, err.Error(), "would move no endpoint")
+		assert.NotContains(t, err.Error(), "/auth/auth/pk")
+	}
+
+	// repeatsBase is the base path's refusal of a prefix that serves.
+	repeatsBase := func(t *testing.T, _ *pwlDeployment, err error) {
+		t.Helper()
+		require.ErrorIs(t, err, httpsec.ErrConfig)
+		assert.Contains(t, err.Error(), "WithPasskeyPasswordlessPrefix")
+		assert.Contains(t, err.Error(), "/auth/auth/pk")
+	}
+
+	cases := []testCase{
+		{
+			name: "prefix under base without passwordless, base given first",
+			setup: func(d *pwlDeployment) {
+				d.withoutPasswordless = true
+				d.passkeyOpts = []httpsec.PasskeyOption{prefix}
+				d.pre = []httpsec.Option{base}
+			},
+			assert: movesNoEndpoint,
+		},
+		{
+			name: "prefix under base without passwordless, base given last",
+			setup: func(d *pwlDeployment) {
+				d.withoutPasswordless = true
+				d.passkeyOpts = []httpsec.PasskeyOption{prefix}
+				d.extra = []httpsec.Option{base}
+			},
+			assert: movesNoEndpoint,
+		},
+		{
+			name: "prefix under base with passwordless, base given first",
+			setup: func(d *pwlDeployment) {
+				d.passkeyOpts = []httpsec.PasskeyOption{prefix}
+				d.pre = []httpsec.Option{base}
+			},
+			assert: repeatsBase,
+		},
+		{
+			name: "prefix under base with passwordless, base given last",
+			setup: func(d *pwlDeployment) {
+				d.passkeyOpts = []httpsec.PasskeyOption{prefix}
+				d.extra = []httpsec.Option{base}
+			},
+			assert: repeatsBase,
+		},
+		{
+			name: "prefix within base with passwordless is served under base",
+			setup: func(d *pwlDeployment) {
+				d.passkeyOpts = []httpsec.PasskeyOption{httpsec.WithPasskeyPasswordlessPrefix("/pk")}
+				d.pre = []httpsec.Option{base}
+			},
+			assert: func(t *testing.T, d *pwlDeployment, err error) {
+				require.NoError(t, err)
+
+				out := serve(t, d.chain, post(t.Context(), "/auth/pk/begin", ""))
+				assert.False(t, out.handlerRan, "the passkey endpoint answers, not the next handler")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			d := newPwlDeployment(t)
+			tc.setup(d)
+
+			opts := append(append([]httpsec.Option{}, d.pre...), d.options(t)...)
+
+			var err error
+
+			d.chain, err = httpsec.New(opts...)
+			tc.assert(t, d, err)
 		})
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/kartaladev/scrty/authorize"
@@ -125,25 +124,27 @@ type oidcConsentClients struct {
 	group *oidcConsentsGroup
 }
 
-// Intercept answers DELETE at the list's path followed by a client's identifier, and passes on
-// every other path. The path is read at the request, so the group's paths are final.
+// Intercept answers DELETE at the list's path followed by one client identifier, and passes on
+// every other path, the trailing slash and deeper paths included. The path is read at the request, so the group's paths are final.
 //
 // The order is the guarantee:
 //
 //  1. no answer may be cached;
 //  2. anything but DELETE is refused, with nothing read from the request;
 //  3. the caller is judged as the list judges it;
-//  4. the identifier is the path's remainder, decoded. A remainder that is empty, or holds a "/"
-//     (a client identifier holding one cannot be named here), is answered as a consent the caller
-//     never gave: the same refusal, so the answer tells no one which clients exist;
+//  4. the identifier is the path's remainder, one non-empty segment. A remainder that is empty, or
+//     holds a "/" (a client identifier holding one cannot be named here), is not this endpoint's and
+//     passes on before 1 to 3, so an empty identifier never reaches the provider;
 //  5. the provider forgets what the caller allowed that client and revokes the caller's grants of
 //     it. A caller holding neither a consent nor a grant of it is refused with
 //     ErrOIDCForeignConsent, 404, and nothing of anyone else's is touched.
 func (c *oidcConsentClients) Intercept(ex *Exchange, next Next) error {
 	g := c.group
 
-	prefix := g.op.consentClientPrefix()
-	if !strings.HasPrefix(ex.Request.Path(), prefix) {
+	// Only the list's path and one non-empty segment is a revocation's path. A
+	// trailing slash, an empty segment and a deeper path pass on unanswered.
+	client, ok := g.op.consentClient(ex.Request.Path())
+	if !ok {
 		return next(ex)
 	}
 
@@ -156,11 +157,6 @@ func (c *oidcConsentClients) Intercept(ex *Exchange, next Next) error {
 	user, err := g.caller(ex)
 	if err != nil {
 		return err
-	}
-
-	client := strings.TrimPrefix(ex.Request.Path(), prefix)
-	if client == "" || strings.Contains(client, "/") {
-		return ErrOIDCForeignConsent
 	}
 
 	if err := g.op.provider.RevokeConsent(ex.Context(), user, client); err != nil {

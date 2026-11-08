@@ -71,6 +71,10 @@ type passwordlessInterceptor struct {
 	users    identity.UserLoader
 	sessions *session.Sessions
 
+	// prefix is the passkey endpoints' passwordless prefix, taken once every
+	// option has run; beginPath and finishPath are where the endpoints answer,
+	// derived from it by resolvePaths.
+	prefix     endpointPath
 	beginPath  string
 	finishPath string
 
@@ -189,7 +193,8 @@ func WithPasskeyPasswordlessLogin(settings ...PasswordlessSetting) PasskeyOption
 // POST "<prefix>/begin" and "<prefix>/finish". The ceremony cookie is scoped
 // to the moved finish path.
 //
-// Default: DefaultPasswordlessPrefix. It is validated as
+// Default: DefaultPasswordlessPrefix, "/sign-in/passkey". The prefix is within the
+// base path (WithBasePath). It is validated as
 // WithPasskeyRegistrationPrefix's is, and New refuses it when passwordless
 // login is not enabled (WithPasskeyPasswordlessLogin), since it would move nothing.
 func WithPasskeyPasswordlessPrefix(prefix string) PasskeyOption {
@@ -199,8 +204,7 @@ func WithPasskeyPasswordlessPrefix(prefix string) PasskeyOption {
 			return err
 		}
 
-		p.loginPrefix = trimmed
-		p.loginPrefixSet = true
+		p.loginPrefix.give("WithPasskeyPasswordlessPrefix", trimmed)
 
 		return nil
 	}
@@ -316,17 +320,23 @@ func PasswordlessBeginResponder(fn PasskeyBeginResponder) PasswordlessSetting {
 // newPasswordless builds the passwordless endpoints p's settings describe,
 // reading the time from now.
 func (p *passkeyInterceptor) newPasswordless(now func() time.Time) *passwordlessInterceptor {
-	prefix := p.loginPrefix
-
 	return &passwordlessInterceptor{
 		passwordlessConfig: *p.passwordless,
 		manager:            p.deps.Passkeys,
 		users:              p.deps.Users,
 		sessions:           p.deps.Sessions,
-		beginPath:          prefix + passkeyBeginSegment,
-		finishPath:         prefix + passkeyFinishSegment,
+		prefix:             p.loginPrefix,
 		now:                now,
 	}
+}
+
+// resolvePaths places the begin and finish endpoints under base, from the
+// prefix the options declared.
+func (i *passwordlessInterceptor) resolvePaths(base string) {
+	i.prefix.resolve(base)
+
+	i.beginPath = i.prefix.at() + passkeyBeginSegment
+	i.finishPath = i.prefix.at() + passkeyFinishSegment
 }
 
 // checkPasswordless reports what only the passkey dependencies can show
@@ -659,3 +669,15 @@ func (i *passwordlessInterceptor) loadUser(ex *Exchange, user identity.UserID) (
 // msgPasswordlessUserUnavailable is the fixed text of a passwordless login
 // whose user could not be loaded.
 const msgPasswordlessUserUnavailable = "httpsec: the passwordless login's user could not be loaded" //nolint:gosec // G101: a fixed log message, not a credential
+
+// endpoints declares passwordless passkey sign-in.
+func (i *passwordlessInterceptor) endpoints() []Endpoint {
+	const feature, placedBy = "EnablePasskeys", "WithPasskeyPasswordlessPrefix"
+
+	return []Endpoint{
+		declare(feature, placedBy, OperationSignInPasskeyBegin, i.beginPath,
+			MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodPost),
+		declare(feature, placedBy, OperationSignInPasskeyFinish, i.finishPath,
+			MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodPost),
+	}
+}

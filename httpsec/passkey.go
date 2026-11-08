@@ -20,16 +20,16 @@ const (
 	// DefaultPasskeyRegistrationPrefix is where registration answers: POST
 	// "<prefix>/begin", "<prefix>/finish", "<prefix>/confirm" and
 	// "<prefix>/confirm-email" (WithPasskeyRegistrationPrefix).
-	DefaultPasskeyRegistrationPrefix = "/passkey/register" //nolint:gosec // G101: a route path, not a credential
+	DefaultPasskeyRegistrationPrefix = "/passkeys/register" //nolint:gosec // G101: a route path, not a credential
 
 	// DefaultPasskeyCredentialsPrefix is where a user's passkeys are listed
 	// (GET "<prefix>"), renamed (POST "<prefix>/rename") and removed (POST
 	// "<prefix>/remove") (WithPasskeyCredentialsPrefix).
-	DefaultPasskeyCredentialsPrefix = "/passkey/credentials" //nolint:gosec // G101: a route path, not a credential
+	DefaultPasskeyCredentialsPrefix = "/passkeys" //nolint:gosec // G101: a route path, not a credential
 
 	// DefaultPasswordlessPrefix is where passwordless login answers, when it
 	// is enabled: POST "<prefix>/begin" and "<prefix>/finish".
-	DefaultPasswordlessPrefix = "/passkey/login"
+	DefaultPasswordlessPrefix = "/sign-in/passkey"
 
 	// DefaultPasswordlessCookieName is the passwordless ceremony cookie's name.
 	DefaultPasswordlessCookieName = "passkey_ceremony"
@@ -69,13 +69,15 @@ type PasskeyOption func(*passkeyInterceptor) error
 type passkeyInterceptor struct {
 	deps PasskeyDeps
 
-	regPrefix  string
-	credPrefix string
+	// regPrefix and credPrefix are where the options placed the endpoints, and
+	// where they answer under the base path once resolved.
+	regPrefix  endpointPath
+	credPrefix endpointPath
 
-	// loginPrefix is the passwordless prefix, and loginPrefixSet reports
-	// that WithPasskeyPasswordlessPrefix moved it.
-	loginPrefix    string
-	loginPrefixSet bool
+	// loginPrefix is the passwordless prefix as the options placed it. The
+	// passwordless endpoints are built from it once every option has run, and
+	// answer where it resolves.
+	loginPrefix endpointPath
 
 	// passwordless holds the passwordless settings when WithPasskeyPasswordlessLogin
 	// was given, and login the passwordless endpoints built from them.
@@ -120,37 +122,24 @@ type passkeyInterceptor struct {
 	enrolment *enrolmentInterceptor
 }
 
+// resolvePaths places the registration and management endpoints under base,
+// from the prefixes the options declared. The passwordless endpoints are a
+// separate interceptor and settle their own.
+func (p *passkeyInterceptor) resolvePaths(base string) {
+	p.regPrefix.resolve(base)
+	p.credPrefix.resolve(base)
+	p.loginPrefix.resolve(base)
+}
+
 // registrationPaths are the four registration endpoints' paths, which the
 // recovery gate and the enrolment gate exempt.
 func (p *passkeyInterceptor) registrationPaths() []string {
 	return []string{
-		p.regPrefix + passkeyBeginSegment,
-		p.regPrefix + passkeyFinishSegment,
-		p.regPrefix + passkeyConfirmSegment,
-		p.regPrefix + passkeyConfirmEmailSegment,
+		p.regPrefix.at() + passkeyBeginSegment,
+		p.regPrefix.at() + passkeyFinishSegment,
+		p.regPrefix.at() + passkeyConfirmSegment,
+		p.regPrefix.at() + passkeyConfirmEmailSegment,
 	}
-}
-
-// paths are every path the passkey endpoints answer, named for a
-// configuration error.
-func (p *passkeyInterceptor) paths() []struct{ name, path string } {
-	paths := []struct{ name, path string }{
-		{"registration begin", p.regPrefix + passkeyBeginSegment},
-		{"registration finish", p.regPrefix + passkeyFinishSegment},
-		{"saved-code confirm", p.regPrefix + passkeyConfirmSegment},
-		{"emailed-code confirm", p.regPrefix + passkeyConfirmEmailSegment},
-		{"listing", p.credPrefix},
-		{"rename", p.credPrefix + passkeyRenameSegment},
-		{"remove", p.credPrefix + passkeyRemoveSegment},
-	}
-
-	if p.login != nil {
-		paths = append(paths,
-			struct{ name, path string }{"passwordless begin", p.login.beginPath},
-			struct{ name, path string }{"passwordless finish", p.login.finishPath})
-	}
-
-	return paths
 }
 
 // EnablePasskeys serves passkey registration on the chain, at OrderPasskeys,
@@ -295,9 +284,9 @@ func EnablePasskeys(deps PasskeyDeps, opts ...PasskeyOption) Option {
 	return func(c *config) error {
 		p := &passkeyInterceptor{
 			deps:                deps,
-			regPrefix:           DefaultPasskeyRegistrationPrefix,
-			credPrefix:          DefaultPasskeyCredentialsPrefix,
-			loginPrefix:         DefaultPasswordlessPrefix,
+			regPrefix:           defaultPath(DefaultPasskeyRegistrationPrefix),
+			credPrefix:          defaultPath(DefaultPasskeyCredentialsPrefix),
+			loginPrefix:         defaultPath(DefaultPasswordlessPrefix),
 			respondBegin:        writePasskeyBegin,
 			respondRegistration: writePasskeyRegistration,
 			respondList:         writePasskeyList,
@@ -411,6 +400,18 @@ func (c *config) hasReauthentication() bool {
 	return found
 }
 
+// declaredPaths reports the paths the consumer set that an endpoint answers. The
+// passwordless prefix is left out while passwordless login is off: it moves no
+// endpoint, and wirePasskeys refuses it as such, so the base path does not
+// judge a doubled path that would never be served.
+func (p *passkeyInterceptor) declaredPaths() []declaredPath {
+	if p.passwordless == nil {
+		return declarations(p.regPrefix, p.credPrefix)
+	}
+
+	return declarations(p.regPrefix, p.credPrefix, p.loginPrefix)
+}
+
 // wirePasskeys checks the passkey paths against the rest of the chain, once
 // every option has been applied, and hands the passkey endpoints the
 // enrolment path when it counts the passkey method among its enrolling
@@ -429,7 +430,7 @@ func (c *config) wirePasskeys() error {
 			"before managing passkeys, since /mfa/verify serves only a pending session", option)
 	}
 
-	if p.loginPrefixSet && p.passwordless == nil {
+	if _, moved := p.loginPrefix.declaration(); moved && p.passwordless == nil {
 		return newConfigError("%s was given WithPasskeyPasswordlessPrefix without WithPasskeyPasswordlessLogin, "+
 			"so the prefix would move no endpoint", option)
 	}
@@ -437,10 +438,6 @@ func (c *config) wirePasskeys() error {
 	c.checkAfterWiring(func() error { return p.checkCloneGrants(c) })
 
 	if err := p.checkResolving(c); err != nil {
-		return err
-	}
-
-	if err := p.checkPaths(option, c); err != nil {
 		return err
 	}
 
@@ -482,88 +479,14 @@ func (p *passkeyInterceptor) checkCloneGrants(c *config) error {
 		"with passkey.WithoutCloneGrantRevocation() to keep them")
 }
 
-// checkPaths refuses a passkey path that collides with another passkey path,
-// the login path, the logout path, the password-change resolve path or an
-// account-recovery endpoint path, or that lies under a prefix another
-// endpoint answers every POST under: the MFA verify and begin prefixes, and
-// the enrolment prefixes.
-func (p *passkeyInterceptor) checkPaths(option string, c *config) error {
-	taken := map[string]string{}
-	if l := c.formLogin(); l != nil {
-		taken[l.path] = "the login path"
-	}
-	if c.logoutPath != "" {
-		taken[c.logoutPath] = "the logout path"
-	}
-
-	_ = eachInterceptor(c, func(g *passwordChangeGate) error {
-		if g.change != nil {
-			taken[g.path] = "the password-change resolve path"
-		}
-
-		return nil
-	})
-
-	_ = eachInterceptor(c, func(i *recoveryInterceptor) error {
-		for _, r := range i.endpointPaths() {
-			taken[r.path] = "the recovery " + r.name + " path"
-		}
-
-		return nil
-	})
-
-	var prefixes []struct{ name, prefix string }
-	if m := c.mfaOf(); m != nil {
-		prefixes = append(prefixes,
-			struct{ name, prefix string }{"EnableMFA's verify prefix", m.verifyPrefix},
-			struct{ name, prefix string }{"EnableMFA's begin prefix", m.beginPrefix})
-	}
-
-	_ = eachInterceptor(c, func(i *enrolmentInterceptor) error {
-		for _, prefix := range i.prefixes() {
-			prefixes = append(prefixes, struct{ name, prefix string }{"an enrolment prefix", prefix})
-		}
-
-		return nil
-	})
-
-	for _, e := range p.paths() {
-		if other, ok := taken[e.path]; ok {
-			return newConfigError("%s's %s path %q is already %s: whichever endpoint matched "+
-				"first would swallow the other", option, e.name, e.path, other)
-		}
-
-		for _, o := range prefixes {
-			if underPrefix(e.path, o.prefix) {
-				return newConfigError("%s's %s path %q lies under %s %q, whose endpoint answers "+
-					"every POST under it", option, e.name, e.path, o.name, o.prefix)
-			}
-		}
-
-		taken[e.path] = "the passkey " + e.name + " path"
-	}
-
-	return nil
-}
-
 // passkeyPrefix validates a passkey endpoint prefix and returns it without a
 // trailing slash.
 func passkeyPrefix(option, prefix string) (string, error) {
-	switch {
-	case prefix == "":
-		return "", newConfigError("%s was given no prefix, so the endpoints would not exist", option)
-	case !strings.HasPrefix(prefix, "/"):
-		return "", newConfigError("%s was given %q, which does not start with \"/\" and so "+
-			"matches no request path", option, prefix)
+	if err := checkEndpointPath(option, prefix); err != nil {
+		return "", err
 	}
 
-	trimmed := strings.TrimRight(prefix, "/")
-	if trimmed == "" {
-		return "", newConfigError("%s was given the root path %q; give the endpoints a prefix "+
-			"of their own", option, prefix)
-	}
-
-	return trimmed, nil
+	return strings.TrimSuffix(prefix, "/"), nil
 }
 
 // Intercept serves the passkey endpoints, and passes every other request on.
@@ -580,13 +503,13 @@ func (p *passkeyInterceptor) Intercept(ex *Exchange, next Next) error {
 	var serve func(*Exchange, *session.Session) error
 
 	switch r.Path() {
-	case p.regPrefix + passkeyBeginSegment:
+	case p.regPrefix.at() + passkeyBeginSegment:
 		serve = p.begin
-	case p.regPrefix + passkeyFinishSegment:
+	case p.regPrefix.at() + passkeyFinishSegment:
 		serve = p.finish
-	case p.regPrefix + passkeyConfirmSegment:
+	case p.regPrefix.at() + passkeyConfirmSegment:
 		serve = p.confirmSaved
-	case p.regPrefix + passkeyConfirmEmailSegment:
+	case p.regPrefix.at() + passkeyConfirmEmailSegment:
 		serve = p.confirmEmail
 	default:
 		return next(ex)
@@ -695,7 +618,8 @@ type PasskeyRegistrationResponder func(ex *Exchange, res *passkey.RegistrationRe
 // prefix instead: POST "<prefix>/begin", "<prefix>/finish", "<prefix>/confirm"
 // and "<prefix>/confirm-email".
 //
-// Default: DefaultPasskeyRegistrationPrefix. A trailing slash is dropped. An
+// Default: DefaultPasskeyRegistrationPrefix, "/passkeys/register". The prefix is
+// within the base path (WithBasePath). A trailing slash is dropped. An
 // empty prefix, one that does not start with "/", and the root "/" are
 // refused; New also refuses a prefix whose paths collide with another
 // endpoint's (see EnablePasskeys). The recovery and enrolment gates exempt
@@ -707,7 +631,7 @@ func WithPasskeyRegistrationPrefix(prefix string) PasskeyOption {
 			return err
 		}
 
-		p.regPrefix = trimmed
+		p.regPrefix.give("WithPasskeyRegistrationPrefix", trimmed)
 
 		return nil
 	}
@@ -717,7 +641,8 @@ func WithPasskeyRegistrationPrefix(prefix string) PasskeyOption {
 // instead: GET "<prefix>" lists, POST "<prefix>/rename" renames and POST
 // "<prefix>/remove" removes.
 //
-// Default: DefaultPasskeyCredentialsPrefix. It is validated as
+// Default: DefaultPasskeyCredentialsPrefix, "/passkeys". The prefix is within the
+// base path (WithBasePath). It is validated as
 // WithPasskeyRegistrationPrefix's is.
 func WithPasskeyCredentialsPrefix(prefix string) PasskeyOption {
 	return func(p *passkeyInterceptor) error {
@@ -726,7 +651,7 @@ func WithPasskeyCredentialsPrefix(prefix string) PasskeyOption {
 			return err
 		}
 
-		p.credPrefix = trimmed
+		p.credPrefix.give("WithPasskeyCredentialsPrefix", trimmed)
 
 		return nil
 	}
@@ -849,4 +774,25 @@ func (p *passkeyInterceptor) checkResolving(c *config) error {
 	}
 
 	return nil
+}
+
+// endpoints declares passkey registration and management. Passwordless
+// sign-in is a separate interceptor and declares its own.
+func (p *passkeyInterceptor) endpoints() []Endpoint {
+	const feature, reg, cred = "EnablePasskeys", "WithPasskeyRegistrationPrefix", "WithPasskeyCredentialsPrefix"
+
+	post := func(placedBy, id, path string) Endpoint {
+		return declare(feature, placedBy, id, path, MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodPost)
+	}
+
+	return []Endpoint{
+		post(reg, OperationPasskeysRegisterBegin, p.regPrefix.at()+passkeyBeginSegment),
+		post(reg, OperationPasskeysRegisterFinish, p.regPrefix.at()+passkeyFinishSegment),
+		post(reg, OperationPasskeysRegisterConfirm, p.regPrefix.at()+passkeyConfirmSegment),
+		post(reg, OperationPasskeysRegisterConfirmEmail, p.regPrefix.at()+passkeyConfirmEmailSegment),
+		declare(feature, cred, OperationPasskeysList, p.credPrefix.at(),
+			MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodGet),
+		post(cred, OperationPasskeysRename, p.credPrefix.at()+passkeyRenameSegment),
+		post(cred, OperationPasskeysRemove, p.credPrefix.at()+passkeyRemoveSegment),
+	}
 }

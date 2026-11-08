@@ -598,7 +598,7 @@ func TestUnenforcedChallengeAtRuntime(t *testing.T) {
 	}
 
 	loginRequest := func(ctx context.Context) *http.Request {
-		return formRequest(ctx, "/login", "username=ada&password=s3cret")
+		return formRequest(ctx, httpsec.DefaultLoginPath, "username=ada&password=s3cret")
 	}
 
 	bearerReq := func(ctx context.Context) *http.Request {
@@ -1184,7 +1184,7 @@ func TestChain_ExpiryTasks(t *testing.T) {
 				c := h.bearerChain(t)
 				s := h.newSession(t, factor.Password, session.MFASatisfied)
 
-				out := serve(t, c, bearerPost(t.Context(), httpsec.DefaultReauthenticationPrefix+"/begin/passkey", mfaTokenFor(s.ID)))
+				out := serve(t, c, bearerPost(t.Context(), httpsec.DefaultReauthenticationPrefix+"/challenge/passkey", mfaTokenFor(s.ID)))
 				require.NoError(t, out.err)
 				require.Equal(t, http.StatusOK, out.rec.Code, "the begin issued a challenge")
 
@@ -1336,7 +1336,7 @@ func flushOIDCRegistry(t *testing.T) *oidc.Registry {
 		Issuer:                "https://idp.example.com",
 		ClientID:              "app",
 		ClientSecret:          "secret-" + testOIDCProvider,
-		RedirectURL:           "https://app.example.com/login/oauth2/callback/" + testOIDCProvider,
+		RedirectURL:           "https://app.example.com/sso/callback/" + testOIDCProvider,
 		AuthorizationEndpoint: "https://idp.example.com/authorize",
 		TokenEndpoint:         "https://idp.example.com/token",
 		JWKSURI:               "https://idp.example.com/jwks",

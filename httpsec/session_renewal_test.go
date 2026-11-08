@@ -1082,13 +1082,6 @@ func TestEnableSessionRenewal_Construction(t *testing.T) {
 			assert: configError,
 		},
 		{
-			name: "an empty path is refused",
-			options: func(h *authHarness) []httpsec.Option {
-				return reference(h, deps(h), httpsec.WithRenewalPath(""))
-			},
-			assert: configError,
-		},
-		{
 			name: "a nil responder is refused",
 			options: func(h *authHarness) []httpsec.Option {
 				return reference(h, deps(h), httpsec.WithRenewalResponder(nil))
@@ -1099,14 +1092,6 @@ func TestEnableSessionRenewal_Construction(t *testing.T) {
 			name: "the endpoint given twice is refused",
 			options: func(h *authHarness) []httpsec.Option {
 				return append(reference(h, deps(h)), httpsec.EnableSessionRenewal(deps(h)))
-			},
-			assert: configError,
-		},
-		{
-			name: "a renewal path that is the logout path is refused",
-			options: func(h *authHarness) []httpsec.Option {
-				return append(reference(h, deps(h), httpsec.WithRenewalPath(httpsec.DefaultLogoutPath)),
-					httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: h.sessions}))
 			},
 			assert: configError,
 		},

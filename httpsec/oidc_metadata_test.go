@@ -161,6 +161,14 @@ func TestOIDCMetadata(t *testing.T) {
 			},
 		},
 		{
+			name:  "a prefix given with one trailing slash is the trimmed prefix",
+			setup: mdSetup{oidc: []httpsec.OIDCProviderOption{httpsec.WithOIDCProviderPrefix("/op/")}},
+			assert: func(t *testing.T, doc map[string]any) {
+				assert.Equal(t, opIssuer+"/op/authorize", doc["authorization_endpoint"])
+				assert.Equal(t, opIssuer+"/op/token", doc["token_endpoint"])
+			},
+		},
+		{
 			name: "the revocation and introspection methods, the latter without none, and the assertion algorithms without none",
 			assert: func(t *testing.T, doc map[string]any) {
 				all := list("client_secret_basic", "client_secret_post", "private_key_jwt", "none")

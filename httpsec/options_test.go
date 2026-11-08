@@ -336,7 +336,7 @@ func TestChain_Clock(t *testing.T) {
 					httpsec.EnableFormLogin(h.formLoginDeps()), httpsec.WithClock(clk))
 				require.NoError(t, err)
 
-				out := serve(t, c, formRequest(t.Context(), "/login", "username=ada&password=s3cret"))
+				out := serve(t, c, formRequest(t.Context(), httpsec.DefaultLoginPath, "username=ada&password=s3cret"))
 
 				return observed{at: seen(), out: out}
 			},

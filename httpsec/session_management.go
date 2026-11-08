@@ -74,7 +74,9 @@ type sessionManagement struct {
 	// chain without one, which offers no choice to revoke application access.
 	grants userGrantRevoker
 
-	prefix  string
+	// prefix is where the options placed the endpoints, without a trailing
+	// slash, and where they answer under the base path once resolved.
+	prefix  endpointPath
 	window  time.Duration
 	list    SignInListResponder
 	respEnd SignInEndResponder
@@ -83,17 +85,19 @@ type sessionManagement struct {
 // WithSessionManagementPrefix replaces the path prefix the endpoints answer
 // under.
 //
-// Default: DefaultSessionManagementPrefix, "/sessions". The prefix must start
-// with "/", must not end with one, and must not be "/" alone; anything else is
-// refused with a configuration error.
+// Default: DefaultSessionManagementPrefix, "/sessions". The prefix is within the
+// base path (WithBasePath): with a base path of "/auth", the default answers
+// under "/auth/sessions". The prefix must start
+// with "/" and must not be "/" alone; one trailing slash is set aside, so
+// "/sessions" and "/sessions/" are the same prefix. Anything else outside the
+// endpoint path shape is refused with a configuration error.
 func WithSessionManagementPrefix(prefix string) SessionManagementOption {
 	return func(m *sessionManagement) error {
-		if prefix == "" || prefix[0] != '/' || strings.HasSuffix(prefix, "/") {
-			return newConfigError("WithSessionManagementPrefix needs a path starting with \"/\" "+
-				"and not ending with one, got %q", prefix)
+		if err := checkEndpointPath("WithSessionManagementPrefix", prefix); err != nil {
+			return err
 		}
 
-		m.prefix = prefix
+		m.prefix.giveAs("WithSessionManagementPrefix", prefix, strings.TrimSuffix(prefix, "/"))
 
 		return nil
 	}
@@ -210,14 +214,15 @@ func WithSignInEndResponder(fn SignInEndResponder) SessionManagementOption {
 // The endpoints use the chain's session manager: the one WithSessions sets,
 // or the first an enabled built-in was wired to. A chain with none is refused
 // with a configuration error naming this option, and so is a second call.
-// Other methods and paths pass through.
+// Other methods and paths pass through, a trailing slash, an empty handle and a
+// path of two or more segments below the prefix among them.
 func EnableSessionManagement(opts ...SessionManagementOption) Option {
 	const option = "EnableSessionManagement"
 
 	return func(c *config) error {
 		m := &sessionManagement{
 			now:     c.now,
-			prefix:  DefaultSessionManagementPrefix,
+			prefix:  defaultPath(DefaultSessionManagementPrefix),
 			window:  DefaultRecentAuthenticationWindow,
 			list:    writeSignInList,
 			respEnd: writeSignInsEnded,
@@ -283,14 +288,16 @@ func (m *sessionManagement) route(r Request) (sessionRoute, string) {
 
 	switch r.Method() {
 	case http.MethodGet:
-		if path == m.prefix {
+		if path == m.prefix.at() {
 			return routeList, ""
 		}
 	case http.MethodDelete:
-		if path == m.prefix {
+		if path == m.prefix.at() {
 			return routeEndOthers, ""
 		}
-		if handle, ok := strings.CutPrefix(path, m.prefix+"/"); ok {
+		// One non-empty segment only: a trailing slash, an empty handle and a
+		// deeper path are not this endpoint's and pass through.
+		if handle, ok := oneSegmentBelow(path, m.prefix.at()); ok {
 			return routeEndOne, handle
 		}
 	}
@@ -300,7 +307,7 @@ func (m *sessionManagement) route(r Request) (sessionRoute, string) {
 
 // under reports whether path is the prefix or below it.
 func (m *sessionManagement) under(path string) bool {
-	return path == m.prefix || strings.HasPrefix(path, m.prefix+"/")
+	return underPrefix(path, m.prefix.at())
 }
 
 // sessionManagementNoStore marks every response under the endpoints' prefix
@@ -480,4 +487,29 @@ func writeSignInsEnded(ex *Exchange) error {
 	ex.Writer.WriteHeader(http.StatusNoContent)
 
 	return nil
+}
+
+// sessionsSharedPath is what the session management operations declare they
+// share: the list and the end of the other sign-ins answer the prefix itself,
+// and the end of one sign-in the prefix and one segment.
+const sessionsSharedPath = "scrty.sessions"
+
+// endpoints declares the three session management operations.
+func (m *sessionManagement) endpoints() []Endpoint {
+	const feature, placedBy = "EnableSessionManagement", "WithSessionManagementPrefix"
+
+	eps := []Endpoint{
+		declare(feature, placedBy, OperationSessionsList, m.prefix.at(),
+			MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodGet),
+		declare(feature, placedBy, OperationSessionsEndOthers, m.prefix.at(),
+			MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodDelete),
+		declare(feature, placedBy, OperationSessionsEnd, withSegment(m.prefix.at(), "handle"),
+			MatchSegment, OtherMethodsPassThrough, RequiresSession, http.MethodDelete),
+	}
+
+	for i := range eps {
+		eps[i].SharesPath = sessionsSharedPath
+	}
+
+	return eps
 }

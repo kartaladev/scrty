@@ -338,59 +338,6 @@ func TestSessionSignals_Construction(t *testing.T) {
 			assert: resolved(nil),
 		},
 		{
-			name:    "the path session management answers is refused",
-			signals: httpsec.SessionSignals{Path: "/sessions"},
-			opts: func(_ *testing.T, f *constructionFixture) []httpsec.Option {
-				return []httpsec.Option{f.bearer, httpsec.EnableSessionManagement()}
-			},
-			assert: refusedNamingField("SessionSignals.Path", "/sessions"),
-		},
-		{
-			name:    "a path under session management's prefix is refused",
-			signals: httpsec.SessionSignals{Path: "/sessions/signals"},
-			opts: func(_ *testing.T, f *constructionFixture) []httpsec.Option {
-				return []httpsec.Option{f.bearer, httpsec.EnableSessionManagement()}
-			},
-			assert: refusedNamingField("SessionSignals.Path", "/sessions"),
-		},
-		{
-			name:    "the logout path is refused",
-			signals: httpsec.SessionSignals{Path: httpsec.DefaultLogoutPath},
-			opts: func(_ *testing.T, f *constructionFixture) []httpsec.Option {
-				return []httpsec.Option{f.bearer, httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: f.sessions})}
-			},
-			assert: refusedNamingField("SessionSignals.Path", httpsec.DefaultLogoutPath),
-		},
-		{
-			name: "the renewal path is refused",
-			opts: func(_ *testing.T, f *constructionFixture) []httpsec.Option {
-				return []httpsec.Option{
-					f.bearer,
-					httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Users: f.users}),
-				}
-			},
-			signals: httpsec.SessionSignals{Path: httpsec.DefaultSessionRenewalPath},
-			assert:  refusedNamingField("SessionSignals.Path", httpsec.DefaultSessionRenewalPath),
-		},
-		{
-			name:    "the re-authentication prefix is refused",
-			signals: httpsec.SessionSignals{Path: httpsec.DefaultReauthenticationPrefix},
-			opts: func(t *testing.T, f *constructionFixture) []httpsec.Option {
-				t.Helper()
-
-				return []httpsec.Option{
-					f.bearer,
-					httpsec.EnableFormLogin(httpsec.FormLoginDeps{
-						Authenticator: NewMockAuthenticator(gomock.NewController(t)),
-						Sessions:      f.sessions,
-						Attempts:      NewMockAttemptStore(gomock.NewController(t)),
-					}),
-					httpsec.EnableReauthentication(),
-				}
-			},
-			assert: refusedNamingField("SessionSignals.Path", httpsec.DefaultReauthenticationPrefix),
-		},
-		{
 			name: "enabled twice is refused",
 			opts: func(_ *testing.T, f *constructionFixture) []httpsec.Option {
 				return []httpsec.Option{f.bearer, httpsec.EnableSessionSignals(httpsec.SessionSignals{})}
@@ -439,49 +386,11 @@ func TestSessionSignals_Construction(t *testing.T) {
 			}),
 		},
 		{
-			name:    "a path with no leading slash is refused",
-			signals: httpsec.SessionSignals{Path: "session/signals"},
-			assert:  refusedNamingField("SessionSignals.Path"),
-		},
-		{
-			name:    "a path ending in a slash is refused",
+			name:    "a path ending in a slash is matched as given",
 			signals: httpsec.SessionSignals{Path: "/session/signals/"},
-			assert:  refusedNamingField("SessionSignals.Path"),
-		},
-		{
-			name:    "the root path is refused",
-			signals: httpsec.SessionSignals{Path: "/"},
-			assert:  refusedNamingField("SessionSignals.Path"),
-		},
-		{
-			name:    "a path holding a query is refused",
-			signals: httpsec.SessionSignals{Path: "/session/signals?x=1"},
-			assert:  refusedNamingField("SessionSignals.Path"),
-		},
-		{
-			name:    "a path holding a fragment is refused",
-			signals: httpsec.SessionSignals{Path: "/session/signals#x"},
-			assert:  refusedNamingField("SessionSignals.Path"),
-		},
-		{
-			name:    "a path holding a space is refused",
-			signals: httpsec.SessionSignals{Path: "/session /signals"},
-			assert:  refusedNamingField("SessionSignals.Path"),
-		},
-		{
-			name:    "a path holding a tab is refused",
-			signals: httpsec.SessionSignals{Path: "/session\t/signals"},
-			assert:  refusedNamingField("SessionSignals.Path"),
-		},
-		{
-			name:    "a path holding a line break is refused",
-			signals: httpsec.SessionSignals{Path: "/session\n/signals"},
-			assert:  refusedNamingField("SessionSignals.Path"),
-		},
-		{
-			name:    "a path holding a percent is refused, because paths are compared decoded",
-			signals: httpsec.SessionSignals{Path: "/session%20signals"},
-			assert:  refusedNamingField("SessionSignals.Path", "%"),
+			assert: resolved(func(t *testing.T, cfg httpsec.SessionSignals) {
+				assert.Equal(t, "/session/signals/", cfg.Path)
+			}),
 		},
 		{
 			name:    "a MaxAge below twice the heartbeat is refused",

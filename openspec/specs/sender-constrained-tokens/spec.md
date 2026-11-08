@@ -127,11 +127,11 @@ A binding SHALL be set when a sign-in is created and SHALL carry over to every s
 - **THEN** the issued token carries no `cnf` and the session stays unbound, because the binding is set when the sign-in is created
 
 #### Scenario: Bound login
-- **WHEN** a client posts its credentials to `/login` with a valid proof
+- **WHEN** a client posts its credentials to `/sign-in/password` with a valid proof
 - **THEN** the issued token carries `cnf.jkt` equal to the thumbprint of the proof's key, and the responder is told the token type is `DPoP`
 
 #### Scenario: Unbound login
-- **WHEN** DPoP is enabled and a client posts its credentials to `/login` without a proof
+- **WHEN** DPoP is enabled and a client posts its credentials to `/sign-in/password` without a proof
 - **THEN** the issued token carries no `cnf`, and the responder is told the token type is `Bearer`
 
 #### Scenario: Bad proof leaves the magic link unspent
@@ -139,7 +139,7 @@ A binding SHALL be set when a sign-in is created and SHALL carry over to every s
 - **THEN** the redemption is refused with the invalid-DPoP-proof error, the link is not consumed, and no session is stored
 
 #### Scenario: Bad proof at login is not a failed password
-- **WHEN** a client posts the right credentials to `/login` with a proof whose `htu` is wrong
+- **WHEN** a client posts the right credentials to `/sign-in/password` with a proof whose `htu` is wrong
 - **THEN** the login is refused with the invalid-DPoP-proof error, and no lockout failure is recorded for the username
 
 #### Scenario: Re-proof keeps the binding

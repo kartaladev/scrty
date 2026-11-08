@@ -37,7 +37,7 @@ type MFAOption func(*mfaInterceptor) error
 // for the substituted principal and the session stays pending.
 //
 // A method that is an mfa.ChallengeMethod also has a begin step: a POST to
-// the begin prefix, "/" and its name ("/mfa/begin/<name>" by default) makes
+// the begin prefix, "/" and its name ("/mfa/challenge/<name>" by default) makes
 // the same refusals, is refused while the user's verification is throttled,
 // and then issues a pending challenge — a one-time token of the method's own
 // purpose, for the session's user, bound to the session's handle — whose
@@ -196,12 +196,13 @@ func EnableMFA(methods []mfa.Method, opts ...MFAOption) Option {
 			byName:       byName,
 			lookups:      lookups,
 			now:          c.now,
-			verifyPrefix: DefaultMFAVerifyPrefix,
 			respond:      writeMFAResult,
-			beginPrefix:  DefaultMFABeginPrefix,
 			beginRespond: writeMFABegin,
 			challengeTTL: DefaultMFAChallengeTTL,
 			challengeCap: DefaultMFAChallengeLimit,
+
+			verifyPrefix: defaultPath(DefaultMFAVerifyPrefix),
+			beginPrefix:  defaultPath(DefaultMFABeginPrefix),
 		}
 
 		for _, opt := range opts {
@@ -211,18 +212,6 @@ func EnableMFA(methods []mfa.Method, opts ...MFAOption) Option {
 			if err := opt(i); err != nil {
 				return err
 			}
-		}
-
-		// Every POST under either prefix is that endpoint's own, so two
-		// prefixes that overlap would leave one endpoint answering the
-		// other's requests.
-		if underPrefix(i.beginPrefix, i.verifyPrefix) || underPrefix(i.verifyPrefix, i.beginPrefix) {
-			return newConfigError("%s's verify prefix %q and begin prefix %q overlap, so one "+
-				"endpoint would answer the other's requests", option, i.verifyPrefix, i.beginPrefix)
-		}
-
-		if err := i.checkListing(option); err != nil {
-			return err
 		}
 
 		c.enable(option, func() error {
@@ -254,7 +243,8 @@ func EnableMFA(methods []mfa.Method, opts ...MFAOption) Option {
 // WithMFAVerifyPrefix verifies each method under prefix instead: a method is
 // verified at prefix, "/" and its name.
 //
-// Default: DefaultMFAVerifyPrefix. Only POST under the prefix is a
+// Default: DefaultMFAVerifyPrefix, "/mfa/verify". The prefix is within the base
+// path (WithBasePath). Only POST under the prefix is a
 // verification; every other request to it is judged like any other, which for
 // a session that owes a second factor means the gate holds it. A trailing
 // slash is dropped, so "/auth/2fa" and "/auth/2fa/" are the same prefix.
@@ -270,7 +260,7 @@ func WithMFAVerifyPrefix(prefix string) MFAOption {
 			return err
 		}
 
-		i.verifyPrefix = p
+		i.verifyPrefix.give("WithMFAVerifyPrefix", p)
 
 		return nil
 	}

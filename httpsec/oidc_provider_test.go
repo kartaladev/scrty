@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -229,18 +230,6 @@ func passkeysOn(t *testing.T, m *session.Sessions) []httpsec.Option {
 	return []httpsec.Option{httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: pm, Sessions: m, Users: users})}
 }
 
-func enrolmentOn(t *testing.T, _ *session.Sessions) []httpsec.Option {
-	t.Helper()
-
-	return []httpsec.Option{
-		mfaOn(t),
-		httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{
-			Users:  NewMockUserLoader(gomock.NewController(t)),
-			Sender: exampleSender{},
-		}),
-	}
-}
-
 func mfaPrefixesOn(t *testing.T, _ *session.Sessions) []httpsec.Option {
 	t.Helper()
 
@@ -431,155 +420,19 @@ func TestOIDCProvider_Construction(t *testing.T) {
 			assert: refused("EnableOIDCProvider", "twice"),
 		},
 		{
-			name: "the end-session path set to the chain's logout path",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				p := f.provider(t)
-
-				return append(f.wired(t, p),
-					httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: reporting(t, p)}),
-					httpsec.EnableOIDCProvider(p, httpsec.WithOIDCProviderPath(httpsec.OIDCEndSession, httpsec.DefaultLogoutPath)))
-			},
-			assert: refused("EnableOIDCProvider", httpsec.DefaultLogoutPath),
-		},
-		{
-			name: "a chain endpoint under the consents path, which answers every path below it",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				p := f.provider(t)
-
-				return append(f.wired(t, p),
-					httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: reporting(t, p)},
-						httpsec.WithLogoutRequestPath("/consents/out")),
-					httpsec.EnableOIDCProvider(p, httpsec.WithOIDCProviderPath(httpsec.OIDCConsents, "/consents")))
-			},
-			assert: refused("EnableOIDCProvider", "/consents/out", "/consents"),
-		},
-		{
-			name: "a chain prefix under the consents path",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				p := f.provider(t)
-
-				return append(f.wired(t, p),
-					httpsec.EnableSessionManagement(httpsec.WithSessionManagementPrefix("/consents/sessions")),
-					httpsec.EnableOIDCProvider(p, httpsec.WithOIDCProviderPath(httpsec.OIDCConsents, "/consents")))
-			},
-			assert: refused("EnableOIDCProvider", "/consents/sessions", "/consents"),
-		},
-		{
-			name: "the token path set to the JWKS path, whichever came first",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPath(httpsec.OIDCToken, httpsec.DefaultJWKSPath))
-			},
-			assert: refused("EnableOIDCProvider", httpsec.DefaultJWKSPath),
-		},
-		{
-			name: "two provider paths equal",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPath(httpsec.OIDCRevoke, "/oauth2/token"))
-			},
-			assert: refused("EnableOIDCProvider", "/oauth2/token"),
-		},
-		{
-			name: "a prefix naming no path",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPrefix("op"))
-			},
-			assert: refused("WithOIDCProviderPrefix"),
-		},
-		{
-			name: "an empty prefix",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPrefix(""))
-			},
-			assert: refused("WithOIDCProviderPrefix"),
-		},
-		{
-			name: "a prefix ending in a slash",
+			name: "a prefix ending in one slash",
 			build: func(t *testing.T) []httpsec.Option {
 				t.Helper()
 
 				return withOptions(t, nil, httpsec.WithOIDCProviderPrefix("/op/"))
 			},
-			assert: refused("WithOIDCProviderPrefix"),
+			assert: built,
 		},
 		{
-			name: "a path naming no path",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPath(httpsec.OIDCToken, "token"))
-			},
-			assert: refused("WithOIDCProviderPath"),
-		},
-		{
-			name: "a path holding a query",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPath(httpsec.OIDCToken, "/tokens?x=1"))
-			},
-			assert: refused("WithOIDCProviderPath"),
-		},
-		{
-			name: "a path holding a fragment",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPath(httpsec.OIDCToken, "/tokens#x"))
-			},
-			assert: refused("WithOIDCProviderPath"),
-		},
-		{
-			name: "a path holding a percent sign",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPath(httpsec.OIDCToken, "/a%20b"))
-			},
-			assert: refused("WithOIDCProviderPath"),
-		},
-		{
-			name: "a path holding a space",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPath(httpsec.OIDCToken, "/a b"))
-			},
-			assert: refused("WithOIDCProviderPath"),
-		},
-		{
-			name: "a path holding a non-ASCII letter",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPath(httpsec.OIDCToken, "/caf\u00e9"))
-			},
-			assert: refused("WithOIDCProviderPath"),
-		},
-		{
-			name: "a prefix holding a space",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPrefix("/o p"))
-			},
-			assert: refused("WithOIDCProviderPrefix"),
-		},
-		{
-			name: "an assertion endpoint under an issuer path needing escaping, behind a stripping router, builds",
+			// The issuer's path must be the same string escaped and unescaped,
+			// so an issuer needing escaping is refused before the assertion
+			// endpoint is judged, whatever it names.
+			name: "an issuer path needing escaping is refused, whatever the assertion endpoint",
 			build: func(t *testing.T) []httpsec.Option {
 				t.Helper()
 
@@ -590,34 +443,7 @@ func TestOIDCProvider_Construction(t *testing.T) {
 
 				return append(f.wired(t, p), httpsec.EnableOIDCProvider(p))
 			},
-			assert: built,
-		},
-		{
-			name: "a prefix holding a query",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPrefix("/op?x"))
-			},
-			assert: refused("WithOIDCProviderPrefix"),
-		},
-		{
-			name: "a prefix holding a fragment",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPrefix("/op#x"))
-			},
-			assert: refused("WithOIDCProviderPrefix"),
-		},
-		{
-			name: "a prefix holding a percent sign",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return withOptions(t, nil, httpsec.WithOIDCProviderPrefix("/op%20x"))
-			},
-			assert: refused("WithOIDCProviderPrefix"),
+			assert: refused("EnableOIDCProvider", `"`+opIssuer+`/a%20b"`),
 		},
 		{
 			name: "a path for an endpoint that does not exist",
@@ -1312,32 +1138,6 @@ func TestOIDCProvider_Construction(t *testing.T) {
 			assert: built,
 		},
 		{
-			name: "the provider given before the logout it collides with",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				p := f.provider(t)
-
-				return append([]httpsec.Option{
-					httpsec.EnableOIDCProvider(p, httpsec.WithOIDCProviderPath(httpsec.OIDCEndSession, httpsec.DefaultLogoutPath)),
-				}, append(f.wired(t, p), httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: reporting(t, p)}))...)
-			},
-			assert: refused("EnableOIDCProvider", httpsec.DefaultLogoutPath),
-		},
-		{
-			name: "the provider given before the key set endpoint its token path collides with",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				p := f.provider(t)
-
-				return append([]httpsec.Option{
-					httpsec.EnableOIDCProvider(p, httpsec.WithOIDCProviderPath(httpsec.OIDCToken, httpsec.DefaultJWKSPath)),
-				}, f.wired(t, p)...)
-			},
-			assert: refused("EnableOIDCProvider", httpsec.DefaultJWKSPath),
-		},
-		{
 			name: "the provider given before the key set endpoint publishing other keys",
 			build: func(t *testing.T) []httpsec.Option {
 				t.Helper()
@@ -1483,51 +1283,6 @@ func TestOIDCProvider_Construction(t *testing.T) {
 			},
 			assert: built,
 		},
-	}
-
-	// Each endpoint family of the chain that the provider's paths must stay clear of,
-	// whatever the order of the options: the provider is given the family's path.
-	for _, fam := range []struct {
-		name     string
-		endpoint httpsec.OIDCEndpoint
-		path     string
-		enable   func(t *testing.T, m *session.Sessions) []httpsec.Option
-	}{
-		{"the magic-link request path", httpsec.OIDCToken, httpsec.DefaultMagicLinkRequestPath, magicLinkOn},
-		{"the magic-link consume path", httpsec.OIDCRevoke, httpsec.DefaultMagicLinkConsumePath, magicLinkOn},
-		{"an OIDC login authorization path", httpsec.OIDCToken, httpsec.DefaultOIDCAuthorizePath + "idp", oidcLoginOn},
-		{"an OIDC login callback path", httpsec.OIDCToken, httpsec.DefaultOIDCCallbackPath + "idp", oidcLoginOn},
-		{"an OIDC login back-channel logout path", httpsec.OIDCToken, httpsec.DefaultOIDCBackchannelPath + "idp", oidcLoginOn},
-		{"the OIDC login handoff path", httpsec.OIDCToken, httpsec.DefaultOIDCHandoffPath, oidcLoginOn},
-		{"the re-authentication listing path", httpsec.OIDCToken, httpsec.DefaultReauthenticationPrefix + "/methods", reauthOn},
-		{"a re-authentication begin path", httpsec.OIDCToken, httpsec.DefaultReauthenticationPrefix + "/begin/totp", reauthOn},
-		{"a re-authentication verify path", httpsec.OIDCToken, httpsec.DefaultReauthenticationPrefix + "/verify/totp", reauthOn},
-		{"the re-authentication password path", httpsec.OIDCToken, httpsec.DefaultReauthenticationPrefix + "/password", reauthOn},
-		{"the session management prefix", httpsec.OIDCToken, httpsec.DefaultSessionManagementPrefix, managementOn},
-		{"a session management path under its prefix", httpsec.OIDCToken, httpsec.DefaultSessionManagementPrefix + "/s-1", managementOn},
-		{"the MFA method listing path", httpsec.OIDCToken, httpsec.DefaultMFAMethodListingPath, mfaListingOn},
-		{"the login path", httpsec.OIDCToken, httpsec.DefaultLoginPath, formLoginOn},
-		{"the session renewal path", httpsec.OIDCToken, httpsec.DefaultSessionRenewalPath, renewalOn},
-		{"the password-change resolve path", httpsec.OIDCToken, opPasswordChangePath, passwordChangeOn},
-		{"a recovery path", httpsec.OIDCToken, httpsec.DefaultRecoveryStartPath, recoveryOn},
-		{"a passkey path", httpsec.OIDCToken, httpsec.DefaultPasskeyCredentialsPrefix, passkeysOn},
-		{"a second-factor begin path", httpsec.OIDCToken, httpsec.DefaultMFABeginPrefix + "/totp", mfaPrefixesOn},
-		{"a second-factor verify path", httpsec.OIDCToken, httpsec.DefaultMFAVerifyPrefix + "/totp", mfaPrefixesOn},
-		{"an enrolment begin path", httpsec.OIDCToken, httpsec.DefaultEnrolmentBeginPrefix + "/totp", enrolmentOn},
-		{"an enrolment confirm path", httpsec.OIDCToken, httpsec.DefaultEnrolmentConfirmPrefix + "/totp", enrolmentOn},
-	} {
-		cases = append(cases, testCase{
-			name: "the provider's path set to " + fam.name,
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				p := f.provider(t)
-
-				return append(f.wired(t, p), append(fam.enable(t, reporting(t, p)),
-					httpsec.EnableOIDCProvider(p, httpsec.WithOIDCProviderPath(fam.endpoint, fam.path)))...)
-			},
-			assert: refused("EnableOIDCProvider", fam.path),
-		})
 	}
 
 	for _, tc := range cases {
@@ -1688,11 +1443,15 @@ func TestOIDCProvider_Routes_Groups(t *testing.T) {
 			},
 		},
 		{
-			name:  "a route another group holds is refused",
+			// An undeclared route (only a test group can add one) is the library's own
+			// broken invariant, not a consumer's configuration error (D7).
+			name:  "a route another group holds is refused as an internal invariant",
 			group: &httpsec.TestOIDCGroup{Path: "/oauth2/token"},
 			assert: func(t *testing.T, _ *httpsec.TestOIDCGroup, chain *httpsec.Chain, err error, _ *http.Request, _ *session.Sessions) {
 				t.Helper()
-				require.ErrorIs(t, err, httpsec.ErrConfig)
+				require.Error(t, err)
+				assert.NotErrorIs(t, err, httpsec.ErrConfig)
+				assert.ErrorContains(t, err, "internal")
 				assert.ErrorContains(t, err, "/oauth2/token")
 				assert.Nil(t, chain)
 			},
@@ -1840,4 +1599,53 @@ func TestOIDCProvider_Slots(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestOIDCProvider_EndpointsListedAtServingSlot pins that the inventory lists
+// each provider operation at the slot that answers it: the resume and the
+// consents behind the bearer and the gates (OrderOIDCProviderSession), so
+// after form login (OrderFormLogin), and every other operation at the outer
+// slot (OrderOIDCProvider), before it. Each operation is listed once.
+func TestOIDCProvider_EndpointsListedAtServingSlot(t *testing.T) {
+	t.Parallel()
+
+	f := newOPFixture(t)
+	p := f.provider(t)
+
+	c, err := httpsec.New(append(f.wired(t, p), append(formLoginOn(t, reporting(t, p)), httpsec.EnableOIDCProvider(p))...)...)
+	require.NoError(t, err)
+
+	ids := operationIDs(c.Endpoints())
+	login := slices.Index(ids, httpsec.OperationSignInPassword)
+	require.GreaterOrEqual(t, login, 0, "form login is listed")
+
+	for _, id := range []string{
+		httpsec.OperationOAuth2Authorize, httpsec.OperationOAuth2Token, httpsec.OperationOAuth2UserInfo,
+		httpsec.OperationOAuth2Revoke, httpsec.OperationOAuth2Introspect, httpsec.OperationOAuth2EndSession,
+		httpsec.OperationOAuth2EndSessionConfirm, httpsec.OperationOAuth2OpenIDConfiguration,
+		httpsec.OperationOAuth2AuthorizationServerMetadata,
+	} {
+		assert.Equalf(t, 1, countOf(ids, id), "%s is listed once", id)
+		assert.Lessf(t, slices.Index(ids, id), login, "%s is listed at the outer slot, before form login", id)
+	}
+
+	for _, id := range []string{
+		httpsec.OperationOAuth2AuthorizeResume, httpsec.OperationOAuth2ConsentsList, httpsec.OperationOAuth2ConsentsRevoke,
+	} {
+		assert.Equalf(t, 1, countOf(ids, id), "%s is listed once", id)
+		assert.Greaterf(t, slices.Index(ids, id), login, "%s is listed at the inner slot, after form login", id)
+	}
+}
+
+// countOf is how many times id is in ids.
+func countOf(ids []string, id string) int {
+	n := 0
+
+	for _, v := range ids {
+		if v == id {
+			n++
+		}
+	}
+
+	return n
 }

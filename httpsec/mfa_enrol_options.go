@@ -209,9 +209,9 @@ func EnableMFAEnrolment(d EnrolmentDeps, opts ...EnrolmentOption) Option {
 			users:             d.Users,
 			sender:            d.Sender,
 			now:               c.now,
-			beginPrefix:       DefaultEnrolmentBeginPrefix,
-			confirmPrefix:     DefaultEnrolmentConfirmPrefix,
-			emailPrefix:       DefaultEnrolmentEmailConfirmPrefix,
+			beginPrefix:       defaultPath(DefaultEnrolmentBeginPrefix),
+			confirmPrefix:     defaultPath(DefaultEnrolmentConfirmPrefix),
+			emailPrefix:       defaultPath(DefaultEnrolmentEmailConfirmPrefix),
 			lifetime:          defaultEnrolmentLifetime,
 			logInterval:       defaultEnrolmentLogInterval,
 			emailConfirmation: true,
@@ -251,7 +251,8 @@ func EnableMFAEnrolment(d EnrolmentDeps, opts ...EnrolmentOption) Option {
 // WithEnrolmentBeginPrefix answers begins under prefix instead: a method's
 // enrolment begins at prefix, "/" and its name.
 //
-// Default: DefaultEnrolmentBeginPrefix. Only POST under the prefix is a begin,
+// Default: DefaultEnrolmentBeginPrefix, "/mfa/enrol/begin". The prefix is within
+// the base path (WithBasePath). Only POST under the prefix is a begin,
 // and every POST under it is the endpoint's: one naming no enrollable method is
 // refused with ErrUnknownMFAMethod. A trailing slash is dropped. An empty
 // prefix is refused, as are one that does not start with "/" and the root
@@ -265,7 +266,7 @@ func WithEnrolmentBeginPrefix(prefix string) EnrolmentOption {
 			return err
 		}
 
-		i.beginPrefix = p
+		i.beginPrefix.give("WithEnrolmentBeginPrefix", p)
 
 		return nil
 	}
@@ -274,7 +275,8 @@ func WithEnrolmentBeginPrefix(prefix string) EnrolmentOption {
 // WithEnrolmentConfirmPrefix answers device proofs under prefix instead: a
 // method's device is proven at prefix, "/" and its name.
 //
-// Default: DefaultEnrolmentConfirmPrefix. The same rules as
+// Default: DefaultEnrolmentConfirmPrefix, "/mfa/enrol/confirm". The prefix is
+// within the base path (WithBasePath). The same rules as
 // WithEnrolmentBeginPrefix apply.
 func WithEnrolmentConfirmPrefix(prefix string) EnrolmentOption {
 	return func(i *enrolmentInterceptor) error {
@@ -283,7 +285,7 @@ func WithEnrolmentConfirmPrefix(prefix string) EnrolmentOption {
 			return err
 		}
 
-		i.confirmPrefix = p
+		i.confirmPrefix.give("WithEnrolmentConfirmPrefix", p)
 
 		return nil
 	}
@@ -292,7 +294,8 @@ func WithEnrolmentConfirmPrefix(prefix string) EnrolmentOption {
 // WithEnrolmentEmailConfirmPrefix answers emailed codes under prefix instead:
 // a method's emailed code is entered at prefix, "/" and its name.
 //
-// Default: DefaultEnrolmentEmailConfirmPrefix. The same rules as
+// Default: DefaultEnrolmentEmailConfirmPrefix, "/mfa/enrol/confirm-email". The
+// prefix is within the base path (WithBasePath). The same rules as
 // WithEnrolmentBeginPrefix apply. With WithoutEnrolmentEmailConfirmation the endpoint
 // does not exist, and a request under prefix is refused like any other route.
 func WithEnrolmentEmailConfirmPrefix(prefix string) EnrolmentOption {
@@ -302,7 +305,7 @@ func WithEnrolmentEmailConfirmPrefix(prefix string) EnrolmentOption {
 			return err
 		}
 
-		i.emailPrefix = p
+		i.emailPrefix.give("WithEnrolmentEmailConfirmPrefix", p)
 
 		return nil
 	}

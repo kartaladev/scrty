@@ -14,8 +14,8 @@ import (
 // DefaultMFABeginPrefix is the prefix the begin endpoint answers POST requests
 // under when the consumer names none: a challenge method begins at the prefix
 // followed by "/" and the method's name, so a method named "passkey" begins at
-// "/mfa/begin/passkey" by default.
-const DefaultMFABeginPrefix = "/mfa/begin"
+// "/mfa/challenge/passkey" by default.
+const DefaultMFABeginPrefix = "/mfa/challenge"
 
 // DefaultMFAChallengeTTL is how long a pending challenge may be answered when
 // the consumer sets no lifetime: long enough for a person to complete a
@@ -66,7 +66,7 @@ func writeMFABegin(ex *Exchange, data json.RawMessage) error {
 // challenge method is refused as unknown rather than passed to the gate or the
 // application.
 func (i *mfaInterceptor) isBeginRequest(r Request) bool {
-	return r.Method() == http.MethodPost && underPrefix(r.Path(), i.beginPrefix)
+	return r.Method() == http.MethodPost && underPrefix(r.Path(), i.beginPrefix.at())
 }
 
 // begin issues a pending challenge for a challenge method and answers with the
@@ -106,7 +106,7 @@ func (i *mfaInterceptor) isBeginRequest(r Request) bool {
 // begin in hand is not what failed. One that failed for any reason but the
 // store's inability to purge is retried by the next begin.
 func (i *mfaInterceptor) begin(ex *Exchange) error {
-	s, method, err := i.admit(ex, i.beginPrefix, isChallengeMethod)
+	s, method, err := i.admit(ex, i.beginPrefix.at(), isChallengeMethod)
 	if err != nil {
 		return err
 	}
@@ -220,7 +220,8 @@ func (i *mfaInterceptor) wireChallenges(c *config) error {
 // WithMFABeginPrefix begins each challenge method under prefix instead: a
 // method begins at prefix, "/" and its name.
 //
-// Default: DefaultMFABeginPrefix. Only POST under the prefix is a begin. A
+// Default: DefaultMFABeginPrefix, "/mfa/challenge". The prefix is within the base
+// path (WithBasePath). Only POST under the prefix is a begin. A
 // trailing slash is dropped. An empty prefix, one that does not start with "/"
 // and the root "/" are refused, as they are for WithMFAVerifyPrefix; so is a
 // prefix equal to, above or below the verify prefix, since one endpoint would
@@ -233,7 +234,7 @@ func WithMFABeginPrefix(prefix string) MFAOption {
 			return err
 		}
 
-		i.beginPrefix = p
+		i.beginPrefix.give("WithMFABeginPrefix", p)
 
 		return nil
 	}
@@ -343,21 +344,6 @@ func WithMFAChallengeLimit(n int) MFAOption {
 	}
 }
 
-// methodSegment returns the method named by path under prefix. It is ok only
-// for prefix, then "/", then one non-empty segment with no further "/": the
-// bare prefix, an empty segment, a trailing slash and an extra segment all name
-// no method, so none of them can match one by accident.
-//
-// prefix is as mfaPrefix returns it, with no trailing slash.
-func methodSegment(path, prefix string) (name string, ok bool) {
-	rest, found := strings.CutPrefix(path, prefix+"/")
-	if !found || rest == "" || strings.Contains(rest, "/") {
-		return "", false
-	}
-
-	return rest, true
-}
-
 // underPrefix reports whether path is prefix itself or lies below it. Every
 // such path is the endpoint's own, including one that names no method, so the
 // endpoint refuses it as unknown rather than letting it through to the
@@ -375,20 +361,9 @@ func underPrefix(path, prefix string) bool {
 // matches no request path; and so is the root, which would claim every
 // one-segment path of the application as a method name.
 func mfaPrefix(option, prefix string) (string, error) {
-	switch {
-	case prefix == "":
-		return "", newConfigError("%s was given no prefix, so a session owing a second factor "+
-			"would have no way to resolve it", option)
-	case !strings.HasPrefix(prefix, "/"):
-		return "", newConfigError("%s was given %q, which does not start with \"/\" and so "+
-			"matches no request path", option, prefix)
+	if err := checkEndpointPath(option, prefix); err != nil {
+		return "", err
 	}
 
-	trimmed := strings.TrimRight(prefix, "/")
-	if trimmed == "" {
-		return "", newConfigError("%s was given the root path %q, which would claim every "+
-			"one-segment path of the application", option, prefix)
-	}
-
-	return trimmed, nil
+	return strings.TrimSuffix(prefix, "/"), nil
 }

@@ -34,7 +34,7 @@ func startStream(ex *Exchange, body func(ctx context.Context, w EventWriter) err
 // A cap, a close and a dependency failure are returned, and answered by sessionSignalsRetry,
 // which is what also sees the same failure from the authenticators outside this slot.
 func (e *sessionSignals) Intercept(ex *Exchange, next Next) error {
-	if ex.Request.Path() != e.cfg.Path {
+	if ex.Request.Path() != e.path.at() {
 		return next(ex)
 	}
 
@@ -266,4 +266,13 @@ func streamByCookie(ex *Exchange) bool {
 	_, token, _ := strings.Cut(ex.Request.Header("Authorization"), " ")
 
 	return ex.bearerCredential == "" || strings.TrimSpace(token) != ex.bearerCredential
+}
+
+// endpoints declares the signal stream, which answers 405 to any method but
+// GET on its path.
+func (e *sessionSignals) endpoints() []Endpoint {
+	return []Endpoint{
+		declare("EnableSessionSignals", "SessionSignals.Path", OperationSessionSignals, e.path.at(),
+			MatchExact, OtherMethodsRefused, RequiresSession, http.MethodGet),
+	}
 }

@@ -282,18 +282,6 @@ func TestJWKSEndpointConstruction(t *testing.T) {
 			},
 			assert: refused("EnableJWKSEndpoint", "key set provider"),
 		},
-		{
-			name: "an empty key set path",
-			build: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return []httpsec.Option{
-					httpsec.EnableJWKSEndpoint(NewMockKeySetProvider(gomock.NewController(t)),
-						httpsec.WithJWKSEndpointPath("")),
-				}
-			},
-			assert: refused("WithJWKSEndpointPath"),
-		},
 	}
 
 	for _, tc := range cases {

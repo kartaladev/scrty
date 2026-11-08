@@ -74,7 +74,7 @@ func TestFormLogin_KeySourceFailureAnswerCarriesNoKeySourceText(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	out := serve(t, chain, formRequest(t.Context(), "/login", "username=ada&password=s3cret"))
+	out := serve(t, chain, formRequest(t.Context(), httpsec.DefaultLoginPath, "username=ada&password=s3cret"))
 
 	require.ErrorIs(t, out.err, errKMS, "the key source's error stays reachable")
 	assert.NotErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
@@ -171,7 +171,7 @@ func TestIssuingFailureIsNeverARefusal(t *testing.T) {
 				httpsec.WithLoginLimiter(countingLimiter(t, 0))))
 			require.NoError(t, err)
 
-			return serve(t, chain, formRequest(t.Context(), "/login", "username=ada&password=s3cret")).err
+			return serve(t, chain, formRequest(t.Context(), httpsec.DefaultLoginPath, "username=ada&password=s3cret")).err
 		}
 	}
 

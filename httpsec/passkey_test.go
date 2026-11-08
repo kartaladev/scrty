@@ -43,6 +43,17 @@ func reachedEndpoint(t *testing.T, path string, out served) {
 		require.NoError(t, out.err)
 		assert.Equal(t, http.StatusOK, out.rec.Code)
 
+		// A gate letting the request through does not show registration
+		// began: the response must carry the challenge the ceremony signs.
+		var doc struct {
+			PublicKey struct {
+				Challenge string `json:"challenge"`
+			} `json:"publicKey"`
+		}
+
+		require.NoError(t, json.Unmarshal(out.rec.Body.Bytes(), &doc), "begin answers the creation options")
+		assert.NotEmpty(t, doc.PublicKey.Challenge, "begin issued a registration challenge")
+
 		return
 	}
 
@@ -568,9 +579,6 @@ func TestPasskeyRecoveryBinding(t *testing.T) {
 		// in its place.
 		lookalike bool
 
-		// recOpts are further recovery options.
-		recOpts []httpsec.RecoveryOption
-
 		assert func(t *testing.T, err error)
 	}
 
@@ -585,18 +593,6 @@ func TestPasskeyRecoveryBinding(t *testing.T) {
 			assert: func(t *testing.T, err error) { require.ErrorIs(t, err, httpsec.ErrConfig) }},
 		{name: "registration and a method shaped like the passkey method", passkeys: true, method: true, lookalike: true,
 			assert: func(t *testing.T, err error) { require.ErrorIs(t, err, httpsec.ErrConfig) }},
-		{name: "a registration path is the recovery complete path", passkeys: true, method: true,
-			recOpts: []httpsec.RecoveryOption{httpsec.WithRecoveryCompletePath(passkeyBeginPath)},
-			assert:  func(t *testing.T, err error) { require.ErrorIs(t, err, httpsec.ErrConfig) }},
-		{name: "a registration path is the recovery start path", passkeys: true, method: true,
-			recOpts: []httpsec.RecoveryOption{httpsec.WithRecoveryStartPath(passkeyFinishPath)},
-			assert:  func(t *testing.T, err error) { require.ErrorIs(t, err, httpsec.ErrConfig) }},
-		{name: "a registration path is the saved-codes path", passkeys: true, method: true,
-			recOpts: []httpsec.RecoveryOption{httpsec.WithRecoveryCodesPath(passkeyConfirmPath)},
-			assert:  func(t *testing.T, err error) { require.ErrorIs(t, err, httpsec.ErrConfig) }},
-		{name: "the credentials listing is the recovery cancel path", passkeys: true, method: true,
-			recOpts: []httpsec.RecoveryOption{httpsec.WithRecoveryCancelPath(passkeyListPath)},
-			assert:  func(t *testing.T, err error) { require.ErrorIs(t, err, httpsec.ErrConfig) }},
 	}
 
 	for _, tc := range cases {
@@ -626,8 +622,6 @@ func TestPasskeyRecoveryBinding(t *testing.T) {
 					httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: h.sessions}),
 					httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(h.tokens)))
 			}
-
-			h.recOpts = append(h.recOpts, tc.recOpts...)
 
 			_, err = httpsec.New(h.options(t)...)
 			tc.assert(t, err)

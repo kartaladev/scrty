@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	defaultConfirmPath   = "/login/magic/confirm"
+	defaultConfirmPath   = "/sign-in/magic-link/confirm"
 	defaultIssuanceLimit = 5
 
 	// bindingNonceBytes is how much randomness a binding value carries. Its
@@ -155,7 +155,11 @@ type Links struct {
 // carries a live credential past anyone on the path. It is an origin and
 // nothing more: a scheme, a host and an optional port.
 //
-// Defaults, each replaceable: /login/magic/confirm (WithConfirmPath), 5 links
+// The confirm page is the consumer's own page, which the emailed link points at;
+// it is not an endpoint of the HTTP chain, so a base path set on the chain does
+// not move it, while the redeem endpoint the page posts to does move.
+//
+// Defaults, each replaceable: /sign-in/magic-link/confirm (WithConfirmPath), 5 links
 // per user per the token manager's issuance window (WithIssuanceLimit), the
 // submitted address passed to the user loader as a username
 // (WithAddressResolver), a neutral plain-text message naming no product

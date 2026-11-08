@@ -60,6 +60,13 @@ context: |
     mapping helper are the public contract. With nothing wired, responses are a bare status code
     with no body, and requests fail closed. Rendering belongs to the consumer.
   - Refusal logs are sampled with pkg/logsample; scrty's own callers always configure a reporter.
+  - Built-in endpoint paths follow one vocabulary: kebab-case segments, plural nouns for
+    collections, an action as a POST to a named sub-path (/sign-in/password, /sign-out,
+    /sso/{login,callback}/{p}, /passkeys, /mfa/challenge/{m}); /oauth2 means only "scrty is the
+    provider". One optional WithBasePath moves every endpoint the chain answers, and nothing else
+    (consumer routes, authorization rules, consumer pages). Paths have one shape, are resolved
+    before any check, and every endpoint is listed by Chain.Endpoints(), which backs the single
+    collision check.
 
   Security rules
   - One-time credentials are check-then-consume: validate, resolve the account, run side-effect-
@@ -90,7 +97,10 @@ context: |
     shared-rate-limiting-postgres (rate-limiting; after operation-hardening), login-source-throttling,
   user-email (identity-model, default-identity-store, oidc-provider-userinfo),
     atomic-code-attempts, limiter-key-bounds, trusted-proxy-client-ip, bff-resource-server
-    (bff-session, resource-server, csrf-protection), chain-time-source (http-security-chain)
+    (bff-session, resource-server, csrf-protection), chain-time-source (http-security-chain),
+    endpoint-inventory-base-path (http-security-chain, oidc-login, oidc-logout,
+    oidc-provider-metadata, multi-factor-auth, passkey-authentication, reauthentication,
+    account-recovery, csrf-protection, framework-adapters, sender-constrained-tokens)
 
 rules:
   design:

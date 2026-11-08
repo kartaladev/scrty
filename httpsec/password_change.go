@@ -67,9 +67,11 @@ func (c *config) grantRevoker() userGrantRevoker {
 type passwordChangeGate struct {
 	sessions *session.Sessions
 
-	// path and change are the consumer's resolve endpoint, and are empty when
+	// path and change are the consumer's resolve endpoint, and are zero when
 	// they registered none. Without one, only a new login clears the challenge.
-	path   string
+	// path also holds where the endpoint answers under the base path, once
+	// resolved; an unset path answers nowhere.
+	path   endpointPath
 	change ChangePasswordFunc
 
 	// logoutPath is the chain's logout endpoint, handed over at assembly and
@@ -201,7 +203,7 @@ func (g *passwordChangeGate) Intercept(ex *Exchange, next Next) error {
 // under that path is not a password change, and letting it through would open
 // a hole in the gate the size of one URL.
 func (g *passwordChangeGate) isResolveRequest(r Request) bool {
-	return g.change != nil && r.Method() == http.MethodPost && r.Path() == g.path
+	return g.change != nil && r.Method() == http.MethodPost && r.Path() == g.path.at()
 }
 
 // resolve runs the consumer's change, and records the debt as paid only when
@@ -459,7 +461,8 @@ func (g *passwordChangeGate) checkGrantRevocation(c *config) error {
 // WithPasswordChangeEndpoint answers POST requests on path with fn.
 //
 // Default: no endpoint at all, under which only a new login clears the
-// challenge. Requests to path pass the gate, so the one endpoint a caller who
+// challenge. The path is within the base path (WithBasePath), and the gate
+// lets through the resolved path. Requests to path pass the gate, so the one endpoint a caller who
 // owes a password change can reach is the one that resolves it; every other
 // method on that path is gated like anything else.
 //
@@ -472,18 +475,31 @@ func (g *passwordChangeGate) checkGrantRevocation(c *config) error {
 // ChangePasswordFunc. A function that refused the request must not return nil.
 func WithPasswordChangeEndpoint(path string, fn ChangePasswordFunc) PasswordChangeOption {
 	return func(g *passwordChangeGate) error {
-		switch {
-		case path == "":
-			return newConfigError("WithPasswordChangeEndpoint was given no path, so a caller " +
-				"owing a password change would have no way to resolve it")
-		case fn == nil:
+		if err := checkEndpointPath("WithPasswordChangeEndpoint", path); err != nil {
+			return err
+		}
+
+		if fn == nil {
 			return newConfigError("WithPasswordChangeEndpoint was given no function to change "+
 				"the password with for %q", path)
 		}
 
-		g.path = path
+		g.path.give("WithPasswordChangeEndpoint", path)
 		g.change = fn
 
 		return nil
+	}
+}
+
+// endpoints declares the consumer's password change, which the gate answers
+// only when it was given one (WithPasswordChangeEndpoint).
+func (g *passwordChangeGate) endpoints() []Endpoint {
+	if g.change == nil {
+		return nil
+	}
+
+	return []Endpoint{
+		declare("EnablePasswordChangeGate", "WithPasswordChangeEndpoint", OperationPasswordChange, g.path.at(),
+			MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodPost),
 	}
 }

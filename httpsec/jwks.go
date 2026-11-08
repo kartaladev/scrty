@@ -42,7 +42,9 @@ type KeySetProvider interface {
 type jwksEndpoint struct {
 	keys KeySetProvider
 
-	path string
+	// path is the endpoint's path: where the options placed it, and where it
+	// answers under the base path once resolved.
+	path endpointPath
 }
 
 // Intercept serves the key set on its own path, and passes everything else
@@ -53,7 +55,7 @@ type jwksEndpoint struct {
 // response is served before any authentication interceptor has run, because a
 // client verifying a token has no token to present yet.
 func (j *jwksEndpoint) Intercept(ex *Exchange, next Next) error {
-	if ex.Request.Method() != http.MethodGet || ex.Request.Path() != j.path {
+	if ex.Request.Method() != http.MethodGet || ex.Request.Path() != j.path.at() {
 		return next(ex)
 	}
 
@@ -91,7 +93,7 @@ func EnableJWKSEndpoint(keys KeySetProvider, opts ...JWKSOption) Option {
 	const option = "EnableJWKSEndpoint"
 
 	return func(c *config) error {
-		j := &jwksEndpoint{keys: keys, path: DefaultJWKSPath}
+		j := &jwksEndpoint{keys: keys, path: defaultPath(DefaultJWKSPath)}
 
 		for _, opt := range opts {
 			if opt == nil {
@@ -114,19 +116,30 @@ func EnableJWKSEndpoint(keys KeySetProvider, opts ...JWKSOption) Option {
 
 // WithJWKSEndpointPath serves the key set on path instead.
 //
-// Default: DefaultJWKSPath, which keeps passing through once the consumer
-// moves the endpoint — a deployment that serves the conventional location
-// through its own route is free to. An empty path is refused: it would match
+// Default: DefaultJWKSPath, "/.well-known/jwks.json", which keeps passing
+// through once the consumer moves the endpoint — a deployment that serves the
+// conventional location through its own route is free to. The path is within
+// the base path (WithBasePath): with a base path of "/auth", the default answers
+// "/auth/.well-known/jwks.json", which is no longer a well-known URI (RFC 8615
+// roots those at the top of the path), so clients find the key set through the
+// provider's published jwks_uri. An empty path is refused: it would match
 // nothing, so the endpoint the consumer asked for would silently not exist.
 func WithJWKSEndpointPath(path string) JWKSOption {
 	return func(j *jwksEndpoint) error {
-		if path == "" {
-			return newConfigError("WithJWKSEndpointPath was given no path, so the key set " +
-				"would be served nowhere")
+		if err := checkEndpointPath("WithJWKSEndpointPath", path); err != nil {
+			return err
 		}
 
-		j.path = path
+		j.path.give("WithJWKSEndpointPath", path)
 
 		return nil
+	}
+}
+
+// endpoints declares the key set.
+func (j *jwksEndpoint) endpoints() []Endpoint {
+	return []Endpoint{
+		declare("EnableJWKSEndpoint", "WithJWKSEndpointPath", OperationKeySet, j.path.at(),
+			MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodGet),
 	}
 }

@@ -320,7 +320,7 @@ A credential in the pending or suspended state SHALL NOT complete a passwordless
 When a credential becomes active for a session in the enrolment-pending or recovery-pending state, the library SHALL move that session to the MFA pending state. This happens at finish, or at the last confirmation that activates it. The session SHALL keep its confinement marker and any recovery time, and SHALL be saved. The user SHALL then prove the new passkey through the MFA begin and verify endpoints. The MFA verify endpoint SHALL resolve the challenge, restore the session's deadlines and rotate it, as it does for an enrolment confirmed through the path. A registration on a full session SHALL NOT change the session's second-factor state. A credential that is still pending SHALL leave the session's state unchanged.
 
 #### Scenario: Recovery route through a passkey
-- **WHEN** a recovery-pending session created at 09:00 registers a passkey, begins the passkey challenge at `/mfa/begin/passkey` and posts a valid assertion to `/mfa/verify/passkey` at 09:05, with a 12-hour absolute timeout
+- **WHEN** a recovery-pending session created at 09:00 registers a passkey, begins the passkey challenge at `/mfa/challenge/passkey` and posts a valid assertion to `/mfa/verify/passkey` at 09:05, with a 12-hour absolute timeout
 - **THEN** the rotated session reports a satisfied second factor, an absolute deadline of 21:00 and a recovery time of 09:00
 
 #### Scenario: Registration alone is not a second factor
@@ -514,7 +514,7 @@ A passwordless login whose assertion carried the user-verified flag SHALL hand t
 The library SHALL provide an MFA method named `passkey` that reports the `public-key` channel and declares a begin step and a JSON body response. A user SHALL be enrolled on it when they hold at least one active passkey. A failed lookup SHALL be an error, never "not enrolled". Its begin data SHALL be request options listing the user's active credentials as allowed credentials, including credentials that are not discoverable. The challenge SHALL be the one the MFA slot issued. Verification SHALL require the assertion to come from one of the session's user's active credentials, and SHALL verify it as at the passwordless finish, except that user presence without user verification SHALL be accepted when user verification is relaxed to `preferred`, since a second factor proves possession. The method's channel SHALL equal the `passkey` kind's channel, so a passkey never serves as the second factor of a passkey login. The method SHALL be able to remove all of a user's passkeys for the operator reset.
 
 #### Scenario: Passkey after a password
-- **WHEN** `u-1`, enrolled only on the passkey method, logs in by password, begins at `/mfa/begin/passkey` and posts a valid assertion to `/mfa/verify/passkey`
+- **WHEN** `u-1`, enrolled only on the passkey method, logs in by password, begins at `/mfa/challenge/passkey` and posts a valid assertion to `/mfa/verify/passkey`
 - **THEN** the challenge is resolved and the session rotated
 
 #### Scenario: Another user's credential
@@ -609,7 +609,7 @@ Passkey endpoints SHALL NOT exist until the consumer enables passkeys on the cha
 - a synchronous sender is configured without accepting synchronous delivery;
 - a challenge lifetime, freshness window, issuance limit or passkey limit is zero or less;
 - no session manager is given to the passkey component while removal revocation or clone revocation is on;
-- any endpoint path is empty, lacks a leading `/`, or equals another passkey path, the login path, the logout path, or a path under the MFA verify or begin prefixes.
+- any endpoint path does not have the shape `http-security-chain` requires of endpoint paths, or collides with another passkey path or another endpoint the chain answers, as that capability's chain-wide collision requirement judges.
 
 #### Scenario: Passwordless without recovery codes
 - **WHEN** passwordless login is enabled, no saved recovery codes are wired, and the optional mode is not chosen
@@ -620,8 +620,8 @@ Passkey endpoints SHALL NOT exist until the consumer enables passkeys on the cha
 - **THEN** construction succeeds
 
 #### Scenario: Path collision
-- **WHEN** the passwordless finish path is set to the logout path
-- **THEN** construction fails with a configuration error
+- **WHEN** the passwordless finish path is set to the sign-out path
+- **THEN** construction fails with a configuration error naming passkeys and logout
 
 #### Scenario: No session manager for revocation
 - **WHEN** the passkey component is built with no session manager and both revocations left on
@@ -633,14 +633,14 @@ Passkey endpoints SHALL NOT exist until the consumer enables passkeys on the cha
 
 ### Requirement: Passkey endpoints have documented default paths
 When enabled, the passkey endpoints SHALL answer at these default paths, each replaceable by an option:
-- registration begin `/passkey/register/begin`, finish `/passkey/register/finish`, saved-code confirm `/passkey/register/confirm`, emailed-code confirm `/passkey/register/confirm-email`, each POST;
-- listing `/passkey/credentials` (GET), rename `/passkey/credentials/rename` (POST), remove `/passkey/credentials/remove` (POST);
-- passwordless begin `/passkey/login/begin` and finish `/passkey/login/finish`, each POST, only when passwordless login is enabled.
+- registration begin `/passkeys/register/begin`, finish `/passkeys/register/finish`, saved-code confirm `/passkeys/register/confirm`, emailed-code confirm `/passkeys/register/confirm-email`, each POST;
+- listing `/passkeys` (GET), rename `/passkeys/rename` (POST), remove `/passkeys/remove` (POST);
+- passwordless begin `/sign-in/passkey/begin` and finish `/sign-in/passkey/finish`, each POST, only when passwordless login is enabled.
 
-The passkey second factor SHALL answer at the MFA slot's paths for the method name `passkey`, by default `/mfa/begin/passkey` and `/mfa/verify/passkey`. Any other HTTP method on a passkey path SHALL pass through without touching a challenge or a credential. Begin data, finish results and listings SHALL be written through replaceable responders, and the default responses SHALL be documented JSON bodies.
+The passkey second factor SHALL answer at the MFA slot's paths for the method name `passkey`, by default `/mfa/challenge/passkey` and `/mfa/verify/passkey`. Any other HTTP method on a passkey path SHALL pass through without touching a challenge or a credential. Begin data, finish results and listings SHALL be written through replaceable responders, and the default responses SHALL be documented JSON bodies.
 
 #### Scenario: GET on a finish path
-- **WHEN** a GET request is sent to `/passkey/login/finish`
+- **WHEN** a GET request is sent to `/sign-in/passkey/finish`
 - **THEN** it passes through and no challenge is spent
 
 #### Scenario: Consumer paths

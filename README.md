@@ -28,6 +28,112 @@ build-environment flag.
 counter, so never use one as a credential, session token or link secret. Those come from
 `crypto/rand` in the packages that mint them.
 
+## Endpoints and the base path
+
+Every built-in endpoint answers at a default path that says what it does. Each path, and each
+option that changes it, is a documented constant (`httpsec.DefaultLoginPath` and the rest), so a
+client, a test or a proxy rule can name the same thing the library does. Nothing needs configuring.
+
+| Endpoint | Default path | Replace with |
+|---|---|---|
+| Password sign-in | `POST /sign-in/password` | `httpsec.WithLoginRequestPath` |
+| Magic link request, redeem | `POST /sign-in/magic-link`, `POST /sign-in/magic-link/redeem` | `httpsec.WithMagicLinkRequestPath`, `httpsec.WithMagicLinkConsumePath` |
+| Passwordless passkey sign-in | `POST /sign-in/passkey/{begin,finish}` | `httpsec.WithPasskeyPasswordlessPrefix` |
+| Sign-out | `POST /sign-out` | `httpsec.WithLogoutRequestPath` |
+| SSO start, callback | `GET /sso/login/{provider}`, `GET /sso/callback/{provider}` | `httpsec.WithOIDCAuthorizePath`, `httpsec.WithOIDCCallbackPath` |
+| SSO handoff, back-channel logout | `POST /sso/handoff`, `POST /sso/backchannel-logout/{provider}` | `httpsec.WithOIDCHandoffPath`, `httpsec.WithOIDCBackchannelLogoutPath` |
+| Passkey registration | `POST /passkeys/register/{begin,finish,confirm,confirm-email}` | `httpsec.WithPasskeyRegistrationPrefix` |
+| Passkey list, rename, remove | `GET /passkeys`, `POST /passkeys/rename`, `POST /passkeys/remove` | `httpsec.WithPasskeyCredentialsPrefix` |
+| Second factor: begin, verify, list methods | `POST /mfa/challenge/{method}`, `POST /mfa/verify/{method}`, `GET /mfa/methods` | `httpsec.WithMFABeginPrefix`, `httpsec.WithMFAVerifyPrefix`, `httpsec.ListingPath` |
+| Second-factor enrolment | `POST /mfa/enrol/begin/{method}`, `/mfa/enrol/confirm/{method}`, `/mfa/enrol/confirm-email/{method}` | `httpsec.WithEnrolmentBeginPrefix` and the two like it |
+| Re-authentication | `/reauth/methods`, `/reauth/challenge/{method}`, `/reauth/verify/{method}`, `/reauth/password` | `httpsec.WithReauthenticationPrefix` |
+| Session renewal, signal stream | `/session/renewal`, `GET /session/signals` | `httpsec.WithRenewalPath`, `httpsec.SessionSignals.Path` |
+| Session management | `/sessions`, `/sessions/{handle}` | `httpsec.WithSessionManagementPrefix` |
+| Account recovery | `/recovery/{start,complete,finish,cancel,codes}` | `httpsec.WithRecoveryStartPath` and the four like it |
+| Key set | `GET /.well-known/jwks.json` | `httpsec.WithJWKSEndpointPath` |
+| OpenID Provider | `/oauth2/*` | `httpsec.WithOIDCProviderPrefix`, `httpsec.WithOIDCProviderPath` |
+
+The sign-in methods sit under `/sign-in`, the relying-party (SSO) side under `/sso`, and `/oauth2`
+means only "scrty is the provider". The password-change endpoint has no default: it exists only
+when you give `httpsec.WithPasswordChangeEndpoint` a path.
+
+`Chain.Endpoints()` lists every operation the chain answers, each at its resolved path, with a
+stable `OperationID` (`scrty.sign-in.password`, `scrty.mfa.verify`, ...), the methods it answers
+and what a request needs to reach it. It does not list the interceptors you register yourself,
+or the pages you serve.
+
+### The base path
+
+`httpsec.WithBasePath("/auth")` answers every built-in endpoint under `/auth`. A path setting is
+the path within the base: with `WithBasePath("/auth")`, password sign-in answers
+`/auth/sign-in/password`, and `WithLoginRequestPath("/signin")` makes it `/auth/signin`. The
+unprefixed path passes through to your application. The default is no base path, under which
+every endpoint answers at its own path.
+
+```go
+chain, err := httpsec.New(
+	httpsec.WithBasePath("/auth"),
+	httpsec.EnableFormLogin(deps), // POST /auth/sign-in/password
+	httpsec.EnableLogout(logoutDeps), // POST /auth/sign-out
+)
+```
+
+The key set, the provider's endpoints and everything the chain derives from a path (the exemptions
+the gates give sign-out, the three cookie scopes, the CSRF and CORS exemptions, the URLs the
+provider publishes) follow the base path.
+
+**What does not move:**
+
+- **Your pages.** The magic-link confirm page (`magiclink.WithConfirmPath`), the provider's login,
+  consent, logout and logged-out pages, and every redirect destination are served by your
+  application, often on another origin. The magic-link redeem endpoint that the confirm page posts
+  to is the chain's, and does move.
+- **Authorization rules.** They describe your own routes and keep judging them.
+- **Routes you give the chain.** Recovery cool-down routes, cross-site exemptions and
+  header-profile matchers name the moved paths; see the migration steps.
+- **Interceptors you register.** They answer where you wrote them to.
+- **A prefix a proxy already strips.** The chain matches the path it receives and never reads
+  `X-Forwarded-Prefix`. If your proxy or `http.StripPrefix` removes `/auth` before the chain sees
+  the request, set no base path. Setting both answers nothing: every built-in path passes through.
+- **The authorization server metadata.** With the provider, the OpenID configuration sits at the
+  issuer followed by `/.well-known/openid-configuration`, so an issuer that includes the base path
+  keeps it under the base. The OAuth authorization server metadata is always at the host root, at
+  `/.well-known/oauth-authorization-server` followed by the issuer's path (RFC 8414 section 3). A
+  gateway that forwards only `/auth/*` must route it to the chain as well.
+
+A base path that leaves something stale fails `httpsec.New` rather than the first request: a base
+path on a chain with no built-in endpoint, a path you set that repeats the base path, an issuer
+that does not cover the base path (`httpsec.WithoutOIDCIssuerBasePathCheck` waives it, for a
+gateway that routes `/.well-known/*` to the chain), a cool-down route or cross-site exemption left
+at a pre-base path (`httpsec.WithoutBasePathRouteCheck`), and a provider whose registered redirect
+URL cannot reach the callback (`httpsec.WithoutOIDCRedirectPathCheck`). Each waiver's godoc says
+what it gives up. A base path that repeats a default's first segment, such as `/sso`, answers
+`/sso/sso/login/{provider}`: that is what was configured, and it is not refused.
+
+### Migrating
+
+Adopting a base path, or upgrading from a build that used the earlier default paths:
+
+1. Set `httpsec.WithBasePath`, and make every path you set explicitly relative to it. A path that
+   repeats the base is refused.
+2. Update each OIDC provider's registered redirect URL, now ending in `/sso/callback/{name}` under
+   the base. `httpsec.New` refuses to build until they agree. A back-channel logout URI
+   registered with a provider is not checked: update it to include the base path yourself.
+3. Give the OpenID Provider an issuer that includes the base path, or waive the check when your
+   gateway routes `/.well-known/*` to the chain.
+4. Rewrite the cool-down routes, cross-site exemptions and header-profile paths that name built-in
+   endpoints to the moved paths. `httpsec.New` finds the first two; a header-profile matcher is a
+   function it cannot read, so compare against `Chain.Endpoints()`.
+5. Point resource servers at the moved key set URL (the provider's published `jwks_uri` follows
+   it), and route `/.well-known/oauth-authorization-server/...` at the host root if you use it.
+6. Update client code that calls a built-in endpoint by its earlier default path, and consumer
+   pages that post to the provider's resume or logout-confirm endpoints. The earlier defaults were
+   `/login`, `/logout`, `/login/magic` and `/login/magic/consume`, `/passkey/login/{begin,finish}`,
+   `/passkey/register/*`, `/passkey/credentials`, `/oauth2/authorization/{provider}`,
+   `/login/oauth2/callback/{provider}`, `/login/oauth2/handoff`,
+   `/logout/oauth2/backchannel/{provider}`, `/mfa/begin/{method}` and `/reauth/begin/{method}`;
+   each is now the path in the table above. Option names did not change, only their defaults.
+
 ## OIDC
 
 `oidc` logs users in through external OpenID Connect providers; `httpsec.EnableOIDCLogin` answers
@@ -39,7 +145,7 @@ registry, err := oidc.NewRegistry(oidc.Provider{
 	Issuer:       "https://idp.example.com",
 	ClientID:     "scrty",
 	ClientSecret: corpClientSecret,
-	RedirectURL:  "https://app.example.com/login/oauth2/callback/corp",
+	RedirectURL:  "https://app.example.com/sso/callback/corp",
 })
 
 broker, err := oidc.NewBroker(oidc.NewMemoryLinkStore(), users)
@@ -66,10 +172,10 @@ and every option names the default it replaces.
 
 | Default path | Method | Purpose | Replace with |
 |---|---|---|---|
-| `/oauth2/authorization/{provider}` | GET | starts a login | `httpsec.WithOIDCAuthorizePath` |
-| `/login/oauth2/callback/{provider}` | GET | the provider's callback | `httpsec.WithOIDCCallbackPath` |
-| `/login/oauth2/handoff` | POST | redeems the handoff code | `httpsec.WithOIDCHandoffPath` |
-| `/logout/oauth2/backchannel/{provider}` | POST | back-channel logout | `httpsec.WithOIDCBackchannelLogoutPath` |
+| `/sso/login/{provider}` | GET | starts a login | `httpsec.WithOIDCAuthorizePath` |
+| `/sso/callback/{provider}` | GET | the provider's callback | `httpsec.WithOIDCCallbackPath` |
+| `/sso/handoff` | POST | redeems the handoff code | `httpsec.WithOIDCHandoffPath` |
+| `/sso/backchannel-logout/{provider}` | POST | back-channel logout | `httpsec.WithOIDCBackchannelLogoutPath` |
 
 `{provider}` is the one path segment naming a provider registered with `oidc.NewRegistry`.
 
@@ -91,7 +197,7 @@ could read the URL through its own request or the `Referer` header):
    history.replaceState(null, "", url);
    ```
 
-and only then POST the code as the `handoff` form field to `/login/oauth2/handoff` (or your
+and only then POST the code as the `handoff` form field to `/sso/handoff` (or your
 `httpsec.WithOIDCHandoffPath`), which answers with the session's access token, refresh token and
 the destination to send the user on to. A consumer who conveys the login another way (a
 backend-for-frontend, say) replaces this whole step with `httpsec.WithOIDCCallbackSuccess`, and no
@@ -118,7 +224,7 @@ gains RP-initiated logout: ending a session that a federated login created also 
 provider's end-session URL, for the client to send the browser to next
 (`httpsec.WithOIDCRPInitiatedLogout(false)` turns this off). A provider that supports OpenID
 Connect back-channel logout can be configured with an end-session and back-channel logout URL that
-points at `/logout/oauth2/backchannel/{provider}`; scrty verifies the logout token and ends the
+points at `/sso/backchannel-logout/{provider}`; scrty verifies the logout token and ends the
 matching sessions without any browser involved.
 
 ### Second factor and provider assurance
@@ -603,7 +709,7 @@ requirement, err := policy.NewMFARequirement(requirementLookup, lookups,
 chain, err := httpsec.New(
 	// ... your other chain options (login, sessions) ...
 	httpsec.EnableMFA(methods), // each method verifies at "/mfa/verify/<name>" (httpsec.WithMFAVerifyPrefix);
-	// a challenge method also begins at "/mfa/begin/<name>" (httpsec.WithMFABeginPrefix);
+	// a challenge method also begins at "/mfa/challenge/<name>" (httpsec.WithMFABeginPrefix);
 	// httpsec.WithMFAMethodListing turns on GET /mfa/methods, off by default
 	httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{
 		Users:  users,        // identity.UserLoader
@@ -639,7 +745,7 @@ chain, err := httpsec.New(
    working credential, as at a login challenge. The same
    line as at re-authentication holds: a consumer policy that raises `policy.ChallengeMFA` without
    reading `policy.Input.MFASatisfied` hides whatever is registered after it. The begin endpoint
-   (`POST /mfa/begin/<name>`) and verification both refuse a caller other than the session's own
+   (`POST /mfa/challenge/<name>`) and verification both refuse a caller other than the session's own
    user, which only a consumer's interceptor can publish, before anything is counted or issued.
 
 Every other request a confined session makes — the password-change endpoint, a consumer route,
@@ -891,7 +997,7 @@ Everything else has a default:
 | Other sessions of the user when a passkey is removed | ended; the removing session stays | `passkey.WithoutSessionRevocationOnRemoval`, or per request the posted `other_sessions` field (`keep` or `end`; anything else, an empty value or a repeated field is a 400, `httpsec.ErrMalformedRequest`) |
 | Sessions of the user when a passkey is suspended as a clone | every session ended | `passkey.WithoutSessionRevocationOnClone` |
 | Second factor at a passwordless login | a user-verified passkey meets it | `passkey.WithoutSecondFactorAtLogin` |
-| Endpoint paths | `/passkey/register`, `/passkey/credentials`, `/passkey/login` | `httpsec.WithPasskeyRegistrationPrefix`, `WithPasskeyCredentialsPrefix`, `WithPasskeyPasswordlessPrefix` |
+| Endpoint paths | `/passkeys/register`, `/passkeys`, `/sign-in/passkey` | `httpsec.WithPasskeyRegistrationPrefix`, `WithPasskeyCredentialsPrefix`, `WithPasskeyPasswordlessPrefix` |
 | Challenge lifetime | 5 minutes (also the timeout in the creation options) | `passkey.WithChallengeTTL` |
 | Registration challenges per user | 10 per hour; the window is fixed | `passkey.WithRegistrationChallengeLimit` |
 | Passkeys per user | 25, every state counted | `passkey.WithPerUserLimit` |
@@ -1019,9 +1125,9 @@ chain, err := httpsec.New(
 ```
 
 - `EnablePasskeys` alone serves registration and management for a signed-in session:
-  `POST /passkey/register/begin` and `/finish` (plus `/confirm` and `/confirm-email`
-  for a pending passkey), and `GET /passkey/credentials` with `POST .../rename` and `.../remove`.
-- `WithPasskeyPasswordlessLogin` is off unless given. It adds `POST /passkey/login/begin` and `/finish`,
+  `POST /passkeys/register/begin` and `/finish` (plus `/confirm` and `/confirm-email`
+  for a pending passkey), and `GET /passkeys` with `POST .../rename` and `.../remove`.
+- `WithPasskeyPasswordlessLogin` is off unless given. It adds `POST /sign-in/passkey/begin` and `/finish`,
   tied together by an `HttpOnly`, `Secure`, `SameSite=Strict` ceremony cookie, and signs a user in
   with a discoverable passkey alone. `PasswordlessTokens` names the token generator, and may be
   left out when the chain has form login to take one from.
@@ -1032,7 +1138,7 @@ chain, err := httpsec.New(
   `httpsec.WithPasskeyRegistrationResolving(kinds...)`; the four registration endpoints then serve it,
   and listing, rename and removal still refuse it. See the defaults table below.
 - The passkey is a second-factor method named `passkey`, beside TOTP: `EnableMFA` serves it at
-  `/mfa/begin/passkey` and `/mfa/verify/passkey`. A user-verified passkey login already meets the
+  `/mfa/challenge/passkey` and `/mfa/verify/passkey`. A user-verified passkey login already meets the
   second factor, so it is not asked again.
 - A passkey is also a binding route for a recovered or enrolment-only session, once the passkey
   method is among the enrolling methods.
@@ -1149,7 +1255,7 @@ caller is refused as authentication required.
 | Request | What it does | Default response |
 |---|---|---|
 | `GET /reauth/methods` | how the session's user may re-prove | `{"methods":[{"name":…,"channel":…,"begins":…}],"password":…}` |
-| `POST /reauth/begin/{method}` | begins a second factor that has a begin step (a passkey) | the method's begin data as JSON |
+| `POST /reauth/challenge/{method}` | begins a second factor that has a begin step (a passkey) | the method's begin data as JSON |
 | `POST /reauth/verify/{method}` | re-proves with a second factor | the login document: `access_token`, `refresh_token`, `valid_until` |
 | `POST /reauth/password` | re-proves with the password, read from the `password` form field or JSON member | the login document |
 
@@ -2563,7 +2669,7 @@ export function Orders({ accessToken }: { accessToken: string }) {
 
 // Sign-in: the response's token_type is "DPoP".
 export async function signIn(username: string, password: string): Promise<string> {
-  const res = await dpopFetch("/login", { method: "POST", body: new URLSearchParams({ username, password }) });
+  const res = await dpopFetch("/sign-in/password", { method: "POST", body: new URLSearchParams({ username, password }) });
   return (await res.json()).access_token;
 }
 ```

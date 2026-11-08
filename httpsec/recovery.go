@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/kartaladev/scrty/event"
@@ -72,17 +71,19 @@ type recoveryInterceptor struct {
 	// chain's form login.
 	recoverer *recovery.Recoverer
 
-	completePath string
-	startPath    string
+	// the five paths are where the options placed the endpoints, and where
+	// they answer under the base path once resolved.
+	completePath endpointPath
+	startPath    endpointPath
 	// startEnabled is whether the start endpoint is answered: only when the
 	// core enables issued codes, the one thing it sends.
 	startEnabled bool
-	finishPath   string
-	cancelPath   string
+	finishPath   endpointPath
+	cancelPath   endpointPath
 	// holds is whether the finish and cancel endpoints are answered: only
 	// when the core may hold a recovery (recovery.Recoverer.Holds).
 	holds     bool
-	codesPath string
+	codesPath endpointPath
 	// codesEnabled is whether the saved-code endpoints are answered: only
 	// when the core enables saved codes. The recovery gate serves them.
 	codesEnabled bool
@@ -133,18 +134,49 @@ func (i *recoveryInterceptor) signInOptions(ctx context.Context) []session.Creat
 	return opts
 }
 
+// resolvePaths places the five endpoints under base, from the paths the
+// options declared.
+func (i *recoveryInterceptor) resolvePaths(base string) {
+	i.completePath.resolve(base)
+	i.startPath.resolve(base)
+	i.finishPath.resolve(base)
+	i.cancelPath.resolve(base)
+	i.codesPath.resolve(base)
+}
+
+// declaredPaths reports the recovery paths the consumer set whose endpoint is
+// served, on the conditions endpoints and the gate's endpoints declare them:
+// the completion always, the start with issued codes, the finish and cancel
+// while a recovery may be held, and the saved-code path with saved codes. The
+// flags are settled by resolve, in build's wiring, so the start, finish,
+// cancel and codes paths are reported as settled by wiring, for the repeat
+// check's late pass alone; the completion, always served, is judged early.
+func (i *recoveryInterceptor) declaredPaths() []declaredPath {
+	paths := declarations(i.completePath)
+
+	if i.startEnabled {
+		paths = append(paths, wiringSettled(i.startPath)...)
+	}
+
+	if i.holds {
+		paths = append(paths, wiringSettled(i.finishPath, i.cancelPath)...)
+	}
+
+	if i.codesEnabled {
+		paths = append(paths, wiringSettled(i.codesPath)...)
+	}
+
+	return paths
+}
+
 // check reports the wiring faults only the assembled configuration can see:
-// the paths against each other and against the chain's login and logout, a
-// chain with no way to bind the recovered session, and a recovery with no
-// token generator to issue its credential through.
+// a chain with no way to bind the recovered session, and a recovery with no
+// token generator to issue its credential through. Paths that collide are
+// judged over the whole chain by the shared collision check.
 //
 // It runs once every option has been applied, so a form login, a logout or a
 // binding route enabled after EnableAccountRecovery still counts.
 func (i *recoveryInterceptor) check(c *config, option string) error {
-	if err := i.checkPaths(c, option); err != nil {
-		return err
-	}
-
 	if !c.hasRecoveryBinding() {
 		return newConfigError("%s needs a way to bind the recovered session: enable "+
 			"EnableMFAEnrolment, EnablePasskeys with the passkey method on EnableMFA, or a "+
@@ -162,49 +194,6 @@ func (i *recoveryInterceptor) check(c *config, option string) error {
 	}
 
 	return checkIssuingGenerator(c, option, "WithRecoveryTokens", i.tokens)
-}
-
-// endpointPaths are every path the recovery endpoints answer, named for a
-// configuration error.
-func (i *recoveryInterceptor) endpointPaths() []struct{ name, path string } {
-	return []struct{ name, path string }{
-		{"complete", i.completePath},
-		{"start", i.startPath},
-		{"finish", i.finishPath},
-		{"cancel", i.cancelPath},
-		{"codes", i.codesPath},
-	}
-}
-
-// checkPaths refuses a recovery path that is empty, lacks a leading "/", or
-// collides with another recovery path, the login path or the logout path.
-// A collision with a passkey path is the passkey endpoints' check.
-func (i *recoveryInterceptor) checkPaths(c *config, option string) error {
-	paths := i.endpointPaths()
-
-	taken := map[string]string{}
-	if l := c.formLogin(); l != nil {
-		taken[l.path] = "the login path"
-	}
-	if c.logoutPath != "" {
-		taken[c.logoutPath] = "the logout path"
-	}
-
-	for _, p := range paths {
-		if !strings.HasPrefix(p.path, "/") {
-			return newConfigError("%s was given the %s path %q, which does not start with \"/\" "+
-				"and so matches no request", option, p.name, p.path)
-		}
-
-		if other, ok := taken[p.path]; ok {
-			return newConfigError("%s was given %q as its %s path, which is already %s: whichever "+
-				"endpoint matched first would swallow the other", option, p.path, p.name, other)
-		}
-
-		taken[p.path] = "the recovery " + p.name + " path"
-	}
-
-	return nil
 }
 
 // formLogin returns the chain's form login, or nil when it has none.
@@ -407,13 +396,13 @@ func (i *recoveryInterceptor) Intercept(ex *Exchange, next Next) error {
 	}
 
 	switch path := ex.Request.Path(); {
-	case path == i.completePath:
+	case path == i.completePath.at():
 		return i.complete(ex)
-	case path == i.startPath && i.startEnabled:
+	case path == i.startPath.at() && i.startEnabled:
 		return i.start(ex)
-	case path == i.finishPath && i.holds:
+	case path == i.finishPath.at() && i.holds:
 		return i.finish(ex)
-	case path == i.cancelPath && i.holds:
+	case path == i.cancelPath.at() && i.holds:
 		return i.cancel(ex)
 	default:
 		return next(ex)
@@ -897,4 +886,30 @@ func readHoldToken(r Request, name string) (string, error) {
 	}
 
 	return values.Get(name), nil
+}
+
+// endpoints declares the recovery endpoints the core enables: the completion
+// always, the start with issued codes, the finish and cancel when it may hold
+// a recovery. The saved-code endpoints are answered at the gate's slot, and
+// the gate declares them.
+func (i *recoveryInterceptor) endpoints() []Endpoint {
+	const feature = "EnableAccountRecovery"
+
+	post := func(placedBy, id, path string) Endpoint {
+		return declare(feature, placedBy, id, path, MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodPost)
+	}
+
+	eps := []Endpoint{post("WithRecoveryCompletePath", OperationRecoveryComplete, i.completePath.at())}
+
+	if i.startEnabled {
+		eps = append(eps, post("WithRecoveryStartPath", OperationRecoveryStart, i.startPath.at()))
+	}
+
+	if i.holds {
+		eps = append(eps,
+			post("WithRecoveryFinishPath", OperationRecoveryFinish, i.finishPath.at()),
+			post("WithRecoveryCancelPath", OperationRecoveryCancel, i.cancelPath.at()))
+	}
+
+	return eps
 }

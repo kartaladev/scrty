@@ -122,7 +122,7 @@ func (p *testProvider) Provider(name string) oidc.Provider {
 		Issuer:       p.Issuer(),
 		ClientID:     "client-" + name,
 		ClientSecret: "secret-" + name,
-		RedirectURL:  "https://app.example/login/oauth2/callback/" + name,
+		RedirectURL:  "https://app.example/sso/callback/" + name,
 	}
 }
 

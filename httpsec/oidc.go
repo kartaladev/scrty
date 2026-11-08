@@ -28,19 +28,19 @@ import (
 const (
 	// DefaultOIDCAuthorizePath is the prefix a login is started under, by a
 	// GET on the prefix followed by the provider's name.
-	DefaultOIDCAuthorizePath = "/oauth2/authorization/"
+	DefaultOIDCAuthorizePath = "/sso/login/"
 
 	// DefaultOIDCCallbackPath is the prefix the provider redirects back to,
 	// followed by the provider's name. A provider's registered redirect URL
 	// has to point here.
-	DefaultOIDCCallbackPath = "/login/oauth2/callback/"
+	DefaultOIDCCallbackPath = "/sso/callback/"
 
 	// DefaultOIDCHandoffPath is where a handoff code is redeemed, by POST.
-	DefaultOIDCHandoffPath = "/login/oauth2/handoff"
+	DefaultOIDCHandoffPath = "/sso/handoff"
 
 	// DefaultOIDCBackchannelPath is the prefix a provider delivers
 	// back-channel logout tokens to, by POST, followed by the provider's name.
-	DefaultOIDCBackchannelPath = "/logout/oauth2/backchannel/"
+	DefaultOIDCBackchannelPath = "/sso/backchannel-logout/"
 
 	// DefaultOIDCFlowCookieName is the cookie that binds a callback to the
 	// browser that started the login.
@@ -206,16 +206,21 @@ type oidcInterceptor struct {
 	handoffCountRefusalsSet bool
 	handoffPathSet          bool
 
+	// redirectCheckWaived records WithoutOIDCRedirectPathCheck.
+	redirectCheckWaived bool
+
 	redirects        *origin.Allowlist
 	allowedRedirects []string
 	allowedOrigins   []string
 
 	now func() time.Time
 
-	authorizePath   string
-	callbackPath    string
-	handoffPath     string
-	backchannelPath string
+	// The four paths are where the options placed the endpoints, and where
+	// they answer under the base path once resolved.
+	authorizePath   endpointPath
+	callbackPath    endpointPath
+	handoffPath     endpointPath
+	backchannelPath endpointPath
 	cookieName      string
 	bodyLimit       int64
 
@@ -290,11 +295,11 @@ func (i *oidcInterceptor) Intercept(ex *Exchange, next Next) error {
 		// Redemption spends a credential, so it is POST-only: nothing a link,
 		// an image tag or a prefetch triggers may reach it. With redemption
 		// off no code is ever issued, and the path is the application's.
-		if i.redeemer != nil && path == i.handoffPath {
+		if i.redeemer != nil && path == i.handoffPath.at() {
 			return i.redeem(ex)
 		}
 
-		if provider := providerSegment(path, i.backchannelPath); provider != "" {
+		if provider := providerSegment(path, i.backchannelPath.at()); provider != "" {
 			return i.backchannel(ex, provider)
 		}
 
@@ -305,13 +310,35 @@ func (i *oidcInterceptor) Intercept(ex *Exchange, next Next) error {
 		return next(ex)
 	}
 
-	if provider := providerSegment(path, i.authorizePath); provider != "" {
+	if provider := providerSegment(path, i.authorizePath.at()); provider != "" {
 		return i.authorize(ex, provider)
 	}
 
-	if provider := providerSegment(path, i.callbackPath); provider != "" {
+	if provider := providerSegment(path, i.callbackPath.at()); provider != "" {
 		return i.callback(ex, provider)
 	}
 
 	return next(ex)
+}
+
+// endpoints declares federated login: starting it and the callback, each the
+// prefix and the provider's name, the handoff while redemption is on, and the
+// back-channel logout.
+func (i *oidcInterceptor) endpoints() []Endpoint {
+	const feature = "EnableOIDCLogin"
+
+	eps := []Endpoint{
+		declare(feature, "WithOIDCAuthorizePath", OperationSSOLogin, withSegment(i.authorizePath.at(), "provider"),
+			MatchSegment, OtherMethodsPassThrough, RequiresNothing, http.MethodGet),
+		declare(feature, "WithOIDCCallbackPath", OperationSSOCallback, withSegment(i.callbackPath.at(), "provider"),
+			MatchSegment, OtherMethodsPassThrough, RequiresNothing, http.MethodGet),
+	}
+
+	if i.redeemer != nil {
+		eps = append(eps, declare(feature, "WithOIDCHandoffPath", OperationSSOHandoff, i.handoffPath.at(),
+			MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodPost))
+	}
+
+	return append(eps, declare(feature, "WithOIDCBackchannelLogoutPath", OperationSSOBackchannelLogout,
+		withSegment(i.backchannelPath.at(), "provider"), MatchSegment, OtherMethodsPassThrough, RequiresNothing, http.MethodPost))
 }

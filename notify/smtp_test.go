@@ -541,7 +541,7 @@ func TestSMTPSenderLogsCarryNoBody(t *testing.T) {
 	srv := startScriptedServer(t, scriptRejectAt("DATA"))
 	s := newTestSMTPSender(t, srv, notify.WithSMTPLogger(logger))
 
-	link := "https://app.example.com/login/magic/confirm?token=abc123secret"
+	link := "https://app.example.com/sign-in/magic-link/confirm?token=abc123secret"
 	require.Error(t, s.Send(t.Context(), notify.Message{
 		To:       "ada@example.com",
 		Subject:  "Sign in",

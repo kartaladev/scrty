@@ -140,7 +140,9 @@ type sessionRenewal struct {
 	limiter ratelimit.Limiter
 	logger  *slog.Logger
 
-	path    string
+	// path is the endpoint's path: where the options placed it, and where it
+	// answers under the base path once resolved.
+	path    endpointPath
 	grace   time.Duration
 	respond RenewalResponder
 
@@ -152,7 +154,7 @@ type sessionRenewal struct {
 // answers reports whether r is a renewal: POST on exactly the endpoint's path.
 // A renewal changes state, so a link or a prefetch never triggers one.
 func (r *sessionRenewal) answers(req Request) bool {
-	return req.Method() == http.MethodPost && req.Path() == r.path
+	return req.Method() == http.MethodPost && req.Path() == r.path.at()
 }
 
 // Intercept renews the request's session on a renewal, and passes everything
@@ -611,7 +613,7 @@ func EnableSessionRenewal(d SessionRenewalDeps, opts ...SessionRenewalOption) Op
 			users:    d.Users,
 			tokens:   d.Tokens,
 			now:      c.now,
-			path:     DefaultSessionRenewalPath,
+			path:     defaultPath(DefaultSessionRenewalPath),
 			grace:    defaultRenewalGrace,
 			respond:  writeRenewalResult,
 		}
@@ -637,10 +639,6 @@ func EnableSessionRenewal(d SessionRenewalDeps, opts ...SessionRenewalOption) Op
 			}
 			if err := requireDep(option, "user loader", d.Users); err != nil {
 				return err
-			}
-			if c.logoutPath != "" && c.logoutPath == r.path {
-				return newConfigError("%s's path %q is the logout path, so a POST there would "+
-					"renew the session it meant to end", option, r.path)
 			}
 
 			limiter, err := c.flowLimiter(option, r.limiter, sessionRenewalFlow, defaultRenewalLimit,
@@ -745,17 +743,18 @@ func WithRenewalLimiter(l ratelimit.Limiter) SessionRenewalOption {
 
 // WithRenewalPath answers renewals on path instead.
 //
-// Default: DefaultSessionRenewalPath. An empty path is refused, because it
+// Default: DefaultSessionRenewalPath, "/session/renewal". The path is within the
+// base path (WithBasePath), and a client renews at the resolved path. An empty
+// path is refused, because it
 // would answer nothing; so is the logout path, when the chain is built. A
 // client that renews posts to the path chosen here, so change it on both sides.
 func WithRenewalPath(path string) SessionRenewalOption {
 	return func(r *sessionRenewal) error {
-		if path == "" {
-			return newConfigError("WithRenewalPath was given no path, so the renewal endpoint " +
-				"would answer nothing")
+		if err := checkEndpointPath("WithRenewalPath", path); err != nil {
+			return err
 		}
 
-		r.path = path
+		r.path.give("WithRenewalPath", path)
 
 		return nil
 	}
@@ -839,5 +838,13 @@ func WithRenewalLifetime(fn func(*Exchange, *session.Session) time.Duration) Ses
 		r.lifetime = fn
 
 		return nil
+	}
+}
+
+// endpoints declares session renewal.
+func (r *sessionRenewal) endpoints() []Endpoint {
+	return []Endpoint{
+		declare("EnableSessionRenewal", "WithRenewalPath", OperationSessionRenewal, r.path.at(),
+			MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodPost),
 	}
 }

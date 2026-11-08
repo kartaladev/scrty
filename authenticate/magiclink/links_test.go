@@ -445,7 +445,7 @@ func TestRequest(t *testing.T) {
 
 				assert.Equal(t, "https", u.Scheme)
 				assert.Equal(t, "app.example.com", u.Host)
-				assert.Equal(t, "/login/magic/confirm", u.Path)
+				assert.Equal(t, "/sign-in/magic-link/confirm", u.Path)
 				assert.NotEmpty(t, u.Query().Get("token"))
 				assert.Equal(t, "/dashboard?tab=a&b=c", u.Query().Get("next"),
 					"the target is query-escaped, so its own separators survive")
@@ -510,7 +510,7 @@ func TestRequest(t *testing.T) {
 				require.Equal(t, 1, sender.Count())
 				msg := sender.Last()
 
-				assert.Contains(t, msg.TextBody, "https://app.example.com/login/magic/confirm?")
+				assert.Contains(t, msg.TextBody, "https://app.example.com/sign-in/magic-link/confirm?")
 				assert.Regexp(t, `(?i)expires`, msg.TextBody)
 				assert.Regexp(t, `(?i)once`, msg.TextBody)
 				assert.Empty(t, msg.From, "the sender's own configured address is used")

@@ -38,13 +38,13 @@ func TestHTTPRequest(t *testing.T) {
 		{
 			name: "method, path, header and query",
 			build: func(t *testing.T) *http.Request {
-				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/login?next=/home", nil)
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/sign-in/password?next=/home", nil)
 				req.Header.Set("Authorization", "Bearer abc")
 				return req
 			},
 			assert: func(t *testing.T, r httpsec.Request) {
 				assert.Equal(t, http.MethodPost, r.Method())
-				assert.Equal(t, "/login", r.Path())
+				assert.Equal(t, "/sign-in/password", r.Path())
 				assert.Equal(t, "Bearer abc", r.Header("Authorization"))
 				assert.Equal(t, "/home", r.Query("next"))
 			},
@@ -108,7 +108,7 @@ func TestHTTPRequest(t *testing.T) {
 		{
 			name: "form value",
 			build: func(t *testing.T) *http.Request {
-				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/login",
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, httpsec.DefaultLoginPath,
 					strings.NewReader("username=alice&password=s3cret"))
 				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 				return req
@@ -122,7 +122,7 @@ func TestHTTPRequest(t *testing.T) {
 			// adapter the library provides.
 			name: "a URL-encoded posted field wins over the same field in the query",
 			build: func(t *testing.T) *http.Request {
-				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/login?x=query",
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/sign-in/password?x=query",
 					strings.NewReader("x=body"))
 				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 				return req
@@ -138,7 +138,7 @@ func TestHTTPRequest(t *testing.T) {
 			name: "a multipart posted field wins over the same field in the query",
 			build: func(t *testing.T) *http.Request {
 				body, contentType := multipartField(t, "x", "body")
-				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/login?x=query",
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/sign-in/password?x=query",
 					strings.NewReader(body))
 				req.Header.Set("Content-Type", contentType)
 				return req
@@ -150,7 +150,7 @@ func TestHTTPRequest(t *testing.T) {
 		{
 			name: "a field only in the query is read",
 			build: func(t *testing.T) *http.Request {
-				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/login?x=query", nil)
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/sign-in/password?x=query", nil)
 				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 				return req
 			},
@@ -164,7 +164,7 @@ func TestHTTPRequest(t *testing.T) {
 			// the empty posted value rather than falling through to the query.
 			name: "an empty posted value still wins over a non-empty query value, matching fiber",
 			build: func(t *testing.T) *http.Request {
-				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/login?x=query",
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/sign-in/password?x=query",
 					strings.NewReader("x="))
 				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 				return req
@@ -199,7 +199,7 @@ func TestHTTPRequestFormValueBodyOrder(t *testing.T) {
 		{
 			name: "Body after FormValue still reads the full posted body",
 			build: func(t *testing.T) *http.Request {
-				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/login",
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, httpsec.DefaultLoginPath,
 					strings.NewReader("x=body"))
 				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 				return req
@@ -215,7 +215,7 @@ func TestHTTPRequestFormValueBodyOrder(t *testing.T) {
 		{
 			name: "FormValue after Body still reads the posted field",
 			build: func(t *testing.T) *http.Request {
-				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/login",
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, httpsec.DefaultLoginPath,
 					strings.NewReader("x=body"))
 				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 				return req
@@ -231,7 +231,7 @@ func TestHTTPRequestFormValueBodyOrder(t *testing.T) {
 		{
 			name: "a GET with a body reads the query, and the body stays readable",
 			build: func(t *testing.T) *http.Request {
-				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/login?x=query",
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/sign-in/password?x=query",
 					strings.NewReader("x=body"))
 				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 				return req
@@ -248,7 +248,7 @@ func TestHTTPRequestFormValueBodyOrder(t *testing.T) {
 			name: "multipart FormValue after Body still reads the posted field",
 			build: func(t *testing.T) *http.Request {
 				body, contentType := multipartField(t, "x", "body")
-				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/login", strings.NewReader(body))
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, httpsec.DefaultLoginPath, strings.NewReader(body))
 				req.Header.Set("Content-Type", contentType)
 				return req
 			},
@@ -823,7 +823,7 @@ func TestHTTPRequestBody(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/login", strings.NewReader(tc.body))
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, httpsec.DefaultLoginPath, strings.NewReader(tc.body))
 			tc.assert(t, req, httpsec.NewHTTPRequest(req))
 		})
 	}

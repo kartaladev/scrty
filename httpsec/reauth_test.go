@@ -401,7 +401,7 @@ func TestEnableReauthentication(t *testing.T) {
 			name: "a GET to a begin path passes through",
 			wire: func(*reauthHarness) {},
 			request: func(r *http.Request) *http.Request {
-				return get(r, httpsec.DefaultReauthenticationPrefix+"/begin/totp")
+				return get(r, httpsec.DefaultReauthenticationPrefix+"/challenge/totp")
 			},
 			assert: passed,
 		},
@@ -443,7 +443,7 @@ func TestEnableReauthentication(t *testing.T) {
 			name: "a POST under the begin path is the endpoint's",
 			wire: func(*reauthHarness) {},
 			request: func(r *http.Request) *http.Request {
-				return formRequest(r.Context(), httpsec.DefaultReauthenticationPrefix+"/begin/passkey", "")
+				return formRequest(r.Context(), httpsec.DefaultReauthenticationPrefix+"/challenge/passkey", "")
 			},
 			assert: claimed,
 		},
@@ -489,50 +489,6 @@ func TestEnableReauthentication(t *testing.T) {
 				h.reauthOpts = []httpsec.ReauthenticationOption{httpsec.RequireSecondFactorForReauthentication()}
 			},
 			assert: refusedConfig("RequireSecondFactorForReauthentication"),
-		},
-		{
-			// "Empty prefix".
-			name:   "an empty prefix",
-			wire:   with(httpsec.WithReauthenticationPrefix("")),
-			assert: refusedConfig("WithReauthenticationPrefix was given no prefix"),
-		},
-		{
-			name:   "a prefix that matches no request path",
-			wire:   with(httpsec.WithReauthenticationPrefix("reauth")),
-			assert: refusedConfig(`WithReauthenticationPrefix was given "reauth"`),
-		},
-		{
-			name:   "the root prefix",
-			wire:   with(httpsec.WithReauthenticationPrefix("/")),
-			assert: refusedConfig("root path"),
-		},
-		{
-			// "Prefix collides with MFA verify".
-			name:   "a prefix under the MFA verify prefix",
-			wire:   with(httpsec.WithReauthenticationPrefix(httpsec.DefaultMFAVerifyPrefix)),
-			assert: refusedConfig(`the MFA verify prefix "/mfa/verify"`),
-		},
-		{
-			name:   "a prefix under the MFA begin prefix",
-			wire:   with(httpsec.WithReauthenticationPrefix(httpsec.DefaultMFABeginPrefix + "/again")),
-			assert: refusedConfig(`the MFA begin prefix "/mfa/begin"`),
-		},
-		{
-			// The re-proof begin and verify paths of the prefix /mfa are the
-			// MFA begin and verify prefixes themselves.
-			name: "a re-proof prefix whose paths are the MFA prefixes",
-			wire: with(httpsec.WithReauthenticationPrefix("/mfa")),
-			assert: refusedConfig(`begin path "/mfa/begin" collides with ` +
-				`the MFA begin prefix "/mfa/begin"`),
-		},
-		{
-			// Logout moved under the re-proof verify prefix would be answered
-			// as a re-proof, whichever option came first.
-			name: "the logout path under the re-proof verify prefix",
-			wire: func(h *reauthHarness) {
-				h.logoutOpts = []httpsec.LogoutOption{httpsec.WithLogoutRequestPath("/reauth/verify/out")}
-			},
-			assert: refusedConfig(`the logout path "/reauth/verify/out"`),
 		},
 		{
 			// Form login matches its path exactly, so a prefix that only
@@ -586,104 +542,6 @@ func TestEnableReauthentication(t *testing.T) {
 				require.NoError(t, err)
 				assert.False(t, out.handlerRan, "logout answered, not the application")
 			},
-		},
-		{
-			name: "the form login path as the password path",
-			wire: func(h *reauthHarness) {
-				h.loginOpts = []httpsec.LoginOption{httpsec.WithLoginRequestPath("/reauth/password")}
-			},
-			assert: refusedConfig(`the form login path "/reauth/password"`),
-		},
-		{
-			// The trailing slash is dropped from the prefix, so it collides as
-			// its slash-free form does.
-			name:   "a prefix with a trailing slash under the MFA verify prefix",
-			wire:   with(httpsec.WithReauthenticationPrefix(httpsec.DefaultMFAVerifyPrefix + "/")),
-			assert: refusedConfig(`the MFA verify prefix "/mfa/verify"`),
-		},
-		{
-			name:   "a prefix that is the passkey registration prefix",
-			wire:   with(httpsec.WithReauthenticationPrefix(httpsec.DefaultPasskeyRegistrationPrefix)),
-			setup:  enablePasskeys(),
-			assert: refusedConfig(`the passkey registration prefix "/passkey/register"`),
-		},
-		{
-			name:   "a prefix that is the passkey credentials prefix",
-			wire:   with(httpsec.WithReauthenticationPrefix(httpsec.DefaultPasskeyCredentialsPrefix)),
-			setup:  enablePasskeys(),
-			assert: refusedConfig(`the passkey credentials prefix "/passkey/credentials"`),
-		},
-		{
-			name:   "a prefix that is the passwordless login prefix",
-			wire:   with(httpsec.WithReauthenticationPrefix(httpsec.DefaultPasswordlessPrefix)),
-			setup:  enablePasskeys(httpsec.WithPasskeyPasswordlessLogin()),
-			assert: refusedConfig(`the passwordless begin path`),
-		},
-		{
-			name:   "a prefix that is the MFA enrolment prefix",
-			wire:   with(httpsec.WithReauthenticationPrefix("/mfa/enrol")),
-			setup:  enableEnrolment(),
-			assert: refusedConfig(`the MFA enrolment begin prefix "/mfa/enrol/begin"`),
-		},
-		{
-			name: "the renewal path is the password path",
-			wire: func(h *reauthHarness) {
-				h.chainOpts = append(h.chainOpts, httpsec.EnableSessionRenewal(
-					httpsec.SessionRenewalDeps{Sessions: h.sessions, Users: h.users, Tokens: h.tokens},
-					httpsec.WithRenewalPath("/reauth/password")))
-			},
-			assert: refusedConfig(`the session renewal path "/reauth/password"`),
-		},
-		{
-			name: "the password-change endpoint is the password path",
-			wire: func(h *reauthHarness) {
-				h.chainOpts = append(h.chainOpts, httpsec.EnablePasswordChangeGate(h.sessions,
-					httpsec.WithPasswordChangeEndpoint("/reauth/password",
-						func(*httpsec.Exchange) error { return nil })))
-			},
-			assert: refusedConfig(`the password-change endpoint "/reauth/password"`),
-		},
-		{
-			name:   "the recovery start path is the password path",
-			wire:   func(*reauthHarness) {},
-			setup:  enableRecovery(httpsec.WithRecoveryStartPath("/reauth/password")),
-			assert: refusedConfig(`the recovery start path "/reauth/password"`),
-		},
-		{
-			name:   "the magic-link request path is the password path",
-			wire:   func(*reauthHarness) {},
-			setup:  enableMagicLink(httpsec.WithMagicLinkRequestPath("/reauth/password")),
-			assert: refusedConfig(`the magic-link request path "/reauth/password"`),
-		},
-		{
-			name:   "the magic-link consume path is under the verify prefix",
-			wire:   func(*reauthHarness) {},
-			setup:  enableMagicLink(httpsec.WithMagicLinkConsumePath("/reauth/verify/link")),
-			assert: refusedConfig(`the magic-link consume path "/reauth/verify/link"`),
-		},
-		{
-			name:   "a prefix under the OIDC authorize prefix",
-			wire:   with(httpsec.WithReauthenticationPrefix("/oauth2/authorization")),
-			setup:  enableOIDC(),
-			assert: refusedConfig(`the OIDC authorize prefix "/oauth2/authorization/"`),
-		},
-		{
-			name:   "the OIDC handoff path is the password path",
-			wire:   func(*reauthHarness) {},
-			setup:  enableOIDC(httpsec.WithOIDCHandoffPath("/reauth/password")),
-			assert: refusedConfig(`the OIDC handoff path "/reauth/password"`),
-		},
-		{
-			name: "the listing path is the MFA listing path",
-			wire: func(h *reauthHarness) {
-				h.mfaOpts = []httpsec.MFAOption{
-					httpsec.WithMFAVerifyPrefix("/2fa/verify"),
-					httpsec.WithMFABeginPrefix("/2fa/begin"),
-					httpsec.WithMFAMethodListing(),
-				}
-				h.reauthOpts = []httpsec.ReauthenticationOption{httpsec.WithReauthenticationPrefix("/mfa")}
-			},
-			assert: refusedConfig(`the MFA listing path "` + httpsec.DefaultMFAMethodListingPath + `"`),
 		},
 		{
 			// "Enabled twice".
@@ -823,24 +681,6 @@ func TestEnableReauthentication(t *testing.T) {
 				h.reauthOpts = append(h.reauthOpts,
 					httpsec.WithReauthenticationChallengeStore(newReauthMemoryStore(t, h)))
 			},
-			assert: func(t *testing.T, _ served, err error) { require.NoError(t, err) },
-		},
-		{
-			name: "the key set endpoint path is the listing path",
-			wire: func(h *reauthHarness) {
-				h.reauthOpts = []httpsec.ReauthenticationOption{httpsec.WithReauthenticationPrefix("/keys")}
-			},
-			setup: func(t *testing.T, h *reauthHarness) {
-				h.chainOpts = append(h.chainOpts, httpsec.EnableJWKSEndpoint(
-					NewMockKeySetProvider(gomock.NewController(t)),
-					httpsec.WithJWKSEndpointPath("/keys/methods")))
-			},
-			assert: refusedConfig(`the key set endpoint "/keys/methods"`),
-		},
-		{
-			// The segment boundary: "/mfa/verifyx" is not under "/mfa/verify".
-			name:   "a prefix that only starts like the MFA verify prefix",
-			wire:   with(httpsec.WithReauthenticationPrefix(httpsec.DefaultMFAVerifyPrefix + "x")),
 			assert: func(t *testing.T, _ served, err error) { require.NoError(t, err) },
 		},
 		{
@@ -1476,7 +1316,7 @@ func TestReauthChallengeStoreSharedAcrossChains(t *testing.T) {
 
 	tok := mfaTokenFor(s.ID)
 
-	begun := serve(t, first, bearerPost(t.Context(), reauthBeginPasskey, tok))
+	begun := serve(t, first, bearerPost(t.Context(), reauthChallengePasskey, tok))
 	require.NoError(t, begun.err)
 
 	out := serve(t, second, bearerJSON(t.Context(), reauthVerifyPasskey, tok, answer(issuedChallenge(t, begun))))
