@@ -214,18 +214,6 @@ func EnableMFA(methods []mfa.Method, opts ...MFAOption) Option {
 			}
 		}
 
-		// Every POST under either prefix is that endpoint's own, so two
-		// prefixes that overlap would leave one endpoint answering the
-		// other's requests.
-		if overlap(i.declaredBeginPrefix, i.declaredVerifyPrefix) {
-			return newConfigError("%s's verify prefix %q and begin prefix %q overlap, so one "+
-				"endpoint would answer the other's requests", option, i.declaredVerifyPrefix, i.declaredBeginPrefix)
-		}
-
-		if err := i.checkListing(option); err != nil {
-			return err
-		}
-
 		c.enable(option, func() error {
 			if c.sessions == nil {
 				return newConfigError("%s needs a session manager to rotate the handle with, "+

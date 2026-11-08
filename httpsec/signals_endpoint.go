@@ -267,3 +267,12 @@ func streamByCookie(ex *Exchange) bool {
 
 	return ex.bearerCredential == "" || strings.TrimSpace(token) != ex.bearerCredential
 }
+
+// endpoints declares the signal stream, which answers 405 to any method but
+// GET on its path.
+func (e *sessionSignals) endpoints() []Endpoint {
+	return []Endpoint{
+		declare("EnableSessionSignals", "SessionSignals.Path", OperationSessionSignals, e.path,
+			MatchExact, Refused, RequiresSession, http.MethodGet),
+	}
+}

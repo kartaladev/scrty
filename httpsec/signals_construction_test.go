@@ -338,59 +338,6 @@ func TestSessionSignals_Construction(t *testing.T) {
 			assert: resolved(nil),
 		},
 		{
-			name:    "the path session management answers is refused",
-			signals: httpsec.SessionSignals{Path: "/sessions"},
-			opts: func(_ *testing.T, f *constructionFixture) []httpsec.Option {
-				return []httpsec.Option{f.bearer, httpsec.EnableSessionManagement()}
-			},
-			assert: refusedNamingField("SessionSignals.Path", "/sessions"),
-		},
-		{
-			name:    "a path under session management's prefix is refused",
-			signals: httpsec.SessionSignals{Path: "/sessions/signals"},
-			opts: func(_ *testing.T, f *constructionFixture) []httpsec.Option {
-				return []httpsec.Option{f.bearer, httpsec.EnableSessionManagement()}
-			},
-			assert: refusedNamingField("SessionSignals.Path", "/sessions"),
-		},
-		{
-			name:    "the logout path is refused",
-			signals: httpsec.SessionSignals{Path: httpsec.DefaultLogoutPath},
-			opts: func(_ *testing.T, f *constructionFixture) []httpsec.Option {
-				return []httpsec.Option{f.bearer, httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: f.sessions})}
-			},
-			assert: refusedNamingField("SessionSignals.Path", httpsec.DefaultLogoutPath),
-		},
-		{
-			name: "the renewal path is refused",
-			opts: func(_ *testing.T, f *constructionFixture) []httpsec.Option {
-				return []httpsec.Option{
-					f.bearer,
-					httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Users: f.users}),
-				}
-			},
-			signals: httpsec.SessionSignals{Path: httpsec.DefaultSessionRenewalPath},
-			assert:  refusedNamingField("SessionSignals.Path", httpsec.DefaultSessionRenewalPath),
-		},
-		{
-			name:    "the re-authentication prefix is refused",
-			signals: httpsec.SessionSignals{Path: httpsec.DefaultReauthenticationPrefix},
-			opts: func(t *testing.T, f *constructionFixture) []httpsec.Option {
-				t.Helper()
-
-				return []httpsec.Option{
-					f.bearer,
-					httpsec.EnableFormLogin(httpsec.FormLoginDeps{
-						Authenticator: NewMockAuthenticator(gomock.NewController(t)),
-						Sessions:      f.sessions,
-						Attempts:      NewMockAttemptStore(gomock.NewController(t)),
-					}),
-					httpsec.EnableReauthentication(),
-				}
-			},
-			assert: refusedNamingField("SessionSignals.Path", httpsec.DefaultReauthenticationPrefix),
-		},
-		{
 			name: "enabled twice is refused",
 			opts: func(_ *testing.T, f *constructionFixture) []httpsec.Option {
 				return []httpsec.Option{f.bearer, httpsec.EnableSessionSignals(httpsec.SessionSignals{})}

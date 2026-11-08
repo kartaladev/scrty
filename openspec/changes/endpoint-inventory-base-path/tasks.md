@@ -65,14 +65,14 @@ Every task is test-first: write the failing test, run it, confirm it fails for t
 
 ## 4. The endpoint inventory (`http-security-chain`)
 
-- [ ] 4.1 Add `Endpoint`, `PathMatch`, `MethodPolicy`, `Requirement` and `(*Chain).Endpoints()`:
+- [x] 4.1 Add `Endpoint`, `PathMatch`, `MethodPolicy`, `Requirement` and `(*Chain).Endpoints()`:
   - every path-answering built-in declares one entry per operation, with D6's operation identifier, `PlacedBy` and `Requires`; `New` collects them after resolution, in slot order and then registration order;
   - the discovery documents are listed at the paths they are served on;
   - tests cover each spec scenario: enabled endpoints under `/auth`, disabled ones absent, discovery entries, two entries on the recovery codes path, a consumer interceptor on `/status` absent, a modified returned slice or entry `Methods` not affecting a fresh list or a later request, identical identifiers with and without a base path;
   - a table pins every operation's identifier, methods, match, other-method policy and `Requires`.
 
   (D6; "The chain lists the endpoints it answers", every scenario but "Every entry is answered".) Verify with `go test -race -count=1 -run 'TestChainEndpoints' ./httpsec/`
-- [ ] 4.2 Add the drift guard. A test builds a chain with every built-in enabled under `/auth` (the provider's prerequisites included), and for each entry:
+- [x] 4.2 Add the drift guard. A test builds a chain with every built-in enabled under `/auth` (the provider's prerequisites included), and for each entry:
   - sends each listed method and path, with a sample segment where the path reads one, and asserts its endpoint answers and the handler is not reached;
   - sends a near-miss (a sibling path), the parent path and an unlisted method, and asserts each passes through or is refused as the entry's other-method policy says;
   - cancels the signal stream's request so the test does not hang.
@@ -87,12 +87,12 @@ Every task is test-first: write the failing test, run it, confirm it fails for t
   - tests cover each spec scenario: two features on `/signin`, re-authentication under the MFA verify prefix, MFA challenge and verify on `/mfa/step`, password sign-in on `/oauth2/token` beside the provider, recovery codes shared, default session management and default consents built, two provider overrides on `/oauth2/me` refused, logout under the MFA verify prefix with its explanation, and the key set on the OpenID configuration's path under `/auth`.
 
   (D7; "Colliding endpoint paths fail at construction", every scenario.) Verify with `go test -race -count=1 -run 'TestChainPathCollisions' ./httpsec/`
-- [ ] 5.2 Retire the collision checks in `mfa_options.go`, `mfa_verify.go`, `mfa_enrol.go`, `passkey.go`, `recovery.go`, `session_renewal.go` and `magiclink.go`:
+- [x] 5.2 Retire the collision checks in `mfa_options.go`, `mfa_verify.go`, `mfa_enrol.go`, `passkey.go`, `recovery.go`, `session_renewal.go` and `magiclink.go`:
   - their tests in `mfa_options_test.go`, `mfa_enrol_options_test.go`, `mfa_verify_test.go`, `passkey_login_test.go`, `passkey_register_test.go`, `recovery_options_test.go`, `session_renewal_test.go`, `magiclink_options_test.go`, `logout_test.go` and `password_change_test.go` move to 5.1's table, assertions kept except the error wording;
   - red step: temporarily make the shared check skip one moved pair and watch its case fail, then restore it.
 
   (D7; `passkey-authentication` "Passkey wiring mistakes fail at construction", `account-recovery` "Recovery is off by default, and its wiring mistakes fail at construction", `http-security-chain` "An opt-in endpoint lists the methods a pending session can use", each MODIFIED.) Verify with `go test -race -count=1 ./httpsec/` and `golangci-lint run ./httpsec/`
-- [ ] 5.3 Retire the collision checks in `signals.go`, `reauth_options.go` (`checkPaths`, `claimedPaths`, `collides`), `oidc_options.go` and `oidc_provider.go` (`settlePaths` and `routers` duplicate refusals, `checkCollisions`, `checkConsentSubtree`, `oidcForeignPaths`, `oidcForeignPrefixes`):
+- [x] 5.3 Retire the collision checks in `signals.go`, `reauth_options.go` (`checkPaths`, `claimedPaths`, `collides`), `oidc_options.go` and `oidc_provider.go` (`settlePaths` and `routers` duplicate refusals, `checkCollisions`, `checkConsentSubtree`, `oidcForeignPaths`, `oidcForeignPrefixes`):
   - their tests in `signals_construction_test.go`, `reauth_test.go`, `oidc_options_test.go` and `oidc_provider_test.go` move to 5.1's table;
   - every changed verdict in D13 gets its own row, among them a re-authentication prefix of `/passkeys/register` now built, listed in the report;
   - same red step as 5.2.

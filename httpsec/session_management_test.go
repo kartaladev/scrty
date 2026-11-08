@@ -323,13 +323,12 @@ func TestSessionManagement(t *testing.T) {
 			},
 		},
 		{
-			name: "a malformed handle, an unknown one and an extra segment are not found",
+			name: "a malformed handle and an unknown one are not found",
 			assert: func(t *testing.T, f *managementFixture) {
 				current := f.signIn(t, "u-1")
 				other := f.signIn(t, "u-1")
 
-				for _, handle := range []string{"not-a-handle", id.Nil.String(), must.Must(id.NewV7Generator().NewID()).String(),
-					other.FamilyID.String() + "/x"} {
+				for _, handle := range []string{"not-a-handle", id.Nil.String(), must.Must(id.NewV7Generator().NewID()).String()} {
 					out := f.request(t, http.MethodDelete, "/sessions/"+handle, current.ID)
 					noStore(t, out)
 					require.ErrorIs(t, out.err, httpsec.ErrSessionHandleNotFound, handle)
@@ -423,17 +422,23 @@ func TestSessionManagement(t *testing.T) {
 			},
 		},
 		{
-			name: "other paths and methods pass through",
+			name: "other paths and methods pass through, a trailing slash, an empty handle and two segments among them",
 			assert: func(t *testing.T, f *managementFixture) {
 				current := f.signIn(t, "u-1")
+				other := f.signIn(t, "u-1")
 
 				for _, r := range [][2]string{
 					{http.MethodGet, "/orders"}, {http.MethodPost, "/sessions"}, {http.MethodGet, "/sessionsx"},
+					{http.MethodDelete, "/sessions/"}, {http.MethodGet, "/sessions/"},
+					{http.MethodDelete, "/sessions/" + other.FamilyID.String() + "/x"},
+					{http.MethodDelete, "/sessions/a/b"},
 				} {
 					out := f.request(t, r[0], r[1], current.ID)
-					require.NoError(t, out.err)
+					require.NoError(t, out.err, r)
 					assert.True(t, out.handlerRan, r)
 				}
+
+				assert.True(t, f.loads(t, other), "nothing was ended")
 			},
 		},
 		{

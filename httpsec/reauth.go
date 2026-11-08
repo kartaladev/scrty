@@ -378,3 +378,22 @@ func writeReauthResult(ex *Exchange, r ReauthenticationResult) error {
 
 	return writeSuccessDocument(ex, body)
 }
+
+// endpoints declares the re-authentication listing and steps; the begin and
+// verify steps answer every POST under their paths.
+func (i *reauthInterceptor) endpoints() []Endpoint {
+	const feature, placedBy = "EnableReauthentication", "WithReauthenticationPrefix"
+
+	p := i.paths()
+
+	return []Endpoint{
+		declare(feature, placedBy, OperationReauthMethods, p.methods,
+			MatchExact, PassThrough, RequiresSession, http.MethodGet),
+		declare(feature, placedBy, OperationReauthChallenge, withSegment(p.begin, "method"),
+			MatchSubtree, PassThrough, RequiresSession, http.MethodPost),
+		declare(feature, placedBy, OperationReauthVerify, withSegment(p.verify, "method"),
+			MatchSubtree, PassThrough, RequiresSession, http.MethodPost),
+		declare(feature, placedBy, OperationReauthPassword, p.password,
+			MatchExact, PassThrough, RequiresSession, http.MethodPost),
+	}
+}

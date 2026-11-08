@@ -559,7 +559,7 @@ func (e *sessionSignals) settle(c *config, option string) error {
 
 	e.clock = timed
 
-	if err := e.settlePath(c, option); err != nil {
+	if err := e.settlePath(option); err != nil {
 		return err
 	}
 
@@ -600,41 +600,15 @@ func (e *sessionSignals) settle(c *config, option string) error {
 	return nil
 }
 
-// settlePath refuses a path that could never be served, or that another endpoint of
-// the chain answers.
-func (e *sessionSignals) settlePath(c *config, option string) error {
+// settlePath refuses a path that could never be served. A path another endpoint
+// of the chain answers is refused by the chain's collision check, which judges
+// every built-in's resolved paths together.
+func (e *sessionSignals) settlePath(option string) error {
 	if e.cfg.Path == "" {
 		e.cfg.Path = DefaultSessionSignalsPath
 	}
 
-	if err := checkEndpointPath(option+": SessionSignals.Path", e.cfg.Path); err != nil {
-		return err
-	}
-
-	own := claimedPath{name: "the signal stream", path: e.path}
-
-	taken := claimedPaths(c, c.mfaOf(), c.formLogin())
-
-	_ = eachInterceptor(c, func(r *reauthInterceptor) error {
-		taken = append(taken, claimedPath{name: "the re-authentication prefix", path: r.prefix, under: true})
-
-		return nil
-	})
-
-	_ = eachInterceptor(c, func(m *sessionManagement) error {
-		taken = append(taken, claimedPath{name: "the session management prefix", path: m.prefix, under: true})
-
-		return nil
-	})
-
-	for _, other := range taken {
-		if collides(own, other) {
-			return newConfigError("%s was given SessionSignals.Path %q, which %s %q already answers: "+
-				"whichever endpoint matched first would swallow the other", option, e.cfg.Path, other.name, other.path)
-		}
-	}
-
-	return nil
+	return checkEndpointPath(option+": SessionSignals.Path", e.cfg.Path)
 }
 
 // settleSignals builds the chain's set.

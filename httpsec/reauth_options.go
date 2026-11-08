@@ -162,16 +162,9 @@ type ReauthenticationOption func(*reauthInterceptor) error
 // enabled twice; when neither EnableMFA nor EnableFormLogin is enabled; when
 // RequireSecondFactorForReauthentication is given without EnableMFA; when an
 // endpoint's path collides with the path of another endpoint the chain
-// enabled, judged by how each matches: the begin and verify paths are
-// matched by prefix, the listing and password paths exactly. A path collides
-// when it equals another's, or lies under another that is matched by prefix
-// (the MFA verify, begin and enrolment prefixes, the passkey registration and
-// credentials prefixes, the OIDC authorize, callback and back-channel logout
-// prefixes), or has another under it when it is itself matched by prefix; the
-// exact paths (logout, form login, the MFA listing, session renewal, password
-// change, every account recovery path, the magic-link and passwordless passkey
-// login paths, the OIDC handoff path and the key set endpoint) collide only on
-// equality or under the begin or verify path, so "/sign-in/password/reauth" is accepted
+// answers, as the chain's collision check judges every built-in: the begin and
+// verify paths match their path and everything beneath it, the listing and
+// password paths match exactly, so "/sign-in/password/reauth" is accepted
 // beside form login at "/sign-in/password"; when the MFA slot was given a challenge store
 // (WithMFAChallengeStore), has a method with a begin step, and
 // WithReauthenticationChallengeStore was not, because the re-proof challenges
@@ -266,10 +259,6 @@ func (i *reauthInterceptor) settle(c *config, option string) error {
 			"options the same store", option)
 	}
 
-	if err := i.checkPaths(c, option); err != nil {
-		return err
-	}
-
 	if err := i.buildChallenges(c, option); err != nil {
 		return err
 	}
@@ -322,164 +311,6 @@ func (i *reauthInterceptor) buildChallenges(c *config, option string) error {
 	i.challenges, i.sweeps = challenges, sweeps
 
 	return nil
-}
-
-// claimedPath is a path another endpoint of the chain answers. under reports
-// that the endpoint claims every path beneath it too.
-type claimedPath struct {
-	name, path string
-	under      bool
-}
-
-// checkPaths refuses an endpoint path another endpoint already answers. Each
-// pair is checked both ways, so the order the options were given in does not
-// matter: a re-proof path at or under a path another endpoint claims, and a
-// path that lies under the begin or verify path, which claim every POST
-// beneath them.
-func (i *reauthInterceptor) checkPaths(c *config, option string) error {
-	taken := claimedPaths(c, i.mfa, i.login)
-
-	p := i.paths()
-	own := []claimedPath{
-		{"listing", p.methods, false},
-		{"begin", p.begin, true},
-		{"verify", p.verify, true},
-		{"password", p.password, false},
-	}
-
-	for _, mine := range own {
-		for _, other := range taken {
-			if collides(mine, other) {
-				return newConfigError("%s's %s path %q collides with %s %q, so one endpoint "+
-					"would answer the other's requests", option, mine.name, mine.path, other.name, other.path)
-			}
-		}
-	}
-
-	return nil
-}
-
-// claimedPaths is every path the chain's other endpoints answer, each marked
-// by how its interceptor matches it: a prefix claims every path beneath it,
-// anything else only itself. Form login and logout compare their path exactly,
-// so form login at "/sign-in/password" does not stop the listing answering at
-// "/sign-in/password/reauth/methods".
-//
-// Recovery's endpoints are all listed whichever proofs are on, because which
-// of them answer is decided after the options are applied, and a path the
-// consumer configured is one the consumer meant.
-func claimedPaths(c *config, m *mfaInterceptor, login *formLogin) []claimedPath {
-	var taken []claimedPath
-
-	add := func(name, path string, under bool) {
-		taken = append(taken, claimedPath{name, path, under})
-	}
-
-	if c.logoutPath != "" {
-		add("the logout path", c.logoutPath, false)
-	}
-
-	if login != nil {
-		add("the form login path", login.path, false)
-	}
-
-	if m != nil {
-		add("the MFA verify prefix", m.verifyPrefix, true)
-		add("the MFA begin prefix", m.beginPrefix, true)
-
-		if m.listing != nil {
-			add("the MFA listing path", m.listing.path, false)
-		}
-	}
-
-	_ = eachInterceptor(c, func(e *enrolmentInterceptor) error {
-		add("the MFA enrolment begin prefix", e.beginPrefix, true)
-		add("the MFA enrolment confirm prefix", e.confirmPrefix, true)
-
-		if e.emailConfirmation {
-			add("the MFA enrolment email-confirm prefix", e.emailPrefix, true)
-		}
-
-		return nil
-	})
-
-	_ = eachInterceptor(c, func(k *passkeyInterceptor) error {
-		add("the passkey registration prefix", k.regPrefix, true)
-		add("the passkey credentials prefix", k.credPrefix, true)
-
-		return nil
-	})
-
-	_ = eachInterceptor(c, func(l *passwordlessInterceptor) error {
-		add("the passwordless begin path", l.beginPath, false)
-		add("the passwordless finish path", l.finishPath, false)
-
-		return nil
-	})
-
-	_ = eachInterceptor(c, func(l *magicLinkInterceptor) error {
-		add("the magic-link request path", l.requestPath, false)
-		add("the magic-link consume path", l.consumePath, false)
-
-		return nil
-	})
-
-	_ = eachInterceptor(c, func(o *oidcInterceptor) error {
-		add("the OIDC authorize prefix", o.authorizePath, true)
-		add("the OIDC callback prefix", o.callbackPath, true)
-		add("the OIDC back-channel logout prefix", o.backchannelPath, true)
-
-		if o.handoffs != nil || o.handoffRedeemerSet {
-			add("the OIDC handoff path", o.handoffPath, false)
-		}
-
-		return nil
-	})
-
-	_ = eachInterceptor(c, func(j *jwksEndpoint) error {
-		add("the key set endpoint", j.path, false)
-
-		return nil
-	})
-
-	_ = eachInterceptor(c, func(r *sessionRenewal) error {
-		add("the session renewal path", r.path, false)
-
-		return nil
-	})
-
-	_ = eachInterceptor(c, func(g *passwordChangeGate) error {
-		if g.change != nil {
-			add("the password-change endpoint", g.path, false)
-		}
-
-		return nil
-	})
-
-	_ = eachInterceptor(c, func(r *recoveryInterceptor) error {
-		for _, e := range r.endpointPaths() {
-			add("the recovery "+e.name+" path", e.path, false)
-		}
-
-		return nil
-	})
-
-	return taken
-}
-
-// collides reports whether a and b would both answer one request path. A
-// prefix written with a trailing slash claims what its slash-free form does.
-func collides(a, b claimedPath) bool {
-	switch {
-	case a.path == b.path:
-		return true
-	case b.under && underPrefix(a.path, strings.TrimRight(b.path, "/")):
-		return true
-	case a.under && underPrefix(b.path, strings.TrimRight(a.path, "/")):
-		return true
-	default:
-		return false
-	}
 }
 
 // WithReauthenticationPrefix answers the endpoints under prefix instead.

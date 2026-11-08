@@ -208,18 +208,12 @@ func (i *magicLinkInterceptor) resolvePaths(base string) {
 }
 
 // check reports the wiring faults only the assembled configuration can see:
-// two endpoints on one path, and the collaborators a redemption cannot do
-// without.
+// the collaborators a redemption cannot do without. Two endpoints on one path
+// are judged over the whole chain by the shared collision check.
 //
 // It runs once every option has been applied, so a session manager wired by
 // another built-in after EnableMagicLink still counts.
 func (i *magicLinkInterceptor) check(c *config, option string) error {
-	if i.requestPath == i.consumePath {
-		return newConfigError("%s was given one path, %q, for both asking for a link and "+
-			"redeeming one, so whichever endpoint matched first would swallow the other",
-			option, i.requestPath)
-	}
-
 	if c.sessionBearer {
 		if err := checkTokenGenerator(c, option, "WithMagicLinkTokens", i.tokens); err != nil {
 			return err
@@ -607,4 +601,16 @@ func (i *magicLinkInterceptor) readConsume(r Request) (token, next string) {
 
 	return values.Get(DefaultMagicLinkTokenParam),
 		i.redirects.Resolve(values.Get(DefaultMagicLinkNextParam))
+}
+
+// endpoints declares asking for a link and redeeming one.
+func (i *magicLinkInterceptor) endpoints() []Endpoint {
+	const feature = "EnableMagicLink"
+
+	return []Endpoint{
+		declare(feature, "WithMagicLinkRequestPath", OperationSignInMagicLinkRequest, i.requestPath,
+			MatchExact, PassThrough, RequiresNothing, http.MethodPost),
+		declare(feature, "WithMagicLinkConsumePath", OperationSignInMagicLinkRedeem, i.consumePath,
+			MatchExact, PassThrough, RequiresNothing, http.MethodPost),
+	}
 }

@@ -505,6 +505,13 @@ func New(opts ...Option) (*Chain, error) {
 
 	c.resolvePaths()
 
+	// Collisions are judged on the resolved paths before any built-in's own
+	// check, so two endpoints on one path are reported as a collision, naming
+	// both settings. build judges the full inventory again once wired.
+	if err := c.checkResolvedCollisions(); err != nil {
+		return nil, err
+	}
+
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
@@ -644,6 +651,21 @@ func (c *config) build() (*Chain, error) {
 		return nil, err
 	}
 
+	// The inventory is collected once every built-in is wired, so it lists only
+	// the operations the assembled configuration enables (the recovery start,
+	// the handoff, the saved codes), at their resolved paths, in the order the
+	// chain will run them.
+	endpoints, err := collectEndpoints(c.ordered())
+	if err != nil {
+		return nil, err
+	}
+
+	// Judged again over the full inventory: operations that wiring turns on
+	// (the recovery start and saved codes, the handoff) are listed only now.
+	if err := checkCollisions(endpoints); err != nil {
+		return nil, err
+	}
+
 	// Activity is recorded for every chain, with no option to enable: a session
 	// whose idle deadline stops moving while its owner is using it is logged
 	// out mid-work, and that is not a behaviour worth being able to switch off.
@@ -686,6 +708,7 @@ func (c *config) build() (*Chain, error) {
 		clients:           newClientResolver(c),
 		csrfOptOut:        c.csrfOptOut,
 		events:            newEventEmitter(c),
+		endpoints:         endpoints,
 	}
 
 	// The sampler is built here rather than by the option, because the default

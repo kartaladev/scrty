@@ -113,12 +113,6 @@ func TestEnableAccountRecovery_Config(t *testing.T) {
 				assert.NotNil(t, chain)
 			},
 		},
-		pathCase("the start path is the logout path", httpsec.WithRecoveryStartPath(httpsec.DefaultLogoutPath)),
-		pathCase("the complete path is the login path", httpsec.WithRecoveryCompletePath(httpsec.DefaultLoginPath)),
-		pathCase("the codes path is the complete path",
-			httpsec.WithRecoveryCodesPath(httpsec.DefaultRecoveryCompletePath)),
-		pathCase("the start path is the finish path",
-			httpsec.WithRecoveryStartPath(httpsec.DefaultRecoveryFinishPath)),
 		pathCase("a nil complete limiter", httpsec.WithRecoveryLimiter(nil)),
 		pathCase("a nil start limiter", httpsec.WithRecoveryStartLimiter(nil)),
 		pathCase("a nil user limiter", httpsec.WithRecoveryUserLimiter(nil)),

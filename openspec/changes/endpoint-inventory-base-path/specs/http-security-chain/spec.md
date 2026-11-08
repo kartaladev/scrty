@@ -205,19 +205,23 @@ A built chain SHALL list every operation of every built-in endpoint it answers. 
 - **WHEN** the same configuration is built with and without a base path
 - **THEN** each endpoint carries the same operation identifier in both lists
 
+#### Scenario: An operation is listed once
+- **WHEN** a chain enables the key set twice, at `/.well-known/jwks.json` and at `/keys`
+- **THEN** construction fails with a configuration error naming `scrty.key-set` and both settings
+
 #### Scenario: Every entry is answered
 - **WHEN** a chain enables every built-in endpoint and a request is sent to each listed method and path
 - **THEN** each request is answered by the endpoint the entry names and never reaches the handler
 
 ### Requirement: Colliding endpoint paths fail at construction
-Building a chain SHALL fail with a configuration error when two built-in operations would answer one resolved request path. Operations of one feature that declare a shared path are exempt if their methods differ or one matches the path and the other the path plus one segment. An exact path equal to another feature's prefix, with or without a trailing slash, SHALL collide. The error SHALL name both settings, both paths and what would break.
+Building a chain SHALL fail with a configuration error when two built-in operations would answer one resolved request path. Operations of one feature that declare a shared path are exempt if their methods differ or one matches the path and the other the path plus one segment. An exact path equal to another operation's prefix, with or without a trailing slash, SHALL collide unless the two declare that they share the path. The error SHALL name both settings, both paths and what would break.
 
 #### Scenario: Two features on one path
 - **WHEN** password sign-in and magic-link requests are both set to answer `/signin`
 - **THEN** construction fails with a configuration error naming both options and `/signin`
 
 #### Scenario: Path under another endpoint's prefix
-- **WHEN** the re-authentication prefix is set so that its password path lies under the MFA verify prefix
+- **WHEN** the re-authentication prefix is set so that its paths lie under the MFA verify prefix
 - **THEN** construction fails with a configuration error naming both options
 
 #### Scenario: Within one feature

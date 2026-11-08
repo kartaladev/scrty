@@ -147,28 +147,6 @@ func (p *passkeyInterceptor) registrationPaths() []string {
 	}
 }
 
-// paths are every path the passkey endpoints answer, named for a
-// configuration error.
-func (p *passkeyInterceptor) paths() []struct{ name, path string } {
-	paths := []struct{ name, path string }{
-		{"registration begin", p.regPrefix + passkeyBeginSegment},
-		{"registration finish", p.regPrefix + passkeyFinishSegment},
-		{"saved-code confirm", p.regPrefix + passkeyConfirmSegment},
-		{"emailed-code confirm", p.regPrefix + passkeyConfirmEmailSegment},
-		{"listing", p.credPrefix},
-		{"rename", p.credPrefix + passkeyRenameSegment},
-		{"remove", p.credPrefix + passkeyRemoveSegment},
-	}
-
-	if p.login != nil {
-		paths = append(paths,
-			struct{ name, path string }{"passwordless begin", p.login.beginPath},
-			struct{ name, path string }{"passwordless finish", p.login.finishPath})
-	}
-
-	return paths
-}
-
 // EnablePasskeys serves passkey registration on the chain, at OrderPasskeys,
 // inside bearer authentication and every gate.
 //
@@ -456,10 +434,6 @@ func (c *config) wirePasskeys() error {
 		return err
 	}
 
-	if err := p.checkPaths(option, c); err != nil {
-		return err
-	}
-
 	if p.login != nil {
 		if err := p.login.resolve(option, c); err != nil {
 			return err
@@ -496,70 +470,6 @@ func (p *passkeyInterceptor) checkCloneGrants(c *config) error {
 	return newConfigError("EnablePasskeys on a chain with EnableOIDCProvider needs a manager that says what " +
 		"a suspected clone does to the user's grants: build it with passkey.WithGrantRevoker(provider), or " +
 		"with passkey.WithoutCloneGrantRevocation() to keep them")
-}
-
-// checkPaths refuses a passkey path that collides with another passkey path,
-// the login path, the logout path, the password-change resolve path or an
-// account-recovery endpoint path, or that lies under a prefix another
-// endpoint answers every POST under: the MFA verify and begin prefixes, and
-// the enrolment prefixes.
-func (p *passkeyInterceptor) checkPaths(option string, c *config) error {
-	taken := map[string]string{}
-	if l := c.formLogin(); l != nil {
-		taken[l.path] = "the login path"
-	}
-	if c.logoutPath != "" {
-		taken[c.logoutPath] = "the logout path"
-	}
-
-	_ = eachInterceptor(c, func(g *passwordChangeGate) error {
-		if g.change != nil {
-			taken[g.path] = "the password-change resolve path"
-		}
-
-		return nil
-	})
-
-	_ = eachInterceptor(c, func(i *recoveryInterceptor) error {
-		for _, r := range i.endpointPaths() {
-			taken[r.path] = "the recovery " + r.name + " path"
-		}
-
-		return nil
-	})
-
-	var prefixes []struct{ name, prefix string }
-	if m := c.mfaOf(); m != nil {
-		prefixes = append(prefixes,
-			struct{ name, prefix string }{"EnableMFA's verify prefix", m.verifyPrefix},
-			struct{ name, prefix string }{"EnableMFA's begin prefix", m.beginPrefix})
-	}
-
-	_ = eachInterceptor(c, func(i *enrolmentInterceptor) error {
-		for _, prefix := range i.prefixes() {
-			prefixes = append(prefixes, struct{ name, prefix string }{"an enrolment prefix", prefix})
-		}
-
-		return nil
-	})
-
-	for _, e := range p.paths() {
-		if other, ok := taken[e.path]; ok {
-			return newConfigError("%s's %s path %q is already %s: whichever endpoint matched "+
-				"first would swallow the other", option, e.name, e.path, other)
-		}
-
-		for _, o := range prefixes {
-			if underPrefix(e.path, o.prefix) {
-				return newConfigError("%s's %s path %q lies under %s %q, whose endpoint answers "+
-					"every POST under it", option, e.name, e.path, o.name, o.prefix)
-			}
-		}
-
-		taken[e.path] = "the passkey " + e.name + " path"
-	}
-
-	return nil
 }
 
 // passkeyPrefix validates a passkey endpoint prefix and returns it without a
@@ -857,4 +767,25 @@ func (p *passkeyInterceptor) checkResolving(c *config) error {
 	}
 
 	return nil
+}
+
+// endpoints declares passkey registration and management. Passwordless
+// sign-in is a separate interceptor and declares its own.
+func (p *passkeyInterceptor) endpoints() []Endpoint {
+	const feature, reg, cred = "EnablePasskeys", "WithPasskeyRegistrationPrefix", "WithPasskeyCredentialsPrefix"
+
+	post := func(placedBy, id, path string) Endpoint {
+		return declare(feature, placedBy, id, path, MatchExact, PassThrough, RequiresSession, http.MethodPost)
+	}
+
+	return []Endpoint{
+		post(reg, OperationPasskeysRegisterBegin, p.regPrefix+passkeyBeginSegment),
+		post(reg, OperationPasskeysRegisterFinish, p.regPrefix+passkeyFinishSegment),
+		post(reg, OperationPasskeysRegisterConfirm, p.regPrefix+passkeyConfirmSegment),
+		post(reg, OperationPasskeysRegisterConfirmEmail, p.regPrefix+passkeyConfirmEmailSegment),
+		declare(feature, cred, OperationPasskeysList, p.credPrefix,
+			MatchExact, PassThrough, RequiresSession, http.MethodGet),
+		post(cred, OperationPasskeysRename, p.credPrefix+passkeyRenameSegment),
+		post(cred, OperationPasskeysRemove, p.credPrefix+passkeyRemoveSegment),
+	}
 }

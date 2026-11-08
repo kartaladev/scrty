@@ -154,17 +154,13 @@ func (i *recoveryInterceptor) resolvePaths(base string) {
 }
 
 // check reports the wiring faults only the assembled configuration can see:
-// the paths against each other and against the chain's login and logout, a
-// chain with no way to bind the recovered session, and a recovery with no
-// token generator to issue its credential through.
+// a chain with no way to bind the recovered session, and a recovery with no
+// token generator to issue its credential through. Paths that collide are
+// judged over the whole chain by the shared collision check.
 //
 // It runs once every option has been applied, so a form login, a logout or a
 // binding route enabled after EnableAccountRecovery still counts.
 func (i *recoveryInterceptor) check(c *config, option string) error {
-	if err := i.checkPaths(c, option); err != nil {
-		return err
-	}
-
 	if !c.hasRecoveryBinding() {
 		return newConfigError("%s needs a way to bind the recovered session: enable "+
 			"EnableMFAEnrolment, EnablePasskeys with the passkey method on EnableMFA, or a "+
@@ -182,43 +178,6 @@ func (i *recoveryInterceptor) check(c *config, option string) error {
 	}
 
 	return checkIssuingGenerator(c, option, "WithRecoveryTokens", i.tokens)
-}
-
-// endpointPaths are every path the recovery endpoints answer, named for a
-// configuration error.
-func (i *recoveryInterceptor) endpointPaths() []struct{ name, path string } {
-	return []struct{ name, path string }{
-		{"complete", i.completePath},
-		{"start", i.startPath},
-		{"finish", i.finishPath},
-		{"cancel", i.cancelPath},
-		{"codes", i.codesPath},
-	}
-}
-
-// checkPaths refuses a recovery path that collides with another recovery path,
-// the login path or the logout path. A collision with a passkey path is the passkey endpoints' check.
-func (i *recoveryInterceptor) checkPaths(c *config, option string) error {
-	paths := i.endpointPaths()
-
-	taken := map[string]string{}
-	if l := c.formLogin(); l != nil {
-		taken[l.path] = "the login path"
-	}
-	if c.logoutPath != "" {
-		taken[c.logoutPath] = "the logout path"
-	}
-
-	for _, p := range paths {
-		if other, ok := taken[p.path]; ok {
-			return newConfigError("%s was given %q as its %s path, which is already %s: whichever "+
-				"endpoint matched first would swallow the other", option, p.path, p.name, other)
-		}
-
-		taken[p.path] = "the recovery " + p.name + " path"
-	}
-
-	return nil
 }
 
 // formLogin returns the chain's form login, or nil when it has none.
@@ -911,4 +870,30 @@ func readHoldToken(r Request, name string) (string, error) {
 	}
 
 	return values.Get(name), nil
+}
+
+// endpoints declares the recovery endpoints the core enables: the completion
+// always, the start with issued codes, the finish and cancel when it may hold
+// a recovery. The saved-code endpoints are answered at the gate's slot, and
+// the gate declares them.
+func (i *recoveryInterceptor) endpoints() []Endpoint {
+	const feature = "EnableAccountRecovery"
+
+	post := func(placedBy, id, path string) Endpoint {
+		return declare(feature, placedBy, id, path, MatchExact, PassThrough, RequiresNothing, http.MethodPost)
+	}
+
+	eps := []Endpoint{post("WithRecoveryCompletePath", OperationRecoveryComplete, i.completePath)}
+
+	if i.startEnabled {
+		eps = append(eps, post("WithRecoveryStartPath", OperationRecoveryStart, i.startPath))
+	}
+
+	if i.holds {
+		eps = append(eps,
+			post("WithRecoveryFinishPath", OperationRecoveryFinish, i.finishPath),
+			post("WithRecoveryCancelPath", OperationRecoveryCancel, i.cancelPath))
+	}
+
+	return eps
 }

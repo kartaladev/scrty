@@ -386,3 +386,11 @@ func WithLogoutClearSiteData(directives ...string) LogoutOption {
 // are left out: the wildcard would also reload every tab where supported and
 // drop more than a logout should unasked.
 var clearSiteDataDirectives = []string{"cache", "cookies", "storage"}
+
+// endpoints declares sign-out.
+func (l *logout) endpoints() []Endpoint {
+	return []Endpoint{
+		declare("EnableLogout", "WithLogoutRequestPath", OperationSignOut, l.path,
+			MatchExact, PassThrough, RequiresAuthentication, http.MethodPost),
+	}
+}

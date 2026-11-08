@@ -184,10 +184,6 @@ func (i *oidcInterceptor) check(c *config, option string) error {
 			"nor any other built-in on this chain supplied one", option)
 	}
 
-	if err := i.checkPaths(option); err != nil {
-		return err
-	}
-
 	// A policy that decides federated logins on provider assurance with no
 	// source would decide every one of them as unmet: required users whose
 	// provider asserted exactly what the deployment accepts would be
@@ -242,42 +238,6 @@ func (i *oidcInterceptor) checkConveyance(option string) error {
 		if opt.set {
 			return newConfigError("%s was given %s and WithOIDCCallbackSuccess, but the "+
 				"conveyance issues no handoff code for %s to govern", option, opt.name, opt.name)
-		}
-	}
-
-	return nil
-}
-
-// checkPaths refuses two endpoints that one request path could reach, since
-// whichever matched first would silently swallow the other.
-//
-// A prefix endpoint answers the prefix followed by exactly one non-empty
-// segment, so two different prefixes never answer the same path; the handoff
-// endpoint answers one exact path. The handoff path is also refused when it
-// names a prefix itself, with or without its trailing slash, because a reader
-// cannot tell those endpoints apart either.
-func (i *oidcInterceptor) checkPaths(option string) error {
-	prefixes := []struct{ name, path string }{
-		{"WithOIDCAuthorizePath", i.authorizePath},
-		{"WithOIDCCallbackPath", i.callbackPath},
-		{"WithOIDCBackchannelLogoutPath", i.backchannelPath},
-	}
-
-	for a := range prefixes {
-		for b := a + 1; b < len(prefixes); b++ {
-			if prefixes[a].path == prefixes[b].path {
-				return newConfigError("%s was given one path prefix, %q, through both %s and %s, "+
-					"so the two endpoints collide", option, prefixes[a].path,
-					prefixes[a].name, prefixes[b].name)
-			}
-		}
-	}
-
-	for _, p := range prefixes {
-		if i.handoffPath == p.path || i.handoffPath == strings.TrimSuffix(p.path, "/") ||
-			providerSegment(i.handoffPath, p.path) != "" {
-			return newConfigError("%s was given a handoff path, %q, that collides with the %q "+
-				"prefix of %s", option, i.handoffPath, p.path, p.name)
 		}
 	}
 
@@ -436,9 +396,11 @@ func WithOIDCCallbackPath(prefix string) OIDCOption {
 // WithOIDCHandoffPath redeems handoff codes by POST on path instead.
 //
 // Default: DefaultOIDCHandoffPath. The path is matched exactly. An empty
-// path, or one that does not start with "/", is refused, and so is a path
-// that collides with an authorize, callback or back-channel prefix, with or
-// without that prefix's trailing slash. This option is redemption-only:
+// path, or one that does not start with "/", is refused. New refuses a path
+// that collides with another endpoint of the chain, as its collision check
+// judges every built-in: equal to an authorize, callback or back-channel
+// prefix, with or without that prefix's trailing slash, is one. This option
+// is redemption-only:
 // given beside WithOIDCCallbackSuccess, which issues no handoff code for it to
 // govern, it is refused.
 func WithOIDCHandoffPath(path string) OIDCOption {

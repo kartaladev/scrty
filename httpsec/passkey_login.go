@@ -669,3 +669,15 @@ func (i *passwordlessInterceptor) loadUser(ex *Exchange, user identity.UserID) (
 // msgPasswordlessUserUnavailable is the fixed text of a passwordless login
 // whose user could not be loaded.
 const msgPasswordlessUserUnavailable = "httpsec: the passwordless login's user could not be loaded" //nolint:gosec // G101: a fixed log message, not a credential
+
+// endpoints declares passwordless passkey sign-in.
+func (i *passwordlessInterceptor) endpoints() []Endpoint {
+	const feature, placedBy = "EnablePasskeys", "WithPasskeyPasswordlessPrefix"
+
+	return []Endpoint{
+		declare(feature, placedBy, OperationSignInPasskeyBegin, i.beginPath,
+			MatchExact, PassThrough, RequiresNothing, http.MethodPost),
+		declare(feature, placedBy, OperationSignInPasskeyFinish, i.finishPath,
+			MatchExact, PassThrough, RequiresNothing, http.MethodPost),
+	}
+}

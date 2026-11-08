@@ -493,3 +493,16 @@ func WithPasswordChangeEndpoint(path string, fn ChangePasswordFunc) PasswordChan
 		return nil
 	}
 }
+
+// endpoints declares the consumer's password change, which the gate answers
+// only when it was given one (WithPasswordChangeEndpoint).
+func (g *passwordChangeGate) endpoints() []Endpoint {
+	if g.change == nil {
+		return nil
+	}
+
+	return []Endpoint{
+		declare("EnablePasswordChangeGate", "WithPasswordChangeEndpoint", OperationPasswordChange, g.path,
+			MatchExact, PassThrough, RequiresSession, http.MethodPost),
+	}
+}

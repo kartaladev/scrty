@@ -1436,43 +1436,6 @@ func TestPasswordlessConstruction(t *testing.T) {
 			assert: refused,
 		},
 		{
-			name: "the finish path on the logout path",
-			setup: func(t *testing.T, d *pwlDeployment) []httpsec.Option {
-				opts := d.options(t)
-				opts[5] = httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: d.sessions},
-					httpsec.WithLogoutRequestPath(passwordlessFinishPath))
-
-				return opts
-			},
-			assert: refused,
-		},
-		{
-			name: "the begin path on the login path",
-			setup: func(t *testing.T, d *pwlDeployment) []httpsec.Option {
-				d.passkeyOpts = append(d.passkeyOpts, httpsec.WithPasskeyPasswordlessPrefix("/login"))
-				opts := d.options(t)
-
-				authn, err := authenticate.NewUsernamePasswordAuthenticator(d.users)
-				require.NoError(t, err)
-
-				opts[1] = httpsec.EnableFormLogin(httpsec.FormLoginDeps{
-					Authenticator: authn, Sessions: d.sessions, Tokens: d.tokens, Attempts: must.Must(lockout.NewMemoryAttemptStore()),
-				}, httpsec.WithLoginRequestPath("/login/begin"))
-
-				return opts
-			},
-			assert: refused,
-		},
-		{
-			name: "a passwordless path under the MFA verify prefix",
-			setup: func(t *testing.T, d *pwlDeployment) []httpsec.Option {
-				d.passkeyOpts = append(d.passkeyOpts, httpsec.WithPasskeyPasswordlessPrefix(httpsec.DefaultMFAVerifyPrefix))
-
-				return d.options(t)
-			},
-			assert: refused,
-		},
-		{
 			name: "an empty cookie name",
 			setup: func(t *testing.T, d *pwlDeployment) []httpsec.Option {
 				d.settings = append(d.settings, httpsec.PasswordlessCookieName(""))

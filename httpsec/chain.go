@@ -97,6 +97,11 @@ type Chain struct {
 	// hook, so its refusals are marked too.
 	refusalSteps []func(*Exchange)
 
+	// endpoints is the inventory of the built-in operations the chain answers,
+	// collected once at construction and never written after. Endpoints hands
+	// out copies of it.
+	endpoints []Endpoint
+
 	// events delivers the chain's security events, and is nil unless
 	// EnableSecurityEvents gave it a sink. Every request carries it on its
 	// context (eventsink), so whatever decides an outcome on the request

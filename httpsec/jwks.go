@@ -135,3 +135,11 @@ func WithJWKSEndpointPath(path string) JWKSOption {
 		return nil
 	}
 }
+
+// endpoints declares the key set.
+func (j *jwksEndpoint) endpoints() []Endpoint {
+	return []Endpoint{
+		declare("EnableJWKSEndpoint", "WithJWKSEndpointPath", OperationKeySet, j.path,
+			MatchExact, PassThrough, RequiresNothing, http.MethodGet),
+	}
+}

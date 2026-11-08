@@ -217,7 +217,8 @@ func WithSignInEndResponder(fn SignInEndResponder) SessionManagementOption {
 // The endpoints use the chain's session manager: the one WithSessions sets,
 // or the first an enabled built-in was wired to. A chain with none is refused
 // with a configuration error naming this option, and so is a second call.
-// Other methods and paths pass through.
+// Other methods and paths pass through, a trailing slash, an empty handle and a
+// path of two or more segments below the prefix among them.
 func EnableSessionManagement(opts ...SessionManagementOption) Option {
 	const option = "EnableSessionManagement"
 
@@ -297,7 +298,9 @@ func (m *sessionManagement) route(r Request) (sessionRoute, string) {
 		if path == m.prefix {
 			return routeEndOthers, ""
 		}
-		if handle, ok := strings.CutPrefix(path, m.prefix+"/"); ok {
+		// One non-empty segment only: a trailing slash, an empty handle and a
+		// deeper path are not this endpoint's and pass through.
+		if handle, ok := strings.CutPrefix(path, m.prefix+"/"); ok && handle != "" && !strings.Contains(handle, "/") {
 			return routeEndOne, handle
 		}
 	}
@@ -487,4 +490,29 @@ func writeSignInsEnded(ex *Exchange) error {
 	ex.Writer.WriteHeader(http.StatusNoContent)
 
 	return nil
+}
+
+// sessionsSharedPath is what the session management operations declare they
+// share: the list and the end of the other sign-ins answer the prefix itself,
+// and the end of one sign-in the prefix and one segment.
+const sessionsSharedPath = "scrty.sessions"
+
+// endpoints declares the three session management operations.
+func (m *sessionManagement) endpoints() []Endpoint {
+	const feature, placedBy = "EnableSessionManagement", "WithSessionManagementPrefix"
+
+	eps := []Endpoint{
+		declare(feature, placedBy, OperationSessionsList, m.prefix,
+			MatchExact, PassThrough, RequiresSession, http.MethodGet),
+		declare(feature, placedBy, OperationSessionsEndOthers, m.prefix,
+			MatchExact, PassThrough, RequiresSession, http.MethodDelete),
+		declare(feature, placedBy, OperationSessionsEnd, withSegment(m.prefix, "handle"),
+			MatchSegment, PassThrough, RequiresSession, http.MethodDelete),
+	}
+
+	for i := range eps {
+		eps[i].SharesPath = sessionsSharedPath
+	}
+
+	return eps
 }

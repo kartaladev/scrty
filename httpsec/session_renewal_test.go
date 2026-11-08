@@ -1096,14 +1096,6 @@ func TestEnableSessionRenewal_Construction(t *testing.T) {
 			assert: configError,
 		},
 		{
-			name: "a renewal path that is the logout path is refused",
-			options: func(h *authHarness) []httpsec.Option {
-				return append(reference(h, deps(h), httpsec.WithRenewalPath(httpsec.DefaultLogoutPath)),
-					httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: h.sessions}))
-			},
-			assert: configError,
-		},
-		{
 			// A nil limiter is a wiring mistake caught when the chain is built.
 			name: "throttle nil limiter is refused: nil",
 			options: func(h *authHarness) []httpsec.Option {

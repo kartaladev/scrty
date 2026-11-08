@@ -324,3 +324,25 @@ func (i *oidcInterceptor) Intercept(ex *Exchange, next Next) error {
 
 	return next(ex)
 }
+
+// endpoints declares federated login: starting it and the callback, each the
+// prefix and the provider's name, the handoff while redemption is on, and the
+// back-channel logout.
+func (i *oidcInterceptor) endpoints() []Endpoint {
+	const feature = "EnableOIDCLogin"
+
+	eps := []Endpoint{
+		declare(feature, "WithOIDCAuthorizePath", OperationSSOLogin, withSegment(i.authorizePath, "provider"),
+			MatchSegment, PassThrough, RequiresNothing, http.MethodGet),
+		declare(feature, "WithOIDCCallbackPath", OperationSSOCallback, withSegment(i.callbackPath, "provider"),
+			MatchSegment, PassThrough, RequiresNothing, http.MethodGet),
+	}
+
+	if i.redeemer != nil {
+		eps = append(eps, declare(feature, "WithOIDCHandoffPath", OperationSSOHandoff, i.handoffPath,
+			MatchExact, PassThrough, RequiresNothing, http.MethodPost))
+	}
+
+	return append(eps, declare(feature, "WithOIDCBackchannelLogoutPath", OperationSSOBackchannelLogout,
+		withSegment(i.backchannelPath, "provider"), MatchSegment, PassThrough, RequiresNothing, http.MethodPost))
+}

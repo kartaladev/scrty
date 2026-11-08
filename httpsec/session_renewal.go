@@ -643,10 +643,6 @@ func EnableSessionRenewal(d SessionRenewalDeps, opts ...SessionRenewalOption) Op
 			if err := requireDep(option, "user loader", d.Users); err != nil {
 				return err
 			}
-			if c.logoutPath != "" && c.logoutPath == r.path {
-				return newConfigError("%s's path %q is the logout path, so a POST there would "+
-					"renew the session it meant to end", option, r.path)
-			}
 
 			limiter, err := c.flowLimiter(option, r.limiter, sessionRenewalFlow, defaultRenewalLimit,
 				defaultRenewalWindow)
@@ -844,5 +840,13 @@ func WithRenewalLifetime(fn func(*Exchange, *session.Session) time.Duration) Ses
 		r.lifetime = fn
 
 		return nil
+	}
+}
+
+// endpoints declares session renewal.
+func (r *sessionRenewal) endpoints() []Endpoint {
+	return []Endpoint{
+		declare("EnableSessionRenewal", "WithRenewalPath", OperationSessionRenewal, r.path,
+			MatchExact, PassThrough, RequiresSession, http.MethodPost),
 	}
 }

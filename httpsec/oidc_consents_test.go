@@ -399,21 +399,25 @@ func TestOIDCConsents(t *testing.T) {
 			assert: refusedWith(httpsec.ErrOIDCForeignConsent, http.StatusNotFound),
 		},
 		{
-			name: "a path naming no client, or more than one segment, is the same 404",
+			name: "a path naming no client, or more than one segment, passes on unanswered",
 			send: func(t *testing.T, w *opFlow, _ *consentsWorld) flowAnswer {
 				t.Helper()
 
 				bearer := signedIn(t, w)
 				for _, path := range []string{consentsPath + "/a/b", consentsPath + "/" + flowWeb + "/"} {
 					a := w.consentsDELETE(t, path, bearer)
-					require.ErrorIs(t, a.err, httpsec.ErrOIDCForeignConsent, path)
-					require.Equal(t, http.StatusNotFound, a.status, path)
-					require.False(t, a.passedOn, path)
+					require.NoError(t, a.err, path)
+					require.True(t, a.passedOn, path)
 				}
 
 				return w.consentsDELETE(t, consentsPath+"/", bearer)
 			},
-			assert: refusedWith(httpsec.ErrOIDCForeignConsent, http.StatusNotFound),
+			assert: func(t *testing.T, _ *opFlow, _ *consentsWorld, a flowAnswer) {
+				t.Helper()
+
+				require.NoError(t, a.err)
+				assert.True(t, a.passedOn)
+			},
 		},
 		{
 			name: "a cross-site revocation is refused by CSRF protection, with nothing revoked",

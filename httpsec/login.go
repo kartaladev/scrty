@@ -962,3 +962,11 @@ func isChallenge(err error) bool {
 
 	return errors.As(err, &ch)
 }
+
+// endpoints declares password sign-in.
+func (l *formLogin) endpoints() []Endpoint {
+	return []Endpoint{
+		declare("EnableFormLogin", "WithLoginRequestPath", OperationSignInPassword, l.path,
+			MatchExact, PassThrough, RequiresNothing, http.MethodPost),
+	}
+}

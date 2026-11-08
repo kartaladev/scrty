@@ -152,3 +152,30 @@ func (c *config) wireRecoveryGate(g *recoveryGate) {
 		g.passkeyPaths = p.registrationPaths()
 	}
 }
+
+// recoveryCodesSharedPath is what the two saved-code operations declare they
+// share: GET counts and POST regenerates, on one path.
+const recoveryCodesSharedPath = "scrty.recovery.codes"
+
+// endpoints declares the saved-code endpoints, which the gate answers while
+// the core enables saved codes.
+func (g *recoveryGate) endpoints() []Endpoint {
+	if g.codes == nil || !g.codes.codesEnabled {
+		return nil
+	}
+
+	const feature, placedBy = "EnableAccountRecovery", "WithRecoveryCodesPath"
+
+	eps := []Endpoint{
+		declare(feature, placedBy, OperationRecoveryCodesCount, g.codes.codesPath,
+			MatchExact, PassThrough, RequiresSession, http.MethodGet),
+		declare(feature, placedBy, OperationRecoveryCodesRegenerate, g.codes.codesPath,
+			MatchExact, PassThrough, RequiresSession, http.MethodPost),
+	}
+
+	for i := range eps {
+		eps[i].SharesPath = recoveryCodesSharedPath
+	}
+
+	return eps
+}

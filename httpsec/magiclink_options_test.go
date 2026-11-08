@@ -77,18 +77,6 @@ func TestEnableMagicLink(t *testing.T) {
 			assert:  configError,
 		},
 		{
-			// Not in the spec, but a contradictory configuration: one path
-			// cannot both ask for a link and redeem one, and whichever branch
-			// matched first would silently swallow the other endpoint.
-			name:    "the request and consume paths collide",
-			manager: configured,
-			opts: []httpsec.MagicLinkOption{
-				httpsec.WithMagicLinkRequestPath("/sign-in/magic-link"),
-				httpsec.WithMagicLinkConsumePath("/sign-in/magic-link"),
-			},
-			assert: configError,
-		},
-		{
 			name:    "a nil token generator",
 			manager: configured,
 			opts:    []httpsec.MagicLinkOption{httpsec.WithMagicLinkTokens(nil)},

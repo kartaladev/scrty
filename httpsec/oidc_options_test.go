@@ -215,33 +215,7 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 			assert: refused("WithOIDCSessions"),
 		},
 
-		// Paths.
-		{
-			name:   "the handoff path equal to the callback prefix",
-			enable: with(httpsec.WithOIDCHandoffPath(httpsec.DefaultOIDCCallbackPath)),
-			assert: refused("collide", httpsec.DefaultOIDCCallbackPath),
-		},
-		{
-			name:   "the handoff path answered by the authorize prefix",
-			enable: with(httpsec.WithOIDCHandoffPath(httpsec.DefaultOIDCAuthorizePath + "handoff")),
-			assert: refused("collide", httpsec.DefaultOIDCAuthorizePath+"handoff"),
-		},
-		{
-			// Spec oidc-logout, "Back-channel path shadows the callback".
-			name:   "the back-channel prefix equal to the callback prefix",
-			enable: with(httpsec.WithOIDCBackchannelLogoutPath(httpsec.DefaultOIDCCallbackPath)),
-			assert: refused("collide", httpsec.DefaultOIDCCallbackPath),
-		},
-		{
-			name:   "the authorize prefix equal to the callback prefix without its slash",
-			enable: with(httpsec.WithOIDCAuthorizePath("/sso/callback")),
-			assert: refused("collide", httpsec.DefaultOIDCCallbackPath),
-		},
-		{
-			name:   "the handoff path equal to a prefix given without its trailing slash",
-			enable: with(httpsec.WithOIDCHandoffPath("/sso/callback")),
-			assert: refused("collide", httpsec.DefaultOIDCCallbackPath),
-		},
+		// The flow cookie.
 		{
 			name:   "an empty flow cookie name",
 			enable: with(httpsec.WithOIDCFlowCookieName("")),

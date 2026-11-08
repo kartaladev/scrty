@@ -220,28 +220,6 @@ func TestEnableMFA(t *testing.T) {
 			assert: configError,
 		},
 		{
-			// The verify endpoint would answer the logout request first, so a
-			// pending session could never log out.
-			name:    "a verify prefix that is the logout path",
-			methods: authenticator,
-			opts:    []httpsec.MFAOption{httpsec.WithMFAVerifyPrefix(httpsec.DefaultLogoutPath)},
-			assert:  configError,
-		},
-		{
-			name:    "a logout path under the verify prefix",
-			methods: authenticator,
-			build: func(t *testing.T, opt httpsec.Option) (*httpsec.Chain, error) {
-				t.Helper()
-
-				sessions, err := session.New()
-				require.NoError(t, err)
-
-				return httpsec.New(opt, httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: sessions},
-					httpsec.WithLogoutRequestPath(httpsec.DefaultMFAVerifyPrefix+"/logout")))
-			},
-			assert: configError,
-		},
-		{
 			name:    "a consumer's begin prefix, challenge lifetime, store and responder",
 			methods: authenticator,
 			opts: []httpsec.MFAOption{
@@ -251,40 +229,6 @@ func TestEnableMFA(t *testing.T) {
 				httpsec.WithMFABeginResponder(func(*httpsec.Exchange, json.RawMessage) error { return nil }),
 			},
 			assert: built,
-		},
-		{
-			// Every POST under the verify prefix is the verify endpoint's, so
-			// no begin could ever be reached.
-			name:    "a begin prefix equal to the verify prefix",
-			methods: authenticator,
-			opts:    []httpsec.MFAOption{httpsec.WithMFABeginPrefix(httpsec.DefaultMFAVerifyPrefix + "/")},
-			assert:  configError,
-		},
-		{
-			name:    "a verify prefix moved onto the begin prefix",
-			methods: authenticator,
-			opts:    []httpsec.MFAOption{httpsec.WithMFAVerifyPrefix(httpsec.DefaultMFABeginPrefix)},
-			assert:  configError,
-		},
-		{
-			name:    "a begin prefix under the verify prefix",
-			methods: authenticator,
-			opts:    []httpsec.MFAOption{httpsec.WithMFABeginPrefix(httpsec.DefaultMFAVerifyPrefix + "/begin")},
-			assert:  configError,
-		},
-		{
-			// The verify prefix sits under this one, so every begin POST
-			// there would be the verify endpoint's.
-			name:    "a begin prefix above the verify prefix",
-			methods: authenticator,
-			opts:    []httpsec.MFAOption{httpsec.WithMFABeginPrefix("/mfa")},
-			assert:  configError,
-		},
-		{
-			name:    "a begin prefix that is the logout path",
-			methods: authenticator,
-			opts:    []httpsec.MFAOption{httpsec.WithMFABeginPrefix(httpsec.DefaultLogoutPath)},
-			assert:  configError,
 		},
 		{
 			name:    "a consumer challenge limit",
@@ -441,44 +385,6 @@ func TestMFAMethodListingConstruction(t *testing.T) {
 			name:    "an absent responder",
 			mfaOpts: with(httpsec.ListingResponder(nil)),
 			assert:  refused("ListingResponder"),
-		},
-		{
-			name:    "a path under the verify prefix",
-			mfaOpts: with(httpsec.ListingPath(httpsec.DefaultMFAVerifyPrefix + "/totp")),
-			assert:  refused("WithMFAMethodListing", httpsec.DefaultMFAVerifyPrefix),
-		},
-		{
-			name:    "the verify prefix itself",
-			mfaOpts: with(httpsec.ListingPath(httpsec.DefaultMFAVerifyPrefix)),
-			assert:  refused("WithMFAMethodListing", httpsec.DefaultMFAVerifyPrefix),
-		},
-		{
-			name:    "a path under the begin prefix",
-			mfaOpts: with(httpsec.ListingPath(httpsec.DefaultMFABeginPrefix + "/passkey")),
-			assert:  refused("WithMFAMethodListing", httpsec.DefaultMFABeginPrefix),
-		},
-		{
-			name: "a path under a consumer's verify prefix",
-			mfaOpts: append(with(httpsec.ListingPath("/2fa/check/totp")),
-				httpsec.WithMFAVerifyPrefix("/2fa/check")),
-			assert: refused("WithMFAMethodListing", "/2fa/check"),
-		},
-		{
-			name: "the default verify path once the verify prefix has moved",
-			mfaOpts: append(with(httpsec.ListingPath(httpsec.DefaultMFAVerifyPrefix+"/totp")),
-				httpsec.WithMFAVerifyPrefix("/2fa/check")),
-			assert: assembles,
-		},
-		{
-			name:    "the logout path",
-			mfaOpts: with(httpsec.ListingPath(httpsec.DefaultLogoutPath)),
-			assert:  refused("WithMFAMethodListing", httpsec.DefaultLogoutPath),
-		},
-		{
-			name:       "a consumer's logout path",
-			mfaOpts:    with(httpsec.ListingPath("/auth/sign-out")),
-			logoutOpts: []httpsec.LogoutOption{httpsec.WithLogoutRequestPath("/auth/sign-out")},
-			assert:     refused("WithMFAMethodListing", "/auth/sign-out"),
 		},
 	}
 

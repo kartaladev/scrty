@@ -160,28 +160,6 @@ func (c *config) wireMFA() error {
 			return newConfigError("EnableMFA could not build the verification throttle: %s", err)
 		}
 
-		// The endpoint answers every POST under its prefix, so a logout there
-		// would be answered as an unknown method and a pending session could
-		// never log out.
-		if c.logoutPath != "" && underPrefix(c.logoutPath, i.verifyPrefix) {
-			return newConfigError("EnableMFA's verify prefix %q claims the logout path %q, so a "+
-				"session owing a second factor could not log out", i.verifyPrefix, c.logoutPath)
-		}
-
-		if c.logoutPath != "" && underPrefix(c.logoutPath, i.beginPrefix) {
-			return newConfigError("EnableMFA's begin prefix %q claims the logout path %q, so a "+
-				"session owing a second factor could not log out", i.beginPrefix, c.logoutPath)
-		}
-
-		// The listing answers GET on exactly its path, and logout POST on
-		// its own, but one path serving both would be a route whose meaning
-		// depends on the verb, and a proxy rule naming either would catch the
-		// other.
-		if i.listing != nil && c.logoutPath != "" && i.listing.path == c.logoutPath {
-			return newConfigError("EnableMFA's WithMFAMethodListing path %q is the logout path",
-				i.listing.path)
-		}
-
 		if err := i.wireChallenges(c); err != nil {
 			return err
 		}
@@ -931,27 +909,6 @@ func (i *mfaInterceptor) resolvePaths(base string) {
 	}
 }
 
-// checkListing refuses a listing path another second-factor endpoint claims:
-// every POST at or under the verify and begin prefixes is that endpoint's, so
-// a path there would name a method, or nothing, rather than the listing.
-func (i *mfaInterceptor) checkListing(option string) error {
-	if i.listing == nil {
-		return nil
-	}
-
-	for _, p := range []struct{ name, prefix string }{
-		{"verify", i.declaredVerifyPrefix},
-		{"begin", i.declaredBeginPrefix},
-	} {
-		if underPrefix(i.listing.declaredPath, p.prefix) {
-			return newConfigError("%s's WithMFAMethodListing path %q is under the %s prefix %q, "+
-				"which that endpoint claims", option, i.listing.declaredPath, p.name, p.prefix)
-		}
-	}
-
-	return nil
-}
-
 // isListingRequest reports whether r asks for the method listing: the
 // listing is on, and r is a GET on exactly its path. Any other method passes
 // on to the gate and the application, as a GET to a verify path does.
@@ -1027,4 +984,24 @@ func writeMethodsDocument(ex *Exchange, methods []MFAMethod, password *bool) err
 	_, err = ex.Writer.Write(body)
 
 	return err
+}
+
+// endpoints declares the begin and verify steps, each answering every POST
+// under its prefix, and the method listing when it is on.
+func (i *mfaInterceptor) endpoints() []Endpoint {
+	const feature = "EnableMFA"
+
+	eps := []Endpoint{
+		declare(feature, "WithMFABeginPrefix", OperationMFAChallenge, withSegment(i.beginPrefix, "method"),
+			MatchSubtree, PassThrough, RequiresPendingSecondFactor, http.MethodPost),
+		declare(feature, "WithMFAVerifyPrefix", OperationMFAVerify, withSegment(i.verifyPrefix, "method"),
+			MatchSubtree, PassThrough, RequiresPendingSecondFactor, http.MethodPost),
+	}
+
+	if i.listing != nil {
+		eps = append(eps, declare(feature, "WithMFAMethodListing", OperationMFAMethods, i.listing.path,
+			MatchExact, PassThrough, RequiresPendingSecondFactor, http.MethodGet))
+	}
+
+	return eps
 }
