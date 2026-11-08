@@ -134,8 +134,11 @@ FOR EACH ROW EXECUTE FUNCTION `+name+`()`)
 
 	t.Cleanup(func() {
 		cctx := context.WithoutCancel(ctx)
-		_, _ = db.ExecContext(cctx, `DROP TRIGGER IF EXISTS `+name+` ON sessions`)
-		_, _ = db.ExecContext(cctx, `DROP FUNCTION IF EXISTS `+name+`()`)
+		// Both drops run, so a failed trigger drop does not leave the function.
+		_, errTrigger := db.ExecContext(cctx, `DROP TRIGGER IF EXISTS `+name+` ON sessions`)
+		assert.NoError(t, errTrigger, "drop trigger %s", name)
+		_, errFunc := db.ExecContext(cctx, `DROP FUNCTION IF EXISTS `+name+`()`)
+		assert.NoError(t, errFunc, "drop function %s", name)
 	})
 }
 

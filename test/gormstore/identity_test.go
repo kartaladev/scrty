@@ -148,8 +148,6 @@ func withGoneTable(ctx context.Context, t *testing.T, d database, table string, 
 func TestIdentityStore_Scenarios(t *testing.T) {
 	t.Parallel()
 
-	d := migratedIdentityDB(t)
-
 	type testCase struct {
 		name   string
 		assert func(t *testing.T, ctx context.Context, d database)
@@ -437,6 +435,10 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+
+			// A database of its own: cases rename tables, which locks them for the
+			// transaction and must not reach a sibling case.
+			d := migratedIdentityDB(t)
 
 			tc.assert(t, t.Context(), d)
 		})

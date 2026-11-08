@@ -6,7 +6,7 @@ The library fixes this change used to carry (its former groups 6–9) moved to `
 
 ## 1. `gorelease` against a module with `replace` (design: Risks, decision 3)
 
-- [ ] 1.1 Add `golang.org/x/exp/cmd/gorelease` as a `tool` directive in `tools/go.mod`, and verify `make tools` installs it into `.bin/`. Run `GOWORK=off gorelease -base=none -version=v0.1.0` inside `store/pgxstore/` and record the exact output.
+- [x] 1.1 Add `golang.org/x/exp/cmd/gorelease` as a `tool` directive in `tools/go.mod`, and verify `make tools` installs it into `.bin/`. Run `GOWORK=off gorelease -base=none -version=v0.1.0` inside `store/pgxstore/` and record the exact output.
   - If it reports the module's API and exits 0, the gate runs it in place.
   - If it refuses because of the `replace` directive, record the error text. The gate then runs it on a temporary copy of the module with the scrty `replace` lines dropped and the workspace-built versions supplied. Report the outcome so the main session records it in `design.md`'s risk entry before group 3.
 
@@ -34,11 +34,19 @@ The library fixes this change used to carry (its former groups 6–9) moved to `
   - `make release-check VERSION=v0.2.0` fails at the requirement step, naming the modules;
   - `make release-check VERSION=v0.1.0` passes, and its output shows each module built with the workspace off;
   - that run's vuln output names all nine modules, and `$(SBOM_DIR)` holds exactly nine `.cdx.json` files, each naming version `v0.1.0`. To see this check bite, run the target once with `GOWORK=off` exported to the sub-make in a temporary copy of the recipe: it writes one file, and the count check fails.
-- [ ] 3.2 Add the API report step to `release-check`, in the form 1.1 decided:
-  - `-base=none` when no previous tag exists;
-  - otherwise `-base=` the latest `v*` root tag.
-  Verify that it prints a report for each of the nine modules for `v0.1.0`, and that the target fails if `gorelease` errors. Check the failure by pointing it at a non-existent module directory in a temporary copy of the list.
-- [ ] 3.3 Add `.github/workflows/release-check.yml`, triggered by `workflow_dispatch` with a `version` input, running `make release-check VERSION=<input>` on the Go, PostgreSQL and Redis matrix of `ci.yml`'s `test` job, with the same service containers and environment. Verify `actionlint` (run ad hoc with `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12`, the latest release per the GitHub API on 2026-10-21) reports nothing on it and on `ci.yml`.
+- [ ] 3.2 Red, then green: add `tools/cmd/releaseproxy` (design decision 3, the local proxy). Given a source tree, a version and a list of module directories, it writes each module as a `GOPROXY` file tree (`<escaped path>/@v/list`, `<version>.info`, `<version>.mod`, `<version>.zip`), building each zip with `golang.org/x/mod/zip.CreateFromDir`. Write these tests first, each seen failing for its intended reason:
+  - a module's zip leaves out a nested module's files;
+  - a path with capitals is escaped as the proxy protocol requires;
+  - a non-semver version, a missing directory, or a directory without `go.mod` is refused with an error naming it, and nothing is written;
+  - an existing output directory that is not empty is refused;
+  - a fresh module with `GOPROXY=file://<out>`, `GONOSUMDB` set for that path, a temporary `GOMODCACHE` and `GOWORK=off` can `go get` a written module at the version.
+  Verify with `make tools-check`.
+- [ ] 3.3 Add the API report step to `release-check`, as design decision 3 states it: export `HEAD` into a throwaway repository, write the local proxy with `releaseproxy`, drop the scrty `replace` lines in each exported module, and run `gorelease` with `GOPROXY=file://<proxy>,https://proxy.golang.org`, `GONOSUMDB=github.com/kartaladev/scrty`, a temporary `GOMODCACHE` and `GOWORK=off`, removing every temporary directory on every exit. Use `-base=none` when no `v*` root tag exists, and otherwise `-base=` the latest one. Verify:
+  - for `v0.1.0`, it prints a report for each of the nine modules and passes;
+  - leaving one module out of the proxy fails the target, naming that module;
+  - the developer's `go env GOMODCACHE` holds no `github.com/kartaladev/scrty*@v0.1.0` afterwards;
+  - no temporary directory is left behind after a failed run.
+- [ ] 3.4 Add `.github/workflows/release-check.yml`, triggered by `workflow_dispatch` with a `version` input, running `make release-check VERSION=<input>` on the Go, PostgreSQL and Redis matrix of `ci.yml`'s `test` job, with the same service containers and environment. Verify `actionlint` (run ad hoc with `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12`, the latest release per the GitHub API on 2026-10-21) reports nothing on it and on `ci.yml`.
 
 ## 4. The outside probe (decision 4; release-policy requirement "A release is proven from outside the repository after tagging")
 
@@ -72,11 +80,12 @@ The library fixes this change used to carry (its former groups 6–9) moved to `
 - [ ] 5.4 Write `RELEASING.md` with the steps of design decision 7, each with its command: the bump commands, `make release-check`, the private-reporting check with `gh api`, `make release-tags`, the push, the probe, and the release notes published with `gh release create <tag> --notes-file <entry> .bin/sbom/*.cdx.json`, which attaches the nine SBOMs the gate wrote on the tagged commit. Include the never-move-a-tag rule and its recovery (a new patch version plus `retract`). Verify that each step's command exists and runs: `make release-check` and `make release-tags` from groups 3 and 5, and the `gh api` check returning JSON. Check the `gh release create` usage against `gh release create --help` only; never run it.
 - [ ] 5.5 Update `README.md`: the *Development* section names `make release-check` and `make release-tags`, and *Supply chain* says the release check runs `release-gate`'s vuln and SBOM steps and that the SBOMs are attached to each release; an install section (`go get github.com/kartaladev/scrty@v0.1.0` and one nested module), links to `CHANGELOG.md` and `SECURITY.md`, and a supported-versions sentence consistent with `SECURITY.md`, and a *Known limitations* section: the concurrent passkey finish, the magic-link timing difference, OIDC logout's replay window with no `jti` guard, `auth_time` and `max_age` not enforced, the rate limiter's burst overshoot and its N-replica multiplication, the in-memory defaults' single-process scope, and two of the OpenID Provider's: its browser session, which does not see a marker placed on the sign-in afterwards, such as a required password change, so a change that matters must end the sign-in, and whose removal through `WithoutBrowserSessions` fails the Basic OP conformance plan, as `prompt=none` then always answers `login_required` (`oidc-provider` R2); and a login finished in another browser than the one that started it, which needs a restart (`oidc-provider` R9). Verify the links resolve within the repository.
 - [ ] 5.6 Record the outcome of each claim `pre-release-hardening` left unreproduced (U2, U4, U8, S7, the fiber `HEAD` bypass, the unparseable-hash half of M2, the Argon2id ceiling). For each, name the test that now pins the fixed behaviour, or state that it was dropped and why. Write them in this change's `design.md`; the archive is not edited. Verify every listed claim has an outcome.
+  - The fiber `HEAD` claim has no fiber-level test (2026-11-09). Add one in `httpsec/fibersec` asserting that a `HEAD` request to a route marked for the recovery cool-down as `GET` is held. It passes on today's code, so show it bites by temporarily removing the core's `HEAD`-as-`GET` matching: it must fail. Then edit the matching back.
 
 ## 6. Release-gate stability
 
-- [ ] 6.1 Give each parallel case of `TestIdentityStore_Scenarios` its own database in all three drivers (`test/pgxstore`, `test/sqlstore`, `test/gormstore`), so no two cases rename tables in one database. Verify with `-count=5` per driver under `-race`.
-- [ ] 6.2 Check the error of the trigger drop in `test/sqlstore/session_supersede_test.go` and `test/gormstore/session_supersede_test.go`. Verify the tests pass, and that a dropped trigger whose drop fails now fails the test: point it at a missing trigger temporarily, then restore it.
+- [x] 6.1 Give each parallel case of `TestIdentityStore_Scenarios` its own database in all three drivers (`test/pgxstore`, `test/sqlstore`, `test/gormstore`), so no two cases rename tables in one database. Verify with `-count=5` per driver under `-race`.
+- [x] 6.2 Check the error of the trigger drop in `test/sqlstore/session_supersede_test.go` and `test/gormstore/session_supersede_test.go`. Verify the tests pass, and that a dropped trigger whose drop fails now fails the test: point it at a missing trigger temporarily, then restore it.
 
 ## 7. Integration gate
 

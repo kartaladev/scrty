@@ -68,7 +68,20 @@ None of the decisions below is library behaviour a consumer configures. They gov
   1. **Requirement check:** the root-module test of decision 2, run with `SCRTY_RELEASE_VERSION` set. It then also fails unless every nested module's scrty requirements name exactly that version. Without the variable, it runs only the always-on half.
   2. **The build gates with the workspace off:** the same fmt-check, vet, lint and test loops `make check` runs, with `GOWORK=off`, over a module list read from `go.work` rather than from `go list -m` (which lists only the root once the workspace is off). Each module is then built as its own main module, its own `replace` included. A module that only built because the workspace supplied something is caught. One pass replaces the workspace pass rather than doubling it.
   3. **The supply-chain gate:** `$(MAKE) release-gate SBOM_VERSION=$(VERSION)`. It runs the vulnerability check (already per module with `GOWORK=off`) and writes the nine SBOMs stamped with the release version, as the `supply-chain` spec requires. The vuln loop is therefore not repeated in step 2. The sub-make runs in workspace mode, so its `MODULES` lists every module (see Risks).
-  4. **The API report:** `gorelease` in each published module. It uses `-base=none -version=v0.1.0` for the first release, and `-base=<previous> -version=<new>` after it. The report is printed. Under v0 it does not fail on an incompatible change, but it fails the gate on any error the tool reports.
+  4. **The API report:** `gorelease` in each published module. It uses `-base=none -version=v0.1.0` for the first release, and `-base=<previous> -version=<new>` after it. The report is printed. Under v0 it does not fail on an incompatible change, but it fails the gate on any error the tool reports. It runs against a local module proxy (next bullet).
+- **The API report runs against a local proxy (decided 2026-11-09, after task 1.1).** `gorelease` loads a module as a consumer would. It ignores `replace`, resolves every requirement through `GOPROXY`, and refuses a repository with uncommitted changes. Run in place on a nested module, it failed with `unknown revision v0.0.0`, and dropping the `replace` only moves that failure to the release version, whose tags do not exist yet. So the gate:
+  1. exports `HEAD` with `git archive` into a temporary directory, and commits it there in a throwaway repository, so `gorelease` sees a clean tree;
+  2. writes every published scrty module of that export at `$(VERSION)` into a second temporary directory laid out as a `GOPROXY` file tree (`<escaped path>/@v/list`, `.info`, `.mod`, `.zip`), using a new `tools/cmd/releaseproxy` program built on `golang.org/x/mod/zip`;
+  3. drops the scrty `replace` lines in each exported module, and runs `gorelease` there with `GOWORK=off`, `GOPROXY=file://<proxy>,https://proxy.golang.org`, `GONOSUMDB=github.com/kartaladev/scrty` and a temporary `GOMODCACHE`.
+  - **What it adds:** before any tag exists, each nested module is shown to resolve and build against exactly the root and siblings about to be tagged, as a consumer will load them. The probe (decision 4) still proves the published copy.
+  - **Default:** this is the only form the gate takes. **Override:** none. It is the repository's release process, not library behaviour.
+  - **Alternatives considered:** running `gorelease` on the root only, which would leave the nested modules' API and dependency changes unreported, against the `release-policy` requirement; and dropping the report for `v0.1.0`. Both were declined by the maintainer.
+  - **Failure modes:**
+    - **The locally built `v0.1.0` must never reach the developer's module cache.** It is built from the working tree, so a run before merge would cache content that differs from the published version and later fail its checksum. Handled: a temporary `GOMODCACHE`, removed on every exit path.
+    - **Skipping the checksum database for scrty modules** is scoped to this one command's environment, never exported, and only applies to modules the local proxy serves. Handled.
+    - **A module the local proxy lacks** makes `gorelease` fall through to the public proxy and fail on the missing version. That fails the gate, naming the module. Handled, with a test.
+    - **A zip carrying files from a nested module or from outside the module** would misrepresent the release. Handled: `releaseproxy` builds each zip with `zip.CreateFromDir`, which leaves out nested modules, and its tests pin this.
+    - **Temporary directories left behind on failure:** removed by a trap on every exit. Handled.
 - **Where it runs.**
   - The maintainer runs it before tagging.
   - A `workflow_dispatch` CI job runs it with the version as input, on the same Go, PostgreSQL and Redis matrix as `ci.yml`'s `test` job, so a release is gated on both PostgreSQL majors.
@@ -143,8 +156,8 @@ The library fixes this change used to carry (the `notify` worker replacement and
 
 - **`gorelease` may refuse a module whose `go.mod` has `replace` directives.**
   - Mitigation: the first task runs it against one module and records the outcome.
-  - If it refuses, the gate runs it on a temporary copy with the scrty `replace` lines dropped, against the workspace-built versions.
-  - This is unverified, and tested first.
+  - **Outcome (task 1.1, 2026-11-09):** confirmed. In the working tree it refused because the repository had uncommitted changes. In a clean export it ignored the `replace` and failed to fetch the root: `unknown revision v0.0.0` for `store/pgxstore`, and `unknown revision 000000000000` for `authenticate/passkey/webauthn`. A temporary copy with the `replace` lines dropped, as first planned, cannot work either, because `v0.1.0` has no tag before the release. Decision 3 now runs it against a local proxy.
+  - **Adding the tool moved `golang.org/x/tools` in the `tools` module to a pseudo-version** (`v0.52.1-0.20261106145633-d407941a339a`), because `golang.org/x/exp` has no tagged releases and requires it. Accepted: `tools` is never published, and only the gate's own tools use it.
 - **The supply-chain sub-make could scan and stamp only the root.** `release-gate`'s `MODULES` comes from `go list -m`, which lists only the root once `GOWORK=off`. If `release-check` exported `GOWORK=off` to the sub-make, vuln and sbom would cover one module and still pass.
   - Handled: `release-check` sets `GOWORK=off` per command, never in the environment it passes to `$(MAKE) release-gate`. Task 3.1 verifies that a `v0.1.0` run writes nine SBOM files and that vuln names nine modules.
 - **Between the bump merge and the tag push, the bump commit names a version that does not exist yet,** so a consumer pinning that commit's pseudo-version cannot resolve it.
@@ -155,6 +168,20 @@ The library fixes this change used to carry (the `notify` worker replacement and
   - Accepted: an unchanged module at a new version costs nothing to a consumer, and keeps one version meaning one tested set.
 - **The response times in the security policy are a commitment.**
   - Mitigation: they are proposed defaults, for the maintainer to confirm or change in review before `SECURITY.md` is published.
+
+## Outcomes of the claims `pre-release-hardening` left unreproduced (task 5.6, 2026-11-09)
+
+No change after 2026-10-24 records a red-step outcome or a drop for any of them, so each outcome rests on the test that pins the behaviour now. Each listed test was run on 2026-11-09 and passes.
+
+| Claim | Outcome | Pinned by |
+|---|---|---|
+| U2, user-wide deletes that loop without bound | Fixed | `TestUntilSettled` (`internal/storekit`); `TestSessionDelete_SettlesUnderConcurrentCreates` in `test/{pgxstore,sqlstore,gormstore}` |
+| U4, a failed first-use write with successor recovery on | Fixed | `TestLoad_FailedFirstUseWrite` (`session`) |
+| U8, relying-party ID validation | Fixed | `TestValidateRPID` (`authenticate/passkey`) |
+| S7, `(nil, nil)` recovery records and nil passkey list elements | Fixed | `TestRecoverer_FinishFailures`, case "a record store that finds no record and no error is refused as missing" (`recovery`); `TestCredentialList_NilElementIsMissing` (`authenticate/passkey`) |
+| The fiber `HEAD`-reaches-`GET` bypass of the recovery cool-down | Fixed in the core, not yet pinned through fiber | `TestRecoveryCooldown_Matching`, case "HEAD on a marked GET is held" (`httpsec`). No fiber test sends `HEAD`. Task 5.6 adds one. |
+| M2, the unparseable-hash half | Fixed | `TestPasswordProvider_UnrecognisedHashCostsOneVerification` (`authenticate`); `TestRecognizer_BuiltInEncodersRecognizeOnlyWhatTheyWouldVerify` (`authenticate/password`) |
+| The Argon2id parameter ceiling | Fixed | `TestEncoderConstruction` (`authenticate/password`) |
 
 ## Post-release backlog
 

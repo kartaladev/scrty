@@ -40,7 +40,10 @@ $(BIN)/benchstat: $(TOOLS_DEPS)
 $(BIN)/cyclonedx-gomod: $(TOOLS_DEPS)
 	cd tools && GOWORK=off GOBIN=$(BIN) go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod
 
-TOOL_BINS := $(BIN)/golangci-lint $(BIN)/govulncheck $(BIN)/mockgen $(BIN)/benchstat $(BIN)/cyclonedx-gomod
+$(BIN)/gorelease: $(TOOLS_DEPS)
+	cd tools && GOWORK=off GOBIN=$(BIN) go install golang.org/x/exp/cmd/gorelease
+
+TOOL_BINS := $(BIN)/golangci-lint $(BIN)/govulncheck $(BIN)/mockgen $(BIN)/benchstat $(BIN)/cyclonedx-gomod $(BIN)/gorelease
 
 tools: $(TOOL_BINS)
 
