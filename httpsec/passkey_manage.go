@@ -119,11 +119,11 @@ func (p *passkeyInterceptor) manage(ex *Exchange) (bool, error) {
 	var serve func(*Exchange, *session.Session) error
 
 	switch {
-	case r.Method() == http.MethodGet && r.Path() == p.credPrefix:
+	case r.Method() == http.MethodGet && r.Path() == p.credPrefix.at():
 		serve = p.list
-	case r.Method() == http.MethodPost && r.Path() == p.credPrefix+passkeyRenameSegment:
+	case r.Method() == http.MethodPost && r.Path() == p.credPrefix.at()+passkeyRenameSegment:
 		serve = p.rename
-	case r.Method() == http.MethodPost && r.Path() == p.credPrefix+passkeyRemoveSegment:
+	case r.Method() == http.MethodPost && r.Path() == p.credPrefix.at()+passkeyRemoveSegment:
 		serve = p.remove
 	default:
 		return false, nil

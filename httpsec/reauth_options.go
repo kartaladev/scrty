@@ -190,7 +190,7 @@ func EnableReauthentication(opts ...ReauthenticationOption) Option {
 		}
 
 		i := &reauthInterceptor{
-			declaredPrefix: DefaultReauthenticationPrefix,
+			prefix:         defaultPath(DefaultReauthenticationPrefix),
 			respond:        writeReauthResult,
 			beginRespond:   writeMFABegin,
 			methodsRespond: writeReauthMethods,
@@ -331,8 +331,7 @@ func WithReauthenticationPrefix(prefix string) ReauthenticationOption {
 			return err
 		}
 
-		i.declaredPrefix = strings.TrimSuffix(prefix, "/")
-		i.declare(option, prefix)
+		i.prefix.giveAs(option, prefix, strings.TrimSuffix(prefix, "/"))
 
 		return nil
 	}

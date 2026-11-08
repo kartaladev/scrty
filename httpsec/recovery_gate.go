@@ -142,7 +142,7 @@ func (c *config) wireRecoveryGate(g *recoveryGate) {
 
 	_ = eachInterceptor(c, func(p *passwordChangeGate) error {
 		if p.change != nil {
-			g.resolvePath = p.path
+			g.resolvePath = p.path.at()
 		}
 
 		return nil
@@ -167,9 +167,9 @@ func (g *recoveryGate) endpoints() []Endpoint {
 	const feature, placedBy = "EnableAccountRecovery", "WithRecoveryCodesPath"
 
 	eps := []Endpoint{
-		declare(feature, placedBy, OperationRecoveryCodesCount, g.codes.codesPath,
+		declare(feature, placedBy, OperationRecoveryCodesCount, g.codes.codesPath.at(),
 			MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodGet),
-		declare(feature, placedBy, OperationRecoveryCodesRegenerate, g.codes.codesPath,
+		declare(feature, placedBy, OperationRecoveryCodesRegenerate, g.codes.codesPath.at(),
 			MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodPost),
 	}
 

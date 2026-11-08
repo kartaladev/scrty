@@ -107,20 +107,20 @@ func EnableOIDCLogin(d OIDCDeps, opts ...OIDCOption) Option {
 		}
 
 		i := &oidcInterceptor{
-			manager:             d.RelyingParty,
-			handoffs:            d.Handoff,
-			now:                 c.now,
-			declaredAuthorize:   DefaultOIDCAuthorizePath,
-			declaredCallback:    DefaultOIDCCallbackPath,
-			declaredHandoff:     DefaultOIDCHandoffPath,
-			declaredBackchannel: DefaultOIDCBackchannelPath,
-			cookieName:          DefaultOIDCFlowCookieName,
-			bodyLimit:           DefaultLoginBodyLimit,
-			limit:               defaultHandoffFailureLimit,
-			window:              defaultHandoffFailureWindow,
-			countRefusals:       true,
-			scope:               BackchannelLogoutScopeIssuer,
-			rpLogout:            true,
+			manager:         d.RelyingParty,
+			handoffs:        d.Handoff,
+			now:             c.now,
+			authorizePath:   defaultPath(DefaultOIDCAuthorizePath),
+			callbackPath:    defaultPath(DefaultOIDCCallbackPath),
+			handoffPath:     defaultPath(DefaultOIDCHandoffPath),
+			backchannelPath: defaultPath(DefaultOIDCBackchannelPath),
+			cookieName:      DefaultOIDCFlowCookieName,
+			bodyLimit:       DefaultLoginBodyLimit,
+			limit:           defaultHandoffFailureLimit,
+			window:          defaultHandoffFailureWindow,
+			countRefusals:   true,
+			scope:           BackchannelLogoutScopeIssuer,
+			rpLogout:        true,
 		}
 
 		for _, opt := range opts {
@@ -237,7 +237,7 @@ func (i *oidcInterceptor) checkRedirectPaths(option string) error {
 				"waives the check)", option, name)
 		}
 
-		want := i.callbackPath + name
+		want := i.callbackPath.at() + name
 		if !strings.HasSuffix(u.Path, want) {
 			return newConfigError("%s: the redirect URL of provider %q has the path %q, which "+
 				"cannot reach the callback this chain serves at %q; register a redirect URL "+
@@ -283,14 +283,17 @@ func (i *oidcInterceptor) checkConveyance(option string) error {
 }
 
 // providerSegment returns the provider name path carries after prefix, or ""
-// when path is not prefix followed by exactly one non-empty segment.
+// when path is not prefix followed by exactly one non-empty segment. prefix
+// ends in the "/" oidcPrefix guarantees; one without it matches nothing.
 func providerSegment(path, prefix string) string {
-	rest, ok := strings.CutPrefix(path, prefix)
-	if !ok || rest == "" || strings.Contains(rest, "/") {
+	base, ok := strings.CutSuffix(prefix, "/")
+	if !ok {
 		return ""
 	}
 
-	return rest
+	provider, _ := oneSegmentBelow(path, base)
+
+	return provider
 }
 
 // wireOIDCLogin builds what the federated-login endpoints cannot build until
@@ -402,8 +405,7 @@ func WithOIDCAuthorizePath(prefix string) OIDCOption {
 			return err
 		}
 
-		i.declaredAuthorize = p
-		i.declare("WithOIDCAuthorizePath", prefix)
+		i.authorizePath.giveAs("WithOIDCAuthorizePath", prefix, p)
 
 		return nil
 	}
@@ -428,8 +430,7 @@ func WithOIDCCallbackPath(prefix string) OIDCOption {
 			return err
 		}
 
-		i.declaredCallback = p
-		i.declare("WithOIDCCallbackPath", prefix)
+		i.callbackPath.giveAs("WithOIDCCallbackPath", prefix, p)
 
 		return nil
 	}
@@ -452,8 +453,7 @@ func WithOIDCHandoffPath(path string) OIDCOption {
 			return err
 		}
 
-		i.declaredHandoff = path
-		i.declare("WithOIDCHandoffPath", path)
+		i.handoffPath.give("WithOIDCHandoffPath", path)
 		i.handoffPathSet = true
 
 		return nil
@@ -477,8 +477,7 @@ func WithOIDCBackchannelLogoutPath(prefix string) OIDCOption {
 			return err
 		}
 
-		i.declaredBackchannel = p
-		i.declare("WithOIDCBackchannelLogoutPath", prefix)
+		i.backchannelPath.giveAs("WithOIDCBackchannelLogoutPath", prefix, p)
 
 		return nil
 	}
@@ -754,8 +753,23 @@ var _ HandoffRedeemer = (*oidc.Handoff)(nil)
 // cannot prefix twice. The flow cookie and the callback's other derived values
 // read callbackPath, so they follow the placed endpoint.
 func (i *oidcInterceptor) resolvePaths(base string) {
-	i.authorizePath = joinBase(base, i.declaredAuthorize)
-	i.callbackPath = joinBase(base, i.declaredCallback)
-	i.handoffPath = joinBase(base, i.declaredHandoff)
-	i.backchannelPath = joinBase(base, i.declaredBackchannel)
+	i.authorizePath.resolve(base)
+	i.callbackPath.resolve(base)
+	i.handoffPath.resolve(base)
+	i.backchannelPath.resolve(base)
+}
+
+// declaredPaths reports the federated-login paths the consumer set whose
+// endpoint is served, each as its option was given it: the handoff only while
+// a redeemer is set, as endpoints declares it. The redeemer is settled by
+// resolve, in build's wiring, so the handoff is reported as settled by wiring,
+// for the repeat check's late pass alone; the other three are judged early.
+func (i *oidcInterceptor) declaredPaths() []declaredPath {
+	paths := declarations(i.authorizePath, i.callbackPath, i.backchannelPath)
+
+	if i.redeemer != nil {
+		paths = append(paths, wiringSettled(i.handoffPath)...)
+	}
+
+	return paths
 }

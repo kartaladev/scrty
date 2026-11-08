@@ -66,6 +66,122 @@ func TestBasePath_Settled(t *testing.T) {
 	}
 }
 
+// TestEndpointPath pins the record each built-in keeps per path: a default is
+// not a declaration, the last value given replaces an earlier one, and resolving
+// works from the declared path, so a second resolution cannot prefix twice.
+func TestEndpointPath(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		build  func() endpointPath
+		assert func(t *testing.T, e endpointPath)
+	}
+
+	cases := []testCase{
+		{
+			name: "a default resolves under the base and is no declaration",
+			build: func() endpointPath {
+				e := defaultPath("/x")
+				e.resolve("/auth")
+
+				return e
+			},
+			assert: func(t *testing.T, e endpointPath) {
+				assert.Equal(t, "/auth/x", e.at())
+
+				_, ok := e.declaration()
+				assert.False(t, ok, "a default is not judged by the repeat check")
+			},
+		},
+		{
+			name: "a given path reports its setting and resolves under the base",
+			build: func() endpointPath {
+				e := defaultPath("/x")
+				e.give("WithX", "/y")
+				e.resolve("/auth")
+
+				return e
+			},
+			assert: func(t *testing.T, e endpointPath) {
+				assert.Equal(t, "/auth/y", e.at())
+
+				d, ok := e.declaration()
+				require.True(t, ok)
+				assert.Equal(t, declaredPath{setting: "WithX", path: "/y"}, d)
+			},
+		},
+		{
+			name: "given twice, the last value is the one declared and resolved",
+			build: func() endpointPath {
+				e := defaultPath("/x")
+				e.give("WithX", "/auth/first")
+				e.give("WithX", "/second")
+				e.resolve("/auth")
+
+				return e
+			},
+			assert: func(t *testing.T, e endpointPath) {
+				assert.Equal(t, "/auth/second", e.at())
+
+				d, ok := e.declaration()
+				require.True(t, ok)
+				assert.Equal(t, declaredPath{setting: "WithX", path: "/second"}, d)
+			},
+		},
+		{
+			name: "resolving twice does not prefix twice",
+			build: func() endpointPath {
+				e := defaultPath("/x")
+				e.resolve("/auth")
+				e.resolve("/auth")
+
+				return e
+			},
+			assert: func(t *testing.T, e endpointPath) {
+				assert.Equal(t, "/auth/x", e.at())
+			},
+		},
+		{
+			name: "with no base the path answers where it was declared",
+			build: func() endpointPath {
+				e := defaultPath("/x")
+				e.resolve("")
+
+				return e
+			},
+			assert: func(t *testing.T, e endpointPath) {
+				assert.Equal(t, "/x", e.at())
+			},
+		},
+		{
+			name: "a path written differently from where it answers declares what was written",
+			build: func() endpointPath {
+				e := defaultPath("/x/")
+				e.giveAs("WithX", "/y", "/y/")
+				e.resolve("/auth")
+
+				return e
+			},
+			assert: func(t *testing.T, e endpointPath) {
+				assert.Equal(t, "/auth/y/", e.at())
+
+				d, ok := e.declaration()
+				require.True(t, ok)
+				assert.Equal(t, declaredPath{setting: "WithX", path: "/y"}, d)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, tc.build())
+		})
+	}
+}
+
 // resolvedPaths is where each resolved built-in of a test configuration answers.
 type resolvedPaths struct {
 	logout, gatesLogout, management, passwordChange, signals string
@@ -175,12 +291,12 @@ func TestResolvePaths(t *testing.T) {
 
 			var got resolvedPaths
 
-			got.logout = c.logout.path
+			got.logout = c.logout.path.at()
 			got.gatesLogout = c.logoutPath
 
-			_ = eachInterceptor(c, func(m *sessionManagement) error { got.management = m.prefix; return nil })
-			_ = eachInterceptor(c, func(g *passwordChangeGate) error { got.passwordChange = g.path; return nil })
-			_ = eachInterceptor(c, func(e *sessionSignals) error { got.signals = e.path; return nil })
+			_ = eachInterceptor(c, func(m *sessionManagement) error { got.management = m.prefix.at(); return nil })
+			_ = eachInterceptor(c, func(g *passwordChangeGate) error { got.passwordChange = g.path.at(); return nil })
+			_ = eachInterceptor(c, func(e *sessionSignals) error { got.signals = e.path.at(); return nil })
 
 			tc.assert(t, c, got)
 		})
@@ -192,8 +308,8 @@ func TestResolvePaths(t *testing.T) {
 func (c *config) answersAt(p string) bool {
 	found := false
 
-	_ = eachInterceptor(c, func(m *sessionManagement) error { found = found || m.prefix == p; return nil })
-	_ = eachInterceptor(c, func(g *passwordChangeGate) error { found = found || g.path == p; return nil })
+	_ = eachInterceptor(c, func(m *sessionManagement) error { found = found || m.prefix.at() == p; return nil })
+	_ = eachInterceptor(c, func(g *passwordChangeGate) error { found = found || g.path.at() == p; return nil })
 
 	return found
 }

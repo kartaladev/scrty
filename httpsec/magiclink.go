@@ -137,8 +137,6 @@ type Redeemer interface {
 
 // magicLinkInterceptor answers both magic-link endpoints.
 type magicLinkInterceptor struct {
-	pathDeclarations
-
 	manager  *magiclink.Links
 	redeemer Redeemer
 	respond  MagicLinkResponder
@@ -183,16 +181,13 @@ type magicLinkInterceptor struct {
 
 	now func() time.Time
 
-	// declaredRequestPath and declaredConsumePath are where the options placed
-	// the endpoints, without the base path; requestPath and consumePath are
-	// where they answer, settled by resolvePaths.
-	declaredRequestPath string
-	declaredConsumePath string
-	requestPath         string
-	consumePath         string
-	cookieName          string
-	bodyLimit           int64
-	countRefusals       bool
+	// requestPath and consumePath are where the options placed the endpoints,
+	// and where they answer under the base path once resolved.
+	requestPath   endpointPath
+	consumePath   endpointPath
+	cookieName    string
+	bodyLimit     int64
+	countRefusals bool
 
 	// automation is the automation-challenge gate when it was selected for the
 	// link request, settled at assembly, and nil otherwise.
@@ -203,8 +198,13 @@ type magicLinkInterceptor struct {
 // paths the options declared. The confirm page the emailed link points at is
 // the consumer's own page, not an endpoint of the chain, and does not move.
 func (i *magicLinkInterceptor) resolvePaths(base string) {
-	i.requestPath = joinBase(base, i.declaredRequestPath)
-	i.consumePath = joinBase(base, i.declaredConsumePath)
+	i.requestPath.resolve(base)
+	i.consumePath.resolve(base)
+}
+
+// declaredPaths reports the request and redeem paths the consumer set.
+func (i *magicLinkInterceptor) declaredPaths() []declaredPath {
+	return declarations(i.requestPath, i.consumePath)
 }
 
 // check reports the wiring faults only the assembled configuration can see:
@@ -313,9 +313,9 @@ func (i *magicLinkInterceptor) Intercept(ex *Exchange, next Next) error {
 	}
 
 	switch ex.Request.Path() {
-	case i.requestPath:
+	case i.requestPath.at():
 		return i.request(ex)
-	case i.consumePath:
+	case i.consumePath.at():
 		return i.consume(ex)
 	default:
 		return next(ex)
@@ -366,7 +366,7 @@ func (i *magicLinkInterceptor) request(ex *Exchange) error {
 		ex.Writer.SetCookie(&Cookie{
 			Name:     i.cookieName,
 			Value:    result.BindingNonce,
-			Path:     i.consumePath,
+			Path:     i.consumePath.at(),
 			MaxAge:   int(i.manager.TTL().Seconds()),
 			HttpOnly: true,
 			Secure:   true,
@@ -608,9 +608,9 @@ func (i *magicLinkInterceptor) endpoints() []Endpoint {
 	const feature = "EnableMagicLink"
 
 	return []Endpoint{
-		declare(feature, "WithMagicLinkRequestPath", OperationSignInMagicLinkRequest, i.requestPath,
+		declare(feature, "WithMagicLinkRequestPath", OperationSignInMagicLinkRequest, i.requestPath.at(),
 			MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodPost),
-		declare(feature, "WithMagicLinkConsumePath", OperationSignInMagicLinkRedeem, i.consumePath,
+		declare(feature, "WithMagicLinkConsumePath", OperationSignInMagicLinkRedeem, i.consumePath.at(),
 			MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodPost),
 	}
 }

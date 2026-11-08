@@ -31,13 +31,25 @@ func checkEndpointPath(setting, p string) error {
 		return newConfigError("%s was given %q, which is not in clean form: %s", setting, p, shape)
 	}
 
-	for i := 0; i < len(trimmed); i++ {
-		if !endpointPathByte(trimmed[i]) {
-			return newConfigError("%s was given %q, which holds %q: %s", setting, p, trimmed[i], shape)
-		}
+	if i := indexNonEndpointPathByte(trimmed); i >= 0 {
+		return newConfigError("%s was given %q, which holds %q: %s", setting, p, trimmed[i], shape)
 	}
 
 	return nil
+}
+
+// indexNonEndpointPathByte is the index of the first byte of p that an endpoint
+// path may not hold, or -1 when every byte is one it may. It is the one place
+// the character rule is applied, for the endpoint paths and for the provider's
+// issuer path, which must be the same string escaped and unescaped.
+func indexNonEndpointPathByte(p string) int {
+	for i := 0; i < len(p); i++ {
+		if !endpointPathByte(p[i]) {
+			return i
+		}
+	}
+
+	return -1
 }
 
 // endpointPathByte reports whether c may appear in an endpoint path.

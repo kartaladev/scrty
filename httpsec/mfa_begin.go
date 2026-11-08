@@ -66,7 +66,7 @@ func writeMFABegin(ex *Exchange, data json.RawMessage) error {
 // challenge method is refused as unknown rather than passed to the gate or the
 // application.
 func (i *mfaInterceptor) isBeginRequest(r Request) bool {
-	return r.Method() == http.MethodPost && underPrefix(r.Path(), i.beginPrefix)
+	return r.Method() == http.MethodPost && underPrefix(r.Path(), i.beginPrefix.at())
 }
 
 // begin issues a pending challenge for a challenge method and answers with the
@@ -106,7 +106,7 @@ func (i *mfaInterceptor) isBeginRequest(r Request) bool {
 // begin in hand is not what failed. One that failed for any reason but the
 // store's inability to purge is retried by the next begin.
 func (i *mfaInterceptor) begin(ex *Exchange) error {
-	s, method, err := i.admit(ex, i.beginPrefix, isChallengeMethod)
+	s, method, err := i.admit(ex, i.beginPrefix.at(), isChallengeMethod)
 	if err != nil {
 		return err
 	}
@@ -234,8 +234,7 @@ func WithMFABeginPrefix(prefix string) MFAOption {
 			return err
 		}
 
-		i.declaredBeginPrefix = p
-		i.declare("WithMFABeginPrefix", p)
+		i.beginPrefix.give("WithMFABeginPrefix", p)
 
 		return nil
 	}
@@ -343,21 +342,6 @@ func WithMFAChallengeLimit(n int) MFAOption {
 
 		return nil
 	}
-}
-
-// methodSegment returns the method named by path under prefix. It is ok only
-// for prefix, then "/", then one non-empty segment with no further "/": the
-// bare prefix, an empty segment, a trailing slash and an extra segment all name
-// no method, so none of them can match one by accident.
-//
-// prefix is as mfaPrefix returns it, with no trailing slash.
-func methodSegment(path, prefix string) (name string, ok bool) {
-	rest, found := strings.CutPrefix(path, prefix+"/")
-	if !found || rest == "" || strings.Contains(rest, "/") {
-		return "", false
-	}
-
-	return rest, true
 }
 
 // underPrefix reports whether path is prefix itself or lies below it. Every

@@ -40,14 +40,11 @@ type KeySetProvider interface {
 
 // jwksEndpoint serves the public key set.
 type jwksEndpoint struct {
-	pathDeclarations
-
 	keys KeySetProvider
 
-	// declaredPath is where the options placed the endpoint, without the base
-	// path; path is where it answers, settled by resolvePaths.
-	declaredPath string
-	path         string
+	// path is the endpoint's path: where the options placed it, and where it
+	// answers under the base path once resolved.
+	path endpointPath
 }
 
 // Intercept serves the key set on its own path, and passes everything else
@@ -58,7 +55,7 @@ type jwksEndpoint struct {
 // response is served before any authentication interceptor has run, because a
 // client verifying a token has no token to present yet.
 func (j *jwksEndpoint) Intercept(ex *Exchange, next Next) error {
-	if ex.Request.Method() != http.MethodGet || ex.Request.Path() != j.path {
+	if ex.Request.Method() != http.MethodGet || ex.Request.Path() != j.path.at() {
 		return next(ex)
 	}
 
@@ -96,7 +93,7 @@ func EnableJWKSEndpoint(keys KeySetProvider, opts ...JWKSOption) Option {
 	const option = "EnableJWKSEndpoint"
 
 	return func(c *config) error {
-		j := &jwksEndpoint{keys: keys, declaredPath: DefaultJWKSPath}
+		j := &jwksEndpoint{keys: keys, path: defaultPath(DefaultJWKSPath)}
 
 		for _, opt := range opts {
 			if opt == nil {
@@ -133,8 +130,7 @@ func WithJWKSEndpointPath(path string) JWKSOption {
 			return err
 		}
 
-		j.declaredPath = path
-		j.declare("WithJWKSEndpointPath", path)
+		j.path.give("WithJWKSEndpointPath", path)
 
 		return nil
 	}
@@ -143,7 +139,7 @@ func WithJWKSEndpointPath(path string) JWKSOption {
 // endpoints declares the key set.
 func (j *jwksEndpoint) endpoints() []Endpoint {
 	return []Endpoint{
-		declare("EnableJWKSEndpoint", "WithJWKSEndpointPath", OperationKeySet, j.path,
+		declare("EnableJWKSEndpoint", "WithJWKSEndpointPath", OperationKeySet, j.path.at(),
 			MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodGet),
 	}
 }

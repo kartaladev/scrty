@@ -121,8 +121,6 @@ type RenewalResponder func(ex *Exchange, r RenewalResult) error
 // sessionRenewal answers POST on its path by rotating the request's session
 // with a grace window, and passes everything else through.
 type sessionRenewal struct {
-	pathDeclarations
-
 	sessions *session.Sessions
 	users    identity.UserLoader
 	tokens   token.Generator
@@ -142,12 +140,11 @@ type sessionRenewal struct {
 	limiter ratelimit.Limiter
 	logger  *slog.Logger
 
-	// declaredPath is where the options placed the endpoint, without the base
-	// path; path is where it answers, settled by resolvePaths.
-	declaredPath string
-	path         string
-	grace        time.Duration
-	respond      RenewalResponder
+	// path is the endpoint's path: where the options placed it, and where it
+	// answers under the base path once resolved.
+	path    endpointPath
+	grace   time.Duration
+	respond RenewalResponder
 
 	// lifetime chooses the successor's absolute lifetime, and nil carries the
 	// predecessor's deadline over.
@@ -157,7 +154,7 @@ type sessionRenewal struct {
 // answers reports whether r is a renewal: POST on exactly the endpoint's path.
 // A renewal changes state, so a link or a prefetch never triggers one.
 func (r *sessionRenewal) answers(req Request) bool {
-	return req.Method() == http.MethodPost && req.Path() == r.path
+	return req.Method() == http.MethodPost && req.Path() == r.path.at()
 }
 
 // Intercept renews the request's session on a renewal, and passes everything
@@ -612,13 +609,13 @@ func EnableSessionRenewal(d SessionRenewalDeps, opts ...SessionRenewalOption) Op
 
 	return func(c *config) error {
 		r := &sessionRenewal{
-			sessions:     d.Sessions,
-			users:        d.Users,
-			tokens:       d.Tokens,
-			now:          c.now,
-			declaredPath: DefaultSessionRenewalPath,
-			grace:        defaultRenewalGrace,
-			respond:      writeRenewalResult,
+			sessions: d.Sessions,
+			users:    d.Users,
+			tokens:   d.Tokens,
+			now:      c.now,
+			path:     defaultPath(DefaultSessionRenewalPath),
+			grace:    defaultRenewalGrace,
+			respond:  writeRenewalResult,
 		}
 
 		for _, opt := range opts {
@@ -757,8 +754,7 @@ func WithRenewalPath(path string) SessionRenewalOption {
 			return err
 		}
 
-		r.declaredPath = path
-		r.declare("WithRenewalPath", path)
+		r.path.give("WithRenewalPath", path)
 
 		return nil
 	}
@@ -848,7 +844,7 @@ func WithRenewalLifetime(fn func(*Exchange, *session.Session) time.Duration) Ses
 // endpoints declares session renewal.
 func (r *sessionRenewal) endpoints() []Endpoint {
 	return []Endpoint{
-		declare("EnableSessionRenewal", "WithRenewalPath", OperationSessionRenewal, r.path,
+		declare("EnableSessionRenewal", "WithRenewalPath", OperationSessionRenewal, r.path.at(),
 			MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodPost),
 	}
 }

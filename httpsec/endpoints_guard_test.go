@@ -18,7 +18,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/session"
 )
 
 // guardSegment is the sample a request puts where an entry reads a segment.
@@ -245,6 +247,32 @@ func TestChainEndpoints_EveryEntryIsAnswered(t *testing.T) {
 		chainRow{"provider", func(t *testing.T) (*httpsec.Chain, error) {
 			return bpChain(t, newOPFixture(t), true)
 		}},
+		chainRow{"every built-in enabled", func(t *testing.T) (*httpsec.Chain, error) {
+			// The fixture's issuer does not carry the base path, which the
+			// issuer check would refuse; this row judges the inventory, not it.
+			popts := []httpsec.OIDCProviderOption{httpsec.WithoutOIDCIssuerBasePathCheck()}
+
+			// The federated login of everyOtherBuiltIn (third) registers a
+			// redirect URL outside the base; it is swapped for one registered
+			// under it. A drift in that list shows as a duplicate endpoint.
+			others := slices.Concat(everyOtherBuiltIn[:2],
+				[]func(*testing.T, *session.Sessions) []httpsec.Option{
+					func(t *testing.T, m *session.Sessions) []httpsec.Option {
+						flows, err := oidc.NewMemoryFlowStore()
+						require.NoError(t, err)
+
+						return []httpsec.Option{httpsec.EnableOIDCLogin(
+							httpsec.OIDCDeps{
+								RelyingParty: oidcManagerAt(t, flows, endpointsBase+httpsec.DefaultOIDCCallbackPath),
+								Handoff:      newTestHandoffManager(t),
+							},
+							httpsec.WithOIDCSessions(m))}
+					},
+				},
+				everyOtherBuiltIn[3:])
+
+			return httpsec.New(underBase(providerBeside(t, newOPFixture(t), popts, others...))...)
+		}},
 	)
 
 	type built struct {
@@ -327,4 +355,39 @@ func TestChainEndpoints_EveryEntryIsAnswered(t *testing.T) {
 			})
 		}
 	}
+
+	// The chain with every built-in enabled is also probed whole, entry by
+	// entry: its shared paths and sessions are where one endpoint could shadow
+	// another, which the per-feature chains cannot show.
+	t.Run("every built-in enabled, all entries together", func(t *testing.T) {
+		all := chains[len(chains)-1]
+		require.Equal(t, "every built-in enabled", all.name)
+
+		for _, e := range all.inv {
+			// An enrolment endpoint serves only a session confined to enrolling,
+			// which the guard probes do not carry; the per-feature rows above
+			// probe it where one is.
+			if strings.HasPrefix(e.OperationID, "scrty.mfa.enrolment.") {
+				continue
+			}
+
+			t.Run(e.OperationID, func(t *testing.T) {
+				for _, m := range e.Methods {
+					target := guardConcrete(e)
+					assert.True(t, guardAnswered(t, all.c, m, target),
+						"%s %s is listed (%s) but passes through to the handler", m, target, all.name)
+				}
+
+				for _, p := range probesFor(e) {
+					t.Run(p.why+" "+p.method, func(t *testing.T) {
+						want := declaredAnswer(all.inv, p.method, p.path)
+						got := guardAnswered(t, all.c, p.method, p.path)
+
+						assert.Equal(t, want, got, "%s %s should be answered=%v as declared (%s %v, %s)",
+							p.method, p.path, want, e.Match, e.Methods, e.OtherMethods)
+					})
+				}
+			})
+		}
+	})
 }

@@ -50,14 +50,14 @@ func EnableMagicLink(m *magiclink.Links, opts ...MagicLinkOption) Option {
 		}
 
 		i := &magicLinkInterceptor{
-			manager:             m,
-			respond:             writeMagicLinkResult,
-			now:                 c.now,
-			declaredRequestPath: DefaultMagicLinkRequestPath,
-			declaredConsumePath: DefaultMagicLinkConsumePath,
-			cookieName:          DefaultBindingCookieName,
-			bodyLimit:           DefaultLoginBodyLimit,
-			countRefusals:       true,
+			manager:       m,
+			respond:       writeMagicLinkResult,
+			now:           c.now,
+			requestPath:   defaultPath(DefaultMagicLinkRequestPath),
+			consumePath:   defaultPath(DefaultMagicLinkConsumePath),
+			cookieName:    DefaultBindingCookieName,
+			bodyLimit:     DefaultLoginBodyLimit,
+			countRefusals: true,
 		}
 
 		for _, opt := range opts {
@@ -92,8 +92,7 @@ func WithMagicLinkRequestPath(path string) MagicLinkOption {
 			return err
 		}
 
-		i.declaredRequestPath = path
-		i.declare("WithMagicLinkRequestPath", path)
+		i.requestPath.give("WithMagicLinkRequestPath", path)
 
 		return nil
 	}
@@ -116,8 +115,7 @@ func WithMagicLinkConsumePath(path string) MagicLinkOption {
 			return err
 		}
 
-		i.declaredConsumePath = path
-		i.declare("WithMagicLinkConsumePath", path)
+		i.consumePath.give("WithMagicLinkConsumePath", path)
 
 		return nil
 	}

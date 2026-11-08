@@ -361,7 +361,10 @@ func TestChainPathCollisions_AuthFeatures(t *testing.T) {
 			name:  "the back-channel prefix at the callback prefix",
 			build: oidcLogin(httpsec.WithOIDCBackchannelLogoutPath(httpsec.DefaultOIDCCallbackPath)),
 			assert: collisionRefused("WithOIDCBackchannelLogoutPath", "WithOIDCCallbackPath",
-				httpsec.OperationSSOBackchannelLogout, httpsec.OperationSSOCallback),
+				httpsec.OperationSSOBackchannelLogout, httpsec.OperationSSOCallback,
+				// Both settle at the callback's one-segment path, which the
+				// refusal names for each.
+				`"`+httpsec.DefaultOIDCCallbackPath+`{provider}"`),
 		},
 		{
 			name:  "the authorize prefix at the callback prefix without its slash",

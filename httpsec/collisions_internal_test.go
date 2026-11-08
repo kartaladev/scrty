@@ -148,9 +148,9 @@ func TestClaimsMeet(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name string
-		a, b pathClaim
-		want bool
+		name   string
+		a, b   pathClaim
+		assert func(t *testing.T, met bool)
 	}
 
 	exact := func(base string) pathClaim { return pathClaim{match: MatchExact, base: base} }
@@ -158,29 +158,82 @@ func TestClaimsMeet(t *testing.T) {
 	subtree := func(base string) pathClaim { return pathClaim{match: MatchSubtree, base: base} }
 
 	cases := []testCase{
-		{"equal exact paths", exact("/a"), exact("/a"), true},
-		{"different exact paths", exact("/a"), exact("/b"), false},
-		{"an exact path one segment below a segment prefix", exact("/a/x"), segment("/a"), true},
-		{"an exact path two segments below a segment prefix", exact("/a/x/y"), segment("/a"), false},
-		{"an exact path equal to a segment prefix", exact("/a"), segment("/a"), false},
-		{"an exact path under a subtree", exact("/a/x/y"), subtree("/a"), true},
-		{"an exact path beside a subtree", exact("/ab"), subtree("/a"), false},
-		{"two segments on one prefix", segment("/a"), segment("/a"), true},
-		{"two segments on different prefixes", segment("/a"), segment("/a/b"), false},
-		{"a segment under a subtree", segment("/a/b"), subtree("/a"), true},
-		{"a subtree rooted one segment below a segment prefix", segment("/a"), subtree("/a/x"), true},
-		{"a subtree rooted two segments below a segment prefix", segment("/a"), subtree("/a/x/y"), false},
-		{"a subtree rooted beside a segment prefix", segment("/a"), subtree("/b"), false},
-		{"nested subtrees", subtree("/a"), subtree("/a/b"), true},
-		{"separate subtrees", subtree("/a"), subtree("/ab"), false},
+		{"equal exact paths", exact("/a"), exact("/a"), func(t *testing.T, met bool) { assert.True(t, met, "equal exact paths") }},
+		{"different exact paths", exact("/a"), exact("/b"), func(t *testing.T, met bool) { assert.False(t, met, "different exact paths") }},
+		{"an exact path one segment below a segment prefix", exact("/a/x"), segment("/a"), func(t *testing.T, met bool) { assert.True(t, met, "an exact path one segment below a segment prefix") }},
+		{"an exact path two segments below a segment prefix", exact("/a/x/y"), segment("/a"), func(t *testing.T, met bool) {
+			assert.False(t, met, "an exact path two segments below a segment prefix")
+		}},
+		{"an exact path equal to a segment prefix", exact("/a"), segment("/a"), func(t *testing.T, met bool) { assert.False(t, met, "an exact path equal to a segment prefix") }},
+		{"an exact path under a subtree", exact("/a/x/y"), subtree("/a"), func(t *testing.T, met bool) { assert.True(t, met, "an exact path under a subtree") }},
+		{"an exact path beside a subtree", exact("/ab"), subtree("/a"), func(t *testing.T, met bool) { assert.False(t, met, "an exact path beside a subtree") }},
+		{"two segments on one prefix", segment("/a"), segment("/a"), func(t *testing.T, met bool) { assert.True(t, met, "two segments on one prefix") }},
+		{"two segments on different prefixes", segment("/a"), segment("/a/b"), func(t *testing.T, met bool) { assert.False(t, met, "two segments on different prefixes") }},
+		{"a segment under a subtree", segment("/a/b"), subtree("/a"), func(t *testing.T, met bool) { assert.True(t, met, "a segment under a subtree") }},
+		{"a subtree rooted one segment below a segment prefix", segment("/a"), subtree("/a/x"), func(t *testing.T, met bool) {
+			assert.True(t, met, "a subtree rooted one segment below a segment prefix")
+		}},
+		{"a subtree rooted two segments below a segment prefix", segment("/a"), subtree("/a/x/y"), func(t *testing.T, met bool) {
+			assert.False(t, met, "a subtree rooted two segments below a segment prefix")
+		}},
+		{"a subtree rooted beside a segment prefix", segment("/a"), subtree("/b"), func(t *testing.T, met bool) { assert.False(t, met, "a subtree rooted beside a segment prefix") }},
+		{"nested subtrees", subtree("/a"), subtree("/a/b"), func(t *testing.T, met bool) { assert.True(t, met, "nested subtrees") }},
+		{"separate subtrees", subtree("/a"), subtree("/ab"), func(t *testing.T, met bool) { assert.False(t, met, "separate subtrees") }},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Equal(t, tc.want, claimsMeet(tc.a, tc.b), "in the order given")
-			assert.Equal(t, tc.want, claimsMeet(tc.b, tc.a), "in the other order")
+			tc.assert(t, claimsMeet(tc.a, tc.b))
+			tc.assert(t, claimsMeet(tc.b, tc.a))
+		})
+	}
+}
+
+// TestOneSegmentBelow pins the one-segment match every segment endpoint, the
+// collision check and the stale-route check share: the prefix followed by
+// exactly one non-empty segment, compared case-sensitively.
+func TestOneSegmentBelow(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		path   string
+		assert func(t *testing.T, segment string, ok bool)
+	}
+
+	refused := func(t *testing.T, segment string, ok bool) {
+		t.Helper()
+		assert.False(t, ok, "not one segment below the prefix")
+		assert.Empty(t, segment)
+	}
+
+	cases := []testCase{
+		{name: "the bare prefix", path: "/sessions", assert: refused},
+		{name: "the prefix with a trailing slash", path: "/sessions/", assert: refused},
+		{name: "an empty segment before another", path: "/sessions//x", assert: refused},
+		{name: "a deeper path", path: "/sessions/a/b", assert: refused},
+		{name: "one segment and a trailing slash", path: "/sessions/a/", assert: refused},
+		{name: "a near-miss prefix", path: "/sessionsX/a", assert: refused},
+		{name: "the prefix in another case", path: "/Sessions/a", assert: refused},
+		{name: "an unrelated path", path: "/other/a", assert: refused},
+		{name: "one segment", path: "/sessions/a", assert: func(t *testing.T, segment string, ok bool) {
+			require.True(t, ok, "one segment below the prefix")
+			assert.Equal(t, "a", segment)
+		}},
+		{name: "one segment keeps its case", path: "/sessions/A", assert: func(t *testing.T, segment string, ok bool) {
+			require.True(t, ok, "one segment below the prefix")
+			assert.Equal(t, "A", segment)
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			segment, ok := oneSegmentBelow(tc.path, "/sessions")
+			tc.assert(t, segment, ok)
 		})
 	}
 }

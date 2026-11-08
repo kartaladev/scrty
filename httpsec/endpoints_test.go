@@ -16,6 +16,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/internal/must"
+	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 )
@@ -487,7 +488,11 @@ func TestChainEndpoints_IdentifiersStableUnderBasePath(t *testing.T) {
 	type testCase struct {
 		name    string
 		options func(t *testing.T) []httpsec.Option
-		assert  func(t *testing.T, without, under []httpsec.Endpoint)
+		// underOptions, when set, are the options of the chain that has the
+		// base path, for a row whose configuration must itself move with it:
+		// a provider's issuer covers the base path only under one.
+		underOptions func(t *testing.T) []httpsec.Option
+		assert       func(t *testing.T, without, under []httpsec.Endpoint)
 	}
 
 	stable := func(t *testing.T, without, under []httpsec.Endpoint) {
@@ -521,9 +526,46 @@ func TestChainEndpoints_IdentifiersStableUnderBasePath(t *testing.T) {
 		})
 	}
 
+	// moved is what every operation of the provider does under the base path
+	// except one: it answers at the base followed by its path. The
+	// authorization server metadata does not move by prefix: RFC 8414 inserts
+	// the well-known segment between the host and the issuer's path.
+	moved := func(t *testing.T, without, under []httpsec.Endpoint) {
+		t.Helper()
+
+		require.NotEmpty(t, without)
+		require.Equal(t, operationIDs(without), operationIDs(under))
+
+		var sawMetadata bool
+
+		for i := range without {
+			if without[i].OperationID == httpsec.OperationOAuth2AuthorizationServerMetadata {
+				sawMetadata = true
+
+				assert.Equal(t, "/.well-known/oauth-authorization-server", without[i].Path)
+				assert.Equal(t, "/.well-known/oauth-authorization-server"+endpointsBase, under[i].Path,
+					"the metadata moves by the issuer's path suffix, not by prefix")
+
+				continue
+			}
+
+			assert.Equal(t, endpointsBase+without[i].Path, under[i].Path, without[i].OperationID)
+		}
+
+		assert.True(t, sawMetadata, "the provider lists its authorization server metadata")
+	}
+
 	cases = append(cases,
 		testCase{name: "re-authentication", options: endpointsReauth, assert: stable},
 		testCase{name: "federated login", options: endpointsOIDCLogin, assert: stable},
+		testCase{
+			name:    "provider",
+			options: func(t *testing.T) []httpsec.Option { return endpointsProvider(t, "https://id.example.com") },
+			underOptions: func(t *testing.T) []httpsec.Option {
+				return endpointsProvider(t, "https://id.example.com"+endpointsBase)
+			},
+			assert: moved,
+		},
 	)
 
 	for _, tc := range cases {
@@ -533,12 +575,46 @@ func TestChainEndpoints_IdentifiersStableUnderBasePath(t *testing.T) {
 			without, err := httpsec.New(tc.options(t)...)
 			require.NoError(t, err)
 
-			under, err := httpsec.New(append(tc.options(t), httpsec.WithBasePath(endpointsBase))...)
+			underOptions := tc.options
+			if tc.underOptions != nil {
+				underOptions = tc.underOptions
+			}
+
+			under, err := httpsec.New(append(underOptions(t), httpsec.WithBasePath(endpointsBase))...)
 			require.NoError(t, err)
 
 			tc.assert(t, without.Endpoints(), under.Endpoints())
 		})
 	}
+}
+
+// endpointsProvider enables the OpenID provider at issuer, with the
+// collaborators the provider's chain needs, and nothing else that answers a
+// path but the key set the provider's chain also serves.
+func endpointsProvider(t *testing.T, issuer string) []httpsec.Option {
+	t.Helper()
+
+	f := newOPFixture(t)
+
+	p, err := oidcprovider.New(oidcprovider.Deps{
+		Issuer: issuer,
+		Clients: []oidcprovider.Client{{
+			ID:           "billing-web",
+			Type:         oidcprovider.Confidential,
+			Secret:       []byte("0123456789abcdef0123456789abcdef"),
+			RedirectURIs: []string{rpCallback},
+			Scopes:       []string{"openid", "profile"},
+		}},
+		Keys:         f.keys,
+		Users:        NewMockUserLoader(gomock.NewController(t)),
+		LoginURL:     bpLoginPage,
+		ConsentURL:   "https://id.example.com/consent",
+		LogoutURL:    "https://id.example.com/logout-page",
+		LoggedOutURL: "https://id.example.com/bye",
+	})
+	require.NoError(t, err)
+
+	return append(f.wired(t, p), httpsec.EnableOIDCProvider(p))
 }
 
 // pinned asserts an entry is what the inventory documents for its operation.
@@ -749,6 +825,7 @@ func TestNew_RefusesAKeySetEnabledTwice(t *testing.T) {
 			assert: func(t *testing.T, c *httpsec.Chain, err error) {
 				require.ErrorIs(t, err, httpsec.ErrConfig)
 				assert.Nil(t, c)
+				assert.Contains(t, err.Error(), "scrty.key-set")
 				assert.Contains(t, err.Error(), "WithJWKSEndpointPath")
 				assert.Contains(t, err.Error(), `"/.well-known/jwks.json"`)
 				assert.Contains(t, err.Error(), `"/keys"`)
@@ -764,4 +841,30 @@ func TestNew_RefusesAKeySetEnabledTwice(t *testing.T) {
 			tc.assert(t, c, err)
 		})
 	}
+}
+
+// TestNew_RefusesOIDCLoginEnabledTwice pins that federated login enabled twice
+// on different callback, login and handoff paths, so its operations would be
+// listed twice, fails New and names the operation identifier.
+func TestNew_RefusesOIDCLoginEnabledTwice(t *testing.T) {
+	t.Parallel()
+
+	first := oidcLoginOptions(t,
+		httpsec.WithOIDCAuthorizePath("/one/login/"),
+		httpsec.WithOIDCCallbackPath("/one/callback/"),
+		httpsec.WithOIDCHandoffPath("/one/handoff"),
+		httpsec.WithoutOIDCRedirectPathCheck())
+	second := oidcLoginOptions(t,
+		httpsec.WithOIDCAuthorizePath("/two/login/"),
+		httpsec.WithOIDCCallbackPath("/two/callback/"),
+		httpsec.WithOIDCHandoffPath("/two/handoff"),
+		httpsec.WithoutOIDCRedirectPathCheck())
+
+	c, err := httpsec.New(append(first, second...)...)
+
+	require.ErrorIs(t, err, httpsec.ErrConfig)
+	assert.Nil(t, c)
+	assert.Contains(t, err.Error(), `"scrty.sso.login" would be listed twice`)
+	assert.Contains(t, err.Error(), "/one/login/{provider}")
+	assert.Contains(t, err.Error(), "/two/login/{provider}")
 }

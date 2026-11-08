@@ -201,8 +201,8 @@ func EnableMFA(methods []mfa.Method, opts ...MFAOption) Option {
 			challengeTTL: DefaultMFAChallengeTTL,
 			challengeCap: DefaultMFAChallengeLimit,
 
-			declaredVerifyPrefix: DefaultMFAVerifyPrefix,
-			declaredBeginPrefix:  DefaultMFABeginPrefix,
+			verifyPrefix: defaultPath(DefaultMFAVerifyPrefix),
+			beginPrefix:  defaultPath(DefaultMFABeginPrefix),
 		}
 
 		for _, opt := range opts {
@@ -260,8 +260,7 @@ func WithMFAVerifyPrefix(prefix string) MFAOption {
 			return err
 		}
 
-		i.declaredVerifyPrefix = p
-		i.declare("WithMFAVerifyPrefix", p)
+		i.verifyPrefix.give("WithMFAVerifyPrefix", p)
 
 		return nil
 	}

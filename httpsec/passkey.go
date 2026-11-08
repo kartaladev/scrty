@@ -67,23 +67,17 @@ type PasskeyOption func(*passkeyInterceptor) error
 
 // passkeyInterceptor is the passkey endpoints that need a session.
 type passkeyInterceptor struct {
-	pathDeclarations
-
 	deps PasskeyDeps
 
-	// declaredRegPrefix and declaredCredPrefix are where the options placed the
-	// endpoints, without the base path; regPrefix and credPrefix are where
-	// they answer, settled by resolvePaths.
-	declaredRegPrefix  string
-	declaredCredPrefix string
-	regPrefix          string
-	credPrefix         string
+	// regPrefix and credPrefix are where the options placed the endpoints, and
+	// where they answer under the base path once resolved.
+	regPrefix  endpointPath
+	credPrefix endpointPath
 
-	// loginPrefix is the passwordless prefix as the options placed it, without
-	// the base path (the passwordless endpoints settle where they answer), and
-	// loginPrefixSet reports that WithPasskeyPasswordlessPrefix moved it.
-	loginPrefix    string
-	loginPrefixSet bool
+	// loginPrefix is the passwordless prefix as the options placed it. The
+	// passwordless endpoints are built from it once every option has run, and
+	// answer where it resolves.
+	loginPrefix endpointPath
 
 	// passwordless holds the passwordless settings when WithPasskeyPasswordlessLogin
 	// was given, and login the passwordless endpoints built from them.
@@ -132,18 +126,19 @@ type passkeyInterceptor struct {
 // from the prefixes the options declared. The passwordless endpoints are a
 // separate interceptor and settle their own.
 func (p *passkeyInterceptor) resolvePaths(base string) {
-	p.regPrefix = joinBase(base, p.declaredRegPrefix)
-	p.credPrefix = joinBase(base, p.declaredCredPrefix)
+	p.regPrefix.resolve(base)
+	p.credPrefix.resolve(base)
+	p.loginPrefix.resolve(base)
 }
 
 // registrationPaths are the four registration endpoints' paths, which the
 // recovery gate and the enrolment gate exempt.
 func (p *passkeyInterceptor) registrationPaths() []string {
 	return []string{
-		p.regPrefix + passkeyBeginSegment,
-		p.regPrefix + passkeyFinishSegment,
-		p.regPrefix + passkeyConfirmSegment,
-		p.regPrefix + passkeyConfirmEmailSegment,
+		p.regPrefix.at() + passkeyBeginSegment,
+		p.regPrefix.at() + passkeyFinishSegment,
+		p.regPrefix.at() + passkeyConfirmSegment,
+		p.regPrefix.at() + passkeyConfirmEmailSegment,
 	}
 }
 
@@ -289,9 +284,9 @@ func EnablePasskeys(deps PasskeyDeps, opts ...PasskeyOption) Option {
 	return func(c *config) error {
 		p := &passkeyInterceptor{
 			deps:                deps,
-			declaredRegPrefix:   DefaultPasskeyRegistrationPrefix,
-			declaredCredPrefix:  DefaultPasskeyCredentialsPrefix,
-			loginPrefix:         DefaultPasswordlessPrefix,
+			regPrefix:           defaultPath(DefaultPasskeyRegistrationPrefix),
+			credPrefix:          defaultPath(DefaultPasskeyCredentialsPrefix),
+			loginPrefix:         defaultPath(DefaultPasswordlessPrefix),
 			respondBegin:        writePasskeyBegin,
 			respondRegistration: writePasskeyRegistration,
 			respondList:         writePasskeyList,
@@ -405,6 +400,18 @@ func (c *config) hasReauthentication() bool {
 	return found
 }
 
+// declaredPaths reports the paths the consumer set that an endpoint answers. The
+// passwordless prefix is left out while passwordless login is off: it moves no
+// endpoint, and wirePasskeys refuses it as such, so the base path does not
+// judge a doubled path that would never be served.
+func (p *passkeyInterceptor) declaredPaths() []declaredPath {
+	if p.passwordless == nil {
+		return declarations(p.regPrefix, p.credPrefix)
+	}
+
+	return declarations(p.regPrefix, p.credPrefix, p.loginPrefix)
+}
+
 // wirePasskeys checks the passkey paths against the rest of the chain, once
 // every option has been applied, and hands the passkey endpoints the
 // enrolment path when it counts the passkey method among its enrolling
@@ -423,7 +430,7 @@ func (c *config) wirePasskeys() error {
 			"before managing passkeys, since /mfa/verify serves only a pending session", option)
 	}
 
-	if p.loginPrefixSet && p.passwordless == nil {
+	if _, moved := p.loginPrefix.declaration(); moved && p.passwordless == nil {
 		return newConfigError("%s was given WithPasskeyPasswordlessPrefix without WithPasskeyPasswordlessLogin, "+
 			"so the prefix would move no endpoint", option)
 	}
@@ -496,13 +503,13 @@ func (p *passkeyInterceptor) Intercept(ex *Exchange, next Next) error {
 	var serve func(*Exchange, *session.Session) error
 
 	switch r.Path() {
-	case p.regPrefix + passkeyBeginSegment:
+	case p.regPrefix.at() + passkeyBeginSegment:
 		serve = p.begin
-	case p.regPrefix + passkeyFinishSegment:
+	case p.regPrefix.at() + passkeyFinishSegment:
 		serve = p.finish
-	case p.regPrefix + passkeyConfirmSegment:
+	case p.regPrefix.at() + passkeyConfirmSegment:
 		serve = p.confirmSaved
-	case p.regPrefix + passkeyConfirmEmailSegment:
+	case p.regPrefix.at() + passkeyConfirmEmailSegment:
 		serve = p.confirmEmail
 	default:
 		return next(ex)
@@ -624,8 +631,7 @@ func WithPasskeyRegistrationPrefix(prefix string) PasskeyOption {
 			return err
 		}
 
-		p.declaredRegPrefix = trimmed
-		p.declare("WithPasskeyRegistrationPrefix", trimmed)
+		p.regPrefix.give("WithPasskeyRegistrationPrefix", trimmed)
 
 		return nil
 	}
@@ -645,8 +651,7 @@ func WithPasskeyCredentialsPrefix(prefix string) PasskeyOption {
 			return err
 		}
 
-		p.declaredCredPrefix = trimmed
-		p.declare("WithPasskeyCredentialsPrefix", trimmed)
+		p.credPrefix.give("WithPasskeyCredentialsPrefix", trimmed)
 
 		return nil
 	}
@@ -781,13 +786,13 @@ func (p *passkeyInterceptor) endpoints() []Endpoint {
 	}
 
 	return []Endpoint{
-		post(reg, OperationPasskeysRegisterBegin, p.regPrefix+passkeyBeginSegment),
-		post(reg, OperationPasskeysRegisterFinish, p.regPrefix+passkeyFinishSegment),
-		post(reg, OperationPasskeysRegisterConfirm, p.regPrefix+passkeyConfirmSegment),
-		post(reg, OperationPasskeysRegisterConfirmEmail, p.regPrefix+passkeyConfirmEmailSegment),
-		declare(feature, cred, OperationPasskeysList, p.credPrefix,
+		post(reg, OperationPasskeysRegisterBegin, p.regPrefix.at()+passkeyBeginSegment),
+		post(reg, OperationPasskeysRegisterFinish, p.regPrefix.at()+passkeyFinishSegment),
+		post(reg, OperationPasskeysRegisterConfirm, p.regPrefix.at()+passkeyConfirmSegment),
+		post(reg, OperationPasskeysRegisterConfirmEmail, p.regPrefix.at()+passkeyConfirmEmailSegment),
+		declare(feature, cred, OperationPasskeysList, p.credPrefix.at(),
 			MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodGet),
-		post(cred, OperationPasskeysRename, p.credPrefix+passkeyRenameSegment),
-		post(cred, OperationPasskeysRemove, p.credPrefix+passkeyRemoveSegment),
+		post(cred, OperationPasskeysRename, p.credPrefix.at()+passkeyRenameSegment),
+		post(cred, OperationPasskeysRemove, p.credPrefix.at()+passkeyRemoveSegment),
 	}
 }

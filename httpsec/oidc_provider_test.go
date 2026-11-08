@@ -429,7 +429,10 @@ func TestOIDCProvider_Construction(t *testing.T) {
 			assert: built,
 		},
 		{
-			name: "an assertion endpoint under an issuer path needing escaping, behind a stripping router, builds",
+			// The issuer's path must be the same string escaped and unescaped,
+			// so an issuer needing escaping is refused before the assertion
+			// endpoint is judged, whatever it names.
+			name: "an issuer path needing escaping is refused, whatever the assertion endpoint",
 			build: func(t *testing.T) []httpsec.Option {
 				t.Helper()
 
@@ -440,7 +443,7 @@ func TestOIDCProvider_Construction(t *testing.T) {
 
 				return append(f.wired(t, p), httpsec.EnableOIDCProvider(p))
 			},
-			assert: built,
+			assert: refused("EnableOIDCProvider", `"`+opIssuer+`/a%20b"`),
 		},
 		{
 			name: "a path for an endpoint that does not exist",
@@ -1440,11 +1443,15 @@ func TestOIDCProvider_Routes_Groups(t *testing.T) {
 			},
 		},
 		{
-			name:  "a route another group holds is refused",
+			// An undeclared route (only a test group can add one) is the library's own
+			// broken invariant, not a consumer's configuration error (D7).
+			name:  "a route another group holds is refused as an internal invariant",
 			group: &httpsec.TestOIDCGroup{Path: "/oauth2/token"},
 			assert: func(t *testing.T, _ *httpsec.TestOIDCGroup, chain *httpsec.Chain, err error, _ *http.Request, _ *session.Sessions) {
 				t.Helper()
-				require.ErrorIs(t, err, httpsec.ErrConfig)
+				require.Error(t, err)
+				assert.NotErrorIs(t, err, httpsec.ErrConfig)
+				assert.ErrorContains(t, err, "internal")
 				assert.ErrorContains(t, err, "/oauth2/token")
 				assert.Nil(t, chain)
 			},

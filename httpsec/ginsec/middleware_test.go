@@ -22,6 +22,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/httpsec/ginsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/session"
 )
 
 // errStoreDown is an internal fault a refusal must neither render nor answer as
@@ -215,6 +216,33 @@ func TestGinRefusal(t *testing.T) {
 				assert.Equal(t, http.StatusNotFound, out.rec.Code)
 				assert.Empty(t, out.rec.Body.String(),
 					"committed empty, not gin's default \"404 page not found\"")
+				assert.False(t, out.routeRan)
+			},
+		},
+		{
+			// The same refusal from a real chain rather than a stub: the OIDC
+			// login endpoint answers an unregistered provider with
+			// ErrUnknownProvider, and nothing in gin matches the path.
+			name: "an unknown provider at /sso/login/nope is committed as an empty 404",
+			build: func(t *testing.T, _ *served) *gin.Engine {
+				t.Helper()
+
+				eng := gin.New()
+				eng.Use(ginsec.Middleware(oidcLoginChain(t)))
+				// No gin route is registered: the chain alone answers.
+
+				return eng
+			},
+			req: func(ctx context.Context) *http.Request {
+				return httptest.NewRequestWithContext(
+					ctx, http.MethodGet, "/sso/login/nope", nil)
+			},
+			assert: func(t *testing.T, out *served) {
+				assert.Equal(t, http.StatusNotFound, out.rec.Code)
+				assert.Empty(t, out.rec.Body.String(),
+					"committed empty by the chain")
+				assert.NotContains(t, out.rec.Body.String(), "404 page not found",
+					"gin's default no-route text must not leak")
 				assert.False(t, out.routeRan)
 			},
 		},
@@ -781,4 +809,41 @@ func TestRequest_ClientCertificate(t *testing.T) {
 			tc.assert(t, got)
 		})
 	}
+}
+
+// oidcLoginChain builds a real chain with federated login for the single
+// provider "corp", whose redirect URL ends in /sso/callback/corp. Pinned
+// endpoints mean nothing built over it sends a request. The callback conveys
+// the login through a function, so no handoff or token generator is needed.
+func oidcLoginChain(t *testing.T) *httpsec.Chain {
+	t.Helper()
+
+	registry, err := oidc.NewRegistry(oidc.Provider{ //nolint:gosec // G101: a fixture, not a credential
+		Name:                  "corp",
+		Issuer:                "https://idp.example.com",
+		ClientID:              "app",
+		ClientSecret:          "secret-corp",
+		RedirectURL:           "https://app.example.com/sso/callback/corp",
+		AuthorizationEndpoint: "https://idp.example.com/authorize",
+		TokenEndpoint:         "https://idp.example.com/token",
+		JWKSURI:               "https://idp.example.com/jwks",
+	})
+	require.NoError(t, err)
+
+	broker, err := oidc.NewBroker(oidc.NewMemoryLinkStore(),
+		NewMockUserLoader(gomock.NewController(t)))
+	require.NoError(t, err)
+
+	rp, err := oidc.NewRelyingParty(registry, broker)
+	require.NoError(t, err)
+
+	sessions, err := session.New()
+	require.NoError(t, err)
+
+	return newChain(t,
+		httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: rp},
+			httpsec.WithOIDCSessions(sessions),
+			httpsec.WithOIDCCallbackSuccess(func(*httpsec.Exchange, oidc.CallbackResult, string) error {
+				return nil
+			})))
 }

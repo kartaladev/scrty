@@ -3,6 +3,7 @@ package httpsec_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -271,16 +272,25 @@ func TestBasePath_OIDCCallbackProvider(t *testing.T) {
 }
 
 // TestBasePath_AuthorizationRulesKeepConsumerPaths pins that the base path does
-// not move an authorization rule: a rule for GET /projects/{id} judges
-// /projects/42 under the base /auth, and never matches /auth/projects/42.
+// not move an authorization rule: a rule denying GET /projects/{id} judges
+// /projects/42 under the base /auth, and never matches /auth/projects/42, which
+// falls to the rule behind it. A permitting rule would pass either way, so the
+// rule denies, and the outcome shows which path it judged. Each built-in still
+// answers at its path under the base.
 func TestBasePath_AuthorizationRulesKeepConsumerPaths(t *testing.T) {
 	t.Parallel()
 
-	rule := authorize.Rule[httpsec.Request]{
-		Match: func(r httpsec.Request) bool {
-			return r.Method() == http.MethodGet && len(r.Path()) > len("/projects/") && r.Path()[:len("/projects/")] == "/projects/"
+	rules := []authorize.Rule[httpsec.Request]{
+		{
+			Match: func(r httpsec.Request) bool {
+				return r.Method() == http.MethodGet && strings.HasPrefix(r.Path(), "/projects/")
+			},
+			Require: authorize.DenyAll(),
 		},
-		Require: authorize.PermitAll(),
+		{
+			Match:   func(httpsec.Request) bool { return true },
+			Require: authorize.PermitAll(),
+		},
 	}
 
 	for _, e := range authEndpoints() {
@@ -288,24 +298,27 @@ func TestBasePath_AuthorizationRulesKeepConsumerPaths(t *testing.T) {
 			t.Parallel()
 
 			opts := append(e.options(t, ""), httpsec.WithBasePath("/auth"),
-				httpsec.EnableAuthorization(permittingAuthorizer(t), rule))
+				httpsec.EnableAuthorization(permittingAuthorizer(t), rules...))
 
 			c, err := httpsec.New(opts...)
 			require.NoError(t, err)
 
-			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set(nextHandlerHeader, "1")
-			})
-
-			reached := func(path string) bool {
-				rec := httptest.NewRecorder()
-				c.Middleware()(next).ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil))
-
-				return rec.Header().Get(nextHandlerHeader) != ""
+			get := func(path string) served {
+				return serve(t, c, httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil))
 			}
 
-			assert.True(t, reached("/projects/42"), "the rule judges /projects/42")
-			assert.False(t, reached("/auth/projects/42"), "the rule never matches /auth/projects/42")
+			denied := get("/projects/42")
+			require.ErrorIs(t, denied.err, authorize.ErrAccessDenied, "the rule judges /projects/42 and denies it")
+			assert.False(t, denied.handlerRan, "the denied request never reaches the handler")
+
+			beside := get("/auth/projects/42")
+			require.NoError(t, beside.err, "the rule never matches /auth/projects/42")
+			assert.True(t, beside.handlerRan, "the request the rule did not match reaches the handler")
+
+			for _, p := range e.probes {
+				assert.True(t, answered(t, c, p.method, "/auth"+e.defaultPrefix+p.suffix),
+					"%s %s is still answered under the base", p.method, "/auth"+e.defaultPrefix+p.suffix)
+			}
 		})
 	}
 }

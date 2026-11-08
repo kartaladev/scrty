@@ -65,17 +65,14 @@ func (c *config) grantRevoker() userGrantRevoker {
 // passwordChangeGate holds every session that owes a password change, and lets
 // the consumer's resolve endpoint through so the debt can be paid.
 type passwordChangeGate struct {
-	pathDeclarations
-
 	sessions *session.Sessions
 
-	// declaredPath and change are the consumer's resolve endpoint, and are empty
-	// when they registered none. Without one, only a new login clears the
-	// challenge. path is where the endpoint answers, the declared path under the
-	// base path, settled by resolvePaths.
-	declaredPath string
-	path         string
-	change       ChangePasswordFunc
+	// path and change are the consumer's resolve endpoint, and are zero when
+	// they registered none. Without one, only a new login clears the challenge.
+	// path also holds where the endpoint answers under the base path, once
+	// resolved; an unset path answers nowhere.
+	path   endpointPath
+	change ChangePasswordFunc
 
 	// logoutPath is the chain's logout endpoint, handed over at assembly and
 	// never configured here, so a consumer who moves logout moves the gate's
@@ -206,7 +203,7 @@ func (g *passwordChangeGate) Intercept(ex *Exchange, next Next) error {
 // under that path is not a password change, and letting it through would open
 // a hole in the gate the size of one URL.
 func (g *passwordChangeGate) isResolveRequest(r Request) bool {
-	return g.change != nil && r.Method() == http.MethodPost && r.Path() == g.path
+	return g.change != nil && r.Method() == http.MethodPost && r.Path() == g.path.at()
 }
 
 // resolve runs the consumer's change, and records the debt as paid only when
@@ -487,8 +484,7 @@ func WithPasswordChangeEndpoint(path string, fn ChangePasswordFunc) PasswordChan
 				"the password with for %q", path)
 		}
 
-		g.declaredPath = path
-		g.declare("WithPasswordChangeEndpoint", path)
+		g.path.give("WithPasswordChangeEndpoint", path)
 		g.change = fn
 
 		return nil
@@ -503,7 +499,7 @@ func (g *passwordChangeGate) endpoints() []Endpoint {
 	}
 
 	return []Endpoint{
-		declare("EnablePasswordChangeGate", "WithPasswordChangeEndpoint", OperationPasswordChange, g.path,
+		declare("EnablePasswordChangeGate", "WithPasswordChangeEndpoint", OperationPasswordChange, g.path.at(),
 			MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodPost),
 	}
 }

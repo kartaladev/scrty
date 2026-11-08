@@ -269,7 +269,7 @@ func (i *reauthInterceptor) admitMethod(
 		return nil, nil, ErrUnknownMFAMethod
 	}
 
-	name, ok := methodSegment(ex.Request.Path(), prefix)
+	name, ok := oneSegmentBelow(ex.Request.Path(), prefix)
 	method, known := i.mfa.byName[name]
 	if !ok || !known || !serves(method) {
 		return nil, nil, ErrUnknownMFAMethod

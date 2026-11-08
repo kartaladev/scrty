@@ -151,7 +151,7 @@ func EnableFormLogin(d FormLoginDeps, opts ...LoginOption) Option {
 			tokens:        d.Tokens,
 			attempts:      d.Attempts,
 			now:           c.now,
-			declaredPath:  DefaultLoginPath,
+			path:          defaultPath(DefaultLoginPath),
 			usernameParam: DefaultLoginUsernameParam,
 			passwordParam: DefaultLoginPasswordParam,
 			bodyLimit:     DefaultLoginBodyLimit,
@@ -210,8 +210,7 @@ func WithLoginRequestPath(path string) LoginOption {
 			return err
 		}
 
-		l.declaredPath = path
-		l.declare("WithLoginRequestPath", path)
+		l.path.give("WithLoginRequestPath", path)
 		return nil
 	}
 }

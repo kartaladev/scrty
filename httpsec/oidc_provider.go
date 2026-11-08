@@ -2,6 +2,7 @@ package httpsec
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -39,11 +40,10 @@ type oidcEndpoints struct {
 	provider *oidcprovider.Provider
 
 	// prefix and overrides are where the options placed the endpoints, within
-	// the base path. The paths the consumer set are declared too, so the base
-	// path can refuse one that repeats it.
-	prefix    string
-	overrides map[OIDCEndpoint]string
-	pathDeclarations
+	// the base path, each holding the setting that placed it, so the base path
+	// can refuse one that repeats it, and where it answers once resolved.
+	prefix    endpointPath
+	overrides map[OIDCEndpoint]endpointPath
 
 	// paths is where each endpoint answers: the declared places under the base
 	// path, settled by resolvePaths once every option has applied.
@@ -55,14 +55,11 @@ type oidcEndpoints struct {
 	outer *oidcOuterRouter
 	inner *oidcInnerRouter
 
-	// resolved records that resolvePaths ran; check refuses a provider whose
-	// paths never were.
-	resolved bool
-
-	// routesErr is two routes fillRouters found on one path. checkRoutes
-	// reports it after the chain's collision check, which refuses two declared
-	// operations on one path first and names both settings; this is left for a
-	// route nothing declared, so no handler is silently dropped.
+	// routesErr is two routes fillRouters found on one path, a broken library
+	// invariant. checkRoutes reports it after the chain's collision check,
+	// which refuses two declared operations on one path first and names both
+	// settings; this is left for a route nothing declared, so no handler is
+	// silently dropped.
 	routesErr error
 
 	pagesCarryFrameAncestors bool
@@ -102,8 +99,8 @@ func newOIDCEndpoints(p *oidcprovider.Provider, now func() time.Time) *oidcEndpo
 	op := &oidcEndpoints{
 		provider:  p,
 		now:       now,
-		prefix:    DefaultOIDCProviderPrefix,
-		overrides: map[OIDCEndpoint]string{},
+		prefix:    defaultPath(DefaultOIDCProviderPrefix),
+		overrides: map[OIDCEndpoint]endpointPath{},
 	}
 
 	op.groups = []oidcEndpointGroup{
@@ -253,17 +250,7 @@ func (op *oidcEndpoints) restsOnSignIn(path string) bool {
 // at: the list's path and one non-empty segment. The trailing slash, an empty segment and a deeper path
 // are not.
 func (op *oidcEndpoints) consentClient(path string) (string, bool) {
-	client, ok := strings.CutPrefix(path, op.consentClientPrefix())
-	if !ok || client == "" || strings.Contains(client, "/") {
-		return "", false
-	}
-
-	return client, true
-}
-
-// consentClientPrefix is what a path under the consents list begins with: the list's path and a "/".
-func (op *oidcEndpoints) consentClientPrefix() string {
-	return strings.TrimSuffix(op.paths[OIDCConsents], "/") + "/"
+	return oneSegmentBelow(path, strings.TrimSuffix(op.paths[OIDCConsents], "/"))
 }
 
 // wireOIDCProvider settles the provider's groups against the assembled
@@ -555,7 +542,17 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 //     profile is judged;
 //   - a path or prefix that needs escaping in a URL path, such as one holding a
 //     space, "?", "#" or "%", because it could not be published and compared
-//     unescaped.
+//     unescaped;
+//   - an issuer whose path holds a character outside letters, digits, "-", ".",
+//     "_", "~" and "/", a percent-escape included, even one that decodes to an
+//     allowed character (https://id.example.com/au%74h), with or without a base
+//     path. The issuer's checks read its path decoded while the OpenID
+//     configuration is placed by its path as written, and only a path with no
+//     escape is the same string both ways. The error names the issuer. There is
+//     no override: write the issuer's path without escapes;
+//   - under WithBasePath, an issuer that does not cover the base path and every
+//     path the provider serves, which WithoutOIDCIssuerBasePathCheck waives, and
+//     that waiver given without WithBasePath, which has no check to waive.
 //
 // # The issuer's path
 //
@@ -647,7 +644,6 @@ func EnableOIDCProvider(p *oidcprovider.Provider, opts ...OIDCProviderOption) Op
 // refuses them, naming both settings, right after every path is resolved and
 // before anything is served.
 func (op *oidcEndpoints) resolvePaths(base string) {
-	op.resolved = true
 	op.settlePaths(base)
 	op.routesErr = op.fillRouters()
 }
@@ -659,15 +655,37 @@ func (r *oidcOuterRouter) resolvePaths(base string) { r.op.resolvePaths(base) }
 
 func (r *oidcOuterRouter) declaredPaths() []declaredPath { return r.op.declaredPaths() }
 
-// settlePaths works out where each endpoint answers under base.
-func (op *oidcEndpoints) settlePaths(base string) {
+// declaredPaths reports the prefix and the endpoint paths the consumer set: the
+// prefix first, then each endpoint's own path in endpoint order.
+func (op *oidcEndpoints) declaredPaths() []declaredPath {
+	paths := []endpointPath{op.prefix}
+
 	for e := range oidcEndpointCount {
-		declared, ok := op.overrides[e]
-		if !ok {
-			declared = op.prefix + oidcEndpointNames[e].suffix
+		if p, ok := op.overrides[e]; ok {
+			paths = append(paths, p)
+		}
+	}
+
+	return declarations(paths...)
+}
+
+// settlePaths works out where each endpoint answers under base: at its own path
+// when the consumer gave it one, and otherwise at the prefix followed by its
+// suffix. The prefix is never empty, as WithOIDCProviderPrefix refuses one, so
+// joining the suffix to the resolved prefix is joining it before resolving.
+func (op *oidcEndpoints) settlePaths(base string) {
+	op.prefix.resolve(base)
+
+	for e := range oidcEndpointCount {
+		if p, ok := op.overrides[e]; ok {
+			p.resolve(base)
+			op.overrides[e] = p
+			op.paths[e] = p.at()
+
+			continue
 		}
 
-		op.paths[e] = joinBase(base, declared)
+		op.paths[e] = op.prefix.at() + oidcEndpointNames[e].suffix
 	}
 }
 
@@ -678,7 +696,9 @@ func (op *oidcEndpoints) settlePaths(base string) {
 // A path two routes name keeps the first, in group order, and is never
 // overwritten; the first such path is returned as an error, which checkRoutes
 // reports once the chain's collision check has judged the declared operations.
-// The error is the backstop for a route no operation declares.
+// The error is a broken library invariant, not a configuration error: every
+// route is declared, so the collision check refuses a consumer's duplicate
+// first, and only a group that routes a path it did not declare reaches this.
 func (op *oidcEndpoints) fillRouters() error {
 	outer, inner := op.outer, op.inner
 	outer.routes = map[string]oidcHandler{}
@@ -694,8 +714,8 @@ func (op *oidcEndpoints) fillRouters() error {
 			switch {
 			case atOuter || atInner:
 				if dup == nil {
-					dup = newConfigError("%s has two endpoints on %q; give each its own path",
-						optionOIDCProvider, route.path)
+					dup = fmt.Errorf("httpsec: internal: the OIDC provider routes %q twice, "+
+						"and the collision check did not refuse it", route.path)
 				}
 			case route.inner:
 				inner.routes[route.path] = route.handle
@@ -708,55 +728,78 @@ func (op *oidcEndpoints) fillRouters() error {
 	return dup
 }
 
-// checkPaths refuses a provider whose paths were never resolved: its routers
-// are empty and would answer nothing, so it is refused rather than assembled.
-func (op *oidcEndpoints) checkPaths(*config) error {
-	if !op.resolved {
-		return newConfigError("%s was assembled before its paths were resolved", optionOIDCProvider)
-	}
-
-	return nil
-}
-
-// checkRoutes reports two routes fillRouters found on one path. It runs after
-// the chain's collision check, so two declared operations on one path are
-// refused there, naming both settings, and only a duplicate the inventory does
-// not explain comes here.
+// checkRoutes reports two routes fillRouters found on one path, as the broken
+// library invariant it is, not as a configuration error. It runs after the
+// chain's collision check, so two declared operations on one path are refused
+// there, naming both settings, and only a duplicate the inventory does not
+// explain comes here.
 func (op *oidcEndpoints) checkRoutes() error {
 	return op.routesErr
 }
 
-// checkIssuerBasePath refuses, under a base path, a provider whose issuer does
-// not cover what it serves. It is judged on what is served: the issuer's path,
-// one trailing slash aside, must be the base path or lie under it, and every
-// endpoint of the provider, and the key set, must lie under the issuer's path.
+// checkIssuerPath refuses a provider whose issuer's path the chain cannot serve
+// as it is written, and, under a base path, a provider whose issuer does not
+// cover what it serves.
 //
-// Otherwise the OpenID configuration would be served at the root, outside the
-// base (servedPaths places it under the issuer only when the token endpoint is
-// there), or publicPath would put the issuer's path in front of a path that
-// already carries the base, and the metadata would name a URL the chain does not
-// serve. The issuer's path is compared decoded, as publicPath compares it.
+// Always, base path or not: the issuer's path may hold only the characters an
+// endpoint path may (checkEndpointPath), with no percent-escape, not even one
+// that decodes to such a character. The checks here and publicPath read the
+// decoded path, while servedPaths places the OpenID configuration by the
+// escaped one; an issuer such as https://id.example.com/au%74h would pass as
+// "/auth" and still have discovery served at the root. With no escape the two
+// forms are one string. Decoding instead is no remedy, since an escaped "/"
+// ("%2F") would become a separator. There is no override: a plain issuer path
+// costs the consumer nothing.
+//
+// Under a base path, unless waived (WithoutOIDCIssuerBasePathCheck), it is
+// judged on what is served: the issuer's path, one trailing slash aside, must
+// be the base path or lie under it, and every endpoint of the provider, and the
+// key set, must lie under the issuer's path. Otherwise the OpenID configuration
+// would be served at the root, outside the base (servedPaths places it under
+// the issuer only when the token endpoint is there), or publicPath would put
+// the issuer's path in front of a path that already carries the base, and the
+// metadata would name a URL the chain does not serve.
+//
+// The waiver given without a base path is refused: there is no check to waive,
+// and a configuration that says otherwise is a wiring mistake. Both are read
+// after every option has applied, so the order of the options does not matter.
 //
 // The OAuth authorization server metadata is not judged: RFC 8414 section 3
 // places it at the host root whatever the issuer.
-func (op *oidcEndpoints) checkIssuerBasePath(c *config) error {
-	if c.basePath == "" || op.issuerBasePathWaived {
-		return nil
+func (op *oidcEndpoints) checkIssuerPath(c *config) error {
+	if op.issuerBasePathWaived && c.basePath == "" {
+		return newConfigError("%s was given %s without WithBasePath: with no base path there is no issuer "+
+			"check to waive; give the waiver only where the base path is set",
+			optionOIDCProvider, optionWithoutOIDCIssuerBasePathCheck)
 	}
 
 	issuer := op.provider.Issuer()
 
+	// The provider refuses an issuer that is no absolute URL, so this is a
+	// backstop: refuse rather than judge a path that could not be read.
+	u, err := url.Parse(issuer)
+	if err != nil {
+		return newConfigError("%s has the issuer %q, which is no URL: %v", optionOIDCProvider, issuer, err)
+	}
+
+	if escaped := u.EscapedPath(); indexNonEndpointPathByte(escaped) >= 0 {
+		return newConfigError("%s has the issuer %q, whose path %q holds a character an endpoint path may not: "+
+			"an issuer's path holds only letters, digits, \"-\", \".\", \"_\", \"~\" and \"/\", with no "+
+			"percent-escape, so that the path the issuer is checked by and the path the OpenID configuration "+
+			"is served on are one string; write the path without escapes",
+			optionOIDCProvider, issuer, escaped)
+	}
+
+	if c.basePath == "" || op.issuerBasePathWaived {
+		return nil
+	}
+
 	refuse := func(why string, args ...any) error {
 		return newConfigError("%s has the issuer %q, which under the base path %q set by WithBasePath must "+
 			"cover the base path and every path the provider serves: "+why+"; give the issuer the base path, "+
-			"as in %q, or waive the check with WithoutOIDCIssuerBasePathCheck if a gateway routes the rest",
+			"as in %q, or waive the check with %s if a gateway routes the rest",
 			append(append([]any{optionOIDCProvider, issuer, c.basePath}, args...),
-				issuerWithPath(issuer, c.basePath))...)
-	}
-
-	u, err := url.Parse(issuer)
-	if err != nil {
-		return refuse("it is no URL")
+				issuerWithPath(issuer, c.basePath), optionWithoutOIDCIssuerBasePathCheck)...)
 	}
 
 	issuerPath := strings.TrimSuffix(u.Path, "/")
@@ -772,7 +815,7 @@ func (op *oidcEndpoints) checkIssuerBasePath(c *config) error {
 	served = append(served, op.paths[:]...)
 
 	if j, ok := findInterceptor[*jwksEndpoint](c); ok {
-		served = append(served, j.path)
+		served = append(served, j.path.at())
 	}
 
 	for _, p := range served {
@@ -800,8 +843,7 @@ func issuerWithPath(issuer, path string) string {
 // resolved under the base path.
 func (op *oidcEndpoints) check(c *config) error {
 	for _, check := range []func(*config) error{
-		op.checkPaths,
-		op.checkIssuerBasePath,
+		op.checkIssuerPath,
 		op.checkBearer,
 		op.checkJWKS,
 		op.checkDPoP,

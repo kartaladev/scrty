@@ -237,7 +237,7 @@ func (g *oidcMetadataGroup) settle(c *config) error {
 	}
 
 	if j, ok := findInterceptor[*jwksEndpoint](c); ok {
-		doc["jwks_uri"] = op.publicURL(j.path)
+		doc["jwks_uri"] = op.publicURL(j.path.at())
 	}
 
 	if c.dpopEnabled && c.dpop != nil {

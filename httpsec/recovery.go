@@ -58,8 +58,6 @@ var recoverySingleFields = []string{
 
 // recoveryInterceptor answers the account-recovery endpoints.
 type recoveryInterceptor struct {
-	pathDeclarations
-
 	deps     RecoveryDeps
 	coreOpts []recovery.Option
 	tokens   token.Generator
@@ -73,26 +71,19 @@ type recoveryInterceptor struct {
 	// chain's form login.
 	recoverer *recovery.Recoverer
 
-	// the declared paths are where the options placed the endpoints, without
-	// the base path; the paths without "declared" are where they answer,
-	// settled by resolvePaths.
-	declaredCompletePath string
-	declaredStartPath    string
-	declaredFinishPath   string
-	declaredCancelPath   string
-	declaredCodesPath    string
-
-	completePath string
-	startPath    string
+	// the five paths are where the options placed the endpoints, and where
+	// they answer under the base path once resolved.
+	completePath endpointPath
+	startPath    endpointPath
 	// startEnabled is whether the start endpoint is answered: only when the
 	// core enables issued codes, the one thing it sends.
 	startEnabled bool
-	finishPath   string
-	cancelPath   string
+	finishPath   endpointPath
+	cancelPath   endpointPath
 	// holds is whether the finish and cancel endpoints are answered: only
 	// when the core may hold a recovery (recovery.Recoverer.Holds).
 	holds     bool
-	codesPath string
+	codesPath endpointPath
 	// codesEnabled is whether the saved-code endpoints are answered: only
 	// when the core enables saved codes. The recovery gate serves them.
 	codesEnabled bool
@@ -146,11 +137,36 @@ func (i *recoveryInterceptor) signInOptions(ctx context.Context) []session.Creat
 // resolvePaths places the five endpoints under base, from the paths the
 // options declared.
 func (i *recoveryInterceptor) resolvePaths(base string) {
-	i.completePath = joinBase(base, i.declaredCompletePath)
-	i.startPath = joinBase(base, i.declaredStartPath)
-	i.finishPath = joinBase(base, i.declaredFinishPath)
-	i.cancelPath = joinBase(base, i.declaredCancelPath)
-	i.codesPath = joinBase(base, i.declaredCodesPath)
+	i.completePath.resolve(base)
+	i.startPath.resolve(base)
+	i.finishPath.resolve(base)
+	i.cancelPath.resolve(base)
+	i.codesPath.resolve(base)
+}
+
+// declaredPaths reports the recovery paths the consumer set whose endpoint is
+// served, on the conditions endpoints and the gate's endpoints declare them:
+// the completion always, the start with issued codes, the finish and cancel
+// while a recovery may be held, and the saved-code path with saved codes. The
+// flags are settled by resolve, in build's wiring, so the start, finish,
+// cancel and codes paths are reported as settled by wiring, for the repeat
+// check's late pass alone; the completion, always served, is judged early.
+func (i *recoveryInterceptor) declaredPaths() []declaredPath {
+	paths := declarations(i.completePath)
+
+	if i.startEnabled {
+		paths = append(paths, wiringSettled(i.startPath)...)
+	}
+
+	if i.holds {
+		paths = append(paths, wiringSettled(i.finishPath, i.cancelPath)...)
+	}
+
+	if i.codesEnabled {
+		paths = append(paths, wiringSettled(i.codesPath)...)
+	}
+
+	return paths
 }
 
 // check reports the wiring faults only the assembled configuration can see:
@@ -380,13 +396,13 @@ func (i *recoveryInterceptor) Intercept(ex *Exchange, next Next) error {
 	}
 
 	switch path := ex.Request.Path(); {
-	case path == i.completePath:
+	case path == i.completePath.at():
 		return i.complete(ex)
-	case path == i.startPath && i.startEnabled:
+	case path == i.startPath.at() && i.startEnabled:
 		return i.start(ex)
-	case path == i.finishPath && i.holds:
+	case path == i.finishPath.at() && i.holds:
 		return i.finish(ex)
-	case path == i.cancelPath && i.holds:
+	case path == i.cancelPath.at() && i.holds:
 		return i.cancel(ex)
 	default:
 		return next(ex)
@@ -883,16 +899,16 @@ func (i *recoveryInterceptor) endpoints() []Endpoint {
 		return declare(feature, placedBy, id, path, MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodPost)
 	}
 
-	eps := []Endpoint{post("WithRecoveryCompletePath", OperationRecoveryComplete, i.completePath)}
+	eps := []Endpoint{post("WithRecoveryCompletePath", OperationRecoveryComplete, i.completePath.at())}
 
 	if i.startEnabled {
-		eps = append(eps, post("WithRecoveryStartPath", OperationRecoveryStart, i.startPath))
+		eps = append(eps, post("WithRecoveryStartPath", OperationRecoveryStart, i.startPath.at()))
 	}
 
 	if i.holds {
 		eps = append(eps,
-			post("WithRecoveryFinishPath", OperationRecoveryFinish, i.finishPath),
-			post("WithRecoveryCancelPath", OperationRecoveryCancel, i.cancelPath))
+			post("WithRecoveryFinishPath", OperationRecoveryFinish, i.finishPath.at()),
+			post("WithRecoveryCancelPath", OperationRecoveryCancel, i.cancelPath.at()))
 	}
 
 	return eps

@@ -105,8 +105,6 @@ type LoginResponder func(ex *Exchange, result LoginResult) error
 // formLogin answers a login on its own path and passes everything else
 // through.
 type formLogin struct {
-	pathDeclarations
-
 	authn    authenticate.Authenticator
 	sessions *session.Sessions
 	tokens   token.Generator
@@ -160,10 +158,9 @@ type formLogin struct {
 
 	now func() time.Time
 
-	// declaredPath is where the options placed the endpoint, without the base
-	// path; path is where it answers, settled by resolvePaths.
-	declaredPath  string
-	path          string
+	// path is the endpoint's path: where the options placed it, and where it
+	// answers under the base path once resolved.
+	path          endpointPath
 	usernameParam string
 	passwordParam string
 	bodyLimit     int64
@@ -338,7 +335,7 @@ func refuseLocked(
 // Intercept answers a login on the configured path and passes everything else
 // through untouched.
 func (l *formLogin) Intercept(ex *Exchange, next Next) error {
-	if ex.Request.Method() != http.MethodPost || ex.Request.Path() != l.path {
+	if ex.Request.Method() != http.MethodPost || ex.Request.Path() != l.path.at() {
 		return next(ex)
 	}
 
@@ -966,7 +963,7 @@ func isChallenge(err error) bool {
 // endpoints declares password sign-in.
 func (l *formLogin) endpoints() []Endpoint {
 	return []Endpoint{
-		declare("EnableFormLogin", "WithLoginRequestPath", OperationSignInPassword, l.path,
+		declare("EnableFormLogin", "WithLoginRequestPath", OperationSignInPassword, l.path.at(),
 			MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodPost),
 	}
 }

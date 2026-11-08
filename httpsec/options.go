@@ -508,6 +508,14 @@ func New(opts ...Option) (*Chain, error) {
 
 	c.resolvePaths()
 
+	// A consumer's path that repeats the base path is refused before validate,
+	// whose checks read resolved paths and would otherwise refuse a doubled
+	// one with advice to register or state the doubled URL. Paths whose
+	// serving wiring settles are judged in build's late pass instead.
+	if err := c.checkBaseRepeatsEarly(); err != nil {
+		return nil, err
+	}
+
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
@@ -647,6 +655,15 @@ func (c *config) build() (*Chain, error) {
 		return nil, err
 	}
 
+	// The repeat check's late pass judges the paths whose serving wiring
+	// settles (the recovery start, finish, cancel and saved codes, the
+	// handoff) once every built-in is wired, so a path set for one that is off
+	// is not judged. Before the inventory and its collision check, so a doubled
+	// path is refused as one, not as whatever it collides with.
+	if err := c.checkBaseRepeats(); err != nil {
+		return nil, err
+	}
+
 	// The inventory is collected once every built-in is wired, so it lists only
 	// the operations the assembled configuration enables (the recovery start,
 	// the handoff, the saved codes), at their resolved paths, in the order the
@@ -663,8 +680,8 @@ func (c *config) build() (*Chain, error) {
 	}
 
 	// After the shared check, so two declared operations on one path are
-	// refused there, naming both settings; this is the provider's own backstop
-	// for a duplicate route that no declaration explains.
+	// refused there, naming both settings; a duplicate route that no declaration
+	// explains is a broken library invariant, reported as one.
 	if c.oidcProvider != nil {
 		if err := c.oidcProvider.checkRoutes(); err != nil {
 			return nil, err

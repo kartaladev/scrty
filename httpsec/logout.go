@@ -44,8 +44,6 @@ type EndSessionBuilder interface {
 // the authenticating session's family. A session with no family is refused:
 // nothing is deleted and the caller gets a 500.
 type logout struct {
-	pathDeclarations
-
 	sessions *session.Sessions
 
 	// provider is the OpenID Provider on the same chain, handed over by the
@@ -58,10 +56,9 @@ type logout struct {
 	// log is the chain's logger, handed over by wire.
 	log *slog.Logger
 
-	// declaredPath is where the options placed the endpoint, without the base
-	// path; path is where it answers, settled by resolvePaths.
-	declaredPath string
-	path         string
+	// path is the endpoint's path: where the options placed it, and where it
+	// answers under the base path once resolved.
+	path endpointPath
 
 	// clearSiteData is the Clear-Site-Data value sent on a secure, successful
 	// logout, or "" for none.
@@ -96,7 +93,7 @@ func (l *logout) wire(c *Chain) {
 //
 // With the OpenID Provider on the chain, the sign-in ends there first (see end).
 func (l *logout) Intercept(ex *Exchange, next Next) error {
-	if ex.Request.Method() != http.MethodPost || ex.Request.Path() != l.path {
+	if ex.Request.Method() != http.MethodPost || ex.Request.Path() != l.path.at() {
 		return next(ex)
 	}
 
@@ -288,7 +285,7 @@ func EnableLogout(d LogoutDeps, opts ...LogoutOption) Option {
 	const option = "EnableLogout"
 
 	return func(c *config) error {
-		l := &logout{sessions: d.Sessions, endSession: d.EndSession, declaredPath: DefaultLogoutPath}
+		l := &logout{sessions: d.Sessions, endSession: d.EndSession, path: defaultPath(DefaultLogoutPath)}
 
 		for _, opt := range opts {
 			if opt == nil {
@@ -337,8 +334,7 @@ func WithLogoutRequestPath(path string) LogoutOption {
 			return err
 		}
 
-		l.declaredPath = path
-		l.declare("WithLogoutRequestPath", path)
+		l.path.give("WithLogoutRequestPath", path)
 
 		return nil
 	}
@@ -392,7 +388,7 @@ var clearSiteDataDirectives = []string{"cache", "cookies", "storage"}
 // endpoints declares sign-out.
 func (l *logout) endpoints() []Endpoint {
 	return []Endpoint{
-		declare("EnableLogout", "WithLogoutRequestPath", OperationSignOut, l.path,
+		declare("EnableLogout", "WithLogoutRequestPath", OperationSignOut, l.path.at(),
 			MatchExact, OtherMethodsPassThrough, RequiresAuthentication, http.MethodPost),
 	}
 }

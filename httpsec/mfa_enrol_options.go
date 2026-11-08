@@ -206,19 +206,19 @@ func EnableMFAEnrolment(d EnrolmentDeps, opts ...EnrolmentOption) Option {
 
 	return func(c *config) error {
 		i := &enrolmentInterceptor{
-			users:                 d.Users,
-			sender:                d.Sender,
-			now:                   c.now,
-			declaredBeginPrefix:   DefaultEnrolmentBeginPrefix,
-			declaredConfirmPrefix: DefaultEnrolmentConfirmPrefix,
-			declaredEmailPrefix:   DefaultEnrolmentEmailConfirmPrefix,
-			lifetime:              defaultEnrolmentLifetime,
-			logInterval:           defaultEnrolmentLogInterval,
-			emailConfirmation:     true,
-			notification:          true,
-			contact:               mfa.UsernameAsAddress,
-			label:                 mfa.UsernameAsAddress,
-			messages:              plainEnrolmentMessages{},
+			users:             d.Users,
+			sender:            d.Sender,
+			now:               c.now,
+			beginPrefix:       defaultPath(DefaultEnrolmentBeginPrefix),
+			confirmPrefix:     defaultPath(DefaultEnrolmentConfirmPrefix),
+			emailPrefix:       defaultPath(DefaultEnrolmentEmailConfirmPrefix),
+			lifetime:          defaultEnrolmentLifetime,
+			logInterval:       defaultEnrolmentLogInterval,
+			emailConfirmation: true,
+			notification:      true,
+			contact:           mfa.UsernameAsAddress,
+			label:             mfa.UsernameAsAddress,
+			messages:          plainEnrolmentMessages{},
 		}
 
 		for _, opt := range opts {
@@ -266,8 +266,7 @@ func WithEnrolmentBeginPrefix(prefix string) EnrolmentOption {
 			return err
 		}
 
-		i.declaredBeginPrefix = p
-		i.declare("WithEnrolmentBeginPrefix", p)
+		i.beginPrefix.give("WithEnrolmentBeginPrefix", p)
 
 		return nil
 	}
@@ -286,8 +285,7 @@ func WithEnrolmentConfirmPrefix(prefix string) EnrolmentOption {
 			return err
 		}
 
-		i.declaredConfirmPrefix = p
-		i.declare("WithEnrolmentConfirmPrefix", p)
+		i.confirmPrefix.give("WithEnrolmentConfirmPrefix", p)
 
 		return nil
 	}
@@ -307,8 +305,7 @@ func WithEnrolmentEmailConfirmPrefix(prefix string) EnrolmentOption {
 			return err
 		}
 
-		i.declaredEmailPrefix = p
-		i.declare("WithEnrolmentEmailConfirmPrefix", p)
+		i.emailPrefix.give("WithEnrolmentEmailConfirmPrefix", p)
 
 		return nil
 	}

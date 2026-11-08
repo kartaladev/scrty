@@ -1,6 +1,8 @@
 package httpsec_test
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -156,6 +158,54 @@ func TestOIDCLogin_RefusesRedirectURLThatCannotReachCallback(t *testing.T) {
 
 			_, err := httpsec.New(oidcLoginRedirecting(t, tc.redirectURL, tc.chain, tc.opts...)...)
 			tc.assert(t, err)
+		})
+	}
+}
+
+// TestOIDCLogin_TrailingSlashOfCallbackPrefix pins that a callback prefix given
+// with its trailing slash, and no base path, builds with a redirect URL ending
+// in the prefix and the provider's name, and that the callback is then served
+// there and not at the default prefix.
+func TestOIDCLogin_TrailingSlashOfCallbackPrefix(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		path   string
+		assert func(t *testing.T, out served)
+	}
+
+	cases := []testCase{
+		{
+			name: "the callback under the moved prefix reaches the callback",
+			path: "/federation/callback/corp?code=c&state=s",
+			assert: func(t *testing.T, out served) {
+				// No flow cookie travels with the request, so the callback
+				// refuses it as one that does not belong to a flow.
+				require.ErrorIs(t, out.err, oidc.ErrInvalidState)
+				assert.False(t, out.handlerRan)
+			},
+		},
+		{
+			name: "the default prefix is no longer the callback",
+			path: "/sso/callback/corp?code=c&state=s",
+			assert: func(t *testing.T, out served) {
+				require.NoError(t, out.err)
+				assert.True(t, out.handlerRan)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			chain, err := httpsec.New(oidcLoginRedirecting(t, "https://app.example.com/federation/callback/corp", nil,
+				httpsec.WithOIDCCallbackPath("/federation/callback/"))...)
+			require.NoError(t, err)
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, tc.path, nil)
+			tc.assert(t, serve(t, chain, req))
 		})
 	}
 }

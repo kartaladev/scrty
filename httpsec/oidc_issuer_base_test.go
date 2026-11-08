@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/oidcprovider"
@@ -14,19 +15,24 @@ import (
 // TestOIDCProvider_IssuerBasePath pins that, under a base path, the provider's
 // issuer must cover the base path and every path the provider serves, so the
 // OpenID configuration is served under the base and every published URL names a
-// path the chain serves; that the waiver lifts the check; and that with no base
-// path nothing is checked.
+// path the chain serves; that the waiver lifts that check, in either order with
+// the base path, and is refused without one; that with no base path the issuer
+// need cover nothing; and that, base path or not, waiver or not, the issuer's
+// path holds only endpoint-path characters, with no percent-escape.
 func TestOIDCProvider_IssuerBasePath(t *testing.T) {
 	t.Parallel()
 
 	f := newOPFixture(t)
 
 	type setup struct {
-		issuer   string
-		base     string
-		provider []oidcprovider.Option
-		opts     []httpsec.OIDCProviderOption
-		jwks     []httpsec.JWKSOption
+		issuer string
+		base   string
+		// baseFirst gives WithBasePath before the provider; by default it is
+		// given last, after the provider's options.
+		baseFirst bool
+		provider  []oidcprovider.Option
+		opts      []httpsec.OIDCProviderOption
+		jwks      []httpsec.JWKSOption
 	}
 
 	type testCase struct {
@@ -168,9 +174,73 @@ func TestOIDCProvider_IssuerBasePath(t *testing.T) {
 			assert: discoveryAt(mdOIDCPath, opIssuer+"/auth/oauth2/token"),
 		},
 		{
+			name: "the issuer waiver without a base path is refused",
+			setup: setup{
+				issuer: opIssuer,
+				opts:   []httpsec.OIDCProviderOption{httpsec.WithoutOIDCIssuerBasePathCheck()},
+			},
+			assert: refused("EnableOIDCProvider", "WithoutOIDCIssuerBasePathCheck", "WithBasePath"),
+		},
+		{
+			name: "the issuer waiver given before the base path builds",
+			setup: setup{
+				issuer: opIssuer,
+				base:   bpBase,
+				opts:   []httpsec.OIDCProviderOption{httpsec.WithoutOIDCIssuerBasePathCheck()},
+			},
+			assert: discoveryAt(mdOIDCPath, opIssuer+"/auth/oauth2/token"),
+		},
+		{
+			name: "the issuer waiver given after the base path builds",
+			setup: setup{
+				issuer:    opIssuer,
+				base:      bpBase,
+				baseFirst: true,
+				opts:      []httpsec.OIDCProviderOption{httpsec.WithoutOIDCIssuerBasePathCheck()},
+			},
+			assert: discoveryAt(mdOIDCPath, opIssuer+"/auth/oauth2/token"),
+		},
+		{
 			name:   "with no base path a root issuer builds as before",
 			setup:  setup{issuer: opIssuer},
 			assert: discoveryAt(mdOIDCPath, opIssuer+"/oauth2/token"),
+		},
+		{
+			name:   "a percent-encoded issuer path under the base is refused",
+			setup:  setup{issuer: opIssuer + "/au%74h", base: bpBase},
+			assert: refused("EnableOIDCProvider", `"`+opIssuer+`/au%74h"`),
+		},
+		{
+			name:   "a percent-encoded issuer path without a base is refused",
+			setup:  setup{issuer: opIssuer + "/t%65nant"},
+			assert: refused("EnableOIDCProvider", `"`+opIssuer+`/t%65nant"`),
+		},
+		{
+			name: "the waiver does not lift the issuer path's character rule",
+			setup: setup{
+				issuer: opIssuer + "/au%74h",
+				base:   bpBase,
+				opts:   []httpsec.OIDCProviderOption{httpsec.WithoutOIDCIssuerBasePathCheck()},
+			},
+			assert: refused("EnableOIDCProvider", `"`+opIssuer+`/au%74h"`),
+		},
+		{
+			name:   "an encoded separator in the issuer path is refused",
+			setup:  setup{issuer: opIssuer + "/tenant%2F1"},
+			assert: refused("EnableOIDCProvider", `"`+opIssuer+`/tenant%2F1"`),
+		},
+		{
+			name:   "a reserved character in the issuer path is refused",
+			setup:  setup{issuer: opIssuer + "/a!b"},
+			assert: refused("EnableOIDCProvider", `"`+opIssuer+`/a!b"`),
+		},
+		{
+			name: "a plain issuer path without a base is built",
+			setup: setup{
+				issuer: opIssuer + "/tenant-1",
+				opts:   []httpsec.OIDCProviderOption{httpsec.WithOIDCProviderPrefix("/tenant-1/oauth2")},
+			},
+			assert: discoveryAt("/tenant-1"+mdOIDCPath, opIssuer+"/tenant-1/oauth2/token"),
 		},
 		{
 			name:  "with no base path an issuer deeper than the endpoints builds as before",
@@ -196,7 +266,10 @@ func TestOIDCProvider_IssuerBasePath(t *testing.T) {
 				httpsec.EnableCSRFProtection(),
 				httpsec.EnableOIDCProvider(p, tc.setup.opts...),
 			}
-			if tc.setup.base != "" {
+			switch {
+			case tc.setup.base != "" && tc.setup.baseFirst:
+				opts = append([]httpsec.Option{httpsec.WithBasePath(tc.setup.base)}, opts...)
+			case tc.setup.base != "":
 				opts = append(opts, httpsec.WithBasePath(tc.setup.base))
 			}
 
@@ -204,4 +277,28 @@ func TestOIDCProvider_IssuerBasePath(t *testing.T) {
 			tc.assert(t, chain, err)
 		})
 	}
+}
+
+// TestOIDCProvider_IssuerNotAURLNeverReachesTheChain pins where an issuer that
+// is no URL is refused: by the provider's constructor, so no provider holding
+// one can be given to EnableOIDCProvider, and the issuer check never has to
+// judge a path it could not read.
+func TestOIDCProvider_IssuerNotAURLNeverReachesTheChain(t *testing.T) {
+	t.Parallel()
+
+	f := newOPFixture(t)
+
+	p, err := oidcprovider.New(oidcprovider.Deps{
+		Issuer:       opIssuer + "/%zz",
+		Clients:      []oidcprovider.Client{{ID: "billing-web", Type: oidcprovider.Public, RedirectURIs: []string{"https://rp.example.com/cb"}}},
+		Keys:         f.keys,
+		Users:        NewMockUserLoader(gomock.NewController(t)),
+		LoginURL:     opIssuer + "/login",
+		ConsentURL:   opIssuer + "/consent",
+		LogoutURL:    opIssuer + "/logout-page",
+		LoggedOutURL: opIssuer + "/bye",
+	})
+	require.ErrorIs(t, err, oidcprovider.ErrConfig)
+	assert.ErrorContains(t, err, "Issuer")
+	assert.Nil(t, p)
 }

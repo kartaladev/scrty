@@ -262,20 +262,20 @@ func EnableAccountRecovery(deps RecoveryDeps, opts ...RecoveryOption) Option {
 
 	return func(c *config) error {
 		i := &recoveryInterceptor{
-			deps:                 deps,
-			now:                  c.now,
-			declaredCompletePath: DefaultRecoveryCompletePath,
-			declaredStartPath:    DefaultRecoveryStartPath,
-			declaredFinishPath:   DefaultRecoveryFinishPath,
-			declaredCancelPath:   DefaultRecoveryCancelPath,
-			declaredCodesPath:    DefaultRecoveryCodesPath,
-			countRefusals:        true,
-			logInterval:          defaultRecoveryLogInterval,
-			respond:              writeRecoveryResult,
-			respondHold:          writeRecoveryHold,
-			freshness:            defaultRegenerationFreshness,
-			respondCodes:         writeRecoveryCodes,
-			respondCount:         writeRecoveryCount,
+			deps:          deps,
+			now:           c.now,
+			completePath:  defaultPath(DefaultRecoveryCompletePath),
+			startPath:     defaultPath(DefaultRecoveryStartPath),
+			finishPath:    defaultPath(DefaultRecoveryFinishPath),
+			cancelPath:    defaultPath(DefaultRecoveryCancelPath),
+			codesPath:     defaultPath(DefaultRecoveryCodesPath),
+			countRefusals: true,
+			logInterval:   defaultRecoveryLogInterval,
+			respond:       writeRecoveryResult,
+			respondHold:   writeRecoveryHold,
+			freshness:     defaultRegenerationFreshness,
+			respondCodes:  writeRecoveryCodes,
+			respondCount:  writeRecoveryCount,
 		}
 
 		for _, opt := range opts {
@@ -329,17 +329,20 @@ func WithRecoveryCore(opts ...recovery.Option) RecoveryOption {
 // WithRecoveryCompletePath answers the complete endpoint on path instead.
 //
 // Default: DefaultRecoveryCompletePath, "/recovery/complete". The path is within
-// the base path (WithBasePath). The path must start with "/" and
-// differ from every other recovery path, the login path and the logout path;
-// New refuses it otherwise.
+// the base path (WithBasePath). The path must start with "/" and be a well-formed
+// endpoint path, and New refuses a chain on which it is answered by another
+// endpoint (the login and logout paths among them). Two recovery paths are
+// compared only while both operations are served. The start path is served
+// only with recovery.ProofIssued, the codes path only with recovery.ProofSaved,
+// and the finish and cancel paths only when a delay or a risk hook holds a
+// recovery; a path that is not served is not compared.
 func WithRecoveryCompletePath(path string) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
 		if err := checkEndpointPath("WithRecoveryCompletePath", path); err != nil {
 			return err
 		}
 
-		i.declaredCompletePath = path
-		i.declare("WithRecoveryCompletePath", path)
+		i.completePath.give("WithRecoveryCompletePath", path)
 
 		return nil
 	}
@@ -349,15 +352,15 @@ func WithRecoveryCompletePath(path string) RecoveryOption {
 //
 // Default: DefaultRecoveryStartPath, "/recovery/start", within the base path (WithBasePath), with
 // the same rules as
-// WithRecoveryCompletePath.
+// WithRecoveryCompletePath, including that it is compared with the other recovery
+// paths only while both operations are served.
 func WithRecoveryStartPath(path string) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
 		if err := checkEndpointPath("WithRecoveryStartPath", path); err != nil {
 			return err
 		}
 
-		i.declaredStartPath = path
-		i.declare("WithRecoveryStartPath", path)
+		i.startPath.give("WithRecoveryStartPath", path)
 
 		return nil
 	}
@@ -368,15 +371,15 @@ func WithRecoveryStartPath(path string) RecoveryOption {
 //
 // Default: DefaultRecoveryFinishPath, "/recovery/finish", within the base path (WithBasePath), with
 // the same rules as
-// WithRecoveryCompletePath.
+// WithRecoveryCompletePath, including that it is compared with the other recovery
+// paths only while both operations are served.
 func WithRecoveryFinishPath(path string) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
 		if err := checkEndpointPath("WithRecoveryFinishPath", path); err != nil {
 			return err
 		}
 
-		i.declaredFinishPath = path
-		i.declare("WithRecoveryFinishPath", path)
+		i.finishPath.give("WithRecoveryFinishPath", path)
 
 		return nil
 	}
@@ -387,15 +390,15 @@ func WithRecoveryFinishPath(path string) RecoveryOption {
 //
 // Default: DefaultRecoveryCancelPath, "/recovery/cancel", within the base path (WithBasePath), with
 // the same rules as
-// WithRecoveryCompletePath.
+// WithRecoveryCompletePath, including that it is compared with the other recovery
+// paths only while both operations are served.
 func WithRecoveryCancelPath(path string) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
 		if err := checkEndpointPath("WithRecoveryCancelPath", path); err != nil {
 			return err
 		}
 
-		i.declaredCancelPath = path
-		i.declare("WithRecoveryCancelPath", path)
+		i.cancelPath.give("WithRecoveryCancelPath", path)
 
 		return nil
 	}
@@ -405,15 +408,15 @@ func WithRecoveryCancelPath(path string) RecoveryOption {
 //
 // Default: DefaultRecoveryCodesPath, "/recovery/codes", within the base path (WithBasePath), with
 // the same rules as
-// WithRecoveryCompletePath.
+// WithRecoveryCompletePath, including that it is compared with the other recovery
+// paths only while both operations are served.
 func WithRecoveryCodesPath(path string) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
 		if err := checkEndpointPath("WithRecoveryCodesPath", path); err != nil {
 			return err
 		}
 
-		i.declaredCodesPath = path
-		i.declare("WithRecoveryCodesPath", path)
+		i.codesPath.give("WithRecoveryCodesPath", path)
 
 		return nil
 	}

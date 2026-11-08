@@ -149,10 +149,13 @@ type SessionSignals struct {
 	//
 	// Default: DefaultSessionSignalsPath, "/session/signals". The path is within the
 	// base path (WithBasePath): with a base path of "/auth", the default answers
-	// "/auth/session/signals". It must start with "/",
-	// must not end with one, must hold no "?", "#", "%" or white space, because a request's
-	// path is compared decoded and such a path would never be served, and must be a path
-	// no other enabled endpoint of the chain answers.
+	// "/auth/session/signals". It must start with "/", must not be "/", and must be
+	// clean (no "." or ".." segment, no "//") once one trailing slash is set aside.
+	// One trailing slash is accepted and names that exact path: "/session/signals/"
+	// is answered, and "/session/signals" then passes through. It must hold no "?",
+	// "#", "%" or white space, because a request's path is compared decoded and such
+	// a path would never be served, and must be a path no other enabled endpoint of
+	// the chain answers.
 	Path string
 
 	// Signals is the chain's set: what a stream may send. A client can narrow it for
@@ -484,7 +487,10 @@ func EnableSessionSignals(s SessionSignals) Option {
 			return err
 		}
 
-		e := &sessionSignals{cfg: s}
+		e := &sessionSignals{cfg: s, path: defaultPath(DefaultSessionSignalsPath)}
+		if s.Path != "" {
+			e.path.give(signalsPathSetting, s.Path)
+		}
 
 		c.enable(option, func() error { return e.settle(c, option) })
 		c.register(e, OrderSessionSignals)
@@ -511,13 +517,13 @@ func RecordsSessionActivity(ex *Exchange) bool {
 
 // sessionSignals is the stream's endpoint, and what the rest of the feature hangs from.
 type sessionSignals struct {
-	// cfg is what the consumer gave, with every default filled by settle. Its
-	// Path is where the stream is placed without the base path.
+	// cfg is what the consumer gave, with every default but the path filled by
+	// settle. The path is held in path alone.
 	cfg SessionSignals
 
-	// path is where the stream answers: cfg.Path, or its default, under the base
-	// path. It is settled by resolvePaths.
-	path string
+	// path is the stream's path: cfg.Path, or DefaultSessionSignalsPath when the
+	// consumer gave none, and where it answers under the base path once resolved.
+	path endpointPath
 
 	// set is the chain's set of library signals, from cfg.Signals.
 	set map[Signal]bool
@@ -606,11 +612,12 @@ func (e *sessionSignals) settle(c *config, option string) error {
 // of the chain answers is refused by the chain's collision check, which judges
 // every built-in's resolved paths together.
 func (e *sessionSignals) settlePath(option string) error {
-	if e.cfg.Path == "" {
-		e.cfg.Path = DefaultSessionSignalsPath
+	d, ok := e.path.declaration()
+	if !ok {
+		return nil
 	}
 
-	return checkEndpointPath(option+": SessionSignals.Path", e.cfg.Path)
+	return checkEndpointPath(option+": SessionSignals.Path", d.path)
 }
 
 // settleSignals builds the chain's set.
@@ -888,7 +895,7 @@ func (e *sessionSignals) wire(c *config, ch *Chain) {
 		return nil
 	})
 
-	ch.perRequest.signalsPath = e.path
+	ch.perRequest.signalsPath = e.path.at()
 	ch.perRequest.signals = e
 
 	// It refuses only a nil observer, and the hub is not one.
@@ -1146,12 +1153,6 @@ func (s *signalStream) offer(sig queuedSignal) bool {
 	}
 }
 
-// declaredPaths reports the stream path the consumer gave. It is judged before
-// settle fills the default, so an empty path is the default and is not declared.
-func (e *sessionSignals) declaredPaths() []declaredPath {
-	if e.cfg.Path == "" {
-		return nil
-	}
-
-	return []declaredPath{{setting: "EnableSessionSignals: SessionSignals.Path", path: e.cfg.Path}}
-}
+// signalsPathSetting names the setting that places the stream, in the base
+// path's repeat check.
+const signalsPathSetting = "EnableSessionSignals: SessionSignals.Path"

@@ -144,8 +144,6 @@ func (s BackchannelLogoutScope) valid() bool { return s <= BackchannelLogoutScop
 // oidcInterceptor answers the federated-login endpoints: the authorize
 // redirect, the callback, handoff redemption and back-channel logout.
 type oidcInterceptor struct {
-	pathDeclarations
-
 	manager  *oidc.RelyingParty
 	handoffs *oidc.Handoff
 
@@ -217,17 +215,12 @@ type oidcInterceptor struct {
 
 	now func() time.Time
 
-	// The declared paths are where the options placed the endpoints, without
-	// the base path; the others are where they answer, settled by resolvePaths.
-	declaredAuthorize   string
-	declaredCallback    string
-	declaredHandoff     string
-	declaredBackchannel string
-
-	authorizePath   string
-	callbackPath    string
-	handoffPath     string
-	backchannelPath string
+	// The four paths are where the options placed the endpoints, and where
+	// they answer under the base path once resolved.
+	authorizePath   endpointPath
+	callbackPath    endpointPath
+	handoffPath     endpointPath
+	backchannelPath endpointPath
 	cookieName      string
 	bodyLimit       int64
 
@@ -302,11 +295,11 @@ func (i *oidcInterceptor) Intercept(ex *Exchange, next Next) error {
 		// Redemption spends a credential, so it is POST-only: nothing a link,
 		// an image tag or a prefetch triggers may reach it. With redemption
 		// off no code is ever issued, and the path is the application's.
-		if i.redeemer != nil && path == i.handoffPath {
+		if i.redeemer != nil && path == i.handoffPath.at() {
 			return i.redeem(ex)
 		}
 
-		if provider := providerSegment(path, i.backchannelPath); provider != "" {
+		if provider := providerSegment(path, i.backchannelPath.at()); provider != "" {
 			return i.backchannel(ex, provider)
 		}
 
@@ -317,11 +310,11 @@ func (i *oidcInterceptor) Intercept(ex *Exchange, next Next) error {
 		return next(ex)
 	}
 
-	if provider := providerSegment(path, i.authorizePath); provider != "" {
+	if provider := providerSegment(path, i.authorizePath.at()); provider != "" {
 		return i.authorize(ex, provider)
 	}
 
-	if provider := providerSegment(path, i.callbackPath); provider != "" {
+	if provider := providerSegment(path, i.callbackPath.at()); provider != "" {
 		return i.callback(ex, provider)
 	}
 
@@ -335,17 +328,17 @@ func (i *oidcInterceptor) endpoints() []Endpoint {
 	const feature = "EnableOIDCLogin"
 
 	eps := []Endpoint{
-		declare(feature, "WithOIDCAuthorizePath", OperationSSOLogin, withSegment(i.authorizePath, "provider"),
+		declare(feature, "WithOIDCAuthorizePath", OperationSSOLogin, withSegment(i.authorizePath.at(), "provider"),
 			MatchSegment, OtherMethodsPassThrough, RequiresNothing, http.MethodGet),
-		declare(feature, "WithOIDCCallbackPath", OperationSSOCallback, withSegment(i.callbackPath, "provider"),
+		declare(feature, "WithOIDCCallbackPath", OperationSSOCallback, withSegment(i.callbackPath.at(), "provider"),
 			MatchSegment, OtherMethodsPassThrough, RequiresNothing, http.MethodGet),
 	}
 
 	if i.redeemer != nil {
-		eps = append(eps, declare(feature, "WithOIDCHandoffPath", OperationSSOHandoff, i.handoffPath,
+		eps = append(eps, declare(feature, "WithOIDCHandoffPath", OperationSSOHandoff, i.handoffPath.at(),
 			MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodPost))
 	}
 
 	return append(eps, declare(feature, "WithOIDCBackchannelLogoutPath", OperationSSOBackchannelLogout,
-		withSegment(i.backchannelPath, "provider"), MatchSegment, OtherMethodsPassThrough, RequiresNothing, http.MethodPost))
+		withSegment(i.backchannelPath.at(), "provider"), MatchSegment, OtherMethodsPassThrough, RequiresNothing, http.MethodPost))
 }

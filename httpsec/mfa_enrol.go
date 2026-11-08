@@ -30,8 +30,6 @@ import (
 // enrolmentInterceptor is the enrolment path: the gate that confines an
 // enrolment-only session, and the endpoints that session may reach.
 type enrolmentInterceptor struct {
-	pathDeclarations
-
 	users  identity.UserLoader
 	sender notify.Sender
 
@@ -43,16 +41,11 @@ type enrolmentInterceptor struct {
 	logoutPath string
 	log        *slog.Logger
 
-	// declaredBeginPrefix, declaredConfirmPrefix and declaredEmailPrefix are
-	// where the options placed the endpoints, without the base path; the
-	// prefixes without "declared" are where they answer, settled by
-	// resolvePaths.
-	declaredBeginPrefix   string
-	declaredConfirmPrefix string
-	declaredEmailPrefix   string
-	beginPrefix           string
-	confirmPrefix         string
-	emailPrefix           string
+	// beginPrefix, confirmPrefix and emailPrefix are where the options placed
+	// the endpoints, and where they answer under the base path once resolved.
+	beginPrefix   endpointPath
+	confirmPrefix endpointPath
+	emailPrefix   endpointPath
 
 	// names are the methods WithEnrolmentMethods named, nil when it was not
 	// given.
@@ -127,9 +120,20 @@ func (i *enrolmentInterceptor) check(option string) error {
 // resolvePaths places the three enrolment endpoints under base, from the
 // prefixes the options declared.
 func (i *enrolmentInterceptor) resolvePaths(base string) {
-	i.beginPrefix = joinBase(base, i.declaredBeginPrefix)
-	i.confirmPrefix = joinBase(base, i.declaredConfirmPrefix)
-	i.emailPrefix = joinBase(base, i.declaredEmailPrefix)
+	i.beginPrefix.resolve(base)
+	i.confirmPrefix.resolve(base)
+	i.emailPrefix.resolve(base)
+}
+
+// declaredPaths reports the enrolment prefixes the consumer set whose endpoint
+// is served: the emailed-code prefix only while email confirmation is on, as
+// endpoints declares it.
+func (i *enrolmentInterceptor) declaredPaths() []declaredPath {
+	if !i.emailConfirmation {
+		return declarations(i.beginPrefix, i.confirmPrefix)
+	}
+
+	return declarations(i.beginPrefix, i.confirmPrefix, i.emailPrefix)
 }
 
 // prefixes is every enrolment endpoint's prefix. The emailed-code endpoint's
@@ -137,10 +141,10 @@ func (i *enrolmentInterceptor) resolvePaths(base string) {
 // does not exist.
 func (i *enrolmentInterceptor) prefixes() []string {
 	if !i.emailConfirmation {
-		return []string{i.beginPrefix, i.confirmPrefix}
+		return []string{i.beginPrefix.at(), i.confirmPrefix.at()}
 	}
 
-	return []string{i.beginPrefix, i.confirmPrefix, i.emailPrefix}
+	return []string{i.beginPrefix.at(), i.confirmPrefix.at(), i.emailPrefix.at()}
 }
 
 // wire takes the settings the chain resolved, once every option has been
@@ -436,12 +440,12 @@ func (i *enrolmentInterceptor) endpoint(ex *Exchange, s *session.Session) (bool,
 	r := ex.Request
 
 	switch {
-	case isPostUnder(r, i.beginPrefix):
-		return true, i.serve(ex, s, endpointBegin, i.beginPrefix, i.begin)
-	case isPostUnder(r, i.confirmPrefix):
-		return true, i.serve(ex, s, endpointConfirm, i.confirmPrefix, i.confirm)
-	case i.emailConfirmation && isPostUnder(r, i.emailPrefix):
-		return true, i.serve(ex, s, endpointEmail, i.emailPrefix, i.redeemEmailCode)
+	case isPostUnder(r, i.beginPrefix.at()):
+		return true, i.serve(ex, s, endpointBegin, i.beginPrefix.at(), i.begin)
+	case isPostUnder(r, i.confirmPrefix.at()):
+		return true, i.serve(ex, s, endpointConfirm, i.confirmPrefix.at(), i.confirm)
+	case i.emailConfirmation && isPostUnder(r, i.emailPrefix.at()):
+		return true, i.serve(ex, s, endpointEmail, i.emailPrefix.at(), i.redeemEmailCode)
 	}
 
 	return false, nil
@@ -459,7 +463,7 @@ func (i *enrolmentInterceptor) serve(
 	endpoint, prefix string,
 	run func(*Exchange, *session.Session, mfa.Enroller) error,
 ) error {
-	name, ok := methodSegment(ex.Request.Path(), prefix)
+	name, ok := oneSegmentBelow(ex.Request.Path(), prefix)
 	method, known := i.methods[name]
 
 	if !ok || !known {
@@ -1127,15 +1131,15 @@ func (i *enrolmentInterceptor) endpoints() []Endpoint {
 	const feature = "EnableMFAEnrolment"
 
 	eps := []Endpoint{
-		declare(feature, "WithEnrolmentBeginPrefix", OperationMFAEnrolmentBegin, withSegment(i.beginPrefix, "method"),
+		declare(feature, "WithEnrolmentBeginPrefix", OperationMFAEnrolmentBegin, withSegment(i.beginPrefix.at(), "method"),
 			MatchSubtree, OtherMethodsPassThrough, RequiresPendingEnrolment, http.MethodPost),
-		declare(feature, "WithEnrolmentConfirmPrefix", OperationMFAEnrolmentConfirm, withSegment(i.confirmPrefix, "method"),
+		declare(feature, "WithEnrolmentConfirmPrefix", OperationMFAEnrolmentConfirm, withSegment(i.confirmPrefix.at(), "method"),
 			MatchSubtree, OtherMethodsPassThrough, RequiresPendingEnrolment, http.MethodPost),
 	}
 
 	if i.emailConfirmation {
 		eps = append(eps, declare(feature, "WithEnrolmentEmailConfirmPrefix", OperationMFAEnrolmentConfirmEmail,
-			withSegment(i.emailPrefix, "method"), MatchSubtree, OtherMethodsPassThrough, RequiresPendingEnrolment, http.MethodPost))
+			withSegment(i.emailPrefix.at(), "method"), MatchSubtree, OtherMethodsPassThrough, RequiresPendingEnrolment, http.MethodPost))
 	}
 
 	return eps

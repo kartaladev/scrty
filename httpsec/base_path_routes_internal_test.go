@@ -240,6 +240,11 @@ func TestCheckStaleRoutes(t *testing.T) {
 			assert:    accepted,
 		},
 		{
+			name: "waived without a base path", base: "", endpoints: []Endpoint{at("/reauth/password", MatchExact, http.MethodPost)},
+			options: []Option{WithoutBasePathRouteCheck()},
+			assert:  refused("WithoutBasePathRouteCheck", "WithBasePath"),
+		},
+		{
 			name: "no routes at all", base: "/auth", endpoints: []Endpoint{exact},
 			assert: accepted,
 		},

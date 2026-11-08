@@ -87,8 +87,7 @@ func WithOIDCProviderPrefix(prefix string) OIDCProviderOption {
 			return err
 		}
 
-		op.prefix = strings.TrimSuffix(prefix, "/")
-		op.declare(option, prefix)
+		op.prefix.giveAs(option, prefix, strings.TrimSuffix(prefix, "/"))
 
 		return nil
 	}
@@ -120,8 +119,9 @@ func WithOIDCProviderPath(endpoint OIDCEndpoint, path string) OIDCProviderOption
 			return err
 		}
 
-		op.overrides[endpoint] = path
-		op.declare(setting, path)
+		p := op.overrides[endpoint]
+		p.give(setting, path)
+		op.overrides[endpoint] = p
 
 		return nil
 	}
@@ -143,14 +143,28 @@ func WithOIDCPagesCarryFrameAncestors() OIDCProviderOption {
 	}
 }
 
+// optionWithoutOIDCIssuerBasePathCheck names the waiver of the issuer's base
+// path check in the refusals that offer it or refuse it.
+const optionWithoutOIDCIssuerBasePathCheck = "WithoutOIDCIssuerBasePathCheck"
+
 // WithoutOIDCIssuerBasePathCheck waives the check that, under WithBasePath, the
 // provider's issuer covers the base path and everything the provider serves.
 //
 // Default: checked whenever WithBasePath is set. New then refuses a provider
 // unless the issuer's path, one trailing slash aside, is the base path or lies
 // under it, and every endpoint of the provider and the key set
-// (EnableJWKSEndpoint) lie under the issuer's path. With no base path nothing is
-// checked, and this option changes nothing.
+// (EnableJWKSEndpoint) lie under the issuer's path.
+//
+// With no base path the base-path check does not run, so there is nothing to
+// waive, and New refuses this option with ErrConfig, naming it: a
+// configuration that waives a check it does not have is a wiring mistake. A consumer whose base path comes
+// from deployment configuration gives the waiver only where the base path is
+// set. The order of this option and WithBasePath does not matter.
+//
+// The waiver does not lift the rule on the issuer's characters, which holds with
+// or without a base path and has no override: the issuer's path holds only
+// letters, digits, "-", ".", "_", "~" and "/", with no percent-escape, even one
+// that decodes to such a character (see EnableOIDCProvider).
 //
 // It is for a gateway that routes "/.well-known/*" to the chain, or a consumer
 // who otherwise makes the URLs reachable. What it gives up:

@@ -23,7 +23,10 @@ import (
 // WithLoginRequestPath("/auth/sign-in/password") would answer
 // "/auth/auth/sign-in/password". "/api-keys" under "/api" is not a repeat. A
 // consumer who wants "/auth/auth/..." writes a base path of "/auth/auth". Paths
-// the consumer did not set are not judged.
+// the consumer did not set are not judged, and neither is a path set for an
+// endpoint the configuration leaves off, such as the recovery start path
+// without issued codes: it answers nowhere, so it repeats nothing. Where the
+// feature refuses such a path itself, that refusal is the one New returns.
 //
 // Given twice, the last call applies. The option takes effect wherever it stands
 // among the chain's options, because New judges it once every option has run.
@@ -94,37 +97,140 @@ func WithBasePath(p string) Option {
 type declaredPath struct {
 	setting string
 	path    string
+	// settledByWiring marks a path whose endpoint is served or not as its
+	// feature's wiring in build decides, not as the options alone do. The
+	// repeat check judges it in its late pass, once that is known, and every
+	// other path in its early pass (see checkBaseRepeats).
+	settledByWiring bool
 }
 
-// pathDeclarations is what an interceptor embeds to remember the paths the
-// consumer set for it, so the base path can judge them once every option has
-// run. A path left at its default is never declared.
-type pathDeclarations []declaredPath
+// endpointPath is one path a built-in answers, held as a single record: the path
+// its setting declared, the setting that declared it, and where it answers once
+// the base path is resolved. A path option sets this record and nothing else, so
+// no option can move an endpoint without the base path's repeat check seeing the
+// path it set, and a default is written in one place, the defaultPath that
+// starts the record.
+type endpointPath struct {
+	// setting is the option that set the path, and "" for a default, which the
+	// repeat check does not judge.
+	setting string
+	// written is the path as the setting was given it, which the repeat check
+	// judges and names; declared is where it answers without the base path,
+	// which differs from written only where the option normalises it.
+	written  string
+	declared string
+	// resolved is where the endpoint answers, settled by resolve.
+	resolved string
+}
 
-// declare records that setting set path, replacing an earlier declaration by the
-// same setting, since the last call to an option is the one that applies.
-func (d *pathDeclarations) declare(setting, path string) {
-	for i := range *d {
-		if (*d)[i].setting == setting {
-			(*d)[i].path = path
+// defaultPath is a path no consumer set: it answers at p, under the base path
+// once resolved, and is not judged by the repeat check.
+func defaultPath(p string) endpointPath {
+	return endpointPath{written: p, declared: p}
+}
 
-			return
+// give records that setting set the path to p. A later call replaces an earlier
+// one, since the last call to an option is the one that applies; the earlier
+// value is neither judged nor answered at.
+func (e *endpointPath) give(setting, p string) {
+	e.giveAs(setting, p, p)
+}
+
+// giveAs is give for an option that normalises what the consumer wrote: the
+// endpoint answers at p, and the repeat check judges and names written.
+func (e *endpointPath) giveAs(setting, written, p string) {
+	e.setting = setting
+	e.written = written
+	e.declared = p
+}
+
+// resolve settles where the endpoint answers under base. It is computed from
+// the declared path every time, never from the previous result, so resolving
+// twice cannot prefix twice.
+func (e *endpointPath) resolve(base string) {
+	e.resolved = joinBase(base, e.declared)
+}
+
+// at is where the endpoint answers, once resolved.
+func (e endpointPath) at() string {
+	return e.resolved
+}
+
+// declaration reports the path the consumer set and the setting that set it,
+// and false for a default.
+func (e endpointPath) declaration() (declaredPath, bool) {
+	if e.setting == "" {
+		return declaredPath{}, false
+	}
+
+	return declaredPath{setting: e.setting, path: e.written}, true
+}
+
+// declarations reports, of paths, the ones the consumer set, in the order given.
+func declarations(paths ...endpointPath) []declaredPath {
+	var out []declaredPath
+
+	for _, p := range paths {
+		if d, ok := p.declaration(); ok {
+			out = append(out, d)
 		}
 	}
 
-	*d = append(*d, declaredPath{setting: setting, path: path})
+	return out
 }
 
-// declaredPaths reports what the consumer set.
-func (d pathDeclarations) declaredPaths() []declaredPath {
-	return d
+// wiringSettled is declarations for paths whose serving the feature's wiring
+// in build settles: each is marked so that only the repeat check's late pass
+// judges it.
+func wiringSettled(paths ...endpointPath) []declaredPath {
+	out := declarations(paths...)
+	for i := range out {
+		out[i].settledByWiring = true
+	}
+
+	return out
 }
 
 // pathDeclarer is an interceptor that can say which of its paths the consumer
-// set.
+// set. Each built-in reports the declaration of every endpointPath it holds
+// whose endpoint it serves, so the repeat check sees every served path a
+// setting placed and none that answers nowhere. A path whose serving only the
+// built-in's wiring in build settles is reported through wiringSettled: before
+// that wiring it may read as off, so only the repeat check's late pass, which
+// runs after it, judges it.
 type pathDeclarer interface {
 	declaredPaths() []declaredPath
 }
+
+// pathOwner is a built-in that holds endpointPath records: it resolves them and
+// reports the ones the consumer set. Every built-in that owns a path is listed
+// here, so a listed built-in that resolves paths but has no declaredPaths fails
+// to compile. The list itself, and whether declaredPaths reports every record,
+// are held by the per-option repeat tests, not by the compiler. The
+// passwordless endpoints resolve a copy of the passkey prefix and are not
+// listed: the passkey built-in, which the option sets, reports it.
+type pathOwner interface {
+	pathResolver
+	pathDeclarer
+}
+
+var (
+	_ pathOwner = (*formLogin)(nil)
+	_ pathOwner = (*logout)(nil)
+	_ pathOwner = (*jwksEndpoint)(nil)
+	_ pathOwner = (*sessionRenewal)(nil)
+	_ pathOwner = (*passwordChangeGate)(nil)
+	_ pathOwner = (*sessionManagement)(nil)
+	_ pathOwner = (*sessionSignals)(nil)
+	_ pathOwner = (*mfaInterceptor)(nil)
+	_ pathOwner = (*enrolmentInterceptor)(nil)
+	_ pathOwner = (*passkeyInterceptor)(nil)
+	_ pathOwner = (*magicLinkInterceptor)(nil)
+	_ pathOwner = (*recoveryInterceptor)(nil)
+	_ pathOwner = (*reauthInterceptor)(nil)
+	_ pathOwner = (*oidcInterceptor)(nil)
+	_ pathOwner = (*oidcOuterRouter)(nil)
+)
 
 // endpointAnswering names the Enable options that answer a built-in endpoint. A
 // built-in not listed here is taken as answering none: the base path is then
@@ -186,9 +292,12 @@ func (c *config) passwordChangeAnswers() bool {
 }
 
 // settleBasePath judges the base path and settles it, with one trailing slash
-// dropped. It runs once, after every option, so the order of WithBasePath among
-// the others cannot change what it sees, and a base path given twice is judged
-// only as its last value. It does nothing when none was given.
+// dropped. It runs once, after every option and before any path is resolved,
+// so the order of WithBasePath among the others cannot change what it sees,
+// and a base path given twice is judged only as its last value. It does
+// nothing when none was given. Whether a consumer's path repeats the base is
+// judged after the paths are resolved, by checkBaseRepeatsEarly and
+// checkBaseRepeats.
 func (c *config) settleBasePath() error {
 	const option = "WithBasePath"
 
@@ -206,8 +315,62 @@ func (c *config) settleBasePath() error {
 		return newConfigError("%s was given %q, but the chain enables no built-in endpoint, so it would move nothing", option, c.basePath)
 	}
 
-	err := eachInterceptor(c, func(d pathDeclarer) error {
+	c.basePath = base
+
+	return nil
+}
+
+// checkBaseRepeatsEarly is the repeat check's early pass. It runs in New, once
+// the paths are resolved and before validate, and judges every path the
+// consumer set whose serving the options alone decide, which is every path
+// not marked settledByWiring.
+//
+// It runs before validate because several of validate's checks read a
+// resolved path and refuse one that does not fit (the OIDC login's redirect
+// check, the provider's assertion endpoint check). Judged by them first, a
+// doubled path would be refused with advice to register or state the doubled
+// URL; judged here, the refusal names the option that set it.
+//
+// The paths whose serving wiring settles (recovery's start, finish, cancel and
+// codes, the OIDC handoff) are left to the late pass: before wiring they may
+// read as off, so a served, doubled path would slip through. The handoff is
+// never judged here, even when the options already set a redeemer, so that
+// the OIDC login's own refusal of a handoff path the consumer's conveyance
+// leaves unused comes first.
+func (c *config) checkBaseRepeatsEarly() error {
+	return c.judgeBaseRepeats(false)
+}
+
+// checkBaseRepeats is the repeat check's late pass. It runs in build, once
+// every built-in is wired, and judges only the paths marked settledByWiring:
+// recovery's start, finish, cancel and codes, settled by wireAccountRecovery,
+// and the OIDC handoff, settled by wireOIDCLogin. Each declaredPaths leaves out
+// a path whose endpoint is off, so a path set for an endpoint the wiring turns
+// off is not judged, and a feature's own refusal of it comes first. It runs
+// before the inventory's collision check, so a doubled path is refused as one,
+// not as whatever it collides with.
+func (c *config) checkBaseRepeats() error {
+	return c.judgeBaseRepeats(true)
+}
+
+// judgeBaseRepeats refuses a path the consumer set for a served built-in
+// endpoint that is the base path or lies under it, judged on whole segments,
+// among the paths whose settledByWiring is settled.
+func (c *config) judgeBaseRepeats(settled bool) error {
+	const option = "WithBasePath"
+
+	if !c.basePathGiven {
+		return nil
+	}
+
+	base := c.basePath
+
+	return eachInterceptor(c, func(d pathDeclarer) error {
 		for _, p := range d.declaredPaths() {
+			if p.settledByWiring != settled {
+				continue
+			}
+
 			trimmed := strings.TrimSuffix(p.path, "/")
 			if trimmed == base || strings.HasPrefix(trimmed, base+"/") {
 				return newConfigError("%s was given %q, which is at or under the base path %q set by %s, "+
@@ -218,13 +381,6 @@ func (c *config) settleBasePath() error {
 
 		return nil
 	})
-	if err != nil {
-		return err
-	}
-
-	c.basePath = base
-
-	return nil
 }
 
 // joinBase is where an endpoint declared at p answers under base. Both are
@@ -241,9 +397,10 @@ func joinBase(base, p string) string {
 }
 
 // pathResolver is a built-in that answers request paths of its own. It keeps
-// the paths its options declared, and resolvePaths sets where it answers: each
-// declared path under base. It is computed from the declared paths every time,
-// never from the previous result, so resolving twice cannot prefix twice.
+// each path as an endpointPath, and resolvePaths sets where it answers: each
+// declared path under base (endpointPath.resolve). It is computed from the
+// declared paths every time, never from the previous result, so resolving twice
+// cannot prefix twice.
 type pathResolver interface {
 	resolvePaths(base string)
 }
@@ -262,30 +419,34 @@ func (c *config) resolvePaths() {
 	})
 
 	if c.logout != nil {
-		c.logoutPath = c.logout.path
+		c.logoutPath = c.logout.path.at()
 	}
 }
 
-func (l *formLogin) resolvePaths(base string) { l.path = joinBase(base, l.declaredPath) }
+func (l *formLogin) resolvePaths(base string) { l.path.resolve(base) }
 
-func (l *logout) resolvePaths(base string) { l.path = joinBase(base, l.declaredPath) }
+func (l *formLogin) declaredPaths() []declaredPath { return declarations(l.path) }
 
-func (j *jwksEndpoint) resolvePaths(base string) { j.path = joinBase(base, j.declaredPath) }
+func (l *logout) resolvePaths(base string) { l.path.resolve(base) }
 
-func (r *sessionRenewal) resolvePaths(base string) { r.path = joinBase(base, r.declaredPath) }
+func (l *logout) declaredPaths() []declaredPath { return declarations(l.path) }
 
-func (g *passwordChangeGate) resolvePaths(base string) { g.path = joinBase(base, g.declaredPath) }
+func (j *jwksEndpoint) resolvePaths(base string) { j.path.resolve(base) }
 
-func (m *sessionManagement) resolvePaths(base string) { m.prefix = joinBase(base, m.declaredPrefix) }
+func (j *jwksEndpoint) declaredPaths() []declaredPath { return declarations(j.path) }
 
-// resolvePaths places the stream. It reads the default itself rather than
-// filling cfg.Path, because settle fills the defaults later and the base path's
-// repeat check must see an unset path as unset.
-func (e *sessionSignals) resolvePaths(base string) {
-	p := e.cfg.Path
-	if p == "" {
-		p = DefaultSessionSignalsPath
-	}
+func (r *sessionRenewal) resolvePaths(base string) { r.path.resolve(base) }
 
-	e.path = joinBase(base, p)
-}
+func (r *sessionRenewal) declaredPaths() []declaredPath { return declarations(r.path) }
+
+func (g *passwordChangeGate) resolvePaths(base string) { g.path.resolve(base) }
+
+func (g *passwordChangeGate) declaredPaths() []declaredPath { return declarations(g.path) }
+
+func (m *sessionManagement) resolvePaths(base string) { m.prefix.resolve(base) }
+
+func (m *sessionManagement) declaredPaths() []declaredPath { return declarations(m.prefix) }
+
+func (e *sessionSignals) resolvePaths(base string) { e.path.resolve(base) }
+
+func (e *sessionSignals) declaredPaths() []declaredPath { return declarations(e.path) }

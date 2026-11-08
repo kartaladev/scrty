@@ -67,8 +67,6 @@ type SignInEndResponder func(ex *Exchange) error
 // sessionManagement answers the session management endpoints and passes
 // every other request through.
 type sessionManagement struct {
-	pathDeclarations
-
 	sessions *session.Sessions
 	now      func() time.Time
 
@@ -76,14 +74,12 @@ type sessionManagement struct {
 	// chain without one, which offers no choice to revoke application access.
 	grants userGrantRevoker
 
-	// declaredPrefix is where the options placed the endpoints, without the base
-	// path and without a trailing slash; prefix is where they answer, settled by
-	// resolvePaths.
-	declaredPrefix string
-	prefix         string
-	window         time.Duration
-	list           SignInListResponder
-	respEnd        SignInEndResponder
+	// prefix is where the options placed the endpoints, without a trailing
+	// slash, and where they answer under the base path once resolved.
+	prefix  endpointPath
+	window  time.Duration
+	list    SignInListResponder
+	respEnd SignInEndResponder
 }
 
 // WithSessionManagementPrefix replaces the path prefix the endpoints answer
@@ -101,8 +97,7 @@ func WithSessionManagementPrefix(prefix string) SessionManagementOption {
 			return err
 		}
 
-		m.declaredPrefix = strings.TrimSuffix(prefix, "/")
-		m.declare("WithSessionManagementPrefix", prefix)
+		m.prefix.giveAs("WithSessionManagementPrefix", prefix, strings.TrimSuffix(prefix, "/"))
 
 		return nil
 	}
@@ -226,11 +221,11 @@ func EnableSessionManagement(opts ...SessionManagementOption) Option {
 
 	return func(c *config) error {
 		m := &sessionManagement{
-			now:            c.now,
-			declaredPrefix: DefaultSessionManagementPrefix,
-			window:         DefaultRecentAuthenticationWindow,
-			list:           writeSignInList,
-			respEnd:        writeSignInsEnded,
+			now:     c.now,
+			prefix:  defaultPath(DefaultSessionManagementPrefix),
+			window:  DefaultRecentAuthenticationWindow,
+			list:    writeSignInList,
+			respEnd: writeSignInsEnded,
 		}
 
 		for _, opt := range opts {
@@ -293,16 +288,16 @@ func (m *sessionManagement) route(r Request) (sessionRoute, string) {
 
 	switch r.Method() {
 	case http.MethodGet:
-		if path == m.prefix {
+		if path == m.prefix.at() {
 			return routeList, ""
 		}
 	case http.MethodDelete:
-		if path == m.prefix {
+		if path == m.prefix.at() {
 			return routeEndOthers, ""
 		}
 		// One non-empty segment only: a trailing slash, an empty handle and a
 		// deeper path are not this endpoint's and pass through.
-		if handle, ok := strings.CutPrefix(path, m.prefix+"/"); ok && handle != "" && !strings.Contains(handle, "/") {
+		if handle, ok := oneSegmentBelow(path, m.prefix.at()); ok {
 			return routeEndOne, handle
 		}
 	}
@@ -312,7 +307,7 @@ func (m *sessionManagement) route(r Request) (sessionRoute, string) {
 
 // under reports whether path is the prefix or below it.
 func (m *sessionManagement) under(path string) bool {
-	return path == m.prefix || strings.HasPrefix(path, m.prefix+"/")
+	return underPrefix(path, m.prefix.at())
 }
 
 // sessionManagementNoStore marks every response under the endpoints' prefix
@@ -504,11 +499,11 @@ func (m *sessionManagement) endpoints() []Endpoint {
 	const feature, placedBy = "EnableSessionManagement", "WithSessionManagementPrefix"
 
 	eps := []Endpoint{
-		declare(feature, placedBy, OperationSessionsList, m.prefix,
+		declare(feature, placedBy, OperationSessionsList, m.prefix.at(),
 			MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodGet),
-		declare(feature, placedBy, OperationSessionsEndOthers, m.prefix,
+		declare(feature, placedBy, OperationSessionsEndOthers, m.prefix.at(),
 			MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodDelete),
-		declare(feature, placedBy, OperationSessionsEnd, withSegment(m.prefix, "handle"),
+		declare(feature, placedBy, OperationSessionsEnd, withSegment(m.prefix.at(), "handle"),
 			MatchSegment, OtherMethodsPassThrough, RequiresSession, http.MethodDelete),
 	}
 

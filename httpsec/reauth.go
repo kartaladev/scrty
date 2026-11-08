@@ -113,13 +113,9 @@ const msgReauthMethodsUnavailable = "httpsec: the re-authentication methods coul
 // password path, so a re-proof is held to the limits that already guard the
 // same secrets.
 type reauthInterceptor struct {
-	pathDeclarations
-
-	// declaredPrefix is where the options placed the endpoints, without the base
-	// path and without a trailing slash; prefix is where they answer, settled by
-	// resolvePaths.
-	declaredPrefix string
-	prefix         string
+	// prefix is where the options placed the endpoints, without a trailing
+	// slash, and where they answer under the base path once resolved.
+	prefix endpointPath
 
 	// tokens issues the rotated session's credential in the signed-token
 	// mode, and issue is the issuer the chain's bearer mode decides on,
@@ -170,7 +166,10 @@ type reauthInterceptor struct {
 
 // resolvePaths places the endpoints under base. Every sub-path is derived from
 // the prefix in paths, so the suffixes are joined once, to the settled prefix.
-func (i *reauthInterceptor) resolvePaths(base string) { i.prefix = joinBase(base, i.declaredPrefix) }
+func (i *reauthInterceptor) resolvePaths(base string) { i.prefix.resolve(base) }
+
+// declaredPaths reports the prefix the consumer set.
+func (i *reauthInterceptor) declaredPaths() []declaredPath { return declarations(i.prefix) }
 
 // reauthPaths are the endpoints' paths under one prefix.
 type reauthPaths struct {
@@ -180,10 +179,10 @@ type reauthPaths struct {
 // paths are the endpoints' paths under the configured prefix.
 func (i *reauthInterceptor) paths() reauthPaths {
 	return reauthPaths{
-		methods:  i.prefix + reauthMethodsSuffix,
-		begin:    i.prefix + reauthBeginSuffix,
-		verify:   i.prefix + reauthVerifySuffix,
-		password: i.prefix + reauthPasswordSuffix,
+		methods:  i.prefix.at() + reauthMethodsSuffix,
+		begin:    i.prefix.at() + reauthBeginSuffix,
+		verify:   i.prefix.at() + reauthVerifySuffix,
+		password: i.prefix.at() + reauthPasswordSuffix,
 	}
 }
 

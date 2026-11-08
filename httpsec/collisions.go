@@ -147,12 +147,32 @@ func claimsMeet(a, b pathClaim) bool {
 	}
 }
 
-// isOneSegmentBelow reports whether path is prefix followed by exactly one
-// non-empty segment.
-func isOneSegmentBelow(path, prefix string) bool {
+// oneSegmentBelow returns the segment path carries after prefix, given without
+// a trailing slash, and reports whether path is prefix followed by exactly one
+// non-empty segment. The bare prefix, a trailing slash, an empty segment, a
+// deeper path and a path that only starts with prefix's characters are refused.
+// It compares as written, case included; a caller that matches without regard
+// to case lower-cases both operands first.
+//
+// It is the one definition of a one-segment match: the collision check, the
+// stale-route check and every endpoint that answers one segment under a prefix
+// use it, so what the inventory lists, what the checks judge and what answers
+// cannot drift apart.
+func oneSegmentBelow(path, prefix string) (segment string, ok bool) {
 	rest, ok := strings.CutPrefix(path, prefix+"/")
+	if !ok || rest == "" || strings.Contains(rest, "/") {
+		return "", false
+	}
 
-	return ok && rest != "" && !strings.Contains(rest, "/")
+	return rest, true
+}
+
+// isOneSegmentBelow reports whether path is prefix followed by exactly one
+// non-empty segment (oneSegmentBelow).
+func isOneSegmentBelow(path, prefix string) bool {
+	_, ok := oneSegmentBelow(path, prefix)
+
+	return ok
 }
 
 // collisionError names both settings, both operations with their paths, and

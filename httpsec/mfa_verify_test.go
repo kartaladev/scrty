@@ -2086,8 +2086,16 @@ func TestMFAMethodListing(t *testing.T) {
 		state     session.MFAState
 		noSession bool
 
+		// verifies wires TOTP to accept the code these tests post, once, and
+		// the throttle to allow it, for the case that posts a verification.
+		// Every other case wires neither to be touched.
+		verifies bool
+
 		request func(r *http.Request) *http.Request
 		assert  func(t *testing.T, out served)
+
+		// after, when set, reads what the case left in the harness.
+		after func(t *testing.T, h *mfaHarness, s *session.Session)
 	}
 
 	listing := func(settings ...httpsec.ListingSetting) func(*mfaHarness, *challengeStub) {
@@ -2328,6 +2336,35 @@ func TestMFAMethodListing(t *testing.T) {
 			request: to(http.MethodHead, httpsec.DefaultMFAMethodListingPath),
 			assert:  passed,
 		},
+		{
+			// The listing is placed beside the verify endpoints, on the very
+			// path TOTP's verification answers. The method splits them: GET
+			// is the listing and never the verification, POST is the
+			// verification and never the listing.
+			name:     "the listing at /mfa/verify/totp answers GET, and verification answers POST",
+			wire:     listing(httpsec.ListingPath(httpsec.DefaultMFAVerifyPrefix + "/totp")),
+			state:    session.MFAPending,
+			verifies: true,
+			request:  get(httpsec.DefaultMFAVerifyPrefix + "/totp"),
+			assert:   lists(defaultListing),
+			after: func(t *testing.T, h *mfaHarness, s *session.Session) {
+				t.Helper()
+
+				require.NotNil(t, h.resolved)
+				assert.Equal(t, s.ID, h.resolved.ID, "a GET never reaches verification, so the handle is not rotated")
+				assert.Equal(t, session.MFAPending, h.stored(t, s.ID).MFA, "the challenge stays pending")
+
+				posted := serve(t, h.chain(t, s), postCode(t.Context(), httpsec.DefaultMFAVerifyPrefix+"/totp"))
+
+				require.NoError(t, posted.err)
+				assert.False(t, posted.handlerRan, "verification answers the POST itself")
+				assert.Equal(t, http.StatusOK, posted.rec.Code)
+				assert.NotContains(t, posted.rec.Body.String(), `"methods"`, "the POST is not the listing")
+				require.NotNil(t, h.resolved, "the POST resolved the challenge")
+				assert.NotEqual(t, s.ID, h.resolved.ID, "the handle is rotated")
+				assert.Equal(t, session.MFASatisfied, h.stored(t, h.resolved.ID).MFA)
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -2335,7 +2372,11 @@ func TestMFAMethodListing(t *testing.T) {
 			t.Parallel()
 
 			h := newMFAHarness(t)
-			h.channel(factor.AuthenticatorApp).neverVerifies().neverChecked().recordsNoFailure()
+			if tc.verifies {
+				h.channel(factor.AuthenticatorApp).allows().accepts().recordsNoFailure()
+			} else {
+				h.channel(factor.AuthenticatorApp).neverVerifies().neverChecked().recordsNoFailure()
+			}
 
 			email := newChallengeStub()
 			email.name, email.channel, email.enrolled = "email-code", factor.Email, false
@@ -2352,6 +2393,11 @@ func TestMFAMethodListing(t *testing.T) {
 			out := serve(t, h.chain(t, s), tc.request(base))
 
 			tc.assert(t, out)
+
+			if tc.after != nil {
+				tc.after(t, h, s)
+			}
+
 			assert.Zero(t, email.verifyCalls.Load(), "nothing is verified")
 		})
 	}

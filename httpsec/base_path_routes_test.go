@@ -2,14 +2,17 @@ package httpsec_test
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/recovery"
+	"github.com/kartaladev/scrty/session"
 )
 
 // TestBasePathRouteCheck pins what New does with the routes the consumer gives
@@ -153,6 +156,28 @@ func TestBasePathRouteCheck(t *testing.T) {
 			assert: built,
 		},
 		{
+			name:   "the waiver without a base path is refused",
+			build:  reauthWith("", httpsec.WithoutBasePathRouteCheck()),
+			assert: refused("WithoutBasePathRouteCheck", "WithBasePath"),
+		},
+		{
+			name: "the waiver given before the base path builds",
+			build: func(t *testing.T) (*httpsec.Chain, error) {
+				h := newLoginGuardHarness(t)
+
+				return httpsec.New(
+					httpsec.WithoutBasePathRouteCheck(),
+					httpsec.EnableFormLogin(httpsec.FormLoginDeps{
+						Authenticator: h.authn, Sessions: h.sessions, Tokens: h.tokens, Attempts: h.attempts,
+					}),
+					httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(h.tokens)),
+					httpsec.EnableCSRFProtection(httpsec.WithCSRFExemption(http.MethodPost, "/sign-in/password")),
+					httpsec.WithBasePath("/auth"),
+				)
+			},
+			assert: built,
+		},
+		{
 			name: "wildcard exemption over the back-channel logout's provider segment",
 			build: func(t *testing.T) (*httpsec.Chain, error) {
 				// The redirect URL of the shared fixture is not under the base path;
@@ -174,6 +199,80 @@ func TestBasePathRouteCheck(t *testing.T) {
 
 			c, err := tc.build(t)
 			tc.assert(t, c, err)
+		})
+	}
+}
+
+// TestBasePathRouteCheck_RouteWrittenWithBaseIsEnforced pins that a cool-down
+// route written with the base path, which the build accepts, is the route the
+// guard then refuses during the cool-down, and that another endpoint of the
+// chain is not caught by it.
+func TestBasePathRouteCheck_RouteWrittenWithBaseIsEnforced(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		method string
+		path   string
+		assert func(t *testing.T, out served)
+	}
+
+	cases := []testCase{
+		{
+			name:   "the route written with the base is refused during the cool-down",
+			method: http.MethodPost,
+			path:   "/auth/reauth/password",
+			assert: func(t *testing.T, out served) {
+				require.ErrorIs(t, out.err, recovery.ErrCooldown)
+				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
+				assert.False(t, out.handlerRan)
+			},
+		},
+		{
+			name:   "another endpoint under the base is not refused by the cool-down",
+			method: http.MethodPost,
+			path:   "/auth/sign-in/password",
+			assert: func(t *testing.T, out served) {
+				assert.NotErrorIs(t, out.err, recovery.ErrCooldown)
+			},
+		},
+		{
+			name:   "an application path beside the marked one reaches the handler",
+			method: http.MethodPost,
+			path:   "/auth/reauth/other",
+			assert: func(t *testing.T, out served) {
+				require.NoError(t, out.err)
+				assert.True(t, out.handlerRan)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newRecoveryHarness(t)
+
+			chain, err := httpsec.New(
+				httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: h.tokens, Sessions: h.sessions, Users: h.users}),
+				httpsec.EnableFormLogin(httpsec.FormLoginDeps{
+					Authenticator: h.authn, Sessions: h.sessions, Tokens: h.tokens, Attempts: h.attempts,
+				}),
+				httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(h.tokens)),
+				httpsec.WithBasePath("/auth"),
+				httpsec.EnableRecoveryCooldown(completedRecoveryAgo(t, 3*time.Hour), recoveryCooldown,
+					httpsec.Route{Method: http.MethodPost, Path: "/auth/reauth/password"}),
+			)
+			require.NoError(t, err)
+
+			s, err := h.sessions.Create(t.Context(), e2eUser, session.WithFirstFactor(factor.Password))
+			require.NoError(t, err)
+
+			req := httptest.NewRequestWithContext(t.Context(), tc.method, tc.path, nil)
+			req.RemoteAddr = e2eSource + ":51000"
+			req.Header.Set("Authorization", "Bearer "+mfaTokenFor(s.ID))
+
+			tc.assert(t, serve(t, chain, req))
 		})
 	}
 }

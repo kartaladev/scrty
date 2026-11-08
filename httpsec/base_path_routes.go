@@ -29,8 +29,13 @@ const optionWithoutBasePathRouteCheck = "WithoutBasePathRouteCheck"
 // stays in force on nothing, until a request shows it. A cross-site exemption
 // pattern that also matches an endpoint's current path is applied there, so it
 // can mask a stale route it covers; that fails closed, since the endpoint is
-// then exempt only where the pattern says so. Without a base path nothing is
-// checked, and the option changes nothing.
+// then exempt only where the pattern says so.
+//
+// Without WithBasePath nothing is checked, so there is nothing to waive, and
+// New refuses the option with ErrConfig, naming it: a configuration that waives
+// a check it does not have is a wiring mistake. A consumer whose base path comes
+// from deployment configuration gives the waiver only where the base path is
+// set. The order of the two options does not matter.
 //
 // Routes given as functions, such as the matcher of WithHeaderProfile, are not
 // checked either way: the library cannot read them. Chain.Endpoints lists the
@@ -51,29 +56,13 @@ type movedEndpoint struct {
 	declared string // "/reauth/password"; for a segment endpoint, "/sso/login"; an exact path keeps its trailing slash
 }
 
-// matchedPrefix is an inventory path as the endpoint matches it: cut before the
-// first segment it reads, and, for a segment or subtree endpoint, without the
-// trailing slash that cut leaves. An exact path keeps its trailing slash, since
-// the exact match compares it.
-func matchedPrefix(path string, match PathMatch) string {
-	if i := strings.IndexByte(path, '{'); i >= 0 {
-		path = path[:i]
-	}
-
-	if match != MatchExact {
-		path = strings.TrimSuffix(path, "/")
-	}
-
-	return path
-}
-
 // currentEndpoints are every inventory entry at the path it answers at now,
 // base path included, in the form movedEndpoint compares in.
 func currentEndpoints(endpoints []Endpoint) []movedEndpoint {
 	current := make([]movedEndpoint, 0, len(endpoints))
 
 	for _, e := range endpoints {
-		current = append(current, movedEndpoint{endpoint: e, declared: matchedPrefix(e.Path, e.Match)})
+		current = append(current, movedEndpoint{endpoint: e, declared: claimOf(e).base})
 	}
 
 	return current
@@ -96,7 +85,12 @@ func movedEndpoints(base string, endpoints []Endpoint) []movedEndpoint {
 			continue
 		}
 
-		declared := matchedPrefix("/"+rest, e.Match)
+		// The claim the entry would make at its pre-base path: cut before the
+		// first segment it reads, without the trailing slash a prefix leaves.
+		pre := e
+		pre.Path = "/" + rest
+
+		declared := claimOf(pre).base
 		if declared == "" {
 			continue
 		}
@@ -108,8 +102,10 @@ func movedEndpoints(base string, endpoints []Endpoint) []movedEndpoint {
 }
 
 // checkStaleRoutes refuses the consumer routes left at an endpoint's pre-base
-// path. It does nothing without a base path, or when the consumer waived the
-// check (WithoutBasePathRouteCheck).
+// path. It checks nothing without a base path, or when the consumer waived the
+// check (WithoutBasePathRouteCheck); the waiver without a base path is itself
+// refused, as a wiring mistake. It runs once every option has applied, so the
+// order of the options does not matter.
 //
 // It reads the resolved inventory and takes the base off each path, rather
 // than reading each built-in's declared path: the inventory lists every
@@ -117,6 +113,12 @@ func movedEndpoints(base string, endpoints []Endpoint) []movedEndpoint {
 // here, and a route that names a path the base path left alone never
 // qualifies.
 func checkStaleRoutes(c *config, endpoints []Endpoint) error {
+	if c.routeCheckWaived && c.basePath == "" {
+		return newConfigError("%s was given without WithBasePath: with no base path no endpoint has moved, "+
+			"so there is no route check to waive; give the waiver only where the base path is set",
+			optionWithoutBasePathRouteCheck)
+	}
+
 	if c.basePath == "" || c.routeCheckWaived {
 		return nil
 	}
@@ -154,11 +156,11 @@ func (m movedEndpoint) coversNormalised(path string) bool {
 
 	switch m.endpoint.Match {
 	case MatchSubtree:
-		return path == declared || strings.HasPrefix(path, declared+"/")
+		return underPrefix(path, declared)
 	case MatchSegment:
-		rest, ok := strings.CutPrefix(path, declared+"/")
+		_, ok := oneSegmentBelow(path, declared)
 
-		return ok && rest != "" && !strings.Contains(rest, "/")
+		return ok
 	default:
 		return path == declared
 	}

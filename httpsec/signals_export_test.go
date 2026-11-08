@@ -17,7 +17,10 @@ func ResolvedSessionSignals(c *Chain) (SessionSignals, bool) {
 		return SessionSignals{}, false
 	}
 
-	return e.cfg, true
+	cfg := e.cfg
+	cfg.Path = e.path.declared
+
+	return cfg, true
 }
 
 // SignalHubOf is the observer the chain's stream added to its session manager.

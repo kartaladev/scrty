@@ -43,6 +43,17 @@ func reachedEndpoint(t *testing.T, path string, out served) {
 		require.NoError(t, out.err)
 		assert.Equal(t, http.StatusOK, out.rec.Code)
 
+		// A gate letting the request through does not show registration
+		// began: the response must carry the challenge the ceremony signs.
+		var doc struct {
+			PublicKey struct {
+				Challenge string `json:"challenge"`
+			} `json:"publicKey"`
+		}
+
+		require.NoError(t, json.Unmarshal(out.rec.Body.Bytes(), &doc), "begin answers the creation options")
+		assert.NotEmpty(t, doc.PublicKey.Challenge, "begin issued a registration challenge")
+
 		return
 	}
 
