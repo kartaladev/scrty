@@ -83,6 +83,9 @@ func normalizeRoute(method, path string) Route {
 // never the store's own, rather than let a sensitive action through
 // unchecked.
 //
+// A path with a "." or ".." segment is refused at the chain's entry, before
+// this guard runs.
+//
 // New refuses, with an error wrapping ErrConfig, a cooldown of zero or less, no
 // routes, a route with an empty method or path, and a nil store (a typed nil
 // included).

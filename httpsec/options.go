@@ -123,6 +123,11 @@ type config struct {
 	engine *policy.Engine
 	logger *slog.Logger
 
+	// The single-value options record that they were given, so a second call,
+	// even with the same value, is refused rather than silently replacing the
+	// first.
+	loggerGiven, clockGiven, engineGiven, limiterFactoryGiven, errorHandlerGiven bool
+
 	// limiterFactory is the factory WithRateLimiterFactory gave, and nil when
 	// the consumer gave none (see rateLimiterFactory).
 	limiterFactory ratelimit.LimiterFactory
@@ -719,6 +724,9 @@ func (c *config) build() (*Chain, error) {
 	}
 
 	c.register(stage, OrderAuthorizer)
+	// The stage learns which gates this chain registers, and the second-factor
+	// methods, once the chain exists (decision 3's backstop needs both).
+	c.wire(stage.wire)
 
 	chain := &Chain{
 		registrations:     c.ordered(),
@@ -769,6 +777,10 @@ func (c *config) build() (*Chain, error) {
 		step()
 	}
 
+	// The registrations are settled, so the fold every request runs is built
+	// here, once, rather than on the first request.
+	chain.foldOnce.Do(chain.buildFold)
+
 	return chain, nil
 }
 
@@ -779,7 +791,7 @@ func (c *config) build() (*Chain, error) {
 // second-factor and session policies judge each phase.
 //
 // A nil engine is refused: it would read as "no policies" while the consumer
-// believed their policies were running.
+// believed their policies were running. Given twice, New refuses the chain.
 //
 // Register every policy on engine before the chain is built. Assembly checks that
 // each challenge a registered policy can raise has something on the chain to
@@ -789,6 +801,12 @@ func (c *config) build() (*Chain, error) {
 // request that raises it.
 func WithPolicyEngine(engine *policy.Engine) Option {
 	return func(c *config) error {
+		if c.engineGiven {
+			return newConfigError("WithPolicyEngine was given twice; one chain has one policy engine")
+		}
+
+		c.engineGiven = true
+
 		if err := requireDep("WithPolicyEngine", "policy engine", engine); err != nil {
 			return err
 		}
@@ -879,8 +897,16 @@ func WithChallengeEnforcer(kind policy.ChallengeKind) Option {
 // error's text" explains, with the deliberate exceptions it names. A consumer
 // who wants a dependency's own text logs it inside their own implementation of
 // the port that failed.
+//
+// Given twice, New refuses the chain.
 func WithLogger(logger *slog.Logger) Option {
 	return func(c *config) error {
+		if c.loggerGiven {
+			return newConfigError("WithLogger was given twice; one chain has one logger")
+		}
+
+		c.loggerGiven = true
+
 		if err := requireDep("WithLogger", "logger", logger); err != nil {
 			return err
 		}
@@ -919,9 +945,16 @@ func WithLogger(logger *slog.Logger) Option {
 // and users are not locked out of sign-in.
 //
 // A nil factory, including an interface holding a nil pointer, is refused. An
-// error from factory fails New, naming the option and the namespace.
+// error from factory fails New, naming the option and the namespace. Given
+// twice, New refuses the chain.
 func WithRateLimiterFactory(factory ratelimit.LimiterFactory) Option {
 	return func(c *config) error {
+		if c.limiterFactoryGiven {
+			return newConfigError("WithRateLimiterFactory was given twice; one chain has one rate-limiter factory")
+		}
+
+		c.limiterFactoryGiven = true
+
 		if err := requireDep("WithRateLimiterFactory", "rate-limiter factory", factory); err != nil {
 			return err
 		}
@@ -1204,8 +1237,16 @@ func WithLockDisclosure() Option {
 // renders it, and on fiber it goes to fiber's error handler. Setting a handler
 // here and mounting the chain on gin or fiber would leave the consumer with two
 // places that answer a refusal and no way to tell which one did.
+//
+// Given twice, New refuses the chain.
 func WithErrorHandler(fn func(w http.ResponseWriter, r *http.Request, err error)) Option {
 	return func(c *config) error {
+		if c.errorHandlerGiven {
+			return newConfigError("WithErrorHandler was given twice; one chain has one error handler")
+		}
+
+		c.errorHandlerGiven = true
+
 		if fn == nil {
 			return newConfigError("WithErrorHandler was given no handler, so a refusal " +
 				"would be answered by nothing")
@@ -1235,9 +1276,16 @@ func WithErrorHandler(fn func(w http.ResponseWriter, r *http.Request, err error)
 // The option governs the chain as a whole, so it may be given with or without
 // any interceptor and in any position among the options: it applies to every
 // interceptor, whether it is enabled before or after it. A nil clock is a
-// configuration error, never a fallback to the system clock.
+// configuration error, never a fallback to the system clock. Given twice, New
+// refuses the chain.
 func WithClock(clock clock.Clock) Option {
 	return func(cfg *config) error {
+		if cfg.clockGiven {
+			return newConfigError("WithClock was given twice; one chain has one time source")
+		}
+
+		cfg.clockGiven = true
+
 		if nilcheck.IsNil(clock) {
 			return newConfigError("WithClock was given no clock; omit the option to use the system clock")
 		}

@@ -19,8 +19,8 @@ Add the core module, and any nested module you use. Every published module is re
 use one version for all of them:
 
 ```sh
-go get github.com/kartaladev/scrty@v0.1.0
-go get github.com/kartaladev/scrty/store/pgxstore@v0.1.0
+go get github.com/kartaladev/scrty@v0.1.1
+go get github.com/kartaladev/scrty/store/pgxstore@v0.1.1
 ```
 
 - [CHANGELOG.md](CHANGELOG.md) lists what each release changes, and states every breaking change.

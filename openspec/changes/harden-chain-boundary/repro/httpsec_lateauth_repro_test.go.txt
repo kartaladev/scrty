@@ -1,0 +1,197 @@
+package httpsec_test
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/authorize"
+	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/session"
+)
+
+// publishingAuthenticator is a consumer's own session authenticator: it loads
+// the session named by id from m, publishes it with its user as the caller
+// through PublishSession and, when evaluate is set, runs the per-request
+// phase, exactly as the package documentation says a first factor of one's
+// own does. Only the slot it is registered at varies between cases.
+func publishingAuthenticator(m *session.Sessions, id string, evaluate bool) httpsec.Interceptor {
+	return httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+		s, err := m.Load(ex.Context(), id)
+		if err != nil {
+			return err
+		}
+
+		p := &identity.Principal{ID: s.UserID, Username: "ada", Name: "Ada Lovelace"}
+		if err := ex.PublishSession(&authenticate.Authentication{Principal: p, Time: time.Now()}, s); err != nil {
+			return err
+		}
+
+		if evaluate {
+			if err := ex.EvaluatePerRequest(s, p); err != nil {
+				return err
+			}
+		}
+
+		return next(ex)
+	})
+}
+
+// authenticatedOnly is the authorization stage requiring an authenticated
+// caller on every request, which is what a deployment relying on the gates
+// would configure.
+func authenticatedOnly(t *testing.T) httpsec.Option {
+	t.Helper()
+
+	return httpsec.EnableAuthorization(NewMockAuthorizer(gomock.NewController(t)), authorize.Rule[httpsec.Request]{
+		Match:   func(httpsec.Request) bool { return true },
+		Require: authorize.Authenticated(),
+	})
+}
+
+// TestRepro_ConsumerAuthenticatorAfterGatesIsJudgedByThem pins that a session
+// a consumer interceptor publishes is refused by the gate that confines it
+// whatever slot the interceptor was registered at. The "before the gates"
+// rows are controls proving the fixture: the same session, published at the
+// bearer slot, is refused.
+func TestRepro_ConsumerAuthenticatorAfterGatesIsJudgedByThem(t *testing.T) {
+	t.Parallel()
+
+	late := httpsec.After(httpsec.OrderLogout)
+	early := httpsec.OrderBearerToken
+
+	// mfaPending is a chain with the second-factor gate on and a session
+	// owing a second factor, published at slot at.
+	mfaPending := func(at httpsec.Order) func(t *testing.T) []httpsec.Option {
+		return func(t *testing.T) []httpsec.Option {
+			t.Helper()
+
+			f := newResolveFixture(t)
+			s, err := f.sessions.Load(t.Context(), f.session.ID)
+			require.NoError(t, err)
+			s.MFA = session.MFAPending
+			require.NoError(t, f.sessions.Save(t.Context(), s))
+
+			return []httpsec.Option{
+				httpsec.WithSessions(f.sessions),
+				enableMFAFor(t),
+				httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: f.sessions}),
+				authenticatedOnly(t),
+				httpsec.RegisterInterceptor(publishingAuthenticator(f.sessions, s.ID, false), at),
+			}
+		}
+	}
+
+	// passwordPending is a chain with the password-change gate on and a
+	// session owing a password change, published at slot at.
+	passwordPending := func(at httpsec.Order) func(t *testing.T) []httpsec.Option {
+		return func(t *testing.T) []httpsec.Option {
+			t.Helper()
+
+			f := newResolveFixture(t)
+			s, err := f.sessions.Load(t.Context(), f.session.ID)
+			require.NoError(t, err)
+			s.PasswordChangePending = true
+			require.NoError(t, f.sessions.Save(t.Context(), s))
+
+			return []httpsec.Option{
+				httpsec.WithSessions(f.sessions),
+				httpsec.EnablePasswordChangeGate(f.sessions),
+				authenticatedOnly(t),
+				httpsec.RegisterInterceptor(publishingAuthenticator(f.sessions, s.ID, false), at),
+			}
+		}
+	}
+
+	// enrolmentOnly is the enrolment tests' chain (second factor, enrolment
+	// gate, logout) with an enrolment-only session published at slot at.
+	enrolmentOnly := func(at httpsec.Order) func(t *testing.T) []httpsec.Option {
+		return func(t *testing.T) []httpsec.Option {
+			t.Helper()
+
+			h := newEnrolHarness(t)
+			s := h.enrolmentOnly(t, factor.Password)
+			h.extra = []httpsec.Option{
+				authenticatedOnly(t),
+				httpsec.RegisterInterceptor(publishingAuthenticator(h.sessions, s.ID, false), at),
+			}
+
+			return h.options(t, nil)
+		}
+	}
+
+	// perRequestMFA is a chain whose per-request policy challenges every
+	// full session for a second factor, the consumer running the phase at
+	// slot at after publishing.
+	perRequestMFA := func(at httpsec.Order) func(t *testing.T) []httpsec.Option {
+		return func(t *testing.T) []httpsec.Option {
+			t.Helper()
+
+			f := newResolveFixture(t)
+
+			return []httpsec.Option{
+				httpsec.WithSessions(f.sessions),
+				httpsec.WithPolicyEngine(challengingIn(t, policy.PerRequest, policy.ChallengeMFA)),
+				enableMFAFor(t),
+				httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: f.sessions}),
+				authenticatedOnly(t),
+				httpsec.RegisterInterceptor(publishingAuthenticator(f.sessions, f.session.ID, true), at),
+			}
+		}
+	}
+
+	refused := func(t *testing.T, status int, handlerRan bool) {
+		t.Helper()
+
+		assert.False(t, handlerRan, "the handler was reached with a confined session (status %d)", status)
+		assert.NotEqual(t, http.StatusOK, status)
+	}
+
+	type testCase struct {
+		name   string
+		opts   func(t *testing.T) []httpsec.Option
+		assert func(t *testing.T, status int, handlerRan bool)
+	}
+
+	cases := []testCase{
+		{name: "MFA pending, published at the bearer slot (control)", opts: mfaPending(early), assert: refused},
+		{name: "MFA pending, published after logout", opts: mfaPending(late), assert: refused},
+		{name: "MFA pending, published between the second-factor and password-change gates", opts: mfaPending(httpsec.After(httpsec.OrderMFAChallenge)), assert: refused},
+		{name: "enrolment-only, published at Before(OrderMFAChallenge) after the enrolment gate registered", opts: enrolmentOnly(httpsec.OrderMFAEnrolment), assert: refused},
+		{name: "password change pending, published at the bearer slot (control)", opts: passwordPending(early), assert: refused},
+		{name: "password change pending, published after logout", opts: passwordPending(late), assert: refused},
+		{name: "enrolment-only, published at the bearer slot (control)", opts: enrolmentOnly(early), assert: refused},
+		{name: "enrolment-only, published after logout", opts: enrolmentOnly(late), assert: refused},
+		{name: "per-request MFA challenge, evaluated at the bearer slot (control)", opts: perRequestMFA(early), assert: refused},
+		{name: "per-request MFA challenge, evaluated after logout", opts: perRequestMFA(late), assert: refused},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			chain, err := httpsec.New(tc.opts(t)...)
+			require.NoError(t, err)
+
+			handlerRan := false
+			h := chain.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				handlerRan = true
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders", nil))
+
+			tc.assert(t, rec.Code, handlerRan)
+		})
+	}
+}

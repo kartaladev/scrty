@@ -55,6 +55,16 @@ import (
 // Handlers registered after this one do not run for a refused or self-answered
 // request, so logging and metrics belong before it.
 //
+// Routes registered before this middleware is added are not guarded by the
+// chain. Mounting one chain twice on a request, for example on the engine and again
+// on a group, runs it once: the second mount lets the request through. Two
+// different chains both run, each counting its own attempts.
+//
+// The second mount lets the request through as the first mount judged it, so a
+// middleware between the two mounts that changes what a rule reads (the host, a
+// header, the query) is not judged again, nor is a request HandleContext
+// re-dispatches on the same path. Put such middleware before the first mount.
+//
 // A nil chain is a wiring mistake and panics here, at wiring time, rather than
 // on the first request a server takes.
 func Middleware(chain *httpsec.Chain) gin.HandlerFunc {
@@ -75,9 +85,10 @@ func Middleware(chain *httpsec.Chain) gin.HandlerFunc {
 		// chain with no error.
 		reached := false
 
-		// The chain is folded around this request rather than once per mount,
-		// because the innermost step is the only place that still holds gin's
-		// own context, and smuggling it through the exchange would let every
+		// The fold is built once per chain; only this request's terminal, the
+		// step that runs the remaining gin handlers, is recorded per request,
+		// because that step is the only place that still holds gin's own
+		// context, and smuggling it through the exchange would let every
 		// interceptor reach past the abstraction the chain exists to present.
 		//nolint:contextcheck // ex.Context() derives from gc.Request.Context(), which is what is written back here
 		run := chain.Assemble(func(ex *httpsec.Exchange) error {

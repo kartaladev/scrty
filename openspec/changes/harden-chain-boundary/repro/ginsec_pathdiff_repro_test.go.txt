@@ -1,0 +1,73 @@
+package ginsec_test
+
+import (
+	"bufio"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// TestGinRoutingOfNonCanonicalTargets records which raw targets reach the
+// /admin/users handler on a default gin engine, and on net/http's ServeMux.
+func TestGinRoutingOfNonCanonicalTargets(t *testing.T) {
+	t.Parallel()
+
+	targets := []string{"/public/../admin/users", "/public/%2e%2e/admin/users", "/ADMIN/users",
+		"/admin/users/", "/admin//users", "/admin/./users", "/public%2F..%2Fadmin/users"}
+
+	type testCase struct {
+		name    string
+		handler func(reached *atomic.Bool) http.Handler
+		assert  func(t *testing.T, target string, status int, reached bool)
+	}
+
+	notReached := func(t *testing.T, target string, status int, reached bool) {
+		t.Helper()
+		assert.False(t, reached, "%s reached the handler (status %d)", target, status)
+		t.Logf("%-32s -> %d", target, status)
+	}
+
+	cases := []testCase{
+		{name: "gin default", handler: func(reached *atomic.Bool) http.Handler {
+			gin.SetMode(gin.TestMode)
+			e := gin.New()
+			e.GET("/admin/users", func(c *gin.Context) { reached.Store(true); c.String(200, "admin") })
+			return e
+		}, assert: notReached},
+		{name: "net/http ServeMux", handler: func(reached *atomic.Bool) http.Handler {
+			m := http.NewServeMux()
+			m.HandleFunc("GET /admin/users", func(w http.ResponseWriter, _ *http.Request) { reached.Store(true) })
+			return m
+		}, assert: notReached},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, target := range targets {
+				var reached atomic.Bool
+				srv := httptest.NewServer(tc.handler(&reached))
+				conn, err := net.DialTimeout("tcp", srv.Listener.Addr().String(), 2*time.Second)
+				require.NoError(t, err)
+				_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+				_, err = fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", target)
+				require.NoError(t, err)
+				res, err := http.ReadResponse(bufio.NewReader(conn), nil)
+				require.NoError(t, err)
+				_, _ = io.Copy(io.Discard, res.Body)
+				_ = res.Body.Close()
+				_ = conn.Close()
+				srv.Close()
+				tc.assert(t, target, res.StatusCode, reached.Load())
+			}
+		})
+	}
+}

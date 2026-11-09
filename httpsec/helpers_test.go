@@ -1882,6 +1882,10 @@ var _ notify.NonBlocking = queuedSender{}
 type enrolHarness struct {
 	t *testing.T
 
+	// ownEngine means a case supplies the chain's policy engine itself, so the
+	// harness adds none: a chain takes one.
+	ownEngine bool
+
 	sessions *session.Sessions
 	store    *mfa.MemoryEnrolmentStore
 	totp     *mfa.TOTP
@@ -2011,13 +2015,20 @@ func (h *enrolHarness) options(t *testing.T, s *session.Session) []httpsec.Optio
 		enrolment = httpsec.EnableGateForTest(policy.ChallengeMFAEnrolment)
 	}
 
-	return append([]httpsec.Option{
-		httpsec.WithPolicyEngine(enrolmentEngineOver(t, append([]mfa.Method{h.method}, h.extraMethods...)...)),
+	opts := []httpsec.Option{
 		h.carries(s),
 		httpsec.EnableMFA(append([]mfa.Method{h.method}, h.extraMethods...), append([]httpsec.MFAOption{httpsec.WithMFATokens(h.tokens)}, h.mfaOpts...)...),
 		enrolment,
 		httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: h.sessions}, h.logoutOpts...),
-	}, h.extra...)
+	}
+	if !h.ownEngine {
+		// First, where the tests that drop an option by index expect it.
+		opts = append([]httpsec.Option{
+			httpsec.WithPolicyEngine(enrolmentEngineOver(t, append([]mfa.Method{h.method}, h.extraMethods...)...)),
+		}, opts...)
+	}
+
+	return append(opts, h.extra...)
 }
 
 // chain assembles the chain under test, with s carried as a first factor

@@ -283,6 +283,7 @@ func TestChain_Clock(t *testing.T) {
 			var c *httpsec.Chain
 
 			if afterEnableMFA {
+				h.systemClock = true // the case supplies the chain's clock itself; a chain takes one
 				h.chainOpts = []httpsec.Option{httpsec.WithClock(clk)}
 				c = h.bearerChain(t)
 			} else {

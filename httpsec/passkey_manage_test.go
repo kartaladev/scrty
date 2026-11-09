@@ -974,6 +974,7 @@ func TestPasskeyRaisedChallenge(t *testing.T) {
 			engine := engineOf(t, raisingDeclared{kind: consumerChallenge, phase: tc.phase})
 			if h.enrolOpts != nil {
 				engine = enrolmentEngineWith(t, raisingDeclared{kind: consumerChallenge, phase: tc.phase})
+				h.ownEngine = true
 			} else {
 				h.withoutEnrolment = true
 			}

@@ -4,7 +4,7 @@ go 1.27
 
 require (
 	github.com/jonboulle/clockwork v0.5.0
-	github.com/kartaladev/scrty v0.1.0
+	github.com/kartaladev/scrty v0.1.1
 	github.com/stretchr/testify v1.12.1
 	gorm.io/gorm v1.31.2
 )

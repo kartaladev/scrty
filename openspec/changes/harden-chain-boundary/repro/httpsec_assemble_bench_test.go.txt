@@ -1,0 +1,42 @@
+package httpsec_test
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/kartaladev/scrty/httpsec"
+)
+
+func benchChain(b *testing.B, n int) *httpsec.Chain {
+	opts := []httpsec.Option{}
+	for i := 0; i < n; i++ {
+		opts = append(opts, httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(ex *httpsec.Exchange, nx httpsec.Next) error { return nx(ex) }), httpsec.Order(100+i)))
+	}
+	c, err := httpsec.New(opts...)
+	if err != nil {
+		b.Fatal(err)
+	}
+	return c
+}
+
+func BenchmarkAssembleOnly8(b *testing.B) {
+	c := benchChain(b, 8)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = c.Assemble(func(*httpsec.Exchange) error { return nil })
+	}
+}
+
+func BenchmarkRequest(b *testing.B) {
+	for _, n := range []int{0, 8} {
+		c := benchChain(b, n)
+		h := c.Middleware()(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		b.Run(map[int]string{0: "0", 8: "8"}[n], func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(b.Context(), "GET", "/", nil))
+			}
+		})
+	}
+}

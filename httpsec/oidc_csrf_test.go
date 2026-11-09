@@ -80,6 +80,16 @@ func TestCSRF_OIDCProviderExemptions(t *testing.T) {
 		assert.False(t, s.passedOn)
 	}
 
+	// refusedAtEntry: the chain refused a dot segment as malformed, before CSRF
+	// protection or any exemption was consulted.
+	refusedAtEntry := func(t *testing.T, s csrfServed) {
+		t.Helper()
+
+		require.ErrorIs(t, s.err, httpsec.ErrMalformedRequest)
+		assert.Equal(t, http.StatusBadRequest, s.status)
+		assert.False(t, s.passedOn)
+	}
+
 	// throttled: the request passed CSRF protection and met the endpoint's throttle.
 	throttled := func(status int) func(*testing.T, csrfServed) {
 		return func(t *testing.T, s csrfServed) {
@@ -145,7 +155,7 @@ func TestCSRF_OIDCProviderExemptions(t *testing.T) {
 		{name: "an escaped spelling of the token path stays judged", method: post, target: issuer + "/oauth2/%74oken", assert: refused},
 		{name: "a trailing slash stays judged", method: post, target: issuer + "/oauth2/token/", assert: refused},
 		{name: "another case stays judged", method: post, target: issuer + "/oauth2/Token", assert: refused},
-		{name: "a dot segment stays judged", method: post, target: issuer + "/oauth2/./token", assert: refused},
+		{name: "a dot segment is refused at the entry", method: post, target: issuer + "/oauth2/./token", assert: refusedAtEntry},
 		{name: "only POST is exempt", method: http.MethodPut, target: issuer + "/oauth2/token", assert: refused},
 
 		{

@@ -195,6 +195,10 @@ type streamSetup struct {
 	// sameClock puts the session manager and its store on the chain's clock, as one machine's
 	// clock is. By default they have one of their own, so the chain's can be stepped against it.
 	sameClock bool
+
+	// ownClock leaves WithClock off the chain's own options, for a row whose opts supply it: a
+	// chain takes one.
+	ownClock bool
 }
 
 // streamRig is a chain with the stream enabled, in a bubble.
@@ -290,9 +294,11 @@ func newStreamRig(t *testing.T, setup streamSetup) *streamRig {
 		})
 
 	opts := []httpsec.Option{
-		httpsec.WithClock(r.clock),
 		httpsec.WithLogger(slog.New(slog.NewJSONHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))),
 		httpsec.EnableSessionSignals(setup.signals),
+	}
+	if !setup.ownClock {
+		opts = append(opts, httpsec.WithClock(r.clock))
 	}
 
 	if !setup.withoutSessionBearer {
@@ -6005,7 +6011,7 @@ func TestSessionSignals_Heartbeat_Panic(t *testing.T) {
 		{
 			name: "the stream's own code",
 			setup: func(_ *testing.T, g *rig) signalsSetup {
-				return listens(g, signalsSetup{opts: func(*signalsFixture) []httpsec.Option {
+				return listens(g, signalsSetup{ownClock: true, opts: func(*signalsFixture) []httpsec.Option {
 					return []httpsec.Option{httpsec.WithClock(g.clock)}
 				}})
 			},

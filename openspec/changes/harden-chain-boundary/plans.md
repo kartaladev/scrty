@@ -1,0 +1,245 @@
+# Harden the chain boundary: implementation plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Close the three security defects reproduced in `v0.1.0` (fiber dot-segment bypass of the rules and of the recovery cool-down; session publication after the gates), make double mounting and duplicate single-value options loud, build the interceptor fold once, and ship `v0.1.1` through an ordinary pull request, disclosing the defects in its changelog.
+
+**Architecture:** All runtime changes sit in the core chain (`httpsec/chain.go`, `httpsec/exchange.go`).
+- The fold is prebuilt at construction.
+- The step that `Assemble` returns does four things: it records the run's terminal, refuses dot-segment paths, passes a re-entered chain through, and then runs the prebuilt fold.
+- The first gate's prebuilt step marks the exchange, and `PublishSession` refuses after that mark.
+- The authorization stage refuses any session that still owes a built-in challenge.
+
+The adapters change in documentation only.
+
+**Tech Stack:** Go 1.27, `net/http`, gin, fiber v3, testify, mockgen, testcontainers (conformance and integration suites).
+
+**Spec:**
+- `openspec/changes/harden-chain-boundary/design.md`, decisions 1 to 8;
+- `specs/http-security-chain/spec.md`;
+- `specs/framework-adapters/spec.md`;
+- `tasks.md`, the task numbers below.
+
+## Global Constraints
+
+- No exported identifier is added or removed (proposal, Impact: API).
+- The dot-segment refusal is `ErrMalformedRequest` (400), raised before client resolution, with no opt-out (decision 1).
+- A late `PublishSession` returns an error wrapping `ErrConfig` (500) and publishes neither the caller nor the session (decision 2).
+- The single-value refusal text is `"<option> was given twice; one chain has one <thing>"` (decision 6).
+- Every Go task is test-first. Its red step is seen failing for the intended reason; a compile error is not a red step (`golang-tdd.md`).
+- Table tests use the `table-test` skill (`assert` closure form, `t.Context()`). Mocks come from `use-mockgen`, containers from `use-testcontainers`.
+- A defect claim needs a failing test (`defect-claims.md`). The red steps come from `repro/*.go.txt`.
+- Agents never run `git checkout --`, `restore`, `reset --hard`, `stash` or `clean`, and never commit, tag or push. The main session owns git and `openspec/`.
+- The work happens on the public branch `fix/harden-chain-boundary` and merges through an ordinary pull request with CI. There is no security advisory, no CVE request and no Go vulnerability database report (decision 8).
+
+## Review Focus
+
+1. **A request whose path is already `//`-heavy** (`/a//b`, `//`) must still be served. Pinned in task 3.1's "not refused" cases.
+2. **A HEAD request on a refused dot-segment path** gets the same 400. Added to task 3.1 as the case `HEAD /a/../b`.
+3. **A refused request under trusted proxies with a forwarded path header** is judged by its request path, not a header. Added to task 3.1: with `EnableTrustedProxies`, `X-Forwarded-Prefix` is ignored, and `/a/../b` is still 400.
+4. **A consumer interceptor that publishes `nil` after the gates** (signing out the caller) is not refused, because only a non-nil session is. Added to task 5.1 as the case "nil session after the gates".
+5. **A stream** (`EnableSessionSignals`) on a chain mounted twice still opens once and closes cleanly. Added to task 4.1 as the case "stream on a double mount".
+
+---
+
+### Task 1.1: Prerequisites on `main` (main session)
+
+- [ ] **Step 1:** Run `git fetch origin && git log origin/main --oneline -- .github/workflows/release-probe.yml`. It must show the commit adding `workflow_dispatch`. Then run `git grep -n TestExportedParametersHaveDescriptiveNames origin/main -- layout_test.go`, which must find the guard. If either check fails, stop: `release-readiness` and `descriptive-parameter-names` land first.
+
+### Task 1.2: Branch (main session)
+
+- [ ] **Step 1:** Run `git switch -c fix/harden-chain-boundary origin/main`. The untracked `openspec/changes/harden-chain-boundary/` directory comes along.
+- [ ] **Step 2:** Verify that `git branch --show-current` prints `fix/harden-chain-boundary` and that `git merge-base HEAD origin/main` equals `git rev-parse origin/main`.
+
+---
+
+### Task 2.1–2.2: Prebuilt fold (Opus implementer, Opus reviewer)
+
+**Files:**
+- Modify: `httpsec/chain.go` (`Chain`, `Assemble`, `build`)
+- Modify: `httpsec/exchange.go` (`Exchange`)
+- Test: `httpsec/chain_fold_test.go` (new)
+- Test: `httpsec/chain_bench_test.go` (new, ported from `repro/httpsec_assemble_bench_test.go.txt`)
+
+**Interfaces:**
+- **Produces, in `Chain`:**
+  - `fold Next`, the prebuilt outermost step;
+  - `firstGate int`, the index in run order of the first registration whose interceptor is `*recoveryGate`, `*enrolmentInterceptor`, `*mfaInterceptor` or `*passwordChangeGate`, or -1 when there is none. Task 5.2 uses it.
+- **Produces, in `Exchange`:**
+  - `terminals [2]runTerminal` and `extra []runTerminal`, where `type runTerminal struct{ chain *Chain; next Next }`;
+  - `func (e *Exchange) pushTerminal(c *Chain, t Next)`, `func (e *Exchange) popTerminal(c *Chain)` and `func (e *Exchange) terminalFor(c *Chain) (Next, bool)`, which returns the topmost entry for `c`.
+- **The innermost prebuilt step** calls `terminalFor(c)`. When there is no entry, it returns `fmt.Errorf("%w: an interceptor passed on an exchange this chain is not running", ErrConfig)`.
+
+- [ ] **Step 1: Baseline.** Port the benchmarks as `BenchmarkAssemble` (8 consumer interceptors, `Assemble` plus run) and `BenchmarkChainRequest` (net/http, 0 and 8 interceptors). Run `go test -run XXX -bench 'BenchmarkAssemble|BenchmarkChainRequest' -benchmem -count=10 ./httpsec/ > <scratch>/fold-before.txt`.
+- [ ] **Step 2: Write the failing test.** `TestAssemble_TerminalPerRun` is a table test with cases:
+  - "foreign exchange": an interceptor calls `next(NewExchange(ex.Context(), ex.Request, ex.Writer))`. Assert `errors.Is(err, ErrConfig)` and that the terminal was not called.
+  - "nested different chain": an interceptor of chain A runs `B.Assemble(next)(ex)`. Assert the order `[A-int, B-int, A-terminal]`.
+  - "next twice": assert the terminal ran twice.
+  - "concurrent": 64 goroutines, each with its own terminal recording its own id. Assert each saw its own.
+- [ ] **Step 3: Run it.** `go test -run TestAssemble_TerminalPerRun -race -count=1 ./httpsec/`. Expected: only "foreign exchange" fails, because the terminal runs.
+- [ ] **Step 4: Implement.** `build` composes `fold` from the sorted registrations. `Assemble(terminal)` returns a step that pushes the terminal, runs the existing entry logic, calls `c.fold(ex)`, and pops on return via `defer`.
+- [ ] **Step 5: Verify.**
+  - `go test ./httpsec/... -race -count=1` passes;
+  - `cd test && go test ./httpsecconformance/... -count=1` passes;
+  - benchmarks are re-run into `fold-after.txt`, and `benchstat fold-before.txt fold-after.txt` shows `BenchmarkAssemble/only/8` (the fold alone) at 2 allocs/op or fewer;
+  - the main session records the numbers in design decision 5.
+
+### Task 3.1–3.4: Dot-segment refusal (Opus implementer, Opus reviewer)
+
+**Files:**
+- Modify: `httpsec/chain.go` (the step `Assemble` returns)
+- Create: `httpsec/path_canonical.go`, holding `func refuseDotSegments(escaped string) error`
+- Test: `httpsec/path_canonical_test.go`
+- Test: `httpsec/fibersec/pathdiff_test.go` (ported)
+- Test: `httpsec/ginsec/pathdiff_test.go` (ported)
+- Modify: `test/httpsecconformance/request_scenarios.go`
+- Godoc: `httpsec/exchange.go` (`Request.Path`), `httpsec/authorization.go`, `httpsec/headers.go` (`PathPrefix`), `httpsec/recovery_cooldown.go`
+
+**Interfaces:**
+- **Produces:** `refuseDotSegments(escaped string) error`. It returns nil, or an error wrapping `ErrMalformedRequest`. It splits both `escaped` and `url.PathUnescape(escaped)` on `/`, and refuses a `.` or `..` segment in either. It also refuses a path that fails to decode.
+
+- [ ] **Step 1: Write the failing tests.**
+  - `TestChain_RefusesDotSegments`, through `Middleware()`. Expect 400 with no handler call for:
+    - `/a/../b`, `/a/./b`, `/a/%2e%2e/b`, `/a/%2E%2E/b`, `/a%2F..%2Fb`;
+    - `HEAD /a/../b`;
+    - `/a/../b` with `EnableTrustedProxies` and `X-Forwarded-Prefix: /x`;
+    - a test `Request` whose `EscapedPath()` is `/a/%zz`.
+
+    Expect the handler to be called for `/files/report..v2.txt`, `/.well-known/jwks.json` and `/a//b`.
+
+    With `EnableSecurityHeaders()`, the 400 carries `X-Content-Type-Options: nosniff`.
+  - Port `TestFiber_AuthorizationRuleSeesRoutedPath` and `TestFiber_RecoveryCooldownSeesRoutedPath` from the repro file, dropping the upper-case case and switching the assertion to `assert.Equal(t, 400, status)`.
+- [ ] **Step 2: Run.**
+  - `go test -run TestChain_RefusesDotSegments -count=1 ./httpsec/`;
+  - `cd httpsec/fibersec && go test -run 'TestFiber_(AuthorizationRule|RecoveryCooldown)SeesRoutedPath' -count=1 .`
+
+  Expected: FAIL. The handler runs with 200.
+- [ ] **Step 3: Implement.** Call `refuseDotSegments(ex.Request.EscapedPath())` first in the returned step. On error, apply `c.headers.applyHeaders` and `c.refusalSteps` exactly as the client-resolution refusal does, and return the error.
+- [ ] **Step 4: Verify.** Run `go test ./httpsec/... -count=1` in the root, in `httpsec/fibersec` and in `httpsec/ginsec`. The ported `TestGin_NonCanonicalTargetsNeverReachTheHandler` passes. (Task 3.2.)
+- [ ] **Step 5: Conformance (task 3.3, Sonnet).** Add the scenario "dot segments are refused on every adapter". It sends raw request lines for `/x/%2e%2e/y` and `/public/../admin/users` over `net.Dial`. Assert 400 and an empty body.
+  - Run `cd test && go test ./httpsecconformance/... -run 'Scenarios' -count=1` and expect PASS.
+  - Comment out the call from step 3 and expect FAIL. Restore it by editing it back.
+- [ ] **Step 6: Godoc (task 3.4, Sonnet).**
+  - `Request.Path`: "The chain refuses a path with a `.` or `..` segment before anything reads it; Path is otherwise the path as sent, decoded, and may differ from the path a router serves in letter case and trailing slashes."
+  - `EnableAuthorization` and `PathPrefix`: the fiber case and trailing-slash sentence, and the HEAD sentence.
+  - `EnableRecoveryCooldown`: the dot-segment sentence.
+
+  Verify with `go doc ./httpsec Request.Path` (and the others), then `make lint`.
+
+### Task 4.1–4.3: Same chain runs once (Opus implementer, Opus reviewer)
+
+**Files:**
+- Modify: `httpsec/chain.go`
+- Test: `httpsec/chain_reentry_test.go`
+- Test: `httpsec/ginsec/double_mount_test.go` (ported)
+- Test: `httpsec/fibersec/double_mount_test.go`
+- Godoc: `httpsec/ginsec/doc.go` and `middleware.go`, `httpsec/fibersec/doc.go` and `middleware.go`
+
+**Interfaces:**
+- **Produces:**
+  - `type chainRun struct{ chain *Chain; method, path string }`, stored under the unexported key `chainRunKey{}`;
+  - `func ranOn(ctx context.Context, c *Chain, method, path string) bool`. It walks only the nearest marker, which links to its parent's.
+
+- [ ] **Step 1: Write the failing tests.**
+  - `TestRepro_DoubleMount`, ported for gin and written fresh for fiber. Assert one authenticator call and one limiter `Reset`.
+  - `TestChain_ReentryPassesThrough`, with cases:
+    - same chain nested: the interceptor count is 1;
+    - different chain nested: both run;
+    - same chain on an in-process forward to `/other`: it runs twice;
+    - stream on a double mount: the signal stream opens once and the handler returns.
+- [ ] **Step 2: Run.** Both double-mount tests fail with `expected: 1, actual: 2`. The forward case passes.
+- [ ] **Step 3: Implement.** In the returned step, after the dot-segment check: if `ranOn(ex.Context(), c, method, escapedPath)`, return the terminal's result directly. Otherwise put the marker on the context before client resolution.
+- [ ] **Step 4: Verify.** The three adapter suites and the conformance suite pass. (Task 4.2.)
+- [ ] **Step 5: Godoc (task 4.3, Sonnet).** Add the three sentences of design decision 7 to `ginsec` and `fibersec`. Verify with `go doc` and `make lint`.
+
+### Task 5.1–5.3: No publication after the gates (Opus implementer, Opus reviewer)
+
+**Files:**
+- Modify: `httpsec/chain.go`, the prebuilt step at `firstGate`
+- Modify: `httpsec/exchange.go`: `PublishSession`, and a new unexported `publishSession`
+- Modify: `httpsec/resolve.go`, and every caller that gopls reports
+- Test: `httpsec/publish_after_gates_test.go` (ported)
+
+**Interfaces:**
+- **Consumes:** `Chain.firstGate` (task 2).
+- **Produces:**
+  - `Exchange.gatesBegun bool`;
+  - `func (e *Exchange) publishSession(a *authenticate.Authentication, s *session.Session) error`, which is today's body of `PublishSession`;
+  - `PublishSession`, which returns `fmt.Errorf("%w: a session was published after the chain's gates had begun; register the authenticator at OrderBearerToken", ErrConfig)` when `e.gatesBegun && s != nil`.
+
+- [ ] **Step 1: Write the failing test.** Port `TestRepro_ConsumerAuthenticatorAfterGatesIsJudgedByThem` with all ten cases. The six late cases expect status 500, `errors.Is(publishErr, ErrConfig)` and no handler call. Add the cases:
+  - "no gate enabled": publishing succeeds and the handler reads the session;
+  - "nil session after the gates": no error, and the caller is cleared.
+- [ ] **Step 2: Run.** `go test -run TestRepro_ConsumerAuthenticator -count=1 ./httpsec/`. Expected: the six late cases fail with 200.
+- [ ] **Step 3: Audit.** Run `gopls references` on `Exchange.PublishSession` and on the `Exchange.Session` field. Move every library caller to `publishSession`. The implementer reports the list.
+- [ ] **Step 4: Implement.** The prebuilt step at `firstGate` sets `ex.gatesBegun = true` before calling the gate. `PublishSession` checks it, and on refusal writes one record through `logSampled` with the key `"late-session-publication"`.
+- [ ] **Step 5: Verify.** `go test ./httpsec/... -race -count=1` and the conformance suite pass. (Task 5.2.)
+- [ ] **Step 6: Godoc (task 5.3, Sonnet).** `PublishSession` gets the refusal and the slots to use. `RegisterInterceptor` gets those slots, plus the sentence about built-in slot-mates running in option order. Verify with `go doc` and `make lint`.
+
+### Task 6.1–6.3: Authorization-stage backstop (Opus implementer, Opus reviewer)
+
+**Files:**
+- Modify: `httpsec/authorization.go` (`authorization.Intercept`)
+- Test: `httpsec/authorization_owing_test.go`, `httpsec/gate_exemptions_test.go`
+
+**Interfaces:**
+- **Consumes:**
+  - `owedChallenge(*session.Session) policy.ChallengeKind` (`full_session.go`);
+  - the gates' existing error constructors;
+  - `Chain.challengeMethods`, for MFA.
+- **Produces:** the stage refuses when `ex.Session != nil && owedChallenge(ex.Session) != policy.ChallengeNone`.
+
+- [ ] **Step 1: Write the enumeration test.** `TestGateExemptions_NeverReachTheAuthorizationStage` builds, for each gate, a session owing that gate's challenge. It sends a request to each exempted endpoint and asserts that a consumer interceptor at `Before(OrderAuthorizer)` never runs. It passes today.
+- [ ] **Step 2: Prove it bites.** Temporarily exempt `/consumer` in the password-change gate, and confirm the test fails. Restore it by editing it back. If the test fails without that edit, stop and report the exemption.
+- [ ] **Step 3: Write the failing test.** `TestAuthorization_RefusesOwingSession` is a table over recovery, enrolment, MFA and password change, each with rules and without. A consumer interceptor at `After(OrderLogout)` sets `ex.Session` directly. Assert the gate's error via `errors.As(err, &*ChallengeError)` with the matching kind, and for MFA its methods. The "full session" case expects 200.
+- [ ] **Step 4: Run.** Expected: the owing cases fail with 200.
+- [ ] **Step 5: Implement** the check before `a.rules` is consulted.
+- [ ] **Step 6: Verify.** The `httpsec` suite and the conformance suite pass. (Task 6.3.)
+
+### Task 7.1–7.3: Single-value options (Sonnet implementer, Sonnet reviewer; may run beside task 2)
+
+**Files:**
+- Modify: `httpsec/options.go` (`WithLogger`, `WithClock`, `WithPolicyEngine`, `WithRateLimiterFactory`, `WithErrorHandler`)
+- Modify: `httpsec/authorization.go` (`EnableAuthorization`)
+- Test: `httpsec/options_once_test.go`
+
+**Interfaces:**
+- **Produces:** the `config` fields `loggerGiven`, `clockGiven`, `engineGiven`, `limiterFactoryGiven` and `errorHandlerGiven` (all `bool`). The `<thing>` names are "logger", "time source", "policy engine", "rate-limiter factory" and "error handler".
+
+- [ ] **Step 1: Write the failing tests.**
+  - `TestNew_SingleValueOptionGivenTwice`: five options times {same value, two values}. Assert `errors.Is(err, ErrConfig)` and that the message contains the option's name.
+  - `TestEnableAuthorization_ChecksEveryAuthorizer`: the case "nil then valid" expects an error naming `EnableAuthorization` and "authorizer". The case "two valid" expects success, both rules applied in order, and the second authorizer judging them.
+- [ ] **Step 2: Run.** `go test -run 'TestNew_SingleValueOptionGivenTwice|TestEnableAuthorization_ChecksEveryAuthorizer' -count=1 ./httpsec/`. Expected: FAIL with `An error is expected but got nil`, except the "two valid" case.
+- [ ] **Step 3: Implement** the given-flags, and `requireDep` on each `EnableAuthorization` call's `az` when that call is applied.
+- [ ] **Step 4: Verify.** `make test` passes across the workspace, with no chain anywhere giving a duplicate option.
+- [ ] **Step 5: Godoc (task 7.3).** Add "Given twice, New refuses the chain." to each of the five options. Verify with `go doc`.
+
+---
+
+### Task 8.1: Whole-branch review
+
+- [ ] **Step 1:** Dispatch a fresh Opus reviewer that edits nothing. It reads both spec deltas and design decisions 1 to 7, enumerates the failures category by category, and then checks the diff. Each finding is fixed in a fresh dispatch of the owning lane, or declined in `design.md`.
+
+### Task 8.2: Local gate, then CI on the pull request
+
+- [ ] **Step 1:** With Docker running, after task 9.1:
+  - `make check`;
+  - `make release-check VERSION=v0.1.1`;
+  - `openspec validate harden-chain-boundary --strict`.
+
+  Save the output to the scratchpad. All three must pass before the pull request is opened.
+- [ ] **Step 2:** After the pull request is opened, `gh pr checks <pr> --watch` ends with every check passing.
+
+### Task 9.1: Release files (Haiku for the given `go mod edit` diff, main session for `CHANGELOG.md`)
+
+- [ ] **Step 1:** Run the `go mod edit -C <dir> -require=...@v0.1.1` commands of `RELEASING.md` step 2, and `go mod edit -retract=v0.1.0` in the root, with a comment on the retract pointing at the `0.1.1` changelog entry's `Security` section.
+- [ ] **Step 2:** Add the `## [0.1.1] - <date>` entry: `Security` (three bullets, each with its effect and the affected version `v0.1.0`), `Changed` (decision 6; dot-segment 400; "Exported signatures use descriptive parameter names (no API change)"), and the link references.
+- [ ] **Step 3:** Verify:
+  - `SCRTY_RELEASE_VERSION=v0.1.1 go test -run TestNestedModulesRequireReleasedVersions -count=1 .` passes;
+  - `go mod edit -json | jq .Retract` lists `v0.1.0`.
+
+### Tasks 9.2–9.4: Merge and release (maintainer)
+
+- [ ] **9.2:** Recheck task 1.1 step 1. Merge the pull request, and wait until CI on `main` is green for the merge commit.
+- [ ] **9.3:** Follow `RELEASING.md` steps 3–8 for `v0.1.1`: the root tag is pushed alone, and the run of `gh run list --workflow release-probe --limit 1` that it triggered passes.
+- [ ] **9.4:** Step 9: `gh release view v0.1.1 --json assets --jq '.assets | length'` prints `9`.

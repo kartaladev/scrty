@@ -1,13 +1,16 @@
 package httpsecconformance
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/base64"
 	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,6 +43,43 @@ func requestScenarios() []Scenario {
 		aFieldReadDoesNotWidenABodyLimit(),
 		anEarlierLargerBodyReadDoesNotWidenALaterLimit(),
 		anOversizedUploadIsLeftIntact(),
+		dotSegmentsAreRefusedOnEveryAdapter(),
+	}
+}
+
+// dotSegmentsAreRefusedOnEveryAdapter sends request lines holding a dot
+// segment over a real connection, so no HTTP client cleans the path first, and
+// requires the same bare 400 from every framework.
+func dotSegmentsAreRefusedOnEveryAdapter() Scenario {
+	return Scenario{
+		Name: "dot segments are refused on every adapter",
+		Stream: func(t *testing.T, listen func(ChainSpec) StreamServer) {
+			srv := listen(ChainSpec{})
+
+			u, err := url.Parse(srv.URL)
+			require.NoError(t, err)
+
+			for _, target := range []string{"/x/%2e%2e/y", "/public/../admin/users"} {
+				conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(t.Context(), "tcp", u.Host)
+				require.NoError(t, err)
+
+				require.NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)))
+
+				_, err = fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", target)
+				require.NoError(t, err)
+
+				res, err := http.ReadResponse(bufio.NewReader(conn), nil)
+				require.NoError(t, err, target)
+
+				body, err := io.ReadAll(res.Body)
+				_ = res.Body.Close()
+				_ = conn.Close()
+
+				require.NoError(t, err, target)
+				assert.Equal(t, http.StatusBadRequest, res.StatusCode, target)
+				assert.Empty(t, body, "a refusal carries no error text: %s", target)
+			}
+		},
 	}
 }
 

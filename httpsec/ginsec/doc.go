@@ -30,6 +30,22 @@
 // logging or metrics, therefore goes before the chain, where it still observes
 // the response the chain wrote on the way back out.
 //
+// # Routes registered before the chain, and a chain mounted twice
+//
+// The chain guards what gin dispatches after Use adds it. A route registered
+// before the middleware is added is not guarded by the chain, so mount the
+// chain before registering the routes it must protect.
+//
+// Mounting one chain twice on a request, for example on the engine and again on
+// a group, runs it once: the second mount lets the request through. Two
+// different chains both run, each counting its own attempts.
+//
+// The second mount lets the request through as the first mount judged it. A
+// middleware placed between the two mounts that changes what a rule reads (the
+// host, a header, the query) is therefore not judged again, and neither is a
+// request that HandleContext re-dispatches on the same path, which is judged as
+// the first pass was: put such middleware before the first mount.
+//
 // # Refusals
 //
 // A refusal is registered on gin's error channel and answered with the status

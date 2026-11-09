@@ -1,0 +1,82 @@
+package httpsec_test
+
+import (
+	"bytes"
+	"context"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/policy"
+)
+
+type orderAuth struct{ trace *[]string }
+
+func (o orderAuth) Authenticate(context.Context, identity.Credentials) (*authenticate.Authentication, error) {
+	*o.trace = append(*o.trace, "builtin")
+	return &authenticate.Authentication{Principal: &identity.Principal{ID: "u", Username: "a"}}, nil
+}
+
+type noopAttempts struct{}
+
+func (noopAttempts) RecordFailure(context.Context, string, time.Time) error { return nil }
+func (noopAttempts) Reset(context.Context, string) error                  { return nil }
+func (noopAttempts) FailureCount(context.Context, string, time.Time) (int, error) {
+	return 0, nil
+}
+
+// 5b
+func TestRepro_SameSlotOrderDependsOnOptionOrder(t *testing.T) {
+	run := func(consumerFirst bool) []string {
+		var trace []string
+		mine := httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(ex *httpsec.Exchange, n httpsec.Next) error {
+			trace = append(trace, "consumer")
+			return n(ex)
+		}), httpsec.OrderBasicAuth)
+		builtin := httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: orderAuth{&trace}, Attempts: noopAttempts{}})
+		opts := []httpsec.Option{builtin, mine}
+		if consumerFirst {
+			opts = []httpsec.Option{mine, builtin}
+		}
+		chain, err := httpsec.New(opts...)
+		require.NoError(t, err)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+		req.SetBasicAuth("a", "b")
+		chain.Middleware()(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).
+			ServeHTTP(httptest.NewRecorder(), req)
+		return trace
+	}
+	assert.Equal(t, run(false), run(true), "same options, different order, different execution order")
+}
+
+// 4
+func TestRepro_SecondSingleValueOptionIsSilent(t *testing.T) {
+	var a, b bytes.Buffer
+	la, lb := slog.New(slog.NewTextHandler(&a, nil)), slog.New(slog.NewTextHandler(&b, nil))
+	_, err := httpsec.New(httpsec.WithLogger(la), httpsec.WithLogger(lb))
+	assert.Error(t, err, "WithLogger given twice")
+
+	e1, _ := policy.NewEngine()
+	e2, _ := policy.NewEngine()
+	_, err = httpsec.New(httpsec.WithPolicyEngine(e1), httpsec.WithPolicyEngine(e2))
+	assert.Error(t, err, "WithPolicyEngine given twice")
+
+	_, err = httpsec.New(httpsec.EnableCSRFProtection(), httpsec.EnableCSRFProtection())
+	assert.Error(t, err, "control: an Enable option given twice is refused")
+}
+
+// 5a
+func TestRepro_NilOption(t *testing.T) {
+	_, err := httpsec.New(nil)
+	assert.Error(t, err)
+	_ = strings.Contains
+}

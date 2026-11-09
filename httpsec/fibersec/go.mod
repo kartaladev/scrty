@@ -4,7 +4,7 @@ go 1.27
 
 require (
 	github.com/gofiber/fiber/v3 v3.6.1
-	github.com/kartaladev/scrty v0.1.0
+	github.com/kartaladev/scrty v0.1.1
 	github.com/stretchr/testify v1.12.1
 	github.com/valyala/fasthttp v1.77.0
 	go.uber.org/mock v0.6.0

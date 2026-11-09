@@ -85,6 +85,16 @@ import (
 // the caller's own sign-in, but place middleware that can refuse a request inside this
 // one, behind the chain, so that a refusal is one the stream sees.
 //
+// Routes registered before this middleware is added are not guarded by the
+// chain. Mounting one chain twice on a request, for example on the application and again
+// on a group, runs it once: the second mount lets the request through. Two
+// different chains both run, each counting its own attempts.
+//
+// The second mount lets the request through as the first mount judged it, so a
+// middleware between the two mounts that changes what a rule reads (the host, a
+// header, the query) is not judged again, nor is a request RestartRouting sends
+// back through the same path. Put such middleware before the first mount.
+//
 // A nil chain is a wiring mistake and panics here, at wiring time, rather than
 // on the first request a server takes.
 func Middleware(chain *httpsec.Chain) fiber.Handler {
@@ -93,9 +103,10 @@ func Middleware(chain *httpsec.Chain) fiber.Handler {
 	}
 
 	return func(fc fiber.Ctx) error {
-		// The chain is folded around this request rather than once per mount,
-		// because the innermost step is the only place that still holds fiber's
-		// own context, and smuggling it through the exchange would let every
+		// The fold is built once per chain; only this request's terminal, the
+		// step that runs the remaining fiber handlers, is recorded per request,
+		// because that step is the only place that still holds fiber's own
+		// context, and smuggling it through the exchange would let every
 		// interceptor reach past the abstraction the chain exists to present.
 		//
 		// nextErr is what the remaining fiber handlers returned. It is kept

@@ -1332,6 +1332,7 @@ func mfaPoliciesFirst(t *testing.T, d *pwlDeployment, rec policy.Policy, require
 		policies = []policy.Policy{rec, requirement, challenge}
 	}
 
+	d.ownEngine = true
 	d.extra = append(d.extra, httpsec.WithPolicyEngine(engineOf(t, policies...)))
 }
 

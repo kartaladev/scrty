@@ -21,3 +21,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 )
+
+// v0.1.0 has three security defects in the httpsec chain, fixed in v0.1.1.
+// See the Security section of the 0.1.1 entry in CHANGELOG.md.
+retract v0.1.0

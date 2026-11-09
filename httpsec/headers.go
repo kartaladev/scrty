@@ -497,6 +497,10 @@ type RouteMatcher func(Request) bool
 // path segments: "/api/" selects "/api" and "/api/orders" and not "/apix".
 // Matching is exact and case-sensitive. A prefix that does not start with "/"
 // is read as if it did.
+//
+// On fiber, letter case and a trailing slash reach one route by default, so a
+// prefix must cover those spellings, and a profile for GET must also cover
+// HEAD.
 func PathPrefix(prefix string) RouteMatcher {
 	base := strings.TrimRight(prefix, "/")
 	if !strings.HasPrefix(base, "/") && base != "" {
