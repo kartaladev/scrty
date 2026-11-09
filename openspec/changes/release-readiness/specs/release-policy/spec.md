@@ -58,6 +58,14 @@ After the tags are pushed, a fresh module outside the repository SHALL fetch eve
 - **WHEN** one module cannot be fetched at the release version
 - **THEN** the probe fails, naming the module, and the release is recorded as needing a new version rather than a moved tag
 
+#### Scenario: Probe run by hand
+- **WHEN** a maintainer starts the probe by hand for the published version `v0.1.0`
+- **THEN** it probes `v0.1.0` exactly as it would after the root tag's push
+
+#### Scenario: Probe given a version that is not one
+- **WHEN** the probe is started by hand with a version that is not a semantic version, such as `v0.1.0;echo`
+- **THEN** it fails before fetching anything, and runs no part of the value as a command
+
 ### Requirement: Every release has a changelog entry
 The repository SHALL keep one changelog covering every published module, in the Keep a Changelog format. It SHALL keep an `Unreleased` section at the top, and each release SHALL move its changes into an entry headed by the version and the release date. An entry that fixes a vulnerability SHALL list it under `Security`. A change that breaks a published API SHALL be stated in the entry, including under v0.
 
@@ -94,6 +102,10 @@ The repository SHALL document the release procedure in order: update the changel
 #### Scenario: Procedure followed
 - **WHEN** a maintainer follows the documented procedure for `v0.1.0`
 - **THEN** each step names the command or check it runs, and the release notes are published only after the outside probe has passed
+
+#### Scenario: Tags pushed so the probe starts
+- **WHEN** a maintainer pushes the tags of a release by the documented procedure
+- **THEN** the eight nested tags are pushed together first and the root tag is pushed alone afterwards, so the root tag's push starts the probe
 
 #### Scenario: Bills of materials published
 - **WHEN** the release notes for `v0.1.0` are published by following the procedure

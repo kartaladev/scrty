@@ -102,10 +102,25 @@ The library fixes this change used to carry (its former groups 6–9) moved to `
 
 ## 8. First release (maintainer)
 
-- [ ] 8.1 **(maintainer)** Enable private vulnerability reporting, and verify `gh api repos/kartaladev/scrty/private-vulnerability-reporting` reports `"enabled": true`.
+- [x] 8.1 **(maintainer)** Enable private vulnerability reporting, and verify `gh api repos/kartaladev/scrty/private-vulnerability-reporting` reports `"enabled": true`.
 - [ ] 8.2 **(maintainer)** After the branch is merged, date the `0.1.0` changelog entry, run `make release-check VERSION=v0.1.0` on the merged commit, then create the tags `make release-tags VERSION=v0.1.0` prints, and push them. Verify the release-probe workflow passes for `v0.1.0`.
+
+## 9. The probe's trigger (decision 4, amended 2026-11-09)
+
+- [x] 9.1 Add `workflow_dispatch` with a required `version` input to `.github/workflows/release-probe.yml`. The run step reads `inputs.version` on a dispatch and `github.ref_name` on a push, through `env`, never by `${{ }}` in the command. Verify, after merge:
+  - `gh workflow run release-probe --ref main -f version=v0.1.0` passes (that run is task 9.3);
+  - a dispatch with `-f version='v0.1.0;echo PWNED'` fails at the script's version check, and the log shows no `PWNED` line;
+  - the push trigger is unchanged (`on.push.tags` still `["v[0-9]*"]`).
+- [x] 9.2 Revise `RELEASING.md`:
+  - step 7: push the eight nested tags in one `git push --atomic`, then the root tag alone, with decision 4's reason;
+  - step 7: if the root tag's push is refused, fix the cause and push it, never deleting a nested tag;
+  - step 8: when no run appears, start the probe with `gh workflow run release-probe --ref main -f version=$VERSION`.
+
+  Verify that a reviewer finds each command runnable as written, that the nine tag names still match `make release-tags`' output, and that `TestReleaseModuleListsAgree` passes.
+- [ ] 9.3 **(maintainer)** After 9.1 and 9.2 are merged, run `gh workflow run release-probe --ref main -f version=v0.1.0` and watch it. Verify that it passes, so that `v0.1.0` has a probe run on record and 8.2's verification is met.
 
 ## Workflow follow-up
 
-- Archive the change once the probe has passed for `v0.1.0`, and sync `module-layout` and the new `release-policy` spec.
+- Archive the change once the probe has passed for `v0.1.0` in CI (task 9.3), and sync `module-layout` and the new `release-policy` spec. The archive commit leaves out every other change's directory.
+- Then remove the `scrty-release` worktree and its `release-v0.1.0-gate` branch, and delete `scrty-release-notes.md`, `scrty-release-gate.log` and `scrty-release-probe.log` next to the repository.
 - Tell the consumer who requested the release that `v0.1.0` resolves.

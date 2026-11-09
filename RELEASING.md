@@ -156,12 +156,11 @@ printed commands. `git tag --points-at HEAD` lists the nine tags afterwards.
 
 ### 7. Push the tags
 
-Pushing a tag is the maintainer's action. Push the nine tags in one atomic push, so either all of
-them reach the remote or none does, and the probe never starts with only some of them there:
+Pushing a tag is the maintainer's action. Push the eight nested tags in one atomic push, so either
+all of them reach the remote or none does:
 
 ```sh
 git push --atomic origin \
-  $VERSION \
   httpsec/fibersec/$VERSION \
   httpsec/ginsec/$VERSION \
   store/gormstore/$VERSION \
@@ -172,7 +171,17 @@ git push --atomic origin \
   test/$VERSION
 ```
 
-If the push is refused, nothing was published: fix the cause and push again.
+Then push the root tag alone:
+
+```sh
+git push origin $VERSION
+```
+
+GitHub creates no push event for a push of more than three tags, so the root tag goes alone so that
+its push starts the probe.
+
+If the root tag's push is refused, fix the cause and push it again. Never delete or move a nested
+tag. Until the root tag is up, the nested modules fail to resolve the root.
 
 ### 8. Watch the probe
 
@@ -183,6 +192,17 @@ package from each.
 ```sh
 gh run list --workflow release-probe --limit 1
 gh run watch "$(gh run list --workflow release-probe --limit 1 --json databaseId --jq '.[0].databaseId')"
+```
+
+A run started by the tag push names the tag as its branch. If no such run appears within a few
+minutes, start the probe by hand:
+
+```sh
+gh run list --workflow release-probe --event push --json headBranch,status,createdAt --jq ".[] | select(.headBranch == \"$VERSION\")"   # prints nothing: no run
+```
+
+```sh
+gh workflow run release-probe --ref main -f version=$VERSION
 ```
 
 The release is proven only when the probe passes. The proxy may take a few minutes to serve a new
