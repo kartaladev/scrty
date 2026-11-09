@@ -19,21 +19,21 @@ var (
 	errNegativeKeep  = errors.New("the number of entries to keep is negative")
 )
 
-// RecentPasswords returns up to n of the user's retired password hashes,
+// RecentPasswords returns up to limit of the user's retired password hashes,
 // newest first by the order they were retired, byte for byte. A well-formed
-// reference with no entries, and n == 0, return an empty slice and no error.
+// reference with no entries, and limit == 0, return an empty slice and no error.
 //
 // A reference that is not the canonical lowercase UUID text this store hands
-// out, a negative n, and a database failure are errors, and return no entries:
+// out, a negative limit, and a database failure are errors, and return no entries:
 // never an empty history.
-func (s *IdentityStore) RecentPasswords(ctx context.Context, ref identity.UserID, n int) ([][]byte, error) {
+func (s *IdentityStore) RecentPasswords(ctx context.Context, ref identity.UserID, limit int) ([][]byte, error) {
 	const op = "read password history"
 
 	uid, ok := storekit.ParseUserID(ref)
 	if !ok {
 		return nil, failed(op, errUserReference)
 	}
-	if n < 0 {
+	if limit < 0 {
 		return nil, failed(op, errNegativeRead)
 	}
 
@@ -41,11 +41,11 @@ func (s *IdentityStore) RecentPasswords(ctx context.Context, ref identity.UserID
 	if err != nil {
 		return nil, failed(op, err)
 	}
-	if n == 0 {
+	if limit == 0 {
 		return [][]byte{}, nil
 	}
 
-	rows, err := q.Raw(pgschema.RecentHistory, uid, n).Rows()
+	rows, err := q.Raw(pgschema.RecentHistory, uid, limit).Rows()
 	if err != nil {
 		return nil, dbFailed(op, err)
 	}

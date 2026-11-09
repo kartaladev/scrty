@@ -82,8 +82,8 @@ func ExampleWithBasePath() {
 	fmt.Println("POST /auth/sign-in/password:", signIn("/auth/sign-in/password"))
 	fmt.Println("POST /sign-in/password:", signIn("/sign-in/password"))
 
-	for _, e := range chain.Endpoints() {
-		fmt.Println(e.OperationID, e.Path)
+	for _, endpoint := range chain.Endpoints() {
+		fmt.Println(endpoint.OperationID, endpoint.Path)
 	}
 
 	// Output:

@@ -438,14 +438,14 @@ type BearerTokenOption func(*bearerToken) error
 // errors.As. A consumer who wants a dependency's full error logs it inside
 // their own implementation of the port: the token.Verifier's key source, or
 // the stores and loader of BearerTokenDeps.
-func EnableBearerToken(d BearerTokenDeps, opts ...BearerTokenOption) Option {
+func EnableBearerToken(deps BearerTokenDeps, opts ...BearerTokenOption) Option {
 	const option = "EnableBearerToken"
 
 	return func(c *config) error {
 		b := &bearerToken{
-			verifier: d.Verifier,
-			sessions: d.Sessions,
-			users:    d.Users,
+			verifier: deps.Verifier,
+			sessions: deps.Sessions,
+			users:    deps.Users,
 			now:      c.now,
 			scheme:   DefaultBearerScheme,
 		}
@@ -462,13 +462,13 @@ func EnableBearerToken(d BearerTokenDeps, opts ...BearerTokenOption) Option {
 		c.bindingVerifiers = append(c.bindingVerifiers, option)
 
 		c.enable(option, func() error {
-			if err := requireDep(option, "token verifier", d.Verifier); err != nil {
+			if err := requireDep(option, "token verifier", deps.Verifier); err != nil {
 				return err
 			}
-			if err := requireDep(option, "session manager", d.Sessions); err != nil {
+			if err := requireDep(option, "session manager", deps.Sessions); err != nil {
 				return err
 			}
-			if err := requireDep(option, "user loader", d.Users); err != nil {
+			if err := requireDep(option, "user loader", deps.Users); err != nil {
 				return err
 			}
 			if err := b.checkOtherBearers(c, option); err != nil {
@@ -478,14 +478,14 @@ func EnableBearerToken(d BearerTokenDeps, opts ...BearerTokenOption) Option {
 			// A generator given as the verifier is one more generator the chain
 			// is given. One hidden behind a verifier that does not itself implement
 			// token.Generator cannot be seen.
-			if g, ok := d.Verifier.(token.Generator); ok {
+			if g, ok := deps.Verifier.(token.Generator); ok {
 				return checkSubjectGenerator(c, option, "BearerTokenDeps.Verifier", g)
 			}
 
 			return nil
 		})
 
-		c.useSessions(d.Sessions)
+		c.useSessions(deps.Sessions)
 		c.wire(b.wire)
 		// The renewal endpoint may be enabled after this option, so it is
 		// handed to the core once every option has been applied.

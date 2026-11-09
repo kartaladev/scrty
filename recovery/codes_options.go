@@ -47,14 +47,14 @@ type CodesOption func(*Codes)
 // silent fallback to memory: a consumer who passed one meant to supply their
 // own, and quietly keeping their users' recovery codes in process memory is
 // not a failure they would find out about until a deploy.
-func WithCodesStore(s CodeStore) CodesOption { return func(c *Codes) { c.store = s } }
+func WithCodesStore(store CodeStore) CodesOption { return func(c *Codes) { c.store = store } }
 
 // WithCodesSetSize replaces how many codes one set holds. The default is 10.
 //
 // It must be between 1 and 100; anything else is a configuration error. Zero
 // codes is no set at all, and the upper bound only caps the work one
 // generation does.
-func WithCodesSetSize(n int) CodesOption { return func(c *Codes) { c.setSize = n } }
+func WithCodesSetSize(size int) CodesOption { return func(c *Codes) { c.setSize = size } }
 
 // WithCodesLowThreshold replaces the remaining count at or below which a set is
 // reported as low. The default is 2.
@@ -63,7 +63,9 @@ func WithCodesSetSize(n int) CodesOption { return func(c *Codes) { c.setSize = n
 // configuration error, because no count could ever reach it. A threshold at or
 // above the set size is accepted, and reports a fresh set as low: that is the
 // consumer's call to make, not a contradiction.
-func WithCodesLowThreshold(n int) CodesOption { return func(c *Codes) { c.lowThreshold = n } }
+func WithCodesLowThreshold(threshold int) CodesOption {
+	return func(c *Codes) { c.lowThreshold = threshold }
+}
 
 // WithCodesLimiter replaces the limiter that counts failed presentations. The
 // default is a ratelimit.MemoryLimiter allowing 5 failures per 15 minutes, per
@@ -92,20 +94,20 @@ func WithCodesLowThreshold(n int) CodesOption { return func(c *Codes) { c.lowThr
 //
 // A nil limiter, typed nil included, is a configuration error rather than a
 // fallback to the default: a consumer who passed one meant to replace it.
-func WithCodesLimiter(l ratelimit.Limiter) CodesOption {
+func WithCodesLimiter(limiter ratelimit.Limiter) CodesOption {
 	return func(c *Codes) {
-		c.limiter = l
+		c.limiter = limiter
 		c.limiterSet = true
 	}
 }
 
 // WithCodesLimiterFactory builds the limiter that counts failed saved-code
-// presentations per user through f, under the namespace "recovery-codes" with
+// presentations per user through factory, under the namespace "recovery-codes" with
 // this flow's own limit and window: 5 failures per 15 minutes.
 //
 // Default: ratelimit.MemoryLimiterFactory, logging through the manager's logger
 // and clock, so the limit holds in this process alone. Precedence: a limiter
-// given with WithCodesLimiter wins, and f is then never asked; then f; then the
+// given with WithCodesLimiter wins, and factory is then never asked; then factory; then the
 // in-memory default.
 //
 // For this second-factor flow, a shared limiter in
@@ -114,10 +116,10 @@ func WithCodesLimiter(l ratelimit.Limiter) CodesOption {
 // users are not locked out of sign-in.
 //
 // A nil factory, typed nil included, is an error wrapping ErrConfig, as is an
-// error from f, which names the namespace.
-func WithCodesLimiterFactory(f ratelimit.LimiterFactory) CodesOption {
+// error from factory, which names the namespace.
+func WithCodesLimiterFactory(factory ratelimit.LimiterFactory) CodesOption {
 	return func(c *Codes) {
-		c.factory = f
+		c.factory = factory
 		c.factorySet = true
 	}
 }
@@ -138,7 +140,7 @@ func WithCodesClock(clk clock.Clock) CodesOption { return func(c *Codes) { c.clo
 // platform supplies its own cryptographic source can use it. A nil reader is a
 // configuration error: falling back would override a deliberate choice about
 // where this deployment's randomness comes from.
-func WithCodesRandom(r io.Reader) CodesOption { return func(c *Codes) { c.random = r } }
+func WithCodesRandom(src io.Reader) CodesOption { return func(c *Codes) { c.random = src } }
 
 // WithCodesLogger replaces the logger. The default is slog.Default().
 //
@@ -146,10 +148,10 @@ func WithCodesRandom(r io.Reader) CodesOption { return func(c *Codes) { c.random
 // that the caller does not want this component's logs. Only dependency
 // failures are logged, as a fixed reason and the error's Go type, and no
 // record carries a code, a hash or a user reference.
-func WithCodesLogger(l *slog.Logger) CodesOption {
+func WithCodesLogger(logger *slog.Logger) CodesOption {
 	return func(c *Codes) {
-		if l != nil {
-			c.logger = l
+		if logger != nil {
+			c.logger = logger
 		}
 	}
 }

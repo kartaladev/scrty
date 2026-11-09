@@ -57,9 +57,9 @@ func defaultOIDCSignInAssurance(s *session.Session) (amr []string, acr string) {
 //
 // A nil function is refused with ErrConfig, because it would read as the default while
 // the consumer believed they had replaced it. Given twice is refused too.
-func WithOIDCSignInAssurance(f func(*session.Session) (amr []string, acr string)) OIDCProviderOption {
+func WithOIDCSignInAssurance(assurance func(*session.Session) (amr []string, acr string)) OIDCProviderOption {
 	return func(op *oidcEndpoints) error {
-		if f == nil {
+		if assurance == nil {
 			return newConfigError("WithOIDCSignInAssurance needs a function")
 		}
 
@@ -67,7 +67,7 @@ func WithOIDCSignInAssurance(f func(*session.Session) (amr []string, acr string)
 			return newConfigError("WithOIDCSignInAssurance was given twice")
 		}
 
-		op.resume.assurance = f
+		op.resume.assurance = assurance
 		op.resume.assuranceSet = true
 
 		return nil

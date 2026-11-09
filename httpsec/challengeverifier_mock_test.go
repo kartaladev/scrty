@@ -42,18 +42,18 @@ func (m *MockChallengeVerifier) EXPECT() *MockChallengeVerifierMockRecorder {
 }
 
 // Verify mocks base method.
-func (m *MockChallengeVerifier) Verify(ctx context.Context, r httpsec.Request, s httpsec.ChallengeSignals) (httpsec.ChallengeDecision, error) {
+func (m *MockChallengeVerifier) Verify(ctx context.Context, request httpsec.Request, signals httpsec.ChallengeSignals) (httpsec.ChallengeDecision, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Verify", ctx, r, s)
+	ret := m.ctrl.Call(m, "Verify", ctx, request, signals)
 	ret0, _ := ret[0].(httpsec.ChallengeDecision)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // Verify indicates an expected call of Verify.
-func (mr *MockChallengeVerifierMockRecorder) Verify(ctx, r, s any) *MockChallengeVerifierVerifyCall {
+func (mr *MockChallengeVerifierMockRecorder) Verify(ctx, request, signals any) *MockChallengeVerifierVerifyCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Verify", reflect.TypeOf((*MockChallengeVerifier)(nil).Verify), ctx, r, s)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Verify", reflect.TypeOf((*MockChallengeVerifier)(nil).Verify), ctx, request, signals)
 	return &MockChallengeVerifierVerifyCall{Call: call}
 }
 

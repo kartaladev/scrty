@@ -395,13 +395,13 @@ type BasicAuthOption func(*basicAuth) error
 // stateless-challenge refusals included, an unavailable user store too, and no
 // refusal answered otherwise does: a lock disclosed with WithLockDisclosure is
 // a 429, and it and a deny answered 403 carry none.
-func EnableBasicAuth(d BasicAuthDeps, opts ...BasicAuthOption) Option {
+func EnableBasicAuth(deps BasicAuthDeps, opts ...BasicAuthOption) Option {
 	const option = "EnableBasicAuth"
 
 	return func(c *config) error {
 		b := &basicAuth{
-			authn:    d.Authenticator,
-			attempts: d.Attempts,
+			authn:    deps.Authenticator,
+			attempts: deps.Attempts,
 			now:      c.now,
 			realm:    DefaultBasicAuthRealm,
 		}
@@ -422,11 +422,11 @@ func EnableBasicAuth(d BasicAuthDeps, opts ...BasicAuthOption) Option {
 		}
 
 		c.enable(option, func() error {
-			if err := requireDep(option, "authenticator", d.Authenticator); err != nil {
+			if err := requireDep(option, "authenticator", deps.Authenticator); err != nil {
 				return err
 			}
 
-			return requireDep(option, "attempt store", d.Attempts)
+			return requireDep(option, "attempt store", deps.Attempts)
 		})
 
 		c.wire(b.wire)
@@ -460,23 +460,23 @@ func WithBasicAuthRealm(realm string) BasicAuthOption {
 	}
 }
 
-// WithBasicAuthLimiter counts Basic authentication's failures against l, by
+// WithBasicAuthLimiter counts Basic authentication's failures against limiter, by
 // source, instead of the password-login limiter Basic shares with form login.
 //
 // Default: one limiter shared by Basic and form login, built from the chain's
 // factory (WithRateLimiterFactory, or the in-memory default) under the
 // namespace "password-login", allowing 50 failures per source in 15 minutes.
 // Sharing it means a source spraying passwords across both endpoints spends
-// one allowance. With this option Basic counts against l alone, under the flow
+// one allowance. With this option Basic counts against limiter alone, under the flow
 // "password-login-basic", and form login keeps the shared default unless it is
-// given its own (WithLoginLimiter). The limit and window are l's own.
+// given its own (WithLoginLimiter). The limit and window are limiter's own.
 //
 // The flow is the endpoint's own so that nothing is shared with form login: its
 // IPv6 aggregate (WithIPv6Aggregate) is built under the namespace
 // "password-login-basic-ipv6-aggregate", and a factory that refuses one
 // namespace with two policies builds the chain all the same. That aggregate is
-// sized from l's own
-// policy, the multiplier times the limit and window l reports through
+// sized from limiter's own
+// policy, the multiplier times the limit and window limiter reports through
 // ratelimit.PolicyReporter, as the memory limiter does. A limiter that reports
 // none gets no default aggregate and one warning at construction naming
 // EnableBasicAuth; an explicit WithIPv6Aggregate refuses it with a
@@ -484,13 +484,13 @@ func WithBasicAuthRealm(realm string) BasicAuthOption {
 //
 // A nil limiter, or a typed nil, is refused: it would read as "no limit"
 // while the consumer believed one was set.
-func WithBasicAuthLimiter(l ratelimit.Limiter) BasicAuthOption {
+func WithBasicAuthLimiter(limiter ratelimit.Limiter) BasicAuthOption {
 	return func(b *basicAuth) error {
-		if err := requireDep("WithBasicAuthLimiter", "limiter", l); err != nil {
+		if err := requireDep("WithBasicAuthLimiter", "limiter", limiter); err != nil {
 			return err
 		}
 
-		b.limiter = l
+		b.limiter = limiter
 
 		return nil
 	}

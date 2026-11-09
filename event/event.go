@@ -83,7 +83,7 @@ const CauseGrantsNotRevoked = "grants_not_revoked"
 // them apart again.
 //
 // It may be called concurrently, from every request the chain serves at once.
-type Sink func(ctx context.Context, e Event)
+type Sink func(ctx context.Context, event Event)
 
 // The outcomes an event reports.
 const (

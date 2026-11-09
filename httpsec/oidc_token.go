@@ -47,7 +47,7 @@ func (g *oidcTokenGroup) flushRefusalLogs() error {
 }
 
 // WithOIDCTokenLimiter counts the token endpoint's failed client authentications and
-// invalid DPoP proofs through l.
+// invalid DPoP proofs through limiter.
 //
 // Default: the chain's rate-limiter factory (WithRateLimiterFactory) under namespace
 // "oidc-token", or else an in-memory limiter of 10 failures per source in 15 minutes. A
@@ -61,32 +61,32 @@ func (g *oidcTokenGroup) flushRefusalLogs() error {
 //
 // A nil limiter, including an interface holding a nil pointer, is refused: it would read
 // as no limit while the consumer believed they had replaced one.
-func WithOIDCTokenLimiter(l ratelimit.Limiter) OIDCProviderOption {
+func WithOIDCTokenLimiter(limiter ratelimit.Limiter) OIDCProviderOption {
 	return func(op *oidcEndpoints) error {
-		if err := requireDep("WithOIDCTokenLimiter", "limiter", l); err != nil {
+		if err := requireDep("WithOIDCTokenLimiter", "limiter", limiter); err != nil {
 			return err
 		}
 
-		op.token.throttle.limiter = l
+		op.token.throttle.limiter = limiter
 
 		return nil
 	}
 }
 
-// WithOIDCTokenBodyLimit reads at most n bytes of a token request's body.
+// WithOIDCTokenBodyLimit reads at most limit bytes of a token request's body.
 //
 // Default: DefaultLoginBodyLimit. The bound applies before anything is parsed or any
 // client is known, and a body over it answers ErrRequestTooLarge. A client's assertion
 // and its resource parameters are what a body needs room for. A limit of zero or less is
 // refused, because it would refuse every request.
-func WithOIDCTokenBodyLimit(n int64) OIDCProviderOption {
+func WithOIDCTokenBodyLimit(limit int64) OIDCProviderOption {
 	return func(op *oidcEndpoints) error {
-		if n <= 0 {
+		if limit <= 0 {
 			return newConfigError("WithOIDCTokenBodyLimit takes a positive bound, and %d would refuse every "+
-				"token request", n)
+				"token request", limit)
 		}
 
-		op.token.bodyLimit = n
+		op.token.bodyLimit = limit
 
 		return nil
 	}

@@ -83,9 +83,9 @@ import (
 // A base path that repeats the first segment of a default path, such as "/sso"
 // with the SSO endpoints, answers "/sso/sso/login/{provider}": that is what was
 // configured, and it is not refused.
-func WithBasePath(p string) Option {
+func WithBasePath(basePath string) Option {
 	return func(c *config) error {
-		c.basePath = p
+		c.basePath = basePath
 		c.basePathGiven = true
 
 		return nil

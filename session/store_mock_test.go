@@ -84,17 +84,17 @@ func (c *MockStoreCountActiveByUserCall) DoAndReturn(f func(context.Context, ide
 }
 
 // Create mocks base method.
-func (m *MockStore) Create(ctx context.Context, s *session.Session) error {
+func (m *MockStore) Create(ctx context.Context, sess *session.Session) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Create", ctx, s)
+	ret := m.ctrl.Call(m, "Create", ctx, sess)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Create indicates an expected call of Create.
-func (mr *MockStoreMockRecorder) Create(ctx, s any) *MockStoreCreateCall {
+func (mr *MockStoreMockRecorder) Create(ctx, sess any) *MockStoreCreateCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockStore)(nil).Create), ctx, s)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockStore)(nil).Create), ctx, sess)
 	return &MockStoreCreateCall{Call: call}
 }
 
@@ -547,17 +547,17 @@ func (c *MockStoreRecordActivityCall) DoAndReturn(f func(context.Context, string
 }
 
 // Save mocks base method.
-func (m *MockStore) Save(ctx context.Context, s *session.Session) error {
+func (m *MockStore) Save(ctx context.Context, sess *session.Session) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Save", ctx, s)
+	ret := m.ctrl.Call(m, "Save", ctx, sess)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Save indicates an expected call of Save.
-func (mr *MockStoreMockRecorder) Save(ctx, s any) *MockStoreSaveCall {
+func (mr *MockStoreMockRecorder) Save(ctx, sess any) *MockStoreSaveCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Save", reflect.TypeOf((*MockStore)(nil).Save), ctx, s)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Save", reflect.TypeOf((*MockStore)(nil).Save), ctx, sess)
 	return &MockStoreSaveCall{Call: call}
 }
 

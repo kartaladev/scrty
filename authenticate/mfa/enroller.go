@@ -352,9 +352,9 @@ const voidingCode = ""
 // or it has expired or run out, nothing is charged and it returns nil. An
 // error other than ErrEmailCodeInvalid — a store failure — stops it and is
 // returned; the code may then keep some attempts.
-func VoidEmailCode(ctx context.Context, e Enroller, user identity.UserID, gen id.ID) error {
+func VoidEmailCode(ctx context.Context, enroller Enroller, user identity.UserID, gen id.ID) error {
 	for range MaxEmailCodeAttempts {
-		err := e.RedeemEmailCode(ctx, user, gen, voidingCode)
+		err := enroller.RedeemEmailCode(ctx, user, gen, voidingCode)
 
 		switch {
 		case err == nil:

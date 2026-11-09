@@ -309,23 +309,23 @@ func (l *securityHeaders) applyHeaders(w ResponseWriter, req Request) {
 }
 
 // WithCSP replaces the Content-Security-Policy of the document profile, or of
-// the profile being built by APIHeaders or NewHeaderProfile, with p.
+// the profile being built by APIHeaders or NewHeaderProfile, with policy.
 //
 // Default: StrictCSP() with no directives added. A policy that fails its own
 // check (see CSPDirective), or that holds no directive at all (the zero
 // CSPPolicy, or one built from it with nothing added), fails construction
 // here. To send no policy, use WithoutHeader("Content-Security-Policy").
-func WithCSP(p CSPPolicy) HeaderOption {
+func WithCSP(policy CSPPolicy) HeaderOption {
 	return func(l *securityHeaders) error {
-		if p.err != nil {
-			return newConfigError("WithCSP was given a policy that cannot be sent: %s", p.err)
+		if policy.err != nil {
+			return newConfigError("WithCSP was given a policy that cannot be sent: %s", policy.err)
 		}
 
-		if len(p.directives) == 0 {
+		if len(policy.directives) == 0 {
 			return newConfigError("WithCSP was given a policy with no directive; remove the header with WithoutHeader to send none")
 		}
 
-		l.document.set(profileHeader{name: headerCSP, policy: &p})
+		l.document.set(profileHeader{name: headerCSP, policy: &policy})
 
 		return nil
 	}
@@ -532,7 +532,7 @@ func APIHeaders(opts ...HeaderOption) HeaderProfile {
 	}}, opts)
 }
 
-// WithHeaderProfile gives the requests m selects the headers of p instead of
+// WithHeaderProfile gives the requests matcher selects the headers of profile instead of
 // the document set. Profiles are tried in the order given and the first whose
 // matcher selects a request applies; a request none selects gets the document
 // set.
@@ -546,21 +546,21 @@ func APIHeaders(opts ...HeaderOption) HeaderProfile {
 // without the base path silently stops selecting that endpoint once a base path
 // moves it. Compare the resolved paths, which Chain.Endpoints lists
 // (WithoutBasePathRouteCheck covers only the routes given as paths).
-func WithHeaderProfile(p HeaderProfile, m RouteMatcher) HeaderOption {
+func WithHeaderProfile(profile HeaderProfile, matcher RouteMatcher) HeaderOption {
 	return func(l *securityHeaders) error {
 		if err := l.layerWide("WithHeaderProfile"); err != nil {
 			return err
 		}
 
-		if p.err != nil {
-			return newConfigError("WithHeaderProfile was given a profile that cannot be sent: %s", p.err)
+		if profile.err != nil {
+			return newConfigError("WithHeaderProfile was given a profile that cannot be sent: %s", profile.err)
 		}
 
-		if m == nil {
+		if matcher == nil {
 			return newConfigError("WithHeaderProfile was given no route matcher, so its profile would never apply")
 		}
 
-		l.profiles = append(l.profiles, routedProfile{profile: p, matches: m})
+		l.profiles = append(l.profiles, routedProfile{profile: profile, matches: matcher})
 
 		return nil
 	}

@@ -46,8 +46,8 @@ type PasswordAgeOption func(*PasswordAge)
 // Zero or less is a configuration error: every password ever set is older than
 // zero, so the policy would challenge every login and the caller could never
 // get past it to set a new one.
-func WithMaxPasswordAge(d time.Duration) PasswordAgeOption {
-	return func(p *PasswordAge) { p.maxAge = d }
+func WithMaxPasswordAge(maxAge time.Duration) PasswordAgeOption {
+	return func(p *PasswordAge) { p.maxAge = maxAge }
 }
 
 // WithUnknownPasswordAge replaces what the policy does about a login whose

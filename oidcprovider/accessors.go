@@ -19,16 +19,16 @@ func (p *Provider) BrowserSessionsEnabled() bool { return p.cfg.browserSessions 
 func (p *Provider) Issuer() string { return p.issuer }
 
 // RequiresBinding reports whether any client the provider can see at construction
-// requires the sender constraint b. BindingOptional is not a requirement, so it
-// answers false.
+// requires the sender constraint named by requirement. BindingOptional names no
+// constraint, so it answers false.
 //
 // The provider can see the clients of Deps.Clients, and those of a *MemoryRegistry
 // given as Deps.Registry. It cannot list a consumer's own registry, so it answers
 // false for the clients that registry holds: that is a stated limit, not a statement
-// that none requires b. Such a client is checked as it is read, and one requiring a
+// that none requires that constraint. Such a client is checked as it is read, and one requiring a
 // binding the chain does not verify is refused then.
-func (p *Provider) RequiresBinding(b BindingRequirement) bool {
-	if b == BindingOptional {
+func (p *Provider) RequiresBinding(requirement BindingRequirement) bool {
+	if requirement == BindingOptional {
 		return false
 	}
 
@@ -41,7 +41,7 @@ func (p *Provider) RequiresBinding(b BindingRequirement) bool {
 	defer memory.mu.RUnlock()
 
 	for _, rc := range memory.clients {
-		if rc.RequireBinding == b {
+		if rc.RequireBinding == requirement {
 			return true
 		}
 	}

@@ -59,28 +59,28 @@ func (s *MemoryEnrolmentStore) Get(
 	return copyEnrolment(e), true, nil
 }
 
-// PutPending stores e as a pending enrolment on the generation e carries,
+// PutPending stores enrolment as a pending enrolment on the generation enrolment carries,
 // clearing any device proof and emailed code.
 //
 // The decision and the write happen under one lock, which is what a durable
 // store expresses as a conditional write: two concurrent begins cannot both
 // find no confirmed enrolment and then both replace one.
-func (s *MemoryEnrolmentStore) PutPending(_ context.Context, e Enrolment) error {
+func (s *MemoryEnrolmentStore) PutPending(_ context.Context, enrolment Enrolment) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if existing, ok := s.enrolments[e.User]; ok && !existing.ConfirmedAt.IsZero() {
+	if existing, ok := s.enrolments[enrolment.User]; ok && !existing.ConfirmedAt.IsZero() {
 		return ErrAlreadyEnrolled
 	}
 
 	// A begin keeps who, what and when, and starts everything else afresh:
 	// unconfirmed, no step spent, no device proof, no emailed code and no
 	// verification attempts charged.
-	s.enrolments[e.User] = Enrolment{
-		User:       e.User,
-		Secret:     bytes.Clone(e.Secret),
-		CreatedAt:  e.CreatedAt,
-		Generation: e.Generation,
+	s.enrolments[enrolment.User] = Enrolment{
+		User:       enrolment.User,
+		Secret:     bytes.Clone(enrolment.Secret),
+		CreatedAt:  enrolment.CreatedAt,
+		Generation: enrolment.Generation,
 	}
 
 	return nil

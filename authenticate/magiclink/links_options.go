@@ -40,8 +40,8 @@ func WithConfirmPath(path string) Option {
 // The window itself belongs to the token manager, configured there with
 // onetime.WithIssuanceWindow, so a one-time credential's timing is set in one
 // place.
-func WithIssuanceLimit(n int) Option {
-	return func(m *Links) { m.issuanceLimit = n }
+func WithIssuanceLimit(limit int) Option {
+	return func(m *Links) { m.issuanceLimit = limit }
 }
 
 // WithAddressResolver replaces how a submitted address becomes a user.
@@ -52,10 +52,10 @@ func WithIssuanceLimit(n int) Option {
 // default lookup no longer runs at all.
 //
 // A nil resolver is ignored and the default is kept.
-func WithAddressResolver(r AddressResolver) Option {
+func WithAddressResolver(resolver AddressResolver) Option {
 	return func(m *Links) {
-		if r != nil {
-			m.resolver = r
+		if resolver != nil {
+			m.resolver = resolver
 		}
 	}
 }
@@ -71,8 +71,8 @@ func WithAddressResolver(r AddressResolver) Option {
 //
 // Whatever a renderer returns, the recipient is forced to the submitted
 // address.
-func WithRenderer(r Renderer) Option {
-	return func(m *Links) { m.renderer = r }
+func WithRenderer(renderer Renderer) Option {
+	return func(m *Links) { m.renderer = renderer }
 }
 
 // WithSameDeviceBinding turns same-device binding on or off.
@@ -114,10 +114,10 @@ func WithSynchronousDelivery() Option {
 // recorded by a fixed reason and the error's Go type, never by the error's own
 // text; a consumer who wants that detail logs it inside their own
 // implementation of the port.
-func WithLogger(l *slog.Logger) Option {
+func WithLogger(logger *slog.Logger) Option {
 	return func(m *Links) {
-		if l != nil {
-			m.logger = l
+		if logger != nil {
+			m.logger = logger
 		}
 	}
 }
@@ -127,6 +127,6 @@ func WithLogger(l *slog.Logger) Option {
 //
 // It exists so a test can make the source fail and watch the request refuse
 // without sending anything. A nil source fails construction with ErrConfig.
-func WithRandom(r io.Reader) Option {
-	return func(m *Links) { m.random = r }
+func WithRandom(src io.Reader) Option {
+	return func(m *Links) { m.random = src }
 }

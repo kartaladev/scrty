@@ -63,14 +63,14 @@ type config struct {
 // Default: none. Without it, every task must carry its own Interval, or New
 // fails with ErrNoInterval naming the first task that has none: the library
 // does not pick a cadence, because one it picked would look like one the
-// deployment chose. A zero or negative d fails construction with
+// deployment chose. A zero or negative interval fails construction with
 // ErrInvalidOption.
-func WithDefaultInterval(d time.Duration) Option {
+func WithDefaultInterval(interval time.Duration) Option {
 	return func(c *config) error {
-		if d <= 0 {
-			return fmt.Errorf("%w: default interval %s is not positive", ErrInvalidOption, d)
+		if interval <= 0 {
+			return fmt.Errorf("%w: default interval %s is not positive", ErrInvalidOption, interval)
 		}
-		c.defaultInterval = d
+		c.defaultInterval = interval
 		return nil
 	}
 }
@@ -90,25 +90,25 @@ func WithRunImmediately() Option {
 	}
 }
 
-// WithDistributedLocker has each run first take a lock from l, keyed by the
-// job name (JobPrefix + task name), and skip the run when l refuses. A lock
+// WithDistributedLocker has each run first take a lock from locker, keyed by the
+// job name (JobPrefix + task name), and skip the run when locker refuses. A lock
 // failure is logged at ERROR with the task and job names, and the task runs
 // again at its next tick. Default: no lock, so every process running a
 // Sweeper sweeps independently, and replicas sweep the same tables
 // concurrently.
 //
-// The lock is gocron's: l is handed to gocron.WithDistributedLocker, which
+// The lock is gocron's: locker is handed to gocron.WithDistributedLocker, which
 // holds it for the length of the run. Whether two replicas actually serialise
-// depends on l. This package's tests prove the locker is consulted with the
+// depends on locker. This package's tests prove the locker is consulted with the
 // job name before each run; they do not, and cannot, prove that a given
-// locker excludes a second replica. A nil l, including a typed nil, fails
+// locker excludes a second replica. A nil locker, including a typed nil, fails
 // construction with ErrInvalidOption.
-func WithDistributedLocker(l gocron.Locker) Option {
+func WithDistributedLocker(locker gocron.Locker) Option {
 	return func(c *config) error {
-		if isNil(l) {
+		if isNil(locker) {
 			return fmt.Errorf("%w: nil distributed locker", ErrInvalidOption)
 		}
-		c.locker = l
+		c.locker = locker
 		return nil
 	}
 }
@@ -122,14 +122,14 @@ func WithDistributedLocker(l gocron.Locker) Option {
 // WithClock, which requires exactly that type, and adapting a narrower clock
 // would mean inventing behaviour for timer methods scrty never reads. It does
 // not set the clock a run's Elapsed is measured with; that is the runner's
-// (expiry.WithClock). A nil c, including a typed nil, fails construction with
+// (expiry.WithClock). A nil clock, including a typed nil, fails construction with
 // ErrInvalidOption.
-func WithClock(c clockwork.Clock) Option {
+func WithClock(clock clockwork.Clock) Option {
 	return func(cfg *config) error {
-		if isNil(c) {
+		if isNil(clock) {
 			return fmt.Errorf("%w: nil clock", ErrInvalidOption)
 		}
-		cfg.clock = c
+		cfg.clock = clock
 		return nil
 	}
 }
@@ -141,13 +141,13 @@ func WithClock(c clockwork.Clock) Option {
 // which comes from the consumer's locker. When the error is, or wraps,
 // context.Canceled or context.DeadlineExceeded, the record also carries
 // cancelled=true, so a lock abandoned at shutdown can be told from a refusal.
-// A nil l fails construction with ErrInvalidOption.
-func WithLogger(l *slog.Logger) Option {
+// A nil logger fails construction with ErrInvalidOption.
+func WithLogger(logger *slog.Logger) Option {
 	return func(c *config) error {
-		if l == nil {
+		if logger == nil {
 			return fmt.Errorf("%w: nil logger", ErrInvalidOption)
 		}
-		c.logger = l
+		c.logger = logger
 		return nil
 	}
 }
@@ -160,20 +160,20 @@ const defaultStopTimeout = 10 * time.Second
 // after cancelling its context. Default: 10 seconds, gocron's own default.
 // Shutdown waits up to this timeout or until its own ctx is done, whichever
 // ends first; a purge still running when the timeout elapses keeps running,
-// and Shutdown returns an error wrapping gocron.ErrStopJobsTimedOut. d is
+// and Shutdown returns an error wrapping gocron.ErrStopJobsTimedOut. timeout is
 // handed to gocron.WithStopTimeout and measured on the sweeper's clock
-// (WithClock), as is gocron's backstop of d plus one second on its wait for
+// (WithClock), as is gocron's backstop of timeout plus one second on its wait for
 // the executor. With the default real clock both elapse in real time. On a
 // clock that does not advance, such as a fake clock nobody moves, neither
 // fires: Shutdown then returns only when its own ctx ends, so give it a ctx
-// with a deadline. A zero or negative d fails construction
+// with a deadline. A zero or negative timeout fails construction
 // with ErrInvalidOption.
-func WithStopTimeout(d time.Duration) Option {
+func WithStopTimeout(timeout time.Duration) Option {
 	return func(c *config) error {
-		if d <= 0 {
-			return fmt.Errorf("%w: stop timeout %s is not positive", ErrInvalidOption, d)
+		if timeout <= 0 {
+			return fmt.Errorf("%w: stop timeout %s is not positive", ErrInvalidOption, timeout)
 		}
-		c.stopTimeout = d
+		c.stopTimeout = timeout
 		return nil
 	}
 }
@@ -241,16 +241,16 @@ type Sweeper struct {
 	shutdownErr  error
 }
 
-// New builds a Sweeper over r. It fails, before anything is scheduled, when:
-//   - r is nil, an option is nil, or an option is handed a meaningless value:
+// New builds a Sweeper over runner. It fails, before anything is scheduled, when:
+//   - runner is nil, an option is nil, or an option is handed a meaningless value:
 //     ErrInvalidOption;
 //   - a task has no Interval and no default interval is set: ErrNoInterval,
 //     naming the task.
 //
 // New builds the gocron scheduler, which starts a goroutine; call Shutdown to
 // release it whether or not Start is called.
-func New(r *expiry.Runner, opts ...Option) (*Sweeper, error) {
-	if r == nil {
+func New(runner *expiry.Runner, opts ...Option) (*Sweeper, error) {
+	if runner == nil {
 		return nil, fmt.Errorf("%w: nil runner", ErrInvalidOption)
 	}
 
@@ -264,7 +264,7 @@ func New(r *expiry.Runner, opts ...Option) (*Sweeper, error) {
 		}
 	}
 
-	tasks := r.Tasks()
+	tasks := runner.Tasks()
 	jobs := make([]job, 0, len(tasks))
 	for _, t := range tasks {
 		interval := t.Interval
@@ -287,7 +287,7 @@ func New(r *expiry.Runner, opts ...Option) (*Sweeper, error) {
 		return nil, fmt.Errorf("sweep: building the scheduler: %w", err)
 	}
 
-	return &Sweeper{runner: r, sched: sched, jobs: jobs, cfg: cfg, shutdownDone: make(chan struct{})}, nil
+	return &Sweeper{runner: runner, sched: sched, jobs: jobs, cfg: cfg, shutdownDone: make(chan struct{})}, nil
 }
 
 // Start schedules one job per task and starts the scheduler. It returns

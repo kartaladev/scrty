@@ -221,17 +221,17 @@ func (c *MockClientStoreGenerateSecretCall) DoAndReturn(f func(context.Context, 
 }
 
 // Put mocks base method.
-func (m *MockClientStore) Put(ctx context.Context, c oidcprovider.Client) error {
+func (m *MockClientStore) Put(ctx context.Context, client oidcprovider.Client) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Put", ctx, c)
+	ret := m.ctrl.Call(m, "Put", ctx, client)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Put indicates an expected call of Put.
-func (mr *MockClientStoreMockRecorder) Put(ctx, c any) *MockClientStorePutCall {
+func (mr *MockClientStoreMockRecorder) Put(ctx, client any) *MockClientStorePutCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Put", reflect.TypeOf((*MockClientStore)(nil).Put), ctx, c)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Put", reflect.TypeOf((*MockClientStore)(nil).Put), ctx, client)
 	return &MockClientStorePutCall{Call: call}
 }
 
@@ -241,19 +241,19 @@ type MockClientStorePutCall struct {
 }
 
 // Return rewrite *gomock.Call.Return
-func (c_2 *MockClientStorePutCall) Return(arg0 error) *MockClientStorePutCall {
-	c_2.Call = c_2.Call.Return(arg0)
-	return c_2
+func (c *MockClientStorePutCall) Return(arg0 error) *MockClientStorePutCall {
+	c.Call = c.Call.Return(arg0)
+	return c
 }
 
 // Do rewrite *gomock.Call.Do
-func (c_2 *MockClientStorePutCall) Do(f func(context.Context, oidcprovider.Client) error) *MockClientStorePutCall {
-	c_2.Call = c_2.Call.Do(f)
-	return c_2
+func (c *MockClientStorePutCall) Do(f func(context.Context, oidcprovider.Client) error) *MockClientStorePutCall {
+	c.Call = c.Call.Do(f)
+	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c_2 *MockClientStorePutCall) DoAndReturn(f func(context.Context, oidcprovider.Client) error) *MockClientStorePutCall {
-	c_2.Call = c_2.Call.DoAndReturn(f)
-	return c_2
+func (c *MockClientStorePutCall) DoAndReturn(f func(context.Context, oidcprovider.Client) error) *MockClientStorePutCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
 }

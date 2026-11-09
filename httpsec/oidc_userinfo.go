@@ -44,19 +44,19 @@ func (g *oidcUserInfoGroup) routes() []oidcRoute {
 	}
 }
 
-// WithOIDCUserInfoBodyLimit reads at most n bytes of a POST's body at UserInfo.
+// WithOIDCUserInfoBodyLimit reads at most limit bytes of a POST's body at UserInfo.
 //
 // Default: DefaultLoginBodyLimit. The bound applies before anything is parsed, and a body over it
 // answers ErrRequestTooLarge. Only a body that declares a form is read at all. A limit of zero or
 // less is refused, because it would refuse every token sent in a form.
-func WithOIDCUserInfoBodyLimit(n int64) OIDCProviderOption {
+func WithOIDCUserInfoBodyLimit(limit int64) OIDCProviderOption {
 	return func(op *oidcEndpoints) error {
-		if n <= 0 {
+		if limit <= 0 {
 			return newConfigError("WithOIDCUserInfoBodyLimit takes a positive bound, and %d would refuse "+
-				"every token sent in a form", n)
+				"every token sent in a form", limit)
 		}
 
-		op.userinfo.bodyLimit = n
+		op.userinfo.bodyLimit = limit
 
 		return nil
 	}

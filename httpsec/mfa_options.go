@@ -266,7 +266,7 @@ func WithMFAVerifyPrefix(prefix string) MFAOption {
 	}
 }
 
-// WithMFAVerifyLimiter counts failed code verifications through l.
+// WithMFAVerifyLimiter counts failed code verifications through limiter.
 //
 // Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
 // namespace "mfa-verify", or else an in-memory limiter of 5 failures per 15
@@ -287,19 +287,19 @@ func WithMFAVerifyPrefix(prefix string) MFAOption {
 //
 // A nil limiter, including an interface holding a nil pointer, is refused: it
 // would read as "no limit" while the consumer believed they had replaced one.
-func WithMFAVerifyLimiter(l ratelimit.Limiter) MFAOption {
+func WithMFAVerifyLimiter(limiter ratelimit.Limiter) MFAOption {
 	return func(i *mfaInterceptor) error {
-		if err := requireDep("WithMFAVerifyLimiter", "limiter", l); err != nil {
+		if err := requireDep("WithMFAVerifyLimiter", "limiter", limiter); err != nil {
 			return err
 		}
 
-		i.throttleOpts = append(i.throttleOpts, mfa.WithThrottleLimiter(l))
+		i.throttleOpts = append(i.throttleOpts, mfa.WithThrottleLimiter(limiter))
 
 		return nil
 	}
 }
 
-// WithMFATokens issues the rotated session's access token through g.
+// WithMFATokens issues the rotated session's access token through tokens.
 //
 // There is no default, and it is required in the signed-token mode: rotation
 // supersedes the handle the caller arrived with, marking it so that it stops
@@ -313,13 +313,13 @@ func WithMFAVerifyLimiter(l ratelimit.Limiter) MFAOption {
 // rotated and the caller's credential still working. It is the same generator
 // the first factors issue through, so a token from a login and one from a
 // second factor are indistinguishable to whatever verifies them.
-func WithMFATokens(g token.Generator) MFAOption {
+func WithMFATokens(tokens token.Generator) MFAOption {
 	return func(i *mfaInterceptor) error {
-		if err := requireDep("WithMFATokens", "token generator", g); err != nil {
+		if err := requireDep("WithMFATokens", "token generator", tokens); err != nil {
 			return err
 		}
 
-		i.tokens = g
+		i.tokens = tokens
 
 		return nil
 	}
@@ -352,7 +352,7 @@ func WithMFAResponder(fn MFAResponder) MFAOption {
 }
 
 // WithMFALogInterval writes at most one second-factor throttle record per
-// reason per d.
+// reason per interval.
 //
 // Default: one minute. It governs the records MFA verification refusals write
 // and nothing else, so a user being guessed at cannot drown out or silence any
@@ -361,9 +361,9 @@ func WithMFAResponder(fn MFAResponder) MFAOption {
 //
 // An interval of zero or less writes every record, which is the documented way
 // to ask for the full stream: it is a choice about volume, not a fault.
-func WithMFALogInterval(d time.Duration) MFAOption {
+func WithMFALogInterval(interval time.Duration) MFAOption {
 	return func(i *mfaInterceptor) error {
-		i.throttleOpts = append(i.throttleOpts, mfa.WithThrottleLogInterval(d))
+		i.throttleOpts = append(i.throttleOpts, mfa.WithThrottleLogInterval(interval))
 
 		return nil
 	}

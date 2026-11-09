@@ -599,8 +599,8 @@ func WithAlgs(algs ...Alg) Option {
 // every replica sharing a store sets the same lifetime. The default grace of
 // WithRetiredKeyGrace is this lifetime, and it reduces that harm without removing
 // it.
-func WithKeyLifetime(d time.Duration) Option {
-	return func(km *Keys) { km.lifetime = d }
+func WithKeyLifetime(lifetime time.Duration) Option {
+	return func(km *Keys) { km.lifetime = lifetime }
 }
 
 // WithRotateInterval sets how often a new key is minted for every configured
@@ -610,8 +610,8 @@ func WithKeyLifetime(d time.Duration) Option {
 // minus this interval from its replacement, so every replica sharing a store sets the
 // same one: a replica rotating less often than another refuses tokens the other
 // verifies.
-func WithRotateInterval(d time.Duration) Option {
-	return func(km *Keys) { km.rotateEvery = d }
+func WithRotateInterval(interval time.Duration) Option {
+	return func(km *Keys) { km.rotateEvery = interval }
 }
 
 // WithHousekeepingInterval sets how often keys past their retire time stop being
@@ -621,8 +621,8 @@ func WithRotateInterval(d time.Duration) Option {
 // shorter interval costs a load per run; a listing that fails is reported to the
 // logger and the error hook, and the next run lists again. With WithRetiredKeysKept a
 // run only unpublishes and does not list the store.
-func WithHousekeepingInterval(d time.Duration) Option {
-	return func(km *Keys) { km.housekeepEvery = d }
+func WithHousekeepingInterval(interval time.Duration) Option {
+	return func(km *Keys) { km.housekeepEvery = interval }
 }
 
 // WithReloadInterval sets how often the store is reloaded, which is how
@@ -633,8 +633,8 @@ func WithHousekeepingInterval(d time.Duration) Option {
 // still signing with a key another has replaced, so every replica sharing a store sets
 // the same one: a replica reloading less often than another signs for longer than that
 // other allows for.
-func WithReloadInterval(d time.Duration) Option {
-	return func(km *Keys) { km.reloadEvery = d }
+func WithReloadInterval(interval time.Duration) Option {
+	return func(km *Keys) { km.reloadEvery = interval }
 }
 
 // WithLogInterval sets how long one written record about a rotation, reload or
@@ -650,8 +650,8 @@ func WithReloadInterval(d time.Duration) Option {
 //
 // The error hook is never sampled: every failure reaches it, bar a store call that
 // Shutdown cut off, which is no failure (see above).
-func WithLogInterval(d time.Duration) Option {
-	return func(km *Keys) { km.sampleWindow = d }
+func WithLogInterval(interval time.Duration) Option {
+	return func(km *Keys) { km.sampleWindow = interval }
 }
 
 // WithKeyStore sets where keys are persisted. Default: NewMemoryKeyStore,
@@ -693,9 +693,9 @@ func WithRetiredKeysKept() Option {
 // Every replica sharing a store sets the same grace, since the shortest in use
 // decides what is deleted. A negative grace, or one beside WithRetiredKeysKept, is
 // a configuration error from New.
-func WithRetiredKeyGrace(d time.Duration) Option {
+func WithRetiredKeyGrace(grace time.Duration) Option {
 	return func(km *Keys) {
-		km.retiredGrace = d
+		km.retiredGrace = grace
 		km.graceSet = true
 	}
 }

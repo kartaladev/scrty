@@ -11,6 +11,6 @@ import (
 // TestRefreshTokenStore_CannotBeBuiltOutsideScrty runs go vet with the tag on and reads
 // the refusal: the one way a caller could try to fill a RefreshTokenStore from a
 // session.Store is a field the compiler does not let it name.
-var _ = func(s session.Store) oidcprovider.RefreshTokenStore {
-	return oidcprovider.RefreshTokenStore{sessions: s}
+var _ = func(store session.Store) oidcprovider.RefreshTokenStore {
+	return oidcprovider.RefreshTokenStore{sessions: store}
 }

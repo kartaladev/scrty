@@ -99,7 +99,7 @@ func (k RenewalKind) String() string {
 
 // ReuseObserver is told about each detected reuse, after the family has been
 // revoked. See WithReuseObserver.
-type ReuseObserver func(ctx context.Context, r ReuseReport)
+type ReuseObserver func(ctx context.Context, report ReuseReport)
 
 // ReuseReport describes one detected reuse. It carries no session identifier,
 // raw or digested: the family is what was revoked and what an audit record
@@ -149,27 +149,27 @@ func rotationOf(opts []RotateOption) rotation {
 }
 
 // WithSuccessorLifetime gives the successor an absolute deadline of now plus
-// d, in place of the default, which carries the predecessor's deadline over.
+// lifetime, in place of the default, which carries the predecessor's deadline over.
 //
-// A d of zero or less, or above the manager's lifetime maximum (see
+// A lifetime of zero or less, or above the manager's lifetime maximum (see
 // WithMaxAbsoluteLifetime), is a wiring mistake: RotateWithGrace refuses it
 // with ErrConfig and stores nothing. A deadline that would pass the family
 // maximum (see WithMaxFamilyLifetime) is not a mistake but the family running
 // out, so it is cut to end exactly at the family maximum.
-func WithSuccessorLifetime(d time.Duration) RotateOption {
+func WithSuccessorLifetime(lifetime time.Duration) RotateOption {
 	return func(r *rotation) {
-		r.lifetime = d
+		r.lifetime = lifetime
 		r.lifetimeSet = true
 	}
 }
 
-// RotateWithGrace moves s to a successor in the same family, and keeps s's
+// RotateWithGrace moves current to a successor in the same family, and keeps current's
 // identifier usable for a grace window after it, so a request already in
 // flight with the old identifier, or a client that never received the
 // response, is not signed out. It returns the successor and the kind of
 // renewal performed.
 //
-// The window ends at now plus grace, or at s's absolute deadline if that is
+// The window ends at now plus grace, or at current's absolute deadline if that is
 // earlier. Inside it, loading the old identifier succeeds while its own idle
 // and absolute deadlines are unexpired, and records no activity; once either
 // has passed it is ErrExpired and nothing is revoked. At or after the
@@ -199,10 +199,10 @@ func WithSuccessorLifetime(d time.Duration) RotateOption {
 // whether its successor was used (Store.SuccessorPresented), and the renewal
 // is reuse when it was, and ErrExpired, revoking nothing, when it was
 // not or is no longer stored. A session from LoadForRenewal is what a renewal
-// endpoint passes here; only s's identifier is read, the stored session is
+// endpoint passes here; only current's identifier is read, the stored session is
 // judged.
 //
-// The successor is built from the stored session, not from s, and keeps
+// The successor is built from the stored session, not from current, and keeps
 // everything rotation keeps (see Rotate), its family and the family's start
 // included. Its absolute deadline is carried over unless WithSuccessorLifetime
 // chose another, and its idle deadline starts afresh, capped at the absolute
@@ -227,8 +227,8 @@ func WithSuccessorLifetime(d time.Duration) RotateOption {
 //
 // RotateWithGrace runs no step of the caller's between building the successor
 // and storing it; RotateWithGraceIssuing is the same renewal with one.
-func (m *Sessions) RotateWithGrace(ctx context.Context, s *Session, grace time.Duration, opts ...RotateOption) (*Session, RenewalKind, error) {
-	next, kind, _, err := m.RotateWithGraceIssuing(ctx, s, grace, nil, opts...)
+func (m *Sessions) RotateWithGrace(ctx context.Context, current *Session, grace time.Duration, opts ...RotateOption) (*Session, RenewalKind, error) {
+	next, kind, _, err := m.RotateWithGraceIssuing(ctx, current, grace, nil, opts...)
 
 	return next, kind, err
 }
@@ -303,16 +303,16 @@ func (m *Sessions) RotateWithGrace(ctx context.Context, s *Session, grace time.D
 // decides which of two concurrent renewals stores its successor. A nil issue
 // runs no step and returns an empty credential, which is RotateWithGrace.
 //
-// Every guarantee RotateWithGrace documents holds here unchanged. s is not
+// Every guarantee RotateWithGrace documents holds here unchanged. current is not
 // modified.
 func (m *Sessions) RotateWithGraceIssuing(
 	ctx context.Context,
-	s *Session,
+	current *Session,
 	grace time.Duration,
 	issue func(successor *Session) (string, error),
 	opts ...RotateOption,
 ) (*Session, RenewalKind, string, error) {
-	if s == nil {
+	if current == nil {
 		return nil, 0, "", errors.New("session: rotate with grace was given no session")
 	}
 	if grace < 0 || grace > MaxRenewalGrace {
@@ -327,7 +327,7 @@ func (m *Sessions) RotateWithGraceIssuing(
 			ErrConfig, r.lifetime, m.maxLifetime)
 	}
 
-	old, err := m.loadStored(ctx, s.ID, "session: the session to renew could not be loaded")
+	old, err := m.loadStored(ctx, current.ID, "session: the session to renew could not be loaded")
 	if err != nil {
 		return nil, 0, "", err
 	}

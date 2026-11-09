@@ -85,31 +85,31 @@ func (g *oidcAuthorizeGroup) flushRefusalLogs() error {
 //
 // A nil limiter, including an interface holding a nil pointer, is refused: it would read
 // as no limit while the consumer believed they had replaced one.
-func WithOIDCAuthorizeLimiter(l ratelimit.Limiter) OIDCProviderOption {
+func WithOIDCAuthorizeLimiter(limiter ratelimit.Limiter) OIDCProviderOption {
 	return func(op *oidcEndpoints) error {
-		if err := requireDep("WithOIDCAuthorizeLimiter", "limiter", l); err != nil {
+		if err := requireDep("WithOIDCAuthorizeLimiter", "limiter", limiter); err != nil {
 			return err
 		}
 
-		op.authorize.throttle.limiter = l
+		op.authorize.throttle.limiter = limiter
 
 		return nil
 	}
 }
 
-// WithOIDCAuthorizeBodyLimit reads at most n bytes of a form POST to the authorization
+// WithOIDCAuthorizeBodyLimit reads at most limit bytes of a form POST to the authorization
 // endpoint.
 //
 // Default: DefaultLoginBodyLimit. A body over it answers ErrRequestTooLarge. A limit of
 // zero or less is refused, because it would refuse every form POST.
-func WithOIDCAuthorizeBodyLimit(n int64) OIDCProviderOption {
+func WithOIDCAuthorizeBodyLimit(limit int64) OIDCProviderOption {
 	return func(op *oidcEndpoints) error {
-		if n <= 0 {
+		if limit <= 0 {
 			return newConfigError("WithOIDCAuthorizeBodyLimit takes a positive bound, and %d would refuse "+
-				"every form POST", n)
+				"every form POST", limit)
 		}
 
-		op.authorize.bodyLimit = n
+		op.authorize.bodyLimit = limit
 
 		return nil
 	}

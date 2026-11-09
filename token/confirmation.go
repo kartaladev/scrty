@@ -23,7 +23,7 @@ type ConfirmingGenerator interface {
 	// GenerateWith is Generate with per-token options. With no options it
 	// issues exactly what Generate issues. An option it cannot honour fails
 	// it, and nothing is issued.
-	GenerateWith(ctx context.Context, id string, p *identity.Principal, opts ...IssueOption) (string, error)
+	GenerateWith(ctx context.Context, id string, principal *identity.Principal, opts ...IssueOption) (string, error)
 }
 
 // The built-in generator binds.
@@ -64,14 +64,14 @@ type issue struct {
 }
 
 // WithConfirmation binds the issued token to a key the client holds, by
-// carrying c as its cnf claim. Default: no binding, and no cnf claim.
+// carrying confirmation as its cnf claim. Default: no binding, and no cnf claim.
 //
-// Generate fails with ErrConfig, and issues nothing, when c names both a DPoP
+// Generate fails with ErrConfig, and issues nothing, when confirmation names both a DPoP
 // key and a certificate, when either thumbprint is not 43 characters of
-// unpadded base64url, and when c carries Other members. The zero value is no
+// unpadded base64url, and when confirmation carries Other members. The zero value is no
 // binding and is accepted.
-func WithConfirmation(c Confirmation) IssueOption {
-	return func(i *issue) { i.cnf = c }
+func WithConfirmation(confirmation Confirmation) IssueOption {
+	return func(i *issue) { i.cnf = confirmation }
 }
 
 // The cnf claim and the two members this package issues and checks.
@@ -156,17 +156,17 @@ func readConfirmation(value any, present bool) (Confirmation, error) {
 	return cnf, nil
 }
 
-// WellFormedThumbprint reports whether s is an unpadded base64url SHA-256
+// WellFormedThumbprint reports whether thumbprint is an unpadded base64url SHA-256
 // digest, the form both confirmation members take: 43 characters of the
 // base64url alphabet, the last of which leaves no stray bits.
-func WellFormedThumbprint(s string) bool {
-	if len(s) != thumbprintLength || !base64URL(s) {
+func WellFormedThumbprint(thumbprint string) bool {
+	if len(thumbprint) != thumbprintLength || !base64URL(thumbprint) {
 		return false
 	}
 
 	// 43 characters carry 258 bits for a 256-bit digest, so the low two bits
 	// of the last character's value are zero in the one canonical encoding.
-	return base64URLValue(s[thumbprintLength-1])&0b11 == 0
+	return base64URLValue(thumbprint[thumbprintLength-1])&0b11 == 0
 }
 
 // base64URLValue is the six-bit value of one base64url character, which the

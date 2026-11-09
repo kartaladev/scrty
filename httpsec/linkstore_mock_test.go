@@ -121,17 +121,17 @@ func (c *MockLinkStoreFindByExternalCall) DoAndReturn(f func(context.Context, st
 }
 
 // Insert mocks base method.
-func (m *MockLinkStore) Insert(ctx context.Context, l oidc.Link) error {
+func (m *MockLinkStore) Insert(ctx context.Context, link oidc.Link) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Insert", ctx, l)
+	ret := m.ctrl.Call(m, "Insert", ctx, link)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Insert indicates an expected call of Insert.
-func (mr *MockLinkStoreMockRecorder) Insert(ctx, l any) *MockLinkStoreInsertCall {
+func (mr *MockLinkStoreMockRecorder) Insert(ctx, link any) *MockLinkStoreInsertCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Insert", reflect.TypeOf((*MockLinkStore)(nil).Insert), ctx, l)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Insert", reflect.TypeOf((*MockLinkStore)(nil).Insert), ctx, link)
 	return &MockLinkStoreInsertCall{Call: call}
 }
 

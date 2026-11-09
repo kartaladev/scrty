@@ -50,9 +50,9 @@ var ErrRecordNotFound = errors.New("recovery: record not found")
 // be used in its place; the library's durable stores implement it over
 // PostgreSQL.
 type RecordStore interface {
-	// Insert stores r, pending or already completed. An identifier the store
+	// Insert stores record, pending or already completed. An identifier the store
 	// already holds is an error.
-	Insert(ctx context.Context, r Record) error
+	Insert(ctx context.Context, record Record) error
 
 	// Find returns the record with this identifier, or ErrRecordNotFound.
 	Find(ctx context.Context, id id.ID) (*Record, error)
@@ -121,19 +121,19 @@ func pending(r *Record) bool { return r.CompletedAt.IsZero() && r.CancelledAt.Is
 
 // Insert implements RecordStore. A record with both CompletedAt and
 // CancelledAt set is refused, since at most one of the two is ever set.
-func (s *MemoryRecordStore) Insert(_ context.Context, r Record) error {
-	if !r.CompletedAt.IsZero() && !r.CancelledAt.IsZero() {
+func (s *MemoryRecordStore) Insert(_ context.Context, record Record) error {
+	if !record.CompletedAt.IsZero() && !record.CancelledAt.IsZero() {
 		return errRecordBothEnded
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.records[r.ID]; ok {
+	if _, ok := s.records[record.ID]; ok {
 		return errRecordExists
 	}
 
-	s.records[r.ID] = copyRecord(&r)
+	s.records[record.ID] = copyRecord(&record)
 
 	return nil
 }

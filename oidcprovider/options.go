@@ -346,42 +346,42 @@ func WithDPoP() Option {
 }
 
 // WithRequestBounds replaces the default parameter bounds. See RequestBounds.
-func WithRequestBounds(b RequestBounds) Option {
-	return func(c *config) { c.bounds = b }
+func WithRequestBounds(bounds RequestBounds) Option {
+	return func(c *config) { c.bounds = bounds }
 }
 
 // WithPendingRequestLifetime replaces how long a parked authorization request
 // lives. The default is 10 minutes, and the value must be positive and at most
 // 30 minutes.
-func WithPendingRequestLifetime(d time.Duration) Option {
-	return func(c *config) { c.pendingLifetime = d }
+func WithPendingRequestLifetime(lifetime time.Duration) Option {
+	return func(c *config) { c.pendingLifetime = lifetime }
 }
 
 // WithCodeLifetime replaces how long an authorization code lives. The default is
 // 60 seconds, and the value must be positive and at most 10 minutes.
-func WithCodeLifetime(d time.Duration) Option {
-	return func(c *config) { c.codeLifetime = d }
+func WithCodeLifetime(lifetime time.Duration) Option {
+	return func(c *config) { c.codeLifetime = lifetime }
 }
 
 // WithClientAssertionAudience replaces the assertion audience rule. The default
 // is AudienceIssuerOnly. An unknown rule fails construction. Under every rule an
 // assertion names one audience.
-func WithClientAssertionAudience(r AudienceRule) Option {
-	return func(c *config) { c.assertionAudience = r }
+func WithClientAssertionAudience(rule AudienceRule) Option {
+	return func(c *config) { c.assertionAudience = rule }
 }
 
 // WithClientAssertionMaxLifetime replaces how far ahead an assertion's exp may
 // lie. The default is 5 minutes, and the value must be positive and at most 1
 // hour.
-func WithClientAssertionMaxLifetime(d time.Duration) Option {
-	return func(c *config) { c.assertionMax = d }
+func WithClientAssertionMaxLifetime(lifetime time.Duration) Option {
+	return func(c *config) { c.assertionMax = lifetime }
 }
 
 // WithClientKeysRefetchCooldown replaces how often an unknown kid may refetch a
 // client's jwks_uri, and how long a failed fetch is answered before it is tried again.
 // The default is 30 seconds, and the value must be positive.
-func WithClientKeysRefetchCooldown(d time.Duration) Option {
-	return func(c *config) { c.keysRefetchCooldown = d }
+func WithClientKeysRefetchCooldown(cooldown time.Duration) Option {
+	return func(c *config) { c.keysRefetchCooldown = cooldown }
 }
 
 // WithOutbound replaces the client that fetches clients' key sets, and so what confines
@@ -392,8 +392,8 @@ func WithClientKeysRefetchCooldown(d time.Duration) Option {
 // gives delivery a client of its own. A logout token follows no redirect whatever this client's cap is, as
 // a copy of it carries the POST. The limit: its own time bound still applies, so a WithLogoutDeliveryTimeout
 // longer than that ends a post under the reason "post" and not "timeout".
-func WithOutbound(o *outbound.Client) Option {
-	return func(c *config) { c.outbound, c.outboundSet = o, true }
+func WithOutbound(client *outbound.Client) Option {
+	return func(c *config) { c.outbound, c.outboundSet = client, true }
 }
 
 // WithClaimSource replaces where UserInfo reads a user's claims. The default reads the user just
@@ -404,8 +404,8 @@ func WithOutbound(o *outbound.Client) Option {
 // The address is never used to look up a user. A consumer with a verified email, phone, address or
 // claims of its own supplies them here, and its values, email_verified true included, are answered
 // unchanged. See ClaimSource. It must not be nil.
-func WithClaimSource(s ClaimSource) Option {
-	return func(c *config) { c.claimSource, c.claimSourceSet = s, true }
+func WithClaimSource(source ClaimSource) Option {
+	return func(c *config) { c.claimSource, c.claimSourceSet = source, true }
 }
 
 // WithLogoutDelivery replaces how a logout token reaches a client, such as with a queue that retries.
@@ -413,8 +413,8 @@ func WithClaimSource(s ClaimSource) Option {
 // follows no redirect, and counts 200 and 204 as success. A consumer's delivery still runs on the
 // provider's pool and within its bound. It must not be nil, and given with WithLogoutOutbound, which it
 // would not use, it fails construction.
-func WithLogoutDelivery(d LogoutDelivery) Option {
-	return func(c *config) { c.logoutDelivery, c.logoutDeliverySet = d, true }
+func WithLogoutDelivery(delivery LogoutDelivery) Option {
+	return func(c *config) { c.logoutDelivery, c.logoutDeliverySet = delivery, true }
 }
 
 // WithLogoutOutbound confines the default delivery, with the options of the outbound client it builds
@@ -441,8 +441,8 @@ func WithLogoutDeliveryPool(workers, queue int) Option {
 // it returns, with at most twice the workers' calls left behind: with that many, a delivery fails at
 // once, reported as busy, rather than start another. A post through a client given by WithOutbound is also
 // held to that client's own time bound.
-func WithLogoutDeliveryTimeout(d time.Duration) Option {
-	return func(c *config) { c.logoutTimeout = d }
+func WithLogoutDeliveryTimeout(timeout time.Duration) Option {
+	return func(c *config) { c.logoutTimeout = timeout }
 }
 
 // WithClock replaces the time source. The default is clock.System(), and it must
@@ -456,20 +456,20 @@ func WithClock(clk clock.Clock) Option {
 // id.NewV7Generator over the provider's clock and randomness, and the generator must not be
 // nil. The identifiers it generates must be non-zero and unique. Identifiers are not secrets,
 // and the provider never relies on one to be unguessable.
-func WithIDGenerator(g id.Generator) Option {
-	return func(c *config) { c.idsGiven = g; c.idsSet = true }
+func WithIDGenerator(ids id.Generator) Option {
+	return func(c *config) { c.idsGiven = ids; c.idsSet = true }
 }
 
 // WithLogger replaces the logger. The default is slog.Default(), and it must not
 // be nil.
-func WithLogger(l *slog.Logger) Option {
-	return func(c *config) { c.logger = l }
+func WithLogger(logger *slog.Logger) Option {
+	return func(c *config) { c.logger = logger }
 }
 
 // WithRandom replaces the source of random bytes. The default is crypto/rand's
 // Reader, and it must not be nil.
-func WithRandom(r io.Reader) Option {
-	return func(c *config) { c.random = r }
+func WithRandom(src io.Reader) Option {
+	return func(c *config) { c.random = src }
 }
 
 // WithRefreshSuccessorKey sets the key a rotated refresh token's successor is derived under, as
@@ -507,16 +507,16 @@ func WithRefreshSuccessorKey(key []byte) Option {
 // lost with the process and not shared between instances, so a deployment of more than
 // one instance needs a shared store to refuse a replay across them. A store given here is
 // the consumer's to sweep, through DeleteExpired. It must not be nil.
-func WithAssertionIDStore(s AssertionIDStore) Option {
-	return func(c *config) { c.assertionIDs, c.assertionIDsSet = s, true }
+func WithAssertionIDStore(store AssertionIDStore) Option {
+	return func(c *config) { c.assertionIDs, c.assertionIDsSet = store, true }
 }
 
 // WithClientKeysTTL replaces how long a key set fetched from a client's jwks_uri is
 // used before it is fetched again, which bounds how long a key the client has
 // withdrawn keeps authenticating it. The default is 15 minutes, and the value must be
 // positive.
-func WithClientKeysTTL(d time.Duration) Option {
-	return func(c *config) { c.keysTTL = d }
+func WithClientKeysTTL(ttl time.Duration) Option {
+	return func(c *config) { c.keysTTL = ttl }
 }
 
 // WithAssertionTokenEndpoint replaces the token endpoint URL that
@@ -537,8 +537,8 @@ func WithAssertionTokenEndpoint(url string) Option {
 // WithPendingRequestStore replaces where parked requests are kept. The default is a
 // MemoryPendingRequestStore, which is lost with the process and not shared between
 // instances. It must not be nil.
-func WithPendingRequestStore(s PendingRequestStore) Option {
-	return func(c *config) { c.pendingRequests, c.pendingRequestsSet = s, true }
+func WithPendingRequestStore(store PendingRequestStore) Option {
+	return func(c *config) { c.pendingRequests, c.pendingRequestsSet = store, true }
 }
 
 // WithCodeStore replaces where code records are kept. The default is a MemoryCodeStore,
@@ -549,15 +549,15 @@ func WithPendingRequestStore(s PendingRequestStore) Option {
 // A valid replay's detection and an end's reach to an exchange in flight need a code kept
 // until a minute past its expiry. A store, or a consumer sweeping it through DeleteExpired
 // sooner, gives that up. To retain longer, WithCodeTokenStore's store must retain as long too.
-func WithCodeStore(s CodeStore) Option {
-	return func(c *config) { c.codes, c.codesSet = s, true }
+func WithCodeStore(store CodeStore) Option {
+	return func(c *config) { c.codes, c.codesSet = store, true }
 }
 
 // WithConsentStore replaces where consents are kept. The default is a
 // MemoryConsentStore, which is lost with the process and not shared between instances.
 // It must not be nil.
-func WithConsentStore(s ConsentStore) Option {
-	return func(c *config) { c.consents, c.consentsSet = s, true }
+func WithConsentStore(store ConsentStore) Option {
+	return func(c *config) { c.consents, c.consentsSet = store, true }
 }
 
 // WithGrantStore replaces where grants are kept. The default is a MemoryGrantStore,
@@ -565,8 +565,8 @@ func WithConsentStore(s ConsentStore) Option {
 // New calls its UseCodes with the provider's code store, and returns its refusal: a grant
 // store reads one code store for good, so providers sharing a grant store must share a
 // code store too, through WithCodeStore, or New fails with an error matching ErrConfig.
-func WithGrantStore(s GrantStore) Option {
-	return func(c *config) { c.grants, c.grantsSet = s, true }
+func WithGrantStore(store GrantStore) Option {
+	return func(c *config) { c.grants, c.grantsSet = store, true }
 }
 
 // WithCodeTokenStore replaces where authorization codes' one-time tokens are kept, which
@@ -579,23 +579,23 @@ func WithGrantStore(s GrantStore) Option {
 // until a minute past its expiry. A consumer purging sooner gives that up. The code store
 // given through WithCodeStore must retain the same window, so for a longer one both stores
 // must retain together.
-func WithCodeTokenStore(s onetime.Store) Option {
-	return func(c *config) { c.codeTokens, c.codeTokensSet = s, true }
+func WithCodeTokenStore(store onetime.Store) Option {
+	return func(c *config) { c.codeTokens, c.codeTokensSet = store, true }
 }
 
 // WithAccessTokenStore replaces where opaque access tokens are kept. The default is a
 // MemoryAccessTokenStore, which is lost with the process and not shared between
 // instances. It must not be nil.
-func WithAccessTokenStore(s AccessTokenStore) Option {
-	return func(c *config) { c.accessTokens, c.accessTokensSet = s, true }
+func WithAccessTokenStore(store AccessTokenStore) Option {
+	return func(c *config) { c.accessTokens, c.accessTokensSet = store, true }
 }
 
 // WithBrowserSessionStore replaces where browser sessions are kept. The default is a
 // MemoryBrowserSessionStore, which is lost with the process and not shared between
 // instances. It must not be nil, and given with WithoutBrowserSessions, which uses no
 // such store, it fails construction rather than being ignored.
-func WithBrowserSessionStore(s BrowserSessionStore) Option {
-	return func(c *config) { c.browserStore, c.browserStoreSet = s, true }
+func WithBrowserSessionStore(store BrowserSessionStore) Option {
+	return func(c *config) { c.browserStore, c.browserStoreSet = store, true }
 }
 
 // WithRefreshTokenStore replaces where refresh-token lineages are kept. The default is
@@ -606,8 +606,8 @@ func WithBrowserSessionStore(s BrowserSessionStore) Option {
 // outlive the process and to be shared by replicas, even with one replica today, so it also
 // needs WithRefreshSuccessorKey, the same on each, or WithRefreshSuccessorWindow(0): otherwise
 // New fails with an error matching ErrConfig.
-func WithRefreshTokenStore(s RefreshTokenStore) Option {
-	return func(c *config) { c.lineage, c.lineageSet = s, true }
+func WithRefreshTokenStore(store RefreshTokenStore) Option {
+	return func(c *config) { c.lineage, c.lineageSet = store, true }
 }
 
 // WithRefreshSuccessorWindow sets how long after its rotation a refresh token presented again is
@@ -636,6 +636,6 @@ func WithRefreshTokenStore(s RefreshTokenStore) Option {
 // or its grace that also falls past the idle deadline stored with it is refused, with nothing
 // revoked, so a retry or a second tab loses out there. It needs a client dormant for about the idle
 // timeout, 30 days by default, and this option does not reach it.
-func WithRefreshSuccessorWindow(d time.Duration) Option {
-	return func(c *config) { c.successorWindow = d }
+func WithRefreshSuccessorWindow(window time.Duration) Option {
+	return func(c *config) { c.successorWindow = window }
 }

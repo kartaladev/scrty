@@ -406,7 +406,7 @@ page resumes the request once the user has signed in.
 // Over the default in-memory stores, one is drawn for you.
 successorKey := mustDecode(os.Getenv("OP_REFRESH_SUCCESSOR_KEY"))
 
-op, err := oidcprovider.New(oidcprovider.Deps{
+provider, err := oidcprovider.New(oidcprovider.Deps{
     Issuer:       "https://id.example.com",
     Clients:      clients,
     Keys:         keys, // the same *signingkey.Keys EnableJWKSEndpoint publishes
@@ -419,12 +419,12 @@ op, err := oidcprovider.New(oidcprovider.Deps{
 if err != nil {
     return err
 }
-// When the application stops, op.Shutdown(ctx) ends back-channel delivery. The chain
-// neither starts nor stops the provider, and op.Start is optional.
+// When the application stops, provider.Shutdown(ctx) ends back-channel delivery. The chain
+// neither starts nor stops the provider, and provider.Start is optional.
 
 // Every session manager on the chain reports sign-in ends to the provider, or grants
 // would outlive a logout. New refuses a chain with one that does not.
-sessions, err := session.New(session.WithStore(store), session.WithEndObserver(op))
+sessions, err := session.New(session.WithStore(store), session.WithEndObserver(provider))
 if err != nil {
     return err
 }
@@ -434,7 +434,7 @@ chain, err := httpsec.New(
     httpsec.EnableJWKSEndpoint(keys),
     httpsec.EnableCSRFProtection(),
     httpsec.EnableSecurityHeaders(),
-    httpsec.EnableOIDCProvider(op),
+    httpsec.EnableOIDCProvider(provider),
 )
 ```
 
@@ -443,9 +443,9 @@ chain, err := httpsec.New(
 
 A passkey manager on the same chain takes a session manager, never a store: `passkey.Deps.Sessions`
 must be a `*session.Sessions` (or a wrapper with a `ReportsEndsTo` method) built with
-`session.WithEndObserver(op)`, because a bare `session.Store` ends sessions with no report a provider
+`session.WithEndObserver(provider)`, because a bare `session.Store` ends sessions with no report a provider
 could see. `New` refuses a chain whose passkey manager is built over a session manager that does not
-report to the provider, and one whose manager was told neither `passkey.WithGrantRevoker(op)` nor
+report to the provider, and one whose manager was told neither `passkey.WithGrantRevoker(provider)` nor
 `passkey.WithoutCloneGrantRevocation()`.
 
 ### The login and consent pages
@@ -457,7 +457,7 @@ A page receives the handle as the `req` query parameter. To show the user who is
 the pending request, which holds the client's name and the scopes and no secret:
 
 ```go
-view, err := httpsec.PendingOIDCRequest(ctx, op, httpsec.NewHTTPRequest(r), r.URL.Query().Get(oidcprovider.HandleParam))
+view, err := httpsec.PendingOIDCRequest(ctx, provider, httpsec.NewHTTPRequest(r), r.URL.Query().Get(oidcprovider.HandleParam))
 ```
 
 A page in the browser resumes with `fetch`, with the sign-in in the `Authorization` header, and then
@@ -500,7 +500,7 @@ The authorization endpoint's refusals of a throttled source answer 429 too, with
 browser endpoints do so rather than the 401 the chain's other throttled flows answer, because a 401
 here reads as "sign the user in" and a page may loop on it. The token endpoints keep their 401.
 
-A server-rendered page can skip the `fetch`, and resume through the Go API: `op.Resume`, with
+A server-rendered page can skip the `fetch`, and resume through the Go API: `provider.Resume`, with
 `ResumeInput` built from the cookies `httpsec.OIDCFlowCookie` and `httpsec.OIDCBrowserSessionCookie`.
 It then answers for what the chain would have judged: `SignIn` cannot say a session owes a step, so
 the page must not pass one that does. The page must also set `ResumeResult.BrowserSessionSecret`
@@ -607,7 +607,7 @@ that client and revokes their grants and outstanding codes of it, offline access
 authorization asks again. A client the caller holds neither a consent nor a grant of is a 404
 `ErrOIDCForeignConsent`. Both need a full session, are never cached, and refuse a cross-site request.
 The endpoint answers every path below `/oauth2/consents`, so `New` refuses a chain endpoint placed
-there. A consumer who wants other member names serves its own page from `op.Consents`.
+there. A consumer who wants other member names serves its own page from `provider.Consents`.
 
 ### What revokes grants
 
@@ -620,11 +620,11 @@ option that changes it:
 | Session management ends every other sign-in | grants survive | the request body `{"revoke_application_access":true}` revokes every grant, offline access and the current sign-in's included |
 | Account recovery completes | all the user's grants revoked, through the chain's provider: once before its codes are spent, and again after its sessions end | `recovery.WithoutRecoveryGrantRevocation` keeps them; `recovery.WithGrantRevoker` names another revoker |
 | Second-factor enrolment reset (`mfa.ResetEnrolment`) | all revoked when `ResetDeps.Grants` is given; with it nil, **none**, since the package cannot see a provider, so a consumer using the provider must set it | `mfa.WithoutResetGrantRevocation` keeps them |
-| A suspected passkey clone suspends a credential | none until decided: the chain refuses a manager told neither | `passkey.WithGrantRevoker(op)` revokes all; `passkey.WithoutCloneGrantRevocation` keeps them |
+| A suspected passkey clone suspends a credential | none until decided: the chain refuses a manager told neither | `passkey.WithGrantRevoker(provider)` revokes all; `passkey.WithoutCloneGrantRevocation` keeps them |
 | Password change | grants kept | `httpsec.WithPasswordChangeGrantRevocation` revokes all before the new password is written |
 
 `mfa.ResetEnrolment` revokes nothing when `ResetDeps.Grants` is nil, because it cannot see a provider and
-no change is wanted where none is in use. A consumer using the provider sets `Grants` to `op`, or a reset
+no change is wanted where none is in use. A consumer using the provider sets `Grants` to `provider`, or a reset
 leaves the user's refresh tokens working.
 
 A clone's revocation that fails leaves the refusal standing, is logged every time, and is reported as
@@ -639,11 +639,11 @@ grant in between. Its proofs are spent, so a failure there does not stop the rec
 `recovery.Result.GrantsNotRevoked` set, the failure is logged and reported as `scrty_grant_revoke_failed`,
 and the chain's `scrty_recovery_completed` carries the cause `event.CauseGrantsNotRevoked`. The default
 response does not change, and a `httpsec.WithRecoveryResponder` reads the flag, to tell the user and call
-`op.RevokeUserGrants` again. A held recovery revokes nothing when it starts, and takes both steps at its finish.
+`provider.RevokeUserGrants` again. A held recovery revokes nothing when it starts, and takes both steps at its finish.
 
 Keeping grants gives up what each option's godoc says: after a recovery, a reset or a clone, a grant
 kept is a way back in for whoever took it, for as long as its refresh token lives. A consumer who runs
-its own flow calls `op.RevokeUserGrants(ctx, user, cause)`.
+its own flow calls `provider.RevokeUserGrants(ctx, user, cause)`.
 
 ### Cross-site requests
 
@@ -973,7 +973,7 @@ not an IP address), its origins are `https` origins on that host or a subdomain 
 on `localhost`), and a malformed one is an error wrapping `passkey.ErrConfig` at construction:
 
 ```go
-rp := passkey.RelyingParty{
+relyingParty := passkey.RelyingParty{
 	ID:      "example.com",
 	Name:    "Example Co",
 	Origins: []string{"https://example.com", "https://app.example.com"},
@@ -990,7 +990,7 @@ account recovery (above) are the way back when both are gone.
 ### Wiring the adapter and the manager
 
 ```go
-verifier, err := webauthn.New(rp) // github.com/kartaladev/scrty/authenticate/passkey/webauthn
+verifier, err := webauthn.New(relyingParty) // github.com/kartaladev/scrty/authenticate/passkey/webauthn
 
 manager, err := passkey.New(passkey.Deps{
 	Verifier: verifier,
@@ -1005,7 +1005,7 @@ manager, err := passkey.New(passkey.Deps{
 `Verifier`, `Users`, `Sender`, `Sessions` and the repudiation contact have no default (`Sessions` may be
 left out only with both `passkey.WithoutSessionRevocationOnRemoval` and
 `passkey.WithoutSessionRevocationOnClone` given). `Sessions` takes a session manager, never a bare
-`session.Store`; on a chain with `EnableOIDCProvider` it must be built with `session.WithEndObserver(op)`.
+`session.Store`; on a chain with `EnableOIDCProvider` it must be built with `session.WithEndObserver(provider)`.
 Everything else has a default:
 
 | What | Default | Replaced by |
@@ -1045,8 +1045,8 @@ per-call `Remove` options):
 ```go
 // Allow a suspected clone and only warn; or decide each one yourself (the policy wins).
 passkey.WithCloneResponse(passkey.CloneSignalOnly)
-passkey.WithClonePolicy(func(_ context.Context, s passkey.CloneSignal) passkey.CloneAction {
-	if s.BackupState { // a synced passkey's counter is unreliable
+passkey.WithClonePolicy(func(_ context.Context, signal passkey.CloneSignal) passkey.CloneAction {
+	if signal.BackupState { // a synced passkey's counter is unreliable
 		return passkey.CloneAllow
 	}
 
@@ -1170,7 +1170,7 @@ Attestation is **off by default**: no statement is requested and any authenticat
 which is what lets synced passkeys register. Two options in the adapter change that:
 
 ```go
-webauthn.New(rp, webauthn.WithAttestationRecord()) // record the format and statement, accept every authenticator
+webauthn.New(relyingParty, webauthn.WithAttestationRecord()) // record the format and statement, accept every authenticator
 ```
 
 Recording collects data that can identify the user's authenticator model and batch, which the
@@ -1185,7 +1185,7 @@ client, err := outbound.New(
 	outbound.WithMaxResponseBytes(32<<20),
 )
 
-verifier, err := webauthn.New(rp, webauthn.WithTrustedAttestation(webauthn.MetadataFromMDS(client)))
+verifier, err := webauthn.New(relyingParty, webauthn.WithTrustedAttestation(webauthn.MetadataFromMDS(client)))
 ```
 
 The source caches the BLOB until its `nextUpdate` and for at most 24 hours, and a failed refresh
@@ -2540,14 +2540,14 @@ sealed with their own additional data, so a nonce never opens as anything else;
 a keyring kept for nonces alone is better, so rotating it touches nothing else:
 
 ```go
-kr, err := seal.NewKeyring(seal.WithKeyringEncryptionKey("2026-11", key))
+keyring, err := seal.NewKeyring(seal.WithKeyringEncryptionKey("2026-11", key))
 // ...
-c, err := seal.NewAEADCipher(kr)
+cipher, err := seal.NewAEADCipher(keyring)
 // ...
 httpsec.EnableDPoP(httpsec.DPoP{
     PublicURL:   "https://app.example.com",
     Nonce:       true,
-    NonceCipher: seal.SessionCipher(c),
+    NonceCipher: seal.SessionCipher(cipher),
 })
 ```
 
@@ -2788,18 +2788,18 @@ type stubVerifier struct {
 }
 
 func (v stubVerifier) Verify(
-    ctx context.Context, r httpsec.Request, s httpsec.ChallengeSignals,
+    ctx context.Context, req httpsec.Request, signals httpsec.ChallengeSignals,
 ) (httpsec.ChallengeDecision, error) {
     // Ordinary traffic is not asked; a source with recent failures is, and so
     // is a fresh IPv6 /64 inside an aggregate others failed from. The
     // identifier signal is not a reason to challenge on its own: it can tell
     // a known account from an unknown one (see the stated limits below), so
     // read it only together with other evidence of automation.
-    if !s.SourceHasFailures && !s.SourceAggregateHasFailures {
+    if !signals.SourceHasFailures && !signals.SourceAggregateHasFailures {
         return httpsec.ChallengeNotNeeded, nil
     }
 
-    token := r.Header("X-Challenge-Response") // wherever your page puts it
+    token := req.Header("X-Challenge-Response") // wherever your page puts it
     if token == "" {
         return httpsec.ChallengeRefuse, nil
     }

@@ -82,12 +82,12 @@ type DurableHarness[S any] struct {
 	PoolSize int
 }
 
-// Require fails t immediately when any field of h is missing, naming every
+// Require fails tb immediately when any field of h is missing, naming every
 // one that is.
-func (h DurableHarness[S]) Require(t testing.TB) {
-	t.Helper()
+func (h DurableHarness[S]) Require(tb testing.TB) {
+	tb.Helper()
 
-	h.requireWith(t)
+	h.requireWith(tb)
 }
 
 // requireWith fails t immediately, once, naming every field of h that is

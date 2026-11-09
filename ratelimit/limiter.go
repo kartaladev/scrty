@@ -134,10 +134,10 @@ type Pruner interface {
 	Prune(ctx context.Context) (removed int, err error)
 }
 
-// ExpiryTask returns the expiry task for p, to run in an expiry.Runner beside
+// ExpiryTask returns the expiry task for pruner, to run in an expiry.Runner beside
 // the tasks of the stores that hold expired state. The built-in pruners are the
 // in-memory limiter and the PostgreSQL limiter factories of the sqlstore and
-// pgxstore packages. p must not be nil.
+// pgxstore packages. pruner must not be nil.
 //
 // The task is named "ratelimit" and has no Interval, so a scheduler uses its
 // own default and a manual run ignores it. A deployment with two pruners
@@ -152,8 +152,8 @@ type Pruner interface {
 // matters for a limiter that goes quiet after a burst, whose keys would
 // otherwise stay held until its next call. Run returns the count and the error
 // the pruner reports; the in-memory limiter never fails.
-func ExpiryTask(p Pruner) expiry.Task {
-	return expiry.Task{Name: "ratelimit", Run: p.Prune}
+func ExpiryTask(pruner Pruner) expiry.Task {
+	return expiry.Task{Name: "ratelimit", Run: pruner.Prune}
 }
 
 // UnavailableMode is what a shared limiter does while the store it counts in

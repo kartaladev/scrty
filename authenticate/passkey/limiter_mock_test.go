@@ -160,17 +160,17 @@ func (c *MockLimiterRecordFailureCall) DoAndReturn(f func(context.Context, strin
 }
 
 // Refund mocks base method.
-func (m *MockLimiter) Refund(ctx context.Context, r ratelimit.Receipt) error {
+func (m *MockLimiter) Refund(ctx context.Context, receipt ratelimit.Receipt) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Refund", ctx, r)
+	ret := m.ctrl.Call(m, "Refund", ctx, receipt)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Refund indicates an expected call of Refund.
-func (mr *MockLimiterMockRecorder) Refund(ctx, r any) *MockLimiterRefundCall {
+func (mr *MockLimiterMockRecorder) Refund(ctx, receipt any) *MockLimiterRefundCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Refund", reflect.TypeOf((*MockLimiter)(nil).Refund), ctx, r)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Refund", reflect.TypeOf((*MockLimiter)(nil).Refund), ctx, receipt)
 	return &MockLimiterRefundCall{Call: call}
 }
 

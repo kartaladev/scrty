@@ -334,7 +334,7 @@ type OwnershipGuard[ID any] struct {
 // type parameter of its own, and the identifier type belongs to the consumer's
 // records rather than to the guards as a whole.
 //
-// It panics with "httpsec: ResourceOwnerships needs non-nil Guards" when g is
+// It panics with "httpsec: ResourceOwnerships needs non-nil Guards" when guards is
 // nil, and with "httpsec: ResourceOwnerships needs a non-nil checker" when
 // checker is nil. The checker has no default and no guard can work without it,
 // so a nil one is a wiring mistake that must surface when the route is wired,
@@ -342,18 +342,18 @@ type OwnershipGuard[ID any] struct {
 // no error, so a panic is how they report it, as net/http's Handle does for a
 // nil handler.
 func ResourceOwnerships[ID any](
-	g *Guards,
+	guards *Guards,
 	group, resource string,
 	checker OwnershipChecker[ID],
 ) *OwnershipGuard[ID] {
-	if g == nil {
+	if guards == nil {
 		panic("httpsec: ResourceOwnerships needs non-nil Guards")
 	}
 	if checker == nil {
 		panic("httpsec: ResourceOwnerships needs a non-nil checker")
 	}
 
-	return &OwnershipGuard[ID]{guards: g, group: group, resource: resource, checker: checker}
+	return &OwnershipGuard[ID]{guards: guards, group: group, resource: resource, checker: checker}
 }
 
 // ForResource guards a route with ownership of the record extract names.
@@ -407,8 +407,8 @@ func (o *OwnershipGuard[ID]) ForResource(
 // ever meet it. For a session, a window longer than its absolute lifetime
 // (session.WithAbsoluteTimeout) is never reached: the session ends first, so
 // the guard refuses only a caller with no recorded authentication time.
-func WithRecentAuthenticationWindow(d time.Duration) GuardOption {
-	return func(g *Guards) { g.window = d }
+func WithRecentAuthenticationWindow(window time.Duration) GuardOption {
+	return func(g *Guards) { g.window = window }
 }
 
 // WithGuardClock replaces where recency guards read the current time.
@@ -419,8 +419,8 @@ func WithRecentAuthenticationWindow(d time.Duration) GuardOption {
 // a session's authentication time, which the chain recorded on its clock,
 // against another. A nil clock, or an interface holding a nil value, fails
 // NewGuards with ErrConfig rather than falling back to the system clock.
-func WithGuardClock(c clock.Clock) GuardOption {
-	return func(g *Guards) { g.clock = c }
+func WithGuardClock(clock clock.Clock) GuardOption {
+	return func(g *Guards) { g.clock = clock }
 }
 
 // WithAuthenticationTime replaces where recency guards find when the caller

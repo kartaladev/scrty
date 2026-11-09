@@ -15,7 +15,7 @@ import (
 // A lock of fixed duration: once five failures fall in the day, the
 // identifier is refused for exactly fifteen minutes after its newest one.
 func ExampleWithWait_fixedDuration() {
-	clk := clockwork.NewFakeClockAt(time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC))
+	clock := clockwork.NewFakeClockAt(time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC))
 	store, err := lockout.NewMemoryAttemptStore()
 	if err != nil {
 		fmt.Println(err)
@@ -23,10 +23,10 @@ func ExampleWithWait_fixedDuration() {
 		return
 	}
 
-	p, err := lockout.New(
+	lockPolicy, err := lockout.New(
 		lockout.WithWait(15*time.Minute, 15*time.Minute),
 		lockout.WithAttemptStore(store),
-		lockout.WithClock(clk),
+		lockout.WithClock(clock),
 	)
 	if err != nil {
 		fmt.Println(err)
@@ -36,32 +36,32 @@ func ExampleWithWait_fixedDuration() {
 
 	ctx := context.Background()
 	for range 5 {
-		if err := store.RecordFailure(ctx, "ada", clk.Now()); err != nil {
+		if err := store.RecordFailure(ctx, "ada", clock.Now()); err != nil {
 			fmt.Println(err)
 
 			return
 		}
 	}
 
-	d := p.Evaluate(ctx, &policy.Input{Username: "ada"})
+	decision := lockPolicy.Evaluate(ctx, &policy.Input{Username: "ada"})
 
 	var locked *lockout.Error
-	if errors.As(d.Reason, &locked) {
-		fmt.Println(d.Outcome, locked.Wait)
+	if errors.As(decision.Reason, &locked) {
+		fmt.Println(decision.Outcome, locked.Wait)
 	}
 
-	clk.Advance(15 * time.Minute)
-	fmt.Println(p.Evaluate(ctx, &policy.Input{Username: "ada"}).Outcome)
+	clock.Advance(15 * time.Minute)
+	fmt.Println(lockPolicy.Evaluate(ctx, &policy.Input{Username: "ada"}).Outcome)
 	// Output:
 	// Deny 15m0s
 	// Allow
 }
 
 // Reports go to the consumer's observer. The policy's view records failures and
-// reports them, so the chain is handed p.Attempts() rather than the bare
+// reports them, so the chain is handed lockPolicy.Attempts() rather than the bare
 // store.
 func ExampleWithObserver() {
-	p, err := lockout.New(
+	lockPolicy, err := lockout.New(
 		lockout.WithObserver(func(_ context.Context, r lockout.Report) {
 			fmt.Println(r.Identifier, r.Kind, r.Failures)
 		}),
@@ -74,9 +74,9 @@ func ExampleWithObserver() {
 
 	ctx := context.Background()
 	for range 5 {
-		_ = p.RecordFailure(ctx, "ada")
+		_ = lockPolicy.RecordFailure(ctx, "ada")
 	}
-	_ = p.Reset(ctx, "ada")
+	_ = lockPolicy.Reset(ctx, "ada")
 
 	// Output:
 	// ada locked 5
@@ -88,9 +88,9 @@ func ExampleWithObserver() {
 // wait. Only clearing its failures lifts it; here, the policy's Reset, which
 // is the unlock an administrator or support tool calls.
 func ExampleWithFailureStreakLimit() {
-	clk := clockwork.NewFakeClockAt(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
-	p, err := lockout.New(
-		lockout.WithClock(clk),
+	clock := clockwork.NewFakeClockAt(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	lockPolicy, err := lockout.New(
+		lockout.WithClock(clock),
 		lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit),
 	)
 	if err != nil {
@@ -101,23 +101,23 @@ func ExampleWithFailureStreakLimit() {
 
 	ctx := context.Background()
 	for range lockout.NISTFailureStreakLimit {
-		if err := p.Attempts().RecordFailure(ctx, "ada", clk.Now()); err != nil {
+		if err := lockPolicy.Attempts().RecordFailure(ctx, "ada", clock.Now()); err != nil {
 			fmt.Println(err)
 
 			return
 		}
-		clk.Advance(2 * time.Hour)
+		clock.Advance(2 * time.Hour)
 	}
 
-	d := p.Evaluate(ctx, &policy.Input{Username: "ada"})
-	fmt.Println(d.Outcome, errors.Is(d.Reason, lockout.ErrAccountHeld))
+	decision := lockPolicy.Evaluate(ctx, &policy.Input{Username: "ada"})
+	fmt.Println(decision.Outcome, errors.Is(decision.Reason, lockout.ErrAccountHeld))
 
-	if err := p.Reset(ctx, "ada"); err != nil {
+	if err := lockPolicy.Reset(ctx, "ada"); err != nil {
 		fmt.Println(err)
 
 		return
 	}
-	fmt.Println(p.Evaluate(ctx, &policy.Input{Username: "ada"}).Outcome)
+	fmt.Println(lockPolicy.Evaluate(ctx, &policy.Input{Username: "ada"}).Outcome)
 	// Output:
 	// Deny true
 	// Allow

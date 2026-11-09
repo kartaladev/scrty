@@ -45,17 +45,17 @@ func (m *MockCodeStore) EXPECT() *MockCodeStoreMockRecorder {
 }
 
 // Create mocks base method.
-func (m *MockCodeStore) Create(ctx context.Context, r *oidcprovider.CodeRecord) error {
+func (m *MockCodeStore) Create(ctx context.Context, record *oidcprovider.CodeRecord) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Create", ctx, r)
+	ret := m.ctrl.Call(m, "Create", ctx, record)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Create indicates an expected call of Create.
-func (mr *MockCodeStoreMockRecorder) Create(ctx, r any) *MockCodeStoreCreateCall {
+func (mr *MockCodeStoreMockRecorder) Create(ctx, record any) *MockCodeStoreCreateCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockCodeStore)(nil).Create), ctx, r)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockCodeStore)(nil).Create), ctx, record)
 	return &MockCodeStoreCreateCall{Call: call}
 }
 
@@ -418,17 +418,17 @@ func (c *MockBrowserSessionStoreLoadCall) DoAndReturn(f func(context.Context, []
 }
 
 // Put mocks base method.
-func (m *MockBrowserSessionStore) Put(ctx context.Context, s *oidcprovider.BrowserSession) error {
+func (m *MockBrowserSessionStore) Put(ctx context.Context, browserSession *oidcprovider.BrowserSession) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Put", ctx, s)
+	ret := m.ctrl.Call(m, "Put", ctx, browserSession)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Put indicates an expected call of Put.
-func (mr *MockBrowserSessionStoreMockRecorder) Put(ctx, s any) *MockBrowserSessionStorePutCall {
+func (mr *MockBrowserSessionStoreMockRecorder) Put(ctx, browserSession any) *MockBrowserSessionStorePutCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Put", reflect.TypeOf((*MockBrowserSessionStore)(nil).Put), ctx, s)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Put", reflect.TypeOf((*MockBrowserSessionStore)(nil).Put), ctx, browserSession)
 	return &MockBrowserSessionStorePutCall{Call: call}
 }
 

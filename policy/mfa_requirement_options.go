@@ -123,10 +123,10 @@ func WithMFARequiredForAll() MFARequirementOption {
 //
 // A nil logger is ignored rather than refused, so configuring logging stays
 // optional.
-func WithMFARequirementLogger(l *slog.Logger) MFARequirementOption {
+func WithMFARequirementLogger(logger *slog.Logger) MFARequirementOption {
 	return mfaRequirementOption(func(p *MFARequirement) {
-		if l != nil {
-			p.logger = l
+		if logger != nil {
+			p.logger = logger
 		}
 	})
 }
@@ -139,8 +139,8 @@ func WithMFARequirementLogger(l *slog.Logger) MFARequirementOption {
 // alone: the second-factor challenge policy keeps its own window under
 // WithMFALogInterval, so an outage of the requirement lookup cannot
 // silence the same-channel warnings.
-func WithMFARequirementLogInterval(d time.Duration) MFARequirementOption {
-	return mfaRequirementOption(func(p *MFARequirement) { p.logInterval = d })
+func WithMFARequirementLogInterval(interval time.Duration) MFARequirementOption {
+	return mfaRequirementOption(func(p *MFARequirement) { p.logInterval = interval })
 }
 
 // WithMFARequirementClock replaces the time source the policy samples its

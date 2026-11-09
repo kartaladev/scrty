@@ -70,7 +70,7 @@ type Fixture interface {
 	identity.MFARequirementLookup
 
 	// SeedRole records the privileges a role grants. It is required.
-	SeedRole(ctx context.Context, role string, p []*identity.ResourcePrivileges) error
+	SeedRole(ctx context.Context, role string, privileges []*identity.ResourcePrivileges) error
 
 	// SeedMFARequired records whether a user must use a second factor. It is
 	// required: no identity port writes the flag, because the consumer's own

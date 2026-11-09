@@ -105,7 +105,7 @@ type Option func(*Keys)
 // a consumer who passed one meant to supply their own, and quietly keeping a
 // fleet's machine credentials in process memory is not a failure they would
 // find out about until a deploy.
-func WithStore(s Store) Option { return func(m *Keys) { m.store = s } }
+func WithStore(store Store) Option { return func(m *Keys) { m.store = store } }
 
 // WithPrefix replaces the prefix presented keys carry. The default is "sk".
 //
@@ -118,7 +118,7 @@ func WithStore(s Store) Option { return func(m *Keys) { m.store = s } }
 // configuration error. The limit is not decoration: the prefix is matched with
 // its separator attached, and a prefix holding an underscore or a dot would
 // make the presented form ambiguous to split.
-func WithPrefix(p string) Option { return func(m *Keys) { m.prefix = p } }
+func WithPrefix(prefix string) Option { return func(m *Keys) { m.prefix = prefix } }
 
 // WithDigest replaces the one-way function the secret is stored under. The
 // default is SHA-256.
@@ -138,14 +138,14 @@ func WithPrefix(p string) Option { return func(m *Keys) { m.prefix = p } }
 // that cannot work; it judges nothing about one that can. A digest that
 // returns an empty value only for some inputs is caught at Issue, which then
 // stores nothing, and at Verify, which refuses.
-func WithDigest(d func([]byte) []byte) Option { return func(m *Keys) { m.digest = d } }
+func WithDigest(digest func([]byte) []byte) Option { return func(m *Keys) { m.digest = digest } }
 
 // WithIDGenerator replaces the source of record identifiers. The default is
 // id.NewV7Generator, whose identifiers sort by the moment they were minted.
 //
 // A consumer replaces it to mint identifiers their own records can be
 // correlated with. A nil generator is a configuration error.
-func WithIDGenerator(g id.Generator) Option { return func(m *Keys) { m.ids = g } }
+func WithIDGenerator(ids id.Generator) Option { return func(m *Keys) { m.ids = ids } }
 
 // WithClock replaces the time source. The default is clock.System().
 //
@@ -162,7 +162,7 @@ func WithClock(clk clock.Clock) Option { return func(m *Keys) { m.clock = clk } 
 // platform supplies its own cryptographic source can use it. A nil reader is a
 // configuration error: falling back would override a deliberate choice about
 // where this deployment's randomness comes from.
-func WithRandom(r io.Reader) Option { return func(m *Keys) { m.random = r } }
+func WithRandom(src io.Reader) Option { return func(m *Keys) { m.random = src } }
 
 // WithSecurityEvents reports the outcomes the manager decides outside a chain
 // to sink: a presented key it judged and refused, as
@@ -193,10 +193,10 @@ func WithSecurityEvents(sink event.Sink) Option {
 // verification refusal are logged, at debug for an unknown key and at error for
 // a store that could not answer, and no log this package writes carries a
 // presented key or a secret.
-func WithLogger(l *slog.Logger) Option {
+func WithLogger(logger *slog.Logger) Option {
 	return func(m *Keys) {
-		if l != nil {
-			m.logger = l
+		if logger != nil {
+			m.logger = logger
 		}
 	}
 }

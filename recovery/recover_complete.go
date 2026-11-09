@@ -49,14 +49,14 @@ const (
 )
 
 // IssueFunc issues the credential the holder of a recovery session carries
-// away, such as a signed token naming s through its identifier, for user, the
+// away, such as a signed token naming sess through its identifier, for user, the
 // recovered account as the recovery loaded it. It is supplied with
 // WithCredentialIssuer.
 //
 // It is called once the session is built and marked recovery-pending, and
-// before the grants are revoked and anything is spent or stored: s loads
+// before the grants are revoked and anything is spent or stored: sess loads
 // nothing yet, and is stored only once the recovery's other effects have run.
-// It must not modify s or user. A credential it returns for a recovery that
+// It must not modify sess or user. A credential it returns for a recovery that
 // then fails, such as one whose first grant revocation fails or that loses a
 // racing recovery its saved code, names a session that is never stored, so it
 // authenticates nothing and is discarded.
@@ -65,7 +65,7 @@ const (
 // spends, removes, ends, replaces, records and sends nothing, counts nothing
 // against the user, and returns the error behind fixed text of this package, still
 // matching it through errors.Is and errors.As.
-type IssueFunc func(ctx context.Context, s *session.Session, user *identity.Details) (string, error)
+type IssueFunc func(ctx context.Context, sess *session.Session, user *identity.Details) (string, error)
 
 // WithCredentialIssuer sets the step that issues the recovery session's
 // credential, which Recover and Finish call before they spend anything and
@@ -510,14 +510,14 @@ func WithoutSessionRevocation() Option {
 // Zero or less is a configuration error, and so is longer than the session
 // manager's absolute timeout, which no session outlives. The default is held
 // to the same bound.
-func WithPendingSessionLifetime(d time.Duration) Option {
-	return func(c *config) { c.sessionLifetime = d }
+func WithPendingSessionLifetime(lifetime time.Duration) Option {
+	return func(c *config) { c.sessionLifetime = lifetime }
 }
 
 // WithIDGenerator replaces the source of recovery record identifiers. The
 // default is id.NewV7Generator. A nil generator is a configuration error.
-func WithIDGenerator(g id.Generator) Option {
-	return func(c *config) { c.ids, c.idsSet = g, true }
+func WithIDGenerator(ids id.Generator) Option {
+	return func(c *config) { c.ids, c.idsSet = ids, true }
 }
 
 // validateCompletion checks the session lifetime and the identifier source.

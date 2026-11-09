@@ -54,9 +54,9 @@ type Option func(*Sessions)
 // memory: a consumer who passed one meant to supply their own, and quietly
 // keeping their users' sessions in process memory is not a failure they would
 // find out about until a deploy.
-func WithStore(s Store) Option {
+func WithStore(store Store) Option {
 	return func(m *Sessions) {
-		m.store = s
+		m.store = store
 		m.storeSupplied = true
 	}
 }
@@ -66,28 +66,28 @@ func WithStore(s Store) Option {
 //
 // Zero or less is a configuration error: it would expire every session at the
 // instant it was created, which no caller can have meant.
-func WithIdleTimeout(d time.Duration) Option {
-	return func(m *Sessions) { m.idleTimeout = d }
+func WithIdleTimeout(timeout time.Duration) Option {
+	return func(m *Sessions) { m.idleTimeout = timeout }
 }
 
 // WithAbsoluteTimeout replaces the deadline nothing extends. The default is 12
 // hours. Zero or less is a configuration error, for the same reason a zero
 // idle timeout is.
-func WithAbsoluteTimeout(d time.Duration) Option {
-	return func(m *Sessions) { m.absoluteTimeout = d }
+func WithAbsoluteTimeout(timeout time.Duration) Option {
+	return func(m *Sessions) { m.absoluteTimeout = timeout }
 }
 
 // WithTouchInterval sets how stale a session's recorded activity may be
 // before Touch writes it again. The default is 0: every Touch writes.
 //
-// With an interval d, a Touch that finds the last recorded activity less
-// than d old writes nothing, so a busy session costs one store write per
+// With an interval, a Touch that finds the last recorded activity less
+// than interval old writes nothing, so a busy session costs one store write per
 // interval rather than one per request. The cost is that a skipped touch
-// leaves the stored idle deadline up to d earlier than it would have been:
+// leaves the stored idle deadline up to interval earlier than it would have been:
 // expiry can only come sooner, never later, and a session is never kept
 // alive by a write that did not happen.
 //
-// d must be at least 0 and less than the idle timeout; anything else is a
+// interval must be at least 0 and less than the idle timeout; anything else is a
 // configuration error from New, because an interval as long as the
 // idle timeout would let a session expire while in constant use.
 //
@@ -98,8 +98,8 @@ func WithAbsoluteTimeout(d time.Duration) Option {
 // touch interval at least as long as any idle timeout its policy engine
 // enforces (policy.IdleTimeout), because the stored last access can be
 // up to one interval stale.
-func WithTouchInterval(d time.Duration) Option {
-	return func(m *Sessions) { m.touchInterval = d }
+func WithTouchInterval(interval time.Duration) Option {
+	return func(m *Sessions) { m.touchInterval = interval }
 }
 
 // WithMaxAbsoluteLifetime sets the longest absolute lifetime a Create may
@@ -133,14 +133,14 @@ func WithMaxAbsoluteLifetime(limit time.Duration) Option {
 }
 
 // WithAbsoluteLifetime gives the session being created an absolute lifetime
-// of d in place of the manager's absolute timeout. The default, with no
+// of lifetime in place of the manager's absolute timeout. The default, with no
 // option, is that timeout. The idle deadline is capped at the result.
 //
-// Create refuses a d of zero or less, or one above the manager's maximum
+// Create refuses a lifetime of zero or less, or one above the manager's maximum
 // (see WithMaxAbsoluteLifetime), with ErrConfig and stores nothing: a
 // requested lifetime is never silently shortened.
-func WithAbsoluteLifetime(d time.Duration) CreateOption {
-	return func(s *Session) { s.AbsoluteExpiresAt = s.CreatedAt.Add(d) }
+func WithAbsoluteLifetime(lifetime time.Duration) CreateOption {
+	return func(s *Session) { s.AbsoluteExpiresAt = s.CreatedAt.Add(lifetime) }
 }
 
 // WithClock replaces the time source. The default is clock.System().
@@ -165,9 +165,9 @@ func WithClock(clk clock.Clock) Option { return func(m *Sessions) { m.clock = cl
 // identifiers their own records can be correlated with. A generator should
 // not return id.Nil, which names no family. A nil generator, typed nil
 // included, is a configuration error.
-func WithFamilyIDGenerator(g id.Generator) Option {
+func WithFamilyIDGenerator(ids id.Generator) Option {
 	return func(m *Sessions) {
-		m.families = g
+		m.families = ids
 		m.familiesSupplied = true
 	}
 }
@@ -177,10 +177,10 @@ func WithFamilyIDGenerator(g id.Generator) Option {
 // A nil logger is ignored rather than refused: unlike a clock, a nil logger
 // has an obvious safe reading — the caller does not want this component's logs
 // — and refusing it would make logging mandatory.
-func WithLogger(l *slog.Logger) Option {
+func WithLogger(logger *slog.Logger) Option {
 	return func(m *Sessions) {
-		if l != nil {
-			m.logger = l
+		if logger != nil {
+			m.logger = logger
 		}
 	}
 }
@@ -193,7 +193,7 @@ func WithLogger(l *slog.Logger) Option {
 // whose platform supplies its own cryptographic source can use it. A nil
 // reader is a configuration error: falling back would override a deliberate
 // choice about where this deployment's randomness comes from.
-func WithRandom(r io.Reader) Option { return func(m *Sessions) { m.random = r } }
+func WithRandom(src io.Reader) Option { return func(m *Sessions) { m.random = src } }
 
 // WithEndObserver adds an observer told about each explicit end of a sign-in
 // through the manager. The default is none: ends happen exactly the same, and
@@ -255,8 +255,8 @@ func WithRandom(r io.Reader) Option { return func(m *Sessions) { m.random = r } 
 //
 // A nil observer, typed nil included, is a configuration error from New.
 // AddEndObserver adds one to a manager already built.
-func WithEndObserver(o EndObserver) Option {
-	return func(m *Sessions) { m.appendEndObserver(o) }
+func WithEndObserver(observer EndObserver) Option {
+	return func(m *Sessions) { m.appendEndObserver(observer) }
 }
 
 // CreateOption configures one session as it is created, rather than the

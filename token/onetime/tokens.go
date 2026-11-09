@@ -94,19 +94,19 @@ type Option func(*Tokens)
 // a consumer who passed one meant to supply their own, and quietly keeping
 // their users' password-reset tokens in process memory is not a failure they
 // would find out about until a deploy.
-func WithStore(s Store) Option { return func(m *Tokens) { m.store, m.storeSet = s, true } }
+func WithStore(store Store) Option { return func(m *Tokens) { m.store, m.storeSet = store, true } }
 
 // WithTokenTTL replaces how long an issued token stays valid. The default is 15
 // minutes. Zero or less is a configuration error: it would expire every token
 // at the instant it was issued.
-func WithTokenTTL(d time.Duration) Option { return func(m *Tokens) { m.ttl = d } }
+func WithTokenTTL(ttl time.Duration) Option { return func(m *Tokens) { m.ttl = ttl } }
 
 // WithIssuanceWindow replaces the span IssuedCount counts over and the distance
 // back from now that PurgeExpired leaves alone. The default is one hour. Zero
 // or less is a configuration error: it would count no issuance at all while
 // making every expired record eligible for the next sweep.
-func WithIssuanceWindow(d time.Duration) Option {
-	return func(m *Tokens) { m.issuanceWindow = d }
+func WithIssuanceWindow(window time.Duration) Option {
+	return func(m *Tokens) { m.issuanceWindow = window }
 }
 
 // WithIDGenerator replaces the source of record identifiers. The default is
@@ -114,7 +114,7 @@ func WithIssuanceWindow(d time.Duration) Option {
 //
 // A consumer replaces it to mint identifiers their own records can be
 // correlated with. A nil generator is a configuration error.
-func WithIDGenerator(g id.Generator) Option { return func(m *Tokens) { m.ids = g } }
+func WithIDGenerator(ids id.Generator) Option { return func(m *Tokens) { m.ids = ids } }
 
 // WithClock replaces the time source. The default is clock.System().
 //
@@ -136,10 +136,10 @@ func WithClock(clk clock.Clock) Option { return func(m *Tokens) { m.clock = clk 
 // and refusing it would make logging mandatory. Only store failures are logged,
 // at error level, and no log this package writes carries a presented token, a
 // secret or a binding.
-func WithLogger(l *slog.Logger) Option {
+func WithLogger(logger *slog.Logger) Option {
 	return func(m *Tokens) {
-		if l != nil {
-			m.logger = l
+		if logger != nil {
+			m.logger = logger
 		}
 	}
 }
@@ -151,7 +151,7 @@ func WithLogger(l *slog.Logger) Option {
 // platform supplies its own cryptographic source can use it. A nil reader is a
 // configuration error: falling back would override a deliberate choice about
 // where this deployment's randomness comes from.
-func WithRandom(r io.Reader) Option { return func(m *Tokens) { m.random = r } }
+func WithRandom(src io.Reader) Option { return func(m *Tokens) { m.random = src } }
 
 // IssueOption configures one issuance, rather than the manager behind it.
 type IssueOption func(*issuance)
@@ -454,7 +454,7 @@ func (m *Tokens) Check(ctx context.Context, presented, binding string) (Checked,
 
 // Consume spends a token that passed Check.
 //
-// The proof is what makes this safe to expose: c can only have come from Check,
+// The proof is what makes this safe to expose: checked can only have come from Check,
 // so there is no way to spend a token that was never checked. It is not, by
 // itself, permission to spend — the store decides that, with one indivisible
 // operation that succeeds only while the token is still unspent. A caller
@@ -472,21 +472,21 @@ func (m *Tokens) Check(ctx context.Context, presented, binding string) (Checked,
 // the same answer in Check. The store failure is logged at error level, since
 // nothing else records it, or at debug level when the caller's own ending caused
 // it.
-func (m *Tokens) Consume(ctx context.Context, c Checked) error {
-	if c.token.ID.IsZero() {
+func (m *Tokens) Consume(ctx context.Context, checked Checked) error {
+	if checked.token.ID.IsZero() {
 		return ErrInvalidToken
 	}
 
 	// Expiry is judged again at the spend, by the clock read now: a caller's
 	// own step between Check and here may have outlasted it.
 	now := m.clock.Now()
-	if !now.Before(c.token.ExpiresAt) {
+	if !now.Before(checked.token.ExpiresAt) {
 		return ErrInvalidToken
 	}
 
-	if err := m.store.Consume(ctx, c.token.ID, now); err != nil {
+	if err := m.store.Consume(ctx, checked.token.ID, now); err != nil {
 		if !errors.Is(err, ErrTokenNotFound) {
-			m.logStoreFailure(ctx, "onetime: marking the token consumed failed", c.token.ID, err)
+			m.logStoreFailure(ctx, "onetime: marking the token consumed failed", checked.token.ID, err)
 		}
 
 		return ErrInvalidToken
@@ -613,8 +613,8 @@ func (m *Tokens) PurgeExpired(ctx context.Context) (int, error) {
 	return removed, nil
 }
 
-// ExpiryTask returns the task that deletes the expired tokens of m's purpose,
-// through m.PurgeExpired.
+// ExpiryTask returns the task that deletes the expired tokens of the purpose tokens was built for,
+// through tokens.PurgeExpired.
 //
 // The task is named "one-time-tokens:" followed by the purpose. It sets no
 // Interval, because only the deployment knows its cadence, and it accepts no
@@ -625,19 +625,19 @@ func (m *Tokens) PurgeExpired(ctx context.Context) (int, error) {
 // A store that cannot purge yields an error that matches both
 // expiry.ErrPurgeUnsupported and ErrReapUnsupported, never a run that removed
 // nothing. A consumer who wants a different task name uses ExpiryTaskNamed.
-func ExpiryTask(m *Tokens) expiry.Task {
-	return ExpiryTaskNamed("one-time-tokens:"+m.Purpose(), m)
+func ExpiryTask(tokens *Tokens) expiry.Task {
+	return ExpiryTaskNamed("one-time-tokens:"+tokens.Purpose(), tokens)
 }
 
 // ExpiryTaskNamed is ExpiryTask with a name the caller chooses, for owners that
 // build on a one-time manager and publish a task under a name of their own.
 // Its behaviour, limits and errors are those of ExpiryTask: no interval, no
 // cutoff, and nothing inside the issuance window is deleted.
-func ExpiryTaskNamed(name string, m *Tokens) expiry.Task {
+func ExpiryTaskNamed(name string, tokens *Tokens) expiry.Task {
 	return expiry.Task{
 		Name: name,
 		Run: func(ctx context.Context) (int, error) {
-			removed, err := m.PurgeExpired(ctx)
+			removed, err := tokens.PurgeExpired(ctx)
 			if errors.Is(err, ErrReapUnsupported) {
 				return removed, errors.Join(err, expiry.ErrPurgeUnsupported)
 			}

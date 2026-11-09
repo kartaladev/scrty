@@ -241,17 +241,17 @@ func (c *MockEnrolmentStoreGetCall) DoAndReturn(f func(context.Context, identity
 }
 
 // PutPending mocks base method.
-func (m *MockEnrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error {
+func (m *MockEnrolmentStore) PutPending(ctx context.Context, enrolment mfa.Enrolment) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "PutPending", ctx, e)
+	ret := m.ctrl.Call(m, "PutPending", ctx, enrolment)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // PutPending indicates an expected call of PutPending.
-func (mr *MockEnrolmentStoreMockRecorder) PutPending(ctx, e any) *MockEnrolmentStorePutPendingCall {
+func (mr *MockEnrolmentStoreMockRecorder) PutPending(ctx, enrolment any) *MockEnrolmentStorePutPendingCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PutPending", reflect.TypeOf((*MockEnrolmentStore)(nil).PutPending), ctx, e)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PutPending", reflect.TypeOf((*MockEnrolmentStore)(nil).PutPending), ctx, enrolment)
 	return &MockEnrolmentStorePutPendingCall{Call: call}
 }
 

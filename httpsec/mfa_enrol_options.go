@@ -201,13 +201,13 @@ type EnrolmentOption func(*enrolmentInterceptor) error
 // or one only a same-channel method here could serve, begin refuses what the
 // user can reach, and that user stays confined until the enrolment-only
 // session ends.
-func EnableMFAEnrolment(d EnrolmentDeps, opts ...EnrolmentOption) Option {
+func EnableMFAEnrolment(deps EnrolmentDeps, opts ...EnrolmentOption) Option {
 	const option = "EnableMFAEnrolment"
 
 	return func(c *config) error {
 		i := &enrolmentInterceptor{
-			users:             d.Users,
-			sender:            d.Sender,
+			users:             deps.Users,
+			sender:            deps.Sender,
 			now:               c.now,
 			beginPrefix:       defaultPath(DefaultEnrolmentBeginPrefix),
 			confirmPrefix:     defaultPath(DefaultEnrolmentConfirmPrefix),
@@ -334,7 +334,7 @@ func WithEnrolmentMethods(names ...string) EnrolmentOption {
 	}
 }
 
-// WithEnrolmentSessionLifetime lets an enrolment-only session live at most d from
+// WithEnrolmentSessionLifetime lets an enrolment-only session live at most lifetime from
 // the moment it is marked.
 //
 // Default: 15 minutes, long enough to install an authenticator app and read an
@@ -354,28 +354,28 @@ func WithEnrolmentMethods(names ...string) EnrolmentOption {
 // An enrolment-only session is a session like any other to a
 // policy.ConcurrentSessions: it counts against the same cap, so whoever
 // holds a password can occupy a required user's cap slots by beginning
-// enrolments that are never confirmed. Each occupied slot lasts at most d, so
+// enrolments that are never confirmed. Each occupied slot lasts at most lifetime, so
 // the exposure is bounded, but not removed, by this option.
 //
 // The enrolment endpoints answer the request themselves, so the step that
 // touches a session's idle deadline does not run for an enrolment-only
-// session. With a session manager whose idle timeout is shorter than d, a user
+// session. With a session manager whose idle timeout is shorter than lifetime, a user
 // who is actively enrolling can still idle out mid-enrolment, and must log in
-// again; keep d within the idle timeout, or accept that.
-func WithEnrolmentSessionLifetime(d time.Duration) EnrolmentOption {
+// again; keep lifetime within the idle timeout, or accept that.
+func WithEnrolmentSessionLifetime(lifetime time.Duration) EnrolmentOption {
 	return func(i *enrolmentInterceptor) error {
-		if d <= 0 {
+		if lifetime <= 0 {
 			return newConfigError("WithEnrolmentSessionLifetime was given %s; an enrolment-only "+
-				"session needs a lifetime greater than zero", d)
+				"session needs a lifetime greater than zero", lifetime)
 		}
 
-		i.lifetime = d
+		i.lifetime = lifetime
 
 		return nil
 	}
 }
 
-// WithEnrolmentBeginLimiter counts begins through l, keyed by
+// WithEnrolmentBeginLimiter counts begins through limiter, keyed by
 // EnrolmentBeginThrottleKey.
 //
 // Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
@@ -393,19 +393,19 @@ func WithEnrolmentSessionLifetime(d time.Duration) EnrolmentOption {
 //
 // A nil limiter, including an interface holding a nil pointer, is refused: it
 // would read as "no limit" while the consumer believed they had replaced one.
-func WithEnrolmentBeginLimiter(l ratelimit.Limiter) EnrolmentOption {
+func WithEnrolmentBeginLimiter(limiter ratelimit.Limiter) EnrolmentOption {
 	return func(i *enrolmentInterceptor) error {
-		if err := requireDep("WithEnrolmentBeginLimiter", "limiter", l); err != nil {
+		if err := requireDep("WithEnrolmentBeginLimiter", "limiter", limiter); err != nil {
 			return err
 		}
 
-		i.beginLimiter = l
+		i.beginLimiter = limiter
 
 		return nil
 	}
 }
 
-// WithEnrolmentConfirmLimiter counts failed confirmations through l, keyed by
+// WithEnrolmentConfirmLimiter counts failed confirmations through limiter, keyed by
 // EnrolmentConfirmThrottleKey.
 //
 // Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
@@ -422,13 +422,13 @@ func WithEnrolmentBeginLimiter(l ratelimit.Limiter) EnrolmentOption {
 // replica still bounds guessing on its own, and users are not locked out.
 //
 // A nil limiter, including an interface holding a nil pointer, is refused.
-func WithEnrolmentConfirmLimiter(l ratelimit.Limiter) EnrolmentOption {
+func WithEnrolmentConfirmLimiter(limiter ratelimit.Limiter) EnrolmentOption {
 	return func(i *enrolmentInterceptor) error {
-		if err := requireDep("WithEnrolmentConfirmLimiter", "limiter", l); err != nil {
+		if err := requireDep("WithEnrolmentConfirmLimiter", "limiter", limiter); err != nil {
 			return err
 		}
 
-		i.confirmLimiter = l
+		i.confirmLimiter = limiter
 
 		return nil
 	}
@@ -496,66 +496,66 @@ func WithEnrolmentSynchronousDelivery() EnrolmentOption {
 }
 
 // WithEnrolmentContactResolver sends the emailed code and the notification to the
-// address r returns for the session's user.
+// address resolver returns for the session's user.
 //
 // Default: mfa.UsernameAsAddress, the username unchanged, which is the
 // convention magic links already rely on. A consumer whose usernames are not
 // addresses reads the address from their own records here. The address is
 // never written to a log. A nil resolver is refused.
-func WithEnrolmentContactResolver(r mfa.ContactResolver) EnrolmentOption {
+func WithEnrolmentContactResolver(resolver mfa.ContactResolver) EnrolmentOption {
 	return func(i *enrolmentInterceptor) error {
-		if r == nil {
+		if resolver == nil {
 			return newConfigError("WithEnrolmentContactResolver was given no resolver; omit the " +
 				"option to keep the username as the address")
 		}
 
-		i.contact = r
+		i.contact = resolver
 
 		return nil
 	}
 }
 
-// WithEnrolmentLabelResolver labels the provisioning URI with what r returns for the
+// WithEnrolmentLabelResolver labels the provisioning URI with what resolver returns for the
 // session's user. The label is never read from the request.
 //
 // Default: mfa.UsernameAsAddress. A username containing ':' is refused by the
 // TOTP method as a label, and the begin then fails storing nothing; a
 // deployment whose usernames may contain one supplies its own resolver. A nil
 // resolver is refused.
-func WithEnrolmentLabelResolver(r mfa.LabelResolver) EnrolmentOption {
+func WithEnrolmentLabelResolver(resolver mfa.LabelResolver) EnrolmentOption {
 	return func(i *enrolmentInterceptor) error {
-		if r == nil {
+		if resolver == nil {
 			return newConfigError("WithEnrolmentLabelResolver was given no resolver; omit the " +
 				"option to keep the username as the label")
 		}
 
-		i.label = r
+		i.label = resolver
 
 		return nil
 	}
 }
 
-// WithEnrolmentMessages renders the emailed code and the notification with r.
+// WithEnrolmentMessages renders the emailed code and the notification with messages.
 //
 // Default: the library's own plain-text messages. The code message carries the
 // code and when it stops being accepted; the notification names the method and
 // the time, and carries no code, secret or provisioning URI. The library still
 // sets the recipient, from the contact resolver, so a renderer cannot address
 // a message elsewhere. A nil renderer is refused.
-func WithEnrolmentMessages(r EnrolmentMessages) EnrolmentOption {
+func WithEnrolmentMessages(messages EnrolmentMessages) EnrolmentOption {
 	return func(i *enrolmentInterceptor) error {
-		if err := requireDep("WithEnrolmentMessages", "message renderer", r); err != nil {
+		if err := requireDep("WithEnrolmentMessages", "message renderer", messages); err != nil {
 			return err
 		}
 
-		i.messages = r
+		i.messages = messages
 
 		return nil
 	}
 }
 
 // WithEnrolmentLogInterval writes at most one record per enrolment refusal
-// reason per d.
+// reason per interval.
 //
 // Default: one minute. It governs the records the enrolment path writes — its
 // endpoints' refusals, a limiter that cannot record, a notification that could
@@ -568,9 +568,9 @@ func WithEnrolmentMessages(r EnrolmentMessages) EnrolmentOption {
 // to ask for the full stream: it is a choice about volume, not a fault. No
 // record, sampled or not, carries a code, a secret, a provisioning URI, an
 // address or the user reference.
-func WithEnrolmentLogInterval(d time.Duration) EnrolmentOption {
+func WithEnrolmentLogInterval(interval time.Duration) EnrolmentOption {
 	return func(i *enrolmentInterceptor) error {
-		i.logInterval = d
+		i.logInterval = interval
 
 		return nil
 	}

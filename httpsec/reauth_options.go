@@ -424,27 +424,27 @@ func WithReauthenticationMethodsResponder(fn ReauthenticationMethodsResponder) R
 	}
 }
 
-// WithReauthenticationChallengeTTL lets a re-proof challenge be answered for d
+// WithReauthenticationChallengeTTL lets a re-proof challenge be answered for ttl
 // after it is issued.
 //
 // Default: 5 minutes, the MFA challenge's default, kept separately: this
 // option governs re-proof challenges alone, and WithMFAChallengeTTL login
 // challenges alone. A lifetime of zero or less is refused, since no challenge
 // could ever be answered.
-func WithReauthenticationChallengeTTL(d time.Duration) ReauthenticationOption {
+func WithReauthenticationChallengeTTL(ttl time.Duration) ReauthenticationOption {
 	return func(i *reauthInterceptor) error {
-		if d <= 0 {
+		if ttl <= 0 {
 			return newConfigError("WithReauthenticationChallengeTTL was given %s; a challenge that "+
-				"expires as it is issued can never be answered", d)
+				"expires as it is issued can never be answered", ttl)
 		}
 
-		i.challengeTTL = d
+		i.challengeTTL = ttl
 
 		return nil
 	}
 }
 
-// WithReauthenticationChallengeLimit lets begin issue n re-proof challenges to
+// WithReauthenticationChallengeLimit lets begin issue limit re-proof challenges to
 // one user for one method within the challenge store's issuance window, one
 // hour. A begin past the limit is refused as mfa.ErrVerifyThrottled and issues
 // nothing.
@@ -452,25 +452,25 @@ func WithReauthenticationChallengeTTL(d time.Duration) ReauthenticationOption {
 // Default: 10, the MFA challenge's default, kept separately as
 // WithReauthenticationChallengeTTL is. A limit of zero or less is refused,
 // since it would refuse every begin.
-func WithReauthenticationChallengeLimit(n int) ReauthenticationOption {
+func WithReauthenticationChallengeLimit(limit int) ReauthenticationOption {
 	return func(i *reauthInterceptor) error {
-		if n <= 0 {
+		if limit <= 0 {
 			return newConfigError("WithReauthenticationChallengeLimit was given %d; a limit that "+
-				"refuses every begin leaves no challenge to answer", n)
+				"refuses every begin leaves no challenge to answer", limit)
 		}
 
-		i.challengeCap = n
+		i.challengeCap = limit
 
 		return nil
 	}
 }
 
-// WithReauthenticationChallengeStore keeps re-proof challenges in s.
+// WithReauthenticationChallengeStore keeps re-proof challenges in store.
 //
 // Default: an in-memory store on the chain's clock, which serves one process:
 // a challenge issued by one replica cannot be answered at another. A
 // deployment running more than one replica gives a store its replicas share.
-// Re-proof challenges are issued under their own purposes, so s may be the
+// Re-proof challenges are issued under their own purposes, so store may be the
 // store the MFA challenges use without either honouring the other's.
 //
 // A chain that gave the MFA slot a store (WithMFAChallengeStore) and has a
@@ -486,13 +486,13 @@ func WithReauthenticationChallengeLimit(n int) ReauthenticationOption {
 // ErrConfig naming it, because nothing issues re-proof challenges there. A
 // slot of TOTP alone accepts it, so one store can be given to both options
 // before a challenge method is added.
-func WithReauthenticationChallengeStore(s onetime.Store) ReauthenticationOption {
+func WithReauthenticationChallengeStore(store onetime.Store) ReauthenticationOption {
 	return func(i *reauthInterceptor) error {
-		if err := requireDep("WithReauthenticationChallengeStore", "one-time store", s); err != nil {
+		if err := requireDep("WithReauthenticationChallengeStore", "one-time store", store); err != nil {
 			return err
 		}
 
-		i.challengeStore = s
+		i.challengeStore = store
 
 		return nil
 	}

@@ -13,11 +13,11 @@ import (
 	"github.com/kartaladev/scrty/ratelimit"
 )
 
-// Run executes the conformance suite against h.
+// Run executes the conformance suite against harness.
 //
 // Cases run one after another, because Advance moves a clock the whole
 // harness shares.
-func Run(t *testing.T, h Harness) {
+func Run(t *testing.T, harness Harness) {
 	t.Helper()
 
 	cases := []testCase{
@@ -131,12 +131,12 @@ func Run(t *testing.T, h Harness) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			l := h.New(t, "conformance", tc.limit, tc.window)
-			tc.assert(t, h, l)
+			l := harness.New(t, "conformance", tc.limit, tc.window)
+			tc.assert(t, harness, l)
 		})
 	}
 
-	runShared(t, h)
+	runShared(t, harness)
 }
 
 // testCase is one single-instance scenario: a fresh limiter with limit and

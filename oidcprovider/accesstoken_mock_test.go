@@ -44,17 +44,17 @@ func (m *MockAccessTokenStore) EXPECT() *MockAccessTokenStoreMockRecorder {
 }
 
 // Create mocks base method.
-func (m *MockAccessTokenStore) Create(ctx context.Context, r *oidcprovider.AccessTokenRecord) error {
+func (m *MockAccessTokenStore) Create(ctx context.Context, record *oidcprovider.AccessTokenRecord) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Create", ctx, r)
+	ret := m.ctrl.Call(m, "Create", ctx, record)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Create indicates an expected call of Create.
-func (mr *MockAccessTokenStoreMockRecorder) Create(ctx, r any) *MockAccessTokenStoreCreateCall {
+func (mr *MockAccessTokenStoreMockRecorder) Create(ctx, record any) *MockAccessTokenStoreCreateCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockAccessTokenStore)(nil).Create), ctx, r)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockAccessTokenStore)(nil).Create), ctx, record)
 	return &MockAccessTokenStoreCreateCall{Call: call}
 }
 

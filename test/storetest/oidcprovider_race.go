@@ -74,13 +74,13 @@ func raceN(key string) int {
 // ProviderRaceRacers callers move each record from StageLogin to StageConsent at once,
 // and exactly one of each must succeed, every other caller receiving
 // oidcprovider.ErrNotFound. Its inputs are checked as RunConsumeRace checks them, so
-// h.PoolSize must be at least ProviderRaceRacers.
-func RunAdvanceRace(t *testing.T, h DurableHarness[oidcprovider.PendingRequestStore]) {
+// harness.PoolSize must be at least ProviderRaceRacers.
+func RunAdvanceRace(t *testing.T, harness DurableHarness[oidcprovider.PendingRequestStore]) {
 	t.Helper()
 
 	signIn := opSignIn("u-1", 1)
 
-	runRace(t, h, Race[oidcprovider.PendingRequestStore]{
+	runRace(t, harness, Race[oidcprovider.PendingRequestStore]{
 		Seed: func(ctx context.Context, t *testing.T, s oidcprovider.PendingRequestStore, i int) string {
 			t.Helper()
 			key := "pending-" + strconv.Itoa(i)
@@ -112,12 +112,12 @@ func RunAdvanceRace(t *testing.T, h DurableHarness[oidcprovider.PendingRequestSt
 // once: ProviderRaceRacers callers consume each token of the provider's purpose at once,
 // and exactly one of each must succeed, every other caller receiving
 // onetime.ErrTokenNotFound. Its inputs are checked as RunConsumeRace checks them.
-func RunCodeSpendRace(t *testing.T, h DurableHarness[onetime.Store]) {
+func RunCodeSpendRace(t *testing.T, harness DurableHarness[onetime.Store]) {
 	t.Helper()
 
 	const firstToken = 70000
 
-	runRace(t, h, Race[onetime.Store]{
+	runRace(t, harness, Race[onetime.Store]{
 		Seed: func(ctx context.Context, t *testing.T, s onetime.Store, i int) string {
 			t.Helper()
 			n := firstToken + i
@@ -146,10 +146,10 @@ func RunCodeSpendRace(t *testing.T, h DurableHarness[onetime.Store]) {
 // RunAssertionRecordRace holds an assertion-identifier store to deciding by the write:
 // ProviderRaceRacers callers record each identifier at once, and exactly one of each must
 // be told it is new. Its inputs are checked as RunConsumeRace checks them.
-func RunAssertionRecordRace(t *testing.T, h DurableHarness[oidcprovider.AssertionIDStore]) {
+func RunAssertionRecordRace(t *testing.T, harness DurableHarness[oidcprovider.AssertionIDStore]) {
 	t.Helper()
 
-	runRace(t, h, Race[oidcprovider.AssertionIDStore]{
+	runRace(t, harness, Race[oidcprovider.AssertionIDStore]{
 		Seed: func(_ context.Context, _ *testing.T, _ oidcprovider.AssertionIDStore, i int) string {
 			return "jti-" + strconv.Itoa(i)
 		},
@@ -169,12 +169,12 @@ func RunAssertionRecordRace(t *testing.T, h DurableHarness[oidcprovider.Assertio
 // BrowserSessionSuite runs this race on the one store its factory returns. A harness run
 // here splits the racers between two instances, and so also catches a store serialising
 // under a lock of one instance.
-func RunTouchRace(t *testing.T, h DurableHarness[oidcprovider.BrowserSessionStore]) {
+func RunTouchRace(t *testing.T, harness DurableHarness[oidcprovider.BrowserSessionStore]) {
 	t.Helper()
 
 	nearer, further := browserIdle.Add(time.Minute), browserIdle.Add(2*time.Minute)
 
-	runRace(t, h, Race[oidcprovider.BrowserSessionStore]{
+	runRace(t, harness, Race[oidcprovider.BrowserSessionStore]{
 		Records: meetingRaceRecords,
 		Seed: func(ctx context.Context, t *testing.T, s oidcprovider.BrowserSessionStore, i int) string {
 			t.Helper()
@@ -221,20 +221,20 @@ func RunTouchRace(t *testing.T, h DurableHarness[oidcprovider.BrowserSessionStor
 //     Whichever goes first the grant must end revoked and marked, and a later report of
 //     that end returns nothing.
 //
-// Its inputs are checked as RunConsumeRace checks them, so h.PoolSize must be at least
+// Its inputs are checked as RunConsumeRace checks them, so harness.PoolSize must be at least
 // ProviderRaceRacers. It uses the in-memory code store whatever the grant store is, as
 // the two meet only through the port.
-func RunGrantRaces(t *testing.T, h DurableHarness[oidcprovider.GrantStore]) {
+func RunGrantRaces(t *testing.T, harness DurableHarness[oidcprovider.GrantStore]) {
 	t.Helper()
 
-	h.Require(t)
+	harness.Require(t)
 
-	h, codes := joinedGrantHarness(t, h)
+	harness, codes := joinedGrantHarness(t, harness)
 
-	runRace(t, h, revocationCreateRace(), raceRule{name: RevocationCreateRaceName, noun: "create", racers: 2})
-	runRace(t, h, revokedOnceRace(), raceRule{name: RevokedOnceRaceName, noun: "first revocation", racers: ProviderRaceRacers})
-	runRace(t, h, endReportedOnceRace(), raceRule{name: EndReportedOnceRaceName, noun: "report", racers: ProviderRaceRacers})
-	runRace(t, h, endCreateRace(codes), raceRule{name: EndCreateRaceName, noun: "create", racers: 2})
+	runRace(t, harness, revocationCreateRace(), raceRule{name: RevocationCreateRaceName, noun: "create", racers: 2})
+	runRace(t, harness, revokedOnceRace(), raceRule{name: RevokedOnceRaceName, noun: "first revocation", racers: ProviderRaceRacers})
+	runRace(t, harness, endReportedOnceRace(), raceRule{name: EndReportedOnceRaceName, noun: "report", racers: ProviderRaceRacers})
+	runRace(t, harness, endCreateRace(codes), raceRule{name: EndCreateRaceName, noun: "create", racers: 2})
 }
 
 // joinedGrantHarness is h with every store it builds joined to one in-memory code store,
@@ -272,12 +272,12 @@ func joinedGrantHarness(
 // The sweep is left out: it is store-wide, so it would take the other records' rows, and
 // an adapter's own test meets it. Its inputs are checked as RunConsumeRace checks them.
 // It uses the in-memory code store whatever the grant store is.
-func RunGrantOrderRaces(t *testing.T, h DurableHarness[oidcprovider.GrantStore]) {
+func RunGrantOrderRaces(t *testing.T, harness DurableHarness[oidcprovider.GrantStore]) {
 	t.Helper()
 
-	h.Require(t)
+	harness.Require(t)
 
-	h, codes := joinedGrantHarness(t, h)
+	harness, codes := joinedGrantHarness(t, harness)
 
 	type call = func(ctx context.Context, s oidcprovider.GrantStore, n int) error
 
@@ -305,7 +305,7 @@ func RunGrantOrderRaces(t *testing.T, h DurableHarness[oidcprovider.GrantStore])
 		{GrantOrderRevokeClientsRaceName, revokeClient, revokeClient},
 	} {
 		firstFamily := 200000 + i*50000
-		runRace(t, h, grantOrderRace(codes, firstFamily, pair.first, pair.second),
+		runRace(t, harness, grantOrderRace(codes, firstFamily, pair.first, pair.second),
 			raceRule{name: pair.name, noun: "call", racers: 2})
 	}
 
@@ -320,7 +320,7 @@ func RunGrantOrderRaces(t *testing.T, h DurableHarness[oidcprovider.GrantStore])
 		{GrantOrderRevokeUserSetsRaceName, revokeUser, revokeClient},
 	} {
 		firstFamily := 450000 + i*50000
-		runRace(t, h, grantOrderSetsRace(firstFamily, pair.first, pair.second),
+		runRace(t, harness, grantOrderSetsRace(firstFamily, pair.first, pair.second),
 			raceRule{name: pair.name, noun: "call", racers: 2})
 	}
 }

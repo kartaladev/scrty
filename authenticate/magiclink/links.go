@@ -113,7 +113,7 @@ type Redemption struct {
 // not run, and the error is returned to the caller unchanged — it is the
 // consumer's contract with their own caller, and the library has no business
 // rewriting it.
-type Check func(ctx context.Context, p identity.Principal, passwordChangedAt time.Time) error
+type Check func(ctx context.Context, principal identity.Principal, passwordChangedAt time.Time) error
 
 // AddressResolver turns a submitted address into the user it belongs to.
 //
@@ -686,8 +686,8 @@ func (m *Links) PurgeExpired(ctx context.Context) (int, error) {
 	return m.tokens.PurgeExpired(ctx)
 }
 
-// ExpiryTask returns the task that deletes m's expired magic-link tokens by
-// purging the token manager m wraps, exactly as m.PurgeExpired does.
+// ExpiryTask returns the task that deletes the expired magic-link tokens of links by
+// purging the token manager it wraps, exactly as links.PurgeExpired does.
 //
 // The task is named "magiclink-tokens". It sets no Interval, because only the
 // deployment knows its cadence, and it accepts no cutoff: the token manager
@@ -695,6 +695,6 @@ func (m *Links) PurgeExpired(ctx context.Context) (int, error) {
 // inside that window, expired or not, so a sweep cannot free issuance quota.
 // A store that cannot purge yields an error matching
 // expiry.ErrPurgeUnsupported.
-func ExpiryTask(m *Links) expiry.Task {
-	return onetime.ExpiryTaskNamed("magiclink-tokens", m.tokens)
+func ExpiryTask(links *Links) expiry.Task {
+	return onetime.ExpiryTaskNamed("magiclink-tokens", links.tokens)
 }

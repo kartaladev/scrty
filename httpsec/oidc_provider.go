@@ -301,7 +301,7 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 	}
 }
 
-// EnableOIDCProvider puts the OpenID Provider p on the chain. The provider answers
+// EnableOIDCProvider puts provider, the OpenID Provider, on the chain. The provider answers
 // the authorization code flow; the login and consent pages are the consumer's, and
 // resume a parked request through the OIDCResume endpoint (see PendingOIDCRequest,
 // and the README's "OpenID Provider"). The authorization endpoint (OIDCAuthorize)
@@ -484,7 +484,7 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // A passkey manager takes a session manager, not a store: passkey.Deps.Sessions
 // must report whether its ends reach the provider, which a bare session.Store
 // cannot. The manager given to EnablePasskeys must be built over a *session.Sessions
-// built with session.WithEndObserver(p), or New refuses the chain, unless the manager
+// built with session.WithEndObserver(provider), or New refuses the chain, unless the manager
 // ends no session at all: passkey.WithoutSessionRevocationOnRemoval and
 // passkey.WithoutSessionRevocationOnClone both given.
 //
@@ -495,7 +495,7 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 //
 // # The provider's lifecycle
 //
-// The chain neither starts nor stops p. oidcprovider.Provider.Start is optional and
+// The chain neither starts nor stops provider. oidcprovider.Provider.Start is optional and
 // launches nothing, because back-channel delivery starts itself at the first ended
 // sign-in. Call oidcprovider.Provider.Shutdown when the application stops, which is
 // what ends that delivery; a provider that has delivered nothing has nothing to end.
@@ -519,7 +519,7 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 //     path that both would answer, or two operations on one path although their
 //     methods differ. Only the consents list and a revocation declare they share
 //     a path;
-//   - a session manager on the chain that does not report sign-in ends to p
+//   - a session manager on the chain that does not report sign-in ends to provider
 //     (session.WithEndObserver), because grants would then outlive a logout. The
 //     one a passkey manager was built over is among them;
 //   - oidcprovider.WithDPoP disagreeing with EnableDPoP;
@@ -592,9 +592,9 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // refusal of the proof, for a nonce or for want of a caller carries DPoP's own challenge alone, as
 // anywhere on the chain. Only these endpoints are challenged: a refusal elsewhere on the chain is
 // answered as it is there.
-func EnableOIDCProvider(p *oidcprovider.Provider, opts ...OIDCProviderOption) Option {
+func EnableOIDCProvider(provider *oidcprovider.Provider, opts ...OIDCProviderOption) Option {
 	return func(c *config) error {
-		if err := requireDep(optionOIDCProvider, "provider", p); err != nil {
+		if err := requireDep(optionOIDCProvider, "provider", provider); err != nil {
 			return err
 		}
 
@@ -602,7 +602,7 @@ func EnableOIDCProvider(p *oidcprovider.Provider, opts ...OIDCProviderOption) Op
 			return newConfigError("%s was given twice; one chain has one provider", optionOIDCProvider)
 		}
 
-		op := newOIDCEndpoints(p, c.now)
+		op := newOIDCEndpoints(provider, c.now)
 
 		for _, opt := range opts {
 			if opt == nil {

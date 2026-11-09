@@ -706,12 +706,12 @@ func (p *Policy) RequiredAttemptView() (policy.AttemptStore, bool) {
 
 var _ policy.Policy = (*Policy)(nil)
 
-// ExpiryTask returns the task that deletes the login failures of p that
-// have aged out of its lockout window, through p.PurgeExpired.
+// ExpiryTask returns the task that deletes the login failures of policy that
+// have aged out of its lockout window, through policy.PurgeExpired.
 //
 // The task is named "login-attempts". It sets no Interval, because only the
-// deployment knows its cadence, and it accepts no cutoff: the cutoff is p's own
-// window behind p's own clock (24 hours by default, or what WithFailureWindow
+// deployment knows its cadence, and it accepts no cutoff: the cutoff is policy's own
+// window behind policy's own clock (24 hours by default, or what WithFailureWindow
 // or WithSliding set). It never deletes a failure the policy would still
 // count, so a sweep cannot unlock an account that is locked.
 //
@@ -722,11 +722,11 @@ var _ policy.Policy = (*Policy)(nil)
 // A store that cannot purge, the default in-memory one among them, yields an
 // error that matches both expiry.ErrPurgeUnsupported and ErrReapUnsupported,
 // never a run that removed nothing.
-func ExpiryTask(p *Policy) expiry.Task {
+func ExpiryTask(policy *Policy) expiry.Task {
 	return expiry.Task{
 		Name: "login-attempts",
 		Run: func(ctx context.Context) (int, error) {
-			removed, err := p.PurgeExpired(ctx)
+			removed, err := policy.PurgeExpired(ctx)
 			if errors.Is(err, ErrReapUnsupported) {
 				return removed, errors.Join(err, expiry.ErrPurgeUnsupported)
 			}

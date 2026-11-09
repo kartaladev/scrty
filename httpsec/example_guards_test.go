@@ -20,7 +20,7 @@ import (
 type projectDeleters struct{}
 
 func (projectDeleters) Authorize(ctx context.Context, _ authorize.Attributes) error {
-	if p, ok := identity.PrincipalFromContext(ctx); ok && p.Username == "ada" {
+	if principal, ok := identity.PrincipalFromContext(ctx); ok && principal.Username == "ada" {
 		return nil
 	}
 
@@ -39,10 +39,10 @@ func (projectDeleters) Authorize(ctx context.Context, _ authorize.Attributes) er
 // WithGuardClock.
 func ExampleGuards_RequireRecentAuthentication() {
 	signedIn := time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC)
-	clk := clockwork.NewFakeClockAt(signedIn)
+	clock := clockwork.NewFakeClockAt(signedIn)
 
 	guards, err := httpsec.NewGuards(projectDeleters{},
-		httpsec.WithGuardClock(clk),
+		httpsec.WithGuardClock(clock),
 		httpsec.WithAuthenticationTime(func(context.Context) (time.Time, bool) {
 			return signedIn, true
 		}),
@@ -78,10 +78,10 @@ func ExampleGuards_RequireRecentAuthentication() {
 		fmt.Println(username, rec.Code)
 	}
 
-	clk.Advance(10 * time.Minute)
+	clock.Advance(10 * time.Minute)
 	call("ada")
 
-	clk.Advance(10 * time.Minute)
+	clock.Advance(10 * time.Minute)
 	call("ada")
 	call("grace")
 

@@ -2692,24 +2692,24 @@ func sessionStrictRotationCases() []suiteCase[session.Store] {
 // does not read the nil family as a family whose current member is kept.
 //
 // The case stores two sessions of one user, moves both rows to the all-zero
-// family through h.Raw, bypassing Create's refusal of it, and deletes except
+// family through harness.Raw, bypassing Create's refusal of it, and deletes except
 // one of them: the other must go.
 //
-// It fails at once, naming every missing input, when h is missing one.
-func RunSessionDeleteExceptNilFamily[S session.Store](t *testing.T, h DurableHarness[S]) {
+// It fails at once, naming every missing input, when harness is missing one.
+func RunSessionDeleteExceptNilFamily[S session.Store](t *testing.T, harness DurableHarness[S]) {
 	t.Helper()
 
-	h.Require(t)
+	harness.Require(t)
 
 	t.Run("a kept session in no family keeps itself alone", func(t *testing.T) {
-		s := h.New(t)
+		s := harness.New(t)
 		user := identity.UserID("nil-family-except-user")
 		keep := familySession("nil-family-except-keep", user, suiteID(2501))
 		other := familySession("nil-family-except-other", user, suiteID(2502))
 		require.NoError(t, s.Create(t.Context(), keep))
 		require.NoError(t, s.Create(t.Context(), other))
 		for _, sess := range []*session.Session{keep, other} {
-			_, err := h.Raw.ExecContext(t.Context(),
+			_, err := harness.Raw.ExecContext(t.Context(),
 				`UPDATE sessions SET family_id = '00000000-0000-0000-0000-000000000000' WHERE id_digest = $1`,
 				sessionDigest(sess.ID))
 			require.NoError(t, err)

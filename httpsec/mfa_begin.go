@@ -240,25 +240,25 @@ func WithMFABeginPrefix(prefix string) MFAOption {
 	}
 }
 
-// WithMFAChallengeTTL lets a pending challenge be answered for d after it is
+// WithMFAChallengeTTL lets a pending challenge be answered for ttl after it is
 // issued, instead of DefaultMFAChallengeTTL.
 //
 // A lifetime of zero or less is refused: it would expire every challenge the
 // moment it was issued, and a challenge method could never be verified.
-func WithMFAChallengeTTL(d time.Duration) MFAOption {
+func WithMFAChallengeTTL(ttl time.Duration) MFAOption {
 	return func(i *mfaInterceptor) error {
-		if d <= 0 {
+		if ttl <= 0 {
 			return newConfigError("WithMFAChallengeTTL was given %s; a challenge that expires as it "+
-				"is issued could never be answered", d)
+				"is issued could never be answered", ttl)
 		}
 
-		i.challengeTTL = d
+		i.challengeTTL = ttl
 
 		return nil
 	}
 }
 
-// WithMFAChallengeStore keeps pending challenges in s instead.
+// WithMFAChallengeStore keeps pending challenges in store instead.
 //
 // Default: an in-memory one-time store, which serves a single process. On
 // several replicas a begin and the verify answering it may land on different
@@ -289,13 +289,13 @@ func WithMFAChallengeTTL(d time.Duration) MFAOption {
 // store to both is fine, as purposes keep the two kinds of challenge apart.
 //
 // A nil store, including an interface holding a nil pointer, is refused.
-func WithMFAChallengeStore(s onetime.Store) MFAOption {
+func WithMFAChallengeStore(store onetime.Store) MFAOption {
 	return func(i *mfaInterceptor) error {
-		if err := requireDep("WithMFAChallengeStore", "one-time store", s); err != nil {
+		if err := requireDep("WithMFAChallengeStore", "one-time store", store); err != nil {
 			return err
 		}
 
-		i.challengeStore = s
+		i.challengeStore = store
 		i.challengeStoreGiven = true
 
 		return nil
@@ -319,7 +319,7 @@ func WithMFABeginResponder(fn MFABeginResponder) MFAOption {
 	}
 }
 
-// WithMFAChallengeLimit lets begin issue n challenges to one user for one
+// WithMFAChallengeLimit lets begin issue limit challenges to one user for one
 // method within the pending-challenge issuance window, one hour, instead of
 // DefaultMFAChallengeLimit. A begin past the limit is refused as
 // mfa.ErrVerifyThrottled and issues nothing.
@@ -327,18 +327,18 @@ func WithMFABeginResponder(fn MFABeginResponder) MFAOption {
 // The limit is counted from the pending-challenge store, so it holds across
 // replicas sharing a store and across a user's sessions. The count and the
 // issue are one decision of the store's, so begins racing each other never
-// together issue more than n.
+// together issue more than limit.
 //
 // A limit of zero or less is refused: it would refuse every begin, and a
 // challenge method could never be verified.
-func WithMFAChallengeLimit(n int) MFAOption {
+func WithMFAChallengeLimit(limit int) MFAOption {
 	return func(i *mfaInterceptor) error {
-		if n <= 0 {
+		if limit <= 0 {
 			return newConfigError("WithMFAChallengeLimit was given %d; a limit that refuses every "+
-				"begin leaves no challenge to answer", n)
+				"begin leaves no challenge to answer", limit)
 		}
 
-		i.challengeCap = n
+		i.challengeCap = limit
 
 		return nil
 	}

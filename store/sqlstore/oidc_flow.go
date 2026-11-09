@@ -46,13 +46,13 @@ func NewFlowStore(db *sql.DB, opts ...Option) (*FlowStore, error) {
 	return &FlowStore{c: c}, nil
 }
 
-// Begin stores f and returns the handle the store minted for it.
-func (s *FlowStore) Begin(ctx context.Context, f oidc.Flow) (string, error) {
+// Begin stores flow and returns the handle the store minted for it.
+func (s *FlowStore) Begin(ctx context.Context, flow oidc.Flow) (string, error) {
 	const op = "begin login flow"
 
 	if err := storekit.CheckStorable(
-		storekit.Text("provider", f.Provider), storekit.Text("state", f.State), storekit.Text("nonce", f.Nonce),
-		storekit.Text("verifier", f.Verifier), storekit.Text("next location", f.Next),
+		storekit.Text("provider", flow.Provider), storekit.Text("state", flow.State), storekit.Text("nonce", flow.Nonce),
+		storekit.Text("verifier", flow.Verifier), storekit.Text("next location", flow.Next),
 	); err != nil {
 		return "", failed(op, err)
 	}
@@ -65,8 +65,8 @@ func (s *FlowStore) Begin(ctx context.Context, f oidc.Flow) (string, error) {
 		return "", failed(op, err)
 	}
 
-	if _, err := s.c.exec(ctx, op, pgschema.FlowInsert, rowID, handle, f.Provider, f.State, f.Nonce, f.Verifier,
-		f.Next, storekit.Time(f.ExpiresAt)); err != nil {
+	if _, err := s.c.exec(ctx, op, pgschema.FlowInsert, rowID, handle, flow.Provider, flow.State, flow.Nonce, flow.Verifier,
+		flow.Next, storekit.Time(flow.ExpiresAt)); err != nil {
 		return "", err
 	}
 

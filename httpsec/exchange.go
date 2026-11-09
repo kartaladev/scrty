@@ -174,9 +174,9 @@ type ResponseWriter interface {
 
 	// SetCookie adds a Set-Cookie header. It has no effect once the response has
 	// begun, as SetHeader has none.
-	SetCookie(c *Cookie)
+	SetCookie(cookie *Cookie)
 	WriteHeader(status int)
-	Write(b []byte) (int, error)
+	Write(body []byte) (int, error)
 
 	// Stream sends the status, every header set so far and contentType as the
 	// Content-Type, then has body write the rest of the response, each
@@ -303,7 +303,7 @@ type ResponseWriter interface {
 	// other requests, and body could read another user's request. net/http and gin do
 	// not reuse them that way, and the rule is the same so that a stream written on one
 	// adapter is safe on the others.
-	Stream(ctx context.Context, contentType string, body func(ctx context.Context, w EventWriter) error) error
+	Stream(ctx context.Context, contentType string, body func(ctx context.Context, events EventWriter) error) error
 }
 
 // Exchange is one request passing through the chain.
@@ -393,11 +393,11 @@ type Exchange struct {
 //
 // It panics when ctx is nil: an exchange with no context would panic at the
 // first call into a core, so the mistake is refused where it is made.
-func NewExchange(ctx context.Context, r Request, w ResponseWriter) *Exchange {
+func NewExchange(ctx context.Context, request Request, writer ResponseWriter) *Exchange {
 	if ctx == nil {
 		panic("httpsec: NewExchange needs a non-nil context")
 	}
-	return &Exchange{Request: r, Writer: w, ctx: ctx}
+	return &Exchange{Request: request, Writer: writer, ctx: ctx}
 }
 
 // Context returns the context every call into scrty's cores is made with. It
@@ -454,10 +454,10 @@ type InterceptorFunc func(ex *Exchange, next Next) error
 // Intercept implements Interceptor.
 func (f InterceptorFunc) Intercept(ex *Exchange, next Next) error { return f(ex, next) }
 
-// PublishSession publishes a, the result of authenticating this request, and
-// s, the session it was authenticated on, together: on the exchange, as
+// PublishSession publishes authentication, the result of authenticating this request, and
+// sess, the session it was authenticated on, together: on the exchange, as
 // Authentication and Session, and on its context, where WithCaller puts the
-// result and its principal and SessionFromContext reads s. Every later
+// result and its principal and SessionFromContext reads sess. Every later
 // interceptor and the handler read the caller and the session from there.
 //
 // It is how a consumer interceptor that authenticates on a session of its own
@@ -465,39 +465,39 @@ func (f InterceptorFunc) Intercept(ex *Exchange, next Next) error { return f(ex,
 // authenticators call. A session published here is treated as theirs is: the
 // session-touch step records its activity after the handler, through the
 // session manager the chain was wired with, and EvaluatePerRequest judges it.
-// Publishing a only, with no session, is WithCaller and SetContext; publishing
-// s only, with no result, publishes a session no caller owns, which no
+// Publishing authentication only, with no session, is WithCaller and SetContext; publishing
+// sess only, with no result, publishes a session no caller owns, which no
 // built-in does.
 //
-// It refuses a non-nil s that belongs to no family (FamilyID is id.Nil) and
-// publishes nothing, neither a nor s. Every stored session belongs to a
+// It refuses a non-nil sess that belongs to no family (FamilyID is id.Nil) and
+// publishes nothing, neither authentication nor sess. Every stored session belongs to a
 // family, which is what reuse detection, family revocation and logout act on;
 // a session without one would escape all three, so one can only come from an
 // interceptor that built it by hand. The error has fixed text and matches no
 // sentinel, ErrAuthenticationRequired and the session errors included, so an
 // interceptor that returns it gets the 500 any unclassified error maps to. A
-// nil s is not refused: it is WithCaller and SetContext, and returns nil.
+// nil sess is not refused: it is WithCaller and SetContext, and returns nil.
 //
 // The default is unused: the built-ins call it, and a consumer calls it from
 // an interceptor registered with RegisterInterceptor, normally at
-// OrderBearerToken, after verifying the credential that names s. Such an
+// OrderBearerToken, after verifying the credential that names sess. Such an
 // interceptor also calls RecordPresentedToken with that credential, so a DPoP
 // proof beside it is judged for its ath. PublishSession is itself the
 // consumer's extension point, so it has no override.
-func (e *Exchange) PublishSession(a *authenticate.Authentication, s *session.Session) error {
-	if s != nil && s.FamilyID == id.Nil {
+func (e *Exchange) PublishSession(authentication *authenticate.Authentication, sess *session.Session) error {
+	if sess != nil && sess.FamilyID == id.Nil {
 		return errors.New("httpsec: a session with no family cannot be published; every stored session belongs to one")
 	}
 
-	e.Authentication = a
-	e.Session = s
-	e.SetContext(withSession(WithCaller(e.ctx, a), s))
+	e.Authentication = authentication
+	e.Session = sess
+	e.SetContext(withSession(WithCaller(e.ctx, authentication), sess))
 
 	return nil
 }
 
-// EvaluatePerRequest runs the chain's per-request policy phase for s, the
-// session this request is authenticated on, and p, its caller, with the
+// EvaluatePerRequest runs the chain's per-request policy phase for sess, the
+// session this request is authenticated on, and principal, its caller, with the
 // challenge handling the built-in authenticators apply, and returns their
 // refusal or nil.
 //
@@ -506,7 +506,7 @@ func (e *Exchange) PublishSession(a *authenticate.Authentication, s *session.Ses
 // on the chain enforces is refused with a configuration error. Any other
 // challenge is marked where the gate enforcing it reads it, and nil is
 // returned so the request goes on to that gate: a built-in kind is marked on
-// s, and a session entering the enrolment-only state is stored before this
+// sess, and a session entering the enrolment-only state is stored before this
 // returns, its deadlines lowered to the chain's enrolment lifetime, so a
 // failed store write is returned rather than served; a consumer kind is
 // recorded for RaisedChallenge. A recovery-pending session is not marked, and
@@ -517,8 +517,8 @@ func (e *Exchange) PublishSession(a *authenticate.Authentication, s *session.Ses
 // mark is stored through the session manager the chain was wired with, the
 // one a built-in given to New brought; on a chain no built-in gave one, an
 // enrolment mark is refused with a configuration error rather than held only
-// in memory. The phase fails closed: a nil s or p, a call before
-// PublishSession, or an s or p that is not the pair PublishSession published
+// in memory. The phase fails closed: a nil sess or principal, a call before
+// PublishSession, or a sess or principal that is not the pair PublishSession published
 // (the same pointers) is refused with ErrAuthenticationRequired, running no
 // policy, because the phase judges an authenticated caller on a session, never
 // an anonymous request or one authenticated as someone else.
@@ -529,8 +529,8 @@ func (e *Exchange) PublishSession(a *authenticate.Authentication, s *session.Ses
 // same phase, and a consumer interceptor calls it after PublishSession to be
 // judged as they are. It is itself the consumer's extension point; the
 // policies it runs are the ones given to WithPolicyEngine.
-func (e *Exchange) EvaluatePerRequest(s *session.Session, p *identity.Principal) error {
-	if s == nil || p == nil {
+func (e *Exchange) EvaluatePerRequest(sess *session.Session, principal *identity.Principal) error {
+	if sess == nil || principal == nil {
 		return ErrAuthenticationRequired
 	}
 
@@ -538,7 +538,7 @@ func (e *Exchange) EvaluatePerRequest(s *session.Session, p *identity.Principal)
 	// a call for any other pair, or before anything was published, would judge
 	// a caller this request was never authenticated as. Sessions are compared
 	// by identity, as the exchange holds the one it published.
-	if e.Authentication == nil || e.Authentication.Principal != p || e.Session != s {
+	if e.Authentication == nil || e.Authentication.Principal != principal || e.Session != sess {
 		return ErrAuthenticationRequired
 	}
 
@@ -547,7 +547,7 @@ func (e *Exchange) EvaluatePerRequest(s *session.Session, p *identity.Principal)
 		return nil
 	}
 
-	return e.evaluatePerRequest(ph, s, p, e.Authentication.PasswordChangedAt, ph.now())
+	return e.evaluatePerRequest(ph, sess, principal, e.Authentication.PasswordChangedAt, ph.now())
 }
 
 // RecordPresentedToken records tok as the access token the request presented,

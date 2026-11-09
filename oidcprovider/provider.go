@@ -100,7 +100,7 @@ type Provider struct {
 // New starts no goroutine, and there is nothing to start for the defaults to work: back-channel
 // delivery, on at most 8 workers with a queue of 1024 and 5 seconds per delivery, starts itself at the
 // first ended sign-in, and its workers leave when the queue is empty. Shutdown stops it.
-func New(d Deps, opts ...Option) (*Provider, error) {
+func New(deps Deps, opts ...Option) (*Provider, error) {
 	cfg := defaultConfig()
 	for _, opt := range opts {
 		if opt != nil {
@@ -110,17 +110,17 @@ func New(d Deps, opts ...Option) (*Provider, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	if err := d.validate(&cfg); err != nil {
+	if err := deps.validate(&cfg); err != nil {
 		return nil, err
 	}
 
 	if cfg.assertionAudience == AudienceIssuerOrTokenEndpoint && !cfg.assertionTokenEndpointSet {
-		cfg.assertionTokenEndpoint = strings.TrimSuffix(d.Issuer, "/") + tokenEndpointPath
+		cfg.assertionTokenEndpoint = strings.TrimSuffix(deps.Issuer, "/") + tokenEndpointPath
 	}
 
-	limits := limitsOf(d.Keys)
-	limits.issuer = d.Issuer
-	registry, err := d.buildRegistry(limits)
+	limits := limitsOf(deps.Keys)
+	limits.issuer = deps.Issuer
+	registry, err := deps.buildRegistry(limits)
 	if err != nil {
 		return nil, err
 	}
@@ -136,11 +136,11 @@ func New(d Deps, opts ...Option) (*Provider, error) {
 		return nil, err
 	}
 
-	issuers, err := buildIssuers(d.Keys, limits, d.Issuer, cfg.clock)
+	issuers, err := buildIssuers(deps.Keys, limits, deps.Issuer, cfg.clock)
 	if err != nil {
 		return nil, err
 	}
-	accessVerifier, err := buildAccessVerifier(d.Keys, d.Issuer, &cfg)
+	accessVerifier, err := buildAccessVerifier(deps.Keys, deps.Issuer, &cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -163,13 +163,13 @@ func New(d Deps, opts ...Option) (*Provider, error) {
 			cooldown: cfg.keysRefetchCooldown,
 		},
 		logoutDelivery: logoutDelivery,
-		issuer:         d.Issuer,
-		keys:           d.Keys,
-		users:          d.Users,
-		loginURL:       d.LoginURL,
-		consentURL:     d.ConsentURL,
-		logoutURL:      d.LogoutURL,
-		loggedOutURL:   d.LoggedOutURL,
+		issuer:         deps.Issuer,
+		keys:           deps.Keys,
+		users:          deps.Users,
+		loginURL:       deps.LoginURL,
+		consentURL:     deps.ConsentURL,
+		logoutURL:      deps.LogoutURL,
+		loggedOutURL:   deps.LoggedOutURL,
 	}
 	p.logouts = newLogoutPool(&cfg, p)
 

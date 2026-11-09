@@ -78,30 +78,30 @@ func (g *oidcResumeGroup) flushRefusalLogs() error {
 //
 // A nil limiter, including an interface holding a nil pointer, is refused: it would read
 // as no limit while the consumer believed they had replaced one.
-func WithOIDCResumeLimiter(l ratelimit.Limiter) OIDCProviderOption {
+func WithOIDCResumeLimiter(limiter ratelimit.Limiter) OIDCProviderOption {
 	return func(op *oidcEndpoints) error {
-		if err := requireDep("WithOIDCResumeLimiter", "limiter", l); err != nil {
+		if err := requireDep("WithOIDCResumeLimiter", "limiter", limiter); err != nil {
 			return err
 		}
 
-		op.resume.throttle.limiter = l
+		op.resume.throttle.limiter = limiter
 
 		return nil
 	}
 }
 
-// WithOIDCResumeBodyLimit reads at most n bytes of a resume's body.
+// WithOIDCResumeBodyLimit reads at most limit bytes of a resume's body.
 //
 // Default: DefaultLoginBodyLimit. A body over it answers ErrRequestTooLarge. A limit of
 // zero or less is refused, because it would refuse every resume.
-func WithOIDCResumeBodyLimit(n int64) OIDCProviderOption {
+func WithOIDCResumeBodyLimit(limit int64) OIDCProviderOption {
 	return func(op *oidcEndpoints) error {
-		if n <= 0 {
+		if limit <= 0 {
 			return newConfigError("WithOIDCResumeBodyLimit takes a positive bound, and %d would refuse "+
-				"every resume", n)
+				"every resume", limit)
 		}
 
-		op.resume.bodyLimit = n
+		op.resume.bodyLimit = limit
 
 		return nil
 	}

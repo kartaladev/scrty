@@ -96,21 +96,21 @@ type Race[S any] struct {
 // record must be consumed exactly once. Attempt consumes key and maps the
 // store's "not found" refusal to (false, nil).
 //
-// Racers alternate between the store h.New returns and the one
-// h.NewReplica returns, two instances on one database with their own
+// Racers alternate between the store harness.New returns and the one
+// harness.NewReplica returns, two instances on one database with their own
 // connection pools, so a store that serialises under a lock of one instance
 // fails. Both instances live in the test's process, so a lock shared by the
 // whole process (a package-level mutex) is not caught; real replicas are
 // separate processes, where such a lock guards only one of them. Records are
-// seeded through h.New's store.
+// seeded through harness.New's store.
 //
-// It fails at once, naming the input, when h or r is missing one, and when
-// h.PoolSize is narrower than r.Racers, since racers queueing for a
+// It fails at once, naming the input, when harness or race is missing one, and when
+// harness.PoolSize is narrower than race.Racers, since racers queueing for a
 // connection reach the database one after another and prove nothing.
-func RunConsumeRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
+func RunConsumeRace[S any](t *testing.T, harness DurableHarness[S], race Race[S]) {
 	t.Helper()
 
-	runRace(t, h, r, consumeRule)
+	runRace(t, harness, race, consumeRule)
 }
 
 // RunLinkInsertRace holds a store with unique inserts, such as external
@@ -121,10 +121,10 @@ func RunConsumeRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
 // to (false, nil); an upsert that reports every insert as a success fails.
 //
 // Its inputs are checked as RunConsumeRace checks them.
-func RunLinkInsertRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
+func RunLinkInsertRace[S any](t *testing.T, harness DurableHarness[S], race Race[S]) {
 	t.Helper()
 
-	runRace(t, h, r, insertRule)
+	runRace(t, harness, race, insertRule)
 }
 
 // RunStepAcceptRace holds an MFA enrolment store to accepting each TOTP time
@@ -134,10 +134,10 @@ func RunLinkInsertRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
 // Attempt returns what AcceptStep reports.
 //
 // Its inputs are checked as RunConsumeRace checks them.
-func RunStepAcceptRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
+func RunStepAcceptRace[S any](t *testing.T, harness DurableHarness[S], race Race[S]) {
 	t.Helper()
 
-	runRace(t, h, r, stepRule)
+	runRace(t, harness, race, stepRule)
 }
 
 // RunCompleteRace holds an MFA enrolment store to completing each enrolment
@@ -149,10 +149,10 @@ func RunStepAcceptRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
 // mfa.DeviceProofStore.Complete reports. storefix.CompleteRace is such a race.
 //
 // Its inputs are checked as RunConsumeRace checks them.
-func RunCompleteRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
+func RunCompleteRace[S any](t *testing.T, harness DurableHarness[S], race Race[S]) {
 	t.Helper()
 
-	runRace(t, h, r, completeRule)
+	runRace(t, harness, race, completeRule)
 }
 
 // RunConfirmProofRace holds an MFA enrolment store to deciding a confirmation
@@ -169,12 +169,12 @@ func RunCompleteRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
 //
 // Racers defaults to 2 here, one of each, so a store is failed by these two
 // operations meeting and not by two confirmations meeting; the confirmation
-// runs on h.New's store and the proof on h.NewReplica's. Its inputs are
+// runs on harness.New's store and the proof on harness.NewReplica's. Its inputs are
 // otherwise checked as RunConsumeRace checks them.
-func RunConfirmProofRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
+func RunConfirmProofRace[S any](t *testing.T, harness DurableHarness[S], race Race[S]) {
 	t.Helper()
 
-	runRace(t, h, r, confirmProofRule)
+	runRace(t, harness, race, confirmProofRule)
 }
 
 // RunChargeRace holds an MFA enrolment store to capping the attempts charged
@@ -191,10 +191,10 @@ func RunConfirmProofRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
 // connections, and must otherwise be at least mfa.MaxEmailCodeAttempts+1, so
 // a store with no cap can win more charges than allowed. Its inputs are
 // otherwise checked as RunConsumeRace checks them.
-func RunChargeRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
+func RunChargeRace[S any](t *testing.T, harness DurableHarness[S], race Race[S]) {
 	t.Helper()
 
-	runRace(t, h, r, chargeRule)
+	runRace(t, harness, race, chargeRule)
 }
 
 // RunVerifyChargeRace holds an MFA enrolment store to capping the TOTP
@@ -210,10 +210,10 @@ func RunChargeRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
 // mfa.DefaultVerifyAttemptLimit+1, so a store with no cap can win more
 // charges than allowed. Its inputs are otherwise checked as RunConsumeRace
 // checks them.
-func RunVerifyChargeRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
+func RunVerifyChargeRace[S any](t *testing.T, harness DurableHarness[S], race Race[S]) {
 	t.Helper()
 
-	runRace(t, h, r, verifyChargeRule)
+	runRace(t, harness, race, verifyChargeRule)
 }
 
 // RunSessionSupersessionRace holds a session store to deciding supersession
@@ -233,13 +233,13 @@ func RunVerifyChargeRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
 // keeps that session's live successor, so a cut that reads the family
 // before a supersession commits and deletes after it fails.
 //
-// The race is the suite's own: h supplies only the store. Its inputs are
-// checked as RunConsumeRace checks them, so h.PoolSize must be at least 8.
-func RunSessionSupersessionRace[S session.Store](t *testing.T, h DurableHarness[S]) {
+// The race is the suite's own: harness supplies only the store. Its inputs are
+// checked as RunConsumeRace checks them, so harness.PoolSize must be at least 8.
+func RunSessionSupersessionRace[S session.Store](t *testing.T, harness DurableHarness[S]) {
 	t.Helper()
 
-	runRace(t, h, sessionSupersessionRace[S](defaultRaceRacers), supersedeRule)
-	runCutRace(t, h)
+	runRace(t, harness, sessionSupersessionRace[S](defaultRaceRacers), supersedeRule)
+	runCutRace(t, harness)
 }
 
 // cutRaceRounds is how many sessions the renewal-and-cut race runs one

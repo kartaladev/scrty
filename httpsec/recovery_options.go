@@ -423,7 +423,7 @@ func WithRecoveryCodesPath(path string) RecoveryOption {
 }
 
 // WithRecoveryLimiter counts the complete endpoint's failures per source
-// through l.
+// through limiter.
 //
 // Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
 // namespace "account-recovery", or else an in-memory limiter of 10 failures per
@@ -434,28 +434,28 @@ func WithRecoveryCodesPath(path string) RecoveryOption {
 // A limiter handed to several flows shares its key cap among them, so a flood
 // on one refuses new sources on all.
 //
-// The flow's IPv6 aggregate (WithIPv6Aggregate) is sized from l: the
-// aggregate's multiplier, 4 by default, times the limit l reports, over the
-// window l reports, read through ratelimit.PolicyReporter, which the in-memory
+// The flow's IPv6 aggregate (WithIPv6Aggregate) is sized from limiter: the
+// aggregate's multiplier, 4 by default, times the limit limiter reports, over the
+// window limiter reports, read through ratelimit.PolicyReporter, which the in-memory
 // limiter and the shared limiters scrty ships implement. A limiter that does
 // not implement it gets no default aggregate for this flow, and one warning
 // when the chain is built; under an explicit WithIPv6Aggregate it is a
 // configuration error.
 //
 // A nil limiter, including an interface holding a nil pointer, is refused.
-func WithRecoveryLimiter(l ratelimit.Limiter) RecoveryOption {
+func WithRecoveryLimiter(limiter ratelimit.Limiter) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
-		if err := requireDep("WithRecoveryLimiter", "limiter", l); err != nil {
+		if err := requireDep("WithRecoveryLimiter", "limiter", limiter); err != nil {
 			return err
 		}
 
-		i.limiter = l
+		i.limiter = limiter
 
 		return nil
 	}
 }
 
-// WithRecoveryStartLimiter counts starts per source through l.
+// WithRecoveryStartLimiter counts starts per source through limiter.
 //
 // Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
 // namespace "account-recovery-start", or else an in-memory limiter of 10 starts
@@ -466,28 +466,28 @@ func WithRecoveryLimiter(l ratelimit.Limiter) RecoveryOption {
 // A limiter handed to several flows shares its key cap among them, so a flood
 // on one refuses new sources on all.
 //
-// The flow's IPv6 aggregate (WithIPv6Aggregate) is sized from l: the
-// aggregate's multiplier, 4 by default, times the limit l reports, over the
-// window l reports, read through ratelimit.PolicyReporter, which the in-memory
+// The flow's IPv6 aggregate (WithIPv6Aggregate) is sized from limiter: the
+// aggregate's multiplier, 4 by default, times the limit limiter reports, over the
+// window limiter reports, read through ratelimit.PolicyReporter, which the in-memory
 // limiter and the shared limiters scrty ships implement. A limiter that does
 // not implement it gets no default aggregate for this flow, and one warning
 // when the chain is built; under an explicit WithIPv6Aggregate it is a
 // configuration error.
 //
 // A nil limiter, including an interface holding a nil pointer, is refused.
-func WithRecoveryStartLimiter(l ratelimit.Limiter) RecoveryOption {
+func WithRecoveryStartLimiter(limiter ratelimit.Limiter) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
-		if err := requireDep("WithRecoveryStartLimiter", "limiter", l); err != nil {
+		if err := requireDep("WithRecoveryStartLimiter", "limiter", limiter); err != nil {
 			return err
 		}
 
-		i.startLimiter = l
+		i.startLimiter = limiter
 
 		return nil
 	}
 }
 
-// WithRecoveryUserLimiter counts failed recoveries per user through l. It is
+// WithRecoveryUserLimiter counts failed recoveries per user through limiter. It is
 // recovery.WithUserLimiter, passed to the core; giving that through
 // WithRecoveryCore is the same.
 //
@@ -501,13 +501,13 @@ func WithRecoveryStartLimiter(l ratelimit.Limiter) RecoveryOption {
 // replica still bounds guessing on its own, and users are not locked out.
 //
 // A nil limiter, including an interface holding a nil pointer, is refused.
-func WithRecoveryUserLimiter(l ratelimit.Limiter) RecoveryOption {
+func WithRecoveryUserLimiter(limiter ratelimit.Limiter) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
-		if err := requireDep("WithRecoveryUserLimiter", "limiter", l); err != nil {
+		if err := requireDep("WithRecoveryUserLimiter", "limiter", limiter); err != nil {
 			return err
 		}
 
-		i.coreOpts = append(i.coreOpts, recovery.WithUserLimiter(l))
+		i.coreOpts = append(i.coreOpts, recovery.WithUserLimiter(limiter))
 
 		return nil
 	}
@@ -530,7 +530,7 @@ func WithRecoveryCountRefusals(count bool) RecoveryOption {
 	}
 }
 
-// WithRecoveryTokens issues the recovered session's access token through g.
+// WithRecoveryTokens issues the recovered session's access token through tokens.
 //
 // The token is issued after every proof has been checked and before any is
 // spent, and at a finish before the held record is completed. A generator
@@ -548,13 +548,13 @@ func WithRecoveryCountRefusals(count bool) RecoveryOption {
 // recovered session's identifier, a generator is a configuration error from
 // New (a token it minted would not be accepted by that chain), and form
 // login's generator is not used either.
-func WithRecoveryTokens(g token.Generator) RecoveryOption {
+func WithRecoveryTokens(tokens token.Generator) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
-		if err := requireDep("WithRecoveryTokens", "token generator", g); err != nil {
+		if err := requireDep("WithRecoveryTokens", "token generator", tokens); err != nil {
 			return err
 		}
 
-		i.tokens = g
+		i.tokens = tokens
 
 		return nil
 	}
@@ -602,14 +602,14 @@ func WithRecoveryHoldResponder(fn RecoveryHoldResponder) RecoveryOption {
 }
 
 // WithRecoveryLogInterval writes at most one of the recovery endpoints' own
-// records per key per d: an unattributable or throttled source.
+// records per key per interval: an unattributable or throttled source.
 //
 // Default: one minute. It governs those records and nothing else; the chain's
 // own records keep the window WithRefusalLogInterval sets. An interval of zero
 // or less writes every record.
-func WithRecoveryLogInterval(d time.Duration) RecoveryOption {
+func WithRecoveryLogInterval(interval time.Duration) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
-		i.logInterval = d
+		i.logInterval = interval
 
 		return nil
 	}

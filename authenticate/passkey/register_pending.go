@@ -260,7 +260,7 @@ func (m *Passkeys) sendEmailCode(
 	return nil
 }
 
-// ConfirmSavedCode confirms that s's user kept the saved recovery codes their
+// ConfirmSavedCode confirms that sess's user kept the saved recovery codes their
 // pending passkey awaits, and clears that reason. It returns the passkey when
 // the confirmation made it active, so the caller can finish the activation,
 // or nil when another reason still holds it pending. rc is the registration's
@@ -273,13 +273,13 @@ func (m *Passkeys) sendEmailCode(
 // codes, or a reason already cleared is mfa.ErrInvalidCode, and the passkey
 // stays pending.
 func (m *Passkeys) ConfirmSavedCode(
-	ctx context.Context, s *session.Session, code string, rc RegistrationContext,
+	ctx context.Context, sess *session.Session, code string, rc RegistrationContext,
 ) (*Credential, error) {
-	if s == nil || s.UserID == "" || m.recovery == nil {
+	if sess == nil || sess.UserID == "" || m.recovery == nil {
 		return nil, mfa.ErrInvalidCode
 	}
 
-	c, err := m.awaiting(ctx, s.UserID, PendingSavedCodes)
+	c, err := m.awaiting(ctx, sess.UserID, PendingSavedCodes)
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +288,7 @@ func (m *Passkeys) ConfirmSavedCode(
 		return nil, mfa.ErrInvalidCode
 	}
 
-	if err := m.recovery.Codes.Confirm(ctx, s.UserID, code); err != nil {
+	if err := m.recovery.Codes.Confirm(ctx, sess.UserID, code); err != nil {
 		switch {
 		case errors.Is(err, recovery.ErrCodeThrottled):
 			return nil, err
@@ -302,7 +302,7 @@ func (m *Passkeys) ConfirmSavedCode(
 	return m.clearReason(ctx, c, PendingSavedCodes, rc)
 }
 
-// ConfirmEmailCode redeems the code emailed for s's user's pending passkey,
+// ConfirmEmailCode redeems the code emailed for sess's user's pending passkey,
 // in the order that bounds guessing:
 //
 //  1. ask the confirmation limiter — rc's, or the manager's own — under
@@ -322,9 +322,9 @@ func (m *Passkeys) ConfirmSavedCode(
 // It returns the passkey when the confirmation made it active, or nil when
 // another reason still holds it pending.
 func (m *Passkeys) ConfirmEmailCode(
-	ctx context.Context, s *session.Session, code string, rc RegistrationContext,
+	ctx context.Context, sess *session.Session, code string, rc RegistrationContext,
 ) (*Credential, error) {
-	if s == nil || s.UserID == "" {
+	if sess == nil || sess.UserID == "" {
 		return nil, mfa.ErrEmailCodeInvalid
 	}
 
@@ -333,7 +333,7 @@ func (m *Passkeys) ConfirmEmailCode(
 		limiter = m.confirmLimiter
 	}
 
-	key := EmailConfirmThrottleKey(s.UserID)
+	key := EmailConfirmThrottleKey(sess.UserID)
 
 	exceeded, err := limiter.Exceeded(ctx, key)
 	if err != nil {
@@ -344,7 +344,7 @@ func (m *Passkeys) ConfirmEmailCode(
 		return nil, mfa.ErrEnrolmentThrottled
 	}
 
-	c, err := m.awaiting(ctx, s.UserID, PendingEmailCode)
+	c, err := m.awaiting(ctx, sess.UserID, PendingEmailCode)
 	if err != nil {
 		return nil, err
 	}
@@ -353,7 +353,7 @@ func (m *Passkeys) ConfirmEmailCode(
 		return nil, m.refuseEmailCode(ctx, limiter, key)
 	}
 
-	stored, charged, err := m.credentials.ChargeEmailAttempt(ctx, s.UserID, c.ID, m.clock.Now())
+	stored, charged, err := m.credentials.ChargeEmailAttempt(ctx, sess.UserID, c.ID, m.clock.Now())
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not charge an attempt against the emailed code")
 	}

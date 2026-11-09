@@ -41,16 +41,16 @@ type MagicLinkOption func(*magicLinkInterceptor) error
 // session the caller then has to be able to present. The session manager is
 // taken from the chain when WithMagicLinkSessions is not given, and a chain
 // with neither is refused.
-func EnableMagicLink(m *magiclink.Links, opts ...MagicLinkOption) Option {
+func EnableMagicLink(links *magiclink.Links, opts ...MagicLinkOption) Option {
 	const option = "EnableMagicLink"
 
 	return func(c *config) error {
-		if m == nil {
+		if links == nil {
 			return newConfigError("%s needs a magic-link manager", option)
 		}
 
 		i := &magicLinkInterceptor{
-			manager:       m,
+			manager:       links,
 			respond:       writeMagicLinkResult,
 			now:           c.now,
 			requestPath:   defaultPath(DefaultMagicLinkRequestPath),
@@ -204,7 +204,7 @@ func WithMagicLinkCountRefusals(count bool) MagicLinkOption {
 	}
 }
 
-// WithMagicLinkLimiter counts failed redemptions through l.
+// WithMagicLinkLimiter counts failed redemptions through limiter.
 //
 // Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
 // namespace "magic-link-redeem", or else an in-memory limiter of 10 failures
@@ -219,9 +219,9 @@ func WithMagicLinkCountRefusals(count bool) MagicLinkOption {
 // A limiter handed to several flows shares its key cap among them, so a flood
 // on one refuses new sources on all.
 //
-// The flow's IPv6 aggregate (WithIPv6Aggregate) is sized from l: the
-// aggregate's multiplier, 4 by default, times the limit l reports, over the
-// window l reports, read through ratelimit.PolicyReporter, which the in-memory
+// The flow's IPv6 aggregate (WithIPv6Aggregate) is sized from limiter: the
+// aggregate's multiplier, 4 by default, times the limit limiter reports, over the
+// window limiter reports, read through ratelimit.PolicyReporter, which the in-memory
 // limiter and the shared limiters scrty ships implement. A limiter that does
 // not implement it gets no default aggregate for this flow, and one warning
 // when the chain is built; under an explicit WithIPv6Aggregate it is a
@@ -229,37 +229,37 @@ func WithMagicLinkCountRefusals(count bool) MagicLinkOption {
 //
 // A nil limiter, including an interface holding a nil pointer, is refused: it
 // would read as "no limit" while the consumer believed they had replaced one.
-func WithMagicLinkLimiter(l ratelimit.Limiter) MagicLinkOption {
+func WithMagicLinkLimiter(limiter ratelimit.Limiter) MagicLinkOption {
 	return func(i *magicLinkInterceptor) error {
-		if err := requireDep("WithMagicLinkLimiter", "limiter", l); err != nil {
+		if err := requireDep("WithMagicLinkLimiter", "limiter", limiter); err != nil {
 			return err
 		}
 
-		i.limiter = l
+		i.limiter = limiter
 
 		return nil
 	}
 }
 
-// WithMagicLinkSessions opens the redeemed link's session in m.
+// WithMagicLinkSessions opens the redeemed link's session in sessions.
 //
 // Default: the session manager the chain's other built-ins were wired to, so a
 // deployment with one session store declares it once. A chain that has none at
 // all is refused: a redemption that could not open a session would spend the
 // link and authenticate nobody.
-func WithMagicLinkSessions(m *session.Sessions) MagicLinkOption {
+func WithMagicLinkSessions(sessions *session.Sessions) MagicLinkOption {
 	return func(i *magicLinkInterceptor) error {
-		if err := requireDep("WithMagicLinkSessions", "session manager", m); err != nil {
+		if err := requireDep("WithMagicLinkSessions", "session manager", sessions); err != nil {
 			return err
 		}
 
-		i.sessions = m
+		i.sessions = sessions
 
 		return nil
 	}
 }
 
-// WithMagicLinkTokens issues the redeemed link's access token through g.
+// WithMagicLinkTokens issues the redeemed link's access token through tokens.
 //
 // There is no default, and it is required: the library ships no signing key, and
 // a session a caller has no credential for is one they cannot use. The
@@ -271,19 +271,19 @@ func WithMagicLinkSessions(m *session.Sessions) MagicLinkOption {
 // opened session's identifier (MagicLinkResult.Token), and a generator is a
 // configuration error from New, since a token it minted would not be accepted
 // by that chain.
-func WithMagicLinkTokens(g token.Generator) MagicLinkOption {
+func WithMagicLinkTokens(tokens token.Generator) MagicLinkOption {
 	return func(i *magicLinkInterceptor) error {
-		if err := requireDep("WithMagicLinkTokens", "token generator", g); err != nil {
+		if err := requireDep("WithMagicLinkTokens", "token generator", tokens); err != nil {
 			return err
 		}
 
-		i.tokens = g
+		i.tokens = tokens
 
 		return nil
 	}
 }
 
-// WithMagicLinkRedeemer redeems links through r instead of the manager.
+// WithMagicLinkRedeemer redeems links through redeemer instead of the manager.
 //
 // Default: the magic-link manager's own Redeem, which checks everything before
 // it consumes anything. A consumer who replaces it takes on that ordering
@@ -295,13 +295,13 @@ func WithMagicLinkTokens(g token.Generator) MagicLinkOption {
 // was handed, is refused with policy.ErrDenied.
 //
 // A nil redeemer is refused: there would be nothing to redeem with.
-func WithMagicLinkRedeemer(r Redeemer) MagicLinkOption {
+func WithMagicLinkRedeemer(redeemer Redeemer) MagicLinkOption {
 	return func(i *magicLinkInterceptor) error {
-		if err := requireDep("WithMagicLinkRedeemer", "redeemer", r); err != nil {
+		if err := requireDep("WithMagicLinkRedeemer", "redeemer", redeemer); err != nil {
 			return err
 		}
 
-		i.redeemer = r
+		i.redeemer = redeemer
 
 		return nil
 	}

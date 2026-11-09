@@ -104,18 +104,18 @@ type EndReport struct {
 // See WithEndObserver, which says what is and is not reported, and how an
 // observer is called. It must not block, and has no error to return.
 type EndObserver interface {
-	SignInsEnded(ctx context.Context, r EndReport)
+	SignInsEnded(ctx context.Context, report EndReport)
 }
 
 // EndObserverFunc adapts a function to an EndObserver. A func cannot be
 // compared, so Sessions.ReportsEndsTo never answers yes for one: an observer a
 // component must find again implements EndObserver on a pointer instead.
-type EndObserverFunc func(ctx context.Context, r EndReport)
+type EndObserverFunc func(ctx context.Context, report EndReport)
 
 // SignInsEnded calls f.
-func (f EndObserverFunc) SignInsEnded(ctx context.Context, r EndReport) { f(ctx, r) }
+func (f EndObserverFunc) SignInsEnded(ctx context.Context, report EndReport) { f(ctx, report) }
 
-// ReportsEndsTo reports whether the manager has observer o, given to
+// ReportsEndsTo reports whether the manager has observer, given to
 // WithEndObserver or added with AddEndObserver, comparing by identity. A
 // component that relies on being told about ends uses it to refuse, when it is
 // wired, a manager that would not tell it. The answer can change from no to yes
@@ -127,19 +127,19 @@ func (f EndObserverFunc) SignInsEnded(ctx context.Context, r EndReport) { f(ctx,
 // the manager was given: the answer is false and nothing panics. A component
 // that needs this check implements EndObserver on a pointer. Asking about nil
 // is false.
-func (m *Sessions) ReportsEndsTo(o EndObserver) bool {
+func (m *Sessions) ReportsEndsTo(observer EndObserver) bool {
 	// The asked value alone needs the check. An interface comparison looks at
 	// the dynamic types first, and reaches an incomparable value only when both
 	// sides hold one of the same type. Value.Comparable looks inside the value,
 	// where a comparable type may still hold a func.
-	if o == nil || !reflect.ValueOf(o).Comparable() {
+	if observer == nil || !reflect.ValueOf(observer).Comparable() {
 		return false
 	}
 
-	return slices.Contains(m.observing(), o)
+	return slices.Contains(m.observing(), observer)
 }
 
-// AddEndObserver adds o to the observers of a manager already built, to be told
+// AddEndObserver adds observer to the observers of a manager already built, to be told
 // about each explicit end from now on, after those given to WithEndObserver and
 // after any added before it. WithEndObserver says what is reported and how an
 // observer is called.
@@ -153,12 +153,12 @@ func (m *Sessions) ReportsEndsTo(o EndObserver) bool {
 //
 // A nil observer, typed nil included, is ErrConfig, and the manager is left as
 // it was.
-func (m *Sessions) AddEndObserver(o EndObserver) error {
-	if nilcheck.IsNil(o) {
+func (m *Sessions) AddEndObserver(observer EndObserver) error {
+	if nilcheck.IsNil(observer) {
 		return fmt.Errorf("%w: end observer must not be nil", ErrConfig)
 	}
 
-	m.appendEndObserver(o)
+	m.appendEndObserver(observer)
 
 	return nil
 }

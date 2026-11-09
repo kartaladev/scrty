@@ -33,13 +33,13 @@ type Notice struct {
 // WithMessages.
 type Messages interface {
 	// Registered renders the notice that a passkey became active.
-	Registered(n Notice) (subject, body string)
+	Registered(notice Notice) (subject, body string)
 	// Removed renders the notice that a passkey was removed.
-	Removed(n Notice) (subject, body string)
+	Removed(notice Notice) (subject, body string)
 	// Suspended renders the notice that a passkey was suspended as a
 	// suspected clone. It should tell the user to remove the passkey and
 	// register a new one.
-	Suspended(n Notice) (subject, body string)
+	Suspended(notice Notice) (subject, body string)
 	// EmailCode renders the message carrying the code that confirms a passkey
 	// registered from an enrolment-only session, usable until until.
 	EmailCode(code string, until time.Time) (subject, body string)
@@ -61,9 +61,9 @@ func WithMessages(msgs Messages) Option {
 // default is mfa.UsernameAsAddress. A registration from an enrolment-only
 // session uses its RegistrationContext's resolver instead, when it has one. A
 // nil resolver is a configuration error.
-func WithContactResolver(r mfa.ContactResolver) Option {
+func WithContactResolver(resolver mfa.ContactResolver) Option {
 	return func(m *Passkeys) {
-		m.contact = r
+		m.contact = resolver
 		m.contactSet = true
 	}
 }

@@ -164,13 +164,13 @@ type OwnershipAttributes struct {
 // handed its own authorizer from outside could be handed a permissive one.
 type authorizerContextKey struct{}
 
-// WithAuthorizer returns a copy of ctx carrying a.
+// WithAuthorizer returns a copy of ctx carrying authorizer.
 //
 // A consumer's middleware calls it once per request, and HasPrivilege then
 // reaches the same decision the rest of the application reaches, rather than
 // each guard being wired with an authorizer of its own.
-func WithAuthorizer(ctx context.Context, a Authorizer) context.Context {
-	return context.WithValue(ctx, authorizerContextKey{}, a)
+func WithAuthorizer(ctx context.Context, authorizer Authorizer) context.Context {
+	return context.WithValue(ctx, authorizerContextKey{}, authorizer)
 }
 
 // AuthorizerFromContext returns the authorizer ctx carries, reporting whether

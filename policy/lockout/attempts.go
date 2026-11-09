@@ -225,8 +225,8 @@ type MemoryAttemptOption func(*MemoryAttemptStore)
 // A maximum of zero or less holds nothing, so every login would be refused;
 // it is a wiring mistake, and NewMemoryAttemptStore refuses it with an error
 // wrapping policy.ErrConfig.
-func WithAttemptStoreMaxIdentifiers(n int) MemoryAttemptOption {
-	return func(s *MemoryAttemptStore) { s.capacity = n }
+func WithAttemptStoreMaxIdentifiers(maxIdentifiers int) MemoryAttemptOption {
+	return func(s *MemoryAttemptStore) { s.capacity = maxIdentifiers }
 }
 
 // MemoryAttemptStore keeps failed attempts in process memory. It is the

@@ -1,8 +1,14 @@
 package scrty_test
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"go/types"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1392,4 +1398,464 @@ func TestReleaseProbeSemverMatchesMakefile(t *testing.T) {
 
 		assert.Empty(t, semverPatternViolations(string(mk), string(sh)))
 	})
+}
+
+// shortParamViolations reports the one-letter parameters of the exported
+// signatures in file: exported functions, exported methods of exported types,
+// methods of exported interfaces and exported function types. Generated files
+// are skipped.
+func shortParamViolations(fset *token.FileSet, file *ast.File) []violation {
+	if ast.IsGenerated(file) {
+		return nil
+	}
+
+	var vs []violation
+	// check judges ft and every function type nested in its parameters or
+	// results, reporting each under the exported owner's name.
+	check := func(owner string, ft *ast.FuncType) {
+		if ft == nil {
+			return
+		}
+		ast.Inspect(ft, func(n ast.Node) bool {
+			nested, ok := n.(*ast.FuncType)
+			if !ok || nested.Params == nil {
+				return true
+			}
+			for _, field := range nested.Params.List {
+				typ := types.ExprString(field.Type)
+				for _, name := range field.Names {
+					if len(name.Name) != 1 || name.Name == "_" || allowedShortParams[name.Name+" "+typ] {
+						continue
+					}
+					pos := fset.Position(name.Pos())
+					vs = append(vs, violation{
+						Where: fmt.Sprintf("%s:%d", pos.Filename, pos.Line),
+						What:  fmt.Sprintf("%s: parameter %q (%s)", owner, name.Name, typ),
+					})
+				}
+			}
+			return true
+		})
+	}
+
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			if !d.Name.IsExported() {
+				continue
+			}
+			if d.Recv == nil || len(d.Recv.List) == 0 {
+				check(d.Name.Name, d.Type)
+				continue
+			}
+			recv := receiverTypeName(d.Recv.List[0].Type)
+			if ast.IsExported(recv) {
+				check(recv+"."+d.Name.Name, d.Type)
+			}
+		case *ast.GenDecl:
+			for _, spec := range d.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok || !ts.Name.IsExported() {
+					continue
+				}
+				switch typ := ts.Type.(type) {
+				case *ast.FuncType:
+					check(ts.Name.Name, typ)
+				case *ast.InterfaceType:
+					for _, m := range typ.Methods.List {
+						ft, ok := m.Type.(*ast.FuncType)
+						if !ok {
+							continue // embedded interface or type set
+						}
+						for _, mn := range m.Names {
+							if mn.IsExported() {
+								check(ts.Name.Name+"."+mn.Name, ft)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return vs
+}
+
+// allowedShortParams lists the one-letter parameters that stay, keyed by
+// "name type": the standard library's own conventions.
+var allowedShortParams = map[string]bool{
+	"w http.ResponseWriter": true,
+	"r *http.Request":       true,
+	"t *testing.T":          true,
+	"b *testing.B":          true,
+	"f *testing.F":          true,
+}
+
+// receiverTypeName returns the bare type name of a receiver expression,
+// without pointer star or type arguments.
+func receiverTypeName(expr ast.Expr) string {
+	for {
+		switch e := expr.(type) {
+		case *ast.StarExpr:
+			expr = e.X
+		case *ast.ParenExpr:
+			expr = e.X
+		case *ast.IndexExpr:
+			expr = e.X
+		case *ast.IndexListExpr:
+			expr = e.X
+		case *ast.Ident:
+			return e.Name
+		default:
+			return ""
+		}
+	}
+}
+
+func TestShortParamViolations(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		src    string
+		assert func(t *testing.T, vs []violation)
+	}
+
+	none := func(t *testing.T, vs []violation) {
+		t.Helper()
+		assert.Empty(t, vs)
+	}
+
+	cases := []testCase{
+		{
+			name:   "allowed http pair",
+			src:    "package p\nfunc H(w http.ResponseWriter, r *http.Request) {}",
+			assert: none,
+		},
+		{
+			name:   "testing",
+			src:    "package p\nfunc Helper(t *testing.T) {}\nfunc Bench(b *testing.B) {}\nfunc Fuzz(f *testing.F) {}",
+			assert: none,
+		},
+		{
+			name:   "receiver",
+			src:    "package p\nfunc (s *S) Do(ctx context.Context) {}",
+			assert: none,
+		},
+		{
+			name:   "unexported function",
+			src:    "package p\nfunc do(m *session.Sessions) {}",
+			assert: none,
+		},
+		{
+			name: "exported function",
+			src:  "package p\nfunc WithSessions(m *session.Sessions) Option { return nil }",
+			assert: func(t *testing.T, vs []violation) {
+				require.Len(t, vs, 1)
+				assert.Equal(t, `WithSessions: parameter "m" (*session.Sessions)`, vs[0].What)
+				assert.Equal(t, "x.go:2", vs[0].Where)
+			},
+		},
+		{
+			name: "exported interface method",
+			src:  "package p\ntype Store interface{ Put(k string) error }",
+			assert: func(t *testing.T, vs []violation) {
+				require.Len(t, vs, 1)
+				assert.Equal(t, `Store.Put: parameter "k" (string)`, vs[0].What)
+			},
+		},
+		{
+			name: "exported function type",
+			src:  "package p\ntype Responder func(e *Exchange) error",
+			assert: func(t *testing.T, vs []violation) {
+				require.Len(t, vs, 1)
+				assert.Equal(t, `Responder: parameter "e" (*Exchange)`, vs[0].What)
+			},
+		},
+		{
+			name: "grouped names",
+			src:  "package p\nfunc F(a, b int) {}",
+			assert: func(t *testing.T, vs []violation) {
+				require.Len(t, vs, 2)
+				assert.Equal(t, `F: parameter "a" (int)`, vs[0].What)
+				assert.Equal(t, `F: parameter "b" (int)`, vs[1].What)
+			},
+		},
+		{
+			name:   "exported method on unexported type",
+			src:    "package p\nfunc (s *impl) Do(m int) {}",
+			assert: none,
+		},
+		{
+			name: "exported method on exported type",
+			src:  "package p\nfunc (s *S) Do(m int) {}",
+			assert: func(t *testing.T, vs []violation) {
+				require.Len(t, vs, 1)
+				assert.Equal(t, `S.Do: parameter "m" (int)`, vs[0].What)
+			},
+		},
+		{
+			name: "exported method on generic type",
+			src:  "package p\nfunc (s *S[T]) Do(m int) {}",
+			assert: func(t *testing.T, vs []violation) {
+				require.Len(t, vs, 1)
+				assert.Equal(t, `S.Do: parameter "m" (int)`, vs[0].What)
+			},
+		},
+		{
+			name:   "generated file is skipped",
+			src:    "// Code generated by mockgen. DO NOT EDIT.\n\npackage p\nfunc F(a int) {}",
+			assert: none,
+		},
+		{
+			name:   "underscore",
+			src:    "package p\nfunc F(_ int) {}",
+			assert: none,
+		},
+		{
+			name:   "unnamed parameter",
+			src:    "package p\nfunc F(int) {}",
+			assert: none,
+		},
+		{
+			name: "w with another type",
+			src:  "package p\nfunc F(w io.Writer) {}",
+			assert: func(t *testing.T, vs []violation) {
+				require.Len(t, vs, 1)
+				assert.Equal(t, `F: parameter "w" (io.Writer)`, vs[0].What)
+			},
+		},
+		{
+			name: "r with a value http.Request",
+			src:  "package p\nfunc F(r http.Request) {}",
+			assert: func(t *testing.T, vs []violation) {
+				require.Len(t, vs, 1)
+			},
+		},
+		{
+			name: "nested func parameter",
+			src:  "package p\nfunc F(handler func(w io.Writer, n int)) {}",
+			assert: func(t *testing.T, vs []violation) {
+				require.Len(t, vs, 2)
+				assert.Equal(t, `F: parameter "w" (io.Writer)`, vs[0].What)
+				assert.Equal(t, `F: parameter "n" (int)`, vs[1].What)
+			},
+		},
+		{
+			name: "returned func type",
+			src:  "package p\nfunc F() func(e int) { return nil }",
+			assert: func(t *testing.T, vs []violation) {
+				require.Len(t, vs, 1)
+				assert.Equal(t, `F: parameter "e" (int)`, vs[0].What)
+			},
+		},
+		{
+			name:   "nested allowed http pair",
+			src:    "package p\nfunc F(handler func(w http.ResponseWriter, r *http.Request)) {}",
+			assert: none,
+		},
+		{
+			name: "doubly nested func type",
+			src:  "package p\nfunc F() func(next func(n int)) { return nil }",
+			assert: func(t *testing.T, vs []violation) {
+				require.Len(t, vs, 1)
+				assert.Equal(t, `F: parameter "n" (int)`, vs[0].What)
+			},
+		},
+		{
+			name: "interface method inside a type group",
+			src:  "package p\ntype (\n\tStore interface{ Put(k string) error }\n\tother int\n)",
+			assert: func(t *testing.T, vs []violation) {
+				require.Len(t, vs, 1)
+				assert.Equal(t, `Store.Put: parameter "k" (string)`, vs[0].What)
+			},
+		},
+		{
+			name: "alias to a func type",
+			src:  "package p\ntype A = func(k int)",
+			assert: func(t *testing.T, vs []violation) {
+				require.Len(t, vs, 1)
+				assert.Equal(t, `A: parameter "k" (int)`, vs[0].What)
+			},
+		},
+		{
+			name: "generic receiver with two type parameters",
+			src:  "package p\nfunc (s *S[K, V]) Do(m int) {}",
+			assert: func(t *testing.T, vs []violation) {
+				require.Len(t, vs, 1)
+				assert.Equal(t, `S.Do: parameter "m" (int)`, vs[0].What)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, "x.go", tc.src, parser.ParseComments)
+			require.NoError(t, err)
+			tc.assert(t, shortParamViolations(fset, file))
+		})
+	}
+}
+
+func TestParsedParamViolationsReportsBrokenFile(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "broken.go")
+	require.NoError(t, os.WriteFile(path, []byte("package p\nfunc F(a int {"), 0o600))
+
+	vs := parsedParamViolations(path)
+
+	require.Len(t, vs, 1)
+	assert.Contains(t, vs[0].What, "parse error")
+}
+
+func TestModuleParamViolations(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		files  map[string]string
+		assert func(t *testing.T, vs []violation, err error)
+	}
+
+	cases := []testCase{
+		{
+			name:  "empty module inspects nothing",
+			files: nil,
+			assert: func(t *testing.T, vs []violation, err error) {
+				require.Error(t, err)
+				assert.Empty(t, vs)
+				assert.Contains(t, err.Error(), "no Go files")
+			},
+		},
+		{
+			name:  "only test files inspects nothing",
+			files: map[string]string{"a_test.go": "package p\n"},
+			assert: func(t *testing.T, vs []violation, err error) {
+				require.Error(t, err)
+				assert.Empty(t, vs)
+			},
+		},
+		{
+			name:  "underscore directory is skipped",
+			files: map[string]string{"a.go": "package p\n", "_x/b.go": "package p\nfunc F(a int) {}"},
+			assert: func(t *testing.T, vs []violation, err error) {
+				require.NoError(t, err)
+				assert.Empty(t, vs)
+			},
+		},
+		{
+			name:  "violations are returned",
+			files: map[string]string{"a.go": "package p\nfunc F(a int) {}"},
+			assert: func(t *testing.T, vs []violation, err error) {
+				require.NoError(t, err)
+				assert.Len(t, vs, 1)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := t.TempDir()
+			for name, src := range tc.files {
+				path := filepath.Join(root, filepath.FromSlash(name))
+				require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o750))
+				require.NoError(t, os.WriteFile(path, []byte(src), 0o600))
+			}
+			vs, err := moduleParamViolations(root)
+			tc.assert(t, vs, err)
+		})
+	}
+}
+
+func TestExportedParametersHaveDescriptiveNames(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile("release-modules.txt")
+	require.NoError(t, err, "the list of released modules is the walk's source")
+	entries, err := parseReleaseModules(data)
+	require.NoError(t, err)
+
+	dirs := []string{"."}
+	for _, e := range entries {
+		dirs = append(dirs, e.Dir)
+	}
+
+	var vs []violation
+	for _, dir := range dirs {
+		found, err := moduleParamViolations(dir)
+		require.NoError(t, err, "module %s", dir)
+		vs = append(vs, found...)
+	}
+	slices.SortFunc(vs, func(a, b violation) int {
+		return cmp.Or(strings.Compare(a.Where, b.Where), strings.Compare(a.What, b.What))
+	})
+
+	if len(vs) > 0 {
+		lines := make([]string, len(vs))
+		for i, v := range vs {
+			lines[i] = v.String()
+		}
+		require.Failf(t, "one-letter parameter names in exported signatures",
+			"%d violations:\n%s", len(vs), strings.Join(lines, "\n"))
+	}
+}
+
+// moduleParamViolations walks the module rooted at root and returns the
+// short-parameter violations of its non-test files. Nested modules, internal
+// packages, dot- and underscore-directories, testdata and generated files are
+// skipped. A file that fails to parse is reported, never skipped. A walk that
+// inspects no Go file is an error, so a wrong root cannot pass vacuously.
+func moduleParamViolations(root string) ([]violation, error) {
+	var vs []violation
+	inspected := 0
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if path == root {
+				return nil
+			}
+			switch name := d.Name(); {
+			case name == "internal", name == "testdata", name == "vendor",
+				strings.HasPrefix(name, "."), strings.HasPrefix(name, "_"):
+				return fs.SkipDir
+			}
+			if _, statErr := os.Stat(filepath.Join(path, "go.mod")); statErr == nil {
+				return fs.SkipDir // another module, walked on its own
+			} else if !errors.Is(statErr, fs.ErrNotExist) {
+				return statErr
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		inspected++
+		vs = append(vs, parsedParamViolations(path)...)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walking %s: %w", root, err)
+	}
+	if inspected == 0 {
+		return nil, fmt.Errorf("no Go files inspected under %s", root)
+	}
+	return vs, nil
+}
+
+// parsedParamViolations parses one file and checks it. A parse failure is
+// itself a violation, so an unreadable file cannot hide its parameters.
+func parsedParamViolations(path string) []violation {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filepath.ToSlash(path), nil, parser.ParseComments)
+	if err != nil {
+		return []violation{{Where: filepath.ToSlash(path), What: "parse error: " + err.Error()}}
+	}
+	return shortParamViolations(fset, file)
 }

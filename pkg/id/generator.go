@@ -53,10 +53,10 @@ func WithClock(clk clock.Clock) V7Option {
 }
 
 // WithRandom replaces the random source. Default: crypto/rand.Reader. A nil reader keeps the default.
-func WithRandom(r io.Reader) V7Option {
+func WithRandom(src io.Reader) V7Option {
 	return func(g *V7Generator) {
-		if r != nil {
-			g.random = r
+		if src != nil {
+			g.random = src
 		}
 	}
 }

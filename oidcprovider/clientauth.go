@@ -31,7 +31,7 @@ type ClientCredentials struct {
 }
 
 // Format writes the redacted form under every verb.
-func (ClientCredentials) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(redacted)) }
+func (ClientCredentials) Format(state fmt.State, _ rune) { _, _ = state.Write([]byte(redacted)) }
 
 // LogValue is the redacted form.
 func (ClientCredentials) LogValue() slog.Value { return slog.StringValue(redacted) }
@@ -67,8 +67,8 @@ type presented struct {
 // A refusal as invalid_client is reported as a security event (WithSecurityEvents), naming the client
 // only when the registry held the identifier presented. A malformed request (invalid_request) and a
 // dependency that failed are not reported.
-func (p *Provider) AuthenticateClient(ctx context.Context, c ClientCredentials) (*RegisteredClient, error) {
-	got, err := readCredentials(c)
+func (p *Provider) AuthenticateClient(ctx context.Context, credentials ClientCredentials) (*RegisteredClient, error) {
+	got, err := readCredentials(credentials)
 	if err != nil {
 		p.noteClientRefusal(ctx, nil, err)
 

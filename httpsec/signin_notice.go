@@ -100,14 +100,14 @@ type signInNotice struct {
 //
 // Default: DefaultSignInNoticeTimeout, 30 seconds. A zero or negative
 // duration is refused; omit the option to keep the default.
-func WithSignInNoticeTimeout(d time.Duration) SignInNoticeOption {
+func WithSignInNoticeTimeout(timeout time.Duration) SignInNoticeOption {
 	return func(n *signInNotice) error {
-		if d <= 0 {
+		if timeout <= 0 {
 			return newConfigError("WithSignInNoticeTimeout was given %s, which is not positive; omit "+
-				"the option to keep the default of %s", d, DefaultSignInNoticeTimeout)
+				"the option to keep the default of %s", timeout, DefaultSignInNoticeTimeout)
 		}
 
-		n.timeout = d
+		n.timeout = timeout
 
 		return nil
 	}
@@ -125,14 +125,14 @@ const DefaultSignInNoticeConcurrency = 32
 // Default: DefaultSignInNoticeConcurrency, 32, about one store connection
 // pool's worth. A value below 1 is refused; omit the option to keep the
 // default.
-func WithSignInNoticeConcurrency(c int) SignInNoticeOption {
+func WithSignInNoticeConcurrency(concurrency int) SignInNoticeOption {
 	return func(n *signInNotice) error {
-		if c < 1 {
+		if concurrency < 1 {
 			return newConfigError("WithSignInNoticeConcurrency was given %d, which is below 1; omit "+
-				"the option to keep the default of %d", c, DefaultSignInNoticeConcurrency)
+				"the option to keep the default of %d", concurrency, DefaultSignInNoticeConcurrency)
 		}
 
-		n.concurrency = c
+		n.concurrency = concurrency
 
 		return nil
 	}
@@ -174,14 +174,14 @@ func WithSignInMatcher(fn func(signedIn, known session.SignIn) bool) SignInNotic
 //
 // Default: none, and only the live sign-ins are consulted. A nil or typed-nil
 // port is refused; omit the option instead.
-func WithSeenDevices(p SeenDevices) SignInNoticeOption {
+func WithSeenDevices(devices SeenDevices) SignInNoticeOption {
 	return func(n *signInNotice) error {
-		if nilcheck.IsNil(p) {
+		if nilcheck.IsNil(devices) {
 			return newConfigError("WithSeenDevices was given no port; omit the option to " +
 				"consult only the live sign-ins")
 		}
 
-		n.seen = p
+		n.seen = devices
 
 		return nil
 	}
@@ -196,7 +196,7 @@ func WithSeenDevices(p SeenDevices) SignInNoticeOption {
 //
 // Default: the principal's username, as the second-factor and passkey notices
 // use the username as the address by default. A nil function is refused.
-func WithSignInNoticeRecipient(fn func(ctx context.Context, p *identity.Principal) (string, error)) SignInNoticeOption {
+func WithSignInNoticeRecipient(fn func(ctx context.Context, principal *identity.Principal) (string, error)) SignInNoticeOption {
 	return func(n *signInNotice) error {
 		if fn == nil {
 			return newConfigError("WithSignInNoticeRecipient was given no function; omit the " +
@@ -213,7 +213,7 @@ func WithSignInNoticeRecipient(fn func(ctx context.Context, p *identity.Principa
 //
 // Default: plain English naming no brand, with the time in UTC and the
 // device. A nil function is refused; omit the option to keep the default.
-func WithSignInNoticeMessage(fn func(f SignInNoticeFacts) (subject, body string)) SignInNoticeOption {
+func WithSignInNoticeMessage(fn func(facts SignInNoticeFacts) (subject, body string)) SignInNoticeOption {
 	return func(n *signInNotice) error {
 		if fn == nil {
 			return newConfigError("WithSignInNoticeMessage was given no function; omit the " +

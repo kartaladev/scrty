@@ -42,18 +42,18 @@ func (m *MockMessages) EXPECT() *MockMessagesMockRecorder {
 }
 
 // Cancelled mocks base method.
-func (m *MockMessages) Cancelled(n recovery.Notice) (string, string) {
+func (m *MockMessages) Cancelled(notice recovery.Notice) (string, string) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Cancelled", n)
+	ret := m.ctrl.Call(m, "Cancelled", notice)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(string)
 	return ret0, ret1
 }
 
 // Cancelled indicates an expected call of Cancelled.
-func (mr *MockMessagesMockRecorder) Cancelled(n any) *MockMessagesCancelledCall {
+func (mr *MockMessagesMockRecorder) Cancelled(notice any) *MockMessagesCancelledCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Cancelled", reflect.TypeOf((*MockMessages)(nil).Cancelled), n)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Cancelled", reflect.TypeOf((*MockMessages)(nil).Cancelled), notice)
 	return &MockMessagesCancelledCall{Call: call}
 }
 
@@ -81,18 +81,18 @@ func (c *MockMessagesCancelledCall) DoAndReturn(f func(recovery.Notice) (string,
 }
 
 // Held mocks base method.
-func (m *MockMessages) Held(n recovery.Notice, cancelLink string, until time.Time) (string, string) {
+func (m *MockMessages) Held(notice recovery.Notice, cancelLink string, until time.Time) (string, string) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Held", n, cancelLink, until)
+	ret := m.ctrl.Call(m, "Held", notice, cancelLink, until)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(string)
 	return ret0, ret1
 }
 
 // Held indicates an expected call of Held.
-func (mr *MockMessagesMockRecorder) Held(n, cancelLink, until any) *MockMessagesHeldCall {
+func (mr *MockMessagesMockRecorder) Held(notice, cancelLink, until any) *MockMessagesHeldCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Held", reflect.TypeOf((*MockMessages)(nil).Held), n, cancelLink, until)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Held", reflect.TypeOf((*MockMessages)(nil).Held), notice, cancelLink, until)
 	return &MockMessagesHeldCall{Call: call}
 }
 
@@ -159,18 +159,18 @@ func (c *MockMessagesIssuedCodeCall) DoAndReturn(f func(string, time.Time) (stri
 }
 
 // Recovered mocks base method.
-func (m *MockMessages) Recovered(n recovery.Notice) (string, string) {
+func (m *MockMessages) Recovered(notice recovery.Notice) (string, string) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Recovered", n)
+	ret := m.ctrl.Call(m, "Recovered", notice)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(string)
 	return ret0, ret1
 }
 
 // Recovered indicates an expected call of Recovered.
-func (mr *MockMessagesMockRecorder) Recovered(n any) *MockMessagesRecoveredCall {
+func (mr *MockMessagesMockRecorder) Recovered(notice any) *MockMessagesRecoveredCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Recovered", reflect.TypeOf((*MockMessages)(nil).Recovered), n)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Recovered", reflect.TypeOf((*MockMessages)(nil).Recovered), notice)
 	return &MockMessagesRecoveredCall{Call: call}
 }
 

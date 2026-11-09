@@ -37,7 +37,7 @@ type EndSessionBuilder interface {
 	// provider offers none. It is called only for a session that records an
 	// identity provider, and only after that session was deleted. state is the
 	// logout request's own "state" form value, passed through unread.
-	EndSessionURL(ctx context.Context, s *session.Session, state string) (string, error)
+	EndSessionURL(ctx context.Context, sess *session.Session, state string) (string, error)
 }
 
 // logout ends the sign-in the request was authenticated with: every session of
@@ -281,11 +281,11 @@ type LogoutOption func(*logout) error
 // that the logout can be retried. A client that could not be told fails nothing. This
 // has no override, because a logout that left an online grant alive would report
 // an end that had not happened.
-func EnableLogout(d LogoutDeps, opts ...LogoutOption) Option {
+func EnableLogout(deps LogoutDeps, opts ...LogoutOption) Option {
 	const option = "EnableLogout"
 
 	return func(c *config) error {
-		l := &logout{sessions: d.Sessions, endSession: d.EndSession, path: defaultPath(DefaultLogoutPath)}
+		l := &logout{sessions: deps.Sessions, endSession: deps.EndSession, path: defaultPath(DefaultLogoutPath)}
 
 		for _, opt := range opts {
 			if opt == nil {
@@ -297,7 +297,7 @@ func EnableLogout(d LogoutDeps, opts ...LogoutOption) Option {
 		}
 
 		c.enable(option, func() error {
-			return requireDep(option, "session manager", d.Sessions)
+			return requireDep(option, "session manager", deps.Sessions)
 		})
 
 		// Kept for the gates, which exempt its path so a session stranded
@@ -306,7 +306,7 @@ func EnableLogout(d LogoutDeps, opts ...LogoutOption) Option {
 		// wirePasswordChange.
 		c.logout = l
 
-		c.useSessions(d.Sessions)
+		c.useSessions(deps.Sessions)
 		c.wire(l.wire)
 		// Read once every option has applied, as the provider may be enabled after
 		// logout.

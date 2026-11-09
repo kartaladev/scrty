@@ -361,12 +361,12 @@ type BrokerOption func(*Broker) error
 // failures to. The default is slog.Default(). No record carries a claim
 // value, a subject, a user reference or a username; an email appears only as
 // its domain.
-func WithBrokerLogger(l *slog.Logger) BrokerOption {
+func WithBrokerLogger(logger *slog.Logger) BrokerOption {
 	return func(b *Broker) error {
-		if l == nil {
+		if logger == nil {
 			return fmt.Errorf("%w: WithBrokerLogger was given nil", ErrConfig)
 		}
-		b.log = l
+		b.log = logger
 		return nil
 	}
 }
@@ -387,12 +387,12 @@ func WithBrokerClock(clk clock.Clock) BrokerOption {
 // WithBrokerIDGenerator replaces the source of a created link's identifier.
 // The default is id.NewV7Generator(). A nil generator, including a nil
 // pointer inside a non-nil interface, is refused.
-func WithBrokerIDGenerator(g id.Generator) BrokerOption {
+func WithBrokerIDGenerator(ids id.Generator) BrokerOption {
 	return func(b *Broker) error {
-		if nilcheck.IsNil(g) {
+		if nilcheck.IsNil(ids) {
 			return fmt.Errorf("%w: WithBrokerIDGenerator was given nil", ErrConfig)
 		}
-		b.ids = g
+		b.ids = ids
 		return nil
 	}
 }
@@ -402,12 +402,12 @@ func WithBrokerIDGenerator(g id.Generator) BrokerOption {
 // no provisioner, and one is required as soon as WithBrokerJIT enables provisioning
 // for any provider, which NewBroker otherwise refuses as a missing port. A nil
 // provisioner, including a nil pointer inside a non-nil interface, is refused.
-func WithBrokerProvisioner(p identity.UserProvisioner) BrokerOption {
+func WithBrokerProvisioner(provisioner identity.UserProvisioner) BrokerOption {
 	return func(b *Broker) error {
-		if nilcheck.IsNil(p) {
+		if nilcheck.IsNil(provisioner) {
 			return fmt.Errorf("%w: WithBrokerProvisioner was given nil", ErrConfig)
 		}
-		b.provisioner = p
+		b.provisioner = provisioner
 		return nil
 	}
 }

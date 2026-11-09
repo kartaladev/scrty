@@ -52,30 +52,30 @@ func NewRecoveryRecordStore(db *sql.DB, opts ...Option) (*RecoveryRecordStore, e
 	return &RecoveryRecordStore{c: c}, nil
 }
 
-// Insert stores r, pending or already completed, refusing an identifier
+// Insert stores record, pending or already completed, refusing an identifier
 // already stored. The refusal runs no failing statement, so it leaves a
 // caller's transaction usable.
-func (s *RecoveryRecordStore) Insert(ctx context.Context, r recovery.Record) error {
+func (s *RecoveryRecordStore) Insert(ctx context.Context, record recovery.Record) error {
 	const op = "insert recovery record"
 
-	if err := storekit.CheckID(r.ID, "recovery record"); err != nil {
+	if err := storekit.CheckID(record.ID, "recovery record"); err != nil {
 		return failed(op, err)
 	}
-	if err := storekit.CheckStorable(storekit.Text("user", string(r.User))); err != nil {
+	if err := storekit.CheckStorable(storekit.Text("user", string(record.User))); err != nil {
 		return failed(op, err)
 	}
-	proven, err := pgschema.RecoveryRefsText(r.Proven)
+	proven, err := pgschema.RecoveryRefsText(record.Proven)
 	if err != nil {
 		return failed(op, fmt.Errorf("the proven list: %w", err))
 	}
-	reported, err := pgschema.RecoveryRefsText(r.Reported)
+	reported, err := pgschema.RecoveryRefsText(record.Reported)
 	if err != nil {
 		return failed(op, fmt.Errorf("the reported list: %w", err))
 	}
 
-	n, err := s.c.exec(ctx, op, pgschema.RecoveryRecordInsert, r.ID, string(r.User),
-		storekit.Time(r.StartedAt), storekit.Time(r.NotBefore), nullTs(r.CompletedAt), nullTs(r.CancelledAt),
-		proven, reported, r.SavedSpent)
+	n, err := s.c.exec(ctx, op, pgschema.RecoveryRecordInsert, record.ID, string(record.User),
+		storekit.Time(record.StartedAt), storekit.Time(record.NotBefore), nullTs(record.CompletedAt), nullTs(record.CancelledAt),
+		proven, reported, record.SavedSpent)
 	if err != nil {
 		return err
 	}

@@ -48,20 +48,20 @@ type Hold struct {
 	CompletableAt   time.Time
 }
 
-// WithHoldDelay holds every recovery for d before it can complete. There is no
+// WithHoldDelay holds every recovery for delay before it can complete. There is no
 // default: a recovery completes at once. Zero or less is a configuration
 // error. With WithRisk as well, the hold is the longer of the two.
 //
 // A hold needs WithCancelLink.
-func WithHoldDelay(d time.Duration) Option {
-	return func(c *config) { c.delay, c.delaySet = d, true }
+func WithHoldDelay(delay time.Duration) Option {
+	return func(c *config) { c.delay, c.delaySet = delay, true }
 }
 
 // WithHoldCompletionWindow replaces how long after its hold a held recovery can
 // still be finished. The default is 24 hours. Zero or less is a configuration
 // error.
-func WithHoldCompletionWindow(d time.Duration) Option {
-	return func(c *config) { c.window = d }
+func WithHoldCompletionWindow(window time.Duration) Option {
+	return func(c *config) { c.window = window }
 }
 
 // WithCancelLink sets the page the held-recovery notice links to, which
@@ -87,8 +87,8 @@ func WithCancelLink(baseURL string) Option {
 // for example with onetime.Tokens.PurgeExpired from a manager over this
 // store for each of FinishTokenPurpose and CancelTokenPurpose, since the
 // default store is not reachable from outside the Recoverer.
-func WithHoldTokenStore(s onetime.Store) Option {
-	return func(c *config) { c.holdStore, c.holdStoreSet = s, true }
+func WithHoldTokenStore(store onetime.Store) Option {
+	return func(c *config) { c.holdStore, c.holdStoreSet = store, true }
 }
 
 // validateHolds checks the hold settings and builds the token managers.
@@ -565,12 +565,12 @@ type finishOptions struct {
 }
 
 // WithFinishKeyBinding binds the recovery-pending session a finish creates,
-// and the credential issued for it, to b (session.WithKeyBinding). The
-// default, with no option, is an unbound session. A b naming both a DPoP key
+// and the credential issued for it, to binding (session.WithKeyBinding). The
+// default, with no option, is an unbound session. A binding naming both a DPoP key
 // and a certificate fails the finish with session.ErrConfig before anything
 // is completed or spent.
-func WithFinishKeyBinding(b session.KeyBinding) FinishOption {
-	return func(o *finishOptions) { o.binding = b }
+func WithFinishKeyBinding(binding session.KeyBinding) FinishOption {
+	return func(o *finishOptions) { o.binding = binding }
 }
 
 // WithFinishSessionOptions adds opts to the caller's own attributes for the

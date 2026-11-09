@@ -43,18 +43,18 @@ func (m *MockGenerator) EXPECT() *MockGeneratorMockRecorder {
 }
 
 // Generate mocks base method.
-func (m *MockGenerator) Generate(ctx context.Context, id string, p *identity.Principal) (string, error) {
+func (m *MockGenerator) Generate(ctx context.Context, id string, principal *identity.Principal) (string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Generate", ctx, id, p)
+	ret := m.ctrl.Call(m, "Generate", ctx, id, principal)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // Generate indicates an expected call of Generate.
-func (mr *MockGeneratorMockRecorder) Generate(ctx, id, p any) *MockGeneratorGenerateCall {
+func (mr *MockGeneratorMockRecorder) Generate(ctx, id, principal any) *MockGeneratorGenerateCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Generate", reflect.TypeOf((*MockGenerator)(nil).Generate), ctx, id, p)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Generate", reflect.TypeOf((*MockGenerator)(nil).Generate), ctx, id, principal)
 	return &MockGeneratorGenerateCall{Call: call}
 }
 

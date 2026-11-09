@@ -48,14 +48,14 @@ type RecoveryCountResponder func(ex *Exchange, count recovery.RemainingCodes) er
 // that enables EnableReauthentication, by a re-proof. On a chain with the
 // second-factor slot and without re-authentication, signing in again is the
 // only way.
-func WithRecoveryRegenerationFreshness(d time.Duration) RecoveryOption {
+func WithRecoveryRegenerationFreshness(freshness time.Duration) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
-		if d <= 0 {
+		if freshness <= 0 {
 			return newConfigError("WithRecoveryRegenerationFreshness was given %s; the window must be above "+
-				"zero, or no session could ever regenerate its codes", d)
+				"zero, or no session could ever regenerate its codes", freshness)
 		}
 
-		i.freshness = d
+		i.freshness = freshness
 
 		return nil
 	}

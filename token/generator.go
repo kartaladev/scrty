@@ -41,7 +41,7 @@ const (
 // the audience. A configured claim goes into every token it issues and is
 // checked by its Verify; a waived claim is neither issued nor checked.
 type Generator interface {
-	// Generate returns a signed token for p, carrying id as its jti. It fails
+	// Generate returns a signed token for principal, carrying id as its jti. It fails
 	// rather than issuing an unsigned token or one signed with an algorithm
 	// other than the configured one, and rather than issuing one that
 	// identifies nobody: an empty id, a nil principal and a principal with no
@@ -61,7 +61,7 @@ type Generator interface {
 	// fixed library text too. In each case the source's or the signer's own
 	// error stays reachable through errors.Is and errors.As, but its text
 	// never is.
-	Generate(ctx context.Context, id string, p *identity.Principal) (string, error)
+	Generate(ctx context.Context, id string, principal *identity.Principal) (string, error)
 
 	// SubjectMode reports which of the principal's values Generate writes as the
 	// token's subject, so that whoever wires a generator beside a reader of that
@@ -129,8 +129,8 @@ func WithoutAudience() Option { return Option(waiveAudience()) }
 // construction, because expiry is recorded in whole seconds. So does one
 // longer than the window a key source that reports its own lifetimes can
 // cover, because a token must not outlive the key that signed it.
-func WithTokenLifetime(d time.Duration) Option {
-	return func(c *config) { c.lifetime = d }
+func WithTokenLifetime(lifetime time.Duration) Option {
+	return func(c *config) { c.lifetime = lifetime }
 }
 
 // WithSigningAlg sets the algorithm to sign with. Default: RS256. The key
@@ -262,10 +262,10 @@ func (g *JWTGenerator) Verify(ctx context.Context, raw string) (*Claims, error) 
 	return g.cfg.verify(ctx, raw)
 }
 
-// Generate signs a token for p, identified by id, with the key source's current
+// Generate signs a token for principal, identified by id, with the key source's current
 // signing key. See Generator.
-func (g *JWTGenerator) Generate(ctx context.Context, id string, p *identity.Principal) (string, error) {
-	return g.GenerateWith(ctx, id, p)
+func (g *JWTGenerator) Generate(ctx context.Context, id string, principal *identity.Principal) (string, error) {
+	return g.GenerateWith(ctx, id, principal)
 }
 
 // GenerateWith is Generate with per-token options: WithConfirmation binds the
@@ -273,7 +273,7 @@ func (g *JWTGenerator) Generate(ctx context.Context, id string, p *identity.Prin
 // Generate issues. An option that cannot be honoured fails it with ErrConfig,
 // and nothing is issued.
 func (g *JWTGenerator) GenerateWith(
-	ctx context.Context, id string, p *identity.Principal, opts ...IssueOption,
+	ctx context.Context, id string, principal *identity.Principal, opts ...IssueOption,
 ) (string, error) {
 	// Never ErrInvalid: that is the verdict on a token a caller
 	// presented, and there is no token here. A consumer mapping
@@ -283,10 +283,10 @@ func (g *JWTGenerator) GenerateWith(
 	// identity.Principal is a plain exported struct, so a store row with a
 	// blank value arrives here as a perfectly good pointer, and signing for it
 	// would mint a valid token for the empty subject.
-	if p == nil {
+	if principal == nil {
 		return "", fmt.Errorf("token: generate: %w", identity.ErrNoPrincipal)
 	}
-	subject := g.cfg.subjectOf(p)
+	subject := g.cfg.subjectOf(principal)
 	if subject == "" {
 		return "", fmt.Errorf("token: generate: %w", ErrNoSubject)
 	}

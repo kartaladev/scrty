@@ -475,19 +475,19 @@ func (m *Sessions) markPresented(ctx context.Context, s *Session, now time.Time)
 	return nil
 }
 
-// Touch records activity on s: it moves the last-access time to now and the
+// Touch records activity on sess: it moves the last-access time to now and the
 // idle deadline to now plus the idle timeout, capped at the absolute deadline,
 // and persists both through Store.RecordActivity, which writes those two
 // fields and nothing else, so a change another request saved to the same
-// session is not undone. s is updated in memory only once the store has
+// session is not undone. sess is updated in memory only once the store has
 // accepted the write.
 //
 // Recording activity persists only the last-access time and the idle
-// deadline. A change to any other field of s, such as its Data, is persisted
+// deadline. A change to any other field of sess, such as its Data, is persisted
 // by Save, never by Touch.
 //
 // With WithTouchInterval set, a Touch that finds the last recorded activity
-// younger than the interval writes nothing and leaves s as it is. The default
+// younger than the interval writes nothing and leaves sess as it is. The default
 // interval is 0: every Touch writes. A session that has been superseded
 // takes no activity and Touch writes nothing for it, so a grace window is
 // never extended by use.
@@ -499,35 +499,35 @@ func (m *Sessions) markPresented(ctx context.Context, s *Session, now time.Time)
 // Activity on a session that is already past either deadline is refused with
 // ErrExpired and nothing is written: an expired session is not one a
 // request can revive by being made.
-func (m *Sessions) Touch(ctx context.Context, s *Session) error {
+func (m *Sessions) Touch(ctx context.Context, sess *Session) error {
 	now := m.clock.Now()
-	if s.expired(now) {
+	if sess.expired(now) {
 		return ErrExpired
 	}
 
-	if s.superseded() || m.touchInterval > 0 && now.Sub(s.LastAccessedAt) < m.touchInterval {
+	if sess.superseded() || m.touchInterval > 0 && now.Sub(sess.LastAccessedAt) < m.touchInterval {
 		return nil
 	}
 
 	idle := now.Add(m.idleTimeout)
-	if idle.After(s.AbsoluteExpiresAt) {
-		idle = s.AbsoluteExpiresAt
+	if idle.After(sess.AbsoluteExpiresAt) {
+		idle = sess.AbsoluteExpiresAt
 	}
-	if err := m.store.RecordActivity(ctx, s.ID, now, idle, now.Add(-m.touchInterval)); err != nil {
+	if err := m.store.RecordActivity(ctx, sess.ID, now, idle, now.Add(-m.touchInterval)); err != nil {
 		return storeFailed(err, "session: the session's activity could not be saved")
 	}
-	s.LastAccessedAt = now
-	s.IdleExpiresAt = idle
+	sess.LastAccessedAt = now
+	sess.IdleExpiresAt = idle
 
 	return nil
 }
 
-// Save persists changes made to s, and never re-creates a session that has
+// Save persists changes made to sess, and never re-creates a session that has
 // been deleted: a session that is no longer stored is ErrNotFound, and so is
 // one that was rotated without grace since it was loaded, which is written
 // to no more than a deleted one.
-func (m *Sessions) Save(ctx context.Context, s *Session) error {
-	return storeFailed(m.store.Save(ctx, s), "session: the session could not be saved")
+func (m *Sessions) Save(ctx context.Context, sess *Session) error {
+	return storeFailed(m.store.Save(ctx, sess), "session: the session could not be saved")
 }
 
 // Delete removes the session with this identifier, and reports EndDeleted to the end observers: one
@@ -751,7 +751,7 @@ func (m *Sessions) IdleTimeout() time.Duration { return m.idleTimeout }
 // WithAbsoluteTimeout configured.
 func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 
-// Rotate moves s to a new identifier and returns it under that identifier.
+// Rotate moves current to a new identifier and returns it under that identifier.
 //
 // It exists for the moment a session's privilege changes — a second factor
 // accepted, a step-up completed — because a handle someone obtained before
@@ -761,7 +761,7 @@ func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // FamilyCreatedAt), the federated assurance and the consumer's own data. The
 // family and the sign-in state fixed when the sign-in was built (KeyBinding,
 // CSRFToken, ClientIP and UserAgent) are taken from the stored record, never
-// from s, so a copy with them cleared or changed cannot move them; they are
+// from current, so a copy with them cleared or changed cannot move them; they are
 // already set on the successor handed to RotateIssuing's issuing step.
 //
 // Rotate takes one RotateOption, WithReauthenticationBinding, which may bind
@@ -812,7 +812,7 @@ func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // lengthen it. The successor's deadlines, absolute and idle, are those of the
 // session it is given, because the caller may have restored them (see
 // RestoreEnrolmentDeadlines); only the family fields come from storage. The
-// successor stays in s's family, and none of s's supersession or presentation
+// successor stays in current's family, and none of current's supersession or presentation
 // state is carried over: the successor is recorded as presented at the
 // rotation (FirstPresentedAt), since it goes straight to the caller using it,
 // so WithUnusedSuccessorRecovery can never renew the old identifier into a
@@ -830,9 +830,9 @@ func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // Rotate runs no step of the caller's between building the successor and
 // storing it; RotateIssuing is the same rotation with one.
 //
-// s is not modified. The returned session is the one to use.
-func (m *Sessions) Rotate(ctx context.Context, s *Session, opts ...RotateOption) (*Session, error) {
-	rotated, _, err := m.RotateIssuing(ctx, s, nil, opts...)
+// current is not modified. The returned session is the one to use.
+func (m *Sessions) Rotate(ctx context.Context, current *Session, opts ...RotateOption) (*Session, error) {
+	rotated, _, err := m.RotateIssuing(ctx, current, nil, opts...)
 
 	return rotated, err
 }
@@ -868,7 +868,7 @@ func (m *Sessions) Rotate(ctx context.Context, s *Session, opts ...RotateOption)
 //
 // Every guarantee Rotate documents holds here unchanged: the strict mark and
 // the in-flight window, the renewal conflict for a lost race through any
-// manager sharing the store, the deadlines and family carried over. s is not
+// manager sharing the store, the deadlines and family carried over. current is not
 // modified.
 //
 // The family's end is checked twice. A family that has already ended when the
@@ -889,11 +889,11 @@ func (m *Sessions) Rotate(ctx context.Context, s *Session, opts ...RotateOption)
 // than as a renewal conflict.
 func (m *Sessions) RotateIssuing(
 	ctx context.Context,
-	s *Session,
+	current *Session,
 	issue func(successor *Session) (string, error),
 	opts ...RotateOption,
 ) (*Session, string, error) {
-	if s == nil {
+	if current == nil {
 		return nil, "", fmt.Errorf("session: rotate was given no session")
 	}
 	r := rotationOf(opts)
@@ -904,10 +904,10 @@ func (m *Sessions) RotateIssuing(
 		return nil, "", fmt.Errorf("%w: a key binding names either a DPoP key or a certificate, not both", ErrConfig)
 	}
 
-	unlock := m.rotating.lock(s.ID)
+	unlock := m.rotating.lock(current.ID)
 	defer unlock()
 
-	stored, err := m.loadStored(ctx, s.ID, "session: the session to rotate could not be loaded")
+	stored, err := m.loadStored(ctx, current.ID, "session: the session to rotate could not be loaded")
 	if err != nil {
 		return nil, "", err
 	}
@@ -934,7 +934,7 @@ func (m *Sessions) RotateIssuing(
 		return nil, "", err
 	}
 
-	rotated := successorOf(s, id)
+	rotated := successorOf(current, id)
 	// The family is the stored record's, never the caller's copy's: a copy
 	// with the family cleared or altered must not move the successor out of
 	// the family the store holds.
@@ -1036,7 +1036,7 @@ func (c nowOnly) After(d time.Duration) <-chan time.Time { return c.waiter.After
 // identifier.
 var identifierEncoding = base64.RawURLEncoding.Strict()
 
-// ValidIdentifier reports whether v has the exact shape of an identifier the
+// ValidIdentifier reports whether identifier has the exact shape of an identifier the
 // Sessions issues: identifierBytes of entropy, encoded URL-safe without
 // padding, which is 43 characters of the alphabet A–Z, a–z, 0–9, "-" and "_".
 //
@@ -1045,14 +1045,14 @@ var identifierEncoding = base64.RawURLEncoding.Strict()
 // wants to refuse a value that cannot be one before it costs a store lookup.
 // An identifier minted by a consumer's own store is not one a [Sessions]
 // issues, and is reported invalid.
-func ValidIdentifier(v string) bool {
-	if len(v) != identifierEncoding.EncodedLen(identifierBytes) {
+func ValidIdentifier(identifier string) bool {
+	if len(identifier) != identifierEncoding.EncodedLen(identifierBytes) {
 		return false
 	}
 
 	// The decoder skips carriage returns and line feeds, so the decoded length
 	// is checked as well as the encoded one.
-	raw, err := identifierEncoding.DecodeString(v)
+	raw, err := identifierEncoding.DecodeString(identifier)
 
 	return err == nil && len(raw) == identifierBytes
 }

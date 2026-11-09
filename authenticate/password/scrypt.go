@@ -51,8 +51,8 @@ type ScryptOption func(*ScryptEncoder)
 // and (N+p)*128*r at most 1 GiB. They have no override, because a configurable
 // ceiling would reopen the process-kill they exist to prevent; a stored record
 // above them never matches.
-func WithScryptN(n int) ScryptOption {
-	return func(e *ScryptEncoder) { e.n = n }
+func WithScryptN(cost int) ScryptOption {
+	return func(e *ScryptEncoder) { e.n = cost }
 }
 
 // WithScryptR sets the block size. Default: 8.
@@ -61,29 +61,29 @@ func WithScryptN(n int) ScryptOption {
 // refuses a value over it with [ErrInvalidParameters], a stored record over it
 // never matches, and there is no override: a configurable ceiling would reopen
 // the process-kill it exists to prevent.
-func WithScryptR(r int) ScryptOption {
-	return func(e *ScryptEncoder) { e.r = r }
+func WithScryptR(blockSize int) ScryptOption {
+	return func(e *ScryptEncoder) { e.r = blockSize }
 }
 
 // WithScryptP sets the parallelisation factor. Default: 1.
 //
-// The ceiling is 16, and p also counts toward the footprint ceiling of
+// The ceiling is 16, and parallelism (p) also counts toward the footprint ceiling of
 // (N+p)*128*r at most 1 GiB. Construction refuses a value over either with
 // [ErrInvalidParameters], a stored record over either never matches, and there
 // is no override: a configurable ceiling would reopen the process-kill it exists
 // to prevent.
-func WithScryptP(p int) ScryptOption {
-	return func(e *ScryptEncoder) { e.p = p }
+func WithScryptP(parallelism int) ScryptOption {
+	return func(e *ScryptEncoder) { e.p = parallelism }
 }
 
 // WithScryptSaltLength sets the salt length in bytes. Default: 16.
-func WithScryptSaltLength(n int) ScryptOption {
-	return func(e *ScryptEncoder) { e.saltLength = n }
+func WithScryptSaltLength(saltLength int) ScryptOption {
+	return func(e *ScryptEncoder) { e.saltLength = saltLength }
 }
 
 // WithScryptKeyLength sets the derived key length in bytes. Default: 32.
-func WithScryptKeyLength(n int) ScryptOption {
-	return func(e *ScryptEncoder) { e.keyLength = n }
+func WithScryptKeyLength(keyLength int) ScryptOption {
+	return func(e *ScryptEncoder) { e.keyLength = keyLength }
 }
 
 // WithScryptRandom sets the source every salt is read from.
@@ -93,8 +93,8 @@ func WithScryptKeyLength(n int) ScryptOption {
 // A source that cannot deliver is reported by [Encoder.Encode] rather than
 // worked around, so this option cannot weaken the guarantee that every stored
 // hash carries an unpredictable salt.
-func WithScryptRandom(r io.Reader) ScryptOption {
-	return func(e *ScryptEncoder) { e.random = r }
+func WithScryptRandom(src io.Reader) ScryptOption {
+	return func(e *ScryptEncoder) { e.random = src }
 }
 
 // NewScryptEncoder returns a scrypt encoder with N = 32768, r = 8, p = 1, a

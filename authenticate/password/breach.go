@@ -135,21 +135,21 @@ const lookupUnavailableText = "password: breach lookup unavailable"
 const PwnedPasswordsRangeURL = "https://api.pwnedpasswords.com/range/" //nolint:gosec // G101: the public Pwned Passwords range URL, not a credential
 
 // PwnedPasswords returns a [BreachSource] over the public Pwned Passwords
-// range API, sent through c so the request is confined, bounded in time and
-// bounded in size as c is configured. Each request carries `Add-Padding:
+// range API, sent through client so the request is confined, bounded in time and
+// bounded in size as client is configured. Each request carries `Add-Padding:
 // true`, so the response size does not reveal the prefix.
 //
 // A non-success status (429 included) and a body that is not lines of a
 // 35-character hexadecimal suffix, a colon and a count are lookup failures,
-// as are c's own refusals and its timeout.
+// as are client's own refusals and its timeout.
 //
-// A nil c returns a nil source, which [Breached] refuses at construction.
-func PwnedPasswords(c *outbound.Client) BreachSource {
-	if c == nil {
+// A nil client returns a nil source, which [Breached] refuses at construction.
+func PwnedPasswords(client *outbound.Client) BreachSource {
+	if client == nil {
 		return nil
 	}
 
-	return &pwnedPasswords{client: c}
+	return &pwnedPasswords{client: client}
 }
 
 type pwnedPasswords struct{ client *outbound.Client }

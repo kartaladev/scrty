@@ -244,8 +244,8 @@ const DefaultMemoryLimiterMaxKeys = 250_000
 // consumer who accepts that cost passes math.MaxInt. MemoryLimiterFactory
 // applies the option to every limiter it builds, so one option sets the cap
 // for every flow the factory serves.
-func WithMemoryLimiterMaxKeys(n int) MemoryOption {
-	return func(l *MemoryLimiter) { l.maxKeys = n }
+func WithMemoryLimiterMaxKeys(maxKeys int) MemoryOption {
+	return func(l *MemoryLimiter) { l.maxKeys = maxKeys }
 }
 
 // MemoryLimiterFactory returns a factory of in-memory limiters. It is the
@@ -568,7 +568,7 @@ func (l *MemoryLimiter) Charge(ctx context.Context, key string) (Receipt, bool, 
 	return NewReceipt(key, now), false, nil
 }
 
-// Refund removes the one stamp r names from r's key, while the window still
+// Refund removes the one stamp receipt names from receipt's key, while the window still
 // counts it, and nothing else. It implements Charger.
 //
 // A stamp is matched with time.Time.Equal. Two charges at the same instant
@@ -579,34 +579,34 @@ func (l *MemoryLimiter) Charge(ctx context.Context, key string) (Receipt, bool, 
 //
 // It ignores ctx, as RecordFailure does: the work is in memory, and there is
 // nothing to abandon. It never returns an error.
-func (l *MemoryLimiter) Refund(_ context.Context, r Receipt) error {
-	if r.stamp.IsZero() {
+func (l *MemoryLimiter) Refund(_ context.Context, receipt Receipt) error {
+	if receipt.stamp.IsZero() {
 		return nil
 	}
 
 	now := l.clock.Now()
-	s := l.shardFor(r.key)
+	s := l.shardFor(receipt.key)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !r.stamp.After(now.Add(-l.window)) {
+	if !receipt.stamp.After(now.Add(-l.window)) {
 		return nil
 	}
-	stamps, held := s.keys[r.key]
+	stamps, held := s.keys[receipt.key]
 	if !held {
 		return nil
 	}
-	i := slices.IndexFunc(stamps, r.stamp.Equal)
+	i := slices.IndexFunc(stamps, receipt.stamp.Equal)
 	if i < 0 {
 		return nil
 	}
 	if stamps = slices.Delete(stamps, i, i+1); len(stamps) > 0 {
-		s.keys[r.key] = stamps
+		s.keys[receipt.key] = stamps
 
 		return nil
 	}
-	delete(s.keys, r.key)
+	delete(s.keys, receipt.key)
 	l.release(1)
 
 	return nil

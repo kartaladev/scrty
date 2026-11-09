@@ -116,7 +116,7 @@ func (SecretBytes) String() string { return redacted }
 func (SecretBytes) GoString() string { return redacted }
 
 // Format writes the redacted form under every verb.
-func (SecretBytes) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(redacted)) }
+func (SecretBytes) Format(state fmt.State, _ rune) { _, _ = state.Write([]byte(redacted)) }
 
 // MarshalJSON writes the redacted form as a JSON string, or null when it holds
 // nothing.

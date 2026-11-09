@@ -42,8 +42,8 @@ type IdleOption func(*IdleTimeout)
 // is refused. One option must never govern two subsystems — a consumer who
 // wants them to agree passes the same duration to both, and one who wants this
 // policy to refuse earlier than the store expires can have that too.
-func WithIdleTimeout(d time.Duration) IdleOption {
-	return func(p *IdleTimeout) { p.idle = d }
+func WithIdleTimeout(timeout time.Duration) IdleOption {
+	return func(p *IdleTimeout) { p.idle = timeout }
 }
 
 // WithIdleAbsoluteTimeout replaces the deadline nothing extends, which
@@ -54,8 +54,8 @@ func WithIdleTimeout(d time.Duration) IdleOption {
 // session's WithAbsoluteTimeout, so a deployment can hand the session manager
 // one set of deadlines and this policy another without either option reaching
 // into the other's subsystem.
-func WithIdleAbsoluteTimeout(d time.Duration) IdleOption {
-	return func(p *IdleTimeout) { p.absolute = d }
+func WithIdleAbsoluteTimeout(timeout time.Duration) IdleOption {
+	return func(p *IdleTimeout) { p.absolute = timeout }
 }
 
 // IdleTimeout refuses a request whose session has gone unused for longer

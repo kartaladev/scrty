@@ -105,7 +105,7 @@ var ErrNoEligibleAuthenticator = errors.New("authenticate: no eligible authentic
 // own. FirstOf is itself an Authenticator, so a FirstOf composes into another
 // FirstOf without a wrapper.
 type Authenticator interface {
-	// Authenticate resolves c, or reports why it could not.
+	// Authenticate resolves credentials, or reports why it could not.
 	//
 	// Credentials of a kind this provider does not handle return
 	// ErrUnsupportedCredentials and nothing else, so a FirstOf can offer them to
@@ -119,7 +119,7 @@ type Authenticator interface {
 	// authentication that names no principal: that is a fault in the provider,
 	// not a refusal, and the callers in this library treat it as one. A provider
 	// that has no one to name returns ErrAuthenticationFailed instead.
-	Authenticate(ctx context.Context, c identity.Credentials) (*Authentication, error)
+	Authenticate(ctx context.Context, credentials identity.Credentials) (*Authentication, error)
 }
 
 // Authentication is what a successful authentication produced.
@@ -170,7 +170,7 @@ type contextKey struct{}
 // travels.
 var authenticationKey contextKey
 
-// WithAuthentication returns a copy of ctx carrying a.
+// WithAuthentication returns a copy of ctx carrying authentication.
 //
 // An authentication interceptor calls this once a FirstOf has resolved the
 // caller, and everything downstream reads the result back rather than
@@ -178,8 +178,8 @@ var authenticationKey contextKey
 //
 // Attaching nothing is allowed and attaches nothing a reader will accept: see
 // AuthenticationFromContext.
-func WithAuthentication(ctx context.Context, a *Authentication) context.Context {
-	return context.WithValue(ctx, authenticationKey, a)
+func WithAuthentication(ctx context.Context, authentication *Authentication) context.Context {
+	return context.WithValue(ctx, authenticationKey, authentication)
 }
 
 // AuthenticationFromContext returns the authentication ctx carries, reporting

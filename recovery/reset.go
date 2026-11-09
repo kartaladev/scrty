@@ -45,12 +45,12 @@ func (r AuthenticatorRef) String() string { return r.Kind + ":" + r.ID }
 //
 // Text with no colon, an empty kind or identifier, or a newline anywhere is
 // ErrMalformed.
-func ParseAuthenticatorRef(s string) (AuthenticatorRef, error) {
-	if strings.Contains(s, "\n") {
+func ParseAuthenticatorRef(raw string) (AuthenticatorRef, error) {
+	if strings.Contains(raw, "\n") {
 		return AuthenticatorRef{}, fmt.Errorf("%w: authenticator reference contains a newline", ErrMalformed)
 	}
 
-	kind, ref, ok := strings.Cut(s, ":")
+	kind, ref, ok := strings.Cut(raw, ":")
 	if !ok || kind == "" || ref == "" {
 		return AuthenticatorRef{}, fmt.Errorf("%w: authenticator reference is not kind:id", ErrMalformed)
 	}

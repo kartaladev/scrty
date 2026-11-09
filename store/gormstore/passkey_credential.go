@@ -52,7 +52,7 @@ type PasskeyCredentialStore struct {
 }
 
 // NewPasskeyCredentialStore returns a durable passkey credential store on db,
-// sealing emailed codes with c. There is no unsealed variant, and a nil c,
+// sealing emailed codes with cipher. There is no unsealed variant, and a nil cipher,
 // typed nil included, is a configuration error.
 //
 // It honours WithTxResolver and refuses any other option: a credential
@@ -68,28 +68,28 @@ type PasskeyCredentialStore struct {
 //   - A transport that is empty or holds a line break is refused the same
 //     way, since the column holds one transport per line.
 //   - Stored times are UTC, truncated to the microsecond.
-func NewPasskeyCredentialStore(db *gorm.DB, c seal.Cipher, opts ...Option) (*PasskeyCredentialStore, error) {
+func NewPasskeyCredentialStore(db *gorm.DB, cipher seal.Cipher, opts ...Option) (*PasskeyCredentialStore, error) {
 	cfg, err := newConfig(db, opts)
 	if err != nil {
 		return nil, err
 	}
-	if err := storekit.RequireCipher(c, ErrConfig); err != nil {
+	if err := storekit.RequireCipher(cipher, ErrConfig); err != nil {
 		return nil, err
 	}
 
-	return &PasskeyCredentialStore{c: cfg, cipher: c}, nil
+	return &PasskeyCredentialStore{c: cfg, cipher: cipher}, nil
 }
 
-// Insert stores c, refusing a credential ID or library identifier already
+// Insert stores credential, refusing a credential ID or library identifier already
 // stored with passkey.ErrDuplicateCredential. Under READ COMMITTED the refusal
 // never aborts a caller's transaction; under a caller-owned REPEATABLE READ or
 // SERIALIZABLE one, a conflicting row committed after the caller's snapshot is
 // a serialization failure (SQLSTATE 40001) that aborts it, and the caller
 // retries. That failure is returned as a database failure, not as a refusal.
-func (s *PasskeyCredentialStore) Insert(ctx context.Context, c *passkey.Credential) error {
+func (s *PasskeyCredentialStore) Insert(ctx context.Context, credential *passkey.Credential) error {
 	const op = "insert passkey credential"
 
-	row, err := s.insertRow(ctx, c)
+	row, err := s.insertRow(ctx, credential)
 	if err != nil {
 		return failed(op, err)
 	}
@@ -117,13 +117,13 @@ func insertCredentialRow(q *gorm.DB, row *passkeyCredentialRow) (int64, error) {
 	return res.RowsAffected, res.Error
 }
 
-// InsertWithin stores c only while its user holds fewer than limit
+// InsertWithin stores credential only while its user holds fewer than limit
 // credentials, in every state, and reports whether it did. A refused insert
 // writes nothing. Under the limit, a credential ID or library identifier
 // already stored is refused with passkey.ErrDuplicateCredential, as Insert
 // refuses it.
 //
-// The decision is taken under the transaction-scoped advisory lock of c's
+// The decision is taken under the transaction-scoped advisory lock of credential's
 // user: the lock, then the count, then the insert, in a READ COMMITTED
 // transaction of the store's own, so a racer for the same user, on this
 // process or on another replica, counts only after this one's credential is
@@ -134,10 +134,10 @@ func insertCredentialRow(q *gorm.DB, row *passkeyCredentialRow) (int64, error) {
 // stronger than READ COMMITTED is refused with ErrIsolationTooStrong and
 // nothing is written: its snapshot would predate the lock, so the count could
 // miss a racer's committed credential.
-func (s *PasskeyCredentialStore) InsertWithin(ctx context.Context, c *passkey.Credential, limit int) (bool, error) {
+func (s *PasskeyCredentialStore) InsertWithin(ctx context.Context, credential *passkey.Credential, limit int) (bool, error) {
 	const op = "insert passkey credential within a limit"
 
-	row, err := s.insertRow(ctx, c)
+	row, err := s.insertRow(ctx, credential)
 	if err != nil {
 		return false, failed(op, err)
 	}
@@ -147,11 +147,11 @@ func (s *PasskeyCredentialStore) InsertWithin(ctx context.Context, c *passkey.Cr
 
 	var stored bool
 	decide := func(q *gorm.DB) error {
-		if err := q.Exec(pgschema.PasskeyCredentialLockUser, string(c.User)).Error; err != nil {
+		if err := q.Exec(pgschema.PasskeyCredentialLockUser, string(credential.User)).Error; err != nil {
 			return err
 		}
 		var n int64
-		if err := q.Model(&passkeyCredentialRow{}).Where("user_id = ?", string(c.User)).Count(&n).Error; err != nil {
+		if err := q.Model(&passkeyCredentialRow{}).Where("user_id = ?", string(credential.User)).Count(&n).Error; err != nil {
 			return err
 		}
 		if n >= int64(limit) {
@@ -437,19 +437,19 @@ func (s *PasskeyCredentialStore) Suspend(ctx context.Context, cid id.ID) (bool, 
 	return n > 0, err
 }
 
-// ClearReason clears the single reason r of user's pending credential cid, in
-// one conditional update. Any r that is not exactly one known reason is
+// ClearReason clears the single reason of user's pending credential cid, in
+// one conditional update. Any reason that is not exactly one known reason is
 // refused before a statement runs.
 func (s *PasskeyCredentialStore) ClearReason(
-	ctx context.Context, user identity.UserID, cid id.ID, r passkey.PendingReason,
+	ctx context.Context, user identity.UserID, cid id.ID, reason passkey.PendingReason,
 ) (passkey.State, bool, error) {
-	if (r != passkey.PendingSavedCodes && r != passkey.PendingEmailCode) || !storekit.Storable(string(user)) {
+	if (reason != passkey.PendingSavedCodes && reason != passkey.PendingEmailCode) || !storekit.Storable(string(user)) {
 		return 0, false, nil
 	}
 
 	var state int64
 	ok, err := s.returning(ctx, "clear passkey pending reason", pgschema.PasskeyClearReason,
-		[]any{cid, string(user), int64(r)}, &state)
+		[]any{cid, string(user), int64(reason)}, &state)
 	if !ok || err != nil {
 		return 0, false, err
 	}

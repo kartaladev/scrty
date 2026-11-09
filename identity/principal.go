@@ -145,23 +145,23 @@ type Details struct {
 // principal's own grants, so writing through it reaches no further either. The
 // copy is deliberately not just of the role slice: the grants are pointers, and
 // cloning only the slice would still hand over the record's own grant objects.
-func PrincipalFromDetails(d *Details) *Principal {
-	if d == nil {
+func PrincipalFromDetails(details *Details) *Principal {
+	if details == nil {
 		return nil
 	}
 
 	p := &Principal{
-		ID:           d.ID,
-		Name:         d.Name,
-		Username:     d.Username,
-		Organization: cloneOrganization(d.Organization),
+		ID:           details.ID,
+		Name:         details.Name,
+		Username:     details.Username,
+		Organization: cloneOrganization(details.Organization),
 	}
 
-	if len(d.Roles) > 0 {
-		p.Roles = make([]*AssignedRole, 0, len(d.Roles))
+	if len(details.Roles) > 0 {
+		p.Roles = make([]*AssignedRole, 0, len(details.Roles))
 	}
 
-	for _, r := range d.Roles {
+	for _, r := range details.Roles {
 		if r == nil {
 			continue
 		}
@@ -200,12 +200,12 @@ func cloneOrganization(o *Organization) *Organization {
 // or overwrite the principal a context carries.
 type principalContextKey struct{}
 
-// WithPrincipal returns a copy of ctx carrying p.
+// WithPrincipal returns a copy of ctx carrying principal.
 //
 // An authentication interceptor calls this once it has resolved the caller;
 // everything downstream reads the principal back rather than re-resolving it.
-func WithPrincipal(ctx context.Context, p *Principal) context.Context {
-	return context.WithValue(ctx, principalContextKey{}, p)
+func WithPrincipal(ctx context.Context, principal *Principal) context.Context {
+	return context.WithValue(ctx, principalContextKey{}, principal)
 }
 
 // PrincipalFromContext returns the principal ctx carries, reporting whether one

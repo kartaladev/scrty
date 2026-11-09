@@ -29,19 +29,19 @@ import (
 // oidcprovider.WithRefreshSuccessorWindow(0), which derives no successor.
 //
 // It honours WithTxResolver, WithClock (default clock.System()) and WithIDGenerator
-// (default id.NewV7Generator), and refuses any other option. A nil c, typed nil
+// (default id.NewV7Generator), and refuses any other option. A nil cipher, typed nil
 // included, is a configuration error, as there is no unsealed variant.
-func NewRefreshTokenStore(pool *pgxpool.Pool, c seal.Cipher, opts ...Option) (oidcprovider.RefreshTokenStore, error) {
+func NewRefreshTokenStore(pool *pgxpool.Pool, cipher seal.Cipher, opts ...Option) (oidcprovider.RefreshTokenStore, error) {
 	cfg, err := newConfig(pool, opts, optIDGenerator, optClock)
 	if err != nil {
 		return oidcprovider.RefreshTokenStore{}, err
 	}
-	if err := storekit.RequireCipher(c, ErrConfig); err != nil {
+	if err := storekit.RequireCipher(cipher, ErrConfig); err != nil {
 		return oidcprovider.RefreshTokenStore{}, err
 	}
 	cfg.lineage = true
 
-	s, err := session.NewEncryptedStore(&sessionStore{c: cfg}, seal.SessionCipher(c))
+	s, err := session.NewEncryptedStore(&sessionStore{c: cfg}, seal.SessionCipher(cipher))
 	if err != nil {
 		return oidcprovider.RefreshTokenStore{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}

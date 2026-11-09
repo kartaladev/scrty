@@ -53,7 +53,7 @@ func NewFirstOf(delegates ...Authenticator) (*FirstOf, error) {
 	return &FirstOf{delegates: slices.Clone(delegates)}, nil
 }
 
-// Authenticate offers c to each delegate in turn and returns the first answer
+// Authenticate offers credentials to each delegate in turn and returns the first answer
 // that is not a refusal to handle the credentials.
 //
 // A delegate reporting ErrUnsupportedCredentials is skipped, and so is one
@@ -70,9 +70,9 @@ func NewFirstOf(delegates ...Authenticator) (*FirstOf, error) {
 // choke point that lets every caller read Principal after a nil error without
 // checking it; leaving the check to each provider would let the next provider
 // written reopen it for everyone.
-func (m *FirstOf) Authenticate(ctx context.Context, c identity.Credentials) (*Authentication, error) {
+func (m *FirstOf) Authenticate(ctx context.Context, credentials identity.Credentials) (*Authentication, error) {
 	for _, d := range m.delegates {
-		a, err := d.Authenticate(ctx, c)
+		a, err := d.Authenticate(ctx, credentials)
 		if errors.Is(err, ErrUnsupportedCredentials) || errors.Is(err, ErrNoEligibleAuthenticator) {
 			continue
 		}
@@ -91,15 +91,15 @@ func (m *FirstOf) Authenticate(ctx context.Context, c identity.Credentials) (*Au
 
 var _ Authenticator = (*FirstOf)(nil)
 
-// VerifyDecoy offers c to each delegate that implements DecoyVerifier, in
-// order, and stops at the first that reports it handled c. It returns false
+// VerifyDecoy offers credentials to each delegate that implements DecoyVerifier, in
+// order, and stops at the first that reports it handled credentials. It returns false
 // when no delegate does, including when none implements DecoyVerifier.
 //
 // Delegates that do not implement DecoyVerifier are skipped, and no delegate's
 // Authenticate is called.
-func (m *FirstOf) VerifyDecoy(ctx context.Context, c identity.Credentials) bool {
+func (m *FirstOf) VerifyDecoy(ctx context.Context, credentials identity.Credentials) bool {
 	for _, d := range m.delegates {
-		if v, ok := d.(DecoyVerifier); ok && v.VerifyDecoy(ctx, c) {
+		if v, ok := d.(DecoyVerifier); ok && v.VerifyDecoy(ctx, credentials) {
 			return true
 		}
 	}

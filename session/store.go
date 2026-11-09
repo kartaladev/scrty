@@ -172,10 +172,10 @@ type Supersession struct {
 //
 //go:generate mockgen -source=store.go -package=session_test -destination=store_mock_test.go -typed
 type Store interface {
-	// Create inserts s. An identifier that is already stored is an error
+	// Create inserts sess. An identifier that is already stored is an error
 	// rather than a replacement: overwriting would silently end the session
-	// already holding it. It stores s unmarked (RotatedStrictly false),
-	// whatever s says: only Supersede writes the mark.
+	// already holding it. It stores sess unmarked (RotatedStrictly false),
+	// whatever sess says: only Supersede writes the mark.
 	//
 	// Every stored session belongs to a family. A session whose FamilyID is
 	// the nil family, id.Nil, is refused with an error and nothing is
@@ -183,7 +183,7 @@ type Store interface {
 	// revocation or a supersession naming it could reach unrelated users'
 	// sessions. The Sessions always gives a session a family; a consumer
 	// writing to a store directly must too.
-	Create(ctx context.Context, s *Session) error
+	Create(ctx context.Context, sess *Session) error
 
 	// Save updates the stored session with this identifier, whole except for
 	// MFAAtFirstFactor and the family, supersession and presentation fields,
@@ -224,7 +224,7 @@ type Store interface {
 	// session handed to it says, so a save can neither unbind a session nor
 	// change its token or metadata. A SQL store leaves their columns out of
 	// the UPDATE.
-	Save(ctx context.Context, s *Session) error
+	Save(ctx context.Context, sess *Session) error
 
 	// Load returns the session with this identifier, ErrNotFound when
 	// there is none, and ErrExpired when a session that is not
@@ -504,13 +504,13 @@ func sessionDigest(id string) []byte {
 	return sum[:]
 }
 
-// ExpiryTask returns the task that deletes the expired sessions of s, through
+// ExpiryTask returns the task that deletes the expired sessions held by store, through
 // the store's own DeleteExpired.
 //
 // The task is named "sessions". It sets no Interval, because only the
 // deployment knows its cadence, and it accepts no cutoff: what counts as
 // expired is the store's own rule, judged by the store's own clock. It never
 // deletes a session that is still live.
-func ExpiryTask(s Store) expiry.Task {
-	return expiry.Task{Name: "sessions", Run: s.DeleteExpired}
+func ExpiryTask(store Store) expiry.Task {
+	return expiry.Task{Name: "sessions", Run: store.DeleteExpired}
 }

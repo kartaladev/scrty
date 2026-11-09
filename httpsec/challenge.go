@@ -135,7 +135,7 @@ type ChallengeSignals struct {
 // An implementation must be safe for concurrent use, and should bound its own
 // I/O: it runs on the request path, in front of the flow.
 type ChallengeVerifier interface {
-	Verify(ctx context.Context, r Request, s ChallengeSignals) (ChallengeDecision, error)
+	Verify(ctx context.Context, request Request, signals ChallengeSignals) (ChallengeDecision, error)
 }
 
 // ChallengeFlow names an unauthenticated flow the challenge verifier can stand
@@ -243,16 +243,16 @@ type challengeGate struct {
 	now     func() time.Time
 }
 
-// EnableAutomationChallenge puts v, a consumer's automation challenge such as
+// EnableAutomationChallenge puts verifier, a consumer's automation challenge such as
 // a CAPTCHA, a managed challenge or a proof of work, in front of the chain's
 // unauthenticated flows, so an automated attack on them costs more.
 //
 // Default: off. No flow asks for a challenge until this option is given, and
-// scrty bundles no verifier for any third-party service: v is the consumer's,
+// scrty bundles no verifier for any third-party service: verifier is the consumer's,
 // and decides on its own what a challenge is and where its answer travels (a
 // header, a form field, a cookie).
 //
-// Once enabled, v is asked in every selected flow, after the flow's source
+// Once enabled, verifier is asked in every selected flow, after the flow's source
 // limit and before its guarded work and any account lookup:
 //
 //   - form login (ChallengeFlowFormLogin), after the password-login source
@@ -272,9 +272,9 @@ type challengeGate struct {
 // on every API call, and a script or service client has no way to answer one.
 // Name it with WithChallengeFlows(ChallengeFlowBasicAuth, ...) to challenge it;
 // WithChallengeFlows replaces the default selection with the flows it names.
-// A source the source limit refuses never reaches v.
+// A source the source limit refuses never reaches verifier.
 //
-// v answers each request with a ChallengeDecision:
+// verifier answers each request with a ChallengeDecision:
 //
 //   - ChallengePass and ChallengeNotNeeded let the request through, unchanged;
 //   - ChallengeRefuse refuses it with ErrChallengeRequired, answered 403,
@@ -283,16 +283,16 @@ type challengeGate struct {
 //     failed attempt, by default (WithoutChallengeRefusalCounting), and never
 //     against the identifier's lockout.
 //
-// A v that returns an error fails the request as a dependency failure:
-// ErrChallengeUnavailable behind fixed library text, answered 500, with v's
+// A verifier that returns an error fails the request as a dependency failure:
+// ErrChallengeUnavailable behind fixed library text, answered 500, with verifier's
 // error reachable through errors.Is and errors.As but never in the text,
 // recorded at ERROR by the error's type, sampled per flow, and charged to no
-// throttle. So is an answer that is none of the three decisions. An error v
+// throttle. So is an answer that is none of the three decisions. An error verifier
 // returns because the request's own context ended is a client that left, not
 // an outage: the request fails with an error matching that context's error,
 // recorded at debug and charged to nothing.
 //
-// v is told, through ChallengeSignals, whether the request's source has recent
+// verifier is told, through ChallengeSignals, whether the request's source has recent
 // failures and, at form login and Basic authentication only, whether the
 // username has, within the failure window of the chain's lockout policy
 // (lockout.WithFailureWindow), so it can answer ChallengeNotNeeded for ordinary
@@ -302,7 +302,7 @@ type challengeGate struct {
 // flows, where it would let a verifier tell a known username from an unknown
 // one; ChallengeSignals says why, and what remains at login.
 //
-// Construction fails with a configuration error, from New, for a nil v, or an
+// Construction fails with a configuration error, from New, for a nil verifier, or an
 // interface holding a nil pointer, naming the verifier; for a second
 // EnableAutomationChallenge; for a selection (WithChallengeFlows) naming a
 // flow the chain does not enable, naming the flow; and for the default
@@ -310,7 +310,7 @@ type challengeGate struct {
 // with only Basic authentication; the error says to name Basic through
 // WithChallengeFlows. A verifier that would never be asked reads as protection
 // the chain does not have.
-func EnableAutomationChallenge(v ChallengeVerifier, opts ...ChallengeOption) Option {
+func EnableAutomationChallenge(verifier ChallengeVerifier, opts ...ChallengeOption) Option {
 	const option = "EnableAutomationChallenge"
 
 	return func(c *config) error {
@@ -319,7 +319,7 @@ func EnableAutomationChallenge(v ChallengeVerifier, opts ...ChallengeOption) Opt
 		}
 
 		g := &challengeGate{
-			verifier:      v,
+			verifier:      verifier,
 			flows:         flowSet(challengeFlowsDefault),
 			countRefusals: true,
 			now:           c.now,
@@ -336,7 +336,7 @@ func EnableAutomationChallenge(v ChallengeVerifier, opts ...ChallengeOption) Opt
 		}
 
 		c.challenge = g
-		c.enable(option, func() error { return requireDep(option, "challenge verifier", v) })
+		c.enable(option, func() error { return requireDep(option, "challenge verifier", verifier) })
 		c.wire(func(ch *Chain) {
 			g.log = ch.logger
 			g.sampler = ch.sampler

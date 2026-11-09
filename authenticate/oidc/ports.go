@@ -25,8 +25,8 @@ type Flow struct {
 // When a consumer supplies none, the RelyingParty uses an in-memory store, which
 // holds flows for one process only.
 type FlowStore interface {
-	// Begin stores f and returns the opaque handle that later names it.
-	Begin(ctx context.Context, f Flow) (handle string, err error)
+	// Begin stores flow and returns the opaque handle that later names it.
+	Begin(ctx context.Context, flow Flow) (handle string, err error)
 
 	// Complete decides existence, the provider and state bindings, single
 	// completion and expiry in one indivisible operation. Every refusal is
@@ -103,10 +103,10 @@ type LinkStore interface {
 	// store can be refused rather than dereferenced.
 	FindByExternal(ctx context.Context, provider, issuer, subject string) (*Link, error)
 
-	// Insert stores l, or returns ErrLinkExists when its external identity is
-	// already linked. l.ID must be unique and non-zero (see Link.ID); a
+	// Insert stores link, or returns ErrLinkExists when its external identity is
+	// already linked. link.ID must be unique and non-zero (see Link.ID); a
 	// store may refuse a zero ID.
-	Insert(ctx context.Context, l Link) error
+	Insert(ctx context.Context, link Link) error
 
 	// DeleteByUser removes every link to user and returns how many it removed.
 	DeleteByUser(ctx context.Context, user identity.UserID) (int, error)

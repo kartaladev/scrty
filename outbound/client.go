@@ -177,8 +177,8 @@ func WithAllowedOrigins(origins ...string) Option {
 // mistake. A negative cap fails construction. The cap is counted first, before
 // the scheme and origin of the new target, because a provider that redirects to
 // itself for ever would otherwise be bounded only by the time limit.
-func WithMaxRedirects(n int) Option {
-	return func(c *config) { c.redirects = n }
+func WithMaxRedirects(maxRedirects int) Option {
+	return func(c *config) { c.redirects = maxRedirects }
 }
 
 // WithTimeout bounds one whole call. Default: DefaultTimeout.
@@ -188,8 +188,8 @@ func WithMaxRedirects(n int) Option {
 // carries. An earlier deadline already on the caller's context wins. A bound of
 // zero or less fails construction: a request that may run for ever is how one
 // unresponsive provider stops every caller behind it.
-func WithTimeout(d time.Duration) Option {
-	return func(c *config) { c.timeout = d }
+func WithTimeout(timeout time.Duration) Option {
+	return func(c *config) { c.timeout = timeout }
 }
 
 // WithMaxResponseBytes bounds how much of a response body is read.
@@ -198,8 +198,8 @@ func WithTimeout(d time.Duration) Option {
 // A response longer than the bound fails the call and its content is not
 // returned, so an oversized document is never parsed rather than parsed in
 // part. A limit of zero or less fails construction.
-func WithMaxResponseBytes(n int64) Option {
-	return func(c *config) { c.maxBytes = n }
+func WithMaxResponseBytes(maxBytes int64) Option {
+	return func(c *config) { c.maxBytes = maxBytes }
 }
 
 // resolve applies the options over the defaults and refuses a configuration

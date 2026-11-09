@@ -431,15 +431,15 @@ func WithCSRFTokenNames(header, field string) CSRFOption {
 // when the sign-in is created and carried by every renewal, compared in
 // constant time; a sign-in holding no token is refused.
 type CSRFTokens interface {
-	// Token returns s's token, for the page to send back. An error or an empty
-	// token means s has none.
-	Token(ctx context.Context, s *session.Session) (string, error)
+	// Token returns sess's token, for the page to send back. An error or an empty
+	// token means sess has none.
+	Token(ctx context.Context, sess *session.Session) (string, error)
 
-	// Verify checks that presented is s's token, comparing in constant time.
+	// Verify checks that presented is sess's token, comparing in constant time.
 	// It returns ErrCrossSiteRequest, or an error wrapping it, for a token
-	// that is missing, malformed or not s's. Any other error is a failure of
+	// that is missing, malformed or not sess's. Any other error is a failure of
 	// the source, answered as such rather than as a refusal.
-	Verify(ctx context.Context, s *session.Session, presented string) error
+	Verify(ctx context.Context, sess *session.Session, presented string) error
 }
 
 // WithCSRFTokens replaces the token source, for example with an HMAC over the
@@ -447,14 +447,14 @@ type CSRFTokens interface {
 // read through it.
 //
 // Default: the token stored on the sign-in (see CSRFTokens). Construction
-// fails with ErrConfig when t is nil or a typed nil.
-func WithCSRFTokens(t CSRFTokens) CSRFOption {
+// fails with ErrConfig when tokens is nil or a typed nil.
+func WithCSRFTokens(tokens CSRFTokens) CSRFOption {
 	return func(l *csrfLayer) error {
-		if err := requireDep("WithCSRFTokens", "token source", t); err != nil {
+		if err := requireDep("WithCSRFTokens", "token source", tokens); err != nil {
 			return err
 		}
 
-		l.tokens = t
+		l.tokens = tokens
 
 		return nil
 	}
@@ -602,7 +602,7 @@ var errCSRFNotJudged = newConfigError("CheckCSRFToken was called on a request CS
 	"OrderCSRF on a chain built with EnableCSRFProtection, or opt out with WithoutCSRFProtection")
 
 // CheckCSRFToken checks the CSRF token of a request a cookie authenticated
-// with the sign-in s. Every CookieAuthenticator calls it before handing s on,
+// with the sign-in sess. Every CookieAuthenticator calls it before handing sess on,
 // and refuses the request with its error.
 //
 // It is nil for a GET, HEAD or OPTIONS, and for a route WithCSRFExemption
@@ -612,14 +612,14 @@ var errCSRFNotJudged = newConfigError("CheckCSRFToken was called on a request CS
 // WithCSRFTokenNames), and checked through the configured CSRFTokens source.
 // A token that is absent or empty is refused without asking the source. A
 // refusal is ErrCrossSiteRequest; any other failure of the source is returned
-// as it is. No error names the token. When it passes, s is the sign-in
+// as it is. No error names the token. When it passes, sess is the sign-in
 // CSRFToken reads the token of.
 //
 // It fails closed, with an error wrapping ErrConfig (answered 500), when the
 // CSRF layer has not judged the request: the authenticator runs outside the
 // chain, or ahead of the layer. The one exception is a chain built with
 // WithoutCSRFProtection, where it is nil.
-func CheckCSRFToken(ex *Exchange, s *session.Session) error {
+func CheckCSRFToken(ex *Exchange, sess *session.Session) error {
 	r := csrfRequestFrom(ex.Context())
 	if r == nil {
 		if ex.csrfOptOut {
@@ -635,13 +635,13 @@ func CheckCSRFToken(ex *Exchange, s *session.Session) error {
 			return ErrCrossSiteRequest
 		}
 
-		if err := r.layer.tokens.Verify(ex.Context(), s, presented); err != nil {
+		if err := r.layer.tokens.Verify(ex.Context(), sess, presented); err != nil {
 			return err
 		}
 	}
 
 	checked := *r
-	checked.signIn = s
+	checked.signIn = sess
 	ex.SetContext(context.WithValue(ex.Context(), csrfKey{}, &checked))
 
 	return nil

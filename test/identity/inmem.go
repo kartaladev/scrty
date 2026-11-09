@@ -95,12 +95,12 @@ func (s *InMemoryStore) Share() *InMemoryStore {
 // The rows are copied in for the same reason SeedRoleGrants copies grants:
 // holding the caller's pointers would let seeded state alias the store's own.
 func (s *InMemoryStore) SeedRole(
-	_ context.Context, role string, p []*identity.ResourcePrivileges,
+	_ context.Context, role string, privileges []*identity.ResourcePrivileges,
 ) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.privs[role] = clonePrivileges(p)
+	s.privs[role] = clonePrivileges(privileges)
 
 	return nil
 }

@@ -73,7 +73,7 @@ type ReauthenticationResult struct {
 // that handle is available. An error it returns leaves the chain as the
 // request's refusal. A consumer's responder owns its headers: the library adds
 // none to what it writes.
-type ReauthenticationResponder func(ex *Exchange, r ReauthenticationResult) error
+type ReauthenticationResponder func(ex *Exchange, result ReauthenticationResult) error
 
 // ReauthenticationMethods is how the session's user may re-prove, under the
 // factor policy (see EnableReauthentication).
@@ -89,16 +89,16 @@ type ReauthenticationMethods struct {
 	Password bool
 }
 
-// ReauthenticationMethodsResponder writes the response to a method listing. m
+// ReauthenticationMethodsResponder writes the response to a method listing. methods
 // is the same decision every re-proof endpoint applies to the session's user.
 //
 // It is called instead of the downstream handler, because the listing is the
 // library's own. An error it returns leaves the chain as the request's
 // refusal. It runs on the request carrying the session, so a consumer may
-// filter m, for example to drop the password for a user who has none. A
+// filter methods, for example to drop the password for a user who has none. A
 // consumer's responder owns its headers: the library adds none to what it
 // writes.
-type ReauthenticationMethodsResponder func(ex *Exchange, m ReauthenticationMethods) error
+type ReauthenticationMethodsResponder func(ex *Exchange, methods ReauthenticationMethods) error
 
 // msgReauthMethodsUnavailable is the fixed text a re-proof request is refused
 // with when the user's enrolments could not be looked up. The failure is the

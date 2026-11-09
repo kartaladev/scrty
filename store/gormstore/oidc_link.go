@@ -74,22 +74,22 @@ func (s *LinkStore) FindByExternal(ctx context.Context, provider, issuer, subjec
 	}, nil
 }
 
-// Insert stores l, refusing with oidc.ErrLinkExists when its external
+// Insert stores link, refusing with oidc.ErrLinkExists when its external
 // identity is already linked: one INSERT … ON CONFLICT (provider, issuer,
-// subject) DO NOTHING, whose zero rows affected is the refusal. A zero l.ID
+// subject) DO NOTHING, whose zero rows affected is the refusal. A zero link.ID
 // is refused before any statement runs, since it is the row's primary key and
 // the caller's to mint.
-func (s *LinkStore) Insert(ctx context.Context, l oidc.Link) error {
+func (s *LinkStore) Insert(ctx context.Context, link oidc.Link) error {
 	const op = "insert link"
 
-	if err := storekit.CheckID(l.ID, "link"); err != nil {
+	if err := storekit.CheckID(link.ID, "link"); err != nil {
 		return failed(op, err)
 	}
 	if err := storekit.CheckStorable(
-		storekit.Text("provider", l.Provider), storekit.Text("issuer", l.Issuer),
-		storekit.Text("subject", l.Subject),
-		storekit.Text("user reference", string(l.UserID)), storekit.Text("username", l.Username),
-		storekit.Text("email", l.Email),
+		storekit.Text("provider", link.Provider), storekit.Text("issuer", link.Issuer),
+		storekit.Text("subject", link.Subject),
+		storekit.Text("user reference", string(link.UserID)), storekit.Text("username", link.Username),
+		storekit.Text("email", link.Email),
 	); err != nil {
 		return failed(op, err)
 	}
@@ -102,14 +102,14 @@ func (s *LinkStore) Insert(ctx context.Context, l oidc.Link) error {
 		Columns:   []clause.Column{{Name: "provider"}, {Name: "issuer"}, {Name: "subject"}},
 		DoNothing: true,
 	}).Create(&linkRow{
-		ID:        l.ID,
-		Provider:  l.Provider,
-		Issuer:    l.Issuer,
-		Subject:   l.Subject,
-		UserID:    string(l.UserID),
-		Username:  l.Username,
-		Email:     l.Email,
-		CreatedAt: storekit.Time(l.CreatedAt),
+		ID:        link.ID,
+		Provider:  link.Provider,
+		Issuer:    link.Issuer,
+		Subject:   link.Subject,
+		UserID:    string(link.UserID),
+		Username:  link.Username,
+		Email:     link.Email,
+		CreatedAt: storekit.Time(link.CreatedAt),
 	})
 	if res.Error != nil {
 		return failed(op, res.Error)

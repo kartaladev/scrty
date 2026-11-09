@@ -77,8 +77,8 @@ type mdsConfig struct {
 // send to, or New fails with passkey.ErrConfig. It has no meaning for
 // MetadataBlob, whose BLOB the consumer fetches, and given there it is a
 // configuration error.
-func WithMDSURL(u string) MDSOption {
-	return func(c *mdsConfig) { c.url, c.urlSet = u, true }
+func WithMDSURL(mdsURL string) MDSOption {
+	return func(c *mdsConfig) { c.url, c.urlSet = mdsURL, true }
 }
 
 // WithMDSRoot sets the certificate the BLOB's signing chain must end at.

@@ -147,8 +147,8 @@ func WithEnrolmentFirstFactors(kinds ...factor.Kind) EnrolmentPathOption {
 // judges against, and not with the clock WithMFARequirementClock replaces,
 // which only samples records. A login whose Input.Now is the zero time finds a
 // path with an instant closed.
-func WithEnrolmentPathUntil(t time.Time) EnrolmentPathOption {
-	return enrolmentPathOption(func(e *enrolmentPath) { e.until = t })
+func WithEnrolmentPathUntil(until time.Time) EnrolmentPathOption {
+	return enrolmentPathOption(func(e *enrolmentPath) { e.until = until })
 }
 
 // enrolmentPath is the enrolment path's configuration. It is fixed at

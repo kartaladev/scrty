@@ -41,13 +41,13 @@ type Messages interface {
 	// IssuedCode carries an issued recovery code, valid once until until.
 	IssuedCode(code string, until time.Time) (subject, body string)
 	// Recovered is the notice sent when a recovery completes.
-	Recovered(n Notice) (subject, body string)
+	Recovered(notice Notice) (subject, body string)
 	// Held is the notice sent when a recovery is held, carrying the link that
 	// cancels it before until. Its Notice.Removed is the plan made when the
 	// hold started, which Finish computes again.
-	Held(n Notice, cancelLink string, until time.Time) (subject, body string)
+	Held(notice Notice, cancelLink string, until time.Time) (subject, body string)
 	// Cancelled is the notice sent when a held recovery is cancelled.
-	Cancelled(n Notice) (subject, body string)
+	Cancelled(notice Notice) (subject, body string)
 	// Regenerated is the notice sent when a user's saved codes are replaced.
 	Regenerated(at time.Time) (subject, body string)
 }

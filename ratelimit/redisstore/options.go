@@ -63,8 +63,8 @@ func newConfig(opts []Option) config {
 //
 // An empty prefix fails construction with ratelimit.ErrConfig: it would put
 // the limiter's keys among the application's own, unmarked.
-func WithKeyPrefix(p string) Option {
-	return func(c *config) { c.prefix = p }
+func WithKeyPrefix(prefix string) Option {
+	return func(c *config) { c.prefix = prefix }
 }
 
 // WithClock makes the limiter stamp failures and compute its window
@@ -104,8 +104,8 @@ func WithClock(clk clock.Clock) Option {
 //
 // A mode other than the three ratelimit declares fails construction with
 // ratelimit.ErrConfig.
-func WithOnUnavailable(m ratelimit.UnavailableMode) Option {
-	return func(c *config) { c.unavailable.Mode = m }
+func WithOnUnavailable(mode ratelimit.UnavailableMode) Option {
+	return func(c *config) { c.unavailable.Mode = mode }
 }
 
 // WithOperationTimeout bounds each call to the server, records included, even
@@ -116,8 +116,8 @@ func WithOnUnavailable(m ratelimit.UnavailableMode) Option {
 // request deadlines are shorter than this timeout lowers it below them.
 //
 // A zero or negative timeout fails construction with ratelimit.ErrConfig.
-func WithOperationTimeout(d time.Duration) Option {
-	return func(c *config) { c.unavailable.Timeout = d }
+func WithOperationTimeout(timeout time.Duration) Option {
+	return func(c *config) { c.unavailable.Timeout = timeout }
 }
 
 // WithProbeInterval sets how long the limiter answers from its
@@ -126,8 +126,8 @@ func WithOperationTimeout(d time.Duration) Option {
 // during an outage costs nothing and does not exhaust the connection pool.
 //
 // A zero or negative interval fails construction with ratelimit.ErrConfig.
-func WithProbeInterval(d time.Duration) Option {
-	return func(c *config) { c.unavailable.ProbeInterval = d }
+func WithProbeInterval(interval time.Duration) Option {
+	return func(c *config) { c.unavailable.ProbeInterval = interval }
 }
 
 // WithUnavailableLogInterval sets how long, in ratelimit.UnavailableAllow
@@ -140,8 +140,8 @@ func WithProbeInterval(d time.Duration) Option {
 // so nothing is lost by suppressing them. An interval of zero or less writes
 // every record, for a consumer whose own handler samples. The other modes
 // write only their transitions, and are not sampled.
-func WithUnavailableLogInterval(d time.Duration) Option {
-	return func(c *config) { c.unavailable.LogInterval = d }
+func WithUnavailableLogInterval(interval time.Duration) Option {
+	return func(c *config) { c.unavailable.LogInterval = interval }
 }
 
 // WithLogger sets where the limiter writes its outage records: the move to
@@ -149,8 +149,8 @@ func WithUnavailableLogInterval(d time.Duration) Option {
 //
 // A nil logger fails construction with ratelimit.ErrConfig, because the
 // outage records would be lost.
-func WithLogger(l *slog.Logger) Option {
-	return func(c *config) { c.unavailable.Logger = l }
+func WithLogger(logger *slog.Logger) Option {
+	return func(c *config) { c.unavailable.Logger = logger }
 }
 
 // WithEvictionPolicyCheck sets whether Verify reads the server's

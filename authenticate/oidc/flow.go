@@ -94,12 +94,12 @@ type MemoryFlowStoreOption func(*MemoryFlowStore) error
 
 // WithMemoryFlowStoreMaxFlows sets how many unexpired flows the store holds before Begin
 // refuses with ErrFlowStoreFull. The default is DefaultMaxFlows (100,000).
-func WithMemoryFlowStoreMaxFlows(n int) MemoryFlowStoreOption {
+func WithMemoryFlowStoreMaxFlows(maxFlows int) MemoryFlowStoreOption {
 	return func(s *MemoryFlowStore) error {
-		if n <= 0 {
-			return fmt.Errorf("%w: WithMemoryFlowStoreMaxFlows must be positive, got %d", ErrConfig, n)
+		if maxFlows <= 0 {
+			return fmt.Errorf("%w: WithMemoryFlowStoreMaxFlows must be positive, got %d", ErrConfig, maxFlows)
 		}
-		s.max = n
+		s.max = maxFlows
 		return nil
 	}
 }
@@ -120,12 +120,12 @@ func WithMemoryFlowStoreClock(clk clock.Clock) MemoryFlowStoreOption {
 // WithMemoryFlowStoreRandom replaces the source flow handles are drawn from.
 // The default is crypto/rand.Reader. The reader must be safe for concurrent
 // use, as crypto/rand.Reader is.
-func WithMemoryFlowStoreRandom(r io.Reader) MemoryFlowStoreOption {
+func WithMemoryFlowStoreRandom(src io.Reader) MemoryFlowStoreOption {
 	return func(s *MemoryFlowStore) error {
-		if nilcheck.IsNil(r) {
+		if nilcheck.IsNil(src) {
 			return fmt.Errorf("%w: WithMemoryFlowStoreRandom was given nil", ErrConfig)
 		}
-		s.random = r
+		s.random = src
 		return nil
 	}
 }
@@ -155,11 +155,11 @@ func NewMemoryFlowStore(opts ...MemoryFlowStoreOption) (*MemoryFlowStore, error)
 	return s, nil
 }
 
-// Begin stores f under a fresh random handle and returns the handle.
+// Begin stores flow under a fresh random handle and returns the handle.
 //
 // When the store holds its maximum of flows it first prunes the expired ones;
 // if none has expired it refuses with ErrFlowStoreFull and evicts nothing.
-func (s *MemoryFlowStore) Begin(_ context.Context, f Flow) (string, error) {
+func (s *MemoryFlowStore) Begin(_ context.Context, flow Flow) (string, error) {
 	h, err := randomURLToken(s.random, flowSecretBytes)
 	if err != nil {
 		return "", err
@@ -177,9 +177,9 @@ func (s *MemoryFlowStore) Begin(_ context.Context, f Flow) (string, error) {
 	if _, taken := s.flows[h]; taken {
 		return "", errFlowHandleTaken
 	}
-	s.flows[h] = f
-	if len(s.flows) == 1 || f.ExpiresAt.Before(s.pruneAfter) {
-		s.pruneAfter = f.ExpiresAt
+	s.flows[h] = flow
+	if len(s.flows) == 1 || flow.ExpiresAt.Before(s.pruneAfter) {
+		s.pruneAfter = flow.ExpiresAt
 	}
 
 	return h, nil
@@ -255,14 +255,14 @@ func (s *MemoryFlowStore) DeleteExpired(_ context.Context, before time.Time) (in
 
 var _ FlowStore = (*MemoryFlowStore)(nil)
 
-// FlowExpiryTask returns the task that deletes m's expired login flows through
-// m.PurgeExpiredFlows.
+// FlowExpiryTask returns the task that deletes the expired login flows of relyingParty through
+// relyingParty.PurgeExpiredFlows.
 //
 // The task is named "oidc-flows"; a consumer renames it by
 // setting Name on the returned value. It sets no Interval, because only the
 // deployment knows its cadence, and it accepts no cutoff: the manager uses its
 // own clock's now. It never deletes a flow that has not expired, and it never
 // touches OIDC links or identity records.
-func FlowExpiryTask(m *RelyingParty) expiry.Task {
-	return expiry.Task{Name: "oidc-flows", Run: m.PurgeExpiredFlows}
+func FlowExpiryTask(relyingParty *RelyingParty) expiry.Task {
+	return expiry.Task{Name: "oidc-flows", Run: relyingParty.PurgeExpiredFlows}
 }

@@ -46,29 +46,29 @@ func (i ID) format() [36]byte {
 // Parse accepts exactly the 36-character hyphenated layout, in either letter case,
 // and rejects everything else, the empty string included. It does not check the
 // version field, so identifiers from a consumer's generator parse unchanged.
-func Parse(s string) (ID, error) {
-	if len(s) != 36 || s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-' {
-		return Nil, fmt.Errorf("%w: %s", ErrInvalid, describe(s))
+func Parse(text string) (ID, error) {
+	if len(text) != 36 || text[8] != '-' || text[13] != '-' || text[18] != '-' || text[23] != '-' {
+		return Nil, fmt.Errorf("%w: %s", ErrInvalid, describe(text))
 	}
 
 	// The hyphens sit at fixed positions, so the other 32 characters are the hex digits.
 	var digits [32]byte
-	n := copy(digits[:], s[0:8])
-	n += copy(digits[n:], s[9:13])
-	n += copy(digits[n:], s[14:18])
-	n += copy(digits[n:], s[19:23])
-	copy(digits[n:], s[24:36])
+	n := copy(digits[:], text[0:8])
+	n += copy(digits[n:], text[9:13])
+	n += copy(digits[n:], text[14:18])
+	n += copy(digits[n:], text[19:23])
+	copy(digits[n:], text[24:36])
 
 	var i ID
 	if _, err := hex.Decode(i[:], digits[:]); err != nil {
-		return Nil, fmt.Errorf("%w: %s", ErrInvalid, describe(s))
+		return Nil, fmt.Errorf("%w: %s", ErrInvalid, describe(text))
 	}
 	return i, nil
 }
 
 // MustParse is Parse for tests and constants; it panics on invalid input.
-func MustParse(s string) ID {
-	i, err := Parse(s)
+func MustParse(text string) ID {
+	i, err := Parse(text)
 	if err != nil {
 		panic(err)
 	}
@@ -90,9 +90,9 @@ func (i ID) MarshalText() ([]byte, error) {
 	return buf[:], nil
 }
 
-// UnmarshalText parses b with Parse. On error, i is left unchanged.
-func (i *ID) UnmarshalText(b []byte) error {
-	parsed, err := Parse(string(b))
+// UnmarshalText parses text with Parse. On error, i is left unchanged.
+func (i *ID) UnmarshalText(text []byte) error {
+	parsed, err := Parse(string(text))
 	if err != nil {
 		return err
 	}

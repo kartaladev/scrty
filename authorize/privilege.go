@@ -53,7 +53,7 @@ type PrivilegeOption func(*PrivilegeAuthorizer)
 // default. The two readings of a nil argument — "I want no comparison" and "the
 // value I computed was empty" — call for opposite behaviour, and only the
 // consumer can tell them apart.
-func WithPrivilegeNameComparer(same func(a, b string) bool) PrivilegeOption {
+func WithPrivilegeNameComparer(same func(left, right string) bool) PrivilegeOption {
 	return func(a *PrivilegeAuthorizer) { a.same = same }
 }
 

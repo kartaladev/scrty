@@ -141,15 +141,15 @@ type LoginOption func(*formLogin) error
 //   - A urlencoded body that does not parse yields no credential at all, rather
 //     than the pairs that did parse before the error. Half a body is not a
 //     credential the client sent.
-func EnableFormLogin(d FormLoginDeps, opts ...LoginOption) Option {
+func EnableFormLogin(deps FormLoginDeps, opts ...LoginOption) Option {
 	const option = "EnableFormLogin"
 
 	return func(c *config) error {
 		l := &formLogin{
-			authn:         d.Authenticator,
-			sessions:      d.Sessions,
-			tokens:        d.Tokens,
-			attempts:      d.Attempts,
+			authn:         deps.Authenticator,
+			sessions:      deps.Sessions,
+			tokens:        deps.Tokens,
+			attempts:      deps.Attempts,
 			now:           c.now,
 			path:          defaultPath(DefaultLoginPath),
 			usernameParam: DefaultLoginUsernameParam,
@@ -174,20 +174,20 @@ func EnableFormLogin(d FormLoginDeps, opts ...LoginOption) Option {
 		}
 
 		c.enable(option, func() error {
-			if err := requireDep(option, "authenticator", d.Authenticator); err != nil {
+			if err := requireDep(option, "authenticator", deps.Authenticator); err != nil {
 				return err
 			}
-			if err := requireDep(option, "session manager", d.Sessions); err != nil {
+			if err := requireDep(option, "session manager", deps.Sessions); err != nil {
 				return err
 			}
-			if err := checkTokenGenerator(c, option, "FormLoginDeps.Tokens", d.Tokens); err != nil {
+			if err := checkTokenGenerator(c, option, "FormLoginDeps.Tokens", deps.Tokens); err != nil {
 				return err
 			}
 
-			return requireDep(option, "attempt store", d.Attempts)
+			return requireDep(option, "attempt store", deps.Attempts)
 		})
 
-		c.useSessions(d.Sessions)
+		c.useSessions(deps.Sessions)
 		c.wire(l.wire)
 		// The bearer mode may be enabled after form login, so the issuer is
 		// chosen once every option has been applied.
@@ -238,20 +238,20 @@ func WithLoginParams(username, password string) LoginOption {
 	}
 }
 
-// WithLoginBodyLimit reads at most n bytes of a login body.
+// WithLoginBodyLimit reads at most limit bytes of a login body.
 //
 // Default: DefaultLoginBodyLimit. The bound applies before anything is parsed,
 // because the login endpoint is unauthenticated and an unbounded read there
 // costs an attacker no credential at all. A limit of zero or less is refused:
 // it would reject every login, including the correct ones.
-func WithLoginBodyLimit(n int64) LoginOption {
+func WithLoginBodyLimit(limit int64) LoginOption {
 	return func(l *formLogin) error {
-		if n <= 0 {
+		if limit <= 0 {
 			return newConfigError("WithLoginBodyLimit takes a positive bound, and %d would "+
-				"refuse every login", n)
+				"refuse every login", limit)
 		}
 
-		l.bodyLimit = n
+		l.bodyLimit = limit
 		return nil
 	}
 }
@@ -278,23 +278,23 @@ func WithLoginResponder(fn LoginResponder) LoginOption {
 	}
 }
 
-// WithLoginLimiter counts form login's failures against l, by source, instead
+// WithLoginLimiter counts form login's failures against limiter, by source, instead
 // of the password-login limiter form login shares with Basic.
 //
 // Default: one limiter shared by form login and Basic, built from the chain's
 // factory (WithRateLimiterFactory, or the in-memory default) under the
 // namespace "password-login", allowing 50 failures per source in 15 minutes.
 // Sharing it means a source spraying passwords across both endpoints spends
-// one allowance. With this option form login counts against l alone, under
+// one allowance. With this option form login counts against limiter alone, under
 // the flow "password-login-form", and Basic keeps the shared default unless it
-// is given its own (WithBasicAuthLimiter). The limit and window are l's own.
+// is given its own (WithBasicAuthLimiter). The limit and window are limiter's own.
 //
 // The flow is the endpoint's own so that nothing is shared with Basic: its
 // IPv6 aggregate (WithIPv6Aggregate) is built under the namespace
 // "password-login-form-ipv6-aggregate", and a factory that refuses one
 // namespace with two policies builds the chain all the same. That aggregate is
-// sized from l's own
-// policy, the multiplier times the limit and window l reports through
+// sized from limiter's own
+// policy, the multiplier times the limit and window limiter reports through
 // ratelimit.PolicyReporter, as the memory limiter does. A limiter that reports
 // none gets no default aggregate and one warning at construction naming
 // EnableFormLogin; an explicit WithIPv6Aggregate refuses it with a
@@ -302,13 +302,13 @@ func WithLoginResponder(fn LoginResponder) LoginOption {
 //
 // A nil limiter, or a typed nil, is refused: it would read as "no limit"
 // while the consumer believed one was set.
-func WithLoginLimiter(l ratelimit.Limiter) LoginOption {
+func WithLoginLimiter(limiter ratelimit.Limiter) LoginOption {
 	return func(f *formLogin) error {
-		if err := requireDep("WithLoginLimiter", "limiter", l); err != nil {
+		if err := requireDep("WithLoginLimiter", "limiter", limiter); err != nil {
 			return err
 		}
 
-		f.limiter = l
+		f.limiter = limiter
 
 		return nil
 	}

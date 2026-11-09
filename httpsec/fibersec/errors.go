@@ -64,7 +64,7 @@ func newRefusal(err error) error {
 // refusal with errors.Is and errors.As and renders from that. A handler that
 // answers authenticate.ErrUnavailable with 503 reopens the oracles
 // httpsec.StatusForError warns of.
-func ErrorHandler(c fiber.Ctx, err error) error {
+func ErrorHandler(ctx fiber.Ctx, err error) error {
 	var refusal *RefusalError
 
 	// An error carrying a fiber status that is not a refusal — a route's own
@@ -72,12 +72,12 @@ func ErrorHandler(c fiber.Ctx, err error) error {
 	// it is answered with the status the chain mapped.
 	var fe *fiber.Error
 	if !errors.As(err, &refusal) && errors.As(err, &fe) {
-		c.Status(fe.Code)
+		ctx.Status(fe.Code)
 
 		return nil
 	}
 
-	c.Status(httpsec.StatusForError(err))
+	ctx.Status(httpsec.StatusForError(err))
 
 	return nil
 }

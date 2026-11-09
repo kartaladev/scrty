@@ -65,8 +65,8 @@ func WithArgon2idMemory(kib uint32) Argon2idOption {
 // [ErrInvalidParameters], a stored record over it never matches, and there is no
 // override: a configurable ceiling would reopen the unbounded login-path work it
 // exists to prevent.
-func WithArgon2idIterations(n uint32) Argon2idOption {
-	return func(e *Argon2idEncoder) { e.iterations = n }
+func WithArgon2idIterations(iterations uint32) Argon2idOption {
+	return func(e *Argon2idEncoder) { e.iterations = iterations }
 }
 
 // WithArgon2idThreads sets the parallelism. Default: 4.
@@ -75,8 +75,8 @@ func WithArgon2idIterations(n uint32) Argon2idOption {
 // [ErrInvalidParameters], a stored record over it never matches, and there is no
 // override: a configurable ceiling would reopen the unbounded login-path work it
 // exists to prevent.
-func WithArgon2idThreads(n uint8) Argon2idOption {
-	return func(e *Argon2idEncoder) { e.threads = n }
+func WithArgon2idThreads(threads uint8) Argon2idOption {
+	return func(e *Argon2idEncoder) { e.threads = threads }
 }
 
 // WithArgon2idSaltLength sets the salt length in bytes. Default: 16.
@@ -84,8 +84,8 @@ func WithArgon2idThreads(n uint8) Argon2idOption {
 // The ceiling is 64 bytes. Construction refuses a value over it with
 // [ErrInvalidParameters], a stored record over it never matches, and there is no
 // override.
-func WithArgon2idSaltLength(n int) Argon2idOption {
-	return func(e *Argon2idEncoder) { e.saltLength = n }
+func WithArgon2idSaltLength(saltLength int) Argon2idOption {
+	return func(e *Argon2idEncoder) { e.saltLength = saltLength }
 }
 
 // WithArgon2idKeyLength sets the derived key length in bytes. Default: 32.
@@ -93,8 +93,8 @@ func WithArgon2idSaltLength(n int) Argon2idOption {
 // The ceiling is 64 bytes. Construction refuses a value over it with
 // [ErrInvalidParameters], a stored record over it never matches, and there is no
 // override.
-func WithArgon2idKeyLength(n uint32) Argon2idOption {
-	return func(e *Argon2idEncoder) { e.keyLength = n }
+func WithArgon2idKeyLength(keyLength uint32) Argon2idOption {
+	return func(e *Argon2idEncoder) { e.keyLength = keyLength }
 }
 
 // WithArgon2idRandom sets the source every salt is read from.
@@ -104,8 +104,8 @@ func WithArgon2idKeyLength(n uint32) Argon2idOption {
 // A source that cannot deliver is reported by [Encoder.Encode] rather than
 // worked around, so this option cannot weaken the guarantee that every stored
 // hash carries an unpredictable salt.
-func WithArgon2idRandom(r io.Reader) Argon2idOption {
-	return func(e *Argon2idEncoder) { e.random = r }
+func WithArgon2idRandom(src io.Reader) Argon2idOption {
+	return func(e *Argon2idEncoder) { e.random = src }
 }
 
 // The ceilings on what a STORED RECORD may demand. They are not configuration:

@@ -210,7 +210,7 @@ func (m *RelyingParty) EndSessionURL(ctx context.Context, provider, idTokenHint,
 // The returned value satisfies the http-security chain's end-session
 // dependency, which httpsec.EnableOIDCLogin supplies by default.
 func (m *RelyingParty) EndSessionBuilder() interface {
-	EndSessionURL(ctx context.Context, s *session.Session, state string) (string, error)
+	EndSessionURL(ctx context.Context, sess *session.Session, state string) (string, error)
 } {
 	return sessionEndSession{m: m}
 }
@@ -218,9 +218,9 @@ func (m *RelyingParty) EndSessionBuilder() interface {
 // sessionEndSession adapts RelyingParty.EndSessionURL to a session.
 type sessionEndSession struct{ m *RelyingParty }
 
-func (b sessionEndSession) EndSessionURL(ctx context.Context, s *session.Session, state string) (string, error) {
-	if s == nil || s.ExternalProvider == "" {
+func (b sessionEndSession) EndSessionURL(ctx context.Context, sess *session.Session, state string) (string, error) {
+	if sess == nil || sess.ExternalProvider == "" {
 		return "", nil
 	}
-	return b.m.EndSessionURL(ctx, s.ExternalProvider, s.ExternalIDToken, state)
+	return b.m.EndSessionURL(ctx, sess.ExternalProvider, sess.ExternalIDToken, state)
 }
