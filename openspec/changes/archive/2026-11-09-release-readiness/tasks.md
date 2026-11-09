@@ -103,7 +103,7 @@ The library fixes this change used to carry (its former groups 6–9) moved to `
 ## 8. First release (maintainer)
 
 - [x] 8.1 **(maintainer)** Enable private vulnerability reporting, and verify `gh api repos/kartaladev/scrty/private-vulnerability-reporting` reports `"enabled": true`.
-- [ ] 8.2 **(maintainer)** After the branch is merged, date the `0.1.0` changelog entry, run `make release-check VERSION=v0.1.0` on the merged commit, then create the tags `make release-tags VERSION=v0.1.0` prints, and push them. Verify the release-probe workflow passes for `v0.1.0`.
+- [x] 8.2 **(maintainer)** After the branch is merged, date the `0.1.0` changelog entry, run `make release-check VERSION=v0.1.0` on the merged commit, then create the tags `make release-tags VERSION=v0.1.0` prints, and push them. Verify the release-probe workflow passes for `v0.1.0`.
 
 ## 9. The probe's trigger (decision 4, amended 2026-11-09)
 
@@ -117,7 +117,7 @@ The library fixes this change used to carry (its former groups 6–9) moved to `
   - step 8: when no run appears, start the probe with `gh workflow run release-probe --ref main -f version=$VERSION`.
 
   Verify that a reviewer finds each command runnable as written, that the nine tag names still match `make release-tags`' output, and that `TestReleaseModuleListsAgree` passes.
-- [ ] 9.3 **(maintainer)** After 9.1 and 9.2 are merged, run `gh workflow run release-probe --ref main -f version=v0.1.0` and watch it. Verify that it passes, so that `v0.1.0` has a probe run on record and 8.2's verification is met.
+- [x] 9.3 **(maintainer)** After 9.1 and 9.2 are merged, run `gh workflow run release-probe --ref main -f version=v0.1.0` and watch it. Verify that it passes, so that `v0.1.0` has a probe run on record and 8.2's verification is met.
 
 ## Workflow follow-up
 
