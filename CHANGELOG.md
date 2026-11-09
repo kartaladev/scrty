@@ -12,7 +12,7 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 
 ## [Unreleased]
 
-## [0.1.0] - YYYY-MM-DD
+## [0.1.0] - 2026-11-09
 
 The first release. Nothing was tagged before it, so the items under *Changed* describe what differs
 from the earlier, untagged tree that this release replaces. Items marked **BREAKING** change a public
@@ -355,4 +355,5 @@ exported identifiers; the moves and renames change no behaviour.
 - A user-store outage during a password login no longer places a hold on a real account.
 - The limit on saved recovery codes holds when the codes are presented concurrently.
 
-[Unreleased]: https://github.com/kartaladev/scrty/commits/main
+[Unreleased]: https://github.com/kartaladev/scrty/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/kartaladev/scrty/releases/tag/v0.1.0
