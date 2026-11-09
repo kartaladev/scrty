@@ -79,6 +79,8 @@ Plan task N.M is `tasks.md` task N.M. The library fixes this plan used to carry 
 | 2 (parallel with R3) | R10 | 6.1–6.2 | `test/pgxstore/identity_test.go`, `test/sqlstore/identity_test.go`, `test/gormstore/identity_test.go` and their helpers; the two `session_supersede_test.go` files | Sonnet: test isolation to a stated shape |
 | 3 (only after `close-security-gaps`, `pre-release-api-fixes` and `oidc-provider` have landed) | main | 7.1–7.2 | — | Opus reviewer for 7.1: the change gates release security |
 | 4 | maintainer | 8.1–8.2 | — | — |
+| 5 (after `v0.1.0`) | R12 | 9.1–9.2 | `.github/workflows/release-probe.yml`, `RELEASING.md` | Sonnet: a trigger and a procedure edit to decision 4's stated amendment |
+| 6 (after R12 is merged) | maintainer | 9.3 | — | — |
 
 R3 and R4 both read `release-modules.txt`, which R2 owns and finishes first. R5 needs R3's target names, which are fixed here (`release-check` and `release-tags`), so it runs in parallel. Each dispatch gets a fresh Sonnet reviewer that edits nothing.
 
@@ -419,3 +421,36 @@ echo "probe: $version resolves for every published module"
 
 - [ ] **8.1 (maintainer):** `gh api -X PUT repos/kartaladev/scrty/private-vulnerability-reporting`, then read it back and expect `"enabled": true`.
 - [ ] **8.2 (maintainer):** after merge, follow `RELEASING.md` for `v0.1.0`, and watch `release-probe` pass.
+
+### Task 9.1–9.3: The probe's trigger (dispatch R12, Sonnet; Sonnet reviewer; then the maintainer)
+
+**Files:**
+- Modify: `.github/workflows/release-probe.yml`
+- Modify: `RELEASING.md` (steps 7 and 8)
+
+**Interfaces:**
+- **Consumes:** `scripts/release-probe.sh "$VERSION"`, unchanged. It already refuses a version outside its `semver` pattern before fetching, with exit 2.
+- **Produces:** the dispatch input `version` (required, type `string`) and the step env `VERSION: ${{ inputs.version || github.ref_name }}`.
+
+- [ ] **Step 1 (9.1): the trigger.** Add the following under `on:`, beside the unchanged `push:`:
+
+```yaml
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Published version to probe, for example v0.1.0"
+        required: true
+        type: string
+```
+
+  The probe step becomes `env: { VERSION: "${{ inputs.version || github.ref_name }}" }` with `run: scripts/release-probe.sh "$VERSION"`. No `${{ }}` appears in `run:`.
+- [ ] **Step 2 (9.1): check the file.** Run `python3 -c 'import yaml,sys; d=yaml.safe_load(open(".github/workflows/release-probe.yml")); print(sorted(d[True]))'`; PyYAML reads `on` as `True`. Expected: `['push', 'workflow_dispatch']`. Then `grep -n '\${{' .github/workflows/release-probe.yml` shows `${{` only on `env:` lines.
+- [ ] **Step 3 (9.2): the procedure.**
+  - Step 7 becomes two commands, with decision 4's reason in one sentence and the refused-root-push recovery:
+    - `git push --atomic origin` with the eight nested tags, in `make release-tags`' order;
+    - `git push origin $VERSION`.
+  - Step 8 adds: "If `gh run list --workflow release-probe --limit 1` shows no run for `$VERSION` within a few minutes, start it: `gh workflow run release-probe --ref main -f version=$VERSION`."
+- [ ] **Step 4: verify.** `go test -run 'TestReleaseModuleListsAgree|TestReleaseProbeSemverMatchesMakefile' -count=1 .` passes. The reviewer checks every command in steps 7 and 8 against `make release-tags VERSION=v0.1.0`'s output.
+- [ ] **Step 5 (9.3, maintainer, after merge):**
+  - `gh workflow run release-probe --ref main -f version=v0.1.0`, then watch it; it passes;
+  - `gh workflow run release-probe --ref main -f version='v0.1.0;echo PWNED'`; it fails at `release-probe: version ... is not vX.Y.Z`, and no `PWNED` line appears in `gh run view --log`.

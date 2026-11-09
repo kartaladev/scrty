@@ -1,10 +1,19 @@
 name: release-probe
 
-# Runs after a release tag is pushed. Nested module tags such as
-# store/pgxstore/v0.1.0 begin with their directory and do not match.
+# Two triggers. A pushed root release tag starts it; nested module tags such as
+# store/pgxstore/v0.1.0 begin with their directory and do not match. A manual
+# dispatch with the version starts it too, because GitHub creates no push event
+# when more than three tags are pushed at once, so a missed run can be started
+# by hand. The version reaches the script only through the environment.
 on:
   push:
     tags: ["v[0-9]*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Published version to probe, for example v0.1.0"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -24,5 +33,5 @@ jobs:
           cache: false
       - name: probe the release from outside the repository
         env:
-          REF_NAME: ${{ github.ref_name }}
-        run: scripts/release-probe.sh "$REF_NAME"
+          VERSION: ${{ inputs.version || github.ref_name }}
+        run: scripts/release-probe.sh "$VERSION"

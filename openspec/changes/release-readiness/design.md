@@ -116,6 +116,21 @@ None of the decisions below is library behaviour a consumer configures. They gov
 - **The probe's source** is a fixed list, kept beside the release-check module list and checked against `go.work` by the same root-module test, so a new module cannot be published without being probed.
 - **Propagation.** The proxy fetches a version on first request, so `go get` through it is also the documented way to prompt it. The workflow retries the fetch a bounded number of times before failing, to absorb propagation delay.
 - **A failure** opens no automatic action. The release is recorded as failed in the run, and the procedure (decision 7) says the fix is a new version, never a moved tag.
+- **The trigger (amended 2026-11-09, after `v0.1.0`).**
+  - **What happened.** The `v0.1.0` tags went up in one atomic push of nine tags, and the probe never started. GitHub creates no push event when more than three tags are pushed at once. The probe was then run by hand (`scripts/release-probe.sh v0.1.0`) and passed: all nine modules resolved, checksums were verified, and the program built. CI has no record of it.
+  - **The fix.**
+    - The workflow also accepts `workflow_dispatch` with a required `version` input. It passes the input to the script through the environment, never by `${{ }}` substitution into the command. The script's existing semantic-version check refuses anything else before fetching.
+    - Step 7 of `RELEASING.md` pushes the eight nested tags in one atomic push, then the root tag alone, so the root tag's push is an event the trigger sees.
+    - Step 8 says to start the probe by hand when no run appears.
+  - **The trade-off.** The nine tags are no longer one all-or-nothing push. If the root tag's push is refused after the nested tags are up, the nested tags are public without their root. The procedure says to fix the cause and push the root tag, never to delete the nested ones (decision 7). Until then, a consumer's `go get` of a nested module at that version fails to resolve the root. It is a loud failure, closed by the next push.
+  - **Rejected alternative.** Keep the atomic nine-tag push and always start the probe by hand. It keeps the all-or-nothing push, but the probe would then depend on a manual step every time.
+
+| Failure | State | Outcome |
+|---|---|---|
+| More than three tags in one push create no event | Handled | The root tag is pushed alone; the manual trigger covers a missed run |
+| A dispatched `version` crafted to inject a command | Handled, verified by a refused dispatch (task 9.1) | The script refuses it before fetching; the value never reaches a `run:` line |
+| The root tag's push is refused after the nested tags are up | Accepted | Nested modules fail to resolve until the root tag is pushed; never fixed by deleting a tag |
+| A dispatch on a version that was never tagged | Handled | The probe fails, naming the first module that does not resolve |
 
 ### 5. One changelog in Keep a Changelog format
 
@@ -263,6 +278,13 @@ Open follow-ups from the archived changes that are not needed for `v0.1.0`. None
 - [opentelemetry-go RELEASING.md](https://github.com/open-telemetry/opentelemetry-go/blob/main/RELEASING.md): `gorelease` run before tagging, and the warning that a bad tag cannot be removed.
 - [Publishing a module](https://go.dev/doc/modules/publishing): prompting the public proxy with `go list -m` against a new tag, and never changing a published version.
 - [Go Modules Reference: environment variables](https://go.dev/ref/mod#environment-variables): `GOPROXY` defaults to `https://proxy.golang.org,direct`.
+
+**Researched (accessed 2026-11-09), for decision 4's trigger amendment:**
+- [GitHub Docs: Webhook events and payloads, `push`](https://docs.github.com/en/webhooks/webhook-events-and-payloads#push): "Events will not be created for tags when more than three tags are pushed at once", which is why the atomic nine-tag push started no probe.
+
+
+**Primary documentation:**
+- [GitHub Docs: Events that trigger workflows, `workflow_dispatch`](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch): a workflow started by hand with typed inputs.
 
 The supply-chain step and the SBOM attachment (decisions 3 and 7, 2026-11-09) are reasoned from scrty's own settled specs (`supply-chain`) and the archived `close-security-gaps` design.
 
