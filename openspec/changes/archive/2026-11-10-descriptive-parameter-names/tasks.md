@@ -34,7 +34,7 @@
 
 - [x] 3.1 Run a whole-branch review with a fresh Sonnet reviewer that edits nothing. It confirms that every hunk is a rename or a doc comment following one. Then run `make check` and `openspec validate descriptive-parameter-names --strict`. Verify that all are clean.
 
-- [ ] 3.2 Open the pull request, let CI pass, and merge it to `main` before `harden-chain-boundary` task 1.2. Verify that `git grep -n TestExportedParametersHaveDescriptiveNames origin/main -- layout_test.go` finds the guard, and that CI's run on the merge commit is green.
+- [x] 3.2 Open the pull request, let CI pass, and merge it to `main` before `harden-chain-boundary` task 1.2. Verify that `git grep -n TestExportedParametersHaveDescriptiveNames origin/main -- layout_test.go` finds the guard, and that CI's run on the merge commit is green.
 
 ## Workflow follow-up
 
