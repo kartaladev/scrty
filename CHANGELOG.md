@@ -354,3 +354,5 @@ exported identifiers; the moves and renames change no behaviour.
 - API keys can be refused when their owner is inactive or gone (`httpsec.WithAPIKeyOwners`).
 - A user-store outage during a password login no longer places a hold on a real account.
 - The limit on saved recovery codes holds when the codes are presented concurrently.
+
+[Unreleased]: https://github.com/kartaladev/scrty/commits/main

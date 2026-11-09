@@ -1,6 +1,7 @@
 package scrty_test
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1271,5 +1272,124 @@ func TestMakefileFixesReleaseVersionBeforeShell(t *testing.T) {
 		require.Contains(t, string(data), "$(shell", "the Makefile runs no shell while read, so this order check pins nothing")
 
 		assert.Empty(t, releaseVersionOrderViolations(string(data)))
+	})
+}
+
+// makefileSemverRE returns the release-version pattern the Makefile hands to bash, with
+// $(SEMVER_ID) expanded and the make escape $$ undone, so it reads as bash sees it.
+func makefileSemverRE(makefile string) (string, error) {
+	var id, re string
+	for line := range strings.SplitSeq(makefile, "\n") {
+		if v, ok := strings.CutPrefix(line, "SEMVER_ID := "); ok {
+			id = v
+		}
+		if v, ok := strings.CutPrefix(line, "SEMVER_RE := "); ok {
+			re = v
+		}
+	}
+	if id == "" || re == "" {
+		return "", errors.New("the Makefile lacks SEMVER_ID or SEMVER_RE")
+	}
+	return strings.ReplaceAll(strings.ReplaceAll(re, "$(SEMVER_ID)", id), "$$", "$"), nil
+}
+
+// probeSemverRE returns the pattern the probe script assigns to semver.
+func probeSemverRE(script string) (string, error) {
+	for line := range strings.SplitSeq(script, "\n") {
+		if v, ok := strings.CutPrefix(line, "semver='"); ok {
+			if re, ok := strings.CutSuffix(v, "'"); ok {
+				return re, nil
+			}
+		}
+	}
+	return "", errors.New("the probe script has no `semver='...'` line")
+}
+
+// semverPatternViolations reports a difference between the version pattern of the
+// Makefile and the one of the probe script: the gate and the probe must accept the
+// same versions.
+func semverPatternViolations(makefile, script string) []violation {
+	want, err := makefileSemverRE(makefile)
+	if err != nil {
+		return []violation{{Where: "Makefile", What: err.Error()}}
+	}
+	got, err := probeSemverRE(script)
+	if err != nil {
+		return []violation{{Where: "scripts/release-probe.sh", What: err.Error()}}
+	}
+	if got != want {
+		return []violation{{
+			Where: "scripts/release-probe.sh",
+			What:  fmt.Sprintf("version pattern differs from the Makefile's: have `%s`, want `%s`", got, want),
+		}}
+	}
+	return nil
+}
+
+func TestReleaseProbeSemverMatchesMakefile(t *testing.T) {
+	t.Parallel()
+
+	const makefile = "SEMVER_ID := (0|[1-9][0-9]*)\nSEMVER_RE := ^v$(SEMVER_ID)(\\.$(SEMVER_ID))?$$\n"
+	const same = "x\nsemver='^v(0|[1-9][0-9]*)(\\.(0|[1-9][0-9]*))?$'\ny\n"
+
+	type testCase struct {
+		name     string
+		makefile string
+		script   string
+		assert   func(t *testing.T, vs []violation)
+	}
+
+	cases := []testCase{
+		{
+			name:     "equal patterns are clean",
+			makefile: makefile,
+			script:   same,
+			assert: func(t *testing.T, vs []violation) {
+				assert.Empty(t, vs)
+			},
+		},
+		{
+			name:     "a stricter probe pattern is reported",
+			makefile: makefile,
+			script:   "semver='^v(0|[1-9][0-9]*)$'\n",
+			assert:   hasViolation("scripts/release-probe.sh", "version pattern differs from the Makefile's"),
+		},
+		{
+			name:     "a changed Makefile pattern is reported",
+			makefile: strings.Replace(makefile, "[1-9]", "[2-9]", 1),
+			script:   same,
+			assert:   hasViolation("scripts/release-probe.sh", "version pattern differs from the Makefile's"),
+		},
+		{
+			name:     "a Makefile without the pattern is reported",
+			makefile: "BIN := .bin\n",
+			script:   same,
+			assert:   hasViolation("Makefile", "lacks SEMVER_ID or SEMVER_RE"),
+		},
+		{
+			name:     "a script without the pattern is reported",
+			makefile: makefile,
+			script:   "set -e\n",
+			assert:   hasViolation("scripts/release-probe.sh", "no `semver='...'` line"),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, semverPatternViolations(tc.makefile, tc.script))
+		})
+	}
+
+	t.Run("the real files", func(t *testing.T) {
+		t.Parallel()
+
+		mk, err := os.ReadFile("Makefile")
+		require.NoError(t, err)
+		sh, err := os.ReadFile(filepath.Join("scripts", "release-probe.sh"))
+		require.NoError(t, err)
+
+		assert.Empty(t, semverPatternViolations(string(mk), string(sh)))
 	})
 }

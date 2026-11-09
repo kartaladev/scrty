@@ -103,12 +103,25 @@ previous release. Before it builds anything, it refuses:
 - a clone with no previous `v` tag, for any `$VERSION` but `v0.1.0` or one of its prereleases: fetch
   the tags (`git fetch --tags`) and run it again;
 - a relative `TMPDIR`, or one holding characters other than letters, digits and `._+@/-`;
+- a non-empty `go env GOFLAGS`, which would change what is built and tested: unset it
+  (`go env -u GOFLAGS`, and `unset GOFLAGS`);
 - an `SBOM_DIR` that is not strictly inside `.bin`, after resolving symlinks and `..`. Leave
   `SBOM_DIR` unset: the gate removes that directory, and a value such as `.` would remove the
   checkout.
 
 A failure stops the release: fix it, merge, and run it again. It needs `jq`, and refuses to start
-without it.
+without it. It also needs Docker, for the PostgreSQL and Redis tests, and runs them on the default
+images only.
+
+Run the same gate in CI as well, which tests both supported PostgreSQL majors, and wait for it to
+pass:
+
+```sh
+gh workflow run release-check --ref main -f version=$VERSION
+gh run watch "$(gh run list --workflow release-check --limit 1 --json databaseId --jq '.[0].databaseId')"
+```
+
+The CI run's SBOMs are not kept; step 9 attaches the ones from your local run.
 
 The gate reads `HEAD` once, when it starts, and gates that commit. It fails if `HEAD` moves or the
 working tree changes before it ends, and on success prints a line starting `release-check: passed
@@ -143,19 +156,23 @@ printed commands. `git tag --points-at HEAD` lists the nine tags afterwards.
 
 ### 7. Push the tags
 
-Pushing a tag is the maintainer's action. Push each of the nine tags:
+Pushing a tag is the maintainer's action. Push the nine tags in one atomic push, so either all of
+them reach the remote or none does, and the probe never starts with only some of them there:
 
 ```sh
-git push origin $VERSION
-git push origin httpsec/fibersec/$VERSION
-git push origin httpsec/ginsec/$VERSION
-git push origin store/gormstore/$VERSION
-git push origin authenticate/passkey/webauthn/$VERSION
-git push origin store/pgxstore/$VERSION
-git push origin ratelimit/redisstore/$VERSION
-git push origin expiry/sweep/$VERSION
-git push origin test/$VERSION
+git push --atomic origin \
+  $VERSION \
+  httpsec/fibersec/$VERSION \
+  httpsec/ginsec/$VERSION \
+  store/gormstore/$VERSION \
+  authenticate/passkey/webauthn/$VERSION \
+  store/pgxstore/$VERSION \
+  ratelimit/redisstore/$VERSION \
+  expiry/sweep/$VERSION \
+  test/$VERSION
 ```
+
+If the push is refused, nothing was published: fix the cause and push again.
 
 ### 8. Watch the probe
 
@@ -185,10 +202,18 @@ SBOMs of step 4:
 gh release create $VERSION --verify-tag --title $VERSION --notes-file <entry> .bin/sbom/*.cdx.json
 ```
 
-`--verify-tag` aborts if the tag is not on the remote, so `gh` never creates a tag for you. Check that
-`.bin/sbom` holds nine files, each naming `$VERSION`, before running it. Only a passing step 4 leaves
-such files there, and any later run of the gate with `SBOM_DIR` unset, even a refused one, empties
-the directory when it starts. If the files are missing, run step 4 again on the same commit.
+`--verify-tag` aborts if the tag is not on the remote, so `gh` never creates a tag for you. Before
+running it, check that `.bin/sbom` holds nine files, each naming `$VERSION`:
+
+```sh
+ls .bin/sbom/*.cdx.json | wc -l   # prints 9
+for f in .bin/sbom/*.cdx.json; do jq -e --arg v "$VERSION" '.metadata.component.version == $v' "$f" >/dev/null || echo "wrong: $f"; done   # prints nothing
+```
+
+Only a passing step 4 leaves such files there, and any later run of the gate with `SBOM_DIR` unset,
+even a refused one, empties the directory when it starts. If the files are missing, run step 4 again
+on the same commit: with the tags now in place, it compares against the previous release, not
+against `$VERSION` itself.
 
 ## Never move a tag
 

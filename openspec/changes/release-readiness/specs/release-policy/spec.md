@@ -93,7 +93,7 @@ The repository SHALL document the release procedure in order: update the changel
 
 #### Scenario: Procedure followed
 - **WHEN** a maintainer follows the documented procedure for `v0.1.0`
-- **THEN** each step names the command or check it runs, and the procedure ends with the outside probe passing
+- **THEN** each step names the command or check it runs, and the release notes are published only after the outside probe has passed
 
 #### Scenario: Bills of materials published
 - **WHEN** the release notes for `v0.1.0` are published by following the procedure

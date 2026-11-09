@@ -97,7 +97,7 @@ The library fixes this change used to carry (its former groups 6–9) moved to `
 
 ## 7. Integration gate
 
-- [ ] 7.1 Run a whole-branch review against every requirement in this change's specs, with a fresh Sonnet reviewer that edits nothing. Verify every finding is fixed or explicitly declined in the design.
+- [ ] 7.1 Run a whole-branch review against every requirement in this change's specs, with a fresh Opus reviewer that edits nothing (the change gates release security). Verify every finding is fixed or explicitly declined in the design.
 - [ ] 7.2 Run `make check`, `make release-check VERSION=v0.1.0` and `openspec validate release-readiness --strict`, and confirm the `conformance` CI job (`oidc-provider` P9) is green on the commit. Verify all four are clean, and keep the output.
 
 ## 8. First release (maintainer)

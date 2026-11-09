@@ -77,7 +77,7 @@ Plan task N.M is `tasks.md` task N.M. The library fixes this plan used to carry 
 | 2 (parallel with R3) | R4 | 4.1–4.2 | `scripts/release-probe.sh`, `.github/workflows/release-probe.yml` | Sonnet: a script to a stated contract |
 | 2 (parallel with R3) | R5 | 5.2–5.5 | `CHANGELOG.md`, `SECURITY.md`, `RELEASING.md`, `README.md` | Sonnet: documents from the decisions |
 | 2 (parallel with R3) | R10 | 6.1–6.2 | `test/pgxstore/identity_test.go`, `test/sqlstore/identity_test.go`, `test/gormstore/identity_test.go` and their helpers; the two `session_supersede_test.go` files | Sonnet: test isolation to a stated shape |
-| 3 (only after `close-security-gaps`, `pre-release-api-fixes` and `oidc-provider` have landed) | main | 7.1–7.2 | — | Sonnet reviewer for 7.1 |
+| 3 (only after `close-security-gaps`, `pre-release-api-fixes` and `oidc-provider` have landed) | main | 7.1–7.2 | — | Opus reviewer for 7.1: the change gates release security |
 | 4 | maintainer | 8.1–8.2 | — | — |
 
 R3 and R4 both read `release-modules.txt`, which R2 owns and finishes first. R5 needs R3's target names, which are fixed here (`release-check` and `release-tags`), so it runs in parallel. Each dispatch gets a fresh Sonnet reviewer that edits nothing.
@@ -412,7 +412,7 @@ echo "probe: $version resolves for every published module"
 
 ### Task 7.1–7.2: Integration gate (main session)
 
-- [ ] **7.1:** dispatch a fresh Sonnet reviewer that edits nothing. It gets both spec deltas (`module-layout`, `release-policy`), the design, and `git diff main...HEAD`. Findings are labelled `REPRODUCED` (with a failing check) or `UNREPRODUCED`, and go back to the owning dispatch.
+- [ ] **7.1:** dispatch a fresh Opus reviewer that edits nothing. It gets both spec deltas (`module-layout`, `release-policy`), the design, and `git diff main...HEAD`. Findings are labelled `REPRODUCED` (with a failing check) or `UNREPRODUCED`, and go back to the owning dispatch.
 - [ ] **7.2:** run `make check`, `make release-check VERSION=v0.1.0` (on a clean tree) and `openspec validate release-readiness --strict`, confirm with `gh run list --workflow ci.yml --commit "$(git rev-parse HEAD)"` that the `conformance` job is green on the commit, and keep the outputs. `conformance` stays a CI job, outside `make release-check`, because it needs Docker and a suite built from source.
 
 ### Task 8.1–8.2: First release (maintainer)

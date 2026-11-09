@@ -225,6 +225,8 @@ RELEASE_DIRS := . $(shell cut -d' ' -f1 release-modules.txt)
 # least one non-digit, as semver 2.0.0 defines it: `v1.0.0-01` and `v1.0.0-..` are
 # refused. Matched by bash `[[ =~ ]]` against the whole string, so a value with a
 # newline, or any trailing text, fails; `grep -E`, used before, matched line by line.
+# scripts/release-probe.sh holds this pattern expanded, and the two must stay equal:
+# TestReleaseProbeSemverMatchesMakefile fails when they differ.
 SEMVER_ID := (0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)
 SEMVER_RE := ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-$(SEMVER_ID)(\.$(SEMVER_ID))*)?$$
 
@@ -313,10 +315,39 @@ release-check:
 	$(RELEASE_VERSION_CHECK) \
 	[ -s release-modules.txt ] || { echo "release-modules.txt is missing or empty"; exit 2; }; \
 	command -v jq >/dev/null || { echo "release-check needs jq"; exit 2; }; \
+	gf="$$(go env GOFLAGS)" || { echo "release-check: go env GOFLAGS failed"; exit 2; }; \
+	[ -z "$$gf" ] || { printf 'release-check: GOFLAGS is set to %q, which would change what is built and gated; unset it (go env -u GOFLAGS, and unset the variable) and run it again\n' "$$gf"; exit 2; }; \
 	shallow="$$(git rev-parse --is-shallow-repository)"; \
 	[ "$$shallow" = false ] || { echo "release-check: this is a shallow clone, which lacks the tags the API report compares against; fetch the full history (git fetch --unshallow --tags) and run it again"; exit 2; }; \
-	tags="$$(git -c versionsort.suffix=- tag --list 'v[0-9]*' --sort=-v:refname)"; \
-	base=none; while IFS= read -r t; do if [[ $$t =~ $$re ]]; then base="$$t"; break; fi; done <<< "$$tags"; \
+	semver_lt() { \
+		local LC_COLLATE=C a="$${1#v}" b="$${2#v}" pa="" pb="" x y i nx ny; local -a ca cb ia ib; \
+		if [[ $$a == *-* ]]; then pa="$${a#*-}"; fi; if [[ $$b == *-* ]]; then pb="$${b#*-}"; fi; \
+		IFS=. read -ra ca <<< "$${a%%-*}"; IFS=. read -ra cb <<< "$${b%%-*}"; \
+		for i in 0 1 2; do x="$${ca[i]}"; y="$${cb[i]}"; \
+			if [ "$${#x}" -ne "$${#y}" ]; then [ "$${#x}" -lt "$${#y}" ]; return; fi; \
+			if [[ $$x != "$$y" ]]; then [[ $$x < $$y ]]; return; fi; \
+		done; \
+		if [ -z "$$pa" ] && [ -z "$$pb" ]; then return 1; fi; \
+		if [ -z "$$pb" ]; then return 0; fi; \
+		if [ -z "$$pa" ]; then return 1; fi; \
+		IFS=. read -ra ia <<< "$$pa"; IFS=. read -ra ib <<< "$$pb"; \
+		for ((i = 0; i < $${#ia[@]} && i < $${#ib[@]}; i++)); do x="$${ia[i]}"; y="$${ib[i]}"; \
+			if [[ $$x == "$$y" ]]; then continue; fi; \
+			nx=0; ny=0; if [[ $$x =~ ^[0-9]+$$ ]]; then nx=1; fi; if [[ $$y =~ ^[0-9]+$$ ]]; then ny=1; fi; \
+			if [ "$$nx" = 1 ] && [ "$$ny" = 1 ]; then \
+				if [ "$${#x}" -ne "$${#y}" ]; then [ "$${#x}" -lt "$${#y}" ]; return; fi; \
+				[[ $$x < $$y ]]; return; \
+			fi; \
+			if [ "$$nx" = 1 ]; then return 0; fi; \
+			if [ "$$ny" = 1 ]; then return 1; fi; \
+			[[ $$x < $$y ]]; return; \
+		done; \
+		[ "$${#ia[@]}" -lt "$${#ib[@]}" ]; \
+	}; \
+	tags="$$(git tag --list 'v[0-9]*')"; \
+	base=none; while IFS= read -r t; do \
+		if [[ $$t =~ $$re ]] && semver_lt "$$t" "$$RELEASE_VERSION" && { [ "$$base" = none ] || semver_lt "$$base" "$$t"; }; then base="$$t"; fi; \
+	done <<< "$$tags"; \
 	if [ "$$base" = none ] && ! [[ $$RELEASE_VERSION =~ ^v0\.1\.0(-[0-9A-Za-z.-]+)?$$ ]]; then \
 		echo "release-check: no previous v tag found, but $$RELEASE_VERSION is not the first release (v0.1.0); fetch the tags (git fetch --tags) and run it again" >&2; exit 2; fi; \
 	tmp="$${TMPDIR:-/tmp}"; \

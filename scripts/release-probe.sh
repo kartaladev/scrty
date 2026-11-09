@@ -27,7 +27,10 @@ is_uint() {
 
 [ "$#" -eq 1 ] || die "usage: release-probe.sh vX.Y.Z"
 version="$1"
-semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+(\.[0-9A-Za-z-]+)*)?$'
+# Must stay equal to SEMVER_RE in the Makefile (SEMVER_ID expanded, $$ written $): the
+# gate and the probe accept the same versions. TestReleaseProbeSemverMatchesMakefile
+# fails when they differ.
+semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$'
 [[ "$version" =~ $semver ]] || die "version '$version' is not vX.Y.Z with an optional prerelease"
 
 retries="${PROBE_RETRIES:-10}"
