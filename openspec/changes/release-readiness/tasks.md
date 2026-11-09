@@ -23,7 +23,7 @@ The library fixes this change used to carry (its former groups 6–9) moved to `
 
 ## 3. The release gate (decision 3; release-policy requirement "A release is gated before it is tagged")
 
-- [ ] 3.1 Add `make release-check VERSION=vX.Y.Z`. It refuses a missing or non-semver `VERSION`, then runs in order, stopping on the first failure:
+- [x] 3.1 Add `make release-check VERSION=vX.Y.Z`. It refuses a missing or non-semver `VERSION`, then runs in order, stopping on the first failure:
   - the requirement test with `SCRTY_RELEASE_VERSION=$(VERSION)`;
   - the fmt-check, vet, lint and test loops with `GOWORK=off`, over the modules in `release-modules.txt` plus the root;
   - `VERSION` reaches the recipe's shell through the environment, never by `$(VERSION)` substitution into the script, so a crafted value cannot run commands (added 2026-11-09).
@@ -45,15 +45,16 @@ The library fixes this change used to carry (its former groups 6–9) moved to `
   - an existing output path, even an empty directory, is refused, as is one whose parent is missing, one inside the source tree, or a symlink; on failure the run removes only the output directory it created (design decision 3, failure modes);
   - a fresh module with `GOPROXY=file://<out>`, `GONOSUMDB` set for that path, a temporary `GOMODCACHE` and `GOWORK=off` can `go get` a written module at the version.
   Verify with `make tools-check`.
-- [ ] 3.3 Add the supply-chain and API report steps to `release-check`, as design decision 3 states them: export `HEAD` into a throwaway repository, tag that repository locally with the nine tags `release-tags` prints, run `release-gate` there with `GOWORK` never exported to it (its `MODULES` would otherwise list only the root) and the repository's `SBOM_DIR` and `BIN`, then delete the local tags, write the local proxy with `releaseproxy`, drop the scrty `replace` lines in each exported module, and run `gorelease` with `GOPROXY=file://<proxy>,https://proxy.golang.org`, `GONOSUMDB=github.com/kartaladev/scrty`, a temporary `GOMODCACHE` and `GOWORK=off`, removing every temporary directory on every exit. Use `-base=none` when no `v*` root tag exists, and otherwise `-base=` the latest one. Verify:
+- [x] 3.3 Add the supply-chain and API report steps to `release-check`, as design decision 3 states them: export `HEAD` into a throwaway repository, tag that repository locally with the nine tags `release-tags` prints, run `release-gate` there with `GOWORK` never exported to it (its `MODULES` would otherwise list only the root) and the repository's `SBOM_DIR` and `BIN`, then delete the local tags, write the local proxy with `releaseproxy`, drop the scrty `replace` lines in each exported module, and run `gorelease` with `GOPROXY=file://<proxy>,https://proxy.golang.org`, `GONOSUMDB=github.com/kartaladev/scrty`, a temporary `GOMODCACHE` and `GOWORK=off`, removing every temporary directory on every exit. Use `-base=none` when no `v*` root tag exists, and otherwise `-base=` the latest one. Verify:
   - remove the `SBOM_VERSION` handling and the `jq` rewrite from `sbom` (design decision 3: the SBOMs come from the tagged export);
+  - harden the gate as design decision 3's review bullets (tasks 3.1b to 3.1e) state, each seen failing first: the `override`/`unexport`/`export` lines before any shell, pinned by `TestMakefileFixesReleaseVersionBeforeShell`; refuse a shallow clone, and a missing previous tag for any version but `v0.1.0` and its prereleases, before anything is built; pin `HEAD` at the start, export that commit, fail if `HEAD` moved or the tree (untracked files included) became dirty, and print the gated commit; write the SBOMs into the run's temporary directory (`SBOM_ROOT`) and move them into `$(SBOM_DIR)` only after every step passes, emptying `.bin/sbom` before any other refusal; refuse an `SBOM_DIR` outside `.bin` in both `sbom` and `release-check`; refuse a relative or unusual `TMPDIR`;
   - for `v0.1.0`, the vuln output names all nine modules, and `$(SBOM_DIR)` holds exactly nine `.cdx.json` files whose main component version is `v0.1.0`. To see the count check bite, export `GOWORK=off` to the sub-make in a temporary copy of the recipe: it writes one file, and the check fails;
   - no tag exists in the repository afterwards (`git tag --list` unchanged);
   - for `v0.1.0`, it prints a report for each of the nine modules and passes;
   - leaving one module out of the proxy fails the target, naming that module;
   - the developer's `go env GOMODCACHE` holds no `github.com/kartaladev/scrty*@v0.1.0` afterwards;
   - no temporary directory is left behind after a failed run.
-- [ ] 3.4 Add `.github/workflows/release-check.yml`, triggered by `workflow_dispatch` with a `version` input, running `make release-check VERSION=<input>` on the Go, PostgreSQL and Redis matrix of `ci.yml`'s `test` job, with the same service containers and environment. It has a `timeout-minutes` and a `concurrency` group keyed on the version, so two runs for one version never overlap. Verify `actionlint` (run ad hoc with `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12`, the latest release per the GitHub API on 2026-10-21) reports nothing on it and on `ci.yml`.
+- [x] 3.4 Add `.github/workflows/release-check.yml`, triggered by `workflow_dispatch` with a `version` input, running `make release-check VERSION=<input>` on the Go, PostgreSQL and Redis matrix of `ci.yml`'s `test` job, with the same service containers and environment. It has a `timeout-minutes` and a `concurrency` group keyed on the version, so two runs for one version never overlap. Its checkout fetches the full history (`fetch-depth: 0`) without keeping credentials. Verify `actionlint` (run ad hoc with `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12`, the latest release per the GitHub API on 2026-10-21) reports nothing on it and on `ci.yml`.
 
 ## 4. The outside probe (decision 4; release-policy requirement "A release is proven from outside the repository after tagging")
 
@@ -69,7 +70,7 @@ The library fixes this change used to carry (its former groups 6–9) moved to `
 
 ## 5. Documents and the tag helper (decisions 5, 6, 7; release-policy requirements on the changelog, the security policy and the procedure)
 
-- [ ] 5.1 Add `make release-tags VERSION=vX.Y.Z`. It prints, for the current `HEAD`, one `git tag -a` command for the root and one per module in `release-modules.txt`. It never creates or pushes a tag. Verify that for `v0.1.0` it prints exactly nine commands with the tags listed in the release-policy spec, and that `git tag` lists nothing new afterwards.
+- [x] 5.1 Add `make release-tags VERSION=vX.Y.Z`. It prints, for the current `HEAD`, one `git tag -a` command for the root and one per module in `release-modules.txt`. It never creates or pushes a tag. Verify that for `v0.1.0` it prints exactly nine commands with the tags listed in the release-policy spec, and that `git tag` lists nothing new afterwards.
 - [x] 5.2 Write `CHANGELOG.md` in Keep a Changelog 1.1.0 format:
   - an empty `Unreleased` section;
   - a statement on semantic versioning and v0;

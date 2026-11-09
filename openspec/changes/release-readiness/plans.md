@@ -242,7 +242,7 @@ release-check: tools
   - `golang.org/x/mod` is already in `tools/go.mod` (v0.42.0). Make it a direct requirement.
   - Verify: `cd tools && GOWORK=off go test -count=1 ./cmd/releaseproxy/` passes, and `make tools-check` passes.
 - [ ] **Step 2b-0 (3.1 and 3.4 review findings, dispatch R3b, done first, test-first):**
-  - **Version handling:** `RELEASE_VERSION := $(value VERSION)`, `unexport VERSION`, `export RELEASE_VERSION`. Recipes read `$$RELEASE_VERSION` and validate it with bash `[[ $$RELEASE_VERSION =~ ^...$$ ]]`, which anchors the whole string, so a newline fails. The pattern is semver with a `v` prefix and no build metadata. Each prerelease identifier is `0|[1-9][0-9]*` or `[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*`.
+  - **Version handling:** `override RELEASE_VERSION := $(value VERSION)` (`override`, so a command-line `RELEASE_VERSION=` is not expanded on export), `unexport VERSION`, `export RELEASE_VERSION`. Recipes read `$$RELEASE_VERSION` and validate it with bash `[[ $$RELEASE_VERSION =~ ^...$$ ]]`, which anchors the whole string, so a newline fails. The pattern is semver with a `v` prefix and no build metadata. Each prerelease identifier is `0|[1-9][0-9]*` or `[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*`.
     - Red: `make release-tags VERSION='v1.0.0$(shell touch <scratch>/pwn)'` creates the file today. Afterwards it is refused and the file does not exist.
     - Repeat that check with the value in the environment, with a value containing a newline, and with `v1.0.0-01` and `v1.0.0-..`.
   - **Gates:** `release-check` also runs `pincheck`, `tools-check`, `generate-check` and `test-isolated`.
@@ -265,6 +265,23 @@ release-check: tools
     - removing one directory from the `releaseproxy` arguments in a temporary copy of the recipe makes it fail, naming that module. Edit it back;
     - the developer's `$(go env GOMODCACHE)/cache/download/github.com/kartaladev/scrty/@v/` holds no `v0.1.0` file afterwards;
     - after a run interrupted during `gorelease`, no directory from the run is left in `$TMPDIR`.
+- [ ] **Step 2c (3.3 hardening, dispatches R3c, R3d, R3e, each test-first, each reviewed):** design decision 3's bullets dated "review of task 3.1b" to "3.1e" fix the behaviour. Each item is seen failing in a scratch clone (a fast copy of the Makefile without the long test passes) before it is fixed:
+  - **Order:** `override RELEASE_VERSION`, `unexport VERSION` and `export RELEASE_VERSION` sit right after `.SHELLFLAGS`. `TestMakefileFixesReleaseVersionBeforeShell` in `layout_test.go` pins this through a pure helper, `releaseVersionOrderViolations(text string) []violation`. Its table covers `$(shell`, `${shell`, `!=` in every prefix form (and with an expanded name), `include`/`-include`/`sinclude`, `load`/`-load`, `$(eval`, `define`, conditionals, and continuations that swallow a line, plus one subtest on the real Makefile. Expected: a command-line or `RELEASE_VERSION=` value containing `$(shell touch PWNED)` creates nothing on GNU make 4.4.1 (Docker `postgres:16-alpine` + `apk add make bash`) or 3.81.
+  - **Refusals, in this order, before anything is built:**
+    1. `mkdir -p` of `SBOM_ROOT` (`SBOM_ROOT := $(BIN)`).
+    2. `SBOM_DIR` resolves physically to a strict subdirectory of `SBOM_ROOT`, otherwise refused (shared with `sbom`).
+    3. `.bin/sbom` is emptied.
+    4. The version check.
+    5. `jq` is present.
+    6. `git rev-parse --is-shallow-repository` must print exactly `false`.
+    7. With no `v*` tag, only `v0.1.0` or one of its prereleases passes.
+    8. `TMPDIR` is empty or matches `^/[A-Za-z0-9._+@/-]*$`.
+    9. The tree is clean (`--untracked-files=all`).
+    10. `$(MAKE) tools`.
+
+    Expected: `SBOM_DIR=.` is refused and the checkout is intact; a `--depth=1` clone is refused; `VERSION=v0.2.0` in a tagless clone is refused in under a second; `TMPDIR=rel` is refused, and no `.bin` build has started.
+  - **Pinning:** `head=$(git rev-parse HEAD)` is read once and printed (`release-check: gating commit <sha>`), and `git archive "$head"` uses it. At the end, the gate fails if `HEAD` differs or the tree is dirty. Expected: an empty commit made after the tests makes the run fail, naming both commits.
+  - **Staging:** `release-gate` runs with `SBOM_ROOT="$work" SBOM_DIR="$work/sbom"`. The count and version checks run there, and the nine files move into `.bin/sbom` only after `gorelease` and the end checks pass. A failed move empties `.bin/sbom`. Expected: a run forced to fail before `gorelease` leaves `.bin/sbom` empty.
 - [ ] **Step 3 (5.1): `release-tags`.**
 
 ```make
@@ -282,6 +299,7 @@ release-tags:
   - Trigger: `on: workflow_dispatch: inputs: version: {required: true, type: string}`.
   - Copy `ci.yml`'s `test` job: its `permissions`, its Go, PostgreSQL and Redis matrix, its `env` (`SCRTY_TEST_POSTGRES_IMAGE` and the Redis one) and its setup steps, then `run: make release-check VERSION="${{ inputs.version }}"`. Pass the input through an `env:` variable, not by interpolating `${{ inputs.version }}` into the script, so a crafted input cannot inject shell.
   - Every `uses:` is pinned by the same full SHA, with its tag comment, that `ci.yml` uses.
+  - The checkout sets `fetch-depth: 0` (the gate refuses a shallow clone and needs the tags) and `persist-credentials: false` (the tests run third-party code).
   - Verify: `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/release-check.yml .github/workflows/ci.yml` prints nothing, and `make pincheck` passes.
 - [ ] **Step 5: commit** `build: release gate and tag helper`.
 

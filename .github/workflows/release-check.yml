@@ -1,0 +1,75 @@
+name: release-check
+
+# The release gate, run by a maintainer on the commit to be tagged, before any tag
+# exists: `make release-check VERSION=<version>` on the Go, PostgreSQL and Redis
+# matrix of ci.yml's test job. It tags and publishes nothing.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "The release version to gate, a semantic version such as v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Two runs for one version never overlap: a second waits rather than cancelling the
+# first, so a gate already under way is never cut short.
+concurrency:
+  group: release-check-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  release-check:
+    name: release-check (Go ${{ matrix.go }}, ${{ matrix.postgres }}, ${{ matrix.redis }})
+    runs-on: ubuntu-latest
+    # The full suite once, per module with the workspace off, then the supply-chain
+    # gate and the API report with a cold module cache; bounded so a hung step cannot
+    # hold the version's concurrency group for GitHub's six-hour default.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep these in step with the test job of ci.yml.
+        go: ["1.27.x"]
+        postgres: ["postgres:15.19-alpine", "postgres:18.6-alpine"]
+        include:
+          - postgres: "postgres:15.19-alpine"
+            redis: "redis:7.4.11-alpine"
+          - postgres: "postgres:18.6-alpine"
+            redis: "redis:8.10.2-alpine"
+    env:
+      SCRTY_TEST_POSTGRES_IMAGE: ${{ matrix.postgres }}
+      SCRTY_TEST_REDIS_IMAGE: ${{ matrix.redis }}
+    steps:
+      # The full history, which brings the tags with it: the gate refuses a shallow
+      # clone, because the API report compares against the latest release tag and a
+      # clone without tags would compare against nothing. The token is not kept in
+      # the clone's git config, since nothing here pushes.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ matrix.go }}
+          cache: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            ~/.cache/golangci-lint
+          key: go-${{ github.job }}-${{ runner.os }}-${{ matrix.go }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            go-${{ github.job }}-${{ runner.os }}-${{ matrix.go }}-
+      # The input reaches the shell as an environment variable, never as text in
+      # the script, so a crafted value cannot run as a command. make reads it with
+      # $(value VERSION), so it is never expanded as make text either, and refuses
+      # anything that is not a semantic version. jq, which the gate needs, is on the
+      # ubuntu-latest image.
+      - name: make release-check
+        env:
+          VERSION: ${{ inputs.version }}
+        run: make release-check

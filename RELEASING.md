@@ -94,11 +94,32 @@ make release-check VERSION=$VERSION
 The gate builds and tests every published module with the workspace off, checks that every nested
 module's scrty requirements name `$VERSION`, runs `release-gate` (the vulnerability check, then an
 SBOM per published module, each naming `$VERSION`) and reports each module's public API against the
-previous release. It refuses a working tree that is not clean and a `$VERSION` that is not a semantic
-version. A failure stops the release: fix it, merge, and run it again.
+previous release. Before it builds anything, it refuses:
 
-The nine SBOMs are written to `.bin/sbom/*.cdx.json`. Keep them: step 9 attaches exactly these files.
-They must come from this run, on the commit that step 6 tags, not from an earlier run.
+- a working tree that is not clean, untracked files included, whatever `status.showUntrackedFiles`
+  says;
+- a `$VERSION` that is not a semantic version;
+- a shallow clone, which lacks the tags the API report compares against;
+- a clone with no previous `v` tag, for any `$VERSION` but `v0.1.0` or one of its prereleases: fetch
+  the tags (`git fetch --tags`) and run it again;
+- a relative `TMPDIR`, or one holding characters other than letters, digits and `._+@/-`;
+- an `SBOM_DIR` that is not strictly inside `.bin`, after resolving symlinks and `..`. Leave
+  `SBOM_DIR` unset: the gate removes that directory, and a value such as `.` would remove the
+  checkout.
+
+A failure stops the release: fix it, merge, and run it again. It needs `jq`, and refuses to start
+without it.
+
+The gate reads `HEAD` once, when it starts, and gates that commit. It fails if `HEAD` moves or the
+working tree changes before it ends, and on success prints a line starting `release-check: passed
+for $VERSION at commit <sha>`. Note the commit: step 6 tags it.
+
+With `SBOM_DIR` unset, the gate empties `.bin/sbom` when it starts, before any of its other refusals, and writes the nine SBOMs to
+`.bin/sbom/*.cdx.json` only when every step has passed, so a refused or failed run leaves the
+directory empty. Keep them: step 9 attaches
+exactly these files. They must come from this run, on the commit that step 6 tags, not from an earlier
+run. Do not run `make sbom` or `make release-gate` before step 9: either rewrites `.bin/sbom` with SBOMs
+that name the commit's pseudo-version instead of `$VERSION`.
 
 ### 5. Confirm that private vulnerability reporting is on
 
@@ -165,7 +186,9 @@ gh release create $VERSION --verify-tag --title $VERSION --notes-file <entry> .b
 ```
 
 `--verify-tag` aborts if the tag is not on the remote, so `gh` never creates a tag for you. Check that
-`.bin/sbom` holds nine files, each naming `$VERSION`, before running it.
+`.bin/sbom` holds nine files, each naming `$VERSION`, before running it. Only a passing step 4 leaves
+such files there, and any later run of the gate with `SBOM_DIR` unset, even a refused one, empties
+the directory when it starts. If the files are missing, run step 4 again on the same commit.
 
 ## Never move a tag
 

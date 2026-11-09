@@ -3205,7 +3205,7 @@ make check   # pin check, tools tests, gofmt, go vet, golangci-lint, go test -ra
 Releasing adds two targets, described in [RELEASING.md](RELEASING.md):
 
 ```sh
-make release-check VERSION=vX.Y.Z  # the release gate, run on the commit to be tagged
+make release-check VERSION=vX.Y.Z  # the release gate, run on the commit to be tagged (needs jq)
 make release-tags VERSION=vX.Y.Z   # print the nine git tag commands for HEAD; creates nothing
 ```
 
