@@ -2,6 +2,7 @@ package fibersec_test
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -252,7 +253,9 @@ func TestFiber_RecoveryCooldownHoldsForEveryPathFiberRoutesToTheMarkedRoute(t *t
 
 	type testCase struct {
 		name   string
+		method string // empty means GET
 		path   string
+		noHold bool // true seeds no completed recovery, so no hold is active
 		assert func(t *testing.T, res response, routeRan bool)
 	}
 
@@ -268,6 +271,19 @@ func TestFiber_RecoveryCooldownHoldsForEveryPathFiberRoutesToTheMarkedRoute(t *t
 		{name: "upper case", path: "/Account/Email", assert: refused},
 		{name: "one trailing slash", path: "/account/email/", assert: refused},
 		{name: "two trailing slashes", path: "/account/email//", assert: refused},
+		{name: "HEAD on the marked GET route", method: http.MethodHead, path: "/account/email", assert: refused},
+		{
+			name:   "HEAD on the marked GET route answers when no hold is active",
+			method: http.MethodHead,
+			path:   "/account/email",
+			noHold: true,
+			assert: func(t *testing.T, res response, routeRan bool) {
+				t.Helper()
+
+				assert.Equal(t, http.StatusNoContent, res.status)
+				assert.True(t, routeRan, "fiber runs the GET handler for HEAD")
+			},
+		},
 		{
 			name: "a route that is not marked is served",
 			path: "/account/name",
@@ -288,10 +304,12 @@ func TestFiber_RecoveryCooldownHoldsForEveryPathFiberRoutesToTheMarkedRoute(t *t
 			rid, err := id.NewV7Generator().NewID()
 			require.NoError(t, err)
 
-			completedAt := time.Now().Add(-time.Hour)
-			require.NoError(t, records.Insert(t.Context(), recovery.Record{
-				ID: rid, User: "u-1", StartedAt: completedAt, NotBefore: completedAt, CompletedAt: completedAt,
-			}))
+			if !tc.noHold {
+				completedAt := time.Now().Add(-time.Hour)
+				require.NoError(t, records.Insert(t.Context(), recovery.Record{
+					ID: rid, User: "u-1", StartedAt: completedAt, NotBefore: completedAt, CompletedAt: completedAt,
+				}))
+			}
 
 			opts, _ := authenticated(t)
 			opts = append(opts, httpsec.EnableRecoveryCooldown(
@@ -310,7 +328,8 @@ func TestFiber_RecoveryCooldownHoldsForEveryPathFiberRoutesToTheMarkedRoute(t *t
 			app.Get("/account/email", handler)
 			app.Get("/account/name", handler)
 
-			res := serve(t, app, bearerRequest(t.Context(), http.MethodGet, tc.path))
+			method := cmp.Or(tc.method, http.MethodGet)
+			res := serve(t, app, bearerRequest(t.Context(), method, tc.path))
 
 			tc.assert(t, res, routeRan)
 		})

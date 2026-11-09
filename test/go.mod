@@ -7,13 +7,13 @@ require (
 	github.com/gofiber/fiber/v3 v3.6.1
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/jonboulle/clockwork v0.5.0
-	github.com/kartaladev/scrty v0.0.0
-	github.com/kartaladev/scrty/authenticate/passkey/webauthn v0.0.0
-	github.com/kartaladev/scrty/httpsec/fibersec v0.0.0-00010101000000-000000000000
-	github.com/kartaladev/scrty/httpsec/ginsec v0.0.0-00010101000000-000000000000
-	github.com/kartaladev/scrty/ratelimit/redisstore v0.0.0
-	github.com/kartaladev/scrty/store/gormstore v0.0.0
-	github.com/kartaladev/scrty/store/pgxstore v0.0.0
+	github.com/kartaladev/scrty v0.1.0
+	github.com/kartaladev/scrty/authenticate/passkey/webauthn v0.1.0
+	github.com/kartaladev/scrty/httpsec/fibersec v0.1.0
+	github.com/kartaladev/scrty/httpsec/ginsec v0.1.0
+	github.com/kartaladev/scrty/ratelimit/redisstore v0.1.0
+	github.com/kartaladev/scrty/store/gormstore v0.1.0
+	github.com/kartaladev/scrty/store/pgxstore v0.1.0
 	github.com/klauspost/compress v1.20.3
 	github.com/lestrrat-go/jwx/v4 v4.6.0
 	github.com/pquerna/otp v1.5.0

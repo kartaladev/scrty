@@ -13,6 +13,25 @@ Authentication and authorization for Go applications.
 Importing the core module adds no framework, driver or test tooling to your module graph. A test in
 this repository enforces that.
 
+## Install
+
+Add the core module, and any nested module you use. Every published module is released in lockstep, so
+use one version for all of them:
+
+```sh
+go get github.com/kartaladev/scrty@v0.1.0
+go get github.com/kartaladev/scrty/store/pgxstore@v0.1.0
+```
+
+- [CHANGELOG.md](CHANGELOG.md) lists what each release changes, and states every breaking change.
+  While the major version is 0, no compatibility is promised between minor releases.
+- [SECURITY.md](SECURITY.md) says how to report a vulnerability, privately, and how fixes are
+  disclosed.
+- [RELEASING.md](RELEASING.md) is the procedure a maintainer follows to cut a release.
+
+**Supported versions.** Only the latest minor release receives security fixes, which today is the
+`0.1.x` line, as [SECURITY.md](SECURITY.md) states.
+
 ## Supported Go versions
 
 scrty requires **Go 1.27** or later. Every module declares `go 1.27`.
@@ -21,6 +40,8 @@ The floor is 1.27, not 1.26, because scrty's JOSE stack reads and writes JSON th
 `encoding/json/v2`, which reaches the standard library in Go 1.27. On Go 1.26 it builds only under
 `GOEXPERIMENT=jsonv2`, and scrty does not ask the applications that embed it to set a
 build-environment flag.
+
+Security fixes go to the latest minor release only, per [SECURITY.md](SECURITY.md).
 
 ## Identifiers are not secrets
 
@@ -3138,10 +3159,54 @@ failure.
 | A nil sink, or an option given twice | refused at construction | none |
 | Delivery | synchronous, on the deciding request | your sink hands events to its own queue |
 
+## Known limitations
+
+Each limit below holds by default and is stated, not hidden. Where a section above covers it, the
+link leads there.
+
+- **Two passkey registrations finishing at once** can leave one response's saved recovery codes
+  superseded, because the saved-code set is one per user and the default limit is 25 passkeys per
+  user (see [Passkeys](#passkeys)).
+- **A magic-link request answers alike for a known and an unknown address**, but the store read
+  and the token insert run only for a real account, so a small timing difference remains; a
+  consumer who needs the endpoint harder to enumerate can put it behind the
+  [automation challenge](#automation-challenge).
+- **A back-channel logout token can be replayed** within `oidc.WithLogoutTokenMaxAge`, because the
+  check is the token's issued-at time and there is no used-once (`jti`) store; a consumer shortens
+  that option (see [Security limits](#security-limits)).
+- **`auth_time` and `max_age` are not enforced** on a provider's `amr` and `acr`, so an `mfa` that a
+  provider's long-lived session asserted hours ago is accepted; a consumer opts out of trusting a
+  provider's assurance (see [Second factor and provider assurance](#second-factor-and-provider-assurance)).
+- **The rate limiter can overshoot under a burst, and multiplies across replicas.** Checking and
+  recording are separate steps, so a burst of concurrent attempts from one source can pass the check
+  together and exceed the limit by the burst's concurrency, and the default in-memory limiter counts
+  per process, so N replicas allow N times the limit; a consumer shares one limit across replicas
+  with `redisstore`, `sqlstore` or `pgxstore`.
+- **The in-memory defaults serve one process.** Stores for recovery records, issued-code and hold
+  tokens, passkey credentials, handles and challenges, re-proof challenges, OIDC flows and handoffs,
+  and the limiters keep their state in the process that created them and forget it on restart; a
+  consumer running more than one replica, or needing state to outlive a restart, supplies durable
+  stores (see [Account recovery](#account-recovery) and [Passkeys](#passkeys)).
+- **The OpenID Provider's browser session does not see a marker placed on the sign-in afterwards**,
+  such as a required password change, so a change that matters must end the sign-in, and removing the
+  session with `oidcprovider.WithoutBrowserSessions()` fails the Basic OP conformance plan, because
+  `prompt=none` then always answers `login_required` (see [The browser session](#the-browser-session)).
+- **A login finished in another browser than the one that started it cannot finish the OpenID
+  Provider's request**, so the user restarts it from the relying party, because the flow cookie is
+  what stops someone else's browser completing a request (see
+  [A login finished in another browser](#a-login-finished-in-another-browser)).
+
 ## Development
 
 ```sh
 make check   # pin check, tools tests, gofmt, go vet, golangci-lint, go test -race, govulncheck, go generate
+```
+
+Releasing adds two targets, described in [RELEASING.md](RELEASING.md):
+
+```sh
+make release-check VERSION=vX.Y.Z  # the release gate, run on the commit to be tagged (needs jq)
+make release-tags VERSION=vX.Y.Z   # print the nine git tag commands for HEAD; creates nothing
 ```
 
 `make check` is the one local command for the build gates. Each gate also runs on its own and
@@ -3173,6 +3238,9 @@ touched. It is not part of `make check`.
 scanned against the versions its own `go.mod` requires, as a consumer gets them. `make pincheck`
 fails a workflow that references an action by anything but a full commit SHA, and `make sbom` writes
 a CycloneDX SBOM per module.
+
+`make release-check` runs `release-gate`: the vulnerability check first, then an SBOM per published
+module, each naming the release version. The nine SBOMs are attached to each GitHub release.
 
 `.github/dependabot.yml` configures Dependabot **version** updates for each module. Security updates
 are a separate repository setting that no file can enable: the repository requires **Dependabot

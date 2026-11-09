@@ -6,7 +6,7 @@
 
 **Architecture:**
 - **Root-module tests.** Two new tests in `layout_test.go`, reusing `layout_guard_test.go`'s `workspaceModules`, `goCmd` and `violation` helpers, pin the requirements (no `v0.0.0` ever, the exact release version on request) and keep one list of published modules in agreement with `go.work`.
-- **Makefile targets.** `release-check` runs the gates with the workspace off, plus a `gorelease` report. `release-tags` prints the tag commands.
+- **Makefile targets.** `release-check` runs the gates with the workspace off, then the existing `release-gate` (vuln and one SBOM per module, stamped with the version), then a `gorelease` report. `release-tags` prints the tag commands.
 - **The probe.** A shell script fetches the modules through the public proxy from an empty module. Two workflows wire the gate and the probe into GitHub Actions.
 
 **Tech Stack:**
@@ -70,11 +70,14 @@ Plan task N.M is `tasks.md` task N.M. The library fixes this plan used to carry 
 |---|---|---|---|---|
 | 1 (parallel) | R1 | 1.1 | `tools/go.mod`, `tools/go.sum` | Sonnet: add one tool directive and record a tool's output |
 | 1 (parallel) | R2 | 2.1–2.5 | `layout_test.go`, `layout_guard_test.go`, `release-modules.txt`, every nested `go.mod` and `go.sum` | Sonnet: checks against a stated contract, plus mechanical bumps |
-| 2 (after R1, R2; the main session records 1.1's outcome in `design.md` first) | R3 | 3.1–3.3, 5.1 | `Makefile`, `.github/workflows/release-check.yml` | Sonnet: Makefile plumbing to a stated order |
+| 2 (after R1, R2; 1.1's outcome is recorded in `design.md`) | R3 | 3.1, 3.4, 5.1 | `Makefile`, `.github/workflows/release-check.yml` | Sonnet: Makefile plumbing to a stated order |
+| 2 (parallel with R3) | R3a | 3.2 | `tools/cmd/releaseproxy/`, `tools/go.mod`, `tools/go.sum` | Sonnet: a small program to a stated contract, test-first |
+| 3 (after R3 and R3a) | R3b | 3.3 | `Makefile` (the API report step only) | Sonnet: plumbing to the stated isolation rules, which its verifications check |
+| 2 (parallel with R3) | R11 | 5.6's fiber `HEAD` test | `httpsec/fibersec/*_test.go` | Sonnet: one test plus a bite check |
 | 2 (parallel with R3) | R4 | 4.1–4.2 | `scripts/release-probe.sh`, `.github/workflows/release-probe.yml` | Sonnet: a script to a stated contract |
 | 2 (parallel with R3) | R5 | 5.2–5.5 | `CHANGELOG.md`, `SECURITY.md`, `RELEASING.md`, `README.md` | Sonnet: documents from the decisions |
 | 2 (parallel with R3) | R10 | 6.1–6.2 | `test/pgxstore/identity_test.go`, `test/sqlstore/identity_test.go`, `test/gormstore/identity_test.go` and their helpers; the two `session_supersede_test.go` files | Sonnet: test isolation to a stated shape |
-| 3 (only after `close-security-gaps`, `pre-release-api-fixes` and `oidc-provider` have landed) | main | 7.1–7.2 | — | Sonnet reviewer for 7.1 |
+| 3 (only after `close-security-gaps`, `pre-release-api-fixes` and `oidc-provider` have landed) | main | 7.1–7.2 | — | Opus reviewer for 7.1: the change gates release security |
 | 4 | maintainer | 8.1–8.2 | — | — |
 
 R3 and R4 both read `release-modules.txt`, which R2 owns and finishes first. R5 needs R3's target names, which are fixed here (`release-check` and `release-tags`), so it runs in parallel. Each dispatch gets a fresh Sonnet reviewer that edits nothing.
@@ -179,7 +182,9 @@ func releaseRequirementViolations(reqs []scrtyRequirement, replaces map[string][
 
 ---
 
-### Task 3.1–3.3, 5.1: Release gate, tag helper and the gate workflow
+### Task 3.1–3.4, 5.1: Release gate, local proxy, tag helper and the gate workflow
+
+Dispatches: R3 does steps 1, 3 and 4 (3.1, 5.1, 3.4). R3a does 3.2 and R3b does 3.3; both are described in step 2.
 
 **Files:**
 - Modify: `Makefile`
@@ -203,9 +208,18 @@ release-check: tools
 	echo "$(VERSION)" | grep -Eq '$(SEMVER)' || { echo "not a semantic version: $(VERSION)"; exit 2; }; \
 	[ -z "$$(git status --porcelain)" ] || { echo "working tree is not clean"; exit 2; }; \
 	SCRTY_RELEASE_VERSION="$(VERSION)" go test -count=1 -run 'TestNestedModulesRequireReleasedVersions|TestReleaseModuleListsAgree|TestModulesDeclareGoFloor' .; \
-	out="$$(GOWORK=off gofmt -l $(RELEASE_DIRS))"; [ -z "$$out" ] || { echo "gofmt needed:"; echo "$$out"; exit 1; }; \
-	for m in $(RELEASE_DIRS); do (cd "$$m" && echo "== $$m (GOWORK=off)" && GOWORK=off go vet ./... && GOWORK=off golangci-lint run ./... && GOWORK=off go test -race -count=1 ./... && GOWORK=off govulncheck ./...); done
+	out="$$(git ls-files -z --cached --others --exclude-standard '*.go' | xargs -0 gofmt -l)"; [ -z "$$out" ] || { echo "gofmt needed:"; echo "$$out"; exit 1; }; \
+	for m in $(RELEASE_DIRS); do (cd "$$m" && echo "== $$m (GOWORK=off)" && GOWORK=off go vet ./... && GOWORK=off golangci-lint run ./... && GOWORK=off go test -race -count=1 ./...); done; \
+	$(MAKE) --no-print-directory release-gate SBOM_VERSION="$(VERSION)"; \
+	n="$$(find "$(SBOM_DIR)" -name '*.cdx.json' | wc -l | tr -d ' ')"; \
+	[ "$$n" -eq $(words $(RELEASE_DIRS)) ] || { echo "release-gate wrote $$n SBOMs, want $(words $(RELEASE_DIRS))"; exit 1; }; \
+	for f in "$(SBOM_DIR)"/*.cdx.json; do grep -q '"$(VERSION)"' "$$f" || { echo "SBOM $$f does not name $(VERSION)"; exit 1; }; done
 ```
+
+  - `GOWORK=off` is set per command only, and never exported. `release-gate`'s `MODULES` comes from `go list -m`, which lists only the root once the workspace is off, so an exported `GOWORK=off` would make vuln and sbom cover one module and pass (design: Risks). The count check is what catches that.
+  - `govulncheck` is not in the loop: `release-gate`'s `vuln` already runs it per module with `GOWORK=off`.
+  - The existing `fmt-check` target switches to the same `git ls-files ... | xargs -0 gofmt -l` form. Red step: put an unformatted `x.go` under `.claude/worktrees/` (git-ignored) and see `make fmt-check` fail before the change and pass after. An unformatted untracked `y.go` at the root must fail both before and after. Remove both files.
+  - **Superseded 2026-11-09 (as landed by R3):** the recipe reads `VERSION` from the environment (`$$VERSION`), never by `$(VERSION)` substitution, so a crafted value cannot run commands. `cyclonedx-gomod` has no `-main-version` flag, so lines 213–216 above move to step 2b: `release-gate` runs in the locally tagged throwaway export, and the version check is `jq -e '.metadata.component.version == $v'`.
 
   Verify each of these:
   - `make release-check` exits 2 with the usage message;
@@ -213,17 +227,61 @@ release-check: tools
   - `v0.1.0-rc.1` passes the format check, then fails at the requirement test, which is expected;
   - `touch x.tmp && make release-check VERSION=v0.1.0` exits 2 with "working tree is not clean", then `rm x.tmp` (Review Focus 1);
   - `VERSION=v0.2.0` fails in the requirement test, naming the modules;
-  - `VERSION=v0.1.0` passes, printing `== <dir> (GOWORK=off)` for all nine.
-- [ ] **Step 2 (3.2): the API report.** Append it to the recipe, in 1.1's form:
+  - `VERSION=v0.1.0` passes, printing `== <dir> (GOWORK=off)` for all nine, `vuln: <dir>` for all nine, and leaving nine `.cdx.json` files in `.bin/sbom` that name `v0.1.0`;
+  - red step for the count check: in a temporary edit of the recipe, prefix the sub-make with `GOWORK=off`. Expected: FAIL with `release-gate wrote 1 SBOMs, want 9`. Edit the recipe back.
+- [ ] **Step 2a (3.2, dispatch R3a): `tools/cmd/releaseproxy`.**
+  - Signature: `func writeProxy(srcRoot, version string, moduleDirs []string, out string) error` in `tools/cmd/releaseproxy/main.go`. `main` parses `-src`, `-version`, `-out` and the module directories as arguments.
+    - Each directory's module path comes from its `go.mod` (`modfile.ModulePath`).
+    - It writes `<out>/<module.EscapePath(path)>/@v/{list,<v>.info,<v>.mod,<v>.zip}`, with the zip from `zip.CreateFromDir(w, module.Version{Path, Version}, dir)`.
+    - `.info` is `{"Version":"<v>","Time":"<RFC 3339 now>"}`.
+  - Tests in `tools/cmd/releaseproxy/main_test.go`, table form, each seen failing for its intended reason before the code exists:
+    - `TestWriteProxy_ExcludesNestedModule`: a fixture root with a nested `sub/go.mod`. The root's zip lists no `sub/` file.
+    - `TestWriteProxy_EscapesPath`: module `example.com/Foo` is written under `example.com/!foo/@v/`.
+    - `TestWriteProxy_Refuses`: cases for version `0.1.0`, a missing directory, a directory without `go.mod`, an existing `out` (empty or not), a missing parent, an `out` inside `-src` and a symlinked `out`. Each returns an error naming the input, and `out` stays as it was.
+    - `TestWriteProxy_GoGetResolves`: write a fixture module, then run `go get example.com/m@v0.1.0` in a fresh module with `GOPROXY=file://<out>`, `GONOSUMDB=example.com/m`, `GOFLAGS=-mod=mod`, `GOMODCACHE=<t.TempDir()>` and `GOWORK=off`. Expected: it succeeds.
+  - `golang.org/x/mod` is already in `tools/go.mod` (v0.42.0). Make it a direct requirement.
+  - Verify: `cd tools && GOWORK=off go test -count=1 ./cmd/releaseproxy/` passes, and `make tools-check` passes.
+- [ ] **Step 2b-0 (3.1 and 3.4 review findings, dispatch R3b, done first, test-first):**
+  - **Version handling:** `override RELEASE_VERSION := $(value VERSION)` (`override`, so a command-line `RELEASE_VERSION=` is not expanded on export), `unexport VERSION`, `export RELEASE_VERSION`. Recipes read `$$RELEASE_VERSION` and validate it with bash `[[ $$RELEASE_VERSION =~ ^...$$ ]]`, which anchors the whole string, so a newline fails. The pattern is semver with a `v` prefix and no build metadata. Each prerelease identifier is `0|[1-9][0-9]*` or `[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*`.
+    - Red: `make release-tags VERSION='v1.0.0$(shell touch <scratch>/pwn)'` creates the file today. Afterwards it is refused and the file does not exist.
+    - Repeat that check with the value in the environment, with a value containing a newline, and with `v1.0.0-01` and `v1.0.0-..`.
+  - **Gates:** `release-check` also runs `pincheck`, `tools-check`, `generate-check` and `test-isolated`.
+  - **Format step:** `gofmt -l --` before the file list, and a failure of either `git ls-files` fails the step.
+  - **`release-check.yml`:** add `timeout-minutes: 120` and `concurrency: {group: release-check-${{ inputs.version }}, cancel-in-progress: false}`.
+- [ ] **Step 2b (3.3, dispatch R3b): the API report.** Append it to `release-check`'s recipe, after the SBOM checks:
+  - Create one working directory with `mktemp -d`, and remove it on every exit through a trap. The trap first checks that the variable is non-empty and is the directory `mktemp` returned, then makes the module-cache files writable (they are read-only) and removes it.
+  - Export `HEAD` with `git archive` into `<work>/src`, then `git init`, `add -A` and `commit` it there with an inline `-c user.name=release -c user.email=release@localhost`. `gorelease` fetches the base version from the proxy, so the throwaway repository needs no tags.
+  - Tag the export locally with the nine tags (`git -C <work>/src tag v0.1.0`, and `<dir>/v0.1.0` per line of `release-modules.txt`). Run `$(MAKE) -C <work>/src release-gate BIN=$(BIN) SBOM_DIR=$(SBOM_DIR)`, without `GOWORK` in its environment. Check that `$(SBOM_DIR)` holds as many `.cdx.json` files as `$(RELEASE_DIRS)`, each with `.metadata.component.version == $VERSION` (`jq -e`). Then delete the nine tags in the export (`git -C <work>/src tag -d ...`), so `gorelease` sees no tag at `HEAD`. Remove the `SBOM_VERSION` handling and the `jq` rewrite from the `sbom` target.
+  - `(cd tools && GOWORK=off go run ./cmd/releaseproxy -src <work>/src -version "$VERSION" -out <work>/proxy $(RELEASE_DIRS))`. The `-out` path must not exist yet; `releaseproxy` creates it.
+  - For each module directory in the export, run `go mod edit -dropreplace` for every `github.com/kartaladev/scrty*` replace. Then run the command below with those variables set on that command only, never exported:
 
-```make
-	prev="$$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)"; base="$${prev:-none}"; \
-	for m in $(RELEASE_DIRS); do (cd "$$m" && echo "== gorelease $$m" && GOWORK=off $(BIN)/gorelease -base="$$base" -version="$(VERSION)"); done
-```
+    ```
+    GOWORK=off GOFLAGS=-mod=mod GOPROXY="file://<work>/proxy,https://proxy.golang.org" GONOSUMDB=github.com/kartaladev/scrty GOMODCACHE="<work>/modcache" $(BIN)/gorelease -base="$$base" -version="$(VERSION)"
+    ```
 
-  With outcome (b), each iteration instead copies the module to `$$(mktemp -d)`, drops the scrty `replace` lines with `go mod edit -dropreplace=github.com/kartaladev/scrty` (and each sibling path), and runs `gorelease` there. Verify:
-  - for `v0.1.0`, there are nine `== gorelease` sections;
-  - a temporary `release-modules.txt` edit adding `nosuch github.com/x/y` makes the target fail. Revert it by editing the file back.
+    Here `base` is the latest `v[0-9]*` root tag, or `none` when there is none. Print `== gorelease <dir>` before each.
+  - Verify:
+    - for `v0.1.0` there are nine `== gorelease` sections and the target passes;
+    - removing one directory from the `releaseproxy` arguments in a temporary copy of the recipe makes it fail, naming that module. Edit it back;
+    - the developer's `$(go env GOMODCACHE)/cache/download/github.com/kartaladev/scrty/@v/` holds no `v0.1.0` file afterwards;
+    - after a run interrupted during `gorelease`, no directory from the run is left in `$TMPDIR`.
+- [ ] **Step 2c (3.3 hardening, dispatches R3c, R3d, R3e, each test-first, each reviewed):** design decision 3's bullets dated "review of task 3.1b" to "3.1e" fix the behaviour. Each item is seen failing in a scratch clone (a fast copy of the Makefile without the long test passes) before it is fixed:
+  - **Order:** `override RELEASE_VERSION`, `unexport VERSION` and `export RELEASE_VERSION` sit right after `.SHELLFLAGS`. `TestMakefileFixesReleaseVersionBeforeShell` in `layout_test.go` pins this through a pure helper, `releaseVersionOrderViolations(text string) []violation`. Its table covers `$(shell`, `${shell`, `!=` in every prefix form (and with an expanded name), `include`/`-include`/`sinclude`, `load`/`-load`, `$(eval`, `define`, conditionals, and continuations that swallow a line, plus one subtest on the real Makefile. Expected: a command-line or `RELEASE_VERSION=` value containing `$(shell touch PWNED)` creates nothing on GNU make 4.4.1 (Docker `postgres:16-alpine` + `apk add make bash`) or 3.81.
+  - **Refusals, in this order, before anything is built:**
+    1. `mkdir -p` of `SBOM_ROOT` (`SBOM_ROOT := $(BIN)`).
+    2. `SBOM_DIR` resolves physically to a strict subdirectory of `SBOM_ROOT`, otherwise refused (shared with `sbom`).
+    3. `.bin/sbom` is emptied.
+    4. The version check.
+    5. `jq` is present.
+    6. `git rev-parse --is-shallow-repository` must print exactly `false`.
+    7. With no `v*` tag, only `v0.1.0` or one of its prereleases passes.
+    8. `TMPDIR` is empty or matches `^/[A-Za-z0-9._+@/-]*$`.
+    9. The tree is clean (`--untracked-files=all`).
+    10. `$(MAKE) tools`.
+
+    Expected: `SBOM_DIR=.` is refused and the checkout is intact; a `--depth=1` clone is refused; `VERSION=v0.2.0` in a tagless clone is refused in under a second; `TMPDIR=rel` is refused, and no `.bin` build has started.
+  - **Pinning:** `head=$(git rev-parse HEAD)` is read once and printed (`release-check: gating commit <sha>`), and `git archive "$head"` uses it. At the end, the gate fails if `HEAD` differs or the tree is dirty. Expected: an empty commit made after the tests makes the run fail, naming both commits.
+  - **Staging:** `release-gate` runs with `SBOM_ROOT="$work" SBOM_DIR="$work/sbom"`. The count and version checks run there, and the nine files move into `.bin/sbom` only after `gorelease` and the end checks pass. A failed move empties `.bin/sbom`. Expected: a run forced to fail before `gorelease` leaves `.bin/sbom` empty.
 - [ ] **Step 3 (5.1): `release-tags`.**
 
 ```make
@@ -237,10 +295,12 @@ release-tags:
 ```
 
   Verify: `make release-tags VERSION=v0.1.0 | wc -l` prints 9, the tags match Global Constraints, and `git tag --list` is unchanged.
-- [ ] **Step 4 (3.3): the workflow** `.github/workflows/release-check.yml`.
+- [ ] **Step 4 (3.4): the workflow** `.github/workflows/release-check.yml`.
   - Trigger: `on: workflow_dispatch: inputs: version: {required: true, type: string}`.
-  - Use the same `permissions`, matrix, `env` and setup steps as `ci.yml`, then `run: make release-check VERSION="${{ inputs.version }}"`.
-  - Verify: `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/release-check.yml .github/workflows/ci.yml` prints nothing.
+  - Copy `ci.yml`'s `test` job: its `permissions`, its Go, PostgreSQL and Redis matrix, its `env` (`SCRTY_TEST_POSTGRES_IMAGE` and the Redis one) and its setup steps, then `run: make release-check VERSION="${{ inputs.version }}"`. Pass the input through an `env:` variable, not by interpolating `${{ inputs.version }}` into the script, so a crafted input cannot inject shell.
+  - Every `uses:` is pinned by the same full SHA, with its tag comment, that `ci.yml` uses.
+  - The checkout sets `fetch-depth: 0` (the gate refuses a shallow clone and needs the tags) and `persist-credentials: false` (the tests run third-party code).
+  - Verify: `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/release-check.yml .github/workflows/ci.yml` prints nothing, and `make pincheck` passes.
 - [ ] **Step 5: commit** `build: release gate and tag helper`.
 
 ---
@@ -260,7 +320,8 @@ set -euo pipefail
 version="${1:?usage: release-probe.sh vX.Y.Z}"
 retries="${PROBE_RETRIES:-10}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
-unset GOFLAGS GONOSUMDB GONOSUMCHECK GOPRIVATE GOINSECURE GONOPROXY
+unset GOFLAGS GONOSUMDB GONOSUMCHECK GOPRIVATE GOINSECURE GONOPROXY GOVCS
+export GOENV=off GOTOOLCHAIN=local
 export GOWORK=off GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org
 go env GOPROXY GOSUMDB GONOSUMDB GOPRIVATE GOFLAGS
 
@@ -293,8 +354,8 @@ echo "probe: $version resolves for every published module"
   - `GONOSUMDB='github.com/kartaladev/*' PROBE_RETRIES=1 scripts/release-probe.sh v0.0.1` prints an empty `GONOSUMDB` in its `go env` lines (Review Focus 4).
 - [ ] **Step 2 (4.2): the workflow** `.github/workflows/release-probe.yml`.
   - Trigger: `on: push: tags: ['v[0-9]*']`. Nested tags such as `store/pgxstore/v0.1.0` begin with their directory, so they do not match.
-  - `permissions: contents: read`, `actions/checkout@v5`, `actions/setup-go@v6` with `1.27.x`, then `run: scripts/release-probe.sh "$GITHUB_REF_NAME"`.
-  - Verify with `actionlint`, which should print nothing.
+  - `permissions: contents: read`, `actions/checkout` and `actions/setup-go` pinned by the same full SHA and tag comment `ci.yml` uses, Go `1.27.x`, then `run: scripts/release-probe.sh "$GITHUB_REF_NAME"`.
+  - Verify with `actionlint`, which should print nothing, and `make pincheck`, which should pass.
 - [ ] **Step 3: commit** `ci: probe a released version from outside the repository`.
 
 ---
@@ -323,13 +384,15 @@ echo "probe: $version resolves for every published module"
   - `make release-tags VERSION=vX.Y.Z`, then running the printed commands;
   - `git push origin <each tag>`;
   - the release-probe run;
-  - `gh release create vX.Y.Z --notes-file <entry>`.
+  - `gh release create vX.Y.Z --notes-file <entry> .bin/sbom/*.cdx.json`, which attaches the nine SBOMs that `make release-check` wrote on the tagged commit. The step says they must come from the gate run on that commit, not from an earlier run.
   - Add a "Never move a tag" section with the recovery: a new patch version, and `retract vX.Y.Z` in each affected `go.mod`.
-  - Verify that each read-only command runs (`make release-check`, `make release-tags`, the `gh api` read). Don't run the tag, push or release commands.
+  - Verify that each read-only command runs (`make release-check`, `make release-tags`, the `gh api` read), and check the `gh release create` arguments against `gh release create --help`. Don't run the tag, push or release commands.
 - [ ] **Step 4 (5.5): `README.md`.**
   - An Install section with `go get github.com/kartaladev/scrty@v0.1.0` and `go get github.com/kartaladev/scrty/store/pgxstore@v0.1.0`.
   - Links to `CHANGELOG.md` and `SECURITY.md`.
   - Keep the existing Supported Go versions section, and add that security fixes go to the latest minor release, per `SECURITY.md`.
+  - *Development*: add `make release-check VERSION=vX.Y.Z` and `make release-tags VERSION=vX.Y.Z` to the gate list, each with a one-line comment, and point to `RELEASING.md`.
+  - *Supply chain*: say that `make release-check` runs `release-gate` (vuln, then an SBOM per published module stamped with the release version), and that the SBOMs are attached to each GitHub release.
   - Verify the relative links name existing files.
 - [ ] **Step 5: commit** `docs: changelog, security policy and release procedure`.
 
@@ -337,8 +400,9 @@ echo "probe: $version resolves for every published module"
 
 ### Task 5.2, 5.5, 5.6 additions (dispatch R5, and the main session for 5.6)
 
-- [ ] **5.2:** in the `[0.1.0]` entry, add every item of `openspec/changes/archive/2026-10-24-pre-release-hardening/changelog-notes.md` under its change type, then `idiomatic-api-shape`'s breaking changes and the breaking items of `close-security-gaps`, `pre-release-api-fixes`, `session-signals` (the `ResponseWriter.Stream` break) and `oidc-provider` under **Changed**, and their new capabilities under **Added**. Summarise `oidc-provider` under **Added** as the OpenID Provider a consumer can now run, naming the four conformance plans it passes. Delete the notes file. Verify with a line-by-line check against the deleted file (`git show HEAD:<path>`).
+- [ ] **5.2:** in the `[0.1.0]` entry, add every item of `openspec/changes/archive/2026-10-24-pre-release-hardening/changelog-notes.md` under its change type, then `idiomatic-api-shape`'s breaking changes and the breaking items of `close-security-gaps`, `pre-release-api-fixes`, `session-signals` (the `ResponseWriter.Stream` break) and `oidc-provider` under **Changed**, and their new capabilities under **Added**. Do the same for the five changes archived later (2026-11-09): `restructure-layout` (the package moves), `reauthentication`, `key-port-context`, `bearer-stream-throttle-retry`, and `endpoint-inventory-base-path` (the endpoint path moves, `WithBasePath` and `Chain.Endpoints()`). Read each one's archived `proposal.md` under `openspec/changes/archive/` for its breaking items. Summarise `oidc-provider` under **Added** as the OpenID Provider a consumer can now run, naming the four conformance plans it passes. Delete the notes file. Verify with a line-by-line check against the deleted file (`git show HEAD:<path>`).
 - [ ] **5.5:** add the *Known limitations* section listed in task 5.5, each limit in one sentence that names the default and what a consumer can do about it. The two provider limits are R2's and R9's, as task 5.5 states them, and match the wording of the README's provider section; `prompt=none` is no longer a limitation of its own.
+- [ ] **5.6, fiber `HEAD` (dispatch R11):** add `TestFiber_RecoveryCooldownHoldsHEADOnMarkedGET` in `httpsec/fibersec`, beside `TestFiber_RecoveryCooldownHoldsForEveryPathFiberRoutesToTheMarkedRoute`. A `HEAD` request to a `GET` route marked for the cool-down, while a hold is active, is held with the same status the `GET` gets. It passes on today's code, so show it bites: temporarily remove the `HEAD`-as-`GET` normalisation in the core's cool-down matcher (find it with gopls from `TestRecoveryCooldown_Matching`'s "HEAD on a marked GET is held" case), watch the fiber test fail, then edit the core back. Verify `go test -race -count=1 ./...` in `httpsec/fibersec` and `go test -count=1 -run TestRecoveryCooldown ./httpsec/` both pass.
 - [ ] **5.6 (main session):** a Sonnet research agent reports, for each listed claim, the test that pins the fixed behaviour (`rg` for the claim's scenario, then `go test -run` it) or that none exists. The main session writes the outcomes into `design.md`.
 
 ### Task 6.1–6.2: Release-gate stability (dispatch R10)
@@ -348,7 +412,7 @@ echo "probe: $version resolves for every published module"
 
 ### Task 7.1–7.2: Integration gate (main session)
 
-- [ ] **7.1:** dispatch a fresh Sonnet reviewer that edits nothing. It gets both spec deltas (`module-layout`, `release-policy`), the design, and `git diff main...HEAD`. Findings are labelled `REPRODUCED` (with a failing check) or `UNREPRODUCED`, and go back to the owning dispatch.
+- [ ] **7.1:** dispatch a fresh Opus reviewer that edits nothing. It gets both spec deltas (`module-layout`, `release-policy`), the design, and `git diff main...HEAD`. Findings are labelled `REPRODUCED` (with a failing check) or `UNREPRODUCED`, and go back to the owning dispatch.
 - [ ] **7.2:** run `make check`, `make release-check VERSION=v0.1.0` (on a clean tree) and `openspec validate release-readiness --strict`, confirm with `gh run list --workflow ci.yml --commit "$(git rev-parse HEAD)"` that the `conformance` job is green on the commit, and keep the outputs. `conformance` stays a CI job, outside `make release-check`, because it needs Docker and a suite built from source.
 
 ### Task 8.1–8.2: First release (maintainer)

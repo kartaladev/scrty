@@ -4,7 +4,7 @@ go 1.27
 
 require (
 	github.com/gin-gonic/gin v1.12.0
-	github.com/kartaladev/scrty v0.0.0
+	github.com/kartaladev/scrty v0.1.0
 	github.com/stretchr/testify v1.12.1
 	go.uber.org/mock v0.6.0
 )

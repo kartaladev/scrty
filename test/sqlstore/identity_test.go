@@ -124,8 +124,6 @@ func TestNewIdentityStore(t *testing.T) {
 func TestIdentityStore_Scenarios(t *testing.T) {
 	t.Parallel()
 
-	conn := migratedIdentityDB(t)
-
 	type testCase struct {
 		name   string
 		assert func(t *testing.T, ctx context.Context, conn test.PostgresConn)
@@ -395,6 +393,10 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+
+			// A database of its own: cases rename tables, which locks them for the
+			// transaction and must not reach a sibling case.
+			conn := migratedIdentityDB(t)
 
 			tc.assert(t, t.Context(), conn)
 		})
