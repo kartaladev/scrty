@@ -55,23 +55,23 @@ func NewRecoveryRecordStore(db *gorm.DB, opts ...Option) (*RecoveryRecordStore, 
 	return &RecoveryRecordStore{c: c}, nil
 }
 
-// Insert stores r, pending or already completed, refusing an identifier
+// Insert stores record, pending or already completed, refusing an identifier
 // already stored: one INSERT … ON CONFLICT (id) DO NOTHING, whose zero rows
 // affected is the refusal, so it leaves a caller's transaction usable.
-func (s *RecoveryRecordStore) Insert(ctx context.Context, r recovery.Record) error {
+func (s *RecoveryRecordStore) Insert(ctx context.Context, record recovery.Record) error {
 	const op = "insert recovery record"
 
-	if err := storekit.CheckID(r.ID, "recovery record"); err != nil {
+	if err := storekit.CheckID(record.ID, "recovery record"); err != nil {
 		return failed(op, err)
 	}
-	if err := storekit.CheckStorable(storekit.Text("user", string(r.User))); err != nil {
+	if err := storekit.CheckStorable(storekit.Text("user", string(record.User))); err != nil {
 		return failed(op, err)
 	}
-	proven, err := pgschema.RecoveryRefsText(r.Proven)
+	proven, err := pgschema.RecoveryRefsText(record.Proven)
 	if err != nil {
 		return failed(op, fmt.Errorf("the proven list: %w", err))
 	}
-	reported, err := pgschema.RecoveryRefsText(r.Reported)
+	reported, err := pgschema.RecoveryRefsText(record.Reported)
 	if err != nil {
 		return failed(op, fmt.Errorf("the reported list: %w", err))
 	}
@@ -81,15 +81,15 @@ func (s *RecoveryRecordStore) Insert(ctx context.Context, r recovery.Record) err
 		return failed(op, err)
 	}
 	row := accountRecoveryRow{
-		ID:          r.ID,
-		UserID:      string(r.User),
-		StartedAt:   storekit.Time(r.StartedAt),
-		NotBefore:   storekit.Time(r.NotBefore),
-		CompletedAt: nullTs(r.CompletedAt),
-		CancelledAt: nullTs(r.CancelledAt),
+		ID:          record.ID,
+		UserID:      string(record.User),
+		StartedAt:   storekit.Time(record.StartedAt),
+		NotBefore:   storekit.Time(record.NotBefore),
+		CompletedAt: nullTs(record.CompletedAt),
+		CancelledAt: nullTs(record.CancelledAt),
 		Proven:      proven,
 		Reported:    reported,
-		SavedSpent:  r.SavedSpent,
+		SavedSpent:  record.SavedSpent,
 	}
 	res := q.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoNothing: true}).Create(&row)
 	if res.Error != nil {

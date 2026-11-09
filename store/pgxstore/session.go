@@ -24,14 +24,14 @@ import (
 // NewSessionStore returns a durable session store on pool, keeping sessions in
 // the sessions table the migrate package creates.
 //
-// The provider ID token a federated session carries is sealed with c before
+// The provider ID token a federated session carries is sealed with cipher before
 // it is written and opened when it is read, through session.NewEncryptedStore
-// and seal.SessionCipher; there is no unsealed variant, and a nil c, typed
+// and seal.SessionCipher; there is no unsealed variant, and a nil cipher, typed
 // nil included, is a configuration error. Every seal and open runs under the
 // context of the save or load it serves. A token that will not open makes the
 // load fail with session.ErrUnreadable, never session.ErrNotFound. An open
 // that is an outage is not that: one abandoned by the context's cancellation
-// or deadline, or one c marks by wrapping its error with seal.ErrUnavailable
+// or deadline, or one cipher marks by wrapping its error with seal.ErrUnavailable
 // (for example errors.Join(seal.ErrUnavailable, err)), fails the load with a
 // store failure that matches the cause, and session.ErrCipherUnavailable for
 // a marked one, never session.ErrUnreadable. A load never rewrites the
@@ -68,16 +68,16 @@ import (
 //     values or acr hold either is refused with an error that names the
 //     field, never the value, and nothing is written; the value is never
 //     altered.
-func NewSessionStore(pool *pgxpool.Pool, c seal.Cipher, opts ...Option) (session.Store, error) {
+func NewSessionStore(pool *pgxpool.Pool, cipher seal.Cipher, opts ...Option) (session.Store, error) {
 	cfg, err := newConfig(pool, opts, optIDGenerator, optClock)
 	if err != nil {
 		return nil, err
 	}
-	if err := storekit.RequireCipher(c, ErrConfig); err != nil {
+	if err := storekit.RequireCipher(cipher, ErrConfig); err != nil {
 		return nil, err
 	}
 
-	s, err := session.NewEncryptedStore(&sessionStore{c: cfg}, seal.SessionCipher(c))
+	s, err := session.NewEncryptedStore(&sessionStore{c: cfg}, seal.SessionCipher(cipher))
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrConfig, err)
 	}

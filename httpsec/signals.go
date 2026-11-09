@@ -373,10 +373,10 @@ type SessionSignals struct {
 //   - A chain that is never closed keeps its bus's goroutines, the publisher and the
 //     subscription.
 type SignalBus interface {
-	// Publish hands e to the other replicas and to this one. It is called from one
+	// Publish hands envelope to the other replicas and to this one. It is called from one
 	// goroutine, under SessionSignals.BusTimeout, on a context with none of the raising
 	// request's values. An error is logged, and changes nothing for that request.
-	Publish(ctx context.Context, e SignalEnvelope) error
+	Publish(ctx context.Context, envelope SignalEnvelope) error
 
 	// Subscribe calls deliver with each envelope until ctx ends, and blocks until then.
 	// It is called once per chain, and retried with backoff if it fails, returns early
@@ -416,7 +416,7 @@ type SignalEnvelope struct {
 	Data json.RawMessage
 }
 
-// EnableSessionSignals serves a text/event-stream at s.Path, telling a front end what
+// EnableSessionSignals serves a text/event-stream at signals.Path, telling a front end what
 // changes about the signed-in user's own session as it happens. It is off until
 // called. Every SessionSignals field says its default and its range, and the zero
 // value of each means that default.
@@ -477,7 +477,7 @@ type SignalEnvelope struct {
 // leaves nothing on the manager. A chain with no manager, a second call, a chain clock
 // (WithClock) that cannot wait (clock.Timed), and any field outside its range are
 // refused with ErrConfig naming what is at fault.
-func EnableSessionSignals(s SessionSignals) Option {
+func EnableSessionSignals(signals SessionSignals) Option {
 	const option = "EnableSessionSignals"
 
 	return func(c *config) error {
@@ -487,9 +487,9 @@ func EnableSessionSignals(s SessionSignals) Option {
 			return err
 		}
 
-		e := &sessionSignals{cfg: s, path: defaultPath(DefaultSessionSignalsPath)}
-		if s.Path != "" {
-			e.path.give(signalsPathSetting, s.Path)
+		e := &sessionSignals{cfg: signals, path: defaultPath(DefaultSessionSignalsPath)}
+		if signals.Path != "" {
+			e.path.give(signalsPathSetting, signals.Path)
 		}
 
 		c.enable(option, func() error { return e.settle(c, option) })

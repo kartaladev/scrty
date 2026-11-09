@@ -329,12 +329,12 @@ type Option func(*RelyingParty) error
 // certificate authority, to allow http for a development provider, or to
 // change those bounds. Confinement is then whatever the supplied client
 // configures; no option here can weaken it past what package outbound allows.
-func WithOutboundClient(c *outbound.Client) Option {
+func WithOutboundClient(client *outbound.Client) Option {
 	return func(m *RelyingParty) error {
-		if c == nil {
+		if client == nil {
 			return fmt.Errorf("%w: WithOutboundClient was given nil", ErrConfig)
 		}
-		m.out = c
+		m.out = client
 		return nil
 	}
 }
@@ -346,12 +346,12 @@ func WithOutboundClient(c *outbound.Client) Option {
 //
 // It exists so a test can fix or fail the source; production code has no
 // reason to replace it.
-func WithRandom(r io.Reader) Option {
+func WithRandom(src io.Reader) Option {
 	return func(m *RelyingParty) error {
-		if nilcheck.IsNil(r) {
+		if nilcheck.IsNil(src) {
 			return fmt.Errorf("%w: WithRandom was given nil", ErrConfig)
 		}
-		m.random = r
+		m.random = src
 		return nil
 	}
 }
@@ -380,7 +380,7 @@ func WithClock(clk clock.Clock) Option {
 // lands on another instance fails. A consumer who needs another maximum
 // builds their own store, for example:
 //
-//	s, err := oidc.NewMemoryFlowStore(oidc.WithMemoryFlowStoreMaxFlows(n))
+//	store, err := oidc.NewMemoryFlowStore(oidc.WithMemoryFlowStoreMaxFlows(n))
 //
 // and passes it here. A store the consumer builds this way does not share
 // the manager's WithClock or WithRandom: it draws its own defaults (clock.System()
@@ -388,12 +388,12 @@ func WithClock(clk clock.Clock) Option {
 // WithMemoryFlowStoreClock and WithMemoryFlowStoreRandom to it, matching
 // whatever WithClock or WithRandom the manager itself was given. A nil store,
 // including a nil pointer inside a non-nil interface, is refused.
-func WithFlowStore(s FlowStore) Option {
+func WithFlowStore(store FlowStore) Option {
 	return func(m *RelyingParty) error {
-		if nilcheck.IsNil(s) {
+		if nilcheck.IsNil(store) {
 			return fmt.Errorf("%w: WithFlowStore was given nil", ErrConfig)
 		}
-		m.flows = s
+		m.flows = store
 		return nil
 	}
 }
@@ -402,12 +402,12 @@ func WithFlowStore(s FlowStore) Option {
 // and so the longest a user may take at the provider. The default is
 // DefaultFlowTTL (10 minutes). A TTL of zero or less is refused: no login
 // could complete.
-func WithFlowTTL(d time.Duration) Option {
+func WithFlowTTL(ttl time.Duration) Option {
 	return func(m *RelyingParty) error {
-		if d <= 0 {
-			return fmt.Errorf("%w: WithFlowTTL must be positive, got %s", ErrConfig, d)
+		if ttl <= 0 {
+			return fmt.Errorf("%w: WithFlowTTL must be positive, got %s", ErrConfig, ttl)
 		}
-		m.flowTTL = d
+		m.flowTTL = ttl
 		return nil
 	}
 }
@@ -417,12 +417,12 @@ func WithFlowTTL(d time.Duration) Option {
 //
 // No record this package writes carries a token, a client secret, a PKCE
 // verifier, a state, a nonce, a handoff code or a claim value.
-func WithLogger(l *slog.Logger) Option {
+func WithLogger(logger *slog.Logger) Option {
 	return func(m *RelyingParty) error {
-		if l == nil {
+		if logger == nil {
 			return fmt.Errorf("%w: WithLogger was given nil", ErrConfig)
 		}
-		m.log = l
+		m.log = logger
 		return nil
 	}
 }
@@ -431,12 +431,12 @@ func WithLogger(l *slog.Logger) Option {
 // are served from the cache, with no request, before the next use refetches
 // them. The default is DefaultDiscoveryTTL (15 minutes). A TTL of zero or
 // less is refused: it would send a request on every login.
-func WithDiscoveryTTL(d time.Duration) Option {
+func WithDiscoveryTTL(ttl time.Duration) Option {
 	return func(m *RelyingParty) error {
-		if d <= 0 {
-			return fmt.Errorf("%w: WithDiscoveryTTL must be positive, got %s", ErrConfig, d)
+		if ttl <= 0 {
+			return fmt.Errorf("%w: WithDiscoveryTTL must be positive, got %s", ErrConfig, ttl)
 		}
-		m.cache.ttl = d
+		m.cache.ttl = ttl
 		return nil
 	}
 }
@@ -464,12 +464,12 @@ func WithDiscoveryFailureBackoff(base, maxWindow time.Duration) Option {
 // with no request. The default is DefaultJWKSRefetchCooldown (30 seconds). The
 // cooldown is tracked per provider. A cooldown of zero or less is refused: it
 // would let every forged key id reach the provider.
-func WithJWKSRefetchCooldown(d time.Duration) Option {
+func WithJWKSRefetchCooldown(cooldown time.Duration) Option {
 	return func(m *RelyingParty) error {
-		if d <= 0 {
-			return fmt.Errorf("%w: WithJWKSRefetchCooldown must be positive, got %s", ErrConfig, d)
+		if cooldown <= 0 {
+			return fmt.Errorf("%w: WithJWKSRefetchCooldown must be positive, got %s", ErrConfig, cooldown)
 		}
-		m.cache.cooldown = d
+		m.cache.cooldown = cooldown
 		return nil
 	}
 }
@@ -515,15 +515,15 @@ const LongestLogoutTokenMaxAge = time.Hour
 // minutes), since it would accept tokens expired by that much. There is no way
 // to exceed the bound: it is the line past which the manager's expiry guarantee
 // stops holding.
-func WithClockSkew(d time.Duration) Option {
+func WithClockSkew(skew time.Duration) Option {
 	return func(m *RelyingParty) error {
-		if d < 0 {
-			return fmt.Errorf("%w: WithClockSkew must not be negative, got %s", ErrConfig, d)
+		if skew < 0 {
+			return fmt.Errorf("%w: WithClockSkew must not be negative, got %s", ErrConfig, skew)
 		}
-		if d > MaxClockSkew {
-			return fmt.Errorf("%w: WithClockSkew must not exceed %s, got %s", ErrConfig, MaxClockSkew, d)
+		if skew > MaxClockSkew {
+			return fmt.Errorf("%w: WithClockSkew must not exceed %s, got %s", ErrConfig, MaxClockSkew, skew)
 		}
-		m.skew, m.skewSet = d, true
+		m.skew, m.skewSet = skew, true
 		return nil
 	}
 }
@@ -538,15 +538,15 @@ func WithClockSkew(d time.Duration) Option {
 // less is refused: no token could be accepted. One above LongestLogoutTokenMaxAge
 // (one hour) is refused too, because it would keep a captured token replayable
 // for that long; the bound cannot be exceeded.
-func WithLogoutTokenMaxAge(d time.Duration) Option {
+func WithLogoutTokenMaxAge(maxAge time.Duration) Option {
 	return func(m *RelyingParty) error {
-		if d <= 0 {
-			return fmt.Errorf("%w: WithLogoutTokenMaxAge must be positive, got %s", ErrConfig, d)
+		if maxAge <= 0 {
+			return fmt.Errorf("%w: WithLogoutTokenMaxAge must be positive, got %s", ErrConfig, maxAge)
 		}
-		if d > LongestLogoutTokenMaxAge {
-			return fmt.Errorf("%w: WithLogoutTokenMaxAge must not exceed %s, got %s", ErrConfig, LongestLogoutTokenMaxAge, d)
+		if maxAge > LongestLogoutTokenMaxAge {
+			return fmt.Errorf("%w: WithLogoutTokenMaxAge must not exceed %s, got %s", ErrConfig, LongestLogoutTokenMaxAge, maxAge)
 		}
-		m.logoutMaxAge = d
+		m.logoutMaxAge = maxAge
 		return nil
 	}
 }
@@ -563,14 +563,14 @@ func WithLogoutTokenMaxAge(d time.Duration) Option {
 // WithOutboundClient. Anything else, the empty string included, fails
 // construction with ErrConfig. The URL is sent exactly as given, since
 // providers compare it byte for byte with the one registered.
-func WithPostLogoutRedirect(u string) Option {
+func WithPostLogoutRedirect(uri string) Option {
 	return func(m *RelyingParty) error {
-		parsed, err := url.Parse(u)
+		parsed, err := url.Parse(uri)
 		if err != nil || !parsed.IsAbs() || parsed.Host == "" || parsed.User != nil {
 			return fmt.Errorf("%w: WithPostLogoutRedirect needs an absolute URL with a host and no user information",
 				ErrConfig)
 		}
-		m.postLogoutRedirect = u
+		m.postLogoutRedirect = uri
 		return nil
 	}
 }
@@ -592,15 +592,15 @@ func WithPostLogoutRedirect(u string) Option {
 // any set contains the empty string, when a RequestACR value contains
 // whitespace (acr_values is space-separated, so it would be sent as two
 // values), or when Match is not AssuranceMatchAny or AssuranceMatchAll.
-func WithProviderAssurance(provider string, a Assurance) Option {
+func WithProviderAssurance(provider string, assurance Assurance) Option {
 	return func(m *RelyingParty) error {
-		if err := a.validate(provider); err != nil {
+		if err := assurance.validate(provider); err != nil {
 			return err
 		}
 		if m.assurance == nil {
 			m.assurance = make(map[string]Assurance)
 		}
-		m.assurance[provider] = a.clone()
+		m.assurance[provider] = assurance.clone()
 		return nil
 	}
 }
@@ -626,12 +626,12 @@ func WithProviderAssurance(provider string, a Assurance) Option {
 //
 // A nil evaluator, including a nil pointer inside a non-nil interface, fails
 // construction with ErrConfig.
-func WithAssuranceEvaluator(e AssuranceEvaluator) Option {
+func WithAssuranceEvaluator(evaluator AssuranceEvaluator) Option {
 	return func(m *RelyingParty) error {
-		if nilcheck.IsNil(e) {
+		if nilcheck.IsNil(evaluator) {
 			return fmt.Errorf("%w: WithAssuranceEvaluator was given nil", ErrConfig)
 		}
-		m.evaluator = e
+		m.evaluator = evaluator
 		return nil
 	}
 }

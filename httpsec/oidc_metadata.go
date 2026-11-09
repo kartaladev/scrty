@@ -324,14 +324,14 @@ func WithOIDCMetadataMember(name string, value any) OIDCProviderOption {
 //
 // Default: DefaultOIDCMetadataCacheLifetime. A negative lifetime, or one under a
 // second, which would read as none, is a configuration error.
-func WithOIDCMetadataCacheLifetime(d time.Duration) OIDCProviderOption {
+func WithOIDCMetadataCacheLifetime(lifetime time.Duration) OIDCProviderOption {
 	return func(op *oidcEndpoints) error {
-		if d < 0 || (d > 0 && d < time.Second) {
+		if lifetime < 0 || (lifetime > 0 && lifetime < time.Second) {
 			return newConfigError("%s was given %s; use zero to have caches revalidate, or at least a second",
-				optionOIDCMetadataCacheFor, d)
+				optionOIDCMetadataCacheFor, lifetime)
 		}
 
-		op.metadata.cache, op.metadata.cacheSet = d, true
+		op.metadata.cache, op.metadata.cacheSet = lifetime, true
 
 		return nil
 	}

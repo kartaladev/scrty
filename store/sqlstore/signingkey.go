@@ -15,14 +15,14 @@ import (
 // NewSigningKeyStore returns a durable signing-key store on db, keeping keys
 // in the signing_keys table the migrate package creates.
 //
-// Each key's private material is sealed with c before it is written and
+// Each key's private material is sealed with cipher before it is written and
 // opened when it is read, through seal.NewSigningKeyStore, bound to the key's
-// id; there is no unsealed variant, and a nil c, typed nil included, is a
+// id; there is no unsealed variant, and a nil cipher, typed nil included, is a
 // configuration error. The public JWK is stored as given: it is published.
 // LoadAll fails as a whole, returning no keys, when any stored key will not
 // open.
 //
-// By default a load re-seals, under c's active key, every key that opened
+// By default a load re-seals, under cipher's active key, every key that opened
 // under a retired one, with one conditional update per key that replaces the
 // stored value only while it still holds the value that was read. A load
 // inside a caller's transaction re-seals nothing, since a failed write there
@@ -39,17 +39,17 @@ import (
 // key whose kid or algorithm holds either is refused with an error that names
 // the field, never the value, and nothing is written. Stored times are UTC,
 // truncated to the microsecond.
-func NewSigningKeyStore(db *sql.DB, c seal.Cipher, opts ...Option) (signingkey.KeyStore, error) {
+func NewSigningKeyStore(db *sql.DB, cipher seal.Cipher, opts ...Option) (signingkey.KeyStore, error) {
 	cfg, err := newConfig(db, opts, optIDGenerator, optResealOnRead)
 	if err != nil {
 		return nil, err
 	}
-	if err := storekit.RequireCipher(c, ErrConfig); err != nil {
+	if err := storekit.RequireCipher(cipher, ErrConfig); err != nil {
 		return nil, err
 	}
 
 	inner := &signingKeyStore{c: cfg}
-	s, err := seal.NewSigningKeyStore(inner, inner, c, seal.WithResealOnRead(cfg.resealOnRead))
+	s, err := seal.NewSigningKeyStore(inner, inner, cipher, seal.WithResealOnRead(cfg.resealOnRead))
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrConfig, err)
 	}

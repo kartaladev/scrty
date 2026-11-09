@@ -82,12 +82,12 @@ type Outbox struct {
 	sent []notify.Message
 }
 
-// Send records m.
-func (o *Outbox) Send(_ context.Context, m notify.Message) error {
+// Send records message.
+func (o *Outbox) Send(_ context.Context, message notify.Message) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	o.sent = append(o.sent, m)
+	o.sent = append(o.sent, message)
 
 	return nil
 }

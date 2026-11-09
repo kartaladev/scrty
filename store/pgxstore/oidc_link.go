@@ -79,27 +79,27 @@ func (s *LinkStore) FindByExternal(ctx context.Context, provider, issuer, subjec
 	return &l, nil
 }
 
-// Insert stores l, refusing with oidc.ErrLinkExists when its external
-// identity is already linked. A zero l.ID is refused before any statement
+// Insert stores link, refusing with oidc.ErrLinkExists when its external
+// identity is already linked. A zero link.ID is refused before any statement
 // runs, since it is the row's primary key and the caller's to mint.
-func (s *LinkStore) Insert(ctx context.Context, l oidc.Link) error {
+func (s *LinkStore) Insert(ctx context.Context, link oidc.Link) error {
 	const op = "insert link"
 
-	if err := storekit.CheckID(l.ID, "link"); err != nil {
+	if err := storekit.CheckID(link.ID, "link"); err != nil {
 		return failed(op, err)
 	}
 
 	if err := storekit.CheckStorable(
-		storekit.Text("provider", l.Provider), storekit.Text("issuer", l.Issuer),
-		storekit.Text("subject", l.Subject),
-		storekit.Text("user reference", string(l.UserID)), storekit.Text("username", l.Username),
-		storekit.Text("email", l.Email),
+		storekit.Text("provider", link.Provider), storekit.Text("issuer", link.Issuer),
+		storekit.Text("subject", link.Subject),
+		storekit.Text("user reference", string(link.UserID)), storekit.Text("username", link.Username),
+		storekit.Text("email", link.Email),
 	); err != nil {
 		return failed(op, err)
 	}
 
-	return s.c.execOrRefuse(ctx, op, oidc.ErrLinkExists, pgschema.LinkInsert, uuidArg(l.ID), l.Provider, l.Issuer,
-		l.Subject, string(l.UserID), l.Username, l.Email, storekit.Time(l.CreatedAt))
+	return s.c.execOrRefuse(ctx, op, oidc.ErrLinkExists, pgschema.LinkInsert, uuidArg(link.ID), link.Provider, link.Issuer,
+		link.Subject, string(link.UserID), link.Username, link.Email, storekit.Time(link.CreatedAt))
 }
 
 // DeleteByUser removes every link of user and reports how many it removed.

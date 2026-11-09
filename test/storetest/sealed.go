@@ -90,7 +90,7 @@ type Sealed[S any] struct {
 const sealedPlaintext = "SENTINEL-SECRET"
 
 // RunSealedColumns holds a durable store with a sealed column to keeping its
-// secret unusable at rest, reading the column through h.Raw rather than the
+// secret unusable at rest, reading the column through harness.Raw rather than the
 // store. Its stores seal under keys the suite generates: k1, then k2 with k1
 // retired. It checks that:
 //   - the stored value, and for a text column its decoded bytes, neither
@@ -126,13 +126,13 @@ const sealedPlaintext = "SENTINEL-SECRET"
 // fails every later read of a store that opens its whole table at once, as
 // the signing-key store does.
 //
-// h.New, h.Begin, h.BeginResolved and h.BeginForeign are not used, but are
+// harness.New, harness.Begin, harness.BeginResolved and harness.BeginForeign are not used, but are
 // required as every durable suite requires them. It fails at once, naming
-// every missing input, when h or s is missing one.
-func RunSealedColumns[S any](t *testing.T, h DurableHarness[S], s Sealed[S]) {
+// every missing input, when harness or sealed is missing one.
+func RunSealedColumns[S any](t *testing.T, harness DurableHarness[S], sealed Sealed[S]) {
 	t.Helper()
 
-	requireSealed(t, h, s)
+	requireSealed(t, harness, sealed)
 
 	k1, k2 := sealKey(t), sealKey(t)
 	underK1 := sealRing(t, seal.WithKeyringEncryptionKey("k1", k1))
@@ -143,7 +143,7 @@ func RunSealedColumns[S any](t *testing.T, h DurableHarness[S], s Sealed[S]) {
 	put := func(t *testing.T, owner string) []byte {
 		t.Helper()
 		secret := []byte(sealedPlaintext + "-" + owner)
-		require.NoError(t, s.Put(t.Context(), s.NewWithKeyring(t, underK1), owner, secret))
+		require.NoError(t, sealed.Put(t.Context(), sealed.NewWithKeyring(t, underK1), owner, secret))
 		return secret
 	}
 	// read reads owner's secret through a store over kr, under the
@@ -153,7 +153,7 @@ func RunSealedColumns[S any](t *testing.T, h DurableHarness[S], s Sealed[S]) {
 	read := func(t *testing.T, kr seal.Keyring, owner string) ([]byte, bool, error) {
 		t.Helper()
 		rec := &contextKeyring{Keyring: kr}
-		got, present, err := s.Get(operationContext(t), s.NewWithKeyring(t, rec), owner)
+		got, present, err := sealed.Get(operationContext(t), sealed.NewWithKeyring(t, rec), owner)
 		assertOperationContext(t, rec.seen())
 		return got, present, err
 	}
@@ -178,15 +178,15 @@ func RunSealedColumns[S any](t *testing.T, h DurableHarness[S], s Sealed[S]) {
 				"the value does not open under the active key alone: it was not re-sealed")
 		},
 	}
-	if s.Rotation == UnchangedOnRead {
+	if sealed.Rotation == UnchangedOnRead {
 		rotation = durableCase{
 			name: "a read under a retired key leaves the stored value unchanged",
 			assert: func(t *testing.T) {
 				secret := put(t, "unchanged")
-				before := s.RawColumn(t, h.Raw, "unchanged")
+				before := sealed.RawColumn(t, harness.Raw, "unchanged")
 
 				opens(t, rotated, "unchanged", secret, "a value sealed under the retired key did not open")
-				assert.Equal(t, before, s.RawColumn(t, h.Raw, "unchanged"), "the read rewrote the stored value")
+				assert.Equal(t, before, sealed.RawColumn(t, harness.Raw, "unchanged"), "the read rewrote the stored value")
 			},
 		}
 	}
@@ -196,13 +196,13 @@ func RunSealedColumns[S any](t *testing.T, h DurableHarness[S], s Sealed[S]) {
 			name: "the cipher carries the operation's context",
 			assert: func(t *testing.T) {
 				kr := &contextKeyring{Keyring: underK1}
-				store := s.NewWithKeyring(t, kr)
+				store := sealed.NewWithKeyring(t, kr)
 				before := len(kr.seen())
 
 				ctx := operationContext(t)
 				secret := []byte(sealedPlaintext + "-context")
-				require.NoError(t, s.Put(ctx, store, "context", secret))
-				got, present, err := s.Get(ctx, store, "context")
+				require.NoError(t, sealed.Put(ctx, store, "context", secret))
+				got, present, err := sealed.Get(ctx, store, "context")
 				require.NoError(t, err)
 				require.True(t, present)
 				assert.Equal(t, secret, got, "the store does not read back what it stored")
@@ -227,10 +227,10 @@ func RunSealedColumns[S any](t *testing.T, h DurableHarness[S], s Sealed[S]) {
 				secret := put(t, "at-rest")
 				opens(t, underK1, "at-rest", secret, "the store does not read back what it stored")
 
-				stored := s.RawColumn(t, h.Raw, "at-rest")
+				stored := sealed.RawColumn(t, harness.Raw, "at-rest")
 				require.NotEmpty(t, stored, "the sealed column is empty")
 				assert.NotContains(t, string(stored), sealedPlaintext, "the column holds the plaintext")
-				if s.Encoding == SealedBase64URL {
+				if sealed.Encoding == SealedBase64URL {
 					decoded, err := base64.RawURLEncoding.DecodeString(string(bytes.TrimRight(stored, "=")))
 					require.NoError(t, err, "the text column does not hold base64url")
 					assert.NotContains(t, string(decoded), sealedPlaintext, "the decoded column holds the plaintext")
@@ -255,7 +255,7 @@ func RunSealedColumns[S any](t *testing.T, h DurableHarness[S], s Sealed[S]) {
 			assert: func(t *testing.T) {
 				victim := put(t, "victim")
 				put(t, "attacker")
-				s.CopySealed(t, h.Raw, "victim", "attacker")
+				sealed.CopySealed(t, harness.Raw, "victim", "attacker")
 
 				// Through a keyring holding every key, so the read can fail
 				// only for the binding: a store that loads its whole table

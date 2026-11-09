@@ -118,20 +118,20 @@ type PendingRequest struct {
 // A store does not judge expiry: Load returns an expired record, and the provider
 // compares ExpiresAt with its own clock.
 type PendingRequestStore interface {
-	// Create stores r, keyed by its HandleDigest. A digest already held is refused
+	// Create stores request, keyed by its HandleDigest. A digest already held is refused
 	// with an error, and the stored record is left unchanged.
-	Create(ctx context.Context, r *PendingRequest) error
+	Create(ctx context.Context, request *PendingRequest) error
 
 	// Load returns a copy of the record for handleDigest, or ErrNotFound.
 	Load(ctx context.Context, handleDigest []byte) (*PendingRequest, error)
 
-	// Advance moves the record from stage from to stage to, and, when s is not nil,
-	// stores s as its sign-in. Nothing else changes. It answers ErrNotFound and writes
+	// Advance moves the record from stage from to stage to, and, when signIn is not nil,
+	// stores signIn as its sign-in. Nothing else changes. It answers ErrNotFound and writes
 	// nothing unless the stored stage equals from and the move is one Stage's order
 	// allows, so moving out of StageDone, backwards, or to the same stage is refused. It
 	// must decide with one conditional write, so that of any number of concurrent calls
 	// with one from, at most one succeeds, and exactly one when the move is allowed.
-	Advance(ctx context.Context, handleDigest []byte, from, to Stage, s *SignIn) error
+	Advance(ctx context.Context, handleDigest []byte, from, to Stage, signIn *SignIn) error
 
 	// DeleteExpired removes the records whose ExpiresAt is strictly before before, and
 	// returns how many it removed. It judges only by before, never by a clock of its own.
@@ -196,9 +196,9 @@ type UnspentCodes interface {
 type CodeStore interface {
 	UnspentCodes
 
-	// Create stores r, keyed by its TokenID. An identifier already held is refused
+	// Create stores record, keyed by its TokenID. An identifier already held is refused
 	// with an error, and the stored record is left unchanged.
-	Create(ctx context.Context, r *CodeRecord) error
+	Create(ctx context.Context, record *CodeRecord) error
 
 	// Load returns a copy of the record for tokenID, or ErrNotFound.
 	Load(ctx context.Context, tokenID id.ID) (*CodeRecord, error)
@@ -410,12 +410,12 @@ type GrantStore interface {
 	// must not panic.
 	UseCodes(codes UnspentCodes) error
 
-	// Create stores g. Over a revocation recorded first for g.Family it fills in the
+	// Create stores grant. Over a revocation recorded first for grant.Family it fills in the
 	// record and answers nil, and the grant is stored revoked with that revocation's
 	// time and cause, and with the sign-in-ended mark EndSignIns left on it, if any.
 	// Over another grant it is refused with an error, and the stored record is left
 	// unchanged.
-	Create(ctx context.Context, g *Grant) error
+	Create(ctx context.Context, grant *Grant) error
 
 	// Load returns a copy of the record for family, or ErrNotFound.
 	Load(ctx context.Context, family id.ID) (*Grant, error)
@@ -504,9 +504,9 @@ type AccessTokenRecord struct {
 // A store does not judge expiry or revocation: Load returns an expired or revoked
 // record, and the provider decides.
 type AccessTokenStore interface {
-	// Create stores r, keyed by its ID, with its Digest unchanged. An identifier already
+	// Create stores record, keyed by its ID, with its Digest unchanged. An identifier already
 	// held is refused with an error, and the stored record is left unchanged.
-	Create(ctx context.Context, r *AccessTokenRecord) error
+	Create(ctx context.Context, record *AccessTokenRecord) error
 
 	// Load returns a copy of the record for id, or ErrNotFound.
 	Load(ctx context.Context, id id.ID) (*AccessTokenRecord, error)
@@ -544,11 +544,11 @@ type BrowserSession struct {
 // To replace a session, Put the new digest and then Delete the old, so a failure
 // between the two leaves the browser signed in rather than not.
 type BrowserSessionStore interface {
-	// Put stores s, keyed by its Digest, with the idle deadline at most the absolute
+	// Put stores browserSession, keyed by its Digest, with the idle deadline at most the absolute
 	// one. A digest already held is refused with an error, and the stored record is left
 	// unchanged. An empty digest or a zero deadline is refused with an error matching
 	// ErrConfig, as a record no load could find or judge.
-	Put(ctx context.Context, s *BrowserSession) error
+	Put(ctx context.Context, browserSession *BrowserSession) error
 
 	// Load returns a copy of the record for digest while now is before both of its
 	// deadlines, and ErrNotFound otherwise, also for an empty digest. It judges by now

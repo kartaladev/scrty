@@ -70,8 +70,8 @@ func WithPasswordEncoder(enc password.Encoder) PasswordOption {
 // default, for the same reason a nil encoder is: the caller meant to inject
 // one, and correlation that quietly used another generator's identifiers would
 // look like it worked until the records were joined.
-func WithPasswordIDGenerator(g id.Generator) PasswordOption {
-	return func(a *UsernamePasswordAuthenticator) { a.ids = g; a.idsSet = true }
+func WithPasswordIDGenerator(ids id.Generator) PasswordOption {
+	return func(a *UsernamePasswordAuthenticator) { a.ids = ids; a.idsSet = true }
 }
 
 // WithPasswordLogInterval sets how often one refusal reason may be
@@ -86,8 +86,8 @@ func WithPasswordIDGenerator(g id.Generator) PasswordOption {
 // override for a deployment that ships its logs somewhere that wants the whole
 // stream — and the stated cost is that an attacker choosing the traffic then
 // chooses the log volume.
-func WithPasswordLogInterval(d time.Duration) PasswordOption {
-	return func(a *UsernamePasswordAuthenticator) { a.logEvery = d; a.logEverySet = true }
+func WithPasswordLogInterval(interval time.Duration) PasswordOption {
+	return func(a *UsernamePasswordAuthenticator) { a.logEvery = interval; a.logEverySet = true }
 }
 
 // WithPasswordLogger replaces the logger. The default is
@@ -97,10 +97,10 @@ func WithPasswordLogInterval(d time.Duration) PasswordOption {
 // cannot work without, a nil logger has an obvious safe reading — the caller
 // does not want to choose this component's logger — and refusing it would make
 // configuring logging mandatory.
-func WithPasswordLogger(l *slog.Logger) PasswordOption {
+func WithPasswordLogger(logger *slog.Logger) PasswordOption {
 	return func(a *UsernamePasswordAuthenticator) {
-		if l != nil {
-			a.logger = l
+		if logger != nil {
+			a.logger = logger
 		}
 	}
 }
@@ -298,8 +298,8 @@ func NewUsernamePasswordAuthenticator(
 // of its own. Accepting any credential that merely looked like a username and a
 // password would mean guessing at where the secret is and whether cleanup wipes
 // it, and a wrong guess there leaves the password resident after a success.
-func (a *UsernamePasswordAuthenticator) Authenticate(ctx context.Context, c identity.Credentials) (*Authentication, error) {
-	creds, ok := c.(*identity.UsernamePassword)
+func (a *UsernamePasswordAuthenticator) Authenticate(ctx context.Context, credentials identity.Credentials) (*Authentication, error) {
+	creds, ok := credentials.(*identity.UsernamePassword)
 	if !ok || creds == nil {
 		// A typed nil is not credentials of any kind: dereferencing it panics, so
 		// it is refused as unsupported like any kind this provider does not handle.
@@ -519,8 +519,8 @@ func (a *UsernamePasswordAuthenticator) FlushRefusalLogs() error {
 // real verification, or reveal whether an account exists. It reports handled
 // only for *identity.UsernamePassword; any other credentials are declined
 // without any hashing.
-func (a *UsernamePasswordAuthenticator) VerifyDecoy(_ context.Context, c identity.Credentials) bool {
-	creds, ok := c.(*identity.UsernamePassword)
+func (a *UsernamePasswordAuthenticator) VerifyDecoy(_ context.Context, credentials identity.Credentials) bool {
+	creds, ok := credentials.(*identity.UsernamePassword)
 	if !ok || creds == nil {
 		return false
 	}

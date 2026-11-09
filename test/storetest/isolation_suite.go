@@ -118,15 +118,15 @@ func (f IsolationFixture) missing() []string {
 // A store that begins its own transactions, or runs a statement outside one,
 // at the database default fails the streak and the replacement cases. The streak
 // case needs a store's concurrent failures to wait on a database lock.
-func RunIsolationSuite(t *testing.T, f IsolationFixture) {
+func RunIsolationSuite(t *testing.T, fixture IsolationFixture) {
 	t.Helper()
 
-	failMissing(t, f.missing())
-	requirePool(t, f.PoolSize, isolationRacers+1)
+	failMissing(t, fixture.missing())
+	requirePool(t, fixture.PoolSize, isolationRacers+1)
 
 	runDurableCases(t, []durableCase{
 		{"concurrent failures of one username all count", func(t *testing.T) {
-			s := f.Streaks(t)
+			s := fixture.Streaks(t)
 			at := suiteStart
 			since := at.Add(-time.Hour)
 			// Committed first, so the racers advance an existing row rather
@@ -140,7 +140,7 @@ func RunIsolationSuite(t *testing.T, f IsolationFixture) {
 			// and racers that happen to run one after another never have one.
 			// The caller's transaction holds the row until a racer waits on
 			// it: that racer's snapshot predates the commit below.
-			tx := f.Begin(t, ReadCommitted)
+			tx := fixture.Begin(t, ReadCommitted)
 			_, _, err = s.AddStreakFailure(tx.Ctx, "iso-streak", at, since, 1000)
 			require.NoError(t, err)
 
@@ -154,7 +154,7 @@ func RunIsolationSuite(t *testing.T, f IsolationFixture) {
 
 			// Whatever the wait found, the lock is released and the racers
 			// joined before this case can end.
-			waited := awaitLockWaiter(t, f.Raw)
+			waited := awaitLockWaiter(t, fixture.Raw)
 			end := tx.Commit
 			if !waited {
 				end = tx.Rollback
@@ -172,19 +172,19 @@ func RunIsolationSuite(t *testing.T, f IsolationFixture) {
 			assert.Equal(t, 2+isolationRacers, got.Failures, "concurrent failures were not all counted")
 		}},
 		{"of two overlapping saved-code replacements, only the later set remains", func(t *testing.T) {
-			s := f.RecoveryCodes(t)
+			s := fixture.RecoveryCodes(t)
 			user := identity.UserID("iso-codes")
 
 			// The earlier replacement runs in a caller's READ COMMITTED
 			// transaction, so it holds the user's serialisation until that
 			// commits, and the later one, in a transaction of the store's
 			// own, waits for it.
-			earlier := f.Begin(t, ReadCommitted)
+			earlier := fixture.Begin(t, ReadCommitted)
 			require.NoError(t, s.ReplaceSet(earlier.Ctx, user, codeSet("a"), suiteStart))
 
 			later := make(chan error, 1)
 			go func() { later <- s.ReplaceSet(t.Context(), user, codeSet("b"), suiteStart) }()
-			awaitAdvisoryWaiter(t, f.Raw)
+			awaitAdvisoryWaiter(t, fixture.Raw)
 			require.NoError(t, earlier.Commit())
 			require.NoError(t, <-later)
 
@@ -198,7 +198,7 @@ func RunIsolationSuite(t *testing.T, f IsolationFixture) {
 			}
 		}},
 		{"concurrent provisions of one username create one user", func(t *testing.T) {
-			s := f.Identities(t)
+			s := fixture.Identities(t)
 
 			errs := raceAll(t.Context(), 8, func(ctx context.Context, _ int) error {
 				_, err := s.Provision(ctx, "iso-provision")
@@ -220,7 +220,7 @@ func RunIsolationSuite(t *testing.T, f IsolationFixture) {
 			assert.Equal(t, 7, exists, "provisions refused as existing")
 		}},
 		{"concurrent updates of one user all succeed", func(t *testing.T) {
-			s := f.Identities(t)
+			s := fixture.Identities(t)
 			_, err := s.Provision(t.Context(), "iso-update")
 			require.NoError(t, err)
 
@@ -232,7 +232,7 @@ func RunIsolationSuite(t *testing.T, f IsolationFixture) {
 			assertNoErrors(t, errs, "a concurrent update")
 		}},
 		{"concurrent limiter records report no failure", func(t *testing.T) {
-			l := f.Limiter(t)
+			l := fixture.Limiter(t)
 			require.NoError(t, l.RecordFailure(t.Context(), "iso-limiter"))
 
 			errs := raceAll(t.Context(), isolationRacers, func(ctx context.Context, _ int) error {
@@ -242,7 +242,7 @@ func RunIsolationSuite(t *testing.T, f IsolationFixture) {
 			assertNoErrors(t, errs, "a concurrent limiter record")
 		}},
 		{"concurrent limiter charges and refunds report no failure", func(t *testing.T) {
-			l := f.Limiter(t)
+			l := fixture.Limiter(t)
 			require.NoError(t, l.RecordFailure(t.Context(), "iso-charge"))
 
 			errs := raceAll(t.Context(), isolationRacers, func(ctx context.Context, _ int) error {
@@ -259,14 +259,14 @@ func RunIsolationSuite(t *testing.T, f IsolationFixture) {
 			assertNoErrors(t, errs, "a concurrent limiter charge or refund")
 		}},
 		{"a caller's repeatable-read transaction refuses a saved-code replacement", func(t *testing.T) {
-			s := f.RecoveryCodes(t)
+			s := fixture.RecoveryCodes(t)
 			user := identity.UserID("iso-codes-refused")
 			require.NoError(t, s.ReplaceSet(t.Context(), user, codeSet("kept"), suiteStart))
 
-			tx := f.Begin(t, RepeatableRead)
+			tx := fixture.Begin(t, RepeatableRead)
 			err := s.ReplaceSet(tx.Ctx, user, codeSet("refused"), suiteStart)
 
-			assertIsolationRefused(t, f, err)
+			assertIsolationRefused(t, fixture, err)
 			require.NoError(t, tx.Probe(), "the caller's transaction is not usable after the refusal")
 			require.NoError(t, tx.Commit())
 			ok, err := s.Match(t.Context(), user, codeSet("kept")[0])
@@ -274,13 +274,13 @@ func RunIsolationSuite(t *testing.T, f IsolationFixture) {
 			assert.True(t, ok, "the refused replacement changed the stored set")
 		}},
 		{"a caller's repeatable-read transaction refuses a streak failure", func(t *testing.T) {
-			s := f.Streaks(t)
+			s := fixture.Streaks(t)
 			since := suiteStart.Add(-time.Hour)
 
-			tx := f.Begin(t, RepeatableRead)
+			tx := fixture.Begin(t, RepeatableRead)
 			_, _, err := s.AddStreakFailure(tx.Ctx, "iso-streak-refused", suiteStart, since, 1000)
 
-			assertIsolationRefused(t, f, err)
+			assertIsolationRefused(t, fixture, err)
 			require.NoError(t, tx.Probe(), "the caller's transaction is not usable after the refusal")
 			require.NoError(t, tx.Commit())
 			got, err := s.FailureStreak(t.Context(), "iso-streak-refused", since)
@@ -288,7 +288,7 @@ func RunIsolationSuite(t *testing.T, f IsolationFixture) {
 			assert.Zero(t, got.Failures, "the refused failure was counted")
 		}},
 		{"concurrent bounded inserts of one subject store no more than the limit", func(t *testing.T) {
-			s := f.OneTime(t)
+			s := fixture.OneTime(t)
 
 			stored := make([]bool, isolationRacers)
 			errs := raceAll(t.Context(), isolationRacers, func(ctx context.Context, i int) error {
@@ -310,12 +310,12 @@ func RunIsolationSuite(t *testing.T, f IsolationFixture) {
 			assert.Equal(t, isolationLimit, n, "records stored")
 		}},
 		{"a caller's repeatable-read transaction refuses a bounded insert", func(t *testing.T) {
-			s := f.OneTime(t)
+			s := fixture.OneTime(t)
 
-			tx := f.Begin(t, RepeatableRead)
+			tx := fixture.Begin(t, RepeatableRead)
 			stored, err := s.InsertWithin(tx.Ctx, isolationToken(100, "iso-bounded-refused"), suiteStart, isolationLimit)
 
-			assertIsolationRefused(t, f, err)
+			assertIsolationRefused(t, fixture, err)
 			assert.False(t, stored)
 			require.NoError(t, tx.Probe(), "the caller's transaction is not usable after the refusal")
 			require.NoError(t, tx.Commit())
@@ -324,7 +324,7 @@ func RunIsolationSuite(t *testing.T, f IsolationFixture) {
 			assert.Zero(t, n, "the refused bounded insert stored a record")
 		}},
 		{"concurrent bounded passkey inserts of one user store no more than the limit", func(t *testing.T) {
-			s := f.Passkeys(t)
+			s := fixture.Passkeys(t)
 			user := identity.UserID("iso-passkeys")
 
 			stored := make([]bool, isolationRacers)
@@ -347,13 +347,13 @@ func RunIsolationSuite(t *testing.T, f IsolationFixture) {
 			assert.Equal(t, isolationLimit, n, "passkeys stored")
 		}},
 		{"a caller's repeatable-read transaction refuses a bounded passkey insert", func(t *testing.T) {
-			s := f.Passkeys(t)
+			s := fixture.Passkeys(t)
 			user := identity.UserID("iso-passkeys-refused")
 
-			tx := f.Begin(t, RepeatableRead)
+			tx := fixture.Begin(t, RepeatableRead)
 			stored, err := s.InsertWithin(tx.Ctx, isolationCredential(100, user), isolationLimit)
 
-			assertIsolationRefused(t, f, err)
+			assertIsolationRefused(t, fixture, err)
 			assert.False(t, stored)
 			require.NoError(t, tx.Probe(), "the caller's transaction is not usable after the refusal")
 			require.NoError(t, tx.Commit())
@@ -362,9 +362,9 @@ func RunIsolationSuite(t *testing.T, f IsolationFixture) {
 			assert.Zero(t, n, "the refused bounded passkey insert stored a credential")
 		}},
 		{"a caller's read-committed transaction holds only its subject's bounded inserts until it ends", func(t *testing.T) {
-			s := f.OneTime(t)
+			s := fixture.OneTime(t)
 
-			tx := f.Begin(t, ReadCommitted)
+			tx := fixture.Begin(t, ReadCommitted)
 			stored, err := s.InsertWithin(tx.Ctx, isolationToken(200, "iso-bounded-held"), suiteStart, 1)
 			require.NoError(t, err)
 			require.True(t, stored, "the caller's bounded insert under its limit must be stored")
@@ -388,18 +388,18 @@ func RunIsolationSuite(t *testing.T, f IsolationFixture) {
 				ok, err := s.InsertWithin(t.Context(), isolationToken(202, "iso-bounded-held"), suiteStart, 1)
 				later <- outcome{ok, err}
 			}()
-			awaitAdvisoryWaiter(t, f.Raw)
+			awaitAdvisoryWaiter(t, fixture.Raw)
 			require.NoError(t, tx.Commit())
 			got := <-later
 			require.NoError(t, got.err)
 			assert.False(t, got.stored, "the held bounded insert did not count the caller's committed record")
 		}},
 		{"a caller's read-committed transaction is joined", func(t *testing.T) {
-			codes, streaks := f.RecoveryCodes(t), f.Streaks(t)
+			codes, streaks := fixture.RecoveryCodes(t), fixture.Streaks(t)
 			user := identity.UserID("iso-codes-joined")
 			since := suiteStart.Add(-time.Hour)
 
-			tx := f.Begin(t, ReadCommitted)
+			tx := fixture.Begin(t, ReadCommitted)
 			require.NoError(t, codes.ReplaceSet(tx.Ctx, user, codeSet("joined"), suiteStart))
 			_, _, err := streaks.AddStreakFailure(tx.Ctx, "iso-streak-joined", suiteStart, since, 1000)
 			require.NoError(t, err)

@@ -45,7 +45,7 @@ func WithCSPReportOnly() HeaderOption {
 	}
 }
 
-// WithCSPReportOnlyPolicy sends p as Content-Security-Policy-Report-Only beside
+// WithCSPReportOnlyPolicy sends policy as Content-Security-Policy-Report-Only beside
 // the enforced policy, to try a stricter candidate on real traffic. A policy
 // with a nonce carries the same nonce as the enforced one, so one handler
 // nonce serves both.
@@ -53,21 +53,21 @@ func WithCSPReportOnly() HeaderOption {
 // Default: no report-only policy. A policy that fails its own check (see
 // CSPDirective) fails construction naming this option, as does a policy with no
 // directive (the zero CSPPolicy) and using it with WithCSPReportOnly.
-func WithCSPReportOnlyPolicy(p CSPPolicy) HeaderOption {
+func WithCSPReportOnlyPolicy(policy CSPPolicy) HeaderOption {
 	return func(l *securityHeaders) error {
 		if err := l.layerWide("WithCSPReportOnlyPolicy"); err != nil {
 			return err
 		}
 
-		if p.err != nil {
-			return newConfigError("WithCSPReportOnlyPolicy was given a policy that cannot be sent: %s", p.err)
+		if policy.err != nil {
+			return newConfigError("WithCSPReportOnlyPolicy was given a policy that cannot be sent: %s", policy.err)
 		}
 
-		if len(p.directives) == 0 {
+		if len(policy.directives) == 0 {
 			return newConfigError("WithCSPReportOnlyPolicy was given a policy with no directive; remove the header with WithoutHeader to send none")
 		}
 
-		l.candidate = &p
+		l.candidate = &policy
 
 		return nil
 	}

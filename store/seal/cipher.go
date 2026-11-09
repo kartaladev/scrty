@@ -359,33 +359,33 @@ type sessionCipher struct {
 	c Cipher
 }
 
-// SessionCipher adapts c to the session.Cipher port, so a durable session
+// SessionCipher adapts cipher to the session.Cipher port, so a durable session
 // store seals the provider ID token through session.NewEncryptedStore:
 //
-//	store, err := session.NewEncryptedStore(inner, seal.SessionCipher(c))
+//	store, err := session.NewEncryptedStore(inner, seal.SessionCipher(cipher))
 //
 // The sealing rule for sessions, including the additional data each token is
 // bound to, stays in package session; this adapter drops the key id Open
-// reports, and passes c the context the session store gives it.
+// reports, and passes cipher the context the session store gives it.
 //
-// An error of c matching ErrUnavailable, from Seal or Open, is reported as
-// session.ErrCipherUnavailable, joined with c's error so ErrUnavailable and
+// An error of cipher matching ErrUnavailable, from Seal or Open, is reported as
+// session.ErrCipherUnavailable, joined with cipher's error so ErrUnavailable and
 // its cause still match. The session store answers such an open failure as a
 // store failure rather than as session.ErrUnreadable, so a cipher marks an
-// outage once, with ErrUnavailable, for every store. Every other error of c
+// outage once, with ErrUnavailable, for every store. Every other error of cipher
 // is returned unchanged: a context error, which the session store also treats
 // as a store failure, and any other, which the session store answers, on an
 // open, as session.ErrUnreadable.
 //
-// A nil c, typed nil included, gives a nil session.Cipher, so
+// A nil cipher, typed nil included, gives a nil session.Cipher, so
 // session.NewEncryptedStore refuses it with session.ErrConfig instead of the
 // first seal panicking.
-func SessionCipher(c Cipher) session.Cipher {
-	if nilcheck.IsNil(c) {
+func SessionCipher(cipher Cipher) session.Cipher {
+	if nilcheck.IsNil(cipher) {
 		return nil
 	}
 
-	return sessionCipher{c: c}
+	return sessionCipher{c: cipher}
 }
 
 // Seal seals plaintext through the wrapped Cipher, under ctx, reporting an

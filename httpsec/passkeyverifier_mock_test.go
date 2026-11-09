@@ -237,18 +237,18 @@ func (c *MockPasskeyVerifierRequestOptionsCall) DoAndReturn(f func(context.Conte
 }
 
 // VerifyAssertion mocks base method.
-func (m *MockPasskeyVerifier) VerifyAssertion(ctx context.Context, p passkey.ParsedAssertion, c *passkey.Credential, exp passkey.AssertionExpectation) (*passkey.AssertionResult, error) {
+func (m *MockPasskeyVerifier) VerifyAssertion(ctx context.Context, parsed passkey.ParsedAssertion, credential *passkey.Credential, exp passkey.AssertionExpectation) (*passkey.AssertionResult, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "VerifyAssertion", ctx, p, c, exp)
+	ret := m.ctrl.Call(m, "VerifyAssertion", ctx, parsed, credential, exp)
 	ret0, _ := ret[0].(*passkey.AssertionResult)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // VerifyAssertion indicates an expected call of VerifyAssertion.
-func (mr *MockPasskeyVerifierMockRecorder) VerifyAssertion(ctx, p, c, exp any) *MockPasskeyVerifierVerifyAssertionCall {
+func (mr *MockPasskeyVerifierMockRecorder) VerifyAssertion(ctx, parsed, credential, exp any) *MockPasskeyVerifierVerifyAssertionCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "VerifyAssertion", reflect.TypeOf((*MockPasskeyVerifier)(nil).VerifyAssertion), ctx, p, c, exp)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "VerifyAssertion", reflect.TypeOf((*MockPasskeyVerifier)(nil).VerifyAssertion), ctx, parsed, credential, exp)
 	return &MockPasskeyVerifierVerifyAssertionCall{Call: call}
 }
 
@@ -258,36 +258,36 @@ type MockPasskeyVerifierVerifyAssertionCall struct {
 }
 
 // Return rewrite *gomock.Call.Return
-func (c_2 *MockPasskeyVerifierVerifyAssertionCall) Return(arg0 *passkey.AssertionResult, arg1 error) *MockPasskeyVerifierVerifyAssertionCall {
-	c_2.Call = c_2.Call.Return(arg0, arg1)
-	return c_2
+func (c *MockPasskeyVerifierVerifyAssertionCall) Return(arg0 *passkey.AssertionResult, arg1 error) *MockPasskeyVerifierVerifyAssertionCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
 }
 
 // Do rewrite *gomock.Call.Do
-func (c_2 *MockPasskeyVerifierVerifyAssertionCall) Do(f func(context.Context, passkey.ParsedAssertion, *passkey.Credential, passkey.AssertionExpectation) (*passkey.AssertionResult, error)) *MockPasskeyVerifierVerifyAssertionCall {
-	c_2.Call = c_2.Call.Do(f)
-	return c_2
+func (c *MockPasskeyVerifierVerifyAssertionCall) Do(f func(context.Context, passkey.ParsedAssertion, *passkey.Credential, passkey.AssertionExpectation) (*passkey.AssertionResult, error)) *MockPasskeyVerifierVerifyAssertionCall {
+	c.Call = c.Call.Do(f)
+	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c_2 *MockPasskeyVerifierVerifyAssertionCall) DoAndReturn(f func(context.Context, passkey.ParsedAssertion, *passkey.Credential, passkey.AssertionExpectation) (*passkey.AssertionResult, error)) *MockPasskeyVerifierVerifyAssertionCall {
-	c_2.Call = c_2.Call.DoAndReturn(f)
-	return c_2
+func (c *MockPasskeyVerifierVerifyAssertionCall) DoAndReturn(f func(context.Context, passkey.ParsedAssertion, *passkey.Credential, passkey.AssertionExpectation) (*passkey.AssertionResult, error)) *MockPasskeyVerifierVerifyAssertionCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
 }
 
 // VerifyRegistration mocks base method.
-func (m *MockPasskeyVerifier) VerifyRegistration(ctx context.Context, p passkey.ParsedRegistration, exp passkey.RegistrationExpectation) (*passkey.CredentialInput, error) {
+func (m *MockPasskeyVerifier) VerifyRegistration(ctx context.Context, parsed passkey.ParsedRegistration, exp passkey.RegistrationExpectation) (*passkey.CredentialInput, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "VerifyRegistration", ctx, p, exp)
+	ret := m.ctrl.Call(m, "VerifyRegistration", ctx, parsed, exp)
 	ret0, _ := ret[0].(*passkey.CredentialInput)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // VerifyRegistration indicates an expected call of VerifyRegistration.
-func (mr *MockPasskeyVerifierMockRecorder) VerifyRegistration(ctx, p, exp any) *MockPasskeyVerifierVerifyRegistrationCall {
+func (mr *MockPasskeyVerifierMockRecorder) VerifyRegistration(ctx, parsed, exp any) *MockPasskeyVerifierVerifyRegistrationCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "VerifyRegistration", reflect.TypeOf((*MockPasskeyVerifier)(nil).VerifyRegistration), ctx, p, exp)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "VerifyRegistration", reflect.TypeOf((*MockPasskeyVerifier)(nil).VerifyRegistration), ctx, parsed, exp)
 	return &MockPasskeyVerifierVerifyRegistrationCall{Call: call}
 }
 

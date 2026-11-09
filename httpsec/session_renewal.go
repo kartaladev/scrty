@@ -116,7 +116,7 @@ type RenewalResult struct {
 // returns leaves the chain as the request's refusal while the client still
 // holds only the renewed credential, which it may present again inside the
 // grace window to be re-rotated.
-type RenewalResponder func(ex *Exchange, r RenewalResult) error
+type RenewalResponder func(ex *Exchange, result RenewalResult) error
 
 // sessionRenewal answers POST on its path by rotating the request's session
 // with a grace window, and passes everything else through.
@@ -604,14 +604,14 @@ func writeRenewalResult(ex *Exchange, r RenewalResult) error {
 // consumer that rolls its request transaction back on a refusal must commit
 // when errors.Is(err, session.ErrReused), or it rolls the revocation
 // back and leaves the stolen family alive.
-func EnableSessionRenewal(d SessionRenewalDeps, opts ...SessionRenewalOption) Option {
+func EnableSessionRenewal(deps SessionRenewalDeps, opts ...SessionRenewalOption) Option {
 	const option = "EnableSessionRenewal"
 
 	return func(c *config) error {
 		r := &sessionRenewal{
-			sessions: d.Sessions,
-			users:    d.Users,
-			tokens:   d.Tokens,
+			sessions: deps.Sessions,
+			users:    deps.Users,
+			tokens:   deps.Tokens,
 			now:      c.now,
 			path:     defaultPath(DefaultSessionRenewalPath),
 			grace:    defaultRenewalGrace,
@@ -634,10 +634,10 @@ func EnableSessionRenewal(d SessionRenewalDeps, opts ...SessionRenewalOption) Op
 		c.renewal = r
 
 		c.enable(option, func() error {
-			if err := r.resolveSessions(c, option, d.Sessions); err != nil {
+			if err := r.resolveSessions(c, option, deps.Sessions); err != nil {
 				return err
 			}
-			if err := requireDep(option, "user loader", d.Users); err != nil {
+			if err := requireDep(option, "user loader", deps.Users); err != nil {
 				return err
 			}
 
@@ -649,10 +649,10 @@ func EnableSessionRenewal(d SessionRenewalDeps, opts ...SessionRenewalOption) Op
 
 			r.limiter = limiter
 
-			return checkTokenGenerator(c, option, "SessionRenewalDeps.Tokens", d.Tokens)
+			return checkTokenGenerator(c, option, "SessionRenewalDeps.Tokens", deps.Tokens)
 		})
 
-		c.useSessions(d.Sessions)
+		c.useSessions(deps.Sessions)
 		// The bearer mode may be enabled after this option, so the issuer is
 		// chosen once every option has been applied.
 		c.wire(func(ch *Chain) {
@@ -729,13 +729,13 @@ func (r *sessionRenewal) resolveSessions(c *config, option string, given *sessio
 // that goes on to rotation. A limiter that returns an error refuses the
 // renewal with ErrRenewalThrottled rather than lifting the limit. A nil
 // limiter is refused when the chain is built.
-func WithRenewalLimiter(l ratelimit.Limiter) SessionRenewalOption {
+func WithRenewalLimiter(limiter ratelimit.Limiter) SessionRenewalOption {
 	return func(r *sessionRenewal) error {
-		if err := requireDep("WithRenewalLimiter", "limiter", l); err != nil {
+		if err := requireDep("WithRenewalLimiter", "limiter", limiter); err != nil {
 			return err
 		}
 
-		r.limiter = l
+		r.limiter = limiter
 
 		return nil
 	}
@@ -760,14 +760,14 @@ func WithRenewalPath(path string) SessionRenewalOption {
 	}
 }
 
-// WithRenewalGrace keeps a renewed credential working for d after its
+// WithRenewalGrace keeps a renewed credential working for grace after its
 // renewal, in place of the default 30 seconds.
 //
 // The window covers requests already in flight with the renewed credential,
 // and a client retrying a renewal whose response it lost. It is also the time
 // in which a stolen credential works as well as the real one, so it is
-// bounded: a d below 0 or above session.MaxRenewalGrace (inclusive) is
-// refused with a configuration error. A d of 0 ends the window at once.
+// bounded: a grace below 0 or above session.MaxRenewalGrace (inclusive) is
+// refused with a configuration error. A grace of 0 ends the window at once.
 //
 // A renewed credential presented after its window is reuse: the manager
 // revokes the session's whole family. That revocation is a store write, so a
@@ -775,14 +775,14 @@ func WithRenewalPath(path string) SessionRenewalOption {
 // when errors.Is(err, session.ErrReused) (see EnableSessionRenewal).
 // Clients should switch to the successor as soon as renewal returns, and retry
 // the requests they queued with it, so they rarely need the window at all.
-func WithRenewalGrace(d time.Duration) SessionRenewalOption {
+func WithRenewalGrace(grace time.Duration) SessionRenewalOption {
 	return func(r *sessionRenewal) error {
-		if d < 0 || d > session.MaxRenewalGrace {
+		if grace < 0 || grace > session.MaxRenewalGrace {
 			return newConfigError("WithRenewalGrace was given %s, outside 0 to %s: the window is "+
-				"time in which a stolen credential also works", d, session.MaxRenewalGrace)
+				"time in which a stolen credential also works", grace, session.MaxRenewalGrace)
 		}
 
-		r.grace = d
+		r.grace = grace
 
 		return nil
 	}

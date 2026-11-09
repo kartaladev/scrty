@@ -43,18 +43,18 @@ func (m *MockFlowStore) EXPECT() *MockFlowStoreMockRecorder {
 }
 
 // Begin mocks base method.
-func (m *MockFlowStore) Begin(ctx context.Context, f oidc.Flow) (string, error) {
+func (m *MockFlowStore) Begin(ctx context.Context, flow oidc.Flow) (string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Begin", ctx, f)
+	ret := m.ctrl.Call(m, "Begin", ctx, flow)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // Begin indicates an expected call of Begin.
-func (mr *MockFlowStoreMockRecorder) Begin(ctx, f any) *MockFlowStoreBeginCall {
+func (mr *MockFlowStoreMockRecorder) Begin(ctx, flow any) *MockFlowStoreBeginCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Begin", reflect.TypeOf((*MockFlowStore)(nil).Begin), ctx, f)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Begin", reflect.TypeOf((*MockFlowStore)(nil).Begin), ctx, flow)
 	return &MockFlowStoreBeginCall{Call: call}
 }
 

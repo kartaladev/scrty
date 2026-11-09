@@ -668,8 +668,8 @@ type Option func(*TOTP)
 // The only other value is 8; anything else is a construction error. RFC 6238
 // admits other lengths, but authenticator apps generate 6 or 8, so a third
 // value would produce enrolments whose codes no app can show.
-func WithDigits(n int) Option {
-	return func(t *TOTP) { t.digits = n }
+func WithDigits(digits int) Option {
+	return func(t *TOTP) { t.digits = digits }
 }
 
 // WithTimeStep sets the length of one time step, replacing the default of 30
@@ -681,8 +681,8 @@ func WithDigits(n int) Option {
 // 30 seconds is what authenticator apps assume when a provisioning URI omits
 // the period. A deployment that changes it is relying on the app reading the
 // period parameter, which not every app does.
-func WithTimeStep(d time.Duration) Option {
-	return func(t *TOTP) { t.period = d }
+func WithTimeStep(step time.Duration) Option {
+	return func(t *TOTP) { t.period = step }
 }
 
 // WithClock replaces the source of the instant codes are matched against. The
@@ -709,8 +709,8 @@ func WithClock(clk clock.Clock) Option {
 // is what a shared secret must come from. This option is for tests that need a
 // fixed secret or a failing source; a consumer who replaces it in production
 // owns the consequences of whatever they supply.
-func WithRandom(r io.Reader) Option {
-	return func(t *TOTP) { t.random = r }
+func WithRandom(src io.Reader) Option {
+	return func(t *TOTP) { t.random = src }
 }
 
 // WithLogger replaces slog.Default as the destination for the records this
@@ -726,8 +726,8 @@ func WithRandom(r io.Reader) Option {
 // EnrolmentStore. A nil logger is a configuration error; a
 // consumer who wants silence supplies one with a discarding handler, which says
 // so at the wiring.
-func WithLogger(l *slog.Logger) Option {
-	return func(t *TOTP) { t.logger = l }
+func WithLogger(logger *slog.Logger) Option {
+	return func(t *TOTP) { t.logger = logger }
 }
 
 // WithIDGenerator replaces id.NewV7Generator as the source of enrolment
@@ -736,8 +736,8 @@ func WithLogger(l *slog.Logger) Option {
 //
 // A generation is not a secret: it binds a device proof and a completion to
 // one begin, and only needs to differ from every earlier one for the user.
-func WithIDGenerator(g id.Generator) Option {
-	return func(t *TOTP) { t.ids = g }
+func WithIDGenerator(ids id.Generator) Option {
+	return func(t *TOTP) { t.ids = ids }
 }
 
 // WithVerifyAttempts replaces how many verification attempts may be charged

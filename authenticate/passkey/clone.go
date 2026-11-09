@@ -87,8 +87,8 @@ type CloneSignal struct {
 // user's sessions and notify the user. CloneSignalOnly allows the login and
 // only writes a warning. A consumer clone policy, when set, decides in its
 // place. Any other value is a configuration error.
-func WithCloneResponse(r CloneResponse) Option {
-	return func(m *Passkeys) { m.cloneResponse = r }
+func WithCloneResponse(response CloneResponse) Option {
+	return func(m *Passkeys) { m.cloneResponse = response }
 }
 
 // WithClonePolicy sets a consumer function that decides each suspected clone,
@@ -97,7 +97,7 @@ func WithCloneResponse(r CloneResponse) Option {
 // returns CloneAllow, CloneRefuse or CloneRefuseSuspend; any other value is
 // taken as CloneRefuseSuspend, the safe reading. Every suspected clone is
 // also written as a sampled warning. A nil function is a configuration error.
-func WithClonePolicy(fn func(ctx context.Context, s CloneSignal) CloneAction) Option {
+func WithClonePolicy(fn func(ctx context.Context, signal CloneSignal) CloneAction) Option {
 	return func(m *Passkeys) {
 		m.clonePolicy = fn
 		m.clonePolicySet = true
@@ -304,8 +304,8 @@ func WithoutSessionRevocationOnClone() Option {
 // Removing a passkey by the user's own request revokes nothing.
 //
 // A nil revoker, typed nil included, is a configuration error from New.
-func WithGrantRevoker(r GrantRevoker) Option {
-	return func(m *Passkeys) { m.grants, m.grantsSet = r, true }
+func WithGrantRevoker(revoker GrantRevoker) Option {
+	return func(m *Passkeys) { m.grants, m.grantsSet = revoker, true }
 }
 
 // WithoutCloneGrantRevocation keeps the user's application grants when a

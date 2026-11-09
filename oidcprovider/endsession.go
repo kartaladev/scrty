@@ -33,7 +33,7 @@ type EndSessionInput struct {
 }
 
 // Format writes the redacted form under every verb.
-func (EndSessionInput) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(redacted)) }
+func (EndSessionInput) Format(state fmt.State, _ rune) { _, _ = state.Write([]byte(redacted)) }
 
 // LogValue is the redacted form.
 func (EndSessionInput) LogValue() slog.Value { return slog.StringValue(redacted) }
@@ -55,7 +55,7 @@ type EndSessionResult struct {
 }
 
 // Format writes the redacted form under every verb.
-func (EndSessionResult) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(redacted)) }
+func (EndSessionResult) Format(state fmt.State, _ rune) { _, _ = state.Write([]byte(redacted)) }
 
 // LogValue is the redacted form.
 func (EndSessionResult) LogValue() slog.Value { return slog.StringValue(redacted) }

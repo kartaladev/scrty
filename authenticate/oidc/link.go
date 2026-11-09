@@ -61,18 +61,18 @@ func (s *MemoryLinkStore) FindByExternal(_ context.Context, provider, issuer, su
 	return &l, nil
 }
 
-// Insert stores l, or returns ErrLinkExists when its provider, issuer and
+// Insert stores link, or returns ErrLinkExists when its provider, issuer and
 // subject are already linked, even to the same user, and leaves the stored
 // link unchanged. A nil return therefore always means this call created it.
-func (s *MemoryLinkStore) Insert(_ context.Context, l Link) error {
+func (s *MemoryLinkStore) Insert(_ context.Context, link Link) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	k := linkKeyOf(l)
+	k := linkKeyOf(link)
 	if _, taken := s.links[k]; taken {
 		return ErrLinkExists
 	}
-	s.links[k] = l
+	s.links[k] = link
 	return nil
 }
 

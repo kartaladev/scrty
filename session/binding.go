@@ -33,37 +33,37 @@ func (b KeyBinding) IsZero() bool { return b == KeyBinding{} }
 // binding may.
 func (b KeyBinding) both() bool { return b.JKT != "" && b.X5TS256 != "" }
 
-// WithKeyBinding binds the session being created to b, in the one write that
+// WithKeyBinding binds the session being created to binding, in the one write that
 // creates it, so a credential issued for the built session (Prepare,
 // CreateIssuing) carries the same binding. The default, with no option, is an
 // unbound session.
 //
-// A b naming both a DPoP key and a certificate is refused by Prepare, Create
-// and CreateIssuing with ErrConfig, and nothing is stored. The zero b binds
+// A binding naming both a DPoP key and a certificate is refused by Prepare, Create
+// and CreateIssuing with ErrConfig, and nothing is stored. The zero binding binds
 // nothing.
-func WithKeyBinding(b KeyBinding) CreateOption {
-	return func(s *Session) { s.KeyBinding = b }
+func WithKeyBinding(binding KeyBinding) CreateOption {
+	return func(s *Session) { s.KeyBinding = binding }
 }
 
 // WithReauthenticationBinding binds the successor of a re-authentication,
 // a strict rotation (Sessions.Rotate, Sessions.RotateIssuing) after the user
-// proved a factor again, to b. The default, with no option, carries the
+// proved a factor again, to binding. The default, with no option, carries the
 // stored session's binding over unchanged, bound or not.
 //
 // A re-authentication may bind an unbound session, because it is a fresh
 // proof of the user's factor. It never changes or removes an existing
-// binding: b naming another key than the stored session's is refused with
-// ErrConfig, and b equal to it keeps the session as it is. The zero b binds
-// nothing. A b naming both a DPoP key and a certificate is refused with
+// binding: a binding naming another key than the stored session's is refused with
+// ErrConfig, and a binding equal to it keeps the session as it is. The zero binding binds
+// nothing. A binding naming both a DPoP key and a certificate is refused with
 // ErrConfig. Every refusal is made before the issuing step runs, and nothing
 // is stored.
 //
 // A renewal never binds (Sessions.RotateWithGrace refuses this option with
 // ErrConfig): otherwise whoever holds an unbound session could renew it under
 // their own key and lock its owner out.
-func WithReauthenticationBinding(b KeyBinding) RotateOption {
+func WithReauthenticationBinding(binding KeyBinding) RotateOption {
 	return func(r *rotation) {
-		r.binding = b
+		r.binding = binding
 		r.bindingSet = true
 	}
 }

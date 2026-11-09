@@ -62,7 +62,7 @@ type TokenRequest struct {
 }
 
 // Format writes the redacted form under every verb.
-func (TokenRequest) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(redacted)) }
+func (TokenRequest) Format(state fmt.State, _ rune) { _, _ = state.Write([]byte(redacted)) }
 
 // LogValue is the redacted form.
 func (TokenRequest) LogValue() slog.Value { return slog.StringValue(redacted) }
@@ -92,7 +92,7 @@ type TokenResponse struct {
 }
 
 // Format writes the redacted form under every verb.
-func (TokenResponse) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(redacted)) }
+func (TokenResponse) Format(state fmt.State, _ rune) { _, _ = state.Write([]byte(redacted)) }
 
 // LogValue is the redacted form.
 func (TokenResponse) LogValue() slog.Value { return slog.StringValue(redacted) }
@@ -173,24 +173,24 @@ func (TokenResponse) LogValue() slog.Value { return slog.StringValue(redacted) }
 // which knocks out the one issued before. A failure after step 8 answers an error, and the presented
 // token retries: an opaque access token stored for it is ended. See
 // [session.Sessions.RotateWithGrace] for what the lineage guarantees.
-func (p *Provider) Token(ctx context.Context, r TokenRequest) (*TokenResponse, error) {
-	if repeatedParam(r.Form) {
+func (p *Provider) Token(ctx context.Context, request TokenRequest) (*TokenResponse, error) {
+	if repeatedParam(request.Form) {
 		return nil, refuseRequest()
 	}
 
-	creds := r.Credentials
+	creds := request.Credentials
 	if creds.Form == nil {
-		creds.Form = r.Form
+		creds.Form = request.Form
 	}
 	if creds.Query == nil {
-		creds.Query = r.Query
+		creds.Query = request.Query
 	}
 	rc, err := p.AuthenticateClient(ctx, creds)
 	if err != nil {
 		return nil, err
 	}
 
-	grantType := GrantType(r.Form.Get(paramGrantType))
+	grantType := GrantType(request.Form.Get(paramGrantType))
 	switch grantType {
 	case "":
 		return nil, refuseRequest()
@@ -201,14 +201,14 @@ func (p *Provider) Token(ctx context.Context, r TokenRequest) (*TokenResponse, e
 	if !slices.Contains(rc.GrantTypes, grantType) {
 		return nil, &Error{Code: CodeUnauthorizedClient}
 	}
-	if err := requireBinding(rc, r.Binding); err != nil {
+	if err := requireBinding(rc, request.Binding); err != nil {
 		return nil, err
 	}
 	if grantType == GrantRefreshToken {
-		return p.refresh(ctx, r, rc)
+		return p.refresh(ctx, request, rc)
 	}
 
-	return p.exchangeCode(ctx, r, rc)
+	return p.exchangeCode(ctx, request, rc)
 }
 
 // repeatedParam reports a parameter given twice, which R11 refuses, apart from resource.

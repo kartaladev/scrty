@@ -35,7 +35,7 @@ import (
 // chain answers bearer session references (httpsec.EnableSessionBearer), so no
 // token generator is wired.
 func ExampleEnableReauthentication() {
-	clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC))
+	clock := clockwork.NewFakeClockAt(time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC))
 
 	// Cheap hashing parameters keep the example quick; use the defaults.
 	enc, err := password.NewArgon2idEncoder(password.WithArgon2idMemory(19456),
@@ -58,7 +58,7 @@ func ExampleEnableReauthentication() {
 		panic(err)
 	}
 
-	sessions, err := session.New(session.WithClock(clk))
+	sessions, err := session.New(session.WithClock(clock))
 	if err != nil {
 		panic(err)
 	}
@@ -74,7 +74,7 @@ func ExampleEnableReauthentication() {
 	}
 
 	chain, err := httpsec.New(
-		httpsec.WithClock(clk),
+		httpsec.WithClock(clock),
 		httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),
 		httpsec.EnableFormLogin(httpsec.FormLoginDeps{
 			Authenticator: authn, Sessions: sessions, Attempts: lockoutPolicy.Attempts(),
@@ -86,7 +86,7 @@ func ExampleEnableReauthentication() {
 		panic(err)
 	}
 
-	guards, err := httpsec.NewGuards(projectDeleters{}, httpsec.WithGuardClock(clk))
+	guards, err := httpsec.NewGuards(projectDeleters{}, httpsec.WithGuardClock(clock))
 	if err != nil {
 		panic(err)
 	}
@@ -128,7 +128,7 @@ func ExampleEnableReauthentication() {
 
 	first := credentialOf(signedIn)
 
-	clk.Advance(20 * time.Minute)
+	clock.Advance(20 * time.Minute)
 	fmt.Println("delete, 20 minutes on:", send(http.MethodDelete, "/projects/p-1", first, nil).Code)
 
 	methods := send(http.MethodGet, httpsec.DefaultReauthenticationPrefix+"/methods", first, nil)

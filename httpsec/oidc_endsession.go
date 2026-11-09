@@ -72,30 +72,30 @@ func (g *oidcEndSessionGroup) flushRefusalLogs() error {
 //
 // A nil limiter, including an interface holding a nil pointer, is refused: it would read as no
 // limit while the consumer believed they had replaced one.
-func WithOIDCEndSessionLimiter(l ratelimit.Limiter) OIDCProviderOption {
+func WithOIDCEndSessionLimiter(limiter ratelimit.Limiter) OIDCProviderOption {
 	return func(op *oidcEndpoints) error {
-		if err := requireDep("WithOIDCEndSessionLimiter", "limiter", l); err != nil {
+		if err := requireDep("WithOIDCEndSessionLimiter", "limiter", limiter); err != nil {
 			return err
 		}
 
-		op.endSession.throttle.limiter = l
+		op.endSession.throttle.limiter = limiter
 
 		return nil
 	}
 }
 
-// WithOIDCEndSessionBodyLimit reads at most n bytes of a form POST to the end-session endpoint.
+// WithOIDCEndSessionBodyLimit reads at most limit bytes of a form POST to the end-session endpoint.
 //
 // Default: DefaultLoginBodyLimit. A body over it answers ErrRequestTooLarge. A limit of zero or
 // less is refused, because it would refuse every form POST.
-func WithOIDCEndSessionBodyLimit(n int64) OIDCProviderOption {
+func WithOIDCEndSessionBodyLimit(limit int64) OIDCProviderOption {
 	return func(op *oidcEndpoints) error {
-		if n <= 0 {
+		if limit <= 0 {
 			return newConfigError("WithOIDCEndSessionBodyLimit takes a positive bound, and %d would refuse "+
-				"every form POST", n)
+				"every form POST", limit)
 		}
 
-		op.endSession.bodyLimit = n
+		op.endSession.bodyLimit = limit
 
 		return nil
 	}

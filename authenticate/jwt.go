@@ -33,8 +33,8 @@ type JWTOption func(*JWTAuthenticator)
 //
 // A nil verifier, including a non-nil interface holding a nil pointer, is the
 // same as supplying none.
-func WithJWTVerifier(v token.Verifier) JWTOption {
-	return func(a *JWTAuthenticator) { a.verifier = v }
+func WithJWTVerifier(verifier token.Verifier) JWTOption {
+	return func(a *JWTAuthenticator) { a.verifier = verifier }
 }
 
 // WithJWTIDGenerator replaces the generator that names an authentication whose
@@ -47,8 +47,8 @@ func WithJWTVerifier(v token.Verifier) JWTOption {
 // A nil generator is a configuration error rather than a silent return to the
 // default, because a consumer supplying one means their records are keyed by
 // its identifiers.
-func WithJWTIDGenerator(g id.Generator) JWTOption {
-	return func(a *JWTAuthenticator) { a.ids = g; a.idsSet = true }
+func WithJWTIDGenerator(ids id.Generator) JWTOption {
+	return func(a *JWTAuthenticator) { a.ids = ids; a.idsSet = true }
 }
 
 // WithJWTUsernameSubject reads a token's subject as the principal's username.
@@ -167,8 +167,8 @@ func NewJWTAuthenticator(opts ...JWTOption) (*JWTAuthenticator, error) {
 // identifier nor a username satisfies every check that asks only whether someone
 // is authenticated, while naming nobody the consumer's store could recognise, so
 // it must not exist.
-func (a *JWTAuthenticator) Authenticate(ctx context.Context, c identity.Credentials) (*Authentication, error) {
-	creds, ok := c.(BearerCredentials)
+func (a *JWTAuthenticator) Authenticate(ctx context.Context, credentials identity.Credentials) (*Authentication, error) {
+	creds, ok := credentials.(BearerCredentials)
 	if !ok {
 		return nil, ErrUnsupportedCredentials
 	}

@@ -174,10 +174,10 @@ func WithMFASameChannelEnrolment(mode SameChannelMode) MFAOption {
 // A nil logger is ignored rather than refused: it has an obvious safe reading —
 // the caller does not want to choose this policy's logger — and refusing it
 // would make configuring logging mandatory.
-func WithMFALogger(l *slog.Logger) MFAOption {
+func WithMFALogger(logger *slog.Logger) MFAOption {
 	return mfaOption(func(p *MFA) {
-		if l != nil {
-			p.logger = l
+		if logger != nil {
+			p.logger = logger
 		}
 	})
 }
@@ -194,8 +194,8 @@ func WithMFALogger(l *slog.Logger) MFAOption {
 // It governs this policy alone. The policy NewMFARequirement returns
 // keeps its own window under WithMFARequirementLogInterval, so one subsystem's
 // flood cannot silence another's.
-func WithMFALogInterval(d time.Duration) MFAOption {
-	return mfaOption(func(p *MFA) { p.logInterval = d })
+func WithMFALogInterval(interval time.Duration) MFAOption {
+	return mfaOption(func(p *MFA) { p.logInterval = interval })
 }
 
 // WithMFAClock replaces the time source the policy samples its records

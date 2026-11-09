@@ -164,7 +164,7 @@ type QueuedOption func(*queuedConfig)
 // WithQueueWorkers replaces how many deliveries run at once. The default is 2.
 // Zero or less is a configuration error: a queue nothing drains accepts every
 // message and delivers none.
-func WithQueueWorkers(n int) QueuedOption { return func(c *queuedConfig) { c.workers = n } }
+func WithQueueWorkers(workers int) QueuedOption { return func(c *queuedConfig) { c.workers = workers } }
 
 // WithQueueMaxMessages replaces how many messages may wait for a worker. The default
 // is 256. Zero or less is a configuration error: it would drop every message
@@ -172,7 +172,9 @@ func WithQueueWorkers(n int) QueuedOption { return func(c *queuedConfig) { c.wor
 //
 // The queue is memory, not storage. Sizing it larger buys tolerance of a
 // longer outage and nothing else — a crash still loses whatever is in it.
-func WithQueueMaxMessages(n int) QueuedOption { return func(c *queuedConfig) { c.size = n } }
+func WithQueueMaxMessages(maxMessages int) QueuedOption {
+	return func(c *queuedConfig) { c.size = maxMessages }
+}
 
 // WithQueueSendTimeout replaces the bound on one delivery. The default is 30
 // seconds. Zero or less is a configuration error.
@@ -181,8 +183,8 @@ func WithQueueMaxMessages(n int) QueuedOption { return func(c *queuedConfig) { c
 // does. One that ignores its context occupies a worker for as long as it
 // likes; Go offers no way to stop a goroutine from outside, so this is stated
 // rather than defended against.
-func WithQueueSendTimeout(d time.Duration) QueuedOption {
-	return func(c *queuedConfig) { c.timeout = d }
+func WithQueueSendTimeout(timeout time.Duration) QueuedOption {
+	return func(c *queuedConfig) { c.timeout = timeout }
 }
 
 // WithQueueLogger replaces where the sender writes its logs. The default is
@@ -203,10 +205,10 @@ func WithQueueSendTimeout(d time.Duration) QueuedOption {
 // who wants it passes a logger over a discarding handler, for example
 // slog.New(slog.DiscardHandler), which puts the decision where the wiring is
 // read instead of leaving it to a default.
-func WithQueueLogger(l *slog.Logger) QueuedOption {
+func WithQueueLogger(logger *slog.Logger) QueuedOption {
 	return func(c *queuedConfig) {
-		if l != nil {
-			c.logger = l
+		if logger != nil {
+			c.logger = logger
 		}
 	}
 }

@@ -201,17 +201,17 @@ func (c *MockRecordStoreFindCall) DoAndReturn(f func(context.Context, id.ID) (*r
 }
 
 // Insert mocks base method.
-func (m *MockRecordStore) Insert(ctx context.Context, r recovery.Record) error {
+func (m *MockRecordStore) Insert(ctx context.Context, record recovery.Record) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Insert", ctx, r)
+	ret := m.ctrl.Call(m, "Insert", ctx, record)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Insert indicates an expected call of Insert.
-func (mr *MockRecordStoreMockRecorder) Insert(ctx, r any) *MockRecordStoreInsertCall {
+func (mr *MockRecordStoreMockRecorder) Insert(ctx, record any) *MockRecordStoreInsertCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Insert", reflect.TypeOf((*MockRecordStore)(nil).Insert), ctx, r)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Insert", reflect.TypeOf((*MockRecordStore)(nil).Insert), ctx, record)
 	return &MockRecordStoreInsertCall{Call: call}
 }
 

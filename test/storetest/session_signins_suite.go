@@ -418,18 +418,18 @@ func keysOf[K comparable, V any](m map[K]V) []K {
 
 // RunSessionListAcrossReplicas holds a durable session store to listing a
 // user's sign-ins from the database, not from the instance that created them.
-// It creates one sign-in through the store h.New returns and another, for the
-// same user, through a second instance h.NewReplica returns, then lists the
+// It creates one sign-in through the store harness.New returns and another, for the
+// same user, through a second instance harness.NewReplica returns, then lists the
 // user through each and requires both families on both, and no other user's.
 //
-// It fails at once, naming every missing input, when h is missing one.
-func RunSessionListAcrossReplicas[S session.Store](t *testing.T, h DurableHarness[S]) {
+// It fails at once, naming every missing input, when harness is missing one.
+func RunSessionListAcrossReplicas[S session.Store](t *testing.T, harness DurableHarness[S]) {
 	t.Helper()
 
-	h.Require(t)
+	harness.Require(t)
 
 	t.Run("a user signed in through two replicas is listed by both", func(t *testing.T) {
-		first, replica := h.New(t), h.NewReplica(t)
+		first, replica := harness.New(t), harness.NewReplica(t)
 		const user = identity.UserID("replicas-user")
 		viaFirst := withSignInState(familySession("replicas-first", user, suiteID(2501)))
 		viaReplica := withSignInState(familySession("replicas-second", user, suiteID(2502)))

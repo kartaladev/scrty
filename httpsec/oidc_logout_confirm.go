@@ -69,30 +69,30 @@ func (g *oidcLogoutConfirmGroup) flushRefusalLogs() error {
 //
 // A nil limiter, including an interface holding a nil pointer, is refused: it would read as no
 // limit while the consumer believed they had replaced one.
-func WithOIDCLogoutConfirmLimiter(l ratelimit.Limiter) OIDCProviderOption {
+func WithOIDCLogoutConfirmLimiter(limiter ratelimit.Limiter) OIDCProviderOption {
 	return func(op *oidcEndpoints) error {
-		if err := requireDep("WithOIDCLogoutConfirmLimiter", "limiter", l); err != nil {
+		if err := requireDep("WithOIDCLogoutConfirmLimiter", "limiter", limiter); err != nil {
 			return err
 		}
 
-		op.logoutConfirm.throttle.limiter = l
+		op.logoutConfirm.throttle.limiter = limiter
 
 		return nil
 	}
 }
 
-// WithOIDCLogoutConfirmBodyLimit reads at most n bytes of a logout confirmation's body.
+// WithOIDCLogoutConfirmBodyLimit reads at most limit bytes of a logout confirmation's body.
 //
 // Default: DefaultLoginBodyLimit. A body over it answers ErrRequestTooLarge. A limit of zero or
 // less is refused, because it would refuse every confirmation.
-func WithOIDCLogoutConfirmBodyLimit(n int64) OIDCProviderOption {
+func WithOIDCLogoutConfirmBodyLimit(limit int64) OIDCProviderOption {
 	return func(op *oidcEndpoints) error {
-		if n <= 0 {
+		if limit <= 0 {
 			return newConfigError("WithOIDCLogoutConfirmBodyLimit takes a positive bound, and %d would refuse "+
-				"every confirmation", n)
+				"every confirmation", limit)
 		}
 
-		op.logoutConfirm.bodyLimit = n
+		op.logoutConfirm.bodyLimit = limit
 
 		return nil
 	}

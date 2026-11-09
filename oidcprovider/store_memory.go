@@ -215,18 +215,18 @@ func NewMemoryPendingRequestStore(opts ...MemoryStoreOption) (*MemoryPendingRequ
 }
 
 // Create implements PendingRequestStore.
-func (m *MemoryPendingRequestStore) Create(_ context.Context, r *PendingRequest) error {
+func (m *MemoryPendingRequestStore) Create(_ context.Context, request *PendingRequest) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if now, due := m.sweep.due(); due {
 		m.deleteExpiredLocked(now)
 	}
-	key := string(r.HandleDigest)
+	key := string(request.HandleDigest)
 	if _, held := m.records[key]; held {
 		return errPendingHeld
 	}
-	m.records[key] = clonePending(r)
+	m.records[key] = clonePending(request)
 
 	return nil
 }
@@ -245,7 +245,7 @@ func (m *MemoryPendingRequestStore) Load(_ context.Context, handleDigest []byte)
 }
 
 // Advance implements PendingRequestStore.
-func (m *MemoryPendingRequestStore) Advance(_ context.Context, handleDigest []byte, from, to Stage, s *SignIn) error {
+func (m *MemoryPendingRequestStore) Advance(_ context.Context, handleDigest []byte, from, to Stage, signIn *SignIn) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -254,9 +254,9 @@ func (m *MemoryPendingRequestStore) Advance(_ context.Context, handleDigest []by
 		return ErrNotFound
 	}
 	r.Stage = to
-	if s != nil {
-		signIn := cloneSignIn(*s)
-		r.SignIn = &signIn
+	if signIn != nil {
+		cloned := cloneSignIn(*signIn)
+		r.SignIn = &cloned
 	}
 
 	return nil
@@ -331,17 +331,17 @@ func NewMemoryCodeStore(opts ...MemoryStoreOption) (*MemoryCodeStore, error) {
 }
 
 // Create implements CodeStore.
-func (m *MemoryCodeStore) Create(_ context.Context, r *CodeRecord) error {
+func (m *MemoryCodeStore) Create(_ context.Context, record *CodeRecord) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if now, due := m.sweep.due(); due {
 		m.deleteExpiredLocked(now.Add(-codeKeptPastExpiry))
 	}
-	if _, held := m.records[r.TokenID]; held {
+	if _, held := m.records[record.TokenID]; held {
 		return errCodeHeld
 	}
-	m.records[r.TokenID] = cloneCode(r)
+	m.records[record.TokenID] = cloneCode(record)
 
 	return nil
 }
@@ -625,21 +625,21 @@ func (m *MemoryGrantStore) sweepIfDue() {
 }
 
 // Create implements GrantStore.
-func (m *MemoryGrantStore) Create(_ context.Context, g *Grant) error {
+func (m *MemoryGrantStore) Create(_ context.Context, grant *Grant) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	m.sweepIfDue()
 
-	next := &memoryGrant{Grant: cloneGrant(g), stored: true}
-	if held, ok := m.grants[g.Family]; ok {
+	next := &memoryGrant{Grant: cloneGrant(grant), stored: true}
+	if held, ok := m.grants[grant.Family]; ok {
 		if held.stored {
 			return errGrantHeld
 		}
 		next.Revoked, next.RevokedAt, next.RevokeCause = true, held.RevokedAt, held.RevokeCause
 		next.SignInEndedAt = held.SignInEndedAt
 	}
-	m.grants[g.Family] = next
+	m.grants[grant.Family] = next
 
 	return nil
 }
@@ -962,17 +962,17 @@ func NewMemoryAccessTokenStore(opts ...MemoryStoreOption) (*MemoryAccessTokenSto
 }
 
 // Create implements AccessTokenStore.
-func (m *MemoryAccessTokenStore) Create(_ context.Context, r *AccessTokenRecord) error {
+func (m *MemoryAccessTokenStore) Create(_ context.Context, record *AccessTokenRecord) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if now, due := m.sweep.due(); due {
 		m.deleteExpiredLocked(now)
 	}
-	if _, held := m.records[r.ID]; held {
+	if _, held := m.records[record.ID]; held {
 		return errAccessTokenHeld
 	}
-	m.records[r.ID] = cloneAccessToken(r)
+	m.records[record.ID] = cloneAccessToken(record)
 
 	return nil
 }
@@ -1152,11 +1152,11 @@ func NewMemoryBrowserSessionStore(opts ...MemoryStoreOption) (*MemoryBrowserSess
 }
 
 // Put implements BrowserSessionStore.
-func (m *MemoryBrowserSessionStore) Put(_ context.Context, s *BrowserSession) error {
-	if len(s.Digest) == 0 {
+func (m *MemoryBrowserSessionStore) Put(_ context.Context, browserSession *BrowserSession) error {
+	if len(browserSession.Digest) == 0 {
 		return fmt.Errorf("%w: BrowserSessionStore.Put: the digest must not be empty", ErrConfig)
 	}
-	if s.IdleExpiresAt.IsZero() || s.AbsoluteExpiresAt.IsZero() {
+	if browserSession.IdleExpiresAt.IsZero() || browserSession.AbsoluteExpiresAt.IsZero() {
 		return fmt.Errorf("%w: BrowserSessionStore.Put: a deadline must not be zero", ErrConfig)
 	}
 
@@ -1166,11 +1166,11 @@ func (m *MemoryBrowserSessionStore) Put(_ context.Context, s *BrowserSession) er
 	if now, due := m.sweep.due(); due {
 		m.deleteExpiredLocked(now)
 	}
-	key := string(s.Digest)
+	key := string(browserSession.Digest)
 	if _, held := m.records[key]; held {
 		return errBrowserSessionHeld
 	}
-	stored := cloneBrowserSession(s)
+	stored := cloneBrowserSession(browserSession)
 	if stored.IdleExpiresAt.After(stored.AbsoluteExpiresAt) {
 		stored.IdleExpiresAt = stored.AbsoluteExpiresAt
 	}

@@ -67,7 +67,7 @@ type ResumeInput struct {
 }
 
 // Format writes the redacted form under every verb.
-func (ResumeInput) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(redacted)) }
+func (ResumeInput) Format(state fmt.State, _ rune) { _, _ = state.Write([]byte(redacted)) }
 
 // LogValue is the redacted form.
 func (ResumeInput) LogValue() slog.Value { return slog.StringValue(redacted) }
@@ -85,7 +85,7 @@ type ResumeResult struct {
 }
 
 // Format writes the redacted form under every verb.
-func (ResumeResult) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(redacted)) }
+func (ResumeResult) Format(state fmt.State, _ rune) { _, _ = state.Write([]byte(redacted)) }
 
 // LogValue is the redacted form.
 func (ResumeResult) LogValue() slog.Value { return slog.StringValue(redacted) }

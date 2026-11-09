@@ -191,7 +191,7 @@ const optionDPoP = "EnableDPoP"
 // A consumer replaces or removes it from a WithErrorHandler (or
 // WithGuardErrorHandler), which edits the response headers.
 //
-// Defaults, each a field of d: accepted, not required (Require); a 60-second
+// Defaults, each a field of dpop: accepted, not required (Require); a 60-second
 // proof lifetime (ProofMaxAge); ES256 alone (Algorithms); an 8 KiB proof
 // bound (MaxProofSize); an in-memory replay store per process (Replay); no
 // server nonces (Nonce), and when they are on, a five-minute nonce lifetime
@@ -214,13 +214,13 @@ const optionDPoP = "EnableDPoP"
 // implement token.ConfirmingGenerator, which could only issue unbound tokens,
 // and any field the comment of DPoP calls a configuration error. Under EnableSessionBearer no endpoint holds a
 // generator, and the binding is kept on the session instead.
-func EnableDPoP(d DPoP) Option {
+func EnableDPoP(dpop DPoP) Option {
 	return func(c *config) error {
 		if c.dpop != nil {
 			return newConfigError("%s was given twice; one chain has one DPoP configuration", optionDPoP)
 		}
 
-		v, err := newDPoPVerifier(d, c.now)
+		v, err := newDPoPVerifier(dpop, c.now)
 		if err != nil {
 			return err
 		}

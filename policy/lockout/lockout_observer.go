@@ -132,7 +132,7 @@ type Report struct {
 // A panic in the observer is recovered and logged through WithLogger,
 // and the call that triggered the report returns as it would have without
 // it.
-type Observer func(ctx context.Context, r Report)
+type Observer func(ctx context.Context, report Report)
 
 // WithObserver supplies an observer told of lockout transitions (see
 // Observer). The default is none: nothing is reported to an observer, and
@@ -154,9 +154,9 @@ type Observer func(ctx context.Context, r Report)
 //
 // A nil observer is a configuration error rather than "none": a consumer who
 // passed one meant to be told, and would hear nothing.
-func WithObserver(o Observer) Option {
+func WithObserver(observer Observer) Option {
 	return func(p *Policy) {
-		p.observer = o
+		p.observer = observer
 		p.setObserver = true
 	}
 }
@@ -170,10 +170,10 @@ func WithObserver(o Observer) Option {
 //
 // Its records carry fixed text, the report's kind and the dependency's error
 // type; never a dependency's error text, and never the submitted identifier.
-func WithLogger(l *slog.Logger) Option {
+func WithLogger(logger *slog.Logger) Option {
 	return func(p *Policy) {
-		if l != nil {
-			p.logger = l
+		if logger != nil {
+			p.logger = logger
 		}
 	}
 }

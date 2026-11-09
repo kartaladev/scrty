@@ -227,8 +227,8 @@ func WithSourceGuardClock(clk clock.Clock) GuardOption {
 // An interval of zero or less writes every refusal, for a consumer whose own
 // handler samples. It governs this guard alone: another guard, and any other
 // part of this library that samples its own records, keeps its own window.
-func WithSourceGuardLogInterval(d time.Duration) GuardOption {
-	return func(g *SourceGuard) { g.logInterval = d }
+func WithSourceGuardLogInterval(interval time.Duration) GuardOption {
+	return func(g *SourceGuard) { g.logInterval = interval }
 }
 
 // WithSourceGuardLogReporter sends the refusal counts the guard's sampling
@@ -447,8 +447,8 @@ func (g *SourceGuard) reportFull(ctx context.Context, msg string, s Source, from
 // judgement about this attempt, and there is nothing a calling flow could
 // usefully do with it on the path of a request that has already failed — so it
 // is logged, through the same sampler as the refusals.
-func (g *SourceGuard) RecordFailure(ctx context.Context, s Source) {
-	if s.key == "" {
+func (g *SourceGuard) RecordFailure(ctx context.Context, source Source) {
+	if source.key == "" {
 		g.logger.LogAttrs(ctx, slog.LevelWarn, msgNoSource, slog.String("flow", g.flow))
 
 		return
@@ -459,8 +459,8 @@ func (g *SourceGuard) RecordFailure(ctx context.Context, s Source) {
 	// uncounted is worth a record whatever the caller's context did.
 	recordCtx := context.WithoutCancel(ctx)
 
-	if err := g.limiter.RecordFailure(recordCtx, s.key); err != nil {
-		g.reportNotRecorded(ctx, err, s, false)
+	if err := g.limiter.RecordFailure(recordCtx, source.key); err != nil {
+		g.reportNotRecorded(ctx, err, source, false)
 	}
 
 	// The aggregate is recorded whether or not the source was. The two are
@@ -469,9 +469,9 @@ func (g *SourceGuard) RecordFailure(ctx context.Context, s Source) {
 	// aggregate exists to deny. A Source is a plain value, so a caller can hand
 	// this guard another guard's: without an aggregate limiter of its own there
 	// is nothing here to count it in.
-	if s.aggregateKey != "" && g.aggregate != nil {
-		if err := g.aggregate.RecordFailure(recordCtx, s.aggregateKey); err != nil {
-			g.reportNotRecorded(ctx, err, s, true)
+	if source.aggregateKey != "" && g.aggregate != nil {
+		if err := g.aggregate.RecordFailure(recordCtx, source.aggregateKey); err != nil {
+			g.reportNotRecorded(ctx, err, source, true)
 		}
 	}
 }

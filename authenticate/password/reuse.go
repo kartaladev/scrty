@@ -24,11 +24,11 @@ import (
 // The hashes are credential material. An implementation must never log them or
 // quote them in an error, and returns them only through RecentPasswords.
 type History interface {
-	// RecentPasswords returns up to n of the user's retired hashes, newest
+	// RecentPasswords returns up to limit of the user's retired hashes, newest
 	// first. A user with none returns an empty slice and no error. A failure,
 	// including a user reference the store cannot read, is an error, never an
 	// empty history: the policy refuses the change rather than check nothing.
-	RecentPasswords(ctx context.Context, user identity.UserID, n int) ([][]byte, error)
+	RecentPasswords(ctx context.Context, user identity.UserID, limit int) ([][]byte, error)
 
 	// RetirePassword records hash as the user's newest retired hash, then keeps
 	// only the newest keep entries. Recording the same bytes as the current
@@ -103,9 +103,9 @@ type reuseRule struct {
 }
 
 // NoReuse adds the reuse rule: a candidate matching the user's current hash
-// or one of their depth−1 most recent retired hashes, read through h, is
+// or one of their depth−1 most recent retired hashes, read through history, is
 // refused with [ErrReused], and a successful [Policy.Change] retires the
-// replaced hash into h, keeping only the newest depth−1.
+// replaced hash into history, keeping only the newest depth−1.
 //
 // Nothing checks or records password history unless a consumer adds this
 // rule and calls the policy from their own password-change code, with the
@@ -144,11 +144,11 @@ type reuseRule struct {
 // password is never retired. Only that user can use this, and only to reuse a
 // password they chose moments earlier.
 //
-// Default: no reuse rule. A nil or typed-nil h or matcher, or a depth below
+// Default: no reuse rule. A nil or typed-nil history or matcher, or a depth below
 // one, fails construction with an error wrapping [ErrConfig] that names the
 // mistake.
-func NoReuse(h History, depth int, opts ...ReuseOption) PolicyOption {
-	spec := &reuseSpec{history: h, depth: depth}
+func NoReuse(history History, depth int, opts ...ReuseOption) PolicyOption {
+	spec := &reuseSpec{history: history, depth: depth}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&spec.cfg)
@@ -319,14 +319,14 @@ func historyError(cause error) error {
 }
 
 // ProvisionerWrite returns the default [WriteFunc] for [Policy.Change]: it
-// calls p.Update for user.Username with
+// calls provisioner.Update for user.Username with
 // [identity.WithUserPasswordChange](hash, changedAt), naming the new hash and
 // the time of the change and nothing else, and returns Update's error
 // unchanged.
 //
 // This is the path on which a change records its time by default, so
 // password-age policy sees every change made through the policy. It joins a
-// transaction attached to ctx exactly when p's Update does, so with a store
+// transaction attached to ctx exactly when provisioner's Update does, so with a store
 // that backs both the users and the [History], one transaction covers the
 // retire and the write.
 //
@@ -334,11 +334,11 @@ func historyError(cause error) error {
 // instead. One that ignores changedAt leaves the stored password-changed time
 // as it was, and so gives up password-age policy for that user.
 //
-// A nil or typed-nil p is refused here, at wiring time, with an error wrapping
+// A nil or typed-nil provisioner is refused here, at wiring time, with an error wrapping
 // [ErrConfig]. The returned write refuses a nil user the same way and updates
 // nothing.
-func ProvisionerWrite(p identity.UserProvisioner) (WriteFunc, error) {
-	if nilcheck.IsNil(p) {
+func ProvisionerWrite(provisioner identity.UserProvisioner) (WriteFunc, error) {
+	if nilcheck.IsNil(provisioner) {
 		return nil, fmt.Errorf("%w: a user provisioner is required", ErrConfig)
 	}
 
@@ -347,7 +347,7 @@ func ProvisionerWrite(p identity.UserProvisioner) (WriteFunc, error) {
 			return fmt.Errorf("%w: a user record is required", ErrConfig)
 		}
 
-		_, err := p.Update(ctx, user.Username, identity.WithUserPasswordChange(hash, changedAt))
+		_, err := provisioner.Update(ctx, user.Username, identity.WithUserPasswordChange(hash, changedAt))
 
 		return err
 	}, nil

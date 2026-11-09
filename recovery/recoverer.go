@@ -141,12 +141,12 @@ type Recoverer struct {
 	events eventsink.Own
 }
 
-// Enabled reports whether proof kind k is one WithProofs enabled. A caller
+// Enabled reports whether kind is one WithProofs enabled. A caller
 // serving the recovery uses it to offer only what the recoverer accepts: an
 // HTTP layer, for example, answers the endpoint that sends issued codes only
 // when ProofIssued is enabled.
-func (r *Recoverer) Enabled(k ProofKind) bool {
-	return slices.Contains(r.proofs, k)
+func (r *Recoverer) Enabled(kind ProofKind) bool {
+	return slices.Contains(r.proofs, kind)
 }
 
 // config collects the options before NewRecoverer validates them. The *Set
@@ -229,15 +229,15 @@ func WithRepudiationContact(text string) Option {
 //
 // Zero or less is a configuration error, and so is more than 24 hours: NIST SP
 // 800-63B-4 caps a code sent to an email address at 24 hours.
-func WithIssuedCodeTTL(d time.Duration) Option {
-	return func(c *config) { c.issuedTTL = d }
+func WithIssuedCodeTTL(ttl time.Duration) Option {
+	return func(c *config) { c.issuedTTL = ttl }
 }
 
 // WithIssuedCodeStore replaces where issued codes are kept. The default is
 // onetime.NewMemoryStore, which holds one process's codes and forgets them on
 // restart. A nil store is a configuration error.
-func WithIssuedCodeStore(s onetime.Store) Option {
-	return func(c *config) { c.issuedStore, c.issuedStoreSet = s, true }
+func WithIssuedCodeStore(store onetime.Store) Option {
+	return func(c *config) { c.issuedStore, c.issuedStoreSet = store, true }
 }
 
 // WithIssuedCodeLimit replaces how many codes one user may be sent within the
@@ -247,8 +247,8 @@ func WithIssuedCodeStore(s onetime.Store) Option {
 // A start past the limit sends nothing, and looks to its caller exactly like
 // any other start. The limit holds under concurrent starts: the count and the
 // issue are one bounded write (onetime.Tokens.IssueWithin).
-func WithIssuedCodeLimit(n int) Option {
-	return func(c *config) { c.issuedLimit = n }
+func WithIssuedCodeLimit(limit int) Option {
+	return func(c *config) { c.issuedLimit = limit }
 }
 
 // WithContactResolver replaces how the address an issued code and the notices
@@ -257,15 +257,15 @@ func WithIssuedCodeLimit(n int) Option {
 //
 // The library always sets the recipient itself: a message builder cannot
 // redirect a code.
-func WithContactResolver(r mfa.ContactResolver) Option {
-	return func(c *config) { c.resolver = r }
+func WithContactResolver(resolver mfa.ContactResolver) Option {
+	return func(c *config) { c.resolver = resolver }
 }
 
 // WithMessages replaces the builder of every message a recovery sends. The
 // default writes plain text naming no product or organisation. A nil builder
 // is a configuration error.
-func WithMessages(m Messages) Option {
-	return func(c *config) { c.messages = m }
+func WithMessages(messages Messages) Option {
+	return func(c *config) { c.messages = messages }
 }
 
 // WithSynchronousDelivery accepts a sender that waits for delivery.
@@ -318,10 +318,10 @@ func WithSecurityEvents(sink event.Sink) Option {
 
 // WithLogger replaces the logger. The default is slog.Default(). A nil logger
 // is ignored. No record carries a username, an address, a code or a token.
-func WithLogger(l *slog.Logger) Option {
+func WithLogger(logger *slog.Logger) Option {
 	return func(c *config) {
-		if l != nil {
-			c.logger = l
+		if logger != nil {
+			c.logger = logger
 		}
 	}
 }
@@ -378,17 +378,17 @@ func WithChecks(checks ...Check) Option {
 // ratelimit.UnavailableFallbackToLocal mode is the recommended choice: during an
 // outage of the shared store each replica still bounds guessing on its own, and
 // users are not locked out of sign-in.
-func WithUserLimiter(l ratelimit.Limiter) Option {
-	return func(c *config) { c.userLimiter, c.userLimiterSet = l, true }
+func WithUserLimiter(limiter ratelimit.Limiter) Option {
+	return func(c *config) { c.userLimiter, c.userLimiterSet = limiter, true }
 }
 
 // WithUserLimiterFactory builds the limiter that counts failed recoveries per
-// user through f, under the namespace "recovery-user" with this flow's own
+// user through factory, under the namespace "recovery-user" with this flow's own
 // limit and window: 5 failures per 15 minutes.
 //
 // Default: ratelimit.MemoryLimiterFactory, logging through the Recoverer's
 // logger and clock, so the limit holds in this process alone. Precedence: a
-// limiter given with WithUserLimiter wins, and f is then never asked; then f;
+// limiter given with WithUserLimiter wins, and factory is then never asked; then factory;
 // then the in-memory default.
 //
 // For this second-factor flow, a shared limiter in
@@ -397,9 +397,9 @@ func WithUserLimiter(l ratelimit.Limiter) Option {
 // users are not locked out of sign-in.
 //
 // A nil factory, typed nil included, is an error wrapping ErrConfig, as is an
-// error from f, which names the namespace.
-func WithUserLimiterFactory(f ratelimit.LimiterFactory) Option {
-	return func(c *config) { c.userFactory, c.userFactorySet = f, true }
+// error from factory, which names the namespace.
+func WithUserLimiterFactory(factory ratelimit.LimiterFactory) Option {
+	return func(c *config) { c.userFactory, c.userFactorySet = factory, true }
 }
 
 // WithAuthenticatorKinds registers the kinds of authenticator a completed

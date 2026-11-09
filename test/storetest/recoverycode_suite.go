@@ -292,23 +292,23 @@ func RunRecoveryCodeStoreSuite(t *testing.T, newStore func(t *testing.T, clk clo
 
 // RunRecoveryCodeTx holds a durable saved-code store to replacing a set
 // inside a transaction its caller owns, reading the result through a second
-// store instance on its own connection pool (h.NewReplica), never through the
+// store instance on its own connection pool (harness.NewReplica), never through the
 // transaction:
-//   - a replacement inside a transaction attached with h.Begin that is rolled
+//   - a replacement inside a transaction attached with harness.Begin that is rolled
 //     back leaves the previous set whole: its unspent codes still match, its
 //     spent code stays spent, and the new codes do not match;
 //   - until that transaction commits, a reader outside it sees the previous
 //     set and nothing of the new one, and after the commit only the new one;
-//   - a store h.BeginResolved configured with a transaction resolver replaces
+//   - a store harness.BeginResolved configured with a transaction resolver replaces
 //     in that transaction, and its rollback leaves the previous set whole.
 //
 // Each case works on a user of its own, so the cases share one database with
 // each other and with the race and ambient suites. It fails at once, naming
-// every missing input, when h is missing one.
-func RunRecoveryCodeTx[S recovery.CodeStore](t *testing.T, h DurableHarness[S]) {
+// every missing input, when harness is missing one.
+func RunRecoveryCodeTx[S recovery.CodeStore](t *testing.T, harness DurableHarness[S]) {
 	t.Helper()
 
-	h.Require(t)
+	harness.Require(t)
 
 	at := suiteStart
 
@@ -319,7 +319,7 @@ func RunRecoveryCodeTx[S recovery.CodeStore](t *testing.T, h DurableHarness[S]) 
 
 		old = recoveryHashes(string(user)+"-old", 5)
 		fresh = recoveryHashes(string(user)+"-new", 5)
-		s := h.New(t)
+		s := harness.New(t)
 		require.NoError(t, s.ReplaceSet(t.Context(), user, old, at))
 		requireSpend(t.Context(), t, s, user, old[0], at, true)
 
@@ -345,12 +345,12 @@ func RunRecoveryCodeTx[S recovery.CodeStore](t *testing.T, h DurableHarness[S]) 
 				const user identity.UserID = "recovery-tx-user-1"
 				old, fresh := seed(t, user)
 
-				ctx, _, rollback := h.Begin(t)
+				ctx, _, rollback := harness.Begin(t)
 				t.Cleanup(func() { _ = rollback() })
-				require.NoError(t, h.New(t).ReplaceSet(ctx, user, fresh, at.Add(time.Minute)))
+				require.NoError(t, harness.New(t).ReplaceSet(ctx, user, fresh, at.Add(time.Minute)))
 				require.NoError(t, rollback())
 
-				assertPrevious(t, h.NewReplica(t), user, old, fresh)
+				assertPrevious(t, harness.NewReplica(t), user, old, fresh)
 			},
 		},
 		{
@@ -358,11 +358,11 @@ func RunRecoveryCodeTx[S recovery.CodeStore](t *testing.T, h DurableHarness[S]) 
 			assert: func(t *testing.T) {
 				const user identity.UserID = "recovery-tx-user-2"
 				old, fresh := seed(t, user)
-				reader := h.NewReplica(t)
+				reader := harness.NewReplica(t)
 
-				ctx, commit, rollback := h.Begin(t)
+				ctx, commit, rollback := harness.Begin(t)
 				t.Cleanup(func() { _ = rollback() })
-				require.NoError(t, h.New(t).ReplaceSet(ctx, user, fresh, at.Add(time.Minute)))
+				require.NoError(t, harness.New(t).ReplaceSet(ctx, user, fresh, at.Add(time.Minute)))
 				assertPrevious(t, reader, user, old, fresh)
 
 				require.NoError(t, commit())
@@ -377,12 +377,12 @@ func RunRecoveryCodeTx[S recovery.CodeStore](t *testing.T, h DurableHarness[S]) 
 				const user identity.UserID = "recovery-tx-user-3"
 				old, fresh := seed(t, user)
 
-				s, ctx, _, rollback := h.BeginResolved(t)
+				s, ctx, _, rollback := harness.BeginResolved(t)
 				t.Cleanup(func() { _ = rollback() })
 				require.NoError(t, s.ReplaceSet(ctx, user, fresh, at.Add(time.Minute)))
 				require.NoError(t, rollback())
 
-				assertPrevious(t, h.NewReplica(t), user, old, fresh)
+				assertPrevious(t, harness.NewReplica(t), user, old, fresh)
 			},
 		},
 		{
@@ -395,23 +395,23 @@ func RunRecoveryCodeTx[S recovery.CodeStore](t *testing.T, h DurableHarness[S]) 
 				// The first replacement runs in a caller's transaction left
 				// open, so the second, on the other replica in a transaction
 				// of its own, starts while the first is uncommitted.
-				ctx, commit, rollback := h.Begin(t)
+				ctx, commit, rollback := harness.Begin(t)
 				t.Cleanup(func() { _ = rollback() })
-				require.NoError(t, h.New(t).ReplaceSet(ctx, user, first, at.Add(time.Minute)))
+				require.NoError(t, harness.New(t).ReplaceSet(ctx, user, first, at.Add(time.Minute)))
 
 				done := make(chan error, 1)
 				go func() {
-					done <- h.NewReplica(t).ReplaceSet(t.Context(), user, second, at.Add(2*time.Minute))
+					done <- harness.NewReplica(t).ReplaceSet(t.Context(), user, second, at.Add(2*time.Minute))
 				}()
 
 				// Commit only once the second replacement is waiting on the
 				// first; committing earlier would let it run afterwards,
 				// serialised by nothing but timing.
-				requireReplacementWaiting(t, h.Raw)
+				requireReplacementWaiting(t, harness.Raw)
 				require.NoError(t, commit())
 				require.NoError(t, <-done)
 
-				reader := h.NewReplica(t)
+				reader := harness.NewReplica(t)
 				requireRemaining(t.Context(), t, reader, user, len(second))
 				assertMatches(t.Context(), t, reader, user, true, second...)
 				assertMatches(t.Context(), t, reader, user, false, first...)

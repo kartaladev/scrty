@@ -120,17 +120,17 @@ func (c *MockSessionRevokerDeleteByUserExceptCall) DoAndReturn(f func(context.Co
 }
 
 // ReportsEndsTo mocks base method.
-func (m *MockSessionRevoker) ReportsEndsTo(o session.EndObserver) bool {
+func (m *MockSessionRevoker) ReportsEndsTo(observer session.EndObserver) bool {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ReportsEndsTo", o)
+	ret := m.ctrl.Call(m, "ReportsEndsTo", observer)
 	ret0, _ := ret[0].(bool)
 	return ret0
 }
 
 // ReportsEndsTo indicates an expected call of ReportsEndsTo.
-func (mr *MockSessionRevokerMockRecorder) ReportsEndsTo(o any) *MockSessionRevokerReportsEndsToCall {
+func (mr *MockSessionRevokerMockRecorder) ReportsEndsTo(observer any) *MockSessionRevokerReportsEndsToCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReportsEndsTo", reflect.TypeOf((*MockSessionRevoker)(nil).ReportsEndsTo), o)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReportsEndsTo", reflect.TypeOf((*MockSessionRevoker)(nil).ReportsEndsTo), observer)
 	return &MockSessionRevokerReportsEndsToCall{Call: call}
 }
 

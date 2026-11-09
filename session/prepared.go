@@ -265,7 +265,7 @@ func (p *Prepared) checkBuilt() error {
 func (m *Sessions) CreateIssuing(
 	ctx context.Context,
 	user identity.UserID,
-	issue func(s *Session) (string, error),
+	issue func(sess *Session) (string, error),
 	opts ...CreateOption,
 ) (*Session, string, error) {
 	p, err := m.Prepare(user, opts...)

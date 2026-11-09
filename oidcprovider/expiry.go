@@ -43,15 +43,15 @@ import (
 // leaves that state to the consumer's own sweep (a supplied store's DeleteExpired, or a
 // scheduled job), changing a Name renames it, and replacing its Run swaps the sweep for
 // the consumer's. Dropping the codes task also drops the sweep of the code records.
-func ExpiryTasks(p *Provider) []expiry.Task {
+func ExpiryTasks(provider *Provider) []expiry.Task {
 	return []expiry.Task{
-		{Name: "oidc-provider.pending-requests", Run: p.sweepPendingRequests},
-		{Name: "oidc-provider.browser-sessions", Run: p.sweepBrowserSessions},
-		{Name: "oidc-provider.codes", Run: p.sweepCodes},
-		{Name: "oidc-provider.grants", Run: p.sweepGrants},
-		{Name: "oidc-provider.refresh-tokens", Run: session.ExpiryTask(oplineage.Sessions(p.stores.lineage)).Run},
-		{Name: "oidc-provider.access-tokens", Run: p.sweepAccessTokens},
-		{Name: "oidc-provider.assertion-ids", Run: p.sweepAssertionIDs},
+		{Name: "oidc-provider.pending-requests", Run: provider.sweepPendingRequests},
+		{Name: "oidc-provider.browser-sessions", Run: provider.sweepBrowserSessions},
+		{Name: "oidc-provider.codes", Run: provider.sweepCodes},
+		{Name: "oidc-provider.grants", Run: provider.sweepGrants},
+		{Name: "oidc-provider.refresh-tokens", Run: session.ExpiryTask(oplineage.Sessions(provider.stores.lineage)).Run},
+		{Name: "oidc-provider.access-tokens", Run: provider.sweepAccessTokens},
+		{Name: "oidc-provider.assertion-ids", Run: provider.sweepAssertionIDs},
 	}
 }
 

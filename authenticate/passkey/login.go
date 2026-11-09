@@ -68,7 +68,7 @@ const (
 // mfa.ErrAuthenticatorRefused (as a second factor, which account recovery
 // spends) for the refusal to be reported; any other error is taken for a
 // failed dependency and reported as nothing.
-func WithLoginCheck(fn func(ctx context.Context, f LoginFacts) error) Option {
+func WithLoginCheck(fn func(ctx context.Context, facts LoginFacts) error) Option {
 	return func(m *Passkeys) {
 		m.loginCheck = fn
 		m.loginCheckSet = true

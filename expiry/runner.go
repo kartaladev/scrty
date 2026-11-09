@@ -126,19 +126,19 @@ type Runner struct {
 type Option func(*Runner) error
 
 // WithRunTimeout bounds each task run: the task's Run receives a context whose
-// deadline is at most d after that task started. Default: 0, no deadline beyond
-// the caller's context. A negative d fails construction with ErrInvalidOption.
+// deadline is at most timeout after that task started. Default: 0, no deadline beyond
+// the caller's context. A negative timeout fails construction with ErrInvalidOption.
 //
 // The deadline is advisory. The runner cannot interrupt a Run that ignores its
 // context, and starts no goroutine to try: such a Run keeps going past the
 // deadline, and the next task starts once it returns. Whether a running DELETE
 // stops at the deadline is up to the store's driver.
-func WithRunTimeout(d time.Duration) Option {
+func WithRunTimeout(timeout time.Duration) Option {
 	return func(r *Runner) error {
-		if d < 0 {
-			return fmt.Errorf("%w: run timeout %s is negative", ErrInvalidOption, d)
+		if timeout < 0 {
+			return fmt.Errorf("%w: run timeout %s is negative", ErrInvalidOption, timeout)
 		}
-		r.timeout = d
+		r.timeout = timeout
 		return nil
 	}
 }
@@ -175,27 +175,27 @@ func WithObserver(fn func(Result)) Option {
 // skipped record says what went wrong with a fixed reason (purge, panic,
 // purge-unsupported, busy or cancelled) and the error's Go type, never the
 // error's text, which comes from the owner's store; the full error is in the
-// Result. A nil l fails construction with ErrInvalidOption.
-func WithLogger(l *slog.Logger) Option {
+// Result. A nil logger fails construction with ErrInvalidOption.
+func WithLogger(logger *slog.Logger) Option {
 	return func(r *Runner) error {
-		if l == nil {
+		if logger == nil {
 			return fmt.Errorf("%w: logger is nil", ErrInvalidOption)
 		}
-		r.logger = l
+		r.logger = logger
 		return nil
 	}
 }
 
 // WithClock sets the clock a task run's Elapsed is measured with. Default:
 // clock.System(). It does not drive WithRunTimeout's deadline, which is a
-// context deadline on real time. A nil c, including a typed nil, fails
+// context deadline on real time. A nil clock, including a typed nil, fails
 // construction with ErrInvalidOption.
-func WithClock(c clock.Clock) Option {
+func WithClock(clock clock.Clock) Option {
 	return func(r *Runner) error {
-		if nilcheck.IsNil(c) {
+		if nilcheck.IsNil(clock) {
 			return fmt.Errorf("%w: clock is nil", ErrInvalidOption)
 		}
-		r.clock = c
+		r.clock = clock
 		return nil
 	}
 }

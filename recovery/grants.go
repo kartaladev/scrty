@@ -80,8 +80,8 @@ type GrantRevoker interface {
 // grants by its first revocation, which runs before that write.
 //
 // A nil revoker, typed nil included, is a configuration error.
-func WithGrantRevoker(g GrantRevoker) Option {
-	return func(c *config) { c.grants, c.grantsSet = g, true }
+func WithGrantRevoker(revoker GrantRevoker) Option {
+	return func(c *config) { c.grants, c.grantsSet = revoker, true }
 }
 
 // WithoutRecoveryGrantRevocation keeps the user's application grants when a

@@ -63,13 +63,13 @@ func (s *GrantStore) UseCodes(codes oidcprovider.UnspentCodes) error { return s.
 // only a revocation recorded first can be filled in, keeping the revocation and any
 // sign-in-ended mark. A grant's zero family is refused, as the record no revocation or
 // token could name.
-func (s *GrantStore) Create(ctx context.Context, g *oidcprovider.Grant) error {
+func (s *GrantStore) Create(ctx context.Context, grant *oidcprovider.Grant) error {
 	const op = "create grant"
 
-	if err := storekit.CheckID(g.Family, "grant"); err != nil {
+	if err := storekit.CheckID(grant.Family, "grant"); err != nil {
 		return failed(op, err)
 	}
-	args, err := pgschema.GrantArgs(g)
+	args, err := pgschema.GrantArgs(grant)
 
 	return s.c.insertRecord(ctx, op, pgschema.GrantInsert, args, err)
 }

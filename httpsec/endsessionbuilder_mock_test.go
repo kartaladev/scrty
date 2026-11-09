@@ -42,18 +42,18 @@ func (m *MockEndSessionBuilder) EXPECT() *MockEndSessionBuilderMockRecorder {
 }
 
 // EndSessionURL mocks base method.
-func (m *MockEndSessionBuilder) EndSessionURL(ctx context.Context, s *session.Session, state string) (string, error) {
+func (m *MockEndSessionBuilder) EndSessionURL(ctx context.Context, sess *session.Session, state string) (string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "EndSessionURL", ctx, s, state)
+	ret := m.ctrl.Call(m, "EndSessionURL", ctx, sess, state)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // EndSessionURL indicates an expected call of EndSessionURL.
-func (mr *MockEndSessionBuilderMockRecorder) EndSessionURL(ctx, s, state any) *MockEndSessionBuilderEndSessionURLCall {
+func (mr *MockEndSessionBuilderMockRecorder) EndSessionURL(ctx, sess, state any) *MockEndSessionBuilderEndSessionURLCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "EndSessionURL", reflect.TypeOf((*MockEndSessionBuilder)(nil).EndSessionURL), ctx, s, state)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "EndSessionURL", reflect.TypeOf((*MockEndSessionBuilder)(nil).EndSessionURL), ctx, sess, state)
 	return &MockEndSessionBuilderEndSessionURLCall{Call: call}
 }
 

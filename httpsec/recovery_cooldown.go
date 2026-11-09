@@ -62,7 +62,7 @@ func normalizeRoute(method, path string) Route {
 }
 
 // EnableRecoveryCooldown refuses the routes the consumer marks as sensitive,
-// for d after the user's latest completed account recovery, with
+// for cooldown after the user's latest completed account recovery, with
 // recovery.ErrCooldown (403).
 //
 // The cool-down is off until this option is given; there is no default
@@ -76,17 +76,17 @@ func normalizeRoute(method, path string) Route {
 // and acts only on a request that matches a route, as Route describes, and
 // carries a session. For such a request it reads the user's latest completion
 // (recovery.RecordStore.LatestCompletion) and refuses while now is before that
-// instant plus d. The cool-down is per user, not per session: it is read from
+// instant plus cooldown. The cool-down is per user, not per session: it is read from
 // the recovery record, so logging out and in again does not end it. A request
 // with no session is passed on, for later interceptors and authorization to
 // decide. A lookup that fails refuses the request behind fixed text (500),
 // never the store's own, rather than let a sensitive action through
 // unchecked.
 //
-// New refuses, with an error wrapping ErrConfig, a d of zero or less, no
+// New refuses, with an error wrapping ErrConfig, a cooldown of zero or less, no
 // routes, a route with an empty method or path, and a nil store (a typed nil
 // included).
-func EnableRecoveryCooldown(records recovery.RecordStore, d time.Duration, routes ...Route) Option {
+func EnableRecoveryCooldown(records recovery.RecordStore, cooldown time.Duration, routes ...Route) Option {
 	const option = "EnableRecoveryCooldown"
 
 	return func(c *config) error {
@@ -94,9 +94,9 @@ func EnableRecoveryCooldown(records recovery.RecordStore, d time.Duration, route
 			return err
 		}
 
-		if d <= 0 {
+		if cooldown <= 0 {
 			return newConfigError("%s was given a cool-down of %s; it must be above zero, or "+
-				"leave the option out to have none", option, d)
+				"leave the option out to have none", option, cooldown)
 		}
 
 		if len(routes) == 0 {
@@ -116,7 +116,7 @@ func EnableRecoveryCooldown(records recovery.RecordStore, d time.Duration, route
 			marked[normalizeRoute(r.Method, r.Path)] = struct{}{}
 		}
 
-		c.register(&recoveryCooldown{records: records, window: d, routes: marked, given: given, now: c.now},
+		c.register(&recoveryCooldown{records: records, window: cooldown, routes: marked, given: given, now: c.now},
 			After(OrderBearerToken))
 
 		return nil

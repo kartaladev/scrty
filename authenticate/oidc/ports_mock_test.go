@@ -44,18 +44,18 @@ func (m *MockFlowStore) EXPECT() *MockFlowStoreMockRecorder {
 }
 
 // Begin mocks base method.
-func (m *MockFlowStore) Begin(ctx context.Context, f oidc.Flow) (string, error) {
+func (m *MockFlowStore) Begin(ctx context.Context, flow oidc.Flow) (string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Begin", ctx, f)
+	ret := m.ctrl.Call(m, "Begin", ctx, flow)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // Begin indicates an expected call of Begin.
-func (mr *MockFlowStoreMockRecorder) Begin(ctx, f any) *MockFlowStoreBeginCall {
+func (mr *MockFlowStoreMockRecorder) Begin(ctx, flow any) *MockFlowStoreBeginCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Begin", reflect.TypeOf((*MockFlowStore)(nil).Begin), ctx, f)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Begin", reflect.TypeOf((*MockFlowStore)(nil).Begin), ctx, flow)
 	return &MockFlowStoreBeginCall{Call: call}
 }
 
@@ -326,17 +326,17 @@ func (c *MockLinkStoreFindByExternalCall) DoAndReturn(f func(context.Context, st
 }
 
 // Insert mocks base method.
-func (m *MockLinkStore) Insert(ctx context.Context, l oidc.Link) error {
+func (m *MockLinkStore) Insert(ctx context.Context, link oidc.Link) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Insert", ctx, l)
+	ret := m.ctrl.Call(m, "Insert", ctx, link)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Insert indicates an expected call of Insert.
-func (mr *MockLinkStoreMockRecorder) Insert(ctx, l any) *MockLinkStoreInsertCall {
+func (mr *MockLinkStoreMockRecorder) Insert(ctx, link any) *MockLinkStoreInsertCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Insert", reflect.TypeOf((*MockLinkStore)(nil).Insert), ctx, l)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Insert", reflect.TypeOf((*MockLinkStore)(nil).Insert), ctx, link)
 	return &MockLinkStoreInsertCall{Call: call}
 }
 

@@ -228,38 +228,38 @@ func PasswordlessCookieName(name string) PasswordlessSetting {
 	}
 }
 
-// PasswordlessLimiter counts passwordless begins per source in l instead.
+// PasswordlessLimiter counts passwordless begins per source in limiter instead.
 //
 // Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
 // namespace "passkey-login", or else an in-memory limiter of 30 begins per
 // source per 15 minutes, which holds this process's counts only; behind several
 // replicas, supply a shared factory or limiter. The guard records every begin,
-// so l's limit is a limit on begins, not on failures.
+// so limiter's limit is a limit on begins, not on failures.
 // A limiter handed to several flows shares its key cap among them, so a flood
 // on one refuses new sources on all.
 //
-// The flow's IPv6 aggregate (WithIPv6Aggregate) is sized from l: the
-// aggregate's multiplier, 4 by default, times the limit l reports, over the
-// window l reports, read through ratelimit.PolicyReporter, which the in-memory
+// The flow's IPv6 aggregate (WithIPv6Aggregate) is sized from limiter: the
+// aggregate's multiplier, 4 by default, times the limit limiter reports, over the
+// window limiter reports, read through ratelimit.PolicyReporter, which the in-memory
 // limiter and the shared limiters scrty ships implement. A limiter that does
 // not implement it gets no default aggregate for this flow, and one warning
 // when the chain is built; under an explicit WithIPv6Aggregate it is a
 // configuration error.
 //
 // A nil limiter is refused; omit the setting to keep the default.
-func PasswordlessLimiter(l ratelimit.Limiter) PasswordlessSetting {
+func PasswordlessLimiter(limiter ratelimit.Limiter) PasswordlessSetting {
 	return func(cfg *passwordlessConfig) error {
-		if err := requireDep("PasswordlessLimiter", "limiter", l); err != nil {
+		if err := requireDep("PasswordlessLimiter", "limiter", limiter); err != nil {
 			return err
 		}
 
-		cfg.limiter = l
+		cfg.limiter = limiter
 
 		return nil
 	}
 }
 
-// PasswordlessTokens issues the access token of a passwordless login with g
+// PasswordlessTokens issues the access token of a passwordless login with tokens
 // instead.
 //
 // Default: the token generator given to EnableFormLogin. A chain without form
@@ -269,13 +269,13 @@ func PasswordlessLimiter(l ratelimit.Limiter) PasswordlessSetting {
 // generator is not inherited: the credential is the opened session's
 // identifier, and a generator is a configuration error from New, since a
 // token it minted would not be accepted by that chain.
-func PasswordlessTokens(g token.Generator) PasswordlessSetting {
+func PasswordlessTokens(tokens token.Generator) PasswordlessSetting {
 	return func(cfg *passwordlessConfig) error {
-		if err := requireDep("PasswordlessTokens", "token generator", g); err != nil {
+		if err := requireDep("PasswordlessTokens", "token generator", tokens); err != nil {
 			return err
 		}
 
-		cfg.tokens = g
+		cfg.tokens = tokens
 
 		return nil
 	}

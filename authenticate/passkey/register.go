@@ -20,10 +20,10 @@ import (
 	"github.com/kartaladev/scrty/token/onetime"
 )
 
-// BeginRegistration starts a registration for s's user and returns the
+// BeginRegistration starts a registration for sess's user and returns the
 // creation options for the browser, as the verifier renders them.
 //
-// It admits s first, by the rule the package documentation's Admission
+// It admits sess first, by the rule the package documentation's Admission
 // section states, deciding over rc.MFAMethods, or Deps.MFAMethods when rc
 // lists none, and over the user's own active passkeys when a passkey route
 // can meet the second factor: a stale or insufficiently assured full session
@@ -42,21 +42,21 @@ import (
 //
 // The user's one handle is assigned on their first begin and reused on every
 // later one. The challenge is a one-time token of the purpose
-// "passkey-registration", its subject the user and bound to s's ID, and its
+// "passkey-registration", its subject the user and bound to sess's ID, and its
 // string is the challenge the options carry. Every credential the user holds,
 // in any state, is listed for the authenticator to exclude.
 func (m *Passkeys) BeginRegistration(
-	ctx context.Context, s *session.Session, rc RegistrationContext,
+	ctx context.Context, sess *session.Session, rc RegistrationContext,
 ) (json.RawMessage, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	if err := m.admit(ctx, s, rc); err != nil {
+	if err := m.admit(ctx, sess, rc); err != nil {
 		return nil, err
 	}
 
-	user := s.UserID
+	user := sess.UserID
 
 	details, err := m.users.LoadByUserID(ctx, user)
 	if err != nil {
@@ -72,7 +72,7 @@ func (m *Passkeys) BeginRegistration(
 		return nil, diag.Wrap(err, "passkey: could not resolve the user's names")
 	}
 
-	handle, err := m.handle(ctx, s)
+	handle, err := m.handle(ctx, sess)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +94,7 @@ func (m *Passkeys) BeginRegistration(
 	// One bounded issue, not a count and then an issue: of begins racing for
 	// one user, on this process or on another replica, no more than the limit
 	// are issued a challenge.
-	challenge, _, err := m.registration.IssueWithin(ctx, string(user), m.issueLimit, onetime.WithBinding(s.ID))
+	challenge, _, err := m.registration.IssueWithin(ctx, string(user), m.issueLimit, onetime.WithBinding(sess.ID))
 
 	switch {
 	case errors.Is(err, onetime.ErrIssueLimitReached):
@@ -193,12 +193,12 @@ type RegistrationResult struct {
 	RecoveryNotSetUp bool
 }
 
-// FinishRegistration finishes a registration s began, in this order:
+// FinishRegistration finishes a registration sess began, in this order:
 //
 //  1. Read the response. One the verifier cannot read is ErrMalformedResponse,
 //     and nothing is spent.
 //  2. Spend the challenge it answers: it must be one this manager issued to
-//     s's ID for s's user, unexpired and unspent. It is spent before the
+//     sess's ID for sess's user, unexpired and unspent. It is spent before the
 //     response is verified, whatever happens next, so of racing finishes
 //     presenting one challenge at most one is verified.
 //  3. Verify the response against the relying party and the user-verification
@@ -243,13 +243,13 @@ type RegistrationResult struct {
 // NormalizeName: a name that is too long or holds a control or format
 // character is replaced by the default date name, never truncated or refused.
 func (m *Passkeys) FinishRegistration(
-	ctx context.Context, s *session.Session, body []byte, rc RegistrationContext,
+	ctx context.Context, sess *session.Session, body []byte, rc RegistrationContext,
 ) (*RegistrationResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	if s == nil || s.UserID == "" {
+	if sess == nil || sess.UserID == "" {
 		return nil, authenticate.ErrAuthenticationFailed
 	}
 
@@ -262,7 +262,7 @@ func (m *Passkeys) FinishRegistration(
 		return nil, ErrMalformedResponse
 	}
 
-	challenge, issued, err := m.spendRegistration(ctx, s, parsed.Challenge())
+	challenge, issued, err := m.spendRegistration(ctx, sess, parsed.Challenge())
 	if err != nil {
 		return nil, err
 	}
@@ -287,7 +287,7 @@ func (m *Passkeys) FinishRegistration(
 
 	if m.regCheck != nil {
 		if err := m.regCheck(ctx, RegistrationFacts{
-			User:               s.UserID,
+			User:               sess.UserID,
 			AAGUID:             nc.AAGUID,
 			BackupEligible:     nc.BackupEligible,
 			BackupState:        nc.BackupState,
@@ -300,12 +300,12 @@ func (m *Passkeys) FinishRegistration(
 
 	now := m.clock.Now()
 
-	plan, err := m.planPending(ctx, s, rc, now, issued)
+	plan, err := m.planPending(ctx, sess, rc, now, issued)
 	if err != nil {
 		return nil, err
 	}
 
-	held, err := m.credentials.Count(ctx, s.UserID)
+	held, err := m.credentials.Count(ctx, sess.UserID)
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not count the user's passkeys")
 	}
@@ -321,7 +321,7 @@ func (m *Passkeys) FinishRegistration(
 
 	c := &Credential{
 		ID:                   cid,
-		User:                 s.UserID,
+		User:                 sess.UserID,
 		CredentialID:         nc.CredentialID,
 		PublicKey:            nc.PublicKey,
 		SignCount:            nc.SignCount,

@@ -139,15 +139,15 @@ type encryptedStore struct {
 // storing tokens in the clear, or to no store at all, would be a security
 // decision made on the consumer's behalf at the moment they most clearly asked
 // for the opposite.
-func NewEncryptedStore(inner Store, c Cipher) (Store, error) {
+func NewEncryptedStore(inner Store, cipher Cipher) (Store, error) {
 	if nilcheck.IsNil(inner) {
 		return nil, fmt.Errorf("%w: the inner store must not be nil", ErrConfig)
 	}
-	if nilcheck.IsNil(c) {
+	if nilcheck.IsNil(cipher) {
 		return nil, fmt.Errorf("%w: the cipher must not be nil", ErrConfig)
 	}
 
-	return &encryptedStore{inner: inner, cipher: c}, nil
+	return &encryptedStore{inner: inner, cipher: cipher}, nil
 }
 
 // additionalData is what a session's ID token is sealed against.

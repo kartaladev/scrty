@@ -188,13 +188,13 @@ func (v *Verifier) ParseRegistration(body []byte) (passkey.ParsedRegistration, e
 // presence is always required. The attestation is then judged by the
 // configured attestation mode.
 func (v *Verifier) VerifyRegistration(
-	ctx context.Context, p passkey.ParsedRegistration, exp passkey.RegistrationExpectation,
+	ctx context.Context, parsed passkey.ParsedRegistration, exp passkey.RegistrationExpectation,
 ) (*passkey.CredentialInput, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	pr, ok := p.(*parsedRegistration)
+	pr, ok := parsed.(*parsedRegistration)
 	if !ok || pr == nil || exp.Challenge == "" {
 		return nil, errRegistrationRefused
 	}
@@ -255,25 +255,25 @@ func (v *Verifier) ParseAssertion(body []byte) (passkey.ParsedAssertion, error) 
 }
 
 // VerifyAssertion verifies an assertion ParseAssertion read against the stored
-// credential c, which must be the credential the assertion names, the relying
+// credential, which must be the credential the assertion names, the relying
 // party, its origins, exp's challenge and exp's user-verification requirement,
 // which is required unless exp says passkey.UserVerificationPreferred. User presence is
 // always required. The signature counter is reported, not judged: the core
 // decides what a counter that did not advance means.
 func (v *Verifier) VerifyAssertion(
-	ctx context.Context, p passkey.ParsedAssertion, c *passkey.Credential, exp passkey.AssertionExpectation,
+	ctx context.Context, parsed passkey.ParsedAssertion, credential *passkey.Credential, exp passkey.AssertionExpectation,
 ) (*passkey.AssertionResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	pa, ok := p.(*parsedAssertion)
-	if !ok || pa == nil || c == nil || exp.Challenge == "" || len(c.PublicKey) == 0 {
+	pa, ok := parsed.(*parsedAssertion)
+	if !ok || pa == nil || credential == nil || exp.Challenge == "" || len(credential.PublicKey) == 0 {
 		return nil, errAssertionRefused
 	}
 
 	data := pa.data
-	if !bytes.Equal(data.RawID, c.CredentialID) {
+	if !bytes.Equal(data.RawID, credential.CredentialID) {
 		return nil, errAssertionRefused
 	}
 
@@ -281,7 +281,7 @@ func (v *Verifier) VerifyAssertion(
 		encodeChallenge(exp.Challenge), v.rp.ID, "", v.origins, nil, nil,
 		protocol.TopOriginExplicitVerificationMode, false,
 		exp.UV != passkey.UserVerificationPreferred, true,
-		c.PublicKey, protocol.SignaturePolicy{},
+		credential.PublicKey, protocol.SignaturePolicy{},
 	); err != nil {
 		return nil, errAssertionRefused
 	}

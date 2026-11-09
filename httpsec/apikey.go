@@ -293,15 +293,15 @@ type APIKeyOption func(*apiKeyInterceptor) error
 // to prompt and nothing to keep between requests, so a policy that challenges
 // in the stateless phase refuses outright rather than raising a prompt nothing
 // can answer.
-func EnableAPIKey(m *apikey.Keys, opts ...APIKeyOption) Option {
+func EnableAPIKey(keys *apikey.Keys, opts ...APIKeyOption) Option {
 	const option = "EnableAPIKey"
 
 	return func(c *config) error {
-		if m == nil {
+		if keys == nil {
 			return newConfigError("%s needs an API key manager", option)
 		}
 
-		i := &apiKeyInterceptor{keys: m, now: c.now, scheme: DefaultAPIKeyScheme}
+		i := &apiKeyInterceptor{keys: keys, now: c.now, scheme: DefaultAPIKeyScheme}
 
 		for _, opt := range opts {
 			if opt == nil {
@@ -340,7 +340,7 @@ func WithAPIKeyScheme(scheme string) APIKeyOption {
 	}
 }
 
-// WithAPIKeyLimiter counts failed key verifications through l.
+// WithAPIKeyLimiter counts failed key verifications through limiter.
 //
 // Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
 // namespace "api-key", or else an in-memory limiter of 20 failures per source
@@ -355,9 +355,9 @@ func WithAPIKeyScheme(scheme string) APIKeyOption {
 // A limiter handed to several flows shares its key cap among them, so a flood
 // on one refuses new sources on all.
 //
-// The flow's IPv6 aggregate (WithIPv6Aggregate) is sized from l: the
-// aggregate's multiplier, 4 by default, times the limit l reports, over the
-// window l reports, read through ratelimit.PolicyReporter, which the in-memory
+// The flow's IPv6 aggregate (WithIPv6Aggregate) is sized from limiter: the
+// aggregate's multiplier, 4 by default, times the limit limiter reports, over the
+// window limiter reports, read through ratelimit.PolicyReporter, which the in-memory
 // limiter and the shared limiters scrty ships implement. A limiter that does
 // not implement it gets no default aggregate for this flow, and one warning
 // when the chain is built; under an explicit WithIPv6Aggregate it is a
@@ -367,13 +367,13 @@ func WithAPIKeyScheme(scheme string) APIKeyOption {
 // a failed guess, and a request carrying no key at all never reaches it.
 //
 // A nil limiter, including an interface holding a nil pointer, is refused.
-func WithAPIKeyLimiter(l ratelimit.Limiter) APIKeyOption {
+func WithAPIKeyLimiter(limiter ratelimit.Limiter) APIKeyOption {
 	return func(i *apiKeyInterceptor) error {
-		if err := requireDep("WithAPIKeyLimiter", "limiter", l); err != nil {
+		if err := requireDep("WithAPIKeyLimiter", "limiter", limiter); err != nil {
 			return err
 		}
 
-		i.limiter = l
+		i.limiter = limiter
 
 		return nil
 	}

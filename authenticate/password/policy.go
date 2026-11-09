@@ -253,8 +253,8 @@ func (c *policyConfig) validateRules() error {
 //
 // Default: [DefaultMinLength]. A minimum below [MinLengthFloor] fails
 // construction.
-func MinLength(n int) PolicyOption {
-	return func(c *policyConfig) { c.minLength = n }
+func MinLength(minimum int) PolicyOption {
+	return func(c *policyConfig) { c.minLength = minimum }
 }
 
 // MaxLength replaces the maximum length, counted in code points. A longer
@@ -262,8 +262,8 @@ func MinLength(n int) PolicyOption {
 //
 // Default: [DefaultMaxLength]. A maximum below [MaxLengthFloor], or below the
 // minimum, fails construction.
-func MaxLength(n int) PolicyOption {
-	return func(c *policyConfig) { c.maxLength = n }
+func MaxLength(maximum int) PolicyOption {
+	return func(c *policyConfig) { c.maxLength = maximum }
 }
 
 // WithoutCommonPasswords removes the common-password rule.
@@ -321,8 +321,8 @@ func ContextWords(fn ContextWordsFunc) PolicyOption {
 // Default: the library's Argon2id encoder at its default parameters
 // ([NewArgon2idEncoder]). A nil encoder, typed nil included, fails
 // construction.
-func WithEncoder(e Encoder) PolicyOption {
-	return func(c *policyConfig) { c.enc, c.encSet = e, true }
+func WithEncoder(encoder Encoder) PolicyOption {
+	return func(c *policyConfig) { c.enc, c.encSet = encoder, true }
 }
 
 // WithClock replaces the clock [Policy.Change] reads the time of the change
@@ -330,8 +330,8 @@ func WithEncoder(e Encoder) PolicyOption {
 //
 // Default: clock.System(). A nil clock, typed nil included, fails
 // construction.
-func WithClock(c clock.Clock) PolicyOption {
-	return func(cfg *policyConfig) { cfg.clock = c }
+func WithClock(clock clock.Clock) PolicyOption {
+	return func(cfg *policyConfig) { cfg.clock = clock }
 }
 
 // WithPolicyLogger replaces the logger the policy writes to when it accepts a
@@ -341,8 +341,8 @@ func WithClock(c clock.Clock) PolicyOption {
 //
 // Default: slog.Default(), read when [NewPolicy] runs. A nil logger, typed nil
 // included, fails construction.
-func WithPolicyLogger(l *slog.Logger) PolicyOption {
-	return func(c *policyConfig) { c.logger = l }
+func WithPolicyLogger(logger *slog.Logger) PolicyOption {
+	return func(c *policyConfig) { c.logger = logger }
 }
 
 // Check refuses candidate for user with a [RejectedError] naming the first

@@ -53,7 +53,7 @@ type provingEnrolmentStore struct {
 }
 
 // NewEnrolmentStore wraps inner so an MFA secret, and the code emailed on the
-// enrolment path, are sealed by c before they are stored and opened when they
+// enrolment path, are sealed by cipher before they are stored and opened when they
 // are read. They are the only fields sealed: every other field and every other
 // operation passes straight through, and the values inner receives are the
 // raw sealed bytes, which a store with a text column encodes itself.
@@ -84,14 +84,14 @@ type provingEnrolmentStore struct {
 // that removes its key fail every read of the user's enrolment. The clock
 // defaults to clock.System(); WithClock replaces it.
 //
-// A failure of c or of inner is returned behind fixed text that names no user
+// A failure of cipher or of inner is returned behind fixed text that names no user
 // and carries none of the failing error's text, and still matches that error
 // through errors.Is and errors.As; an inner error matching
 // mfa.ErrAlreadyEnrolled comes back as that sentinel itself, bare, with no
 // store text. Nothing is stored when sealing fails.
 //
 // By default a read that opens a secret under a key other than the active
-// one re-seals it under the active key and hands the old and new values to r.
+// one re-seals it under the active key and hands the old and new values to resealer.
 // A failed re-seal, or a cipher that cannot say which key is active, never
 // fails the read. WithResealOnRead(false) turns re-sealing off. The emailed
 // code is never re-sealed: it lives for minutes, so a code under a retired key
@@ -107,25 +107,25 @@ type provingEnrolmentStore struct {
 // When inner does not, neither does the returned store.
 //
 // A nil inner store or a nil cipher, typed nil included, or a nil option is a
-// configuration error matching ErrConfig, and so is a nil r
+// configuration error matching ErrConfig, and so is a nil resealer
 // unless re-sealing on read is turned off, and a nil clock given to
-// WithClock. With re-sealing off, r is not used and may be nil.
+// WithClock. With re-sealing off, resealer is not used and may be nil.
 func NewEnrolmentStore(
-	inner mfa.EnrolmentStore, r EnrolmentResealer, c Cipher, opts ...Option,
+	inner mfa.EnrolmentStore, resealer EnrolmentResealer, cipher Cipher, opts ...Option,
 ) (mfa.EnrolmentStore, error) {
 	if nilcheck.IsNil(inner) {
 		return nil, fmt.Errorf("%w: the sealing MFA enrolment store has no inner store", ErrConfig)
 	}
-	if nilcheck.IsNil(c) {
+	if nilcheck.IsNil(cipher) {
 		return nil, fmt.Errorf("%w: the sealing MFA enrolment store has no cipher", ErrConfig)
 	}
 
-	o, err := newOptions("MFA enrolment", !nilcheck.IsNil(r), true, opts)
+	o, err := newOptions("MFA enrolment", !nilcheck.IsNil(resealer), true, opts)
 	if err != nil {
 		return nil, err
 	}
 
-	s := &enrolmentStore{inner: inner, resealer: r, cipher: c, opts: o}
+	s := &enrolmentStore{inner: inner, resealer: resealer, cipher: cipher, opts: o}
 	if proofs, ok := inner.(mfa.DeviceProofStore); ok {
 		return provingEnrolmentStore{enrolmentStore: s, proofs: proofs}, nil
 	}

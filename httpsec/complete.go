@@ -312,13 +312,13 @@ func postAuthenticationInput(
 // dressed as a caller. It derives rather than replaces: everything already on
 // ctx, including an upstream request identifier and the client's cancellation,
 // is still there.
-func WithCaller(ctx context.Context, a *authenticate.Authentication) context.Context {
-	ctx = authenticate.WithAuthentication(ctx, a)
-	if a == nil || a.Principal == nil {
+func WithCaller(ctx context.Context, authentication *authenticate.Authentication) context.Context {
+	ctx = authenticate.WithAuthentication(ctx, authentication)
+	if authentication == nil || authentication.Principal == nil {
 		return ctx
 	}
 
-	return identity.WithPrincipal(ctx, a.Principal)
+	return identity.WithPrincipal(ctx, authentication.Principal)
 }
 
 // challengeMarker records on a session that a challenge is owed, in the fields

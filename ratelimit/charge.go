@@ -38,7 +38,7 @@ type Charger interface {
 	// nothing is recorded.
 	Charge(ctx context.Context, key string) (r Receipt, exceeded bool, err error)
 
-	// Refund removes the failure r recorded, if it is still in the window,
+	// Refund removes the failure receipt recorded, if it is still in the window,
 	// and no other: a refund for a failure that has left the window removes
 	// nothing, and refunding the zero Receipt does nothing.
 	//
@@ -53,7 +53,7 @@ type Charger interface {
 	// The context may have had its cancellation stripped, as with
 	// RecordFailure, so an implementation that reaches a remote store bounds
 	// its own I/O. An error is an outage: the failure may still be counted.
-	Refund(ctx context.Context, r Receipt) error
+	Refund(ctx context.Context, receipt Receipt) error
 }
 
 // Receipt names the one failure a Charge recorded: the key it was charged to,

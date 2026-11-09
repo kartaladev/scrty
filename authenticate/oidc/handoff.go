@@ -239,7 +239,7 @@ type RedeemCandidate struct {
 //
 // The first check that returns an error stops the redemption, later checks do
 // not run, the error is returned unchanged, and the code stays redeemable.
-type RedeemCheck func(ctx context.Context, c RedeemCandidate) error
+type RedeemCheck func(ctx context.Context, candidate RedeemCandidate) error
 
 // HandoffResult is a redeemed handoff: the user it authenticates, loaded
 // afresh by the recorded reference, and the provider session it came from.
@@ -477,12 +477,12 @@ type HandoffOption func(*Handoff) error
 // It exists so a test can fix or fail the source; production code has no
 // reason to replace it, and a source that is not cryptographically secure
 // makes every code guessable.
-func WithHandoffRandom(r io.Reader) HandoffOption {
+func WithHandoffRandom(src io.Reader) HandoffOption {
 	return func(h *Handoff) error {
-		if nilcheck.IsNil(r) {
+		if nilcheck.IsNil(src) {
 			return fmt.Errorf("%w: WithHandoffRandom was given nil", ErrConfig)
 		}
-		h.random = r
+		h.random = src
 		return nil
 	}
 }
@@ -506,12 +506,12 @@ func WithHandoffClock(clk clock.Clock) HandoffOption {
 //
 // The record ID names the record for the store; it is not part of the code,
 // which carries its own random token id.
-func WithHandoffIDGenerator(g id.Generator) HandoffOption {
+func WithHandoffIDGenerator(ids id.Generator) HandoffOption {
 	return func(h *Handoff) error {
-		if nilcheck.IsNil(g) {
+		if nilcheck.IsNil(ids) {
 			return fmt.Errorf("%w: WithHandoffIDGenerator was given nil", ErrConfig)
 		}
-		h.ids = g
+		h.ids = ids
 		return nil
 	}
 }
@@ -523,12 +523,12 @@ func WithHandoffIDGenerator(g id.Generator) HandoffOption {
 // place the cause appears: a miss, an inactive user or a reference mismatch at
 // DEBUG, a store or loader failure at ERROR. No record carries the code, its
 // secret, the ID token or a claim value.
-func WithHandoffLogger(l *slog.Logger) HandoffOption {
+func WithHandoffLogger(logger *slog.Logger) HandoffOption {
 	return func(h *Handoff) error {
-		if l == nil {
+		if logger == nil {
 			return fmt.Errorf("%w: WithHandoffLogger was given nil", ErrConfig)
 		}
-		h.log = l
+		h.log = logger
 		return nil
 	}
 }
@@ -654,14 +654,14 @@ func (s *MemoryHandoffStore) DeleteExpired(_ context.Context, before time.Time) 
 
 var _ HandoffStore = (*MemoryHandoffStore)(nil)
 
-// HandoffExpiryTask returns the task that deletes h's expired handoff records,
-// spent or not, through h.PurgeExpired.
+// HandoffExpiryTask returns the task that deletes the expired records of handoff,
+// spent or not, through handoff.PurgeExpired.
 //
 // The task is named "oidc-handoffs"; a consumer renames
 // it by setting Name on the returned value. It sets no Interval, because only
 // the deployment knows its cadence, and it accepts no cutoff: the manager uses
 // its own clock's now. It never deletes a code that has not expired, and it
 // never touches OIDC links, sessions or identity records.
-func HandoffExpiryTask(h *Handoff) expiry.Task {
-	return expiry.Task{Name: "oidc-handoffs", Run: h.PurgeExpired}
+func HandoffExpiryTask(handoff *Handoff) expiry.Task {
+	return expiry.Task{Name: "oidc-handoffs", Run: handoff.PurgeExpired}
 }

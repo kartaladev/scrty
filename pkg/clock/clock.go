@@ -26,7 +26,7 @@ type Clock interface {
 // clockwork's fake clock is a conforming implementation.
 type Timed interface {
 	Clock
-	After(d time.Duration) <-chan time.Time
+	After(delay time.Duration) <-chan time.Time
 }
 
 // System returns the clock backed by package time. It is every component's

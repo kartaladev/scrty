@@ -263,13 +263,13 @@ func (b *sessionBearer) Intercept(ex *Exchange, next Next) error {
 // only a digest of the high-entropy identifier, so a digest lookup needs no
 // constant-time comparison. The cost is one store read per request, which the
 // signed-token bearer also pays.
-func EnableSessionBearer(d SessionBearerDeps, opts ...SessionBearerOption) Option {
+func EnableSessionBearer(deps SessionBearerDeps, opts ...SessionBearerOption) Option {
 	const option = "EnableSessionBearer"
 
 	return func(c *config) error {
 		b := &sessionBearer{
-			sessions: d.Sessions,
-			users:    d.Users,
+			sessions: deps.Sessions,
+			users:    deps.Users,
 			now:      c.now,
 			scheme:   DefaultBearerScheme,
 		}
@@ -297,14 +297,14 @@ func EnableSessionBearer(d SessionBearerDeps, opts ...SessionBearerOption) Optio
 			}); err != nil {
 				return err
 			}
-			if err := requireDep(option, "session manager", d.Sessions); err != nil {
+			if err := requireDep(option, "session manager", deps.Sessions); err != nil {
 				return err
 			}
 
-			return requireDep(option, "user loader", d.Users)
+			return requireDep(option, "user loader", deps.Users)
 		})
 
-		c.useSessions(d.Sessions)
+		c.useSessions(deps.Sessions)
 		c.wire(b.wire)
 		// The renewal endpoint may be enabled after this option, so it is
 		// handed to the core once every option has been applied.
@@ -370,7 +370,7 @@ func checkTokenGenerator(c *config, option, field string, g token.Generator) err
 }
 
 // WithSessionBearerLimiter counts the unknown session references each source
-// presents in l.
+// presents in limiter.
 //
 // Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
 // namespace "session-reference", or else an in-memory limiter of 100 failures
@@ -393,17 +393,17 @@ func checkTokenGenerator(c *config, option, field string, g token.Generator) err
 // address (a proxy or NAT) every client counts against one allowance. Configure
 // the framework's trusted-proxy setting (gin's SetTrustedProxies, fiber's
 // TrustedProxies) so the real client address is the one used. The flow's IPv6
-// aggregate (WithIPv6Aggregate) is sized from l when l reports its policy
+// aggregate (WithIPv6Aggregate) is sized from limiter when limiter reports its policy
 // (ratelimit.PolicyReporter), as for WithAPIKeyLimiter.
 //
 // A nil limiter, including an interface holding a nil pointer, is refused.
-func WithSessionBearerLimiter(l ratelimit.Limiter) SessionBearerOption {
+func WithSessionBearerLimiter(limiter ratelimit.Limiter) SessionBearerOption {
 	return func(b *sessionBearer) error {
-		if err := requireDep("WithSessionBearerLimiter", "limiter", l); err != nil {
+		if err := requireDep("WithSessionBearerLimiter", "limiter", limiter); err != nil {
 			return err
 		}
 
-		b.limiter = l
+		b.limiter = limiter
 
 		return nil
 	}

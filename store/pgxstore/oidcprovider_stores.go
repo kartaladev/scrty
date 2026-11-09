@@ -125,13 +125,13 @@ func NewPendingRequestStore(pool *pgxpool.Pool, opts ...Option) (*PendingRequest
 }
 
 // Create implements oidcprovider.PendingRequestStore.
-func (s *PendingRequestStore) Create(ctx context.Context, r *oidcprovider.PendingRequest) error {
+func (s *PendingRequestStore) Create(ctx context.Context, request *oidcprovider.PendingRequest) error {
 	const op = "create pending request"
 
-	if err := storekit.CheckID(r.ID, "pending request"); err != nil {
+	if err := storekit.CheckID(request.ID, "pending request"); err != nil {
 		return failed(op, err)
 	}
-	args, err := pgschema.PendingRequestArgs(r)
+	args, err := pgschema.PendingRequestArgs(request)
 
 	return s.c.insertRecord(ctx, op, pgschema.PendingRequestInsert, args, err)
 }
@@ -185,13 +185,13 @@ func NewCodeStore(pool *pgxpool.Pool, opts ...Option) (*CodeStore, error) {
 }
 
 // Create implements oidcprovider.CodeStore.
-func (s *CodeStore) Create(ctx context.Context, r *oidcprovider.CodeRecord) error {
+func (s *CodeStore) Create(ctx context.Context, record *oidcprovider.CodeRecord) error {
 	const op = "create code record"
 
-	if err := storekit.CheckID(r.TokenID, "code record"); err != nil {
+	if err := storekit.CheckID(record.TokenID, "code record"); err != nil {
 		return failed(op, err)
 	}
-	args, err := pgschema.CodeArgs(r)
+	args, err := pgschema.CodeArgs(record)
 
 	return s.c.insertRecord(ctx, op, pgschema.CodeInsert, args, err)
 }
@@ -334,13 +334,13 @@ func NewAccessTokenStore(pool *pgxpool.Pool, opts ...Option) (*AccessTokenStore,
 }
 
 // Create implements oidcprovider.AccessTokenStore.
-func (s *AccessTokenStore) Create(ctx context.Context, r *oidcprovider.AccessTokenRecord) error {
+func (s *AccessTokenStore) Create(ctx context.Context, record *oidcprovider.AccessTokenRecord) error {
 	const op = "create access token"
 
-	if err := storekit.CheckID(r.ID, "access token"); err != nil {
+	if err := storekit.CheckID(record.ID, "access token"); err != nil {
 		return failed(op, err)
 	}
-	args, err := pgschema.AccessTokenArgs(r)
+	args, err := pgschema.AccessTokenArgs(record)
 
 	return s.c.insertRecord(ctx, op, pgschema.AccessTokenInsert, args, err)
 }

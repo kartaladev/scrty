@@ -751,7 +751,7 @@ func (h *InMemoryHistory) writeLocked(w historyWrite) {
 
 // RecentPasswords implements password.History.
 func (h *InMemoryHistory) RecentPasswords(
-	ctx context.Context, user identity.UserID, n int,
+	ctx context.Context, user identity.UserID, limit int,
 ) ([][]byte, error) {
 	var entries [][]byte
 
@@ -765,14 +765,14 @@ func (h *InMemoryHistory) RecentPasswords(
 		h.mu.Unlock()
 	}
 
-	if n <= 0 || len(entries) == 0 {
+	if limit <= 0 || len(entries) == 0 {
 		return nil, nil
 	}
 
 	// Each hash is copied out, so the caller writing to one never reaches a
 	// stored entry, committed or staged.
-	out := make([][]byte, 0, min(n, len(entries)))
-	for i := len(entries) - 1; i >= 0 && len(out) < n; i-- {
+	out := make([][]byte, 0, min(limit, len(entries)))
+	for i := len(entries) - 1; i >= 0 && len(out) < limit; i-- {
 		out = append(out, bytes.Clone(entries[i]))
 	}
 

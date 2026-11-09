@@ -43,18 +43,18 @@ func (m *MockAuthenticator) EXPECT() *MockAuthenticatorMockRecorder {
 }
 
 // Authenticate mocks base method.
-func (m *MockAuthenticator) Authenticate(ctx context.Context, c identity.Credentials) (*authenticate.Authentication, error) {
+func (m *MockAuthenticator) Authenticate(ctx context.Context, credentials identity.Credentials) (*authenticate.Authentication, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Authenticate", ctx, c)
+	ret := m.ctrl.Call(m, "Authenticate", ctx, credentials)
 	ret0, _ := ret[0].(*authenticate.Authentication)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // Authenticate indicates an expected call of Authenticate.
-func (mr *MockAuthenticatorMockRecorder) Authenticate(ctx, c any) *MockAuthenticatorAuthenticateCall {
+func (mr *MockAuthenticatorMockRecorder) Authenticate(ctx, credentials any) *MockAuthenticatorAuthenticateCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Authenticate", reflect.TypeOf((*MockAuthenticator)(nil).Authenticate), ctx, c)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Authenticate", reflect.TypeOf((*MockAuthenticator)(nil).Authenticate), ctx, credentials)
 	return &MockAuthenticatorAuthenticateCall{Call: call}
 }
 
@@ -64,19 +64,19 @@ type MockAuthenticatorAuthenticateCall struct {
 }
 
 // Return rewrite *gomock.Call.Return
-func (c_2 *MockAuthenticatorAuthenticateCall) Return(arg0 *authenticate.Authentication, arg1 error) *MockAuthenticatorAuthenticateCall {
-	c_2.Call = c_2.Call.Return(arg0, arg1)
-	return c_2
+func (c *MockAuthenticatorAuthenticateCall) Return(arg0 *authenticate.Authentication, arg1 error) *MockAuthenticatorAuthenticateCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
 }
 
 // Do rewrite *gomock.Call.Do
-func (c_2 *MockAuthenticatorAuthenticateCall) Do(f func(context.Context, identity.Credentials) (*authenticate.Authentication, error)) *MockAuthenticatorAuthenticateCall {
-	c_2.Call = c_2.Call.Do(f)
-	return c_2
+func (c *MockAuthenticatorAuthenticateCall) Do(f func(context.Context, identity.Credentials) (*authenticate.Authentication, error)) *MockAuthenticatorAuthenticateCall {
+	c.Call = c.Call.Do(f)
+	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c_2 *MockAuthenticatorAuthenticateCall) DoAndReturn(f func(context.Context, identity.Credentials) (*authenticate.Authentication, error)) *MockAuthenticatorAuthenticateCall {
-	c_2.Call = c_2.Call.DoAndReturn(f)
-	return c_2
+func (c *MockAuthenticatorAuthenticateCall) DoAndReturn(f func(context.Context, identity.Credentials) (*authenticate.Authentication, error)) *MockAuthenticatorAuthenticateCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
 }

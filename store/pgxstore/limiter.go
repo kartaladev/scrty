@@ -208,7 +208,7 @@ func (l *Limiter) Charge(ctx context.Context, key string) (ratelimit.Receipt, bo
 	return l.limiter.Charge(ctx, key)
 }
 
-// Refund removes the one failure r recorded, while it is still in the
+// Refund removes the one failure receipt recorded, while it is still in the
 // window, in one statement on the key's row; of two failures stamped at the
 // same instant it removes one. The zero Receipt does nothing. It implements
 // ratelimit.Charger.
@@ -218,8 +218,8 @@ func (l *Limiter) Charge(ctx context.Context, key string) (ratelimit.Receipt, bo
 // database is an error wrapping ratelimit.ErrBackendUnavailable, and the
 // failure stays counted; in fall-back mode, during an outage, the refund is
 // made on this replica's local count.
-func (l *Limiter) Refund(ctx context.Context, r ratelimit.Receipt) error {
-	return l.limiter.Refund(ctx, r)
+func (l *Limiter) Refund(ctx context.Context, receipt ratelimit.Receipt) error {
+	return l.limiter.Refund(ctx, receipt)
 }
 
 // Policy reports the limit and window the limiter was built with
@@ -365,8 +365,8 @@ func WithLimiterClock(clk clock.Clock) LimiterOption {
 //
 // A mode other than the three ratelimit declares fails construction with
 // ratelimit.ErrConfig.
-func WithLimiterOnUnavailable(m ratelimit.UnavailableMode) LimiterOption {
-	return func(c *limiterConfig) { c.core.Unavailable.Mode = m }
+func WithLimiterOnUnavailable(mode ratelimit.UnavailableMode) LimiterOption {
+	return func(c *limiterConfig) { c.core.Unavailable.Mode = mode }
 }
 
 // WithLimiterOperationTimeout bounds each call to the database, records
@@ -384,8 +384,8 @@ func WithLimiterOnUnavailable(m ratelimit.UnavailableMode) LimiterOption {
 // A zero or negative timeout, or one above 2147483647ms (about 24.8 days),
 // the most PostgreSQL accepts for lock_timeout, fails construction with
 // ratelimit.ErrConfig.
-func WithLimiterOperationTimeout(d time.Duration) LimiterOption {
-	return func(c *limiterConfig) { c.core.Unavailable.Timeout = d }
+func WithLimiterOperationTimeout(timeout time.Duration) LimiterOption {
+	return func(c *limiterConfig) { c.core.Unavailable.Timeout = timeout }
 }
 
 // WithLimiterProbeInterval sets how long the limiter answers from its
@@ -395,8 +395,8 @@ func WithLimiterOperationTimeout(d time.Duration) LimiterOption {
 // connection pool.
 //
 // A zero or negative interval fails construction with ratelimit.ErrConfig.
-func WithLimiterProbeInterval(d time.Duration) LimiterOption {
-	return func(c *limiterConfig) { c.core.Unavailable.ProbeInterval = d }
+func WithLimiterProbeInterval(interval time.Duration) LimiterOption {
+	return func(c *limiterConfig) { c.core.Unavailable.ProbeInterval = interval }
 }
 
 // WithLimiterUnavailableLogInterval sets how long, in
@@ -408,8 +408,8 @@ func WithLimiterProbeInterval(d time.Duration) LimiterOption {
 // many records were suppressed. An interval of zero or less writes every
 // record, for a consumer whose own handler samples. The other modes write
 // only their transitions, and are not sampled.
-func WithLimiterUnavailableLogInterval(d time.Duration) LimiterOption {
-	return func(c *limiterConfig) { c.core.Unavailable.LogInterval = d }
+func WithLimiterUnavailableLogInterval(interval time.Duration) LimiterOption {
+	return func(c *limiterConfig) { c.core.Unavailable.LogInterval = interval }
 }
 
 // WithLimiterLogger sets where the limiter writes its outage records: the
@@ -417,8 +417,8 @@ func WithLimiterUnavailableLogInterval(d time.Duration) LimiterOption {
 //
 // A nil logger fails construction with ratelimit.ErrConfig, because the
 // outage records would be lost.
-func WithLimiterLogger(l *slog.Logger) LimiterOption {
-	return func(c *limiterConfig) { c.core.Unavailable.Logger = l }
+func WithLimiterLogger(logger *slog.Logger) LimiterOption {
+	return func(c *limiterConfig) { c.core.Unavailable.Logger = logger }
 }
 
 // WithLimiterPruneBatchSize sets how many keys one batch of the factory's
@@ -432,8 +432,8 @@ func WithLimiterLogger(l *slog.Logger) LimiterOption {
 //
 // Only a factory's prune uses it, but NewLimiter refuses a size below 1 too,
 // as it refuses every invalid option.
-func WithLimiterPruneBatchSize(n int) LimiterOption {
-	return func(c *limiterConfig) { c.core.PruneBatchSize = n }
+func WithLimiterPruneBatchSize(size int) LimiterOption {
+	return func(c *limiterConfig) { c.core.PruneBatchSize = size }
 }
 
 var (

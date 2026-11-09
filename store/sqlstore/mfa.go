@@ -18,10 +18,10 @@ import (
 // NewEnrolmentStore returns a durable MFA enrolment store on db, keeping
 // enrolments in the mfa_enrolments table the migrate package creates.
 //
-// Each secret is sealed with c before it is written and opened when it is
+// Each secret is sealed with cipher before it is written and opened when it is
 // read, through seal.NewEnrolmentStore, bound to the enrolment generation and
 // the user reference; the column holds the sealed value base64url-encoded.
-// There is no unsealed variant, and a nil c, typed nil included, is a
+// There is no unsealed variant, and a nil cipher, typed nil included, is a
 // configuration error. A secret that will not open, a stored value that is
 // not base64url, and a database failure are each an error with the found
 // flag false, never an absent enrolment, which a caller would read as "no
@@ -45,10 +45,10 @@ import (
 // concurrent charges against one code no more than mfa.MaxEmailCodeAttempts
 // do. The nil generation is bound as NULL, stored and compared, so it matches
 // no enrolment, not even one stored without a generation. The emailed code is
-// sealed with c too, bound to the user reference and the generation, in its
+// sealed with cipher too, bound to the user reference and the generation, in its
 // own base64url column; it is never re-sealed on read.
 //
-// By default a read re-seals, under c's active key, a secret that opened under
+// By default a read re-seals, under cipher's active key, a secret that opened under
 // a retired one, with one conditional update that replaces the stored value
 // only while it still holds the value that was read, so a new pending
 // enrolment written in between keeps its new secret. A read inside a caller's
@@ -70,17 +70,17 @@ import (
 //     step, device proof, completion, charge or deletion for such a
 //     reference matches nothing.
 //   - Stored times are UTC, truncated to the microsecond.
-func NewEnrolmentStore(db *sql.DB, c seal.Cipher, opts ...Option) (mfa.EnrolmentStore, error) {
+func NewEnrolmentStore(db *sql.DB, cipher seal.Cipher, opts ...Option) (mfa.EnrolmentStore, error) {
 	cfg, err := newConfig(db, opts, optIDGenerator, optClock, optResealOnRead)
 	if err != nil {
 		return nil, err
 	}
-	if err := storekit.RequireCipher(c, ErrConfig); err != nil {
+	if err := storekit.RequireCipher(cipher, ErrConfig); err != nil {
 		return nil, err
 	}
 
 	inner := &enrolmentStore{c: cfg}
-	s, err := seal.NewEnrolmentStore(inner, inner, c, seal.WithClock(cfg.clock), seal.WithResealOnRead(cfg.resealOnRead))
+	s, err := seal.NewEnrolmentStore(inner, inner, cipher, seal.WithClock(cfg.clock), seal.WithResealOnRead(cfg.resealOnRead))
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrConfig, err)
 	}

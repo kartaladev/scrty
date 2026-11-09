@@ -247,7 +247,7 @@ func (l *Limiter) Charge(ctx context.Context, key string) (ratelimit.Receipt, bo
 	return l.limiter.Charge(ctx, key)
 }
 
-// Refund removes the one failure r recorded, while it is still in the window,
+// Refund removes the one failure receipt recorded, while it is still in the window,
 // in one script; of two failures stamped in the same microsecond it removes
 // one. It leaves the key's lifetime as it is. The zero Receipt does nothing.
 // It implements ratelimit.Charger.
@@ -257,8 +257,8 @@ func (l *Limiter) Charge(ctx context.Context, key string) (ratelimit.Receipt, bo
 // server is an error wrapping ratelimit.ErrBackendUnavailable, and the failure
 // stays counted; in fall-back mode, during an outage, the refund is made on
 // this replica's local count.
-func (l *Limiter) Refund(ctx context.Context, r ratelimit.Receipt) error {
-	return l.limiter.Refund(ctx, r)
+func (l *Limiter) Refund(ctx context.Context, receipt ratelimit.Receipt) error {
+	return l.limiter.Refund(ctx, receipt)
 }
 
 // Policy reports the limit and window the limiter was built with

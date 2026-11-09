@@ -364,15 +364,15 @@ func (c *config) useSessions(m *session.Sessions) {
 //
 // Default: the manager of the first enabled built-in that was wired to one.
 // A chain with none records no activity and refuses to store an enrolment mark.
-func WithSessions(m *session.Sessions) Option {
+func WithSessions(sessions *session.Sessions) Option {
 	return func(c *config) error {
-		if err := requireDep("WithSessions", "session manager", m); err != nil {
+		if err := requireDep("WithSessions", "session manager", sessions); err != nil {
 			return err
 		}
 
-		c.sessions = m
+		c.sessions = sessions
 		c.sessionsExplicit = true
-		c.addSessionManager(m)
+		c.addSessionManager(sessions)
 		return nil
 	}
 }
@@ -772,7 +772,7 @@ func (c *config) build() (*Chain, error) {
 	return chain, nil
 }
 
-// WithPolicyEngine evaluates every policy phase through e.
+// WithPolicyEngine evaluates every policy phase through engine.
 //
 // Default: no engine, under which every phase allows and the chain's decisions
 // rest on authentication and authorization alone. Supply one to have lockout,
@@ -781,19 +781,19 @@ func (c *config) build() (*Chain, error) {
 // A nil engine is refused: it would read as "no policies" while the consumer
 // believed their policies were running.
 //
-// Register every policy on e before the chain is built. Assembly checks that
+// Register every policy on engine before the chain is built. Assembly checks that
 // each challenge a registered policy can raise has something on the chain to
 // enforce it, and can only see the policies registered by then. A policy added
 // afterwards escapes that check; a challenge it raises that nothing enforces is
 // refused at runtime instead, with an error wrapping ErrConfig, on every
 // request that raises it.
-func WithPolicyEngine(e *policy.Engine) Option {
+func WithPolicyEngine(engine *policy.Engine) Option {
 	return func(c *config) error {
-		if err := requireDep("WithPolicyEngine", "policy engine", e); err != nil {
+		if err := requireDep("WithPolicyEngine", "policy engine", engine); err != nil {
 			return err
 		}
 
-		c.engine = e
+		c.engine = engine
 		return nil
 	}
 }
@@ -858,7 +858,7 @@ func WithChallengeEnforcer(kind policy.ChallengeKind) Option {
 	}
 }
 
-// WithLogger writes the chain's own records through l.
+// WithLogger writes the chain's own records through logger.
 //
 // Default: slog.Default(), so a consumer who configures logging once for their
 // application sees the chain's records without wiring anything here.
@@ -879,18 +879,18 @@ func WithChallengeEnforcer(kind policy.ChallengeKind) Option {
 // error's text" explains, with the deliberate exceptions it names. A consumer
 // who wants a dependency's own text logs it inside their own implementation of
 // the port that failed.
-func WithLogger(l *slog.Logger) Option {
+func WithLogger(logger *slog.Logger) Option {
 	return func(c *config) error {
-		if err := requireDep("WithLogger", "logger", l); err != nil {
+		if err := requireDep("WithLogger", "logger", logger); err != nil {
 			return err
 		}
 
-		c.logger = l
+		c.logger = logger
 		return nil
 	}
 }
 
-// WithRateLimiterFactory builds every limiter the chain builds through f, each
+// WithRateLimiterFactory builds every limiter the chain builds through factory, each
 // under its flow's namespace with that flow's own limit and window, so a
 // consumer who moves the counts to shared storage keeps every flow's policy.
 //
@@ -903,13 +903,13 @@ func WithLogger(l *slog.Logger) Option {
 // WithMagicLinkLimiter, WithOIDCHandoffLimiter, PasswordlessLimiter,
 // WithRecoveryLimiter, WithRecoveryStartLimiter, WithRecoveryUserLimiter,
 // WithMFAVerifyLimiter, WithEnrolmentBeginLimiter, WithEnrolmentConfirmLimiter)
-// wins, and f is never asked for that flow; then f; then the in-memory default.
+// wins, and factory is never asked for that flow; then factory; then the in-memory default.
 //
 // The namespaces are fixed: "api-key", "magic-link-redeem", "oidc.handoff",
 // "passkey-login", "account-recovery" and "account-recovery-start" for the
 // source guards, and "mfa-verify", "mfa-enrol-begin", "mfa-enrol-confirm" and
 // "recovery-user" for the user-keyed limits of the components the chain builds
-// (the package documentation's "Rate limits" lists each with its default). f
+// (the package documentation's "Rate limits" lists each with its default). factory
 // does not reach a component the consumer built and handed over, such as the
 // passkey.Passkeys or the recovery.Codes; those take their own factory option.
 //
@@ -919,14 +919,14 @@ func WithLogger(l *slog.Logger) Option {
 // and users are not locked out of sign-in.
 //
 // A nil factory, including an interface holding a nil pointer, is refused. An
-// error from f fails New, naming the option and the namespace.
-func WithRateLimiterFactory(f ratelimit.LimiterFactory) Option {
+// error from factory fails New, naming the option and the namespace.
+func WithRateLimiterFactory(factory ratelimit.LimiterFactory) Option {
 	return func(c *config) error {
-		if err := requireDep("WithRateLimiterFactory", "rate-limiter factory", f); err != nil {
+		if err := requireDep("WithRateLimiterFactory", "rate-limiter factory", factory); err != nil {
 			return err
 		}
 
-		c.limiterFactory = f
+		c.limiterFactory = factory
 		return nil
 	}
 }
@@ -1081,7 +1081,7 @@ func WithoutIPv6Aggregate() Option {
 	}
 }
 
-// WithRefusalLogInterval writes at most one record per refusal key per d.
+// WithRefusalLogInterval writes at most one record per refusal key per interval.
 //
 // Default: one minute. An interval of zero or less disables sampling and writes
 // every record, which is the documented way to ask for the full stream — it is
@@ -1094,9 +1094,9 @@ func WithoutIPv6Aggregate() Option {
 // WithRecoveryLogInterval, and the passwordless begin guard the passkey
 // manager's window (passkey.WithLogInterval), as those endpoints' own records
 // do.
-func WithRefusalLogInterval(d time.Duration) Option {
+func WithRefusalLogInterval(interval time.Duration) Option {
 	return func(c *config) error {
-		c.refusalInterval = d
+		c.refusalInterval = interval
 		return nil
 	}
 }
@@ -1236,13 +1236,13 @@ func WithErrorHandler(fn func(w http.ResponseWriter, r *http.Request, err error)
 // any interceptor and in any position among the options: it applies to every
 // interceptor, whether it is enabled before or after it. A nil clock is a
 // configuration error, never a fallback to the system clock.
-func WithClock(c clock.Clock) Option {
+func WithClock(clock clock.Clock) Option {
 	return func(cfg *config) error {
-		if nilcheck.IsNil(c) {
+		if nilcheck.IsNil(clock) {
 			return newConfigError("WithClock was given no clock; omit the option to use the system clock")
 		}
 
-		cfg.clock = c
+		cfg.clock = clock
 
 		return nil
 	}

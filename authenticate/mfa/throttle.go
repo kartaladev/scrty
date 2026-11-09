@@ -299,20 +299,20 @@ type ThrottleOption func(*VerifyThrottle)
 // users are not locked out of sign-in.
 //
 // A nil limiter is a configuration error.
-func WithThrottleLimiter(l ratelimit.Limiter) ThrottleOption {
+func WithThrottleLimiter(limiter ratelimit.Limiter) ThrottleOption {
 	return func(t *VerifyThrottle) {
-		t.limiter = l
+		t.limiter = limiter
 		t.limiterSet = true
 	}
 }
 
-// WithThrottleLimiterFactory builds the verification limiter through f, under the
+// WithThrottleLimiterFactory builds the verification limiter through factory, under the
 // namespace "mfa-verify" with this flow's own limit and window: 5 failures per
 // 15 minutes.
 //
 // Default: ratelimit.MemoryLimiterFactory, logging through the throttle's
 // logger and clock, so the limit holds in this process alone. Precedence: a
-// limiter given with WithThrottleLimiter wins, and f is then never asked; then f;
+// limiter given with WithThrottleLimiter wins, and factory is then never asked; then factory;
 // then the in-memory default.
 //
 // For this second-factor flow, a shared limiter in
@@ -321,10 +321,10 @@ func WithThrottleLimiter(l ratelimit.Limiter) ThrottleOption {
 // users are not locked out of sign-in.
 //
 // A nil factory, typed nil included, is an error wrapping ErrConfig, as is an
-// error from f, which names the namespace.
-func WithThrottleLimiterFactory(f ratelimit.LimiterFactory) ThrottleOption {
+// error from factory, which names the namespace.
+func WithThrottleLimiterFactory(factory ratelimit.LimiterFactory) ThrottleOption {
 	return func(t *VerifyThrottle) {
-		t.factory = f
+		t.factory = factory
 		t.factorySet = true
 	}
 }
@@ -335,8 +335,8 @@ func WithThrottleLimiterFactory(f ratelimit.LimiterFactory) ThrottleOption {
 // An interval of zero or less writes every record. It governs MFA verification
 // records alone: no other part of the library is quieted by it, so a user being
 // guessed at cannot drown out or silence anything else.
-func WithThrottleLogInterval(d time.Duration) ThrottleOption {
-	return func(t *VerifyThrottle) { t.logInterval = d }
+func WithThrottleLogInterval(interval time.Duration) ThrottleOption {
+	return func(t *VerifyThrottle) { t.logInterval = interval }
 }
 
 // WithThrottleSecurityEvents reports the outcomes the throttle decides
@@ -367,8 +367,8 @@ func WithThrottleSecurityEvents(sink event.Sink) ThrottleOption {
 // "record-error") and the limiter's error's Go type, never its text; a
 // throttled record carries the reason alone. A consumer who wants the
 // limiter's own detail logs it inside their own implementation of Limiter.
-func WithThrottleLogger(l *slog.Logger) ThrottleOption {
-	return func(t *VerifyThrottle) { t.logger = l }
+func WithThrottleLogger(logger *slog.Logger) ThrottleOption {
+	return func(t *VerifyThrottle) { t.logger = logger }
 }
 
 // WithThrottleClock sets the time source the throttle's default limiter and its
@@ -376,6 +376,6 @@ func WithThrottleLogger(l *slog.Logger) ThrottleOption {
 // consumer gives keeps its own clock.
 //
 // A nil clock, typed nil included, is an error wrapping ErrConfig.
-func WithThrottleClock(c clock.Clock) ThrottleOption {
-	return func(t *VerifyThrottle) { t.clock = c }
+func WithThrottleClock(clock clock.Clock) ThrottleOption {
+	return func(t *VerifyThrottle) { t.clock = clock }
 }

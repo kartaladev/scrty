@@ -530,14 +530,14 @@ const OrderMFAEnrolment = OrderMFAChallenge - 1
 // slot, and slot-mates run in the order they were registered.
 const OrderAccountRecovery = OrderMFAEnrolment - 1
 
-// Before is the slot immediately outside o, which runs just before it.
-func Before(o Order) Order { return o - 1 }
+// Before is the slot immediately outside order, which runs just before it.
+func Before(order Order) Order { return order - 1 }
 
-// After is the slot immediately inside o, which runs just after it and before
+// After is the slot immediately inside order, which runs just after it and before
 // the next named slot.
-func After(o Order) Order { return o + 1 }
+func After(order Order) Order { return order + 1 }
 
-// RegisterInterceptor runs i at slot at.
+// RegisterInterceptor runs interceptor at slot at.
 //
 // There is no default: a chain registers only the built-ins its Enable options
 // asked for, and this is how a consumer adds one of their own. Use Before and
@@ -553,13 +553,13 @@ func After(o Order) Order { return o + 1 }
 //
 // A nil interceptor, including an interface holding a nil pointer, is refused
 // when the chain is built: it can only ever panic on the first request.
-func RegisterInterceptor(i Interceptor, at Order) Option {
+func RegisterInterceptor(interceptor Interceptor, at Order) Option {
 	return func(c *config) error {
-		if nilcheck.IsNil(i) {
+		if nilcheck.IsNil(interceptor) {
 			return newConfigError("RegisterInterceptor was given no interceptor for slot %d", at)
 		}
 
-		c.registrations = append(c.registrations, registration{interceptor: i, order: at, seq: c.seq})
+		c.registrations = append(c.registrations, registration{interceptor: interceptor, order: at, seq: c.seq})
 		c.seq++
 		return nil
 	}

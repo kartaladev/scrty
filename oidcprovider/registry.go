@@ -53,7 +53,7 @@ type ClientStore interface {
 	// judge, as it sees neither the provider's keys nor its issuer: an algorithm the keys cannot
 	// produce, and a ResourceIdentifier equal to the issuer. Both are reported as an unknown client
 	// on read.
-	Put(ctx context.Context, c Client) error
+	Put(ctx context.Context, client Client) error
 	// Delete removes a client, or answers ErrClientNotFound.
 	Delete(ctx context.Context, id string) error
 	// GenerateSecret gives the client a new secret of 256 bits, and returns it. This is
@@ -223,8 +223,8 @@ func (r *MemoryRegistry) Client(_ context.Context, id string) (*RegisteredClient
 // produce is reported when the client is next read, as an unknown client. So is a client whose
 // ResourceIdentifier equals the issuer: Put cannot see the issuer, so it cannot judge that, and the
 // client is reported as unknown on read.
-func (r *MemoryRegistry) Put(_ context.Context, c Client) error {
-	rc, err := newRegistered(c)
+func (r *MemoryRegistry) Put(_ context.Context, client Client) error {
+	rc, err := newRegistered(client)
 	if err != nil {
 		return err
 	}

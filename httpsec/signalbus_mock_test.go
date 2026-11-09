@@ -42,17 +42,17 @@ func (m *MockSignalBus) EXPECT() *MockSignalBusMockRecorder {
 }
 
 // Publish mocks base method.
-func (m *MockSignalBus) Publish(ctx context.Context, e httpsec.SignalEnvelope) error {
+func (m *MockSignalBus) Publish(ctx context.Context, envelope httpsec.SignalEnvelope) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Publish", ctx, e)
+	ret := m.ctrl.Call(m, "Publish", ctx, envelope)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Publish indicates an expected call of Publish.
-func (mr *MockSignalBusMockRecorder) Publish(ctx, e any) *MockSignalBusPublishCall {
+func (mr *MockSignalBusMockRecorder) Publish(ctx, envelope any) *MockSignalBusPublishCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Publish", reflect.TypeOf((*MockSignalBus)(nil).Publish), ctx, e)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Publish", reflect.TypeOf((*MockSignalBus)(nil).Publish), ctx, envelope)
 	return &MockSignalBusPublishCall{Call: call}
 }
 

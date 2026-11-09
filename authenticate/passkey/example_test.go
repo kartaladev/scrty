@@ -80,17 +80,17 @@ func exampleUser() exampleUsers {
 // (http only on localhost), and a malformed one is an error wrapping
 // passkey.ErrConfig. Changing the ID later orphans every registered passkey.
 func ExampleRelyingParty() {
-	rp := passkey.RelyingParty{
+	relyingParty := passkey.RelyingParty{
 		ID:      "example.com",
 		Name:    "Example Co",
 		Origins: []string{"https://example.com", "https://app.example.com"},
 	}
 
-	fmt.Println(rp.Validate())
+	fmt.Println(relyingParty.Validate())
 
-	rp.ID = "https://example.com" // a scheme is not a host
+	relyingParty.ID = "https://example.com" // a scheme is not a host
 
-	fmt.Println(errors.Is(rp.Validate(), passkey.ErrConfig))
+	fmt.Println(errors.Is(relyingParty.Validate(), passkey.ErrConfig))
 
 	// Output:
 	// <nil>

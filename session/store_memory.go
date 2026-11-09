@@ -746,8 +746,8 @@ type MemoryStoreOption func(*MemoryStore)
 // Zero or less is refused by NewMemoryStore with an error wrapping ErrConfig:
 // a non-positive interval would make housekeeping spin, which is not what a
 // caller asking for it wants.
-func WithMemoryStoreHousekeepingInterval(d time.Duration) MemoryStoreOption {
-	return func(s *MemoryStore) { s.interval = d }
+func WithMemoryStoreHousekeepingInterval(interval time.Duration) MemoryStoreOption {
+	return func(s *MemoryStore) { s.interval = interval }
 }
 
 // WithMemoryStoreClock replaces the store's time source. The default is

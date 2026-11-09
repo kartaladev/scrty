@@ -79,13 +79,13 @@ type Option func(*config)
 // ErrNilTransaction before any statement runs. A nil resolver is a
 // configuration error, rather than a silent fallback to the context lookup: a
 // caller passing one meant their transaction manager to be asked.
-func WithTxResolver(r TxResolver) Option {
+func WithTxResolver(resolver TxResolver) Option {
 	return func(c *config) {
-		if r == nil {
+		if resolver == nil {
 			c.refuse("the transaction resolver is nil")
 			return
 		}
-		c.resolver = r
+		c.resolver = resolver
 	}
 }
 
@@ -101,16 +101,16 @@ func WithTxResolver(r TxResolver) Option {
 // Given to any other store, whose records arrive with their own identifier, it
 // is a configuration error. A nil generator, including an interface holding a
 // nil pointer, is a configuration error.
-func WithIDGenerator(g id.Generator) Option {
+func WithIDGenerator(ids id.Generator) Option {
 	return func(c *config) {
 		if !c.applies(optIDGenerator, "WithIDGenerator") {
 			return
 		}
-		if nilcheck.IsNil(g) {
+		if nilcheck.IsNil(ids) {
 			c.refuse("the id generator is nil")
 			return
 		}
-		c.ids = g
+		c.ids = ids
 	}
 }
 

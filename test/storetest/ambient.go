@@ -48,46 +48,46 @@ type Ambient[S any] struct {
 }
 
 // RunAmbientTx holds a durable store to taking part in a transaction its
-// caller owns, checking what it wrote through h.Raw rather than through the
+// caller owns, checking what it wrote through harness.Raw rather than through the
 // store:
-//   - a write inside a transaction attached with h.Begin is not visible until
+//   - a write inside a transaction attached with harness.Begin is not visible until
 //     the transaction ends, is discarded by a rollback and kept by a commit;
 //   - a refusal inside the transaction leaves it usable: a write after it
 //     succeeds, and a commit keeps the writes on both sides of it;
-//   - a store h.BeginResolved configured with a transaction resolver writes
+//   - a store harness.BeginResolved configured with a transaction resolver writes
 //     in that transaction, though the context carries none;
-//   - a transaction h.BeginForeign attaches for another backend is ignored:
+//   - a transaction harness.BeginForeign attaches for another backend is ignored:
 //     the store writes through its own handle, and the foreign rollback does
 //     not take the write with it;
-//   - where a.Remove is set, each of those holds for a delete too: discarded
+//   - where ambient.Remove is set, each of those holds for a delete too: discarded
 //     by a rollback, kept by a commit, in a resolver's transaction, and outside
 //     another backend's.
 //
-// It fails at once, naming every missing input, when h or a is missing one.
+// It fails at once, naming every missing input, when harness or ambient is missing one.
 //
 // The shared PostgreSQL rate limiter (sqlstore.Limiter and pgxstore.Limiter) does
 // not run this suite: it ignores the caller's transaction by design, so a
 // failure recorded in a request that rolls back still counts. Its own test
 // pins that opposite guarantee.
-func RunAmbientTx[S any](t *testing.T, h DurableHarness[S], a Ambient[S]) {
+func RunAmbientTx[S any](t *testing.T, harness DurableHarness[S], ambient Ambient[S]) {
 	t.Helper()
 
-	requireAmbient(t, h, a)
+	requireAmbient(t, harness, ambient)
 
 	present := func(t *testing.T, i int) bool {
 		t.Helper()
-		return a.Present(t, h.Raw, i)
+		return ambient.Present(t, harness.Raw, i)
 	}
 	// begin and beginResolved roll the transaction back at cleanup, so a
 	// case that fails part way never leaves it open. After a commit or a
 	// rollback that rollback fails, and its error is ignored.
 	begin := func(t *testing.T) (context.Context, func() error, func() error) {
-		ctx, commit, rollback := h.Begin(t)
+		ctx, commit, rollback := harness.Begin(t)
 		t.Cleanup(func() { _ = rollback() })
 		return ctx, commit, rollback
 	}
 	beginResolved := func(t *testing.T) (S, context.Context, func() error) {
-		s, ctx, _, rollback := h.BeginResolved(t)
+		s, ctx, _, rollback := harness.BeginResolved(t)
 		t.Cleanup(func() { _ = rollback() })
 		return s, ctx, rollback
 	}
@@ -97,7 +97,7 @@ func RunAmbientTx[S any](t *testing.T, h DurableHarness[S], a Ambient[S]) {
 			name: "a write inside a rolled back transaction is discarded",
 			assert: func(t *testing.T) {
 				ctx, _, rollback := begin(t)
-				require.NoError(t, a.Write(ctx, h.New(t), 1))
+				require.NoError(t, ambient.Write(ctx, harness.New(t), 1))
 				assert.False(t, present(t, 1),
 					"the write is visible before its transaction ended: the store did not write in it")
 
@@ -109,7 +109,7 @@ func RunAmbientTx[S any](t *testing.T, h DurableHarness[S], a Ambient[S]) {
 			name: "a write inside a committed transaction is kept",
 			assert: func(t *testing.T) {
 				ctx, commit, _ := begin(t)
-				require.NoError(t, a.Write(ctx, h.New(t), 2))
+				require.NoError(t, ambient.Write(ctx, harness.New(t), 2))
 				assert.False(t, present(t, 2),
 					"the write is visible before its transaction ended: the store did not write in it")
 
@@ -121,12 +121,12 @@ func RunAmbientTx[S any](t *testing.T, h DurableHarness[S], a Ambient[S]) {
 			name: "a refusal inside a transaction leaves it usable",
 			assert: func(t *testing.T) {
 				ctx, commit, _ := begin(t)
-				s := h.New(t)
-				require.NoError(t, a.Write(ctx, s, 3))
+				s := harness.New(t)
+				require.NoError(t, ambient.Write(ctx, s, 3))
 
-				require.ErrorIs(t, a.Refuse(ctx, s), a.Refusal, "Refuse did not return the refusal")
+				require.ErrorIs(t, ambient.Refuse(ctx, s), ambient.Refusal, "Refuse did not return the refusal")
 
-				require.NoError(t, a.Write(ctx, s, 4), "a write after the refusal failed")
+				require.NoError(t, ambient.Write(ctx, s, 4), "a write after the refusal failed")
 				require.NoError(t, commit(), "the transaction did not commit after the refusal")
 				assert.True(t, present(t, 3), "the write before the refusal was not committed")
 				assert.True(t, present(t, 4), "the write after the refusal was not committed")
@@ -136,7 +136,7 @@ func RunAmbientTx[S any](t *testing.T, h DurableHarness[S], a Ambient[S]) {
 			name: "a configured resolver's transaction is used",
 			assert: func(t *testing.T) {
 				s, ctx, rollback := beginResolved(t)
-				require.NoError(t, a.Write(ctx, s, 5))
+				require.NoError(t, ambient.Write(ctx, s, 5))
 				assert.False(t, present(t, 5),
 					"the write is visible before the resolver's transaction ended: the store did not write in it")
 
@@ -147,9 +147,9 @@ func RunAmbientTx[S any](t *testing.T, h DurableHarness[S], a Ambient[S]) {
 		{
 			name: "a transaction attached for another backend is ignored",
 			assert: func(t *testing.T) {
-				ctx, rollback := h.BeginForeign(t)
+				ctx, rollback := harness.BeginForeign(t)
 				t.Cleanup(func() { _ = rollback() })
-				require.NoError(t, a.Write(ctx, h.New(t), 6))
+				require.NoError(t, ambient.Write(ctx, harness.New(t), 6))
 				assert.True(t, present(t, 6),
 					"the write is not visible: the store wrote in another backend's transaction")
 
@@ -158,8 +158,8 @@ func RunAmbientTx[S any](t *testing.T, h DurableHarness[S], a Ambient[S]) {
 			},
 		},
 	}
-	if a.Remove != nil {
-		cases = append(cases, ambientRemoveCases(h, a, present, begin, beginResolved)...)
+	if ambient.Remove != nil {
+		cases = append(cases, ambientRemoveCases(harness, ambient, present, begin, beginResolved)...)
 	} else {
 		cases = append(cases, durableCase{
 			name: "deletes are not covered",
@@ -263,9 +263,9 @@ func requireAmbient[S any](t testing.TB, h DurableHarness[S], a Ambient[S]) {
 // RunSessionFamilyAmbientTx holds a durable session store to taking its
 // multi-statement operations, Supersede and DeleteFamily, into a transaction
 // its caller owns, as RunAmbientTx holds a store's single writes. It checks
-// what each case wrote through a store h.New returns, outside the caller's
+// what each case wrote through a store harness.New returns, outside the caller's
 // transaction:
-//   - a supersession inside a transaction attached with h.Begin is not
+//   - a supersession inside a transaction attached with harness.Begin is not
 //     visible until the transaction ends, and a rollback leaves neither the
 //     successor nor the old session's supersession;
 //   - a family revocation inside such a transaction is discarded by a
@@ -276,16 +276,16 @@ func requireAmbient[S any](t testing.TB, h DurableHarness[S], a Ambient[S]) {
 //     identifier is already stored, leaves nothing of itself in the
 //     transaction, which stays usable and commits the writes around it.
 //
-// It fails at once, naming every missing input, when h is missing one.
-func RunSessionFamilyAmbientTx[S session.Store](t *testing.T, h DurableHarness[S]) {
+// It fails at once, naming every missing input, when harness is missing one.
+func RunSessionFamilyAmbientTx[S session.Store](t *testing.T, harness DurableHarness[S]) {
 	t.Helper()
 
-	h.Require(t)
+	harness.Require(t)
 
 	// begin rolls the transaction back at cleanup, so a case that fails part
 	// way never leaves it open.
 	begin := func(t *testing.T) (context.Context, func() error, func() error) {
-		ctx, commit, rollback := h.Begin(t)
+		ctx, commit, rollback := harness.Begin(t)
 		t.Cleanup(func() { _ = rollback() })
 		return ctx, commit, rollback
 	}
@@ -321,7 +321,7 @@ func RunSessionFamilyAmbientTx[S session.Store](t *testing.T, h DurableHarness[S
 		{
 			name: "a supersession inside a rolled back transaction is discarded",
 			assert: func(t *testing.T) {
-				s := h.New(t)
+				s := harness.New(t)
 				old := familySession(sid("rolled-back"), "ambient-family-u1", suiteID(2001))
 				require.NoError(t, s.Create(t.Context(), old))
 
@@ -340,7 +340,7 @@ func RunSessionFamilyAmbientTx[S session.Store](t *testing.T, h DurableHarness[S
 		{
 			name: "a family revocation inside a rolled back transaction is discarded",
 			assert: func(t *testing.T) {
-				s := h.New(t)
+				s := harness.New(t)
 				a := familySession(sid("family-a"), "ambient-family-u2", suiteID(2002))
 				b := familySession(sid("family-b"), "ambient-family-u2", suiteID(2002))
 				require.NoError(t, s.Create(t.Context(), a))
@@ -364,7 +364,7 @@ func RunSessionFamilyAmbientTx[S session.Store](t *testing.T, h DurableHarness[S
 		{
 			name: "a supersession refused as a conflict leaves the transaction usable",
 			assert: func(t *testing.T) {
-				s := h.New(t)
+				s := harness.New(t)
 				old := familySession(sid("conflict"), "ambient-family-u3", suiteID(2003))
 				require.NoError(t, s.Create(t.Context(), old))
 				require.NoError(t, s.Supersede(t.Context(), rotation(old, sid("conflict-first"))))
@@ -384,7 +384,7 @@ func RunSessionFamilyAmbientTx[S session.Store](t *testing.T, h DurableHarness[S
 		{
 			name: "a supersession refused after its first write leaves nothing of it in the transaction",
 			assert: func(t *testing.T) {
-				s := h.New(t)
+				s := harness.New(t)
 				old := familySession(sid("taken"), "ambient-family-u4", suiteID(2005))
 				taken := familySession(sid("taken-successor"), "ambient-family-u4", suiteID(2006))
 				require.NoError(t, s.Create(t.Context(), old))
@@ -414,18 +414,18 @@ func RunSessionFamilyAmbientTx[S session.Store](t *testing.T, h DurableHarness[S
 // RunSessionSuccessorAmbientTx holds a durable session store to reading
 // whether a superseded session's successor was used (SuccessorPresented)
 // through a transaction its caller owns, as its other reads do: inside a
-// transaction attached with h.Begin it sees a presentation written in that
+// transaction attached with harness.Begin it sees a presentation written in that
 // transaction, outside it does not until a commit, and a rollback leaves the
 // successor unused.
 //
-// It fails at once, naming every missing input, when h is missing one.
-func RunSessionSuccessorAmbientTx[S session.Store](t *testing.T, h DurableHarness[S]) {
+// It fails at once, naming every missing input, when harness is missing one.
+func RunSessionSuccessorAmbientTx[S session.Store](t *testing.T, harness DurableHarness[S]) {
 	t.Helper()
 
-	h.Require(t)
+	harness.Require(t)
 
 	begin := func(t *testing.T) (context.Context, func() error) {
-		ctx, _, rollback := h.Begin(t)
+		ctx, _, rollback := harness.Begin(t)
 		t.Cleanup(func() { _ = rollback() })
 		return ctx, rollback
 	}
@@ -437,7 +437,7 @@ func RunSessionSuccessorAmbientTx[S session.Store](t *testing.T, h DurableHarnes
 		{
 			name: "whether a successor was used is read inside the caller's transaction",
 			assert: func(t *testing.T) {
-				s := h.New(t)
+				s := harness.New(t)
 				old := familySession(sid("old"), "ambient-successor-u1", suiteID(2101))
 				require.NoError(t, s.Create(t.Context(), old))
 				successor := successorOf(old, sid("successor"), suiteStart)
@@ -484,8 +484,8 @@ WHERE datname = current_database() AND pid <> pg_backend_pid()
 // RunSessionFamilyRevocationRace holds a durable session store to revoking a
 // family completely while a supersession of one of its members is in flight.
 // For each case it creates a family member, supersedes it inside a
-// transaction attached with h.Begin and leaves that transaction open, then
-// revokes the family through a store h.NewReplica returns, from another
+// transaction attached with harness.Begin and leaves that transaction open, then
+// revokes the family through a store harness.NewReplica returns, from another
 // goroutine. Once the revocation is waiting on the old member's row lock it
 // commits the supersession, and requires the revocation to have removed both
 // the old member and the successor that transaction inserted, and to count
@@ -497,19 +497,19 @@ WHERE datname = current_database() AND pid <> pg_backend_pid()
 // for, so the successor survives the revocation of its family.
 //
 // The revocation runs once on its own and once inside a transaction of its
-// own attached with h.Begin, committed after it returns.
+// own attached with harness.Begin, committed after it returns.
 //
-// It detects the waiting revocation through h.Raw, from PostgreSQL's
+// It detects the waiting revocation through harness.Raw, from PostgreSQL's
 // pg_stat_activity, and so needs a PostgreSQL store. It fails at once, naming
-// every missing input, when h is missing one.
-func RunSessionFamilyRevocationRace[S session.Store](t *testing.T, h DurableHarness[S]) {
+// every missing input, when harness is missing one.
+func RunSessionFamilyRevocationRace[S session.Store](t *testing.T, harness DurableHarness[S]) {
 	t.Helper()
 
-	h.Require(t)
-	requirePool(t, h.PoolSize, 2)
+	harness.Require(t)
+	requirePool(t, harness.PoolSize, 2)
 
 	begin := func(t *testing.T) (context.Context, func() error) {
-		ctx, commit, rollback := h.Begin(t)
+		ctx, commit, rollback := harness.Begin(t)
 		t.Cleanup(func() { _ = rollback() })
 		return ctx, commit
 	}
@@ -542,8 +542,8 @@ func RunSessionFamilyRevocationRace[S session.Store](t *testing.T, h DurableHarn
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := h.New(t)
-			revoker := h.NewReplica(t)
+			s := harness.New(t)
+			revoker := harness.NewReplica(t)
 			family := suiteID(tc.family)
 			name := fmt.Sprintf("revocation-race-%d", tc.family)
 			old := familySession(name, identity.UserID(name+"-user"), family)
@@ -570,7 +570,7 @@ func RunSessionFamilyRevocationRace[S session.Store](t *testing.T, h DurableHarn
 				done <- outcome{n, err}
 			}()
 
-			awaitWaitingRevocation(t, h.Raw, done)
+			awaitWaitingRevocation(t, harness.Raw, done)
 			require.NoError(t, commitSupersession(), "the supersession did not commit")
 
 			var got outcome
@@ -613,8 +613,8 @@ func awaitWaitingRevocation[O any](t *testing.T, raw *sql.DB, done <-chan O) {
 // For each case it stores, for one user, a session X and an unrelated session
 // K of another sign-in; in the provider cases X was established through a
 // provider, and K was not. It supersedes X by a successor Y, which carries X's
-// provider sign-in, inside a transaction attached with h.Begin and leaves that
-// transaction open, then runs the case's delete through a store h.NewReplica
+// provider sign-in, inside a transaction attached with harness.Begin and leaves that
+// transaction open, then runs the case's delete through a store harness.NewReplica
 // returns, from another goroutine: every session of the user, every session of
 // the user but K, every session of X's provider sign-in, or every session of
 // the user from X's provider. Once the delete is waiting on X's row lock it
@@ -627,14 +627,14 @@ func awaitWaitingRevocation[O any](t *testing.T, raw *sql.DB, done <-chan O) {
 // is released, but never sees a row inserted by the transaction it waited
 // for, so the successor of a session the delete was asked to end survives it.
 //
-// It detects the waiting delete through h.Raw, from PostgreSQL's
+// It detects the waiting delete through harness.Raw, from PostgreSQL's
 // pg_stat_activity, and so needs a PostgreSQL store. It fails at once, naming
-// every missing input, when h is missing one.
-func RunSessionUserDeleteRace[S session.Store](t *testing.T, h DurableHarness[S]) {
+// every missing input, when harness is missing one.
+func RunSessionUserDeleteRace[S session.Store](t *testing.T, harness DurableHarness[S]) {
 	t.Helper()
 
-	h.Require(t)
-	requirePool(t, h.PoolSize, 2)
+	harness.Require(t)
+	requirePool(t, harness.PoolSize, 2)
 
 	// sessions is what a case stores: X, superseded in flight, and K.
 	type sessions struct {
@@ -707,8 +707,8 @@ func RunSessionUserDeleteRace[S session.Store](t *testing.T, h DurableHarness[S]
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := h.New(t)
-			deleter := h.NewReplica(t)
+			s := harness.New(t)
+			deleter := harness.NewReplica(t)
 			name := fmt.Sprintf("user-delete-race-%d", tc.race)
 			in := sessions{user: identity.UserID(name + "-user")}
 			in.x = sessionRecord(name+"-x", in.user)
@@ -721,7 +721,7 @@ func RunSessionUserDeleteRace[S session.Store](t *testing.T, h DurableHarness[S]
 
 			// The supersession in flight: written, not yet committed. The
 			// successor carries X's provider sign-in, as a renewal's does.
-			superseding, commitSupersession, rollback := h.Begin(t)
+			superseding, commitSupersession, rollback := harness.Begin(t)
 			t.Cleanup(func() { _ = rollback() })
 			successor := successorOf(in.x, name+"-y", suiteStart)
 			successor.FirstFactor = in.x.FirstFactor
@@ -748,7 +748,7 @@ func RunSessionUserDeleteRace[S session.Store](t *testing.T, h DurableHarness[S]
 				done <- outcome{n, err}
 			}()
 
-			awaitWaiting(t, h.Raw, waitingRevocation, done,
+			awaitWaiting(t, harness.Raw, waitingRevocation, done,
 				"the delete returned while a supersession of one of its sessions was uncommitted: "+
 					"it did not wait for the session's row",
 				"no delete waited on the uncommitted supersession's row lock")
@@ -819,8 +819,8 @@ WHERE datname = current_database() AND pid <> pg_backend_pid()
 //
 // For each case it creates a family member and rotates it once, committed,
 // then moves that first successor on inside a transaction attached with
-// h.Begin and leaves the transaction open: it presents it, rotates it, or
-// removes it. From another goroutine, through a store h.NewReplica returns,
+// harness.Begin and leaves the transaction open: it presents it, rotates it, or
+// removes it. From another goroutine, through a store harness.NewReplica returns,
 // it supersedes the old member again observing the first successor, with
 // Supersession.RequireUnpresentedSuccessor set where the case is the
 // presentation. Once that supersession is waiting on a lock it commits the
@@ -832,14 +832,14 @@ WHERE datname = current_database() AND pid <> pg_backend_pid()
 // committed, unadvanced state, goes on to wait, and then supersedes a
 // successor that moved on while it waited.
 //
-// It detects the waiting supersession through h.Raw, from PostgreSQL's
+// It detects the waiting supersession through harness.Raw, from PostgreSQL's
 // pg_stat_activity, and so needs a PostgreSQL store. It fails at once, naming
-// every missing input, when h is missing one.
-func RunSessionSuccessorAdvanceRace[S session.Store](t *testing.T, h DurableHarness[S]) {
+// every missing input, when harness is missing one.
+func RunSessionSuccessorAdvanceRace[S session.Store](t *testing.T, harness DurableHarness[S]) {
 	t.Helper()
 
-	h.Require(t)
-	requirePool(t, h.PoolSize, 2)
+	harness.Require(t)
+	requirePool(t, harness.PoolSize, 2)
 
 	type testCase struct {
 		name string
@@ -884,8 +884,8 @@ func RunSessionSuccessorAdvanceRace[S session.Store](t *testing.T, h DurableHarn
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := h.New(t)
-			superseder := h.NewReplica(t)
+			s := harness.New(t)
+			superseder := harness.NewReplica(t)
 			name := fmt.Sprintf("successor-race-%d", tc.family)
 			old := familySession(name, identity.UserID(name+"-user"), suiteID(tc.family))
 			require.NoError(t, s.Create(t.Context(), old))
@@ -896,7 +896,7 @@ func RunSessionSuccessorAdvanceRace[S session.Store](t *testing.T, h DurableHarn
 			}))
 
 			// The successor moving on: written, not yet committed.
-			advancing, commitAdvance, rollbackAdvance := h.Begin(t)
+			advancing, commitAdvance, rollbackAdvance := harness.Begin(t)
 			t.Cleanup(func() { _ = rollbackAdvance() })
 			tc.advance(advancing, t, s, first)
 
@@ -914,7 +914,7 @@ func RunSessionSuccessorAdvanceRace[S session.Store](t *testing.T, h DurableHarn
 				})
 			}()
 
-			awaitWaiting(t, h.Raw, waitingSupersession, done,
+			awaitWaiting(t, harness.Raw, waitingSupersession, done,
 				"the supersession returned while its observed successor was moving on, uncommitted: "+
 					"it did not wait for the successor's row",
 				"no supersession waited on the uncommitted change to its observed successor")
@@ -981,9 +981,9 @@ func awaitLockWaiters(t *testing.T, raw *sql.DB, n int, none string) {
 // two rows, O and S1, and a family revocation locks every member of the
 // family, O and S1 among them, in row id order. The case rotates O into S1,
 // committed, then holds whichever of the two rows sorts first by row id in a
-// transaction opened through h.Raw. Behind that lock, in this order, it
-// queues a revocation of the family through a store h.NewReplica returns, and
-// a re-rotation of O observing S1 through the store h.New returns. Once both
+// transaction opened through harness.Raw. Behind that lock, in this order, it
+// queues a revocation of the family through a store harness.NewReplica returns, and
+// a re-rotation of O observing S1 through the store harness.New returns. Once both
 // wait it releases the row, so the revocation takes it first and reaches for
 // the other row next.
 //
@@ -999,18 +999,18 @@ func awaitLockWaiters(t *testing.T, raw *sql.DB, n int, none string) {
 // holds a store to locking both rows in id order, rather than in the order
 // its statements happen to reach them.
 //
-// It detects waiting statements through h.Raw, from PostgreSQL's
+// It detects waiting statements through harness.Raw, from PostgreSQL's
 // pg_stat_activity, and so needs a PostgreSQL store. It fails at once, naming
-// every missing input, when h is missing one.
-func RunSessionSupersessionLockOrder[S session.Store](t *testing.T, h DurableHarness[S]) {
+// every missing input, when harness is missing one.
+func RunSessionSupersessionLockOrder[S session.Store](t *testing.T, harness DurableHarness[S]) {
 	t.Helper()
 
-	h.Require(t)
-	requirePool(t, h.PoolSize, 2)
+	harness.Require(t)
+	requirePool(t, harness.PoolSize, 2)
 
 	t.Run("a re-rotation and a family revocation over the same rows do not deadlock", func(t *testing.T) {
-		s := h.New(t)
-		revoker := h.NewReplica(t)
+		s := harness.New(t)
+		revoker := harness.NewReplica(t)
 		family := suiteID(2301)
 		name := "lock-order-2301"
 		old := familySession(name, identity.UserID(name+"-user"), family)
@@ -1023,7 +1023,7 @@ func RunSessionSupersessionLockOrder[S session.Store](t *testing.T, h DurableHar
 
 		// Hold the row that sorts first, so the racers queue behind it in a
 		// known order.
-		holder, err := h.Raw.BeginTx(t.Context(), nil)
+		holder, err := harness.Raw.BeginTx(t.Context(), nil)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = holder.Rollback() })
 		_, err = holder.ExecContext(t.Context(),
@@ -1043,7 +1043,7 @@ func RunSessionSupersessionLockOrder[S session.Store](t *testing.T, h DurableHar
 			n, err := revoker.DeleteFamily(ctx, family)
 			revoked <- outcome{n, err}
 		}()
-		awaitLockWaiters(t, h.Raw, 1, "the family revocation did not wait on the held row")
+		awaitLockWaiters(t, harness.Raw, 1, "the family revocation did not wait on the held row")
 
 		later := suiteStart.Add(time.Hour)
 		late := successorOf(old, name+"-late", later)
@@ -1055,7 +1055,7 @@ func RunSessionSupersessionLockOrder[S session.Store](t *testing.T, h DurableHar
 				Successor: late, Now: later,
 			})
 		}()
-		awaitLockWaiters(t, h.Raw, 2, "the re-rotation did not wait behind the family revocation")
+		awaitLockWaiters(t, harness.Raw, 2, "the re-rotation did not wait behind the family revocation")
 
 		require.NoError(t, holder.Rollback())
 
@@ -1091,23 +1091,23 @@ func RunSessionSupersessionLockOrder[S session.Store](t *testing.T, h DurableHar
 // leave, and writes nothing.
 //
 // The case creates a session in a family, moves its row to the all-zero
-// family through h.Raw, bypassing Create's refusal, then supersedes it. The
+// family through harness.Raw, bypassing Create's refusal, then supersedes it. The
 // supersession must fail with an error that is neither a renewal conflict, a
 // missing session nor an advanced successor, the successor must not be stored,
 // and the old row must load as it did before the attempt.
 //
-// It fails at once, naming every missing input, when h is missing one.
-func RunSessionSupersedeRefusesNilFamily[S session.Store](t *testing.T, h DurableHarness[S]) {
+// It fails at once, naming every missing input, when harness is missing one.
+func RunSessionSupersedeRefusesNilFamily[S session.Store](t *testing.T, harness DurableHarness[S]) {
 	t.Helper()
 
-	h.Require(t)
+	harness.Require(t)
 
 	t.Run("a session in no family is not superseded and nothing is written", func(t *testing.T) {
-		s := h.New(t)
+		s := harness.New(t)
 		name := "nil-family-2401"
 		old := familySession(name, identity.UserID(name+"-user"), suiteID(2401))
 		require.NoError(t, s.Create(t.Context(), old))
-		_, err := h.Raw.ExecContext(t.Context(),
+		_, err := harness.Raw.ExecContext(t.Context(),
 			`UPDATE sessions SET family_id = '00000000-0000-0000-0000-000000000000' WHERE id_digest = $1`,
 			sessionDigest(old.ID))
 		require.NoError(t, err)
@@ -1171,11 +1171,11 @@ WHERE datname = current_database() AND pid <> pg_backend_pid()
 // the mark waits for it.
 //
 // It creates a family member O and rotates it once, committed, into an
-// unpresented successor S1. Inside a transaction attached with h.Begin it
+// unpresented successor S1. Inside a transaction attached with harness.Begin it
 // then supersedes O again observing S1, with
 // Supersession.RequireUnpresentedSuccessor set, as a recovery of O does, and
 // leaves the transaction open: S1 is superseded there, not yet committed.
-// From another goroutine, through a store h.NewReplica returns, it records
+// From another goroutine, through a store harness.NewReplica returns, it records
 // S1's first presentation. Once that mark is waiting on a lock it commits the
 // transaction, and requires the mark to be refused with
 // session.ErrSuperseded, with S1's first presentation still unset.
@@ -1185,18 +1185,18 @@ WHERE datname = current_database() AND pid <> pg_backend_pid()
 // presentation on a session that was superseded while it waited: the
 // recovery's new successor and S1 are both live.
 //
-// It detects the waiting mark through h.Raw, from PostgreSQL's
+// It detects the waiting mark through harness.Raw, from PostgreSQL's
 // pg_stat_activity, and so needs a PostgreSQL store. It fails at once, naming
-// every missing input, when h is missing one.
-func RunSessionPresentationRace[S session.Store](t *testing.T, h DurableHarness[S]) {
+// every missing input, when harness is missing one.
+func RunSessionPresentationRace[S session.Store](t *testing.T, harness DurableHarness[S]) {
 	t.Helper()
 
-	h.Require(t)
-	requirePool(t, h.PoolSize, 2)
+	harness.Require(t)
+	requirePool(t, harness.PoolSize, 2)
 
 	t.Run("a first presentation that waited on its session's supersession is refused", func(t *testing.T) {
-		s := h.New(t)
-		presenter := h.NewReplica(t)
+		s := harness.New(t)
+		presenter := harness.NewReplica(t)
 		name := "presentation-race-2402"
 		old := familySession(name, identity.UserID(name+"-user"), suiteID(2402))
 		require.NoError(t, s.Create(t.Context(), old))
@@ -1208,7 +1208,7 @@ func RunSessionPresentationRace[S session.Store](t *testing.T, h DurableHarness[
 
 		// The recovery: S1 superseded, not yet committed.
 		later := suiteStart.Add(time.Hour)
-		recovering, commitRecovery, rollbackRecovery := h.Begin(t)
+		recovering, commitRecovery, rollbackRecovery := harness.Begin(t)
 		t.Cleanup(func() { _ = rollbackRecovery() })
 		require.NoError(t, s.Supersede(recovering, session.Supersession{
 			Old: old.ID, ObservedSuccessor: sessionDigest(first.ID), RequireUnpresentedSuccessor: true,
@@ -1221,7 +1221,7 @@ func RunSessionPresentationRace[S session.Store](t *testing.T, h DurableHarness[
 		done := make(chan error, 1)
 		go func() { done <- presenter.MarkPresented(ctx, first.ID, later.Add(time.Second)) }()
 
-		awaitWaiting(t, h.Raw, waitingPresentation, done,
+		awaitWaiting(t, harness.Raw, waitingPresentation, done,
 			"the first-presentation mark returned while its session's supersession was uncommitted: "+
 				"it did not wait for the session's row",
 			"no first-presentation mark waited on the uncommitted supersession of its session")

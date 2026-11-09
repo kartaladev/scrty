@@ -84,17 +84,17 @@ func (c *MockLineageSessionStoreCountActiveByUserCall) DoAndReturn(f func(contex
 }
 
 // Create mocks base method.
-func (m *MockLineageSessionStore) Create(ctx context.Context, s *session.Session) error {
+func (m *MockLineageSessionStore) Create(ctx context.Context, sess *session.Session) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Create", ctx, s)
+	ret := m.ctrl.Call(m, "Create", ctx, sess)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Create indicates an expected call of Create.
-func (mr *MockLineageSessionStoreMockRecorder) Create(ctx, s any) *MockLineageSessionStoreCreateCall {
+func (mr *MockLineageSessionStoreMockRecorder) Create(ctx, sess any) *MockLineageSessionStoreCreateCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockLineageSessionStore)(nil).Create), ctx, s)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockLineageSessionStore)(nil).Create), ctx, sess)
 	return &MockLineageSessionStoreCreateCall{Call: call}
 }
 
@@ -547,17 +547,17 @@ func (c *MockLineageSessionStoreRecordActivityCall) DoAndReturn(f func(context.C
 }
 
 // Save mocks base method.
-func (m *MockLineageSessionStore) Save(ctx context.Context, s *session.Session) error {
+func (m *MockLineageSessionStore) Save(ctx context.Context, sess *session.Session) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Save", ctx, s)
+	ret := m.ctrl.Call(m, "Save", ctx, sess)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Save indicates an expected call of Save.
-func (mr *MockLineageSessionStoreMockRecorder) Save(ctx, s any) *MockLineageSessionStoreSaveCall {
+func (mr *MockLineageSessionStoreMockRecorder) Save(ctx, sess any) *MockLineageSessionStoreSaveCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Save", reflect.TypeOf((*MockLineageSessionStore)(nil).Save), ctx, s)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Save", reflect.TypeOf((*MockLineageSessionStore)(nil).Save), ctx, sess)
 	return &MockLineageSessionStoreSaveCall{Call: call}
 }
 

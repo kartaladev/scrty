@@ -23,12 +23,12 @@ type Verifier interface {
 	// ParseRegistration reads a registration response body without verifying it.
 	ParseRegistration(body []byte) (ParsedRegistration, error)
 	// VerifyRegistration verifies a parsed registration against exp.
-	VerifyRegistration(ctx context.Context, p ParsedRegistration, exp RegistrationExpectation) (*CredentialInput, error)
+	VerifyRegistration(ctx context.Context, parsed ParsedRegistration, exp RegistrationExpectation) (*CredentialInput, error)
 	// ParseAssertion reads an assertion response body without verifying it.
 	ParseAssertion(body []byte) (ParsedAssertion, error)
 	// VerifyAssertion verifies a parsed assertion against the stored
-	// credential c and exp.
-	VerifyAssertion(ctx context.Context, p ParsedAssertion, c *Credential, exp AssertionExpectation) (*AssertionResult, error)
+	// credential and exp.
+	VerifyAssertion(ctx context.Context, parsed ParsedAssertion, credential *Credential, exp AssertionExpectation) (*AssertionResult, error)
 }
 
 // ParsedRegistration is a registration response read but not yet verified.

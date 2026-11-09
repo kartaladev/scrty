@@ -152,17 +152,17 @@ func clientsToNotify(ended []Grant) []ClientToNotify {
 // that sends this report, so a store failing on this second end reports event.GrantEndFailed although
 // nothing outlived the sign-in. That false alarm is accepted, as the alternative is to stay silent about
 // one that is real.
-func (p *Provider) SignInsEnded(ctx context.Context, r session.EndReport) {
-	sel, ok := selectorOf(r)
+func (p *Provider) SignInsEnded(ctx context.Context, report session.EndReport) {
+	sel, ok := selectorOf(report)
 	if !ok {
 		p.cfg.logger.LogAttrs(ctx, slog.LevelWarn, "oidcprovider: a report of an ended sign-in names no one, so no grant can be matched",
-			slog.Int("cause", int(r.Cause)))
+			slog.Int("cause", int(report.Cause)))
 
 		return
 	}
 
 	if _, err := p.EndSignIn(ctx, sel); err != nil {
-		p.logAndReportEndFailure(ctx, r, err)
+		p.logAndReportEndFailure(ctx, report, err)
 	}
 }
 

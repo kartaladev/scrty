@@ -35,12 +35,12 @@ type OIDCDeps struct {
 // starting a login, the provider's callback, redeeming the handoff code the
 // callback conveys the login with, and back-channel logout.
 //
-// d.RelyingParty is required and holds everything about the providers: the
+// deps.RelyingParty is required and holds everything about the providers: the
 // registry, discovery, the broker and its role options all belong to the oidc
-// constructors, and only transport lives here. d.Handoff is required unless
+// constructors, and only transport lives here. deps.Handoff is required unless
 // WithOIDCCallbackSuccess conveys the login instead, because the default
 // conveyance issues its code through it; with WithOIDCCallbackSuccess given,
-// d.Handoff must be nil, since the conveyance replaces it and issues no code
+// deps.Handoff must be nil, since the conveyance replaces it and issues no code
 // for it, or any redemption-only option, to govern.
 //
 // Defaults: a login starts with a GET on DefaultOIDCAuthorizePath followed by
@@ -97,18 +97,18 @@ type OIDCDeps struct {
 // WithOIDCHandoffRedeemer, WithOIDCHandoffLimiter, WithOIDCHandoffRateLimit,
 // WithOIDCHandoffCountRefusals or WithOIDCHandoffPath, since none of them
 // govern anything once no handoff code is issued.
-func EnableOIDCLogin(d OIDCDeps, opts ...OIDCOption) Option {
+func EnableOIDCLogin(deps OIDCDeps, opts ...OIDCOption) Option {
 	const option = "EnableOIDCLogin"
 
 	return func(c *config) error {
-		if d.RelyingParty == nil {
+		if deps.RelyingParty == nil {
 			return newConfigError("%s needs OIDCDeps.RelyingParty: it holds the providers every "+
 				"endpoint serves", option)
 		}
 
 		i := &oidcInterceptor{
-			manager:         d.RelyingParty,
-			handoffs:        d.Handoff,
+			manager:         deps.RelyingParty,
+			handoffs:        deps.Handoff,
 			now:             c.now,
 			authorizePath:   defaultPath(DefaultOIDCAuthorizePath),
 			callbackPath:    defaultPath(DefaultOIDCCallbackPath),
@@ -346,7 +346,7 @@ func (i *oidcInterceptor) resolve(c *config) error {
 }
 
 // WithOIDCTokens issues the access token of the session a redeemed handoff
-// opens through g.
+// opens through tokens.
 //
 // There is no default, and it is required: the library ships no signing key,
 // and a session a caller has no credential for is one they cannot use. The
@@ -359,31 +359,31 @@ func (i *oidcInterceptor) resolve(c *config) error {
 // redeemed handoff returns is the opened session's identifier, and a
 // generator is a configuration error from New, since a token it minted would
 // not be accepted by that chain.
-func WithOIDCTokens(g token.Generator) OIDCOption {
+func WithOIDCTokens(tokens token.Generator) OIDCOption {
 	return func(i *oidcInterceptor) error {
-		if err := requireDep("WithOIDCTokens", "token generator", g); err != nil {
+		if err := requireDep("WithOIDCTokens", "token generator", tokens); err != nil {
 			return err
 		}
 
-		i.tokens = g
+		i.tokens = tokens
 
 		return nil
 	}
 }
 
-// WithOIDCSessions opens the session a redeemed handoff establishes in m,
+// WithOIDCSessions opens the session a redeemed handoff establishes in sessions,
 // and ends back-channel-logged-out sessions there.
 //
 // Default: the session manager the chain's other built-ins were wired to, so a
 // deployment with one session store declares it once. A chain that has none at
 // all is refused. A nil manager is refused.
-func WithOIDCSessions(m *session.Sessions) OIDCOption {
+func WithOIDCSessions(sessions *session.Sessions) OIDCOption {
 	return func(i *oidcInterceptor) error {
-		if err := requireDep("WithOIDCSessions", "session manager", m); err != nil {
+		if err := requireDep("WithOIDCSessions", "session manager", sessions); err != nil {
 			return err
 		}
 
-		i.sessions = m
+		i.sessions = sessions
 
 		return nil
 	}
@@ -580,7 +580,7 @@ func WithOIDCCallbackSuccess(fn CallbackSuccess) OIDCOption {
 	}
 }
 
-// WithOIDCHandoffRedeemer redeems handoff codes through r instead.
+// WithOIDCHandoffRedeemer redeems handoff codes through redeemer instead.
 //
 // Default: the *oidc.Handoff given to EnableOIDCLogin, which runs
 // every check before it consumes the code. A replacement takes on that
@@ -593,20 +593,20 @@ func WithOIDCCallbackSuccess(fn CallbackSuccess) OIDCOption {
 // redeemer, including an interface holding a nil pointer, is refused. This
 // option is redemption-only: given beside WithOIDCCallbackSuccess, which issues
 // no handoff code for it to redeem, it is refused.
-func WithOIDCHandoffRedeemer(r HandoffRedeemer) OIDCOption {
+func WithOIDCHandoffRedeemer(redeemer HandoffRedeemer) OIDCOption {
 	return func(i *oidcInterceptor) error {
-		if err := requireDep("WithOIDCHandoffRedeemer", "redeemer", r); err != nil {
+		if err := requireDep("WithOIDCHandoffRedeemer", "redeemer", redeemer); err != nil {
 			return err
 		}
 
-		i.redeemer = r
+		i.redeemer = redeemer
 		i.handoffRedeemerSet = true
 
 		return nil
 	}
 }
 
-// WithOIDCHandoffLimiter counts failed handoff redemptions through l.
+// WithOIDCHandoffLimiter counts failed handoff redemptions through limiter.
 //
 // Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
 // namespace "oidc.handoff", or else an in-memory limiter of 10 failures per
@@ -618,9 +618,9 @@ func WithOIDCHandoffRedeemer(r HandoffRedeemer) OIDCOption {
 // A limiter handed to several flows shares its key cap among them, so a flood
 // on one refuses new sources on all.
 //
-// The flow's IPv6 aggregate (WithIPv6Aggregate) is sized from l: the
-// aggregate's multiplier, 4 by default, times the limit l reports, over the
-// window l reports, read through ratelimit.PolicyReporter, which the in-memory
+// The flow's IPv6 aggregate (WithIPv6Aggregate) is sized from limiter: the
+// aggregate's multiplier, 4 by default, times the limit limiter reports, over the
+// window limiter reports, read through ratelimit.PolicyReporter, which the in-memory
 // limiter and the shared limiters scrty ships implement. A limiter that does
 // not implement it gets no default aggregate for this flow, and one warning
 // when the chain is built; under an explicit WithIPv6Aggregate it is a
@@ -630,13 +630,13 @@ func WithOIDCHandoffRedeemer(r HandoffRedeemer) OIDCOption {
 // would read as "no limit". This option is redemption-only: given beside
 // WithOIDCCallbackSuccess, which issues no code for anything to be limited on, it
 // is refused.
-func WithOIDCHandoffLimiter(l ratelimit.Limiter) OIDCOption {
+func WithOIDCHandoffLimiter(limiter ratelimit.Limiter) OIDCOption {
 	return func(i *oidcInterceptor) error {
-		if err := requireDep("WithOIDCHandoffLimiter", "limiter", l); err != nil {
+		if err := requireDep("WithOIDCHandoffLimiter", "limiter", limiter); err != nil {
 			return err
 		}
 
-		i.limiter = l
+		i.limiter = limiter
 		i.handoffLimiterSet = true
 
 		return nil
@@ -695,14 +695,14 @@ func WithOIDCHandoffCountRefusals(count bool) OIDCOption {
 // provider end sessions it did not establish: the user's password sessions and
 // sessions opened through other providers. A token naming a session (sid) is
 // unaffected by the scope. Any other value is refused.
-func WithOIDCBackchannelLogoutScope(s BackchannelLogoutScope) OIDCOption {
+func WithOIDCBackchannelLogoutScope(scope BackchannelLogoutScope) OIDCOption {
 	return func(i *oidcInterceptor) error {
-		if !s.valid() {
+		if !scope.valid() {
 			return newConfigError("WithOIDCBackchannelLogoutScope was given %d, which is not "+
-				"BackchannelLogoutScopeIssuer or BackchannelLogoutScopeAll", s)
+				"BackchannelLogoutScopeIssuer or BackchannelLogoutScopeAll", scope)
 		}
 
-		i.scope = s
+		i.scope = scope
 
 		return nil
 	}

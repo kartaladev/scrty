@@ -307,7 +307,7 @@ func sessionFamilyReadCases() []suiteCase[session.Store] {
 // to what only a database row can show. A store with no family read fails it at
 // once: it is for a store that claims the read, and a store that lists instead
 // has the portable suite's cases logged as not run. It checks, writing the rows
-// through h.Raw, that:
+// through harness.Raw, that:
 //   - a row of another family that will not decode fails neither the family read
 //     nor a manager's SignInState for this family, and does fail a read of the
 //     family holding it, and the listing, as the contract asks;
@@ -317,11 +317,11 @@ func sessionFamilyReadCases() []suiteCase[session.Store] {
 //     listing still lists;
 //   - the read comes from the database, not the instance that wrote the row.
 //
-// It fails at once, naming every missing input, when h is missing one.
-func RunSessionFamilyRead[S session.Store](t *testing.T, h DurableHarness[S]) {
+// It fails at once, naming every missing input, when harness is missing one.
+func RunSessionFamilyRead[S session.Store](t *testing.T, harness DurableHarness[S]) {
 	t.Helper()
 
-	h.Require(t)
+	harness.Require(t)
 
 	reader := func(t *testing.T, s S) session.FamilyReader {
 		t.Helper()
@@ -334,14 +334,14 @@ func RunSessionFamilyRead[S session.Store](t *testing.T, h DurableHarness[S]) {
 	now := suiteStart.Add(time.Minute)
 
 	t.Run("a row of another family that will not decode fails only its own family's read", func(t *testing.T) {
-		s := h.New(t)
+		s := harness.New(t)
 		r := reader(t, s)
 		const user = identity.UserID("family-read-undecodable-user")
 		healthy := familySession("family-read-healthy", user, suiteID(2801))
 		holding := familySession("family-read-holding", user, suiteID(2802))
 		require.NoError(t, s.Create(t.Context(), healthy))
 		require.NoError(t, s.Create(t.Context(), holding))
-		_, err := h.Raw.ExecContext(t.Context(), `UPDATE sessions SET data = '[1]' WHERE id_digest = $1`,
+		_, err := harness.Raw.ExecContext(t.Context(), `UPDATE sessions SET data = '[1]' WHERE id_digest = $1`,
 			sessionDigest(holding.ID))
 		require.NoError(t, err)
 
@@ -367,13 +367,13 @@ func RunSessionFamilyRead[S session.Store](t *testing.T, h DurableHarness[S]) {
 	})
 
 	t.Run("a family read opens no sealed field", func(t *testing.T) {
-		s := h.New(t)
+		s := harness.New(t)
 		r := reader(t, s)
 		const user = identity.UserID("family-read-sealed-user")
 		want := withSignInState(federatedSession("family-read-sealed", user, "https://idp.example.com", "upstream-session"))
 		want.FamilyID = suiteID(2811)
 		require.NoError(t, s.Create(t.Context(), want))
-		_, err := h.Raw.ExecContext(t.Context(),
+		_, err := harness.Raw.ExecContext(t.Context(),
 			`UPDATE sessions SET external_id_token = 'not-an-envelope', csrf_token = 'not-an-envelope' WHERE id_digest = $1`,
 			sessionDigest(want.ID))
 		require.NoError(t, err)
@@ -387,12 +387,12 @@ func RunSessionFamilyRead[S session.Store](t *testing.T, h DurableHarness[S]) {
 	})
 
 	t.Run("the nil family reads nothing, even where a row is stored in it", func(t *testing.T) {
-		s := h.New(t)
+		s := harness.New(t)
 		r := reader(t, s)
 		const user = identity.UserID("family-read-nil-user")
 		inNone := familySession("family-read-nil", user, suiteID(2821))
 		require.NoError(t, s.Create(t.Context(), inNone))
-		_, err := h.Raw.ExecContext(t.Context(),
+		_, err := harness.Raw.ExecContext(t.Context(),
 			`UPDATE sessions SET family_id = '00000000-0000-0000-0000-000000000000' WHERE id_digest = $1`,
 			sessionDigest(inNone.ID))
 		require.NoError(t, err)
@@ -407,7 +407,7 @@ func RunSessionFamilyRead[S session.Store](t *testing.T, h DurableHarness[S]) {
 	})
 
 	t.Run("a family written through one replica is read by another", func(t *testing.T) {
-		first, replica := h.New(t), h.NewReplica(t)
+		first, replica := harness.New(t), harness.NewReplica(t)
 		const user = identity.UserID("family-read-replica-user")
 		want := familySession("family-read-replica", user, suiteID(2831))
 		require.NoError(t, first.Create(t.Context(), want))

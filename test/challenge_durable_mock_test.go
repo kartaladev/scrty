@@ -42,18 +42,18 @@ func (m *MockDurableChallengeVerifier) EXPECT() *MockDurableChallengeVerifierMoc
 }
 
 // Verify mocks base method.
-func (m *MockDurableChallengeVerifier) Verify(ctx context.Context, r httpsec.Request, s httpsec.ChallengeSignals) (httpsec.ChallengeDecision, error) {
+func (m *MockDurableChallengeVerifier) Verify(ctx context.Context, request httpsec.Request, signals httpsec.ChallengeSignals) (httpsec.ChallengeDecision, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Verify", ctx, r, s)
+	ret := m.ctrl.Call(m, "Verify", ctx, request, signals)
 	ret0, _ := ret[0].(httpsec.ChallengeDecision)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // Verify indicates an expected call of Verify.
-func (mr *MockDurableChallengeVerifierMockRecorder) Verify(ctx, r, s any) *MockDurableChallengeVerifierVerifyCall {
+func (mr *MockDurableChallengeVerifierMockRecorder) Verify(ctx, request, signals any) *MockDurableChallengeVerifierVerifyCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Verify", reflect.TypeOf((*MockDurableChallengeVerifier)(nil).Verify), ctx, r, s)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Verify", reflect.TypeOf((*MockDurableChallengeVerifier)(nil).Verify), ctx, request, signals)
 	return &MockDurableChallengeVerifierVerifyCall{Call: call}
 }
 

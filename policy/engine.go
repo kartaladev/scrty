@@ -81,20 +81,20 @@ func NewEngine(policies ...Policy) (*Engine, error) {
 // would leave the engine making fewer checks than the consumer wrote, with
 // nothing at all to show for the rule that went missing; and keeping it would
 // panic at the first request, where a line of wiring reads as a runtime fault.
-func (e *Engine) Add(p Policy) error {
-	if nilcheck.IsNil(p) {
+func (e *Engine) Add(policy Policy) error {
+	if nilcheck.IsNil(policy) {
 		return fmt.Errorf(
 			"%w: a policy is absent, and registering it would leave the engine "+
 				"making fewer checks than were written", ErrConfig)
 	}
 
-	phases := p.Phases()
+	phases := policy.Phases()
 	for _, phase := range phases {
-		e.byPhase[phase] = append(e.byPhase[phase], p)
+		e.byPhase[phase] = append(e.byPhase[phase], policy)
 	}
 
 	if len(phases) > 0 {
-		e.asked = append(e.asked, p)
+		e.asked = append(e.asked, policy)
 	}
 
 	return nil

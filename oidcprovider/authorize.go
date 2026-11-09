@@ -103,7 +103,7 @@ type AuthorizeInput struct {
 
 // Format writes the redacted form under every verb. The input holds the browser's secrets,
 // so it prints and logs redacted too; read its fields to use it.
-func (AuthorizeInput) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(redacted)) }
+func (AuthorizeInput) Format(state fmt.State, _ rune) { _, _ = state.Write([]byte(redacted)) }
 
 // LogValue is the redacted form.
 func (AuthorizeInput) LogValue() slog.Value { return slog.StringValue(redacted) }
@@ -121,7 +121,7 @@ type AuthorizeResult struct {
 }
 
 // Format writes the redacted form under every verb.
-func (AuthorizeResult) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(redacted)) }
+func (AuthorizeResult) Format(state fmt.State, _ rune) { _, _ = state.Write([]byte(redacted)) }
 
 // LogValue is the redacted form.
 func (AuthorizeResult) LogValue() slog.Value { return slog.StringValue(redacted) }

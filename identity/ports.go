@@ -45,13 +45,13 @@ type UserChange struct {
 	conditional      bool
 }
 
-// IsSet reports whether the caller named f.
-func (u *UserChange) IsSet(f Field) bool {
-	if f >= fieldCount {
+// IsSet reports whether the caller named field.
+func (u *UserChange) IsSet(field Field) bool {
+	if field >= fieldCount {
 		return false
 	}
 
-	return u.set[f]
+	return u.set[field]
 }
 
 func (u *UserChange) mark(f Field) {
@@ -118,8 +118,8 @@ func WithUserPassword(hash []byte) UserOption {
 // when the password is mirrored from an identity provider, so a mirror written
 // on every federated login cannot keep a user permanently fresh. Naming the zero
 // time clears it.
-func WithUserPasswordChangedAt(t time.Time) UserOption {
-	return func(u *UserChange) { u.PasswordChangedAt = t; u.mark(FieldPasswordChangedAt) }
+func WithUserPasswordChangedAt(changedAt time.Time) UserOption {
+	return func(u *UserChange) { u.PasswordChangedAt = changedAt; u.mark(FieldPasswordChangedAt) }
 }
 
 // WithUserPasswordChange names a local password change: the already-hashed

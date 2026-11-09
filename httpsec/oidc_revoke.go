@@ -64,7 +64,7 @@ func (g *oidcRevokeGroup) flushRefusalLogs() error {
 	return nil
 }
 
-// WithOIDCRevokeLimiter counts the revocation endpoint's failed client authentications through l.
+// WithOIDCRevokeLimiter counts the revocation endpoint's failed client authentications through limiter.
 //
 // Default: the chain's rate-limiter factory (WithRateLimiterFactory) under namespace "oidc-revoke",
 // or else an in-memory limiter of 10 failures per source in 15 minutes. A deployment of more than one
@@ -72,20 +72,20 @@ func (g *oidcRevokeGroup) flushRefusalLogs() error {
 //
 // A nil limiter, including an interface holding a nil pointer, is refused: it would read as no limit
 // while the consumer believed they had replaced one.
-func WithOIDCRevokeLimiter(l ratelimit.Limiter) OIDCProviderOption {
+func WithOIDCRevokeLimiter(limiter ratelimit.Limiter) OIDCProviderOption {
 	return func(op *oidcEndpoints) error {
-		if err := requireDep("WithOIDCRevokeLimiter", "limiter", l); err != nil {
+		if err := requireDep("WithOIDCRevokeLimiter", "limiter", limiter); err != nil {
 			return err
 		}
 
-		op.revoke.revocation.throttle.limiter = l
+		op.revoke.revocation.throttle.limiter = limiter
 
 		return nil
 	}
 }
 
 // WithOIDCIntrospectLimiter counts the introspection endpoint's failed client authentications
-// through l.
+// through limiter.
 //
 // Default: the chain's rate-limiter factory (WithRateLimiterFactory) under namespace
 // "oidc-introspect", or else an in-memory limiter of 10 failures per source in 15 minutes. A
@@ -94,49 +94,49 @@ func WithOIDCRevokeLimiter(l ratelimit.Limiter) OIDCProviderOption {
 //
 // A nil limiter, including an interface holding a nil pointer, is refused: it would read as no limit
 // while the consumer believed they had replaced one.
-func WithOIDCIntrospectLimiter(l ratelimit.Limiter) OIDCProviderOption {
+func WithOIDCIntrospectLimiter(limiter ratelimit.Limiter) OIDCProviderOption {
 	return func(op *oidcEndpoints) error {
-		if err := requireDep("WithOIDCIntrospectLimiter", "limiter", l); err != nil {
+		if err := requireDep("WithOIDCIntrospectLimiter", "limiter", limiter); err != nil {
 			return err
 		}
 
-		op.revoke.introspection.throttle.limiter = l
+		op.revoke.introspection.throttle.limiter = limiter
 
 		return nil
 	}
 }
 
-// WithOIDCRevokeBodyLimit reads at most n bytes of a revocation request's body.
+// WithOIDCRevokeBodyLimit reads at most limit bytes of a revocation request's body.
 //
 // Default: DefaultLoginBodyLimit. The bound applies before anything is parsed or any client is known,
 // and a body over it answers ErrRequestTooLarge. A limit of zero or less is refused, because it would
 // refuse every request.
-func WithOIDCRevokeBodyLimit(n int64) OIDCProviderOption {
+func WithOIDCRevokeBodyLimit(limit int64) OIDCProviderOption {
 	return func(op *oidcEndpoints) error {
-		if n <= 0 {
+		if limit <= 0 {
 			return newConfigError("WithOIDCRevokeBodyLimit takes a positive bound, and %d would refuse every "+
-				"revocation request", n)
+				"revocation request", limit)
 		}
 
-		op.revoke.revocation.bodyLimit = n
+		op.revoke.revocation.bodyLimit = limit
 
 		return nil
 	}
 }
 
-// WithOIDCIntrospectBodyLimit reads at most n bytes of an introspection request's body.
+// WithOIDCIntrospectBodyLimit reads at most limit bytes of an introspection request's body.
 //
 // Default: DefaultLoginBodyLimit. The bound applies before anything is parsed or any client is known,
 // and a body over it answers ErrRequestTooLarge. A limit of zero or less is refused, because it would
 // refuse every request.
-func WithOIDCIntrospectBodyLimit(n int64) OIDCProviderOption {
+func WithOIDCIntrospectBodyLimit(limit int64) OIDCProviderOption {
 	return func(op *oidcEndpoints) error {
-		if n <= 0 {
+		if limit <= 0 {
 			return newConfigError("WithOIDCIntrospectBodyLimit takes a positive bound, and %d would refuse "+
-				"every introspection request", n)
+				"every introspection request", limit)
 		}
 
-		op.revoke.introspection.bodyLimit = n
+		op.revoke.introspection.bodyLimit = limit
 
 		return nil
 	}

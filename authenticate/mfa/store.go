@@ -125,19 +125,19 @@ type EnrolmentStore interface {
 	// definitively holds none.
 	Get(ctx context.Context, user identity.UserID) (Enrolment, bool, error)
 
-	// PutPending stores e as a pending enrolment, replacing an existing pending
+	// PutPending stores enrolment as a pending enrolment, replacing an existing pending
 	// one. It returns ErrAlreadyEnrolled when a confirmed enrolment exists,
 	// decided by the write.
 	//
 	// The stored enrolment is pending with no accepted time step: its
-	// confirmation time and last accepted step are cleared whatever e holds,
+	// confirmation time and last accepted step are cleared whatever enrolment holds,
 	// so a replaced pending enrolment keeps no step spent against its secret.
 	//
-	// It starts the generation e carries: the stored enrolment takes
-	// e.Generation, and its device proof, emailed code, code expiry and attempt
-	// count are cleared whatever e holds, so nothing proven against an earlier
+	// It starts the generation enrolment carries: the stored enrolment takes
+	// enrolment.Generation, and its device proof, emailed code, code expiry and attempt
+	// count are cleared whatever enrolment holds, so nothing proven against an earlier
 	// begin survives a later one.
-	PutPending(ctx context.Context, e Enrolment) error
+	PutPending(ctx context.Context, enrolment Enrolment) error
 
 	// Confirm marks the user's pending enrolment on generation gen confirmed
 	// at the given time and records step. It reports false, changing nothing,

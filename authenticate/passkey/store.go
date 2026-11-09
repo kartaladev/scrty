@@ -26,12 +26,12 @@ import (
 // user's, is refused the same way. The error is reserved for the store
 // failing.
 type CredentialStore interface {
-	// Insert stores c. It returns ErrDuplicateCredential when c's credential
+	// Insert stores the credential. It returns ErrDuplicateCredential when its credential
 	// ID, or its library ID, is already stored, whatever user holds it; the
 	// write decides, so of concurrent inserts of one credential ID exactly one
 	// succeeds.
-	Insert(ctx context.Context, c *Credential) error
-	// InsertWithin stores c only while c's user holds fewer than limit
+	Insert(ctx context.Context, credential *Credential) error
+	// InsertWithin stores credential only while credential's user holds fewer than limit
 	// credentials in every state, as Count counts them, and reports whether
 	// it stored it. A refused insert is (false, nil) and writes nothing; it is
 	// an outcome, not a failure. A limit below one refuses every insert.
@@ -50,7 +50,7 @@ type CredentialStore interface {
 	// (false, nil) without having looked them up. The library uses it for a
 	// registration finish; Insert stays for seeding and import, where no
 	// limit applies.
-	InsertWithin(ctx context.Context, c *Credential, limit int) (bool, error)
+	InsertWithin(ctx context.Context, credential *Credential, limit int) (bool, error)
 	// FindByCredentialID returns the credential with the WebAuthn credential
 	// ID credID, or ErrNotFound.
 	FindByCredentialID(ctx context.Context, credID []byte) (*Credential, error)
@@ -79,14 +79,14 @@ type CredentialStore interface {
 	// Suspend moves credential cid from active to suspended, and reports
 	// whether this call did. Suspension is terminal.
 	Suspend(ctx context.Context, cid id.ID) (bool, error)
-	// ClearReason clears the pending reason r of user's credential cid, only
-	// where r is exactly one reason, PendingSavedCodes or PendingEmailCode,
-	// and the credential is pending with it set; any other r, such as zero, a
+	// ClearReason clears the pending reason of user's credential cid, only
+	// where reason is exactly one reason, PendingSavedCodes or PendingEmailCode,
+	// and the credential is pending with it set; any other reason, such as zero, a
 	// combination or an unknown bit, is refused and changes nothing. Clearing the last reason
 	// makes it active in the same write, and clearing PendingEmailCode drops
 	// its emailed code. It returns the state that results and true, or the
 	// zero State and false when refused.
-	ClearReason(ctx context.Context, user identity.UserID, cid id.ID, r PendingReason) (State, bool, error)
+	ClearReason(ctx context.Context, user identity.UserID, cid id.ID, reason PendingReason) (State, bool, error)
 	// ChargeEmailAttempt charges one attempt against the emailed code of
 	// user's credential cid, only where the credential is pending with
 	// PendingEmailCode set, the code is outstanding, at is before its expiry
@@ -139,10 +139,10 @@ func NewMemoryCredentialStore() *MemoryCredentialStore {
 	}
 }
 
-// Insert stores a copy of c, refusing a credential ID or library ID already
+// Insert stores a copy of the credential, refusing a credential ID or library ID already
 // stored with ErrDuplicateCredential.
-func (s *MemoryCredentialStore) Insert(_ context.Context, c *Credential) error {
-	cp := copyCredential(c)
+func (s *MemoryCredentialStore) Insert(_ context.Context, credential *Credential) error {
+	cp := copyCredential(credential)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -166,13 +166,13 @@ func (s *MemoryCredentialStore) insertLocked(cp *Credential) error {
 	return nil
 }
 
-// InsertWithin stores a copy of c only while c's user holds fewer than limit
+// InsertWithin stores a copy of credential only while credential's user holds fewer than limit
 // credentials, in every state, and reports whether it did. The count and the
 // insert happen under one lock, so of several callers racing for one user no
 // more than limit are told they stored a credential. Under the limit, a
 // credential ID or library ID already stored is ErrDuplicateCredential.
-func (s *MemoryCredentialStore) InsertWithin(_ context.Context, c *Credential, limit int) (bool, error) {
-	cp := copyCredential(c)
+func (s *MemoryCredentialStore) InsertWithin(_ context.Context, credential *Credential, limit int) (bool, error) {
+	cp := copyCredential(credential)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -317,24 +317,24 @@ func (s *MemoryCredentialStore) Suspend(_ context.Context, cid id.ID) (bool, err
 	return true, nil
 }
 
-// ClearReason clears the single reason r of user's pending credential cid
+// ClearReason clears the single reason of user's pending credential cid
 // where it is set, activating the credential when no reason remains and
-// dropping its emailed code when r is PendingEmailCode. Any other r is
+// dropping its emailed code when reason is PendingEmailCode. Any other reason is
 // refused.
 func (s *MemoryCredentialStore) ClearReason(
-	_ context.Context, user identity.UserID, cid id.ID, r PendingReason,
+	_ context.Context, user identity.UserID, cid id.ID, reason PendingReason,
 ) (State, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	c := s.owned(user, cid)
-	if (r != PendingSavedCodes && r != PendingEmailCode) || c == nil ||
-		c.State != StatePending || c.Pending&r == 0 {
+	if (reason != PendingSavedCodes && reason != PendingEmailCode) || c == nil ||
+		c.State != StatePending || c.Pending&reason == 0 {
 		return 0, false, nil
 	}
 
-	c.Pending &^= r
-	if r&PendingEmailCode != 0 {
+	c.Pending &^= reason
+	if reason&PendingEmailCode != 0 {
 		c.EmailCode = nil
 	}
 

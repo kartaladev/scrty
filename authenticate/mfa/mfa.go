@@ -329,7 +329,7 @@ func (f ResponseFormat) Limit() int64 { return f.limit }
 //
 // An error refuses the step that needed the address. The address is never
 // written to a log.
-type ContactResolver func(ctx context.Context, d *identity.Details) (string, error)
+type ContactResolver func(ctx context.Context, details *identity.Details) (string, error)
 
 // LabelResolver returns the account label a provisioning URI carries, which an
 // authenticator app shows beside the issuer, from the user's loaded details.
@@ -337,7 +337,7 @@ type ContactResolver func(ctx context.Context, d *identity.Details) (string, err
 //
 // The default is UsernameAsAddress. A consumer replaces it, for instance with
 // one returning the display email held elsewhere in their records.
-type LabelResolver func(ctx context.Context, d *identity.Details) (string, error)
+type LabelResolver func(ctx context.Context, details *identity.Details) (string, error)
 
 // UsernameAsAddress is the default ContactResolver and LabelResolver: the
 // user's username, unchanged — never trimmed, case-folded or parsed.
@@ -346,12 +346,12 @@ type LabelResolver func(ctx context.Context, d *identity.Details) (string, error
 // address. A username containing ':' is returned as it is, and TOTP then
 // refuses it as an account label when an enrolment begins, storing nothing; a
 // deployment whose usernames may contain ':' supplies its own LabelResolver.
-func UsernameAsAddress(_ context.Context, d *identity.Details) (string, error) {
-	if d == nil || d.Username == "" {
+func UsernameAsAddress(_ context.Context, details *identity.Details) (string, error) {
+	if details == nil || details.Username == "" {
 		return "", errors.New("mfa: the user has no username to use as an address")
 	}
 
-	return d.Username, nil
+	return details.Username, nil
 }
 
 var (

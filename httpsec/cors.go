@@ -115,13 +115,13 @@ type corsLayer struct {
 	clientExposed string
 }
 
-// EnableCORS lets browser pages on the origins p names call the chain's
+// EnableCORS lets browser pages on the origins policy names call the chain's
 // endpoints and the consumer's routes behind it.
 //
 // Default: off; the chain sends no CORS header. Once enabled:
 //
 //   - A request's Origin is allowed only when it equals one of
-//     p.AllowedOrigins exactly, after both are normalised to a lower-case
+//     policy.AllowedOrigins exactly, after both are normalised to a lower-case
 //     scheme and host with no default port, or matches a WithOriginPattern
 //     pattern. "*" alone allows every origin, without credentials: any
 //     request carrying an Origin, including "null" and one that is not a
@@ -137,19 +137,19 @@ type corsLayer struct {
 //     its responses marked.
 //   - An allowed actual request gets Access-Control-Allow-Origin with its
 //     origin ("*" for "*"), Access-Control-Allow-Credentials: true when
-//     p.AllowCredentials is set (default false), and
-//     Access-Control-Expose-Headers naming p.ExposedHeaders (default none).
+//     policy.AllowCredentials is set (default false), and
+//     Access-Control-Expose-Headers naming policy.ExposedHeaders (default none).
 //     These are set before the next interceptor runs, so a refusal from a
 //     later one, such as a bearer token's 401, is readable by the page.
 //   - A preflight, an OPTIONS request carrying Origin and
 //     Access-Control-Request-Method, is answered with 204 in OrderCORS, and
 //     reaches no authentication interceptor, authorizer or handler. It is
-//     allowed when its origin is, its method is one of p.AllowedMethods
+//     allowed when its origin is, its method is one of policy.AllowedMethods
 //     (default GET, HEAD and POST, compared case-sensitively) and every header
-//     it asks for is one of p.AllowedHeaders (default none, compared
+//     it asks for is one of policy.AllowedHeaders (default none, compared
 //     case-insensitively, every Access-Control-Request-Headers line read as
 //     one list). An allowed preflight carries the allowed origin, the allowed
-//     methods, the requested headers and Access-Control-Max-Age, p.MaxAge in
+//     methods, the requested headers and Access-Control-Max-Age, policy.MaxAge in
 //     whole seconds (default 600; 0 with WithoutPreflightCaching). Any other
 //     preflight gets 204 with no CORS header. Every preflight answer adds
 //     Origin, Access-Control-Request-Method, Access-Control-Request-Headers to
@@ -167,7 +167,7 @@ type corsLayer struct {
 //     metadata documents, follow the allowlist as any route does, with
 //     Authorization and DPoP allowed as request headers whether or not DPoP is
 //     enabled, DPoP-Nonce and WWW-Authenticate exposed, and credentials never
-//     allowed, whatever p.AllowCredentials says; the authorization, resume,
+//     allowed, whatever policy.AllowCredentials says; the authorization, resume,
 //     end-session and logout confirmation endpoints carry no Access-Control
 //     header at all, whatever the allowlist says, and a preflight to them is
 //     not answered by the layer. WithoutAutomaticCORSHeaders also turns off the
@@ -179,14 +179,14 @@ type corsLayer struct {
 // origin is given; an origin is "null", has a scheme other than http or https,
 // a path (even "/"), a query, a fragment, userinfo or no host; "*" is given
 // with AllowCredentials or beside other origins; an origin holds a wildcard
-// without WithOriginPattern; p.MaxAge is negative, positive but below one
+// without WithOriginPattern; policy.MaxAge is negative, positive but below one
 // second, or set together with WithoutPreflightCaching; a method or header
 // name is not a single token, or is "*"; or CORS is enabled twice.
 //
 // The layer is scrty's own rather than a framework's middleware, so it behaves
 // the same on every adapter, and a preflight is answered before the chain's
 // fail-closed authorizer could refuse it.
-func EnableCORS(p CORSPolicy, opts ...CORSOption) Option {
+func EnableCORS(policy CORSPolicy, opts ...CORSOption) Option {
 	const option = "EnableCORS"
 
 	return func(c *config) error {
@@ -197,7 +197,7 @@ func EnableCORS(p CORSPolicy, opts ...CORSOption) Option {
 			return dup
 		}
 
-		l, err := newCORSLayer(p, opts)
+		l, err := newCORSLayer(policy, opts)
 		if err != nil {
 			return err
 		}

@@ -41,7 +41,7 @@ type signingKeyStore struct {
 }
 
 // NewSigningKeyStore wraps inner so a signing key's private material is
-// sealed by c before it is stored and opened when it is loaded. Every other
+// sealed by cipher before it is stored and opened when it is loaded. Every other
 // field of the record, the public JWK included, is stored as given: it is
 // published anyway.
 //
@@ -54,39 +54,39 @@ type signingKeyStore struct {
 // cipher's own (ErrDecryptionFailed or ErrUnknownKeyID from the default
 // cipher) through errors.Is and errors.As, and its text is fixed: it names no
 // key id and carries no text of the cipher's or of inner's errors. A failure
-// of inner, or of c while sealing, is returned the same way; nothing is
+// of inner, or of cipher while sealing, is returned the same way; nothing is
 // stored when sealing fails.
 //
 // Delete forwards to inner, since it has nothing to seal.
 //
 // By default a load re-seals, under the active key, every key that opened
-// under another one, and hands the old and new values to r. A failed
+// under another one, and hands the old and new values to resealer. A failed
 // re-seal, or a cipher that cannot say which key is active, never fails the
 // load. Keys are re-sealed only once every key has opened, so a load that
 // fails rewrites nothing. WithResealOnRead(false) turns re-sealing off.
 //
 // A nil inner store or a nil cipher, typed nil included, or a nil option is a
-// configuration error matching ErrConfig, and so is a nil r
+// configuration error matching ErrConfig, and so is a nil resealer
 // unless re-sealing on read is turned off: re-sealing is the default, and a
 // store with nowhere to re-seal to would quietly keep retired keys in use. With
-// re-sealing off, r is not used and may be nil. WithClock is refused: the
+// re-sealing off, resealer is not used and may be nil. WithClock is refused: the
 // store judges no time, so a clock would be silently ignored.
 func NewSigningKeyStore(
-	inner signingkey.KeyStore, r SigningKeyResealer, c Cipher, opts ...Option,
+	inner signingkey.KeyStore, resealer SigningKeyResealer, cipher Cipher, opts ...Option,
 ) (signingkey.KeyStore, error) {
 	if nilcheck.IsNil(inner) {
 		return nil, fmt.Errorf("%w: the sealing signing-key store has no inner store", ErrConfig)
 	}
-	if nilcheck.IsNil(c) {
+	if nilcheck.IsNil(cipher) {
 		return nil, fmt.Errorf("%w: the sealing signing-key store has no cipher", ErrConfig)
 	}
 
-	o, err := newOptions("signing-key", !nilcheck.IsNil(r), false, opts)
+	o, err := newOptions("signing-key", !nilcheck.IsNil(resealer), false, opts)
 	if err != nil {
 		return nil, err
 	}
 
-	return &signingKeyStore{inner: inner, resealer: r, cipher: c, opts: o}, nil
+	return &signingKeyStore{inner: inner, resealer: resealer, cipher: cipher, opts: o}, nil
 }
 
 // Store seals the private material of a copy of rec and stores the copy.

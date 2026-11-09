@@ -80,8 +80,8 @@ const OverflowKey = "logsample: overflow"
 // keys are sampled together under OverflowKey, so the count of what was
 // suppressed stays exact while memory stays bounded. A value of zero or less
 // keeps the default. Default: DefaultMaxKeys.
-func WithMaxKeys(n int) Option {
-	return func(s *Sampler) { s.maxKeys = n }
+func WithMaxKeys(maxKeys int) Option {
+	return func(s *Sampler) { s.maxKeys = maxKeys }
 }
 
 // New returns a Sampler with fixed windows of the given length.

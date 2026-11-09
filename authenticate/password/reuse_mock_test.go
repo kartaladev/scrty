@@ -80,18 +80,18 @@ func (c *MockHistoryForgetPasswordsCall) DoAndReturn(f func(context.Context, ide
 }
 
 // RecentPasswords mocks base method.
-func (m *MockHistory) RecentPasswords(ctx context.Context, user identity.UserID, n int) ([][]byte, error) {
+func (m *MockHistory) RecentPasswords(ctx context.Context, user identity.UserID, limit int) ([][]byte, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "RecentPasswords", ctx, user, n)
+	ret := m.ctrl.Call(m, "RecentPasswords", ctx, user, limit)
 	ret0, _ := ret[0].([][]byte)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // RecentPasswords indicates an expected call of RecentPasswords.
-func (mr *MockHistoryMockRecorder) RecentPasswords(ctx, user, n any) *MockHistoryRecentPasswordsCall {
+func (mr *MockHistoryMockRecorder) RecentPasswords(ctx, user, limit any) *MockHistoryRecentPasswordsCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RecentPasswords", reflect.TypeOf((*MockHistory)(nil).RecentPasswords), ctx, user, n)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RecentPasswords", reflect.TypeOf((*MockHistory)(nil).RecentPasswords), ctx, user, limit)
 	return &MockHistoryRecentPasswordsCall{Call: call}
 }
 

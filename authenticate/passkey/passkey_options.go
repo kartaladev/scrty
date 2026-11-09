@@ -17,9 +17,9 @@ import (
 type Option func(*Passkeys)
 
 // NameResolver returns the user name and display name a registration's
-// creation options carry for the user d describes. An authenticator shows
+// creation options carry for the user details describes. An authenticator shows
 // them when the user picks a passkey; neither is the user handle.
-type NameResolver func(ctx context.Context, d *identity.Details) (name, display string, err error)
+type NameResolver func(ctx context.Context, details *identity.Details) (name, display string, err error)
 
 // RegistrationFacts is what a consumer's registration check is given about a
 // verified registration, before anything is stored.
@@ -41,15 +41,15 @@ type RegistrationFacts struct {
 }
 
 // WithConfirmLimiterFactory builds the limiter that counts failed emailed-code
-// confirmations per user (ConfirmEmailCode) through f, under the namespace
+// confirmations per user (ConfirmEmailCode) through factory, under the namespace
 // "passkey-email-confirm" with this flow's own limit and window: 5 failures per
 // 15 minutes.
 //
 // Default: ratelimit.MemoryLimiterFactory, logging through the Passkeys logger
 // and clock, so the limit holds in this process alone. Precedence: a limiter
 // given for one confirmation (RegistrationContext.ConfirmLimiter) wins for that
-// call; then the limiter f built; then the in-memory default. Because the
-// explicit limiter is given per call, f is asked once, when New runs.
+// call; then the limiter factory built; then the in-memory default. Because the
+// explicit limiter is given per call, factory is asked once, when New runs.
 //
 // For this second-factor flow, a shared limiter in
 // ratelimit.UnavailableFallbackToLocal mode is the recommended choice: during an
@@ -57,10 +57,10 @@ type RegistrationFacts struct {
 // users are not locked out of sign-in.
 //
 // A nil factory, typed nil included, is an error wrapping ErrConfig, as is an
-// error from f, which names the namespace.
-func WithConfirmLimiterFactory(f ratelimit.LimiterFactory) Option {
+// error from factory, which names the namespace.
+func WithConfirmLimiterFactory(factory ratelimit.LimiterFactory) Option {
 	return func(m *Passkeys) {
-		m.confirmFactory = f
+		m.confirmFactory = factory
 		m.factorySet = true
 	}
 }
@@ -68,8 +68,8 @@ func WithConfirmLimiterFactory(f ratelimit.LimiterFactory) Option {
 // WithChallengeTTL replaces how long a ceremony challenge is honoured after it
 // is issued. The default is 5 minutes, and it is also the timeout the creation
 // options carry. Zero or less is a configuration error.
-func WithChallengeTTL(d time.Duration) Option {
-	return func(m *Passkeys) { m.ttl = d }
+func WithChallengeTTL(ttl time.Duration) Option {
+	return func(m *Passkeys) { m.ttl = ttl }
 }
 
 // WithRegistrationChallengeLimit replaces how many registration challenges one
@@ -77,8 +77,8 @@ func WithChallengeTTL(d time.Duration) Option {
 // 10; the next begin is refused with ErrRegistrationThrottled. The count and
 // the issue are one decision of the challenge store's, so begins racing for
 // one user never together exceed it. Zero or less is a configuration error.
-func WithRegistrationChallengeLimit(n int) Option {
-	return func(m *Passkeys) { m.issueLimit = n }
+func WithRegistrationChallengeLimit(limit int) Option {
+	return func(m *Passkeys) { m.issueLimit = limit }
 }
 
 // WithPerUserLimit replaces how many passkeys one user may hold, counting
@@ -86,8 +86,8 @@ func WithRegistrationChallengeLimit(n int) Option {
 // ErrPerUserLimitReached. The limit is decided by the credential store's bounded
 // insert (CredentialStore.InsertWithin), so finishes racing for one user never
 // leave it holding more. Zero or less is a configuration error.
-func WithPerUserLimit(n int) Option {
-	return func(m *Passkeys) { m.passkeyLimit = n }
+func WithPerUserLimit(limit int) Option {
+	return func(m *Passkeys) { m.passkeyLimit = limit }
 }
 
 // WithManagementFreshness replaces how recent a full session's authentication
@@ -96,8 +96,8 @@ func WithPerUserLimit(n int) Option {
 // second factor or a re-authentication. A renewal never refreshes it, so a
 // renewed session does not regain freshness. The default is 15 minutes; an older session is refused
 // with ErrReauthenticationRequired. Zero or less is a configuration error.
-func WithManagementFreshness(d time.Duration) Option {
-	return func(m *Passkeys) { m.freshness = d }
+func WithManagementFreshness(maxAge time.Duration) Option {
+	return func(m *Passkeys) { m.freshness = maxAge }
 }
 
 // WithUserVerification replaces the user-verification requirement of every
@@ -133,8 +133,8 @@ func WithNameResolver(fn NameResolver) Option {
 // passkeys is told to turn, such as a support address. It has no default and
 // is required: a notice that a passkey was bound is only useful when it says
 // what to do if it was not the recipient.
-func WithRepudiationContact(s string) Option {
-	return func(m *Passkeys) { m.repudiation = s }
+func WithRepudiationContact(contact string) Option {
+	return func(m *Passkeys) { m.repudiation = contact }
 }
 
 // WithSynchronousDelivery accepts a sender that does not report
@@ -150,7 +150,7 @@ func WithSynchronousDelivery() Option {
 // returned unchanged, and nothing is stored. A consumer can use it to apply a
 // stricter policy to some users only, such as refusing backup-eligible
 // passkeys for administrators. A nil check is a configuration error.
-func WithRegistrationCheck(fn func(ctx context.Context, f RegistrationFacts) error) Option {
+func WithRegistrationCheck(fn func(ctx context.Context, facts RegistrationFacts) error) Option {
 	return func(m *Passkeys) {
 		m.regCheck = fn
 		m.regCheckSet = true
@@ -179,9 +179,9 @@ func WithClock(clk clock.Clock) Option {
 // WithRandom replaces the source user handles, emailed codes and challenge
 // secrets are drawn from. The default is crypto/rand.Reader. A nil reader is a
 // configuration error.
-func WithRandom(r io.Reader) Option {
+func WithRandom(src io.Reader) Option {
 	return func(m *Passkeys) {
-		m.random = r
+		m.random = src
 		m.randomSet = true
 	}
 }
@@ -189,19 +189,19 @@ func WithRandom(r io.Reader) Option {
 // WithIDGenerator replaces the generator of credential and challenge
 // identifiers. The default is id.NewV7Generator. A nil generator is a
 // configuration error.
-func WithIDGenerator(g id.Generator) Option {
+func WithIDGenerator(ids id.Generator) Option {
 	return func(m *Passkeys) {
-		m.ids = g
+		m.ids = ids
 		m.idsSet = true
 	}
 }
 
 // WithLogger replaces the logger. The default is slog.Default(). A nil logger
 // is ignored.
-func WithLogger(l *slog.Logger) Option {
+func WithLogger(logger *slog.Logger) Option {
 	return func(m *Passkeys) {
-		if l != nil {
-			m.logger = l
+		if logger != nil {
+			m.logger = logger
 		}
 	}
 }
@@ -211,6 +211,6 @@ func WithLogger(l *slog.Logger) Option {
 // written at most once per key per window, keyed by reason, and the counts
 // held back are reported. The default is one minute. An interval of zero or
 // less writes every record. It governs the passkey manager's records only.
-func WithLogInterval(d time.Duration) Option {
-	return func(m *Passkeys) { m.logInterval = d }
+func WithLogInterval(interval time.Duration) Option {
+	return func(m *Passkeys) { m.logInterval = interval }
 }

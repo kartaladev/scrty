@@ -44,17 +44,17 @@ func (m *MockPendingRequestStore) EXPECT() *MockPendingRequestStoreMockRecorder 
 }
 
 // Advance mocks base method.
-func (m *MockPendingRequestStore) Advance(ctx context.Context, handleDigest []byte, from, to oidcprovider.Stage, s *oidcprovider.SignIn) error {
+func (m *MockPendingRequestStore) Advance(ctx context.Context, handleDigest []byte, from, to oidcprovider.Stage, signIn *oidcprovider.SignIn) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Advance", ctx, handleDigest, from, to, s)
+	ret := m.ctrl.Call(m, "Advance", ctx, handleDigest, from, to, signIn)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Advance indicates an expected call of Advance.
-func (mr *MockPendingRequestStoreMockRecorder) Advance(ctx, handleDigest, from, to, s any) *MockPendingRequestStoreAdvanceCall {
+func (mr *MockPendingRequestStoreMockRecorder) Advance(ctx, handleDigest, from, to, signIn any) *MockPendingRequestStoreAdvanceCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Advance", reflect.TypeOf((*MockPendingRequestStore)(nil).Advance), ctx, handleDigest, from, to, s)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Advance", reflect.TypeOf((*MockPendingRequestStore)(nil).Advance), ctx, handleDigest, from, to, signIn)
 	return &MockPendingRequestStoreAdvanceCall{Call: call}
 }
 
@@ -82,17 +82,17 @@ func (c *MockPendingRequestStoreAdvanceCall) DoAndReturn(f func(context.Context,
 }
 
 // Create mocks base method.
-func (m *MockPendingRequestStore) Create(ctx context.Context, r *oidcprovider.PendingRequest) error {
+func (m *MockPendingRequestStore) Create(ctx context.Context, request *oidcprovider.PendingRequest) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Create", ctx, r)
+	ret := m.ctrl.Call(m, "Create", ctx, request)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Create indicates an expected call of Create.
-func (mr *MockPendingRequestStoreMockRecorder) Create(ctx, r any) *MockPendingRequestStoreCreateCall {
+func (mr *MockPendingRequestStoreMockRecorder) Create(ctx, request any) *MockPendingRequestStoreCreateCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockPendingRequestStore)(nil).Create), ctx, r)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockPendingRequestStore)(nil).Create), ctx, request)
 	return &MockPendingRequestStoreCreateCall{Call: call}
 }
 

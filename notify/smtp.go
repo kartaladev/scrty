@@ -142,7 +142,9 @@ func WithSMTPPort(port int) SMTPOption { return func(s *SMTPSender) { s.port = p
 //
 // The caller's own context deadline still applies, and the earlier of the two
 // wins. This option can only lengthen what the sender allows, never remove it.
-func WithSMTPTimeout(d time.Duration) SMTPOption { return func(s *SMTPSender) { s.timeout = d } }
+func WithSMTPTimeout(timeout time.Duration) SMTPOption {
+	return func(s *SMTPSender) { s.timeout = timeout }
+}
 
 // WithSMTPFrom replaces the sender address used for a message that names none.
 // The default is no default address, in which case such a message fails before
@@ -190,10 +192,10 @@ func WithSMTPOpportunisticTLS() SMTPOption { return func(s *SMTPSender) { s.oppo
 // the guarantee survives it.
 //
 // A nil configuration is ignored, leaving the default in place.
-func WithSMTPTLSConfig(c *tls.Config) SMTPOption {
+func WithSMTPTLSConfig(tlsConfig *tls.Config) SMTPOption {
 	return func(s *SMTPSender) {
-		if c != nil {
-			s.tlsConfig = c
+		if tlsConfig != nil {
+			s.tlsConfig = tlsConfig
 		}
 	}
 }
@@ -205,7 +207,7 @@ func WithSMTPTLSConfig(c *tls.Config) SMTPOption {
 // the consumer's own. The context it is handed already carries the send's
 // single deadline, so a dialler that honours its context needs no bound of its
 // own.
-func WithSMTPDialer(d DialFunc) SMTPOption { return func(s *SMTPSender) { s.dial = d } }
+func WithSMTPDialer(dial DialFunc) SMTPOption { return func(s *SMTPSender) { s.dial = dial } }
 
 // WithSMTPLogger replaces where the sender writes its logs. The default is
 // slog.Default, captured when the sender is built, so a consumer who
@@ -223,10 +225,10 @@ func WithSMTPDialer(d DialFunc) SMTPOption { return func(s *SMTPSender) { s.dial
 // handler, for example slog.New(slog.DiscardHandler). Silence is available,
 // but it is chosen at the wiring rather than inherited from a default, because
 // a failed delivery no caller is told of is otherwise invisible.
-func WithSMTPLogger(l *slog.Logger) SMTPOption {
+func WithSMTPLogger(logger *slog.Logger) SMTPOption {
 	return func(s *SMTPSender) {
-		if l != nil {
-			s.logger = l
+		if logger != nil {
+			s.logger = logger
 		}
 	}
 }

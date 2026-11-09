@@ -45,17 +45,17 @@ func (m *MockGrantStore) EXPECT() *MockGrantStoreMockRecorder {
 }
 
 // Create mocks base method.
-func (m *MockGrantStore) Create(ctx context.Context, g *oidcprovider.Grant) error {
+func (m *MockGrantStore) Create(ctx context.Context, grant *oidcprovider.Grant) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Create", ctx, g)
+	ret := m.ctrl.Call(m, "Create", ctx, grant)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Create indicates an expected call of Create.
-func (mr *MockGrantStoreMockRecorder) Create(ctx, g any) *MockGrantStoreCreateCall {
+func (mr *MockGrantStoreMockRecorder) Create(ctx, grant any) *MockGrantStoreCreateCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockGrantStore)(nil).Create), ctx, g)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockGrantStore)(nil).Create), ctx, grant)
 	return &MockGrantStoreCreateCall{Call: call}
 }
 

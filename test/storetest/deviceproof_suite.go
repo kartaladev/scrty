@@ -21,17 +21,17 @@ type DeviceProofEnrolmentStore interface {
 	mfa.DeviceProofStore
 }
 
-// RequireDeviceProof returns s as a DeviceProofEnrolmentStore, and fails t at
-// once, naming the missing port and the store's type, when s does not
+// RequireDeviceProof returns store as a DeviceProofEnrolmentStore, and fails tb at
+// once, naming the missing port and the store's type, when store does not
 // implement mfa.DeviceProofStore. It lets a factory typed on
 // mfa.EnrolmentStore, such as a wrapper's constructor that returns the
 // interface, feed RunDeviceProofSuite without a type assertion of its own.
-func RequireDeviceProof(t testing.TB, s mfa.EnrolmentStore) DeviceProofEnrolmentStore {
-	t.Helper()
+func RequireDeviceProof(tb testing.TB, store mfa.EnrolmentStore) DeviceProofEnrolmentStore {
+	tb.Helper()
 
-	p, ok := s.(DeviceProofEnrolmentStore)
+	p, ok := store.(DeviceProofEnrolmentStore)
 	if !ok {
-		t.Fatalf("storetest: store %T does not implement mfa.DeviceProofStore, which the enrolment path needs", s)
+		tb.Fatalf("storetest: store %T does not implement mfa.DeviceProofStore, which the enrolment path needs", store)
 	}
 	return p
 }
