@@ -187,3 +187,61 @@ func TestGatesRunning_AllocatesNothing(t *testing.T) {
 	allocs := testing.AllocsPerRun(100, func() { _ = gatesRunning(ctx, publisher) })
 	assert.Zero(t, allocs, "the walk allocates")
 }
+
+// TestExchange_PublishingChain pins the filter that skips a run whose terminal is
+// running: through the public path another check refuses the same publication.
+func TestExchange_PublishingChain(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		stack  func(below, top *Chain) []runTerminal
+		assert func(t *testing.T, got, below, top *Chain)
+	}
+
+	cases := []testCase{
+		{
+			name: "a top entry whose terminal is running yields the entry below",
+			stack: func(below, top *Chain) []runTerminal {
+				return []runTerminal{{chain: below}, {chain: top, running: true}}
+			},
+			assert: func(t *testing.T, got, below, _ *Chain) { t.Helper(); require.Same(t, below, got) },
+		},
+		{
+			name: "nothing running yields the top entry",
+			stack: func(below, top *Chain) []runTerminal {
+				return []runTerminal{{chain: below}, {chain: top}}
+			},
+			assert: func(t *testing.T, got, _, top *Chain) { t.Helper(); require.Same(t, top, got) },
+		},
+		{
+			name: "every terminal running yields no chain",
+			stack: func(below, top *Chain) []runTerminal {
+				return []runTerminal{{chain: below, running: true}, {chain: top, running: true}}
+			},
+			assert: func(t *testing.T, got, _, _ *Chain) { t.Helper(); require.Nil(t, got) },
+		},
+		{
+			name:   "no run yields no chain",
+			stack:  func(_, _ *Chain) []runTerminal { return nil },
+			assert: func(t *testing.T, got, _, _ *Chain) { t.Helper(); require.Nil(t, got) },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			below := gatedChain(t, gateOrder[0])
+			top := gatedChain(t, gateOrder[1])
+
+			e := &Exchange{}
+			for _, entry := range tc.stack(below, top) {
+				e.pushTerminal(entry.chain, entry.next)
+				e.terminalAt(e.terminalCount() - 1).running = entry.running
+			}
+
+			tc.assert(t, e.publishingChain(), below, top)
+		})
+	}
+}
