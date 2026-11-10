@@ -1,8 +1,10 @@
 package httpsec_test
 
 import (
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -94,6 +96,19 @@ type nestedOutcome struct {
 	err        error            // what the inner chain refused with, nil when it served
 	handlerRan bool             // the inner chain's handler ran
 	served     *session.Session // the session the handler read from the context
+
+	// records are what the inner chain logged.
+	records []slog.Record
+
+	// stored is the enclosing session as the store holds it once the request
+	// has been answered, nil when the enclosing chain published none.
+	stored *session.Session
+}
+
+// bypassRecorded reports whether the inner chain's authorization stage logged
+// that an owing session reached it past the gates.
+func (o nestedOutcome) bypassRecorded() bool {
+	return slices.ContainsFunc(o.records, func(r slog.Record) bool { return r.Message == msgOwingAtAuthorization })
 }
 
 // TestNestedChain_JudgesEnclosingSession pins that a chain mounted inside a
@@ -155,13 +170,23 @@ func TestNestedChain_JudgesEnclosingSession(t *testing.T) {
 
 	full := inState(session.MFASatisfied, false)
 
-	// refused is the inner chain refusing with a challenge of kind carrying
-	// the session picked from the row's sessions, as that gate refuses it.
-	refused := func(kind policy.ChallengeKind, status int, pick func(enclosing, own, late *session.Session) *session.Session) func(t *testing.T, enclosing, own, late *session.Session, o nestedOutcome) {
+	// refusedBy is the inner chain refusing with a challenge of kind carrying
+	// the session picked from the row's sessions. With atBackstop, the
+	// authorization stage refused it and logged the gates' bypass; without,
+	// the gate itself refused it and the stage logged nothing, so a gate that
+	// stopped judging the enclosing session, leaving the stage to refuse in
+	// its place with the same error, is noticed.
+	refusedBy := func(atBackstop bool, kind policy.ChallengeKind, status int, pick func(enclosing, own, late *session.Session) *session.Session) func(t *testing.T, enclosing, own, late *session.Session, o nestedOutcome) {
 		return func(t *testing.T, enclosing, own, late *session.Session, o nestedOutcome) {
 			t.Helper()
 
 			want := pick(enclosing, own, late)
+
+			if atBackstop {
+				assert.True(t, o.bypassRecorded(), "the authorization stage did not record the gates' bypass")
+			} else {
+				assert.False(t, o.bypassRecorded(), "the authorization stage refused in the gate's place")
+			}
 
 			assert.False(t, o.handlerRan, "the inner handler ran for a session owing %v", kind)
 			assert.Equal(t, status, o.code)
@@ -173,6 +198,14 @@ func TestNestedChain_JudgesEnclosingSession(t *testing.T) {
 			assert.Equal(t, want.ID, got.Session.ID, "the session judged")
 			assert.Empty(t, got.Token, "a gate issues nothing")
 		}
+	}
+
+	refused := func(kind policy.ChallengeKind, status int, pick func(enclosing, own, late *session.Session) *session.Session) func(t *testing.T, enclosing, own, late *session.Session, o nestedOutcome) {
+		return refusedBy(false, kind, status, pick)
+	}
+
+	refusedAtBackstop := func(kind policy.ChallengeKind, status int, pick func(enclosing, own, late *session.Session) *session.Session) func(t *testing.T, enclosing, own, late *session.Session, o nestedOutcome) {
+		return refusedBy(true, kind, status, pick)
 	}
 
 	ofEnclosing := func(enclosing, _, _ *session.Session) *session.Session { return enclosing }
@@ -230,6 +263,27 @@ func TestNestedChain_JudgesEnclosingSession(t *testing.T) {
 			assert:    refused(policy.ChallengeMFA, http.StatusUnauthorized, ofEnclosing),
 		},
 		{
+			// The enrolment endpoints serve only the session this chain
+			// authenticated: they save the session through this chain's
+			// store, which need not be the enclosing chain's. The enclosing
+			// session is still judged by the gate, so the request goes no
+			// further either.
+			name:      "enrolment begin on an enrolment-pending session from the enclosing chain",
+			enclosing: inState(session.MFAEnrolmentPending, false),
+			method:    http.MethodPost,
+			path:      enrolBeginPath,
+			assert: func(t *testing.T, enclosing, _, _ *session.Session, o nestedOutcome) {
+				t.Helper()
+
+				assert.False(t, o.handlerRan, "the inner handler ran")
+				require.ErrorIs(t, o.err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, http.StatusUnauthorized, o.code)
+				require.NotNil(t, o.stored)
+				assert.Equal(t, enclosing.EnrolmentGeneration, o.stored.EnrolmentGeneration,
+					"the endpoint saved the enclosing chain's session")
+			},
+		},
+		{
 			name:      "recovery cool-down on a full session from the enclosing chain",
 			enclosing: full,
 			method:    cooldownRoute.Method,
@@ -248,13 +302,13 @@ func TestNestedChain_JudgesEnclosingSession(t *testing.T) {
 			name:   "second factor pending on the context past the gates, with rules",
 			late:   inState(session.MFAPending, false),
 			rules:  true,
-			assert: refused(policy.ChallengeMFA, http.StatusUnauthorized, ofLate),
+			assert: refusedAtBackstop(policy.ChallengeMFA, http.StatusUnauthorized, ofLate),
 		},
 		{
 			name:   "password change pending on the context past the gates, with rules",
 			late:   inState(session.MFASatisfied, true),
 			rules:  true,
-			assert: refused(policy.ChallengePasswordChange, http.StatusForbidden, ofLate),
+			assert: refusedAtBackstop(policy.ChallengePasswordChange, http.StatusForbidden, ofLate),
 		},
 		{
 			name:      "full session from the enclosing chain, with rules",
@@ -317,7 +371,10 @@ func TestNestedChain_JudgesEnclosingSession(t *testing.T) {
 
 			var o nestedOutcome
 
+			logs := &capturingHandler{}
+
 			h.extra = []httpsec.Option{
+				httpsec.WithLogger(slog.New(logs)),
 				httpsec.WithSessions(h.sessions),
 				httpsec.EnableRecoveryGateForTest(),
 				httpsec.EnablePasswordChangeGate(h.sessions),
@@ -353,6 +410,12 @@ func TestNestedChain_JudgesEnclosingSession(t *testing.T) {
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), method, path, nil))
 			o.code = rec.Code
+			o.records = logs.records()
+
+			if enclosing != nil {
+				o.stored, err = h.sessions.Load(t.Context(), enclosing.ID)
+				require.NoError(t, err)
+			}
 
 			tc.assert(t, enclosing, own, late, o)
 		})

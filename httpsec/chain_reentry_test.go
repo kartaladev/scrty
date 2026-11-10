@@ -2,6 +2,7 @@ package httpsec_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -267,4 +268,172 @@ func TestChain_ExchangeRunAgainRunsInFull(t *testing.T) {
 	}
 
 	assert.EqualValues(t, 2, runs.Load(), "runs of the chain")
+}
+
+// interceptorKey is the context key a consumer interceptor sets a value under.
+type interceptorKey struct{}
+
+// TestChain_RunPutsBackTheContextItFound pins that a run of the chain leaves
+// the exchange's context as it found it, on every way out: the context of an
+// exchange run many times does not grow, so looking a value up on it stays one
+// short walk however often the exchange is reused.
+func TestChain_RunPutsBackTheContextItFound(t *testing.T) {
+	t.Parallel()
+
+	const runs = 100
+
+	type testCase struct {
+		name string
+		// path is the request's; /x when empty.
+		path string
+		// build returns the step one run calls.
+		build func(t *testing.T) httpsec.Next
+		// assert receives the context before the first run, the context
+		// after each run, and what the last run returned or raised.
+		assert func(t *testing.T, before context.Context, after []context.Context, err error, panicked any)
+	}
+
+	errStop := errors.New("stop")
+
+	unchanged := func(wantErr error, wantPanic bool) func(t *testing.T, before context.Context, after []context.Context, err error, panicked any) {
+		return func(t *testing.T, before context.Context, after []context.Context, err error, panicked any) {
+			t.Helper()
+
+			if wantErr != nil {
+				require.ErrorIs(t, err, wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+
+			if wantPanic {
+				require.NotNil(t, panicked, "the run did not panic")
+			} else {
+				require.Nil(t, panicked)
+			}
+
+			require.Len(t, after, runs)
+
+			for i, ctx := range after {
+				require.True(t, ctx == before, "the context after run %d is not the one the exchange had before it", i+1)
+			}
+		}
+	}
+
+	chain := func(t *testing.T, opts ...httpsec.Option) *httpsec.Chain {
+		t.Helper()
+
+		c, err := httpsec.New(opts...)
+		require.NoError(t, err)
+
+		return c
+	}
+
+	settingContext := httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+		ex.SetContext(context.WithValue(ex.Context(), interceptorKey{}, "set by an interceptor"))
+
+		return next(ex)
+	}), httpsec.OrderBearerToken)
+
+	cases := []testCase{
+		{
+			name: "run returns",
+			build: func(t *testing.T) httpsec.Next {
+				t.Helper()
+
+				return chain(t).Assemble(func(*httpsec.Exchange) error { return nil })
+			},
+			assert: unchanged(nil, false),
+		},
+		{
+			name: "interceptor sets a context of its own",
+			build: func(t *testing.T) httpsec.Next {
+				t.Helper()
+
+				return chain(t, settingContext).Assemble(func(*httpsec.Exchange) error { return nil })
+			},
+			assert: unchanged(nil, false),
+		},
+		{
+			name: "terminal returns an error",
+			build: func(t *testing.T) httpsec.Next {
+				t.Helper()
+
+				return chain(t).Assemble(func(*httpsec.Exchange) error { return errStop })
+			},
+			assert: unchanged(errStop, false),
+		},
+		{
+			name: "refused at the entry",
+			path: "/a/../x",
+			build: func(t *testing.T) httpsec.Next {
+				t.Helper()
+
+				return chain(t).Assemble(func(*httpsec.Exchange) error { return nil })
+			},
+			assert: unchanged(httpsec.ErrMalformedRequest, false),
+		},
+		{
+			name: "terminal panics",
+			build: func(t *testing.T) httpsec.Next {
+				t.Helper()
+
+				return chain(t).Assemble(func(*httpsec.Exchange) error { panic("terminal panics") })
+			},
+			assert: unchanged(nil, true),
+		},
+		{
+			name: "different chain nested on the same exchange",
+			build: func(t *testing.T) httpsec.Next {
+				t.Helper()
+
+				return chain(t).Assemble(chain(t, settingContext).Assemble(func(*httpsec.Exchange) error { return nil }))
+			},
+			assert: unchanged(nil, false),
+		},
+		{
+			name: "same chain entered again, passing through",
+			build: func(t *testing.T) httpsec.Next {
+				t.Helper()
+
+				c := chain(t, settingContext)
+
+				return c.Assemble(c.Assemble(func(*httpsec.Exchange) error { return nil }))
+			},
+			assert: unchanged(nil, false),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			path := "/x"
+			if tc.path != "" {
+				path = tc.path
+			}
+
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil)
+			ex := httpsec.NewExchange(t.Context(), httpsec.NewHTTPRequest(r), httpsec.NewHTTPResponseWriter(httptest.NewRecorder()))
+			run := tc.build(t)
+			before := ex.Context()
+
+			var (
+				err      error
+				panicked any
+				after    = make([]context.Context, 0, runs)
+			)
+
+			for range runs {
+				func() {
+					defer func() { panicked = recover() }()
+
+					err = run(ex)
+				}()
+
+				after = append(after, ex.Context())
+			}
+
+			tc.assert(t, before, after, err, panicked)
+		})
+	}
 }

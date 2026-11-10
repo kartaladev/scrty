@@ -512,15 +512,15 @@ func (c *Chain) buildFold() {
 				// has no entry to mark, so its gates could not stop a
 				// session published past them. It is refused before the
 				// gate runs, as its innermost step would refuse it.
-				i := ex.topTerminal(c)
-				if i < 0 {
+				at := ex.topTerminal(c)
+				if at < 0 {
 					return errNoRun
 				}
 
 				// The entry is marked and put back by position, as
 				// runTerminal clears running: a run entered from inside the
 				// gate can grow the stack and move spilled entries.
-				entry := ex.terminalAt(i)
+				entry := ex.terminalAt(at)
 				before := entry.gatesBegun
 				entry.gatesBegun = true
 
@@ -531,8 +531,8 @@ func (c *Chain) buildFold() {
 				}
 
 				defer func() {
-					if i < ex.terminalCount() {
-						if e := ex.terminalAt(i); e.chain == c {
+					if at < ex.terminalCount() {
+						if e := ex.terminalAt(at); e.chain == c {
 							e.gatesBegun = before
 						}
 					}

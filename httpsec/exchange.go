@@ -547,25 +547,35 @@ func (e *Exchange) publishingRun() int {
 // gateMarkRefusal returns why a session published now is refused by the gate
 // marks of the runs on e, or nil when none refuses it. A mark of the
 // publishing run itself makes the publication late: its own gates have begun
-// (errLatePublication). A mark of any other run on e refuses it when the
-// publishing chain does not enable every gate that run's chain enables
-// (errPublishedInsideGates); a publication from the handler, where no chain
-// is running interceptors, enables no gate and is refused by any mark. The
-// marks are read from e itself, so the context an interceptor set does not
-// change what they decide; runs on another exchange are judged by
-// gatesRunning. The walk is as deep as the runs on e and allocates nothing.
+// (errLatePublication). A mark of any other run on e is judged by
+// otherRunMarkRefusal. The marks are read from e itself, so the context an
+// interceptor set does not change what they decide; runs on another exchange
+// are judged by gatesRunning. The walk is as deep as the runs on e and
+// allocates nothing.
 func (e *Exchange) gateMarkRefusal() error {
+	if p := e.publishingRun(); p >= 0 && e.terminalAt(p).gatesBegun {
+		return errLatePublication
+	}
+
+	return e.otherRunMarkRefusal()
+}
+
+// otherRunMarkRefusal returns errPublishedInsideGates when a run on e other
+// than the publishing one is marked and the publishing chain does not enable
+// every gate that run's chain enables, or nil when none is. A publication from
+// the handler, where no chain is running interceptors, enables no gate and is
+// refused by any mark. The publishing run's own mark is not read: the
+// resolution core runs before its own chain's gates, and PublishSession
+// judges that mark itself (gateMarkRefusal). The marks are read from e, never
+// from its context, so a context an interceptor replaced cannot hide them.
+// The walk is as deep as the runs on e and allocates nothing.
+func (e *Exchange) otherRunMarkRefusal() error {
 	publisher := e.publishingRun()
 
 	var have gateSet
 	if publisher >= 0 {
-		t := e.terminalAt(publisher)
-		if t.gatesBegun {
-			return errLatePublication
-		}
-
-		if t.chain != nil {
-			have = t.chain.gates
+		if c := e.terminalAt(publisher).chain; c != nil {
+			have = c.gates
 		}
 	}
 
@@ -604,11 +614,12 @@ func (e *Exchange) Context() context.Context { return e.ctx }
 // SetContext replaces the context. An interceptor that resolves security state
 // calls it so every later interceptor, and the handler, read that state.
 //
-// The new context must derive from the current one. The chain runs in progress
-// are marked on the context, so one that does not derive from it hides the
-// enclosing runs, and a chain run on it is judged as a chain on its own: the
-// check that refuses a session published inside another chain's gates then
-// finds nothing to refuse.
+// The new context must derive from the current one. The runs on this exchange
+// are judged from the exchange's own marks, so replacing the context does not
+// hide them. The enclosing runs on other exchanges are found through the
+// context, so one that does not derive from it hides those: a chain run on it
+// is judged as a chain on its own, and the check that refuses a session
+// published inside another chain's gates then finds nothing to refuse.
 //
 // It panics when ctx is nil: dropping the context the exchange already holds
 // would silently detach the rest of the chain from the client's cancellation.
@@ -781,18 +792,30 @@ func (e *Exchange) logLatePublication() {
 	logSampled(e.ctx, c.sampler, c.logger, slog.LevelError, c.perRequest.now(), latePublicationKey, msgLatePublication)
 }
 
-// publishSession is PublishSession without the check of the gate marks of
-// the runs on this exchange (gateMarkRefusal): the path the resolution core and every built-in that publishes a
-// session take, wherever in their own chain they run. It still refuses a
-// non-nil sess while a run of another chain on the context is inside gates
-// the publishing chain does not all enable (gatesRunning), since a session
-// published there reaches the handler unjudged by the gate it lacks, whoever
-// publishes it.
+// publishSession is PublishSession without the check of the publishing run's
+// own gate mark: the path the resolution core and every built-in that
+// publishes a session take, wherever in their own chain they run, since the
+// core runs at OrderBearerToken, before its own chain's gates. It still
+// refuses a non-nil sess while another chain's run is inside gates the
+// publishing chain does not all enable, since a session published there
+// reaches the handler unjudged by the gate it lacks, whoever publishes it.
+// Such a run is found two ways, and either refuses: on this exchange, from
+// the marks the exchange itself holds (otherRunMarkRefusal), so a consumer
+// interceptor that replaced the context with one not derived from the run's
+// does not hide it; and on an exchange further out, through the run marker's
+// parent links on the context (gatesRunning).
 func (e *Exchange) publishSession(authentication *authenticate.Authentication, sess *session.Session) error {
-	if sess != nil && gatesRunning(e.ctx, e.publishingChain()) {
-		e.logLatePublication()
+	if sess != nil {
+		err := e.otherRunMarkRefusal()
+		if err == nil && gatesRunning(e.ctx, e.publishingChain()) {
+			err = errPublishedInsideGates
+		}
 
-		return errPublishedInsideGates
+		if err != nil {
+			e.logLatePublication()
+
+			return err
+		}
 	}
 
 	if sess != nil && sess.FamilyID == id.Nil {

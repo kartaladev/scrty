@@ -258,9 +258,13 @@ func TestExchange_GateMarkRefusal(t *testing.T) {
 	mfaAndPassword := gatedChain(t, policy.ChallengeMFA, policy.ChallengePasswordChange)
 
 	type testCase struct {
-		name   string
-		stack  []runTerminal
-		assert func(t *testing.T, err error)
+		name  string
+		stack []runTerminal
+		// assert judges PublishSession's check (gateMarkRefusal), and
+		// builtIn the built-in publishing path's (otherRunMarkRefusal),
+		// which exempts the publishing run's own mark.
+		assert  func(t *testing.T, err error)
+		builtIn func(t *testing.T, err error)
 	}
 
 	published := func(t *testing.T, err error) { t.Helper(); require.NoError(t, err) }
@@ -268,50 +272,58 @@ func TestExchange_GateMarkRefusal(t *testing.T) {
 	inside := func(t *testing.T, err error) { t.Helper(); require.ErrorIs(t, err, errPublishedInsideGates) }
 
 	cases := []testCase{
-		{name: "no run", assert: published},
-		{name: "one run before its gates", stack: []runTerminal{{chain: password}}, assert: published},
-		{name: "one run inside its own gates", stack: []runTerminal{{chain: password, gatesBegun: true}}, assert: late},
+		{name: "no run", assert: published, builtIn: published},
+		{name: "one run before its gates", stack: []runTerminal{{chain: password}}, assert: published, builtIn: published},
+		{name: "one run inside its own gates", stack: []runTerminal{{chain: password, gatesBegun: true}}, assert: late, builtIn: published},
 		{
-			name:   "covering chain nested inside another run's gates",
-			stack:  []runTerminal{{chain: password, gatesBegun: true, running: true}, {chain: mfaAndPassword}},
-			assert: published,
+			name:    "covering chain nested inside another run's gates",
+			stack:   []runTerminal{{chain: password, gatesBegun: true, running: true}, {chain: mfaAndPassword}},
+			assert:  published,
+			builtIn: published,
 		},
 		{
-			name:   "same chain nested inside its own earlier run's gates",
-			stack:  []runTerminal{{chain: password, gatesBegun: true, running: true}, {chain: password}},
-			assert: published,
+			name:    "same chain nested inside its own earlier run's gates",
+			stack:   []runTerminal{{chain: password, gatesBegun: true, running: true}, {chain: password}},
+			assert:  published,
+			builtIn: published,
 		},
 		{
-			name:   "nested chain inside its own gates, the outer run's gates covered",
-			stack:  []runTerminal{{chain: password, gatesBegun: true, running: true}, {chain: password, gatesBegun: true}},
-			assert: late,
+			name:    "nested chain inside its own gates, the outer run's gates covered",
+			stack:   []runTerminal{{chain: password, gatesBegun: true, running: true}, {chain: password, gatesBegun: true}},
+			assert:  late,
+			builtIn: published,
 		},
 		{
-			name:   "nested chain lacking a gate of another run",
-			stack:  []runTerminal{{chain: mfaAndPassword, gatesBegun: true, running: true}, {chain: password}},
-			assert: inside,
+			name:    "nested chain lacking a gate of another run",
+			stack:   []runTerminal{{chain: mfaAndPassword, gatesBegun: true, running: true}, {chain: password}},
+			assert:  inside,
+			builtIn: inside,
 		},
 		{
-			name:   "outer run's interceptor inside a nested run's gates it lacks",
-			stack:  []runTerminal{{chain: password}, {chain: mfaAndPassword, gatesBegun: true, running: true}},
-			assert: inside,
+			name:    "outer run's interceptor inside a nested run's gates it lacks",
+			stack:   []runTerminal{{chain: password}, {chain: mfaAndPassword, gatesBegun: true, running: true}},
+			assert:  inside,
+			builtIn: inside,
 		},
 		{
 			name: "outer run past its own gates, behind a nested covered run",
 			stack: []runTerminal{
 				{chain: mfaAndPassword, gatesBegun: true}, {chain: password, gatesBegun: true, running: true},
 			},
-			assert: late,
+			assert:  late,
+			builtIn: published,
 		},
 		{
-			name:   "handler inside a run's gates",
-			stack:  []runTerminal{{chain: password, gatesBegun: true, running: true}},
-			assert: inside,
+			name:    "handler inside a run's gates",
+			stack:   []runTerminal{{chain: password, gatesBegun: true, running: true}},
+			assert:  inside,
+			builtIn: inside,
 		},
 		{
-			name:   "handler, no run inside its gates",
-			stack:  []runTerminal{{chain: password, running: true}},
-			assert: published,
+			name:    "handler, no run inside its gates",
+			stack:   []runTerminal{{chain: password, running: true}},
+			assert:  published,
+			builtIn: published,
 		},
 		{
 			name: "three deep, the spilled publisher lacking the outermost run's gate",
@@ -320,7 +332,8 @@ func TestExchange_GateMarkRefusal(t *testing.T) {
 				{chain: password, running: true},
 				{chain: password},
 			},
-			assert: inside,
+			assert:  inside,
+			builtIn: inside,
 		},
 	}
 
@@ -329,6 +342,7 @@ func TestExchange_GateMarkRefusal(t *testing.T) {
 			t.Parallel()
 
 			tc.assert(t, exchangeWith(tc.stack).gateMarkRefusal())
+			tc.builtIn(t, exchangeWith(tc.stack).otherRunMarkRefusal())
 		})
 	}
 }
@@ -345,7 +359,10 @@ func TestExchange_GateMarkRefusal_AllocatesNothing(t *testing.T) {
 		{chain: password},
 	})
 
-	allocs := testing.AllocsPerRun(100, func() { _ = e.gateMarkRefusal() })
+	allocs := testing.AllocsPerRun(100, func() {
+		_ = e.gateMarkRefusal()
+		_ = e.otherRunMarkRefusal()
+	})
 	assert.Zero(t, allocs, "the walk allocates")
 }
 

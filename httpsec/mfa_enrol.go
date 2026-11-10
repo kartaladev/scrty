@@ -406,13 +406,27 @@ func (c *config) flowLimiter(
 // passes on untouched: the recovery gate outside this one has already decided
 // which requests such a session may make, and refusing here too would only
 // restate that decision under the enrolment challenge's name.
+//
+// The gate judges the request's session as every built-in gate does: the one
+// this chain resolved, or, when it resolved none, the one an enclosing chain
+// put on the context (requestSession). The endpoints serve only the one this
+// chain resolved, ex.Session, because they save it through this chain's
+// session manager. Inside a gateless enclosing chain they answer
+// ErrAuthenticationRequired and store nothing, and enrolment goes through the
+// chain that owns the session.
 func (i *enrolmentInterceptor) Intercept(ex *Exchange, next Next) error {
 	s := requestSession(ex)
 	if s == nil || (s.MFA != session.MFAEnrolmentPending && s.MFA != session.MFARecoveryPending) {
 		return next(ex)
 	}
 
-	if served, err := i.endpoint(ex, s); served {
+	// The endpoints serve only the session this chain authenticated, never
+	// one an enclosing chain put on the context: they save the session
+	// through this chain's session manager, which need not be the store the
+	// enclosing chain loaded it from. Inside a gateless enclosing chain they
+	// answer ErrAuthenticationRequired, and enrolment goes through the chain
+	// that owns the session. The gate above still judges the enclosing one.
+	if served, err := i.endpoint(ex, ex.Session); served {
 		return err
 	}
 
@@ -435,7 +449,9 @@ func (i *enrolmentInterceptor) passkeyRegistration(r Request) bool {
 }
 
 // endpoint serves ex when it is a request to one of the path's endpoints. It
-// reports whether it was one, and the endpoint's answer when it was.
+// reports whether it was one, and the endpoint's answer when it was. s is the
+// session this chain authenticated, ex.Session; a nil s is refused with
+// ErrAuthenticationRequired by every endpoint (serve).
 func (i *enrolmentInterceptor) endpoint(ex *Exchange, s *session.Session) (bool, error) {
 	r := ex.Request
 
@@ -456,13 +472,19 @@ func (i *enrolmentInterceptor) endpoint(ex *Exchange, s *session.Session) (bool,
 // an unknown, empty or extra segment, or the bare prefix — is refused with
 // ErrUnknownMFAMethod before anything else, so it neither reaches the
 // endpoint's limiter nor stores anything. The method is read from the path and
-// nowhere else.
+// nowhere else. A nil s, a request this chain did not authenticate, is
+// refused with ErrAuthenticationRequired before the path is read, so it too
+// stores nothing.
 func (i *enrolmentInterceptor) serve(
 	ex *Exchange,
 	s *session.Session,
 	endpoint, prefix string,
 	run func(*Exchange, *session.Session, mfa.Enroller) error,
 ) error {
+	if s == nil {
+		return i.refused(ex.Context(), endpoint, ErrAuthenticationRequired)
+	}
+
 	name, ok := oneSegmentBelow(ex.Request.Path(), prefix)
 	method, known := i.methods[name]
 
@@ -551,6 +573,7 @@ var refusalReasons = []struct {
 	{ErrCredentialsMissing, "code-unread", slog.LevelInfo},
 	{ErrRequestTooLarge, "too-large", slog.LevelInfo},
 	{ErrUnknownMFAMethod, "unknown-method", slog.LevelInfo},
+	{ErrAuthenticationRequired, "unauthenticated", slog.LevelInfo},
 }
 
 // isPostUnder reports whether r is a POST at or under prefix. Only POST: every

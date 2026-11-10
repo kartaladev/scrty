@@ -425,6 +425,48 @@ func TestPublishSession_RefusedOnceTheGatesHaveBegun(t *testing.T) {
 	}
 }
 
+// runBuiltInInsideGates runs a gateless chain whose session bearer
+// authenticates the fixture's session inside a password-change-gated chain's
+// gates, on the outer chain's exchange, and sets probe.reached when the
+// handler reads a session. With detach, an interceptor past the outer gate
+// replaces the context with one not derived from the run's first.
+func runBuiltInInsideGates(t *testing.T, f resolveFixture, probe *publishProbe, detach bool) error {
+	t.Helper()
+
+	users := NewMockUserLoader(gomock.NewController(t))
+	users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(storedUser(), nil).AnyTimes()
+
+	outerOpts := []httpsec.Option{httpsec.WithSessions(f.sessions), httpsec.EnablePasswordChangeGate(f.sessions)}
+	if detach {
+		outerOpts = append(outerOpts, httpsec.RegisterInterceptor(httpsec.InterceptorFunc(
+			func(ex *httpsec.Exchange, next httpsec.Next) error {
+				ex.SetContext(context.WithoutCancel(t.Context()))
+
+				return next(ex)
+			}), httpsec.After(httpsec.OrderPasswordChange)))
+	}
+
+	outer, err := httpsec.New(outerOpts...)
+	require.NoError(t, err)
+
+	inner, err := httpsec.New(
+		httpsec.WithLogger(slog.New(slog.DiscardHandler)),
+		httpsec.WithClock(f.clk),
+		httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: f.sessions, Users: users}),
+	)
+	require.NoError(t, err)
+
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders", nil)
+	r.Header.Set("Authorization", "Bearer "+f.session.ID)
+	ex := httpsec.NewExchange(t.Context(), httpsec.NewHTTPRequest(r), httpsec.NewHTTPResponseWriter(httptest.NewRecorder()))
+
+	return outer.Assemble(inner.Assemble(func(ex *httpsec.Exchange) error {
+		probe.reached = ex.Session != nil
+
+		return nil
+	}))(ex)
+}
+
 // TestPublishSession_GateMarkOnOneExchange pins how the mark the first gate
 // sets lives on one exchange run through Assemble: it holds while the gate's
 // frame runs, so a different chain nested inside the gated one refuses a
@@ -608,6 +650,39 @@ func TestPublishSession_GateMarkOnOneExchange(t *testing.T) {
 
 				require.True(t, probe.reached)
 				require.ErrorIs(t, probe.err, httpsec.ErrConfig)
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+			},
+		},
+		{
+			name: "gateless nested chain's built-in authenticator, on a context not derived from the run's",
+			run: func(t *testing.T, f resolveFixture, probe *publishProbe) error {
+				t.Helper()
+
+				// The built-in publishes through the library's own path, which
+				// must read the outer run's mark from the exchange as
+				// PublishSession does once the context no longer shows it.
+				return runBuiltInInsideGates(t, f, probe, true)
+			},
+			assert: func(t *testing.T, probe *publishProbe, err error) {
+				t.Helper()
+
+				require.False(t, probe.reached,
+					"a gateless chain's built-in published inside the outer chain's gates on its exchange (err %v)", err)
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+			},
+		},
+		{
+			name: "gateless nested chain's built-in authenticator, on the run's context",
+			run: func(t *testing.T, f resolveFixture, probe *publishProbe) error {
+				t.Helper()
+
+				return runBuiltInInsideGates(t, f, probe, false)
+			},
+			assert: func(t *testing.T, probe *publishProbe, err error) {
+				t.Helper()
+
+				require.False(t, probe.reached,
+					"a gateless chain's built-in published inside the outer chain's gates on its exchange (err %v)", err)
 				require.ErrorIs(t, err, httpsec.ErrConfig)
 			},
 		},
