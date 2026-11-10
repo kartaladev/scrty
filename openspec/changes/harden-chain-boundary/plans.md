@@ -509,6 +509,18 @@ Each lane takes the final site list from 13.2's table, and owns its packages' te
 - [ ] **Step 2:** Run each new test. Expected: the deadline cases FAIL (`no deadline`). The outcome cases PASS, because they pin today's handling.
 - [ ] **Step 3: Implement.** At each class-4 site, `ctx, cancel := detach.Bounded(ctx, detach.WriteTimeout)` (or `RevocationTimeout`), then `defer cancel()`. A site with its own bound keeps it. A site with several independent writes bounds each one.
 - [ ] **Step 4:** `go test -race -count=1` on the lane's packages, then `make lint` (`lostcancel` included). Expected: PASS.
+- [ ] **Step 5: Lane B's red, redone (Sonnet).** Save lane B's `recovery` production diff (`recover.go`, `codes.go`, `grants.go`, `hold.go`, `recover_complete.go`, `reset.go`) to the scratchpad. Copy the six files there too. Reverse only that diff with `git apply -R`, and keep `recovery/detached.go`, `recovery/recoverer.go` and the tests. Do not use `checkout`, `restore`, `reset` or `stash`. Then run `go test -race -count=1 -run DetachedCallsCarryDeadline ./recovery/`. Expected: the deadline cases FAIL with "no deadline", and the outcome cases PASS. Put the six files back from the copies, unchanged. Rerun. Expected: PASS. Then run `make lint`.
+
+### Task 13.7: The bound's expiry is not a hang-up (Sonnet implementer, after 13.4 step 5)
+
+**Files:** Modify `internal/detach/detach.go` and `internal/hangup/hangup.go`, and their tests. Add a test in `token/onetime`.
+
+**Interfaces:** `detach.Bounded` keeps its signature. Internally it uses `context.WithTimeoutCause(context.WithoutCancel(ctx), d, errBoundReached)`. `detach` exposes the check to `hangup` as `func BoundReached(ctx context.Context) bool`, which is `errors.Is(context.Cause(ctx), errBoundReached)`. `hangup.ByCaller` returns false first when `detach.BoundReached(ctx)`.
+
+- [ ] **Step 1: Red.** Add a `TestByCaller` row, "a detach bound that passed, with err its DeadlineExceeded". It uses `detach.Bounded(ctx, time.Nanosecond)`, waits for `Done`, and expects `isNotHangUp`. Then add `TestTokens_ConsumeBoundExpiryLogsError` in `token/onetime`. Under `synctest.Test`, `Consume` runs with a `detach.Bounded(ctx, detach.WriteTimeout)` context. The store double blocks until its context ends and returns `ctx.Err()`. Assert that the captured log record is at `slog.LevelError`.
+- [ ] **Step 2:** Run both tests. Expected: FAIL. The row is reported as a hang-up, and the record is at DEBUG.
+- [ ] **Step 3:** Implement the cause and the check. Add a `TestBounded` row: once the bound passes, `BoundReached` is true; after the returned cancel, it is false.
+- [ ] **Step 4:** `go test -race -count=1 ./internal/... ./token/... ./recovery/... ./session/...`, then `make lint`. Expected: PASS.
 
 ### Task 13.5: Changelog (main session)
 

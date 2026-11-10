@@ -84,7 +84,7 @@ At construction, the chain finds the first registration in run order whose inter
 
 It returns an error wrapping `ErrConfig` (500) that names the late publication and the slots to use, and publishes nothing. The chain writes one sampled log record per chain for it.
 
-The resolution core and any built-in that sets a session publish through an unexported path. That path does not check its own exchange's mark, because the core runs at `OrderBearerToken`, before its own gates. It does refuse, with the same error class, when an enclosing run of another chain is marked and the publishing chain lacks one of that chain's gates; that error says to mount the chain outside the other chain's gates. The audit for such built-ins is a gopls references query, not a grep.
+The resolution core and any built-in that sets a session publish through an unexported path. That path does not check its own run's mark, because the core runs at `OrderBearerToken`, before its own gates. It does refuse, with the same error class, when another run's entry on the same exchange is marked, or an enclosing run of another chain is marked, and the publishing chain lacks one of that run's gates; that error says to mount the chain outside the other chain's gates. The same-exchange check was added in task 10.16, after the 10.14 review reproduced a gateless built-in publishing on a shared exchange whose context had been replaced. The audit for such built-ins is a gopls references query, not a grep.
 
 The frame-scoped mark and the check of enclosing runs were added after review. Two defects were reproduced against the first version, which set the mark for the whole run and kept it on the exchange only:
 - **A retried pass:** a consumer interceptor before the bearer slot that calls `next` twice had its authenticator refused on the second pass (`TestChain_RetriedPassPublishesBeforeGates`).
@@ -125,7 +125,7 @@ The gate-set condition was added while group 10 was implemented. The first versi
 | A handler forwards the request in-process through the same chain, or through a different chain that enables every gate the outer chain enables | Handled, tested | Publication succeeds. The inner chain's own gates judge the session, so a session owing a challenge is refused by that gate, not served |
 | A chain inside the gates enables some of the outer chain's gates but not all | Handled, tested | Refused with 500: the gate it lacks would leave its challenge unjudged |
 | Several enclosing marked runs | Handled, tested | The publishing chain must cover the gates of every marked enclosing run. The walk compares gate sets of fixed size and allocates nothing |
-| Consumer code inside the gates sends the request on with a context not derived from the request's (`context.Background()`, or a context from elsewhere through `SetContext`) | Accepted, documented | The enclosing run is no longer visible, so the inner chain is judged as a chain on its own: a gateless one publishes. Nothing can see a run the consumer dropped, and the code doing it can already assign a session. Reproduced as behaviour by the review (a throwaway test). The `PublishSession` and `SetContext` godoc say a new context must derive from the current one |
+| Consumer code inside the gates sends the request on with a context not derived from the request's (`context.Background()`, or a context from elsewhere through `SetContext`) | Accepted, documented | On another exchange, the enclosing run is no longer visible, so the inner chain is judged as a chain on its own: a gateless one publishes. On the same exchange the marks are read from the exchange, so it is still refused (the row above). Nothing can see a run the consumer dropped, and the code doing it can already assign a session. Reproduced as behaviour by the review (a throwaway test). The `PublishSession` and `SetContext` godoc say a new context must derive from the current one |
 | Consumer code calls a `next` captured from another chain's interceptor while both runs are live on one exchange, so the publishing chain is misidentified | Accepted, UNREPRODUCED | The same misuse as reusing `next` after its run (decision 5's rows). No adapter, forward, nesting or retry reaches it |
 | The gate-set encoding drifts from the helper that names the gates | Handled, tested | A test asserts every gate kind has a position in the set and that the set fits its type, so a missing kind cannot silently read as covered |
 | A gate's exemptions differ between two chains with the same gates | Accepted | Each chain's exemptions cover only the endpoints that chain answers itself, and those answer the request (decision 3's enumeration). A forwarded request is judged by the inner chain's exemptions, as any request to that chain is |
@@ -375,10 +375,59 @@ The sweep put these in class 4:
 
 The sweep's list includes limiter calls (`mfa/throttle.go:216`, `ratelimit/guard.go:460`, the recovery limiter calls), which are class 5 by the rule above. It also missed sites the audit found outside these packages: `internal/eventsink/eventsink.go:77` (class 5), `oidcprovider/endsignin.go:181`, `authenticate/oidc/remote.go:319` and `policy/lockout`. Task 13.2 classes them, and lane D takes the class-4 sites outside lanes A–C.
 
+**Inventory (task 13.2, 2026-11-11).** A fresh search of production code for `context.WithoutCancel`, `context.Background()` and `context.TODO()` across every workspace module. Classes 1–3 need no change:
+- **Class 1:** `oidcprovider` under `revocationBudget` (`endsignin.go`, `endsession.go`, `revoke.go`, `refresh.go`, `exchange.go`); `authenticate/apikey/keys.go:672`; `authenticate/passkey/register_pending.go:163`; `httpsec/signin_notice.go:377`; `internal/unavailable/wrap.go:409,724`; `authenticate/oidc/remote.go:319` and `oidcprovider/clientkeys.go:76` (the outbound client's timeout); `expiry/sweep/sweeper.go:455`.
+- **Class 2:** the rollbacks and savepoint closes in `store/pgxstore`, `store/sqlstore`, `store/gormstore` and `internal/storekit/session_tx.go:81`.
+- **Class 3:** `session/store_memory.go:156`, `expiry/sweep/sweeper.go:323`, `token/signingkey/keys_lifecycle.go:65`, `notify/queued.go:268`, `oidcprovider/backchannel.go:363,385`, `httpsec/signals_endpoint.go:168,186`, `httpsec/signals_bus.go:171`, `httpsec/fibersec/middleware.go:132`, `httpsec/fibersec/exchange.go:496`.
+- Every other `context.Background()` is the context of a log call with no request context to inherit, and starts no work.
+
+Class 4 and class 5, with the lane that takes each class-4 site:
+
+| Site | Callee | Class, bound | Lane | Today, on the callee's error |
+|---|---|---|---|---|
+| `authenticate/mfa/totp.go:279` | `RefundVerifyAttempt` (store) | 4, write | A | WARN log, carries on |
+| `authenticate/mfa/throttle.go:216` | `Limiter.RecordFailure` | 5 | — | sampled ERROR log |
+| `authenticate/passkey/register_pending.go:372` | `Limiter.RecordFailure` | 5 | — | ERROR log, refusal stands |
+| `authenticate/passkey/manage.go:195` | `Sessions.DeleteByUserExcept` | 4, revocation | A | sampled ERROR log, change stands |
+| `authenticate/passkey/clone.go:117` | `credentials.Find`; `credentials.Suspend` | 4, write; 4, revocation, each bounded | A | wrapped error; wrapped error matching `ErrCloneSuspected` |
+| `authenticate/passkey/clone.go:183` | `Sessions.DeleteByUser` | 4, revocation | A | sampled ERROR log, refusal stands |
+| `authenticate/passkey/clone.go:210` | `GrantRevoker.RevokeUserGrants` | 4, revocation | A | ERROR log and `GrantRevokeFailed` event |
+| `authenticate/passkey/messages.go:152` | user loader; contact resolver; `Sender.Send` | 4, write, each; the send is class 1 | A | sampled ERROR log, change stands |
+| `authenticate/passkey/webauthn/metadata.go:264` | the consumer's fetch | 4, `outbound.DefaultTimeout` | A2 | registration refused as attestation-refused |
+| `session/reuse.go:511` | `SuccessorPresented` | 4, write | B | renewal refused (`storeFailed`) |
+| `session/reuse.go:533` | `DeleteFamily` | 4, revocation | B | ERROR log, `ErrReused` joined with the store error |
+| `session/end_observer.go:207` | `EndObserver.SignInsEnded` | 5 | — | panic recovered and logged |
+| `recovery/recover.go:428`, `:717`; `recovery/codes.go:264`, `:317` | limiter calls | 5 | — | logged; refusal or carry on as today |
+| `recovery/recover.go:578` | `mfa.Verify`; `Consume`; `codes.spend` | 4, write, each | B | `spendRefused` / `spendFailed` |
+| `recovery/recover.go:602` | `spendMFA`; `RevokeUserGrants`; `spendCodes` | 4: revocation for the revoke, write for the rest | B | revoke: ERROR log, `ErrDependency` |
+| `recovery/recover_complete.go:280` | record insert, hold start, `complete` (planner, `DeleteByUser`, `RevokeUserGrants`, codes, commit, notice) | 4: revocation for the two revocations, write for the rest | B | ERROR log and wrapped error; the grant revoke sets `GrantsNotRevoked`; the notice logs |
+| `recovery/hold.go:406` | `records.Complete`; `consumeHoldToken`; `complete` | 4, write (revocations inside `complete` as above) | B | ERROR log and wrapped error; the token consume logs DEBUG |
+| `recovery/hold.go:508` | `records.Cancel`; `consumeHoldToken`; user loader; notice | 4, write, each; the send is class 1 | B | logs, returns nothing |
+| `ratelimit/guard.go:460`, `httpsec/throttle.go:355`, `httpsec/session_renewal.go:269`, `httpsec/mfa_enrol.go:722` | limiter calls | 5 | — | logged |
+| `internal/eventsink/eventsink.go:77`, `oidcprovider/endsignin.go:181` | the event sink | 5 | — | panic recovered and logged |
+| `httpsec/logout.go:165` | `Sessions.Logout` (`EndSignIn` is class 1) | 4, revocation | C | logout refused; `ErrNotFound` ignored |
+| `httpsec/oidc_endsession.go:207` | `Sessions.Logout` | 4, revocation | C | refused |
+| `httpsec/oidc_backchannel.go:115` | `DeleteByExternalSession`; `FindByExternal`; `DeleteByUser…` | 4: revocation for the deletes, write for the read | C | error returned to the provider |
+| `httpsec/session.go:72` | `Sessions.Touch` | 4, write | C | DEBUG log, discarded |
+| `httpsec/basic.go:225`, `httpsec/login.go:770` | `AttemptStore.RecordFailure` (the lockout store and sink run under it) | 4, write | C | ERROR log, outcome unchanged |
+| `httpsec/mfa_enrol.go:838` | `VoidEmailCode` | 4, write | C | sampled ERROR log |
+| `httpsec/mfa_enrol.go:905` | user loader; contact resolver; `Sender.Send` | 4, write, each; the send is class 1 | C | sampled ERROR log |
+| `httpsec/password_change.go:331` | `AttemptStore.Reset`, per store | 4, write, each | C | ERROR log per store, carries on |
+| `httpsec/rehash.go:63` | the consumer's `RehashFunc` | 4, write | C | ERROR log |
+
+Settled by the main session on the agent's open points:
+- **A notice's sender is class 1.** It owns its bound: the SMTP sender's timeout, or a queue that only enqueues. A 5-second cap would cut a synchronous SMTP notice short of its own timeout. The user loader and contact resolver before it are class 4 writes, each bounded.
+- **`RehashFunc` is class 4.** It is a store-write port, not a reporting callback like the observers and the sink.
+- **Session revocations are bounded at their call sites, not inside `session`.** `reportEnd` drops the deadline before the observers, so they stay class 5 whoever calls.
+- **Calls inside a transaction the site opens are bounded as one unit**, with the bound of the transaction's strongest kind (a revocation inside it makes it 10 s). Bounding statements separately would let the transaction outlive a bound.
+- **`recovery`'s first grant revocation without an MFA proof is not detached.** `revokeThenSpend` detaches only after it spends an MFA proof. With none, the revocation runs on the caller's own context, so a hang-up spends nothing, and the caller's deadline bounds it. It is outside every class. With an MFA proof it runs detached, bounded as a revocation (10 s).
+- **The bound's expiry is an outage, not a hang-up.** A callee that picks its log level with `hangup.ByCaller` (for example `token/onetime`'s `Consume` and `Issue`) sees the bounded context. Its deadline has passed, and the store's error matches it, so the callee would log the library's own bound running out at DEBUG, as if the client had left. `detach.Bounded` therefore ends the context with an internal cause, and `hangup.ByCaller` reports false when that cause ended the context. A bound that runs out is logged at the callee's error level, the same as a store's own timeout. The maintainer chose this on 2026-11-11 over fixing `onetime` alone, which would leave every other such callee mislabelled, and over accepting DEBUG. A detached context's cancellation is never the client's (`WithoutCancel` drops it), so no real hang-up is relabelled.
+- **Lane D has no class-4 site.** `policy/lockout` detaches nothing of its own: it runs under the context `httpsec/login.go:770` and `basic.go:225` detach, so lane C bounds it there. `oidcprovider/endsignin.go:181` is class 5, and `authenticate/oidc/remote.go:319` is class 1.
+
 A consumer-supplied WebAuthn metadata fetch (`authenticate/passkey/webauthn/metadata.go`) runs detached under singleflight with no deadline. The built-in fetch is bounded by the outbound client's timeout, `outbound.DefaultTimeout` (10 s) unless the consumer configured another. The consumer's fetch now gets a context with a 10-second deadline, `outbound.DefaultTimeout`, and `MetadataBlob`'s godoc, which promises the fetch receives "not its cancellation or deadline", is corrected. A fetch that times out fails the registration as any metadata failure does: refused with the attestation-refused refusal, nothing stored.
 
 - **Default:** 5 seconds per detached write, which two sites already use; 10 seconds per revocation, which `oidcprovider` already uses. Each is generous for one statement, and short enough that a hung store frees the request goroutine.
-- **Override:** none in `v0.1.1`. An exported option is new API, and under Semantic Versioning a patch adds none (decision 8 ships a patch). `gorelease` does not enforce this for a `v0` base, so it is held by review, not by the gate. `library-design.md` rule 2 asks for the reason when a default cannot be replaced, and this is it. A consumer's own store or port can still impose a shorter bound of its own. An option to lengthen the bound is a candidate for the next minor. The main session decided this on 2026-11-11, under the maintainer's instruction to fix #3 in this change. It is flagged for the maintainer to confirm.
+- **Override:** none in `v0.1.1`. An exported option is new API, and under Semantic Versioning a patch adds none (decision 8 ships a patch). `gorelease` does not enforce this for a `v0` base, so it is held by review, not by the gate. `library-design.md` rule 2 asks for the reason when a default cannot be replaced, and this is it. A consumer's own store or port can still impose a shorter bound of its own. An option to lengthen the bound is a candidate for the next minor. The main session proposed this on 2026-11-11, under the maintainer's instruction to fix #3 in this change, and the maintainer confirmed it the same day (task 13.1).
 
 | Failure | State | Outcome |
 |---|---|---|
@@ -387,6 +436,7 @@ A consumer-supplied WebAuthn metadata fetch (`authenticate/passkey/webauthn/meta
 | A reuse-triggered family revocation slower than 10 s, under lock contention | Accepted, the stated line | The request is refused, as it is today on a store error, and the family stays live until the next presentation of a revoked member or the family's expiry. Before, the request waited without end |
 | A slow limiter on a failed-attempt record | Handled (class 5) | Not bounded by the library, so the guess is charged as the spec requires. The limiter's own contract bounds it |
 | A slow session end observer or event sink | Accepted, tested | Not bounded by the library. Their godoc tells the consumer to bound their own work (task 14.4). A test pins that their context carries no library deadline |
+| The bound runs out inside a callee that classifies hang-ups (`token/onetime`, the recovery helpers) | Handled, tested | Logged at the callee's error level, not as a hang-up: `hangup.ByCaller` recognises the bound's own cause. A test in `hangup` and one in `onetime` pin it. The record still carries `internal/diag`'s `cancelled=true`, which says only that the error wraps a context's end, as it does: accepted |
 | The client hangs up before or during the detached work | Handled, unchanged | It still runs, because it is detached, and now it has a bound |
 | A site's cancel function is not called | Handled, tested by the lint | Each site defers it. `go vet`'s `lostcancel` check flags a missed one, and the lint runs it |
 | The consumer's metadata fetch ignores its context | Accepted | Waiters still return on their own context, as today. The fetch's goroutine lasts as long as the consumer's code does |
@@ -427,7 +477,6 @@ When the exchange fails and the context `Send` received has ended, the send's er
 ## Open Questions
 
 - **Refusing owed second-factor states on every chain.** The authorization stage refuses only challenges whose gate the chain registers (decision 3). A gateless chain run inside a gated chain's gates is now refused at publication (decision 2). What remains is a gateless chain mounted on its own, not inside a gated one, that shares the session store. The group 6 review leaned toward refusing the second-factor, enrolment and recovery states on every chain, failing closed even where that chain cannot satisfy them. That would close the remaining case. Left for the maintainer to decide, as a follow-up change with its own red test, not in this patch.
-- **Decision 12's bound has no override in `v0.1.1`.** The main session chose fixed bounds (5 s, 10 s for revocations) with no exported option, because under Semantic Versioning new API makes this a minor release. (An earlier wording said `gorelease` refuses it; the audit showed it does not for a `v0` base, so this rests on the versioning rule alone.) The other choice is to release `v0.2.0` with an option. That would redo task 9.1's version work, and would also need the changelog and `RELEASING.md` steps to change. The maintainer is asked to confirm before group 13 starts.
 
 ## Risks / Trade-offs
 

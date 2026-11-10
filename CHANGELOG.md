@@ -70,6 +70,19 @@ All three affect the `httpsec` chain in `github.com/kartaladev/scrty` `v0.1.0`.
   whose header names no `alg`. `token.Verifier` accepted one on `v0.1.0`, against its documentation;
   the hint check began accepting one with jwx 4.6.0. The signature was always checked under the
   algorithm recorded on the key, so neither let a token through without the issuer's key.
+- Store and service calls that must finish even if the client hangs up now have a deadline where
+  they had none: 5 seconds for a write, and 10 seconds for revoking a session, a session family or a
+  credential. They still outlive the client's cancellation. When the deadline passes, the call
+  fails as a store error from that call already did, and the failure is logged as an outage, not
+  as the client leaving. Calls that already had a bound keep it. Rate-limiter calls, session end
+  observers and the event sink are not bounded by the library: the limiter bounds itself, and an
+  observer or sink bounds its own work. A consumer-supplied WebAuthn metadata fetch now receives a
+  context with a deadline of `outbound.DefaultTimeout` (10 seconds). A fetch that runs past it
+  refuses the registration, as any metadata failure does.
+- `notify.SMTPSender.Send` returns an error that matches the context's error (`context.Canceled`
+  or `context.DeadlineExceeded`) when the caller's context ended during the send. Such a send is
+  logged at debug level, as a hang-up, not as a failed delivery. A timeout of the sender's own still
+  returns the network error.
 - Exported signatures use descriptive parameter names (no API change).
 - Dependencies: `github.com/lestrrat-go/jwx/v4` 4.6.0; `github.com/testcontainers/testcontainers-go`
   and its postgres, redis and mailpit modules 0.45.0 (the `test` module only). With jwx 4.6.0 a
