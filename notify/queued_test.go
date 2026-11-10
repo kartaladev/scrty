@@ -1510,3 +1510,35 @@ func TestQueuedSenderReportsDropsByDefault(t *testing.T) {
 		})
 	}
 }
+
+// A delivery that outruns the queue's own bound is the queue's failure, not a
+// caller's hang-up: the inner SMTP send records it at debug level, because its
+// context ended, and the queue's record must still be an error.
+func TestQueuedSender_DeliveryOutrunningItsBoundIsLoggedAtError(t *testing.T) {
+	t.Parallel()
+
+	logged := &levelRecorder{}
+
+	srv := startScriptedServer(t, scriptSilentGreeting())
+	inner := newTestSMTPSender(t, srv,
+		notify.WithSMTPTimeout(30*time.Second),
+		notify.WithSMTPLogger(slog.New(logged)))
+
+	q, err := notify.NewQueuedSender(inner,
+		notify.WithQueueWorkers(1),
+		notify.WithQueueSendTimeout(200*time.Millisecond),
+		notify.WithQueueLogger(slog.New(logged)))
+	require.NoError(t, err)
+
+	require.NoError(t, q.Send(t.Context(), testMessage()))
+
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 10*time.Second)
+	defer cancel()
+
+	require.NoError(t, q.Shutdown(shutdownCtx), "the drain must end once the delivery's bound passes")
+
+	assert.Equal(t, []slog.Level{slog.LevelError}, logged.levels("notify: delivery failed"),
+		"a delivery that outran the queue's bound is a failed delivery")
+	assert.Equal(t, []slog.Level{slog.LevelDebug}, logged.levels(sendFailedMsg),
+		"the inner send saw its context end, so it records at debug level")
+}

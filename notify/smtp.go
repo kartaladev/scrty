@@ -326,6 +326,8 @@ func callerEnded(callerCtx context.Context) error {
 // library's hang-up classification (hangup.ByCaller), widened by the deadline
 // race callerEnded describes, so a send that failed on the caller's deadline
 // is not logged as a failure just because the context's timer has not fired.
+// It is notify's own check and does not know internal/detach's bound cause; no
+// library path hands Send a bounded context.
 func callerHungUp(callerCtx context.Context, err error) bool {
 	if hangup.ByCaller(callerCtx, err) {
 		return true

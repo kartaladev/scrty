@@ -661,7 +661,11 @@ func WithMaxFamilyLifetime(limit time.Duration) Option {
 //
 // The observer runs synchronously, after the family has been revoked, with
 // the context of the request that presented the reused session, so it can
-// write an audit record in the request's transaction. Its report carries the
+// write an audit record in the request's transaction. That context is the
+// request's own, unchanged: its deadline, cancellation and values reach the
+// observer, and the library adds no bound of its own, so the observer bounds
+// its own work. The revocation before it ran under a detached, bounded
+// context; the observer's did not. Its report carries the
 // user, the family and the two times, and never a session identifier. It
 // returns nothing: it cannot fail the request or undo the revocation. It is
 // not called when the revocation itself failed.

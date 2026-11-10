@@ -2,6 +2,7 @@ package notify_test
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"os"
@@ -107,6 +108,36 @@ func TestSMTPSender_CallerEndedSendReportsContextError(t *testing.T) {
 			assert: func(t *testing.T, err error, logged *levelRecorder) {
 				require.ErrorIs(t, err, context.Canceled,
 					"a send the caller cancelled must match context.Canceled; got %T", err)
+				assert.NotErrorIs(t, err, context.DeadlineExceeded)
+				assert.False(t, logged.anyAt(slog.LevelError), "a caller's hang-up is not an error-level failure")
+				assert.Equal(t, []slog.Level{slog.LevelDebug}, logged.levels(sendFailedMsg),
+					"a caller's hang-up is still recorded, at debug level")
+			},
+		},
+		{
+			// The dialler reports its own error, not the context's, so the
+			// caller's error reaches the result only through the send's join.
+			name: "the caller cancels while the dial is still in progress",
+			opts: []notify.SMTPOption{
+				notify.WithSMTPTimeout(30 * time.Second),
+				notify.WithSMTPDialer(func(ctx context.Context, _, _ string) (net.Conn, error) {
+					<-ctx.Done()
+
+					return nil, errors.New("dial aborted")
+				}),
+			},
+			ctx: func(t *testing.T, ctx context.Context) context.Context {
+				t.Helper()
+
+				ctx, cancel := context.WithCancel(ctx)
+				timer := time.AfterFunc(100*time.Millisecond, cancel)
+				t.Cleanup(func() { timer.Stop(); cancel() })
+
+				return ctx
+			},
+			assert: func(t *testing.T, err error, logged *levelRecorder) {
+				require.ErrorIs(t, err, context.Canceled,
+					"a dial the caller cancelled must match context.Canceled; got %T", err)
 				assert.NotErrorIs(t, err, context.DeadlineExceeded)
 				assert.False(t, logged.anyAt(slog.LevelError), "a caller's hang-up is not an error-level failure")
 				assert.Equal(t, []slog.Level{slog.LevelDebug}, logged.levels(sendFailedMsg),
