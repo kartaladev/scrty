@@ -99,4 +99,8 @@
 // Guards are built with an authorizer, with WithChainAuthorizer to rely on the
 // one the chain publishes on each request, or with both. Building them with
 // neither fails with an error wrapping httpsec.ErrConfig.
+//
+// When the chain passes the request on, c.Request carries the chain's context
+// afterwards, so a gin middleware registered before the chain reads that context
+// after c.Next() returns. A refused request's c.Request is unchanged.
 package ginsec

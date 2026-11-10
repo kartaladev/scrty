@@ -781,6 +781,8 @@ func WithErrorHook(hook func(error)) Option {
 // manager's logger without the event's contents, and the rotation stands. A
 // sink that blocks holds the rotation loop. A nil sink, or the option given
 // twice, is a configuration error.
+//
+// The library gives the sink's context no deadline; bound your own work.
 func WithSecurityEvents(sink event.Sink) Option {
 	return func(km *Keys) { km.events.Set(sink) }
 }

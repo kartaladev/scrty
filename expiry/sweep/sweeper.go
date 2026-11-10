@@ -303,6 +303,9 @@ func New(runner *expiry.Runner, opts ...Option) (*Sweeper, error) {
 // If scheduling fails partway, Start shuts the sweeper down before returning
 // the error, so no task is left half-scheduled, and a retry gets
 // ErrAlreadyShutdown rather than registering jobs twice.
+//
+// The loop keeps the values of ctx for its whole life, including a store transaction
+// attached to it; start it from a context with no transaction attached.
 func (s *Sweeper) Start(ctx context.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("%w: nil context", ErrInvalidOption)

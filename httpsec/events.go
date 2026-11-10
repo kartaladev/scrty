@@ -64,6 +64,8 @@ import (
 // refusal.
 //
 // A nil sink, or the option given twice, is a configuration error.
+//
+// The library gives the sink's context no deadline; bound your own work.
 func EnableSecurityEvents(sink event.Sink) Option {
 	const option = "EnableSecurityEvents"
 

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/hangup"
 )
 
 // errRcptStage tags an exchange failure that happened while presenting the
@@ -251,7 +252,16 @@ func (s *SMTPSender) Timeout() time.Duration { return s.timeout }
 // stalled server a second helping of the bound. Cancelling ctx aborts a send
 // in progress, mid-transfer included.
 //
-// A failure is logged to the configured logger. The record names the server
+// A send that fails after ctx has ended returns an error matching ctx's own
+// (context.Canceled or context.DeadlineExceeded), joined with the network
+// error the abort caused, which stays reachable for diagnosis. ctx's deadline
+// counts as passed once the clock reaches it, even before ctx reports it. A
+// send that fails on the sender's own timeout while ctx is live matches
+// neither: it reports the connection's timeout, as any other failed send.
+// A send the server has already accepted returns nil, whatever ctx does next.
+//
+// A failure is logged to the configured logger, at error level; a send that
+// ctx ended is the caller's hang-up, and is logged at debug level instead. The record names the server
 // host, whether a recipient was given, and the failure through [diag.Failure]:
 // a fixed reason ("rcpt" when the server refused the recipient, "send"
 // otherwise) and the error's Go type — never the error's own text, the
@@ -282,13 +292,54 @@ func (s *SMTPSender) Send(ctx context.Context, msg Message) error {
 			slog.Bool("has_recipient", msg.To != ""),
 		}, diag.Failure(reason, err)...)
 
-		s.logger.LogAttrs(ctx, slog.LevelError, "notify: smtp send failed", attrs...)
+		// A send the caller ended is the caller's hang-up, not a failing
+		// server: it is still recorded, but not as an error-level failure.
+		level := slog.LevelError
+		if callerHungUp(ctx, err) {
+			level = slog.LevelDebug
+		}
+
+		s.logger.LogAttrs(ctx, level, "notify: smtp send failed", attrs...)
 	}
 
 	return err
 }
 
-func (s *SMTPSender) send(ctx context.Context, msg Message) error {
+// callerEnded returns the error that ends callerCtx: its own error once it
+// reports one, or context.DeadlineExceeded once the clock has reached its
+// deadline. The second matters because the connection deadline and the
+// context's timer race: a read can fail on the caller's deadline a moment
+// before the context reports it. It returns nil while callerCtx is live.
+func callerEnded(callerCtx context.Context) error {
+	if err := callerCtx.Err(); err != nil {
+		return err
+	}
+
+	if d, ok := callerCtx.Deadline(); ok && !time.Now().Before(d) {
+		return context.DeadlineExceeded
+	}
+
+	return nil
+}
+
+// callerHungUp reports whether err is the caller ending the send: the
+// library's hang-up classification (hangup.ByCaller), widened by the deadline
+// race callerEnded describes, so a send that failed on the caller's deadline
+// is not logged as a failure just because the context's timer has not fired.
+func callerHungUp(callerCtx context.Context, err error) bool {
+	if hangup.ByCaller(callerCtx, err) {
+		return true
+	}
+
+	ended := callerEnded(callerCtx)
+
+	return ended != nil && errors.Is(err, ended)
+}
+
+// send delivers msg. callerCtx is the context Send received; it is kept apart
+// from the context transfer bounds with the sender's own deadline, so the
+// sender's own timeout is never mistaken for the caller's.
+func (s *SMTPSender) send(callerCtx context.Context, msg Message) error {
 	if err := refuseUnsafeHeaders(msg); err != nil {
 		return err
 	}
@@ -302,19 +353,37 @@ func (s *SMTPSender) send(ctx context.Context, msg Message) error {
 		return fmt.Errorf("%w: message names no sender address and the sender has no default", ErrConfig)
 	}
 
-	if err := ctx.Err(); err != nil {
+	if err := callerCtx.Err(); err != nil {
 		return err
 	}
 
+	err := s.transfer(callerCtx, from, msg)
+	if err == nil {
+		return nil
+	}
+
+	// The caller ended the send, and the failure is the interrupted network
+	// call that ending forced: the caller's error leads, and the network error
+	// stays in the chain for diagnosis. A send that failed on the sender's own
+	// deadline, with the caller still live, keeps the timeout alone.
+	if ended := callerEnded(callerCtx); ended != nil {
+		return errors.Join(ended, err)
+	}
+
+	return err
+}
+
+// transfer dials the server and runs the exchange under one absolute deadline.
+func (s *SMTPSender) transfer(callerCtx context.Context, from string, msg Message) error {
 	// One absolute deadline, fixed before the dial and never recomputed. A
 	// dial timeout followed by a fresh exchange deadline would let a slow
 	// server have nearly twice the bound the consumer configured.
 	deadline := time.Now().Add(s.timeout)
-	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+	if d, ok := callerCtx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
 	}
 
-	ctx, cancel := context.WithDeadline(ctx, deadline)
+	ctx, cancel := context.WithDeadline(callerCtx, deadline)
 	defer cancel()
 
 	addr := net.JoinHostPort(s.host, strconv.Itoa(s.port))

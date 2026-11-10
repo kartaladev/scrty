@@ -67,6 +67,10 @@ import (
 //
 // A nil chain is a wiring mistake and panics here, at wiring time, rather than
 // on the first request a server takes.
+//
+// When the chain passes the request on, c.Request carries the chain's context
+// afterwards, so a gin middleware registered before the chain reads that context
+// after c.Next() returns. A refused request's c.Request is unchanged.
 func Middleware(chain *httpsec.Chain) gin.HandlerFunc {
 	if chain == nil {
 		panic("ginsec: Middleware needs a chain; a nil one would serve every request unguarded")

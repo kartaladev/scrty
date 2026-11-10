@@ -37,6 +37,8 @@ import (
 // returns promptly, onto a queue of its own.
 //
 // A nil sink, or the option given twice, is a configuration error wrapping ErrConfig from New.
+//
+// The library gives the sink's context no deadline; bound your own work.
 func WithSecurityEvents(sink event.Sink) Option {
 	return func(c *config) { c.events.Set(sink) }
 }
@@ -112,12 +114,13 @@ func (p *Provider) reportClientRefused(ctx context.Context, clientID string) {
 // reuseNote carries what a refresh request knows of its grant to wherever the lineage manager's
 // verdict is acted on, and makes sure the reuse it finds is reported once whichever path finds it
 // first: the row marked ahead of the manager, the manager's observer, or the failure path that
-// marks the row when the family cannot be deleted. It also holds the request's own context, which
-// is what the report goes out on, as the observer is handed the one quietLineage made.
+// marks the row when the family cannot be deleted. It also holds the request's emitter, which
+// quietLineage took off the context the observer is handed, so that the report goes out on that context
+// with the emitter put back.
 type reuseNote struct {
 	client string
 	user   identity.UserID
-	origin context.Context
+	emit   eventsink.Emitter
 	done   atomic.Bool
 }
 
@@ -125,7 +128,7 @@ type reuseNoteKey struct{}
 
 // withReuseNote returns ctx carrying a note for the grant a refresh presents.
 func withReuseNote(ctx context.Context, g *Grant) context.Context {
-	return context.WithValue(ctx, reuseNoteKey{}, &reuseNote{client: g.ClientID, user: g.User, origin: ctx})
+	return context.WithValue(ctx, reuseNoteKey{}, &reuseNote{client: g.ClientID, user: g.User, emit: eventsink.From(ctx)})
 }
 
 // quietLineage is the context a lineage manager's renewal runs on: ctx with no chain to report through.
@@ -143,17 +146,17 @@ func quietLineage(ctx context.Context) context.Context {
 func (p *Provider) reportReuse(ctx context.Context, fallback identity.UserID, newly bool) {
 	note, _ := ctx.Value(reuseNoteKey{}).(*reuseNote)
 	if note == nil {
-		note = &reuseNote{user: fallback, origin: ctx}
+		note = &reuseNote{user: fallback, emit: eventsink.From(ctx)}
 	}
 	if !note.done.CompareAndSwap(false, true) {
 		return
 	}
 
-	//nolint:contextcheck // the request's own context, which quietLineage derived what ctx may be from
-	p.report(note.origin, event.Event{Name: event.RefreshReused, Outcome: event.OutcomeFailure, User: note.user, Client: note.client})
+	// ctx may be the one quietLineage made, which has no emitter: the request's goes back on it.
+	reportCtx := eventsink.With(ctx, note.emit)
+	p.report(reportCtx, event.Event{Name: event.RefreshReused, Outcome: event.OutcomeFailure, User: note.user, Client: note.client})
 	if newly {
-		//nolint:contextcheck // as above
-		p.reportGrantRevoked(note.origin, note.client, note.user, CauseReuse)
+		p.reportGrantRevoked(reportCtx, note.client, note.user, CauseReuse)
 	}
 }
 

@@ -355,6 +355,8 @@ func WithThrottleLogInterval(interval time.Duration) ThrottleOption {
 // event's contents, and the refusal stands; a sink that blocks holds the
 // check (see event.Sink). A nil sink, or the option given twice, is a
 // configuration error.
+//
+// The library gives the sink's context no deadline; bound your own work.
 func WithThrottleSecurityEvents(sink event.Sink) ThrottleOption {
 	return func(t *VerifyThrottle) { t.events.Set(sink) }
 }

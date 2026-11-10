@@ -41,6 +41,13 @@ func With(ctx context.Context, emit Emitter) context.Context {
 	return context.WithValue(ctx, emitterKey{}, emit)
 }
 
+// From returns the Emitter ctx carries, and nil when it carries none.
+func From(ctx context.Context) Emitter {
+	emit, _ := ctx.Value(emitterKey{}).(Emitter)
+
+	return emit
+}
+
 // Send reports e through the Emitter ctx carries, and does nothing when ctx
 // carries none.
 func Send(ctx context.Context, e event.Event) {

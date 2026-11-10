@@ -181,6 +181,8 @@ func WithRandom(src io.Reader) Option { return func(m *Keys) { m.random = src } 
 // the event's contents, and the verification's result stands; a sink that
 // blocks holds the verification (see event.Sink). A nil sink, or the option
 // given twice, is a configuration error.
+//
+// The library gives the sink's context no deadline; bound your own work.
 func WithSecurityEvents(sink event.Sink) Option {
 	return func(m *Keys) { m.events.Set(sink) }
 }
