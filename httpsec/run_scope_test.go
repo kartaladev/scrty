@@ -476,3 +476,101 @@ func TestChain_RunPutsBackTheExchangeItFound(t *testing.T) {
 
 // interceptorScopeKey is a context key a case sets a value under.
 type interceptorScopeKey struct{}
+
+// A chain composed around the rest of an outer run (inner.Assemble(next))
+// puts back what the outer run's later interceptors set inside it. This pins
+// that accepted behaviour: an interceptor of the outer run before the
+// composition point reads, after next, the state from before the inner step,
+// and the run's own state is read in its terminal.
+func TestChain_ComposedInnerStepPutsBackWhatTheOuterRunSetInside(t *testing.T) {
+	t.Parallel()
+
+	type outcome struct {
+		readerSession  *session.Session
+		readerCtx      *session.Session
+		terminalSeen   *session.Session
+		readerCtxFound bool
+	}
+
+	type testCase struct {
+		name   string
+		assert func(t *testing.T, s1, s2 *session.Session, got outcome)
+	}
+
+	cases := []testCase{
+		{
+			name: "a reader before the composition point sees the pre-composition session",
+			assert: func(t *testing.T, s1, s2 *session.Session, got outcome) {
+				assert.Same(t, s1, got.readerSession, "ex.Session is put back, not the rotated one")
+				assert.NotSame(t, s2, got.readerSession)
+				require.True(t, got.readerCtxFound)
+				assert.Same(t, got.readerSession, got.readerCtx, "ex.Session and the context's session agree")
+			},
+		},
+		{
+			name: "the terminal sees what the later interceptor set",
+			assert: func(t *testing.T, _, s2 *session.Session, got outcome) {
+				assert.Same(t, s2, got.terminalSeen)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			s1 := &session.Session{FamilyID: id.MustParse("01890a5d-ac96-7774-8f5a-4b1c2d3e4f50")}
+			s2 := &session.Session{FamilyID: id.MustParse("01890a5d-ac96-7774-8f5a-4b1c2d3e4f50")}
+
+			var got outcome
+
+			reader := InterceptorFunc(func(ex *Exchange, next Next) error {
+				err := next(ex)
+				got.readerSession = ex.Session
+				got.readerCtx, got.readerCtxFound = SessionFromContext(ex.Context())
+
+				return err
+			})
+			publish := InterceptorFunc(func(ex *Exchange, next Next) error {
+				authn := &authenticate.Authentication{Principal: &identity.Principal{}}
+				if err := ex.PublishSession(authn, s1); err != nil {
+					return err
+				}
+
+				return next(ex)
+			})
+
+			inner, err := New(WithLogger(slog.New(slog.DiscardHandler)))
+			require.NoError(t, err)
+
+			compose := InterceptorFunc(func(ex *Exchange, next Next) error {
+				return inner.Assemble(next)(ex)
+			})
+			rotate := InterceptorFunc(func(ex *Exchange, next Next) error {
+				ex.Session = s2
+				ex.SetContext(withSession(ex.Context(), s2))
+
+				return next(ex)
+			})
+
+			outer, err := New(WithLogger(slog.New(slog.DiscardHandler)),
+				RegisterInterceptor(publish, OrderBearerToken),
+				RegisterInterceptor(reader, Order(510)),
+				RegisterInterceptor(compose, Order(520)),
+				RegisterInterceptor(rotate, Order(530)),
+			)
+			require.NoError(t, err)
+
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", nil)
+			ex := NewExchange(t.Context(), NewHTTPRequest(r), NewHTTPResponseWriter(httptest.NewRecorder()))
+
+			require.NoError(t, outer.Assemble(func(ex *Exchange) error {
+				got.terminalSeen = ex.Session
+
+				return nil
+			})(ex))
+
+			tc.assert(t, s1, s2, got)
+		})
+	}
+}

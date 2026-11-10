@@ -234,6 +234,11 @@ var _ logsample.Flusher = (*Chain)(nil)
 // state is therefore read inside the run, in terminal; read after the step
 // returns, the exchange holds what it held before the run. A chain assembled
 // inside another on one exchange leaves the outer run's state as it found it.
+// That holds for a nested chain with its own terminal. A chain composed around
+// the rest of a run (inner.Assemble(next)) puts back, when its step returns,
+// what the outer run's later interceptors set inside it, so an outer
+// interceptor before that point reads, after next, the state from before the
+// inner step. Read a run's state in the terminal.
 // Request and Writer are never put back, and nor is the record that the
 // request's refusal was reported, which is shared by the runs nested on one
 // exchange, so a refusal is reported once, and is cleared when a run starts

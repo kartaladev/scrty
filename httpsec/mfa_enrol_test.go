@@ -3488,7 +3488,7 @@ func TestEnrolmentRefusalRecordCarriesErrorType(t *testing.T) {
 			// The session is only on the context, so the endpoint will not
 			// serve it: a caller who is not authenticated is refused at INFO,
 			// not as a fault.
-			name:      "a session only an enclosing chain published is unauthenticated",
+			name:      "a session only on the context, not ex.Session, is unauthenticated",
 			first:     factor.Password,
 			prepare:   func(*testing.T, *enrolHarness) {},
 			anonymous: true,

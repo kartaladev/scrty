@@ -337,8 +337,11 @@ type ResponseWriter interface {
 // entry, and everything else its run resolved or its chain configured. Read
 // after the step returns, an exchange holds what it held before the run; an
 // enclosing chain's interceptor reads its own run's state after an inner
-// chain's step, not the inner run's. Request and Writer are the request's own,
-// and are never put back.
+// chain's step, not the inner run's. That holds for a nested chain with its own
+// terminal. A chain composed around the rest of a run (inner.Assemble(next))
+// puts back what the outer run's later interceptors set inside it, so read a
+// run's state in the terminal. Request and Writer are the request's own, and
+// are never put back.
 type Exchange struct {
 	// Request is what the interceptors read. It is never replaced once the
 	// exchange has started.

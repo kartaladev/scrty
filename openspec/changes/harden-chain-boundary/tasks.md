@@ -168,7 +168,7 @@ One Opus lane, after 10.17: it changes `httpsec/chain.go` and `httpsec/exchange.
   - `BenchmarkAssemble/run/8` is flat across `-benchtime=1000x` and `-benchtime=16000x`;
   - `benchstat` shows `Assemble/run/8` and `ChainRequest/0` and `/8` allocations unchanged from decision 5's figures.
 - [x] 12.3 Changelog (main session): the `0.1.1` `Changed` entry says that an exchange's context, session and authentication read after the chain's step returns are what they were before the run. Verify by reading the entry against decision 11.
-- [ ] 12.4 Review group 12 with a fresh Opus reviewer that edits nothing, against decision 11, its spec requirement, and decisions 2, 4 and 5, whose rows it must not break. It enumerates how the change fails before judging it. Verify that every finding is fixed or recorded in `design.md`.
+- [x] 12.4 Review group 12 with a fresh Opus reviewer that edits nothing, against decision 11, its spec requirement, and decisions 2, 4 and 5, whose rows it must not break. It enumerates how the change fails before judging it. Verify that every finding is fixed or recorded in `design.md`.
 
 ## 13. Work detached from the caller's cancellation has a deadline (decision 12; specs `security-state-stores`, `passkey-authentication`)
 

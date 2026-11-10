@@ -587,8 +587,11 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session, raised policy
 	emitEvent(ctx, sessionEvent(event.SessionRenewed, event.OutcomeSuccess, rotated))
 
 	// Published on the exchange and on the context, so a consumer's error
-	// handling and their responder read the handle the caller is to present
-	// from now on rather than the one the rotation has just superseded.
+	// handling and their responder, which run inside this run, read the handle
+	// the caller is to present from now on rather than the one the rotation has
+	// just superseded. The chain's step puts the exchange back when it returns,
+	// so code after the step reads the state from before the run; read it in
+	// the terminal.
 	ex.Session = rotated
 	ex.SetContext(withSession(ex.Context(), rotated))
 
