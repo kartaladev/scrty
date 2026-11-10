@@ -2,27 +2,30 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Close the three security defects reproduced in `v0.1.0` (fiber dot-segment bypass of the rules and of the recovery cool-down; session publication after the gates), make double mounting and duplicate single-value options loud, build the interceptor fold once, and ship `v0.1.1` through an ordinary pull request, disclosing the defects in its changelog.
+**Goal:** Close the three security defects reproduced in `v0.1.0` (fiber dot-segment bypass of the rules and of the recovery cool-down; session publication after the gates), make double mounting and duplicate single-value options loud, build the interceptor fold once, bring the library's context hand-offs in line with Go's idioms (groups 12–14), and ship `v0.1.1` through an ordinary pull request, disclosing the defects in its changelog.
 
-**Architecture:** All runtime changes sit in the core chain (`httpsec/chain.go`, `httpsec/exchange.go`).
+**Architecture:** The chain's runtime changes sit in the core chain (`httpsec/chain.go`, `httpsec/exchange.go`); groups 13 and 14 touch detached calls across packages, `notify`, `oidcprovider` events and godoc.
 - The fold is prebuilt at construction.
 - The step that `Assemble` returns does four things: it records the run's terminal, refuses dot-segment paths, passes a re-entered chain through, and then runs the prebuilt fold.
 - The first gate's prebuilt step marks the exchange and its run's marker while the gate's frame runs. Publication is refused while its own exchange is marked, or while an enclosing run of another chain is marked and the publishing chain lacks one of that chain's gates (group 10).
 - The authorization stage refuses any session that still owes a built-in challenge.
+- The step puts back, on return, the exchange's context and the run-scoped fields it found (group 12).
 
 The adapters change in documentation only.
 
 **Tech Stack:** Go 1.27, `net/http`, gin, fiber v3, testify, mockgen, testcontainers (conformance and integration suites).
 
 **Spec:**
-- `openspec/changes/harden-chain-boundary/design.md`, decisions 1 to 8;
+- `openspec/changes/harden-chain-boundary/design.md`, decisions 1 to 14;
 - `specs/http-security-chain/spec.md`;
 - `specs/framework-adapters/spec.md`;
+- `specs/token-issuance`, `oidc-provider-authorization`, `oidc-provider-logout` (group 11), `security-state-stores`, `passkey-authentication` (group 13), `email-notification` (group 14);
 - `tasks.md`, the task numbers below.
 
 ## Global Constraints
 
-- No exported identifier is added or removed (proposal, Impact: API).
+- No exported identifier is added or removed (proposal, Impact: API). `internal/detach` is internal. An exported bound option is new API, which Semantic Versioning keeps out of a patch. `gorelease` does not enforce that for a `v0` base, so reviewers hold it (decision 12).
+- Detached-work bounds are `detach.WriteTimeout = 5 * time.Second` and `detach.RevocationTimeout = 10 * time.Second`; a site with its own bound keeps it. Limiter port calls and consumer callbacks get no library bound (decision 12, class 5).
 - The dot-segment refusal is `ErrMalformedRequest` (400), raised after client resolution and before any interceptor, with no opt-out (decision 1; moved by task 10.4).
 - A late `PublishSession` returns an error wrapping `ErrConfig` (500) and publishes neither the caller nor the session (decision 2).
 - The single-value refusal text is `"<option> was given twice; one chain has one <thing>"` (decision 6).
@@ -42,6 +45,10 @@ The adapters change in documentation only.
 6. **Three chains deep** (gated A, then gateless B, then gateless C, each mounted inside the last). C's publication is refused because the walk passes B to find A. Added to task 10.1 as the case "third chain inside the gates".
 7. **A gated inner chain inside a gated outer chain** whose own bearer authenticates. It is refused when it lacks one of the outer chain's gates (decision 2's gate-set condition): the outer chain's second-factor gate, the inner's password-change gate only. Added to task 10.1 as the case "gated chain inside the gates". An inner chain with every outer gate publishes; that is the forward case.
 8. **An outer run that has finished** (its marker `done`) but whose context is reused by a later chain. A finished run's mark refuses nothing. Added to task 10.1 as the case "finished outer run".
+9. **Three chains on one exchange** (A assembles B, B assembles C), each publishing. After C returns B reads B's state, and after B returns A reads A's. Added to task 12.1 as the case "three chains on one exchange".
+10. **A caller that set its own context on the exchange before the run** gets exactly that context back, not the adapter's. Added to task 12.1 as the case "caller's own context".
+12. **An exchange refused once and run again** reports the second run's refusal. Added to task 12.1 (`refusalReported` cleared at the outermost entry).
+11. **A detached site that discards the callee's error today** (`_ =` or log only) keeps doing so on a timeout, without a new refusal. Added to task 13.4's outcome cases.
 
 ---
 
@@ -361,7 +368,7 @@ Task 11.1 is done: the dependency agent applied the updates in an isolated workt
 
 ### Task 10.9: The whole-branch review's open findings (maintainer)
 
-- [ ] **Step 1:** The maintainer chooses, for each finding in design.md's Open Questions, a fix or an accepted row. A fix starts from the matching test in `repro/httpsec_review108_repro_test.go.txt` as its red step, on Opus (security refusal logic on the hot path).
+- [ ] **Step 1:** The maintainer chooses, for each finding in design.md's Open Questions, a fix or an accepted row. A fix starts from the matching test in `repro/httpsec_nested_chains_repro_test.go.txt` as its red step, on Opus (security refusal logic on the hot path).
 
 ### Task 10.10: Pin each header and publishing check on its own (Sonnet implementer)
 
@@ -381,7 +388,7 @@ Task 11.1 is done: the dependency agent applied the updates in an isolated workt
 
 **Must not touch:** `httpsec/exchange.go`, `httpsec/chain.go` (task 10.12 runs beside it).
 
-- [ ] **Step 1: Red.** Port `TestReview108_GatedChainInsideGatelessOuterServesOwingSession` as a table: an owing session from the enclosing chain, for each of the four gates and the cool-down, is refused with that built-in's own error and status, and the handler does not run; a full session is let through and the inner handler reads it; when the inner chain resolves its own session, that one is judged.
+- [ ] **Step 1: Red.** Port `TestChain_GatedChainInsideGatelessChainServesOwingSession` as a table: an owing session from the enclosing chain, for each of the four gates and the cool-down, is refused with that built-in's own error and status, and the handler does not run; a full session is let through and the inner handler reads it; when the inner chain resolves its own session, that one is judged.
 - [ ] **Step 2:** Run it. Expected: the owing cases FAIL with 200; the controls PASS.
 - [ ] **Step 3: Implement** the helper and use it in each built-in. A built-in that also writes the session back (for example after a renewal) keeps writing `ex.Session` as today.
 - [ ] **Step 4:** `go test ./httpsec/... -count=1 -race`, the ginsec and fibersec suites, and the conformance suite. Expected: PASS.
@@ -394,7 +401,7 @@ Task 11.1 is done: the dependency agent applied the updates in an isolated workt
 
 **Interfaces:** each run's entry on the exchange (`runTerminal`) carries its own `gatesBegun`, set and restored by its gate frame; the exchange-level bool goes. `gateMarkRefusal` decides before `publishSession`: the publishing run's own mark is `errLatePublication`; another marked run on the exchange is `errPublishedInsideGates` unless the publisher covers its gates; `gatesRunning` then covers enclosing runs on other exchanges. (Implemented this way rather than recording only the chain, which would miss an outer chain's late authenticator behind a covering chain; design decision 2.)
 
-- [ ] **Step 1: Red.** Port `TestReview108_SameExchangeCoveringChainPublishes`, and add: the inner chain's own late authenticator on the shared exchange is refused; a nested chain lacking a gate on the shared exchange is refused. Expected today: the covering case FAILs with the late-publication error; the other two PASS.
+- [ ] **Step 1: Red.** Port `TestChain_CoveringChainOnSharedExchangePublishes`, and add: the inner chain's own late authenticator on the shared exchange is refused; a nested chain lacking a gate on the shared exchange is refused. Expected today: the covering case FAILs with the late-publication error; the other two PASS.
 - [ ] **Step 2: Implement** as in Interfaces. A publication from the handler (`publishingChain()` nil) stays refused by the gate-set check.
 - [ ] **Step 3:** `go test ./httpsec/... -count=1 -race`. Expected: PASS, including the retried-pass, late-authenticator, gate-panics and forward suites.
 
@@ -406,9 +413,162 @@ Task 11.1 is done: the dependency agent applied the updates in an isolated workt
 
 - [ ] **Step 1:** A fresh reviewer over the 10.11–10.12 diff, against decisions 2 and 3 and the two requirements, enumerating failures first.
 
-### Task 10.15: Gate again (main session)
+### Task 10.16: Fold the 10.14 review (Opus implementer: hot-path ordering and refusal logic)
 
-- [ ] **Step 1:** `make check`; `make release-check VERSION=v0.1.1` in a clean worktree of the head, not at the same time as `make check` (golangci-lint refuses a parallel run); `openspec validate harden-chain-boundary --strict`; then `gh pr checks 100 --watch`. Expected: all green.
+**Files:** `httpsec/exchange.go` (`publishSession`), `httpsec/chain.go` (the gate frame's shadowed `i`, renamed `at`), `httpsec/mfa_enrol.go` (endpoints back on `ex.Session`), tests in `httpsec/publish_after_gates_test.go`, `httpsec/publish_inside_gates_internal_test.go` and `httpsec/nested_session_test.go`. The context restore is task 12.2's, not this task's.
+
+- [ ] **Step 1: Red.** Port `TestChain_GatelessBuiltInOnSharedExchangeWithReplacedContextPublishes` (FAILs: the built-in publishes). Add per-gate rows asserting no bypass record, and an enrolment-endpoint row expecting `ErrAuthenticationRequired` inside a gateless chain (FAILs today: served).
+- [ ] **Step 2: Implement.** `publishSession` refuses from the exchange's own marks as `gateMarkRefusal` does, except the publishing run's own mark. Enrolment endpoints read `ex.Session`; the enrolment gate keeps judging with `requestSession`.
+- [ ] **Step 3:** `go test ./httpsec/... -count=1 -race`: only `TestChain_RunPutsBackTheContextItFound` fails (red until 12.2). ginsec, fibersec and `make lint` pass.
+
+### Task 10.17: Review of 10.16 (Opus reviewer, edits nothing)
+
+- [ ] **Step 1:** A fresh reviewer over the 10.16 diff against decisions 2, 3 and 5.
+
+### Group 12: A chain run leaves the caller's exchange as it found it (decision 11)
+
+One Opus lane after 10.17. It owns `httpsec/chain.go`, `httpsec/exchange.go`, and every `httpsec` test helper that reads an exchange after its run. No other lane writes `httpsec` while it runs.
+
+### Task 12.1–12.2: Restore the run's state on return (Opus implementer: hot-path ordering, a refactor that keeps decisions 2, 4 and 5)
+
+**Files:**
+- Modify: `httpsec/chain.go` (the step `Assemble` returns), `httpsec/exchange.go` (a small unexported snapshot type and the godoc of `Exchange` and `Exchange.Context`), and the godoc of `Chain.Assemble`
+- Modify: the 12 helper sites that set `out.handled = ex` and the 26 tests that read `handled.Context()` or its fields after the run. Find them with gopls references on the helpers.
+- Test: `httpsec/chain_reentry_test.go` (`TestChain_RunPutsBackTheContextItFound`, already present), `httpsec/run_scope_test.go` (create: `TestChain_RunPutsBackTheExchangeItFound`)
+
+**Interfaces:** `type runScope struct{ ctx context.Context; session *session.Session; authn *authenticate.Authentication; bearerCredential, renewal string; chargeRenewal func(context.Context); admitRenewal func(*Exchange, *session.Session) (*identity.Details, error); perRequest *perRequestPhase; csrfOptOut bool; raised policy.ChallengeKind }` with `func (ex *Exchange) saveScope() runScope` and `func (ex *Exchange) restoreScope(runScope)`. It holds only the fields 12.1 showed leaking. `refusalReported`, the terminal stack, the gate marks, `Request`, `Writer` and the certificate fields are never in it.
+
+- [ ] **Step 1: Red.** `TestChain_RunPutsBackTheExchangeItFound`, a table (`table-test` skill) over an outer chain whose interceptor at slot 100 assembles an inner chain on the same exchange, then reads the exchange after the inner step returns. The cases are:
+  - the inner chain publishes a session: `ex.Session` and `ex.Authentication` are the outer run's, nil here;
+  - the inner bearer resolves a credential: `bearerCredential == ""`;
+  - an inner late renewal: `renewal == ""` and both renewal funcs are nil;
+  - the inner chain is built `WithoutCSRFProtection` and the outer is not: `csrfOptOut == false`;
+  - `perRequest` is the outer chain's;
+  - the inner chain raises a consumer challenge: `raised == policy.ChallengeNone`;
+  - an inner interceptor panics and the outer recovers it: every field is as before the inner step;
+  - three chains on one exchange: each level reads its own run's state after the level below returns;
+  - caller's own context: a context set with `SetContext` before the outer run is the one after it;
+  - an exchange refused once and run again: the second refusal is reported;
+  - control: the inner chain refuses with an event sink wired, and the outer chain's refusal is not reported again (`refusalReported` survives).
+- [ ] **Step 2:** Run `go test -run 'TestChain_RunPutsBack' -count=1 ./httpsec/`. Expected: the 7 context cases FAIL. Report which field cases fail and which pass. A field whose case passes is left out of `runScope`, and the main session drops it from decision 11, the spec requirement and the proposal.
+- [ ] **Step 3: Implement.** `scope := ex.saveScope(); defer ex.restoreScope(scope)` at the top of the step, before the re-entry check, so a pass-through entry is covered too. When the terminal stack is empty on entry (an outermost run), clear `refusalReported`. Move each helper and test to read inside the terminal. Add the godoc.
+- [ ] **Step 4:** Verify:
+  - `go test ./httpsec/... -count=1 -race`, the ginsec and fibersec suites, and the conformance suite pass;
+  - `go test -run '^$' -bench 'BenchmarkAssemble/run/8' -benchtime=1000x` and `16000x`: ns/op within noise;
+  - `benchstat` on `Assemble/run/8` and `ChainRequest/0` and `/8`, `-count=10`: allocs/op equal to decision 5's recorded figures.
+
+### Task 12.3: Changelog (main session)
+
+- [ ] **Step 1:** `0.1.1` `Changed`: an exchange's context, session and authentication read after the chain's step returns are what they were before the run; read a run's state in the terminal.
+
+### Task 12.4: Review of group 12 (Opus reviewer, edits nothing)
+
+- [ ] **Step 1:** A fresh reviewer over the group 12 diff against decision 11, its requirement, and the rows of decisions 2, 4 and 5. It enumerates failures first, with particular attention to panics, the pass-through, nested runs on one exchange, and the decision 2 marks.
+
+### Group 13: Work detached from the caller's cancellation has a deadline (decision 12)
+
+13.1 gates the group. 13.2 and 13.3 run in parallel. 13.4's lanes run after 13.3, because they import `internal/detach`.
+
+### Task 13.1: Confirm the bound (maintainer)
+
+- [ ] **Step 1:** The maintainer confirms the fixed bounds (5 s, 10 s for revocations) with no option in `v0.1.1`, or chooses `v0.2.0`. The reason is Semantic Versioning's rule, not `gorelease`. In the second case, stop and revise decisions 8 and 12, task 9.1 and group 13 first.
+
+### Task 13.2: Inventory (Sonnet, read-only)
+
+- [ ] **Step 1:** `rg -n 'context\.WithoutCancel' --glob '*.go' --glob '!*_test.go' --glob '!.claude/.legacy' --glob '!test/**'`. Repeat it for `context\.(Background|TODO)\(\)` and keep the hits that detach work. For each site, name the callee (with gopls), the class (1–5 of decision 12), the kind of bound for class 4 (write or revocation), the lane (A, A2, B, C or D), and what the site does with the callee's error. Report it as a table. The main session writes it into decision 12.
+
+### Task 13.3: `internal/detach` (Sonnet implementer)
+
+**Files:** Create `internal/detach/detach.go` and `internal/detach/detach_test.go`.
+
+**Interfaces:** `const WriteTimeout = 5 * time.Second`; `const RevocationTimeout = 10 * time.Second`; `func Bounded(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)`, which is `context.WithTimeout(context.WithoutCancel(ctx), d)`.
+
+- [ ] **Step 1: Red.** `TestBounded`, a table whose cases are:
+  - the deadline is set and `0 < time.Until(deadline) <= d`, for `WriteTimeout` and `RevocationTimeout`;
+  - a parent value is readable;
+  - cancelling the parent leaves `Err() == nil`;
+  - calling the returned cancel makes `Err()` `context.Canceled`.
+
+  Run it. Expected: FAIL, with `Bounded` stubbed to return `context.WithoutCancel(ctx)` and a no-op cancel; a compile error is not the red step.
+- [ ] **Step 2:** Implement. `go test -race -count=1 ./internal/detach/`. Expected: PASS.
+
+### Task 13.4: Bound the class-4 sites (Sonnet lanes A, B, C and D; Opus lane A2; Opus reviewer in 13.6)
+
+**Lanes and files:** the class-4 and class-5 sites in 13.2's table, by package:
+- **A:** `authenticate/mfa` and `authenticate/passkey`;
+- **A2:** `authenticate/passkey/webauthn/metadata.go`, which runs under singleflight;
+- **B:** `session` and `recovery`;
+- **C:** `httpsec`, outside `chain.go` and `exchange.go`, after group 12 has landed;
+- **D:** every other package 13.2 lists, for example `oidcprovider/endsignin.go`, `authenticate/oidc` and `policy/lockout`.
+
+Each lane takes the final site list from 13.2's table, and owns its packages' tests.
+
+**Interfaces:** consumes `detach.Bounded` from 13.3.
+
+- [ ] **Step 1: Red.** For each package, a table test `Test<Component>_DetachedCallsCarryDeadline` with one case per class-4 site. A mockgen double (`use-mockgen` skill) records the deadline and asserts it is within the site's bound: `WriteTimeout`, or `RevocationTimeout` for a revocation. A second case per site returns `context.DeadlineExceeded`, and asserts the site's existing outcome for a store error from that call. A case per class-5 site in the package asserts that its context has no library deadline: limiter calls and session end observers. Lane A2 adds `TestMetadata_ConsumerFetchHasDeadline`: a consumer fetch that blocks on `<-ctx.Done()`. Its context carries a deadline `outbound.DefaultTimeout` away, and the registration is refused with the attestation-refused refusal. Test it through the deadline value, without sleeping for the full timeout. Lane A2 also corrects `MetadataBlob`'s godoc.
+- [ ] **Step 2:** Run each new test. Expected: the deadline cases FAIL (`no deadline`). The outcome cases PASS, because they pin today's handling.
+- [ ] **Step 3: Implement.** At each class-4 site, `ctx, cancel := detach.Bounded(ctx, detach.WriteTimeout)` (or `RevocationTimeout`), then `defer cancel()`. A site with its own bound keeps it. A site with several independent writes bounds each one.
+- [ ] **Step 4:** `go test -race -count=1` on the lane's packages, then `make lint` (`lostcancel` included). Expected: PASS.
+
+### Task 13.5: Changelog (main session)
+
+- [ ] **Step 1:** `0.1.1` `Changed`: detached store work has a bound where it had none (5 s, 10 s for revocations), while limiter calls and consumer callbacks are left to their owners. A consumer-supplied WebAuthn metadata fetch is bounded by `outbound.DefaultTimeout`.
+
+### Task 13.6: Review of group 13 (Opus reviewer, edits nothing)
+
+- [ ] **Step 1:** A fresh reviewer reruns 13.2's search and compares it with the table. It checks each site's timeout outcome against today's handling of a store error, and enumerates failures first.
+
+### Group 14: A cancelled send, and the remaining hand-offs (decisions 13, 14)
+
+Four independent lanes, which run in parallel with groups 12 and 13, each in its own git worktree (`isolation: worktree`). Their red steps would otherwise fail the suites and the lint that 10.16 and group 12 run in the shared tree. The main session integrates each lane once its review is clean.
+
+### Task 14.1: SMTP cancellation (Opus implementer: the connection deadline and the context timer race)
+
+**Files:** `notify/smtp.go`, and the send-failure log site found with gopls (references on the `smtp send failed` record's function); test `notify/smtp_cancel_test.go` (create).
+
+- [ ] **Step 1: Red.** `TestSMTPSender_CallerEndedSendReportsContextError`, a table using the existing `startScriptedServer` and `scriptSilentGreeting` helpers. The cases are:
+  - cancel after 100 ms: `errors.Is(err, context.Canceled)`, and a capturing `slog` handler sees no record at `slog.LevelError`;
+  - the caller's deadline at 100 ms with the sender at 30 s: `errors.Is(err, context.DeadlineExceeded)`;
+  - the sender at 200 ms with the caller live: neither matches, and the error is the timeout.
+- [ ] **Step 2:** Run it. Expected: the first two FAIL (`got *diag.Fault: notify: the greeting … failed`). The third PASSes.
+- [ ] **Step 3: Implement.** Keep the context `Send` received (`callerCtx`), separate from the one `send` derives with the sender's deadline (`smtp.go:317`). When `exchange` fails, the caller has ended the send if `callerCtx.Err() != nil` or `callerCtx`'s deadline has been reached by the clock. In that case return `errors.Join(callerErr, err)`, where `callerErr` is `callerCtx.Err()` or `context.DeadlineExceeded`. At the log site, log such a send at DEBUG through `hangup.ByCaller`.
+- [ ] **Step 4:** `go test -race -count=1 ./notify/...`. Expected: PASS.
+
+### Task 14.2: fibersec stream-panic log context (Sonnet implementer)
+
+- [ ] **Step 1: Red.** In `httpsec/fibersec`, not parallel because it sets slog's default logger, a stream that panics. A capturing log handler reads a context key set by a fiber middleware before the chain, and the test asserts the panic record saw the value. Expected: FAIL (it logs under `context.Background()`).
+- [ ] **Step 2: Implement.** Log under `context.WithoutCancel` of the request's context, on both the panic and the `Goexit` branches. Run the fibersec suite. Expected: PASS.
+
+### Task 14.3: Events without a context in a context (Sonnet implementer)
+
+- [ ] **Step 1:** In `oidcprovider/events.go`, the context value holds the emitter, or the values the reuse event needs, not a `context.Context`. Break the routing temporarily: the existing event tests must FAIL. Restore it, then run `go test -race -count=1 ./oidcprovider/...`. Expected: PASS.
+
+### Task 14.4: Godoc (Haiku; the main session gives the exact wording in the prompt)
+
+- [ ] **Step 1:** Add the godoc to:
+  - `expiry/sweep` `Start`, the signing-key lifecycle's `Start` and the memory session store's `Start`: "The loop keeps the values of ctx for its whole life, including a store transaction attached to it; start it from a context with no transaction attached.";
+  - the `ginsec` package doc and `Middleware`: "When the chain passes the request on, c.Request carries the chain's context afterwards, so a gin middleware registered before the chain reads that context after c.Next() returns. A refused request's c.Request is unchanged.";
+  - the session end-observer option and the event-sink option: "The library gives this function's context no deadline; bound your own work."
+
+  Verify with `go doc` on each symbol, and `make lint`.
+
+### Task 14.5: Changelog (main session)
+
+- [ ] **Step 1:** `0.1.1` `Changed`: a cancelled SMTP send's error matches the context's error, and is not logged at ERROR.
+
+### Task 14.6: Review of group 14 (Sonnet reviewer, edits nothing)
+
+- [ ] **Step 1:** A fresh reviewer over the group 14 diff against decisions 13 and 14 and the `email-notification` delta, enumerating failures first.
+
+### Task 10.15: Gate again (main session, after groups 12–14)
+
+- [ ] **Step 1:** Run, in order and never at the same time:
+  - `make check`;
+  - `make release-check VERSION=v0.1.1` in a clean worktree of the head, on a quiet machine (golangci-lint refuses a parallel run, and `TestSessionDelete_SettlesUnderConcurrentCreates` has an 8 s bound that a loaded machine misses);
+  - `openspec validate harden-chain-boundary --strict`;
+  - `gh pr checks 100 --watch`.
+
+  Expected: all green. Then update the pull request body, with no session link.
 
 ### Task 11.7: Fold the group 11 review (Opus implementer: security verification logic; Opus reviewer in 10.8's whole-branch pass)
 

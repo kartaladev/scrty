@@ -155,3 +155,26 @@ Building a chain SHALL fail with a configuration error naming the option when th
 #### Scenario: Consumer replaces the authorizer
 - **WHEN** the authorization option is given twice with two valid authorizers and a rule in each call
 - **THEN** construction succeeds, both rules apply in call order, and the second authorizer judges them
+
+### Requirement: A chain run leaves the caller's exchange as it found it
+When the step a chain assembles returns, normally or by a panic, the exchange SHALL carry the context, the session, the authentication result and the chain configuration it carried when the step was entered. The request itself and the record that a refusal was already reported SHALL NOT be put back. Code that needs a run's state SHALL read it while the run is live, inside the terminal.
+
+#### Scenario: Context after a run
+- **WHEN** an exchange is run through a chain whose authenticator publishes a session
+- **THEN** after the step returns, the exchange's context is the one it had before the run, and the handler read the published session during the run
+
+#### Scenario: One exchange run many times
+- **WHEN** one exchange is run through a chain many times
+- **THEN** its context does not grow, and each run costs the same
+
+#### Scenario: Nested chain on a shared exchange
+- **WHEN** a chain assembles a different chain on its own exchange, the inner chain publishes a session, and the outer chain's interceptor reads the exchange after the inner step returns
+- **THEN** it reads the outer run's session, authentication and configuration, not the inner run's
+
+#### Scenario: Panic inside a run
+- **WHEN** an interceptor panics and the panic is recovered by the caller of the step
+- **THEN** the exchange carries what it carried before the run
+
+#### Scenario: Refusal reported once
+- **WHEN** an inner chain on a shared exchange refuses a request and reports the refusal
+- **THEN** the outer chain does not report it again

@@ -1,0 +1,58 @@
+package httpsec_test
+
+import (
+	"context"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/identity"
+)
+
+// A built-in authenticator of a gateless chain nested on the outer chain's
+// exchange, inside the outer chain's gates, after a consumer interceptor
+// replaced the context with one not derived from the run's. Design decision 2
+// says "Marks on the same exchange are read from the exchange itself, not the
+// context, so a gateless inner chain is still refused".
+func TestChain_GatelessBuiltInOnSharedExchangeWithReplacedContextPublishes(t *testing.T) {
+	t.Parallel()
+
+	f := newResolveFixture(t)
+
+	users := NewMockUserLoader(gomock.NewController(t))
+	users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(storedUser(), nil).AnyTimes()
+
+	detach := httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+		ex.SetContext(context.WithoutCancel(t.Context()))
+		return next(ex)
+	})
+
+	outer, err := httpsec.New(httpsec.WithSessions(f.sessions), httpsec.EnablePasswordChangeGate(f.sessions),
+		httpsec.RegisterInterceptor(detach, httpsec.After(httpsec.OrderPasswordChange)))
+	require.NoError(t, err)
+
+	inner, err := httpsec.New(
+		httpsec.WithLogger(slog.New(slog.DiscardHandler)),
+		httpsec.WithClock(f.clk),
+		httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: f.sessions, Users: users}),
+	)
+	require.NoError(t, err)
+
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders", nil)
+	r.Header.Set("Authorization", "Bearer "+f.session.ID)
+	ex := httpsec.NewExchange(t.Context(), httpsec.NewHTTPRequest(r), httpsec.NewHTTPResponseWriter(httptest.NewRecorder()))
+
+	var published bool
+	err = outer.Assemble(inner.Assemble(func(ex *httpsec.Exchange) error {
+		published = ex.Session != nil
+		return nil
+	}))(ex)
+
+	require.False(t, published, "a gateless chain's built-in published inside the outer chain's gates on its exchange (err %v)", err)
+	require.ErrorIs(t, err, httpsec.ErrConfig)
+}

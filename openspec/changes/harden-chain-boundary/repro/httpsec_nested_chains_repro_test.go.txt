@@ -18,7 +18,7 @@ import (
 // Spec: "SHALL apply to a chain run inside them unless that chain enables every
 // gate the enclosing chain enables." A covering chain nested on the same exchange
 // should publish.
-func TestReview108_SameExchangeCoveringChainPublishes(t *testing.T) {
+func TestChain_CoveringChainOnSharedExchangePublishes(t *testing.T) {
 	f := newResolveFixture(t)
 	probe := &publishProbe{}
 
@@ -40,7 +40,7 @@ func TestReview108_SameExchangeCoveringChainPublishes(t *testing.T) {
 
 // A gated chain mounted inside a gateless chain that published a session owing
 // a second factor: does the gated chain's handler get that session?
-func TestReview108_GatedChainInsideGatelessOuterServesOwingSession(t *testing.T) {
+func TestChain_GatedChainInsideGatelessChainServesOwingSession(t *testing.T) {
 	f := newResolveFixture(t)
 	s, err := f.sessions.Load(t.Context(), f.session.ID)
 	require.NoError(t, err)

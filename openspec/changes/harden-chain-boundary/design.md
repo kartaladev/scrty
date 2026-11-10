@@ -2,7 +2,7 @@
 
 ## Context
 
-See `proposal.md` for why. The requirements are in `specs/http-security-chain/spec.md` and `specs/framework-adapters/spec.md`.
+See `proposal.md` for why. The requirements are in the deltas under `specs/`: `http-security-chain` and `framework-adapters` (decisions 1–7, 11), `token-issuance`, `oidc-provider-authorization` and `oidc-provider-logout` (decision 9), `security-state-stores` and `passkey-authentication` (decision 12), and `email-notification` (decision 13).
 
 The current state that shapes the approach:
 
@@ -24,12 +24,14 @@ The current state that shapes the approach:
 - Make the wiring gaps loud: double mounting, single-value options given twice.
 - Reduce the per-request cost of `Assemble` without adding API.
 - Ship `v0.1.1` through an ordinary pull request, with the defects disclosed in its changelog.
+- Follow Go's context idioms across the library (decisions 11–14), found by a sweep of every package on 2026-11-11: a chain run leaves its caller's exchange as it found it, work detached from the caller's cancellation has a deadline, a cancelled send says so, and the remaining context hand-offs are documented or corrected.
 
 **Non-Goals:**
 - **Case-folding or trailing-slash folding of `Path()` on fiber.** That would silently change every exact-match endpoint and every consumer predicate written with capitals. It stays the consumer's to write rules knowing fiber's routing, now stated where rules are written (decision 7).
 - **A construction-time role for consumer authenticators,** such as a `RegisterAuthenticator`. It would add API in a patch release, and decision 2 already fails closed at runtime. It is recorded as a candidate for a later minor.
 - **Enforcing consumer challenge kinds at the authorization stage.** Only the consumer's own gate knows where it sits.
 - **Checking routers other than ServeMux and gin behind the net/http adapter.** Decision 1 covers them anyway, because the refusal does not depend on the router.
+- **Exported options in this release for the bounds of decision 12, or a `WithoutTx` for background starts (decision 14).** Each adds exported API, and under Semantic Versioning a patch release adds none. `gorelease` would not catch it: it skips the compatible-change check while the base version is `v0` (`cmd/gorelease/report.go`, checked in the pinned source by the audit of 2026-11-11), so this is the project's own rule, held by review. Both are candidates for the next minor.
 
 ## Decisions
 
@@ -75,7 +77,7 @@ The refusal is `ErrMalformedRequest` (400). It is written like a client-resoluti
 
 At construction, the chain finds the first registration in run order whose interceptor is one of the four gates. Its frame in the fold (decision 5) marks the exchange before calling the gate. When the gate returns, the frame puts back the value the mark had before. The mark therefore holds exactly while the gates, and everything they pass the request to, are running. The frame also records the mark on its run's marker in the request context (decision 4), so it can be seen from a different chain run inside it, whichever adapter mounts that chain.
 
-`PublishSession`, the exported function, refuses a non-nil session in two cases:
+`PublishSession`, the exported function, refuses a non-nil session in three cases:
 - the publishing run's own entry on the exchange is marked by its gate frame (a late publication);
 - another run's entry on the same exchange is marked and the publishing chain does not enable every gate that run's chain enables;
 - an enclosing run of another chain, found through the run marker's parent links, is marked, and the publishing chain does not enable every gate that run's chain enables.
@@ -104,13 +106,15 @@ The gate-set condition was added while group 10 was implemented. The first versi
 |---|---|---|
 | Consumer authenticator after logout, between gates, or a later slot-mate of a gate | Handled, tested | 500, nothing published, handler not run |
 | Consumer assigns `ex.Session` directly, an exported field | Accepted, with decision 3 as backstop | The session never reaches the request context. The authorization stage still refuses it if it owes a challenge |
-| A different chain nested on the same exchange authenticates after the outer chain's gates | Handled, tested | Refused with 500, by a consumer or a built-in authenticator alike, when the nested chain lacks one of the outer chain's gates. A nested chain covering every gate publishes, on the same exchange as on a fresh one: each run's entry on the exchange carries its own mark, set and restored by its gate frame, and only the publishing run's own mark is a late publication; another run's mark refuses only a publisher that lacks one of its gates. The whole-branch review reproduced the earlier refusal of a covering chain on the same exchange (`TestReview108_SameExchangeCoveringChainPublishes`); the maintainer chose to fix it before release (2026-11-10) |
+| A different chain nested on the same exchange authenticates after the outer chain's gates | Handled, tested | Refused with 500, by a consumer or a built-in authenticator alike, when the nested chain lacks one of the outer chain's gates. A nested chain covering every gate publishes, on the same exchange as on a fresh one: each run's entry on the exchange carries its own mark, set and restored by its gate frame, and only the publishing run's own mark is a late publication; another run's mark refuses only a publisher that lacks one of its gates. The whole-branch review reproduced the earlier refusal of a covering chain on the same exchange (`TestChain_CoveringChainOnSharedExchangePublishes`); the maintainer chose to fix it before release (2026-11-10) |
 | A gated chain nested on the same exchange before the outer chain's gates | Handled | The nested chain's mark is not the outer chain's own, so the outer chain's authenticator, still before its own gates, is judged by the gate-set rule like any publication inside another chain's gates: refused when the outer chain lacks one of the nested chain's gates |
 | The inner chain's own late authenticator on a shared exchange | Handled, tested | Its own run's mark is set, so it is a late publication: 500 |
 | Why the mark is per run, not "the chain that set it" | Handled, tested | Recording only the chain would let an outer chain's late authenticator publish once an interceptor past its gate ran the rest of the chain through a covering chain: the mark would name the inner chain, and the outer chain's own run would be skipped. Found while implementing task 10.12; a per-run mark refuses it (`outer chain's late authenticator behind a covering chain`) |
-| A consumer replaces the context on a shared exchange to hide the enclosing run | Handled, tested | Marks on the same exchange are read from the exchange itself, not the context, so a gateless inner chain is still refused |
+| A consumer replaces the context on a shared exchange to hide the enclosing run | Handled, tested | Marks on the same exchange are read from the exchange itself, not the context, in both `PublishSession` and the built-in publishing path, so a gateless inner chain is still refused, by a consumer or a built-in authenticator. The 10.14 review reproduced the built-in path missing that check (`TestChain_GatelessBuiltInOnSharedExchangeWithReplacedContextPublishes`) |
+| An exchange run many times | Handled, tested (decision 11) | Each run puts back the context it found when it returns, so the context does not grow and a context-session lookup stays one short walk. The 10.14 review measured `BenchmarkAssemble/run/8` growing from 27 µs to 1 ms per run over 16,000 runs of one exchange before this |
+| A gate reverted to judging only `ex.Session` | Tested | Each gate's own refusal is pinned: the backstop's bypass record is absent when a gate refuses, so a gate that stops judging the enclosing session is noticed |
 | A gate frame reached on an exchange where its chain has no run (a step kept past its run) | Handled, tested | Refused with the existing not-running error before the gate runs |
-| Publication with no chain running interceptors (from a handler), or an enclosing marked run with no chain recorded | Handled, fails closed | Treated as enabling no gate, so any enclosing marked run of a gated chain refuses it. From a handler, `PublishSession` is refused first by its exchange's own mark |
+| Publication with no chain running interceptors (from a handler), or an enclosing marked run with no chain recorded | Handled, fails closed | Treated as enabling no gate, so any enclosing marked run of a gated chain refuses it. From a handler, publication is refused by the gate-set rule (`errPublishedInsideGates`), since the handler runs inside its chain's own marked run |
 | `PublishSession` on an exchange after its outermost run returned | Accepted | The mark was put back when the gate's frame returned, so the call is allowed. It reaches nothing: the handler has run and no chain reads the exchange again |
 | A consumer interceptor before the bearer slot calls `next` twice (a retry) | Handled, tested | The mark is put back after each pass, so the authenticator publishes before the gates on both passes |
 | A different chain run inside another chain's gates, through any adapter, publishes a session, and it lacks one of the enclosing chain's gates | Handled, tested | Refused with 500, whether a consumer or a built-in authenticator publishes, and the handler does not run. The error says to mount the chain outside the other chain's gates, or to authenticate in the outer chain |
@@ -121,7 +125,7 @@ The gate-set condition was added while group 10 was implemented. The first versi
 | A handler forwards the request in-process through the same chain, or through a different chain that enables every gate the outer chain enables | Handled, tested | Publication succeeds. The inner chain's own gates judge the session, so a session owing a challenge is refused by that gate, not served |
 | A chain inside the gates enables some of the outer chain's gates but not all | Handled, tested | Refused with 500: the gate it lacks would leave its challenge unjudged |
 | Several enclosing marked runs | Handled, tested | The publishing chain must cover the gates of every marked enclosing run. The walk compares gate sets of fixed size and allocates nothing |
-| Consumer code inside the gates sends the request on with a context not derived from the request's (`context.Background()`, or a context from elsewhere through `SetContext`) | Accepted, documented | The enclosing run is no longer visible, so the inner chain is judged as a chain on its own: a gateless one publishes. Nothing can see a run the consumer dropped, and the code doing it can already assign a session. Reproduced as behaviour by the review (`TestReview_ContextDroppedInsideGates`). The `PublishSession` and `SetContext` godoc say a new context must derive from the current one |
+| Consumer code inside the gates sends the request on with a context not derived from the request's (`context.Background()`, or a context from elsewhere through `SetContext`) | Accepted, documented | The enclosing run is no longer visible, so the inner chain is judged as a chain on its own: a gateless one publishes. Nothing can see a run the consumer dropped, and the code doing it can already assign a session. Reproduced as behaviour by the review (a throwaway test). The `PublishSession` and `SetContext` godoc say a new context must derive from the current one |
 | Consumer code calls a `next` captured from another chain's interceptor while both runs are live on one exchange, so the publishing chain is misidentified | Accepted, UNREPRODUCED | The same misuse as reusing `next` after its run (decision 5's rows). No adapter, forward, nesting or retry reaches it |
 | The gate-set encoding drifts from the helper that names the gates | Handled, tested | A test asserts every gate kind has a position in the set and that the set fits its type, so a missing kind cannot silently read as covered |
 | A gate's exemptions differ between two chains with the same gates | Accepted | Each chain's exemptions cover only the endpoints that chain answers itself, and those answer the request (decision 3's enumeration). A forwarded request is judged by the inner chain's exemptions, as any request to that chain is |
@@ -135,7 +139,7 @@ The gate-set condition was added while group 10 was implemented. The first versi
 
 Before evaluating rules, the authorization stage checks `ex.Session` against the gates this chain registers, in their run order. When the session owes the challenge of a registered gate, the stage refuses with the error that gate returns, including the second-factor methods (`challengeMethods`). A challenge whose gate the chain does not register is not refused (see the failure table).
 
-- **Which session is judged:** every built-in that judges the request's session (the four gates, the recovery cool-down, and this stage) reads one helper: the chain's own `ex.Session`, or, when the chain resolved none, the session on the request context, which only an enclosing chain can have put there (a consumer cannot write that key). The whole-branch review reproduced the need: a gated chain mounted inside a gateless chain that published a session owing a second factor built a fresh exchange with no session, so its gate and this stage judged nothing, and its handler served the session from the context with 200 (`TestReview108_GatedChainInsideGatelessOuterServesOwingSession`). `v0.1.0` behaves the same. The maintainer chose to fix it before release (2026-11-10), over documenting it as a known issue.
+- **Which session is judged:** every built-in that judges the request's session (the four gates, the recovery cool-down, and this stage) reads one helper: the chain's own `ex.Session`, or, when the chain resolved none, the session on the request context, which only an enclosing chain can have put there (a consumer cannot write that key). The whole-branch review reproduced the need: a gated chain mounted inside a gateless chain that published a session owing a second factor built a fresh exchange with no session, so its gate and this stage judged nothing, and its handler served the session from the context with 200 (`TestChain_GatedChainInsideGatelessChainServesOwingSession`). `v0.1.0` behaves the same. The maintainer chose to fix it before release (2026-11-10), over documenting it as a known issue.
 - **Why:** defence in depth for the direct field assignment that decision 2 accepts, and for a future slot change that moves a gate.
 - **Exemptions:** before the stage is enabled, a test enumerates every gate exemption and asserts that none hands an owing session on past slot 899. Each exempted endpoint is answered by the chain itself. If one is found that hands it on, the stage reuses that gate's exemption predicate rather than refusing it; this is recorded as a finding first.
 - **Default and override:** on, with no opt-out, for the same reason as decision 2.
@@ -155,7 +159,7 @@ Before evaluating rules, the authorization stage checks `ex.Session` against the
 | The inner chain resolves a session of its own while the context carries the enclosing chain's | Handled, tested | The chain's own session is judged. It is the one the chain's handler sees too, because publishing puts it on the context |
 | `ex.Session` and the request context's session diverge through `ex.SetContext` with a foreign context | Accepted, documented | The built-ins judge `ex.Session` when set, the context's session otherwise. A context not derived from the request's is already documented as hiding the enclosing runs (decision 2) |
 | A full session from the enclosing chain on a chain whose rules require an authenticated caller | Handled, tested | Let through, as on `v0.1.0` |
-| The enrolment gate's own endpoints (begin, confirm, email) inside a gateless chain | Handled | They serve the enclosing chain's enrolment-pending session, since the gate judges and answers with one session and those endpoints never write a session back. Without it the inner chain would confine the session and give it no way to enrol |
+| The enrolment gate's own endpoints (begin, confirm, email) inside a gateless chain | Accepted, tested | They stay on the chain's own `ex.Session`, like the second-factor endpoints below: the gate judges with the enclosing session, the endpoints answer `ErrAuthenticationRequired`, and enrolment goes through the chain that owns the session. The first implementation served the enclosing session there; the 10.14 review found that those endpoints save the session through the inner chain's session store, which writes another chain's session into a different store when the two differ. Decided 2026-11-11 in favour of failing closed and one rule for every endpoint |
 | The second-factor verify, begin and listing endpoints, the saved recovery-codes endpoint and the password-change resolve endpoint inside a gateless chain | Accepted | They stay on `ex.Session`, because they need the chain's own authentication and rotate the session. The inner gate refuses the owing session, and the inner chain's verify endpoint answers it with `ErrAuthenticationRequired`. The challenge is paid through the chain that owns the session. Fails closed |
 | The four gate types listed in more than one place drift apart | Handled | One helper names the gates, and both the fold (decision 2's mark) and the stage use it |
 
@@ -302,9 +306,128 @@ Decision, made by the maintainer on 2026-11-10: both verification paths require 
 | A tool in the gate asks the local proxy for `latest` or a version list | Accepted | It gets the public answer; the gate pins every version it needs |
 | The public proxy unreachable | Accepted | The listing fails, and the gate stops with that error, as any network failure in it does |
 
+### 11. A chain run leaves the caller's exchange as it found it
+
+The 10.14 review found that a chain run's context leaks up to its caller. The step `Assemble` returns derives a context (event delivery, the run marker, the published session) and stores it on the exchange, and nothing puts the caller's back. Each later run on the same exchange then wraps the one before. After a nested run, the outer chain reads the inner chain's context. A sweep of every package on 2026-11-11 found this upward leak only in `httpsec`.
+
+The step records, on entry, what a run may change on the exchange. It puts that back when the run returns, deferred, so a panic takes the same path. This applies to every entry, the decision 4 pass-through included, where it changes nothing. It restores:
+- **the context:** `ex.Context()`, which publishing and `SetContext` replace during the run;
+- **what the run resolved:** `Session`, `Authentication`, `bearerCredential`, and the late-renewal fields (`renewal`, `chargeRenewal`, `admitRenewal`);
+- **what the run's chain configured:** `perRequest`, `csrfOptOut` and `raised`.
+
+It does not restore two kinds of field:
+- **the request's own facts:** `Request`, `Writer`, and the certificate thumbprint, which describe the one request whichever chain reads them;
+- **the state that coordinates runs on one exchange:** `refusalReported`, the terminal stack and the gate marks. They exist to be seen across runs. `refusalReported` in particular stops an outer chain reporting a refusal an inner chain already reported. It is cleared when an outermost run starts (no other run live on the exchange), so an exchange run again reports that run's own refusal; nested runs still share it.
+
+A field restore in this list is kept only if its red test fails first (`defect-claims.md`). The context restore is reproduced. The field leak is UNREPRODUCED. Once the context is restored, the expected failure is an outer chain's code after `next` reading the inner run's `ex.Session` while its context carries its own session, and the inner chain's CSRF opt-out or per-request phase in place of its own. A field whose red test passes is dropped from the restore, and its row below says so.
+
+- **Why:** this is Go's own idiom. A context derived for a call belongs to that call: `net/http` middleware passes `r.WithContext(ctx)` to `next` and never writes it back, and the `context` package says not to keep a context in a struct for later use. The exchange holds the run's context only while the run is live. The fields follow the same scope, so that after a run `ex.Session` and the context agree.
+- **Alternatives:**
+  - Reset at the next entry (option B, rejected). It caps the growth, but the caller still sees the finished run's state until then, and the reset reads state the caller may have meant to keep.
+  - Restore the context only (rejected by the maintainer, 2026-11-11). It leaves `ex.Session` and the context disagreeing after the run.
+- **Default and override:** on, with no override. A caller has no use for a finished run's derived state. Code that needs the run's state reads it inside the terminal, where it is live; the library's adapters already do.
+- **Compatibility:** code that reads `ex.Context()`, `ex.Session` or `ex.Authentication` after the step returns now gets what was there before the run. No library code does. 26 `httpsec` tests did, through 12 helper sites that keep the exchange and read it after the run, and they move to reading inside the terminal. The changelog lists it under `Changed`.
+
+| Failure | State | Outcome |
+|---|---|---|
+| One exchange run many times | Handled, tested | Context depth and per-run cost stay flat (`TestChain_RunPutsBackTheContextItFound`; `BenchmarkAssemble/run/8` flat across `-benchtime` values) |
+| An interceptor or the terminal panics | Handled, tested | The deferred restore runs, and a recovered panic leaves the caller's exchange as it was |
+| A nested chain on a shared exchange publishes a session, and the outer chain's code after `next` reads the exchange | Handled, tested (pending reproduction) | It reads its own run's session, authentication and configuration |
+| An inner chain reports its refusal, and the outer chain sees the error | Handled, tested | `refusalReported` is not restored, so the refusal is reported once, as before |
+| An exchange refused once and run again | Handled, tested | `refusalReported` is cleared at the outermost entry, so the second run's refusal is reported. On `v0.1.0` it was swallowed (UNREPRODUCED; the audit read it in `events.go`) |
+| Consumer code (an adapter of their own) reads the exchange after the step returns | Accepted, documented | It sees the state from before the run. The `Exchange` and `Assemble` godoc say to read a run's state in the terminal |
+| The decision 4 marker after the run | Handled | The marker lives on the context, so restoring the context removes it from the exchange. A context kept elsewhere still carries the finished run, which is flagged done (decision 4's rows) |
+| Gate marks (decision 2) | Handled, tested (decision 2) | They are restored by their own gate frame, inside the run |
+| `SetContext` with a context not derived from the run's, inside the run | Accepted (decision 2's row) | Decision 2's accepted row. The restore puts back the caller's context, whatever the run did to it |
+| Cost | Handled, measured | A handful of field copies per run and no allocation. `Assemble/run/8` and `ChainRequest/0` and `/8` allocations stay as decision 5 recorded |
+
+### 12. Work detached from the caller's cancellation has a deadline
+
+Some work must finish even if the client hangs up, so the library runs it under `context.WithoutCancel`. Examples are a failed-attempt record, a reuse-triggered family revocation, a TOTP refund and a passkey state change. `WithoutCancel` also drops the caller's deadline, so a store or port that hangs holds the request goroutine without end. The sweep reproduced the mechanism on the MFA verify throttle (`TestVerifyThrottle_DetachedRecordCarriesDeadline`: the detached call carries no deadline). That particular call goes to the `ratelimit.Limiter` port, which this decision leaves to the port's own contract (class 5 below), so the reproduction is not carried forward as a red step. The store calls in class 4 get their own red tests in task 13.4. The library is inconsistent here. Three groups of sites already bound their detached work:
+- `apikey` and the passkey pending-registration delete, at 5 s;
+- `oidcprovider`, at 10 s (`revocationBudget`);
+- the sign-in notice, the unavailable-store wrapper and the SMTP send, each by its own timeout.
+
+The other sites do not.
+
+The rule: every detached call on a request path into a store or a service gets a deadline. Where a site has no bound of its own, it uses a library default through one internal helper, `internal/detach`: 5 seconds for a write, and 10 seconds for a revocation (a session family, a session or a credential), the budget `oidcprovider` already gives revocations (`revocationBudget`), because a revocation that times out leaves something live that should not be. Sites that already have a bound keep it.
+
+Two kinds of call are left unbounded on purpose:
+- **The `ratelimit.Limiter` port** (`RecordFailure`, `Charge`, `Refund`, `Exceeded`). Its contract makes the limiter bound itself, and the shipped shared limiters do (`internal/unavailable` applies its own operation timeout under a fresh `WithoutCancel`, so a bound here would change nothing for them). A failed record is only logged, so a bound that cut a slow consumer limiter short would drop a guess the `multi-factor-auth` spec says SHALL be charged. The port's contract governs instead.
+- **Consumer callbacks: session end observers and the event sink.** They run consumer code, and the settled `sessions` requirement "End reports survive a hang-up and a panic" promises the reports. A shared cap would let one slow observer starve the rest. Their godoc says the consumer's code bounds its own work (task 14.4). A site that runs several independent writes gives each its own bound, as `oidcprovider/endsignin.go` does. Where one bounded call fails, the site handles the timeout exactly as it already handles a store error from that call: it refuses, logs or carries on as it does today. No new error path is added.
+
+The implementing task takes a fresh inventory of every `context.WithoutCancel` in production code and puts each site in one of four classes. The main session records the final table here:
+1. **Already bounded:** unchanged.
+2. **The rollback or close of a transaction or savepoint the same call opened:** accepted. It runs on a connection whose operation has just returned, under the driver's and the pool's own timeouts.
+3. **The long-lived context of a background loop, queue or stream:** unchanged here. This covers the sweeper, the memory session store, signing keys, queued notifications, back-channel jobs, the signals reload and the fiber route context. Each is bounded by its own shutdown or per-job timeout. Decision 14 covers their documentation.
+4. **A detached request-path call into a store or service with no bound:** bounded by the default for its kind.
+5. **A limiter port call or a consumer callback:** unbounded on purpose, as above.
+
+The inventory also searches production code for `context.Background()` and `context.TODO()` used to detach work (for example `httpsec/fibersec/exchange.go`), and classes those sites the same way.
+
+The sweep put these in class 4:
+- `authenticate/mfa`: `throttle.go:216`, `totp.go:279`;
+- `authenticate/passkey`: `register_pending.go:372`, `manage.go:195`, `clone.go:117,183,210`, `messages.go:152`;
+- `session`: the reuse and end-observer writes;
+- `recovery`: its detached writes and limiter calls;
+- the MFA verify and grant-revoke paths;
+- `httpsec`: the detached limiter and store calls (login, Basic, throttle, renewal, enrolment, password change, logout, end session, back-channel and rehash).
+
+The sweep's list includes limiter calls (`mfa/throttle.go:216`, `ratelimit/guard.go:460`, the recovery limiter calls), which are class 5 by the rule above. It also missed sites the audit found outside these packages: `internal/eventsink/eventsink.go:77` (class 5), `oidcprovider/endsignin.go:181`, `authenticate/oidc/remote.go:319` and `policy/lockout`. Task 13.2 classes them, and lane D takes the class-4 sites outside lanes A–C.
+
+A consumer-supplied WebAuthn metadata fetch (`authenticate/passkey/webauthn/metadata.go`) runs detached under singleflight with no deadline. The built-in fetch is bounded by the outbound client's timeout, `outbound.DefaultTimeout` (10 s) unless the consumer configured another. The consumer's fetch now gets a context with a 10-second deadline, `outbound.DefaultTimeout`, and `MetadataBlob`'s godoc, which promises the fetch receives "not its cancellation or deadline", is corrected. A fetch that times out fails the registration as any metadata failure does: refused with the attestation-refused refusal, nothing stored.
+
+- **Default:** 5 seconds per detached write, which two sites already use; 10 seconds per revocation, which `oidcprovider` already uses. Each is generous for one statement, and short enough that a hung store frees the request goroutine.
+- **Override:** none in `v0.1.1`. An exported option is new API, and under Semantic Versioning a patch adds none (decision 8 ships a patch). `gorelease` does not enforce this for a `v0` base, so it is held by review, not by the gate. `library-design.md` rule 2 asks for the reason when a default cannot be replaced, and this is it. A consumer's own store or port can still impose a shorter bound of its own. An option to lengthen the bound is a candidate for the next minor. The main session decided this on 2026-11-11, under the maintainer's instruction to fix #3 in this change. It is flagged for the maintainer to confirm.
+
+| Failure | State | Outcome |
+|---|---|---|
+| A store hangs on a detached call | Handled, tested | The call fails with `context.DeadlineExceeded` within the bound, and the site handles it as it handles that call's store error today. A test in each affected package asserts the deadline is present, and that the site's outcome for that error is unchanged |
+| A slow store, over 5 s for one write (a row-lock wait under contention, for example) | Accepted, the stated line (`library-design.md` rule 4) | The write fails as a store error would, where before it completed late. A consumer who needs longer waits for the option in the next minor |
+| A reuse-triggered family revocation slower than 10 s, under lock contention | Accepted, the stated line | The request is refused, as it is today on a store error, and the family stays live until the next presentation of a revoked member or the family's expiry. Before, the request waited without end |
+| A slow limiter on a failed-attempt record | Handled (class 5) | Not bounded by the library, so the guess is charged as the spec requires. The limiter's own contract bounds it |
+| A slow session end observer or event sink | Accepted, tested | Not bounded by the library. Their godoc tells the consumer to bound their own work (task 14.4). A test pins that their context carries no library deadline |
+| The client hangs up before or during the detached work | Handled, unchanged | It still runs, because it is detached, and now it has a bound |
+| A site's cancel function is not called | Handled, tested by the lint | Each site defers it. `go vet`'s `lostcancel` check flags a missed one, and the lint runs it |
+| The consumer's metadata fetch ignores its context | Accepted | Waiters still return on their own context, as today. The fetch's goroutine lasts as long as the consumer's code does |
+| A class-2 rollback hangs | Accepted | As above: the driver and the pool bound the connection |
+| The inventory misses a site | Handled | The task searches every `context.WithoutCancel` in production code, not the sweep's list alone. The review rechecks the search |
+| A detached call keeps the request context's values, including an attached transaction | Accepted, unchanged from `v0.1.0` | As on `v0.1.0`. Decision 14 documents it for background starts, where it lasts longest |
+
+### 13. A send the caller cancelled reports the caller's cancellation
+
+The SMTP sender aborts a send when the caller's context ends, by forcing the connection deadline to now (`notify/smtp.go`). The send then fails with the network error from the interrupted read, which does not match `context.Canceled` or `context.DeadlineExceeded`. So a caller cannot tell its own hang-up from a broken mail server, and `Send` logs the failure at ERROR without consulting the library's hang-up classification (`internal/hangup`) at all. Reproduced: `TestSMTPSender_CancelMidTransferMatchesContextCanceled` fails with `got *diag.Fault: notify: the greeting from 127.0.0.1 failed`, alongside an `ERROR notify: smtp send failed` record. A throwaway fix that joins the context's error passes it.
+
+When the exchange fails and the context `Send` received has ended, the send's error matches that context's error. That is the caller's context, not the one `send` derives with the sender's own deadline (`smtp.go:317`), which would make the sender's own timeout look like the caller's. A caller's deadline counts as passed when the clock has reached it, even if the context's timer has not fired yet, because the connection deadline and the context timer race. It is joined with the network error, which stays in the chain for diagnosis. A send that fails on the sender's own deadline, with the caller's context still live, keeps today's timeout error. A send the caller ended is logged at DEBUG, not ERROR, through the hang-up classification, as the rest of the library does.
+
+- **Default and override:** on, with no override. This corrects what the existing requirement promises ("cancelling the caller's context SHALL abort a send").
+
+| Failure | State | Outcome |
+|---|---|---|
+| The caller cancels mid-transfer | Handled, tested | The error matches `context.Canceled`, and there is no ERROR record |
+| The caller's deadline passes mid-transfer | Handled, tested | The error matches `context.DeadlineExceeded` |
+| The sender's own deadline passes while the caller's context is live | Handled, tested | Unchanged: the timeout error, logged as a failed send |
+| The context ends after the server has accepted the message | Accepted | The send has succeeded, and returns nil |
+| The queued sender, which detaches each message | Handled | Its per-delivery timeout (`queued.go:350`) is the context `SMTPSender.Send` receives, so a delivery that runs past it now matches `context.DeadlineExceeded` and `SMTPSender` logs it at DEBUG. The queue's own "delivery failed" record stays at ERROR, so an operator still sees it. Nothing cancels a delivery already under way, as `QueuedSender.Shutdown`'s godoc says |
+
+### 14. The remaining context hand-offs are documented or corrected
+
+- **Background starts keep the start context's values (documented).** `expiry/sweep` `Start`, the signing-key lifecycle's `Start` and the memory session store's `Start` run their loops under `WithoutCancel` of the start context, for the life of the process. That is documented today. What is not documented is that a store transaction attached to that context goes with it. The godoc of each says to start from a context with no transaction attached. A `WithoutTx` helper would add API, so it is left to the next minor (Non-Goals). This is UNREPRODUCED as harm: a test showed the values reach the loop, and no shipped caller starts inside a transaction.
+- **A context kept inside a context value (corrected).** `oidcprovider/events.go:128` routes a reuse event by putting a context inside another context's value. The value now holds what the event needs instead of a context. It is a refactor with no change in behaviour. The existing event tests cover it, and the task shows they would catch a broken route by breaking it temporarily.
+- **`ginsec` leaves the chain's context on `c.Request` (documented).** gin has one `*http.Request` per `*gin.Context`. When the chain passed the request on, a gin middleware registered before the chain reads the chain's context after `c.Next()` returns; when the chain refused it, `c.Request` is unchanged. The `ginsec` godoc says so, as `fibersec`'s already does for its context.
+- **`fibersec` logs a stream panic under `context.Background()` (corrected).** The record loses the request's values, such as a trace or request identifier, that a consumer's log handler reads. It now logs under `context.WithoutCancel` of the request's context. A test with a handler that reads a context value is red before the change.
+- **`authenticate/password_upgrade.go` keeps the request context in a handle (accepted).** It is documented, and the handle is read after the call returns by design. Removing it breaks the published API.
+
+| Failure | State | Outcome |
+|---|---|---|
+| A consumer starts a background manager inside a transaction | Accepted, documented | The godoc says not to. As before, the loop's store calls would join that transaction |
+| The events refactor changes routing | Handled, tested | The existing event tests, shown to bite |
+| A stream panic's log loses request values | Handled, tested | It carries them, and no cancellation |
+
 ## Open Questions
 
 - **Refusing owed second-factor states on every chain.** The authorization stage refuses only challenges whose gate the chain registers (decision 3). A gateless chain run inside a gated chain's gates is now refused at publication (decision 2). What remains is a gateless chain mounted on its own, not inside a gated one, that shares the session store. The group 6 review leaned toward refusing the second-factor, enrolment and recovery states on every chain, failing closed even where that chain cannot satisfy them. That would close the remaining case. Left for the maintainer to decide, as a follow-up change with its own red test, not in this patch.
+- **Decision 12's bound has no override in `v0.1.1`.** The main session chose fixed bounds (5 s, 10 s for revocations) with no exported option, because under Semantic Versioning new API makes this a minor release. (An earlier wording said `gorelease` refuses it; the audit showed it does not for a `v0` base, so this rests on the versioning rule alone.) The other choice is to release `v0.2.0` with an option. That would redo task 9.1's version work, and would also need the changelog and `RELEASING.md` steps to change. The maintainer is asked to confirm before group 13 starts.
 
 ## Risks / Trade-offs
 
@@ -313,6 +436,8 @@ Decision, made by the maintainer on 2026-11-10: both verification paths require 
 - **[The fold rewrite changes a hot path every request takes]** → The conformance suite runs on all three adapters, with a benchmark comparison, and the Opus reviewer checks ordering, re-entry and the terminal lookup specifically.
 - **[The fix is public before `v0.1.1` is tagged]** → Accepted: no consumer runs scrty in production (decision 8). The tag follows the merge as soon as CI on `main` is green.
 - **[`govulncheck` never flags `v0.1.0`]** → Accepted (decision 8). The retraction and the changelog are the only signals.
+- **[Decisions 11–14 widen a security patch to packages outside `httpsec`]** → The maintainer chose this on 2026-11-11. Each package's change has its own red test and a fresh reviewer, and the whole gate (task 10.15) runs after them.
+- **[A 5-second bound on detached writes, or 10 seconds on revocations, fails a write that used to succeed slowly]** → Accepted (decision 12). The failure takes the path that site already takes for a store error.
 - **[The release-probe fix in `release-readiness` has not landed when `v0.1.1` is tagged]** → Task 1.1 checks that it is on `main` before the branch is cut, and task 9.2 checks again before tagging.
 
 ## Migration Plan
@@ -320,7 +445,9 @@ Decision, made by the maintainer on 2026-11-10: both verification paths require 
 1. A consumer upgrades all scrty modules to `v0.1.1`.
 2. A chain that gives one of the five options twice fails construction with an error naming the option. The consumer removes the duplicate.
 3. A consumer authenticator registered after the gates now gets 500 on publishing. The consumer moves it to `OrderBearerToken`.
-4. **Rollback:** pin `v0.1.0`. That reintroduces the defects, and `go` warns because the version is retracted.
+4. Code that reads an exchange's context, session or authentication after the chain's step returns (a consumer's own adapter) reads them inside the terminal instead (decision 11).
+5. A store that takes longer than 5 seconds on one detached write now sees that write fail as a store error (decision 12).
+6. **Rollback:** pin `v0.1.0`. That reintroduces the defects, and `go` warns because the version is retracted.
 
 ## References
 
@@ -364,6 +491,15 @@ Researched, accessed 2026-11-10:
 - [RFC 7515 §4.1.1](https://www.rfc-editor.org/rfc/rfc7515#section-4.1.1): the `alg` header parameter is required.
 - [RFC 8725 §3.1](https://www.rfc-editor.org/rfc/rfc8725#section-3.1): verifiers perform algorithm verification.
 
+### Decisions 11–14: context hand-offs
+
+**Primary documentation:**
+- [Go `context` package](https://pkg.go.dev/context): a context is passed explicitly and not stored in a struct; `WithoutCancel` returns a context with no deadline and no cancellation, so a bound must be added by the caller. Supports decisions 11 and 12.
+- [Go blog, "Contexts and structs"](https://go.dev/blog/context-and-structs): a context stored in a struct outlives the call it belongs to. Supports decision 11's scoping and decision 14's events refactor.
+- [`net/http` `Request.WithContext`](https://pkg.go.dev/net/http#Request.WithContext): middleware hands a shallow copy carrying the derived context to the next handler, and the caller's request is unchanged. Supports decision 11.
+
+Otherwise reasoned from scrty's own settled specs (`http-security-chain`, `security-state-stores`, `email-notification`, `passkey-authentication`) and the 2026-11-11 sweep of every package. The researched comparison of options A and B was given to the maintainer in conversation on 2026-11-11. These are cited as standard references and were not re-checked when written down.
+
 ## Reproductions
 
 Each test was red on `v0.1.0`, in a disposable export, and the main session re-ran it on 2026-11-09. The files are kept in `repro/` as `.go.txt`, so no module compiles them. Each becomes the red step of its task.
@@ -387,8 +523,17 @@ The review of the first implementation (2026-11-10) added these. Each test ran o
 | The backstop's log hides a method-lookup failure | `TestAuthorization_BackstopSurfacesMethodLookupFailure`, log case (same file) | same directory | `no record carries the store failure; only the wiring-mistake record exists` |
 | The backstop's status differs from the gate's on a method-lookup failure | same test, status case | same directory | Refuted: passes, gate and stage both `500 … the usable MFA methods could not be looked up` |
 | Double mount: a rewrite between the mounts is not judged again | `TestGin_DoubleMountSecondEntryAfterCredentialSwap` (`repro/ginsec_double_swap_repro_test.go.txt`) | `go test -run 'TestGin_DoubleMountSecondEntryAfterCredentialSwap' -count=1 .` in `httpsec/ginsec` | Credential swap `expected: "u-2" actual: "u-1"`; invalid credential `expected: 401 actual: 200`; Host and query swaps served. Both controls pass (no middleware, path rewrite). This is the accepted behaviour of decision 4, which group 10 pins rather than changes |
-| A gated chain inside a gateless chain serves an owing session | `TestReview108_GatedChainInsideGatelessOuterServesOwingSession` (`repro/httpsec_review108_repro_test.go.txt`) | `go test -run 'TestReview108_' -count=1 ./httpsec/` on `fbf89b6c` | `Should not be: 200 … the MFA-gated chain served its handler a session owing a second factor (authenticated=true, MFA=true)`. Fixed by decision 3's session helper |
-| A covering chain on the same exchange is refused | `TestReview108_SameExchangeCoveringChainPublishes` (same file) | same | `a session was published after the chain's gates had begun`; green with the own-exchange check removed. Fixed by decision 2's mark owner |
+| A gated chain inside a gateless chain serves an owing session | `TestChain_GatedChainInsideGatelessChainServesOwingSession` (`repro/httpsec_nested_chains_repro_test.go.txt`) | `go test -run 'TestChain_GatedChainInsideGatelessChainServesOwingSession|TestChain_CoveringChainOnSharedExchangePublishes' -count=1 ./httpsec/` on `fbf89b6c` | `Should not be: 200 … the MFA-gated chain served its handler a session owing a second factor (authenticated=true, MFA=true)`. Fixed by decision 3's session helper |
+| A covering chain on the same exchange is refused | `TestChain_CoveringChainOnSharedExchangePublishes` (same file) | same | `a session was published after the chain's gates had begun`; green with the own-exchange check removed. Fixed by decision 2's mark owner |
 | The first cross-chain check refuses a handler's in-process forward through a gated chain | `TestReauthResolve/a_re-proof_racing_a_renewal_of_its_session_is_a_renewal_conflict_and_the_renewal's_session_stands` (existing), and a throwaway same-chain forward test during task 10.2 | `go test ./httpsec/... -count=1 -race` on the task 10.2 tree | `a session was published by a chain run inside another chain's gates`; the forward test `expected: 204 actual: 500`. On `fcec3a8f` both passed. Fixed by decision 2's gate-set condition |
+
+The 10.14 review and the 2026-11-11 context sweep added these:
+
+| Claim | Test | Command | Red output |
+|---|---|---|---|
+| A gateless chain's built-in publishes inside the outer chain's gates on a shared exchange whose context was replaced | `TestChain_GatelessBuiltInOnSharedExchangeWithReplacedContextPublishes` (`repro/httpsec_shared_exchange_repro_test.go.txt`) | `go test -run '…' -count=1 ./httpsec/` on `6d971f67` | The built-in publishes and the handler runs. Fixed by decision 2's own-exchange check in the built-in path (task 10.16) |
+| A chain run leaks its context up to the caller's exchange, growing on reuse | `TestChain_RunPutsBackTheContextItFound` (in the working tree, uncommitted; task 12.1's red step), and `BenchmarkAssemble/run/8` | `go test -run TestChain_RunPutsBackTheContextItFound -count=1 ./httpsec/` | 7 cases fail: the context after the run is not the one before it, and the layer count reads `[0 1 2 3]` over four runs. The benchmark goes from 27 µs to 1 ms per run over 16,000 runs. Fixed by decision 11 |
+| A detached failure record has no deadline | `TestVerifyThrottle_DetachedRecordCarriesDeadline` (`repro/mfa_detached_bound_repro_test.go.txt`) | `go test -run '…' -count=1 ./authenticate/mfa/` in a disposable worktree of `6d971f67` | `detached write got no deadline (cancelled=false): a hung limiter blocks the caller forever`. Resolved by decision 12's class 5: a limiter call is bounded by the port's own contract, not by the library, so this case is not changed |
+| A cancelled SMTP send does not match `context.Canceled` | `TestSMTPSender_CancelMidTransferMatchesContextCanceled` (`repro/notify_cancel_repro_test.go.txt`) | `go test -run '…' -count=1 ./notify/` in a disposable worktree of `6d971f67` | `got *diag.Fault: notify: the greeting from 127.0.0.1 failed`, with an `ERROR notify: smtp send failed` record. A throwaway fix that joins the context's error passes it. Fixed by decision 13 |
 
 The upper-case fiber case is not closed by decision 1. It is accepted as the consumer's to match (decision 7), so it is left out of the carried-forward test rather than kept as a test that can never pass. `TestRepro_NilOption` and `TestRepro_SameSlotOrderDependsOnOptionOrder` assert behaviour that is documented and stays. They are not carried forward as red steps.

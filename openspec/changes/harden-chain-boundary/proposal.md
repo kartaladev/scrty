@@ -25,6 +25,11 @@ These go out as `v0.1.1`, a patch release that retracts `v0.1.0`. No consumer ru
 - **BREAKING (configuration only).** `WithLogger`, `WithClock`, `WithPolicyEngine`, `WithRateLimiterFactory` and `WithErrorHandler` given more than once are refused at construction, like the `Enable*` options. `EnableAuthorization` keeps its documented last-wins authorizer. Every call's authorizer is checked, so a nil one in an earlier call no longer hides.
 - **Dependencies follow the open Dependabot updates, and a token header must name its algorithm.** `lestrrat-go/jwx/v4` moves to 4.6.0, `testcontainers-go` and its modules to 0.45.0 (test module only), and CodeQL to 4.39.3. jwx 4.6.0 accepts a header with no `alg` when one key is given, which loosened the ID token hint check. Token verification and the hint check now refuse a header with no `alg` themselves. `token.Verifier` had accepted such a header since `v0.1.0`, against its own documentation.
 - **The interceptor fold is built once, at construction.** `Assemble` hands each request's terminal to a fold built when the chain was, instead of allocating a closure per interceptor on every request. Behaviour is unchanged, and so is the API.
+- **Go's context idioms hold across the library.** A sweep of every package on 2026-11-11 found these, and the maintainer chose to fix them in this release:
+  - **A chain run leaves its caller's exchange as it found it.** The context, the session, the authentication result and the chain's configuration are put back when the run returns. Before, the context grew on every reuse of an exchange, and an outer chain read an inner chain's state.
+  - **Detached work has a deadline.** Some store work runs on after the client hangs up, such as a TOTP refund, a revocation or a passkey state change. Where it had no bound, it now gets 5 seconds, or 10 seconds for a revocation. Limiter calls and consumer callbacks stay bounded by their owners, so a slow limiter still charges every guess. A consumer-supplied WebAuthn metadata fetch gets the outbound client's 10-second default.
+  - **A cancelled SMTP send reports the cancellation.** Its error matches `context.Canceled`, and it is not logged at ERROR.
+  - **The remaining hand-offs are documented or corrected.** Background managers started inside a transaction, and `ginsec` leaving the chain's context on `c.Request`, are documented. A context stored inside another context's value in `oidcprovider` events is replaced. `fibersec` logs a stream panic with the request's values.
 - **Documentation:**
   - fiber's case-insensitive and trailing-slash routing, and a rule written on `GET` that also has to cover `HEAD`, are stated where rules are written (`EnableAuthorization`, `PathPrefix`);
   - registering after routes leaves them unguarded on gin and fiber;
@@ -45,22 +50,33 @@ None.
   - consumer interceptors may not publish a session once the gates have begun;
   - the authorization stage refuses a session owing a built-in challenge;
   - a chain entered twice on one request runs once;
-  - single-value options given twice fail at construction.
+  - single-value options given twice fail at construction;
+  - a chain's built-ins judge a session an enclosing chain published;
+  - a chain run leaves the caller's exchange as it found it.
 - `framework-adapters`: every adapter refuses non-canonical paths alike; mounting a chain twice runs it once.
 - `token-issuance`: verification refuses a token whose header names no algorithm.
 - `oidc-provider-authorization`: an ID token hint whose header names no algorithm is refused.
+- `oidc-provider-logout`: the end-session endpoint judges hints with the same check.
+- `security-state-stores`: store work detached from the caller has a deadline.
+- `passkey-authentication`: a consumer-supplied metadata fetch has a deadline.
+- `email-notification`: a send the caller ended reports the caller's context error.
 
 ## Impact
 
 - **Code:**
   - core `httpsec`: `chain.go`, `exchange.go`, `options.go`, `authorization.go`, the four gate interceptors, and every built-in that publishes a session;
   - godoc in `httpsec/fibersec` and `httpsec/ginsec`;
-  - the shared conformance suite in `test/httpsecconformance`.
+  - the shared conformance suite in `test/httpsecconformance`;
+  - detached store calls in `session`, `recovery`, `authenticate/mfa`, `authenticate/passkey` (and its `webauthn` metadata), `httpsec` and the other packages the inventory finds, through a new `internal/detach` helper;
+  - `notify/smtp.go`; `oidcprovider/events.go`; godoc in `expiry/sweep`, `token/signingkey` and `session`.
 - **API:**
   - no exported identifier is added or removed;
   - `PublishSession` gains a documented refusal;
   - five options gain a refusal of a second call;
-  - requests with dot segments now get `400` where they used to be served.
+  - requests with dot segments now get `400` where they used to be served;
+  - an exchange's context, session and authentication read after the chain's step returns are what they were before the run;
+  - a detached store write slower than 5 seconds, or a revocation slower than 10, now fails as a store error;
+  - a cancelled SMTP send's error matches `context.Canceled`.
 - **Release:**
   - `v0.1.1` for the nine published modules, with `retract v0.1.0` in the root `go.mod`;
   - a `CHANGELOG.md` `Security` entry;
