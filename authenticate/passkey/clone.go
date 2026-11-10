@@ -9,6 +9,7 @@ import (
 
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -113,10 +114,12 @@ func WithClonePolicy(fn func(ctx context.Context, signal CloneSignal) CloneActio
 func (m *Passkeys) onCounterRefused(ctx context.Context, c *Credential, res *AssertionResult) error {
 	// The read-back and the suspension are detached from the request: a client
 	// that disconnects once the write was refused must not leave a suspected
-	// clone active.
-	detached := context.WithoutCancel(ctx)
+	// clone active. Each is its own call and carries its own bound: the read
+	// is a write-class call, the suspension a revocation.
+	findCtx, cancelFind := detach.Bounded(ctx, detach.WriteTimeout)
+	now, err := m.credentials.Find(findCtx, c.User, c.ID)
 
-	now, err := m.credentials.Find(detached, c.User, c.ID)
+	cancelFind()
 
 	switch {
 	case errors.Is(err, ErrNotFound):
@@ -152,7 +155,11 @@ func (m *Passkeys) onCounterRefused(ctx context.Context, c *Credential, res *Ass
 	case CloneRefuse:
 		return ErrCloneSuspected
 	default:
-		suspended, err := m.credentials.Suspend(detached, c.ID)
+		suspendCtx, cancelSuspend := detach.Bounded(ctx, detach.RevocationTimeout)
+		suspended, err := m.credentials.Suspend(suspendCtx, c.ID)
+
+		cancelSuspend()
+
 		if err != nil {
 			return diag.Wrap(err, "passkey: could not suspend the credential", ErrCloneSuspected)
 		}
@@ -180,9 +187,14 @@ func (m *Passkeys) endSessionsOnClone(ctx context.Context, c *Credential) bool {
 		return false
 	}
 
+	callCtx, cancel := detach.Bounded(ctx, detach.RevocationTimeout)
+	err := m.sessions.DeleteByUser(callCtx, c.User)
+
+	cancel()
+
 	ctx = context.WithoutCancel(ctx)
 
-	if err := m.sessions.DeleteByUser(ctx, c.User); err != nil {
+	if err != nil {
 		m.sampled(ctx, slog.LevelError, "clone|sessions-not-ended", msgSessionsNotEnded,
 			append(diag.Failure("clone", err), credentialAttr(c.ID))...)
 
@@ -207,9 +219,13 @@ func (m *Passkeys) revokeGrantsOnClone(ctx context.Context, c *Credential) {
 		return
 	}
 
+	callCtx, cancel := detach.Bounded(ctx, detach.RevocationTimeout)
+	err := m.grants.RevokeUserGrants(callCtx, c.User, cloneGrantCause)
+
+	cancel()
+
 	ctx = context.WithoutCancel(ctx)
 
-	err := m.grants.RevokeUserGrants(ctx, c.User, cloneGrantCause)
 	if err == nil {
 		return
 	}

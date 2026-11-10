@@ -7,6 +7,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/notify"
 )
@@ -185,7 +186,14 @@ func (m *Passkeys) sendNotice(
 // contactOf loads user and resolves their contact address by resolve, or by
 // the manager's resolver when resolve is nil.
 func (m *Passkeys) contactOf(ctx context.Context, user identity.UserID, resolve mfa.ContactResolver) (string, error) {
-	details, err := m.users.LoadByUserID(ctx, user)
+	// The loader and the resolver are writes' worth of work the caller cannot
+	// cancel, each with a bound of its own so the first cannot eat the second's.
+	// The send that follows is the sender's to bound.
+	loadCtx, cancelLoad := detach.Bounded(ctx, detach.WriteTimeout)
+	details, err := m.users.LoadByUserID(loadCtx, user)
+
+	cancelLoad()
+
 	if err != nil {
 		return "", diag.Wrap(err, "passkey: could not load the user")
 	}
@@ -194,7 +202,11 @@ func (m *Passkeys) contactOf(ctx context.Context, user identity.UserID, resolve 
 		resolve = m.contact
 	}
 
-	to, err := resolve(ctx, details)
+	resolveCtx, cancelResolve := detach.Bounded(ctx, detach.WriteTimeout)
+	to, err := resolve(resolveCtx, details)
+
+	cancelResolve()
+
 	if err != nil {
 		return "", diag.Wrap(err, "passkey: could not resolve the user's contact address")
 	}

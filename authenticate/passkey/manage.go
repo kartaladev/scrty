@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -192,9 +193,17 @@ func (m *Passkeys) Remove(
 // caller cannot cancel, and its failure is logged and does not undo the
 // removal.
 func (m *Passkeys) endOtherSessionsAgain(ctx context.Context, s *session.Session, cid id.ID) {
+	// The second pass is a revocation: it outlives the request's cancellation
+	// and carries a bound of its own, so a store that never answers cannot hold
+	// the caller. The log below keeps the request's values, not the bound.
+	callCtx, cancel := detach.Bounded(ctx, detach.RevocationTimeout)
+	_, err := m.sessions.DeleteByUserExcept(callCtx, s.UserID, s.ID)
+
+	cancel()
+
 	ctx = context.WithoutCancel(ctx)
 
-	if _, err := m.sessions.DeleteByUserExcept(ctx, s.UserID, s.ID); err != nil {
+	if err != nil {
 		m.sampled(ctx, slog.LevelError, "remove|sessions-not-ended", msgSessionsNotEnded,
 			append(diag.Failure("remove", err), credentialAttr(cid))...)
 	}

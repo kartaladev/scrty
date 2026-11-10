@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/depfault"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -303,7 +304,8 @@ func (r *Recoverer) recover(ctx context.Context, req Request) (*Result, error) {
 	}
 
 	rec.CompletedAt = now
-	if err := r.records.Insert(ctx, rec); err != nil {
+	err = bounded(ctx, detach.WriteTimeout, func(c context.Context) error { return r.records.Insert(c, rec) })
+	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgRecordFailed, diag.Failure("record-store", err)...)
 
 		return nil, diag.Wrap(err, errTextRecordStore)
@@ -397,14 +399,17 @@ func recoveryOwn(user identity.UserID) session.CreateOption {
 // the proofs are spent, so returning would leave the user locked out with no way
 // to retry, which is worse than one grant the consumer is told about.
 func (r *Recoverer) complete(ctx context.Context, c completion, now time.Time) (*Result, error) {
-	if err := r.planner.execute(ctx, c.user, c.plan); err != nil {
+	if err := r.planner.execute(ctx, c.user, c.plan); err != nil { // each removal bounded inside
 		r.logger.LogAttrs(ctx, slog.LevelError, msgResetFailed, diag.Failure("authenticator-remove", err)...)
 
 		return nil, err
 	}
 
 	if r.revokeSessions {
-		if err := r.sessions.DeleteByUser(ctx, c.user); err != nil {
+		err := bounded(ctx, detach.RevocationTimeout, func(bc context.Context) error {
+			return r.sessions.DeleteByUser(bc, c.user)
+		})
+		if err != nil {
 			r.logger.LogAttrs(ctx, slog.LevelError, msgRevokeFailed, diag.Failure("session-store", err)...)
 
 			return nil, err
@@ -414,7 +419,10 @@ func (r *Recoverer) complete(ctx context.Context, c completion, now time.Time) (
 	res := &Result{Details: c.details, Removed: slices.Clone(c.plan)}
 
 	if r.grants != nil {
-		if err := r.grants.RevokeUserGrants(ctx, c.user, grantRevocationCause); err != nil {
+		err := bounded(ctx, detach.RevocationTimeout, func(bc context.Context) error {
+			return r.grants.RevokeUserGrants(bc, c.user, grantRevocationCause)
+		})
+		if err != nil {
 			r.logger.LogAttrs(ctx, slog.LevelError, msgGrantsFailed, diag.Failure("grant-revoker", err)...)
 			r.events.Report(ctx, event.Event{
 				Name: event.GrantRevokeFailed, At: r.clock.Now(), Outcome: event.OutcomeFailure, User: c.user,
@@ -426,7 +434,7 @@ func (r *Recoverer) complete(ctx context.Context, c completion, now time.Time) (
 
 	switch {
 	case c.savedSpent:
-		codes, err := r.codes.Generate(ctx, c.user)
+		codes, err := r.codes.generate(ctx, c.user, detach.WriteTimeout)
 		if err != nil {
 			r.logger.LogAttrs(ctx, slog.LevelError, msgReissueFailed, diag.Failure("codes", err)...)
 
@@ -436,7 +444,7 @@ func (r *Recoverer) complete(ctx context.Context, c completion, now time.Time) (
 		res.Codes = codes
 		res.Remaining = RemainingCodes{N: len(codes), Low: len(codes) <= r.codes.lowThreshold}
 	case r.codes != nil:
-		n, err := r.codes.Remaining(ctx, c.user)
+		n, err := r.codes.remaining(ctx, c.user, detach.WriteTimeout)
 		if err != nil {
 			r.logger.LogAttrs(ctx, slog.LevelError, msgRemainingFailed, diag.Failure("codes", err)...)
 
@@ -450,7 +458,7 @@ func (r *Recoverer) complete(ctx context.Context, c completion, now time.Time) (
 	// after the saved set was replaced, so the credential that answers with
 	// the new codes existed before the old ones were lost. A failure discards
 	// the credential, which names a session that was never stored.
-	s, err := c.issued.prepared.Commit(ctx)
+	s, err := boundedValue(ctx, detach.WriteTimeout, c.issued.prepared.Commit)
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgSessionFailed, diag.Failure("session-store", err)...)
 
@@ -466,7 +474,7 @@ func (r *Recoverer) complete(ctx context.Context, c completion, now time.Time) (
 		CodesReplaced: c.savedSpent,
 		Repudiation:   r.repudiation,
 	})
-	r.notify(ctx, c.details, subject, body)
+	r.notifyDetached(ctx, c.details, subject, body)
 
 	return res, nil
 }
@@ -475,7 +483,24 @@ func (r *Recoverer) complete(ctx context.Context, c completion, now time.Time) (
 // addressed or queued is logged and otherwise ignored: it never undoes what it
 // reports. The recipient is always the resolver's, whatever the builder wrote.
 func (r *Recoverer) notify(ctx context.Context, details *identity.Details, subject, body string) {
-	address, err := r.resolver(ctx, details)
+	r.deliver(ctx, details, subject, body, 0)
+}
+
+// notifyDetached is notify for a notice sent from a context already detached
+// from the caller's cancellation: the contact resolver is bounded by
+// detach.WriteTimeout. The sender is not: it owns its own bound (the SMTP
+// timeout, or a queue that only enqueues), and a cap here would cut a
+// synchronous send short of it.
+func (r *Recoverer) notifyDetached(ctx context.Context, details *identity.Details, subject, body string) {
+	r.deliver(ctx, details, subject, body, detach.WriteTimeout)
+}
+
+// deliver resolves the address under a bound of resolveBound when it is above
+// zero, and sends the notice on ctx.
+func (r *Recoverer) deliver(ctx context.Context, details *identity.Details, subject, body string, resolveBound time.Duration) {
+	address, err := maybeBoundedValue(ctx, resolveBound, func(rc context.Context) (string, error) {
+		return r.resolver(rc, details)
+	})
 
 	switch {
 	case err != nil:

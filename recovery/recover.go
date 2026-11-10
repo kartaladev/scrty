@@ -16,6 +16,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/depfault"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/session"
@@ -601,15 +602,21 @@ func (r *Recoverer) spend(ctx context.Context, v *verified) error {
 func (r *Recoverer) revokeThenSpend(ctx context.Context, v *verified) error {
 	detached := context.WithoutCancel(ctx)
 
+	// The revocation is bounded only once it runs detached, after the MFA
+	// proof is spent. With no MFA proof it stays on the caller's own context,
+	// whose end must spend nothing.
+	var revokeBound time.Duration
+
 	if v.mfa != nil {
 		if err := r.spendMFA(detached, v); err != nil {
 			return err
 		}
 
 		ctx = detached
+		revokeBound = detach.RevocationTimeout
 	}
 
-	if err := r.revokeGrantsFirst(ctx, v.user); err != nil {
+	if err := r.revokeGrantsFirst(ctx, v.user, revokeBound); err != nil {
 		return err
 	}
 
@@ -633,7 +640,10 @@ func (r *Recoverer) spendMFA(ctx context.Context, v *verified) error {
 		return nil
 	}
 
-	if err := v.mfa.Verify(ctx, v.user, v.mfaCode); err != nil {
+	err := bounded(ctx, detach.WriteTimeout, func(c context.Context) error {
+		return v.mfa.Verify(c, v.user, v.mfaCode)
+	})
+	if err != nil {
 		return r.spendRefused(ctx, v.user, "mfa-verify", err, mfaRefusal(err))
 	}
 
@@ -646,7 +656,10 @@ func (r *Recoverer) spendMFA(ctx context.Context, v *verified) error {
 func (r *Recoverer) spendCodes(ctx context.Context, v *verified) error {
 	if v.has(ProofIssued) {
 		cctx, watch := depfault.Watching(ctx)
-		if err := r.issued.Consume(cctx, v.issued); err != nil {
+		err := bounded(cctx, detach.WriteTimeout, func(c context.Context) error {
+			return r.issued.Consume(c, v.issued)
+		})
+		if err != nil {
 			return r.spendRefused(ctx, v.user, "token-consume", err, refusedByStore(watch))
 		}
 	}

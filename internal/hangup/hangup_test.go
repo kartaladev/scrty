@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/hangup"
 )
 
@@ -98,6 +99,22 @@ func TestByCaller(t *testing.T) {
 				return fmt.Errorf("db: %w", ctx.Err())
 			},
 			assert: isHangUp,
+		},
+		{
+			name: "a detach bound that passed, with err its DeadlineExceeded",
+			ctx: func(t *testing.T, ctx context.Context) context.Context {
+				t.Helper()
+
+				bounded, cancel := detach.Bounded(ctx, time.Nanosecond)
+				t.Cleanup(cancel)
+				<-bounded.Done()
+
+				return bounded
+			},
+			err: func(ctx context.Context) error {
+				return fmt.Errorf("db: %w", ctx.Err())
+			},
+			assert: isNotHangUp,
 		},
 	}
 

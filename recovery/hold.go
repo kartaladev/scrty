@@ -14,6 +14,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/ascii"
 	"github.com/kartaladev/scrty/internal/depfault"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -229,7 +230,8 @@ const errTextHoldToken = "recovery: a hold token could not be issued"
 // because both end it anyway, and whoever holds a stolen sheet must not use
 // its other codes while the hold runs.
 func (r *Recoverer) startHold(ctx context.Context, v *verified, rec Record, hold time.Duration) (*Result, error) {
-	if err := r.records.Insert(ctx, rec); err != nil {
+	err := bounded(ctx, detach.WriteTimeout, func(c context.Context) error { return r.records.Insert(c, rec) })
+	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgRecordFailed, diag.Failure("record-store", err)...)
 
 		return nil, diag.Wrap(err, errTextRecordStore)
@@ -248,7 +250,10 @@ func (r *Recoverer) startHold(ctx context.Context, v *verified, rec Record, hold
 	}
 
 	if rec.SavedSpent {
-		if _, err := r.codes.store.DeleteUser(ctx, rec.User); err != nil {
+		_, err := boundedValue(ctx, detach.WriteTimeout, func(c context.Context) (int, error) {
+			return r.codes.store.DeleteUser(c, rec.User)
+		})
+		if err != nil {
 			r.logger.LogAttrs(ctx, slog.LevelError, msgHoldCodesFailed, diag.Failure("code-store", err)...)
 
 			return nil, diag.Wrap(err, errTextCodeStore)
@@ -261,7 +266,7 @@ func (r *Recoverer) startHold(ctx context.Context, v *verified, rec Record, hold
 		CodesVoided: rec.SavedSpent,
 		Repudiation: r.repudiation,
 	}, r.cancelURL(cancelToken), rec.NotBefore)
-	r.notify(ctx, v.details, subject, body)
+	r.notifyDetached(ctx, v.details, subject, body)
 
 	return &Result{Held: &Hold{CompletionToken: finishToken, CompletableAt: rec.NotBefore}}, nil
 }
@@ -273,7 +278,13 @@ func (r *Recoverer) issueHoldToken(ctx context.Context, purpose string, rid id.I
 	m, err := r.holdTokens(purpose, ttl)
 	if err == nil {
 		var tok string
-		if tok, _, err = m.Issue(ctx, rid.String()); err == nil {
+
+		tok, err = boundedValue(ctx, detach.WriteTimeout, func(c context.Context) (string, error) {
+			t, _, ierr := m.Issue(c, rid.String())
+
+			return t, ierr
+		})
+		if err == nil {
 			return tok, nil
 		}
 	}
@@ -399,13 +410,15 @@ func (r *Recoverer) finish(ctx context.Context, completionToken string, opts ...
 
 	// Before the record is completed for the same reason: an outage here leaves
 	// the finish able to be retried.
-	if err := r.revokeGrantsFirst(ctx, rec.User); err != nil {
+	if err := r.revokeGrantsFirst(ctx, rec.User, 0); err != nil {
 		return nil, err
 	}
 
 	ctx = context.WithoutCancel(ctx)
 
-	completed, err := r.records.Complete(ctx, rec.ID, now)
+	completed, err := boundedValue(ctx, detach.WriteTimeout, func(c context.Context) (bool, error) {
+		return r.records.Complete(c, rec.ID, now)
+	})
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgRecordFailed, diag.Failure("record-store", err)...)
 
@@ -471,7 +484,8 @@ func (r *Recoverer) findHeld(ctx context.Context, m *onetime.Tokens, token, refu
 // record's conditional write is what decided the race, and it already refuses
 // the token's every later use, so a consume that fails is logged and ignored.
 func (r *Recoverer) consumeHoldToken(ctx context.Context, m *onetime.Tokens, checked onetime.Checked) {
-	if err := m.Consume(ctx, checked); err != nil {
+	err := bounded(ctx, detach.WriteTimeout, func(c context.Context) error { return m.Consume(c, checked) })
+	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelDebug, msgHoldTokenConsume, diag.Failure("token-consume", err)...)
 	}
 }
@@ -508,7 +522,9 @@ func (r *Recoverer) Cancel(ctx context.Context, cancelToken string) {
 	ctx = context.WithoutCancel(ctx)
 	now := r.clock.Now()
 
-	n, err := r.records.Cancel(ctx, rec.ID, now)
+	n, err := boundedValue(ctx, detach.WriteTimeout, func(c context.Context) (int, error) {
+		return r.records.Cancel(c, rec.ID, now)
+	})
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgCancelFailed, diag.Failure("record-store", err)...)
 
@@ -522,7 +538,9 @@ func (r *Recoverer) Cancel(ctx context.Context, cancelToken string) {
 
 	r.consumeHoldToken(ctx, r.cancelTokens, checked)
 
-	details, err := r.users.LoadByUserID(ctx, rec.User)
+	details, err := boundedValue(ctx, detach.WriteTimeout, func(c context.Context) (*identity.Details, error) {
+		return r.users.LoadByUserID(c, rec.User)
+	})
 
 	switch {
 	case err != nil:
@@ -536,7 +554,7 @@ func (r *Recoverer) Cancel(ctx context.Context, cancelToken string) {
 	}
 
 	subject, body := r.messages.Cancelled(Notice{At: now, CodesVoided: rec.SavedSpent, Repudiation: r.repudiation})
-	r.notify(ctx, details, subject, body)
+	r.notifyDetached(ctx, details, subject, body)
 }
 
 // CancelPending cancels every pending recovery of user. The login path, and a

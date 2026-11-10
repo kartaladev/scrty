@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -508,7 +509,10 @@ func (m *Sessions) judge(ctx context.Context, s *Session, now time.Time, p purpo
 func (m *Sessions) ended(ctx context.Context, s *Session, now time.Time) error {
 	// Detached so a client hanging up cannot turn a reuse verdict into a
 	// refusal that revokes nothing; values are kept, as in reuse.
-	used, err := m.store.SuccessorPresented(context.WithoutCancel(ctx), s.ID)
+	// Bounded by detach.WriteTimeout so a hung store cannot hold the request.
+	dctx, cancel := detach.Bounded(ctx, detach.WriteTimeout)
+	used, err := m.store.SuccessorPresented(dctx, s.ID)
+	cancel()
 	if err != nil {
 		return storeFailed(err, "session: whether the session's successor was used could not be read")
 	}
@@ -530,7 +534,12 @@ func (m *Sessions) reuse(ctx context.Context, s *Session, now time.Time) error {
 	// Detached so a client hanging up cannot abort the revocation;
 	// WithoutCancel keeps the context's values, so a consumer's transaction is
 	// still joined.
-	if _, err := m.store.DeleteFamily(context.WithoutCancel(ctx), s.FamilyID); err != nil {
+	// Bounded by detach.RevocationTimeout: a revocation that times out leaves
+	// a family live that should not be.
+	dctx, cancel := detach.Bounded(ctx, detach.RevocationTimeout)
+	_, err := m.store.DeleteFamily(dctx, s.FamilyID)
+	cancel()
+	if err != nil {
 		m.logger.LogAttrs(ctx, slog.LevelError,
 			"session: a superseded session was presented after its window; its family could not be revoked",
 			append(diag.Failure("delete_family", err), slog.String("family", s.FamilyID.String()))...)
