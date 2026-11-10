@@ -132,7 +132,7 @@ Two lanes. Lane A (10.1–10.4, Opus) owns `httpsec/chain.go`, `httpsec/exchange
 
   `TestChain_RunPutsBackTheContextItFound`, already in the tree and red, stays red until task 12.2. Verify that the 10.16 tests pass, that `go test ./httpsec/... -count=1 -race` fails only on that test, and that the ginsec and fibersec suites and `make lint` pass.
 - [x] 10.17 Review 10.16 with a fresh Opus reviewer that edits nothing, against decisions 2, 3 and 5 and their rows. Verify that every finding is fixed or recorded.
-- [ ] 10.15 After groups 12–14, on the branch head, re-run task 8.2's gate: `make check`, `make release-check VERSION=v0.1.1` in a clean worktree on a quiet machine (sequentially, not beside other test runs), `openspec validate harden-chain-boundary --strict`, and CI on the pull request. Verify that all are green, then update the pull request body.
+- [x] 10.15 After groups 12–14, on the branch head, re-run task 8.2's gate: `make check`, `make release-check VERSION=v0.1.1` in a clean worktree on a quiet machine (sequentially, not beside other test runs), `openspec validate harden-chain-boundary --strict`, and CI on the pull request. Verify that all are green, then update the pull request body.
 
 ## 11. Dependencies and the header algorithm (decision 9; specs `token-issuance`, `oidc-provider-authorization`)
 
