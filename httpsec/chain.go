@@ -228,6 +228,18 @@ var _ logsample.Flusher = (*Chain)(nil)
 // on, or one kept and called after its run returned, reaches no terminal and
 // returns an error wrapping ErrConfig.
 //
+// The returned step puts back, as it returns, a panic included, what it found
+// on the exchange when it was entered: the context, Session, Authentication,
+// and everything else the run resolved or the chain configured on it. A run's
+// state is therefore read inside the run, in terminal; read after the step
+// returns, the exchange holds what it held before the run. A chain assembled
+// inside another on one exchange leaves the outer run's state as it found it.
+// Request and Writer are never put back, and nor is the record that the
+// request's refusal was reported, which is shared by the runs nested on one
+// exchange, so a refusal is reported once, and is cleared when a run starts
+// with no other run live on the exchange, so an exchange run again reports
+// that run's refusal.
+//
 // Continuation needs no code here. An interceptor stops the request by not
 // calling the next step, and an error travels back out through every enclosing
 // frame unchanged, because no frame of the fold inspects it.
@@ -235,6 +247,21 @@ func (c *Chain) Assemble(terminal Next) Next {
 	c.foldOnce.Do(c.buildFold)
 
 	return func(ex *Exchange) error {
+		// What this run may change on the exchange is put back as it returns,
+		// a panic included, so the caller, an enclosing chain's interceptor
+		// among them, reads after the step what it held before it, and an
+		// exchange run many times does not carry every earlier run's context.
+		// It is recorded before the re-entry check, so a pass-through is
+		// covered too, where it changes nothing the terminal did not.
+		defer ex.restoreScope(ex.saveScope())
+
+		// An outermost run, with no other run live on the exchange, reports
+		// its own refusal, whatever an earlier run of the exchange reported.
+		// Nested runs share the record, so one refusal is reported once.
+		if ex.terminalCount() == 0 {
+			ex.refusalReported = false
+		}
+
 		// A chain entered again on a request it is already running on, such
 		// as one mounted both at an application and at one of its groups,
 		// passes the request straight on: a second run would verify the

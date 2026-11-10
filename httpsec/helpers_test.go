@@ -697,8 +697,20 @@ type served struct {
 
 	// handled is the exchange as the downstream handler saw it, and nil when
 	// the handler was never reached. It is what a test reads to assert on the
-	// state an interceptor published for the application.
+	// state an interceptor published for the application. It is a copy taken
+	// inside the terminal (inTerminal), since the step puts the exchange back
+	// as it found it once the run returns.
 	handled *httpsec.Exchange
+}
+
+// inTerminal returns a copy of ex as the terminal sees it, its run's context,
+// session and authentication included. A run's state is live only inside the
+// terminal: the step the chain assembles puts back what it found on the
+// exchange as it returns, so the exchange read after the run holds none of it.
+func inTerminal(ex *httpsec.Exchange) *httpsec.Exchange {
+	seen := *ex
+
+	return &seen
 }
 
 // serve runs req through chain, recording whether the downstream handler was
@@ -718,7 +730,7 @@ func serveContext(ctx context.Context, t *testing.T, chain *httpsec.Chain, req *
 	out := served{rec: httptest.NewRecorder()}
 	run := chain.Assemble(func(ex *httpsec.Exchange) error { //nolint:contextcheck // the exchange carries ctx, which the interceptors read through ex.Context()
 		out.handlerRan = true
-		out.handled = ex
+		out.handled = inTerminal(ex)
 
 		return nil
 	})
@@ -2153,7 +2165,7 @@ func serveIn(ctx context.Context, t *testing.T, chain *httpsec.Chain, req *http.
 	out := served{rec: httptest.NewRecorder()}
 	run := chain.Assemble(func(ex *httpsec.Exchange) error { //nolint:contextcheck // the exchange carries the request context, and begin reads it through ex.Context()
 		out.handlerRan = true
-		out.handled = ex
+		out.handled = inTerminal(ex)
 
 		return nil
 	})

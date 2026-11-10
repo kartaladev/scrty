@@ -330,6 +330,15 @@ type ResponseWriter interface {
 //
 // An Exchange belongs to one goroutine: an interceptor that hands next or the
 // exchange to another goroutine and returns before it finishes is unsupported.
+//
+// A run's state is read inside the run, in the terminal Chain.Assemble was
+// given or in an interceptor before it returns: the step Assemble returns puts
+// back, as it returns, the context, Session and Authentication it found on
+// entry, and everything else its run resolved or its chain configured. Read
+// after the step returns, an exchange holds what it held before the run; an
+// enclosing chain's interceptor reads its own run's state after an inner
+// chain's step, not the inner run's. Request and Writer are the request's own,
+// and are never put back.
 type Exchange struct {
 	// Request is what the interceptors read. It is never replaced once the
 	// exchange has started.
@@ -361,7 +370,10 @@ type Exchange struct {
 
 	// refusalReported is whether a chain this exchange ran through has
 	// already reported the refusal it was answered with (emitRefusal), so a
-	// chain assembled inside another's does not have it reported twice.
+	// chain assembled inside another's does not have it reported twice. A
+	// run's step does not put it back, so nested runs share it, and an
+	// outermost run clears it as it starts, so an exchange run again reports
+	// that run's refusal.
 	refusalReported bool
 
 	// renewal is the identifier of a session the resolution core let through
@@ -595,6 +607,56 @@ func (e *Exchange) otherRunMarkRefusal() error {
 	return nil
 }
 
+// runScope is what one run of a chain may change on an exchange and puts back
+// as it returns (Chain.Assemble): the context, what the run resolved and what
+// its chain configured. The request's own facts (Request, Writer, the
+// certificate thumbprint) describe the one request whichever chain reads them,
+// and the state that coordinates runs on one exchange (refusalReported, the
+// terminal stack and its gate marks) exists to be seen across runs, so
+// neither is in it.
+type runScope struct {
+	ctx              context.Context //nolint:containedctx // the context a run found, put back as it returns
+	session          *session.Session
+	authentication   *authenticate.Authentication
+	bearerCredential string
+	renewal          string
+	chargeRenewal    func(context.Context)
+	admitRenewal     func(*Exchange, *session.Session) (*identity.Details, error)
+	perRequest       *perRequestPhase
+	csrfOptOut       bool
+	raised           policy.ChallengeKind
+}
+
+// saveScope records what a run may change on e.
+func (e *Exchange) saveScope() runScope {
+	return runScope{
+		ctx:              e.ctx,
+		session:          e.Session,
+		authentication:   e.Authentication,
+		bearerCredential: e.bearerCredential,
+		renewal:          e.renewal,
+		chargeRenewal:    e.chargeRenewal,
+		admitRenewal:     e.admitRenewal,
+		perRequest:       e.perRequest,
+		csrfOptOut:       e.csrfOptOut,
+		raised:           e.raised,
+	}
+}
+
+// restoreScope puts back on e what saveScope recorded.
+func (e *Exchange) restoreScope(s runScope) {
+	e.ctx = s.ctx
+	e.Session = s.session
+	e.Authentication = s.authentication
+	e.bearerCredential = s.bearerCredential
+	e.renewal = s.renewal
+	e.chargeRenewal = s.chargeRenewal
+	e.admitRenewal = s.admitRenewal
+	e.perRequest = s.perRequest
+	e.csrfOptOut = s.csrfOptOut
+	e.raised = s.raised
+}
+
 // NewExchange starts an exchange seeded from ctx.
 //
 // It panics when ctx is nil: an exchange with no context would panic at the
@@ -609,6 +671,11 @@ func NewExchange(ctx context.Context, request Request, writer ResponseWriter) *E
 // Context returns the context every call into scrty's cores is made with. It
 // is derived from the incoming request's context and never replaces it, so an
 // upstream value and an upstream cancellation both survive the chain.
+//
+// During a run it is that run's context, carrying the caller and the session
+// the run published; read it inside the terminal to see them. Once the step
+// Chain.Assemble returned has returned, it is again the context the exchange
+// had when the step was entered, whatever the run set with SetContext.
 func (e *Exchange) Context() context.Context { return e.ctx }
 
 // SetContext replaces the context. An interceptor that resolves security state

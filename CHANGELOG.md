@@ -64,6 +64,11 @@ All three affect the `httpsec` chain in `github.com/kartaladev/scrty` `v0.1.0`.
   different chains still both run.
 - An interceptor that keeps `next` and calls it after its run has returned, or a terminal that calls
   `next` of its own run, now gets an `httpsec.ErrConfig` error instead of running the terminal again.
+- After the chain's step returns, an exchange's context, `Session` and `Authentication`, and the
+  rest of its per-run state, are what they were before the run, including after a recovered
+  panic. Code that read them after the step returned used to see the run's state, and an exchange
+  run many times grew its context on every run. Read a run's state inside the terminal. An exchange
+  refused once and run again now reports its second refusal too.
 - The chain builds its interceptor fold once, when it is constructed, instead of on every request.
   With eight interceptors a request now allocates as much as with none.
 - Token verification (`token.Verifier`) and the OIDC provider's ID token hint check refuse a token

@@ -937,7 +937,7 @@ func serveHangingUp(t *testing.T, chain *httpsec.Chain, req *http.Request) serve
 	out := served{rec: httptest.NewRecorder()}
 	run := chain.Assemble(func(ex *httpsec.Exchange) error {
 		out.handlerRan = true
-		out.handled = ex
+		out.handled = inTerminal(ex)
 
 		return nil
 	})

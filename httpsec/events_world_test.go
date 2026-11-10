@@ -233,7 +233,7 @@ func (w *eventsWorld) send(t *testing.T, method, path, credential string, values
 	out := served{rec: httptest.NewRecorder()}
 	run := w.chain.Assemble(func(ex *httpsec.Exchange) error {
 		out.handlerRan = true
-		out.handled = ex
+		out.handled = inTerminal(ex)
 
 		if w.handler != nil {
 			return w.handler(ex)
