@@ -197,7 +197,7 @@ One Opus lane, after 10.17: it changes `httpsec/chain.go` and `httpsec/exchange.
 
   Confirm both fail because the call is classed as a hang-up. Then have `detach.Bounded` end its context with an internal cause (`context.WithTimeoutCause`), and have `hangup.ByCaller` report false when that cause ended the context. Keep `TestBounded` and every existing `TestByCaller` case green. Verify `go test -race -count=1 ./internal/... ./token/... ./recovery/... ./session/...` and `make lint`.
 - [x] 13.5 Changelog (main session): the `0.1.1` `Changed` entry says that detached store work now has a bound where it had none (5 s, 10 s for revocations), that limiter calls and consumer callbacks are left to their owners, and that a consumer metadata fetch is bounded. Verify by reading the entry against decision 12.
-- [ ] 13.6 Review group 13 with a fresh Opus reviewer that edits nothing, against decision 12, its two spec deltas and the inventory table. It checks that the inventory search missed no site, and enumerates how the change fails before judging it. Verify that every finding is fixed or recorded in `design.md`.
+- [x] 13.6 Review group 13 with a fresh Opus reviewer that edits nothing, against decision 12, its two spec deltas and the inventory table. It checks that the inventory search missed no site, and enumerates how the change fails before judging it. Verify that every finding is fixed or recorded in `design.md`.
 
 ## 14. A cancelled send, and the remaining context hand-offs (decisions 13, 14; spec `email-notification`)
 

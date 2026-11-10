@@ -162,7 +162,7 @@ func (m *Passkeys) notify(
 func (m *Passkeys) sendNotice(
 	ctx context.Context, kind noticeKind, c *Credential, resolve mfa.ContactResolver, sessionsEnded bool,
 ) error {
-	to, err := m.contactOf(ctx, c.User, resolve)
+	to, err := m.boundedContactOf(ctx, c.User, resolve)
 	if err != nil {
 		return err
 	}
@@ -184,11 +184,32 @@ func (m *Passkeys) sendNotice(
 }
 
 // contactOf loads user and resolves their contact address by resolve, or by
-// the manager's resolver when resolve is nil.
+// the manager's resolver when resolve is nil, on ctx as given: the caller's
+// deadline and cancellation apply.
 func (m *Passkeys) contactOf(ctx context.Context, user identity.UserID, resolve mfa.ContactResolver) (string, error) {
-	// The loader and the resolver are writes' worth of work the caller cannot
-	// cancel, each with a bound of its own so the first cannot eat the second's.
-	// The send that follows is the sender's to bound.
+	details, err := m.users.LoadByUserID(ctx, user)
+	if err != nil {
+		return "", diag.Wrap(err, "passkey: could not load the user")
+	}
+
+	if resolve == nil {
+		resolve = m.contact
+	}
+
+	to, err := resolve(ctx, details)
+	if err != nil {
+		return "", diag.Wrap(err, "passkey: could not resolve the user's contact address")
+	}
+
+	return to, nil
+}
+
+// boundedContactOf is contactOf for a context the caller cannot cancel: the
+// loader and the resolver each get a bound of their own, so a hung first call
+// cannot eat the second's. The send that follows is the sender's to bound.
+func (m *Passkeys) boundedContactOf(
+	ctx context.Context, user identity.UserID, resolve mfa.ContactResolver,
+) (string, error) {
 	loadCtx, cancelLoad := detach.Bounded(ctx, detach.WriteTimeout)
 	details, err := m.users.LoadByUserID(loadCtx, user)
 

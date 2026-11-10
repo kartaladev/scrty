@@ -131,7 +131,8 @@ func TestChain_DetachedCallsCarryDeadline(t *testing.T) {
 	}
 
 	// assertBounded asserts every call the probe saw carries a deadline within
-	// bound, and that at least n calls were made.
+	// bound (a revocation's also beyond a write's), and that at least n calls were
+	// made.
 	assertBounded := func(bound time.Duration, n int) func(*testing.T, *deadlineProbe, detachedOutcome) {
 		return func(t *testing.T, p *deadlineProbe, _ detachedOutcome) {
 			t.Helper()
@@ -144,6 +145,10 @@ func TestChain_DetachedCallsCarryDeadline(t *testing.T) {
 				remaining := time.Until(c.deadline)
 				assert.Positive(t, remaining)
 				assert.LessOrEqual(t, remaining, bound)
+
+				if bound == detach.RevocationTimeout {
+					assert.Greater(t, remaining, detach.WriteTimeout, "a revocation is bounded at a write's timeout")
+				}
 				assert.NoError(t, c.err, "the detached call's context was already done")
 			}
 		}
