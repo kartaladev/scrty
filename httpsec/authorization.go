@@ -57,18 +57,40 @@ const owingAtAuthorizationHint = "the gates were bypassed; register the authenti
 // owingAtAuthorizationKey is the sampling key of that record.
 const owingAtAuthorizationKey = "owing-session-at-authorization"
 
+// msgOwingLookupFailed is the record left when a refused owing session's
+// second-factor methods could not be looked up. It carries neither the store's
+// error text nor an identifier: the error is returned to the caller, and the
+// record says only that the lookup failed.
+const msgOwingLookupFailed = msgOwingAtAuthorization + "; its second-factor methods could not be looked up"
+
+// owingLookupFailedKey is the sampling key of that record.
+const owingLookupFailedKey = "owing-session-lookup-failed"
+
+// logOwingLookupFailed writes the record of an owing session whose methods
+// could not be looked up, sampled per chain, with the same chain and logger
+// conditions as logOwing.
+func (a *authorization) logOwingLookupFailed(ex *Exchange) {
+	a.logOwingRecord(ex, owingLookupFailedKey, msgOwingLookupFailed)
+}
+
 // logOwing writes the record of a refused owing session, sampled per chain. It
 // names neither the session, its family nor its user: it is a wiring mistake,
 // and what an operator needs is that it happened. A stage with no chain, or a
 // chain with no logger, writes nothing.
 func (a *authorization) logOwing(ex *Exchange) {
+	a.logOwingRecord(ex, owingAtAuthorizationKey, msgOwingAtAuthorization)
+}
+
+// logOwingRecord writes one sampled owing-session record under key, or nothing
+// when the stage has no chain, or the chain no logger or clock.
+func (a *authorization) logOwingRecord(ex *Exchange, key, msg string) {
 	c := a.chain
 	if c == nil || c.logger == nil || c.perRequest == nil {
 		return
 	}
 
 	logSampled(ex.Context(), c.sampler, c.logger, slog.LevelError, c.perRequest.now(),
-		owingAtAuthorizationKey, msgOwingAtAuthorization, slog.String("hint", owingAtAuthorizationHint))
+		key, msg, slog.String("hint", owingAtAuthorizationHint))
 }
 
 // gateOrder is the built-in challenges in the order their gates run:
@@ -202,7 +224,7 @@ func (a *authorization) owedRefusal(ex *Exchange) error {
 		if a.methods != nil {
 			found, err := a.methods(ex.Context(), kind, s.UserID, s.FirstFactor)
 			if err != nil {
-				a.logOwing(ex)
+				a.logOwingLookupFailed(ex)
 
 				return err
 			}
@@ -292,10 +314,6 @@ func EnableAuthorization(az authorize.Authorizer, rules ...authorize.Rule[Reques
 
 		c.authorizer = az
 		c.authzRules = append(c.authzRules, rules...)
-
-		c.enable(option, func() error {
-			return requireDep(option, "authorizer", az)
-		})
 
 		return nil
 	}

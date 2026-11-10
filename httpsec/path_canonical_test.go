@@ -39,8 +39,7 @@ type dotSegmentResult struct {
 
 // TestChain_RefusesDotSegments pins that a request whose path holds a "." or
 // ".." segment, as sent or decoded once, or whose path does not decode, is
-// answered 400 before client resolution, any interceptor, a rule or the
-// handler runs, and that a path merely holding dots inside a segment, or
+// answered 400 before any interceptor, a rule or the handler runs, and that a path merely holding dots inside a segment, or
 // repeated slashes, is let through.
 func TestChain_RefusesDotSegments(t *testing.T) {
 	t.Parallel()
@@ -192,10 +191,10 @@ func TestChain_RefusesDotSegments(t *testing.T) {
 	}
 }
 
-// TestChain_RefusesDotSegmentsFirst pins that the dot-segment refusal is the
-// first thing the chain's entry does: ahead of client resolution, whose own
-// refusal would otherwise answer, and ahead of the outermost interceptor.
-func TestChain_RefusesDotSegmentsFirst(t *testing.T) {
+// TestChain_RefusesDotSegmentsAtEntry pins where the dot-segment refusal sits
+// in the chain's entry: after client resolution, whose own refusal answers a
+// request both would refuse, and ahead of the outermost interceptor.
+func TestChain_RefusesDotSegmentsAtEntry(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
@@ -208,7 +207,7 @@ func TestChain_RefusesDotSegmentsFirst(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name:   "refused before client resolution",
+			name:   "client resolution refuses first",
 			header: map[string]string{"X-Forwarded-Host": "evil.example"},
 			opts: func(*atomic.Bool) []httpsec.Option {
 				return []httpsec.Option{httpsec.EnableTrustedProxies(httpsec.TrustedProxies{
@@ -217,8 +216,8 @@ func TestChain_RefusesDotSegmentsFirst(t *testing.T) {
 				})}
 			},
 			assert: func(t *testing.T, err error, _ bool) {
-				require.ErrorIs(t, err, httpsec.ErrMalformedRequest)
-				assert.NotErrorIs(t, err, httpsec.ErrHostNotAllowed)
+				require.ErrorIs(t, err, httpsec.ErrHostNotAllowed)
+				assert.NotErrorIs(t, err, httpsec.ErrMalformedRequest)
 			},
 		},
 		{
@@ -278,6 +277,138 @@ func TestChain_RefusesDotSegmentsFirst(t *testing.T) {
 				assert.False(t, reached.Load(), "the handler ran")
 			}
 			tc.assert(t, err, ran.Load())
+		})
+	}
+}
+
+// TestChain_EntryRefusalCarriesSecureHeadersBehindTrustedProxy pins that the
+// 400 for a dot-segment path is written after client resolution: behind a
+// trusted TLS-terminating proxy it carries the secure-only headers a clean
+// path gets, a forged scheme from an untrusted peer does not turn them on, and
+// a request client resolution refuses gets that refusal, not the dot-segment
+// one.
+func TestChain_EntryRefusalCarriesSecureHeadersBehindTrustedProxy(t *testing.T) {
+	t.Parallel()
+
+	const (
+		hsts          = "Strict-Transport-Security"
+		trustedPeer   = "10.20.0.2:41000"
+		untrustedPeer = "198.51.100.9:41000"
+	)
+
+	type result struct {
+		status  int
+		header  http.Header
+		err     error
+		reached bool
+	}
+
+	type testCase struct {
+		name   string
+		target string
+		peer   string
+		// forwardedHost, when set, is sent as X-Forwarded-Host to a chain that
+		// trusts only "app.example".
+		forwardedHost string
+		assert        func(t *testing.T, r result)
+	}
+
+	cases := []testCase{
+		{
+			name: "control: clean path through the proxy carries HSTS", target: "/a/admin", peer: trustedPeer,
+			assert: func(t *testing.T, r result) {
+				t.Helper()
+				assert.Equal(t, http.StatusOK, r.status)
+				assert.True(t, r.reached, "the handler did not run")
+				assert.NotEmpty(t, r.header.Get(hsts), "control: the fixture must make the request secure")
+			},
+		},
+		{
+			name: "control: untrusted peer's forged scheme gets no HSTS on the refusal", target: "/a/%2e%2e/admin",
+			peer: untrustedPeer,
+			assert: func(t *testing.T, r result) {
+				t.Helper()
+				assert.Equal(t, http.StatusBadRequest, r.status)
+				require.ErrorIs(t, r.err, httpsec.ErrMalformedRequest)
+				assert.Empty(t, r.header.Get(hsts))
+			},
+		},
+		{
+			name: "dot-segment 400 behind the trusted proxy carries HSTS", target: "/a/%2e%2e/admin", peer: trustedPeer,
+			assert: func(t *testing.T, r result) {
+				t.Helper()
+				assert.Equal(t, http.StatusBadRequest, r.status)
+				require.ErrorIs(t, r.err, httpsec.ErrMalformedRequest)
+				assert.False(t, r.reached, "the handler ran")
+				assert.NotEmpty(t, r.header.Get(hsts),
+					"the refusal lacks the secure-only header the same request gets on a clean path")
+			},
+		},
+		{
+			name: "client resolution refuses first", target: "/a/../b", peer: trustedPeer, forwardedHost: "evil.example",
+			assert: func(t *testing.T, r result) {
+				t.Helper()
+				assert.Equal(t, httpsec.StatusForError(httpsec.ErrHostNotAllowed), r.status)
+				require.ErrorIs(t, r.err, httpsec.ErrHostNotAllowed)
+				assert.NotErrorIs(t, r.err, httpsec.ErrMalformedRequest)
+				assert.False(t, r.reached, "the handler ran")
+			},
+		},
+		{
+			name:   "an allowed forwarded host on a dot-segment path is refused as a dot segment, with HSTS",
+			target: "/a/../b", peer: trustedPeer, forwardedHost: "app.example",
+			assert: func(t *testing.T, r result) {
+				t.Helper()
+				assert.Equal(t, http.StatusBadRequest, r.status)
+				require.ErrorIs(t, r.err, httpsec.ErrMalformedRequest)
+				assert.NotEmpty(t, r.header.Get(hsts))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			fields := []httpsec.ForwardedField{httpsec.ForwardedFor, httpsec.ForwardedProto}
+			if tc.forwardedHost != "" {
+				fields = append(fields, httpsec.ForwardedHost("app.example"))
+			}
+
+			var (
+				res     result
+				handled error
+			)
+
+			chain, err := httpsec.New(
+				httpsec.EnableSecurityHeaders(),
+				httpsec.EnableTrustedProxies(httpsec.TrustedProxies{
+					Prefixes: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")},
+					Headers:  httpsec.XForwarded(fields...),
+				}),
+				httpsec.WithErrorHandler(func(w http.ResponseWriter, _ *http.Request, err error) {
+					handled = err
+					w.WriteHeader(httpsec.StatusForError(err))
+				}),
+			)
+			require.NoError(t, err)
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, tc.target, nil)
+			req.RemoteAddr = tc.peer
+			req.Header.Set("X-Forwarded-For", "203.0.113.7")
+			req.Header.Set("X-Forwarded-Proto", "https")
+			if tc.forwardedHost != "" {
+				req.Header.Set("X-Forwarded-Host", tc.forwardedHost)
+			}
+
+			rec := httptest.NewRecorder()
+			chain.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				res.reached = true
+				w.WriteHeader(http.StatusOK)
+			})).ServeHTTP(rec, req)
+
+			res.status, res.header, res.err = rec.Code, rec.Header(), handled
+			tc.assert(t, res)
 		})
 	}
 }

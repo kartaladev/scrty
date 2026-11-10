@@ -432,3 +432,186 @@ func TestAuthorization_OwingRefusalIsLoggedSampledWithoutIdentifiers(t *testing.
 		return true
 	})
 }
+
+// TestAuthorization_BackstopSurfacesMethodLookupFailure pins that the
+// authorization backstop answers a failed second-factor method lookup as the
+// gate does, and leaves the operator a record of the store failure.
+func TestAuthorization_BackstopSurfacesMethodLookupFailure(t *testing.T) {
+	t.Parallel()
+
+	type result struct {
+		gate, stage served
+		logs        []slog.Record
+		sessionID   string
+		userID      string
+	}
+
+	run := func(t *testing.T, stageRequests int) result {
+		t.Helper()
+
+		h := newEnrolHarness(t)
+		h.extraMethods = []mfa.Method{enrolledEmailMethod(t, true)}
+		s := h.sessionIn(t, factor.Password, session.MFAPending)
+
+		req := func() *http.Request {
+			return httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/invoices", nil)
+		}
+
+		gateChain, err := httpsec.New(h.options(t, s)...)
+		require.NoError(t, err)
+
+		logs := &capturingHandler{}
+		h.extra = []httpsec.Option{
+			httpsec.WithLogger(slog.New(logs)),
+			httpsec.RegisterInterceptor(assigningSession(s), httpsec.After(httpsec.OrderLogout)),
+		}
+		stageOpts := append(h.options(t, nil), httpsec.EnableAuthorization(NewMockAuthorizer(gomock.NewController(t))))
+		stageChain, err := httpsec.New(stageOpts...)
+		require.NoError(t, err)
+
+		gate := serve(t, gateChain, req())
+
+		var stage served
+		for range stageRequests {
+			stage = serve(t, stageChain, req())
+		}
+
+		return result{gate: gate, stage: stage, logs: logs.records(), sessionID: s.ID, userID: string(s.UserID)}
+	}
+
+	type testCase struct {
+		name string
+		// requests is how many times the stage chain is served.
+		requests int
+		assert   func(t *testing.T, r result)
+	}
+
+	cases := []testCase{
+		{
+			name:     "status and error class match the gate",
+			requests: 1,
+			assert: func(t *testing.T, r result) {
+				t.Helper()
+				require.Error(t, r.gate.err, "control: the gate fails on the lookup")
+				require.Error(t, r.stage.err)
+				assert.False(t, r.stage.handlerRan)
+				assert.Equal(t, httpsec.StatusForError(r.gate.err), httpsec.StatusForError(r.stage.err))
+				assert.ErrorIs(t, r.stage.err, errEnrolmentStoreDown, "wrapped store error, as the gate's")
+				assert.Equal(t, r.gate.err.Error(), r.stage.err.Error())
+			},
+		},
+		{
+			name:     "log lets an operator see the lookup failed, sampled, with the hint and without the store's text or identifiers",
+			requests: 3,
+			assert: func(t *testing.T, r result) {
+				t.Helper()
+				require.Error(t, r.stage.err)
+
+				var found []slog.Record
+
+				for _, rec := range r.logs {
+					assert.NotEqual(t, msgOwingAtAuthorization, rec.Message, "the plain wiring record is not written on the lookup-failure path")
+
+					if strings.Contains(rec.Message, "could not be looked up") {
+						found = append(found, rec)
+					}
+				}
+
+				require.Len(t, found, 1, "one lookup-failure record per sampling window however many requests fail")
+				assert.Equal(t, slog.LevelError, found[0].Level)
+
+				var hint string
+
+				found[0].Attrs(func(a slog.Attr) bool {
+					if a.Key == "hint" {
+						hint = a.Value.String()
+					}
+
+					return true
+				})
+				assert.Equal(t, "the gates were bypassed; register the authenticator at OrderBearerToken", hint)
+				assert.NotContains(t, found[0].Message, errEnrolmentStoreDown.Error())
+
+				found[0].Attrs(func(a slog.Attr) bool {
+					v := a.Value.String()
+					assert.NotContains(t, v, errEnrolmentStoreDown.Error(), "attribute %q leaks the store error", a.Key)
+					assert.NotContains(t, v, r.sessionID, "attribute %q leaks the session", a.Key)
+					assert.NotContains(t, v, r.userID, "attribute %q leaks the user", a.Key)
+
+					return true
+				})
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tc.assert(t, run(t, tc.requests))
+		})
+	}
+}
+
+// TestAuthorization_BackstopLooksUpMethodsOnlyForSecondFactor observes through
+// a mock expectation that the method store is not consulted for owed kinds
+// other than the second factor.
+func TestAuthorization_BackstopLooksUpMethodsOnlyForSecondFactor(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name  string
+		state session.MFAState
+		pw    bool
+		// assert receives the stage's outcome; the mock's Times(0) on the
+		// method lookup is checked when the controller finishes.
+		assert func(t *testing.T, got served)
+	}
+
+	owedKind := func(want policy.ChallengeKind) func(t *testing.T, got served) {
+		return func(t *testing.T, got served) {
+			t.Helper()
+
+			require.Error(t, got.err)
+			assert.False(t, got.handlerRan)
+
+			var ch *httpsec.ChallengeError
+			require.ErrorAs(t, got.err, &ch)
+			assert.Equal(t, want, ch.Kind)
+		}
+	}
+
+	cases := []testCase{
+		{name: "enrolment pending", state: session.MFAEnrolmentPending, assert: owedKind(policy.ChallengeMFAEnrolment)},
+		{name: "password change pending", state: session.MFASatisfied, pw: true, assert: owedKind(policy.ChallengePasswordChange)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newEnrolHarness(t)
+			m := NewMockMethod(gomock.NewController(t))
+			m.EXPECT().Name().Return("emailcode").AnyTimes()
+			m.EXPECT().Channel().Return(factor.Email).AnyTimes()
+			m.EXPECT().Response().Return(mfa.FormField("code", 64)).AnyTimes()
+			m.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Times(0)
+			h.extraMethods = []mfa.Method{m}
+
+			s := h.sessionIn(t, factor.Password, tc.state)
+			if tc.pw {
+				s.PasswordChangePending = true
+				require.NoError(t, h.sessions.Save(t.Context(), s))
+			}
+
+			h.extra = []httpsec.Option{
+				httpsec.RegisterInterceptor(assigningSession(s), httpsec.After(httpsec.OrderLogout)),
+				httpsec.EnableRecoveryGateForTest(), httpsec.EnablePasswordChangeGate(h.sessions),
+				httpsec.EnableAuthorization(NewMockAuthorizer(gomock.NewController(t))),
+			}
+			chain, err := httpsec.New(h.options(t, nil)...)
+			require.NoError(t, err)
+
+			tc.assert(t, serve(t, chain, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/invoices", nil)))
+		})
+	}
+}

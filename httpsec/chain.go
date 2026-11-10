@@ -123,6 +123,12 @@ type Chain struct {
 	// password change), and -1 when the chain has none.
 	firstGate int
 
+	// gates is the set of built-in gates the chain enables, built with fold
+	// and never written after. A run of another chain inside this chain's
+	// gates may publish a session only when its chain enables every gate in
+	// it (gatesRunning).
+	gates gateSet
+
 	// foldOnce builds fold and firstGate. New runs it once construction has
 	// settled the registrations; Assemble runs it too, so a Chain that did not
 	// come from New still gets its fold.
@@ -229,26 +235,13 @@ func (c *Chain) Assemble(terminal Next) Next {
 	c.foldOnce.Do(c.buildFold)
 
 	return func(ex *Exchange) error {
-		// A path with a dot segment, or one that does not decode, is refused
-		// before any interceptor runs: a router may resolve it to a path
-		// other than the one the rules, the guards and the cool-down judge.
-		// Only the header-profile matchers and the refusal steps still see
-		// the path, and only to choose the headers of the empty 400. There is
-		// no opt-out (refuseDotSegments).
-		path := ex.Request.EscapedPath()
-		if err := refuseDotSegments(path); err != nil {
-			c.refuseAtEntry(ex)
-
-			return err
-		}
-
 		// A chain entered again on a request it is already running on, such
 		// as one mounted both at an application and at one of its groups,
 		// passes the request straight on: a second run would verify the
 		// credentials and touch the counters again. Another chain, or this
 		// one for another method or path (an in-process forward), runs in
 		// full.
-		method := ex.Request.Method()
+		method, path := ex.Request.Method(), ex.Request.EscapedPath()
 
 		outer := nearestRun(ex.Context())
 		if outer.ranOn(c, method, path) {
@@ -260,17 +253,13 @@ func (c *Chain) Assemble(terminal Next) Next {
 		ex.pushTerminal(c, terminal)
 		defer ex.popTerminal(c)
 
-		// An outermost run starts with no gate entered: a mark left by an
-		// earlier, finished run of this exchange judges nothing in this one.
-		// A run nested inside another keeps the outer run's mark, so a chain
-		// assembled past another's gates cannot publish a session either.
-		if ex.terminalCount() == 1 {
-			ex.gatesBegun = false
-		}
-
 		// The run is marked on the context before anything else reads it, so
 		// whatever the terminal hands that context to, an adapter's mount of
-		// this chain further in included, sees the run in progress.
+		// this chain further in included, sees the run in progress, and,
+		// through its gatesBegun, whether this chain's gates are running
+		// (gatesRunning). The gate mark itself is scoped to the first gate's
+		// frame (buildFold), so neither a run of this exchange that has ended
+		// nor an earlier pass of this run leaves it set.
 		run := &chainRun{Context: ex.Context(), chain: c, method: method, path: path, parent: outer}
 		ex.SetContext(run)
 
@@ -294,6 +283,22 @@ func (c *Chain) Assemble(terminal Next) Next {
 		// one resolved answer, and a forwarded host on none of the allowed
 		// hosts is refused before any of them runs.
 		if err := c.clients.begin(ex); err != nil {
+			c.refuseAtEntry(ex)
+
+			return err
+		}
+
+		// A path with a dot segment, or one that does not decode, is refused
+		// before any interceptor runs: a router may resolve it to a path
+		// other than the one the rules, the guards and the cool-down judge.
+		// It is refused after client resolution, which reads no path, so the
+		// 400 carries the headers the resolved request earns, those sent only
+		// on a secure response behind a trusted TLS-terminating proxy
+		// included, and a host client resolution refuses gets that refusal
+		// instead. Only the header-profile matchers and the refusal steps
+		// still see the path, and only to choose the headers of the empty
+		// 400. There is no opt-out (refuseDotSegments).
+		if err := refuseDotSegments(path); err != nil {
 			c.refuseAtEntry(ex)
 
 			return err
@@ -334,6 +339,14 @@ type chainRun struct {
 	// then marks nothing, so a request sent on it later is judged in full.
 	// It is atomic because such a goroutine may read it while the run ends.
 	done atomic.Bool
+
+	// gatesBegun is set while the first gate's frame of this run is running,
+	// and put back as that frame returns, a panic included. A run of another
+	// chain inside it, on this exchange or on a fresh one an adapter built,
+	// finds it through the parent links and publishes no session unless its
+	// chain enables every gate this run's chain enables (gatesRunning).
+	// It is atomic for the same reason as done.
+	gatesBegun atomic.Bool
 }
 
 // Value answers chainRunKey with the run, and every other key from the
@@ -371,9 +384,83 @@ func (r *chainRun) ranOn(c *Chain, method, path string) bool {
 	return false
 }
 
+// runOf returns the run of c in progress marked nearest on ctx, or nil when
+// none is: a consumer interceptor may have replaced the context with one that
+// does not derive from the run's.
+func runOf(ctx context.Context, c *Chain) *chainRun {
+	for r := nearestRun(ctx); r != nil; r = r.parent {
+		if r.chain == c && !r.done.Load() {
+			return r
+		}
+	}
+
+	return nil
+}
+
+// gatesRunning reports whether a run in progress on ctx, the nearest or any
+// run it began inside, is inside the gates of a chain that enables a gate c
+// does not. Such a run's gates would not judge what c publishes, since c has
+// no gate of their kind. A run of c itself never counts: c's own gates judge
+// what it publishes, and a run of c inside its own gates is a request the
+// handler forwarded through c, which runs in full. Skipping those runs by
+// identity is only a short-circuit: covers already decides it, since a chain's
+// gate set covers its own. A finished run counts for
+// nothing, its gate mark included. A nil c enables no gate. The walk is as
+// deep as the chains nested on one request, compares gate sets of fixed size
+// and allocates nothing.
+func gatesRunning(ctx context.Context, c *Chain) bool {
+	var have gateSet
+	if c != nil {
+		have = c.gates
+	}
+
+	for r := nearestRun(ctx); r != nil; r = r.parent {
+		if r.chain == c || !r.gatesBegun.Load() || r.done.Load() {
+			continue
+		}
+
+		// A marked run always has a chain; one without is refused rather
+		// than read as enabling no gate.
+		if r.chain == nil || !have.covers(r.chain.gates) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// gateSet is a set of the built-in gates, one bit per entry of gateOrder, so
+// it has a fixed size and comparing two sets allocates nothing.
+type gateSet uint8
+
+// gateSetOf returns the set of the built-in gates among registrations, named
+// by gateKind, the one helper that tells a gate from any other interceptor.
+func gateSetOf(registrations []registration) gateSet {
+	var s gateSet
+
+	for _, r := range registrations {
+		kind, ok := gateKind(r.interceptor)
+		if !ok {
+			continue
+		}
+
+		if i := slices.Index(gateOrder[:], kind); i >= 0 {
+			s |= 1 << i
+		}
+	}
+
+	return s
+}
+
+// covers reports whether s holds every gate in other.
+func (s gateSet) covers(other gateSet) bool { return other&^s == 0 }
+
 // refuseAtEntry prepares the response to a refusal decided at the chain's
-// entry, before the first interceptor: a path with a dot segment, or a host
-// client resolution does not allow. No interceptor runs for it, the
+// entry, before the first interceptor: a host client resolution does not
+// allow, or, once client resolution has answered, a path with a dot segment.
+// Either way the headers are chosen against the resolved request, so a
+// request a trusted proxy made secure gets the secure-only headers. No
+// interceptor runs for it, the
 // security-headers one included, so the layer's headers are set here, on the
 // exchange's writer and before a consumer's error handler sees the refusal,
 // and the features' refusal steps are run.
@@ -387,7 +474,8 @@ func (c *Chain) refuseAtEntry(ex *Exchange) {
 	}
 }
 
-// buildFold composes the registrations into fold and finds firstGate.
+// buildFold composes the registrations into fold, finds firstGate and
+// records the chain's gate set.
 //
 // The fold runs backwards: the innermost step is built first, and each
 // interceptor outside it wraps what has been built so far.
@@ -397,6 +485,7 @@ func (c *Chain) buildFold() {
 
 		return ok
 	})
+	c.gates = gateSetOf(c.registrations)
 
 	next := c.runTerminal
 	for i := len(c.registrations) - 1; i >= 0; i-- {
@@ -406,13 +495,31 @@ func (c *Chain) buildFold() {
 		interceptor := c.registrations[i].interceptor
 
 		if i == c.firstGate {
-			// The first gate's frame marks the exchange before the gate
-			// runs, whatever the gate then decides, so nothing inside it, a
-			// later gate's slot-mate or an interceptor between two gates
+			// The first gate's frame marks the exchange, and this chain's
+			// run on its context, before the gate runs, whatever the gate
+			// then decides, so nothing inside it, a later gate's slot-mate,
+			// an interceptor between two gates or a chain mounted further in
 			// included, can publish a session no gate judged
-			// (PublishSession).
+			// (PublishSession). Both marks are put back as the frame
+			// returns, a panic included, so they hold exactly while the
+			// gates run: a second pass through the fold, or a later run of
+			// the exchange, publishes before the gates as the first did.
 			next = func(ex *Exchange) error {
+				before := ex.gatesBegun
 				ex.gatesBegun = true
+
+				run := runOf(ex.Context(), c)
+				var runBefore bool
+				if run != nil {
+					runBefore = run.gatesBegun.Swap(true)
+				}
+
+				defer func() {
+					ex.gatesBegun = before
+					if run != nil {
+						run.gatesBegun.Store(runBefore)
+					}
+				}()
 
 				return interceptor.Intercept(ex, inner)
 			}

@@ -359,12 +359,14 @@ type Exchange struct {
 	// layer judged the request.
 	csrfOptOut bool
 
-	// gatesBegun is set as a run of a chain on this exchange enters its first
-	// enabled gate (recovery, enrolment, second factor or password change),
-	// whatever that gate then decides. From then on PublishSession refuses a
+	// gatesBegun is set while a run of a chain on this exchange is inside its
+	// first enabled gate (recovery, enrolment, second factor or password
+	// change), whatever that gate then decides, and everything the gate
+	// passes the request to. While it is set PublishSession refuses a
 	// session: one published past the gates would reach the handler unjudged
-	// by them. It is cleared only as an outermost run begins, so a different
-	// chain nested inside a gated one is refused too.
+	// by them. The gate's frame puts back the value it found as it returns,
+	// a panic included, so a retried pass or a later run of the exchange
+	// publishes before the gates as normal (buildFold).
 	gatesBegun bool
 
 	// refusalReported is whether a chain this exchange ran through has
@@ -511,6 +513,22 @@ func (e *Exchange) topTerminal(c *Chain) int {
 	return -1
 }
 
+// publishingChain returns the chain whose interceptors are running on e: the
+// topmost run in progress whose terminal is not itself running. A run whose
+// terminal is running has handed the request on, so what publishes there
+// belongs to the run below it or to the handler. It is nil when no chain is
+// running interceptors on e, such as from the handler, and a nil chain
+// enables no gate, so the check it feeds fails closed.
+func (e *Exchange) publishingChain() *Chain {
+	for i := e.terminalCount() - 1; i >= 0; i-- {
+		if t := e.terminalAt(i); !t.running {
+			return t.chain
+		}
+	}
+
+	return nil
+}
+
 // NewExchange starts an exchange seeded from ctx.
 //
 // It panics when ctx is nil: an exchange with no context would panic at the
@@ -529,6 +547,12 @@ func (e *Exchange) Context() context.Context { return e.ctx }
 
 // SetContext replaces the context. An interceptor that resolves security state
 // calls it so every later interceptor, and the handler, read that state.
+//
+// The new context must derive from the current one. The chain runs in progress
+// are marked on the context, so one that does not derive from it hides the
+// enclosing runs, and a chain run on it is judged as a chain on its own: the
+// check that refuses a session published inside another chain's gates then
+// finds nothing to refuse.
 //
 // It panics when ctx is nil: dropping the context the exchange already holds
 // would silently detach the rest of the chain from the client's cancellation.
@@ -614,8 +638,22 @@ func (f InterceptorFunc) Intercept(ex *Exchange, next Next) error { return f(ex,
 // the recovery cool-down, judge a request by the session it carries when they
 // run, so a session published behind them is never judged by them. A chain
 // with none of the gates enabled refuses nothing, and a nil sess, signing the caller out, is
-// never refused. This holds for a different chain run inside a gated one on
-// the same exchange: it fails closed with the same error.
+// never refused. The refusal also holds for a chain run inside another
+// chain's gates, on the same exchange or on one an adapter's mount built
+// further in, whether a consumer interceptor or a built-in authenticator
+// publishes, when the publishing chain does not enable every gate the other
+// chain enables: the error, which also wraps ErrConfig, says to mount that
+// chain outside the other chain's gates or to authenticate in the outer chain.
+// A chain that enables every one of those gates, the same chain included, is
+// not refused: a handler may forward the request in-process through it, and
+// its own gates judge the session it publishes. The
+// mark holds only while the gates run, so an interceptor before
+// OrderBearerToken that runs the rest of the chain twice publishes before the
+// gates on both passes.
+//
+// The enclosing runs are found through the exchange's context, so the context
+// an interceptor sets must derive from the current one (SetContext): a chain
+// run on a context that does not is judged as a chain on its own.
 //
 // The default is unused: the built-ins call it, and a consumer calls it from
 // an interceptor registered with RegisterInterceptor at OrderBearerToken,
@@ -641,6 +679,12 @@ func (e *Exchange) PublishSession(authentication *authenticate.Authentication, s
 // once the chain's gates have begun.
 var errLatePublication = fmt.Errorf("%w: a session was published after the chain's gates had begun; "+
 	"register the authenticator at OrderBearerToken", ErrConfig)
+
+// errPublishedInsideGates is what publishing a session returns when the chain
+// publishing it runs inside another chain's gates, on this exchange or on one
+// an adapter built further in.
+var errPublishedInsideGates = fmt.Errorf("%w: a session was published by a chain run inside another chain's gates; "+
+	"mount this chain outside the other chain's gates or authenticate in the outer chain", ErrConfig)
 
 // msgLatePublication is the record a refused late publication leaves.
 const msgLatePublication = "httpsec: session published after the gates refused"
@@ -668,10 +712,20 @@ func (e *Exchange) logLatePublication() {
 	logSampled(e.ctx, c.sampler, c.logger, slog.LevelError, c.perRequest.now(), latePublicationKey, msgLatePublication)
 }
 
-// publishSession is PublishSession without the gate check: the path the
-// resolution core and every built-in that publishes a session take, wherever
-// in the chain they run.
+// publishSession is PublishSession without the check of this exchange's own
+// gate mark: the path the resolution core and every built-in that publishes a
+// session take, wherever in their own chain they run. It still refuses a
+// non-nil sess while a run of another chain on the context is inside gates
+// the publishing chain does not all enable (gatesRunning), since a session
+// published there reaches the handler unjudged by the gate it lacks, whoever
+// publishes it.
 func (e *Exchange) publishSession(authentication *authenticate.Authentication, sess *session.Session) error {
+	if sess != nil && gatesRunning(e.ctx, e.publishingChain()) {
+		e.logLatePublication()
+
+		return errPublishedInsideGates
+	}
+
 	if sess != nil && sess.FamilyID == id.Nil {
 		return errors.New("httpsec: a session with no family cannot be published; every stored session belongs to one")
 	}
