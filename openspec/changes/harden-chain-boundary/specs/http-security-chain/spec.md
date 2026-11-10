@@ -80,6 +80,14 @@ Once a request has entered the first enabled gate, the chain SHALL refuse to pub
 - **WHEN** a handler behind a chain with the second-factor gate forwards the request in-process through a different chain that also enables the second-factor gate, and that chain publishes a session owing a second factor
 - **THEN** publishing succeeds and that chain's second-factor gate refuses the request
 
+#### Scenario: Covering chain on the same exchange
+- **WHEN** a chain with the password-change gate assembles, on its own exchange, a different chain that also enables the password-change gate, and that chain's consumer authenticator publishes a session
+- **THEN** publishing succeeds, and that chain's own gate judges the session
+
+#### Scenario: Late authenticator of the inner chain on the same exchange
+- **WHEN** two chains share one exchange and a consumer interceptor of the inner chain registered after the inner chain's own gates publishes a session
+- **THEN** publishing fails and the handler does not run
+
 #### Scenario: Gateless chain on its own
 - **WHEN** a chain with no gates, not run inside another chain's gates, publishes a session at any slot
 - **THEN** publishing succeeds
@@ -102,6 +110,21 @@ The authorization stage SHALL refuse a request whose published session still owe
 #### Scenario: Full session
 - **WHEN** a full session is published and the rules permit the request
 - **THEN** the authorization stage lets it through
+
+### Requirement: A chain's built-ins judge a session an enclosing chain published
+Every built-in that judges the request's session (the recovery, enrolment, second-factor and password-change gates, the recovery cool-down and the authorization stage) SHALL judge the session the chain resolved for the request or, when it resolved none, the session already on the request context, published by an enclosing chain. A chain mounted inside another chain SHALL therefore never serve its handler a session owing a challenge whose gate it enables.
+
+#### Scenario: Gated chain inside a gateless chain
+- **WHEN** a chain with no gates and an authenticator publishes a session owing a second factor, and mounts a chain with the second-factor gate that resolves no session of its own
+- **THEN** the inner chain's second-factor gate refuses the request with its challenge, and the handler does not run
+
+#### Scenario: Full session from the enclosing chain
+- **WHEN** a gateless chain publishes a full session and mounts a chain with the second-factor gate whose rules require an authenticated caller
+- **THEN** the inner chain lets the request through and its handler reads that session
+
+#### Scenario: The chain's own session wins
+- **WHEN** a chain mounted inside another resolves a session of its own from the request's credential
+- **THEN** its built-ins judge that session, not the one on the context
 
 ### Requirement: A chain entered again on a request it already ran on lets it through
 When a chain is entered on a request whose context shows that the same chain already ran on it, the chain SHALL pass the request straight to what follows it, without running any interceptor, resolving the client or recording anything. A different chain entered on that request SHALL run in full.

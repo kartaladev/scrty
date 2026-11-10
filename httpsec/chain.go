@@ -495,18 +495,34 @@ func (c *Chain) buildFold() {
 		interceptor := c.registrations[i].interceptor
 
 		if i == c.firstGate {
-			// The first gate's frame marks the exchange, and this chain's
-			// run on its context, before the gate runs, whatever the gate
-			// then decides, so nothing inside it, a later gate's slot-mate,
-			// an interceptor between two gates or a chain mounted further in
-			// included, can publish a session no gate judged
-			// (PublishSession). Both marks are put back as the frame
-			// returns, a panic included, so they hold exactly while the
-			// gates run: a second pass through the fold, or a later run of
-			// the exchange, publishes before the gates as the first did.
+			// The first gate's frame marks this run's entry on the
+			// exchange, and this run on its context, before the gate runs,
+			// whatever the gate then decides, so nothing inside it, a later
+			// gate's slot-mate, an interceptor between two gates or a chain
+			// mounted further in included, can publish a session no gate
+			// judged (PublishSession). The entry, not the exchange, carries
+			// the mark, so a different chain nested on the same exchange
+			// that enables every gate this chain enables still publishes.
+			// Both marks are put back as the frame returns, a panic
+			// included, so they hold exactly while the gates run: a second
+			// pass through the fold, or a later run of the exchange,
+			// publishes before the gates as the first did.
 			next = func(ex *Exchange) error {
-				before := ex.gatesBegun
-				ex.gatesBegun = true
+				// A step reached on an exchange this chain is not running
+				// has no entry to mark, so its gates could not stop a
+				// session published past them. It is refused before the
+				// gate runs, as its innermost step would refuse it.
+				i := ex.topTerminal(c)
+				if i < 0 {
+					return errNoRun
+				}
+
+				// The entry is marked and put back by position, as
+				// runTerminal clears running: a run entered from inside the
+				// gate can grow the stack and move spilled entries.
+				entry := ex.terminalAt(i)
+				before := entry.gatesBegun
+				entry.gatesBegun = true
 
 				run := runOf(ex.Context(), c)
 				var runBefore bool
@@ -515,7 +531,12 @@ func (c *Chain) buildFold() {
 				}
 
 				defer func() {
-					ex.gatesBegun = before
+					if i < ex.terminalCount() {
+						if e := ex.terminalAt(i); e.chain == c {
+							e.gatesBegun = before
+						}
+					}
+
 					if run != nil {
 						run.gatesBegun.Store(runBefore)
 					}
@@ -533,6 +554,10 @@ func (c *Chain) buildFold() {
 	c.fold = next
 }
 
+// errNoRun is what a step of the fold returns when it is reached on an
+// exchange its chain is not running.
+var errNoRun = fmt.Errorf("%w: an interceptor passed on an exchange this chain is not running", ErrConfig)
+
 // runTerminal is the fold's innermost step: it calls the terminal of the run
 // of c in progress on ex.
 //
@@ -543,7 +568,7 @@ func (c *Chain) buildFold() {
 func (c *Chain) runTerminal(ex *Exchange) error {
 	i := ex.topTerminal(c)
 	if i < 0 {
-		return fmt.Errorf("%w: an interceptor passed on an exchange this chain is not running", ErrConfig)
+		return errNoRun
 	}
 
 	entry := ex.terminalAt(i)

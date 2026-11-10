@@ -142,7 +142,8 @@ type recoveryCooldown struct {
 // Intercept refuses a marked request from a session whose user completed a
 // recovery within the window, and passes everything else on.
 func (g *recoveryCooldown) Intercept(ex *Exchange, next Next) error {
-	if ex.Session == nil {
+	s := requestSession(ex)
+	if s == nil {
 		return next(ex)
 	}
 
@@ -150,7 +151,7 @@ func (g *recoveryCooldown) Intercept(ex *Exchange, next Next) error {
 		return next(ex)
 	}
 
-	completed, ok, err := g.records.LatestCompletion(ex.Context(), ex.Session.UserID)
+	completed, ok, err := g.records.LatestCompletion(ex.Context(), s.UserID)
 	if err != nil {
 		return diag.Wrap(err, textCooldownLookupFailed)
 	}

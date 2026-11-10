@@ -407,7 +407,7 @@ func (c *config) flowLimiter(
 // which requests such a session may make, and refusing here too would only
 // restate that decision under the enrolment challenge's name.
 func (i *enrolmentInterceptor) Intercept(ex *Exchange, next Next) error {
-	s := ex.Session
+	s := requestSession(ex)
 	if s == nil || (s.MFA != session.MFAEnrolmentPending && s.MFA != session.MFARecoveryPending) {
 		return next(ex)
 	}

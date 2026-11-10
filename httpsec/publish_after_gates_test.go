@@ -474,6 +474,204 @@ func TestPublishSession_GateMarkOnOneExchange(t *testing.T) {
 			},
 		},
 		{
+			name: "covering chain nested after the outer chain's gates",
+			run: func(t *testing.T, f resolveFixture, probe *publishProbe) error {
+				t.Helper()
+
+				// The nested chain enables every gate the outer one does, so
+				// its own gates judge what it publishes, on the outer chain's
+				// exchange as on a fresh one.
+				outer, err := httpsec.New(httpsec.WithSessions(f.sessions), httpsec.EnablePasswordChangeGate(f.sessions))
+				require.NoError(t, err)
+
+				inner, err := httpsec.New(httpsec.WithSessions(f.sessions), httpsec.EnablePasswordChangeGate(f.sessions),
+					httpsec.RegisterInterceptor(publishingAuthenticator(f.sessions, f.session.ID, false, probe), httpsec.OrderBearerToken))
+				require.NoError(t, err)
+
+				return outer.Assemble(inner.Assemble(func(*httpsec.Exchange) error { return nil }))(newExchange(t))
+			},
+			assert: func(t *testing.T, probe *publishProbe, err error) {
+				t.Helper()
+
+				require.True(t, probe.reached)
+				require.NoError(t, probe.err, "a chain enabling every gate of the enclosing chain was refused")
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "nested chain's own late authenticator on the shared exchange",
+			run: func(t *testing.T, f resolveFixture, probe *publishProbe) error {
+				t.Helper()
+
+				outer, err := httpsec.New(httpsec.WithSessions(f.sessions), httpsec.EnablePasswordChangeGate(f.sessions))
+				require.NoError(t, err)
+
+				inner, err := httpsec.New(httpsec.WithSessions(f.sessions), httpsec.EnablePasswordChangeGate(f.sessions),
+					httpsec.RegisterInterceptor(publishingAuthenticator(f.sessions, f.session.ID, false, probe),
+						httpsec.After(httpsec.OrderPasswordChange)))
+				require.NoError(t, err)
+
+				return outer.Assemble(inner.Assemble(func(*httpsec.Exchange) error { return nil }))(newExchange(t))
+			},
+			assert: func(t *testing.T, probe *publishProbe, err error) {
+				t.Helper()
+
+				require.True(t, probe.reached)
+				require.ErrorIs(t, probe.err, httpsec.ErrConfig)
+				require.ErrorContains(t, probe.err, "after the chain's gates had begun")
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+			},
+		},
+		{
+			name: "nested chain lacking one of the outer chain's gates",
+			run: func(t *testing.T, f resolveFixture, probe *publishProbe) error {
+				t.Helper()
+
+				outer, err := httpsec.New(httpsec.WithSessions(f.sessions), enableMFAFor(t),
+					httpsec.EnablePasswordChangeGate(f.sessions))
+				require.NoError(t, err)
+
+				inner, err := httpsec.New(httpsec.WithSessions(f.sessions), httpsec.EnablePasswordChangeGate(f.sessions),
+					httpsec.RegisterInterceptor(publishingAuthenticator(f.sessions, f.session.ID, false, probe), httpsec.OrderBearerToken))
+				require.NoError(t, err)
+
+				return outer.Assemble(inner.Assemble(func(*httpsec.Exchange) error { return nil }))(newExchange(t))
+			},
+			assert: func(t *testing.T, probe *publishProbe, err error) {
+				t.Helper()
+
+				require.True(t, probe.reached)
+				require.ErrorIs(t, probe.err, httpsec.ErrConfig)
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+			},
+		},
+		{
+			name: "outer chain's late authenticator behind a covering chain it ran its continuation through",
+			run: func(t *testing.T, f resolveFixture, probe *publishProbe) error {
+				t.Helper()
+
+				// An interceptor past the outer chain's gate runs the rest of
+				// the outer chain as the terminal of a chain with the same
+				// gate. The publisher after it is still past the outer chain's
+				// own gate, and the nested chain's gate has returned to it
+				// nothing it judged.
+				inner, err := httpsec.New(httpsec.WithSessions(f.sessions), httpsec.EnablePasswordChangeGate(f.sessions))
+				require.NoError(t, err)
+
+				through := httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+					return inner.Assemble(next)(ex)
+				})
+
+				outer, err := httpsec.New(httpsec.WithSessions(f.sessions), httpsec.EnablePasswordChangeGate(f.sessions),
+					httpsec.RegisterInterceptor(through, httpsec.After(httpsec.OrderPasswordChange)),
+					httpsec.RegisterInterceptor(publishingAuthenticator(f.sessions, f.session.ID, false, probe),
+						httpsec.After(httpsec.OrderPasswordChange)))
+				require.NoError(t, err)
+
+				return outer.Assemble(func(*httpsec.Exchange) error { return nil })(newExchange(t))
+			},
+			assert: func(t *testing.T, probe *publishProbe, err error) {
+				t.Helper()
+
+				require.True(t, probe.reached)
+				require.ErrorIs(t, probe.err, httpsec.ErrConfig)
+				require.ErrorContains(t, probe.err, "after the chain's gates had begun")
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+			},
+		},
+		{
+			name: "nested chain lacking a gate, on a context not derived from the run's",
+			run: func(t *testing.T, f resolveFixture, probe *publishProbe) error {
+				t.Helper()
+
+				// The outer chain's run is no longer on the context the
+				// nested chain sees, so only the exchange's own marks can
+				// tell that its gates are running.
+				detach := httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+					ex.SetContext(context.WithoutCancel(t.Context()))
+
+					return next(ex)
+				})
+
+				outer, err := httpsec.New(httpsec.WithSessions(f.sessions), httpsec.EnablePasswordChangeGate(f.sessions),
+					httpsec.RegisterInterceptor(detach, httpsec.After(httpsec.OrderPasswordChange)))
+				require.NoError(t, err)
+
+				inner, err := httpsec.New(httpsec.WithSessions(f.sessions),
+					httpsec.RegisterInterceptor(publishingAuthenticator(f.sessions, f.session.ID, false, probe), httpsec.OrderBearerToken))
+				require.NoError(t, err)
+
+				return outer.Assemble(inner.Assemble(func(*httpsec.Exchange) error { return nil }))(newExchange(t))
+			},
+			assert: func(t *testing.T, probe *publishProbe, err error) {
+				t.Helper()
+
+				require.True(t, probe.reached)
+				require.ErrorIs(t, probe.err, httpsec.ErrConfig)
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+			},
+		},
+		{
+			name: "step kept past its run is refused before the gates",
+			run: func(t *testing.T, f resolveFixture, probe *publishProbe) error {
+				t.Helper()
+
+				// An interceptor before the gates keeps the step it was given
+				// and calls it again once the run has returned: the chain has
+				// no run on the exchange to mark, so its gates must not run.
+				var kept httpsec.Next
+
+				keeping := httpsec.InterceptorFunc(func(_ *httpsec.Exchange, next httpsec.Next) error {
+					kept = next
+
+					return nil
+				})
+
+				c, err := httpsec.New(httpsec.WithSessions(f.sessions), httpsec.EnablePasswordChangeGate(f.sessions),
+					httpsec.RegisterInterceptor(keeping, httpsec.Before(httpsec.OrderBearerToken)),
+					httpsec.RegisterInterceptor(publishingAuthenticator(f.sessions, f.session.ID, false, probe),
+						httpsec.After(httpsec.OrderPasswordChange)))
+				require.NoError(t, err)
+
+				ex := newExchange(t)
+				require.NoError(t, c.Assemble(func(*httpsec.Exchange) error { return nil })(ex), "first run")
+				require.NotNil(t, kept)
+
+				return kept(ex)
+			},
+			assert: func(t *testing.T, probe *publishProbe, err error) {
+				t.Helper()
+
+				require.False(t, probe.reached, "the gates ran on an exchange their chain was not running (publish err %v)", probe.err)
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+			},
+		},
+		{
+			name: "published from the handler inside the gates",
+			run: func(t *testing.T, f resolveFixture, probe *publishProbe) error {
+				t.Helper()
+
+				// The handler is no chain's interceptor, so no chain's gates
+				// judge what it publishes: it is refused like a chain enabling
+				// no gate.
+				c, err := httpsec.New(httpsec.WithSessions(f.sessions), httpsec.EnablePasswordChangeGate(f.sessions))
+				require.NoError(t, err)
+
+				handler := publishingAuthenticator(f.sessions, f.session.ID, false, probe)
+
+				return c.Assemble(func(ex *httpsec.Exchange) error {
+					return handler.Intercept(ex, func(*httpsec.Exchange) error { return nil })
+				})(newExchange(t))
+			},
+			assert: func(t *testing.T, probe *publishProbe, err error) {
+				t.Helper()
+
+				require.True(t, probe.reached)
+				require.ErrorIs(t, probe.err, httpsec.ErrConfig)
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+			},
+		},
+		{
 			name: "same exchange run a second time",
 			run: func(t *testing.T, f resolveFixture, probe *publishProbe) error {
 				t.Helper()

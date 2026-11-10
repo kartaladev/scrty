@@ -372,6 +372,44 @@ Task 11.1 is done: the dependency agent applied the updates in an isolated workt
 - [ ] **Step 2:** A `publishingChain` test with a two-entry run stack whose top entry's terminal is running: the result is the entry below. It must fail when the running filter is removed.
 - [ ] **Step 3:** `go test -race -count=1 ./token/... ./oidcprovider/... ./httpsec/`. Expected: PASS.
 
+### Task 10.11: Built-ins judge a session an enclosing chain published (Opus implementer: security refusal logic on the hot path)
+
+**Files:**
+- Create: `httpsec/request_session.go` (one unexported helper, `requestSession(ex *Exchange) *session.Session`: `ex.Session` when set, else the session on `ex.Context()`)
+- Modify: every built-in that reads the request's session to judge it. Find them with gopls references on `Exchange.Session`; at least the recovery gate, the enrolment gate, the second-factor gate (`mfa_verify.go`), the password-change gate, the recovery cool-down, and the authorization stage's backstop (`authorization.go`)
+- Test: `httpsec/nested_session_test.go` (create)
+
+**Must not touch:** `httpsec/exchange.go`, `httpsec/chain.go` (task 10.12 runs beside it).
+
+- [ ] **Step 1: Red.** Port `TestReview108_GatedChainInsideGatelessOuterServesOwingSession` as a table: an owing session from the enclosing chain, for each of the four gates and the cool-down, is refused with that built-in's own error and status, and the handler does not run; a full session is let through and the inner handler reads it; when the inner chain resolves its own session, that one is judged.
+- [ ] **Step 2:** Run it. Expected: the owing cases FAIL with 200; the controls PASS.
+- [ ] **Step 3: Implement** the helper and use it in each built-in. A built-in that also writes the session back (for example after a renewal) keeps writing `ex.Session` as today.
+- [ ] **Step 4:** `go test ./httpsec/... -count=1 -race`, the ginsec and fibersec suites, and the conformance suite. Expected: PASS.
+
+### Task 10.12: The exchange's mark records its chain (Opus implementer, beside 10.11)
+
+**Files:**
+- Modify: `httpsec/chain.go` (the first gate's frame), `httpsec/exchange.go` (the mark field, `PublishSession`)
+- Test: `httpsec/publish_after_gates_test.go` (extend)
+
+**Interfaces:** each run's entry on the exchange (`runTerminal`) carries its own `gatesBegun`, set and restored by its gate frame; the exchange-level bool goes. `gateMarkRefusal` decides before `publishSession`: the publishing run's own mark is `errLatePublication`; another marked run on the exchange is `errPublishedInsideGates` unless the publisher covers its gates; `gatesRunning` then covers enclosing runs on other exchanges. (Implemented this way rather than recording only the chain, which would miss an outer chain's late authenticator behind a covering chain; design decision 2.)
+
+- [ ] **Step 1: Red.** Port `TestReview108_SameExchangeCoveringChainPublishes`, and add: the inner chain's own late authenticator on the shared exchange is refused; a nested chain lacking a gate on the shared exchange is refused. Expected today: the covering case FAILs with the late-publication error; the other two PASS.
+- [ ] **Step 2: Implement** as in Interfaces. A publication from the handler (`publishingChain()` nil) stays refused by the gate-set check.
+- [ ] **Step 3:** `go test ./httpsec/... -count=1 -race`. Expected: PASS, including the retried-pass, late-authenticator, gate-panics and forward suites.
+
+### Task 10.13: Changelog (main session)
+
+- [ ] **Step 1:** Extend the `0.1.1` Security entry with the gated chain inside a gateless chain, affecting `v0.1.0`.
+
+### Task 10.14: Review of 10.11–10.12 (Opus reviewer, edits nothing)
+
+- [ ] **Step 1:** A fresh reviewer over the 10.11–10.12 diff, against decisions 2 and 3 and the two requirements, enumerating failures first.
+
+### Task 10.15: Gate again (main session)
+
+- [ ] **Step 1:** `make check`; `make release-check VERSION=v0.1.1` in a clean worktree of the head, not at the same time as `make check` (golangci-lint refuses a parallel run); `openspec validate harden-chain-boundary --strict`; then `gh pr checks 100 --watch`. Expected: all green.
+
 ### Task 11.7: Fold the group 11 review (Opus implementer: security verification logic; Opus reviewer in 10.8's whole-branch pass)
 
 **Files:**

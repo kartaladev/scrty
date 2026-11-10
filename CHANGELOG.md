@@ -35,7 +35,10 @@ All three affect the `httpsec` chain in `github.com/kartaladev/scrty` `v0.1.0`.
   any adapter, could do the same with its own authenticator. `Exchange.PublishSession` now refuses a
   session while a request is inside the chain's gates, or inside another chain's gates that enclose
   this run, unless the publishing chain enables every gate the enclosing chain enables, so that its
-  own gates judge what it publishes. As defence in depth, the authorization stage refuses a session that
+  own gates judge what it publishes. The reverse nesting is closed too: a chain with gates mounted
+  inside a chain without them never judged the session the outer chain had published, so its
+  handler could serve a session still owing a second factor. Its gates and authorization stage now
+  judge that session. As defence in depth, the authorization stage refuses a session that
   still owes the challenge of a gate the chain enables, with that gate's own error.
 
 ### Changed

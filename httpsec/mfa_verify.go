@@ -655,7 +655,7 @@ func writeMFAResult(ex *Exchange, result MFAResult) error {
 // The verify, begin and listing endpoints need no exemption here because they
 // never reach this function.
 func (i *mfaInterceptor) gate(ex *Exchange, next Next) error {
-	s := ex.Session
+	s := requestSession(ex)
 	if s == nil || s.MFA != session.MFAPending {
 		return next(ex)
 	}

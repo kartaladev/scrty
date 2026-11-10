@@ -245,3 +245,121 @@ func TestExchange_PublishingChain(t *testing.T) {
 		})
 	}
 }
+
+// TestExchange_GateMarkRefusal pins how the gate marks of the runs on one
+// exchange judge a publication: a mark of the publishing run makes it late, a
+// mark of another run refuses it unless the publishing chain covers that
+// run's gates, and a publication with no chain running interceptors, from
+// the handler, is refused by any mark.
+func TestExchange_GateMarkRefusal(t *testing.T) {
+	t.Parallel()
+
+	password := gatedChain(t, policy.ChallengePasswordChange)
+	mfaAndPassword := gatedChain(t, policy.ChallengeMFA, policy.ChallengePasswordChange)
+
+	type testCase struct {
+		name   string
+		stack  []runTerminal
+		assert func(t *testing.T, err error)
+	}
+
+	published := func(t *testing.T, err error) { t.Helper(); require.NoError(t, err) }
+	late := func(t *testing.T, err error) { t.Helper(); require.ErrorIs(t, err, errLatePublication) }
+	inside := func(t *testing.T, err error) { t.Helper(); require.ErrorIs(t, err, errPublishedInsideGates) }
+
+	cases := []testCase{
+		{name: "no run", assert: published},
+		{name: "one run before its gates", stack: []runTerminal{{chain: password}}, assert: published},
+		{name: "one run inside its own gates", stack: []runTerminal{{chain: password, gatesBegun: true}}, assert: late},
+		{
+			name:   "covering chain nested inside another run's gates",
+			stack:  []runTerminal{{chain: password, gatesBegun: true, running: true}, {chain: mfaAndPassword}},
+			assert: published,
+		},
+		{
+			name:   "same chain nested inside its own earlier run's gates",
+			stack:  []runTerminal{{chain: password, gatesBegun: true, running: true}, {chain: password}},
+			assert: published,
+		},
+		{
+			name:   "nested chain inside its own gates, the outer run's gates covered",
+			stack:  []runTerminal{{chain: password, gatesBegun: true, running: true}, {chain: password, gatesBegun: true}},
+			assert: late,
+		},
+		{
+			name:   "nested chain lacking a gate of another run",
+			stack:  []runTerminal{{chain: mfaAndPassword, gatesBegun: true, running: true}, {chain: password}},
+			assert: inside,
+		},
+		{
+			name:   "outer run's interceptor inside a nested run's gates it lacks",
+			stack:  []runTerminal{{chain: password}, {chain: mfaAndPassword, gatesBegun: true, running: true}},
+			assert: inside,
+		},
+		{
+			name: "outer run past its own gates, behind a nested covered run",
+			stack: []runTerminal{
+				{chain: mfaAndPassword, gatesBegun: true}, {chain: password, gatesBegun: true, running: true},
+			},
+			assert: late,
+		},
+		{
+			name:   "handler inside a run's gates",
+			stack:  []runTerminal{{chain: password, gatesBegun: true, running: true}},
+			assert: inside,
+		},
+		{
+			name:   "handler, no run inside its gates",
+			stack:  []runTerminal{{chain: password, running: true}},
+			assert: published,
+		},
+		{
+			name: "three deep, the spilled publisher lacking the outermost run's gate",
+			stack: []runTerminal{
+				{chain: mfaAndPassword, gatesBegun: true, running: true},
+				{chain: password, running: true},
+				{chain: password},
+			},
+			assert: inside,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, exchangeWith(tc.stack).gateMarkRefusal())
+		})
+	}
+}
+
+// TestExchange_GateMarkRefusal_AllocatesNothing pins that the walk over the
+// exchange's runs, which runs on every publication, allocates nothing, the
+// spilled entries included. It is not parallel: AllocsPerRun counts every
+// allocation in the process.
+func TestExchange_GateMarkRefusal_AllocatesNothing(t *testing.T) {
+	password := gatedChain(t, policy.ChallengePasswordChange)
+	e := exchangeWith([]runTerminal{
+		{chain: password, gatesBegun: true, running: true},
+		{chain: gatedChain(t, policy.ChallengeMFA, policy.ChallengePasswordChange), gatesBegun: true, running: true},
+		{chain: password},
+	})
+
+	allocs := testing.AllocsPerRun(100, func() { _ = e.gateMarkRefusal() })
+	assert.Zero(t, allocs, "the walk allocates")
+}
+
+// exchangeWith returns an exchange whose stack of runs is stack, bottom
+// first.
+func exchangeWith(stack []runTerminal) *Exchange {
+	e := &Exchange{}
+	for _, entry := range stack {
+		e.pushTerminal(entry.chain, entry.next)
+
+		top := e.terminalAt(e.terminalCount() - 1)
+		top.running = entry.running
+		top.gatesBegun = entry.gatesBegun
+	}
+
+	return e
+}

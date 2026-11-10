@@ -359,16 +359,6 @@ type Exchange struct {
 	// layer judged the request.
 	csrfOptOut bool
 
-	// gatesBegun is set while a run of a chain on this exchange is inside its
-	// first enabled gate (recovery, enrolment, second factor or password
-	// change), whatever that gate then decides, and everything the gate
-	// passes the request to. While it is set PublishSession refuses a
-	// session: one published past the gates would reach the handler unjudged
-	// by them. The gate's frame puts back the value it found as it returns,
-	// a panic included, so a retried pass or a later run of the exchange
-	// publishes before the gates as normal (buildFold).
-	gatesBegun bool
-
 	// refusalReported is whether a chain this exchange ran through has
 	// already reported the refusal it was answered with (emitRefusal), so a
 	// chain assembled inside another's does not have it reported twice.
@@ -431,10 +421,25 @@ type Exchange struct {
 // terminal its Assemble was given. running is set while the innermost step is
 // inside next, so a lookup made from within that terminal, where the same
 // chain is entered again, finds the run outside it rather than this one.
+//
+// gatesBegun is the run's gate mark on this exchange: it is set while the
+// run is inside its chain's first enabled gate (recovery, enrolment, second
+// factor or password change), whatever that gate then decides, and
+// everything the gate passes the request to. While it is set PublishSession
+// refuses a session the run itself publishes, since one published past its
+// gates would reach the handler unjudged by them, and a session another run
+// publishes unless that run's chain enables every gate this run's chain
+// enables. The mark belongs to the run whose gate frame set it, so a
+// different chain nested on the same exchange that covers every gate
+// publishes, and its own gates judge what it published. The gate's frame
+// puts back the value it found as it returns, a panic included, so a
+// retried pass or a later run of the exchange publishes before the gates as
+// normal (buildFold).
 type runTerminal struct {
-	chain   *Chain
-	next    Next
-	running bool
+	chain      *Chain
+	next       Next
+	running    bool
+	gatesBegun bool
 }
 
 // terminalCount is how many runs are in progress on e.
@@ -520,9 +525,60 @@ func (e *Exchange) topTerminal(c *Chain) int {
 // running interceptors on e, such as from the handler, and a nil chain
 // enables no gate, so the check it feeds fails closed.
 func (e *Exchange) publishingChain() *Chain {
+	if i := e.publishingRun(); i >= 0 {
+		return e.terminalAt(i).chain
+	}
+
+	return nil
+}
+
+// publishingRun returns the position of the run publishingChain names, or -1
+// when no chain is running interceptors on e.
+func (e *Exchange) publishingRun() int {
 	for i := e.terminalCount() - 1; i >= 0; i-- {
-		if t := e.terminalAt(i); !t.running {
-			return t.chain
+		if !e.terminalAt(i).running {
+			return i
+		}
+	}
+
+	return -1
+}
+
+// gateMarkRefusal returns why a session published now is refused by the gate
+// marks of the runs on e, or nil when none refuses it. A mark of the
+// publishing run itself makes the publication late: its own gates have begun
+// (errLatePublication). A mark of any other run on e refuses it when the
+// publishing chain does not enable every gate that run's chain enables
+// (errPublishedInsideGates); a publication from the handler, where no chain
+// is running interceptors, enables no gate and is refused by any mark. The
+// marks are read from e itself, so the context an interceptor set does not
+// change what they decide; runs on another exchange are judged by
+// gatesRunning. The walk is as deep as the runs on e and allocates nothing.
+func (e *Exchange) gateMarkRefusal() error {
+	publisher := e.publishingRun()
+
+	var have gateSet
+	if publisher >= 0 {
+		t := e.terminalAt(publisher)
+		if t.gatesBegun {
+			return errLatePublication
+		}
+
+		if t.chain != nil {
+			have = t.chain.gates
+		}
+	}
+
+	for i := range e.terminalCount() {
+		t := e.terminalAt(i)
+		if i == publisher || !t.gatesBegun {
+			continue
+		}
+
+		// A marked run always has a chain; one without is refused rather
+		// than read as enabling no gate.
+		if t.chain == nil || !have.covers(t.chain.gates) {
+			return errPublishedInsideGates
 		}
 	}
 
@@ -637,23 +693,32 @@ func (f InterceptorFunc) Intercept(ex *Exchange, next Next) error { return f(ex,
 // at OrderBearerToken, no later. Interceptors after OrderBearerToken, such as
 // the recovery cool-down, judge a request by the session it carries when they
 // run, so a session published behind them is never judged by them. A chain
-// with none of the gates enabled refuses nothing, and a nil sess, signing the caller out, is
-// never refused. The refusal also holds for a chain run inside another
-// chain's gates, on the same exchange or on one an adapter's mount built
-// further in, whether a consumer interceptor or a built-in authenticator
-// publishes, when the publishing chain does not enable every gate the other
-// chain enables: the error, which also wraps ErrConfig, says to mount that
-// chain outside the other chain's gates or to authenticate in the outer chain.
-// A chain that enables every one of those gates, the same chain included, is
-// not refused: a handler may forward the request in-process through it, and
-// its own gates judge the session it publishes. The
-// mark holds only while the gates run, so an interceptor before
-// OrderBearerToken that runs the rest of the chain twice publishes before the
-// gates on both passes.
+// with none of the gates enabled refuses nothing, and a nil sess, signing the
+// caller out, is never refused. The gate mark that makes a publication late
+// belongs to the run whose first gate set it: only the publishing chain's own
+// gates having begun do.
 //
-// The enclosing runs are found through the exchange's context, so the context
-// an interceptor sets must derive from the current one (SetContext): a chain
-// run on a context that does not is judged as a chain on its own.
+// A publication inside another chain's gates is judged by gate set instead:
+// on the same exchange or on one an adapter's mount built further in,
+// whether a consumer interceptor or a built-in authenticator publishes, it is
+// refused when the publishing chain does not enable every gate the other
+// chain enables, and the error, which also wraps ErrConfig, says to mount
+// that chain outside the other chain's gates or to authenticate in the outer
+// chain. A chain that enables every one of those gates, the same chain
+// included, is not refused, whether it is assembled inside the other on one
+// exchange or a handler forwards the request in-process through it: its own
+// gates judge the session it publishes, and a late authenticator of its own
+// is refused by its own gates' mark. A session published from the handler,
+// where no chain is running interceptors, is refused once any chain's gates
+// have begun. The mark holds only while the gates run, so an interceptor
+// before OrderBearerToken that runs the rest of the chain twice publishes
+// before the gates on both passes.
+//
+// The runs on the same exchange are judged from the exchange itself. The
+// enclosing runs on other exchanges are found through the exchange's context,
+// so the context an interceptor sets must derive from the current one
+// (SetContext): a chain run on a fresh exchange whose context does not is
+// judged as a chain on its own.
 //
 // The default is unused: the built-ins call it, and a consumer calls it from
 // an interceptor registered with RegisterInterceptor at OrderBearerToken,
@@ -662,21 +727,25 @@ func (f InterceptorFunc) Intercept(ex *Exchange, next Next) error { return f(ex,
 // proof beside it is judged for its ath. PublishSession is itself the
 // consumer's extension point, so it has no override.
 func (e *Exchange) PublishSession(authentication *authenticate.Authentication, sess *session.Session) error {
-	// A session published once the gates have begun reaches the handler and
-	// the authorization stage without any gate having judged it: one owing a
-	// second factor, a password change or an enrolment would be served. It is
-	// refused, never published, and the chain is told once per window.
-	if e.gatesBegun && sess != nil {
-		e.logLatePublication()
+	// A session published once the publishing chain's gates have begun, or
+	// inside the gates of another run on this exchange that the publishing
+	// chain does not cover, reaches the handler and the authorization stage
+	// without the gates having judged it: one owing a second factor, a
+	// password change or an enrolment would be served. It is refused, never
+	// published, and the chain is told once per window.
+	if sess != nil {
+		if err := e.gateMarkRefusal(); err != nil {
+			e.logLatePublication()
 
-		return errLatePublication
+			return err
+		}
 	}
 
 	return e.publishSession(authentication, sess)
 }
 
 // errLatePublication is what PublishSession returns for a session published
-// once the chain's gates have begun.
+// once the publishing chain's own gates have begun.
 var errLatePublication = fmt.Errorf("%w: a session was published after the chain's gates had begun; "+
 	"register the authenticator at OrderBearerToken", ErrConfig)
 
@@ -712,8 +781,8 @@ func (e *Exchange) logLatePublication() {
 	logSampled(e.ctx, c.sampler, c.logger, slog.LevelError, c.perRequest.now(), latePublicationKey, msgLatePublication)
 }
 
-// publishSession is PublishSession without the check of this exchange's own
-// gate mark: the path the resolution core and every built-in that publishes a
+// publishSession is PublishSession without the check of the gate marks of
+// the runs on this exchange (gateMarkRefusal): the path the resolution core and every built-in that publishes a
 // session take, wherever in their own chain they run. It still refuses a
 // non-nil sess while a run of another chain on the context is inside gates
 // the publishing chain does not all enable (gatesRunning), since a session

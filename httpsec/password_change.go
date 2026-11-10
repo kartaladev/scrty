@@ -184,14 +184,14 @@ func (g *passwordChangeGate) Intercept(ex *Exchange, next Next) error {
 		return g.resolve(ex)
 	}
 
-	if ex.Session != nil && ex.Session.PasswordChangePending {
+	if s := requestSession(ex); s != nil && s.PasswordChangePending {
 		if isLogoutPost(g.logoutPath, ex.Request) {
 			return next(ex)
 		}
 
 		// No token: the caller already holds the credential this session was
 		// reached with, and a gate issues nothing.
-		return &ChallengeError{Kind: policy.ChallengePasswordChange, Session: ex.Session}
+		return &ChallengeError{Kind: policy.ChallengePasswordChange, Session: s}
 	}
 
 	return next(ex)

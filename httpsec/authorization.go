@@ -157,10 +157,13 @@ func gateKind(i Interceptor) (policy.ChallengeKind, bool) {
 // field directly. The refusal also leaves one sampled error record per chain,
 // without identifiers, because it means a gate was bypassed.
 //
-// The stage sees the session on the exchange when it runs. A session assigned
-// after it, by an interceptor registered After(OrderAuthorizer) or a slot-mate
-// at the stage's slot registered after it, is out of its reach. Such an
-// assignment changes only ex.Session, not the request context handlers read.
+// The stage judges the session on the exchange when it runs or, when there is
+// none, the one an enclosing chain published on the request context
+// (requestSession), so a chain mounted inside a gateless one still refuses an
+// owing session that chain published. A session assigned after the stage, by
+// an interceptor registered After(OrderAuthorizer) or a slot-mate at the
+// stage's slot registered after it, is out of its reach. Such an assignment
+// changes only ex.Session, not the request context handlers read.
 func (a *authorization) Intercept(ex *Exchange, next Next) error {
 	if err := a.owedRefusal(ex); err != nil {
 		return err
@@ -209,7 +212,7 @@ func (a *authorization) Intercept(ex *Exchange, next Next) error {
 // no gate would have refused it: the stage backs the gates up and does not
 // stand in for a gate the chain left out.
 func (a *authorization) owedRefusal(ex *Exchange) error {
-	s := ex.Session
+	s := requestSession(ex)
 	if s == nil {
 		return nil
 	}
