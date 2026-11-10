@@ -988,7 +988,7 @@ func TestChain_SecondChainCannotPublishPastFirstChainsGates(t *testing.T) {
 				// The context the gated chain handed its handler, from inside its
 				// gates, is kept past the run and sent through the second chain.
 				return func(h http.Handler) http.Handler {
-					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { //nolint:contextcheck // deliberately serves a context kept from a finished run
 						var kept context.Context
 
 						a.Middleware()(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -996,7 +996,7 @@ func TestChain_SecondChainCannotPublishPastFirstChainsGates(t *testing.T) {
 						})).ServeHTTP(httptest.NewRecorder(), r)
 						require.NotNil(t, kept, "the gated chain's handler never ran")
 
-						b.Middleware()(h).ServeHTTP(w, r.WithContext(kept))
+						b.Middleware()(h).ServeHTTP(w, r.WithContext(kept)) //nolint:contextcheck // the kept context is the point of this case
 					})
 				}
 			},
