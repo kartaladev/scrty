@@ -22,9 +22,11 @@ const (
 
 // signWithHeader signs valid claims, with typedIssuer and typedAudience, under
 // the key source's current RS256 key and exactly the header members given besides
-// alg and kid. It is written out by hand, with no JOSE library, because the point
-// of these tokens is a header a library would refuse to build or would complete
-// by itself: one with no typ at all, or one whose typ is not a string.
+// alg and kid. A member given replaces alg or kid, and a member given as nil is
+// left out, so a row can write a header with no alg. It is written out by hand,
+// with no JOSE library, because the point of these tokens is a header a library
+// would refuse to build or would complete by itself: one with no typ or no alg at
+// all, or one whose typ or alg is not a string.
 func signWithHeader(t *testing.T, keys signingkey.KeySource, members map[string]any) string {
 	t.Helper()
 
@@ -33,6 +35,11 @@ func signWithHeader(t *testing.T, keys signingkey.KeySource, members map[string]
 
 	header := map[string]any{"alg": "RS256", "kid": kid}
 	for name, value := range members {
+		if value == nil {
+			delete(header, name)
+
+			continue
+		}
 		header[name] = value
 	}
 

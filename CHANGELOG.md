@@ -31,8 +31,10 @@ All three affect the `httpsec` chain in `github.com/kartaladev/scrty` `v0.1.0`.
 - **A consumer authenticator placed after the gates skipped them.** An authenticator registered past
   the recovery, enrolment, second-factor and password-change gates could publish a session those
   gates never judged. A session still owing a second factor, an enrolment or a password change then
-  reached the handler with 200. `Exchange.PublishSession` now refuses a session once a request has
-  entered the chain's first gate. As defence in depth, the authorization stage refuses a session that
+  reached the handler with 200. A second chain run inside the first chain's gates, mounted through
+  any adapter, could do the same with its own authenticator. `Exchange.PublishSession` now refuses a
+  session while a request is inside the chain's gates, or inside another chain's gates that enclose
+  this run. As defence in depth, the authorization stage refuses a session that
   still owes the challenge of a gate the chain enables, with that gate's own error.
 
 ### Changed
@@ -46,9 +48,10 @@ All three affect the `httpsec` chain in `github.com/kartaladev/scrty` `v0.1.0`.
   the last value used to win silently. `EnableAuthorization` keeps its last-wins authorizer, and now
   refuses a nil authorizer in any of its calls.
 - **BREAKING (configuration).** `Exchange.PublishSession` returns an `httpsec.ErrConfig` error, and
-  publishes nothing, when a session is published after the chain's gates have begun. Register a
-  consumer authenticator at `OrderBearerToken`, no later: the recovery cool-down, just after it,
-  judges a request by the session it carries when it runs.
+  publishes nothing, when a session is published after the chain's gates have begun, or by a chain
+  run inside another chain's gates. Register a consumer authenticator at `OrderBearerToken`, no
+  later: the recovery cool-down, just after it, judges a request by the session it carries when it
+  runs. Mount a second chain outside the first chain's gates, or authenticate in the outer chain.
 - One chain mounted twice on a request, such as on a gin engine or fiber application and again on a
   group, now runs once. The second mount lets the request through as the first one judged it, so a
   middleware between the two mounts that changes what a rule reads is not judged again. Two
@@ -57,7 +60,13 @@ All three affect the `httpsec` chain in `github.com/kartaladev/scrty` `v0.1.0`.
   `next` of its own run, now gets an `httpsec.ErrConfig` error instead of running the terminal again.
 - The chain builds its interceptor fold once, when it is constructed, instead of on every request.
   With eight interceptors a request now allocates as much as with none.
+- Token verification (`token.Verifier`) and the OIDC provider's ID token hint check refuse a token
+  whose header names no `alg`. `token.Verifier` accepted one on `v0.1.0`, against its documentation;
+  the hint check began accepting one with jwx 4.6.0. The signature was always checked under the
+  algorithm recorded on the key, so neither let a token through without the issuer's key.
 - Exported signatures use descriptive parameter names (no API change).
+- Dependencies: `github.com/lestrrat-go/jwx/v4` 4.6.0; `github.com/testcontainers/testcontainers-go`
+  and its postgres, redis and mailpit modules 0.45.0 (the `test` module only).
 
 ## [0.1.0] - 2026-11-09
 

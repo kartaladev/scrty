@@ -7,7 +7,7 @@
 **Architecture:** All runtime changes sit in the core chain (`httpsec/chain.go`, `httpsec/exchange.go`).
 - The fold is prebuilt at construction.
 - The step that `Assemble` returns does four things: it records the run's terminal, refuses dot-segment paths, passes a re-entered chain through, and then runs the prebuilt fold.
-- The first gate's prebuilt step marks the exchange and its run's marker while the gate's frame runs. Publication is refused while its own exchange or an enclosing run of another chain is marked (group 10).
+- The first gate's prebuilt step marks the exchange and its run's marker while the gate's frame runs. Publication is refused while its own exchange is marked, or while an enclosing run of another chain is marked and the publishing chain lacks one of that chain's gates (group 10).
 - The authorization stage refuses any session that still owes a built-in challenge.
 
 The adapters change in documentation only.
@@ -40,7 +40,7 @@ The adapters change in documentation only.
 4. **A consumer interceptor that publishes `nil` after the gates** (signing out the caller) is not refused, because only a non-nil session is. Added to task 5.1 as the case "nil session after the gates".
 5. **A stream** (`EnableSessionSignals`) on a chain mounted twice still opens once and closes cleanly. Added to task 4.1 as the case "stream on a double mount".
 6. **Three chains deep** (gated A, then gateless B, then gateless C, each mounted inside the last). C's publication is refused because the walk passes B to find A. Added to task 10.1 as the case "third chain inside the gates".
-7. **A gated inner chain inside a gated outer chain** whose own bearer authenticates. It is refused too, because it publishes inside the outer chain's gates (spec: "SHALL also apply to any chain run inside them"). Added to task 10.1 as the case "gated chain inside the gates".
+7. **A gated inner chain inside a gated outer chain** whose own bearer authenticates. It is refused when it lacks one of the outer chain's gates (decision 2's gate-set condition): the outer chain's second-factor gate, the inner's password-change gate only. Added to task 10.1 as the case "gated chain inside the gates". An inner chain with every outer gate publishes; that is the forward case.
 8. **An outer run that has finished** (its marker `done`) but whose context is reused by a later chain. A finished run's mark refuses nothing. Added to task 10.1 as the case "finished outer run".
 
 ---
@@ -225,7 +225,7 @@ The adapters change in documentation only.
 
 ### Task 8.2: Local gate, then CI on the pull request
 
-- [ ] **Step 1:** With Docker running, after task 9.1 and group 10 (task 10.8 clean):
+- [ ] **Step 1:** With Docker running, after task 9.1, group 10 (task 10.8 clean) and group 11 (tasks 11.5, 11.7 and 11.8 done):
   - `make check`;
   - `make release-check VERSION=v0.1.1`;
   - `openspec validate harden-chain-boundary --strict`.
@@ -245,29 +245,34 @@ The proofs are in `repro/` and ran red on `fcec3a8f` (design, Reproductions). La
 - Test: `httpsec/publish_after_gates_test.go` (extend)
 
 **Interfaces:**
-- Produces: `chainRun.gatesBegun atomic.Bool`; `func gatesRunning(ctx context.Context) bool`, which walks `nearestRun(ctx)` and its `parent` links and reports any run not `done` whose `gatesBegun` is set; `errPublishedInsideGates`, a second error wrapping `ErrConfig` whose text says to "mount this chain outside the other chain's gates or authenticate in the outer chain".
+- Produces: `chainRun.gatesBegun atomic.Bool`; `func gatesRunning(ctx context.Context, c *Chain) bool`, which walks `nearestRun(ctx)` and its `parent` links and reports any run not `done` whose `gatesBegun` is set and whose chain enables a gate `c` does not (decision 2's gate-set condition; a run of `c` itself never counts). Each `Chain` holds its enabled gates as a fixed-size value computed in `build` from the one helper that names the four gates (decision 3), so the comparison allocates nothing; `errPublishedInsideGates`, a second error wrapping `ErrConfig` whose text says to "mount this chain outside the other chain's gates or authenticate in the outer chain".
 - Consumes: `nearestRun`, `chainRun.done`, `Exchange.gatesBegun` (task 5.2).
 
 - [ ] **Step 1: Red.** Port both tests from `repro/httpsec_gatemark_repro_test.go.txt` into `publish_after_gates_test.go` with the package's helpers. Keep their cases and controls, and add:
   - "built-in authenticator inside the gates": chain B uses the session bearer, not a consumer authenticator. Expect 500, and the handler not run.
   - "third chain inside the gates", "gated chain inside the gates" and "finished outer run" (Review Focus 6–8). The first two expect 500. The last expects publication to succeed.
   - "gate panics": the first gate panics, the panic is recovered, and a second `Assemble` run of the same exchange publishes at `OrderBearerToken`, which must succeed.
+  - "forward through the same chain" (control): a chain with the second-factor gate and an authenticator at `OrderBearerToken`; its handler serves `r.Clone(r.Context())` for another path through `c.Middleware()`. The forward's authenticator publishes a full session; expect 204 from the forwarded handler and no `ErrConfig`.
+  - "forward through a chain with the same gates": the handler forwards through a different chain that also enables the second-factor gate, whose authenticator publishes a session owing a second factor. Expect publication to succeed and that chain's gate to refuse with its `ChallengeError` (kind `ChallengeMFA`); the forwarded handler does not run.
+  - "chain with fewer gates inside the gates": outer chain enables the second-factor and password-change gates; the inner chain only the password-change gate, and publishes a session owing a second factor. Expect 500 and `ErrConfig`, handler not run.
+  - `TestGatesRunning` (internal) gains cases for the gate-set comparison: an enclosing marked run whose chain's gates the publishing chain covers (false), lacks one (true), and two marked enclosing runs where only the outer one is uncovered (true).
 - [ ] **Step 2:** Run `go test -run 'TestChain_RetriedPassPublishesBeforeGates|TestChain_SecondChainCannotPublishPastFirstChainsGates' -count=1 -v ./httpsec/`. Expected:
   - the retried pass FAILs with `a session was published after the chain's gates had begun`;
   - each nested case FAILs with status 200 and the handler run;
   - the controls PASS.
+  On the task 10.2 tree as first implemented (refusing every enclosing marked run), the two forward cases and `TestReauthResolve`'s racing-renewal case are the red step for the gate-set condition: they FAIL with `a session was published by a chain run inside another chain's gates` (500), and the fewer-gates case PASSes.
 - [ ] **Step 3: Implement.**
   - **The first gate's frame:** saves `ex.gatesBegun` and sets it, then sets `gatesBegun` on this chain's own run (the nearest run whose `chain` is this chain). It restores both in a `defer`. `terminalCount() == 1` no longer clears the mark.
-  - **`PublishSession`:** refuses with `errLatePublication` when `ex.gatesBegun` is set, and with `errPublishedInsideGates` when `gatesRunning(ex.Context())` is true.
-  - **`publishSession`:** refuses with `errPublishedInsideGates` when `gatesRunning(ex.Context())` is true. The resolution core returns that error unchanged.
+  - **`PublishSession`:** refuses with `errLatePublication` when `ex.gatesBegun` is set, and with `errPublishedInsideGates` when `gatesRunning(ex.Context(), chain)` is true, `chain` being the chain whose run published.
+  - **`publishSession`:** refuses with `errPublishedInsideGates` when `gatesRunning(ex.Context(), chain)` is true. The resolution core returns that error unchanged.
   - **Logging:** both refusals go through the existing sampled late-publication log.
-- [ ] **Step 4:** Run `go test ./httpsec/... -count=1 -race`, then `go test -count=1 ./...` in `httpsec/ginsec` and `httpsec/fibersec`, then the conformance suite (`go test -count=1 ./httpsecconformance/...` in `test`, with Docker running). Expected: PASS, including `TestPublishSession_GateMarkOnOneExchange` and the late-authenticator suite from task 5.1.
+- [ ] **Step 4:** Run `go test ./httpsec/... -count=1 -race`, then `go test -count=1 ./...` in `httpsec/ginsec` and `httpsec/fibersec`, then the conformance suite (`go test -count=1 ./httpsecconformance/...` in `test`, with Docker running). Expected: PASS, including `TestPublishSession_GateMarkOnOneExchange`, the late-authenticator suite from task 5.1, and `TestReauthResolve`.
 
 ### Task 10.3–10.4: Entry check after client resolution (lane A, after 10.2; Opus implementer, Opus reviewer)
 
 **Files:**
 - Modify: `httpsec/chain.go` (the step `Assemble` returns; `refuseAtEntry`)
-- Modify: `httpsec/path_canonical.go`, and `Request.Path` godoc in `httpsec/nethttp.go`, wherever they say "before client resolution"
+- Modify: `httpsec/path_canonical.go`, and `Request.Path` godoc in `httpsec/exchange.go`, wherever they say "before client resolution"
 - Test: `httpsec/path_canonical_test.go` (extend)
 
 **Interfaces:**
@@ -323,6 +328,62 @@ The proofs are in `repro/` and ran red on `fcec3a8f` (design, Reproductions). La
   - decisions 1–4 and 6, and their failure rows.
 
   It enumerates how the change fails before judging it. Each claimed defect carries a failing test or the `UNREPRODUCED` label. Findings go to a fresh dispatch of the owning lane, or are recorded in `design.md` by the main session.
+
+### Group 11: Dependencies and the header algorithm (decision 9)
+
+Task 11.1 is done: the dependency agent applied the updates in an isolated worktree and ran the whole workspace there; the main session applied its `go.mod`/`go.sum` diff and the CodeQL pins. Tasks 11.2–11.3 are one dispatch on Opus (security refusal logic written for the first time), owning `token/` and `oidcprovider/` only, so it runs beside lane A's 10.3–10.4.
+
+### Task 11.2–11.3: Refuse a header with no `alg` (Opus implementer, Opus reviewer in 11.5)
+
+**Files:**
+- Modify: `token/verifier.go` (the header check after the signature, `checkTokenType` or a sibling; the comment that says a header naming none fails)
+- Modify: `oidcprovider/authorize.go` (`judgeHintToken`)
+- Test: `token/verifier_test.go`, `oidcprovider/authorize_test.go`, `oidcprovider/endsession_test.go` (extend)
+
+**Must not touch:** `httpsec/` (lane A), any `go.mod`/`go.sum`, `CHANGELOG.md`, `openspec/`.
+
+**Interfaces:**
+- Consumes: `ErrInvalid` (token), the hint verdicts `hintRefused` and friends (oidcprovider).
+- Produces: no exported identifier.
+
+- [ ] **Step 1: Red.** `TestVerifier_RefusesHeaderWithoutAlg`, a table over a token signed with the current RS256 key whose protected header carries its `kid` and `typ` and: no `alg`; `"alg":""`; `"alg":1`. Each asserts `errors.Is(err, ErrInvalid)` and no claims. A control with `alg` `RS256` verifies. Build the tokens by signing the header and payload bytes with the key directly, since jwx's signer always writes `alg`. In `oidcprovider`, add a hint with no `alg`, signed with a published key, as a case of the authorization endpoint's hint tests (expect `invalid_request`) and of the end-session endpoint's hint tests (expect its existing refusal of a bad hint).
+- [ ] **Step 2:** Run `go test -run 'TestVerifier_RefusesHeaderWithoutAlg' -count=1 -v ./token/` and the two hint tests. Expected: the no-`alg` cases FAIL (no error from the verifier; the hint accepted); the empty and non-string cases may already pass, and the control passes.
+- [ ] **Step 3: Implement.** Before trusting the parsed token, read the protected header through `jws.Parse` (as `checkTokenType` already does) and refuse when `alg` is absent or empty, with `ErrInvalid` in the verifier and the bad-signature verdict in the hint check. One unexported helper per package is enough; no shared package is added for it.
+- [ ] **Step 4:** Run `go test -race -count=1 ./token/... ./oidcprovider/...`, and in `test` the token and OIDC provider suites (`go test -race -count=1 -run 'Token|OIDCProvider|Provider' ./...`, Docker up). Expected: PASS.
+
+### Task 11.4: Changelog (main session)
+
+- [ ] **Step 1:** In `## [0.1.1]` → `### Changed`, add: token verification and the ID token hint check refuse a header with no `alg` (and that `token.Verifier` accepted one on `v0.1.0`, against its documentation). Add a `Changed` line naming the dependencies: jwx 4.6.0, testcontainers 0.45.0 (test module). The changelog follows Keep a Changelog, which has no dependencies section.
+
+### Task 11.5: Review of group 11 (Opus reviewer, edits nothing)
+
+- [ ] **Step 1:** Dispatch a fresh Opus reviewer over the group 11 diff (the `go.mod`/`go.sum` changes, `ci.yml`, `token/`, `oidcprovider/`), against decision 9, the `token-issuance` and `oidc-provider-authorization` deltas, and the jwx 4.6.0 changes decision 9 lists. It enumerates how the change fails before judging it.
+
+### Task 11.7: Fold the group 11 review (Opus implementer: security verification logic; Opus reviewer in 10.8's whole-branch pass)
+
+**Files:**
+- Modify: `token/verifier.go` (`readHeader` or a sibling: equality of the header `alg` with the selected key's algorithm; the `errNoAlgorithm` comment), `oidcprovider/authorize.go` (`namesAlgorithm` becomes the equality check against `signature`)
+- Test: `token/verifier_test.go` (`TestVerifyKeySelection` rows; fold `TestVerifier_RefusesHeaderWithoutAlg` into it), `oidcprovider/authorize_test.go`, `httpsec/oidc_endsession_test.go` (`TestOIDCEndSession` rows), `oidcprovider/endsession_test.go` (remove the moved test)
+
+**Must not touch:** `httpsec/chain.go`, `httpsec/exchange.go`, `httpsec/resolve.go`, `httpsec/path_canonical*.go`, `httpsec/nethttp.go` (lane A, 10.3–10.4), `go.mod`/`go.sum`, `openspec/`.
+
+- [ ] **Step 1: Red.** Rows with header `{"alg":"RS384"}` and `{"alg":"none"}`, the current `kid` and `typ`, signed RS256: the verifier returns `ErrInvalid`; as a hint, `invalid_request`. They pass today, so make them bite: add `jwt.WithVerifyOption(jws.WithSkipAlgorithmMatch(true))` temporarily, see them FAIL (the token verifies, the hint is accepted), and remove it by editing.
+- [ ] **Step 2: Implement** the equality check in both paths, refusing as a missing `alg` is refused. Fold and move the tests as listed.
+- [ ] **Step 3:** `go test -race -count=1 ./token/... ./oidcprovider/... ./httpsec/`. Expected: PASS.
+
+### Task 11.8: Release proxy without a version list (Sonnet implementer; the gate's own tooling)
+
+**Files:**
+- Modify: `tools/cmd/releaseproxy/main.go` (the function that writes `@v/` files)
+- Test: `tools/cmd/releaseproxy/main_test.go`
+
+- [ ] **Step 1: Red.** A test that runs the proxy writer for a module at `v0.1.1` and asserts `v0.1.1.info`, `v0.1.1.mod` and `v0.1.1.zip` exist and `list` does not. Expected today: FAIL, `list` exists. Update any existing assertion that expects `list`.
+- [ ] **Step 2: Implement:** stop writing `list`. Update the godoc that describes the proxy's layout.
+- [ ] **Step 3:** `cd tools && GOWORK=off go test -count=1 ./...` and `GOWORK=off go vet ./...`. Expected: PASS. The end-to-end proof is `make release-check VERSION=v0.1.1` in task 8.2.
+
+### Task 11.6: Close the Dependabot pull requests (main session)
+
+- [ ] **Step 1:** After the branch carrying 11.1 is pushed, `gh pr close <n> --comment "..."` for #85 to #95, the comment naming this change's pull request. Verify with `gh pr list --author app/dependabot --state open`, which lists none of them.
 
 ### Task 9.1: Release files (Haiku for the given `go mod edit` diff, main session for `CHANGELOG.md`)
 

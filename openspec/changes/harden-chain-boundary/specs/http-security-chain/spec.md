@@ -38,7 +38,7 @@ After client resolution and before any interceptor, the chain SHALL refuse with 
 - **THEN** the 400 response carries the headers sent only on secure responses
 
 ### Requirement: A session cannot be published once the gates have begun
-Once a request has entered the first enabled gate, the chain SHALL refuse to publish a session through the consumer's publishing operation: the operation returns an error that matches the configuration error and publishes neither the caller nor the session. The gates are the recovery, enrolment, second-factor and password-change gates. The refusal SHALL hold while the gates run, and SHALL also apply to any chain run inside them.
+Once a request has entered the first enabled gate, the chain SHALL refuse to publish a session through the consumer's publishing operation: the operation returns an error that matches the configuration error and publishes neither the caller nor the session. The gates are the recovery, enrolment, second-factor and password-change gates. The refusal SHALL hold while the gates run, and SHALL apply to a chain run inside them unless that chain enables every gate the enclosing chain enables.
 
 #### Scenario: Authenticator after logout's slot
 - **WHEN** the second-factor gate is enabled and a consumer interceptor registered after the logout slot publishes a session owing a second factor
@@ -67,6 +67,18 @@ Once a request has entered the first enabled gate, the chain SHALL refuse to pub
 #### Scenario: Second chain inside the gates
 - **WHEN** a chain with the second-factor gate mounts a different chain with no gates, through any adapter, and that chain's authenticator, the consumer's or a built-in one, publishes a session owing a second factor
 - **THEN** publishing fails, the request is refused with a 500 and the handler does not run
+
+#### Scenario: Chain with fewer gates inside the gates
+- **WHEN** a chain with the second-factor and password-change gates mounts a different chain with only the password-change gate, and that chain publishes a session owing a second factor
+- **THEN** publishing fails, the request is refused with a 500 and the handler does not run
+
+#### Scenario: Forward from the handler through the same chain
+- **WHEN** a handler behind a chain with the second-factor gate forwards the request in-process to another path through the same chain, and that chain's authenticator publishes a session
+- **THEN** publishing succeeds, and the chain's own gates judge the forwarded request
+
+#### Scenario: Forward through a different chain with the same gates
+- **WHEN** a handler behind a chain with the second-factor gate forwards the request in-process through a different chain that also enables the second-factor gate, and that chain publishes a session owing a second factor
+- **THEN** publishing succeeds and that chain's second-factor gate refuses the request
 
 #### Scenario: Gateless chain on its own
 - **WHEN** a chain with no gates, not run inside another chain's gates, publishes a session at any slot

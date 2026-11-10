@@ -190,7 +190,28 @@ func TestVerifyKeySelection(t *testing.T) {
 		assert func(t *testing.T, claims *token.Claims, err error)
 	}
 
+	// headed signs valid claims under the current RS256 key with its kid and the
+	// verifier's typ, and exactly the alg given (nil leaves it out), so a row
+	// refused was refused for its alg alone.
+	headed := func(alg any) func(t *testing.T, keys *signingkey.Keys) string {
+		return func(t *testing.T, keys *signingkey.Keys) string {
+			t.Helper()
+
+			raw := signWithHeader(t, keys, map[string]any{"alg": alg, "typ": token.TypeFirstParty})
+			_, hasAlg := decodeHeader(t, raw)["alg"]
+			require.Equal(t, alg != nil, hasAlg, "the header carries alg exactly when the row gives one")
+
+			return raw
+		}
+	}
+
 	cases := []testCase{
+		{name: "a hand-written header naming the key's alg RS256 verifies", token: headed("RS256"), assert: accepted},
+		{name: "a header naming no alg is refused", token: headed(nil), assert: rejected},
+		{name: "a header naming an empty alg is refused", token: headed(""), assert: rejected},
+		{name: "a header whose alg is not a string is refused", token: headed(1), assert: rejected},
+		{name: "a header naming RS384 over the key's RS256 signature is refused", token: headed("RS384"), assert: rejected},
+		{name: "a header naming none over the key's RS256 signature is refused", token: headed("none"), assert: rejected},
 		{
 			name: "a token this key source did not sign",
 			token: func(t *testing.T, _ *signingkey.Keys) string {

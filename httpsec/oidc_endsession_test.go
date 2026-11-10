@@ -2,6 +2,10 @@ package httpsec_test
 
 import (
 	"context"
+	"crypto"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -291,6 +295,32 @@ func (w *logoutFlow) logoutHintFrom(
 	require.NoError(t, err)
 
 	return raw
+}
+
+// logoutHintHeaded is logoutHint's claims under a header written by hand: the published RS256
+// key's kid, the ID token type, and alg as given (nil leaves it out), signed RS256 with that
+// key. No JOSE library writes a header with no alg, or one that is not a string, so a row
+// refused was refused for its alg alone.
+func (w *logoutFlow) logoutHintHeaded(t *testing.T, family id.ID, alg any) string {
+	t.Helper()
+
+	kid, signer, err := tokenKeys().Signer(t.Context(), signingkey.RS256)
+	require.NoError(t, err)
+
+	header := map[string]any{"kid": kid, "typ": token.TypeIDToken}
+	if alg != nil {
+		header["alg"] = alg
+	}
+	encoded, err := json.Marshal(header)
+	require.NoError(t, err)
+
+	payload := strings.Split(w.logoutHint(t, family), ".")[1]
+	input := base64.RawURLEncoding.EncodeToString(encoded) + "." + payload
+	digest := sha256.Sum256([]byte(input))
+	signature, err := signer.Sign(rand.Reader, digest[:], crypto.SHA256)
+	require.NoError(t, err)
+
+	return input + "." + base64.RawURLEncoding.EncodeToString(signature)
 }
 
 // endSessionGET sends params to the end-session endpoint by GET.
@@ -694,6 +724,51 @@ func TestOIDCEndSession(t *testing.T) {
 
 				return logoutParams("id_token_hint",
 					w.logoutHintFrom(t, "https://other.example.com", tokenKeys(), w.clk, in.session.FamilyID))
+			},
+			assert: refused,
+		},
+		{
+			name: "a hand-written hint naming its key's alg RS256 ends the sign-in, with no question",
+			params: func(t *testing.T, w *logoutFlow, in logoutSignIn) url.Values {
+				t.Helper()
+
+				return logoutParams("id_token_hint", w.logoutHintHeaded(t, in.session.FamilyID, "RS256"))
+			},
+			assert: endsTo(opIssuer + logoutByePath),
+		},
+		{
+			name: "a hint naming no alg is refused",
+			params: func(t *testing.T, w *logoutFlow, in logoutSignIn) url.Values {
+				t.Helper()
+
+				return logoutParams("id_token_hint", w.logoutHintHeaded(t, in.session.FamilyID, nil))
+			},
+			assert: refused,
+		},
+		{
+			name: "a hint naming an empty alg is refused",
+			params: func(t *testing.T, w *logoutFlow, in logoutSignIn) url.Values {
+				t.Helper()
+
+				return logoutParams("id_token_hint", w.logoutHintHeaded(t, in.session.FamilyID, ""))
+			},
+			assert: refused,
+		},
+		{
+			name: "a hint whose alg is not a string is refused",
+			params: func(t *testing.T, w *logoutFlow, in logoutSignIn) url.Values {
+				t.Helper()
+
+				return logoutParams("id_token_hint", w.logoutHintHeaded(t, in.session.FamilyID, 1))
+			},
+			assert: refused,
+		},
+		{
+			name: "a hint naming RS384 over its key's RS256 signature is refused",
+			params: func(t *testing.T, w *logoutFlow, in logoutSignIn) url.Values {
+				t.Helper()
+
+				return logoutParams("id_token_hint", w.logoutHintHeaded(t, in.session.FamilyID, "RS384"))
 			},
 			assert: refused,
 		},

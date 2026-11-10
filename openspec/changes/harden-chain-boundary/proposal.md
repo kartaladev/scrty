@@ -22,6 +22,7 @@ These go out as `v0.1.1`, a patch release that retracts `v0.1.0`. No consumer ru
 - **Defence in depth at the authorization stage.** The authorization stage refuses a published session that still owes a built-in challenge, with that challenge's error, unless a gate's own exemption let it through.
 - **A chain mounted twice runs once.** A chain marks the request context it ran on. When the same chain is entered again on that context, it passes the request straight to the terminal. Two different chains still each run, and the adapters document it.
 - **BREAKING (configuration only).** `WithLogger`, `WithClock`, `WithPolicyEngine`, `WithRateLimiterFactory` and `WithErrorHandler` given more than once are refused at construction, like the `Enable*` options. `EnableAuthorization` keeps its documented last-wins authorizer. Every call's authorizer is checked, so a nil one in an earlier call no longer hides.
+- **Dependencies follow the open Dependabot updates, and a token header must name its algorithm.** `lestrrat-go/jwx/v4` moves to 4.6.0, `testcontainers-go` and its modules to 0.45.0 (test module only), and CodeQL to 4.39.3. jwx 4.6.0 accepts a header with no `alg` when one key is given, which loosened the ID token hint check. Token verification and the hint check now refuse a header with no `alg` themselves. `token.Verifier` had accepted such a header since `v0.1.0`, against its own documentation.
 - **The interceptor fold is built once, at construction.** `Assemble` hands each request's terminal to a fold built when the chain was, instead of allocating a closure per interceptor on every request. Behaviour is unchanged, and so is the API.
 - **Documentation:**
   - fiber's case-insensitive and trailing-slash routing, and a rule written on `GET` that also has to cover `HEAD`, are stated where rules are written (`EnableAuthorization`, `PathPrefix`);
@@ -45,6 +46,8 @@ None.
   - a chain entered twice on one request runs once;
   - single-value options given twice fail at construction.
 - `framework-adapters`: every adapter refuses non-canonical paths alike; mounting a chain twice runs it once.
+- `token-issuance`: verification refuses a token whose header names no algorithm.
+- `oidc-provider-authorization`: an ID token hint whose header names no algorithm is refused.
 
 ## Impact
 

@@ -77,15 +77,19 @@ At construction, the chain finds the first registration in run order whose inter
 
 `PublishSession`, the exported function, refuses a non-nil session in two cases:
 - its own exchange is marked;
-- an enclosing run of another chain, found through the run marker's parent links, is marked.
+- an enclosing run of another chain, found through the run marker's parent links, is marked, and the publishing chain does not enable every gate that run's chain enables.
 
 It returns an error wrapping `ErrConfig` (500) that names the late publication and the slots to use, and publishes nothing. The chain writes one sampled log record per chain for it.
 
-The resolution core and any built-in that sets a session publish through an unexported path. That path does not check its own exchange's mark, because the core runs at `OrderBearerToken`, before its own gates. It does refuse, with the same error class, when an enclosing run of another chain is marked; that error says to mount the chain outside the other chain's gates. The audit for such built-ins is a gopls references query, not a grep.
+The resolution core and any built-in that sets a session publish through an unexported path. That path does not check its own exchange's mark, because the core runs at `OrderBearerToken`, before its own gates. It does refuse, with the same error class, when an enclosing run of another chain is marked and the publishing chain lacks one of that chain's gates; that error says to mount the chain outside the other chain's gates. The audit for such built-ins is a gopls references query, not a grep.
 
 The frame-scoped mark and the check of enclosing runs were added after review. Two defects were reproduced against the first version, which set the mark for the whole run and kept it on the exchange only:
 - **A retried pass:** a consumer interceptor before the bearer slot that calls `next` twice had its authenticator refused on the second pass (`TestChain_RetriedPassPublishesBeforeGates`).
 - **A chain mounted inside another chain's gates:** a gateless chain mounted with `Middleware` inside a gated chain built a fresh exchange with no mark. It published a session owing a second factor that no gate judged, and the handler served it with 200 (`TestChain_SecondChainCannotPublishPastFirstChainsGates`).
+
+The gate-set condition was added while group 10 was implemented. The first version of the cross-chain check refused every chain run inside a marked run. A handler runs inside its chain's gates, so that also refused a handler forwarding the request in-process through a gated chain, the same chain included. Decision 4 says such a forward runs in full. The check returned 500, and the existing `TestReauthResolve` case that serves a racing renewal through the chain from inside the second-factor gate failed. A throwaway test reproduced the same 500 for a same-chain forward from the handler. A chain mounted inside the gates and a chain the handler calls run in the same place, so position cannot tell them apart. What tells the bypass apart is whether the inner chain's own gates judge what it publishes. A chain that enables every gate the enclosing chain enables judges the session the same way the outer chain would, so its publication is allowed. A chain missing one of those gates is refused. The maintainer chose this rule on 2026-11-10 over two others: skipping only runs of the same chain, which still refuses a forward to an equally gated chain, and dropping the cross-chain check, which reopens the reproduced 200.
+
+- **Why the gate set, not the chain's identity:** Spring Security re-applies its filters on a forward and authorizes the forwarded dispatch again, carrying over the security context of the original request. A forward is judged by the chain it goes through. A chain with the same gates gives the same judgement, whichever chain it is.
 
 - **Why mark the gate's frame, not a slot number:** a threshold such as "slot above 650" misses a consumer at slot 601, between two gates, and a slot-mate registered after `EnableMFAEnrolment`. Both were reproduced.
 - **Why at publication:** that is the only point a consumer has to put a session where the handler and the authorizer read it. A refusal there means nothing past the gates can claim a session at all.
@@ -100,14 +104,22 @@ The frame-scoped mark and the check of enclosing runs were added after review. T
 | Consumer authenticator after logout, between gates, or a later slot-mate of a gate | Handled, tested | 500, nothing published, handler not run |
 | Consumer assigns `ex.Session` directly, an exported field | Accepted, with decision 3 as backstop | The session never reaches the request context. The authorization stage still refuses it if it owes a challenge |
 | A different chain nested on the same exchange authenticates after the outer chain's gates | Handled, tested | Refused with 500, by a consumer or a built-in authenticator alike, because authenticating inside another chain's gates is the same bypass. The outer run's marker is the enclosing run the check finds |
-| A gated chain nested on the same exchange before the outer chain's gates | Accepted, fails closed | The nested chain's gates set the mark, so the outer chain's own authenticator, still before its gates, is refused with 500. A contrived configuration |
+| A gated chain nested on the same exchange before the outer chain's gates | Accepted, fails closed | The nested chain's gates set the exchange's mark, so the outer chain's own authenticator, still before its gates, is refused with 500 by `PublishSession`'s own-exchange check, whatever gates either chain enables. A contrived configuration |
+| Publication with no chain running interceptors (from a handler), or an enclosing marked run with no chain recorded | Handled, fails closed | Treated as enabling no gate, so any enclosing marked run of a gated chain refuses it. From a handler, `PublishSession` is refused first by its exchange's own mark |
 | `PublishSession` on an exchange after its outermost run returned | Accepted | The mark was put back when the gate's frame returned, so the call is allowed. It reaches nothing: the handler has run and no chain reads the exchange again |
 | A consumer interceptor before the bearer slot calls `next` twice (a retry) | Handled, tested | The mark is put back after each pass, so the authenticator publishes before the gates on both passes |
-| A different chain run inside another chain's gates, through any adapter, publishes a session | Handled, tested | Refused with 500, whether a consumer or a built-in authenticator publishes, and the handler does not run. The error says to mount the chain outside the other chain's gates, or to authenticate in the outer chain |
+| A different chain run inside another chain's gates, through any adapter, publishes a session, and it lacks one of the enclosing chain's gates | Handled, tested | Refused with 500, whether a consumer or a built-in authenticator publishes, and the handler does not run. The error says to mount the chain outside the other chain's gates, or to authenticate in the outer chain |
 | No gate enabled | Handled, tested | Nothing to bypass; publishing is allowed anywhere |
 | A built-in that publishes at or after the gates | Handled | The resolution core (`resolve.go`, reached only at `OrderBearerToken`) uses the unexported path. gopls finds no other library caller of `PublishSession`; the other built-ins that set a session assign the field directly (`complete.go`, `mfa_verify.go`, `reauth_resolve.go`, `recovery.go`) |
 | The mark left over from an earlier run of the same exchange | Handled, tested | The gate's frame puts the mark back on return, and a panic out of a gate takes the same deferred path. A second run of one exchange publishes at the bearer slot as normal |
 | A chain mounted with `Middleware` or an adapter inside another chain's gates (a fresh exchange) | Handled, tested | The outer run's mark is read from the run marker on the context, so the inner chain's publication is refused as in the row above |
+| A handler forwards the request in-process through the same chain, or through a different chain that enables every gate the outer chain enables | Handled, tested | Publication succeeds. The inner chain's own gates judge the session, so a session owing a challenge is refused by that gate, not served |
+| A chain inside the gates enables some of the outer chain's gates but not all | Handled, tested | Refused with 500: the gate it lacks would leave its challenge unjudged |
+| Several enclosing marked runs | Handled, tested | The publishing chain must cover the gates of every marked enclosing run. The walk compares gate sets of fixed size and allocates nothing |
+| Consumer code inside the gates sends the request on with a context not derived from the request's (`context.Background()`, or a context from elsewhere through `SetContext`) | Accepted, documented | The enclosing run is no longer visible, so the inner chain is judged as a chain on its own: a gateless one publishes. Nothing can see a run the consumer dropped, and the code doing it can already assign a session. Reproduced as behaviour by the review (`TestReview_ContextDroppedInsideGates`). The `PublishSession` and `SetContext` godoc say a new context must derive from the current one |
+| Consumer code calls a `next` captured from another chain's interceptor while both runs are live on one exchange, so the publishing chain is misidentified | Accepted, UNREPRODUCED | The same misuse as reusing `next` after its run (decision 5's rows). No adapter, forward, nesting or retry reaches it |
+| The gate-set encoding drifts from the helper that names the gates | Handled, tested | A test asserts every gate kind has a position in the set and that the set fits its type, so a missing kind cannot silently read as covered |
+| A gate's exemptions differ between two chains with the same gates | Accepted | Each chain's exemptions cover only the endpoints that chain answers itself, and those answer the request (decision 3's enumeration). A forwarded request is judged by the inner chain's exemptions, as any request to that chain is |
 | A gateless chain not run inside a gated chain, sharing its session store | Accepted (Open Questions) | Nothing on that chain judges an owed challenge, as for any chain without the gate |
 | The marker's parent links are walked on every publication | Accepted | A walk only as deep as the chains nested on one request, usually one. It reads an atomic flag per run and allocates nothing |
 | A result published with no session after the gates | Accepted | Only a non-nil session is refused, as specified. A stateless caller is not what the gates judge, and setting one is the same as `WithCaller` on the context |
@@ -230,6 +242,55 @@ The fold accounts for one allocation per `Assemble` (`only/8`). The other three 
 - **What a `v0.1.0` user sees (accepted failure mode).** `govulncheck` reports nothing for `v0.1.0`, because no database entry exists. The signals are `go list -m -u` showing `v0.1.0` as retracted, with the retraction comment pointing at the `0.1.1` changelog entry, and that entry's `Security` section.
 - **Exposure before the tag (accepted failure mode).** The defects and their reproductions are public from the moment the branch is pushed until `v0.1.1` is tagged. The maintainer tags as soon as CI on `main` is green for the merge commit.
 
+### 9. A token header must name its algorithm, and the dependencies follow Dependabot
+
+The maintainer asked, on 2026-11-10, for the open Dependabot updates to be taken on this branch, with every feature proven unbroken:
+- `lestrrat-go/jwx/v4` 4.5.0 to 4.6.0: the root module directly, and the nested modules indirectly;
+- `testcontainers-go` and its postgres, redis and mailpit modules 0.44.0 to 0.45.0, in the `test` module only;
+- `github/codeql-action` init and analyze 4.39.2 to 4.39.3, pinned by commit.
+
+The whole workspace passed build, vet, `-race` tests with the container suites running, the layout guards, `pincheck`, `test-isolated` and `vuln` on the upgraded modules.
+
+jwx 4.6.0 changes behaviour in places scrty reaches:
+- **A header with no `alg` (jwx #2422):** with one key given, `jwt.Parse` now verifies under the key's algorithm instead of refusing. The ID token hint check (`judgeHintToken`, used by the authorization and end-session endpoints) refused such a hint on 4.5.0 and accepts it on 4.6.0. Separately, `token.Verifier`, which selects the key from a set, accepted a header with no `alg` on 4.5.0 already, against the comment that says a header naming none fails. A test reproduced it in a scratch copy on both versions (`TestProbe_VerifierRefusesHeaderWithoutAlg`, `token: invalid` expected, got nil). Neither is a forgery: the signature is still checked under the algorithm recorded on the key, so the issuer's private key is still needed.
+- **NumericDate parsing:** a negative `nbf` or `iat` now parses as a date before 1970 where it used to fail, a negative `exp` is still refused as expired, and a malformed string date is now refused at parse. Each needs the issuer's key to produce, and RFC 7519 does not forbid them.
+
+Decision, made by the maintainer on 2026-11-10: both verification paths require `alg` in the header before the signature is checked (the verifier after fetching its keys, the hint check after finding the published key, so a hint under a retired key still counts as none), refusing as each refuses a bad signature today (`token.Verifier`: an invalid-token error; the hint check: the hint is refused, `invalid_request`). The other callers (the OIDC client, the client-assertion check, DPoP, WebAuthn metadata) already require `alg` themselves.
+
+- **Why refuse:** RFC 7515 §4.1.1 makes `alg` required, and RFC 8725 §3.1 asks a verifier to check the algorithm. Relying on the library's default for a missing header is what changed under us. An explicit check holds whatever the library does next.
+- **Default and override:** on, with no override. A token without `alg` is malformed; no consumer needs it accepted.
+- **Alternatives:** fixing only the hint check, which the upgrade caused, and leaving the older `token.Verifier` gap for a later release; accepting both as harmless and correcting the comment.
+
+| Failure | State | Outcome |
+|---|---|---|
+| Access or ID token with no `alg`, signed with the current key | Handled, tested | `token.Verifier` refuses it as invalid |
+| ID token hint with no `alg`, at the authorization or end-session endpoint | Handled, tested | Refused as a hint that fails its checks: `invalid_request` at authorization, the end-session endpoint's existing refusal of a bad hint |
+| `alg` present but empty, or not a string | Handled, tested | Refused like a missing `alg` |
+| Negative `nbf`/`iat`, negative `exp` on a hint, malformed string dates | Accepted | jwx 4.6.0's parsing, as above. Producing them needs the issuer's key |
+| A later jwx release changes the missing-`alg` default again | Handled | scrty's own check runs before the library's |
+| `make vuln` lists known vulnerabilities in required modules that scrty's code does not call | Accepted | `govulncheck` reports none reachable. Not compared against `main` |
+| testcontainers 0.45.0 moves the CockroachDB and Dex adapters and the redis client examples into separate modules | Accepted | scrty uses none of them; every module builds and the container suites pass |
+| A header naming an algorithm other than the key's, over a valid signature under the key's algorithm | Handled, tested | Refused by scrty's own equality check, next to the missing-`alg` check, in both paths. The group 11 review showed that only jwx's default algorithm-match check enforced it, and that no test would notice if the default changed (a mutation skipping the match let `"alg":"RS384"` and `"alg":"none"` over an RS256 signature verify). The same reasoning as for a missing `alg` applies |
+| A refusal's error text quotes the presented `alg` (jwx's unknown-algorithm or mismatch text) | Accepted, unchanged from `v0.1.0` | The error is returned to the consumer, never rendered by the chain, and the bare status carries no body. The comment on scrty's own refusal says only that one carries no header value |
+| Every presented token's header is parsed before its signature is checked | Accepted | One extra parse per token, bounded by the verifier's maximum token size |
+| Indirect requirements tidy moved with the upgrade (`magiconair/properties` 1.18.12 and `moby/go-archive` 0.3.3 in `test`; `valyala/fastjson` dropped everywhere) | Accepted | Real releases; `go mod verify` and `go mod tidy -diff` are clean |
+| The end-session endpoint judges hints with the same check | Handled, tested | One function judges hints for both endpoints; the `oidc-provider-logout` delta states it |
+| A hint whose payload is itself a signed token | Accepted, UNREPRODUCED as a defect | Refused today, pinned by the existing row `hint wrapping a token of its own`. While task 11.7 temporarily turned off jwx's algorithm match, that row failed too, so the refusal rests on jwx's default handling of nested tokens rather than on a check of scrty's own. No shipped configuration turns the match off. A later jwx change would show up as that row failing |
+
+### 10. The release gate's local proxy does not list the release version
+
+`make release-check` serves the release-to-be from a local file proxy (`tools/cmd/releaseproxy`) placed before the public proxy in `GOPROXY`, so nested modules can resolve the root at the release version. The proxy wrote an `@v/list` file naming that version. `gorelease` reads a base module's existing versions with `go list -m -versions`, which takes the first proxy's list, so it saw the release version as published and refused: `version v0.1.1 already exists`. `v0.1.0` passed only because its base was `none`, which skips the listing. A scratch check showed it: with the local list, `go list -m -versions github.com/kartaladev/scrty` printed `v0.1.1`; without it, the listing fell through to the public proxy (`v0.1.0`), and `go list -m github.com/kartaladev/scrty@v0.1.1` still resolved locally.
+
+- **Decision (maintainer, 2026-11-10):** the local proxy serves `.info`, `.mod` and `.zip` for the release version and writes no `@v/list`. Version listing then answers what is really published, and exact versions still resolve locally.
+- **Default and override:** none; this is the gate's own tooling, not published.
+
+| Failure | State | Outcome |
+|---|---|---|
+| The release version already published | Handled | `gorelease` sees it through the public proxy and refuses, as it should |
+| The release version not published | Handled, tested | `gorelease` proceeds; exact lookups resolve from the local proxy |
+| A tool in the gate asks the local proxy for `latest` or a version list | Accepted | It gets the public answer; the gate pins every version it needs |
+| The public proxy unreachable | Accepted | The listing fails, and the gate stops with that error, as any network failure in it does |
+
 ## Open Questions
 
 - **Refusing owed second-factor states on every chain.** The authorization stage refuses only challenges whose gate the chain registers (decision 3). A gateless chain run inside a gated chain's gates is now refused at publication (decision 2). What remains is a gateless chain mounted on its own, not inside a gated one, that shares the session store. The group 6 review leaned toward refusing the second-factor, enrolment and recovery states on every chain, failing closed even where that chain cannot satisfy them. That would close the remaining case. Left for the maintainer to decide, as a follow-up change with its own red test, not in this patch.
@@ -277,7 +338,20 @@ Reasoned from scrty's own settled specs (`http-security-chain`, `framework-adapt
 Researched, accessed 2026-11-10:
 - [RFC 6797 §7.1–7.2, HTTP Strict Transport Security](https://www.rfc-editor.org/rfc/rfc6797#section-7.2): an HSTS host sends the header on responses over secure transport, and never over plain HTTP. Supports running the entry check after client resolution (decision 1).
 - [Spring Framework, `OncePerRequestFilter`](https://docs.spring.io/spring-framework/docs/current/javadoc-api/org/springframework/web/filter/OncePerRequestFilter.html): a filter skips a second pass on one request when an "already filtered" attribute is present, with no comparison of request state. Supports keeping decision 4's pass-through.
+- [Spring Security, Authorize HttpServletRequests](https://docs.spring.io/spring-security/reference/servlet/authorization/authorize-http-requests.html): the authorization filter runs on every dispatch, `FORWARD` included, and the security context established on the request dispatch carries over. Supports decision 2's gate-set rule: a forward is judged by the chain it goes through.
 - [Spring Security, `HttpFirewall`](https://docs.spring.io/spring-security/reference/servlet/exploits/firewall.html): established practice is to reject un-normalised paths by default. The page does not say how that rejection is ordered against forwarded-header handling, so that point is unverified.
+
+### Decision 9: header algorithm and dependencies
+
+**Researched** (2026-11-10):
+- [lestrrat-go/jwx v4.6.0 release notes](https://github.com/lestrrat-go/jwx/releases/tag/v4.6.0): #2422 retries a missing `alg` through `jws.Verify`; NumericDate parsing changes (#2368, #2369, #2409, #2411, #2413). The module declares `go 1.26.10`, below scrty's floor.
+- [testcontainers-go v0.45.0 release notes](https://github.com/testcontainers/testcontainers-go/releases/tag/v0.45.0): the breaking changes move client SDK adapters into separate examples modules.
+- [OSV API](https://api.osv.dev/v1/query), queried for both modules: no known vulnerabilities (live figure; drifts).
+- `github/codeql-action` tag `v4.39.3` resolves to commit `33d7b85da1a04171e211befe2c739303b9a4c066` (GitHub API).
+
+**Primary documentation:**
+- [RFC 7515 §4.1.1](https://www.rfc-editor.org/rfc/rfc7515#section-4.1.1): the `alg` header parameter is required.
+- [RFC 8725 §3.1](https://www.rfc-editor.org/rfc/rfc8725#section-3.1): verifiers perform algorithm verification.
 
 ## Reproductions
 
@@ -302,5 +376,6 @@ The review of the first implementation (2026-11-10) added these. Each test ran o
 | The backstop's log hides a method-lookup failure | `TestAuthorization_BackstopSurfacesMethodLookupFailure`, log case (same file) | same directory | `no record carries the store failure; only the wiring-mistake record exists` |
 | The backstop's status differs from the gate's on a method-lookup failure | same test, status case | same directory | Refuted: passes, gate and stage both `500 … the usable MFA methods could not be looked up` |
 | Double mount: a rewrite between the mounts is not judged again | `TestGin_DoubleMountSecondEntryAfterCredentialSwap` (`repro/ginsec_double_swap_repro_test.go.txt`) | `go test -run 'TestGin_DoubleMountSecondEntryAfterCredentialSwap' -count=1 .` in `httpsec/ginsec` | Credential swap `expected: "u-2" actual: "u-1"`; invalid credential `expected: 401 actual: 200`; Host and query swaps served. Both controls pass (no middleware, path rewrite). This is the accepted behaviour of decision 4, which group 10 pins rather than changes |
+| The first cross-chain check refuses a handler's in-process forward through a gated chain | `TestReauthResolve/a_re-proof_racing_a_renewal_of_its_session_is_a_renewal_conflict_and_the_renewal's_session_stands` (existing), and a throwaway same-chain forward test during task 10.2 | `go test ./httpsec/... -count=1 -race` on the task 10.2 tree | `a session was published by a chain run inside another chain's gates`; the forward test `expected: 204 actual: 500`. On `fcec3a8f` both passed. Fixed by decision 2's gate-set condition |
 
 The upper-case fiber case is not closed by decision 1. It is accepted as the consumer's to match (decision 7), so it is left out of the carried-forward test rather than kept as a test that can never pass. `TestRepro_NilOption` and `TestRepro_SameSlotOrderDependsOnOptionOrder` assert behaviour that is documented and stays. They are not carried forward as red steps.

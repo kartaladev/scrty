@@ -7,6 +7,12 @@
 // LICENSE that cmd/go adds when it builds a subdirectory module from a tagged
 // repository; the API report does not read that file.
 //
+// Each module gets <version>.info, <version>.mod and <version>.zip under its
+// @v directory, and deliberately no @v/list: the API report lists a module's
+// existing versions through the proxy and would refuse a version that is
+// listed as already released, while exact lookups still resolve from these
+// files and a listing falls through to the next proxy.
+//
 // Usage: releaseproxy -src <dir> -version <vX.Y.Z> -out <dir> <module-dir>...
 //
 // Module directories are relative to -src, and "." is the root; a directory
@@ -237,10 +243,7 @@ func writeModule(out string, s source, version, now string) (err error) {
 	if err := os.WriteFile(filepath.Join(dir, version+".info"), []byte(info), fileMode); err != nil {
 		return err
 	}
-	if err := writeZip(filepath.Join(dir, version+".zip"), s); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dir, "list"), []byte(version+"\n"), fileMode)
+	return writeZip(filepath.Join(dir, version+".zip"), s)
 }
 
 func writeZip(name string, s source) (err error) {
