@@ -7,7 +7,7 @@
 **Architecture:** All runtime changes sit in the core chain (`httpsec/chain.go`, `httpsec/exchange.go`).
 - The fold is prebuilt at construction.
 - The step that `Assemble` returns does four things: it records the run's terminal, refuses dot-segment paths, passes a re-entered chain through, and then runs the prebuilt fold.
-- The first gate's prebuilt step marks the exchange, and `PublishSession` refuses after that mark.
+- The first gate's prebuilt step marks the exchange and its run's marker while the gate's frame runs. Publication is refused while its own exchange or an enclosing run of another chain is marked (group 10).
 - The authorization stage refuses any session that still owes a built-in challenge.
 
 The adapters change in documentation only.
@@ -23,7 +23,7 @@ The adapters change in documentation only.
 ## Global Constraints
 
 - No exported identifier is added or removed (proposal, Impact: API).
-- The dot-segment refusal is `ErrMalformedRequest` (400), raised before client resolution, with no opt-out (decision 1).
+- The dot-segment refusal is `ErrMalformedRequest` (400), raised after client resolution and before any interceptor, with no opt-out (decision 1; moved by task 10.4).
 - A late `PublishSession` returns an error wrapping `ErrConfig` (500) and publishes neither the caller nor the session (decision 2).
 - The single-value refusal text is `"<option> was given twice; one chain has one <thing>"` (decision 6).
 - Every Go task is test-first. Its red step is seen failing for the intended reason; a compile error is not a red step (`golang-tdd.md`).
@@ -39,6 +39,9 @@ The adapters change in documentation only.
 3. **A refused request under trusted proxies with a forwarded path header** is judged by its request path, not a header. Added to task 3.1: with `EnableTrustedProxies`, `X-Forwarded-Prefix` is ignored, and `/a/../b` is still 400.
 4. **A consumer interceptor that publishes `nil` after the gates** (signing out the caller) is not refused, because only a non-nil session is. Added to task 5.1 as the case "nil session after the gates".
 5. **A stream** (`EnableSessionSignals`) on a chain mounted twice still opens once and closes cleanly. Added to task 4.1 as the case "stream on a double mount".
+6. **Three chains deep** (gated A, then gateless B, then gateless C, each mounted inside the last). C's publication is refused because the walk passes B to find A. Added to task 10.1 as the case "third chain inside the gates".
+7. **A gated inner chain inside a gated outer chain** whose own bearer authenticates. It is refused too, because it publishes inside the outer chain's gates (spec: "SHALL also apply to any chain run inside them"). Added to task 10.1 as the case "gated chain inside the gates".
+8. **An outer run that has finished** (its marker `done`) but whose context is reused by a later chain. A finished run's mark refuses nothing. Added to task 10.1 as the case "finished outer run".
 
 ---
 
@@ -222,13 +225,104 @@ The adapters change in documentation only.
 
 ### Task 8.2: Local gate, then CI on the pull request
 
-- [ ] **Step 1:** With Docker running, after task 9.1:
+- [ ] **Step 1:** With Docker running, after task 9.1 and group 10 (task 10.8 clean):
   - `make check`;
   - `make release-check VERSION=v0.1.1`;
   - `openspec validate harden-chain-boundary --strict`.
 
   Save the output to the scratchpad. All three must pass before the pull request is opened.
 - [ ] **Step 2:** After the pull request is opened, `gh pr checks <pr> --watch` ends with every check passing.
+
+### Group 10: Review and security findings
+
+The proofs are in `repro/` and ran red on `fcec3a8f` (design, Reproductions). Lane A (10.1–10.4) runs in order on Opus, because it is ordering on the hot path and security refusal logic. Lane B (10.5–10.6) runs on Sonnet beside it. Each prompt carries the Global Constraints, the failure rows of the decision it covers, and the files it must not touch.
+
+### Task 10.1–10.2: Frame-scoped gate mark, refused inside another chain's gates (lane A, Opus implementer, Opus reviewer)
+
+**Files:**
+- Modify: `httpsec/chain.go` (`chainRun`, the first gate's frame in `buildFold`, the comment in the step `Assemble` returns that says a nested run "keeps the outer run's mark")
+- Modify: `httpsec/exchange.go` (`PublishSession`, `publishSession`, the late-publication error)
+- Test: `httpsec/publish_after_gates_test.go` (extend)
+
+**Interfaces:**
+- Produces: `chainRun.gatesBegun atomic.Bool`; `func gatesRunning(ctx context.Context) bool`, which walks `nearestRun(ctx)` and its `parent` links and reports any run not `done` whose `gatesBegun` is set; `errPublishedInsideGates`, a second error wrapping `ErrConfig` whose text says to "mount this chain outside the other chain's gates or authenticate in the outer chain".
+- Consumes: `nearestRun`, `chainRun.done`, `Exchange.gatesBegun` (task 5.2).
+
+- [ ] **Step 1: Red.** Port both tests from `repro/httpsec_gatemark_repro_test.go.txt` into `publish_after_gates_test.go` with the package's helpers. Keep their cases and controls, and add:
+  - "built-in authenticator inside the gates": chain B uses the session bearer, not a consumer authenticator. Expect 500, and the handler not run.
+  - "third chain inside the gates", "gated chain inside the gates" and "finished outer run" (Review Focus 6–8). The first two expect 500. The last expects publication to succeed.
+  - "gate panics": the first gate panics, the panic is recovered, and a second `Assemble` run of the same exchange publishes at `OrderBearerToken`, which must succeed.
+- [ ] **Step 2:** Run `go test -run 'TestChain_RetriedPassPublishesBeforeGates|TestChain_SecondChainCannotPublishPastFirstChainsGates' -count=1 -v ./httpsec/`. Expected:
+  - the retried pass FAILs with `a session was published after the chain's gates had begun`;
+  - each nested case FAILs with status 200 and the handler run;
+  - the controls PASS.
+- [ ] **Step 3: Implement.**
+  - **The first gate's frame:** saves `ex.gatesBegun` and sets it, then sets `gatesBegun` on this chain's own run (the nearest run whose `chain` is this chain). It restores both in a `defer`. `terminalCount() == 1` no longer clears the mark.
+  - **`PublishSession`:** refuses with `errLatePublication` when `ex.gatesBegun` is set, and with `errPublishedInsideGates` when `gatesRunning(ex.Context())` is true.
+  - **`publishSession`:** refuses with `errPublishedInsideGates` when `gatesRunning(ex.Context())` is true. The resolution core returns that error unchanged.
+  - **Logging:** both refusals go through the existing sampled late-publication log.
+- [ ] **Step 4:** Run `go test ./httpsec/... -count=1 -race`, then `go test -count=1 ./...` in `httpsec/ginsec` and `httpsec/fibersec`, then the conformance suite (`go test -count=1 ./httpsecconformance/...` in `test`, with Docker running). Expected: PASS, including `TestPublishSession_GateMarkOnOneExchange` and the late-authenticator suite from task 5.1.
+
+### Task 10.3–10.4: Entry check after client resolution (lane A, after 10.2; Opus implementer, Opus reviewer)
+
+**Files:**
+- Modify: `httpsec/chain.go` (the step `Assemble` returns; `refuseAtEntry`)
+- Modify: `httpsec/path_canonical.go`, and `Request.Path` godoc in `httpsec/nethttp.go`, wherever they say "before client resolution"
+- Test: `httpsec/path_canonical_test.go` (extend)
+
+**Interfaces:**
+- Consumes: `refuseDotSegments(escaped string) error`, `c.clients.begin(ex)`.
+
+- [ ] **Step 1: Red.** Port `TestChain_EntryRefusalCarriesSecureHeadersBehindTrustedProxy` from `repro/httpsec_entry_backstop_repro_test.go.txt`, with both controls:
+  - a clean path carries `Strict-Transport-Security`;
+  - an untrusted peer that forges `X-Forwarded-Proto: https` gets none.
+
+  Add the case "client resolution refuses first": a forwarded host that the allowlist refuses, on `/a/../b`. It expects the client-resolution refusal's status and error, not `ErrMalformedRequest`.
+- [ ] **Step 2:** Run `go test -run 'TestChain_EntryRefusalCarriesSecureHeadersBehindTrustedProxy' -count=1 -v ./httpsec/`. Expected: the main case FAILs with `Strict-Transport-Security` empty, and the controls PASS.
+- [ ] **Step 3: Implement.** Move the `refuseDotSegments` call to just after a successful `c.clients.begin(ex)`. The refusal is written as it is today, through `refuseAtEntry`. No interceptor runs before it.
+- [ ] **Step 4:** Run `go test ./httpsec/... -count=1 -race` and the conformance dot-segment scenario on all three adapters. Expected: PASS, including `TestChain_RefusesDotSegments` and `TestFiber_AuthorizationRuleSeesRoutedPath`.
+
+### Task 10.5: Backstop log on a method-lookup failure; one nil-authorizer check (lane B, Sonnet implementer, Sonnet reviewer)
+
+**Files:**
+- Modify: `httpsec/authorization.go` (`owedRefusal`, `logOwing`, `EnableAuthorization`)
+- Test: `httpsec/authorization_owing_test.go` (extend)
+
+**Must not touch:** `httpsec/chain.go`, `httpsec/exchange.go` (lane A).
+
+- [ ] **Step 1: Red.** Port `TestAuthorization_BackstopSurfacesMethodLookupFailure` (both cases: status and log) and `TestAuthorization_BackstopLooksUpMethodsOnlyForSecondFactor` from `repro/httpsec_entry_backstop_repro_test.go.txt`. The log case asserts a record whose message contains `could not be looked up` and that carries no error text, session ID or user ID.
+- [ ] **Step 2:** Run `go test -run 'TestAuthorization_Backstop' -count=1 -v ./httpsec/`. Expected:
+  - the log case FAILs with `only the wiring-mistake record exists`;
+  - the status case PASSes;
+  - the method-lookup test PASSes.
+- [ ] **Step 3: Implement.** On a lookup error, `owedRefusal` writes one sampled error record per chain. Its message is `httpsec: session owing a built-in challenge reached the authorization stage; its second-factor methods could not be looked up`, and its `hint` is the existing one. It returns the error unchanged. The wiring record stays for the success path. Remove the deferred nil-authorizer check `EnableAuthorization` registers through `c.enable`. This step has no red: `TestEnableAuthorization_ChecksEveryAuthorizer` covers the check that remains.
+- [ ] **Step 4:** Run `go test ./httpsec/... -count=1`. Expected: PASS.
+
+### Task 10.6: Pin the double-mount pass-through (lane B, Sonnet implementer, Sonnet reviewer)
+
+**Files:**
+- Test: `httpsec/ginsec/double_mount_test.go` (extend)
+
+- [ ] **Step 1:** Port `repro/ginsec_double_swap_repro_test.go.txt` as `TestGin_DoubleMountPassesRewritesThrough`, asserting the accepted outcome (decision 4):
+  - **credential swap:** the handler sees `u-1`, and the authenticator ran once;
+  - **invalid credential swap:** 200, and the handler sees `u-1`;
+  - **Host swap and query swap:** the handler runs;
+  - **no middleware:** the chain runs once;
+  - **path rewrite:** the authenticator ran twice, and the handler sees `u-2`.
+- [ ] **Step 2: Make it bite.** Temporarily make `ranOn` return false, then run `go test -run TestGin_DoubleMountPassesRewritesThrough -count=1 -v .` in `httpsec/ginsec`. Expected: the swap cases FAIL. Restore `ranOn` by editing it back, never with git.
+- [ ] **Step 3:** Run `go test -count=1 ./...` in `httpsec/ginsec`. Expected: PASS.
+
+### Task 10.7: Changelog (main session; `CHANGELOG.md` is release prose)
+
+- [ ] **Step 1:** In `## [0.1.1]` → `### Security`, extend the third bullet: an authenticator in a second chain run inside the gates, through any adapter, is refused the same way. In `### Changed`, remove any "before client resolution" wording from the 400 entry. Verify with `grep -n 'client resolution' CHANGELOG.md`, which must print nothing that contradicts decision 1.
+
+### Task 10.8: Review of group 10 (Opus reviewer, edits nothing)
+
+- [ ] **Step 1:** Dispatch a fresh Opus reviewer over the group 10 diff. It works against:
+  - the revised `http-security-chain` requirements "A request path with a dot segment is refused before the chain runs" and "A session cannot be published once the gates have begun";
+  - decisions 1–4 and 6, and their failure rows.
+
+  It enumerates how the change fails before judging it. Each claimed defect carries a failing test or the `UNREPRODUCED` label. Findings go to a fresh dispatch of the owning lane, or are recorded in `design.md` by the main session.
 
 ### Task 9.1: Release files (Haiku for the given `go mod edit` diff, main session for `CHANGELOG.md`)
 

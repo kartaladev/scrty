@@ -1,0 +1,219 @@
+package ginsec_test
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/httpsec/ginsec"
+	"github.com/kartaladev/scrty/identity"
+)
+
+// passwordAuthenticator maps the Basic password to a principal: "pw-1" is u-1,
+// "pw-2" is u-2, anything else is refused.
+type passwordAuthenticator struct{ calls atomic.Int32 }
+
+func (a *passwordAuthenticator) Authenticate(_ context.Context, creds identity.Credentials) (*authenticate.Authentication, error) {
+	a.calls.Add(1)
+
+	var password string
+
+	switch up := creds.(type) {
+	case *identity.UsernamePassword:
+		password = string(up.Password)
+	}
+
+	switch password {
+	case "pw-1":
+		return &authenticate.Authentication{Principal: &identity.Principal{ID: "u-1", Username: "ada"}}, nil
+	case "pw-2":
+		return &authenticate.Authentication{Principal: &identity.Principal{ID: "u-2", Username: "bob"}}, nil
+	default:
+		return nil, authenticate.ErrAuthenticationFailed
+	}
+}
+
+// ruleInterceptor is a consumer rule that reads one part of the request and
+// refuses when it holds the value the rule forbids.
+func ruleInterceptor(read func(r httpsec.Request) string, forbidden string, calls *atomic.Int32) httpsec.Interceptor {
+	return httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+		calls.Add(1)
+
+		if read(ex.Request) == forbidden {
+			return authenticate.ErrAuthenticationFailed
+		}
+
+		return next(ex)
+	})
+}
+
+type doubleOutcome struct {
+	rec        *httptest.ResponseRecorder
+	handlerRan bool
+	// ctxPrincipal is the principal on c.Request.Context() in the handler.
+	ctxPrincipal string
+	chainCalls   int32
+}
+
+func TestGin_DoubleMountSecondEntryAfterCredentialSwap(t *testing.T) {
+	t.Parallel()
+
+	basicReq := func(t *testing.T, path, pw string) *http.Request {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil)
+		req.SetBasicAuth("ada", pw)
+
+		return req
+	}
+
+	type testCase struct {
+		name string
+		// build returns the chain, the consumer middleware between the mounts,
+		// the request, and a counter of how many times the chain's judging
+		// code ran.
+		build  func(t *testing.T) (*httpsec.Chain, gin.HandlerFunc, *http.Request, *atomic.Int32)
+		assert func(t *testing.T, o doubleOutcome)
+	}
+
+	cases := []testCase{
+		{
+			name: "credential swap to another valid principal is re-judged",
+			build: func(t *testing.T) (*httpsec.Chain, gin.HandlerFunc, *http.Request, *atomic.Int32) {
+				a := &passwordAuthenticator{}
+				chain := newChain(t, httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: a, Attempts: &countingAttempts{}}))
+				swap := func(gc *gin.Context) { gc.Request.SetBasicAuth("ada", "pw-2") }
+
+				return chain, swap, basicReq(t, "/api/x", "pw-1"), &a.calls
+			},
+			assert: func(t *testing.T, o doubleOutcome) {
+				// Secure: the second entry sees pw-2 and the handler runs as u-2
+				// (or the request is refused).
+				if o.handlerRan {
+					assert.Equal(t, "u-2", o.ctxPrincipal, "handler ran as the principal of the FIRST credential, not the one now on the request")
+				}
+				assert.EqualValues(t, 2, o.chainCalls, "authenticator calls: the swapped credential was never verified")
+			},
+		},
+		{
+			name: "credential swap to an invalid credential is refused",
+			build: func(t *testing.T) (*httpsec.Chain, gin.HandlerFunc, *http.Request, *atomic.Int32) {
+				a := &passwordAuthenticator{}
+				chain := newChain(t, httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: a, Attempts: &countingAttempts{}}))
+				swap := func(gc *gin.Context) { gc.Request.SetBasicAuth("ada", "garbage") }
+
+				return chain, swap, basicReq(t, "/api/x", "pw-1"), &a.calls
+			},
+			assert: func(t *testing.T, o doubleOutcome) {
+				assert.False(t, o.handlerRan, "handler ran (principal %q) behind a credential the chain never accepted", o.ctxPrincipal)
+				assert.Equal(t, http.StatusUnauthorized, o.rec.Code)
+			},
+		},
+		{
+			name: "host swap to a host a rule refuses is re-judged",
+			build: func(t *testing.T) (*httpsec.Chain, gin.HandlerFunc, *http.Request, *atomic.Int32) {
+				var calls atomic.Int32
+				chain := newChain(t, httpsec.RegisterInterceptor(
+					ruleInterceptor(func(r httpsec.Request) string { return r.Host() }, "evil.example", &calls), httpsec.OrderBearerToken))
+				swap := func(gc *gin.Context) { gc.Request.Host = "evil.example" }
+				req := basicReq(t, "/api/x", "pw-1")
+				req.Host = "app.example"
+
+				return chain, swap, req, &calls
+			},
+			assert: func(t *testing.T, o doubleOutcome) {
+				assert.False(t, o.handlerRan, "handler ran for a Host the rule refuses")
+			},
+		},
+		{
+			name: "query swap to a value a rule refuses is re-judged",
+			build: func(t *testing.T) (*httpsec.Chain, gin.HandlerFunc, *http.Request, *atomic.Int32) {
+				var calls atomic.Int32
+				chain := newChain(t, httpsec.RegisterInterceptor(
+					ruleInterceptor(func(r httpsec.Request) string { return r.Query("mode") }, "deny", &calls), httpsec.OrderBearerToken))
+				swap := func(gc *gin.Context) { gc.Request.URL.RawQuery = "mode=deny" }
+
+				return chain, swap, basicReq(t, "/api/x?mode=ok", "pw-1"), &calls
+			},
+			assert: func(t *testing.T, o doubleOutcome) {
+				assert.False(t, o.handlerRan, "handler ran for a query the rule refuses")
+			},
+		},
+		{
+			name: "control: no middleware between the mounts runs the chain once",
+			build: func(t *testing.T) (*httpsec.Chain, gin.HandlerFunc, *http.Request, *atomic.Int32) {
+				a := &passwordAuthenticator{}
+				chain := newChain(t, httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: a, Attempts: &countingAttempts{}}))
+
+				return chain, nil, basicReq(t, "/api/x", "pw-1"), &a.calls
+			},
+			assert: func(t *testing.T, o doubleOutcome) {
+				assert.True(t, o.handlerRan)
+				assert.Equal(t, "u-1", o.ctxPrincipal)
+				assert.EqualValues(t, 1, o.chainCalls)
+			},
+		},
+		{
+			name: "control: a path rewrite between the mounts runs the chain in full again",
+			build: func(t *testing.T) (*httpsec.Chain, gin.HandlerFunc, *http.Request, *atomic.Int32) {
+				a := &passwordAuthenticator{}
+				chain := newChain(t, httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: a, Attempts: &countingAttempts{}}))
+				swap := func(gc *gin.Context) {
+					gc.Request.URL.Path = "/api/y"
+					gc.Request.URL.RawPath = ""
+					gc.Request.SetBasicAuth("ada", "pw-2")
+				}
+
+				return chain, swap, basicReq(t, "/api/x", "pw-1"), &a.calls
+			},
+			assert: func(t *testing.T, o doubleOutcome) {
+				assert.EqualValues(t, 2, o.chainCalls, "path is in the key, so the second entry re-runs")
+				assert.True(t, o.handlerRan)
+				assert.Equal(t, "u-2", o.ctxPrincipal)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			chain, swap, req, calls := tc.build(t)
+
+			var o doubleOutcome
+
+			eng := gin.New()
+			eng.Use(ginsec.Middleware(chain))
+
+			g := eng.Group("/api")
+			if swap != nil {
+				g.Use(swap)
+			}
+
+			g.Use(ginsec.Middleware(chain))
+
+			handler := func(gc *gin.Context) {
+				o.handlerRan = true
+
+				if p, ok := identity.PrincipalFromContext(gc.Request.Context()); ok {
+					o.ctxPrincipal = string(p.ID)
+				}
+
+				gc.Status(http.StatusOK)
+			}
+			g.GET("/x", handler)
+			g.GET("/y", handler)
+
+			o.rec = httptest.NewRecorder()
+			eng.ServeHTTP(o.rec, req)
+			o.chainCalls = calls.Load()
+
+			tc.assert(t, o)
+		})
+	}
+}

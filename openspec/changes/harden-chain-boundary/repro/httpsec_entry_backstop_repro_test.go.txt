@@ -1,0 +1,230 @@
+package httpsec_test
+
+import (
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/session"
+)
+
+// TestChain_EntryRefusalCarriesSecureHeadersBehindTrustedProxy pins that the
+// 400 for a dot-segment path carries the secure-only headers a normal response
+// to the same request carries, when a trusted proxy makes the request secure.
+func TestChain_EntryRefusalCarriesSecureHeadersBehindTrustedProxy(t *testing.T) {
+	t.Parallel()
+
+	const hsts = "Strict-Transport-Security"
+
+	type testCase struct {
+		name   string
+		target string
+		peer   string
+		assert func(t *testing.T, status int, h http.Header)
+	}
+
+	cases := []testCase{
+		{
+			name: "control: clean path through the proxy carries HSTS", target: "/a/admin", peer: "10.20.0.2:41000",
+			assert: func(t *testing.T, status int, h http.Header) {
+				t.Helper()
+				assert.Equal(t, http.StatusOK, status)
+				assert.NotEmpty(t, h.Get(hsts), "control: the fixture must make the request secure")
+			},
+		},
+		{
+			name: "control: untrusted peer's forged scheme gets no HSTS on the refusal", target: "/a/%2e%2e/admin", peer: "198.51.100.9:41000",
+			assert: func(t *testing.T, status int, h http.Header) {
+				t.Helper()
+				assert.Equal(t, http.StatusBadRequest, status)
+				assert.Empty(t, h.Get(hsts))
+			},
+		},
+		{
+			name: "dot-segment 400 behind the trusted proxy carries HSTS", target: "/a/%2e%2e/admin", peer: "10.20.0.2:41000",
+			assert: func(t *testing.T, status int, h http.Header) {
+				t.Helper()
+				assert.Equal(t, http.StatusBadRequest, status)
+				assert.NotEmpty(t, h.Get(hsts), "the refusal lacks the secure-only header the same request gets on a clean path")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			chain, err := httpsec.New(
+				httpsec.EnableSecurityHeaders(),
+				httpsec.EnableTrustedProxies(httpsec.TrustedProxies{
+					Prefixes: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")},
+					Headers:  httpsec.XForwarded(httpsec.ForwardedFor, httpsec.ForwardedProto),
+				}),
+				httpsec.WithErrorHandler(func(w http.ResponseWriter, _ *http.Request, err error) {
+					w.WriteHeader(httpsec.StatusForError(err))
+				}),
+			)
+			require.NoError(t, err)
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, tc.target, nil)
+			req.RemoteAddr = tc.peer
+			req.Header.Set("X-Forwarded-For", "203.0.113.7")
+			req.Header.Set("X-Forwarded-Proto", "https")
+
+			rec := httptest.NewRecorder()
+			chain.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})).ServeHTTP(rec, req)
+
+			tc.assert(t, rec.Code, rec.Header())
+		})
+	}
+}
+
+// TestAuthorization_BackstopSurfacesMethodLookupFailure pins that the
+// authorization backstop answers a failed second-factor method lookup as the
+// gate does, and leaves the operator a record of the store failure.
+func TestAuthorization_BackstopSurfacesMethodLookupFailure(t *testing.T) {
+	t.Parallel()
+
+	type result struct {
+		gate, stage served
+		logs        []slog.Record
+	}
+
+	run := func(t *testing.T) result {
+		t.Helper()
+
+		h := newEnrolHarness(t)
+		h.extraMethods = []mfa.Method{enrolledEmailMethod(t, true)}
+		s := h.sessionIn(t, factor.Password, session.MFAPending)
+
+		req := func() *http.Request {
+			return httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/invoices", nil)
+		}
+
+		gateChain, err := httpsec.New(h.options(t, s)...)
+		require.NoError(t, err)
+
+		logs := &capturingHandler{}
+		h.extra = []httpsec.Option{
+			httpsec.WithLogger(slog.New(logs)),
+			httpsec.RegisterInterceptor(assigningSession(s), httpsec.After(httpsec.OrderLogout)),
+		}
+		stageOpts := append(h.options(t, nil), httpsec.EnableAuthorization(NewMockAuthorizer(gomock.NewController(t))))
+		stageChain, err := httpsec.New(stageOpts...)
+		require.NoError(t, err)
+
+		return result{gate: serve(t, gateChain, req()), stage: serve(t, stageChain, req()), logs: logs.records()}
+	}
+
+	type testCase struct {
+		name   string
+		assert func(t *testing.T, r result)
+	}
+
+	cases := []testCase{
+		{
+			name: "status and error class match the gate",
+			assert: func(t *testing.T, r result) {
+				t.Helper()
+				require.Error(t, r.gate.err, "control: the gate fails on the lookup")
+				require.Error(t, r.stage.err)
+				assert.False(t, r.stage.handlerRan)
+				t.Logf("gate: status=%d err=%v", httpsec.StatusForError(r.gate.err), r.gate.err)
+				t.Logf("stage: status=%d err=%v", httpsec.StatusForError(r.stage.err), r.stage.err)
+				assert.Equal(t, httpsec.StatusForError(r.gate.err), httpsec.StatusForError(r.stage.err))
+				assert.ErrorIs(t, r.stage.err, errEnrolmentStoreDown, "wrapped store error, as the gate's")
+				assert.Equal(t, r.gate.err.Error(), r.stage.err.Error())
+			},
+		},
+		{
+			name: "log lets an operator see the store failure",
+			assert: func(t *testing.T, r result) {
+				t.Helper()
+				require.Error(t, r.stage.err)
+
+				seen := false
+				for _, rec := range r.logs {
+					t.Logf("record: level=%v msg=%q", rec.Level, rec.Message)
+					if strings.Contains(rec.Message, errEnrolmentStoreDown.Error()) {
+						seen = true
+					}
+					rec.Attrs(func(a slog.Attr) bool {
+						t.Logf("  attr %s=%s", a.Key, a.Value.String())
+						if strings.Contains(a.Value.String(), errEnrolmentStoreDown.Error()) {
+							seen = true
+						}
+						return true
+					})
+				}
+				assert.True(t, seen, "no record carries the store failure; only the wiring-mistake record exists")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tc.assert(t, run(t))
+		})
+	}
+}
+
+// TestAuthorization_BackstopLooksUpMethodsOnlyForSecondFactor observes through
+// a mock expectation that the method store is not consulted for owed kinds
+// other than the second factor.
+func TestAuthorization_BackstopLooksUpMethodsOnlyForSecondFactor(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		state session.MFAState
+		pw    bool
+	}{
+		{name: "enrolment pending", state: session.MFAEnrolmentPending},
+		{name: "password change pending", state: session.MFASatisfied, pw: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newEnrolHarness(t)
+			m := NewMockMethod(gomock.NewController(t))
+			m.EXPECT().Name().Return("emailcode").AnyTimes()
+			m.EXPECT().Channel().Return(factor.Email).AnyTimes()
+			m.EXPECT().Response().Return(mfa.FormField("code", 64)).AnyTimes()
+			m.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Times(0)
+			h.extraMethods = []mfa.Method{m}
+
+			s := h.sessionIn(t, factor.Password, tc.state)
+			if tc.pw {
+				s.PasswordChangePending = true
+				require.NoError(t, h.sessions.Save(t.Context(), s))
+			}
+
+			h.extra = []httpsec.Option{
+				httpsec.RegisterInterceptor(assigningSession(s), httpsec.After(httpsec.OrderLogout)),
+				httpsec.EnableRecoveryGateForTest(), httpsec.EnablePasswordChangeGate(h.sessions),
+				httpsec.EnableAuthorization(NewMockAuthorizer(gomock.NewController(t))),
+			}
+			chain, err := httpsec.New(h.options(t, nil)...)
+			require.NoError(t, err)
+
+			got := serve(t, chain, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/invoices", nil))
+			require.Error(t, got.err)
+			assert.False(t, got.handlerRan)
+		})
+	}
+}

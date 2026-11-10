@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: A request path with a dot segment is refused before the chain runs
-Before client resolution and before any interceptor, the chain SHALL refuse with the malformed-request error (400) a request whose path, read as sent and again decoded once, holds a `.` or `..` segment, and one whose path does not decode. The refusal SHALL carry the security headers when that layer is enabled. Repeated slashes SHALL NOT be refused. There SHALL be no option to turn this off.
+After client resolution and before any interceptor, the chain SHALL refuse with the malformed-request error (400) a request whose path, read as sent and again decoded once, holds a `.` or `..` segment, and one whose path does not decode. The refusal SHALL carry the security headers when that layer is enabled. Repeated slashes SHALL NOT be refused. There SHALL be no option to turn this off.
 
 #### Scenario: Parent segment
 - **WHEN** a request for `/public/../admin/users` reaches a chain whose rules permit `/public` and deny `/admin`
@@ -33,8 +33,12 @@ Before client resolution and before any interceptor, the chain SHALL refuse with
 - **WHEN** security headers are enabled and a request for `/a/../b` is refused
 - **THEN** the 400 response carries the layer's headers, as a refusal by client resolution does
 
+#### Scenario: Refusal behind a trusted proxy
+- **WHEN** security headers are enabled, a trusted proxy forwards a request as HTTPS, and the request for `/a/../b` is refused
+- **THEN** the 400 response carries the headers sent only on secure responses
+
 ### Requirement: A session cannot be published once the gates have begun
-Once a request has entered the first enabled gate, the chain SHALL refuse to publish a session through the consumer's publishing operation: the operation returns an error that matches the configuration error and publishes neither the caller nor the session. The gates are the recovery, enrolment, second-factor and password-change gates. A chain with none of them enabled SHALL NOT refuse.
+Once a request has entered the first enabled gate, the chain SHALL refuse to publish a session through the consumer's publishing operation: the operation returns an error that matches the configuration error and publishes neither the caller nor the session. The gates are the recovery, enrolment, second-factor and password-change gates. The refusal SHALL hold while the gates run, and SHALL also apply to any chain run inside them.
 
 #### Scenario: Authenticator after logout's slot
 - **WHEN** the second-factor gate is enabled and a consumer interceptor registered after the logout slot publishes a session owing a second factor
@@ -55,6 +59,18 @@ Once a request has entered the first enabled gate, the chain SHALL refuse to pub
 #### Scenario: No gate enabled
 - **WHEN** no gate is enabled and a consumer interceptor after the logout slot publishes a live session
 - **THEN** publishing succeeds and the handler reads the session
+
+#### Scenario: Retried pass
+- **WHEN** a gate is enabled and a consumer interceptor before the bearer token slot calls the rest of the chain twice, with an authenticator at the bearer token slot
+- **THEN** the authenticator publishes on both passes
+
+#### Scenario: Second chain inside the gates
+- **WHEN** a chain with the second-factor gate mounts a different chain with no gates, through any adapter, and that chain's authenticator, the consumer's or a built-in one, publishes a session owing a second factor
+- **THEN** publishing fails, the request is refused with a 500 and the handler does not run
+
+#### Scenario: Gateless chain on its own
+- **WHEN** a chain with no gates, not run inside another chain's gates, publishes a session at any slot
+- **THEN** publishing succeeds
 
 ### Requirement: The authorization stage refuses a session owing a built-in challenge
 The authorization stage SHALL refuse a request whose published session still owes a built-in challenge (recovery, enrolment, second factor or password change) whose gate the chain enables, with the error that gate would return, before the consumer's rules and the handler, whether or not rules are configured.

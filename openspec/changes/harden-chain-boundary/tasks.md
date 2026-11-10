@@ -81,7 +81,7 @@
 ## 8. Integration gate
 
 - [x] 8.1 Run a whole-branch review with a fresh Opus reviewer that edits nothing. It checks the diff against every requirement in this change's two spec deltas and decisions 1–7, and enumerates how the change fails before judging it. Verify that every finding is fixed or declined in `design.md`.
-- [ ] 8.2 On the branch head, run `make check`, `make release-check VERSION=v0.1.1` (after task 9.1's file changes) and `openspec validate harden-chain-boundary --strict`, with Docker up so the conformance and integration suites run. Verify that all three are clean before the pull request is opened, and that CI on the pull request is green.
+- [ ] 8.2 After group 10 is complete, on the branch head, run `make check`, `make release-check VERSION=v0.1.1` (after task 9.1's file changes) and `openspec validate harden-chain-boundary --strict`, with Docker up so the conformance and integration suites run. Verify that all three are clean before the pull request is opened, and that CI on the pull request is green.
 
 ## 9. Release `v0.1.1` (decision 8)
 
@@ -98,6 +98,23 @@
   - the root tag was pushed on its own;
   - the `release-probe` run triggered by that push passed.
 - [ ] 9.4 **(maintainer)** Step 9: publish the release notes with the nine SBOMs. Verify that `gh release view v0.1.1` lists nine assets.
+
+## 10. Review and security findings (decisions 1, 2, 3, 4, 6; design "Reproductions", review rows)
+
+Two lanes. Lane A (10.1–10.4, Opus) owns `httpsec/chain.go`, `httpsec/exchange.go`, `httpsec/resolve.go` and their tests, and runs in order. Lane B (10.5–10.6, Sonnet) owns `httpsec/authorization.go` and `httpsec/ginsec` tests, and runs in parallel with lane A. Each red step is the stored reproduction, ported into the package's suite and helpers with the same cases.
+
+- [ ] 10.1 Red: port `TestChain_RetriedPassPublishesBeforeGates` and `TestChain_SecondChainCannotPublishPastFirstChainsGates` from `repro/httpsec_gatemark_repro_test.go.txt` into `httpsec`. Add these cases:
+  - the second chain mounted with a built-in authenticator (the session bearer) instead of a consumer one;
+  - a gate that panics, and a run after it on the same exchange that publishes at the bearer slot.
+
+  Verify that the retried-pass case fails with the late-publication error and the nested cases fail with a 200, and that the controls pass.
+- [ ] 10.2 Make the gate mark hold only during the first gate's frame (put back on return, deferred), record it on the run's marker, and refuse publication when an enclosing run of another chain is marked, in both `PublishSession` and the unexported publishing path. Correct the comment in `Assemble`'s step. Verify that 10.1 passes, and that `go test ./httpsec/... -count=1 -race`, the `ginsec` and `fibersec` suites and the conformance suite pass.
+- [ ] 10.3 Red: port `TestChain_EntryRefusalCarriesSecureHeadersBehindTrustedProxy` from `repro/httpsec_entry_backstop_repro_test.go.txt` into `httpsec`, with both controls (a clean path carries HSTS; an untrusted peer forging the scheme gets none). Add a case where client resolution refuses a request that also holds a dot segment, expecting the client-resolution refusal. Verify that the main case fails with the header missing and the controls pass.
+- [ ] 10.4 Move the dot-segment check to after client resolution, before any interceptor. Update `refuseAtEntry`'s godoc and `Request.Path`'s if they say "before client resolution". Verify that 10.3 passes, that `TestChain_RefusesDotSegments`, the fiber and gin path tests and the conformance dot-segment scenario still pass, and that `go test ./httpsec/... -count=1 -race` passes.
+- [ ] 10.5 Red: port the log case of `TestAuthorization_BackstopSurfacesMethodLookupFailure` and `TestAuthorization_BackstopLooksUpMethodsOnlyForSecondFactor` from the same file into `httpsec`. Keep the status case as a regression guard. Verify that the log case fails showing only the wiring record. Then write a distinct sampled record when the method lookup fails, with no error text and no identifier, and remove `EnableAuthorization`'s deferred nil-authorizer check (no red step: `TestEnableAuthorization_ChecksEveryAuthorizer` covers the check that remains). Verify that the ported tests and the `httpsec` suite pass.
+- [ ] 10.6 Port `repro/ginsec_double_swap_repro_test.go.txt` into `httpsec/ginsec` as `TestGin_DoubleMountPassesRewritesThrough`. It pins the accepted behaviour of decision 4: the swap cases are served on the first judgement and the authenticator runs once, the no-middleware control runs once, and the path-rewrite control runs the chain again. Confirm it bites by temporarily dropping the pass-through, then restore it by editing it back. Verify that the `ginsec` suite passes.
+- [ ] 10.7 Changelog: in the `0.1.1` Security entry, the authenticator bullet also names a second chain run inside the gates, and the `Changed` entry for the 400 does not say "before client resolution". Verify by reading the entry against decisions 1 and 2.
+- [ ] 10.8 Run a whole-branch review with a fresh Opus reviewer that edits nothing. It checks the group 10 diff against the revised requirements and decisions 1–4 and 6, and enumerates how the change fails before judging it. Verify that every finding is fixed or recorded in `design.md`.
 
 ## Workflow follow-up
 
