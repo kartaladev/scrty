@@ -18,8 +18,16 @@ Every call the library makes on a request path to a store or an outbound service
 - **THEN** the outcome is the one the same write gives on a store error
 
 ### Requirement: Some detached work is bounded by its owner, not the library
-The library SHALL NOT add a deadline to detached calls to the rate-limiter port, whose contract makes the limiter bound itself, or to consumer callbacks (session end observers, the event sink). The rollback or close of a transaction the same call opened, and the long-lived context of a background loop or queue, SHALL keep their existing bounds.
+The library SHALL NOT add a deadline to detached calls to the rate-limiter port, to consumer callbacks (session end observers, the event sink), or to a notification sender, which owns its bound. A consumer callback run inside a bounded call SHALL share that call's bound. The rollback or close of a transaction the same call opened, and the long-lived context of a background loop or queue, SHALL keep their existing bounds.
 
 #### Scenario: Limiter record not cut short
 - **WHEN** a failed second factor is recorded against a rate limiter that takes 7 seconds to answer
 - **THEN** the library does not cut the record short, and the guess is charged
+
+#### Scenario: Notice sender owns its bound
+- **WHEN** a security notice is sent detached after a change, through a sender with its own timeout
+- **THEN** the library adds no deadline to the send, and the sender's own timeout governs it
+
+#### Scenario: Lockout observer shares the record's bound
+- **WHEN** the chain records a failed login, and the lockout policy calls its observer
+- **THEN** the observer's context carries the record's 5-second bound, and no further one

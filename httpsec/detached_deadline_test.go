@@ -24,6 +24,8 @@ import (
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -331,6 +333,16 @@ func TestChain_DetachedCallsCarryDeadline(t *testing.T) {
 			run:    runLoginRecord,
 			fail:   context.DeadlineExceeded,
 			assert: failedLogin(slog.LevelError, "httpsec: a failed login attempt could not be recorded"),
+		},
+		{
+			name:   "form login: the lockout observer shares the record's write deadline",
+			run:    runLoginLockoutObserver,
+			assert: assertBounded(detach.WriteTimeout, 1),
+		},
+		{
+			name:   "Basic: the lockout observer shares the record's write deadline",
+			run:    runBasicLockoutObserver,
+			assert: assertBounded(detach.WriteTimeout, 1),
 		},
 		{
 			name:   "enrolment: voiding the emailed code carries the write deadline",
@@ -678,6 +690,59 @@ func runLoginRecord(ctx context.Context, t *testing.T, p *deadlineProbe, fail er
 
 	s := serveContext(ctx, t, chain,
 		formRequest(ctx, httpsec.DefaultLoginPath, "username=ada&password=wrong"))
+
+	return detachedOutcome{s: s, records: h.logs.records()}
+}
+
+// lockoutObserved is a lockout policy that locks on the first failure and
+// reports it to an observer recording the context it is called on, so the
+// chain's record of a failed login reaches the observer through the real policy.
+func lockoutObserved(t *testing.T, p *deadlineProbe) policy.AttemptStore {
+	t.Helper()
+
+	lock, err := lockout.New(
+		lockout.WithWaitThreshold(1),
+		lockout.WithObserver(func(ctx context.Context, _ lockout.Report) { p.see(ctx) }))
+	require.NoError(t, err)
+
+	return lock.Attempts()
+}
+
+func runLoginLockoutObserver(ctx context.Context, t *testing.T, p *deadlineProbe, _ error) detachedOutcome {
+	t.Helper()
+
+	h := newAuthHarness(t)
+	h.expectAuthenticationFailed()
+
+	deps := h.formLoginDeps()
+	deps.Attempts = lockoutObserved(t, p)
+
+	chain, err := httpsec.New(
+		httpsec.WithLogger(h.logger()),
+		httpsec.EnableFormLogin(deps))
+	require.NoError(t, err)
+
+	s := serveContext(ctx, t, chain,
+		formRequest(ctx, httpsec.DefaultLoginPath, "username=ada&password=wrong"))
+
+	return detachedOutcome{s: s, records: h.logs.records()}
+}
+
+func runBasicLockoutObserver(ctx context.Context, t *testing.T, p *deadlineProbe, _ error) detachedOutcome {
+	t.Helper()
+
+	h := newAuthHarness(t)
+	h.expectAuthenticationFailed()
+
+	deps := h.basicAuthDeps()
+	deps.Attempts = lockoutObserved(t, p)
+
+	chain, err := httpsec.New(
+		httpsec.WithLogger(h.logger()),
+		httpsec.EnableBasicAuth(deps))
+	require.NoError(t, err)
+
+	s := serveContext(ctx, t, chain, basicRequest(ctx, "ada", "wrong"))
 
 	return detachedOutcome{s: s, records: h.logs.records()}
 }

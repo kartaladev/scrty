@@ -102,5 +102,7 @@
 //
 // When the chain passes the request on, c.Request carries the chain's context
 // afterwards, so a gin middleware registered before the chain reads that context
-// after c.Next() returns. A refused request's c.Request is unchanged.
+// after c.Next() returns. A request refused before the chain reached the gin
+// handlers keeps its c.Request; one refused after them (an interceptor that
+// returns an error after next) keeps the chain's context.
 package ginsec

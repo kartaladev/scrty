@@ -801,7 +801,8 @@ func (f InterceptorFunc) Intercept(ex *Exchange, next Next) error { return f(ex,
 // (SetContext): a chain run on a fresh exchange whose context does not is
 // judged as a chain on its own.
 //
-// The default is unused: the built-ins call it, and a consumer calls it from
+// The default is unused: the built-ins publish through an unexported path that
+// makes the same checks, and a consumer calls it from
 // an interceptor registered with RegisterInterceptor at OrderBearerToken,
 // after verifying the credential that names sess. Such an
 // interceptor also calls RecordPresentedToken with that credential, so a DPoP

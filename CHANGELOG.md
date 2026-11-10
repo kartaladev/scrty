@@ -80,8 +80,9 @@ All three affect the `httpsec` chain in `github.com/kartaladev/scrty` `v0.1.0`.
   credential. They still outlive the client's cancellation. When the deadline passes, the call
   fails as a store error from that call already did, and the failure is logged as an outage, not
   as the client leaving. Calls that already had a bound keep it. Rate-limiter calls, session end
-  observers and the event sink are not bounded by the library: the limiter bounds itself, and an
-  observer or sink bounds its own work. A consumer-supplied WebAuthn metadata fetch now receives a
+  observers, the event sink and notification senders are not bounded by the library: the limiter
+  and the sender bound themselves, and an observer or sink bounds its own work. A lockout observer
+  shares the 5-second bound of the chain's failed-attempt record or reset that runs it. A consumer-supplied WebAuthn metadata fetch now receives a
   context with a deadline of `outbound.DefaultTimeout` (10 seconds). A fetch that runs past it
   refuses the registration, as any metadata failure does.
 - `notify.SMTPSender.Send` returns an error that matches the context's error (`context.Canceled`
