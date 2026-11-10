@@ -149,7 +149,7 @@ Two lanes. Lane A (10.1–10.4, Opus) owns `httpsec/chain.go`, `httpsec/exchange
 
 One Opus lane, after 10.17: it changes `httpsec/chain.go` and `httpsec/exchange.go` and every test that reads an exchange after its run, so it cannot share the package with another lane.
 
-- [ ] 12.1 Red: `TestChain_RunPutsBackTheContextItFound` (in the tree) is red with its 7 cases. Add `TestChain_RunPutsBackTheExchangeItFound`, a table over a chain that assembles a different chain on its own exchange, with an outer interceptor reading the exchange after the inner step returns. It has one case for each field decision 11 restores:
+- [x] 12.1 Red: `TestChain_RunPutsBackTheContextItFound` (in the tree) is red with its 7 cases. Add `TestChain_RunPutsBackTheExchangeItFound`, a table over a chain that assembles a different chain on its own exchange, with an outer interceptor reading the exchange after the inner step returns. It has one case for each field decision 11 restores:
   - `Session`, `Authentication` and `bearerCredential`;
   - the late-renewal fields;
   - `perRequest`, `csrfOptOut` and `raised`.
@@ -162,12 +162,12 @@ One Opus lane, after 10.17: it changes `httpsec/chain.go` and `httpsec/exchange.
   - control: an inner refusal is reported once.
 
   Run it, and report which cases fail. A field whose case passes before any change is reported, not restored. The main session then drops it from decision 11, the spec requirement and the proposal.
-- [ ] 12.2 Implement the restore in the step `Assemble` returns, deferred, for the context and every field 12.1 showed leaking, and clear `refusalReported` when an outermost run starts. Move the 12 helper sites and 26 tests that read an exchange after its run to read inside the terminal. Find them with gopls references on the helpers, then run the suite. Godoc on `Exchange`, `Exchange.Context` and `Chain.Assemble`: a run's state is read inside the terminal, and the step puts back what it found. Verify:
+- [x] 12.2 Implement the restore in the step `Assemble` returns, deferred, for the context and every field 12.1 showed leaking, and clear `refusalReported` when an outermost run starts. Move the 12 helper sites and 26 tests that read an exchange after its run to read inside the terminal. Find them with gopls references on the helpers, then run the suite. Godoc on `Exchange`, `Exchange.Context` and `Chain.Assemble`: a run's state is read inside the terminal, and the step puts back what it found. Verify:
   - 12.1 passes;
   - `go test ./httpsec/... -count=1 -race`, the ginsec and fibersec suites and the conformance suite pass;
   - `BenchmarkAssemble/run/8` is flat across `-benchtime=1000x` and `-benchtime=16000x`;
   - `benchstat` shows `Assemble/run/8` and `ChainRequest/0` and `/8` allocations unchanged from decision 5's figures.
-- [ ] 12.3 Changelog (main session): the `0.1.1` `Changed` entry says that an exchange's context, session and authentication read after the chain's step returns are what they were before the run. Verify by reading the entry against decision 11.
+- [x] 12.3 Changelog (main session): the `0.1.1` `Changed` entry says that an exchange's context, session and authentication read after the chain's step returns are what they were before the run. Verify by reading the entry against decision 11.
 - [ ] 12.4 Review group 12 with a fresh Opus reviewer that edits nothing, against decision 11, its spec requirement, and decisions 2, 4 and 5, whose rows it must not break. It enumerates how the change fails before judging it. Verify that every finding is fixed or recorded in `design.md`.
 
 ## 13. Work detached from the caller's cancellation has a deadline (decision 12; specs `security-state-stores`, `passkey-authentication`)
@@ -175,7 +175,7 @@ One Opus lane, after 10.17: it changes `httpsec/chain.go` and `httpsec/exchange.
 - [x] 13.1 **(maintainer decision)** Confirm decision 12's fixed bounds (5 s, 10 s for revocations) with no exported option in `v0.1.1`, or choose `v0.2.0` with an option. The reason for no option is Semantic Versioning's rule that a patch adds no API. `gorelease` does not enforce it for a `v0` base. If the maintainer chooses `v0.2.0`, stop: the main session revises decisions 8 and 12, task 9.1 and this group before any code.
 - [x] 13.2 Inventory (Sonnet, read-only): list every `context.WithoutCancel`, and every `context.Background()` or `context.TODO()` that detaches work, in production code across the workspace. Use a text search, since this is a call-site inventory, with gopls to find each site's callee. Put each site in decision 12's classes 1–5, with the kind of bound (write or revocation) for class 4, naming the callee and the site's handling of that callee's error. The main session records the table in decision 12 and settles any site the agent marks unsure.
 - [x] 13.3 `internal/detach` (Sonnet): red first, `TestBounded`, a table test asserting that the returned context has a deadline at most the given duration away, keeps the parent's values, is not cancelled when the parent is, and is cancelled by its own cancel function. Then implement `func Bounded(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)`, `const WriteTimeout = 5 * time.Second` and `const RevocationTimeout = 10 * time.Second`. Verify `go test -race -count=1 ./internal/detach/`.
-- [ ] 13.4 Bound the class-4 sites from 13.2's table, in lanes that each own their packages and those packages' tests:
+- [x] 13.4 Bound the class-4 sites from 13.2's table, in lanes that each own their packages and those packages' tests:
   - lane A (Sonnet): `authenticate/mfa` and `authenticate/passkey`;
   - lane A2 (Opus, because the fetch runs under singleflight): `authenticate/passkey/webauthn/metadata.go`;
   - lane B (Sonnet): `session` and `recovery`;
@@ -213,7 +213,7 @@ These are independent of groups 12 and 13 and of one another, so they run in par
 - [x] 14.3 `oidcprovider/events.go` (Sonnet): make the context value hold what the reuse event needs instead of a context. This is a refactor under the existing event tests. Show they bite by breaking the route temporarily, then restore it by editing it back. Verify `go test -race -count=1 ./oidcprovider/...`.
 - [x] 14.4 Godoc (Haiku, wording given by the main session): `expiry/sweep` `Start`, the signing-key lifecycle's `Start` and the memory session store's `Start` say the loop keeps the start context's values, a store transaction included, so start it from a context with no transaction attached. The `ginsec` package and `Middleware` godoc say that when the chain passed the request on, a gin middleware before the chain reads the chain's context on `c.Request` after `c.Next()` returns. The godoc of the session end observer and of the event sink says the library gives their context no deadline, so the consumer's code bounds its own work (decision 12, class 5). Verify with `go doc` and `make lint`.
 - [x] 14.5 Changelog (main session): the `0.1.1` `Changed` entry says that a cancelled SMTP send's error matches the context's error. Verify by reading the entry against decision 13.
-- [ ] 14.6 Review group 14 with a fresh Sonnet reviewer that edits nothing, against decisions 13 and 14 and the `email-notification` delta. It enumerates how the change fails before judging it. Verify that every finding is fixed or recorded in `design.md`.
+- [x] 14.6 Review group 14 with a fresh Sonnet reviewer that edits nothing, against decisions 13 and 14 and the `email-notification` delta. It enumerates how the change fails before judging it. Verify that every finding is fixed or recorded in `design.md`.
 
 ## Workflow follow-up
 

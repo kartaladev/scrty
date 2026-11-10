@@ -2064,9 +2064,11 @@ func TestFormLoginIgnoresQueryCredentials(t *testing.T) {
 // expectCancelThenFail wires the harness so the client hangs up after sending
 // its guess: the authenticator cancels the request context and refuses, and
 // the attempt store honours cancellation the way a SQL driver does. It returns
-// the context the store was handed, valid once the request has been served.
-func expectCancelThenFail(h *authHarness, cancel context.CancelFunc) *context.Context {
-	var recorded context.Context
+// what the store saw of the context it was handed, read when it was called:
+// the context ends with the call, so it cannot be inspected after the request
+// has been served.
+func expectCancelThenFail(h *authHarness, cancel context.CancelFunc) *storeCall {
+	recorded := &storeCall{}
 
 	h.authn.EXPECT().Authenticate(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(context.Context, identity.Credentials) (*authenticate.Authentication, error) {
@@ -2076,12 +2078,19 @@ func expectCancelThenFail(h *authHarness, cancel context.CancelFunc) *context.Co
 		})
 	h.attempts.EXPECT().RecordFailure(gomock.Any(), "ada", gomock.Any()).
 		DoAndReturn(func(ctx context.Context, _ string, _ time.Time) error {
-			recorded = ctx
+			recorded.reached = true
+			recorded.ctxErr = ctx.Err()
 
 			return ctx.Err()
 		})
 
-	return &recorded
+	return recorded
+}
+
+// storeCall is what an attempt store saw of the context of its call.
+type storeCall struct {
+	reached bool
+	ctxErr  error
 }
 
 // serveOn runs req through chain on an exchange built from ctx, because the
@@ -2106,12 +2115,12 @@ func TestLogin_RecordsFailureOnUncancellableContext(t *testing.T) {
 		option func(h *authHarness) httpsec.Option
 		// request builds the wrong-password request the client hangs up after.
 		request func(ctx context.Context) *http.Request
-		assert  func(t *testing.T, recorded context.Context)
+		assert  func(t *testing.T, recorded *storeCall)
 	}
 
-	failureReachedStore := func(t *testing.T, recorded context.Context) {
-		require.NotNil(t, recorded, "the failure must reach the attempt store")
-		assert.NoError(t, recorded.Err(),
+	failureReachedStore := func(t *testing.T, recorded *storeCall) {
+		require.True(t, recorded.reached, "the failure must reach the attempt store")
+		assert.NoError(t, recorded.ctxErr,
 			"the failure must be recorded on a context the client cannot cancel")
 	}
 
@@ -2148,7 +2157,7 @@ func TestLogin_RecordsFailureOnUncancellableContext(t *testing.T) {
 
 			serveOn(ctx, chain, tc.request(ctx))
 
-			tc.assert(t, *recorded)
+			tc.assert(t, recorded)
 		})
 	}
 }

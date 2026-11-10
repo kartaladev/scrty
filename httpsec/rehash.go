@@ -6,6 +6,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 )
 
@@ -60,7 +61,10 @@ func runRehash(ctx context.Context, log *slog.Logger, fn RehashFunc, up *authent
 		return
 	}
 
-	if err := fn(context.WithoutCancel(ctx), user, replaced, upgraded); err != nil {
+	write, cancel := detach.Bounded(ctx, detach.WriteTimeout)
+	defer cancel()
+
+	if err := fn(write, user, replaced, upgraded); err != nil {
 		log.LogAttrs(ctx, slog.LevelError, msgRehashFailed, diag.Failure("rehash-write", err)...)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/session"
 )
@@ -71,7 +72,12 @@ func (s *sessionTouch) Intercept(ex *Exchange, next Next) error {
 	// session without extending it.
 	ctx := context.WithoutCancel(ex.Context())
 
-	if tErr := s.sessions.Touch(ctx, ex.Session); tErr != nil {
+	// The write is bounded; the log below stays on ctx, so an expired bound is
+	// not read as the client hanging up.
+	touch, cancel := detach.Bounded(ctx, detach.WriteTimeout)
+	defer cancel()
+
+	if tErr := s.sessions.Touch(touch, ex.Session); tErr != nil {
 		// Deliberately not returned. This is bookkeeping: a store that cannot
 		// record activity must not mask the handler's result, nor turn a served
 		// request into a fault, and a session a concurrent logout has just

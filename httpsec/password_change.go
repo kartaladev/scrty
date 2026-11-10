@@ -8,6 +8,7 @@ import (
 
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/policy"
@@ -328,9 +329,8 @@ func (g *passwordChangeGate) clearFailures(reqCtx context.Context, username stri
 		return
 	}
 
-	ctx := context.WithoutCancel(reqCtx)
 	for _, store := range g.attempts {
-		if err := store.Reset(ctx, username); err != nil {
+		if err := resetBounded(reqCtx, store, username); err != nil {
 			g.log.LogAttrs(reqCtx, slog.LevelError, msgFailuresNotCleared,
 				diag.Failure("attempt-store", err)...)
 		}
@@ -502,4 +502,14 @@ func (g *passwordChangeGate) endpoints() []Endpoint {
 		declare("EnablePasswordChangeGate", "WithPasswordChangeEndpoint", OperationPasswordChange, g.path.at(),
 			MatchExact, OtherMethodsPassThrough, RequiresSession, http.MethodPost),
 	}
+}
+
+// resetBounded clears username in store under a context the caller cannot
+// cancel and that ends after detach.WriteTimeout, so one store's clearing
+// neither holds the request for ever nor spends the next store's budget.
+func resetBounded(ctx context.Context, store policy.AttemptStore, username string) error {
+	bounded, cancel := detach.Bounded(ctx, detach.WriteTimeout)
+	defer cancel()
+
+	return store.Reset(bounded, username)
 }

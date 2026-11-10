@@ -14,6 +14,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/notify"
@@ -835,7 +836,10 @@ func (i *enrolmentInterceptor) confirm(ex *Exchange, s *session.Session, method 
 // the error's Go type, never the failure's own text, which a store may word
 // with the user reference.
 func (i *enrolmentInterceptor) voidEmailCode(ctx context.Context, method mfa.Enroller, user identity.UserID, gen id.ID) {
-	if err := mfa.VoidEmailCode(context.WithoutCancel(ctx), method, user, gen); err != nil {
+	void, cancel := detach.Bounded(ctx, detach.WriteTimeout)
+	defer cancel()
+
+	if err := mfa.VoidEmailCode(void, method, user, gen); err != nil {
 		i.logSampled(ctx, slog.LevelError, reasonNotVoided, msgEmailCodeNotVoided,
 			diag.Failure(reasonNotVoided, err)...)
 	}
@@ -902,11 +906,13 @@ func (i *enrolmentInterceptor) notifyBound(ctx context.Context, user identity.Us
 		return
 	}
 
+	// The send runs on the detached context alone: the sender owns its bound.
+	// The loader and the resolver before it are each bounded as writes.
 	ctx = context.WithoutCancel(ctx)
 
 	reason := ""
 
-	to, err := i.contactOf(ctx, user)
+	to, err := i.boundedContactOf(ctx, user)
 	if err != nil {
 		// A failure is always logged, under the fault's own reason when it
 		// names one.
@@ -943,6 +949,30 @@ func (i *enrolmentInterceptor) contactOf(ctx context.Context, user identity.User
 	}
 
 	to, err := i.contact(ctx, details)
+	if err != nil {
+		return "", newEnrolmentFault(reasonContactUnresolved, msgContactUnresolved, err)
+	}
+
+	return to, nil
+}
+
+// boundedContactOf is contactOf for a context the caller cannot cancel: the
+// user loader and the contact resolver each run under their own write
+// deadline, so one that hangs neither holds the request for ever nor spends the
+// other's budget.
+func (i *enrolmentInterceptor) boundedContactOf(ctx context.Context, user identity.UserID) (string, error) {
+	load, cancelLoad := detach.Bounded(ctx, detach.WriteTimeout)
+	defer cancelLoad()
+
+	details, err := i.users.LoadByUserID(load, user)
+	if err != nil {
+		return "", newEnrolmentFault(reasonUserUnloadable, msgUserUnloadable, err)
+	}
+
+	resolve, cancelResolve := detach.Bounded(ctx, detach.WriteTimeout)
+	defer cancelResolve()
+
+	to, err := i.contact(resolve, details)
 	if err != nil {
 		return "", newEnrolmentFault(reasonContactUnresolved, msgContactUnresolved, err)
 	}
