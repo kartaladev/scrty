@@ -81,7 +81,7 @@
 ## 8. Integration gate
 
 - [x] 8.1 Run a whole-branch review with a fresh Opus reviewer that edits nothing. It checks the diff against every requirement in this change's two spec deltas and decisions 1–7, and enumerates how the change fails before judging it. Verify that every finding is fixed or declined in `design.md`.
-- [ ] 8.2 After groups 10 and 11 are complete, on the branch head, run `make check`, `make release-check VERSION=v0.1.1` (after task 9.1's file changes) and `openspec validate harden-chain-boundary --strict`, with Docker up so the conformance and integration suites run. Verify that all three are clean before the pull request is opened, and that CI on the pull request is green.
+- [x] 8.2 After groups 10 and 11 are complete, on the branch head, run `make check`, `make release-check VERSION=v0.1.1` (after task 9.1's file changes) and `openspec validate harden-chain-boundary --strict`, with Docker up so the conformance and integration suites run. Verify that all three are clean before the pull request is opened, and that CI on the pull request is green.
 
 ## 9. Release `v0.1.1` (decision 8)
 
