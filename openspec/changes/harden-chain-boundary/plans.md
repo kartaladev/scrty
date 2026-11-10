@@ -359,6 +359,19 @@ Task 11.1 is done: the dependency agent applied the updates in an isolated workt
 
 - [ ] **Step 1:** Dispatch a fresh Opus reviewer over the group 11 diff (the `go.mod`/`go.sum` changes, `ci.yml`, `token/`, `oidcprovider/`), against decision 9, the `token-issuance` and `oidc-provider-authorization` deltas, and the jwx 4.6.0 changes decision 9 lists. It enumerates how the change fails before judging it.
 
+### Task 10.9: The whole-branch review's open findings (maintainer)
+
+- [ ] **Step 1:** The maintainer chooses, for each finding in design.md's Open Questions, a fix or an accepted row. A fix starts from the matching test in `repro/httpsec_review108_repro_test.go.txt` as its red step, on Opus (security refusal logic on the hot path).
+
+### Task 10.10: Pin each header and publishing check on its own (Sonnet implementer)
+
+**Files:**
+- Test: `token/verifier_internal_test.go` (create, `package token`), `oidcprovider/authorize_internal_test.go` (create or extend, `package oidcprovider`), `httpsec/publish_inside_gates_internal_test.go` (extend)
+
+- [ ] **Step 1:** Table tests calling the unexported helpers directly: `matchesKey` refuses a header `alg` that differs from every key under its `kid`; the header reader refuses a missing and an empty `alg`; `namesAlgorithm` refuses a header `alg` that differs from the key's. Each must fail when that one check is removed (edit, run, edit back).
+- [ ] **Step 2:** A `publishingChain` test with a two-entry run stack whose top entry's terminal is running: the result is the entry below. It must fail when the running filter is removed.
+- [ ] **Step 3:** `go test -race -count=1 ./token/... ./oidcprovider/... ./httpsec/`. Expected: PASS.
+
 ### Task 11.7: Fold the group 11 review (Opus implementer: security verification logic; Opus reviewer in 10.8's whole-branch pass)
 
 **Files:**

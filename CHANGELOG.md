@@ -34,22 +34,25 @@ All three affect the `httpsec` chain in `github.com/kartaladev/scrty` `v0.1.0`.
   reached the handler with 200. A second chain run inside the first chain's gates, mounted through
   any adapter, could do the same with its own authenticator. `Exchange.PublishSession` now refuses a
   session while a request is inside the chain's gates, or inside another chain's gates that enclose
-  this run. As defence in depth, the authorization stage refuses a session that
+  this run, unless the publishing chain enables every gate the enclosing chain enables, so that its
+  own gates judge what it publishes. As defence in depth, the authorization stage refuses a session that
   still owes the challenge of a gate the chain enables, with that gate's own error.
 
 ### Changed
 
 - **BREAKING (request handling).** The chain answers `400` (`httpsec.ErrMalformedRequest`) to a
   request whose path holds a `.` or `..` segment, sent as is or percent-encoded, or whose
-  percent-encoding does not decode. The check runs before any interceptor, on every adapter, and has
-  no opt-out. Browsers never send such paths.
+  percent-encoding does not decode. The check runs after client resolution, whose own refusal wins
+  when both apply, and before any interceptor, on every adapter. It has no opt-out, and the 400
+  carries the same security headers as any other refusal. Browsers never send such paths.
 - **BREAKING (configuration).** `WithLogger`, `WithClock`, `WithPolicyEngine`,
   `WithRateLimiterFactory` and `WithErrorHandler` given more than once now fail `httpsec.New`, where
   the last value used to win silently. `EnableAuthorization` keeps its last-wins authorizer, and now
   refuses a nil authorizer in any of its calls.
 - **BREAKING (configuration).** `Exchange.PublishSession` returns an `httpsec.ErrConfig` error, and
   publishes nothing, when a session is published after the chain's gates have begun, or by a chain
-  run inside another chain's gates. Register a consumer authenticator at `OrderBearerToken`, no
+  run inside another chain's gates that lacks one of that chain's gates. A handler's in-process
+  forward through the same chain, or through a chain with the same gates, still publishes. Register a consumer authenticator at `OrderBearerToken`, no
   later: the recovery cool-down, just after it, judges a request by the session it carries when it
   runs. Mount a second chain outside the first chain's gates, or authenticate in the outer chain.
 - One chain mounted twice on a request, such as on a gin engine or fiber application and again on a
@@ -66,7 +69,9 @@ All three affect the `httpsec` chain in `github.com/kartaladev/scrty` `v0.1.0`.
   algorithm recorded on the key, so neither let a token through without the issuer's key.
 - Exported signatures use descriptive parameter names (no API change).
 - Dependencies: `github.com/lestrrat-go/jwx/v4` 4.6.0; `github.com/testcontainers/testcontainers-go`
-  and its postgres, redis and mailpit modules 0.45.0 (the `test` module only).
+  and its postgres, redis and mailpit modules 0.45.0 (the `test` module only). With jwx 4.6.0 a
+  token's negative `nbf` or `iat` parses as a date before 1970 instead of being refused, and a
+  malformed string date is refused when the token is parsed.
 
 ## [0.1.0] - 2026-11-09
 
