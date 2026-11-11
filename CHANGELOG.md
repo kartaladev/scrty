@@ -12,7 +12,7 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 
 ## [Unreleased]
 
-## [0.1.1] - 2026-11-10
+## [0.1.1] - 2026-11-11
 
 A patch release that fixes three security defects in `v0.1.0`, and retracts `v0.1.0`. Upgrade every
 scrty module to `v0.1.1`.
