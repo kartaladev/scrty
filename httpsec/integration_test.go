@@ -194,6 +194,7 @@ func TestChain_ClockMFA(t *testing.T) {
 			}
 
 			clk := clockwork.NewFakeClockAt(tc.at)
+			h.systemClock = true // the case supplies the chain's clock itself; a chain takes one
 			h.chainOpts = []httpsec.Option{httpsec.WithClock(clk)}
 
 			r := &clockMFARun{clk: clk, chain: h.bearerChain(t), session: h.pendingSession(t, factor.Password)}

@@ -64,6 +64,10 @@ const pwlMaxPasswordAge = 24 * time.Hour
 // the stub verifier. Only the user store and the token generator are
 // doubles.
 type pwlDeployment struct {
+	// ownEngine means a case supplies the chain's policy engine itself, so the
+	// deployment adds none: a chain takes one.
+	ownEngine bool
+
 	sessions *session.Sessions
 	users    *MockUserLoader
 	tokens   *MockGenerator
@@ -310,7 +314,6 @@ func (d *pwlDeployment) options(t *testing.T) []httpsec.Option {
 	}
 
 	opts := []httpsec.Option{
-		httpsec.WithPolicyEngine(engineOf(t, policies...)),
 		httpsec.EnableFormLogin(httpsec.FormLoginDeps{
 			Authenticator: authn, Sessions: d.sessions, Tokens: tokens, Attempts: must.Must(lockout.NewMemoryAttemptStore()),
 		}),
@@ -319,6 +322,10 @@ func (d *pwlDeployment) options(t *testing.T) []httpsec.Option {
 		httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: d.sessions, Users: d.users}, passkeyOpts...),
 		httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(tokens)),
 		httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: d.sessions}),
+	}
+
+	if !d.ownEngine {
+		opts = append([]httpsec.Option{httpsec.WithPolicyEngine(engineOf(t, policies...))}, opts...)
 	}
 
 	if d.passwordAge {

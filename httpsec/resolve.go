@@ -169,7 +169,7 @@ func (r *sessionResolver) resolve(ex *Exchange, id string) error {
 
 	now := r.phase.now()
 
-	if err := ex.PublishSession(&authenticate.Authentication{
+	if err := ex.publishSession(&authenticate.Authentication{
 		Principal:         principal,
 		Time:              now,
 		PasswordChangedAt: details.PasswordChangedAt,

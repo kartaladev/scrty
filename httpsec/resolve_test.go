@@ -42,11 +42,16 @@ func TestExchangePublishSession(t *testing.T) {
 		seenOK   bool
 		caller   *identity.Principal
 		callerOK bool
+		onEx     *session.Session
+		authn    *authenticate.Authentication
 	)
 
+	// The run's state is read inside the terminal, where it is live: the step
+	// puts the exchange back as it found it once the run returns.
 	run := chain.Assemble(func(ex *httpsec.Exchange) error {
 		seen, seenOK = httpsec.SessionFromContext(ex.Context())
 		caller, callerOK = identity.PrincipalFromContext(ex.Context())
+		onEx, authn = ex.Session, ex.Authentication
 
 		return nil
 	})
@@ -57,11 +62,11 @@ func TestExchangePublishSession(t *testing.T) {
 
 	require.True(t, seenOK, "the handler reads the published session")
 	assert.Equal(t, f.session.ID, seen.ID)
-	assert.Same(t, seen, ex.Session, "the exchange carries the same session")
+	assert.Same(t, seen, onEx, "the exchange carries the same session")
 
 	require.True(t, callerOK, "the caller is published with it")
 	assert.Equal(t, identity.UserID("u-1"), caller.ID)
-	require.NotNil(t, ex.Authentication)
+	require.NotNil(t, authn)
 
 	stored, err := f.sessions.Load(t.Context(), f.session.ID)
 	require.NoError(t, err)

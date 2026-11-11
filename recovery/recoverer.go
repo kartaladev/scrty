@@ -312,6 +312,8 @@ func WithClock(clk clock.Clock) Option {
 // event's contents, and the outcome stands; a sink that blocks holds the call
 // (see event.Sink). A nil sink, or the option given twice, is a
 // configuration error.
+//
+// The library gives the sink's context no deadline; bound your own work.
 func WithSecurityEvents(sink event.Sink) Option {
 	return func(c *config) { c.events.Set(sink) }
 }

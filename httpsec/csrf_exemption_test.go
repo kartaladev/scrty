@@ -41,6 +41,15 @@ func TestCSRF_Exemptions(t *testing.T) {
 		refusedCrossSite(t, s)
 	}
 
+	// refusedAtEntry is the chain's refusal of a dot segment, before CSRF
+	// protection or any exemption is consulted.
+	refusedAtEntry := func(t *testing.T, s served, err error) {
+		require.NoError(t, err)
+		require.ErrorIs(t, s.err, httpsec.ErrMalformedRequest)
+		assert.Equal(t, http.StatusBadRequest, httpsec.StatusForError(s.err))
+		assert.False(t, s.handlerRan, "a refused request never reaches the handler")
+	}
+
 	// notRefusedAsCrossSite is the back-channel endpoint reached: it answers
 	// the request itself, refusing a missing logout token, but CSRF protection
 	// did not refuse it.
@@ -72,8 +81,8 @@ func TestCSRF_Exemptions(t *testing.T) {
 		{name: "a trailing slash is another route", csrf: webhook, method: http.MethodPost, path: "/webhooks/payments/", assert: judged},
 		{name: "a case change is another route", csrf: webhook, method: http.MethodPost, path: "/Webhooks/payments", assert: judged},
 		{
-			name: "dot segments are another route", csrf: webhook,
-			method: http.MethodPost, path: "/webhooks/payments/../../settings", assert: judged,
+			name: "dot segments are refused at the entry", csrf: webhook,
+			method: http.MethodPost, path: "/webhooks/payments/../../settings", assert: refusedAtEntry,
 		},
 		{name: "an exempt prefix exempts nothing under it", csrf: webhook, method: http.MethodPost, path: "/webhooks/payments/refunds", assert: judged},
 		{name: "another method on an exempt path", csrf: webhook, method: http.MethodDelete, path: "/webhooks/payments", assert: judged},
@@ -81,19 +90,19 @@ func TestCSRF_Exemptions(t *testing.T) {
 		{name: "an encoded trailing slash", csrf: webhook, method: http.MethodPost, path: "/webhooks/payments%2F", assert: judged},
 		{name: "an encoded case change", csrf: webhook, method: http.MethodPost, path: "/%57ebhooks/payments", assert: judged},
 		{
-			name: "encoded dot segments", csrf: webhook,
-			method: http.MethodPost, path: "/webhooks/payments%2F..%2F..%2Fsettings", assert: judged,
+			name: "encoded dot segments are refused at the entry", csrf: webhook,
+			method: http.MethodPost, path: "/webhooks/payments%2F..%2F..%2Fsettings", assert: refusedAtEntry,
 		},
 		{name: "an encoded slash is not the exempt path", csrf: webhook, method: http.MethodPost, path: "/webhooks%2Fpayments", assert: judged},
 		{name: "an encoded letter is not the exempt path", csrf: webhook, method: http.MethodPost, path: "/webhooks/p%61yments", assert: judged},
 		{name: "a wildcard does not match a segment holding an encoded slash", csrf: events, method: http.MethodPost, path: "/webhooks/a%2Fb/events", assert: judged},
-		{name: "a wildcard does not match an encoded dot segment", csrf: events, method: http.MethodPost, path: "/webhooks/%2E%2E/events", assert: judged},
+		{name: "an encoded dot segment under a wildcard is refused at the entry", csrf: events, method: http.MethodPost, path: "/webhooks/%2E%2E/events", assert: refusedAtEntry},
 		{name: "a wildcard matches an encoded segment", csrf: events, method: http.MethodPost, path: "/webhooks/str%69pe/events", assert: exempt},
 		{name: "a wildcard matches one segment", csrf: events, method: http.MethodPost, path: "/webhooks/stripe/events", assert: exempt},
 		{name: "a wildcard does not match two segments", csrf: events, method: http.MethodPost, path: "/webhooks/a/b/events", assert: judged},
 		{name: "a wildcard does not match an empty segment", csrf: events, method: http.MethodPost, path: "/webhooks//events", assert: judged},
-		{name: "a wildcard does not match a dot segment", csrf: events, method: http.MethodPost, path: "/webhooks/../events", assert: judged},
-		{name: "a wildcard does not match a current-directory segment", csrf: events, method: http.MethodPost, path: "/webhooks/./events", assert: judged},
+		{name: "a dot segment under a wildcard is refused at the entry", csrf: events, method: http.MethodPost, path: "/webhooks/../events", assert: refusedAtEntry},
+		{name: "a current-directory segment under a wildcard is refused at the entry", csrf: events, method: http.MethodPost, path: "/webhooks/./events", assert: refusedAtEntry},
 		{name: "a wildcard pattern does not match a trailing slash", csrf: events, method: http.MethodPost, path: "/webhooks/stripe/events/", assert: judged},
 		{
 			name:  "back-channel logout is exempt by default",

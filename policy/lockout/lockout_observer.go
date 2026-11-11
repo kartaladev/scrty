@@ -152,6 +152,15 @@ type Observer func(ctx context.Context, report Report)
 // identifier may both report ReportReleased. Reports are advisory; the reset
 // itself is unaffected.
 //
+// The observer runs synchronously on the context of the call that triggered
+// the report, unchanged: that context's deadline, cancellation and values
+// reach it, a store transaction the consumer attached included. The lockout
+// adds no bound of its own, but the httpsec chain's failure records and
+// password-change resets give that context a 5-second bound, which the
+// observer shares with the store write. A direct caller's context reaches it
+// as given. The observer bounds its own work and should finish well inside
+// that; one that blocks holds the call up.
+//
 // A nil observer is a configuration error rather than "none": a consumer who
 // passed one meant to be told, and would hear nothing.
 func WithObserver(observer Observer) Option {

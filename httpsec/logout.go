@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/kartaladev/scrty/event"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/session"
@@ -170,7 +171,12 @@ func (l *logout) end(ctx context.Context, s *session.Session) error {
 		}
 	}
 
-	n, err := l.sessions.Logout(detached, s.UserID, s.FamilyID)
+	// The revocation is bounded: a store that hangs must not hold the request
+	// goroutine for ever. The provider's own end above keeps its own bound.
+	revoke, cancel := detach.Bounded(ctx, detach.RevocationTimeout)
+	defer cancel()
+
+	n, err := l.sessions.Logout(revoke, s.UserID, s.FamilyID)
 	if err != nil && !errors.Is(err, session.ErrNotFound) {
 		return err
 	}

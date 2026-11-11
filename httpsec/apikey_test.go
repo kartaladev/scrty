@@ -767,7 +767,7 @@ func serveAPIKey(ctx context.Context, c *httpsec.Chain, header string) served {
 	out := served{rec: httptest.NewRecorder()}
 	run := c.Assemble(func(ex *httpsec.Exchange) error { //nolint:contextcheck // the exchange carries the request context, and begin reads it through ex.Context()
 		out.handlerRan = true
-		out.handled = ex
+		out.handled = inTerminal(ex)
 
 		return nil
 	})

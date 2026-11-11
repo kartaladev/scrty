@@ -80,6 +80,9 @@ func (i *reauthInterceptor) resolve(ex *Exchange, s *session.Session, method mfa
 	emitEvent(ctx, sessionEvent(event.Reauthenticated, event.OutcomeSuccess, rotated))
 	emitEvent(ctx, sessionEvent(event.SessionRenewed, event.OutcomeSuccess, rotated))
 
+	// Set on the exchange and on the context for what runs inside this run. The
+	// chain's step puts the exchange back when it returns, so code after the
+	// step does not see the rotated session; read it in the terminal.
 	ex.Session = rotated
 	ex.SetContext(withSession(ex.Context(), rotated))
 

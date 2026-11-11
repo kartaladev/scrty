@@ -728,11 +728,11 @@ func (c *Chain) Middleware() func(http.Handler) http.Handler {
 			// cancellation set before the chain survive it.
 			ex := NewExchange(r.Context(), NewHTTPRequest(r), NewHTTPResponseWriter(w))
 
-			// The chain is folded around this request's handler rather than once
-			// per mount, because the terminal is the only place that still holds
-			// the framework's own writer and request, and smuggling them through
-			// the exchange would make every interceptor able to reach past the
-			// abstraction the chain exists to present.
+			// The fold is built once per chain; only this request's terminal is
+			// recorded per request, because the terminal is the only place that
+			// still holds the framework's own writer and request, and smuggling
+			// them through the exchange would make every interceptor able to
+			// reach past the abstraction the chain exists to present.
 			//nolint:contextcheck // ex.Context() is derived from r.Context(), which is what is written back here
 			run := c.Assemble(func(ex *Exchange) error {
 				downstream.ServeHTTP(w, r.WithContext(ex.Context()))

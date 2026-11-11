@@ -2,8 +2,10 @@ package oidcprovider_test
 
 import (
 	"context"
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"errors"
@@ -273,6 +275,20 @@ func (h *hintFixture) issued(t *testing.T, typ, iss string, at time.Time) string
 	require.NoError(t, err)
 
 	return raw
+}
+
+// rs256 signs a hand-built signing input with key, as the key's holder would, so a hint can
+// carry a header no JOSE library writes: one with no alg, or an alg that is not a string.
+func rs256(t *testing.T, key crypto.Signer) func(string) []byte {
+	t.Helper()
+
+	return func(input string) []byte {
+		digest := sha256.Sum256([]byte(input))
+		signature, err := key.Sign(rand.Reader, digest[:], crypto.SHA256)
+		require.NoError(t, err)
+
+		return signature
+	}
 }
 
 // roundTripFunc is a transport written as a function.
@@ -844,6 +860,19 @@ func TestValidateAuthorizationRequest(t *testing.T) {
 		{name: "hint under HS256, keyed by the public key", params: set("id_token_hint", signed(t, "HS256", publicDER, idHeader, hintClaims(nil))), assert: refused(oidcprovider.CodeInvalidRequest)},
 		{name: "hint under an algorithm its key does not verify", params: set("id_token_hint", signed(t, "PS256", hints.private, idHeader, hintClaims(nil))), assert: refused(oidcprovider.CodeInvalidRequest)},
 		{name: "hint wrapping a token of its own", params: set("id_token_hint", signedPayload(t, "RS256", hints.private, idHeader, []byte(signed(t, "RS256", hints.private, idHeader, hintClaims(nil))))), assert: refused(oidcprovider.CodeInvalidRequest)},
+		{name: "hint built by hand under alg RS256 from this provider", params: set("id_token_hint", unsigned(t, map[string]any{"alg": "RS256", "kid": publishedKid, "typ": token.TypeIDToken}, hintClaims(nil), rs256(t, hints.private))), assert: proceeds(func(t *testing.T, r *oidcprovider.PendingRequest) {
+			t.Helper()
+			assert.Equal(t, "u-1", r.IDTokenHintSubject)
+		})},
+		{name: "hint naming no alg, signed with a published key", params: set("id_token_hint", unsigned(t, map[string]any{"kid": publishedKid, "typ": token.TypeIDToken}, hintClaims(nil), rs256(t, hints.private))), assert: refused(oidcprovider.CodeInvalidRequest)},
+		{name: "hint naming an empty alg, signed with a published key", params: set("id_token_hint", unsigned(t, map[string]any{"alg": "", "kid": publishedKid, "typ": token.TypeIDToken}, hintClaims(nil), rs256(t, hints.private))), assert: refused(oidcprovider.CodeInvalidRequest)},
+		{name: "hint naming an alg that is not a string, signed with a published key", params: set("id_token_hint", unsigned(t, map[string]any{"alg": 1, "kid": publishedKid, "typ": token.TypeIDToken}, hintClaims(nil), rs256(t, hints.private))), assert: refused(oidcprovider.CodeInvalidRequest)},
+		{name: "hint naming RS384 over its published key's RS256 signature", params: set("id_token_hint", unsigned(t, map[string]any{"alg": "RS384", "kid": publishedKid, "typ": token.TypeIDToken}, hintClaims(nil), rs256(t, hints.private))), assert: refused(oidcprovider.CodeInvalidRequest)},
+		{name: "hint naming none over its published key's RS256 signature", params: set("id_token_hint", unsigned(t, map[string]any{"alg": "none", "kid": publishedKid, "typ": token.TypeIDToken}, hintClaims(nil), rs256(t, hints.private))), assert: refused(oidcprovider.CodeInvalidRequest)},
+		{name: "hint naming no alg under an unpublished kid counts as none", params: set("id_token_hint", unsigned(t, map[string]any{"kid": "retired", "typ": token.TypeIDToken}, hintClaims(nil), rs256(t, hints.foreign))), assert: proceeds(func(t *testing.T, r *oidcprovider.PendingRequest) {
+			t.Helper()
+			assert.Empty(t, r.IDTokenHintSubject)
+		})},
 		{name: "hint under an unpublished kid counts as none", params: set("id_token_hint", signed(t, "RS256", hints.foreign, map[string]any{"kid": "retired", "typ": "JWT"}, hintClaims(nil))), assert: proceeds(func(t *testing.T, r *oidcprovider.PendingRequest) {
 			t.Helper()
 			assert.Empty(t, r.IDTokenHintSubject)

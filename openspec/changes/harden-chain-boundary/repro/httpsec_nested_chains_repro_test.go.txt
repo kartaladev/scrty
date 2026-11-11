@@ -1,0 +1,75 @@
+package httpsec_test
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/authorize"
+	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/session"
+)
+
+// Spec: "SHALL apply to a chain run inside them unless that chain enables every
+// gate the enclosing chain enables." A covering chain nested on the same exchange
+// should publish.
+func TestChain_CoveringChainOnSharedExchangePublishes(t *testing.T) {
+	f := newResolveFixture(t)
+	probe := &publishProbe{}
+
+	outer, err := httpsec.New(httpsec.WithSessions(f.sessions), httpsec.EnablePasswordChangeGate(f.sessions))
+	require.NoError(t, err)
+	inner, err := httpsec.New(httpsec.WithSessions(f.sessions), httpsec.EnablePasswordChangeGate(f.sessions),
+		httpsec.RegisterInterceptor(publishingAuthenticator(f.sessions, f.session.ID, false, probe), httpsec.OrderBearerToken))
+	require.NoError(t, err)
+
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders", nil)
+	ex := httpsec.NewExchange(t.Context(), httpsec.NewHTTPRequest(r), httpsec.NewHTTPResponseWriter(httptest.NewRecorder()))
+
+	err = outer.Assemble(inner.Assemble(func(*httpsec.Exchange) error { return nil }))(ex)
+
+	require.True(t, probe.reached)
+	require.NoError(t, probe.err, "a chain enabling every gate of the enclosing chain was refused")
+	require.NoError(t, err)
+}
+
+// A gated chain mounted inside a gateless chain that published a session owing
+// a second factor: does the gated chain's handler get that session?
+func TestChain_GatedChainInsideGatelessChainServesOwingSession(t *testing.T) {
+	f := newResolveFixture(t)
+	s, err := f.sessions.Load(t.Context(), f.session.ID)
+	require.NoError(t, err)
+	s.MFA = session.MFAPending
+	require.NoError(t, f.sessions.Save(t.Context(), s))
+
+	probe := &publishProbe{}
+	outer, err := httpsec.New(httpsec.WithSessions(f.sessions),
+		httpsec.RegisterInterceptor(publishingAuthenticator(f.sessions, f.session.ID, false, probe), httpsec.OrderBearerToken))
+	require.NoError(t, err)
+
+	inner, err := httpsec.New(httpsec.WithSessions(f.sessions), enableMFAFor(t),
+		httpsec.EnableAuthorization(NewMockAuthorizer(gomock.NewController(t)), authorize.Rule[httpsec.Request]{
+			Match: func(httpsec.Request) bool { return true }, Require: authorize.Authenticated(),
+		}))
+	require.NoError(t, err)
+
+	var served *session.Session
+	var authed bool
+	h := outer.Middleware()(inner.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		served, _ = httpsec.SessionFromContext(r.Context())
+		_, authed = authenticate.AuthenticationFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders", nil))
+
+	require.NoError(t, probe.err)
+	assert.NotEqual(t, http.StatusOK, rec.Code,
+		"the MFA-gated chain served its handler a session owing a second factor (authenticated=%v, MFA=%v)", authed, served != nil && served.MFA == session.MFAPending)
+}

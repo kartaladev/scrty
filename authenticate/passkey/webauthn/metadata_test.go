@@ -738,3 +738,104 @@ func TestMetadataSource_CallerContext(t *testing.T) {
 		})
 	}
 }
+
+// fetchCtxKey carries a value from the registration's context, to see it
+// reach the consumer's fetch.
+type fetchCtxKey struct{}
+
+// fetchSeen is what a consumer fetch saw of its context.
+type fetchSeen struct {
+	deadline    time.Time
+	hasDeadline bool
+	value       any
+	ended       time.Duration // how long after the fetch started its context ended
+	endErr      error
+}
+
+// TestMetadata_ConsumerFetchHasDeadline pins that a consumer-supplied BLOB
+// fetch receives a context with a deadline of outbound.DefaultTimeout from
+// the start of the fetch, keeping the registration's values, and that a fetch
+// ended by that deadline refuses the registration as any metadata failure
+// does.
+//
+// It stands apart from TestMetadataSource_CallerContext: each case runs in a
+// synctest bubble, so the deadline is judged on the bubble's fake clock and
+// the 10-second wait costs no wall time.
+func TestMetadata_ConsumerFetchHasDeadline(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// fetch is the consumer's fetch; it records what it saw in seen.
+		fetch  func(ctx context.Context, seen *fetchSeen, release <-chan struct{}) ([]byte, error)
+		assert func(t *testing.T, start time.Time, seen fetchSeen, o outcome)
+	}
+
+	cases := []testCase{
+		{
+			name: "the fetch's context carries the registration's values and a deadline of outbound.DefaultTimeout",
+			fetch: func(ctx context.Context, seen *fetchSeen, _ <-chan struct{}) ([]byte, error) {
+				seen.deadline, seen.hasDeadline = ctx.Deadline()
+				seen.value = ctx.Value(fetchCtxKey{})
+				// Simulate the deadline passing without waiting for it.
+				return nil, context.DeadlineExceeded
+			},
+			assert: func(t *testing.T, start time.Time, seen fetchSeen, o outcome) {
+				require.True(t, seen.hasDeadline, "the consumer's fetch got a context with no deadline")
+				assert.Equal(t, start.Add(outbound.DefaultTimeout), seen.deadline)
+				assert.Equal(t, "registration value", seen.value)
+				require.ErrorIs(t, o.err, passkey.ErrAttestationRefused)
+				assert.NotErrorIs(t, o.err, context.DeadlineExceeded, "the fetch's own error reached the caller")
+				assert.Nil(t, o.nc)
+			},
+		},
+		{
+			name: "a fetch that waits on its context is ended at the deadline and the registration is refused",
+			fetch: func(ctx context.Context, seen *fetchSeen, release <-chan struct{}) ([]byte, error) {
+				begun := time.Now()
+				select {
+				case <-ctx.Done():
+					seen.ended, seen.endErr = time.Since(begun), ctx.Err()
+					return nil, ctx.Err()
+				case <-release:
+					return nil, errors.New("released by the test: the context never ended")
+				}
+			},
+			assert: func(t *testing.T, _ time.Time, seen fetchSeen, o outcome) {
+				require.ErrorIs(t, seen.endErr, context.DeadlineExceeded, "the fetch's context did not expire")
+				assert.Equal(t, outbound.DefaultTimeout, seen.ended)
+				require.ErrorIs(t, o.err, passkey.ErrAttestationRefused)
+				assert.NotErrorIs(t, o.err, context.DeadlineExceeded, "the fetch's own error reached the caller")
+				assert.Nil(t, o.nc)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				e := newAttestationEnv(t)
+				release := make(chan struct{})
+				var seen fetchSeen
+				src := webauthn.MetadataBlob(func(ctx context.Context) ([]byte, error) {
+					return tc.fetch(ctx, &seen, release)
+				}, webauthn.WithMDSRoot(e.mdsRoot.cert))
+				r := &gatedRegistrar{env: e, v: newVerifier(t, webauthn.WithTrustedAttestation(src))}
+				body := r.body(t)
+
+				// The caller waits well past the fetch's deadline, so a fetch
+				// with none is seen as such rather than as a deadlock.
+				ctx, cancel := context.WithTimeout(context.WithValue(t.Context(), fetchCtxKey{}, "registration value"), 6*outbound.DefaultTimeout)
+				defer cancel()
+
+				start := time.Now()
+				o := r.register(ctx, body)
+				close(release)
+				synctest.Wait() // the fetch has returned; seen is settled
+
+				tc.assert(t, start, seen, o)
+			})
+		})
+	}
+}

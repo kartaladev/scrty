@@ -30,6 +30,22 @@
 // logging or metrics, therefore goes before the chain, where it still observes
 // the response the chain wrote on the way back out.
 //
+// # Routes registered before the chain, and a chain mounted twice
+//
+// The chain guards what gin dispatches after Use adds it. A route registered
+// before the middleware is added is not guarded by the chain, so mount the
+// chain before registering the routes it must protect.
+//
+// Mounting one chain twice on a request, for example on the engine and again on
+// a group, runs it once: the second mount lets the request through. Two
+// different chains both run, each counting its own attempts.
+//
+// The second mount lets the request through as the first mount judged it. A
+// middleware placed between the two mounts that changes what a rule reads (the
+// host, a header, the query) is therefore not judged again, and neither is a
+// request that HandleContext re-dispatches on the same path, which is judged as
+// the first pass was: put such middleware before the first mount.
+//
 // # Refusals
 //
 // A refusal is registered on gin's error channel and answered with the status
@@ -83,4 +99,10 @@
 // Guards are built with an authorizer, with WithChainAuthorizer to rely on the
 // one the chain publishes on each request, or with both. Building them with
 // neither fails with an error wrapping httpsec.ErrConfig.
+//
+// When the chain passes the request on, c.Request carries the chain's context
+// afterwards, so a gin middleware registered before the chain reads that context
+// after c.Next() returns. A request refused before the chain reached the gin
+// handlers keeps its c.Request; one refused after them (an interceptor that
+// returns an error after next) keeps the chain's context.
 package ginsec

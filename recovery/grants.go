@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/depfault"
@@ -102,12 +103,19 @@ func WithoutRecoveryGrantRevocation() Option {
 // behind fixed text, a dependency failure: at ERROR, or at DEBUG when ctx's own
 // end cut it short. It is marked depfault.ErrFailed too, so a revoker's error
 // that wraps a refusal reports no refusal.
-func (r *Recoverer) revokeGrantsFirst(ctx context.Context, user identity.UserID) error {
+//
+// A bound above zero runs the revoker under a context detached from ctx's
+// cancellation that ends after bound; the failure is still logged and
+// classified under ctx, so the bound's own end is never read as a hang-up. Zero
+// runs the revoker on ctx itself.
+func (r *Recoverer) revokeGrantsFirst(ctx context.Context, user identity.UserID, bound time.Duration) error {
 	if r.grants == nil {
 		return nil
 	}
 
-	err := r.grants.RevokeUserGrants(ctx, user, grantRevocationCause)
+	call := func(c context.Context) error { return r.grants.RevokeUserGrants(c, user, grantRevocationCause) }
+
+	err := maybeBounded(ctx, bound, call)
 	if err == nil {
 		return nil
 	}

@@ -656,6 +656,19 @@ func (p *Provider) judgeHint(ctx context.Context, raw string) (string, hintVerdi
 	return subject, hintAccepted, nil
 }
 
+// namesAlgorithm reports whether a hint's header names signature, the algorithm of the
+// published key its kid selects: RFC 7515 section 4.1.1 requires the header to name one, and
+// RFC 8725 section 3.1 asks a verifier to check it. The signature is checked under the
+// published key's algorithm whatever the header says, but the JOSE stack's answers to a
+// header naming none, or another, are its defaults and have changed between releases, so the
+// refusal is the provider's own and holds whatever the stack does next. A header whose alg is
+// empty or not a string does not parse, and is refused before this.
+func namesAlgorithm(header jws.Headers, signature jwa.SignatureAlgorithm) bool {
+	alg, ok := header.Algorithm()
+
+	return ok && alg.String() != "" && alg.String() == signature.String()
+}
+
 // judgeHintToken is judgeHint, handing an accepted hint's token to a caller reading more of
 // it than its subject.
 func (p *Provider) judgeHintToken(ctx context.Context, raw string) (jwt.Token, hintVerdict, error) {
@@ -683,9 +696,15 @@ func (p *Provider) judgeHintToken(ctx context.Context, raw string) (jwt.Token, h
 		return nil, hintRefused, nil
 	}
 
+	// After the kid is found, so a hint under a retired key still counts as none, and after
+	// the key's algorithm is known, so a key the provider cannot use is an outage whatever
+	// the hint's header names.
 	signature, known := jwa.LookupSignatureAlgorithm(published[i].Alg)
 	if !known {
 		return nil, hintRefused, errUnusableKey
+	}
+	if !namesAlgorithm(header, signature) {
+		return nil, hintRefused, nil
 	}
 	key, err := jwk.Import[jwk.Key](published[i].Key)
 	if err != nil {

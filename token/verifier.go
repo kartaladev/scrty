@@ -226,9 +226,23 @@ func (c *config) verify(ctx context.Context, raw string) (*Claims, error) {
 		return nil, err
 	}
 
+	// The header is read once, here, by the parser that reads the signature's
+	// header. It must name an algorithm, and the one recorded on the key its kid
+	// selects, before anything is verified: the JOSE stack's own answers to a
+	// header naming none, or another, are its defaults and have changed between
+	// releases, so the refusal is this package's, and holds whatever the stack
+	// does next.
+	header, err := readHeader(raw)
+	if err != nil {
+		return nil, err
+	}
+	if err := header.matchesKey(keys); err != nil {
+		return nil, err
+	}
+
 	// The key is selected by the token's kid, and the algorithm recorded on
-	// that key checks the signature, so a header naming another algorithm — or
-	// none — fails. Requiring the kid is the default; it is never relaxed.
+	// that key checks the signature. Requiring the kid is the default; it is
+	// never relaxed.
 	//
 	// The validation rules were built once, at construction. They are only
 	// read from here, never appended to, because the slice is shared by every
@@ -243,9 +257,9 @@ func (c *config) verify(ctx context.Context, raw string) (*Claims, error) {
 		return nil, classify(err)
 	}
 
-	// After the signature, so what is read is what the key signed, and before
+	// After the signature, so what is judged is what the key signed, and before
 	// anything is handed back.
-	if err := c.checkTokenType(raw); err != nil {
+	if err := c.checkTokenType(header); err != nil {
 		return nil, err
 	}
 
@@ -263,27 +277,77 @@ func (c *config) verify(ctx context.Context, raw string) (*Claims, error) {
 // never rendered: it is the presenter's input.
 var errOtherTokenType = errors.New("the token does not declare the type this verifier is for")
 
+// errNoAlgorithm is the cause a header naming no algorithm wraps. Its text
+// carries no header value. An error the JOSE stack returns for a header it
+// cannot read is wrapped as it is, and may quote what the header held.
+var errNoAlgorithm = errors.New("the token header does not name its algorithm")
+
+// errOtherAlgorithm is the cause a header naming an algorithm other than its
+// key's wraps. Its text carries neither algorithm.
+var errOtherAlgorithm = errors.New("the token header names an algorithm other than its key's")
+
+// tokenHeader is what verification reads from a token's protected header.
+type tokenHeader struct {
+	alg         string
+	kid         string
+	typ         string
+	declaresTyp bool
+}
+
+// matchesKey refuses a header whose alg is not the algorithm recorded on the
+// key its kid selects, as RFC 8725 section 3.1 asks a verifier to check. A key
+// source publishes one key per kid, but should it publish more, every one of
+// them must record the header's algorithm, so no key is tried under another.
+// A kid no key carries, or none at all, is left to the JOSE stack, which
+// refuses it as a token no published key signed.
+func (h tokenHeader) matchesKey(keys []signingkey.PublicKey) error {
+	for _, pk := range keys {
+		if pk.Kid == h.kid && pk.Alg != h.alg {
+			return fmt.Errorf("%w: %w", ErrInvalid, errOtherAlgorithm)
+		}
+	}
+
+	return nil
+}
+
+// readHeader reads raw's one protected header and refuses it when it names no
+// algorithm, or an empty one, as RFC 7515 section 4.1.1 requires it to. A header
+// whose alg is empty, unknown or not a string does not parse, and is refused here
+// too; the emptiness check below holds whatever the parser accepts next.
+//
+// It parses with the JOSE stack rather than decoding the header here, so the
+// header judged is the one the signature covers, and a member spelled TYP or ALG
+// stays a member of another name.
+func readHeader(raw string) (tokenHeader, error) {
+	message, err := jws.Parse([]byte(raw))
+	if err != nil {
+		return tokenHeader{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+
+	// canonicalCompact has held raw to a single signature; this holds whatever
+	// the parser makes of it.
+	signatures := message.Signatures()
+	if len(signatures) != 1 {
+		return tokenHeader{}, fmt.Errorf("%w: not exactly one signature", ErrInvalid)
+	}
+	protected := signatures[0].ProtectedHeaders()
+
+	alg, ok := protected.Algorithm()
+	if !ok || alg.String() == "" {
+		return tokenHeader{}, fmt.Errorf("%w: %w", ErrInvalid, errNoAlgorithm)
+	}
+
+	kid, _ := protected.KeyID()
+	typ, declared := protected.Type()
+
+	return tokenHeader{alg: alg.String(), kid: kid, typ: typ, declaresTyp: declared}, nil
+}
+
 // checkTokenType refuses a verified token whose typ is not the verifier's, so one
 // kind of token is not accepted as another where keys, issuer and audience are
 // shared.
-//
-// It parses the header with the JOSE stack rather than decoding it here, so the
-// type is read by the parser that read the signature's header, and a member
-// spelled TYP stays a member of another name.
-func (c *config) checkTokenType(raw string) error {
-	message, err := jws.Parse([]byte(raw))
-	if err != nil {
-		return fmt.Errorf("%w: %w", ErrInvalid, err)
-	}
-
-	// canonicalCompact has held raw to a single signature.
-	signatures := message.Signatures()
-	if len(signatures) != 1 {
-		return fmt.Errorf("%w: %w", ErrInvalid, errOtherTokenType)
-	}
-
-	typ, ok := signatures[0].ProtectedHeaders().Type()
-	if !ok || normalizeTokenType(typ) != normalizeTokenType(c.tokenType) {
+func (c *config) checkTokenType(header tokenHeader) error {
+	if !header.declaresTyp || normalizeTokenType(header.typ) != normalizeTokenType(c.tokenType) {
 		return fmt.Errorf("%w: %w", ErrInvalid, errOtherTokenType)
 	}
 

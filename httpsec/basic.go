@@ -2,7 +2,6 @@ package httpsec
 
 import (
 	"bytes"
-	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/pkg/logsample"
@@ -222,7 +222,10 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 
 			// The lockout's view reports a lock this failure decides, with the
 			// factor the context names.
-			recordCtx := eventsink.WithFactor(context.WithoutCancel(ctx), factor.Basic)
+			bounded, cancel := detach.Bounded(ctx, detach.WriteTimeout)
+			defer cancel()
+
+			recordCtx := eventsink.WithFactor(bounded, factor.Basic)
 			if recErr := b.attempts.RecordFailure(recordCtx, username, now); recErr != nil {
 				b.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
 					diag.Failure("attempt-store", recErr)...)

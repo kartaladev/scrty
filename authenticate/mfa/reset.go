@@ -194,6 +194,8 @@ func WithResetMessage(build func(at time.Time) (subject, body string)) ResetOpti
 // its own, without the event's contents, and the reset goes on; a sink that
 // blocks holds the reset (see event.Sink). A nil sink, or the option given
 // twice, is an ErrConfig, returned before anything is removed.
+//
+// The library gives the sink's context no deadline; bound your own work.
 func WithResetSecurityEvents(sink event.Sink) ResetOption {
 	return func(c *resetConfig) { c.events.Set(sink) }
 }

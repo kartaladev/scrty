@@ -45,6 +45,10 @@ type signalsSetup struct {
 	// withoutBearer leaves the session bearer off.
 	withoutBearer bool
 
+	// ownClock leaves WithClock off the chain's own options, for a row whose opts supply it: a
+	// chain takes one.
+	ownClock bool
+
 	// wrap decorates the session store.
 	wrap func(session.Store) session.Store
 
@@ -87,7 +91,11 @@ func newSignalsFixture(t *testing.T, setup signalsSetup) *signalsFixture {
 	f.users = NewMockUserLoader(gomock.NewController(t))
 	f.users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(storedUser(), nil).AnyTimes()
 
-	opts := []httpsec.Option{httpsec.WithClock(f.clk)}
+	var opts []httpsec.Option
+	if !setup.ownClock {
+		opts = append(opts, httpsec.WithClock(f.clk))
+	}
+
 	if !setup.withoutBearer {
 		opts = append(opts, httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: f.sessions, Users: f.users}))
 	}

@@ -16,12 +16,18 @@
 //   - the OIDC provider's code exchange, which tells a spent code's failed
 //     reads apart from the caller leaving.
 //
+// A context that ended because the library's own bound on detached work passed
+// ([detach.Bounded]) is never a hang-up: the caller did not leave, the
+// dependency was too slow, and that is an outage.
+//
 // Other checks keep their own copies of the decision.
 package hangup
 
 import (
 	"context"
 	"errors"
+
+	"github.com/kartaladev/scrty/internal/detach"
 )
 
 // ByCaller reports whether err is ctx's own ending rather than a dependency
@@ -34,7 +40,15 @@ import (
 // errors.Is(err, context.DeadlineExceeded) or context.Canceled is never asked.
 // Nor is an error unrelated to ctx's end a hang-up just because ctx ended
 // beside it.
+//
+// A context whose bound from [detach.Bounded] has passed is not the caller's
+// ending, whatever err matches: the library gave up waiting on the dependency,
+// so ByCaller reports false and the failure is an outage.
 func ByCaller(ctx context.Context, err error) bool {
+	if detach.BoundReached(ctx) {
+		return false
+	}
+
 	ctxErr := ctx.Err()
 	if ctxErr == nil {
 		return false

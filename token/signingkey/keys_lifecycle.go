@@ -37,6 +37,9 @@ var ErrAlreadyShutdown = errors.New("signingkey: already shut down")
 // (WithClock) waits for all three to be waiting before advancing it — with
 // clockwork's fake, BlockUntilContext(ctx, 3) — or its advance may land before
 // a loop starts counting and never fire that loop.
+//
+// The loop keeps the values of ctx for its whole life, including a store transaction
+// attached to it; start it from a context with no transaction attached.
 func (km *Keys) Start(ctx context.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("%w: Start needs a non-nil context", ErrConfig)

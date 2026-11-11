@@ -240,6 +240,7 @@ func oidcScenarios() []Scenario {
 		oidcForgedBackchannelIsRefused(),
 		oidcUnknownProviderIsNotFound(),
 		oidcEncodedSlashInProviderPassesThrough(),
+		oidcEncodedDotSegmentAfterProviderIsRefused(),
 		oidcLogoutAnswersEndSessionURL(),
 	}
 }
@@ -476,7 +477,7 @@ func oidcEncodedSlashInProviderPassesThrough() Scenario {
 		Build: oidcBuild(nil),
 		Request: sending(RequestSpec{
 			Method:        http.MethodGet,
-			Path:          httpsec.DefaultOIDCAuthorizePath + OIDCProvider + "%2F..",
+			Path:          httpsec.DefaultOIDCAuthorizePath + OIDCProvider + "%2Fx",
 			ClientAddress: ClientAddress,
 		}),
 		Assert: func(t *testing.T, res Result) {
@@ -486,6 +487,30 @@ func oidcEncodedSlashInProviderPassesThrough() Scenario {
 			assert.True(t, res.NoRouteRan, "the chain passed the request on")
 			assert.Equal(t, NoRouteBody, res.Body)
 			assert.Empty(t, res.Header.Values("Set-Cookie"), "no flow was started")
+		},
+	}
+}
+
+// oidcEncodedDotSegmentAfterProviderIsRefused pins that every adapter refuses,
+// at the chain's entry, a path whose one decode holds a dot segment: the
+// provider segment's encoded slash followed by "..". The answer is 400 with no
+// body, no route runs and no flow starts.
+func oidcEncodedDotSegmentAfterProviderIsRefused() Scenario {
+	return Scenario{
+		Name:  "OIDC authorize with an encoded dot segment after the provider is refused at the entry",
+		Build: oidcBuild(nil),
+		Request: sending(RequestSpec{
+			Method:        http.MethodGet,
+			Path:          httpsec.DefaultOIDCAuthorizePath + OIDCProvider + "%2F..",
+			ClientAddress: ClientAddress,
+		}),
+		Assert: func(t *testing.T, res Result) {
+			require.ErrorIs(t, res.Refusal, httpsec.ErrMalformedRequest)
+			assert.Equal(t, http.StatusBadRequest, res.Status)
+			assert.Empty(t, res.Body)
+			assert.Empty(t, res.Header.Values("Set-Cookie"), "no flow was started")
+			assert.False(t, res.NoRouteRan, "the chain refused it before any no-route handler")
+			assert.False(t, res.RouteRan)
 		},
 	}
 }

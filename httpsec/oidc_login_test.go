@@ -540,6 +540,17 @@ func TestOIDCAuthorize(t *testing.T) {
 		assert.Zero(t, h.liveFlows(t))
 	}
 
+	// refusedAtEntry is the outcome of a path the chain refuses before any
+	// interceptor: a dot segment, which never reaches the authorize endpoint.
+	refusedAtEntry := func(t *testing.T, h *oidcHarness, out served) {
+		require.ErrorIs(t, out.err, httpsec.ErrMalformedRequest)
+		assert.Equal(t, http.StatusBadRequest, httpsec.StatusForError(out.err))
+		assert.False(t, out.handlerRan)
+		assert.Empty(t, out.rec.Header().Get("Location"))
+		assert.Empty(t, out.rec.Header().Values("Set-Cookie"))
+		assert.Zero(t, h.liveFlows(t))
+	}
+
 	passedThrough := func(t *testing.T, h *oidcHarness, out served) {
 		require.NoError(t, out.err)
 		assert.True(t, out.handlerRan)
@@ -593,8 +604,13 @@ func TestOIDCAuthorize(t *testing.T) {
 			},
 		},
 		{
-			name:    "an encoded slash in the provider segment is not a provider",
+			name:    "an encoded dot segment after the provider is refused at the entry",
 			request: get(corp + "%2F.."),
+			assert:  refusedAtEntry,
+		},
+		{
+			name:    "an encoded slash in the provider segment is not a provider",
+			request: get(corp + "%2Fx"),
 			assert:  notAProvider,
 		},
 		{
@@ -608,8 +624,13 @@ func TestOIDCAuthorize(t *testing.T) {
 			assert:  notAProvider,
 		},
 		{
-			name:    "a dot segment is not a provider",
+			name:    "a dot segment is refused at the entry",
 			request: get(httpsec.DefaultOIDCAuthorizePath + ".."),
+			assert:  refusedAtEntry,
+		},
+		{
+			name:    "a name holding dots is not a provider",
+			request: get(httpsec.DefaultOIDCAuthorizePath + ".." + testOIDCProvider),
 			assert:  notAProvider,
 		},
 		{

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -508,7 +509,10 @@ func (m *Sessions) judge(ctx context.Context, s *Session, now time.Time, p purpo
 func (m *Sessions) ended(ctx context.Context, s *Session, now time.Time) error {
 	// Detached so a client hanging up cannot turn a reuse verdict into a
 	// refusal that revokes nothing; values are kept, as in reuse.
-	used, err := m.store.SuccessorPresented(context.WithoutCancel(ctx), s.ID)
+	// Bounded by detach.WriteTimeout so a hung store cannot hold the request.
+	dctx, cancel := detach.Bounded(ctx, detach.WriteTimeout)
+	used, err := m.store.SuccessorPresented(dctx, s.ID)
+	cancel()
 	if err != nil {
 		return storeFailed(err, "session: whether the session's successor was used could not be read")
 	}
@@ -530,7 +534,12 @@ func (m *Sessions) reuse(ctx context.Context, s *Session, now time.Time) error {
 	// Detached so a client hanging up cannot abort the revocation;
 	// WithoutCancel keeps the context's values, so a consumer's transaction is
 	// still joined.
-	if _, err := m.store.DeleteFamily(context.WithoutCancel(ctx), s.FamilyID); err != nil {
+	// Bounded by detach.RevocationTimeout: a revocation that times out leaves
+	// a family live that should not be.
+	dctx, cancel := detach.Bounded(ctx, detach.RevocationTimeout)
+	_, err := m.store.DeleteFamily(dctx, s.FamilyID)
+	cancel()
+	if err != nil {
 		m.logger.LogAttrs(ctx, slog.LevelError,
 			"session: a superseded session was presented after its window; its family could not be revoked",
 			append(diag.Failure("delete_family", err), slog.String("family", s.FamilyID.String()))...)
@@ -652,7 +661,11 @@ func WithMaxFamilyLifetime(limit time.Duration) Option {
 //
 // The observer runs synchronously, after the family has been revoked, with
 // the context of the request that presented the reused session, so it can
-// write an audit record in the request's transaction. Its report carries the
+// write an audit record in the request's transaction. That context is the
+// request's own, unchanged: its deadline, cancellation and values reach the
+// observer, and the library adds no bound of its own, so the observer bounds
+// its own work. The revocation before it ran under a detached, bounded
+// context; the observer's did not. Its report carries the
 // user, the family and the two times, and never a session identifier. It
 // returns nothing: it cannot fail the request or undo the revocation. It is
 // not called when the revocation itself failed.

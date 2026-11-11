@@ -19,6 +19,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
@@ -274,9 +275,14 @@ func (t *TOTP) Verify(ctx context.Context, user identity.UserID, response []byte
 	// A success gives back its own charge, in the window it was charged in,
 	// so a user who proves the factor spends nothing. A caller hanging up
 	// after the code was accepted must not cost them an attempt, so the
-	// give-back does not inherit the request's cancellation. Failing to give
-	// it back costs the user one attempt and refuses nothing.
-	if _, err := t.store.RefundVerifyAttempt(context.WithoutCancel(ctx), user, until); err != nil {
+	// give-back does not inherit the request's cancellation, and carries its
+	// own write deadline so a store that never answers cannot hold the caller.
+	// Failing to give it back costs the user one attempt and refuses nothing.
+	refundCtx, cancelRefund := detach.Bounded(ctx, detach.WriteTimeout)
+	_, err = t.store.RefundVerifyAttempt(refundCtx, user, until)
+	cancelRefund()
+
+	if err != nil {
 		t.record(ctx, slog.LevelWarn, msgGiveBackFailed, user, diag.Failure("enrolment-store", err)...)
 	}
 

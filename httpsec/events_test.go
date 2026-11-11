@@ -79,7 +79,7 @@ func serveWithContext(ctx context.Context, chain *httpsec.Chain, req *http.Reque
 	out := served{rec: httptest.NewRecorder()}
 	run := chain.Assemble(func(ex *httpsec.Exchange) error { //nolint:contextcheck // the exchange carries the request context, and begin reads it through ex.Context()
 		out.handlerRan = true
-		out.handled = ex
+		out.handled = inTerminal(ex)
 
 		return nil
 	})

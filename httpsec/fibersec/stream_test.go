@@ -1987,6 +1987,149 @@ func TestFiber_StreamPanicLog(t *testing.T) {
 	}
 }
 
+type streamLogKey struct{}
+
+// ctxRecorder is a slog handler that records the context key's value each record was
+// logged under, which is how a test sees what a record's context carried.
+type ctxRecorder struct {
+	mu   sync.Mutex
+	seen map[string]any
+}
+
+func (*ctxRecorder) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *ctxRecorder) Handle(ctx context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.seen == nil {
+		h.seen = map[string]any{}
+	}
+
+	h.seen[r.Message] = ctx.Value(streamLogKey{})
+
+	return nil
+}
+
+func (h *ctxRecorder) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *ctxRecorder) WithGroup(string) slog.Handler      { return h }
+
+func (h *ctxRecorder) value(msg string) (any, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	v, ok := h.seen[msg]
+
+	return v, ok
+}
+
+// TestFiber_StreamEndLogKeepsRequestValues pins that a stream's end is logged under the
+// request's context values, so a handler that reads them (trace ids) sees them, on a live
+// stream and on one whose chain refused. It is not parallel, because the log it reads is the
+// process's default.
+func TestFiber_StreamEndLogKeepsRequestValues(t *testing.T) {
+	const marker = "trace-from-middleware"
+
+	cases := []struct {
+		name string
+		msg  string
+		// refused runs the body on a stream whose chain refused after Stream, the
+		// branch that ends the body on a context already ended.
+		refused bool
+		body    func() error
+	}{
+		{
+			name: "a panic",
+			msg:  "fibersec: the body of a stream panicked",
+			body: func() error { panic("boom") },
+		},
+		{
+			name: "runtime.Goexit",
+			msg:  "fibersec: the body of a stream ended its goroutine without returning",
+			body: func() error {
+				runtime.Goexit()
+
+				return nil
+			},
+		},
+		{
+			name:    "a panic on a refused stream",
+			msg:     "fibersec: the body of a stream panicked",
+			refused: true,
+			body:    func() error { panic("boom") },
+		},
+		{
+			name:    "runtime.Goexit on a refused stream",
+			msg:     "fibersec: the body of a stream ended its goroutine without returning",
+			refused: true,
+			body: func() error {
+				runtime.Goexit()
+
+				return nil
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &ctxRecorder{}
+			old := slog.Default()
+
+			slog.SetDefault(slog.New(rec))
+			t.Cleanup(func() { slog.SetDefault(old) })
+
+			if tc.refused {
+				// The chain refuses once what is inside it has returned, so the stream's
+				// body runs on an ended context and its end is logged on that branch.
+				outer := httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+					if err := next(ex); err != nil {
+						return err
+					}
+
+					return httpsec.ErrRequestTooLarge
+				}), httpsec.OrderJWKS)
+
+				url, _ := serveStreamChain(t, outer, streaming(func(ex *httpsec.Exchange) error {
+					ctx := context.WithValue(ex.Context(), streamLogKey{}, marker)
+
+					return ex.Writer.Stream(ctx, "", func(context.Context, httpsec.EventWriter) error {
+						return tc.body()
+					})
+				}))
+
+				_, err := io.ReadAll(openStream(t.Context(), t, url).Body)
+				require.NoError(t, err, "the refusal was cut")
+			} else {
+				app := fiber.New()
+				app.Get("/stream", func(fc fiber.Ctx) error {
+					ctx := context.WithValue(fc.Context(), streamLogKey{}, marker)
+
+					return fibersec.NewResponseWriter(fc).Stream(ctx, "", func(context.Context, httpsec.EventWriter) error {
+						return tc.body()
+					})
+				})
+
+				conn := serveRaw(t, app, false)()
+				require.NoError(t, conn.SetDeadline(time.Now().Add(streamBound)))
+
+				_, err := io.WriteString(conn, rawStreamRequest)
+				require.NoError(t, err)
+
+				_, _ = io.Copy(io.Discard, conn)
+			}
+
+			require.Eventually(t, func() bool {
+				_, ok := rec.value(tc.msg)
+
+				return ok
+			}, streamBound, 10*time.Millisecond, "the end was not logged")
+
+			got, _ := rec.value(tc.msg)
+			assert.Equal(t, marker, got, "the record was logged under a context without the request's values")
+		})
+	}
+}
+
 //go:noinline
 func panicHolding(_ uint64, value string) { panic(value) }
 

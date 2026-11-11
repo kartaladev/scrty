@@ -11,6 +11,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 )
@@ -330,7 +331,10 @@ func (p planner) execute(ctx context.Context, user identity.UserID, plan []Authe
 			continue
 		}
 
-		if err := k.Remove(ctx, user, refs); err != nil {
+		// Each kind's removal is its own write, and execute runs only from a
+		// completion detached from the caller's cancellation.
+		err := bounded(ctx, detach.WriteTimeout, func(c context.Context) error { return k.Remove(c, user, refs) })
+		if err != nil {
 			return diag.Wrap(err, errTextResetRemoval)
 		}
 	}

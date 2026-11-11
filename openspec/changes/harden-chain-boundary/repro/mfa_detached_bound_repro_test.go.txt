@@ -1,0 +1,36 @@
+package mfa_test
+
+import (
+	"context"
+	"testing"
+
+	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/ratelimit"
+)
+
+type capLimiter struct {
+	ratelimit.Limiter
+	hasDeadline bool
+	cancelled   bool
+}
+
+func (c *capLimiter) RecordFailure(ctx context.Context, _ string) error {
+	_, c.hasDeadline = ctx.Deadline()
+	c.cancelled = ctx.Err() != nil
+	return nil
+}
+
+func TestVerifyThrottle_DetachedRecordCarriesDeadline(t *testing.T) {
+	l := &capLimiter{}
+	th, err := mfa.NewVerifyThrottle(mfa.WithThrottleLimiter(l))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	th.RecordFailure(ctx, identity.UserID("u"))
+	if !l.hasDeadline {
+		t.Errorf("detached write got no deadline (cancelled=%v): a hung limiter blocks the caller forever", l.cancelled)
+	}
+}

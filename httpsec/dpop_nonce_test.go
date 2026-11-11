@@ -92,7 +92,7 @@ func serveWithin(ctx context.Context, t *testing.T, chain *httpsec.Chain, req *h
 	//nolint:contextcheck // the exchange below carries ctx to every interceptor
 	run := chain.Assemble(func(ex *httpsec.Exchange) error {
 		out.handlerRan = true
-		out.handled = ex
+		out.handled = inTerminal(ex)
 
 		return nil
 	})
@@ -571,7 +571,7 @@ func TestDPoP_NonceSealDoesNotBlock(t *testing.T) {
 			out := served{rec: httptest.NewRecorder()}
 			run := chain.Assemble(func(ex *httpsec.Exchange) error { //nolint:contextcheck // the exchange carries the request context, and begin reads it through ex.Context()
 				out.handlerRan = true
-				out.handled = ex
+				out.handled = inTerminal(ex)
 
 				return nil
 			})

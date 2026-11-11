@@ -13,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/hangup"
@@ -767,7 +768,10 @@ func (l *formLogin) recordFailure(ctx context.Context, username string, now time
 	// sending its guess must still be charged for it, and an attempt store that
 	// honours cancellation would otherwise drop the failure. The context names
 	// the password factor, which the lockout's view reports a lock with.
-	recordCtx := eventsink.WithFactor(context.WithoutCancel(ctx), factor.Password)
+	bounded, cancel := detach.Bounded(ctx, detach.WriteTimeout)
+	defer cancel()
+
+	recordCtx := eventsink.WithFactor(bounded, factor.Password)
 	if err := l.attempts.RecordFailure(recordCtx, username, now); err != nil {
 		l.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
 			diag.Failure("attempt-store", err)...)

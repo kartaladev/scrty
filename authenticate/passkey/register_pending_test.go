@@ -701,3 +701,59 @@ func TestPendingConcurrentEmailGuessesAreBounded(t *testing.T) {
 	assert.LessOrEqual(t, compared.Load(), int32(5))
 	assert.Equal(t, passkey.StatePending, onlyCredential(t, f, "u-1").State)
 }
+
+// The emailed code is sent on the finishing request's own context, so the user
+// loader and the contact resolver see the caller's deadline and cancellation,
+// never a library bound that outlives them.
+func TestFinishRegistration_EmailCodeContactKeepsCallersDeadline(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+
+	var loaderCtx, resolverCtx context.Context
+
+	users := NewMockUserLoader(f.ctrl)
+	users.EXPECT().LoadByUserID(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(ctx context.Context, u identity.UserID) (*identity.Details, error) {
+			loaderCtx = ctx
+
+			return &identity.Details{ID: u, Username: usernames[u], Active: true}, nil
+		}).AnyTimes()
+	f.deps.Users = users
+
+	m := f.manager(t)
+	s := enrolmentSession("sess-a", "u-1")
+
+	rc := passkey.RegistrationContext{
+		EmailConfirmation: true,
+		ContactResolver: func(ctx context.Context, d *identity.Details) (string, error) {
+			resolverCtx = ctx
+
+			return d.Username, nil
+		},
+	}
+
+	f.clock.Advance(time.Minute)
+	challenge := f.begin(t, m, s)
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+
+	callerDeadline, _ := ctx.Deadline()
+
+	_, err := m.FinishRegistration(ctx, s, regBody(challenge, "cred-a", ""), rc)
+	require.NoError(t, err)
+
+	for name, seen := range map[string]context.Context{"loader": loaderCtx, "resolver": resolverCtx} {
+		require.NotNil(t, seen, name)
+
+		dl, ok := seen.Deadline()
+		require.True(t, ok, name)
+		assert.False(t, dl.After(callerDeadline), "%s deadline outlives the caller's by %v", name, dl.Sub(callerDeadline))
+	}
+
+	cancel()
+
+	assert.Error(t, loaderCtx.Err(), "the caller's cancellation does not reach the loader")
+	assert.Error(t, resolverCtx.Err(), "the caller's cancellation does not reach the resolver")
+}

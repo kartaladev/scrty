@@ -4,9 +4,12 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kartaladev/scrty/expiry"
@@ -107,6 +110,29 @@ type Chain struct {
 	// context (eventsink), so whatever decides an outcome on the request
 	// reports it there.
 	events *eventEmitter
+
+	// fold is the chain's interceptors composed once, outermost first: step i
+	// calls interceptor i with step i+1, and the innermost step calls the
+	// terminal of the run in progress on the exchange (runTerminal). It is
+	// shared by every request, so it holds no terminal of its own; Assemble
+	// records the terminal on the exchange instead.
+	fold Next
+
+	// firstGate is the position, in run order, of the first registration that
+	// is one of the built-in gates (recovery, enrolment, second factor,
+	// password change), and -1 when the chain has none.
+	firstGate int
+
+	// gates is the set of built-in gates the chain enables, built with fold
+	// and never written after. A run of another chain inside this chain's
+	// gates may publish a session only when its chain enables every gate in
+	// it (gatesRunning).
+	gates gateSet
+
+	// foldOnce builds fold and firstGate. New runs it once construction has
+	// settled the registrations; Assemble runs it too, so a Chain that did not
+	// come from New still gets its fold.
+	foldOnce sync.Once
 }
 
 // refusalLogFlusher is implemented by an interceptor that holds a component
@@ -186,36 +212,94 @@ func (c *Chain) FlushRefusalLogs() error {
 
 var _ logsample.Flusher = (*Chain)(nil)
 
-// Assemble folds the chain around terminal and returns its outermost step.
+// Assemble puts the chain around terminal and returns its outermost step.
 //
 // It is what an integration calls to put the chain in front of its own
 // handler: terminal is that handler, adapted to Next, and the returned Next is
 // the whole chain with the handler innermost.
 //
-// Interceptors run in ascending slot order with the lowest outermost, so the
-// fold runs backwards — the innermost interceptor wraps the terminal, and each
-// one outside it wraps what has been built so far. Two interceptors at one slot
-// run in the order they were registered.
+// Interceptors run in ascending slot order with the lowest outermost. Two
+// interceptors at one slot run in the order they were registered.
+//
+// The interceptors are composed once per chain, not per call: the returned
+// step records terminal on the exchange it runs, for the length of that run,
+// and the innermost step reaches it from there. A step reached on an exchange
+// the chain is not running, such as one an interceptor built itself and passed
+// on, or one kept and called after its run returned, reaches no terminal and
+// returns an error wrapping ErrConfig.
+//
+// The returned step puts back, as it returns, a panic included, what it found
+// on the exchange when it was entered: the context, Session, Authentication,
+// and everything else the run resolved or the chain configured on it. A run's
+// state is therefore read inside the run, in terminal; read after the step
+// returns, the exchange holds what it held before the run. A chain assembled
+// inside another on one exchange leaves the outer run's state as it found it.
+// That holds for a nested chain with its own terminal. A chain composed around
+// the rest of a run (inner.Assemble(next)) puts back, when its step returns,
+// what the outer run's later interceptors set inside it, so an outer
+// interceptor before that point reads, after next, the state from before the
+// inner step. Read a run's state in the terminal.
+// Request and Writer are never put back, and nor is the record that the
+// request's refusal was reported, which is shared by the runs nested on one
+// exchange, so a refusal is reported once, and is cleared when a run starts
+// with no other run live on the exchange, so an exchange run again reports
+// that run's refusal.
 //
 // Continuation needs no code here. An interceptor stops the request by not
 // calling the next step, and an error travels back out through every enclosing
-// frame unchanged, because no frame this fold builds inspects it.
+// frame unchanged, because no frame of the fold inspects it.
 func (c *Chain) Assemble(terminal Next) Next {
-	next := terminal
-	for i := len(c.registrations) - 1; i >= 0; i-- {
-		// inner and interceptor are bound per iteration, so each closure keeps
-		// the step and the interceptor belonging to its own frame.
-		inner := next
-		interceptor := c.registrations[i].interceptor
-		next = func(ex *Exchange) error { return interceptor.Intercept(ex, inner) }
-	}
-
-	// The exchange is handed the chain's per-request phase before the first
-	// interceptor runs, so a consumer interceptor's EvaluatePerRequest judges
-	// it as the built-ins do.
-	chain := next
+	c.foldOnce.Do(c.buildFold)
 
 	return func(ex *Exchange) error {
+		// What this run may change on the exchange is put back as it returns,
+		// a panic included, so the caller, an enclosing chain's interceptor
+		// among them, reads after the step what it held before it, and an
+		// exchange run many times does not carry every earlier run's context.
+		// It is recorded before the re-entry check, so a pass-through is
+		// covered too, where it changes nothing the terminal did not.
+		defer ex.restoreScope(ex.saveScope())
+
+		// An outermost run, with no other run live on the exchange, reports
+		// its own refusal, whatever an earlier run of the exchange reported.
+		// Nested runs share the record, so one refusal is reported once.
+		if ex.terminalCount() == 0 {
+			ex.refusalReported = false
+		}
+
+		// A chain entered again on a request it is already running on, such
+		// as one mounted both at an application and at one of its groups,
+		// passes the request straight on: a second run would verify the
+		// credentials and touch the counters again. Another chain, or this
+		// one for another method or path (an in-process forward), runs in
+		// full.
+		method, path := ex.Request.Method(), ex.Request.EscapedPath()
+
+		outer := nearestRun(ex.Context())
+		if outer.ranOn(c, method, path) {
+			return terminal(ex)
+		}
+
+		// The entry is removed however the run ends, a panic included, so the
+		// exchange never holds the terminal of a run that is over.
+		ex.pushTerminal(c, terminal)
+		defer ex.popTerminal(c)
+
+		// The run is marked on the context before anything else reads it, so
+		// whatever the terminal hands that context to, an adapter's mount of
+		// this chain further in included, sees the run in progress, and,
+		// through its gatesBegun, whether this chain's gates are running
+		// (gatesRunning). The gate mark itself is scoped to the first gate's
+		// frame (buildFold), so neither a run of this exchange that has ended
+		// nor an earlier pass of this run leaves it set.
+		run := &chainRun{Context: ex.Context(), chain: c, method: method, path: path, parent: outer}
+		ex.SetContext(run)
+
+		defer run.done.Store(true)
+
+		// The exchange is handed the chain's per-request phase before the
+		// first interceptor runs, so a consumer interceptor's
+		// EvaluatePerRequest judges it as the built-ins do.
 		ex.perRequest = c.perRequest
 		ex.csrfOptOut = c.csrfOptOut
 
@@ -231,17 +315,23 @@ func (c *Chain) Assemble(terminal Next) Next {
 		// one resolved answer, and a forwarded host on none of the allowed
 		// hosts is refused before any of them runs.
 		if err := c.clients.begin(ex); err != nil {
-			// The one response written outside the security-headers slot: no
-			// interceptor runs for it, so the layer's headers are set here,
-			// on the exchange's writer and before a consumer's error handler
-			// sees the refusal.
-			if c.headers != nil {
-				c.headers.applyHeaders(ex.Writer, ex.Request)
-			}
+			c.refuseAtEntry(ex)
 
-			for _, step := range c.refusalSteps {
-				step(ex)
-			}
+			return err
+		}
+
+		// A path with a dot segment, or one that does not decode, is refused
+		// before any interceptor runs: a router may resolve it to a path
+		// other than the one the rules, the guards and the cool-down judge.
+		// It is refused after client resolution, which reads no path, so the
+		// 400 carries the headers the resolved request earns, those sent only
+		// on a secure response behind a trusted TLS-terminating proxy
+		// included, and a host client resolution refuses gets that refusal
+		// instead. Only the header-profile matchers and the refusal steps
+		// still see the path, and only to choose the headers of the empty
+		// 400. There is no opt-out (refuseDotSegments).
+		if err := refuseDotSegments(path); err != nil {
+			c.refuseAtEntry(ex)
 
 			return err
 		}
@@ -249,13 +339,285 @@ func (c *Chain) Assemble(terminal Next) Next {
 		// The refusals that can arise anywhere in the chain, a cross-site
 		// request or an invalid proof among them, are reported once, here,
 		// as the request leaves it (emitRefusal).
-		err := chain(ex)
+		err := c.fold(ex)
 		if err != nil {
 			emitRefusal(ex, err)
 		}
 
 		return err
 	}
+}
+
+// chainRunKey is the context key a chainRun answers to.
+type chainRunKey struct{}
+
+// chainRun marks a context as carrying a run of chain in progress for one
+// method and escaped path. It is the context itself, rather than a value
+// stored under a key, so marking a run costs one allocation.
+//
+// parent is the run marked on the context this run began on, nearest first,
+// so a chain mounted inside another chain inside itself (A, B, then A again)
+// still finds its own run past the other chain's.
+type chainRun struct {
+	context.Context //nolint:containedctx // the run marks the context it wraps, and is that context
+
+	chain  *Chain
+	method string
+	path   string
+	parent *chainRun
+
+	// done is set as the run returns. A context kept past its run, by a
+	// goroutine the handler started or a value detached from the request,
+	// then marks nothing, so a request sent on it later is judged in full.
+	// It is atomic because such a goroutine may read it while the run ends.
+	done atomic.Bool
+
+	// gatesBegun is set while the first gate's frame of this run is running,
+	// and put back as that frame returns, a panic included. A run of another
+	// chain inside it, on this exchange or on a fresh one an adapter built,
+	// finds it through the parent links and publishes no session unless its
+	// chain enables every gate this run's chain enables (gatesRunning).
+	// It is atomic for the same reason as done.
+	gatesBegun atomic.Bool
+}
+
+// Value answers chainRunKey with the run, and every other key from the
+// context the run began on.
+func (r *chainRun) Value(key any) any {
+	if _, ok := key.(chainRunKey); ok {
+		return r
+	}
+
+	return r.Context.Value(key)
+}
+
+// nearestRun returns the run in progress marked nearest on ctx, or nil when
+// none is. A finished run is skipped for the run it began inside, so a
+// context kept past its run, or an exchange run again, links no new run to a
+// finished one.
+func nearestRun(ctx context.Context) *chainRun {
+	r, _ := ctx.Value(chainRunKey{}).(*chainRun)
+	for r != nil && r.done.Load() {
+		r = r.parent
+	}
+
+	return r
+}
+
+// ranOn reports whether c is running, on r or a run r began inside, for
+// method and path. A nil r reports false.
+func (r *chainRun) ranOn(c *Chain, method, path string) bool {
+	for ; r != nil; r = r.parent {
+		if r.chain == c && r.method == method && r.path == path && !r.done.Load() {
+			return true
+		}
+	}
+
+	return false
+}
+
+// runOf returns the run of c in progress marked nearest on ctx, or nil when
+// none is: a consumer interceptor may have replaced the context with one that
+// does not derive from the run's.
+func runOf(ctx context.Context, c *Chain) *chainRun {
+	for r := nearestRun(ctx); r != nil; r = r.parent {
+		if r.chain == c && !r.done.Load() {
+			return r
+		}
+	}
+
+	return nil
+}
+
+// gatesRunning reports whether a run in progress on ctx, the nearest or any
+// run it began inside, is inside the gates of a chain that enables a gate c
+// does not. Such a run's gates would not judge what c publishes, since c has
+// no gate of their kind. A run of c itself never counts: c's own gates judge
+// what it publishes, and a run of c inside its own gates is a request the
+// handler forwarded through c, which runs in full. Skipping those runs by
+// identity is only a short-circuit: covers already decides it, since a chain's
+// gate set covers its own. A finished run counts for
+// nothing, its gate mark included. A nil c enables no gate. The walk is as
+// deep as the chains nested on one request, compares gate sets of fixed size
+// and allocates nothing.
+func gatesRunning(ctx context.Context, c *Chain) bool {
+	var have gateSet
+	if c != nil {
+		have = c.gates
+	}
+
+	for r := nearestRun(ctx); r != nil; r = r.parent {
+		if r.chain == c || !r.gatesBegun.Load() || r.done.Load() {
+			continue
+		}
+
+		// A marked run always has a chain; one without is refused rather
+		// than read as enabling no gate.
+		if r.chain == nil || !have.covers(r.chain.gates) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// gateSet is a set of the built-in gates, one bit per entry of gateOrder, so
+// it has a fixed size and comparing two sets allocates nothing.
+type gateSet uint8
+
+// gateSetOf returns the set of the built-in gates among registrations, named
+// by gateKind, the one helper that tells a gate from any other interceptor.
+func gateSetOf(registrations []registration) gateSet {
+	var s gateSet
+
+	for _, r := range registrations {
+		kind, ok := gateKind(r.interceptor)
+		if !ok {
+			continue
+		}
+
+		if i := slices.Index(gateOrder[:], kind); i >= 0 {
+			s |= 1 << i
+		}
+	}
+
+	return s
+}
+
+// covers reports whether s holds every gate in other.
+func (s gateSet) covers(other gateSet) bool { return other&^s == 0 }
+
+// refuseAtEntry prepares the response to a refusal decided at the chain's
+// entry, before the first interceptor: a host client resolution does not
+// allow, or, once client resolution has answered, a path with a dot segment.
+// Either way the headers are chosen against the resolved request, so a
+// request a trusted proxy made secure gets the secure-only headers. No
+// interceptor runs for it, the
+// security-headers one included, so the layer's headers are set here, on the
+// exchange's writer and before a consumer's error handler sees the refusal,
+// and the features' refusal steps are run.
+func (c *Chain) refuseAtEntry(ex *Exchange) {
+	if c.headers != nil {
+		c.headers.applyHeaders(ex.Writer, ex.Request)
+	}
+
+	for _, step := range c.refusalSteps {
+		step(ex)
+	}
+}
+
+// buildFold composes the registrations into fold, finds firstGate and
+// records the chain's gate set.
+//
+// The fold runs backwards: the innermost step is built first, and each
+// interceptor outside it wraps what has been built so far.
+func (c *Chain) buildFold() {
+	c.firstGate = slices.IndexFunc(c.registrations, func(r registration) bool {
+		_, ok := gateKind(r.interceptor)
+
+		return ok
+	})
+	c.gates = gateSetOf(c.registrations)
+
+	next := c.runTerminal
+	for i := len(c.registrations) - 1; i >= 0; i-- {
+		// inner and interceptor are bound per iteration, so each closure keeps
+		// the step and the interceptor belonging to its own frame.
+		inner := next
+		interceptor := c.registrations[i].interceptor
+
+		if i == c.firstGate {
+			// The first gate's frame marks this run's entry on the
+			// exchange, and this run on its context, before the gate runs,
+			// whatever the gate then decides, so nothing inside it, a later
+			// gate's slot-mate, an interceptor between two gates or a chain
+			// mounted further in included, can publish a session no gate
+			// judged (PublishSession). The entry, not the exchange, carries
+			// the mark, so a different chain nested on the same exchange
+			// that enables every gate this chain enables still publishes.
+			// Both marks are put back as the frame returns, a panic
+			// included, so they hold exactly while the gates run: a second
+			// pass through the fold, or a later run of the exchange,
+			// publishes before the gates as the first did.
+			next = func(ex *Exchange) error {
+				// A step reached on an exchange this chain is not running
+				// has no entry to mark, so its gates could not stop a
+				// session published past them. It is refused before the
+				// gate runs, as its innermost step would refuse it.
+				at := ex.topTerminal(c)
+				if at < 0 {
+					return errNoRun
+				}
+
+				// The entry is marked and put back by position, as
+				// runTerminal clears running: a run entered from inside the
+				// gate can grow the stack and move spilled entries.
+				entry := ex.terminalAt(at)
+				before := entry.gatesBegun
+				entry.gatesBegun = true
+
+				run := runOf(ex.Context(), c)
+				var runBefore bool
+				if run != nil {
+					runBefore = run.gatesBegun.Swap(true)
+				}
+
+				defer func() {
+					if at < ex.terminalCount() {
+						if e := ex.terminalAt(at); e.chain == c {
+							e.gatesBegun = before
+						}
+					}
+
+					if run != nil {
+						run.gatesBegun.Store(runBefore)
+					}
+				}()
+
+				return interceptor.Intercept(ex, inner)
+			}
+
+			continue
+		}
+
+		next = func(ex *Exchange) error { return interceptor.Intercept(ex, inner) }
+	}
+
+	c.fold = next
+}
+
+// errNoRun is what a step of the fold returns when it is reached on an
+// exchange its chain is not running.
+var errNoRun = fmt.Errorf("%w: an interceptor passed on an exchange this chain is not running", ErrConfig)
+
+// runTerminal is the fold's innermost step: it calls the terminal of the run
+// of c in progress on ex.
+//
+// While that terminal runs, its entry is marked running, so the same chain
+// entered again from inside it starts a run of its own, and a step of the
+// outer run reached from there finds the outer run's terminal, as it would
+// were each run folded separately.
+func (c *Chain) runTerminal(ex *Exchange) error {
+	i := ex.topTerminal(c)
+	if i < 0 {
+		return errNoRun
+	}
+
+	entry := ex.terminalAt(i)
+	next := entry.next
+	entry.running = true
+
+	// The mark is cleared by position, not through entry: a run entered from
+	// inside the terminal can grow the stack and move its spilled entries.
+	defer func() {
+		if i < ex.terminalCount() {
+			if e := ex.terminalAt(i); e.chain == c {
+				e.running = false
+			}
+		}
+	}()
+
+	return next(ex)
 }
 
 // builtInEnforcer names the library's own gate for a challenge kind: the
@@ -545,11 +907,26 @@ func After(order Order) Order { return order + 1 }
 // interceptors at one slot is allowed, and they run in the order they were
 // registered.
 //
+// A consumer interceptor registered at a built-in's exact slot is that
+// built-in's slot-mate, and the two run in the order their options were
+// given: registered after the Enable option, it runs inside the built-in;
+// before, outside it.
+//
 // An interceptor that authenticates a request publishes what it resolved with
 // WithCaller, which is what the built-in first factors use. Publishing with
 // authenticate.WithAuthentication alone announces the event without the caller,
 // and every guard behind the interceptor then refuses a caller it had just
 // authenticated.
+//
+// One that authenticates on a session, publishing it with
+// Exchange.PublishSession, belongs at OrderBearerToken, no later, so the
+// recovery cool-down and the recovery, enrolment, second-factor and
+// password-change gates judge the session it publishes: an interceptor after
+// OrderBearerToken judges a request by the session it carries when it runs. Once a request has entered the first of those gates
+// the chain has enabled, PublishSession refuses a session with an error
+// wrapping ErrConfig, answered with a 500: registered after a gate, between
+// two gates, or at a gate's slot after its Enable option, such an
+// interceptor fails every request it authenticates.
 //
 // A nil interceptor, including an interface holding a nil pointer, is refused
 // when the chain is built: it can only ever panic on the first request.

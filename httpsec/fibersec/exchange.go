@@ -552,7 +552,7 @@ func (r *streamRun) run(bw *bufio.Writer) {
 	if refused || r.conn.SetWriteDeadline(time.Now().Add(r.window)) != nil {
 		cancel()
 
-		defer endStreamBody(&returned, nil, bw, pipe)
+		defer endStreamBody(r.ctx, &returned, nil, bw, pipe)
 
 		_ = r.body(ctx, diag.NewEndedWriter(ctx))
 		returned = true
@@ -560,7 +560,7 @@ func (r *streamRun) run(bw *bufio.Writer) {
 		return
 	}
 
-	defer endStreamBody(&returned, &r.cut, bw, pipe)
+	defer endStreamBody(r.ctx, &returned, &r.cut, bw, pipe)
 
 	// It exits when the body returns, at the latest, through the cancel above.
 	go func() {
@@ -660,17 +660,20 @@ const watchClientBuffer = 256
 // value's type, and the function, file and line of up to 32 frames. It logs nothing of
 // the value, which is the body's and can be a secret, and not debug.Stack's text either,
 // which quotes the arguments of the frames it lists. It writes to slog's default logger, because a
-// writer has no way to reach the logger its chain was given (httpsec.WithLogger).
-func endStreamBody(returned *bool, cut *atomic.Bool, bw *bufio.Writer, pipe io.Closer) {
+// writer has no way to reach the logger its chain was given (httpsec.WithLogger). It logs under
+// ctx, which is the request's context without its cancellation (context.WithoutCancel), so a
+// handler that reads the request's values sees them, and a request already ended does not drop
+// the record.
+func endStreamBody(ctx context.Context, returned *bool, cut *atomic.Bool, bw *bufio.Writer, pipe io.Closer) {
 	r := recover()
 
 	switch {
 	case r != nil:
-		slog.LogAttrs(context.Background(), slog.LevelError, "fibersec: the body of a stream panicked", diag.PanicAttrs(r)...)
+		slog.LogAttrs(ctx, slog.LevelError, "fibersec: the body of a stream panicked", diag.PanicAttrs(r)...)
 	case *returned:
 		return
 	default:
-		slog.Error("fibersec: the body of a stream ended its goroutine without returning")
+		slog.LogAttrs(ctx, slog.LevelError, "fibersec: the body of a stream ended its goroutine without returning")
 	}
 
 	if cut != nil {

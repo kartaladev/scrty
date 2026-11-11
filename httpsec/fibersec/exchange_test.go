@@ -134,10 +134,10 @@ func TestFiberExchange(t *testing.T) {
 		{
 			name: "the path is decoded as net/http decodes it, an encoded slash included",
 			request: func(ctx context.Context) *http.Request {
-				return httptest.NewRequestWithContext(ctx, http.MethodGet, "/sso/login/corp%2F..", nil)
+				return httptest.NewRequestWithContext(ctx, http.MethodGet, "/sso/login/corp%2Fx", nil)
 			},
 			assert: func(t *testing.T, got observed) {
-				assert.Equal(t, "/sso/login/corp/..", got.path)
+				assert.Equal(t, "/sso/login/corp/x", got.path)
 			},
 		},
 		{

@@ -138,6 +138,9 @@ var ErrAlreadyShutdown = errors.New("session: already shut down")
 // clock (WithMemoryStoreClock) waits for that one waiter before advancing it —
 // with clockwork's fake, BlockUntilContext(ctx, 1) — or its advance may land
 // before the loop starts counting and never trigger a sweep.
+//
+// The loop keeps the values of ctx for its whole life, including a store transaction
+// attached to it; start it from a context with no transaction attached.
 func (s *MemoryStore) Start(ctx context.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("%w: Start needs a non-nil context", ErrConfig)

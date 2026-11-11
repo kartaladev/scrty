@@ -9,6 +9,7 @@ import (
 	"slices"
 
 	"github.com/kartaladev/scrty/authenticate/oidc"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 )
 
@@ -133,7 +134,9 @@ func (i *oidcInterceptor) endBackchannelSessions(
 	ctx context.Context, provider string, claims oidc.LogoutClaims,
 ) error {
 	if claims.SessionID != "" {
-		n, err := i.sessions.DeleteByExternalSession(ctx, claims.Issuer, claims.SessionID)
+		n, err := revokeBounded(ctx, func(ctx context.Context) (int, error) {
+			return i.sessions.DeleteByExternalSession(ctx, claims.Issuer, claims.SessionID)
+		})
 		if err != nil {
 			return err
 		}
@@ -153,7 +156,9 @@ func (i *oidcInterceptor) endBackchannelSessions(
 		return nil
 	}
 
-	link, err := links.FindByExternal(ctx, provider, claims.Issuer, claims.Subject)
+	link, err := lookupBounded(ctx, func(ctx context.Context) (*oidc.Link, error) {
+		return links.FindByExternal(ctx, provider, claims.Issuer, claims.Subject)
+	})
 	switch {
 	case errors.Is(err, oidc.ErrLinkNotFound):
 		// No user was ever linked to this subject, so none of its sessions
@@ -167,7 +172,10 @@ func (i *oidcInterceptor) endBackchannelSessions(
 	}
 
 	if i.scope == BackchannelLogoutScopeAll {
-		if err := i.sessions.DeleteByUser(ctx, link.UserID); err != nil {
+		_, err := revokeBounded(ctx, func(ctx context.Context) (int, error) {
+			return 0, i.sessions.DeleteByUser(ctx, link.UserID)
+		})
+		if err != nil {
 			return err
 		}
 
@@ -176,7 +184,9 @@ func (i *oidcInterceptor) endBackchannelSessions(
 		return nil
 	}
 
-	n, err := i.sessions.DeleteByUserAndExternalIssuer(ctx, link.UserID, claims.Issuer)
+	n, err := revokeBounded(ctx, func(ctx context.Context) (int, error) {
+		return i.sessions.DeleteByUserAndExternalIssuer(ctx, link.UserID, claims.Issuer)
+	})
 	if err != nil {
 		return err
 	}
@@ -184,6 +194,26 @@ func (i *oidcInterceptor) endBackchannelSessions(
 	i.logBackchannel(ctx, slog.LevelInfo, backchannelBySubject, provider, slog.Int("ended", n))
 
 	return nil
+}
+
+// revokeBounded runs one session revocation under its own revocation deadline.
+// ctx is already detached from the request's cancellation. A caller logs under
+// ctx, not under the bounded context, so an expired bound is not read as the
+// client hanging up.
+func revokeBounded(ctx context.Context, call func(context.Context) (int, error)) (int, error) {
+	bounded, cancel := detach.Bounded(ctx, detach.RevocationTimeout)
+	defer cancel()
+
+	return call(bounded)
+}
+
+// lookupBounded runs one link lookup under its own write deadline, as
+// revokeBounded does a revocation.
+func lookupBounded(ctx context.Context, call func(context.Context) (*oidc.Link, error)) (*oidc.Link, error) {
+	bounded, cancel := detach.Bounded(ctx, detach.WriteTimeout)
+	defer cancel()
+
+	return call(bounded)
 }
 
 // logBackchannel writes one sampled record under the back-channel flow and

@@ -156,7 +156,8 @@ func TestSessionSignals_Close_NoEventAfterTheSelect(t *testing.T) {
 				c := &closeOnNow{}
 
 				r := newStreamRig(t, streamSetup{
-					signals: httpsec.SessionSignals{Heartbeat: 5 * time.Second, Signals: endedOnly},
+					signals:  httpsec.SessionSignals{Heartbeat: 5 * time.Second, Signals: endedOnly},
+					ownClock: true,
 					opts: func(r *streamRig) []httpsec.Option {
 						c.inner = r.clock
 

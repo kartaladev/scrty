@@ -1,0 +1,211 @@
+package httpsec_test
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/authorize"
+	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/session"
+)
+
+// retrying is a consumer interceptor that runs the rest of the chain twice and
+// returns the second result, a retry the consumer is entitled to write.
+func retrying() httpsec.Interceptor {
+	return httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+		_ = next(ex)
+
+		return next(ex)
+	})
+}
+
+// TestChain_RetriedPassPublishesBeforeGates pins that a consumer interceptor
+// outside the gates may call next twice, and that the authenticator, which
+// publishes before every gate, succeeds on both passes.
+func TestChain_RetriedPassPublishesBeforeGates(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		retry  bool
+		assert func(t *testing.T, o publishOutcome)
+	}
+
+	cases := []testCase{
+		{
+			name:  "no retry (control)",
+			retry: false,
+			assert: func(t *testing.T, o publishOutcome) {
+				t.Helper()
+
+				require.True(t, o.probe.reached)
+				require.NoError(t, o.probe.err)
+				assert.True(t, o.handlerRan)
+				assert.Equal(t, http.StatusOK, o.status)
+			},
+		},
+		{
+			name:  "next called twice by an interceptor outside the gates",
+			retry: true,
+			assert: func(t *testing.T, o publishOutcome) {
+				t.Helper()
+
+				require.True(t, o.probe.reached)
+				require.NoError(t, o.probe.err, "the second pass's publication before the gates was refused")
+				assert.True(t, o.handlerRan)
+				assert.Equal(t, http.StatusOK, o.status)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newResolveFixture(t)
+			o := publishOutcome{probe: &publishProbe{}}
+
+			opts := []httpsec.Option{
+				httpsec.WithSessions(f.sessions),
+				enableMFAFor(t),
+				httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: f.sessions}),
+				authenticatedOnly(t),
+				httpsec.RegisterInterceptor(publishingAuthenticator(f.sessions, f.session.ID, false, o.probe), httpsec.OrderBearerToken),
+			}
+			if tc.retry {
+				opts = append(opts, httpsec.RegisterInterceptor(retrying(), httpsec.Before(httpsec.OrderBearerToken)))
+			}
+
+			chain, err := httpsec.New(opts...)
+			require.NoError(t, err)
+
+			h := chain.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				o.handlerRan = true
+				o.session, _ = httpsec.SessionFromContext(r.Context())
+				_, o.authenticated = authenticate.AuthenticationFromContext(r.Context())
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders", nil))
+			o.status = rec.Code
+
+			tc.assert(t, o)
+		})
+	}
+}
+
+// TestChain_SecondChainCannotPublishPastFirstChainsGates pins that a session
+// owing a second factor, published by a second chain mounted behind a gated
+// chain, never reaches the handler as an authenticated caller no gate judged.
+func TestChain_SecondChainCannotPublishPastFirstChainsGates(t *testing.T) {
+	t.Parallel()
+
+	permitAll := func(t *testing.T) httpsec.Option {
+		t.Helper()
+
+		return httpsec.EnableAuthorization(NewMockAuthorizer(gomock.NewController(t)), authorize.Rule[httpsec.Request]{
+			Match:   func(httpsec.Request) bool { return true },
+			Require: authorize.PermitAll(),
+		})
+	}
+
+	type testCase struct {
+		name string
+		// build returns the handler-wrapping function and the probe of the
+		// owing publisher.
+		build  func(t *testing.T, f resolveFixture, probe *publishProbe) func(http.Handler) http.Handler
+		assert func(t *testing.T, o publishOutcome)
+	}
+
+	cases := []testCase{
+		{
+			name: "owing session published inside the gated chain, before its gates (control)",
+			build: func(t *testing.T, f resolveFixture, probe *publishProbe) func(http.Handler) http.Handler {
+				t.Helper()
+
+				a, err := httpsec.New(
+					httpsec.WithSessions(f.sessions),
+					enableMFAFor(t),
+					httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: f.sessions}),
+					permitAll(t),
+					httpsec.RegisterInterceptor(publishingAuthenticator(f.sessions, f.session.ID, false, probe), httpsec.OrderBearerToken),
+				)
+				require.NoError(t, err)
+
+				return a.Middleware()
+			},
+			assert: func(t *testing.T, o publishOutcome) {
+				t.Helper()
+
+				require.True(t, o.probe.reached)
+				require.NoError(t, o.probe.err)
+				assert.False(t, o.handlerRan, "the handler was reached with a session owing a second factor (status %d)", o.status)
+				assert.NotEqual(t, http.StatusOK, o.status)
+			},
+		},
+		{
+			name: "owing session published by a second ungated chain mounted behind the gated chain",
+			build: func(t *testing.T, f resolveFixture, probe *publishProbe) func(http.Handler) http.Handler {
+				t.Helper()
+
+				a, err := httpsec.New(
+					httpsec.WithSessions(f.sessions),
+					enableMFAFor(t),
+					httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: f.sessions}),
+					permitAll(t),
+				)
+				require.NoError(t, err)
+
+				b, err := httpsec.New(
+					httpsec.WithSessions(f.sessions),
+					authenticatedOnly(t),
+					httpsec.RegisterInterceptor(publishingAuthenticator(f.sessions, f.session.ID, false, probe), httpsec.OrderBearerToken),
+				)
+				require.NoError(t, err)
+
+				return func(h http.Handler) http.Handler { return a.Middleware()(b.Middleware()(h)) }
+			},
+			assert: func(t *testing.T, o publishOutcome) {
+				t.Helper()
+
+				require.True(t, o.probe.reached, "the second chain's publisher never ran (status %d)", o.status)
+				assert.False(t, o.handlerRan && o.authenticated,
+					"the handler ran with session owing a second factor as an authenticated caller no gate judged (status %d, publish err %v)", o.status, o.probe.err)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newResolveFixture(t)
+			s, err := f.sessions.Load(t.Context(), f.session.ID)
+			require.NoError(t, err)
+			s.MFA = session.MFAPending
+			require.NoError(t, f.sessions.Save(t.Context(), s))
+
+			o := publishOutcome{probe: &publishProbe{}}
+
+			h := tc.build(t, f, o.probe)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				o.handlerRan = true
+				o.session, _ = httpsec.SessionFromContext(r.Context())
+				_, o.authenticated = authenticate.AuthenticationFromContext(r.Context())
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders", nil))
+			o.status = rec.Code
+
+			tc.assert(t, o)
+		})
+	}
+}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/depfault"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -179,6 +180,14 @@ func (c *Codes) resolveLimiter() error {
 // one store write, so a random source or store that fails leaves the previous
 // set exactly as it was, and no code is returned.
 func (c *Codes) Generate(ctx context.Context, user identity.UserID) ([]string, error) {
+	return c.generate(ctx, user, 0)
+}
+
+// generate is Generate with the store write bounded by bound when it is above
+// zero: a recovery completing detached from its caller passes
+// detach.WriteTimeout, so a hung store cannot hold the request. The failure is
+// logged under ctx, so the bound's own end is not read as a hang-up.
+func (c *Codes) generate(ctx context.Context, user identity.UserID, bound time.Duration) ([]string, error) {
 	codes := make([]string, c.setSize)
 	hashes := make([][]byte, c.setSize)
 
@@ -194,7 +203,10 @@ func (c *Codes) Generate(ctx context.Context, user identity.UserID) ([]string, e
 		hashes[i] = hash[:]
 	}
 
-	if err := c.store.ReplaceSet(ctx, user, hashes, c.clock.Now()); err != nil {
+	err := maybeBounded(ctx, bound, func(sctx context.Context) error {
+		return c.store.ReplaceSet(sctx, user, hashes, c.clock.Now())
+	})
+	if err != nil {
 		c.logFailure(ctx, msgCodeStoreError, "store", err)
 
 		return nil, diag.Wrap(err, errTextCodeStore)
@@ -222,7 +234,15 @@ func (c *Codes) Confirm(ctx context.Context, user identity.UserID, presented str
 // Remaining reports how many unspent codes user has, and whether that is at or
 // below the low threshold. A user with no set has none, which is low.
 func (c *Codes) Remaining(ctx context.Context, user identity.UserID) (RemainingCodes, error) {
-	n, err := c.store.Remaining(ctx, user)
+	return c.remaining(ctx, user, 0)
+}
+
+// remaining is Remaining with the store read bounded by bound when it is
+// above zero, as generate bounds its write.
+func (c *Codes) remaining(ctx context.Context, user identity.UserID, bound time.Duration) (RemainingCodes, error) {
+	n, err := maybeBoundedValue(ctx, bound, func(sctx context.Context) (int, error) {
+		return c.store.Remaining(sctx, user)
+	})
 	if err != nil {
 		c.logFailure(ctx, msgCodeStoreError, "store", err)
 
@@ -295,7 +315,11 @@ func (c *Codes) check(ctx context.Context, user identity.UserID, presented strin
 // spent since the check — by a racing recovery — is refused with ErrRefused,
 // and is not charged: the presenter held a real code.
 func (c *Codes) spend(ctx context.Context, user identity.UserID, hash [32]byte) error {
-	ok, err := c.store.Spend(ctx, user, hash[:], c.clock.Now())
+	// Bounded: spend runs detached from the caller's cancellation. The
+	// failure is logged under ctx, not the bound's context.
+	ok, err := boundedValue(ctx, detach.WriteTimeout, func(sctx context.Context) (bool, error) {
+		return c.store.Spend(sctx, user, hash[:], c.clock.Now())
+	})
 	if err != nil {
 		c.logFailure(ctx, msgCodeStoreError, "store", err)
 

@@ -1,0 +1,102 @@
+package ginsec_test
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/httpsec/ginsec"
+	"github.com/kartaladev/scrty/identity"
+)
+
+type countingAttempts struct{ fails, resets atomic.Int32 }
+
+func (c *countingAttempts) RecordFailure(context.Context, string, time.Time) error {
+	c.fails.Add(1)
+	return nil
+}
+func (c *countingAttempts) Reset(context.Context, string) error { c.resets.Add(1); return nil }
+func (c *countingAttempts) FailureCount(context.Context, string, time.Time) (int, error) {
+	return 0, nil
+}
+
+type fakeAuth struct {
+	calls atomic.Int32
+	err   error
+}
+
+func (f *fakeAuth) Authenticate(context.Context, identity.Credentials) (*authenticate.Authentication, error) {
+	f.calls.Add(1)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &authenticate.Authentication{Principal: &identity.Principal{ID: "u-1", Username: "ada"}}, nil
+}
+
+func TestRepro_DoubleMount(t *testing.T) {
+	type tc struct {
+		name   string
+		authEr error
+		assert func(t *testing.T, a *fakeAuth, at *countingAttempts, rec *httptest.ResponseRecorder)
+	}
+	cases := []tc{
+		{"failed basic login mounted at app and group is charged once", authenticate.ErrAuthenticationFailed,
+			func(t *testing.T, a *fakeAuth, at *countingAttempts, rec *httptest.ResponseRecorder) {
+				assert.Equal(t, http.StatusUnauthorized, rec.Code)
+				assert.EqualValues(t, 1, at.fails.Load(), "failures recorded")
+				assert.EqualValues(t, 1, a.calls.Load(), "authenticator calls")
+			}},
+		{"successful basic login mounted at app and group authenticates once", nil,
+			func(t *testing.T, a *fakeAuth, at *countingAttempts, rec *httptest.ResponseRecorder) {
+				assert.Equal(t, http.StatusOK, rec.Code)
+				assert.EqualValues(t, 1, a.calls.Load(), "authenticator calls")
+				assert.EqualValues(t, 1, at.resets.Load(), "resets")
+			}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a := &fakeAuth{err: c.authEr}
+			at := &countingAttempts{}
+			chain, err := httpsec.New(httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: a, Attempts: at}))
+			require.NoError(t, err)
+			r := gin.New()
+			r.Use(ginsec.Middleware(chain))
+			g := r.Group("/api")
+			g.Use(ginsec.Middleware(chain))
+			g.GET("/x", func(gc *gin.Context) { gc.Status(200) })
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/x", nil)
+			req.SetBasicAuth("ada", "pw")
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+			c.assert(t, a, at, rec)
+		})
+	}
+}
+
+// 3b: routes registered before Use are unguarded.
+func TestRepro_LateMount(t *testing.T) {
+	chain, err := httpsec.New(httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: &fakeAuth{err: authenticate.ErrAuthenticationFailed}, Attempts: &countingAttempts{}}),
+		httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(ex *httpsec.Exchange, n httpsec.Next) error {
+			return authenticate.ErrAuthenticationFailed
+		}), httpsec.OrderAuthorizer))
+	_ = err
+	require.NoError(t, err)
+	r := gin.New()
+	r.GET("/early", func(gc *gin.Context) { gc.String(200, "secret") })
+	r.Use(ginsec.Middleware(chain))
+	r.GET("/late", func(gc *gin.Context) { gc.String(200, "secret") })
+	for _, p := range []string{"/early", "/late"} {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, p, nil))
+		t.Logf("%s -> %d", p, rec.Code)
+	}
+}

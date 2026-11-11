@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/x509"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/kartaladev/scrty/authenticate"
@@ -29,12 +31,24 @@ import (
 // framework's own handlers.
 type Request interface {
 	Method() string
+
+	// Path is the request path as sent, decoded. The chain refuses a path
+	// with a "." or ".." segment before any interceptor runs, so an
+	// interceptor never sees one. Path is otherwise as sent, and may differ
+	// from the path a router serves in letter case and trailing slashes: a
+	// matcher that reads it must cover the spellings its framework routes to
+	// one handler.
 	Path() string
 
 	// EscapedPath is the request path as the client sent it, percent-encoding
 	// intact: "/api/ord%65rs" stays "/api/ord%65rs", where Path decodes it to
-	// "/api/orders". An integration reads it from the request line itself,
-	// never decoded and re-encoded.
+	// "/api/orders". An integration returns it exactly as sent, never
+	// normalised: the chain's dot-segment refusal reads this value, so a
+	// cleaned path would let a "." or ".." segment through. net/http's
+	// URL.EscapedPath may re-encode from the decoded path when the raw path is
+	// not a valid encoding. Dots stay visible either way, while an encoded
+	// slash may come back as a plain "/", which the refusal reads as a
+	// separator.
 	//
 	// DPoP (EnableDPoP) compares a proof's htu against it, so a proof made for
 	// one spelling of a path is not accepted for another that decodes to the
@@ -313,6 +327,21 @@ type ResponseWriter interface {
 // integration's own incoming context, so values and cancellation set before the
 // chain survive, and it is written back into the framework's carrier
 // immediately before the handler.
+//
+// An Exchange belongs to one goroutine: an interceptor that hands next or the
+// exchange to another goroutine and returns before it finishes is unsupported.
+//
+// A run's state is read inside the run, in the terminal Chain.Assemble was
+// given or in an interceptor before it returns: the step Assemble returns puts
+// back, as it returns, the context, Session and Authentication it found on
+// entry, and everything else its run resolved or its chain configured. Read
+// after the step returns, an exchange holds what it held before the run; an
+// enclosing chain's interceptor reads its own run's state after an inner
+// chain's step, not the inner run's. That holds for a nested chain with its own
+// terminal. A chain composed around the rest of a run (inner.Assemble(next))
+// puts back what the outer run's later interceptors set inside it, so read a
+// run's state in the terminal. Request and Writer are the request's own, and
+// are never put back.
 type Exchange struct {
 	// Request is what the interceptors read. It is never replaced once the
 	// exchange has started.
@@ -344,7 +373,10 @@ type Exchange struct {
 
 	// refusalReported is whether a chain this exchange ran through has
 	// already reported the refusal it was answered with (emitRefusal), so a
-	// chain assembled inside another's does not have it reported twice.
+	// chain assembled inside another's does not have it reported twice. A
+	// run's step does not put it back, so nested runs share it, and an
+	// outermost run clears it as it starts, so an exchange run again reports
+	// that run's refusal.
 	refusalReported bool
 
 	// renewal is the identifier of a session the resolution core let through
@@ -386,7 +418,246 @@ type Exchange struct {
 	// DPoP proof beside it carries ath over it.
 	bearerCredential string
 
+	// terminals and extra are the stack of runs in progress on this exchange,
+	// one entry per Assemble step entered and not yet returned: the chain and
+	// the terminal that run was given. The prebuilt fold is shared by every
+	// request, so its innermost step finds the terminal here (topTerminal)
+	// rather than holding one. Two entries cover one chain, and one chain
+	// nested in another, without allocating; deeper nesting spills to extra.
+	// The occupied entries are always terminals[0], then terminals[1], then
+	// extra in order.
+	terminals [2]runTerminal
+	extra     []runTerminal
+
 	ctx context.Context
+}
+
+// runTerminal is one run in progress on an exchange: the chain running and the
+// terminal its Assemble was given. running is set while the innermost step is
+// inside next, so a lookup made from within that terminal, where the same
+// chain is entered again, finds the run outside it rather than this one.
+//
+// gatesBegun is the run's gate mark on this exchange: it is set while the
+// run is inside its chain's first enabled gate (recovery, enrolment, second
+// factor or password change), whatever that gate then decides, and
+// everything the gate passes the request to. While it is set PublishSession
+// refuses a session the run itself publishes, since one published past its
+// gates would reach the handler unjudged by them, and a session another run
+// publishes unless that run's chain enables every gate this run's chain
+// enables. The mark belongs to the run whose gate frame set it, so a
+// different chain nested on the same exchange that covers every gate
+// publishes, and its own gates judge what it published. The gate's frame
+// puts back the value it found as it returns, a panic included, so a
+// retried pass or a later run of the exchange publishes before the gates as
+// normal (buildFold).
+type runTerminal struct {
+	chain      *Chain
+	next       Next
+	running    bool
+	gatesBegun bool
+}
+
+// terminalCount is how many runs are in progress on e.
+func (e *Exchange) terminalCount() int {
+	switch {
+	case e.terminals[0].chain == nil:
+		return 0
+	case e.terminals[1].chain == nil:
+		return 1
+	default:
+		return len(e.terminals) + len(e.extra)
+	}
+}
+
+// terminalAt returns the entry at position i of the stack, the bottom being 0.
+func (e *Exchange) terminalAt(i int) *runTerminal {
+	if i < len(e.terminals) {
+		return &e.terminals[i]
+	}
+
+	return &e.extra[i-len(e.terminals)]
+}
+
+// pushTerminal records that c has begun a run on e with terminal t.
+func (e *Exchange) pushTerminal(c *Chain, t Next) {
+	entry := runTerminal{chain: c, next: t}
+
+	switch n := e.terminalCount(); {
+	case n < len(e.terminals):
+		e.terminals[n] = entry
+	default:
+		e.extra = append(e.extra, entry)
+	}
+}
+
+// popTerminal removes the topmost entry of c, the run that is returning.
+//
+// Runs return in the reverse order they began, a panic unwinding included,
+// so that entry is the top of the stack; the entries above it, if any, are
+// shifted down regardless, so a stack left out of order still never holds a
+// terminal of a run that has ended. Nothing is removed when c has no entry.
+func (e *Exchange) popTerminal(c *Chain) {
+	n := e.terminalCount()
+
+	i := n - 1
+	for i >= 0 && e.terminalAt(i).chain != c {
+		i--
+	}
+
+	if i < 0 {
+		return
+	}
+
+	for j := i; j < n-1; j++ {
+		*e.terminalAt(j) = *e.terminalAt(j + 1)
+	}
+
+	// The vacated top is cleared so the stack does not keep the terminal, and
+	// what its closure holds, reachable.
+	*e.terminalAt(n - 1) = runTerminal{}
+
+	if n > len(e.terminals) {
+		e.extra = e.extra[:n-1-len(e.terminals)]
+	}
+}
+
+// topTerminal returns the position of c's topmost entry whose terminal is not
+// already running, or -1 when there is none.
+func (e *Exchange) topTerminal(c *Chain) int {
+	for i := e.terminalCount() - 1; i >= 0; i-- {
+		if t := e.terminalAt(i); t.chain == c && !t.running {
+			return i
+		}
+	}
+
+	return -1
+}
+
+// publishingChain returns the chain whose interceptors are running on e: the
+// topmost run in progress whose terminal is not itself running. A run whose
+// terminal is running has handed the request on, so what publishes there
+// belongs to the run below it or to the handler. It is nil when no chain is
+// running interceptors on e, such as from the handler, and a nil chain
+// enables no gate, so the check it feeds fails closed.
+func (e *Exchange) publishingChain() *Chain {
+	if i := e.publishingRun(); i >= 0 {
+		return e.terminalAt(i).chain
+	}
+
+	return nil
+}
+
+// publishingRun returns the position of the run publishingChain names, or -1
+// when no chain is running interceptors on e.
+func (e *Exchange) publishingRun() int {
+	for i := e.terminalCount() - 1; i >= 0; i-- {
+		if !e.terminalAt(i).running {
+			return i
+		}
+	}
+
+	return -1
+}
+
+// gateMarkRefusal returns why a session published now is refused by the gate
+// marks of the runs on e, or nil when none refuses it. A mark of the
+// publishing run itself makes the publication late: its own gates have begun
+// (errLatePublication). A mark of any other run on e is judged by
+// otherRunMarkRefusal. The marks are read from e itself, so the context an
+// interceptor set does not change what they decide; runs on another exchange
+// are judged by gatesRunning. The walk is as deep as the runs on e and
+// allocates nothing.
+func (e *Exchange) gateMarkRefusal() error {
+	if p := e.publishingRun(); p >= 0 && e.terminalAt(p).gatesBegun {
+		return errLatePublication
+	}
+
+	return e.otherRunMarkRefusal()
+}
+
+// otherRunMarkRefusal returns errPublishedInsideGates when a run on e other
+// than the publishing one is marked and the publishing chain does not enable
+// every gate that run's chain enables, or nil when none is. A publication from
+// the handler, where no chain is running interceptors, enables no gate and is
+// refused by any mark. The publishing run's own mark is not read: the
+// resolution core runs before its own chain's gates, and PublishSession
+// judges that mark itself (gateMarkRefusal). The marks are read from e, never
+// from its context, so a context an interceptor replaced cannot hide them.
+// The walk is as deep as the runs on e and allocates nothing.
+func (e *Exchange) otherRunMarkRefusal() error {
+	publisher := e.publishingRun()
+
+	var have gateSet
+	if publisher >= 0 {
+		if c := e.terminalAt(publisher).chain; c != nil {
+			have = c.gates
+		}
+	}
+
+	for i := range e.terminalCount() {
+		t := e.terminalAt(i)
+		if i == publisher || !t.gatesBegun {
+			continue
+		}
+
+		// A marked run always has a chain; one without is refused rather
+		// than read as enabling no gate.
+		if t.chain == nil || !have.covers(t.chain.gates) {
+			return errPublishedInsideGates
+		}
+	}
+
+	return nil
+}
+
+// runScope is what one run of a chain may change on an exchange and puts back
+// as it returns (Chain.Assemble): the context, what the run resolved and what
+// its chain configured. The request's own facts (Request, Writer, the
+// certificate thumbprint) describe the one request whichever chain reads them,
+// and the state that coordinates runs on one exchange (refusalReported, the
+// terminal stack and its gate marks) exists to be seen across runs, so
+// neither is in it.
+type runScope struct {
+	ctx              context.Context //nolint:containedctx // the context a run found, put back as it returns
+	session          *session.Session
+	authentication   *authenticate.Authentication
+	bearerCredential string
+	renewal          string
+	chargeRenewal    func(context.Context)
+	admitRenewal     func(*Exchange, *session.Session) (*identity.Details, error)
+	perRequest       *perRequestPhase
+	csrfOptOut       bool
+	raised           policy.ChallengeKind
+}
+
+// saveScope records what a run may change on e.
+func (e *Exchange) saveScope() runScope {
+	return runScope{
+		ctx:              e.ctx,
+		session:          e.Session,
+		authentication:   e.Authentication,
+		bearerCredential: e.bearerCredential,
+		renewal:          e.renewal,
+		chargeRenewal:    e.chargeRenewal,
+		admitRenewal:     e.admitRenewal,
+		perRequest:       e.perRequest,
+		csrfOptOut:       e.csrfOptOut,
+		raised:           e.raised,
+	}
+}
+
+// restoreScope puts back on e what saveScope recorded.
+func (e *Exchange) restoreScope(s runScope) {
+	e.ctx = s.ctx
+	e.Session = s.session
+	e.Authentication = s.authentication
+	e.bearerCredential = s.bearerCredential
+	e.renewal = s.renewal
+	e.chargeRenewal = s.chargeRenewal
+	e.admitRenewal = s.admitRenewal
+	e.perRequest = s.perRequest
+	e.csrfOptOut = s.csrfOptOut
+	e.raised = s.raised
 }
 
 // NewExchange starts an exchange seeded from ctx.
@@ -403,10 +674,22 @@ func NewExchange(ctx context.Context, request Request, writer ResponseWriter) *E
 // Context returns the context every call into scrty's cores is made with. It
 // is derived from the incoming request's context and never replaces it, so an
 // upstream value and an upstream cancellation both survive the chain.
+//
+// During a run it is that run's context, carrying the caller and the session
+// the run published; read it inside the terminal to see them. Once the step
+// Chain.Assemble returned has returned, it is again the context the exchange
+// had when the step was entered, whatever the run set with SetContext.
 func (e *Exchange) Context() context.Context { return e.ctx }
 
 // SetContext replaces the context. An interceptor that resolves security state
 // calls it so every later interceptor, and the handler, read that state.
+//
+// The new context must derive from the current one. The runs on this exchange
+// are judged from the exchange's own marks, so replacing the context does not
+// hide them. The enclosing runs on other exchanges are found through the
+// context, so one that does not derive from it hides those: a chain run on it
+// is judged as a chain on its own, and the check that refuses a session
+// published inside another chain's gates then finds nothing to refuse.
 //
 // It panics when ctx is nil: dropping the context the exchange already holds
 // would silently detach the rest of the chain from the client's cancellation.
@@ -478,13 +761,134 @@ func (f InterceptorFunc) Intercept(ex *Exchange, next Next) error { return f(ex,
 // interceptor that returns it gets the 500 any unclassified error maps to. A
 // nil sess is not refused: it is WithCaller and SetContext, and returns nil.
 //
-// The default is unused: the built-ins call it, and a consumer calls it from
-// an interceptor registered with RegisterInterceptor, normally at
-// OrderBearerToken, after verifying the credential that names sess. Such an
+// It also refuses a non-nil sess once the request has entered the chain's
+// first enabled gate: the recovery gate (OrderAccountRecovery), the enrolment
+// gate (OrderMFAEnrolment), the second-factor gate (OrderMFAChallenge) or the
+// password-change gate (OrderPasswordChange). A session published past that
+// point would reach the authorization stage and the handler without the gates
+// having judged it, so one owing a second factor, a password change or an
+// enrolment would be served. The error wraps ErrConfig, so the request is
+// answered with a 500, nothing is published, and the chain writes one sampled
+// record naming neither the session nor its user. The refusal is a wiring
+// mistake, not a runtime condition: register the authenticating interceptor
+// at OrderBearerToken, no later. Interceptors after OrderBearerToken, such as
+// the recovery cool-down, judge a request by the session it carries when they
+// run, so a session published behind them is never judged by them. A chain
+// with none of the gates enabled refuses nothing, and a nil sess, signing the
+// caller out, is never refused. The gate mark that makes a publication late
+// belongs to the run whose first gate set it: only the publishing chain's own
+// gates having begun do.
+//
+// A publication inside another chain's gates is judged by gate set instead:
+// on the same exchange or on one an adapter's mount built further in,
+// whether a consumer interceptor or a built-in authenticator publishes, it is
+// refused when the publishing chain does not enable every gate the other
+// chain enables, and the error, which also wraps ErrConfig, says to mount
+// that chain outside the other chain's gates or to authenticate in the outer
+// chain. A chain that enables every one of those gates, the same chain
+// included, is not refused, whether it is assembled inside the other on one
+// exchange or a handler forwards the request in-process through it: its own
+// gates judge the session it publishes, and a late authenticator of its own
+// is refused by its own gates' mark. A session published from the handler,
+// where no chain is running interceptors, is refused once any chain's gates
+// have begun. The mark holds only while the gates run, so an interceptor
+// before OrderBearerToken that runs the rest of the chain twice publishes
+// before the gates on both passes.
+//
+// The runs on the same exchange are judged from the exchange itself. The
+// enclosing runs on other exchanges are found through the exchange's context,
+// so the context an interceptor sets must derive from the current one
+// (SetContext): a chain run on a fresh exchange whose context does not is
+// judged as a chain on its own.
+//
+// The default is unused: the built-ins publish through an unexported path that
+// makes the same checks, and a consumer calls it from
+// an interceptor registered with RegisterInterceptor at OrderBearerToken,
+// after verifying the credential that names sess. Such an
 // interceptor also calls RecordPresentedToken with that credential, so a DPoP
 // proof beside it is judged for its ath. PublishSession is itself the
 // consumer's extension point, so it has no override.
 func (e *Exchange) PublishSession(authentication *authenticate.Authentication, sess *session.Session) error {
+	// A session published once the publishing chain's gates have begun, or
+	// inside the gates of another run on this exchange that the publishing
+	// chain does not cover, reaches the handler and the authorization stage
+	// without the gates having judged it: one owing a second factor, a
+	// password change or an enrolment would be served. It is refused, never
+	// published, and the chain is told once per window.
+	if sess != nil {
+		if err := e.gateMarkRefusal(); err != nil {
+			e.logLatePublication()
+
+			return err
+		}
+	}
+
+	return e.publishSession(authentication, sess)
+}
+
+// errLatePublication is what PublishSession returns for a session published
+// once the publishing chain's own gates have begun.
+var errLatePublication = fmt.Errorf("%w: a session was published after the chain's gates had begun; "+
+	"register the authenticator at OrderBearerToken", ErrConfig)
+
+// errPublishedInsideGates is what publishing a session returns when the chain
+// publishing it runs inside another chain's gates, on this exchange or on one
+// an adapter built further in.
+var errPublishedInsideGates = fmt.Errorf("%w: a session was published by a chain run inside another chain's gates; "+
+	"mount this chain outside the other chain's gates or authenticate in the outer chain", ErrConfig)
+
+// msgLatePublication is the record a refused late publication leaves.
+const msgLatePublication = "httpsec: session published after the gates refused"
+
+// latePublicationKey is the sampling key of that record.
+const latePublicationKey = "late-session-publication"
+
+// logLatePublication writes the record of a refused late publication through
+// the chain running innermost on e, sampled per chain. It names neither the
+// session nor its user: the refusal is a wiring mistake, and what an operator
+// needs is that it happened, not whose request met it. An exchange no chain
+// is running, or a chain that did not come from New, has no logger, and
+// nothing is written.
+func (e *Exchange) logLatePublication() {
+	n := e.terminalCount()
+	if n == 0 {
+		return
+	}
+
+	c := e.terminalAt(n - 1).chain
+	if c == nil || c.logger == nil || c.perRequest == nil {
+		return
+	}
+
+	logSampled(e.ctx, c.sampler, c.logger, slog.LevelError, c.perRequest.now(), latePublicationKey, msgLatePublication)
+}
+
+// publishSession is PublishSession without the check of the publishing run's
+// own gate mark: the path the resolution core and every built-in that
+// publishes a session take, wherever in their own chain they run, since the
+// core runs at OrderBearerToken, before its own chain's gates. It still
+// refuses a non-nil sess while another chain's run is inside gates the
+// publishing chain does not all enable, since a session published there
+// reaches the handler unjudged by the gate it lacks, whoever publishes it.
+// Such a run is found two ways, and either refuses: on this exchange, from
+// the marks the exchange itself holds (otherRunMarkRefusal), so a consumer
+// interceptor that replaced the context with one not derived from the run's
+// does not hide it; and on an exchange further out, through the run marker's
+// parent links on the context (gatesRunning).
+func (e *Exchange) publishSession(authentication *authenticate.Authentication, sess *session.Session) error {
+	if sess != nil {
+		err := e.otherRunMarkRefusal()
+		if err == nil && gatesRunning(e.ctx, e.publishingChain()) {
+			err = errPublishedInsideGates
+		}
+
+		if err != nil {
+			e.logLatePublication()
+
+			return err
+		}
+	}
+
 	if sess != nil && sess.FamilyID == id.Nil {
 		return errors.New("httpsec: a session with no family cannot be published; every stored session belongs to one")
 	}

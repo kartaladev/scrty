@@ -1,0 +1,26 @@
+package notify_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/kartaladev/scrty/notify"
+)
+
+func TestSMTPSender_CancelMidTransferMatchesContextCanceled(t *testing.T) {
+	srv := startScriptedServer(t, scriptSilentGreeting())
+	s := newTestSMTPSender(t, srv, notify.WithSMTPTimeout(30*time.Second))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- s.Send(ctx, testMessage()) }()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	err := <-done
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("a send the caller cancelled must match context.Canceled; got %T: %v", err, err)
+	}
+}

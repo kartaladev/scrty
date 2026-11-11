@@ -151,7 +151,7 @@ func (h *backchannelHarness) serve(t *testing.T, req *http.Request) served {
 	out := served{rec: httptest.NewRecorder()}
 	run := h.chain.Assemble(func(ex *httpsec.Exchange) error {
 		out.handlerRan = true
-		out.handled = ex
+		out.handled = inTerminal(ex)
 
 		return nil
 	})

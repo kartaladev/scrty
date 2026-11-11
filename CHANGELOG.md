@@ -12,6 +12,89 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-11
+
+A patch release that fixes three security defects in `v0.1.0`, and retracts `v0.1.0`. Upgrade every
+scrty module to `v0.1.1`.
+
+### Security
+
+All three affect the `httpsec` chain in `github.com/kartaladev/scrty` `v0.1.0`.
+
+- **A fiber application could serve a path its authorization rules never approved.** Fiber removes
+  `.` and `..` segments before routing, while the chain's rules read the path as sent. So a
+  `/public` rule permitted `GET /public/../admin/users`, and fiber served it from the `/admin/users`
+  handler. Encoded spellings (`%2e%2e`, and segments joined by `%2F` when `UnescapePath` is set)
+  did the same. The chain now refuses such paths on every adapter (see *Changed*).
+- **The recovery cool-down could be bypassed the same way.** On fiber, `/x/../account/delete`
+  reached a route the cool-down marks while the cool-down was in force.
+- **A consumer authenticator placed after the gates skipped them.** An authenticator registered past
+  the recovery, enrolment, second-factor and password-change gates could publish a session those
+  gates never judged. A session still owing a second factor, an enrolment or a password change then
+  reached the handler with 200. A second chain run inside the first chain's gates, mounted through
+  any adapter, could do the same with its own authenticator. `Exchange.PublishSession` now refuses a
+  session while a request is inside the chain's gates, or inside another chain's gates that enclose
+  this run, unless the publishing chain enables every gate the enclosing chain enables, so that its
+  own gates judge what it publishes. The reverse nesting is closed too: a chain with gates mounted
+  inside a chain without them never judged the session the outer chain had published, so its
+  handler could serve a session still owing a second factor. Its gates and authorization stage now
+  judge that session. As defence in depth, the authorization stage refuses a session that
+  still owes the challenge of a gate the chain enables, with that gate's own error.
+
+### Changed
+
+- **BREAKING (request handling).** The chain answers `400` (`httpsec.ErrMalformedRequest`) to a
+  request whose path holds a `.` or `..` segment, sent as is or percent-encoded, or whose
+  percent-encoding does not decode. The check runs after client resolution, whose own refusal wins
+  when both apply, and before any interceptor, on every adapter. It has no opt-out, and the 400
+  carries the same security headers as any other refusal. Browsers never send such paths.
+- **BREAKING (configuration).** `WithLogger`, `WithClock`, `WithPolicyEngine`,
+  `WithRateLimiterFactory` and `WithErrorHandler` given more than once now fail `httpsec.New`, where
+  the last value used to win silently. `EnableAuthorization` keeps its last-wins authorizer, and now
+  refuses a nil authorizer in any of its calls.
+- **BREAKING (configuration).** `Exchange.PublishSession` returns an `httpsec.ErrConfig` error, and
+  publishes nothing, when a session is published after the chain's gates have begun, or by a chain
+  run inside another chain's gates that lacks one of that chain's gates. A handler's in-process
+  forward through the same chain, or through a chain with the same gates, still publishes. Register a consumer authenticator at `OrderBearerToken`, no
+  later: the recovery cool-down, just after it, judges a request by the session it carries when it
+  runs. Mount a second chain outside the first chain's gates, or authenticate in the outer chain.
+- One chain mounted twice on a request, such as on a gin engine or fiber application and again on a
+  group, now runs once. The second mount lets the request through as the first one judged it, so a
+  middleware between the two mounts that changes what a rule reads is not judged again. Two
+  different chains still both run.
+- An interceptor that keeps `next` and calls it after its run has returned, or a terminal that calls
+  `next` of its own run, now gets an `httpsec.ErrConfig` error instead of running the terminal again.
+- After the chain's step returns, an exchange's context, `Session` and `Authentication`, and the
+  rest of its per-run state, are what they were before the run, including after a recovered
+  panic. Code that read them after the step returned used to see the run's state, and an exchange
+  run many times grew its context on every run. Read a run's state inside the terminal. An exchange
+  refused once and run again now reports its second refusal too.
+- The chain builds its interceptor fold once, when it is constructed, instead of on every request.
+  With eight interceptors a request now allocates as much as with none.
+- Token verification (`token.Verifier`) and the OIDC provider's ID token hint check refuse a token
+  whose header names no `alg`. `token.Verifier` accepted one on `v0.1.0`, against its documentation;
+  the hint check began accepting one with jwx 4.6.0. The signature was always checked under the
+  algorithm recorded on the key, so neither let a token through without the issuer's key.
+- Store and service calls that must finish even if the client hangs up now have a deadline where
+  they had none: 5 seconds for a write, and 10 seconds for revoking a session, a session family or a
+  credential. They still outlive the client's cancellation. When the deadline passes, the call
+  fails as a store error from that call already did, and the failure is logged as an outage, not
+  as the client leaving. Calls that already had a bound keep it. Rate-limiter calls, session end
+  observers, the event sink and notification senders are not bounded by the library: the limiter
+  and the sender bound themselves, and an observer or sink bounds its own work. A lockout observer
+  shares the 5-second bound of the chain's failed-attempt record or reset that runs it. A consumer-supplied WebAuthn metadata fetch now receives a
+  context with a deadline of `outbound.DefaultTimeout` (10 seconds). A fetch that runs past it
+  refuses the registration, as any metadata failure does.
+- `notify.SMTPSender.Send` returns an error that matches the context's error (`context.Canceled`
+  or `context.DeadlineExceeded`) when the caller's context ended during the send. Such a send is
+  logged at debug level, as a hang-up, not as a failed delivery. A timeout of the sender's own still
+  returns the network error.
+- Exported signatures use descriptive parameter names (no API change).
+- Dependencies: `github.com/lestrrat-go/jwx/v4` 4.6.0; `github.com/testcontainers/testcontainers-go`
+  and its postgres, redis and mailpit modules 0.45.0 (the `test` module only). With jwx 4.6.0 a
+  token's negative `nbf` or `iat` parses as a date before 1970 instead of being refused, and a
+  malformed string date is refused when the token is parsed.
+
 ## [0.1.0] - 2026-11-09
 
 The first release. Nothing was tagged before it, so the items under *Changed* describe what differs
@@ -355,5 +438,6 @@ exported identifiers; the moves and renames change no behaviour.
 - A user-store outage during a password login no longer places a hold on a real account.
 - The limit on saved recovery codes holds when the codes are presented concurrently.
 
-[Unreleased]: https://github.com/kartaladev/scrty/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/kartaladev/scrty/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/kartaladev/scrty/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/kartaladev/scrty/releases/tag/v0.1.0

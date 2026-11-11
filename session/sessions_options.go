@@ -255,6 +255,8 @@ func WithRandom(src io.Reader) Option { return func(m *Sessions) { m.random = sr
 //
 // A nil observer, typed nil included, is a configuration error from New.
 // AddEndObserver adds one to a manager already built.
+//
+// The library gives the observer's context no deadline; bound your own work.
 func WithEndObserver(observer EndObserver) Option {
 	return func(m *Sessions) { m.appendEndObserver(observer) }
 }

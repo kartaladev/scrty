@@ -4,6 +4,8 @@ import (
 	"archive/zip"
 	"context"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -177,8 +179,8 @@ func TestWriteProxy_EscapesPath(t *testing.T) {
 	}
 }
 
-// One case: the other tests pin zips and paths; this one pins the three small files.
-func TestWriteProxy_WritesListInfoAndMod(t *testing.T) {
+// One case: the other tests pin zips and paths; this one pins the three version files and the absence of list.
+func TestWriteProxy_WritesInfoModZipAndNoList(t *testing.T) {
 	t.Parallel()
 
 	src := t.TempDir()
@@ -194,9 +196,15 @@ func TestWriteProxy_WritesListInfoAndMod(t *testing.T) {
 	}
 	dir := filepath.Join(out, "example.com", "m", "@v")
 
-	list, err := os.ReadFile(filepath.Join(dir, "list")) //nolint:gosec // G304: a path under this test's temporary directories
-	if err != nil || string(list) != version+"\n" {
-		t.Errorf("list = %q (%v), want %q", list, err, version+"\n")
+	// No @v/list: gorelease lists the base module's versions through the
+	// proxy and would refuse the release version as already existing.
+	if _, err := os.Stat(filepath.Join(dir, "list")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("stat list = %v, want the file to be absent", err)
+	}
+	for _, name := range []string{version + ".info", version + ".mod", version + ".zip"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("stat %s: %v", name, err)
+		}
 	}
 	mod, err := os.ReadFile(filepath.Join(dir, version+".mod")) //nolint:gosec // G304: a path under this test's temporary directories
 	if err != nil || string(mod) != rootMod {
@@ -387,6 +395,35 @@ func TestWriteProxy_GoGetResolves(t *testing.T) {
 	mod, err := os.ReadFile(filepath.Join(consumer, "go.mod")) //nolint:gosec // G304: a path under this test's temporary directories
 	if err != nil || !strings.Contains(string(mod), "example.com/m "+version) {
 		t.Errorf("consumer go.mod = %q (%v), want a requirement on example.com/m %s", mod, err, version)
+	}
+}
+
+// One case: gorelease lists the base module's versions through the proxy, so
+// the release version must resolve exactly yet never appear in the listing.
+func TestWriteProxy_GoListDoesNotListTheRelease(t *testing.T) {
+	t.Parallel()
+
+	src := t.TempDir()
+	writeTree(t, src, map[string]string{"go.mod": rootMod, "m.go": "package m\n"})
+	out := filepath.Join(t.TempDir(), "proxy")
+	if err := writeProxy(src, version, []string{"."}, out); err != nil {
+		t.Fatal(err)
+	}
+	consumer := t.TempDir()
+	writeTree(t, consumer, map[string]string{"go.mod": "module example.com/consumer\n\ngo 1.21\n"})
+	env := append(goEnv(t, out), "GOPROXY=file://"+filepath.ToSlash(out)+",off")
+
+	// With no @v/list the file proxy has no listing, so go falls through to
+	// "off" and fails; either way the release version must not be listed.
+	cmd := exec.CommandContext(t.Context(), "go", "list", "-m", "-versions", "example.com/m")
+	cmd.Dir, cmd.Env = consumer, env
+	versions, _ := cmd.CombinedOutput() // a failed lookup is expected here; only the output matters
+	if strings.Contains(string(versions), version) {
+		t.Errorf("go list -m -versions = %q, want it not to list %s", versions, version)
+	}
+	got := runGo(t, consumer, env, "list", "-m", "example.com/m@"+version)
+	if !strings.Contains(got, "example.com/m "+version) {
+		t.Errorf("go list -m example.com/m@%s = %q, want it to resolve", version, got)
 	}
 }
 

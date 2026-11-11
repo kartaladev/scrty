@@ -39,7 +39,7 @@ func serveAs(t *testing.T, chain *httpsec.Chain, p *identity.Principal, path str
 	out := served{rec: httptest.NewRecorder()}
 	run := chain.Assemble(func(ex *httpsec.Exchange) error {
 		out.handlerRan = true
-		out.handled = ex
+		out.handled = inTerminal(ex)
 
 		return nil
 	})

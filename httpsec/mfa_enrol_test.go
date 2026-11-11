@@ -3030,7 +3030,7 @@ func serveThrough(t *testing.T, chain *httpsec.Chain, req *http.Request, w https
 	out := served{rec: httptest.NewRecorder()}
 	run := chain.Assemble(func(ex *httpsec.Exchange) error { //nolint:contextcheck // the exchange carries the request context, and begin reads it through ex.Context()
 		out.handlerRan = true
-		out.handled = ex
+		out.handled = inTerminal(ex)
 
 		return nil
 	})
@@ -3425,7 +3425,16 @@ func TestEnrolmentRefusalRecordCarriesErrorType(t *testing.T) {
 		// case names another method.
 		path string
 
-		reason  string
+		// anonymous builds the chain with no session of its own, the
+		// enrolment-only one only on the context, as an enclosing chain's
+		// publication leaves it: the endpoints answer ErrAuthenticationRequired.
+		anonymous bool
+
+		reason string
+
+		// level is the record's level; slog.LevelInfo, the zero value, unless
+		// a case names another.
+		level   slog.Level
 		hasType bool
 	}
 
@@ -3442,6 +3451,7 @@ func TestEnrolmentRefusalRecordCarriesErrorType(t *testing.T) {
 				h.enrolOpts = append(h.enrolOpts, httpsec.WithEnrolmentBeginLimiter(l))
 			},
 			reason:  "limiter-unavailable",
+			level:   slog.LevelError,
 			hasType: true,
 		},
 		{
@@ -3474,6 +3484,18 @@ func TestEnrolmentRefusalRecordCarriesErrorType(t *testing.T) {
 			reason:  "unknown-method",
 			hasType: false,
 		},
+		{
+			// The session is only on the context, so the endpoint will not
+			// serve it: a caller who is not authenticated is refused at INFO,
+			// not as a fault.
+			name:      "a session only on the context, not ex.Session, is unauthenticated",
+			first:     factor.Password,
+			prepare:   func(*testing.T, *enrolHarness) {},
+			anonymous: true,
+			reason:    "unauthenticated",
+			level:     slog.LevelInfo,
+			hasType:   false,
+		},
 	}
 
 	for _, tc := range cases {
@@ -3491,11 +3513,23 @@ func TestEnrolmentRefusalRecordCarriesErrorType(t *testing.T) {
 				path = enrolBeginPath
 			}
 
-			c := h.chain(t, h.enrolmentOnly(t, tc.first))
+			s := h.enrolmentOnly(t, tc.first)
+			if tc.anonymous {
+				published := s
+				h.extra = append(h.extra, httpsec.RegisterInterceptor(
+					httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+						ex.SetContext(httpsec.WithSession(ex.Context(), published))
+						return next(ex)
+					}), httpsec.OrderBearerToken))
+				s = nil
+			}
+
+			c := h.chain(t, s)
 			serve(t, c, post(t.Context(), path, ""))
 
 			refused := withReason(recordsNamed(logs, msgEnrolmentRefused), tc.reason)
 			require.Len(t, refused, 1, "the refusal is recorded under its reason")
+			assert.Equal(t, tc.level, refused[0].Level, "the refusal's level")
 
 			_, ok := attrValue(refused[0], "error_type")
 			assert.Equal(t, tc.hasType, ok,

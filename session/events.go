@@ -30,6 +30,8 @@ import (
 //
 // A nil sink, or the option given twice, is a configuration error wrapping
 // ErrConfig from New.
+//
+// The library gives the sink's context no deadline; bound your own work.
 func WithSecurityEvents(sink event.Sink) Option {
 	return func(m *Sessions) { m.events.Set(sink) }
 }

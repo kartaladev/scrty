@@ -70,7 +70,7 @@ type recoveryGate struct {
 // interceptors resolved, and must never be reached by a session a recovery
 // has confined.
 func (g *recoveryGate) Intercept(ex *Exchange, next Next) error {
-	s := ex.Session
+	s := requestSession(ex)
 	if s != nil && s.MFA == session.MFARecoveryPending {
 		if g.exempt(ex.Request) {
 			return next(ex)

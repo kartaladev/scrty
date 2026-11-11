@@ -120,8 +120,13 @@ func (c *mdsConfig) fail(reason string) {
 //
 // Concurrent registrations share one call of fetch, so its context carries
 // the values of the registration that started it but not its cancellation or
-// deadline. fetch must bound its own duration: while it runs, every
-// registration that needs metadata waits for it.
+// deadline. It carries a deadline of its own instead: outbound.DefaultTimeout
+// from the start of the call, the bound MetadataFromMDS gets from the
+// confined client by default. A fetch that honours its context ends there,
+// and the registrations waiting for it are refused with
+// passkey.ErrAttestationRefused, as for any failed fetch. A fetch that ignores
+// its context is not stopped: each registration still waits only as long as
+// its own context allows, but no other fetch starts until that one returns.
 //
 // The consumer decides where the bytes come from, and so takes on what
 // fetching them means: scrty only decodes and checks them.
@@ -136,7 +141,25 @@ func MetadataBlob(fetch func(ctx context.Context) ([]byte, error), opts ...MDSOp
 		cfg.fail("the metadata fetch function is nil")
 	}
 
-	return newMetadataCache(cfg, fetch)
+	return newMetadataCache(cfg, boundFetch(fetch))
+}
+
+// boundFetch gives each call of a consumer's fetch a context that ends
+// outbound.DefaultTimeout after the call starts, and releases its timer when
+// the call returns. The context it wraps is already detached from the
+// registration's cancellation (see provider), so the bound is the only
+// deadline the fetch sees.
+func boundFetch(fetch func(ctx context.Context) ([]byte, error)) func(ctx context.Context) ([]byte, error) {
+	if fetch == nil {
+		return nil
+	}
+
+	return func(ctx context.Context) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(ctx, outbound.DefaultTimeout)
+		defer cancel()
+
+		return fetch(ctx)
+	}
 }
 
 // MetadataFromMDS returns a source that fetches the BLOB from the FIDO
@@ -249,9 +272,10 @@ var errMetadataUnavailable = errors.New("webauthn: attestation metadata unavaila
 // The fetch is shared by every caller that arrives while it runs, so it runs
 // detached from the cancellation of the caller that started it: one caller
 // giving up must not fail the others. It keeps that caller's context values,
-// and is bounded by the fetch itself (the confined client's timeout for
-// MetadataFromMDS). A caller whose context ends while it waits returns the
-// context's error; the fetch carries on for the rest.
+// and is bounded by the fetch itself: the confined client's timeout for
+// MetadataFromMDS, and outbound.DefaultTimeout for MetadataBlob (boundFetch).
+// A caller whose context ends while it waits returns the context's error; the
+// fetch carries on for the rest.
 func (c *metadataCache) provider(ctx context.Context) (metadata.Provider, error) {
 	if p := c.fresh(c.clock.Now()); p != nil {
 		return p, nil

@@ -1,13 +1,13 @@
 package httpsec
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"time"
 
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
@@ -204,7 +204,11 @@ func (op *oidcEndpoints) finishLogout(ex *Exchange, ended *oidcprovider.SignInSe
 
 	// Detached so a client hanging up cannot leave the family live; WithoutCancel keeps the
 	// context's values, so a consumer's transaction is still joined.
-	n, err := op.sessions.Logout(context.WithoutCancel(ctx), user, ended.Family)
+	// Bounded, so a store that hangs cannot hold the request for ever.
+	revoke, cancel := detach.Bounded(ctx, detach.RevocationTimeout)
+	defer cancel()
+
+	n, err := op.sessions.Logout(revoke, user, ended.Family)
 	if err != nil && !errors.Is(err, session.ErrNotFound) {
 		return err
 	}
