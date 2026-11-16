@@ -5,7 +5,7 @@ go 1.27
 require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/gofiber/fiber/v3 v3.6.1
-	github.com/jackc/pgx/v5 v5.12.0
+	github.com/jackc/pgx/v5 v5.13.0
 	github.com/jonboulle/clockwork v0.5.0
 	github.com/kartaladev/scrty v0.1.1
 	github.com/kartaladev/scrty/authenticate/passkey/webauthn v0.1.1
