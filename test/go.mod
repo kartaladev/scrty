@@ -14,7 +14,7 @@ require (
 	github.com/kartaladev/scrty/ratelimit/redisstore v0.1.1
 	github.com/kartaladev/scrty/store/gormstore v0.1.1
 	github.com/kartaladev/scrty/store/pgxstore v0.1.1
-	github.com/klauspost/compress v1.20.3
+	github.com/klauspost/compress v1.20.4
 	github.com/lestrrat-go/jwx/v4 v4.6.0
 	github.com/pquerna/otp v1.5.0
 	github.com/pressly/goose/v3 v3.29.0
