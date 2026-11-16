@@ -14,7 +14,7 @@ require (
 
 require (
 	github.com/robfig/cron/v3 v3.0.1 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
+	go.yaml.in/yaml/v3 v3.0.6 // indirect
 )
 
 // The core module is not tagged yet, so there is no version to require. It is
