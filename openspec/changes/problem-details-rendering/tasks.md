@@ -23,7 +23,7 @@
 
 ## 2. Core: recognising lookup and challenge token type (design decisions 2, 5)
 
-- [ ] 2.1 Red: add `TestLookupStatus` (table) in `httpsec`. Cases:
+- [x] 2.1 Red: add `TestLookupStatus` (table) in `httpsec`. Cases:
   - every `statusTable` row: recognised, with the row's status;
   - each challenge kind: recognised, 401 or 403;
   - each explicit 500 branch: recognised, 500;
@@ -32,15 +32,15 @@
   - a consumer error and `nil`: unrecognised, 500.
 
   Each case also asserts that the status equals `StatusForError(err)`. Seeing the red step: the test fails because the lookup reports no errors as recognised (stub it to return `StatusForError(err), false` first). Green: implement `LookupStatus` and re-express `StatusForError` through it. Verify with `go test -run 'TestLookupStatus|TestStatusForError' -count=1 ./httpsec/`.
-- [ ] 2.2 Red: add `TestLookupStatus_DependencySentinelInventory`. It lists every exported core sentinel whose godoc calls it a dependency or unavailability failure that maps to 500, and asserts each is recognised. Before writing it, inventory them with gopls workspace symbols (`Err*Unavailable`, `ErrDependency`, `ErrHistoryUnavailable`, `ErrLookupUnavailable`), and report the list. Green: add the missing ones to the lookup. Verify with `go test -run TestLookupStatus_DependencySentinelInventory -count=1 ./httpsec/`.
-- [ ] 2.3 Red: extend the challenge-error tests:
+- [x] 2.2 Red: add `TestLookupStatus_DependencySentinelInventory`. It lists every exported core sentinel whose godoc calls it a dependency or unavailability failure that maps to 500, and asserts each is recognised. Before writing it, inventory them with gopls workspace symbols (`Err*Unavailable`, `ErrDependency`, `ErrHistoryUnavailable`, `ErrLookupUnavailable`), and report the list. Green: add the missing ones to the lookup. Verify with `go test -run TestLookupStatus_DependencySentinelInventory -count=1 ./httpsec/`.
+- [x] 2.3 Red: extend the challenge-error tests:
   - a challenged password login on a bearer chain has `TokenType == TokenTypeBearer`;
   - a DPoP-bound login has `TokenTypeDPoP`;
   - an MFA verification raising a password-change challenge carries the rotated token's type;
   - the password-change gate's challenge, which carries no token, has an empty `TokenType`.
 
   Green: set `TokenType` at the three construction sites (`complete.go`, `mfa_verify.go` ×2) from `tokenTypeOf`. Verify with `go test -run 'Challenge' -count=1 ./httpsec/`.
-- [ ] 2.4 Godoc:
+- [x] 2.4 Godoc:
   - `LookupStatus`: what "recognised" means, and the comma-ok pairing with `StatusForError`;
   - `ChallengeError.TokenType`;
   - the package doc's "Failing closed" section names the lookup.

@@ -96,7 +96,7 @@ A problem's title and detail SHALL be fixed library text, and no error's text SH
 #### Scenario: What each member holds
 - **WHEN** a problem carries an extension member
 - **THEN** it holds only what this list gives:
-  - `challenge`: a challenge's kind;
+  - `challenge`: a challenge's kind, as one of the fixed values `mfa`, `password-change`, `mfa-enrolment` or `account-recovery`. A challenge of any other kind has no `challenge` member;
   - `methods`: on `mfa-required`, the usable second-factor methods in the challenge's order, each with `name`, `channel` and `begins`;
   - `max_age`: on `reauthentication-required`, the required recency in whole seconds, when the refusal carries one;
   - `rule`: on `password-rejected`, the policy rule that refused the candidate;

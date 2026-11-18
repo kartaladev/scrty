@@ -92,7 +92,8 @@ The core gains a comma-ok lookup. `StatusForError` becomes `s, _ := LookupStatus
 
 - **Title and detail.** Each is a fixed English string per type, also used for the type's discovery documentation.
 - **Extension members.** Each member is set with `Problem.Set`. All names are valid prblm extension names.
-  - `challenge`: `ChallengeKind.String()`, on every challenge type.
+  - `challenge`: on every challenge type, a fixed token the integration owns, in the sub-types' kebab-case vocabulary: `mfa`, `password-change`, `mfa-enrolment` or `account-recovery`. A kind outside that list, such as a consumer's own, has no `challenge` member. Its type still says it is a challenge.
+    - **Not `ChallengeKind.String()`:** that method returns Go constant names for logs, and a bare number for a consumer's kind. Exposing it would make a rename in `policy` a wire break. Maintainer's choice, 2026-11-18.
   - `methods`: on `mfa-required`, a list of `{name, channel, begins}`, with `channel` the `factor.Channel` string. An empty, non-nil list is rendered `[]`, which tells the caller only sign-out is left. A nil list (no session) is omitted.
   - `max_age`: on `reauthentication-required`, `floor(Window / time.Second)`, only when the refusal is a `*ReauthenticationRequiredError` with `Window > 0`. Rounding down never tells a client a staler proof will do.
   - `rule`: on `password-rejected`, the `password.Rule` string from a `password.RejectedError`. A rejection with no `RejectedError` in the chain has no `rule`.
@@ -222,7 +223,8 @@ Consumers learn scrty from three places, and the module is documented in each:
 | Token present without `TokenType` (consumer-built) | Handled, tested | `access_token` only |
 | Token-bearing problem cached | Handled, tested | `Cache-Control: no-store` on all three frameworks |
 | Invalid prefix, nil or duplicate option | Handled, tested | `ErrConfig` from `New` |
-| A `*Problems` not built by `New` (nil, or a zero value after ignoring `New`'s error) | Accepted, documented | Using a nil pointer panics when the handler is wired, before any traffic. A zero value registers no types and no mapper. The godoc says a `Problems` comes only from `New` |
+| A `*Problems` not built by `New` (nil, or a zero value after ignoring `New`'s error) | Handled, tested, documented | `Mapper`, `Types` and `Option` on a nil pointer panic when the handler is wired, before any traffic. A zero value registers no types, and its mapper matches nothing, so prblm alone decides. The godoc says a `Problems` comes only from `New` |
+| A consumer port's error wraps a library refusal sentinel, which a type within the same status tests for (for example a cause wrapping `ErrAuthenticationRequired` under a refused recovery) | Accepted, documented | The status is unchanged, but the type can follow the port's sentinel instead of the refusal, which can reveal that a dependency was involved. Nothing the library ships produces it. Only the consumer can prevent it, so the godoc warns that ports must not return library refusal sentinels, next to the warning about describers |
 | A very long prefix | Accepted | It is the consumer's own construction-time configuration, not request input. prblm's grammar is the only check, and no length bound is added |
 | New core sentinel without a type | Handled, tested | Status default type. A test asserts status agreement for every sentinel the spec names |
 | `LookupStatus` and `StatusForError` disagree | Handled, tested | Impossible by construction. An agreement test covers every table row, kind and an unknown error |

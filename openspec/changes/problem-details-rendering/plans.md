@@ -27,7 +27,7 @@
 
 ## Review Focus
 
-1. **A consumer-built `*ChallengeError` with odd fields** (`Token` set and `Session` nil, `Methods` nil, `Kind` a consumer kind). Expect no panic, members only where present, and `challenge` set to `Kind.String()`. Pinned in Task 4.3 (`consumer kind` case).
+1. **A consumer-built `*ChallengeError` with odd fields** (`Token` set and `Session` nil, `Methods` nil, `Kind` a consumer kind). Expect no panic, members only where present, and no `challenge` member, since a consumer kind is outside the fixed vocabulary (design decision 4). Pinned in Task 4.3 (`consumer kind` case).
 2. **An error joining two recognised refusals of different statuses**, for example `errors.Join(ErrCrossSiteRequest, mfa.ErrInvalidCode)`. Expect the type to follow `StatusForError`'s pick, never the other refusal's type. Pinned in Task 4.1 (`joined across statuses` case).
 3. **The same `*Problems` used concurrently** by many requests. Expect no data race. Pinned in Task 4.5 (`-race` parallel subtest).
 4. **`WithTypePrefix` with a nested prefix** (`auth/v1`). Expect it to be accepted and to produce `/probs/auth/v1/access-denied`. Pinned in Task 3.1 (`nested prefix` case).
