@@ -121,6 +121,13 @@
 // password, joined to the lock so a consumer's handler still sees it, and
 // WithLockDisclosure answers it with the lock itself, mapped to 429.
 //
+// The ready-made renderer is the prblmsec module,
+// github.com/kartaladev/scrty/httpsec/prblmsec: it answers each refusal as an
+// RFC 9457 problem document through prblm, with the status StatusForError
+// gives and a type a client can act on, and delivers a challenge's token. Set
+// its prblm handler's Write as WithErrorHandler on net/http; gin and fiber use
+// prblm's own adapters, as that module documents.
+//
 // WithErrorHandler replaces what a refusal is answered with on the net/http
 // chain only. A framework that already owns how a request is refused keeps that
 // ownership: on gin the refusal goes to gin's error channel, and on fiber to

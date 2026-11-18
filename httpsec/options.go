@@ -1231,6 +1231,10 @@ func WithLockDisclosure() Option {
 // A handler that answers authenticate.ErrUnavailable with 503 reopens the
 // oracles StatusForError warns of.
 //
+// For a ready-made handler that renders every refusal as an RFC 9457 problem
+// and delivers a challenge's token, use the prblmsec module
+// (github.com/kartaladev/scrty/httpsec/prblmsec) with a prblm handler's Write.
+//
 // It governs the net/http chain and nothing else, by design. A framework that
 // already owns how a request is refused keeps that ownership: on gin the
 // refusal goes to gin's error channel, so the consumer's own error middleware

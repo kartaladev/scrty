@@ -87,7 +87,9 @@ func ErrorHandler(ctx fiber.Ctx, err error) error {
 //
 // The body holds only the standard status text, never the error's own, for the
 // same reason ErrorHandler sends no body at all: what a refusal knows is the
-// deployment's, not the client's.
+// deployment's, not the client's. For a rendered RFC 9457 problem body
+// instead, use fiberprblm.ErrorHandler with the prblmsec module's option
+// (github.com/kartaladev/scrty/httpsec/prblmsec).
 //
 //	app := fiber.New(fiber.Config{ErrorHandler: func(c fiber.Ctx, err error) error {
 //		log.Error("refused", "err", err)

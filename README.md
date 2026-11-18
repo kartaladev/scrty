@@ -8,6 +8,7 @@ Authentication and authorization for Go applications.
 |---|---|
 | `github.com/kartaladev/scrty` | Core packages. Production builds import only the standard library. |
 | `github.com/kartaladev/scrty/test` | Shared test helpers and conformance suites. No other scrty module imports it; run the suites from your own tests to check your implementations. |
+| `github.com/kartaladev/scrty/httpsec/prblmsec` | Answers refusals as [RFC 9457 problem details](#problem-details-rfc-9457) through prblm. |
 | `github.com/kartaladev/scrty/<integration>` | One nested module per framework, driver, scheduler or DI container, added as scrty grows. |
 
 Importing the core module adds no framework, driver or test tooling to your module graph. A test in
@@ -21,6 +22,7 @@ use one version for all of them:
 ```sh
 go get github.com/kartaladev/scrty@v0.1.1
 go get github.com/kartaladev/scrty/store/pgxstore@v0.1.1
+go get github.com/kartaladev/scrty/httpsec/prblmsec@v0.1.1
 ```
 
 - [CHANGELOG.md](CHANGELOG.md) lists what each release changes, and states every breaking change.
@@ -763,7 +765,8 @@ chain, err := httpsec.New(
    carrying the rotated session and its credential, instead of calling the responder. The caller's
    old credential is superseded, so the consumer's error handler must deliver `ce.Token`; the default
    handler writes only the status, so a chain without `WithErrorHandler` leaves the caller without a
-   working credential, as at a login challenge. The same
+   working credential, as at a login challenge. The [`prblmsec`](#problem-details-rfc-9457) renderer does
+   that by default, as `access_token`. The same
    line as at re-authentication holds: a consumer policy that raises `policy.ChallengeMFA` without
    reading `policy.Input.MFASatisfied` hides whatever is registered after it. The begin endpoint
    (`POST /mfa/challenge/<name>`) and verification both refuse a caller other than the session's own
@@ -3158,6 +3161,174 @@ failure.
 | A component's own sink, outside a chain | none | the component's `WithSecurityEvents` option |
 | A nil sink, or an option given twice | refused at construction | none |
 | Delivery | synchronous, on the deciding request | your sink hands events to its own queue |
+
+## Problem details (RFC 9457)
+
+The core answers a refusal with a status and nothing else. The `prblmsec` module answers it as an
+[RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem document, through
+[prblm](https://github.com/kartaladev/prblm): each refusal becomes a typed problem a client can act on,
+its status always equals `httpsec.StatusForError`, and nothing the core withholds from a client is
+revealed. It is opt-in: a deployment that never registers it keeps the responses it has today, and the
+core module does not import prblm.
+
+```sh
+go get github.com/kartaladev/scrty/httpsec/prblmsec@v0.1.1
+```
+
+### Wiring
+
+On net/http, give the prblm handler's `Write` to the chain and to the guards, so a refusal at either is
+answered alike. Mirrors `Example_netHTTP` in `httpsec/prblmsec`:
+
+```go
+p, err := prblmsec.New()
+if err != nil {
+	return err
+}
+h := prblm.NewHandler(prblm.WithNamespace("/probs"), p.Option())
+
+chain, err := httpsec.New(/* mechanisms */, httpsec.WithErrorHandler(h.Write))
+guards, err := httpsec.NewGuards(authorizer, httpsec.WithGuardErrorHandler(h.Write))
+```
+
+On gin, register `ginprblm.Middleware` before `ginsec.Middleware(chain)`. No `httpsec.WithErrorHandler` is
+set and no option is needed. Mirrors `TestProblemParity` in the `test` module:
+
+```go
+engine.Use(ginprblm.Middleware(prblm.WithNamespace("/probs"), p.Option()))
+engine.Use(ginsec.Middleware(chain))
+```
+
+On fiber, set `fiberprblm.ErrorHandler` in place of `fibersec.ErrorHandler`. Mirrors `TestProblemParity` in
+the `test` module:
+
+```go
+app := fiber.New(fiber.Config{
+	ErrorHandler: fiberprblm.ErrorHandler(prblm.WithNamespace("/probs"), p.Option()),
+})
+app.Use(fibersec.Middleware(chain))
+```
+
+Always give the prblm handler a namespace: without one a relative type is sent as given and prblm reports
+`prblm.ErrInvalidType` to its hooks. Register the integration before the application's own mappers, because
+prblm runs mappers in registration order. To register it by hand, use `prblm.WithTypes(p.Types()...)` and
+`prblm.WithMappers(p.Mapper(), appMapper)`, as `ExampleProblems_Mapper` does.
+
+### A challenged login
+
+A password login that owes a second factor is answered with the `mfa-required` problem, the usable methods,
+and the access token to continue with, with `Cache-Control: no-store`. Mirrors `Example_challengedLogin`:
+
+```http
+HTTP/1.1 401 Unauthorized
+Content-Type: application/problem+json
+Cache-Control: no-store
+
+{
+  "type": "/probs/security/mfa-required",
+  "title": "...",
+  "status": 401,
+  "detail": "...",
+  "challenge": "mfa",
+  "methods": [
+    {"name": "totp", "channel": "authenticator-app", "begins": false},
+    {"name": "passkey", "channel": "public-key", "begins": true}
+  ],
+  "access_token": "tok-123",
+  "token_type": "Bearer"
+}
+```
+
+The `title` and `detail` are fixed library text, and no error's text appears in any member. The only
+extension members are `challenge`, `methods`, `max_age`, `rule`, `access_token` and `token_type`.
+`challenge` is one of the fixed tokens `mfa`, `password-change`, `mfa-enrolment` or `account-recovery`,
+and is absent for a challenge of any other kind and for every other refusal. `max_age` is the required
+recency in seconds, on `reauthentication-required`. `rule` is the password policy rule that refused a
+candidate, on `password-rejected`; it is your data, passed through unchanged.
+
+### Types
+
+Every type is a sub-type under the prefix (default `security`), resolved against the handler's namespace.
+The status of a problem always equals `httpsec.StatusForError` for the error; a recognised status with no
+type of its own is answered `about:blank` with no detail, and a recognised 500 always is.
+
+| Sub-type | Status | What it answers |
+|---|---|---|
+| `authentication-required` | 401 | authentication required, an idle or expired session, a provider's re-authentication refusal |
+| `authentication-failed` | 401 | the status default: failed authentication in every form, a concealed lock, an unavailable user store, a throttled source, a refused magic link |
+| `second-factor-failed` | 401 | an invalid or throttled second-factor attempt or enrolment, a throttled passkey registration begin |
+| `proof-of-possession-failed` | 401 | a missing or invalid DPoP proof, a DPoP nonce required, a certificate-bound token without its certificate |
+| `mfa-required` | 401 | a challenge of the second-factor kind |
+| `challenge-required` | 401 | a challenge of any other kind answered 401 |
+| `password-change-required` | 403 | a challenge of the password-change kind |
+| `mfa-enrolment-required` | 403 | a challenge of the second-factor enrolment kind |
+| `account-recovery-required` | 403 | a challenge of the account-recovery kind |
+| `reauthentication-required` | 403 | any re-authentication-required refusal |
+| `cross-site-request` | 403 | a cross-site request refused by CSRF protection or the signal stream |
+| `automation-challenge-required` | 403 | a request refused by the automation-challenge verifier |
+| `access-denied` | 403 | the status default |
+| `invalid-request` | 400 | the status default |
+| `not-found` | 404 | the status default |
+| `conflict` | 409 | the status default |
+| `request-too-large` | 413 | the status default |
+| `password-rejected` | 422 | the status default |
+| `account-locked` | 429 | the disclosed account lock |
+| `limit-reached` | 429 | the status default |
+
+Where the core gives several refusals one status to conceal which occurred, the problem does not tell them
+apart: a concealed account lock and an unavailable user store both get the problem a wrong password gets,
+byte for byte.
+
+### Customising
+
+The prefix is replaced with `prblmsec.WithTypePrefix("auth")`, which gives `/probs/auth/access-denied`;
+discovery follows it, and an invalid prefix fails in `prblmsec.New`. Mirrors `ExampleWithTypePrefix`.
+
+A challenge's token is delivered by default. `prblmsec.WithoutChallengeToken()` withholds `access_token` and
+`token_type` and leaves the rest of the problem unchanged: use it for cookie-only deployments, or when you
+deliver the token another way. Mirrors `ExampleWithoutChallengeToken`.
+
+A mapper you register ahead of the integration replaces a single problem on purpose; every other refusal
+keeps the integration's. Mirrors `Example_override`:
+
+```go
+lockPage := prblm.Is(lockout.ErrAccountLocked, func(error) *prblm.Problem {
+	return prblm.New(http.StatusTooManyRequests,
+		prblm.WithType("app/locked"), prblm.WithHeader("Retry-After", "900"))
+})
+h := prblm.NewHandler(prblm.WithNamespace("/probs"), prblm.WithMappers(lockPage), p.Option())
+```
+
+### Defaults
+
+| What | Default | Replaced by |
+|---|---|---|
+| Type prefix | `security` | `prblmsec.WithTypePrefix` |
+| Challenge token | delivered as `access_token`, with `Cache-Control: no-store` | `prblmsec.WithoutChallengeToken` |
+| Problem for a refusal | the integration's, by status and type | a prblm mapper registered ahead of `p.Option()` |
+| Title and detail | fixed library text | a prblm mapper ahead of `p.Option()`, or a prblm enricher |
+| An error scrty does not recognise | left to your later mappers, then prblm's safe 500 with no detail | your mappers |
+| A nil option, an option given twice, an invalid prefix | refused by `prblmsec.New` | none |
+| `WWW-Authenticate` | never set by the integration; the chain's own header is kept | none |
+
+### Stated limits
+
+- **Ports must not return a problem.** A user store, verifier or any other port you supply must not
+  return a `prblm.Describer` or `*prblm.Problem`, nor wrap one: prblm answers a describer before any
+  mapper, so it would replace the integration's problem and could tell apart refusals whose status is
+  shared to conceal them. Nor may a port return an error wrapping one of scrty's refusal sentinels, such
+  as `authorize.ErrAccessDenied` or `lockout.ErrAccountLocked`, which can steer a refusal's type.
+- **prblm's hooks see the token.** A hook (`OnError`, `AddErrorHook`) receives the problem as delivered,
+  `access_token` included, so one that logs extension members logs the token. Withhold it with
+  `WithoutChallengeToken`, or keep the hook from logging members.
+- **A `*Problems` comes only from `prblmsec.New`.** A nil one panics in `Mapper`, `Types` and `Option` at
+  wiring time; a zero value maps nothing.
+- **gin needs no option, with `ginprblm`.** `ginprblm` defers the response header, so it renders the
+  chain's own 404s, such as an unknown MFA method or identity provider that matches no gin route, with or
+  without `ginsec.WithRefusalsRendered()`. That option is for your own error middleware that writes the
+  response immediately. A gin deployment with no renderer at all answers those 404s with an empty body.
+- **A context error scrty does not recognise is prblm's to map.** The integration reports no match for a
+  deadline or cancellation it did not raise.
 
 ## Known limitations
 

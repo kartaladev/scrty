@@ -137,7 +137,7 @@
 
 ## 7. Consumer documentation (design decisions 9, 10)
 
-- [ ] 7.1 Runnable examples in `httpsec/prblmsec` (`example_test.go`), each with an `// Output:` block, so `go test` checks it and pkg.go.dev shows it:
+- [x] 7.1 Runnable examples in `httpsec/prblmsec` (`example_test.go`), each with an `// Output:` block, so `go test` checks it and pkg.go.dev shows it:
   - `Example_netHTTP`: a namespace, `p.Option()`, and the chain's and guards' error handlers set to `h.Write`. Output: the 401 `authentication-required` problem for an unauthenticated request;
   - `Example_challengedLogin`: the `mfa-required` problem with `methods`, `access_token` and `token_type`, and the `Cache-Control: no-store` header;
   - `ExampleWithTypePrefix`: the type `/v1/probs/auth/access-denied`;
@@ -146,7 +146,7 @@
   - `Example_override`: a consumer mapper for `lockout.ErrAccountLocked` registered ahead of `p.Option()`, giving 429 with `Retry-After: 900`, while a wrong password keeps `authentication-failed`.
 
   The `// Output:` values come from the spec, not from running the code. To confirm each example bites, temporarily change one expected line, see `go test` report the output diff, then edit it back. Verify with `go test -run Example -count=1 ./...` in the module.
-- [ ] 7.2 Write the package overview in `httpsec/prblmsec/doc.go`. Sections:
+- [x] 7.2 Write the package overview in `httpsec/prblmsec/doc.go`. Sections:
   - **What it is:** the three pieces, and what stays prblm's.
   - **Wiring:**
     - net/http;
@@ -163,7 +163,7 @@
     - context errors scrty does not recognise are prblm's to map.
 
   The gin and fiber snippets are prose. They mirror `TestProblemParity` in the test module, and each says so (`Mirrors TestProblemParity`). Verify with `go doc ./` in the module, which shows every section, and a reviewer check that each snippet matches the test or example it names.
-- [ ] 7.3 Write a `README.md` section, "Problem details (RFC 9457)", placed after "Security events" and before "Known limitations":
+- [x] 7.3 Write a `README.md` section, "Problem details (RFC 9457)", placed after "Security events" and before "Known limitations":
   - install (`go get github.com/kartaladev/scrty/httpsec/prblmsec@<version>` with the lockstep version);
   - wiring for net/http, gin (`ginprblm.Middleware` before `ginsec.Middleware(chain)`, no option needed) and fiber;
   - customisation: prefix, withholding the token, and a consumer override;
@@ -172,7 +172,7 @@
   - "Defaults" and "Stated limits" subsections, as other README sections have.
 
   Each snippet names the example or test it mirrors. Verify with `git grep -n "Problem details (RFC 9457)" README.md`, which finds the section, and a reviewer check that each snippet's mirror exists and matches.
-- [ ] 7.4 Add cross-references at the places consumers already read about rendering:
+- [x] 7.4 Add cross-references at the places consumers already read about rendering:
   - **`httpsec/doc.go`:** "Failing closed" and `WithErrorHandler` name `prblmsec` as the ready-made renderer.
   - **The `ginsec` and `fibersec` "Refusals" docs:**
     - each names `ginprblm` or `fiberprblm` with `prblmsec`;
