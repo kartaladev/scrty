@@ -6,6 +6,7 @@ use (
 	./expiry/sweep
 	./httpsec/fibersec
 	./httpsec/ginsec
+	./httpsec/prblmsec
 	./ratelimit/redisstore
 	./store/gormstore
 	./store/pgxstore
