@@ -697,7 +697,10 @@ func (l *preparedLogin) commit(ex *Exchange) (string, error) {
 	emitSignIn(ctx, s, l.afterFailures)
 
 	if l.decision.Outcome == policy.Challenge {
-		return l.token, &ChallengeError{Kind: l.decision.Challenge, Session: s, Token: l.token, Methods: l.methods}
+		return l.token, &ChallengeError{
+			Kind: l.decision.Challenge, Session: s, Token: l.token,
+			TokenType: challengeTokenType(l.token, s), Methods: l.methods,
+		}
 	}
 
 	return l.token, nil

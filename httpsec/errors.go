@@ -15,12 +15,15 @@ import (
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/authorize"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/store/seal"
+	"github.com/kartaladev/scrty/token"
 	"github.com/kartaladev/scrty/token/onetime"
 )
 
@@ -214,6 +217,14 @@ type ChallengeError struct {
 	// empty unless one was issued when the challenge was raised.
 	Token string
 
+	// TokenType is how Token is presented: TokenTypeDPoP for a token bound to
+	// a DPoP key, TokenTypeBearer otherwise, as the login success document
+	// would name it. The library sets it wherever it sets Token, and it is
+	// empty when Token is. A ChallengeError built elsewhere with a Token and
+	// no TokenType keeps it empty: the type is never guessed, since a token
+	// may be bound.
+	TokenType TokenType
+
 	// Methods are the second-factor methods the session's user can answer a
 	// challenge of kind policy.ChallengeMFA with, in the order EnableMFA was
 	// given them, as policy.UsableMFAMethods decides — the same decision the
@@ -244,6 +255,17 @@ type MFAMethod struct {
 // token are fields, not text.
 func (e *ChallengeError) Error() string {
 	return fmt.Sprintf("httpsec: challenge required: %s", e.Kind)
+}
+
+// challengeTokenType is the TokenType of a challenge carrying token, issued
+// for s: empty when no token was issued, so a challenge never names the type of
+// a credential it does not carry.
+func challengeTokenType(token string, s *session.Session) TokenType {
+	if token == "" {
+		return ""
+	}
+
+	return tokenTypeOf(s)
 }
 
 // statusRow is one refusal and the status it answers with. The table is
@@ -337,7 +359,7 @@ var statusTable = []statusRow{
 	// value is refused, so a client can show a field-level message. A history
 	// that could not be read or recorded is a dependency failure, not a
 	// refusal of the caller's input, and carries no row here: it falls through
-	// to the unrecognised-error 500 below, like any other unrecognised error.
+	// to the 500 below, where LookupStatus still recognises it as the library's.
 	//
 	// Every other refusal of a password policy ([password.ErrPasswordRejected],
 	// which [password.ErrReused] also matches) answers the same way. A breach
@@ -487,7 +509,7 @@ var statusTable = []statusRow{
 // tell "you still owe a change" from "that password was used recently"). A
 // history that could not be read or recorded ([password.ErrHistoryUnavailable])
 // is a dependency failure, not a refusal of the caller's input, and maps to
-// 500 like any other unrecognised error.
+// 500; LookupStatus recognises it as the library's own.
 //
 // A user store that could not answer a login, a Basic request, a recovery's
 // password proof or an API key's owner check ([authenticate.ErrUnavailable])
@@ -499,45 +521,114 @@ var statusTable = []statusRow{
 // answers 503, revealing lock state; and in a partial outage, where a found
 // user's load reads more than a miss does, known users answer 503 and unknown
 // ones 401, revealing which usernames exist.
+//
+// LookupStatus returns the same status and also reports whether the error was
+// recognised; StatusForError is defined through it.
 func StatusForError(err error) int {
+	status, _ := LookupStatus(err)
+
+	return status
+}
+
+// LookupStatus is StatusForError with the comma-ok idiom: it returns the same
+// status for every error, and reports whether the library recognised the
+// error as one of its own. StatusForError is defined through it, so the two
+// never disagree.
+//
+// An error is recognised when it is, wraps or joins:
+//   - a refusal StatusForError answers with its own status;
+//   - a *ChallengeError, of any kind, a consumer's own included;
+//   - a dependency failure the library reported: a credential the chain could
+//     not issue, ErrChallengeUnavailable, oidcprovider.ErrDependency,
+//     recovery.ErrDependency, a failure the library wrapped behind fixed text
+//     (whatever status that gives), or one of the library's named
+//     dependency-unavailable sentinels:
+//     [password.ErrHistoryUnavailable], [password.ErrLookupUnavailable],
+//     [session.ErrListUnavailable], [session.ErrCipherUnavailable],
+//     [seal.ErrUnavailable], [ratelimit.ErrBackendUnavailable],
+//     [oidc.ErrExchangeFailed], [oidc.ErrDiscoveryFailed] and
+//     [token.ErrNoVerificationKeys].
+//
+// Everything else, nil included, is not recognised and is reported as
+// (500, false): the same 500 StatusForError answers, without claiming the error.
+// An error handler that chains several mappers uses ok to tell a failure the
+// library has already decided, which must keep its status, from an
+// application's own error, which a later mapper may still answer: a dependency
+// failure the library flattened to 500 is recognised, so a driver mapper never
+// re-reads the connection error it wraps as another status.
+//
+// A nil *ChallengeError in the chain is treated as no challenge.
+func LookupStatus(err error) (status int, ok bool) {
 	if err == nil {
-		return http.StatusInternalServerError
+		return http.StatusInternalServerError, false
 	}
 
 	// An issuing failure is a dependency failure whatever its cause wraps,
 	// so it is answered before the challenge and the refusal table are read.
 	var issuing *issueFailure
 	if errors.As(err, &issuing) {
-		return http.StatusInternalServerError
+		return http.StatusInternalServerError, true
 	}
 
 	// So is a challenge verifier that could not answer, whatever its own
 	// error wraps: an outage never reads to the client as a refusal.
 	if errors.Is(err, ErrChallengeUnavailable) {
-		return http.StatusInternalServerError
+		return http.StatusInternalServerError, true
 	}
 
 	// And a dependency of the OpenID Provider or of a recovery that failed,
 	// whatever its own error wraps.
 	if errors.Is(err, oidcprovider.ErrDependency) || errors.Is(err, recovery.ErrDependency) {
-		return http.StatusInternalServerError
+		return http.StatusInternalServerError, true
 	}
 
+	// A nil *ChallengeError carries no kind to answer: it is no challenge,
+	// and the rest of the chain decides.
 	var ch *ChallengeError
-	if errors.As(err, &ch) {
+	if errors.As(err, &ch) && ch != nil {
 		switch ch.Kind {
 		case policy.ChallengePasswordChange, policy.ChallengeMFAEnrolment, policy.ChallengeAccountRecovery:
-			return http.StatusForbidden
+			return http.StatusForbidden, true
 		default:
-			return http.StatusUnauthorized
+			return http.StatusUnauthorized, true
 		}
 	}
 
 	for _, row := range statusTable {
 		if errors.Is(err, row.err) {
-			return row.status
+			return row.status, true
 		}
 	}
 
-	return http.StatusInternalServerError
+	// What remains matched no row, so a library dependency failure is 500
+	// here, exactly as the fallback below answers it, but claimed as the
+	// library's.
+	var fault *diag.Fault
+	if errors.As(err, &fault) {
+		return http.StatusInternalServerError, true
+	}
+
+	for _, sentinel := range dependencySentinels {
+		if errors.Is(err, sentinel) {
+			return http.StatusInternalServerError, true
+		}
+	}
+
+	return http.StatusInternalServerError, false
+}
+
+// dependencySentinels are the library's named dependency-unavailable
+// failures that no row above answers: each is 500, and LookupStatus
+// recognises it. A sentinel added to the library with that meaning belongs
+// here, and in TestLookupStatus_DependencySentinelInventory.
+var dependencySentinels = []error{
+	password.ErrHistoryUnavailable,
+	password.ErrLookupUnavailable,
+	session.ErrListUnavailable,
+	session.ErrCipherUnavailable,
+	seal.ErrUnavailable,
+	ratelimit.ErrBackendUnavailable,
+	oidc.ErrExchangeFailed,
+	oidc.ErrDiscoveryFailed,
+	token.ErrNoVerificationKeys,
 }

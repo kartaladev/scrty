@@ -104,7 +104,10 @@
 // consumer's own error handling agrees with the library on everything it does
 // not handle itself. An error the mapping does not recognise is a server
 // fault, never a quiet success, and a request whose interceptor returned an
-// error never reaches the downstream handler.
+// error never reaches the downstream handler. LookupStatus returns the same
+// status and also reports whether the library recognised the error as its own,
+// so an error handler chaining several mappers leaves the library's refusals
+// and dependency failures to it and answers only the rest.
 //
 // The refusals this package defines itself are ErrAuthenticationRequired,
 // ErrCredentialsMissing and ErrRequestTooLarge; everything else a consumer

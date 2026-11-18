@@ -599,7 +599,7 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session, raised policy
 	// carrying the rotated session and its credential for the consumer's
 	// prompt, and never through the success responder.
 	if raised != policy.ChallengeNone {
-		return &ChallengeError{Kind: raised, Session: rotated, Token: tok}
+		return &ChallengeError{Kind: raised, Session: rotated, Token: tok, TokenType: challengeTokenType(tok, rotated)}
 	}
 
 	return i.respond(ex, MFAResult{Token: tok, Session: rotated, TokenType: tokenTypeOf(rotated)})
@@ -701,7 +701,10 @@ func (i *mfaInterceptor) challenge(ctx context.Context, s *session.Session, toke
 		return err
 	}
 
-	return &ChallengeError{Kind: policy.ChallengeMFA, Session: s, Token: token, Methods: methods}
+	return &ChallengeError{
+		Kind: policy.ChallengeMFA, Session: s, Token: token,
+		TokenType: challengeTokenType(token, s), Methods: methods,
+	}
 }
 
 // usableMethods is the methods a second-factor challenge to user, whose first
