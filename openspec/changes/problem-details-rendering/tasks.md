@@ -215,7 +215,7 @@
 
 ## 9. Review
 
-- [ ] 9.1 A whole-branch review (Opus, fresh agent) against every requirement in this change's five spec deltas and the consumer documentation of group 7, which first enumerates how the change fails (`defensive-coding.md`). Findings go back to a fresh dispatch of the owning group. Verify that the review is clean and that 8.3 is re-run green after fixes.
+- [x] 9.1 A whole-branch review (Opus, fresh agent) against every requirement in this change's five spec deltas and the consumer documentation of group 7, which first enumerates how the change fails (`defensive-coding.md`). Findings go back to a fresh dispatch of the owning group. Verify that the review is clean and that 8.3 is re-run green after fixes.
 
 ## Workflow follow-up
 
