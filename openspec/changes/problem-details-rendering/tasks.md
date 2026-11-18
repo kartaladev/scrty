@@ -120,7 +120,7 @@
 
 ## 6. Parity across net/http, gin and fiber (decision 7)
 
-- [ ] 6.1 In the test module, require `github.com/kartaladev/prblm/adapters/ginprblm v0.2.0` and `.../adapters/fiberprblm v0.2.0`. Red: `TestProblemParity` (table over the three frameworks) runs one chain configuration three ways: net/http through `WithErrorHandler(h.Write)`, gin with `ginprblm.Middleware` before `ginsec.Middleware(chain, ginsec.WithRefusalsRendered())`, and fiber with `fiberprblm.ErrorHandler`. Cases:
+- [x] 6.1 In the test module, require `github.com/kartaladev/prblm/adapters/ginprblm v0.2.0` and `.../adapters/fiberprblm v0.2.0`. Red: `TestProblemParity` (table over the three frameworks) runs one chain configuration three ways: net/http through `WithErrorHandler(h.Write)`, gin with `ginprblm.Middleware` before `ginsec.Middleware(chain, ginsec.WithRefusalsRendered())`, and fiber with `fiberprblm.ErrorHandler`. Cases:
   - unauthenticated gives `authentication-required`;
   - a challenged password login gives `mfa-required` with `access_token` and `Cache-Control: no-store`;
   - a failed Basic login keeps `WWW-Authenticate: Basic` exactly once;
@@ -132,8 +132,8 @@
   - a not-found refusal from a guard on a gin route the consumer registered gives the `not-found` problem on all three.
 
   Except for the no-renderer case, it asserts the same status, document and headers on all three. Verify with `go test -run TestProblemParity -count=1 ./` in `test/`.
-- [ ] 6.2 Red: `TestProblemParity_GuardRefusal` covers a net/http guard with `WithGuardErrorHandler(h.Write)` and the gin and fiber guards. A guard refusal gives the same typed problem as the chain's for the same error. Verify with `go test -run TestProblemParity_Guard -count=1 ./`.
-- [ ] 6.3 The module-graph check: a consumer of the core only has no `github.com/kartaladev/prblm` in `go list -m all`. Extend `TestCoreDependencies` and `TestConsumerModuleGraph` (`layout_test.go`) to list `github.com/kartaladev/prblm`, and watch them fail by temporarily adding the requirement to the root `go.mod`. Verify with `go test -run 'TestCoreDependencies|TestConsumerModuleGraph' -count=1 .` at the root.
+- [x] 6.2 Red: `TestProblemParity_GuardRefusal` covers a net/http guard with `WithGuardErrorHandler(h.Write)` and the gin and fiber guards. A guard refusal gives the same typed problem as the chain's for the same error. Verify with `go test -run TestProblemParity_Guard -count=1 ./`.
+- [x] 6.3 The module-graph check: a consumer of the core only has no `github.com/kartaladev/prblm` in `go list -m all`. Extend `TestCoreDependencies` and `TestConsumerModuleGraph` (`layout_test.go`) to list `github.com/kartaladev/prblm`, and watch them fail by temporarily adding the requirement to the root `go.mod`. Verify with `go test -run 'TestCoreDependencies|TestConsumerModuleGraph' -count=1 .` at the root.
 
 ## 7. Consumer documentation (design decisions 9, 10)
 

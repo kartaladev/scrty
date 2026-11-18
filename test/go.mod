@@ -4,13 +4,17 @@ go 1.27
 
 require (
 	github.com/gin-gonic/gin v1.12.0
-	github.com/gofiber/fiber/v3 v3.6.1
+	github.com/gofiber/fiber/v3 v3.7.0
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/jonboulle/clockwork v0.5.0
+	github.com/kartaladev/prblm v0.2.0
+	github.com/kartaladev/prblm/adapters/fiberprblm v0.2.0
+	github.com/kartaladev/prblm/adapters/ginprblm v0.2.0
 	github.com/kartaladev/scrty v0.1.1
 	github.com/kartaladev/scrty/authenticate/passkey/webauthn v0.1.1
 	github.com/kartaladev/scrty/httpsec/fibersec v0.1.1
 	github.com/kartaladev/scrty/httpsec/ginsec v0.1.1
+	github.com/kartaladev/scrty/httpsec/prblmsec v0.1.1
 	github.com/kartaladev/scrty/ratelimit/redisstore v0.1.1
 	github.com/kartaladev/scrty/store/gormstore v0.1.1
 	github.com/kartaladev/scrty/store/pgxstore v0.1.1
@@ -24,7 +28,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/mailpit v0.45.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.45.0
 	github.com/testcontainers/testcontainers-go/modules/redis v0.45.0
-	github.com/valyala/fasthttp v1.77.0
+	github.com/valyala/fasthttp v1.78.0
 	go.uber.org/mock v0.6.0
 	gorm.io/driver/postgres v1.6.3
 	gorm.io/gorm v1.31.2
@@ -65,8 +69,8 @@ require (
 	github.com/go-webauthn/x v0.3.1 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
-	github.com/gofiber/schema v1.8.8 // indirect
-	github.com/gofiber/utils/v2 v2.6.2 // indirect
+	github.com/gofiber/schema v1.9.3 // indirect
+	github.com/gofiber/utils/v2 v2.6.4 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -97,11 +101,11 @@ require (
 	github.com/moby/term v0.5.2 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
-	github.com/molecule-man/go-brrr v1.3.0 // indirect
+	github.com/molecule-man/go-brrr v1.3.1 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
-	github.com/philhofer/fwd v1.2.0 // indirect
+	github.com/philhofer/fwd v1.2.1 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.1 // indirect
@@ -125,10 +129,10 @@ require (
 	go.opentelemetry.io/otel/trace v1.47.0 // indirect
 	go.uber.org/atomic v1.12.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
+	go.yaml.in/yaml/v3 v3.0.6 // indirect
 	golang.org/x/arch v0.22.0 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/net v0.61.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
@@ -165,3 +169,8 @@ replace github.com/kartaladev/scrty/authenticate/passkey/webauthn => ../authenti
 // rate-limit conformance suite and the server tests against real Redis and
 // Valkey servers. It must not require this module.
 replace github.com/kartaladev/scrty/ratelimit/redisstore => ../ratelimit/redisstore
+
+// The problem-details module is not tagged either. This module imports it so
+// one chain configuration can be run through all three frameworks and the
+// problem documents compared. It must not require this module.
+replace github.com/kartaladev/scrty/httpsec/prblmsec => ../httpsec/prblmsec

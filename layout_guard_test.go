@@ -64,6 +64,7 @@ var integrationModules = []string{
 	"github.com/google/go-tpm",
 	"github.com/redis/go-redis",
 	"github.com/testcontainers/testcontainers-go/modules/redis",
+	"github.com/kartaladev/prblm",
 }
 
 type requirement struct {

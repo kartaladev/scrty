@@ -60,12 +60,13 @@ go mod edit -C expiry/sweep                     -require=github.com/kartaladev/s
 go mod edit -C test                             -require=github.com/kartaladev/scrty@$VERSION
 ```
 
-The `test` module also requires six sibling modules:
+The `test` module also requires seven sibling modules:
 
 ```sh
 go mod edit -C test -require=github.com/kartaladev/scrty/authenticate/passkey/webauthn@$VERSION
 go mod edit -C test -require=github.com/kartaladev/scrty/httpsec/fibersec@$VERSION
 go mod edit -C test -require=github.com/kartaladev/scrty/httpsec/ginsec@$VERSION
+go mod edit -C test -require=github.com/kartaladev/scrty/httpsec/prblmsec@$VERSION
 go mod edit -C test -require=github.com/kartaladev/scrty/ratelimit/redisstore@$VERSION
 go mod edit -C test -require=github.com/kartaladev/scrty/store/gormstore@$VERSION
 go mod edit -C test -require=github.com/kartaladev/scrty/store/pgxstore@$VERSION
