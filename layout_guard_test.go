@@ -565,6 +565,7 @@ var integrationTable = []integrationEntry{
 	{"expiry/sweep", "sweep", "the sweeper extends expiry"},
 	{"httpsec/ginsec", "ginsec", "the Gin adapter extends httpsec"},
 	{"httpsec/fibersec", "fibersec", "the Fiber adapter extends httpsec"},
+	{"httpsec/prblmsec", "prblmsec", "the problem-details renderer extends httpsec"},
 }
 
 // integrationDirs lists, by directory relative to the repository root, every

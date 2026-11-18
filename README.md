@@ -3206,7 +3206,7 @@ Releasing adds two targets, described in [RELEASING.md](RELEASING.md):
 
 ```sh
 make release-check VERSION=vX.Y.Z  # the release gate, run on the commit to be tagged (needs jq)
-make release-tags VERSION=vX.Y.Z   # print the nine git tag commands for HEAD; creates nothing
+make release-tags VERSION=vX.Y.Z   # print the ten git tag commands for HEAD; creates nothing
 ```
 
 `make check` is the one local command for the build gates. Each gate also runs on its own and
@@ -3240,7 +3240,7 @@ fails a workflow that references an action by anything but a full commit SHA, an
 a CycloneDX SBOM per module.
 
 `make release-check` runs `release-gate`: the vulnerability check first, then an SBOM per published
-module, each naming the release version. The nine SBOMs are attached to each GitHub release.
+module, each naming the release version. The ten SBOMs are attached to each GitHub release.
 
 `.github/dependabot.yml` configures Dependabot **version** updates for each module. Security updates
 are a separate repository setting that no file can enable: the repository requires **Dependabot

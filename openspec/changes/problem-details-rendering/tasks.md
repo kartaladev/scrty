@@ -49,7 +49,7 @@
 
 ## 3. `httpsec/prblmsec` module and construction (decisions 1, 6)
 
-- [ ] 3.1 Create the module `github.com/kartaladev/scrty/httpsec/prblmsec`:
+- [x] 3.1 Create the module `github.com/kartaladev/scrty/httpsec/prblmsec`:
   - it requires `github.com/kartaladev/prblm v0.2.0` and the core through the workspace;
   - its package doc names the opt-in contract;
   - add it to `go.work`.
@@ -60,7 +60,7 @@
   - an invalid prefix (`Auth/../x`, `""`, `a//b`), a nil option and a duplicated option each fail with `errors.Is(err, ErrConfig)`, and no `*Problems` is returned.
 
   Green: implement `New`, the options and `ErrConfig`. Prefix validity comes from recovering only `prblm.DefineType`'s construction panic. Verify with `go test -run TestNew -count=1 ./...` in `httpsec/prblmsec`.
-- [ ] 3.2 Red: `TestTypes_DocumentEveryType`. A prblm handler built with `WithNamespace("/probs")` and `p.Option()` serves discovery. For every sub-type in the spec's table, `GET /probs/<prefix>/<sub-type>` answers 200 JSON with that status, and an `AddErrorHook` records no `ErrUndocumentedType` or `ErrInvalidType` note when each type's problem is answered. Green: define the types in `New` from one table, and implement `Types()` and `Option()`. Verify with `go test -run TestTypes -count=1 ./...`.
+- [x] 3.2 Red: `TestTypes_DocumentEveryType`. A prblm handler built with `WithNamespace("/probs")` and `p.Option()` serves discovery. For every sub-type in the spec's table, `GET /probs/<prefix>/<sub-type>` answers 200 JSON with that status, and an `AddErrorHook` records no `ErrUndocumentedType` or `ErrInvalidType` note when each type's problem is answered. Green: define the types in `New` from one table, and implement `Types()` and `Option()`. Verify with `go test -run TestTypes -count=1 ./...`.
 
 ## 4. Mapping refusals to problems (decisions 3, 4, 5)
 
@@ -183,8 +183,8 @@
 
 ## 8. Layout, release and supply chain (decision 8)
 
-- [ ] 8.1 Red: extend `TestIntegrationModulesUnderTheirConcept` and `TestNoUnlistedIntegrationModule` (`layout_test.go`), and `tools/repocheck`'s expectations, with `httpsec/prblmsec`, and confirm they fail before the module is listed. Green: add `.github/dependabot.yml`'s gomod entry for `/httpsec/prblmsec`, and add the module to the layout lists. Verify with `go test -count=1 ./...` in `tools`, and `go test -run 'TestModuleLayout|TestIntegrationModules|TestNoUnlisted|TestGoWork' -count=1 .` at the root.
-- [ ] 8.2 `RELEASING.md` lists `httpsec/prblmsec` among the lockstep modules and tags. `CHANGELOG.md`'s Unreleased section, under Added, names the module, `httpsec.LookupStatus`, `ChallengeError.TokenType` and `ginsec.WithRefusalsRendered`, and notes that `ginsec.Middleware` is now variadic (code storing it as a `func(*httpsec.Chain) gin.HandlerFunc` value breaks). Verify with `git grep -n prblmsec RELEASING.md CHANGELOG.md .github/dependabot.yml go.work`, which finds each.
+- [x] 8.1 Red: extend `TestIntegrationModulesUnderTheirConcept` and `TestNoUnlistedIntegrationModule` (`layout_test.go`), and `tools/repocheck`'s expectations, with `httpsec/prblmsec`, and confirm they fail before the module is listed. Green: add `.github/dependabot.yml`'s gomod entry for `/httpsec/prblmsec`, and add the module to the layout lists. Verify with `go test -count=1 ./...` in `tools`, and `go test -run 'TestModuleLayout|TestIntegrationModules|TestNoUnlisted|TestGoWork' -count=1 .` at the root.
+- [x] 8.2 `RELEASING.md` lists `httpsec/prblmsec` among the lockstep modules and tags. `CHANGELOG.md`'s Unreleased section, under Added, names the module, `httpsec.LookupStatus`, `ChallengeError.TokenType` and `ginsec.WithRefusalsRendered`, and notes that `ginsec.Middleware` is now variadic (code storing it as a `func(*httpsec.Chain) gin.HandlerFunc` value breaks). Verify with `git grep -n prblmsec RELEASING.md CHANGELOG.md .github/dependabot.yml go.work`, which finds each.
 - [ ] 8.3 Whole-tree gate on the branch, all clean:
   - `go work sync`;
   - `go vet ./...` and `go test -race -count=1 ./...` in every workspace module;

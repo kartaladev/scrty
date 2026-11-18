@@ -1,5 +1,6 @@
 httpsec/fibersec github.com/kartaladev/scrty/httpsec/fibersec
 httpsec/ginsec github.com/kartaladev/scrty/httpsec/ginsec
+httpsec/prblmsec github.com/kartaladev/scrty/httpsec/prblmsec
 store/gormstore github.com/kartaladev/scrty/store/gormstore
 authenticate/passkey/webauthn github.com/kartaladev/scrty/authenticate/passkey/webauthn
 store/pgxstore github.com/kartaladev/scrty/store/pgxstore

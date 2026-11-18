@@ -222,6 +222,8 @@ Consumers learn scrty from three places, and the module is documented in each:
 | Token present without `TokenType` (consumer-built) | Handled, tested | `access_token` only |
 | Token-bearing problem cached | Handled, tested | `Cache-Control: no-store` on all three frameworks |
 | Invalid prefix, nil or duplicate option | Handled, tested | `ErrConfig` from `New` |
+| A `*Problems` not built by `New` (nil, or a zero value after ignoring `New`'s error) | Accepted, documented | Using a nil pointer panics when the handler is wired, before any traffic. A zero value registers no types and no mapper. The godoc says a `Problems` comes only from `New` |
+| A very long prefix | Accepted | It is the consumer's own construction-time configuration, not request input. prblm's grammar is the only check, and no length bound is added |
 | New core sentinel without a type | Handled, tested | Status default type. A test asserts status agreement for every sentinel the spec names |
 | `LookupStatus` and `StatusForError` disagree | Handled, tested | Impossible by construction. An agreement test covers every table row, kind and an unknown error |
 | A dependency-unavailable sentinel left out of `LookupStatus` | Handled, tested | Inventory test pins the list. Left out, it would fall to prblm, where the status may differ from 500 |

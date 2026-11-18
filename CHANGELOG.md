@@ -12,6 +12,27 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 
 ## [Unreleased]
 
+### Added
+
+- **`github.com/kartaladev/scrty/httpsec/prblmsec`.** A new module that renders the chain's refusals
+  as RFC 9457 problem details through `github.com/kartaladev/prblm`. It is opt-in: nothing changes
+  for an application that does not mount it.
+- `httpsec.LookupStatus`, which reports the HTTP status the chain maps an error to and whether it
+  maps one at all.
+- `httpsec.ChallengeError.TokenType`, the token type a challenge names.
+- `ginsec.WithRefusalsRendered`, an option that leaves a chain's refusals to the application's error
+  middleware, including a 404 for an unrouted path.
+
+### Changed
+
+- **BREAKING** `ginsec.Middleware` takes options after the chain (`...Option`). Every call compiles
+  unchanged, but code that stores it as a `func(*httpsec.Chain) gin.HandlerFunc` value no longer
+  compiles.
+
+### Fixed
+
+- `httpsec.StatusForError` no longer panics on a typed-nil `*ChallengeError` in the error chain.
+
 ## [0.1.1] - 2026-11-11
 
 A patch release that fixes three security defects in `v0.1.0`, and retracts `v0.1.0`. Upgrade every
