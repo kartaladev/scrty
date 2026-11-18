@@ -165,7 +165,7 @@ Consumers learn scrty from three places, and the module is documented in each:
   - the README passage requiring the error handler to deliver `ce.Token`.
 
   A consumer who reads any of these finds the ready-made option.
-- **gin needs one declaration.** Without `ginsec.WithRefusalsRendered()`, the chain's own 404s on gin have an empty body and are not rendered (decision 10). The `prblmsec` docs and the README gin snippets always pass the option. The stated limit is what happens when it is left out.
+- **gin with `ginprblm` needs no declaration.** `ginprblm.Middleware` defers the response header, so it renders the chain's own 404s with or without `ginsec.WithRefusalsRendered()` (decision 10). The `prblmsec` docs and the README gin snippets therefore show `ginsec.Middleware(chain)` with no option. They name the option as the declaration for a consumer's own error middleware that writes immediately, and state that gin with no renderer at all answers those 404s with an empty body.
 - **Default and override:** not applicable, since this is documentation.
 - **Alternatives:**
   - (b) gin and fiber examples in the test module. Rejected: pkg.go.dev shows examples only for the package they belong to.
@@ -176,7 +176,8 @@ Consumers learn scrty from three places, and the module is documented in each:
 **The problem.** On a path gin matched no route for, `ginsec`'s `refuse` (`middleware.go:154`) sends a 404 immediately with an empty body (`gc.FullPath() == ""`, then `WriteHeaderNow`). That covers every 404 at the chain's own endpoints, because they are not gin routes: an unknown identity provider, an unknown MFA method, passkey not found, sign-in not found.
 
 - **Why it was settled.** With no error middleware, gin's `serveError` (gin v1.12, `gin.go:764`) writes `404 page not found` for a 404 nothing wrote, and the other adapters send an empty body (`framework-adapters`).
-- **What it costs `prblmsec`.** `ginprblm` writes after `c.Next()`, so the response is already sent and it cannot render a problem there.
+- **What it costs an error middleware.** An error middleware that writes after `c.Next()` on gin's own writer finds the response already sent, and cannot render a problem there.
+- **What it does not cost `ginprblm` (finding, 2026-11-18, corrects the original assumption).** `ginprblm.Middleware` v0.2.0 swaps in a `deferredWriter` (`writer.go:14-23`). On it, `WriteHeader` and `WriteHeaderNow` only record the status, and the response commits on the first body write. So `refuse`'s `WriteHeaderNow` sends nothing, and `ginprblm` renders the `not-found` problem with or without the option. The parity test pins both. This decision originally assumed `ginprblm` was blocked too; it is not.
 - **What doesn't fix it.**
   - A consumer `NoRoute` handler never runs: `refuse` aborts first.
   - gin issue #4189 asks only for an opt-in skip of global middleware on 405, which would not change this.
@@ -186,6 +187,7 @@ Consumers learn scrty from three places, and the module is documented in each:
 - With the option, `refuse` still registers the error, sets 404 and aborts, but skips `WriteHeaderNow`. An error middleware registered earlier writes after `c.Next()`, and `serveError` sees `Written()` and adds nothing.
 - Without the option, nothing changes.
 - **Detection rejected.** `ginsec` cannot reliably detect a downstream error middleware in gin, so the consumer declares it.
+- **Kept after the finding** (maintainer's choice, 2026-11-18). `ginprblm` users do not need the option, but error middleware that does not defer the write, such as a consumer's own JSON middleware, still does. The option, its `ginsec` tests and the `framework-adapters` scenarios stay as they are.
 
 - **Default and override:** the default is unchanged (an empty 404). The option is the override. The declaration is the consumer's promise: the library cannot check it, so its godoc names what breaking the promise costs.
 - **Option rules.**
@@ -193,18 +195,20 @@ Consumers learn scrty from three places, and the module is documented in each:
   - A nil `Option` is skipped, for the same reason.
 - **Compatibility.** Adding a variadic parameter keeps every existing call compiling. The only break is code that stores `ginsec.Middleware` as a `func(*httpsec.Chain) gin.HandlerFunc` value. That is allowed before the next tag, and recorded in `CHANGELOG.md`.
 - **Alternatives:**
-  - (b) Leave the limit documented. Rejected by the maintainer: gin users of `prblmsec` would get empty 404s exactly where a client needs to know what went wrong.
+  - (b) Leave the limit documented. Rejected by the maintainer: gin users of an error middleware that writes immediately would get empty 404s exactly where a client needs to know what went wrong. (The rejection was first argued for `ginprblm` users. The finding above shows they are not affected, and the maintainer kept the option for the other middleware.)
   - (c) A consumer route mirroring every chain endpoint path, so that `FullPath()` is not empty. Rejected: it is untested, breaks with `WithBasePath`, and conflicts with gin's wildcard rules.
   - (d) Always leave the 404 open. Rejected: it breaks the settled parity of the no-middleware default.
 
 | Failure | State | Outcome |
 |---|---|---|
 | Option set, error middleware renders | Handled, tested | The middleware's body and status are sent |
+| Option not set, `ginprblm.Middleware` registered before `ginsec` | Handled, tested (parity test) | `ginprblm`'s deferred writer holds the early 404 uncommitted, so the `not-found` problem is sent, as with the option |
+| Option not set, a consumer error middleware that writes immediately | Accepted, documented | The early 404 is already sent with an empty body, and the middleware cannot render it. The godoc names the option for this case |
 | Option set, no error middleware | Accepted, documented, tested | 404 with gin's generic text. Still fails closed, carries no scrty text, and differs from the other adapters' empty body |
 | Option set, error middleware registered after `ginsec` | Accepted, documented | It never sees the refusal, as for every refusal today. Gin's text 404 is sent |
 | Option set, middleware renders only some errors | Accepted, documented | A skipped no-route 404 gets gin's text, and other refusals get the bare status |
 | Option given twice, or a nil option | Handled, tested | Same as once, or skipped |
-| Option not set (default) | Handled, tested | An empty 404, exactly as today. The existing scenario stays green |
+| Option not set (default), no error middleware | Handled, tested | An empty 404, exactly as today. The existing scenario stays green |
 | A 404 on a route the consumer registered | Handled, tested | Unaffected by the option: left open, as today |
 | A refusal of another status on an unrouted path | Handled, tested | Unaffected: only the 404 was ever sent early |
 | A gin guard used globally, refusing 404 on an unrouted path (a consumer authorizer returning a 404-mapped sentinel) | Accepted, documented | Guards do not take the option, so the 404 is committed with an empty body, which fails closed as on net/http. `WithGuardErrorHandler` renders guard refusals directly. A guard option is not worth its API cost |
@@ -235,7 +239,7 @@ Consumers learn scrty from three places, and the module is documented in each:
 | Unrecognised context errors (`DeadlineExceeded`) | Accepted | prblm's built-in maps them (504). A context error inside a library `Fault` stays 500 |
 | No prblm namespace | Accepted, documented | Relative types plus prblm's `ErrInvalidType` note |
 | Mapper panics | Accepted | prblm contains it, reports a `*PanicError` and falls back to its 500 |
-| gin 404 at a chain endpoint (no gin route matched) | Handled, tested (decision 10) | With `ginsec.WithRefusalsRendered()`, the `not-found` problem, as on net/http and fiber. Without it, an empty 404. The parity test covers both |
+| gin 404 at a chain endpoint (no gin route matched) | Handled, tested (decision 10) | With `ginprblm.Middleware`, the `not-found` problem, as on net/http and fiber, with or without `ginsec.WithRefusalsRendered()`. With no renderer at all, an empty 404 (the `framework-adapters` default). With an error middleware that writes immediately, the option is needed, else an empty 404. The parity test covers `ginprblm` both ways and the no-renderer default |
 | fiberprblm drops interceptor headers | Handled, tested | Not the case at 003affb (code reading, decision 7). The parity test pins it |
 | prblm breaking change in a later version | Accepted | Dependabot proposes the bump, and the parity tests gate it |
 
@@ -298,6 +302,7 @@ Concealment rules are reasoned from scrty's own settled `http-error-propagation`
 **Researched** (2026-11-18):
 - [gin v1.12.0 `gin.go` `serveError` and `handleHTTPRequest`](https://github.com/gin-gonic/gin/blob/v1.12.0/gin.go), read from the module cache: the no-route chain is global middleware plus `NoRoute` handlers, run inside `serveError`. That function writes its default body only when nothing was written and the status is still the error code.
 - [gin-gonic/gin issue #4189](https://github.com/gin-gonic/gin/issues/4189) (open): asks for an opt-in skip of global middleware on 405 only. It would not change the no-route 404 path.
+- [kartaladev/prblm `adapters/ginprblm/writer.go` at v0.2.0](https://github.com/kartaladev/prblm/blob/adapters/ginprblm/v0.2.0/adapters/ginprblm/writer.go), read from the module cache: `Middleware` installs a `deferredWriter` whose `WriteHeader` and `WriteHeaderNow` only record the status, and the response commits on the first body write (`writer.go:14-23`). The basis for the finding that `ginprblm` renders the chain's no-route 404 with or without the option.
 
 Otherwise reasoned from scrty's own settled `framework-adapters` spec, and from srvr's confirmation that it consumes `ginsec` and cannot change it.
 

@@ -7,7 +7,7 @@
 **Architecture:**
 - **Core.** It gains a comma-ok status lookup, with `StatusForError` built on it, and a token type on challenge errors.
 - **Mapper.** The new module's mapper takes the status from the lookup, then picks a type only among the types of that status. That is what keeps the core's concealment intact. It returns nil for errors the core does not recognise.
-- **gin.** `ginsec.Middleware` gains a variadic `WithRefusalsRendered()` option, so `ginprblm` can render the chain's own 404s on paths gin has no route for.
+- **gin.** `ginsec.Middleware` gains a variadic `WithRefusalsRendered()` option, so an error middleware that writes immediately can render the chain's own 404s on paths gin has no route for. `ginprblm` defers the header and renders them with or without it (design decision 10, finding of 2026-11-18).
 - **Parity.** The test module checks that net/http, gin (`ginprblm`) and fiber (`fiberprblm`) all render the same problem.
 
 **Tech Stack:** Go 1.27, prblm v0.2.0 (`ginprblm` and `fiberprblm` v0.2.0 in tests only), testify, gin v1.12, fiber v3.
@@ -278,10 +278,11 @@
   - `dpop nonce`, with both `DPoP-Nonce` and the `WWW-Authenticate: DPoP` challenge present;
   - `unknown handler error`, which is prblm's 500;
   - `chain endpoint 404`: `GET /sso/login/nope` (an unregistered provider) and `POST /mfa/verify/nope`. With `ginsec.WithRefusalsRendered()` on the gin server, all three give the 404 `security/not-found` problem;
-  - `chain endpoint 404, gin undeclared`: the same requests on a second gin server without the option give 404 and an empty body;
+  - `chain endpoint 404, gin undeclared`: the same requests on a second gin server with `ginprblm.Middleware` and without the option give the same 404 `security/not-found` problem as the declared case. Red for this case: first assert the old empty-body expectation and see it fail with the rendered problem;
+  - `chain endpoint 404, gin no renderer`: the same requests on a third gin server with no error middleware and no option give 404 and an empty body (the `framework-adapters` default);
   - `matched-route 404`: a guard refusing with a not-found refusal on a gin route the consumer registered gives the `not-found` problem on all three.
 
-  For each case except `chain endpoint 404, gin undeclared`, assert that the status, JSON body and the listed headers are equal across the three frameworks. Expected red before the wiring helpers exist: the gin and fiber servers answer the bare-status defaults.
+  For each case except `chain endpoint 404, gin no renderer`, assert that the status, JSON body and the listed headers are equal across the three frameworks. Expected red before the wiring helpers exist: the gin and fiber servers answer the bare-status defaults.
 - [ ] **Step 3: Implement the per-framework server helpers** in the same file: gin uses `ginprblm.Middleware(...)` before `ginsec.Middleware(chain, ginsec.WithRefusalsRendered())`, and fiber uses `fiber.Config{ErrorHandler: fiberprblm.ErrorHandler(...)}`.
 - [ ] **Step 4: Run.** `go test -run TestProblemParity -count=1 ./` in `test/`. Expected: PASS. If fiber drops a header, stop and report; the design said to go back to the user.
 - [ ] **Step 5: Commit.** `test: problem rendering is the same on net/http, gin and fiber`
@@ -324,7 +325,7 @@
 - [ ] **Step 1:** Write the package overview, with these godoc `#` sections in order:
   - **What it provides:** `Mapper`, `Types` and `Option`, and that the handler, encoding, headers, hooks and adapters are prblm's.
   - **net/http:** mirrors `Example_netHTTP`.
-  - **gin:** `ginprblm.Middleware(opts...)` before `ginsec.Middleware(chain, ginsec.WithRefusalsRendered())`, and no `httpsec.WithErrorHandler`. Marked "Mirrors TestProblemParity".
+  - **gin:** `ginprblm.Middleware(opts...)` before `ginsec.Middleware(chain)`, no option needed, and no `httpsec.WithErrorHandler`. Marked "Mirrors TestProblemParity".
   - **fiber:** `fiber.Config{ErrorHandler: fiberprblm.ErrorHandler(opts...)}` in place of `fibersec.ErrorHandler`. Marked "Mirrors TestProblemParity".
   - **Problem types:** the spec's table, and that status equals `httpsec.StatusForError`.
   - **Extension members.**
@@ -333,7 +334,7 @@
   - **Namespaces:** always set one.
   - **Stated limits:**
     - ports must not return a `prblm.Describer` or `*prblm.Problem`;
-    - on gin, leaving out `ginsec.WithRefusalsRendered()` gives the chain's own 404s an empty body;
+    - on gin, `ginprblm` renders the chain's own 404s with or without `ginsec.WithRefusalsRendered()`; the option is for a consumer's own error middleware that writes immediately, and gin with no renderer at all gives those 404s an empty body;
     - context errors scrty does not recognise are prblm's to map.
 - [ ] **Step 2:** Run `go doc ./` in the module. Expected: every section is shown. Record, for the reviewer, the test or example each snippet mirrors.
 - [ ] **Step 3: Commit.** `docs(prblmsec): package overview`
@@ -344,7 +345,7 @@
 
 - [ ] **Step 1:** Write `## Problem details (RFC 9457)`, with subsections:
   - "Install": `go get github.com/kartaladev/scrty/httpsec/prblmsec@<lockstep version>`, beside prblm;
-  - "Wiring": net/http, gin and fiber, each snippet ending with an italic mirror note such as *(Mirrors `Example_netHTTP`.)*;
+  - "Wiring": net/http, gin (`ginprblm.Middleware` before `ginsec.Middleware(chain)`, no option) and fiber, each snippet ending with an italic mirror note such as *(Mirrors `Example_netHTTP`.)*;
   - "Customising": prefix, withholding the token, a consumer override;
   - "What a client receives": a challenged-login response from `Example_challengedLogin`;
   - "Problem types": the table;
@@ -359,7 +360,7 @@
 
 - [ ] **Step 1:** Add the pointers:
   - `httpsec` "Failing closed" and `WithErrorHandler`: one sentence naming `prblmsec` as the ready-made RFC 9457 renderer;
-  - `ginsec` "Refusals": names `ginprblm` with `prblmsec` and `WithRefusalsRendered`;
+  - `ginsec` "Refusals": names `ginprblm` with `prblmsec`, says it needs no option, and points users of an error middleware that writes immediately to `WithRefusalsRendered`;
   - `fibersec` "Refusals" and `MapError`: name `fiberprblm.ErrorHandler` with `prblmsec`;
   - the README MFA passage (around line 764) on delivering `ce.Token`: `prblmsec` does it by default;
   - the README Modules table and install list: add the module.

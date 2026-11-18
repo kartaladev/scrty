@@ -187,15 +187,19 @@ A refusal rendered through the integration SHALL produce the same status, proble
 - **WHEN** the same challenged password login is sent to a net/http, a gin and a fiber deployment, each rendering through the integration
 - **THEN** the three responses carry the same status, the same problem document and the same `WWW-Authenticate` and `Cache-Control` headers
 
-### Requirement: On gin, the chain's own 404s render once the adapter is told
-On gin, a 404 refusal on a path that matched no gin route, as at the chain's own endpoints, SHALL be rendered as a problem when the gin adapter is given its rendered-refusals declaration. Without it, the gin adapter answers that 404 with an empty body, as the framework-adapters capability states. The integration's documentation SHALL tell gin consumers to give the declaration.
+### Requirement: On gin, the chain's own 404s render through prblm's gin middleware
+On gin, a 404 refusal on a path that matched no gin route, as at the chain's own endpoints, SHALL be rendered as a problem when prblm's gin middleware is registered before the gin adapter, with or without the gin adapter's rendered-refusals declaration. The declaration is for other error middleware, which writes the response immediately. A gin deployment with no renderer at all answers that 404 with an empty body, as the framework-adapters capability states.
 
 #### Scenario: gin 404 at a chain endpoint, declared
 - **WHEN** the gin adapter is given the rendered-refusals declaration, prblm's gin middleware is registered before it, and an MFA verify path names an unknown method that no gin route matches
 - **THEN** gin answers a 404 problem of type `security/not-found`, as net/http and fiber do
 
 #### Scenario: gin 404 at a chain endpoint, not declared
-- **WHEN** the same request is sent to a gin deployment whose adapter is not given the declaration
+- **WHEN** the same request is sent to a gin deployment with prblm's gin middleware registered before the gin adapter, and the adapter is not given the declaration
+- **THEN** gin answers the same 404 problem of type `security/not-found`
+
+#### Scenario: gin 404 at a chain endpoint, no renderer
+- **WHEN** the same request is sent to a gin deployment with no error middleware and no declaration
 - **THEN** gin answers 404 with an empty body
 
 #### Scenario: gin 404 on a matched route

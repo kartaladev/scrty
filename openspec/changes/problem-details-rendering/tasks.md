@@ -64,18 +64,18 @@
 
 ## 4. Mapping refusals to problems (decisions 3, 4, 5)
 
-- [ ] 4.1 Red: `TestMapper_TypePerRefusal` (table) covers one case per row of the spec's type table, plus every refusal the spec names. It asserts the type and that the status equals `httpsec.StatusForError(err)`. It also covers:
+- [x] 4.1 Red: `TestMapper_TypePerRefusal` (table) covers one case per row of the spec's type table, plus every refusal the spec names. It asserts the type and that the status equals `httpsec.StatusForError(err)`. It also covers:
   - a challenge wrapping access-denied gives `mfa-required`;
   - a recognised 500, 405 or 501 gives `about:blank` with no detail.
 
   Green: implement status-first type selection. Verify with `go test -run TestMapper_TypePerRefusal -count=1 ./...`.
-- [ ] 4.2 Red: `TestMapper_ConcealsWhatStatusConceals`. Encode the JSON problem for each of these on the same request and assert the bytes are identical:
+- [x] 4.2 Red: `TestMapper_ConcealsWhatStatusConceals`. Encode the JSON problem for each of these on the same request and assert the bytes are identical:
   - a wrong password;
   - authentication-failed joined with account-locked;
   - `authenticate.ErrUnavailable` wrapping a connection error.
 
   The disclosed lock gives a 429 `account-locked`. Watch it fail by temporarily giving `ErrUnavailable` its own type. Verify with `go test -run TestMapper_Conceals -count=1 ./...`.
-- [ ] 4.3 Red: `TestMapper_Members` (table) covers:
+- [x] 4.3 Red: `TestMapper_Members` (table) covers:
   - `methods` order and fields, a non-nil empty list rendered `[]`, and nil omitted;
   - `challenge` on every challenge type;
   - `max_age` 300 for a 5-minute window, and omitted for `Window <= 0`;
@@ -84,7 +84,7 @@
   - no member or detail contains the text `alice@example.com`, carried in the cause.
 
   Verify with `go test -run TestMapper_Members -count=1 ./...`.
-- [ ] 4.4 Red: `TestMapper_ChallengeToken` (table) covers:
+- [x] 4.4 Red: `TestMapper_ChallengeToken` (table) covers:
   - a token with `TokenType` Bearer gives `access_token`, `token_type` and a `Cache-Control: no-store` problem header;
   - DPoP gives `token_type` `DPoP`;
   - no token gives neither member;
@@ -92,14 +92,14 @@
   - `WithoutChallengeToken` gives neither member, with the rest unchanged.
 
   Verify with `go test -run TestMapper_ChallengeToken -count=1 ./...`.
-- [ ] 4.5 Red: `TestMapper_DefersUnrecognised` covers:
+- [x] 4.5 Red: `TestMapper_DefersUnrecognised` covers:
   - a consumer error with a consumer `prblm.Status(errApp, 404)` mapper registered after the integration gives 404;
   - an unknown error gives prblm's 500 with no detail;
   - a recognised dependency failure wrapping a fake error that a later mapper maps to 503 stays 500;
   - a consumer mapper registered ahead for the disclosed lock wins, and a wrong password still gives `authentication-failed`.
 
   Verify with `go test -run TestMapper_Defers -count=1 ./...`.
-- [ ] 4.6 Godoc for every exported identifier of `prblmsec`. Each option names the default it replaces: prefix `security`, token delivered. Verify with `go doc -all ./` in the module, where every exported symbol has a doc comment, plus `go vet`, `gofmt -l` and `golangci-lint run` in the module, all clean. The package overview and the examples are group 7.
+- [x] 4.6 Godoc for every exported identifier of `prblmsec`. Each option names the default it replaces: prefix `security`, token delivered. Verify with `go doc -all ./` in the module, where every exported symbol has a doc comment, plus `go vet`, `gofmt -l` and `golangci-lint run` in the module, all clean. The package overview and the examples are group 7.
 
 ## 5. gin: refusals left for an error middleware (design decision 10)
 
@@ -127,10 +127,11 @@
   - a DPoP nonce refusal keeps `DPoP-Nonce` and `WWW-Authenticate: DPoP`;
   - an unknown handler error gives prblm's 500;
   - an unknown identity provider in a federated login path, and an unknown MFA method in a verify path, with `ginsec.WithRefusalsRendered()` on the gin deployment: all three give the 404 `not-found` problem;
-  - the same requests on a gin deployment without the option: 404 with an empty body (the default, pinned);
+  - the same requests on a gin deployment with `ginprblm.Middleware` and without the option: the same 404 `not-found` problem (`ginprblm` defers the header, design decision 10). Red: first assert the old empty-body expectation and see it fail;
+  - the same requests on a gin deployment with no renderer at all and no option: 404 with an empty body (the `framework-adapters` default, pinned);
   - a not-found refusal from a guard on a gin route the consumer registered gives the `not-found` problem on all three.
 
-  Except for the case without the option, it asserts the same status, document and headers on all three. Verify with `go test -run TestProblemParity -count=1 ./` in `test/`.
+  Except for the no-renderer case, it asserts the same status, document and headers on all three. Verify with `go test -run TestProblemParity -count=1 ./` in `test/`.
 - [ ] 6.2 Red: `TestProblemParity_GuardRefusal` covers a net/http guard with `WithGuardErrorHandler(h.Write)` and the gin and fiber guards. A guard refusal gives the same typed problem as the chain's for the same error. Verify with `go test -run TestProblemParity_Guard -count=1 ./`.
 - [ ] 6.3 The module-graph check: a consumer of the core only has no `github.com/kartaladev/prblm` in `go list -m all`. Extend `TestCoreDependencies` and `TestConsumerModuleGraph` (`layout_test.go`) to list `github.com/kartaladev/prblm`, and watch them fail by temporarily adding the requirement to the root `go.mod`. Verify with `go test -run 'TestCoreDependencies|TestConsumerModuleGraph' -count=1 .` at the root.
 
@@ -149,7 +150,7 @@
   - **What it is:** the three pieces, and what stays prblm's.
   - **Wiring:**
     - net/http;
-    - gin: `ginprblm.Middleware` registered before `ginsec.Middleware(chain, ginsec.WithRefusalsRendered())`, with no `httpsec.WithErrorHandler`;
+    - gin: `ginprblm.Middleware` registered before `ginsec.Middleware(chain)`, with no `httpsec.WithErrorHandler` and no option needed;
     - fiber: `fiberprblm.ErrorHandler` in place of `fibersec.ErrorHandler`.
   - **Problem types:** the type table, and that status always equals `httpsec.StatusForError`.
   - **Extension members.**
@@ -158,13 +159,13 @@
   - **Always set a namespace.**
   - **Stated limits:**
     - ports must not return a `prblm.Describer` or `*prblm.Problem`;
-    - on gin, leaving out `ginsec.WithRefusalsRendered()` gives the chain's own 404s an empty body, and setting it with no error middleware gives gin's text 404;
+    - on gin, `ginprblm` renders the chain's own 404s with or without `ginsec.WithRefusalsRendered()`; the option is for a consumer's own error middleware that writes immediately, and gin with no renderer at all gives those 404s an empty body;
     - context errors scrty does not recognise are prblm's to map.
 
   The gin and fiber snippets are prose. They mirror `TestProblemParity` in the test module, and each says so (`Mirrors TestProblemParity`). Verify with `go doc ./` in the module, which shows every section, and a reviewer check that each snippet matches the test or example it names.
 - [ ] 7.3 Write a `README.md` section, "Problem details (RFC 9457)", placed after "Security events" and before "Known limitations":
   - install (`go get github.com/kartaladev/scrty/httpsec/prblmsec@<version>` with the lockstep version);
-  - wiring for net/http, gin and fiber;
+  - wiring for net/http, gin (`ginprblm.Middleware` before `ginsec.Middleware(chain)`, no option needed) and fiber;
   - customisation: prefix, withholding the token, and a consumer override;
   - an example response for a challenged login;
   - the type table;
@@ -176,7 +177,7 @@
   - **The `ginsec` and `fibersec` "Refusals" docs:**
     - each names `ginprblm` or `fiberprblm` with `prblmsec`;
     - `fibersec.MapError`'s doc points to it for a rendered body;
-    - `ginsec` points prblm users to `WithRefusalsRendered`.
+    - `ginsec` says `ginprblm` needs no option, and points users of an error middleware that writes immediately to `WithRefusalsRendered`.
   - **`README.md`:** the MFA passage that says the consumer's error handler must deliver `ce.Token` (around line 764) names `prblmsec`, which does that by default. So do the README's Modules table and its install list.
 
   Verify with `git grep -n prblmsec httpsec/doc.go httpsec/ginsec/doc.go httpsec/fibersec/doc.go README.md`, which finds each, plus `go vet ./...` and `gofmt -l .` clean in the three modules.

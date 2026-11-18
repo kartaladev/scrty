@@ -28,7 +28,8 @@ scrty refuses requests with typed errors and, by design, renders nothing: a bare
   - `ChallengeError.TokenType`, set whenever `Token` is, so a renderer can name the token's type (`Bearer` or `DPoP`) without re-deriving it.
 - **gin: refusals left for an error middleware.** `ginsec.Middleware(chain, opts ...Option)` gains its first option, `WithRefusalsRendered()`.
   - **What it declares:** an error middleware renders every refusal.
-  - **What it changes:** with it, the 404 the chain gives at its own endpoints on a path gin has no route for is left open like every other refusal, instead of being sent immediately with an empty body. So `ginprblm` can render it.
+  - **What it changes:** with it, the 404 the chain gives at its own endpoints on a path gin has no route for is left open like every other refusal, instead of being sent immediately with an empty body. So an error middleware that writes immediately, such as a consumer's own JSON middleware, can render it.
+  - **`ginprblm` does not need it:** its middleware defers the response header, so it renders that 404 with or without the option.
   - **Default:** unchanged.
   - **Without an error middleware:** gin's generic `404 page not found` text is sent. That is still a 404, and carries no scrty text.
 - **Spec amendment:** the core still includes no body renderer. The settled "no problem-details renderer" requirement is narrowed to the core module, and the one renderer lives in the opt-in module.
