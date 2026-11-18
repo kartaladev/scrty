@@ -697,13 +697,26 @@ func (l *preparedLogin) commit(ex *Exchange) (string, error) {
 	emitSignIn(ctx, s, l.afterFailures)
 
 	if l.decision.Outcome == policy.Challenge {
-		return l.token, &ChallengeError{
+		return l.token, refuseWithChallenge(ex, &ChallengeError{
 			Kind: l.decision.Challenge, Session: s, Token: l.token,
 			TokenType: challengeTokenType(l.token, s), Methods: l.methods,
-		}
+		})
 	}
 
 	return l.token, nil
+}
+
+// refuseWithChallenge returns ch as the refusal, first marking the response
+// no-store when ch carries a credential. The set replaces whatever cache policy
+// an outer layer or an earlier interceptor put on the response, so a token handed
+// out with a challenge is never stored by a shared cache. A challenge without a
+// token leaves the consumer's policy as it is.
+func refuseWithChallenge(ex *Exchange, ch *ChallengeError) error {
+	if ch.Token != "" {
+		ex.Writer.SetHeader("Cache-Control", "no-store")
+	}
+
+	return ch
 }
 
 // emitSignIn reports a stored sign-in: its session, its credential, and the

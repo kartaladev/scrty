@@ -215,6 +215,14 @@ type ChallengeError struct {
 
 	// Token is the access token issued alongside the pending session, and is
 	// empty unless one was issued when the challenge was raised.
+	//
+	// Wherever the library raises a challenge with a Token, it first sets the
+	// response's Cache-Control to no-store, replacing any cache policy an outer
+	// middleware or an earlier interceptor set, so no cache keeps the
+	// credential. The response must stay no-store: an error handler that sets
+	// Cache-Control again after the challenge is raised overrides this, and
+	// the library cannot prevent it. A challenge without a Token leaves the
+	// consumer's cache policy as it is.
 	Token string
 
 	// TokenType is how Token is presented: TokenTypeDPoP for a token bound to

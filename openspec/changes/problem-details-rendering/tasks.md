@@ -46,7 +46,7 @@
   - the package doc's "Failing closed" section names the lookup.
 
   Verify with `go doc ./httpsec LookupStatus`, plus `go vet ./... && gofmt -l . && go test -count=1 ./httpsec/...`, all clean.
-- [ ] 2.5 A refusal that carries a credential is never cacheable (design decision 5, whole-branch review finding). Red: `TestChallengeToken_NoStore` (table) in `httpsec`, over a real chain whose error handler records the response headers, with a middleware ahead of the chain that sets `Cache-Control: public, max-age=300`. Cases:
+- [x] 2.5 A refusal that carries a credential is never cacheable (design decision 5, whole-branch review finding). Red: `TestChallengeToken_NoStore` (table) in `httpsec`, over a real chain whose error handler records the response headers, with a middleware ahead of the chain that sets `Cache-Control: public, max-age=300`. Cases:
   - a challenged password login on a bearer chain: `Cache-Control` is exactly `[no-store]`;
   - an MFA verification raising a further, token-bearing challenge: exactly `[no-store]`;
   - a DPoP-bound challenged login: exactly `[no-store]`;
@@ -141,7 +141,7 @@
   Except for the no-renderer case, it asserts the same status, document and headers on all three. Verify with `go test -run TestProblemParity -count=1 ./` in `test/`.
 - [x] 6.2 Red: `TestProblemParity_GuardRefusal` covers a net/http guard with `WithGuardErrorHandler(h.Write)` and the gin and fiber guards. A guard refusal gives the same typed problem as the chain's for the same error. Verify with `go test -run TestProblemParity_Guard -count=1 ./`.
 - [x] 6.3 The module-graph check: a consumer of the core only has no `github.com/kartaladev/prblm` in `go list -m all`. Extend `TestCoreDependencies` and `TestConsumerModuleGraph` (`layout_test.go`) to list `github.com/kartaladev/prblm`, and watch them fail by temporarily adding the requirement to the root `go.mod`. Verify with `go test -run 'TestCoreDependencies|TestConsumerModuleGraph' -count=1 .` at the root.
-- [ ] 6.4 Extend `TestProblemParity` (whole-branch review findings):
+- [x] 6.4 Extend `TestProblemParity` (whole-branch review findings):
   - **upstream cache policy:** each framework's server gets a middleware ahead of the chain that sets `Cache-Control: public, max-age=300`, and a challenged password login gives `access_token` and `Cache-Control` exactly `[no-store]` on all three. Red: run it before 2.5 is green, or with 2.5's header set temporarily removed, and see it fail on the upstream value;
   - **matched-route 404 without the option:** the guard not-found case on a consumer gin route also runs on gin with `ginprblm.Middleware` and no `WithRefusalsRendered` (`extraGin: ginProblemsOnly`), with the same problem as net/http.
 

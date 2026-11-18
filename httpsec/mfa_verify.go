@@ -599,7 +599,9 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session, raised policy
 	// carrying the rotated session and its credential for the consumer's
 	// prompt, and never through the success responder.
 	if raised != policy.ChallengeNone {
-		return &ChallengeError{Kind: raised, Session: rotated, Token: tok, TokenType: challengeTokenType(tok, rotated)}
+		return refuseWithChallenge(ex, &ChallengeError{
+			Kind: raised, Session: rotated, Token: tok, TokenType: challengeTokenType(tok, rotated),
+		})
 	}
 
 	return i.respond(ex, MFAResult{Token: tok, Session: rotated, TokenType: tokenTypeOf(rotated)})
@@ -669,7 +671,7 @@ func (i *mfaInterceptor) gate(ex *Exchange, next Next) error {
 
 	// No token: the caller already holds the credential this session was
 	// reached with, and a gate issues nothing.
-	return i.challenge(ex.Context(), s, "")
+	return i.challenge(ex, s, "")
 }
 
 // isLogoutRequest reports whether r is the logout the chain was configured
@@ -695,16 +697,16 @@ const msgMFAMethodsUnavailable = "httpsec: the usable MFA methods could not be l
 // endpoint would refuse as not usable. A lookup that fails replaces the
 // challenge with that failure, behind fixed text: a partial list would hide a
 // method the user holds, and an empty one would read as "nothing left".
-func (i *mfaInterceptor) challenge(ctx context.Context, s *session.Session, token string) error {
-	methods, err := i.usableMethods(ctx, s.UserID, s.FirstFactor)
+func (i *mfaInterceptor) challenge(ex *Exchange, s *session.Session, token string) error {
+	methods, err := i.usableMethods(ex.Context(), s.UserID, s.FirstFactor)
 	if err != nil {
 		return err
 	}
 
-	return &ChallengeError{
+	return refuseWithChallenge(ex, &ChallengeError{
 		Kind: policy.ChallengeMFA, Session: s, Token: token,
 		TokenType: challengeTokenType(token, s), Methods: methods,
-	}
+	})
 }
 
 // usableMethods is the methods a second-factor challenge to user, whose first

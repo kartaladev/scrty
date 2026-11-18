@@ -208,6 +208,10 @@ type parityWorld struct {
 	problem *prblmsec.Problems
 	prblm   []prblm.Option
 	handler *prblm.Handler
+
+	// upstreamCacheControl, when set, is the cache policy the consumer's own
+	// middleware puts on every response ahead of the chain.
+	upstreamCacheControl string
 }
 
 func newParityWorld(t *testing.T) *parityWorld {
@@ -338,6 +342,13 @@ func nethttpParityServer(t *testing.T, w *parityWorld) parityServer {
 	mux.Handle("GET "+parityMissingPath, guarded("missing"))
 
 	handler := chain.Middleware()(mux)
+	if cc := w.upstreamCacheControl; cc != "" {
+		inner := handler
+		handler = http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+			rw.Header().Set("Cache-Control", cc)
+			inner.ServeHTTP(rw, r)
+		})
+	}
 
 	return func(t *testing.T, req httpsecconformance.RequestSpec) parityResponse {
 		t.Helper()
@@ -388,6 +399,13 @@ func ginParityServer(t *testing.T, w *parityWorld, mode ginMode) parityServer {
 	require.NoError(t, err)
 
 	engine := gin.New()
+	if cc := w.upstreamCacheControl; cc != "" {
+		engine.Use(func(gc *gin.Context) {
+			gc.Header("Cache-Control", cc)
+			gc.Next()
+		})
+	}
+
 	if mode != ginNoRenderer {
 		engine.Use(ginprblm.Middleware(w.prblm...))
 	}
@@ -418,6 +436,14 @@ func fiberParityServer(t *testing.T, w *parityWorld) parityServer {
 	require.NoError(t, err)
 
 	app := fiber.New(fiber.Config{ErrorHandler: fiberprblm.ErrorHandler(w.prblm...)})
+	if cc := w.upstreamCacheControl; cc != "" {
+		app.Use(func(fc fiber.Ctx) error {
+			fc.Set("Cache-Control", cc)
+
+			return fc.Next()
+		})
+	}
+
 	app.Use(fibersec.Middleware(w.chain(t)))
 	app.Get(paritySecuredPath, func(fc fiber.Ctx) error { return fc.SendStatus(http.StatusOK) })
 	app.Get(parityBoomPath, func(fiber.Ctx) error { return errParityBoom })
@@ -535,6 +561,10 @@ func TestProblemParity(t *testing.T) {
 		// withProof makes the request carry a DPoP proof without a nonce.
 		withProof bool
 
+		// upstreamCacheControl, when set, puts a consumer middleware ahead of
+		// the chain on every framework that sets this cache policy.
+		upstreamCacheControl string
+
 		// assert is what every framework's own answer must be, so three
 		// servers that agree on a wrong answer do not pass.
 		assert func(t *testing.T, r parityResponse)
@@ -560,6 +590,19 @@ func TestProblemParity(t *testing.T) {
 				assert.Equal(t, "mfa", doc["challenge"])
 				assert.NotEmpty(t, doc["access_token"], "the token the prompt is answered with is delivered")
 				assert.Equal(t, []string{"no-store"}, r.header.Values("Cache-Control"))
+			},
+		},
+		{
+			name:                 "challenged password login under an upstream cache policy",
+			request:              parityLogin(),
+			upstreamCacheControl: "public, max-age=300",
+			assert: func(t *testing.T, r parityResponse) {
+				doc := r.problem(t)
+				assert.Equal(t, http.StatusUnauthorized, r.status)
+				assert.Equal(t, typePrefix+"mfa-required", doc["type"])
+				assert.NotEmpty(t, doc["access_token"], "the token the prompt is answered with is delivered")
+				assert.Equal(t, []string{"no-store"}, r.header.Values("Cache-Control"),
+					"a response carrying a credential replaces the upstream cache policy")
 			},
 		},
 		{
@@ -624,7 +667,8 @@ func TestProblemParity(t *testing.T) {
 			request: func(t *testing.T, w *parityWorld) httpsecconformance.RequestSpec {
 				return parityGet(parityMissingPath, map[string]string{"Authorization": w.bearer})(t, w)
 			},
-			assert: notFound,
+			assert:   notFound,
+			extraGin: []ginMode{ginProblemsOnly},
 		},
 	}
 
@@ -636,6 +680,7 @@ func TestProblemParity(t *testing.T) {
 				t.Helper()
 
 				w := newParityWorld(t)
+				w.upstreamCacheControl = tc.upstreamCacheControl
 				req := tc.request(t, w)
 
 				if tc.withProof {

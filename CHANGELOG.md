@@ -28,6 +28,11 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 - **BREAKING** `ginsec.Middleware` takes options after the chain (`...Option`). Every call compiles
   unchanged, but code that stores it as a `func(*httpsec.Chain) gin.HandlerFunc` value no longer
   compiles.
+- `httpsec` sets `Cache-Control: no-store` on any response refused with a `*ChallengeError` that
+  carries a `Token`. It replaces any cache policy that an outer middleware or an earlier interceptor
+  set, so a credential handed out with a challenge is never cacheable. A challenge without a token
+  leaves `Cache-Control` as it was. An error handler that sets `Cache-Control` again after the
+  refusal overrides this.
 
 ### Fixed
 
