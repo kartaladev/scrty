@@ -22,7 +22,7 @@
 
 **Spec:** `openspec/changes/split-ci-jobs/`:
 - `proposal.md`;
-- `design.md` (decisions 1 to 8, Risks, Migration Plan);
+- `design.md` (decisions 1 to 9, Risks, Migration Plan);
 - `specs/continuous-integration/spec.md` and `specs/module-layout/spec.md`;
 - `tasks.md`.
 
@@ -90,8 +90,11 @@ Dispatches run in the main working tree, because the branch cannot be checked ou
 | 2 (after M1) | D1 | 1.3, 2.2 | `README.md` | Sonnet: documentation of targets that now exist |
 | 3 | main | 4.1–4.5 | — | Only if 4.3 finds a module missing: a Sonnet dispatch that owns `ci.yml` |
 | 4 | reviewer | 4.6 | — | Sonnet: a whole-branch review of a tooling change with no concurrency or security logic |
+| 5 (parallel) | M2 | 5.1, 5.2 | `Makefile` | Sonnet: a stated file and a stated prerequisite |
+| 5 (parallel) | W3 | 5.3 | `.github/workflows/ci.yml`, `.github/actions/setup-go-cached/action.yml`, and `tools/repocheck/` and `tools/cmd/pincheck/` only if the pin check misses the action | Sonnet: moving steps to a stated layout |
+| 6 | main | 5.4, then 4.4, 4.5 | — | Sonnet reviewer for 5.1 to 5.3 |
 
-W1 and M1 share no file. W1 depends only on the target names fixed below (`fmt-check`, `vet`, `lint`, `generate-check`, `vuln`, `pincheck`, `tools-check`, `test`, `test-isolated`, `spec-check`, and the variables `SPEC_BASE` and `OPENSPEC`), so they run at the same time. Every dispatch gets a fresh Sonnet reviewer that edits nothing.
+M2 and W3 share no file. W1 and M1 share no file. W1 depends only on the target names fixed below (`fmt-check`, `vet`, `lint`, `generate-check`, `vuln`, `pincheck`, `tools-check`, `test`, `test-isolated`, `spec-check`, and the variables `SPEC_BASE` and `OPENSPEC`), so they run at the same time. Every dispatch gets a fresh Sonnet reviewer that edits nothing.
 
 ---
 
@@ -125,7 +128,7 @@ W1 and M1 share no file. W1 depends only on the target names fixed below (`fmt-c
   - Each file target depends on `$(TOOLS_DEPS)`, and its recipe is `cd tools && GOWORK=off GOBIN=$(BIN) go install <package>`.
   - `tools: $(TOOL_BINS)`, with an empty recipe.
   - `lint: $(BIN)/golangci-lint`, `tools-check: $(BIN)/golangci-lint`, `vuln: $(BIN)/govulncheck` and `generate-check: $(BIN)/mockgen`.
-  - `sbom` keeps depending on `tools`, and `pincheck` needs no tool.
+  - `sbom` depended on `tools` here, and task 5.2 narrows it. `pincheck` needs no tool.
   - Keep the existing comment explaining `GOWORK=off`.
 - [ ] **Step 2: Verify.** With `.bin` moved aside, run each of `make lint`, `make vuln` and `make generate-check` under the `PATH` from 1.1. Expected:
   - each passes;
@@ -307,7 +310,51 @@ Follow `tasks.md` 4.1 to 4.5 as written. What the main session checks at each on
 
   Findings go back to a fresh dispatch of the lane that owns the file.
 
+### Task 5.1: Rebuild tools when the Go release changes (decision 2; dispatch M2)
+
+**Files:** Modify `Makefile`.
+
+**Interfaces:**
+- Produces: `$(BIN)/.go-version`, added to `TOOLS_DEPS`. It is written by a `$(shell ...)` after `BIN` is defined, and is not a target with a recipe.
+
+- [ ] **Step 1 (red):** with `.bin/golangci-lint` built, run `GOTOOLCHAIN=<another go1.27 release> make -n lint`. Expected: no `go install` line, while `GOTOOLCHAIN=<that release> go env GOVERSION` differs from `go version .bin/golangci-lint`. If an install line appears, stop and report it.
+- [ ] **Step 2:** add the stamp. Create `$(BIN)` first, and rewrite the file only when its contents differ from `go env GOVERSION`.
+- [ ] **Step 3:** run each check in `tasks.md` 5.1. Expected:
+  - `make lint && make -n lint | grep -c 'go install'` prints `0`;
+  - under the other release, it prints `1`, and after a real `make lint`, `go version .bin/golangci-lint` names that release;
+  - with `.bin` removed, `make -n -j8 check | grep -c 'go install'` still prints `5` (Review Focus 5);
+  - `make check` passes.
+
+### Task 5.2: `sbom` installs one tool (decision 2; dispatch M2)
+
+**Files:** Modify `Makefile`.
+
+- [ ] **Step 1 (red):** with `.bin` removed, `make -n sbom | grep -c 'go install'` prints `5`.
+- [ ] **Step 2:** `sbom: $(BIN)/cyclonedx-gomod`.
+- [ ] **Step 3:** the same command prints `1`. With `.bin` removed, `make sbom` passes, and `ls -A .bin` shows only `cyclonedx-gomod`, `.go-version` and `sbom`.
+
+### Task 5.3: The composite action (decision 9; dispatch W3)
+
+**Files:** Create `.github/actions/setup-go-cached/action.yml`. Modify `.github/workflows/ci.yml`.
+
+**Interfaces:**
+- Produces: the action's inputs `go-version` (required), `cache-id` (required) and `extra-paths` (optional, one path per line).
+- Cache `key`: `go-${{ inputs.cache-id }}-${{ runner.os }}-${{ inputs.go-version }}-${{ hashFiles('**/go.sum') }}`. Restore key: the same without the hash. These match today's keys when `cache-id` is the job's name, and `codeql-<language>` for `codeql`.
+- Paths: `~/go/pkg/mod`, `~/.cache/go-build`, plus `extra-paths`. `lint` and `tools-check` pass `~/.cache/golangci-lint`.
+
+- [ ] **Step 1:** record `grep -cE 'actions/(setup-go|cache)@' .github/workflows/ci.yml` as the baseline.
+- [ ] **Step 2:** write the action, with the same pinned SHAs as `ci.yml` and `cache: false` on setup-go. Use it in `vet`, `lint`, `generate`, `vuln`, `pincheck`, `tools-check`, `test` (`matrix.go` as `go-version`) and `codeql` (keeping `if: matrix.language == 'go'`). Leave `format` and `openspec` as they are.
+- [ ] **Step 3:** `actionlint` reports nothing, and `.github/scripts/ci-needs-check.sh .github/workflows/ci.yml ci-ok` passes. The baseline command now prints `2` for `ci.yml`: `format` and `openspec`.
+- [ ] **Step 4 (red for the pin check):** change one `uses:` in the action to `@v7`, and run `make pincheck`. Expected: it fails naming `action.yml`. If it passes, extend `tools/repocheck` with a failing test first, until it does. Edit the line back, and confirm `make pincheck` passes.
+
+### Task 5.4: Proof on the pull request (main session)
+
+- [ ] **Step 1:** push. `gh run view <id> --json jobs` lists every job in 4.1, all `success`, and the code-scanning query in 4.3 lists `go` and `actions` for the head commit.
+- [ ] **Step 2:** a fresh Sonnet reviewer, who edits nothing, checks 5.1 to 5.3 against decisions 2 and 9 and the scenario "Go release changes". Then run 4.4 and 4.5.
+
 ### Commits (main session)
+
+After the commits below, group 5 adds, staging exact paths: `build(make): rebuild tools when the Go release changes`, and `ci: share setup-go and the cache through one composite action`.
 
 Commit one per dispatch, after its verification and review, staging exact paths:
 1. `build(make): let each gate target install its own tool`;

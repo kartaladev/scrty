@@ -19,6 +19,10 @@ For every module, the build gates SHALL fail when any Go file is not `gofmt`-for
 - **WHEN** a contributor runs the local command for a single gate, such as lint, on a fresh checkout
 - **THEN** it installs the tool that gate needs, at the version the repository pins, and runs only that gate
 
+#### Scenario: Go release changes
+- **WHEN** a contributor runs the local command for a single gate, with its tool already installed, after the Go release in use has changed
+- **THEN** it rebuilds that tool with the Go release in use before running the gate
+
 #### Scenario: Checks that run only in CI
 - **WHEN** CI runs code scanning and spec validation
 - **THEN** neither is part of the local gate command, and the local gate command needs neither CodeQL nor the OpenSpec CLI

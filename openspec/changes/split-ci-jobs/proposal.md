@@ -50,6 +50,7 @@ CI is one job that runs `make check` on each PostgreSQL leg of the matrix. That 
 
 - **Changed files:**
   - `.github/workflows/ci.yml`, rewritten into per-check jobs, a CodeQL job and an aggregate job;
+  - `.github/actions/setup-go-cached/action.yml`, the setup-go and cache steps those jobs share;
   - the `Makefile`, which gains per-tool install targets and `spec-check`, and makes each gate target install its own tool;
   - `README.md`, whose line "`make check` is what continuous integration runs" becomes stale.
 - **No library code, API or `go.mod` change.**

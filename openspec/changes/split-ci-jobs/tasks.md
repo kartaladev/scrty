@@ -109,13 +109,30 @@ Restore a deliberately broken file by editing it back, never with a git command 
   - `gh api 'repos/kartaladev/scrty/code-scanning/analyses?ref=<pr ref>'` lists a `go` and an `actions` analysis for the head commit.
 
   If any workspace module is missing, switch `go` to `build-mode: manual`, with a build of each workspace module, and re-verify. Report the outcome so the main session records it in design decision 5.
-- [ ] 4.4 After a second run on the pull request, verify:
+- [ ] 4.4 Run after group 5. After a second run on the pull request, verify:
   - each building job reports a cache hit on its own key;
   - `gh api repos/kartaladev/scrty/actions/cache/usage` reports the repository's total under 10 GB.
 
   Record the sizes.
-- [ ] 4.5 Run `make check`, `make spec-check` and `openspec validate split-ci-jobs --strict`. Verify all three pass, and keep their output.
+- [ ] 4.5 Run after group 5. Run `make check`, `make spec-check` and `openspec validate split-ci-jobs --strict`. Verify all three pass, and keep their output.
 - [x] 4.6 Review the whole branch against every requirement in this change's two spec deltas, with a reviewer that wrote none of it. Verify that the review lists each requirement and scenario as met, or files a finding.
+
+## 5. Fold the review of pull request #68 (design decisions 2 and 9; module-layout scenario "Go release changes")
+
+- [ ] 5.1 Red: record `go env GOVERSION` and `go version .bin/golangci-lint`. Then run `make -n lint` with `GOTOOLCHAIN` set to another installed or downloadable Go 1.27 release, and record that it shows no reinstall although the release differs. If it does reinstall, report it, and the main session drops this task and its scenario. Then add a `$(BIN)/.go-version` file that a `$(shell ...)` rewrites while the Makefile is read, only when `go env GOVERSION` differs from its contents, and add it to `TOOLS_DEPS`. It is not a forced target, because `make -n` always shows a reinstall behind one. Verify:
+  - with the same release, `make -n lint` after a real `make lint` shows no install;
+  - under the other release, `make -n lint` shows the reinstall, and `make lint` leaves a binary `go version` reports as built with it;
+  - `touch tools/go.mod` still reinstalls;
+  - `make -j4 tools` installs each tool once;
+  - `make check` passes.
+
+  Whether golangci-lint refuses a module newer than the Go release that built it stays UNREPRODUCED, and this task does not depend on it.
+- [ ] 5.2 Red: with `.bin` removed, `make -n sbom` lists all five tools. Then make `sbom` depend on `$(BIN)/cyclonedx-gomod` alone. Verify `make -n sbom` lists one install, and `make sbom` with `.bin` removed succeeds and leaves only that tool and `.go-version` in `.bin`, besides its output.
+- [ ] 5.3 Record the count of `actions/setup-go` and `actions/cache` references in `ci.yml` as the baseline. This task changes no behaviour, so it has no failing run of its own beyond the pin check below. Add `.github/actions/setup-go-cached/action.yml`, a composite action with inputs for the Go version, the cache identifier and extra cache paths, and move the setup-go and cache steps of the eight building jobs into it. Checkout stays in each job. `format` and `openspec` keep plain setup-go. Cache keys and restore keys stay exactly as decision 7 states them, with `codeql` passing `codeql-<language>` as its identifier. Every `uses:` in the action is pinned by SHA with its tag in a comment. Verify:
+  - `actionlint` reports nothing on `ci.yml`;
+  - adding an unpinned `uses:` to the action makes `make pincheck` fail naming that file. If it does not fail, extend `tools/repocheck` test-first until it does, then edit the line back;
+  - `ci-needs-check.sh .github/workflows/ci.yml ci-ok` passes.
+- [ ] 5.4 **(main session)** Push, and verify on the pull request that every job runs on its head commit, `ci-ok` passes, and the `codeql` analyses are listed for `go` and `actions`. Then review 5.1 to 5.3 with a Sonnet reviewer that wrote none of it.
 
 ## Workflow follow-up
 
