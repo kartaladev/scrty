@@ -22,7 +22,13 @@ use one version for all of them:
 ```sh
 go get github.com/kartaladev/scrty@v0.1.1
 go get github.com/kartaladev/scrty/store/pgxstore@v0.1.1
-go get github.com/kartaladev/scrty/httpsec/prblmsec@v0.1.1
+```
+
+The `httpsec/prblmsec` module is new after v0.1.1 and ships from the next lockstep release; once that is
+tagged, add it at the same version as the rest:
+
+```sh
+go get github.com/kartaladev/scrty/httpsec/prblmsec@<version>
 ```
 
 - [CHANGELOG.md](CHANGELOG.md) lists what each release changes, and states every breaking change.
@@ -3171,8 +3177,11 @@ its status always equals `httpsec.StatusForError`, and nothing the core withhold
 revealed. It is opt-in: a deployment that never registers it keeps the responses it has today, and the
 core module does not import prblm.
 
+The module ships from the next lockstep release after v0.1.1; use that release's version in place of
+`<version>`:
+
 ```sh
-go get github.com/kartaladev/scrty/httpsec/prblmsec@v0.1.1
+go get github.com/kartaladev/scrty/httpsec/prblmsec@<version>
 ```
 
 ### Wiring

@@ -37,7 +37,12 @@ In `CHANGELOG.md`, move the contents of `## [Unreleased]` into a new entry heade
 vulnerability under `Security`. Add or update the link references at the foot of the changelog
 (`[Unreleased]` comparing the new tag with `HEAD`, and `[X.Y.Z]` comparing it with the previous tag;
 for the first release, `[0.1.0]` links to the tag itself). In `SECURITY.md`, make the supported-versions table name the new
-`X.Y.x` line only, and update the same sentence in `README.md`.
+`X.Y.x` line only, and update the same sentence in `README.md`. In `README.md`, also make every
+`go get` line name the release version (the value of `$VERSION`, not the variable). Where a module
+ships for the first time in this release, replace its `@<version>` placeholders
+(`grep -n '<version>' README.md` finds them), move its line in the Install section into the list of
+modules installed at one version, and remove the notes saying it ships from the next release, both
+in the Install section and in the module's own section.
 
 ```sh
 git diff -- CHANGELOG.md SECURITY.md README.md
