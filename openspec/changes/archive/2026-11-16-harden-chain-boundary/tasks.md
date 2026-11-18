@@ -91,13 +91,13 @@
   - `retract v0.1.0` in the root `go.mod`, with a comment pointing at the `0.1.1` changelog entry's `Security` section.
 
   Verify that `SCRTY_RELEASE_VERSION=v0.1.1 go test -run TestNestedModulesRequireReleasedVersions .` passes and `go mod edit -json | jq .Retract` shows `v0.1.0`.
-- [ ] 9.2 **(maintainer)** Recheck that the release-probe fix is on `main`. Merge the pull request, then verify that CI on `main` is green for the merged commit before any tag.
-- [ ] 9.3 **(maintainer)** Follow `RELEASING.md` steps 3–8 for `v0.1.1`. Verify:
+- [x] 9.2 **(maintainer)** Recheck that the release-probe fix is on `main`. Merge the pull request, then verify that CI on `main` is green for the merged commit before any tag.
+- [x] 9.3 **(maintainer)** Follow `RELEASING.md` steps 3–8 for `v0.1.1`. Verify:
   - the gate passed locally and in CI;
   - the nine tags are on one commit;
   - the root tag was pushed on its own;
   - the `release-probe` run triggered by that push passed.
-- [ ] 9.4 **(maintainer)** Step 9: publish the release notes with the nine SBOMs. Verify that `gh release view v0.1.1` lists nine assets.
+- [x] 9.4 **(maintainer)** Step 9: publish the release notes with the nine SBOMs. Verify that `gh release view v0.1.1` lists nine assets.
 
 ## 10. Review and security findings (decisions 1, 2, 3, 4, 6; design "Reproductions", review rows)
 

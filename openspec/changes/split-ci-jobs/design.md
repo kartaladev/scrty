@@ -60,8 +60,9 @@ See `proposal.md` for why. What shapes the approach:
 
 - **One file target per tool.** Each tool in `tools/go.mod` gets a target, for example `$(BIN)/golangci-lint`:
   - it runs `cd tools && GOWORK=off GOBIN=$(BIN) go install <package>`, which builds the version `tools/go.mod` pins;
-  - it depends on `tools/go.mod` and `tools/go.sum`, so bumping a tool reinstalls it on the next run.
-- **Each gate depends on its own tool.** `lint`, `tools-check`, `vuln` and `generate-check` depend on the file target of the tool they call. `tools` keeps installing everything, `benchstat` included.
+  - it depends on `tools/go.mod` and `tools/go.sum`, so bumping a tool reinstalls it on the next run;
+  - it depends on `$(BIN)/.go-version` (2026-11-04, from the review of #68), a file rewritten as the Makefile is read, only when `go env GOVERSION` changes. A forced target was rejected, because on GNU Make 3.81 `make -n` then shows a reinstall even when nothing changed, as a scratch Makefile showed on 2026-11-04. Without the file, a tool stays built with the old release after an upgrade, and `make tools` can no longer refresh it, as it could when it always re-ran `go install`. Forcing `make tools` to reinstall was rejected, because a contributor would have to know to run it. Whether golangci-lint refuses a newer module is UNREPRODUCED, and the rule does not rest on it.
+- **Each gate depends on its own tool.** `lint`, `tools-check`, `vuln` and `generate-check` depend on the file target of the tool they call, and so does `sbom` (2026-11-04), which is not a gate. `tools` keeps installing everything, `benchstat` included.
 - **`make check` is unchanged.** It runs the same targets in the same order, and `test-isolated` still runs from its recipe.
 - **Alternative considered:** `golangci/golangci-lint-action` and `golang/govulncheck-action` instead of `make`. That would give each tool two version sources, the action input and `tools/go.mod`, and CI could then pass with a linter a contributor never ran. Rejected for parity.
 - **Override:** a contributor runs `make lint` or any other gate alone, with no `make tools` first. Running `make tools` first still works.
@@ -148,8 +149,17 @@ See `proposal.md` for why. What shapes the approach:
   | `github/codeql-action` | v4.39.2 |
 
 - **Current majors.** `ci.yml` already pins `checkout` v7.0.1 and `setup-go` v7.0.0. The other SHAs are resolved from the tags through the API when the change is implemented.
-- **`pincheck` runs as its own job under `ci-ok`,** so a new reference that is not pinned fails that job.
+- **`pincheck` runs as its own job under `ci-ok`,** so a new reference that is not pinned fails that job. It must also cover the composite action in decision 9.
 - **Override:** none.
+
+### 9. One composite action for setup-go and the cache (2026-11-04, from the review of #68)
+
+- **The action.** `.github/actions/setup-go-cached` holds the setup-go and cache steps of the eight building jobs, so an action bump or a cache-key change is made once.
+- **Inputs.** The Go version, the cache identifier and extra cache paths. Each job passes these, because the documentation read does not say whether a composite action can read `matrix` or the workflow's `env`.
+- **What stays in the jobs.** Checkout, since a job must have the repository before it can use an action from it, as GitHub's example does; the page read does not state this as a rule, so it is unverified. `format` and `openspec` build nothing, and keep plain setup-go.
+- **Cache keys** do not change, so decision 7 and task 4.4 still hold.
+- **Alternative considered:** leaving the repeated steps. It is simpler to read, and was the design until the review, but a missed job drifts silently.
+- **Override:** none. This is repository tooling (see Context).
 
 ## Risks / Trade-offs
 
@@ -205,6 +215,17 @@ Read on 2026-11-03. These drift with every run.
 **Researched (accessed 2026-11-02):**
 - `openspec validate --help`, and runs of `--specs`, `--archived`, `--all` and `--strict` against the tree with OpenSpec CLI 1.15.0. `--specs` and `--archived` were also run with 1.16.0 through `npx`.
 - The `@fission-ai/openspec` package on npm: 1.16.0, published 2026-10-30, needs Node `>=22.12.0`. Live; it drifts.
+
+### Composite action (decision 9)
+
+**Researched (accessed 2026-11-04):**
+- [Metadata syntax for GitHub Actions](https://docs.github.com/en/actions/reference/workflows-and-actions/metadata-syntax): a composite action's steps may call `uses:`, and read inputs through the `inputs` context.
+- [Creating a composite action](https://docs.github.com/en/actions/tutorials/create-actions/create-a-composite-action): its example checks out the repository before using a local action. It does not say this is mandatory.
+
+### The Go release rule (decision 2)
+
+**Researched (accessed 2026-11-04):**
+- [golangci-lint install documentation](https://golangci-lint.run/docs/welcome/install/) and [`pkg/goanalysis/runner.go`](https://github.com/golangci/golangci-lint/blob/main/pkg/goanalysis/runner.go): neither shows a refusal of a module newer than the Go release that built the tool, which does not show that no such check exists. The claim stays UNREPRODUCED.
 
 ### Caching and action versions
 
