@@ -329,23 +329,37 @@ func ruleOf(err error) password.Rule {
 	return ""
 }
 
-// maxWalkDepth bounds how deep firstNonNil follows Unwrap, so a cyclic or
-// pathologically deep chain cannot recurse without end. It is the bound the
+// maxWalkDepth bounds how deep firstNonNil's fallback walk follows Unwrap,
+// which bounds the recursion depth and work it spends on a pathologically deep
+// chain. It is the bound the
 // core's own challenge walk uses, so the two find the same challenge.
 const maxWalkDepth = 100
 
 // firstNonNil returns the first non-nil T, a pointer error type, in err's
-// chain, in the order errors.As visits it: depth first, through both
-// Unwrap() error and Unwrap() []error. Unlike errors.As, it steps over a
-// typed-nil T instead of stopping on it, so a real value joined behind one is
-// still found. It walks exactly as httpsec.LookupStatus walks for a challenge
-// (no As methods, the same depth bound), so the challenge whose kind decided
-// the status is the one whose members are read. It returns the zero T when
-// there is none, or when the chain is deeper than maxWalkDepth.
+// chain. It keeps errors.As semantics: it tries errors.As first, so an error
+// presenting a T through its own As(any) bool method is recognised, at any
+// depth, and keeps what errors.As finds when it is non-nil. errors.As stops on
+// a typed-nil T, so when it finds nothing or a typed nil, firstNonNil falls
+// back to a walk in the order errors.As visits the chain, depth first through
+// both Unwrap() error and Unwrap() []error, which steps over a typed nil
+// instead of stopping on it, so a real value joined behind one is still found.
+// The fallback follows Unwrap only, never As methods, and stops at depth
+// maxWalkDepth (100), the outermost error being depth 0. It returns the zero T
+// when neither finds one.
+//
+// It chooses exactly as httpsec.LookupStatus chooses a challenge, so the
+// challenge whose kind decided the status is the one whose members are read.
+// An As method that panics is not recovered, as errors.As does not recover it;
+// a cyclic chain is not guarded, since errors.As, like the core's lookup,
+// loops on it without end.
 func firstNonNil[T interface {
 	comparable
 	error
 }](err error) T {
+	var zero, v T
+	if errors.As(err, &v) && v != zero {
+		return v
+	}
 	return walk[T](err, 0)
 }
 

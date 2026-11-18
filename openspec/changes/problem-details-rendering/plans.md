@@ -132,13 +132,15 @@
   - `httpsec`: `TestStatusForError_ChallengeWalk` (table, `assert` closures). Cases:
     - `asChallenge` gives `StatusForError` 401 and `LookupStatus` `(401, true)`;
     - `errors.Join((*ChallengeError)(nil), realChallenge)` gives 401 and finds the real one;
-    - a challenge under 101 `fmt.Errorf("w: %w", …)` layers gives `LookupStatus` `ok == false` and `StatusForError` 500, with no panic;
-    - the same challenge under 99 layers gives 401.
-  - `prblmsec`: `TestMapper_ChallengeWalk`, the same four cases.
+    - a challenge under 101 `fmt.Errorf("w: %w", …)` layers gives 401, because `errors.As` has no depth limit;
+    - `errors.Join((*ChallengeError)(nil), <challenge under 99 wraps>)` gives 401, because the fallback walk finds it at depth 100;
+    - the same join with 100 wraps gives `LookupStatus` `ok == false` and `StatusForError` 500, with no panic;
+    - `errors.Join((*ChallengeError)(nil), asChallenge)` gives 500, the accepted outcome;
+    - a chain joining `asChallenge` and a direct challenge gives the first in `errors.As` order.
+  - `prblmsec`: `TestMapper_ChallengeWalk`, the same cases.
     - The mapper's status equals `httpsec.StatusForError(err)` in each case.
-    - `asChallenge` gives the `/probs/security/mfa-required` type (or the type for the kind the fixture uses) and its members.
-    - The 101-layer chain gives the mapper's no-challenge outcome for the rest of the chain.
-- [ ] **Step 2: Watch it fail.** Run `go test -run 'TestStatusForError_ChallengeWalk' -count=1 ./httpsec/` and `go -C httpsec/prblmsec test -run TestMapper_ChallengeWalk -count=1 ./...`. Expected: FAIL only on the `asChallenge` case, with 500 where 401 is wanted. The other three cases pass and pin today's behaviour.
+    - `asChallenge` gives the type for its kind, and its members.
+- [ ] **Step 2: Watch it fail.** Run `go test -run 'TestStatusForError_ChallengeWalk' -count=1 ./httpsec/` and `go -C httpsec/prblmsec test -run TestMapper_ChallengeWalk -count=1 ./...`. Expected: FAIL on the `As` cases (500 where 401 or 403 is wanted), on the joined `As`-plus-direct case (the direct one's status) and on the 101-wrap case (500). The typed-nil and fallback-depth cases pass and pin today's behaviour.
 - [ ] **Step 3: Implement.** In each walk:
   1. First try `errors.As(err, &v)` and return `v` if it is non-nil (for `firstNonNil`, if `v != zero`).
   2. Otherwise fall back to the existing nil-skipping walk.

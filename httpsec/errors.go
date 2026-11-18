@@ -276,17 +276,32 @@ func challengeTokenType(token string, s *session.Session) TokenType {
 	return tokenTypeOf(s)
 }
 
-// maxChallengeWalkDepth bounds how deep firstChallenge follows Unwrap, so a
-// cyclic or pathologically deep chain cannot recurse without end.
+// maxChallengeWalkDepth bounds how deep firstChallenge's fallback walk follows
+// Unwrap, which bounds the recursion depth and work it spends on a
+// pathologically deep chain.
 const maxChallengeWalkDepth = 100
 
-// firstChallenge returns the first non-nil *ChallengeError in err's chain, in
-// the order errors.As visits it: depth first, through both Unwrap() error and
-// Unwrap() []error. Unlike errors.As, it steps over a typed-nil
-// *ChallengeError instead of stopping on it, so a real challenge joined
-// behind one is still found. It returns nil when there is none, or when the
-// chain is deeper than maxChallengeWalkDepth.
+// firstChallenge returns the first non-nil *ChallengeError in err's chain. It
+// keeps errors.As semantics: it tries errors.As first, so an error presenting
+// a challenge through its own As(any) bool method is recognised, at any depth,
+// and keeps what errors.As finds when it is non-nil. errors.As stops on a
+// typed-nil *ChallengeError, so when it finds nothing or a typed nil,
+// firstChallenge falls back to a walk in the order errors.As visits the chain,
+// depth first through both Unwrap() error and Unwrap() []error, which steps
+// over a typed nil instead of stopping on it, so a real challenge joined
+// behind one is still found. The fallback follows Unwrap only, never As
+// methods, and stops at depth maxChallengeWalkDepth (100), the outermost
+// error being depth 0. firstChallenge returns nil when neither finds one.
+//
+// An As method that panics is not recovered, as errors.As does not recover
+// it. A cyclic chain is not guarded either: errors.As, like the errors.Is
+// calls LookupStatus makes before it, loops on it without end.
 func firstChallenge(err error) *ChallengeError {
+	var ch *ChallengeError
+	if errors.As(err, &ch) && ch != nil {
+		return ch
+	}
+
 	return findChallenge(err, 0)
 }
 

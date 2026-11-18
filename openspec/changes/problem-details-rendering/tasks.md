@@ -53,12 +53,15 @@
   - the password-change gate's challenge, which carries no token: `[public, max-age=300]`, unchanged.
 
   Before writing it, find every site that returns a `ChallengeError` with a `Token` (gopls references on `ChallengeError`; expected `complete.go` and `mfa_verify.go` ×2) and report the list. See the token-bearing cases fail on the upstream value. Green: set `Cache-Control: no-store` with a replacing set on the exchange's writer at each site, before the refusal is returned. `ChallengeError.Token`'s godoc says the response must stay `no-store`. Verify with `go test -race -run 'TestChallengeToken_NoStore|Challenge' -count=1 ./httpsec/`.
-- [ ] 2.6 Restore `errors.As` semantics in the challenge walks (design failure modes, whole-branch review finding). The walks are `firstChallenge` in `httpsec` and the mapper's walk in `prblmsec`. Red: a table test in each package with these cases:
+- [x] 2.6 Restore `errors.As` semantics in the challenge walks (design failure modes, whole-branch review finding). The walks are `firstChallenge` in `httpsec` and the mapper's walk in `prblmsec`. Red: a table test in each package with these cases:
   - an error that presents a `*ChallengeError` only through its own `As(any) bool` method: `StatusForError` is 401, `LookupStatus` is `(401, true)`, and the mapper gives the challenge's type and members. Today it is 500;
   - a typed-nil `*ChallengeError` joined ahead of a real one: the real challenge is still found, as today;
-  - a challenge wrapped 101 levels deep through `Unwrap() error`: the walk reports no challenge and the rest of the chain decides, with no hang or panic. This pins today's behaviour.
+  - a challenge wrapped 101 levels deep through `Unwrap() error` is found, as `errors.As` finds it on `main`;
+  - behind a typed nil, where only the nil-skipping fallback searches: a challenge at depth 100 is found, and one at depth 101 is not, so the rest of the chain decides (500), with no panic;
+  - a challenge offered through an `As` method and joined behind a typed nil: 500, the accepted outcome in design.md;
+  - a chain holding a challenge through `As` and a direct one: the mapper's status equals `StatusForError`'s.
 
-  See the `As` case fail with 500. Green: each walk tries `errors.As` first and keeps a non-nil result, then falls back to the nil-skipping walk. Verify with `go test -race -run 'Challenge|LookupStatus|StatusForError' -count=1 ./httpsec/` and `go -C httpsec/prblmsec test -race -count=1 ./...`.
+  See the `As` cases and the 101-wrap case fail. Green: each walk tries `errors.As` first and keeps a non-nil result, then falls back to the nil-skipping walk. Verify with `go test -race -run 'Challenge|LookupStatus|StatusForError' -count=1 ./httpsec/` and `go -C httpsec/prblmsec test -race -count=1 ./...`.
 
 ## 3. `httpsec/prblmsec` module and construction (decisions 1, 6)
 
