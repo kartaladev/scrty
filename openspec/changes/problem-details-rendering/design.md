@@ -225,7 +225,9 @@ Consumers learn scrty from three places, and the module is documented in each:
 | Recognised dependency failure wrapping a driver error (`53300`) | Handled, tested | 500 `about:blank`, not the driver mapper's status |
 | Concealed lock / user-store outage | Handled, tested | Byte-identical to a wrong password |
 | Challenge wrapping a sentinel | Handled, tested | Challenge's type and status |
-| Typed-nil `*ChallengeError` in the chain | Handled, tested | Treated as no challenge: no members, no panic. Status is still `LookupStatus`'s |
+| Typed-nil `*ChallengeError` in the chain | Handled, tested | Treated as no challenge: no members, no panic. Status is still `LookupStatus`'s. A real challenge joined behind it is still found |
+| An error presents itself as a `*ChallengeError` only through its own `As(any) bool` method | Handled, tested (task 2.6, whole-branch review finding) | Recognised as that challenge, as `errors.As` recognises it on `main`: its status, type and members. The core's lookup and the mapper both try `errors.As` first and keep a non-nil result, then fall back to the walk that steps over a typed-nil challenge. The nil-skipping walk must not drop what `errors.As` finds |
+| A challenge buried deeper than the walk's limit of 100 levels, or a cyclic chain | Handled, tested (task 2.6) | The walk stops at the limit and reports no challenge, so the rest of the chain decides the status (usually 500, fail closed). It never recurses without end. `errors.As` has no such limit, so a challenge it reaches through an `As` method at any depth is still found |
 | `Methods` nil vs empty | Handled, tested | Omitted vs `[]` |
 | `Window <= 0`, or a rejection without `RejectedError` | Handled, tested | `max_age` / `rule` omitted |
 | Token present without `TokenType` (consumer-built) | Handled, tested | `access_token` only |
@@ -248,6 +250,8 @@ Consumers learn scrty from three places, and the module is documented in each:
 | gin 404 at a chain endpoint (no gin route matched) | Handled, tested (decision 10) | With `ginprblm.Middleware`, the `not-found` problem, as on net/http and fiber, with or without `ginsec.WithRefusalsRendered()`. With no renderer at all, an empty 404 (the `framework-adapters` default). With an error middleware that writes immediately, the option is needed, else an empty 404. The parity test covers `ginprblm` both ways and the no-renderer default |
 | fiberprblm drops interceptor headers | Handled, tested | Not the case at 003affb (code reading, decision 7). The parity test pins it |
 | prblm breaking change in a later version | Accepted | Dependabot proposes the bump, and the parity tests gate it |
+| A held identifier (`lockout.ErrAccountHeld`, the disclosed lock) | Handled, tested | `account-locked` (429), the spec table's "disclosed account lock". A concealed lock still answers 401 `authentication-failed` |
+| The parity tests do not pin the problem media type or `no-store` (group 6 review) | Judged not a gap (whole-branch review) | Each parity observation includes `Content-Type` and is compared across net/http, gin and fiber. The token-bearing cases assert `Cache-Control` is exactly `[no-store]` |
 
 ## Risks / Trade-offs
 

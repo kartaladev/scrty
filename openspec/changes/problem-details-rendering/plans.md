@@ -117,6 +117,35 @@
 - [ ] **Step 3: Implement.** At each site, before returning the refusal, call the exchange writer's replacing header set: `Cache-Control` = `no-store`. Add to `ChallengeError.Token`'s godoc that the chain sets `no-store` and a consumer error handler must keep it.
 - [ ] **Step 4: Run.** `go test -race -run 'TestChallengeToken_NoStore|Challenge' -count=1 ./httpsec/`, then `go test -race -count=1 ./httpsec/...`. Expected: PASS.
 
+### Task 2.6: The challenge walks keep `errors.As` semantics
+
+**Files:**
+- Modify `httpsec/errors.go`: `firstChallenge` (around line 289).
+- Modify `httpsec/prblmsec/mapper.go`: the generic `firstNonNil[T]` (around line 345) and the comment above it.
+- Test: a table test in each package, beside the existing typed-nil tests (`httpsec/lookup_status_internal_test.go`, `httpsec/prblmsec/members_test.go`).
+
+**Interfaces:**
+- Signatures stay the same: `firstChallenge(err error) *ChallengeError` and `firstNonNil[T](err error) T`.
+- Invariant: both walks pick the same challenge for every error, because the mapper's members must come from the challenge whose kind decided `LookupStatus`'s status. Keep `maxChallengeWalkDepth` and `maxWalkDepth` at 100.
+
+- [ ] **Step 1: Write the failing tests.** The test fixture is `asChallenge`, a test-only error type whose `As(target any) bool` sets `*target` to a fixed `*ChallengeError` (kind `policy.ChallengeMFA`) and which has no `Unwrap`.
+  - `httpsec`: `TestStatusForError_ChallengeWalk` (table, `assert` closures). Cases:
+    - `asChallenge` gives `StatusForError` 401 and `LookupStatus` `(401, true)`;
+    - `errors.Join((*ChallengeError)(nil), realChallenge)` gives 401 and finds the real one;
+    - a challenge under 101 `fmt.Errorf("w: %w", …)` layers gives `LookupStatus` `ok == false` and `StatusForError` 500, with no panic;
+    - the same challenge under 99 layers gives 401.
+  - `prblmsec`: `TestMapper_ChallengeWalk`, the same four cases.
+    - The mapper's status equals `httpsec.StatusForError(err)` in each case.
+    - `asChallenge` gives the `/probs/security/mfa-required` type (or the type for the kind the fixture uses) and its members.
+    - The 101-layer chain gives the mapper's no-challenge outcome for the rest of the chain.
+- [ ] **Step 2: Watch it fail.** Run `go test -run 'TestStatusForError_ChallengeWalk' -count=1 ./httpsec/` and `go -C httpsec/prblmsec test -run TestMapper_ChallengeWalk -count=1 ./...`. Expected: FAIL only on the `asChallenge` case, with 500 where 401 is wanted. The other three cases pass and pin today's behaviour.
+- [ ] **Step 3: Implement.** In each walk:
+  1. First try `errors.As(err, &v)` and return `v` if it is non-nil (for `firstNonNil`, if `v != zero`).
+  2. Otherwise fall back to the existing nil-skipping walk.
+  3. Update the godoc. It must stop saying "no As methods". It says the walk honours `As` methods through `errors.As`, steps over a typed nil, and is bounded at depth 100 for the fallback.
+- [ ] **Step 4: Run.** Run `go test -race -run 'Challenge|LookupStatus|StatusForError' -count=1 ./httpsec/`, `go -C httpsec/prblmsec test -race -count=1 ./...` and `go -C test test -race -run TestProblemParity -count=1 ./`. Expected: PASS.
+- [ ] **Step 5: Commit.** `fix(httpsec,prblmsec): challenge walks honour As methods again`, with a CHANGELOG `Fixed` line if the regression is visible from a published version. It is not: the walk is new on this branch, so no line is needed.
+
 ### Task 3.1: Module scaffold and `New`
 
 **Files:**
