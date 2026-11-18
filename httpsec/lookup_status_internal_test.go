@@ -140,6 +140,22 @@ func TestLookupStatus(t *testing.T) {
 			assert: recognised(http.StatusForbidden),
 		},
 		{
+			name:   "typed-nil challenge before a real challenge in a join",
+			err:    errors.Join((*ChallengeError)(nil), &ChallengeError{Kind: policy.ChallengeMFA}),
+			assert: recognised(http.StatusUnauthorized),
+		},
+		{
+			name:   "real challenge before a typed-nil challenge in a join",
+			err:    errors.Join(&ChallengeError{Kind: policy.ChallengeMFA}, (*ChallengeError)(nil)),
+			assert: recognised(http.StatusUnauthorized),
+		},
+		{
+			name: "typed-nil challenge before a real one in a nested join",
+			err: fmt.Errorf("x: %w", errors.Join(
+				(*ChallengeError)(nil), &ChallengeError{Kind: policy.ChallengePasswordChange})),
+			assert: recognised(http.StatusForbidden),
+		},
+		{
 			name:   "consumer error",
 			err:    errors.New("app"),
 			assert: unrecognised,

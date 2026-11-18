@@ -130,6 +130,25 @@ func TestChallengeError_TokenType(t *testing.T) {
 			},
 		},
 		{
+			name: "the second-factor gate's challenge carries no token and names no type",
+			challenge: func(t *testing.T) served {
+				t.Helper()
+
+				b := newIssuingBase(t)
+				f := mfaVerifyOver(t, b, d)
+				tok := b.signedIn(t, "", func(s *session.Session) { s.MFA = session.MFAPending })
+
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/app", nil)
+
+				return serve(t, f.chain, presenting(t, req, tok, "", noProof))
+			},
+			assert: func(t *testing.T, ch *httpsec.ChallengeError) {
+				assert.Equal(t, policy.ChallengeMFA, ch.Kind)
+				assert.Empty(t, ch.Token)
+				assert.Empty(t, ch.TokenType)
+			},
+		},
+		{
 			name: "a consumer-built challenge with a token and no type keeps the type empty",
 			challenge: func(*testing.T) served {
 				return served{err: &httpsec.ChallengeError{Kind: policy.ChallengeMFA, Token: "consumer-token"}}

@@ -268,6 +268,43 @@ func challengeTokenType(token string, s *session.Session) TokenType {
 	return tokenTypeOf(s)
 }
 
+// maxChallengeWalkDepth bounds how deep firstChallenge follows Unwrap, so a
+// cyclic or pathologically deep chain cannot recurse without end.
+const maxChallengeWalkDepth = 100
+
+// firstChallenge returns the first non-nil *ChallengeError in err's chain, in
+// the order errors.As visits it: depth first, through both Unwrap() error and
+// Unwrap() []error. Unlike errors.As, it steps over a typed-nil
+// *ChallengeError instead of stopping on it, so a real challenge joined
+// behind one is still found. It returns nil when there is none, or when the
+// chain is deeper than maxChallengeWalkDepth.
+func firstChallenge(err error) *ChallengeError {
+	return findChallenge(err, 0)
+}
+
+func findChallenge(err error, depth int) *ChallengeError {
+	if err == nil || depth > maxChallengeWalkDepth {
+		return nil
+	}
+
+	if ch, ok := err.(*ChallengeError); ok && ch != nil { //nolint:errorlint // the walk is the unwrapping
+		return ch
+	}
+
+	switch u := err.(type) { //nolint:errorlint // the walk is the unwrapping
+	case interface{ Unwrap() error }:
+		return findChallenge(u.Unwrap(), depth+1)
+	case interface{ Unwrap() []error }:
+		for _, e := range u.Unwrap() {
+			if ch := findChallenge(e, depth+1); ch != nil {
+				return ch
+			}
+		}
+	}
+
+	return nil
+}
+
 // statusRow is one refusal and the status it answers with. The table is
 // ordered, and the first row whose sentinel the error matches decides, so two
 // rows can never disagree about an error that wraps both.
@@ -584,8 +621,7 @@ func LookupStatus(err error) (status int, ok bool) {
 
 	// A nil *ChallengeError carries no kind to answer: it is no challenge,
 	// and the rest of the chain decides.
-	var ch *ChallengeError
-	if errors.As(err, &ch) && ch != nil {
+	if ch := firstChallenge(err); ch != nil {
 		switch ch.Kind {
 		case policy.ChallengePasswordChange, policy.ChallengeMFAEnrolment, policy.ChallengeAccountRecovery:
 			return http.StatusForbidden, true
