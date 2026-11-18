@@ -106,6 +106,17 @@
 - [ ] **Step 2:** Run `go vet ./... && test -z "$(gofmt -l .)" && go test -count=1 ./httpsec/...`. Expected: clean.
 - [ ] **Step 3: Commit.** `docs(httpsec): document LookupStatus and TokenType`
 
+### Task 2.5: A credential-carrying refusal is never cacheable
+
+**Files:** Modify the sites that return a `ChallengeError` with a `Token` (expected `httpsec/complete.go`, `httpsec/mfa_verify.go` ×2; confirm with gopls references) and the `ChallengeError.Token` godoc. Test: a new `_test.go` in `httpsec` beside the existing challenge-error tests.
+
+**Interfaces:** Produces the guarantee Task 6.4 tests across frameworks: after a token-bearing challenge refusal, the response header `Cache-Control` is exactly `no-store`, whatever was set before.
+
+- [ ] **Step 1: Write the failing test.** `TestChallengeToken_NoStore` (table, `assert` closures, `t.Context()`), over a real chain with a recording error handler and an outer middleware setting `Cache-Control: public, max-age=300`. Cases: bearer challenged login → `[]string{"no-store"}`; MFA verify raising a token-bearing challenge → `[]string{"no-store"}`; DPoP-bound challenged login → `[]string{"no-store"}`; password-change gate (no token) → `[]string{"public, max-age=300"}`.
+- [ ] **Step 2: Watch it fail.** `go test -run TestChallengeToken_NoStore -count=1 ./httpsec/`. Expected: FAIL on the three token-bearing cases with `[public, max-age=300]`; the no-token case passes.
+- [ ] **Step 3: Implement.** At each site, before returning the refusal, call the exchange writer's replacing header set: `Cache-Control` = `no-store`. Add to `ChallengeError.Token`'s godoc that the chain sets `no-store` and a consumer error handler must keep it.
+- [ ] **Step 4: Run.** `go test -race -run 'TestChallengeToken_NoStore|Challenge' -count=1 ./httpsec/`, then `go test -race -count=1 ./httpsec/...`. Expected: PASS.
+
 ### Task 3.1: Module scaffold and `New`
 
 **Files:**
@@ -299,6 +310,17 @@
 - [ ] **Step 2: Run.** `go test -run 'TestCoreDependencies|TestConsumerModuleGraph' -count=1 .`. Expected: PASS.
 - [ ] **Step 3: Commit.** `test(layout): the core never requires prblm`
 
+### Task 6.4: Parity with an upstream cache policy, and the matched-route 404 without the option
+
+**Files:** Modify `test/problem_parity_test.go`.
+
+**Interfaces:** Consumes Task 2.5 (the core sets `Cache-Control: no-store` on token-bearing challenges) and the existing `ginMode` values `ginRendered`, `ginProblemsOnly`, `ginNoRenderer`.
+
+- [ ] **Step 1: Write the failing test.** Add a case `challenged login under an upstream cache policy`: each framework's server registers, ahead of the chain, a middleware setting `Cache-Control: public, max-age=300`. Assert on all three: `access_token` present and `r.header.Values("Cache-Control")` equals `[]string{"no-store"}`. Add `extraGin: []ginMode{ginProblemsOnly}` to the existing matched-route not-found guard case.
+- [ ] **Step 2: Watch it fail.** With Task 2.5's header set temporarily removed (or before it lands), run `go test -run TestProblemParity -count=1 ./` in `test/`. Expected: FAIL on the new case with `[public, max-age=300]`. Restore by editing.
+- [ ] **Step 3: Run.** `go test -race -run TestProblemParity -count=1 ./` in `test/`. Expected: PASS.
+- [ ] **Step 4: Commit** together with Task 2.5.
+
 ### Task 7.1: Runnable examples
 
 **Files:** Create `httpsec/prblmsec/example_test.go`.
@@ -308,7 +330,7 @@
 - [ ] **Step 1: Write the examples.** Each has an `// Output:` block written from the spec, printing the status, the `type` and the members it shows:
   - `Example_netHTTP` prints `401 /v1/probs/security/authentication-required`;
   - `Example_challengedLogin` prints `401 /v1/probs/security/mfa-required`, the `methods` names, `token_type Bearer` and `Cache-Control no-store`;
-  - `ExampleWithTypePrefix` prints `/v1/probs/auth/access-denied`;
+  - `ExampleWithTypePrefix` prints `/probs/auth/access-denied` (namespace `/probs`, prefix `auth`);
   - `ExampleWithoutChallengeToken` prints the `mfa-required` problem, with `access_token` absent;
   - `ExampleProblems_Mapper` registers `prblm.WithTypes(p.Types()...)` and `prblm.WithMappers(p.Mapper(), prblm.Status(errVesselNotFound, 404))`, and prints `404 about:blank` for the app error;
   - `Example_override` registers `prblm.Is(lockout.ErrAccountLocked, …)` ahead of `p.Option()` and prints `429 Retry-After 900`, then `401 /v1/probs/security/authentication-failed` for a wrong password.

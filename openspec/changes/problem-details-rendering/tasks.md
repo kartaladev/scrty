@@ -46,6 +46,13 @@
   - the package doc's "Failing closed" section names the lookup.
 
   Verify with `go doc ./httpsec LookupStatus`, plus `go vet ./... && gofmt -l . && go test -count=1 ./httpsec/...`, all clean.
+- [ ] 2.5 A refusal that carries a credential is never cacheable (design decision 5, whole-branch review finding). Red: `TestChallengeToken_NoStore` (table) in `httpsec`, over a real chain whose error handler records the response headers, with a middleware ahead of the chain that sets `Cache-Control: public, max-age=300`. Cases:
+  - a challenged password login on a bearer chain: `Cache-Control` is exactly `[no-store]`;
+  - an MFA verification raising a further, token-bearing challenge: exactly `[no-store]`;
+  - a DPoP-bound challenged login: exactly `[no-store]`;
+  - the password-change gate's challenge, which carries no token: `[public, max-age=300]`, unchanged.
+
+  Before writing it, find every site that returns a `ChallengeError` with a `Token` (gopls references on `ChallengeError`; expected `complete.go` and `mfa_verify.go` ×2) and report the list. See the token-bearing cases fail on the upstream value. Green: set `Cache-Control: no-store` with a replacing set on the exchange's writer at each site, before the refusal is returned. `ChallengeError.Token`'s godoc says the response must stay `no-store`. Verify with `go test -race -run 'TestChallengeToken_NoStore|Challenge' -count=1 ./httpsec/`.
 
 ## 3. `httpsec/prblmsec` module and construction (decisions 1, 6)
 
@@ -134,13 +141,18 @@
   Except for the no-renderer case, it asserts the same status, document and headers on all three. Verify with `go test -run TestProblemParity -count=1 ./` in `test/`.
 - [x] 6.2 Red: `TestProblemParity_GuardRefusal` covers a net/http guard with `WithGuardErrorHandler(h.Write)` and the gin and fiber guards. A guard refusal gives the same typed problem as the chain's for the same error. Verify with `go test -run TestProblemParity_Guard -count=1 ./`.
 - [x] 6.3 The module-graph check: a consumer of the core only has no `github.com/kartaladev/prblm` in `go list -m all`. Extend `TestCoreDependencies` and `TestConsumerModuleGraph` (`layout_test.go`) to list `github.com/kartaladev/prblm`, and watch them fail by temporarily adding the requirement to the root `go.mod`. Verify with `go test -run 'TestCoreDependencies|TestConsumerModuleGraph' -count=1 .` at the root.
+- [ ] 6.4 Extend `TestProblemParity` (whole-branch review findings):
+  - **upstream cache policy:** each framework's server gets a middleware ahead of the chain that sets `Cache-Control: public, max-age=300`, and a challenged password login gives `access_token` and `Cache-Control` exactly `[no-store]` on all three. Red: run it before 2.5 is green, or with 2.5's header set temporarily removed, and see it fail on the upstream value;
+  - **matched-route 404 without the option:** the guard not-found case on a consumer gin route also runs on gin with `ginprblm.Middleware` and no `WithRefusalsRendered` (`extraGin: ginProblemsOnly`), with the same problem as net/http.
+
+  Verify with `go test -race -run TestProblemParity -count=1 ./` in `test/`.
 
 ## 7. Consumer documentation (design decisions 9, 10)
 
 - [x] 7.1 Runnable examples in `httpsec/prblmsec` (`example_test.go`), each with an `// Output:` block, so `go test` checks it and pkg.go.dev shows it:
   - `Example_netHTTP`: a namespace, `p.Option()`, and the chain's and guards' error handlers set to `h.Write`. Output: the 401 `authentication-required` problem for an unauthenticated request;
   - `Example_challengedLogin`: the `mfa-required` problem with `methods`, `access_token` and `token_type`, and the `Cache-Control: no-store` header;
-  - `ExampleWithTypePrefix`: the type `/v1/probs/auth/access-denied`;
+  - `ExampleWithTypePrefix`: the type `/probs/auth/access-denied` (namespace `/probs`, prefix `auth`);
   - `ExampleWithoutChallengeToken`: the same challenge without the token members;
   - `ExampleProblems_Mapper`: manual registration with `prblm.WithTypes(p.Types()...)` and `prblm.WithMappers(p.Mapper(), appMapper)`, where the app's own error gets the app mapper's problem;
   - `Example_override`: a consumer mapper for `lockout.ErrAccountLocked` registered ahead of `p.Option()`, giving 429 with `Retry-After: 900`, while a wrong password keeps `authentication-failed`.
@@ -186,7 +198,7 @@
 
 - [x] 8.1 Red: extend `TestIntegrationModulesUnderTheirConcept` and `TestNoUnlistedIntegrationModule` (`layout_test.go`), and `tools/repocheck`'s expectations, with `httpsec/prblmsec`, and confirm they fail before the module is listed. Green: add `.github/dependabot.yml`'s gomod entry for `/httpsec/prblmsec`, and add the module to the layout lists. Verify with `go test -count=1 ./...` in `tools`, and `go test -run 'TestModuleLayout|TestIntegrationModules|TestNoUnlisted|TestGoWork' -count=1 .` at the root.
 - [x] 8.2 `RELEASING.md` lists `httpsec/prblmsec` among the lockstep modules and tags. `CHANGELOG.md`'s Unreleased section, under Added, names the module, `httpsec.LookupStatus`, `ChallengeError.TokenType` and `ginsec.WithRefusalsRendered`, and notes that `ginsec.Middleware` is now variadic (code storing it as a `func(*httpsec.Chain) gin.HandlerFunc` value breaks). Verify with `git grep -n prblmsec RELEASING.md CHANGELOG.md .github/dependabot.yml go.work`, which finds each.
-- [ ] 8.3 Whole-tree gate on the branch, all clean:
+- [x] 8.3 Whole-tree gate on the branch, all clean:
   - `go work sync`;
   - `go vet ./...` and `go test -race -count=1 ./...` in every workspace module;
   - `gofmt -l .`;

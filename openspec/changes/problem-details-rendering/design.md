@@ -103,7 +103,11 @@ The core gains a comma-ok lookup. `StatusForError` becomes `s, _ := LookupStatus
 
 ### 5. The challenge's credential is delivered by default
 
-When `ChallengeError.Token` is not empty, the problem carries `access_token`, and `token_type` from the new `ChallengeError.TokenType`. The problem also sets `Cache-Control: no-store` itself. prblm's own default is `no-store` too, but setting it explicitly survives a consumer handler that sets another default.
+When `ChallengeError.Token` is not empty, the problem carries `access_token`, and `token_type` from the new `ChallengeError.TokenType`. The problem also sets `Cache-Control: no-store` itself. prblm's own default is `no-store` too.
+
+- **The core sets `no-store` too (whole-branch review finding, 2026-11-18; maintainer's choice).** prblm v0.2.0's `Response.MergeInto` keeps any `Cache-Control` already on the response (`respond.go:70-73`). So a consumer middleware that sets `Cache-Control: public, max-age=300` ahead of the chain won over the problem's `no-store`, and the `access_token` went out cacheable (reproduced by the review). The core therefore sets `Cache-Control: no-store` on the response, replacing any earlier value, wherever it returns a `ChallengeError` that carries a `Token`. It does so before the refusal propagates, as it does for `WWW-Authenticate`. This covers every renderer: `prblmsec`, a consumer's own `WithErrorHandler`, gin and fiber. It matches the core already owning `Cache-Control` on token-bearing success responses, and RFC 6749 §5.1.
+  - **Default and override:** none. A response carrying a credential is never cacheable, which is a guarantee, not a policy (`library-design.md` rule 4). A consumer error handler that deliberately overwrites the header after the refusal owns that choice.
+  - **Alternative rejected:** (b) accept and document that an upstream `Cache-Control` wins. Rejected by the maintainer: a shared cache could store the token whenever a consumer got the middleware order wrong.
 
 - **Core change.** `ChallengeError` gains `TokenType TokenType`, set wherever `Token` is set, from the existing `tokenTypeOf(session)`. A renderer therefore never re-derives it from `Session.KeyBinding`, and so cannot drift from the login success document.
 - **Consumer-built errors.** A `ChallengeError` the consumer builds with a `Token` and no `TokenType` gets `access_token` and no `token_type`. The library does not guess `Bearer` for a token that may be DPoP-bound.
@@ -226,6 +230,8 @@ Consumers learn scrty from three places, and the module is documented in each:
 | `Window <= 0`, or a rejection without `RejectedError` | Handled, tested | `max_age` / `rule` omitted |
 | Token present without `TokenType` (consumer-built) | Handled, tested | `access_token` only |
 | Token-bearing problem cached | Handled, tested | `Cache-Control: no-store` on all three frameworks |
+| A consumer middleware set `Cache-Control` before the chain, and a token-bearing challenge is refused | Handled, tested (decision 5) | The core replaces it with `no-store` before the refusal propagates, so prblm's merge keeps `no-store`. Tested in the core and on all three frameworks |
+| A consumer error handler overwrites `Cache-Control` after the refusal | Accepted, documented | The consumer's handler writes the response and owns its headers. The godoc of `ChallengeError.Token` says the response must stay `no-store` |
 | Invalid prefix, nil or duplicate option | Handled, tested | `ErrConfig` from `New` |
 | A `*Problems` not built by `New` (nil, or a zero value after ignoring `New`'s error) | Handled, tested, documented | `Mapper`, `Types` and `Option` on a nil pointer panic when the handler is wired, before any traffic. A zero value registers no types, and its mapper matches nothing, so prblm alone decides. The godoc says a `Problems` comes only from `New` |
 | A consumer port's error wraps a library refusal sentinel, which a type within the same status tests for (for example a cause wrapping `ErrAuthenticationRequired` under a refused recovery) | Accepted, documented | The status is unchanged, but the type can follow the port's sentinel instead of the refusal, which can reveal that a dependency was involved. Nothing the library ships produces it. Only the consumer can prevent it, so the godoc warns that ports must not return library refusal sentinels, next to the warning about describers |
@@ -286,6 +292,7 @@ Concealment rules are reasoned from scrty's own settled `http-error-propagation`
 
 **Primary documentation:**
 - [RFC 6749 §5.1](https://www.rfc-editor.org/rfc/rfc6749#section-5.1): responses carrying tokens are sent with `Cache-Control: no-store`.
+- [kartaladev/prblm `respond.go` at v0.2.0](https://github.com/kartaladev/prblm/blob/v0.2.0/respond.go) (researched 2026-11-18, read from the module cache): `Response.MergeInto` copies the problem's `Cache-Control` only when the response has none (lines 70-73). This is why the core, not the mapper, must set `no-store` on a token-bearing challenge.
 - [RFC 9449 §5](https://www.rfc-editor.org/rfc/rfc9449#section-5): `token_type` `DPoP` for a DPoP-bound access token.
 
 ### Decision 7: framework wiring and headers

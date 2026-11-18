@@ -125,6 +125,10 @@ When a challenge error carries an access token, its problem SHALL carry it as `a
 - **WHEN** a password login over a bearer-token chain is challenged for a second factor
 - **THEN** the problem carries `access_token` equal to the challenge's token, `token_type` `Bearer`, and the response carries `Cache-Control: no-store`
 
+#### Scenario: Upstream cache policy does not survive a token
+- **WHEN** a consumer middleware sets `Cache-Control: public, max-age=300` before the chain, and a password login is challenged for a second factor, on net/http, gin and fiber
+- **THEN** each framework's response carries `access_token` and `Cache-Control: no-store` only
+
 #### Scenario: Challenge raised on a later request
 - **WHEN** the password-change gate refuses a session
 - **THEN** the problem carries neither `access_token` nor `token_type`

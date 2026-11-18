@@ -25,6 +25,17 @@ The library SHALL provide a public lookup that returns the status the public map
 - **WHEN** every refusal of the status table, every challenge kind and an unknown error are each looked up
 - **THEN** each status equals the public mapping's status for the same error
 
+### Requirement: A refusal that carries a credential is never cacheable
+Whenever the chain refuses with a challenge error that carries an access token, it SHALL set `Cache-Control: no-store` on the response before the refusal propagates, replacing any `Cache-Control` value already set, so that no renderer sends the credential in a cacheable response. A challenge error that carries no token SHALL leave `Cache-Control` as it was.
+
+#### Scenario: Upstream middleware set a cacheable policy
+- **WHEN** a consumer middleware sets `Cache-Control: public, max-age=300` before the chain, and a password login is challenged for a second factor over a bearer-token chain
+- **THEN** the response the error handler receives carries `Cache-Control: no-store` only
+
+#### Scenario: Challenge without a token
+- **WHEN** a consumer middleware sets `Cache-Control: public, max-age=300` before the chain, and a refusal carries a challenge error with no token
+- **THEN** the response keeps `Cache-Control: public, max-age=300`
+
 ## MODIFIED Requirements
 
 ### Requirement: Refusals propagate as errors, unrendered
