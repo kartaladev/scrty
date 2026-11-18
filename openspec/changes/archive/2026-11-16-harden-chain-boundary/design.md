@@ -560,7 +560,7 @@ Otherwise reasoned from scrty's own settled specs (`http-security-chain`, `secur
 
 ## Reproductions
 
-Each test was red on `v0.1.0`, in a disposable export, and the main session re-ran it on 2026-11-09. The files are kept in `repro/` as `.go.txt`, so no module compiles them. Each becomes the red step of its task.
+Each test was red on `v0.1.0`, in a disposable export, and the main session re-ran it on 2026-11-09. The `repro/` files were removed when the change was archived (2026-11-16). Each reproduction was ported into its package's suite as the red step of the task that names it in `tasks.md`, and that test is the lasting proof. The `repro/` paths below are historical. Each becomes the red step of its task.
 
 | Claim | Test | Command (in the export) | Red output |
 |---|---|---|---|
