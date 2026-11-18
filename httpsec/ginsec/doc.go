@@ -68,6 +68,17 @@
 // error middleware cannot re-render it — every other refusal, including a 404
 // on a route gin did match, keeps the rule above.
 //
+// A consumer whose error middleware renders every refusal declares it with
+// WithRefusalsRendered, and that 404 is then left open for it too:
+//
+//	engine.Use(errorMiddleware())                                   // first
+//	engine.Use(ginsec.Middleware(chain, ginsec.WithRefusalsRendered()))
+//
+// The library cannot check the declaration. If it is broken (no error
+// middleware, one registered after Middleware, or one that skips some errors),
+// such a request is answered with gin's own "404 page not found" text, which carries no
+// refusal text but differs from the other adapters' empty 404.
+//
 // # Client addresses
 //
 // The adapter hands the chain the raw transport peer, the Host header, the
