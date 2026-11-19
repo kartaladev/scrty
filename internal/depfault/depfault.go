@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/errwalk"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token/onetime"
@@ -44,8 +45,37 @@ func Refusal(cause, kind error) error {
 // Silent reports whether a refusal event must not report err: it answers a
 // dependency that failed, or the caller's own context ended before the
 // verdict.
+//
+// err is read through one bounded, recovering walk (internal/errwalk). An err
+// whose chain cannot be walked (a cycle, a fan-out past the walk's budget, or
+// a panicking Unwrap or Is) is not silent: its event is reported rather than
+// dropped. Silent writes no record of the abort; the classification of the
+// same refusal reports it.
 func Silent(ctx context.Context, err error) bool {
-	return errors.Is(err, ErrFailed) || hangup.ByCaller(ctx, err)
+	failed, abort := matches(err, ErrFailed)
+	if abort != nil {
+		return false
+	}
+
+	return failed || hangup.ByCaller(ctx, err)
+}
+
+// walkBuffer is how many nodes of a chain a walk holds on its caller's stack
+// before it grows onto the heap.
+const walkBuffer = 16
+
+// matches reports whether err's chain holds target, as errors.Is would, read
+// through one bounded, recovering walk. abort is the walk's abort, and when it
+// is set, matched is false.
+func matches(err, target error) (matched bool, abort error) {
+	var buf [walkBuffer]error
+
+	chain, abort := errwalk.FlattenInto(buf[:], err)
+	if abort != nil {
+		return false, abort
+	}
+
+	return errwalk.Is(chain, target)
 }
 
 type watchKey struct{}
@@ -122,12 +152,23 @@ func (s reapingStore) DeleteExpiredBefore(ctx context.Context, purpose string, r
 	return s.reaper.DeleteExpiredBefore(ctx, purpose, retainSince)
 }
 
+// record notes err on the Watch ctx carries, unless err is nil or the store's
+// answer that it holds no such token. An err whose chain cannot be walked is
+// not that answer, so it is noted as the failure it may be; record writes no
+// record of the abort.
 func record(ctx context.Context, err error) {
-	if err == nil || errors.Is(err, onetime.ErrTokenNotFound) {
+	if err == nil {
 		return
 	}
 
-	if w, ok := ctx.Value(watchKey{}).(*Watch); ok {
-		w.note(err)
+	w, ok := ctx.Value(watchKey{}).(*Watch)
+	if !ok {
+		return
 	}
+
+	if notFound, abort := matches(err, onetime.ErrTokenNotFound); notFound && abort == nil {
+		return
+	}
+
+	w.note(err)
 }
