@@ -14,6 +14,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/pkg/logsample"
@@ -169,6 +170,9 @@ func (b *Broker) nameProvider(provider string) {
 // username and user reference redacted.
 func (b *Broker) Broker(ctx context.Context, ext ExternalIdentity) (*identity.Principal, error) {
 	l, err := b.links.FindByExternal(ctx, ext.Provider, ext.Issuer, ext.Subject)
+	// Before the ErrLinkNotFound check: a chain that cannot be walked is a
+	// store fault, never "no link", which would provision a duplicate user.
+	err = porterr.SanitizeTo(ctx, b.log, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrLinkNotFound):
 		return b.provision(ctx, ext)
@@ -192,6 +196,8 @@ func (b *Broker) Broker(ctx context.Context, ext ExternalIdentity) (*identity.Pr
 // reference.
 func (b *Broker) resolveLinked(ctx context.Context, ext ExternalIdentity, l *Link) (*identity.Details, error) {
 	det, err := b.users.LoadByUserID(ctx, l.UserID)
+	// A chain that cannot be walked is a loader fault, never ErrUserNotFound.
+	err = porterr.SanitizeTo(ctx, b.log, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound):
 		b.refusal(ctx, slog.LevelWarn, "a link names a user that no longer exists", l.Provider, l.Email)

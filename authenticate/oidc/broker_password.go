@@ -10,6 +10,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // The accepted bcrypt cost band of a mapped password-hash claim, by default
@@ -115,6 +116,8 @@ func (b *Broker) checkPasswordClaims() error {
 	}
 	if b.passwordEncoder != nil {
 		probe, err := b.passwordEncoder.Encode("scrty password encoder probe")
+		// Construction has no request context; b.log is already set.
+		err = porterr.SanitizeTo(context.Background(), b.log, err, porterr.ErrUnwalkable)
 		if err != nil {
 			// ErrConfig already matched regardless of cause: every failure of
 			// this probe is a construction error, so it is named as a kind
