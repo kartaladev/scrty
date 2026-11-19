@@ -332,7 +332,7 @@ Its rules are pinned, and prblm adopts the same rules for its v0.3.0 hardening, 
 - **Without it**, the guard logs only when its own lookup will not abort.
 
 No process-wide reporter is installed. A process-wide reporter could not see each guard's own handler setting, and it would be the global state this design avoids. Nothing aborts unseen |
-| A selective `Is` method that panics only for one sentinel, reached after the lookup succeeded (DPoP answer check, response-refused event switch) | Handled, tested (task 10.9 follow-up) | Uses the walk. The abort drops the extra challenge or event and is reported once |
+| A selective `Is` method that panics only for one sentinel, reached after the lookup succeeded (DPoP answer check, response-refused event switch) | Handled, tested (task 10.9 follow-up) | Uses the walk. The abort drops the extra challenge or event and is reported once. This covers the response-refused switch on the spend path only. On the MFA `Verify` path, `Verify`'s error is read with stdlib `errors.Is` (`mfa.ErrVerifyThrottled`) before the switch runs. That read is at a consumer port, so it falls under the accepted port row and the task 10.12 sanitizer (10.9a review) |
 | Another inspection of the refused error runs before or beside the lookup, on the refusal path | Handled, tested (task 10.9) | It uses the same walk. A cyclic or panicking error can no longer hang or crash the request before the lookup's bound applies |
 | A consumer wants a larger budget or a different typed-nil rule | Accepted, documented (decision 11) | No option. A configurable bound could reopen the hang, so the rules are fixed (`library-design.md` 4). The consumer controls only where the record goes |
 | `Methods` nil vs empty | Handled, tested | Omitted vs `[]` |

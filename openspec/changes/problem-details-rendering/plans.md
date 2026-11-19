@@ -718,8 +718,9 @@ Steps:
 
 **Files:**
 - `httpsec/oidc_consents.go`, `httpsec/challenge_spend.go`, `httpsec/guards.go`.
-- The missed sites: `httpsec/resolve.go` (`emitLoadRefusal`), `httpsec/dpop_nonce.go` (around lines 263 and 296), `httpsec/signals_retry.go` (around line 155), `httpsec/oidc_login.go` (`emitCallbackRefused`), `httpsec/passkey_login.go` (`emitPasskeyRefused`), `httpsec/mfa_enrol.go` (`refusalReason`) and `oidcprovider/events.go` (around line 222).
-- Test: `httpsec/refusal_path_hostile_test.go`, plus a test in `oidcprovider`.
+- The missed sites: `httpsec/resolve.go` (`emitLoadRefusal`), `httpsec/dpop_nonce.go` (around lines 263 and 296), `httpsec/signals_retry.go` (around line 155), `httpsec/oidc_login.go` (`emitCallbackRefused`), `httpsec/passkey_login.go` (`emitPasskeyRefused`), `httpsec/mfa_enrol.go` (`refusalReason`).
+- `oidcprovider/events.go` (around line 222) is not in this task. It moved to Task 10.12, group 7, with the registry read at `oidcprovider/registry.go:353` that runs first (10.9a review).
+- Test: `httpsec/refusal_path_hostile_test.go` and `httpsec/refusal_sites_hostile_test.go`.
 
 - The guard reporting redesign:
   - `internal/eventsink/eventsink.go`: `GuardRefused`. Remove `SetGuardAbortReporter` and the installed reporter.
@@ -790,13 +791,13 @@ Steps:
   4. throttle and limiters
   5. recovery and magic link
   6. OIDC client
-  7. OIDC provider, in several dispatches
+  7. OIDC provider, in several dispatches. Includes the client registry read at `oidcprovider/registry.go:353`. Its row also covers `events.go:222`, which runs after that read: a hostile registry error must reach line 222 only as the sanitized `*porterr.Fault`
   8. passkey
-  9. MFA and enrolment
+  9. MFA and enrolment. Includes the `method.Verify` read at `httpsec/challenge_spend.go:174`, with a row whose `Is` panics only for `mfa.ErrVerifyThrottled`. That row is the accepted sentinel-specific case, so its expected outcome is net/http's per-request recovery, not a sanitized answer
   10. authorization
-  11. token and one-time
+  11. token and one-time. Includes the `IssueWithin` read at `httpsec/challenge_spend.go:278`
   12. `store/seal`
-  13. `expiry/sweep`, and the `webauthn` `MetadataSource`
+  13. `expiry/sweep`, and the `webauthn` `MetadataSource`. Includes the `PurgeExpired` read at `httpsec/challenge_spend.go:110` on the sweep path, which is not a refusal path, so its row asserts the sweep's existing failure outcome
 
   At each call site, `err = porterr.Sanitize(err, <the port's unavailable sentinel>)` goes immediately after the port method returns. The main session names the sentinel per port when it splits a group.
 - [ ] **Step 5 (each call-site dispatch): write the red tests first.**

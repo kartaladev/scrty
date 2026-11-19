@@ -310,9 +310,9 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
     - `signals_retry.go` `streamErr` (around line 155), if it can see a consumer error;
     - `oidc_login.go` `emitCallbackRefused`;
     - `passkey_login.go` `emitPasskeyRefused`;
-    - `challenge_spend.go` line 201;
-    - `mfa_enrol.go` `refusalReason`;
-    - `oidcprovider/events.go` around line 222.
+    - `challenge_spend.go` line 201 (the `emitResponseRefused` switch);
+    - `mfa_enrol.go` `refusalReason`.
+  - `oidcprovider/events.go` around line 222 moved to 10.12 (10.9a review). It reads the error only after `registry.go:353` has already read the consumer registry's error with stdlib `errors.Is`. A hostile error hangs or panics there first, so converting line 222 alone protects nothing, and the sanitizer at the registry read covers both.
   - Verify with `go test -race -count=1 ./...` (root).
 - [ ] 10.12 Consumer-port errors are sanitized where they enter the library (design decision 11).
   - First, the internals with the most reach, read through the walk directly:
@@ -321,7 +321,7 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
 
     Red: each is handed a cyclic error and an error whose `Unwrap` panics, and hangs or panics on the current code. After the fix it returns its defined safe answer: `Failure` omits `cancelled`, `causeOf` returns the error unchanged, and `Silent` reports false.
   - Then the sanitizer:
-    - `func portErr(err error, unavailable error) error`, in an internal package that every flow can import.
+    - `porterr.Sanitize(err error, unavailable error) error`, in `internal/porterr`, which every flow can import.
     - It walks `err` once. When the walk completes, it returns `err` unchanged. When the walk aborts, it returns a fixed library error that `errors.Is(_, unavailable)` matches, carries no consumer text, and reports one record.
     - Unit-test it first.
   - Then apply it at every port call site, in groups of at most six call sites per dispatch, in the order of the 10.12 inventory:
@@ -331,13 +331,13 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
     - throttle and limiters;
     - recovery and magic link;
     - OIDC client;
-    - OIDC provider (several dispatches);
+    - OIDC provider (several dispatches), including the client registry read at `oidcprovider/registry.go:353` that `events.go:222` depends on (moved from 10.9a);
     - passkey;
-    - MFA and enrolment;
+    - MFA and enrolment, including the `method.Verify` read at `httpsec/challenge_spend.go:174` (named by the 10.9a review);
     - authorization;
-    - token and one-time;
+    - token and one-time, including the `IssueWithin` read at `httpsec/challenge_spend.go:278` (named by the 10.9a review);
     - `store/seal`;
-    - `expiry/sweep`, and the webauthn `MetadataSource` in its nested module.
+    - `expiry/sweep`, including the `PurgeExpired` read at `httpsec/challenge_spend.go:110` (named by the 10.9a review), and the webauthn `MetadataSource` in its nested module.
   - Per call site, the red test has the port's mock return a `cycleOne`, a `cycleMany` (in a subprocess) and a `panicUnwrap`. These hang, crash or panic on the current code. After the fix, the flow takes its existing branch for a failing port, and one record is written. A non-hostile parity row pins the old outcome.
   - Where that branch conceals (unknown user, unknown credential, a concealed lock, uniform recovery), assert the response is byte-identical to a plain port outage.
   - Verify each dispatch with `go test -race -count=1 ./...` in the affected modules.
