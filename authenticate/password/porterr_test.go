@@ -25,6 +25,29 @@ import (
 // recovered, so only a child can watch for it.
 const portErrRowEnv = "SCRTY_PASSWORD_PORTERR_ROW"
 
+// portErrRanMarker prefixes the line a child prints on stdout, followed by the
+// row's name, only after the row ran and passed. A child whose row name
+// matches no case skips every row and exits 0, so only this line proves a row
+// ran. Stdout reaches the parent's CombinedOutput without -v.
+const portErrRanMarker = "SCRTY_PASSWORD_PORTERR_RAN: "
+
+// requireChildRan fails unless one whole line of the child's output is the
+// marker for row: not a substring, so a suffix or a prefix does not count.
+func requireChildRan(t *testing.T, out []byte, row string) {
+	t.Helper()
+
+	want := portErrRanMarker + row
+
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if strings.TrimRight(line, "\r") == want {
+			return
+		}
+	}
+
+	require.Fail(t, "the child never ran the row: its name matches no case",
+		"row %q: no output line equals %q", row, want)
+}
+
 // hostileCycleOne contains itself through Unwrap() error.
 type hostileCycleOne struct{}
 
@@ -73,6 +96,10 @@ func eachPortErrRow(t *testing.T, body func(t *testing.T, row portErrRow)) {
 			if row.name == only {
 				debug.SetMaxStack(64 << 20)
 				body(t, row)
+
+				if !t.Failed() && !t.Skipped() {
+					_, _ = os.Stdout.WriteString(portErrRanMarker + row.name + "\n")
+				}
 			}
 		case row.child:
 			t.Run(row.name, func(t *testing.T) {
@@ -88,6 +115,7 @@ func eachPortErrRow(t *testing.T, body func(t *testing.T, row portErrRow)) {
 				out, err := cmd.CombinedOutput()
 				require.NoError(t, ctx.Err(), "the child did not finish within a minute")
 				require.NoError(t, err, "the child failed:\n%s", headLines(out))
+				requireChildRan(t, out, row.name)
 			})
 		default:
 			t.Run(row.name, func(t *testing.T) { body(t, row) })

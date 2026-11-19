@@ -605,6 +605,16 @@ func keyPortErrInChild(t *testing.T, row string) {
 
 	// A child whose row name matched no case skips every row and exits 0: it
 	// proves it ran the row only by printing the marker after the row passed.
-	require.Contains(t, string(out), keyPortErrRanMarker+row,
-		"the child never ran the row: its name matches no case")
+	// The marker must be one whole line: a substring check would accept the
+	// marker followed by a suffix.
+	want := keyPortErrRanMarker + row
+
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if strings.TrimRight(line, "\r") == want {
+			return
+		}
+	}
+
+	require.Fail(t, "the child never ran the row: its name matches no case",
+		"row %q: no output line equals %q", row, want)
 }

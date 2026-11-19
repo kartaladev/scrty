@@ -59,6 +59,47 @@ func fanOut(depth int) error {
 // hostileRowEnv names the row a child process runs. It is empty in the parent.
 const hostileRowEnv = "SCRTY_DEPFAULT_HOSTILE_ROW"
 
+// hostileRanMarker prefixes the line a child prints on stdout, followed by the
+// row's name, only after the row ran and passed. A child whose row name
+// matches no case skips every row and exits 0, so only this line proves a row
+// ran. Stdout reaches the parent's CombinedOutput without -v.
+const hostileRanMarker = "SCRTY_DEPFAULT_HOSTILE_RAN: "
+
+// announceRan arranges for a child's row subtest to print the marker for row
+// once it has finished, if it neither failed nor skipped. It does nothing in
+// the parent, where only is empty. A cleanup runs after the subtest's own
+// parallel work, so the row has really completed.
+func announceRan(t *testing.T, only, row string) {
+	t.Helper()
+
+	if only == "" {
+		return
+	}
+
+	t.Cleanup(func() {
+		if !t.Failed() && !t.Skipped() {
+			_, _ = os.Stdout.WriteString(hostileRanMarker + row + "\n")
+		}
+	})
+}
+
+// requireChildRan fails unless one whole line of the child's output is the
+// marker for row: not a substring, so a suffix or a prefix does not count.
+func requireChildRan(t *testing.T, out []byte, row string) {
+	t.Helper()
+
+	want := hostileRanMarker + row
+
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if strings.TrimRight(line, "\r") == want {
+			return
+		}
+	}
+
+	require.Fail(t, "the child never ran the row: its name matches no case",
+		"row %q: no output line equals %q", row, want)
+}
+
 // childRow is the row this process runs as a child, or "" in the parent. A
 // child lowers the stack limit, so an unbounded recursion overflows quickly.
 func childRow() string {
@@ -88,6 +129,7 @@ func inChild(t *testing.T, row string) {
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, ctx.Err(), "the child did not finish within a minute")
 	require.NoError(t, err, "the child failed:\n%s", head(out))
+	requireChildRan(t, out, row)
 }
 
 // head is the first lines of a child's output, where a fatal error or a failed
@@ -199,6 +241,7 @@ func TestSilent_HostileChains(t *testing.T) {
 				return
 			}
 
+			announceRan(t, only, tc.name)
 			t.Parallel()
 
 			ctx := t.Context()
@@ -267,6 +310,7 @@ func TestStore_RecordsHostileChainsAsFailures(t *testing.T) {
 				return
 			}
 
+			announceRan(t, only, tc.name)
 			t.Parallel()
 
 			err := tc.err()

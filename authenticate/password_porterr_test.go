@@ -37,6 +37,39 @@ const msgPortErrAborted = "httpsec: error classification aborted"
 // the parent.
 const passwordPortErrRowEnv = "SCRTY_AUTHENTICATE_PORTERR_ROW"
 
+// portErrRanMarker prefixes the line a child prints on stdout, followed by the
+// row's name, only after the row ran and passed. A child whose row name
+// matches no case skips every row and exits 0, so only this line proves a row
+// ran. Stdout reaches the parent's CombinedOutput without -v.
+const portErrRanMarker = "SCRTY_AUTHENTICATE_PORTERR_RAN: "
+
+// announcePortErrRan prints the marker for row from a child's row subtest,
+// when the row neither failed nor skipped. It does nothing in the parent.
+func announcePortErrRan(t *testing.T, only, row string) {
+	t.Helper()
+
+	if only != "" && !t.Failed() && !t.Skipped() {
+		_, _ = os.Stdout.WriteString(portErrRanMarker + row + "\n")
+	}
+}
+
+// requireChildRan fails unless one whole line of the child's output is the
+// marker for row: not a substring, so a suffix or a prefix does not count.
+func requireChildRan(t *testing.T, out []byte, row string) {
+	t.Helper()
+
+	want := portErrRanMarker + row
+
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if strings.TrimRight(line, "\r") == want {
+			return
+		}
+	}
+
+	require.Fail(t, "the child never ran the row: its name matches no case",
+		"row %q: no output line equals %q", row, want)
+}
+
 // loaderCycleOne contains itself through Unwrap() error.
 type loaderCycleOne struct{}
 
@@ -392,6 +425,8 @@ func TestPortErrors_PasswordUserLoader(t *testing.T) { //nolint:paralleltest // 
 			for _, rec := range jsonRecords(t, defaults.Bytes()) {
 				assert.NotEqual(t, msgPortErrAborted, rec["msg"], "an abort record went to slog.Default()")
 			}
+
+			announcePortErrRan(t, only, tc.name)
 		})
 	}
 }
@@ -416,4 +451,5 @@ func passwordPortErrInChild(t *testing.T, row string) {
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	require.NoError(t, err, "the child failed:\n%s", strings.Join(lines[:min(len(lines), 8)], "\n"))
+	requireChildRan(t, out, row)
 }

@@ -302,6 +302,8 @@ func TestPortErrors_JWT(t *testing.T) { //nolint:paralleltest // it replaces slo
 			} else {
 				assert.Equal(t, 1, aborts, "one abort record, on slog.Default()")
 			}
+
+			announcePortErrRan(t, only, tc.name)
 		})
 	}
 }
@@ -326,4 +328,5 @@ func jwtPortErrInChild(t *testing.T, row string) {
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	require.NoError(t, err, "the child failed:\n%s", strings.Join(lines[:min(len(lines), 8)], "\n"))
+	requireChildRan(t, out, row)
 }
