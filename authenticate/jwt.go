@@ -10,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token"
 )
@@ -174,6 +175,7 @@ func (a *JWTAuthenticator) Authenticate(ctx context.Context, credentials identit
 	}
 
 	claims, err := a.verifier.Verify(ctx, creds.Token())
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 	if err != nil {
 		if errors.Is(err, token.ErrInvalid) {
 			return nil, errors.Join(ErrAuthenticationFailed, err)
@@ -234,6 +236,7 @@ func (a *JWTAuthenticator) eventID(claims *token.Claims) (id.ID, error) {
 	}
 
 	generated, err := a.ids.NewID()
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 	if err != nil {
 		return id.Nil, fmt.Errorf("authenticate: naming the authentication: %w", err)
 	}
