@@ -10,6 +10,7 @@ import (
 
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
@@ -349,6 +350,7 @@ func (g *SourceGuard) Check(ctx context.Context, clientAddr string) (Source, err
 	}
 
 	exceeded, err := g.limiter.Exceeded(ctx, src.key)
+	err = porterr.SanitizeTo(ctx, g.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return Source{}, g.refuseUnconsultable(ctx, src, err, false)
 	}
@@ -369,6 +371,7 @@ func (g *SourceGuard) Check(ctx context.Context, clientAddr string) (Source, err
 	}
 
 	exceeded, err = g.aggregate.Exceeded(ctx, src.aggregateKey)
+	err = porterr.SanitizeTo(ctx, g.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return Source{}, g.refuseUnconsultable(ctx, src, err, true)
 	}
@@ -459,7 +462,8 @@ func (g *SourceGuard) RecordFailure(ctx context.Context, source Source) {
 	// uncounted is worth a record whatever the caller's context did.
 	recordCtx := context.WithoutCancel(ctx)
 
-	if err := g.limiter.RecordFailure(recordCtx, source.key); err != nil {
+	err := g.limiter.RecordFailure(recordCtx, source.key)
+	if err = porterr.SanitizeTo(ctx, g.logger, err, porterr.ErrUnwalkable); err != nil {
 		g.reportNotRecorded(ctx, err, source, false)
 	}
 
@@ -470,7 +474,8 @@ func (g *SourceGuard) RecordFailure(ctx context.Context, source Source) {
 	// this guard another guard's: without an aggregate limiter of its own there
 	// is nothing here to count it in.
 	if source.aggregateKey != "" && g.aggregate != nil {
-		if err := g.aggregate.RecordFailure(recordCtx, source.aggregateKey); err != nil {
+		err = g.aggregate.RecordFailure(recordCtx, source.aggregateKey)
+		if err = porterr.SanitizeTo(ctx, g.logger, err, porterr.ErrUnwalkable); err != nil {
 			g.reportNotRecorded(ctx, err, source, true)
 		}
 	}
@@ -522,6 +527,7 @@ func (g *SourceGuard) HasRecentFailures(ctx context.Context, clientAddr string) 
 	src := Source{key: g.flow + keySeparator + addr, addr: addr}
 
 	has, err := r.HasRecentFailures(ctx, src.key)
+	err = porterr.SanitizeTo(ctx, g.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		g.reportUnreported(ctx, src, err)
 
@@ -571,6 +577,7 @@ func (g *SourceGuard) HasRecentAggregateFailures(ctx context.Context, clientAddr
 	}
 
 	has, err := r.HasRecentFailures(ctx, src.aggregateKey)
+	err = porterr.SanitizeTo(ctx, g.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		g.reportUnreported(ctx, src, err)
 
