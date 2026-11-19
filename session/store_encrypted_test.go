@@ -506,6 +506,47 @@ func TestEncryptedStoreSupersedeReturnsSentinelsBare(t *testing.T) {
 	}
 }
 
+// SuccessorPresented answers whether the session's successor was used; the
+// sealing store passes the answer through unchanged when the read succeeds.
+func TestEncryptedStoreSuccessorPresentedPassesTheAnswerThrough(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		used   bool
+		assert func(t *testing.T, used bool, err error)
+	}
+
+	expect := func(want bool) func(t *testing.T, used bool, err error) {
+		return func(t *testing.T, used bool, err error) {
+			t.Helper()
+
+			require.NoError(t, err)
+			assert.Equal(t, want, used)
+		}
+	}
+
+	cases := []testCase{
+		{name: "successor used", used: true, assert: expect(true)},
+		{name: "successor not used", used: false, assert: expect(false)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			inner := NewMockStore(gomock.NewController(t))
+			inner.EXPECT().SuccessorPresented(gomock.Any(), "sp-old").Return(tc.used, nil)
+			sealing, err := session.NewEncryptedStore(inner, fakeCipher{key: 0x2a})
+			require.NoError(t, err)
+
+			used, err := sealing.SuccessorPresented(t.Context(), "sp-old")
+
+			tc.assert(t, used, err)
+		})
+	}
+}
+
 // TestEncryptedStoreCreatePassesOnTheNilFamilyRefusal pins that the sealing
 // store neither hides nor works around the inner store's refusal of a
 // session in no family: the error comes back and nothing is stored.

@@ -444,8 +444,9 @@ func (s *encryptedStore) DeleteFamily(ctx context.Context, family id.ID) (int, e
 // MarkPresented passes the mark on. The inner store's ErrNotFound and
 // ErrSuperseded come back bare, as Supersede's refusals do.
 func (s *encryptedStore) MarkPresented(ctx context.Context, id string, at time.Time) error {
-	return storeFailed(s.inner.MarkPresented(ctx, id, at),
-		"session: the inner store could not record the session's first presentation")
+	err := porterr.Sanitize(s.inner.MarkPresented(ctx, id, at), porterr.ErrUnwalkable)
+
+	return storeFailed(err, "session: the inner store could not record the session's first presentation")
 }
 
 // SuccessorPresented passes the read on: it reads only presentation and
@@ -453,6 +454,7 @@ func (s *encryptedStore) MarkPresented(ctx context.Context, id string, at time.T
 // ErrNotFound comes back bare.
 func (s *encryptedStore) SuccessorPresented(ctx context.Context, id string) (bool, error) {
 	used, err := s.inner.SuccessorPresented(ctx, id)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 
 	return used, storeFailed(err, "session: the inner store could not read whether the session's successor was used")
 }

@@ -351,6 +351,22 @@ func peForwardFlows() []peFlow {
 
 				return got
 			}},
+		{name: "MarkPresented on the inner store", unavailable: porterr.ErrUnwalkable,
+			run: func(t *testing.T, ctx context.Context, ctrl *gomock.Controller, err error) error {
+				sealing, inner := peStore(t, ctrl, NewMockCipher(ctrl))
+				inner.EXPECT().MarkPresented(gomock.Any(), "pe-mark", createdAt).Return(err)
+
+				return sealing.MarkPresented(ctx, "pe-mark", createdAt)
+			}},
+		{name: "SuccessorPresented on the inner store", unavailable: porterr.ErrUnwalkable,
+			run: func(t *testing.T, ctx context.Context, ctrl *gomock.Controller, err error) error {
+				sealing, inner := peStore(t, ctrl, NewMockCipher(ctrl))
+				inner.EXPECT().SuccessorPresented(gomock.Any(), "pe-succ-used").Return(false, err)
+
+				_, got := sealing.SuccessorPresented(ctx, "pe-succ-used")
+
+				return got
+			}},
 	}
 }
 
@@ -568,6 +584,50 @@ func TestPortErrors_EncryptedStore_ForwardedSentinels(t *testing.T) { //nolint:p
 			for _, sentinel := range sentinels {
 				assert.False(t, peWithin(t, func() bool { return errors.Is(got, sentinel) }), "%v", sentinel)
 			}
+		})
+	}
+}
+
+// peUsed is the pair SuccessorPresented returns.
+type peUsed struct {
+	used bool
+	err  error
+}
+
+// TestPortErrors_EncryptedStore_SuccessorPresentedBool: the bool the inner store
+// returns beside a failing read comes back unchanged, whatever the error, so a
+// hostile error leaves the same bool as a plain outage. The inner store here
+// returns true, so a decorator that zeroed it on the sanitized path would show.
+func TestPortErrors_EncryptedStore_SuccessorPresentedBool(t *testing.T) { //nolint:paralleltest // swaps slog.Default
+	run := func(t *testing.T, err error) bool {
+		t.Helper()
+
+		ctrl := gomock.NewController(t)
+		sealing, inner := peStore(t, ctrl, NewMockCipher(ctrl))
+		inner.EXPECT().SuccessorPresented(gomock.Any(), "pe-succ-bool").Return(true, err)
+
+		got := peWithin(t, func() peUsed {
+			used, e := sealing.SuccessorPresented(t.Context(), "pe-succ-bool")
+
+			return peUsed{used, e}
+		})
+		require.Error(t, got.err)
+
+		return got.used
+	}
+
+	peRecording(t)
+	plain := run(t, errPePlain)
+
+	for _, kind := range peKinds() {
+		if kind.child || !kind.hostile {
+			continue
+		}
+
+		t.Run(kind.name, func(t *testing.T) {
+			peRecording(t)
+
+			assert.Equal(t, plain, run(t, kind.make(porterr.ErrUnwalkable)), "the bool is the plain outage's")
 		})
 	}
 }
