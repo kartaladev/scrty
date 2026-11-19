@@ -19,6 +19,7 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/ratelimit"
 )
@@ -282,6 +283,7 @@ func (c *Codes) check(ctx context.Context, user identity.UserID, presented strin
 	key := CodeThrottleKey(user)
 
 	receipt, exceeded, err := c.limiter.Charge(context.WithoutCancel(ctx), key)
+	err = porterr.SanitizeTo(ctx, c.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		c.logFailure(ctx, msgCodeLimiterError, "limiter", err)
 
@@ -338,7 +340,9 @@ func (c *Codes) spend(ctx context.Context, user identity.UserID, hash [32]byte) 
 // code stays valid, and the charge stays counted until its window passes, so
 // the user loses one attempt.
 func (c *Codes) refund(ctx context.Context, r ratelimit.Receipt) {
-	if err := c.limiter.Refund(context.WithoutCancel(ctx), r); err != nil {
+	err := c.limiter.Refund(context.WithoutCancel(ctx), r)
+	err = porterr.SanitizeTo(ctx, c.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		c.logFailure(ctx, msgCodeRefundError, "limiter", err)
 	}
 }

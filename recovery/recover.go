@@ -19,6 +19,7 @@ import (
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -427,6 +428,7 @@ func (r *Recoverer) resolveForRecover(ctx context.Context, username string) (*id
 // again.
 func (r *Recoverer) checkUserLimit(ctx context.Context, user identity.UserID) error {
 	exceeded, err := r.userLimiter.Exceeded(context.WithoutCancel(ctx), UserThrottleKey(user))
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgUserLimiterError, diag.Failure("limiter", err)...)
 
@@ -727,7 +729,9 @@ func (r *Recoverer) spendRefused(ctx context.Context, user identity.UserID, reas
 // refuse records a failure for user and returns err, marked when the recovery
 // codes had passed their check.
 func (r *Recoverer) refuse(ctx context.Context, user identity.UserID, err error, afterCodes bool) error {
-	if rerr := r.userLimiter.RecordFailure(context.WithoutCancel(ctx), UserThrottleKey(user)); rerr != nil {
+	rerr := r.userLimiter.RecordFailure(context.WithoutCancel(ctx), UserThrottleKey(user))
+	rerr = porterr.SanitizeTo(ctx, r.logger, rerr, porterr.ErrUnwalkable)
+	if rerr != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgUserRecordError, diag.Failure("limiter", rerr)...)
 	}
 
