@@ -194,7 +194,7 @@ var refusalEvents = []struct {
 func emitRefusal(ex *Exchange, err error) {
 	ctx := ex.Context()
 	if ex.refusalReported || !eventsink.Enabled(ctx) || hangup.ByCaller(ctx, err) ||
-		StatusForError(err) >= http.StatusInternalServerError {
+		ex.answeringChain().statusQuietly(ctx, err) >= http.StatusInternalServerError {
 		return
 	}
 
@@ -225,5 +225,5 @@ func refused(ctx context.Context, err error) bool {
 		return false
 	}
 
-	return StatusForError(err) < 500
+	return statusUnreported(err) < 500
 }

@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"io"
+	"log/slog"
 	"math"
 	"mime"
 	"mime/multipart"
@@ -741,7 +742,7 @@ func (c *Chain) Middleware() func(http.Handler) http.Handler {
 			})
 
 			if err := run(ex); err != nil {
-				c.handleError(ex, w, r, err)
+				c.handleError(ex, w, r, err) //nolint:contextcheck // a record it writes goes on ex.Context(), derived from r.Context()
 			}
 		})
 	}
@@ -765,5 +766,31 @@ func (c *Chain) handleError(ex *Exchange, w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	ex.Writer.WriteHeader(StatusForError(err))
+	status, _, abort := lookup(err)
+	if abort != nil {
+		c.logClassificationAborted(ex.Context(), abort)
+	}
+
+	ex.Writer.WriteHeader(status)
+}
+
+// logClassificationAborted reports a classification of a refusal that gave
+// up, through the chain's logger and sampler under the abort's per-reason key
+// (classificationAbortedKey), so a hostile error that recurs on every request
+// writes one record per reason per window. A Chain that did not come from New
+// has no logger, sampler or clock of its own: it writes to slog.Default(),
+// unsampled, at the system clock's time.
+func (c *Chain) logClassificationAborted(ctx context.Context, abort error) {
+	log := c.logger
+	if log == nil {
+		log = slog.Default()
+	}
+
+	now := clock.System().Now
+	if c.perRequest != nil && c.perRequest.now != nil {
+		now = c.perRequest.now
+	}
+
+	logSampled(ctx, c.sampler, log, slog.LevelError, now(),
+		classificationAbortedKey(abort), msgClassificationAborted, classificationAbortedAttrs(abort)...)
 }

@@ -190,7 +190,7 @@ func (c *oidcConsentClients) Intercept(ex *Exchange, next Next) error {
 // (dpopAnswersChallenge): this one would stand ahead of it, and a client reading the first line would
 // not see the error it has to act on.
 func (op *oidcEndpoints) challengeOIDCSignIn(ex *Exchange, err error) error {
-	if err == nil || StatusForError(err) != http.StatusUnauthorized {
+	if err == nil || ex.answeringChain().statusQuietly(ex.Context(), err) != http.StatusUnauthorized {
 		return err
 	}
 

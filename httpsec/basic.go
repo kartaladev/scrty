@@ -119,7 +119,7 @@ func (b *basicAuth) Intercept(ex *Exchange, next Next) error {
 
 	auth, err := b.authenticate(ex, strings.TrimPrefix(header, basicPrefix))
 	if err != nil {
-		if StatusForError(err) == http.StatusUnauthorized {
+		if ex.answeringChain().statusQuietly(ex.Context(), err) == http.StatusUnauthorized {
 			b.challenge(ex)
 		}
 

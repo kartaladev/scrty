@@ -193,7 +193,7 @@ func (ex *Exchange) markPerRequestThrottle(err error) error {
 		return err
 	}
 
-	if !errors.Is(err, ratelimit.ErrThrottled) || StatusForError(err) != http.StatusUnauthorized {
+	if !errors.Is(err, ratelimit.ErrThrottled) || ex.answeringChain().statusQuietly(ex.Context(), err) != http.StatusUnauthorized {
 		return err
 	}
 
@@ -242,7 +242,7 @@ func (e *sessionSignals) isThrottledSignIn(entered context.Context, ex *Exchange
 		return false
 	}
 
-	return StatusForError(err) == http.StatusUnauthorized && e.retryable(ex, throttle.error) //nolint:contextcheck // only the classification above reads entered; a panic in RetryableError is logged on the exchange's current context
+	return ex.answeringChain().statusQuietly(ex.Context(), err) == http.StatusUnauthorized && e.retryable(ex, throttle.error) //nolint:contextcheck // only the check above reads entered; an aborted classification and a panic in RetryableError are logged on the exchange's current context
 }
 
 // isDependencyFailure reports whether err is a failure of something the request depends on, and not
@@ -267,7 +267,7 @@ func (e *sessionSignals) isDependencyFailure(entered context.Context, ex *Exchan
 		return false
 	}
 
-	return StatusForError(err) >= http.StatusInternalServerError && e.retryable(ex, err) //nolint:contextcheck // only the classification above reads entered; a panic in RetryableError is logged on the exchange's current context
+	return ex.answeringChain().statusQuietly(ex.Context(), err) >= http.StatusInternalServerError && e.retryable(ex, err) //nolint:contextcheck // only the check above reads entered; an aborted classification and a panic in RetryableError are logged on the exchange's current context
 }
 
 // retryable asks a consumer's SessionSignals.RetryableError about err. A panic in it is logged as a

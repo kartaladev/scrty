@@ -108,29 +108,31 @@ func TestStatusForError_ChallengeWalk(t *testing.T) {
 			assert: answers(http.StatusForbidden),
 		},
 		{
-			// The fallback walk follows Unwrap only, so a challenge
-			// presented through As behind a typed nil is not seen.
+			// The walk skips the typed nil and keeps going, so a challenge
+			// presented through As behind it is found.
 			name:   "challenge through As behind a typed nil",
 			err:    errors.Join(typedNil, asChallenge{ch: mfa()}),
-			assert: noChallenge,
+			assert: answers(http.StatusUnauthorized),
 		},
 		{
-			// errors.As has no depth limit.
+			// Deep, but well inside the walk's budget.
 			name:   "challenge 101 wraps deep",
 			err:    wrapLayers(mfa(), 101),
 			assert: answers(http.StatusUnauthorized),
 		},
 		{
-			// Behind a typed nil only the bounded walk can find it: the
-			// join is depth 0 and the challenge depth 100, the limit.
-			name:   "challenge 99 wraps deep behind a typed nil",
-			err:    errors.Join(typedNil, wrapLayers(mfa(), 99)),
+			// The join, the typed nil, 997 wraps and the challenge: the
+			// challenge is the budget's last entry. The typed nil counts
+			// toward the budget, though the walk skips it.
+			name:   "challenge behind a typed nil at the budget's last entry",
+			err:    errors.Join(typedNil, wrapLayers(mfa(), walkBudget-3)),
 			assert: answers(http.StatusUnauthorized),
 		},
 		{
-			// Depth 101, past the limit: the rest of the chain decides.
-			name:   "challenge 100 wraps deep behind a typed nil",
-			err:    errors.Join(typedNil, wrapLayers(mfa(), 100)),
+			// One wrap more puts the challenge past the budget: the walk
+			// gives up, and the classification fails closed.
+			name:   "challenge behind a typed nil one entry past the budget",
+			err:    errors.Join(typedNil, wrapLayers(mfa(), walkBudget-2)),
 			assert: noChallenge,
 		},
 	}

@@ -3,6 +3,7 @@ package httpsec
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -174,8 +175,14 @@ func (g *Guards) refuse(w http.ResponseWriter, r *http.Request, err error) {
 
 	// The status and nothing else. A body here would either leak what the
 	// refusal knew — a store's error text, whether a record exists — or invent
-	// a format the consumer must then work around.
-	w.WriteHeader(StatusForError(err))
+	// a format the consumer must then work around. Guards hold no chain logger,
+	// so a classification that gave up is reported to the process default.
+	status, _, abort := lookup(err)
+	if abort != nil {
+		logClassificationAborted(r.Context(), slog.Default(), abort)
+	}
+
+	w.WriteHeader(status)
 }
 
 // authorizerFor is where every guard finds its judge.

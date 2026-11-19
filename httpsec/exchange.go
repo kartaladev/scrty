@@ -547,6 +547,22 @@ func (e *Exchange) publishingChain() *Chain {
 	return nil
 }
 
+// answeringChain returns the chain that answers an error refused on e: the
+// run at the bottom of the stack, whose middleware or adapter created the
+// exchange and dispatches what the run returns. A chain assembled inside
+// another on e (inner.Assemble(next)) answers nothing of its own: its error
+// travels out through the outer run, whose dispatch, or whose consumer's error
+// handler, answers it. The quiet classification sites report an abort through
+// this chain (statusQuietly), so the report follows whoever answers. It is nil
+// when no run is in progress on e, and a nil chain reports nothing.
+func (e *Exchange) answeringChain() *Chain {
+	if e.terminalCount() == 0 {
+		return nil
+	}
+
+	return e.terminalAt(0).chain
+}
+
 // publishingRun returns the position of the run publishingChain names, or -1
 // when no chain is running interceptors on e.
 func (e *Exchange) publishingRun() int {

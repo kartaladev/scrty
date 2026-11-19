@@ -1,8 +1,10 @@
 package httpsec
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/errwalk"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
@@ -276,58 +279,6 @@ func challengeTokenType(token string, s *session.Session) TokenType {
 	return tokenTypeOf(s)
 }
 
-// maxChallengeWalkDepth bounds how deep firstChallenge's fallback walk follows
-// Unwrap, which bounds the recursion depth and work it spends on a
-// pathologically deep chain.
-const maxChallengeWalkDepth = 100
-
-// firstChallenge returns the first non-nil *ChallengeError in err's chain. It
-// keeps errors.As semantics: it tries errors.As first, so an error presenting
-// a challenge through its own As(any) bool method is recognised, at any depth,
-// and keeps what errors.As finds when it is non-nil. errors.As stops on a
-// typed-nil *ChallengeError, so when it finds nothing or a typed nil,
-// firstChallenge falls back to a walk in the order errors.As visits the chain,
-// depth first through both Unwrap() error and Unwrap() []error, which steps
-// over a typed nil instead of stopping on it, so a real challenge joined
-// behind one is still found. The fallback follows Unwrap only, never As
-// methods, and stops at depth maxChallengeWalkDepth (100), the outermost
-// error being depth 0. firstChallenge returns nil when neither finds one.
-//
-// An As method that panics is not recovered, as errors.As does not recover
-// it. A cyclic chain is not guarded either: errors.As, like the errors.Is
-// calls LookupStatus makes before it, loops on it without end.
-func firstChallenge(err error) *ChallengeError {
-	var ch *ChallengeError
-	if errors.As(err, &ch) && ch != nil {
-		return ch
-	}
-
-	return findChallenge(err, 0)
-}
-
-func findChallenge(err error, depth int) *ChallengeError {
-	if err == nil || depth > maxChallengeWalkDepth {
-		return nil
-	}
-
-	if ch, ok := err.(*ChallengeError); ok && ch != nil { //nolint:errorlint // the walk is the unwrapping
-		return ch
-	}
-
-	switch u := err.(type) { //nolint:errorlint // the walk is the unwrapping
-	case interface{ Unwrap() error }:
-		return findChallenge(u.Unwrap(), depth+1)
-	case interface{ Unwrap() []error }:
-		for _, e := range u.Unwrap() {
-			if ch := findChallenge(e, depth+1); ch != nil {
-				return ch
-			}
-		}
-	}
-
-	return nil
-}
-
 // statusRow is one refusal and the status it answers with. The table is
 // ordered, and the first row whose sentinel the error matches decides, so two
 // rows can never disagree about an error that wraps both.
@@ -583,7 +534,8 @@ var statusTable = []statusRow{
 // ones 401, revealing which usernames exist.
 //
 // LookupStatus returns the same status and also reports whether the error was
-// recognised; StatusForError is defined through it.
+// recognised; StatusForError is defined through it, and reports a
+// classification that gave up as LookupStatus does.
 func StatusForError(err error) int {
 	status, _ := LookupStatus(err)
 
@@ -618,62 +570,197 @@ func StatusForError(err error) int {
 // re-reads the connection error it wraps as another status.
 //
 // A nil *ChallengeError in the chain is treated as no challenge.
+//
+// The chain is walked once, under fixed rules, and every check reads that one
+// walk: a nil-pointer link is skipped without calling any of its methods, and
+// the walk gives up after examining 1,000 entries, repeats and nil entries
+// included, or when a link's Unwrap, Is or As method panics. A walk that gives
+// up, on a cyclic chain, a fan-out of joins or a panicking link, is reported
+// as (500, false), unrecognised, and never as a guess at what the unreached
+// link would have said.
+//
+// Each walk that gives up writes one Error record to slog.Default(), with the
+// message "httpsec: error classification aborted" and a reason attribute,
+// "budget" or "panic"; a panic adds its Go type and where it happened,
+// never its value. The record never carries the error's text, and no method of
+// the error is called to write it. Called once per request by a consumer's
+// error handler, it writes one record per aborted request, unsampled. The
+// chain's own error dispatch does not call it: it writes the record to the
+// chain's logger, sampled (WithLogger, WithRefusalLogInterval).
 func LookupStatus(err error) (status int, ok bool) {
-	if err == nil {
-		return http.StatusInternalServerError, false
+	status, ok, abort := lookup(err)
+	if abort != nil {
+		// It takes no context, so the record carries none.
+		attrs := classificationAbortedAttrs(abort)
+		args := make([]any, len(attrs))
+
+		for i, a := range attrs {
+			args[i] = a
+		}
+
+		slog.Default().Error(msgClassificationAborted, args...)
+	}
+
+	return status, ok
+}
+
+// msgClassificationAborted is the record an aborted classification writes, and
+// classificationAbortedKeyPrefix the start of every key the chain samples it
+// under (classificationAbortedKey).
+const (
+	msgClassificationAborted       = "httpsec: error classification aborted"
+	classificationAbortedKeyPrefix = "classification-aborted:"
+)
+
+// classificationAbortedKey is the sampling key of abort's record: one per
+// reason, "classification-aborted:budget" or "classification-aborted:panic", so
+// a budget abort never hides a panic abort in the same window. Several reports
+// of one reason inside a window, from the dispatch and the quiet sites of one
+// request or of many, write one record.
+func classificationAbortedKey(abort error) string {
+	return classificationAbortedKeyPrefix + errwalk.Reason(abort)
+}
+
+// classificationAbortedAttrs are the attributes of an aborted classification's
+// record: the reason, and for a recovered panic its redacted attributes, whose
+// frames are those the walk captured as it recovered, so they name where the
+// panic happened rather than this record's writer. abort is one of errwalk's
+// own values; nothing is read from it but its type, a panic's captured frames
+// and its recovered value, which is described by type only.
+func classificationAbortedAttrs(abort error) []slog.Attr {
+	attrs := []slog.Attr{slog.String("reason", errwalk.Reason(abort))}
+
+	if p, ok := abort.(*errwalk.PanicError); ok && p != nil { //nolint:errorlint // errwalk's own value, never wrapped
+		attrs = append(attrs, diag.PanicAttrsFrom(p.Value, p.Frames)...)
+	}
+
+	return attrs
+}
+
+// logClassificationAborted writes one unsampled record of abort to log.
+func logClassificationAborted(ctx context.Context, log *slog.Logger, abort error) {
+	log.LogAttrs(ctx, slog.LevelError, msgClassificationAborted, classificationAbortedAttrs(abort)...)
+}
+
+// statusQuietly is the status lookup gives err, for code inside a run that
+// classifies a refusal for its own purposes: the refusal event, the Basic
+// challenge, the OIDC sign-in challenge and the session-signals checks. An
+// abort answers 500, as the dispatch does. c is the exchange's answering chain
+// (Exchange.answeringChain), the one whose dispatch answers err, not the chain
+// whose interceptor raised it: with one chain assembled inside another, that is
+// the outer one.
+//
+// It reports an abort only when c has a consumer's error handler
+// (WithErrorHandler): the chain's dispatch then classifies nothing, so without
+// this report an abort the library met would go unseen. The record goes
+// through c's logger and sampler under the dispatch's per-reason key, so the
+// sites of one request, and the requests of one window, write one record. A
+// handler that also calls LookupStatus or StatusForError writes a second
+// record, to slog.Default(): over-reporting, never silence. Without a consumer
+// handler it stays quiet, because the dispatch classifies the same refusal and
+// reports it: one request, one record. A nil c, a site running outside any
+// chain's interceptors, stays quiet too.
+func (c *Chain) statusQuietly(ctx context.Context, err error) int {
+	status, _, abort := lookup(err)
+	if abort != nil && c != nil && c.errorHandler != nil {
+		c.logClassificationAborted(ctx, abort)
+	}
+
+	return status
+}
+
+// statusUnreported is the status lookup gives err, never reporting an abort.
+// It is for refused, whose callers hold no chain; making each of them report
+// is left to the refusal-path sites that are to walk the error themselves.
+func statusUnreported(err error) int {
+	status, _, _ := lookup(err)
+
+	return status
+}
+
+// lookup is LookupStatus without reporting: it also returns the abort that
+// stopped the classification, nil when none did, and never logs. The status
+// is 500 and ok false whenever abort is non-nil. abort is one of errwalk's own
+// values, so errwalk.Reason names it; it must reach Reason unwrapped.
+//
+// The checks run in a fixed order, and the first that matches decides: an
+// issuing failure, ErrChallengeUnavailable, the OpenID Provider's and a
+// recovery's dependency failures, a challenge, the status table, a library
+// fault, and the named dependency sentinels.
+func lookup(err error) (status int, ok bool, abort error) {
+	unrecognised := func(stop error) (int, bool, error) {
+		return http.StatusInternalServerError, false, stop
+	}
+
+	chain, abort := errwalk.Flatten(err)
+	if abort != nil {
+		return unrecognised(abort)
+	}
+
+	if len(chain) == 0 {
+		// nil, or a nil pointer: nothing to recognise.
+		return unrecognised(nil)
 	}
 
 	// An issuing failure is a dependency failure whatever its cause wraps,
 	// so it is answered before the challenge and the refusal table are read.
-	var issuing *issueFailure
-	if errors.As(err, &issuing) {
-		return http.StatusInternalServerError, true
+	if _, found, stop := errwalk.As[*issueFailure](chain); stop != nil {
+		return unrecognised(stop)
+	} else if found {
+		return http.StatusInternalServerError, true, nil
 	}
 
 	// So is a challenge verifier that could not answer, whatever its own
-	// error wraps: an outage never reads to the client as a refusal.
-	if errors.Is(err, ErrChallengeUnavailable) {
-		return http.StatusInternalServerError, true
+	// error wraps: an outage never reads to the client as a refusal. And a
+	// dependency of the OpenID Provider or of a recovery that failed, whatever
+	// its own error wraps.
+	for _, sentinel := range [...]error{ErrChallengeUnavailable, oidcprovider.ErrDependency, recovery.ErrDependency} {
+		if found, stop := errwalk.Is(chain, sentinel); stop != nil {
+			return unrecognised(stop)
+		} else if found {
+			return http.StatusInternalServerError, true, nil
+		}
 	}
 
-	// And a dependency of the OpenID Provider or of a recovery that failed,
-	// whatever its own error wraps.
-	if errors.Is(err, oidcprovider.ErrDependency) || errors.Is(err, recovery.ErrDependency) {
-		return http.StatusInternalServerError, true
-	}
-
-	// A nil *ChallengeError carries no kind to answer: it is no challenge,
-	// and the rest of the chain decides.
-	if ch := firstChallenge(err); ch != nil {
+	// A nil *ChallengeError carries no kind to answer: the walk skips it, and
+	// the rest of the chain decides.
+	if ch, found, stop := errwalk.As[*ChallengeError](chain); stop != nil {
+		return unrecognised(stop)
+	} else if found {
 		switch ch.Kind {
 		case policy.ChallengePasswordChange, policy.ChallengeMFAEnrolment, policy.ChallengeAccountRecovery:
-			return http.StatusForbidden, true
+			return http.StatusForbidden, true, nil
 		default:
-			return http.StatusUnauthorized, true
+			return http.StatusUnauthorized, true, nil
 		}
 	}
 
 	for _, row := range statusTable {
-		if errors.Is(err, row.err) {
-			return row.status, true
+		if found, stop := errwalk.Is(chain, row.err); stop != nil {
+			return unrecognised(stop)
+		} else if found {
+			return row.status, true, nil
 		}
 	}
 
 	// What remains matched no row, so a library dependency failure is 500
 	// here, exactly as the fallback below answers it, but claimed as the
 	// library's.
-	var fault *diag.Fault
-	if errors.As(err, &fault) {
-		return http.StatusInternalServerError, true
+	if _, found, stop := errwalk.As[*diag.Fault](chain); stop != nil {
+		return unrecognised(stop)
+	} else if found {
+		return http.StatusInternalServerError, true, nil
 	}
 
 	for _, sentinel := range dependencySentinels {
-		if errors.Is(err, sentinel) {
-			return http.StatusInternalServerError, true
+		if found, stop := errwalk.Is(chain, sentinel); stop != nil {
+			return unrecognised(stop)
+		} else if found {
+			return http.StatusInternalServerError, true, nil
 		}
 	}
 
-	return http.StatusInternalServerError, false
+	return unrecognised(nil)
 }
 
 // dependencySentinels are the library's named dependency-unavailable
