@@ -274,7 +274,7 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
     - the core and fibersec log helpers use it.
 
   Verify with `go test -race -run 'Panic|Abort' -count=1 ./internal/... ./httpsec/` and `go -C httpsec/fibersec test -race -count=1 ./...`.
-- [ ] 10.9 Every other inspection of the refused error on the refusal path uses the walk (design decision 11).
+- [x] 10.9 Every other inspection of the refused error on the refusal path uses the walk (design decision 11).
   - First inventory, with gopls, every stdlib `errors.Is` or `errors.As` that runs over the refused error before or beside the lookup, and report it. Expected:
     - `refused()`'s outage check;
     - `authorization.go`'s check;
@@ -288,7 +288,7 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
   - Green: each site checks over one `errwalk.Flatten`. Its existing order and outcome stay the same for every non-hostile error.
 
   Verify with `go test -race -count=1 ./...` in the root module.
-- [ ] 10.9b Fixes from the 10.9 review (design decision 11 failure rows). Each item needs a failing test first.
+- [x] 10.9b Fixes from the 10.9 review (design decision 11 failure rows). Each item needs a failing test first.
   - A quiet site (`reportQuietly`: authorization, the DPoP challenge, `answerRetryOnly`, `markPerRequestThrottle`, `emitPerRequestDenial`, `recordThrottledBearer`, and the DPoP guard path through `challenge()`) reports whenever its own walk aborted and the request's lookup did not.
     - Each site has a row using an error whose `Is` panics only for the sentinel that site checks. Each row fails with `expected: 1 actual: 0` first.
     - Under a consumer handler, each site also needs its own row, because only two sites have one today.
@@ -296,7 +296,7 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
   - `emitRefusal` marks the refusal reported on the exchange when its walk aborts. A nested chain with `WithRefusalLogInterval(0)` then writes exactly one record. It fails with 2 first.
   - A consumer error wrapping `ErrDPoPNonceRequired` on a DPoP chain without nonces no longer panics. It is refused as the plain DPoP refusal with no nonce header. Reproduce the nil-pointer panic first.
   - Verify with `go test -race -count=1 ./...` (root).
-- [ ] 10.9a The rest of 10.9 (design decision 11 failure rows). Each item needs a failing test first.
+- [x] 10.9a The rest of 10.9 (design decision 11 failure rows). Each item needs a failing test first.
   - `dpopAnswersChallenge` (`oidc_consents.go`) and the switch in `emitResponseRefused` (`challenge_spend.go`) use the walk. An `Is` that panics only for the sentinel each one checks no longer escapes.
   - A guard refusal behind `WithGuardErrorHandler`, whose `GuardRefused` event or DPoP challenge aborts, writes exactly one record to the default logger. It fails with 0 records first (the 10.9b re-review's rows G1, G1b, G2 and the gin probe).
   - Remove the process-wide reporter (`eventsink.SetGuardAbortReporter`):
@@ -341,7 +341,7 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
   - Per call site, the red test has the port's mock return a `cycleOne`, a `cycleMany` (in a subprocess) and a `panicUnwrap`. These hang, crash or panic on the current code. After the fix, the flow takes its existing branch for a failing port, and one record is written. A non-hostile parity row pins the old outcome.
   - Where that branch conceals (unknown user, unknown credential, a concealed lock, uniform recovery), assert the response is byte-identical to a plain port outage.
   - Verify each dispatch with `go test -race -count=1 ./...` in the affected modules.
-- [ ] 10.13a The walker does not allocate for chains that fit (design decision 11, performance).
+- [x] 10.13a The walker does not allocate for chains that fit (design decision 11, performance).
   - Add a buffer-taking walk, for example `errwalk.FlattenInto(buf []error, err error) (Chain, error)`, that fills the caller's buffer and grows onto the heap only past its capacity. Keep `Flatten`.
   - The lookup, the mapper and fibersec use it with a stack array, for example `var buf [16]error`. Choose the size from the benchmark rows.
   - Red: `testing.AllocsPerRun` on `LookupStatus` for `bare-sentinel`, `wrap-5` and `join-3-challenge` asserts 0 allocations attributable to the walk, measured against the pre-walk baseline's count.

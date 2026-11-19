@@ -256,6 +256,11 @@ The library also protects every error returned by a consumer-supplied port befor
 - The walk replaces many stdlib traversals with one flatten per classification.
 - The walker flattens into a buffer the caller provides, a fixed array on the caller's stack. A chain that fits takes no heap allocation, and only a longer chain grows onto the heap. Task 10.13 found the first cut allocating on every call (`chain-50`: 8 B to 2,112 B), and this rule removes that.
 - Task 10.13 benchmarks the lookup and the mapper against the pre-walk baseline on an idle machine.
+- **Measured** (task 10.13a, 2026-11-19, `c1bf3e97` against `ca2d9887`, 10 alternating rounds, benchstat, Apple M4 Pro, go1.27; figures drift by machine):
+  - `LookupStatus` time per call: −23% to −38% on every row. Allocations drop to 0 on bare-sentinel, wrap-5, join-3-challenge and unknown (from 1–2).
+  - `MapError` time per call: −6% to −33% on every row.
+  - `MapError` allocations: 0 on unknown, and fewer than the baseline on the recognised rows: 1, 1 and 4, from 2, 2 and 5. The remaining allocations build the returned `*prblm.Problem`, not the walk, which the unknown row shows takes none.
+  - `chain-50` allocates as it grows past the stack buffer (lookup 1,664 B, mapper 3,440 B), which is accepted.
 
 Its rules are pinned, and prblm adopts the same rules for its v0.3.0 hardening, so a consumer sees one rule across both libraries.
 - **Order:** root first, then depth first, in the order `errors.Is` and `errors.As` visit. Each visited node's `Unwrap` is called once. A nil entry in an `Unwrap() []error` is skipped. A nil result from `Unwrap() error` ends that branch.
