@@ -767,7 +767,8 @@ Steps:
 - Later dispatches: each call-site group's files and their tests, at most six call sites per dispatch.
 
 **Interfaces:**
-- Produces `porterr.Sanitize(err error, unavailable error) error`.
+- Produces `porterr.Sanitize(err error, unavailable error) error`, which writes its record to `slog.Default()`.
+- Produces `porterr.SanitizeTo(ctx context.Context, logger *slog.Logger, err error, unavailable error) error`, which writes its record to `logger` with `ctx`. A nil logger means `slog.Default()`. `Sanitize(err, u)` is `SanitizeTo(context.Background(), nil, err, u)`.
   - A nil error returns nil.
   - When `errwalk.Flatten` completes, the error is returned unchanged.
   - When it aborts, the result is a fixed `*porterr.Fault`. `Is(unavailable)` reports true on it, and so does `Is(porterr.ErrUnwalkable)`. Its `Error()` text is fixed, it carries the abort (reason and frames), and it wraps nothing of the consumer's.
@@ -784,7 +785,8 @@ Steps:
   - a plain error comes back as the same value;
   - a wrapped `unavailable` comes back unchanged;
   - a cycle, a fan-out and a panicking `Unwrap` each give a `*Fault`, satisfy `errors.Is(_, unavailable)` and `errors.Is(_, porterr.ErrUnwalkable)`, contain no consumer text, and write 1 record;
-  - with `unavailable` set to `porterr.ErrUnwalkable`, an aborting row gives a `*Fault` that matches no library refusal sentinel.
+  - with `unavailable` set to `porterr.ErrUnwalkable`, an aborting row gives a `*Fault` that matches no library refusal sentinel;
+  - `TestSanitizeTo`: an aborting error writes 1 record to the given logger and 0 to `slog.Default()`. The record carries an attribute from the given `ctx` (through a context-reading handler). A nil logger writes 1 record to `slog.Default()`. A walkable error writes nothing anywhere.
 - [ ] **Step 3: Watch them fail, then implement, then run** `go test -race -count=1 ./internal/...`. Review, then commit.
 - [ ] **Step 4 (Dispatches 2 and on): apply the sanitizer to each port call site.**
   - It goes immediately after every port call whose error the library reads, log-only calls included.
@@ -802,11 +804,11 @@ Steps:
   8. passkey
   9. MFA and enrolment. Includes the `method.Verify` read at `httpsec/challenge_spend.go:174`, with a row whose `Is` panics only for `mfa.ErrVerifyThrottled`. That row is the accepted sentinel-specific case, so its expected outcome is net/http's per-request recovery, not a sanitized answer. Also `policy/mfa_requirement.go` (`MFARequirementLookup.Required`) and `httpsec/challenge.go` (`ChallengeVerifier.Verify`)
   10. authorization, plus `policy/engine.go` (`Policy.Evaluate`)
-  11. token and one-time. Includes the `IssueWithin` read at `httpsec/challenge_spend.go:278`
+  11. token and one-time. Includes the `IssueWithin` read at `httpsec/challenge_spend.go:278`, and `internal/depfault.Store`: it sanitizes the store's error with `porterr.ErrUnwalkable` before handing it to the `onetime` manager and its `Watch`. Red row: a one-time store returning `cycleOne` reaches `depfault.Refusal` (`challenge_spend.go:73`, `recover.go:510`, `passkey/login.go:283`) only as a `*porterr.Fault`, with 1 record
   12. `store/seal`
   13. `expiry/sweep`, and the `webauthn` `MetadataSource`. Includes the `PurgeExpired` read at `httpsec/challenge_spend.go:110` on the sweep path, which is not a refusal path, so its row asserts the sweep's existing failure outcome
 
-  At each call site, `err = porterr.Sanitize(err, <the port's unavailable sentinel, or porterr.ErrUnwalkable>)` goes immediately after the port method returns. The main session names the sentinel per port when it splits a group.
+  At each call site, `err = porterr.SanitizeTo(ctx, <the site's logger>, err, <the port's unavailable sentinel, or porterr.ErrUnwalkable>)` goes immediately after the port method returns. A site that holds no logger uses `porterr.Sanitize(err, …)` instead. Each hostile row in a site that holds a logger asserts the record lands on that logger, not on the default one. The main session names the sentinel per port when it splits a group.
 - [ ] **Step 5 (each call-site dispatch): write the red tests first.**
   - `TestPortErrors_<Group>` is a table. The port's mock (`use-mockgen`) returns a `cycleOne`, a `cycleMany` in a subprocess, a `panicUnwrap`, and an outage parity error.
   - Each hostile row asserts:

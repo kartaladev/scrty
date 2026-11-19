@@ -321,7 +321,7 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
 
     Red: each is handed a cyclic error and an error whose `Unwrap` panics, and hangs or panics on the current code. After the fix it returns its defined safe answer: `Failure` omits `cancelled`, `causeOf` returns the error unchanged, and `Silent` reports false.
   - Then the sanitizer:
-    - `porterr.Sanitize(err error, unavailable error) error`, in `internal/porterr`, which every flow can import.
+    - `porterr.Sanitize(err error, unavailable error) error`, in `internal/porterr`, which every flow can import, and `porterr.SanitizeTo(ctx context.Context, logger *slog.Logger, err error, unavailable error) error` for a site that holds a logger. A nil logger means `slog.Default()`. A site uses `SanitizeTo` with its own logger whenever it holds one (decision 11, "Where the sanitizer's record goes").
     - It walks `err` once. When the walk completes, it returns `err` unchanged. When the walk aborts, it returns a fixed library error that `errors.Is(_, unavailable)` matches, carries no consumer text, and reports one record.
     - `porterr.ErrUnwalkable` is the internal sentinel for a port that has no unavailable sentinel of its own, such as the session `Store`, `identity.UserLoader` on the reload path, or `apikey.Store` management. The fixed error always matches it, so it reaches the site's catch-all branch (decision 11, "A port with no unavailable sentinel").
     - Unit-test it first.
@@ -336,7 +336,7 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
     - passkey;
     - MFA and enrolment, including the `method.Verify` read at `httpsec/challenge_spend.go:174` (named by the 10.9a review), `policy/mfa_requirement.go` `MFARequirementLookup.Required`, and `httpsec/challenge.go` `ChallengeVerifier.Verify`;
     - authorization, including `policy/engine.go` `Policy.Evaluate`;
-    - token and one-time, including the `IssueWithin` read at `httpsec/challenge_spend.go:278` (named by the 10.9a review);
+    - token and one-time, including the `IssueWithin` read at `httpsec/challenge_spend.go:278` (named by the 10.9a review), and `internal/depfault.Store`. That wrapper runs immediately after the consumer's one-time store call and passes the raw error both to the `onetime` manager and to its `Watch`, whose `Failure()` reaches `depfault.Refusal` (10.12 dispatch 1 review). It sanitizes with `porterr.ErrUnwalkable` before passing the error on;
     - `store/seal`;
     - `expiry/sweep`, including the `PurgeExpired` read at `httpsec/challenge_spend.go:110` (named by the 10.9a review), and the webauthn `MetadataSource` in its nested module.
   - Per call site, the red test has the port's mock return a `cycleOne`, a `cycleMany` (in a subprocess) and a `panicUnwrap`. These hang, crash or panic on the current code. After the fix, the flow takes its existing branch for a failing port, and one record is written. A non-hostile parity row pins the old outcome.

@@ -251,6 +251,12 @@ The library also protects every error returned by a consumer-supplied port befor
   - Rejected: new public per-port sentinels. They grow the API for a case the catch-all already answers.
   - Rejected: borrowing the nearest existing sentinel. `authenticate.ErrUnavailable` answers 401 where the reload sites answer 500, so it would change their outcome.
   - The name follows prblm v0.3.0's `ErrUnwalkableError`, so the two libraries describe the case alike.
+- **Where the sanitizer's record goes** follows the reporting rule below.
+  - A site that holds a logger calls `porterr.SanitizeTo(ctx, logger, err, unavailable)`. The record goes to that logger with the request's context, so a consumer who wired only `WithLogger` still sees port aborts, with their trace attributes.
+  - A site with no logger calls `porterr.Sanitize`, which writes to `slog.Default()`.
+  - A nil logger means `slog.Default()`.
+  - The sanitizer's record is not sampled, as on the default-logger paths (failure row "A hostile error recurs on every request").
+  - Found by the dispatch 1 review: the first cut always wrote to the default logger.
 - **The outcome of an abort is the site's existing branch for a failing port, not a new 500.** That branch was already designed to conceal: a user-store outage reads exactly like a wrong password, and recovery start is uniform. So an abort is never a not-found, a throttle or an outage claim, and never an enumeration oracle.
 - **Accepted:** an `Is` method that panics only for one particular sentinel passes the walk, which calls no `Is`, and panics later at a stdlib check. net/http recovers that panic per request, so it neither hangs nor crashes the process. It is recorded in the failure table.
 - **Not ports:**
