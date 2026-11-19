@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/magiclink"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/origin"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -468,7 +469,7 @@ func (i *magicLinkInterceptor) consume(ex *Exchange) error {
 		nonce, _ = ex.Request.Cookie(i.cookieName)
 	}
 
-	check, out := redemptionPolicyCheck(i.engine, i.enforced, i.challengeMethods, factor.MagicLink, i.now)
+	check, out := redemptionPolicyCheck(i.engine, i.enforced, i.challengeMethods, factor.MagicLink, i.now, i.log)
 
 	// Built and issued inside the checks, after every refusal check has
 	// passed and before the redeemer consumes the link, so a credential that
@@ -496,12 +497,15 @@ func (i *magicLinkInterceptor) consume(ex *Exchange) error {
 	// check, and a login any check refused is never issued for.
 	checks := make([]magiclink.Check, 0, 2+len(i.checks))
 	checks = append(checks, check)
-	checks = append(checks, wrapChecks(i.checks, out)...)
+	checks = append(checks, wrapChecks(i.checks, out, i.log)...)
 	checks = append(checks, func(ctx context.Context, p identity.Principal, passwordChangedAt time.Time) error {
 		return login.issue(ctx, postAuthenticationInput(&p, factor.MagicLink, "", passwordChangedAt, i.now()))
 	})
 
 	redemption, err := i.redeemer.Redeem(ctx, token, nonce, checks...)
+	// The redeemer is a consumer port and its error is walked below: a chain
+	// that cannot be walked is answered as a plain outage, recorded once.
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
 	if err != nil {
 		if countsAgainstSource(i.countRefusals, err, out) {
 			recordSourceFailure(ctx, i.guard, src)
