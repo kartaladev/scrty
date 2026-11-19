@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/policy"
 )
@@ -479,7 +480,9 @@ func (p *Policy) FailureStreakRetention() time.Duration { return p.capRetention 
 // whether the identifier is held, still denies. Failing open
 // would let an attacker who can break the store disable lockout altogether, so
 // the one thing this policy will not do is treat "I do not know" as "nothing
-// recorded".
+// recorded". A store error whose chain cannot be inspected (a cycle, a
+// fan-out, an Unwrap that panics) is denied the same way, with a fault of
+// fixed text in its place, reported once to the policy's logger (WithLogger).
 func (p *Policy) Evaluate(ctx context.Context, in *policy.Input) policy.Decision {
 	if in == nil {
 		// Nothing to key on, and allowing would make a wiring mistake look
@@ -499,6 +502,7 @@ func (p *Policy) Evaluate(ctx context.Context, in *policy.Input) policy.Decision
 		// A hold is checked first and decides alone: it outlives every
 		// window, so the windowed count has nothing to add to it.
 		streak, err := p.streaks.FailureStreak(ctx, in.Username, now.Add(-p.capRetention))
+		err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable)
 		if err != nil {
 			return storeDenied(err)
 		}
@@ -508,6 +512,7 @@ func (p *Policy) Evaluate(ctx context.Context, in *policy.Input) policy.Decision
 	}
 
 	count, err := p.store.FailureCount(ctx, in.Username, now.Add(-p.window))
+	err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return storeDenied(err)
 	}
@@ -529,6 +534,7 @@ func (p *Policy) Evaluate(ctx context.Context, in *policy.Input) policy.Decision
 
 	wait := p.waitFor(count)
 	recent, err := p.store.FailureCount(ctx, in.Username, now.Add(-wait))
+	err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return storeDenied(err)
 	}
@@ -658,7 +664,9 @@ func (p *Policy) Reset(ctx context.Context, username string) error {
 // text; it stays reachable through errors.Is and errors.As, but its text
 // never is. ErrRetainSinceRequired — the sentinel a reaper reports for a zero
 // cutoff, which this policy never passes — is the one bare exception: it
-// comes back as itself, since it carries no dependency text of its own.
+// comes back as itself, since it carries no dependency text of its own. A
+// reaper's error whose chain cannot be inspected comes back as a fault of
+// fixed text, never as that sentinel, reported once to the policy's logger.
 func (p *Policy) PurgeExpired(ctx context.Context) (int, error) {
 	reaper, ok := p.store.(AttemptReaper)
 	if !ok {
@@ -668,6 +676,7 @@ func (p *Policy) PurgeExpired(ctx context.Context) (int, error) {
 	now := p.clock.Now()
 
 	removed, err := reaper.DeleteAttemptsBefore(ctx, now.Add(-p.window))
+	err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return 0, purgeFailed(err, "lockout: purge stale failed attempts")
 	}
@@ -677,6 +686,7 @@ func (p *Policy) PurgeExpired(ctx context.Context) (int, error) {
 	}
 
 	streaks, err := p.streaks.DeleteStreaksBefore(ctx, now.Add(-p.capRetention))
+	err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return 0, purgeFailed(err, "lockout: purge inactive consecutive failures")
 	}
