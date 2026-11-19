@@ -464,9 +464,9 @@
 2. 10.2, then 10.3 (same files). 10.5 runs in parallel with both.
 3. 10.10, after 10.2, 10.3 and 10.5. It touches errwalk, diag, the core's log helper and fibersec's.
 4. 10.9 and 10.4 in parallel: 10.9 owns the core refusal-path files, and 10.4 owns prblmsec.
-5. 10.9a, after 10.9.
-6. 10.12, in sequential dispatches by group, after 10.9a. These share the core.
-7. 10.13, in parallel with 10.12. It only adds `_test.go` benchmark files, plus an export of `main`.
+5. 10.13 (the benchmark files are already written), 10.9b and 10.13a in parallel. 10.9b owns the refusal-path files: `events.go`, `authorization.go`, `dpop_nonce.go`, `signals_retry.go` and `resolve.go`. 10.13a owns `internal/errwalk`, the lookup in `errors.go`, the mapper and fibersec.
+6. 10.9a, after 10.9b. It shares `dpop_nonce.go`, `resolve.go` and `signals_retry.go`.
+7. 10.12, after 10.9a and 10.13a, in sequential dispatches: the internals, then the sanitizer, then the call-site groups.
 8. 10.11, after 10.4 and once nothing else is running `test/`. It changes prblmsec's go.mod and the test module.
 9. 10.6, then 10.7, then 10.8.
 
@@ -681,83 +681,147 @@
 - [ ] **Step 2: Watch them fail.** Expected: `expected: 1 actual: 0`, and `expected: 2 actual: 1`.
 - [ ] **Step 3: Implement**, then run `go test -race -count=1 ./httpsec/`. Expected: PASS.
 
-### Task 10.9a: 10.9 follow-up
+### Task 10.9b: Fixes from the 10.9 review
 
 **Files:**
-- `httpsec/oidc_consents.go` (`dpopAnswersChallenge`)
-- `httpsec/challenge_spend.go` (`emitResponseRefused`)
-- the guard refusal path that `WithGuardErrorHandler` takes (`httpsec/guards.go`)
-- `httpsec/refusal_path_hostile_test.go`
-
-**Interfaces:** consumes `refusalWalk`, `walkRefusal`, `refusalAs` and `reportAbort` from 10.9, and `logClassificationAborted` from 10.3.
-
-- [ ] **Step 1: Write the failing tests.**
-  - `selectiveIs` is an error whose `Is` panics only for the sentinel each of the two sites checks. Route it through the DPoP-answer path and through the response-refused event path. Expected: no panic, the extra challenge or event is dropped, and exactly one record is written.
-  - A guard with `WithGuardErrorHandler` refuses a cyclic error, on a chain with events on, and separately on a DPoP chain. Expected: exactly one record on the default logger.
-- [ ] **Step 2: Watch them fail.** Expected: a panic escapes, or `should have 1 item(s), but has 0`.
-- [ ] **Step 3: Implement.**
-  - Both sites check through the walk.
-  - The guard reports its own abort to `slog.Default()` when `WithGuardErrorHandler` is set, and only then.
-- [ ] **Step 4: Run.** `go test -race -count=1 ./...` (root). Expected: PASS.
-
-### Task 10.12: Consumer-port error reads use the walk
-
-**Files:** set by the inventory. Each group's dispatch owns only its group's files and their tests.
+- Modify: `httpsec/events.go` (`reportQuietly`, `emitRefusal`), `httpsec/authorization.go` (fix the comment as well), `httpsec/dpop_nonce.go`, `httpsec/signals_retry.go`, `httpsec/resolve.go`.
+- Test: `httpsec/refusal_path_hostile_test.go`.
 
 **Interfaces:**
-- Consumes `errwalk`, plus the core's `refusalWalk` helpers and its abort logging.
-- One new helper, and only if a group needs it: `func portFailed(err error) (abort error)`, or an equivalent of the 10.9 helpers.
-- Reuse the 10.9 helpers before adding anything.
+- Consumes `refusalWalk`, `walkRefusal`, `reportQuietly` and `reportAbort` from 10.9.
+- The rule for reporting:
+  - If the site's own walk aborts and the request's lookup does not, the site reports.
+  - If both abort, the site stays quiet, because the dispatch reports.
+  - To know whether the lookup aborts, call the core's `lookup(err)` once per request at the site, or reuse a classification already cached on the exchange.
 
-- [ ] **Step 1: Inventory (main-session gate).** Dispatch read-only research. List every stdlib `errors.Is`, `errors.As` or `errors.AsType` in the root module whose argument is, or wraps, an error a consumer port returned.
-  - Group the sites by flow: session and bearer resolution; login and lockout; Basic and API key; throttle and limiters; recovery and magic link; OIDC; anything else.
-  - Give each group's size.
-  - The main session splits the work into dispatches of at most six sites each.
-- [ ] **Step 2: Per group, write the failing tests first.**
-  - `TestPortErrors_<Group>_HostileChains` (table). For each site, a port mock (gomock, per the `use-mockgen` skill) returns:
-    - a `cycleOne`;
-    - a `cycleMany`, run alone or in a subprocess;
-    - a `panicIs`;
-    - a non-hostile parity error.
-  - Each hostile row asserts:
-    - status 500;
-    - no hang (2 s watchdog);
-    - no panic;
-    - one record;
-    - no throttle mark or outage claim.
-  - Each parity row asserts the HEAD outcome.
-- [ ] **Step 3: Watch them fail.** Expected: a hang, a fatal error or an escaped panic on every hostile row. Report each.
+Steps:
+- [ ] **Step 1: Write the failing tests.** Add `TestRefusalPath_SelectiveAborts`, a table. Each site gets a `selectiveIs{matches: X, panicsOn: Y}` row. The reviewer's four rows come first:
+  - signals retry: matches `ErrAccessDenied`, panics on `ErrStreamingStarted`;
+  - throttle mark: `ErrSessionIdle`, `ratelimit.ErrThrottled`;
+  - DPoP challenge with events off: `ErrAuthenticationRequired`, `ErrDPoPNonceRequired`;
+  - authorization: `ErrChallengeUnavailable`, `authorize.ErrAuthenticationRequired`.
+
+  Then one row each for `emitPerRequestDenial` and `recordThrottledBearer`. Every row asserts the site's status, no panic and exactly 1 record. Under a consumer handler that does not classify, add the same rows again, one per site.
+- [ ] **Step 2: Write `TestRefusalPath_NestedAbortSamplingOff`.** An inner and an outer chain both have events on and `WithRefusalLogInterval(0)`, and a cyclic refusal is raised. Expected: exactly 1 record.
+- [ ] **Step 3: Write `TestDPoP_ConsumerNonceRequiredWithoutNonces`.** A DPoP chain without nonces refuses `fmt.Errorf("x: %w", httpsec.ErrDPoPNonceRequired)`. Expected: no panic, a 401 DPoP refusal, and no `DPoP-Nonce` header.
+- [ ] **Step 4: Watch each fail.** Expected:
+  - the selective rows give `expected: 1 actual: 0`;
+  - the nested test gives `expected: 1 actual: 2`;
+  - the DPoP test gives a nil pointer dereference.
+- [ ] **Step 5: Implement.**
+  - `reportQuietly` follows the rule above.
+  - `emitRefusal` sets `ex.refusalReported = true` on its abort path.
+  - The DPoP challenger skips the nonce when the chain has no nonce source.
+- [ ] **Step 6: Run.** `go test -race -count=1 ./...` (root module), the fibersec and ginsec suites, `TestProblemParity` and golangci-lint. Expected: PASS, with 0 lint issues.
+
+### Task 10.9a: The rest of 10.9
+
+**Files:**
+- `httpsec/oidc_consents.go`, `httpsec/challenge_spend.go`, `httpsec/guards.go`.
+- The missed sites: `httpsec/resolve.go` (`emitLoadRefusal`), `httpsec/dpop_nonce.go` (around lines 263 and 296), `httpsec/signals_retry.go` (around line 155), `httpsec/oidc_login.go` (`emitCallbackRefused`), `httpsec/passkey_login.go` (`emitPasskeyRefused`), `httpsec/mfa_enrol.go` (`refusalReason`) and `oidcprovider/events.go` (around line 222).
+- Test: `httpsec/refusal_path_hostile_test.go`, plus a test in `oidcprovider`.
+
+**Interfaces:** consumes the 10.9 helpers and the reporting rule from 10.9b.
+
+Steps:
+- [ ] **Step 1: Confirm the inputs.** For the three sites marked "if it can see a consumer error", follow the error back to its source with gopls. Report the result, and drop any site that only ever sees an error the library built itself.
+- [ ] **Step 2: Write the failing tests.** For each remaining site:
+  - a cyclic error and a `selectiveIs` error routed through that site's real path. Expected: no hang, no panic, the event or challenge dropped, and 1 record.
+  - a guard with `WithGuardErrorHandler`, on a chain with events and separately on a DPoP chain, refusing a cyclic error. Expected: exactly 1 record on the default logger.
+- [ ] **Step 3: Watch them fail.** Expected: a hang, a panic, or `has 0`.
 - [ ] **Step 4: Implement.**
-  - Each read checks through one walk.
-  - On abort, take the dependency-failure branch.
-- [ ] **Step 5: Run.** `go test -race -count=1 ./...` (root). Expected: PASS.
-- [ ] **Step 6: Review, then commit per group.** `fix(httpsec): <group> port errors are read through the bounded walk`.
+  - Each site checks through the walk.
+  - A guard reports its own abort to `slog.Default()`, and only when `WithGuardErrorHandler` is set.
+- [ ] **Step 5: Run.** The same commands as 10.9b Step 6. Expected: PASS.
+
+### Task 10.12: Consumer-port errors are sanitized where they enter the library
+
+**Files:**
+- Dispatch 1:
+  - `internal/diag/diag.go` (`Failure`, `causeOf`) and `internal/depfault/depfault.go` (`Silent`, `record`), with their tests.
+  - A new `internal/porterr/porterr.go` and its test.
+- Later dispatches: each call-site group's files and their tests, at most six call sites per dispatch.
+
+**Interfaces:**
+- Produces `porterr.Sanitize(err error, unavailable error) error`.
+  - A nil error returns nil.
+  - When `errwalk.Flatten` completes, the error is returned unchanged.
+  - When it aborts, the result is a fixed `*porterr.Fault`. `Is(unavailable)` reports true on it, its `Error()` text is fixed, it carries the abort (reason and frames), and it wraps nothing of the consumer's.
+  - It writes one record to `slog.Default()`, using the reasons and attributes from 10.3.
+- Produces `porterr.Reported(err error) bool`. A caller that holds the chain's logger and wants to report through it uses this instead. Decide in Dispatch 1 whether this is needed; prefer the simpler shape.
+- The internals use `errwalk` directly.
+
+Steps:
+- [ ] **Step 1 (Dispatch 1): write the failing tests for the internals.** `TestFailure_HostileChains`, `TestCauseOf_HostileChains` and `TestSilent_HostileChains`. Each takes a `cycleOne`, a `cycleMany` in a subprocess, and a `panicUnwrap`.
+  - Expected after the fix: `Failure` drops the `cancelled` attribute and returns, `causeOf` returns the error unchanged, and `Silent` returns false. Nothing hangs and nothing panics.
+- [ ] **Step 2 (Dispatch 1): write the failing tests for the sanitizer.** `TestSanitize` is a table:
+  - nil gives nil;
+  - a plain error comes back as the same value;
+  - a wrapped `unavailable` comes back unchanged;
+  - a cycle, a fan-out and a panicking `Unwrap` each give a `*Fault`, satisfy `errors.Is(_, unavailable)`, contain no consumer text, and write 1 record.
+- [ ] **Step 3: Watch them fail, then implement, then run** `go test -race -count=1 ./internal/...`. Review, then commit.
+- [ ] **Step 4 (Dispatches 2 and on): apply the sanitizer to each port call site.** Work in the inventory's group order:
+  1. session and bearer
+  2. login, password and lockout
+  3. Basic, API key and JWT
+  4. throttle and limiters
+  5. recovery and magic link
+  6. OIDC client
+  7. OIDC provider, in several dispatches
+  8. passkey
+  9. MFA and enrolment
+  10. authorization
+  11. token and one-time
+  12. `store/seal`
+  13. `expiry/sweep`, and the `webauthn` `MetadataSource`
+
+  At each call site, `err = porterr.Sanitize(err, <the port's unavailable sentinel>)` goes immediately after the port method returns. The main session names the sentinel per port when it splits a group.
+- [ ] **Step 5 (each call-site dispatch): write the red tests first.**
+  - `TestPortErrors_<Group>` is a table. The port's mock (`use-mockgen`) returns a `cycleOne`, a `cycleMany` in a subprocess, a `panicUnwrap`, and an outage parity error.
+  - Each hostile row asserts:
+    - the response equals the outage row's response byte for byte, including status, headers and body, at every concealing site (unknown user, unknown credential, a concealed lock, uniform recovery);
+    - no hang and no panic;
+    - 1 record.
+  - Watch the hostile rows hang, crash or panic before the fix.
+- [ ] **Step 6 (each call-site dispatch): run** `go test -race -count=1 ./...` in each module the dispatch touches. Review, then commit per group: `fix: <group> port errors are sanitized at the boundary`.
 
 ### Task 10.13: Benchmark the classification
 
+**Files:** `httpsec/lookup_bench_test.go` and `httpsec/prblmsec/mapper_bench_test.go`. Both are written already.
+
+- [ ] **Step 1:** The benchmarks are written. Their rows are `bare-sentinel`, `wrap-5`, `join-3-challenge`, `unknown` and `chain-50`.
+- [ ] **Step 2:** The baseline is a `git archive c1bf3e97` export. `main` has neither `LookupStatus` nor prblmsec. The finding is recorded: allocations rise on every row except `unknown`, and the time measurements were too noisy to read. That finding becomes 10.13a.
+- [ ] **Step 3:** Commit the benchmark files: `test: benchmark the bounded classification`.
+
+### Task 10.13a: The walker does not allocate for chains that fit
+
 **Files:**
-- Create `httpsec/lookup_bench_test.go`.
-- Create `httpsec/prblmsec/mapper_bench_test.go`.
+- `internal/errwalk/errwalk.go` and its test.
+- `httpsec/errors.go` (`lookup`).
+- `httpsec/prblmsec/mapper.go`.
+- `httpsec/fibersec/errors.go` and `httpsec/fibersec/middleware.go`.
 
-- [ ] **Step 1: Write the benchmarks.**
-  - `BenchmarkLookupStatus` and `BenchmarkMapError`, each with sub-benchmarks:
-    - `bare-sentinel`: `authorize.ErrAccessDenied`;
-    - `wrap-5`;
-    - `join-3-challenge`: a challenge joined with two sentinels;
-    - `unknown`: a plain error;
-    - `chain-50`.
-  - Use `b.ReportAllocs()` and `b.Loop()`, or the loop the repository's existing benchmarks use.
-- [ ] **Step 2: Measure on `main`.**
-  - Export `main` with `git archive main | tar -x -C <scratch>/main`.
-  - Copy in the same benchmark files. They use only exported APIs, so they compile on `main`.
-  - Run `go test -run '^$' -bench 'LookupStatus|MapError' -count=10 -benchmem ./httpsec/ ./httpsec/prblmsec/` in that export, and save the output as `old.txt`.
-  - On `main`, prblmsec does not exist. `BenchmarkMapError` therefore compares against the branch's first prblmsec commit, `c63edf3a`, exported the same way.
-- [ ] **Step 3: Measure on the branch.** Run the same command and save the output as `new.txt`.
-- [ ] **Step 4: Compare.** `benchstat old.txt new.txt`. Report every row.
-  - Expected: no row regresses by more than 10% in time or allocations.
-  - A regression goes back as a fix, or gets a design.md row that states its reason.
-- [ ] **Step 5: Commit** the benchmark files: `test: benchmark the bounded classification`.
+**Interfaces:**
+- Produces `func FlattenInto(buf []error, err error) (Chain, error)`.
+  - It appends into `buf[:0]` and grows onto the heap only past `cap(buf)`.
+  - Every `Flatten` rule holds unchanged: the budget, typed nils, panics and aborts.
+  - `Flatten(err)` becomes `FlattenInto(nil, err)`.
 
+Steps:
+- [ ] **Step 1: Write the failing tests.**
+  - `TestFlattenInto_NoHeapForShortChains`: for a 1-entry and a 6-entry chain with `var buf [16]error`, `testing.AllocsPerRun` is 0.
+  - `TestFlattenInto_SameAsFlatten`: on every existing `TestFlatten` shape, the result equals `Flatten`'s.
+  - `TestLookupStatus_Allocs`: on `bare-sentinel`, `wrap-5` and `join-3-challenge`, the allocation count is at or below the pre-walk baseline's (`c1bf3e97`: 1, 1 and 1).
+- [ ] **Step 2: Watch them fail.** `FlattenInto` needs a stub first so the tests compile. Expected: allocations above 0.
+- [ ] **Step 3: Implement.**
+  - Use the buffer.
+  - Keep the stack bounded by `Budget`, with the pending-entry charge.
+  - The lookup, the mapper and fibersec each use a `[16]error` stack array. The size comes from the benchmark rows: the longest common row, `join-3-challenge`, has 4 entries, and 16 leaves headroom.
+  - Make sure the array does not escape. Check with `go build -gcflags=-m`, and report the escape result.
+- [ ] **Step 4: Measure.** Re-run 10.13's benchmarks against `c1bf3e97` on an idle machine: `ps` shows no other Go test, and the load average is below 4. Report the benchstat tables.
+  - Expected: allocations are no higher than the baseline on the short rows.
+  - A remaining time regression above 10% goes back to the main session, with a profile.
+- [ ] **Step 5: Run** all suites and lint. Review, then commit: `perf(errwalk): flatten into a caller buffer`.
 ### Task 10.11: Require prblm v0.2.1
 
 **Files:** `httpsec/prblmsec/go.mod` and `go.sum`, `test/go.mod` and `go.sum`, `go.work.sum`, `test/problem_parity_test.go`.

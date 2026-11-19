@@ -219,7 +219,7 @@
 
 ## 10. One bounded, recovering walk classifies a refusal (design decision 11)
 
-Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parallel. Then 10.10 (panic frames), then 10.9 (remaining walks) and 10.4 (mapper) in parallel. Then 10.9a (follow-up), then 10.12 (port errors, in groups) and 10.13 (benchmark). Then 10.11 (prblm v0.2.1), then 10.6 (docs), 10.7 (gate) and 10.8 (review).
+Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parallel. Then 10.10 (panic frames), then 10.9 (remaining walks) and 10.4 (mapper) in parallel. Then 10.9b (10.9 review fixes) and 10.13a (no-allocation walk) in parallel, then 10.9a, then 10.12 (internals, sanitizer, then call sites in groups). Then 10.11 (prblm v0.2.1), then 10.6 (docs), 10.7 (gate) and 10.8 (review).
 
 - [x] 10.1 `internal/errwalk`. Red: `TestFlatten` (table), with these cases:
   - order: root first, then depth first, through `Unwrap() error` and `Unwrap() []error`, each node's `Unwrap` called once;
@@ -288,17 +288,62 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
   - Green: each site checks over one `errwalk.Flatten`. Its existing order and outcome stay the same for every non-hostile error.
 
   Verify with `go test -race -count=1 ./...` in the root module.
-- [ ] 10.9a 10.9 follow-up (design decision 11 failure rows).
-  - Red, then green: `dpopAnswersChallenge` (`oidc_consents.go`) and the switch in `emitResponseRefused` (`challenge_spend.go`) use the walk. An `Is` that panics only for the sentinel each one checks no longer escapes.
-  - Red, then green: a guard refusal behind `WithGuardErrorHandler`, whose `GuardRefused` event or DPoP challenge aborts, writes exactly one record to the default logger. The test fails with 0 records first.
-  - Verify with `go test -race -count=1 ./...` in the root module.
-- [ ] 10.12 Reads of consumer-port errors mid-flow use the walk (design decision 11).
-  - Inventory first, with gopls. Find every stdlib `errors.Is`, `errors.As` or `errors.AsType` in the root module that reads an error a consumer-supplied port returned: session, identity, credential, attempt, throttle, history, recovery and OIDC stores; the authenticator; the API-key store; limiters; notifiers. Group the sites by package or flow, and report each group's size.
-  - Then work the groups in sequential dispatches of at most six sites each. For each site, the red test sends a port error that is a cycle (each `Unwrap` form) and one with a panicking `Is`. On the current code these hang, crash or panic. After the fix, the site takes its fail-closed branch: refused as a dependency failure, 500, and one record written. A non-hostile parity row pins the existing outcome.
-  - Verify each dispatch with `go test -race -count=1 ./...` in the root module.
-- [ ] 10.13 Benchmark the classification (design decision 11, performance).
+- [ ] 10.9b Fixes from the 10.9 review (design decision 11 failure rows). Each item needs a failing test first.
+  - A quiet site (`reportQuietly`: authorization, the DPoP challenge, `answerRetryOnly`, `markPerRequestThrottle`, `emitPerRequestDenial`, `recordThrottledBearer`, and the DPoP guard path through `challenge()`) reports whenever its own walk aborted and the request's lookup did not.
+    - Each site has a row using an error whose `Is` panics only for the sentinel that site checks. Each row fails with `expected: 1 actual: 0` first.
+    - Under a consumer handler, each site also needs its own row, because only two sites have one today.
+    - Correct the `authorization.go` comment "the dispatch answers it 500".
+  - `emitRefusal` marks the refusal reported on the exchange when its walk aborts. A nested chain with `WithRefusalLogInterval(0)` then writes exactly one record. It fails with 2 first.
+  - A consumer error wrapping `ErrDPoPNonceRequired` on a DPoP chain without nonces no longer panics. It is refused as the plain DPoP refusal with no nonce header. Reproduce the nil-pointer panic first.
+  - Verify with `go test -race -count=1 ./...` (root).
+- [ ] 10.9a The rest of 10.9 (design decision 11 failure rows). Each item needs a failing test first.
+  - `dpopAnswersChallenge` (`oidc_consents.go`) and the switch in `emitResponseRefused` (`challenge_spend.go`) use the walk. An `Is` that panics only for the sentinel each one checks no longer escapes.
+  - A guard refusal behind `WithGuardErrorHandler`, whose `GuardRefused` event or DPoP challenge aborts, writes exactly one record to the default logger. It fails with 0 records first.
+  - These refusal-path reads, which the 10.12 inventory found and 10.9 missed, use the walk:
+    - `resolve.go` `emitLoadRefusal`;
+    - `dpop_nonce.go` `NonceCipher.Open` (around line 263), and the check around line 296 if it can see a consumer error;
+    - `signals_retry.go` `streamErr` (around line 155), if it can see a consumer error;
+    - `oidc_login.go` `emitCallbackRefused`;
+    - `passkey_login.go` `emitPasskeyRefused`;
+    - `challenge_spend.go` line 201;
+    - `mfa_enrol.go` `refusalReason`;
+    - `oidcprovider/events.go` around line 222.
+  - Verify with `go test -race -count=1 ./...` (root).
+- [ ] 10.12 Consumer-port errors are sanitized where they enter the library (design decision 11).
+  - First, the internals with the most reach, read through the walk directly:
+    - `diag.Failure` and `diag.causeOf` (`internal/diag/diag.go`);
+    - `depfault.Silent` and `depfault.record` (`internal/depfault/depfault.go`).
+
+    Red: each is handed a cyclic error and an error whose `Unwrap` panics, and hangs or panics on the current code. After the fix it returns its defined safe answer: `Failure` omits `cancelled`, `causeOf` returns the error unchanged, and `Silent` reports false.
+  - Then the sanitizer:
+    - `func portErr(err error, unavailable error) error`, in an internal package that every flow can import.
+    - It walks `err` once. When the walk completes, it returns `err` unchanged. When the walk aborts, it returns a fixed library error that `errors.Is(_, unavailable)` matches, carries no consumer text, and reports one record.
+    - Unit-test it first.
+  - Then apply it at every port call site, in groups of at most six call sites per dispatch, in the order of the 10.12 inventory:
+    - session and bearer;
+    - login, password and lockout;
+    - Basic, API key and JWT;
+    - throttle and limiters;
+    - recovery and magic link;
+    - OIDC client;
+    - OIDC provider (several dispatches);
+    - passkey;
+    - MFA and enrolment;
+    - authorization;
+    - token and one-time;
+    - `store/seal`;
+    - `expiry/sweep`, and the webauthn `MetadataSource` in its nested module.
+  - Per call site, the red test has the port's mock return a `cycleOne`, a `cycleMany` (in a subprocess) and a `panicUnwrap`. These hang, crash or panic on the current code. After the fix, the flow takes its existing branch for a failing port, and one record is written. A non-hostile parity row pins the old outcome.
+  - Where that branch conceals (unknown user, unknown credential, a concealed lock, uniform recovery), assert the response is byte-identical to a plain port outage.
+  - Verify each dispatch with `go test -race -count=1 ./...` in the affected modules.
+- [ ] 10.13a The walker does not allocate for chains that fit (design decision 11, performance).
+  - Add a buffer-taking walk, for example `errwalk.FlattenInto(buf []error, err error) (Chain, error)`, that fills the caller's buffer and grows onto the heap only past its capacity. Keep `Flatten`.
+  - The lookup, the mapper and fibersec use it with a stack array, for example `var buf [16]error`. Choose the size from the benchmark rows.
+  - Red: `testing.AllocsPerRun` on `LookupStatus` for `bare-sentinel`, `wrap-5` and `join-3-challenge` asserts 0 allocations attributable to the walk, measured against the pre-walk baseline's count.
+  - Re-run 10.13's benchmarks on an idle machine. The deltas against the pre-walk baseline go into the report.
+- [x] 10.13 Benchmark the classification (design decision 11, performance).
   - Add `BenchmarkLookupStatus` and `BenchmarkMapError`. Their rows are: a bare sentinel, a 5-deep wrap, a 3-way join with a challenge, an unknown error, and a 50-link chain.
-  - Run each against `main` (a `git archive` export) and against the branch, with `-count=10 -benchmem`, and compare them with `benchstat`.
+  - Run each against the pre-walk baseline `c1bf3e97` (a `git archive` export; `main` has no `LookupStatus` or prblmsec) and against the branch, with `-count=10 -benchmem`, and compare them with `benchstat`.
   - Report the deltas. A regression above 10% on any row is a finding: it goes back as a fix, or is recorded in design.md with its reason.
 - [ ] 10.11 Require prblm v0.2.1 (design decision 8).
   - Require `github.com/kartaladev/prblm v0.2.1` in `httpsec/prblmsec`.
