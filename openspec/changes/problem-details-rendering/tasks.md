@@ -219,7 +219,7 @@
 
 ## 10. One bounded, recovering walk classifies a refusal (design decision 11)
 
-Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parallel. Then 10.10 (panic frames), then 10.9 (remaining walks) and 10.4 (mapper) in parallel. Then 10.6 (docs), 10.7 (gate) and 10.8 (review).
+Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parallel. Then 10.10 (panic frames), then 10.9 (remaining walks) and 10.4 (mapper) in parallel. Then 10.11 (prblm v0.2.1), then 10.6 (docs), 10.7 (gate) and 10.8 (review).
 
 - [x] 10.1 `internal/errwalk`. Red: `TestFlatten` (table), with these cases:
   - order: root first, then depth first, through `Unwrap() error` and `Unwrap() []error`, each node's `Unwrap` called once;
@@ -248,6 +248,10 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
   - a panicking `Is` writes one record with reason `panic`.
 
   `TestChain_AbortLogsToChainLogger`: a chain built with the consumer's `WithLogger` that dispatches a cyclic error writes the record to that logger and nothing to the default. Green: an unexported lookup variant returns the abort. The chain's error dispatch logs it with the chain's logger, using `diag.PanicAttrs` for a panic. The exported functions log to `slog.Default()`. Verify with `go test -race -run 'Abort' -count=1 ./httpsec/`.
+
+  Review follow-up, both with red tests:
+  - **Quiet sites under a consumer error handler.** Under `WithErrorHandler`, the quiet sites (the refusal event, the basic challenge header, OIDC consent, the session-signals checks) log an abort through the chain's logger and sampler. A chain with `WithLogger`, security events, and a handler that writes 418 without classifying, refusing a cyclic error, writes exactly one record.
+  - **Per-reason sampling keys.** The sampling key is per reason, so a budget abort followed by a panic abort in one window writes two records.
 - [ ] 10.4 Mapper over the walk. Red: extend `TestMapper_ChallengeWalk` and add `TestMapper_HostileChains` in `httpsec/prblmsec`, calling `MapError` directly:
   - for each hostile chain in 10.2 the mapper's status agrees with `LookupStatus`: nil for the aborted ones;
   - the typed-nil `RejectedError` case gives the access-denied problem;
@@ -284,6 +288,12 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
   - Green: each site checks over one `errwalk.Flatten`. Its existing order and outcome stay the same for every non-hostile error.
 
   Verify with `go test -race -count=1 ./...` in the root module.
+- [ ] 10.11 Require prblm v0.2.1 (design decision 8).
+  - Require `github.com/kartaladev/prblm v0.2.1` in `httpsec/prblmsec`.
+  - In `test`, require it together with `adapters/ginprblm v0.2.1`. `adapters/fiberprblm` stays on v0.2.0.
+  - Run `go work sync`, then `go mod tidy` in each changed module. Check that no `go.sum` lost its `/go.mod h1:` lines.
+  - Red: a `TestProblemParity` case where the route fails with an error whose own `As` method panics. With prblmsec registered, net/http and gin answer a 500 problem, and nothing escapes. On v0.2.0 the panic escapes `Respond`. Run it before the bump to see that.
+  - Verify with `go -C httpsec/prblmsec test -race -count=1 ./...` and `go -C test test -race -run TestProblemParity -count=1 ./`.
 - [ ] 10.6 Documentation. Write these:
   - godoc of `LookupStatus` and `StatusForError`: the bound, the typed-nil skip, fail-closed and the log record, and that consumer code calling stdlib `errors.Is` or `errors.As` on the same error is not protected;
   - prblmsec's package doc and the README section: the limit under prblm v0.2.0. A cycle hangs or dies in prblm's Describer step before the mapper runs, a panicking `As` escapes prblm's status-hint step, and gin's `Context.Error` walks the chain first;

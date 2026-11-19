@@ -464,7 +464,8 @@
 2. 10.2, then 10.3 (same files). 10.5 runs in parallel with both.
 3. 10.10, after 10.2, 10.3 and 10.5. It touches errwalk, diag, the core's log helper and fibersec's.
 4. 10.9 and 10.4 in parallel: 10.9 owns the core refusal-path files, and 10.4 owns prblmsec.
-5. 10.6, then 10.7, then 10.8.
+5. 10.11, after 10.4: it changes prblmsec's go.mod and the test module.
+6. 10.6, then 10.7, then 10.8.
 
 **Review Focus:** the five things most likely to go wrong, each pinned to a task.
 1. **One request logging twice.** The chain's dispatch and an auxiliary classification on the same request (events, guards) both call the lookup. 10.3 asserts the total count across both loggers.
@@ -662,6 +663,37 @@
   - The order and outcome for every non-hostile error stay the same. Add a HEAD-parity row per site for a non-hostile error.
 - [ ] **Step 5: Run.** `go test -race -count=1 ./...` in the root module. Expected: PASS.
 - [ ] **Step 6: Commit.** `fix(httpsec): every refusal-path inspection uses the bounded walk`.
+
+### Task 10.3 follow-up: quiet sites under a consumer handler, and per-reason keys
+
+**Files:** `httpsec/errors.go` (the quiet helper and the key), the quiet call sites, and `httpsec/lookup_abort_log_test.go`.
+
+**Interfaces:**
+- The quiet helper takes the chain, `func (c *Chain) statusQuietly(ctx context.Context, err error) int` or an equivalent. When `c.errorHandler != nil`, it logs an abort through `c.logClassificationAborted`.
+- The sampling key is `classification-aborted:` followed by `errwalk.Reason(abort)`.
+
+- [ ] **Step 1: Write the failing tests.**
+  - Add a row to `TestChain_AbortLogsToChainLogger`. It uses `WithLogger`, `EnableSecurityEvents`, and a `WithErrorHandler` that writes 418 without classifying, and refuses `&cycleOne{}`. Expected: one record on the chain logger.
+  - Add a second row with a budget abort, then a panic abort, inside one window. Expected: two records.
+- [ ] **Step 2: Watch them fail.** Expected: `expected: 1 actual: 0`, and `expected: 2 actual: 1`.
+- [ ] **Step 3: Implement**, then run `go test -race -count=1 ./httpsec/`. Expected: PASS.
+
+### Task 10.11: Require prblm v0.2.1
+
+**Files:** `httpsec/prblmsec/go.mod` and `go.sum`, `test/go.mod` and `go.sum`, `go.work.sum`, `test/problem_parity_test.go`.
+
+- [ ] **Step 1: Write the failing test.**
+  - Add a `TestProblemParity` case where the route returns an error whose `As` panics.
+  - With prblmsec registered, net/http and gin answer 500 `application/problem+json`, with no panic past the server.
+  - fiber gets the same answer, because fibersec's own walk aborts first.
+- [ ] **Step 2: Watch it fail on v0.2.0.** Run `go -C test test -run TestProblemParity -count=1 ./`. Expected: FAIL on net/http, with the panic escaping prblm's `Respond` (status hint).
+- [ ] **Step 3: Bump.**
+  - `go -C httpsec/prblmsec get github.com/kartaladev/prblm@v0.2.1`.
+  - `go -C test get github.com/kartaladev/prblm@v0.2.1 github.com/kartaladev/prblm/adapters/ginprblm@v0.2.1`.
+  - `go work sync`, then `go mod tidy` in each changed module.
+  - Check that no `go.sum` lost its `/go.mod h1:` lines.
+- [ ] **Step 4: Run.** `go -C httpsec/prblmsec test -race -count=1 ./...` and `go -C test test -race -run TestProblemParity -count=1 ./`. Expected: PASS.
+- [ ] **Step 5: Commit.** `build: require prblm v0.2.1`.
 
 ### Task 10.6: Documentation
 

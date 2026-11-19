@@ -151,7 +151,11 @@ guards, _ := httpsec.NewGuards(az, httpsec.WithGuardErrorHandler(h.Write))
 
 ### 8. Dependency, layout and release
 
-- **Versions.** `prblmsec` requires `github.com/kartaladev/prblm v0.2.0`. The test module also requires `adapters/ginprblm v0.2.0` and `adapters/fiberprblm v0.2.0`.
+- **Versions.**
+  - `prblmsec` requires `github.com/kartaladev/prblm v0.2.1`.
+  - The test module also requires `adapters/ginprblm v0.2.1` and `adapters/fiberprblm v0.2.0`.
+  - v0.2.1 is a patch release with no API change. It recovers three panics v0.2.0 let escape: the status-hint step, net/http `Handler.Recover`'s broken-connection check, and gin Recovery's broken-connection check.
+  - ginprblm v0.2.1 still requires core v0.2.0, so both are required explicitly (task 10.11).
 - **Where the module is listed.** `go.work`, `.github/dependabot.yml`, `tools/repocheck`'s module expectations, `RELEASING.md`'s module list, and the lockstep tag set (`httpsec/prblmsec/vX.Y.Z`).
 - **Live figures** (read 2026-11-18; they drift): prblm is MIT, its tags are `v0.1.0` and `v0.2.0`, its last push was 2026-11-18, and it has 0 stars. Both projects have the same owner. The release gate's `govulncheck` and SBOM steps cover the new module like any published module (`supply-chain`).
 
@@ -257,11 +261,12 @@ Each of these inspects the error before or beside the lookup, so an unbounded on
 - A typed nil whose methods are nil-safe and meaningful is ignored, where stdlib would honour it. The library builds no such error.
 - A challenge offered through an `As` method behind a typed nil is now found, because the walk keeps going past the nil.
 - A typed-nil `*password.RejectedError` no longer panics the lookup. It is skipped, and the rest of the chain decides.
+- An `As` method that reports true but sets nothing is no longer a match. Before, `errors.As` took it and the challenge check fell to 500. Now the rest of the chain decides, which can give a refusal's status instead. The library defines no `As` method.
 
 **The line scrty cannot cross.** The walker protects scrty's own classification only.
 - Consumer code that calls stdlib `errors.Is` or `errors.As` on the same error still sees the typed nil, and still hangs or panics. The hardened lookup and stdlib-based code can therefore disagree about one error.
-- prblm v0.2.0 walks the error itself, before or outside the scrty mapper. Its Describer step hangs or dies on a cycle before the mapper runs. A panicking `As` method escapes `Respond` from its status-hint step. gin's own `Context.Error` and fiberprblm's hint walk the chain too.
-- prblm v0.2.1 recovers the status-hint step, and v0.3.0 is to adopt this walker's rules. Until then, the godoc and README state the limit.
+- prblm v0.2.1, the version required (decision 8), walks the error itself, before or outside the scrty mapper. Its Describer step hangs or dies on a cycle before the mapper runs, and gin's own `Context.Error` and fiberprblm's hint walk the chain too.
+- v0.2.1 already recovers a panicking `As` method in prblm's status-hint step, so with scrty's mapper registered such an error answers a 500 problem instead of escaping. Cycles remain until prblm v0.3.0 adopts this walker's rules. The godoc and README state the limit.
 
 **Alternatives.**
 - A depth limit only: rejected, because it does not stop fan-out.
@@ -286,6 +291,8 @@ Each of these inspects the error before or beside the lookup, so an unbounded on
 | An error's own `Unwrap`, `Is` or `As` method panics during the walk | Handled, tested (decision 11) | Recovered. The classification aborts and fails closed with 500, unrecognised, and is reported with reason `panic` and the redacted panic attributes. It never guesses what the panicking link would have said. Under prblm v0.2.0 a panicking `As` method still escapes `Respond` from prblm's own status-hint step; v0.2.1 recovers it |
 | An aborted classification nobody can see | Handled, tested (decision 11) | One Error-level slog record per abort, to the chain's logger where the caller holds it, else `slog.Default()`. The record carries a constant message and the reason, and never the error text |
 | A consumer's own middleware, outside the fiber adapter, wraps a refusal whose classification already aborted | Accepted, documented (task 10.5 review) | The adapter classifies the wrapped error again, as it did on `main`, so the request writes a second record. The rule is one record per aborted classification, so this over-reports and never goes silent. Avoiding it would mean hiding the refusal's inner error from the consumer's own `errors.Is`, or exporting a way to see an abort, and neither is worth it for an error a consumer wrapped twice |
+| A consumer's `WithErrorHandler` replaces the chain's dispatch, and an inspection inside the library aborts (the refusal event, the basic challenge header, OIDC consent, session signals) | Handled, tested (task 10.3 review) | The chain's dispatch classifies nothing under a consumer handler, so the quiet sites report instead. Each logs through the chain's logger and sampler under the same per-reason key, so several sites on one request collapse to one record in the window. If the consumer's handler also calls the free functions, a second record reaches the default logger: over-reporting, never silence |
+| Two abort reasons in one sampling window | Handled, tested (task 10.3 review) | The sampling key is per reason (`classification-aborted:budget`, `classification-aborted:panic`), so a budget abort never hides a later panic abort |
 | A hostile error recurs on every request through a path that logs to the default logger (guards, a consumer's `WithErrorHandler` calling the free functions, the gin and fiber adapters, the mapper) | Accepted, documented | The chain's own dispatch is sampled through the chain's sampler. These paths have no sampler, and adding one would mean process-global state. They write one record per aborted classification, and the consumer limits the rate in its own slog handler. The godoc says so |
 | Another inspection of the refused error runs before or beside the lookup, on the refusal path | Handled, tested (task 10.9) | It uses the same walk. A cyclic or panicking error can no longer hang or crash the request before the lookup's bound applies |
 | A consumer wants a larger budget or a different typed-nil rule | Accepted, documented (decision 11) | No option. A configurable bound could reopen the hang, so the rules are fixed (`library-design.md` 4). The consumer controls only where the record goes |
@@ -382,6 +389,9 @@ Otherwise reasoned from scrty's own settled `framework-adapters` spec, and from 
 
 **Researched** (2026-11-18; live figures drift):
 - [kartaladev/prblm repository metadata](https://github.com/kartaladev/prblm): MIT, tags `v0.1.0` and `v0.2.0`, 0 stars, last push 2026-11-18. The core `go.mod` has no requirements.
+
+**Researched** (2026-11-19):
+- [kartaladev/prblm release v0.2.1](https://github.com/kartaladev/prblm/releases/tag/v0.2.1): tags `v0.2.1` and `adapters/ginprblm/v0.2.1`, both on commit 5742e04. The prblm session confirmed that both resolve through the Go proxy. The release fixes three panics that escaped prblm's recovery: the status-hint step, net/http `Recover`'s broken-connection check, and gin Recovery's broken-connection check. It changes no API, and ginprblm v0.2.1 still requires core v0.2.0.
 
 ### Decision 11: one bounded, recovering walk
 
