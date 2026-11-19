@@ -15,6 +15,7 @@ import (
 
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/origin"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // Authorization is where to send a browser to start a login, and the flow it
@@ -81,6 +82,7 @@ func (m *RelyingParty) Authorize(ctx context.Context, provider, next string) (Au
 	handle, err := m.flows.Begin(ctx, Flow{
 		Provider: p.Name, State: state, Nonce: nonce, Verifier: verifier, Next: next, ExpiresAt: expires,
 	})
+	err = porterr.SanitizeTo(ctx, m.log, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return Authorization{}, diag.Wrap(err, "oidc: storing the login flow")
 	}
@@ -184,6 +186,10 @@ func (m *RelyingParty) Callback(ctx context.Context, provider, code, state, hand
 		EmailVerified: claims.EmailVerified,
 		Claims:        claims.Claims,
 	})
+	// A chain that cannot be walked is the broker failing, never the
+	// link-state refusal (ErrNoLinkedAccount, ErrProvisioningRefused) it
+	// might claim.
+	err = porterr.SanitizeTo(ctx, m.log, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return CallbackResult{}, err
 	}
@@ -242,6 +248,9 @@ func (m *RelyingParty) AbortFlow(ctx context.Context, provider, state, handle st
 // their own implementation of FlowStore.
 func (m *RelyingParty) completeFlow(ctx context.Context, provider, state, handle string) (Flow, error) {
 	f, err := m.flows.Complete(ctx, handle, provider, state)
+	// Before the ErrInvalidState check: a chain that cannot be walked is a
+	// store fault, never a refusal.
+	err = porterr.SanitizeTo(ctx, m.log, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrInvalidState):
 		return Flow{}, ErrInvalidState

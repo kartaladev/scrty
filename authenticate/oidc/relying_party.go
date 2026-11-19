@@ -12,6 +12,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/outbound"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
@@ -311,7 +312,8 @@ func (m *RelyingParty) RoleSyncProviders() []string {
 // is never deleted. A flow store error is returned with whatever count the
 // store reported. FlowExpiryTask wraps it as a task.
 func (m *RelyingParty) PurgeExpiredFlows(ctx context.Context) (int, error) {
-	return m.flows.DeleteExpired(ctx, m.clock.Now())
+	n, err := m.flows.DeleteExpired(ctx, m.clock.Now())
+	return n, porterr.SanitizeTo(ctx, m.log, err, porterr.ErrUnwalkable)
 }
 
 // Option customises a RelyingParty at construction.
