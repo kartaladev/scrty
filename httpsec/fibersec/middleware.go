@@ -2,11 +2,11 @@ package fibersec
 
 import (
 	"context"
-	"errors"
 
 	"github.com/gofiber/fiber/v3"
 
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/internal/errwalk"
 )
 
 // Middleware runs the chain in front of the fiber handlers registered after it.
@@ -158,10 +158,22 @@ func Middleware(chain *httpsec.Chain) fiber.Handler {
 		if err := run(ex); err != nil {
 			// What the route or a later handler returned goes back as it came,
 			// so fiber's own handling reads its status and text. Matching with
-			// errors.Is also covers an interceptor that wrapped it on the way
+			// the bounded walk also covers an interceptor that wrapped it on the way
 			// out, and never a refusal the chain made itself.
-			if nextErr != nil && errors.Is(err, nextErr) {
-				return err
+			if nextErr != nil {
+				chain, abort := errwalk.Flatten(err)
+				if abort != nil {
+					return abortedRefusal(err, abort)
+				}
+
+				same, abort := errwalk.Is(chain, nextErr)
+				if abort != nil {
+					return abortedRefusal(err, abort)
+				}
+
+				if same {
+					return err
+				}
 			}
 
 			return newRefusal(err)

@@ -234,7 +234,7 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
   - a panicking `Unwrap` aborts with reason `panic` and carries the recovered value.
 
   Also `TestMatch` for the matching helpers over the list: `Is` matches by `==` when comparable or by the node's `Is` method; `As[T]` matches by type or by the node's `As` method, first in list order; a panicking `Is` or `As` aborts with `panic`. Green: implement. Verify with `go test -race -run 'TestFlatten|TestMatch' -count=1 ./internal/errwalk/`.
-- [ ] 10.2 Core lookup over the walk. Red: `TestLookupStatus_HostileChains` (table) in `httpsec`, with these cases:
+- [x] 10.2 Core lookup over the walk. Red: `TestLookupStatus_HostileChains` (table) in `httpsec`, with these cases:
   - a self-cycle through each `Unwrap` form: `(500, false)`;
   - a fan-out of 25 levels: `(500, false)`, promptly;
   - a panicking `Is` method and a panicking `As` method: `(500, false)`, no escape;
@@ -243,7 +243,7 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
   - a challenge 1,000 links in is found, and one past the budget gives `(500, false)`.
 
   The cycle and fan-out cases hang or crash before the change, so run them in a subprocess or under a timeout so that the red step is observable. Green: `LookupStatus` flattens once and classifies every check over the list. `firstChallenge` and its fallback are replaced. `StatusForError` stays `s, _ := LookupStatus(err)`. Update `TestStatusForError_ChallengeWalk`'s fallback-depth cases to the new rules. All existing lookup, agreement and inventory tests stay green. Verify with `go test -race -run 'LookupStatus|StatusForError|Challenge' -count=1 ./httpsec/`.
-- [ ] 10.3 Reporting. Red: `TestLookupStatus_AbortIsLogged`:
+- [x] 10.3 Reporting. Red: `TestLookupStatus_AbortIsLogged`:
   - a cyclic error looked up once through the free function writes exactly one Error record to `slog.Default()` (swapped for the test, not in parallel), with reason `budget` and no error text;
   - a panicking `Is` writes one record with reason `panic`.
 
@@ -258,13 +258,13 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
   - an aborted chain writes exactly one record, the lookup's, not a second.
 
   Green: `firstNonNil`, the specifics loop and `ruleOf` classify over the walk's list. The mapper returns nil without walking again when the lookup reports unrecognised. Verify with `go -C httpsec/prblmsec test -race -count=1 ./...`.
-- [ ] 10.5 fibersec refusal unwrapping over the walk. Red: `TestErrorHandler_HostileChains` in `httpsec/fibersec`, with these cases:
+- [x] 10.5 fibersec refusal unwrapping over the walk. Red: `TestErrorHandler_HostileChains` in `httpsec/fibersec`, with these cases:
   - a cyclic error;
   - a panicking `As`;
   - a nil `*RefusalError` ahead of a real one.
 
   Each case must reach the handler's status without hanging or panicking. Green: the `errors.As` for `*RefusalError` and `*fiber.Error` (`errors.go`) and the `errors.Is(err, nextErr)` on the refusal path (`middleware.go`) use the walk. Verify with `go -C httpsec/fibersec test -race -count=1 ./...`.
-- [ ] 10.10 Panic frames captured at recovery (design decision 11, reporting).
+- [x] 10.10 Panic frames captured at recovery (design decision 11, reporting).
   - Red: `TestFlatten_PanicCarriesFrames` in `internal/errwalk`. A panicking `Unwrap`, `Is` or `As` gives a `*PanicError` whose captured frames include the panicking method's function, not only errwalk's own functions.
   - Red: a test in `httpsec` that the abort record's frames name the panicking method, not `lookup` or `handleError`.
   - Red: a test in `httpsec/fibersec` that its abort record carries the panic's type and frames. This closes the open review finding that fibersec logged `reason` only.

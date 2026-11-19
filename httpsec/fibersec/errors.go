@@ -1,12 +1,15 @@
 package fibersec
 
 import (
-	"errors"
+	"context"
+	"log/slog"
 	"net/http"
 
 	"github.com/gofiber/fiber/v3"
 
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/errwalk"
 )
 
 // RefusalError is what the chain returns to fiber when it refuses a request.
@@ -29,17 +32,79 @@ type RefusalError struct {
 	status  *fiber.Error
 }
 
-// Error is the standard text for the mapped status and nothing else.
-func (e *RefusalError) Error() string { return http.StatusText(e.status.Code) }
+// Error is the standard text for the mapped status and nothing else. A
+// RefusalError the adapter did not build carries no status, and its text is
+// the 500 status text.
+func (e *RefusalError) Error() string { return http.StatusText(e.code()) }
+
+// code is the status the chain mapped, or 500 for a RefusalError the adapter
+// did not build.
+func (e *RefusalError) code() int {
+	if e == nil || e.status == nil {
+		return http.StatusInternalServerError
+	}
+
+	return e.status.Code
+}
+
+// classified returns the status the adapter stored in err when err is, as it
+// stands, a refusal the adapter built, so it is answered without classifying
+// it again. Anything else, a zero RefusalError included, reports false.
+func classified(err error) (int, bool) {
+	refusal, ok := err.(*RefusalError) //nolint:errorlint // the chain's own value, read as it stands
+	if !ok || refusal == nil || refusal.status == nil {
+		return 0, false
+	}
+
+	return refusal.status.Code, true
+}
 
 // Unwrap exposes the refusal and the status to errors.Is and errors.As.
 func (e *RefusalError) Unwrap() []error { return []error{e.refusal, e.status} }
 
 // newRefusal wraps a refusal the chain returned so fiber can answer it.
+//
+// The status is classified here, once, and carried in the RefusalError, so the
+// error handler that answers it does not walk the chain again. A chain whose
+// walk aborts — a cycle, too many links, a panicking method — is answered 500
+// and reported once, here, without calling anything on it.
 func newRefusal(err error) error {
+	if _, abort := errwalk.Flatten(err); abort != nil {
+		return abortedRefusal(err, abort)
+	}
+
+	// fibersec's walk succeeded, so it writes no record. The core's own
+	// classification can still abort, on an Is or As method that panics, which
+	// Flatten never calls; the core then writes the record itself. Either way
+	// the request has one.
 	status := httpsec.StatusForError(err)
 
 	return &RefusalError{refusal: err, status: fiber.NewError(status)}
+}
+
+// abortedRefusal answers a refusal whose chain could not be walked with a 500
+// and writes the one record of it. The record carries the reason only: the
+// error's text is never read, since a hostile node's Error method is not
+// trusted either.
+func abortedRefusal(err, abort error) error {
+	reportAbort(abort)
+
+	return &RefusalError{refusal: err, status: fiber.NewError(http.StatusInternalServerError)}
+}
+
+// reportAbort writes the Error record for an aborted classification to
+// slog.Default(), as the core's own lookup does: a constant message, the
+// reason, and for a recovered panic its Go type and the frames the walk
+// captured where it panicked, never its value or the error's text.
+func reportAbort(abort error) {
+	attrs := []slog.Attr{slog.String("reason", errwalk.Reason(abort))}
+
+	if p, ok := abort.(*errwalk.PanicError); ok && p != nil { //nolint:errorlint // errwalk's own value, never wrapped
+		attrs = append(attrs, diag.PanicAttrsFrom(p.Value, p.Frames)...)
+	}
+
+	// No context reaches here, so the record carries none.
+	slog.Default().LogAttrs(context.Background(), slog.LevelError, "httpsec: error classification aborted", attrs...)
 }
 
 // ErrorHandler answers a refusal with the mapped status and an empty body.
@@ -65,21 +130,56 @@ func newRefusal(err error) error {
 // answers authenticate.ErrUnavailable with 503 reopens the oracles
 // httpsec.StatusForError warns of.
 func ErrorHandler(ctx fiber.Ctx, err error) error {
-	var refusal *RefusalError
-
-	// An error carrying a fiber status that is not a refusal — a route's own
-	// 422, the router's 404 — keeps that status. A refusal wraps one too, but
-	// it is answered with the status the chain mapped.
-	var fe *fiber.Error
-	if !errors.As(err, &refusal) && errors.As(err, &fe) {
-		ctx.Status(fe.Code)
-
-		return nil
-	}
-
-	ctx.Status(httpsec.StatusForError(err))
+	ctx.Status(handlerStatus(err))
 
 	return nil
+}
+
+// handlerStatus is the status ErrorHandler answers err with.
+//
+// A refusal the chain made, as it stands, carries the status it was classified
+// with, and is answered with it, without a second classification. Anything
+// else is flattened once: a refusal found anywhere in it is answered with the
+// core's classification of the whole error, so an outage joined with a refusal
+// still reads as the failed authentication it conceals; with no refusal, a
+// fiber status keeps its status; and anything else is classified by the core.
+//
+// An abort in fibersec's own walk or matching is answered 500 and reported
+// here, and the core is never asked about that error. An abort in the core's
+// classification is reported by the core. So the handler never reports one
+// error twice.
+func handlerStatus(err error) int {
+	if status, ok := classified(err); ok {
+		return status
+	}
+
+	chain, abort := errwalk.Flatten(err)
+	if abort != nil {
+		return failClosed(abort)
+	}
+
+	if _, found, abort := errwalk.As[*RefusalError](chain); abort != nil {
+		return failClosed(abort)
+	} else if found {
+		return httpsec.StatusForError(err)
+	}
+
+	// An error carrying a fiber status that is not a refusal — a route's own
+	// 422, the router's 404 — keeps that status.
+	if fe, found, abort := errwalk.As[*fiber.Error](chain); abort != nil {
+		return failClosed(abort)
+	} else if found {
+		return fe.Code
+	}
+
+	return httpsec.StatusForError(err)
+}
+
+// failClosed reports an abort in fibersec's own walk and answers 500.
+func failClosed(abort error) int {
+	reportAbort(abort)
+
+	return http.StatusInternalServerError
 }
 
 // MapError returns the status and a minimal body for a consumer's own error
@@ -97,7 +197,12 @@ func ErrorHandler(ctx fiber.Ctx, err error) error {
 //		return c.Status(status).JSON(body)
 //	}})
 func MapError(err error) (int, any) {
-	status := httpsec.StatusForError(err)
+	// A refusal the chain made keeps the status it was classified with, and is
+	// not classified a second time.
+	status, ok := classified(err)
+	if !ok {
+		status = httpsec.StatusForError(err)
+	}
 
 	return status, fiber.Map{"error": http.StatusText(status)}
 }
