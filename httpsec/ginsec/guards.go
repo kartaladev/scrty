@@ -166,12 +166,41 @@ func WithGuardErrorHandler(fn func(gc *gin.Context, err error)) GuardOption {
 // The challenge the chain in front answers its own refusals with, such as
 // DPoP's WWW-Authenticate, is set first, so a guard's refusal carries it
 // too, whoever renders the answer.
+//
+// The refusal's security event and the challenge each walk err, and return
+// the abort that stopped the walk instead of reporting it. The guard writes
+// one record per refusal whose classification aborted, to slog.Default(),
+// since guards hold no chain logger:
+//
+//   - with WithGuardErrorHandler, the guard classifies nothing of its own, so
+//     the first abort either walk met is reported;
+//   - otherwise the default answer's status lookup reports its own abort, and
+//     an abort only the event or the challenge met, such as an Is method that
+//     panics only for the sentinel one of them asked about, is reported in its
+//     place. The lookup is the one the chain in front answers
+//     (guardauth.LookupAborts), and a response already written is not
+//     classified at all, so the guard reports then too.
+//
+// A cyclic refusal still hangs in gin's own Context.Error, which every gin
+// refusal is registered with, before any of this can answer: that is gin's
+// limit, and nothing a guard can stop.
 func (g *Guards) refuse(gc *gin.Context, err error) {
-	eventsink.GuardRefused(gc.Request.Context(), err)
+	ctx := gc.Request.Context()
 
-	err = guardauth.Challenge(gc.Request.Context(), httpsec.NewHTTPResponseWriter(gc.Writer), err)
+	eventAbort := eventsink.GuardRefused(ctx, err)
+
+	err, challengeAbort := guardauth.Challenge(ctx, httpsec.NewHTTPResponseWriter(gc.Writer), err)
+
+	walkAbort := eventAbort
+	if walkAbort == nil {
+		walkAbort = challengeAbort
+	}
 
 	if g.onError != nil {
+		if walkAbort != nil {
+			guardauth.ReportAbort(ctx, walkAbort)
+		}
+
 		// Registered first, so a consumer who renders here still has the
 		// refusal on the channel their logging middleware reads.
 		_ = gc.Error(err)
@@ -180,6 +209,10 @@ func (g *Guards) refuse(gc *gin.Context, err error) {
 		gc.Abort()
 
 		return
+	}
+
+	if walkAbort != nil && (gc.Writer.Written() || !guardauth.LookupAborts(ctx, err)) {
+		guardauth.ReportAbort(ctx, walkAbort)
 	}
 
 	// The same answer the chain's own refusals get, from the same place, so a

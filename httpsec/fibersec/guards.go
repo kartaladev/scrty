@@ -171,24 +171,39 @@ func (g *Guards) guard(judge judgement) fiber.Handler {
 
 		az, ok := g.authorizerFor(ctx)
 		if !ok {
-			err := fmt.Errorf("%w: no authorizer was wired for this route", authorize.ErrAccessDenied)
-			eventsink.GuardRefused(ctx, err)
-
-			return newRefusal(err)
+			return refused(ctx, fmt.Errorf("%w: no authorizer was wired for this route", authorize.ErrAccessDenied))
 		}
 
 		if err := judge(ctx, request{c: fc}, az); err != nil {
-			eventsink.GuardRefused(ctx, err)
-
 			// Wrapped, not rewritten. The extractor's error says the record
 			// could not be identified and the authorizer's says what it decided
 			// or what it could not reach, and either is still reachable through
 			// the RefusalError.
-			return newRefusal(err)
+			return refused(ctx, err)
 		}
 
 		return fc.Next()
 	}
+}
+
+// refused reports err, a guard's refusal, as a security event and returns it
+// as the RefusalError fiber answers.
+//
+// The event walks err, and returns the abort that stopped the walk instead of
+// reporting it. A fiber guard has no error handler of its own: the refusal is
+// classified once, as it is wrapped (newRefusal), which reports an abort it
+// meets. So the guard writes one record, to slog.Default(), only when that
+// classification, the lookup of the chain in front (guardauth.LookupAborts),
+// does not abort: an abort only the event met, such as an Is method that
+// panics only for the authorization denial it asks about. The DPoP challenge
+// of a fiber guard's refusal is the chain's own, set as the refusal leaves the
+// chain, and reported by the chain's rule.
+func refused(ctx context.Context, err error) error {
+	if abort := eventsink.GuardRefused(ctx, err); abort != nil && !guardauth.LookupAborts(ctx, err) {
+		guardauth.ReportAbort(ctx, abort)
+	}
+
+	return newRefusal(err) //nolint:contextcheck // newRefusal takes no context, and its record carries none
 }
 
 // authenticationRequired refuses a request that has not said who it is.

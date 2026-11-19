@@ -162,12 +162,34 @@ func WithGuardErrorHandler(fn func(w http.ResponseWriter, r *http.Request, err e
 // The challenge the chain in front answers its own refusals with, such as
 // DPoP's WWW-Authenticate, is set first, so a guard's refusal carries it
 // too, whoever renders the answer.
+//
+// The refusal's security event and the challenge each walk err, and return
+// the abort that stopped the walk instead of reporting it. The guard writes
+// one record per refusal whose classification aborted, to slog.Default(),
+// since guards hold no chain logger:
+//
+//   - with WithGuardErrorHandler, the guard classifies nothing of its own, so
+//     the first abort either walk met is reported;
+//   - otherwise the guard's status lookup reports its own abort, and an abort
+//     only the event or the challenge met, such as an Is method that panics
+//     only for the sentinel one of them asked about, is reported in its place.
 func (g *Guards) refuse(w http.ResponseWriter, r *http.Request, err error) {
-	eventsink.GuardRefused(r.Context(), err)
+	ctx := r.Context()
 
-	err = guardauth.Challenge(r.Context(), NewHTTPResponseWriter(w), err)
+	eventAbort := eventsink.GuardRefused(ctx, err)
+
+	err, challengeAbort := guardauth.Challenge(ctx, NewHTTPResponseWriter(w), err)
+
+	walkAbort := eventAbort
+	if walkAbort == nil {
+		walkAbort = challengeAbort
+	}
 
 	if g.onError != nil {
+		if walkAbort != nil {
+			logClassificationAborted(ctx, slog.Default(), walkAbort)
+		}
+
 		g.onError(w, r, err)
 
 		return
@@ -175,11 +197,14 @@ func (g *Guards) refuse(w http.ResponseWriter, r *http.Request, err error) {
 
 	// The status and nothing else. A body here would either leak what the
 	// refusal knew — a store's error text, whether a record exists — or invent
-	// a format the consumer must then work around. Guards hold no chain logger,
-	// so a classification that gave up is reported to the process default.
+	// a format the consumer must then work around.
 	status, _, abort := lookup(err)
-	if abort != nil {
-		logClassificationAborted(r.Context(), slog.Default(), abort)
+
+	switch {
+	case abort != nil:
+		logClassificationAborted(ctx, slog.Default(), abort)
+	case walkAbort != nil:
+		logClassificationAborted(ctx, slog.Default(), walkAbort)
 	}
 
 	w.WriteHeader(status)

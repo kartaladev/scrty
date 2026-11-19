@@ -164,7 +164,7 @@ func checkResponse(
 	if cm, ok := method.(mfa.ChallengeMethod); ok {
 		if err := spendChallenge(ctx, challenges[cm.Name()], cm, s, response); err != nil {
 			throttle.RecordFailure(ctx, user)
-			emitResponseRefused(ctx, err, failed, s)
+			emitResponseRefused(ctx, ex.answeringChain(), err, failed, s)
 
 			return err
 		}
@@ -175,7 +175,7 @@ func checkResponse(
 			throttle.RecordFailure(ctx, user)
 		}
 
-		emitResponseRefused(ctx, err, failed, s)
+		emitResponseRefused(ctx, ex.answeringChain(), err, failed, s)
 
 		return err
 	}
@@ -191,14 +191,27 @@ func checkResponse(
 // locked-out user returns before a response is judged, so it never reaches
 // here and is reported once, by the throttle. A dependency failure, such as a
 // challenge store that failed beneath the refusal, and a request whose own
-// context ended, are not reported.
-func emitResponseRefused(ctx context.Context, err error, failed string, s *session.Session) {
-	if !refused(ctx, err) || depfault.Silent(ctx, err) {
+// context ended, are not reported. c is the exchange's answering chain, which
+// refused reports an aborted walk of err through.
+//
+// err is the consumer's method's as often as the library's, so which event it
+// is is read through one bounded walk. One the walk gives up on, such as a
+// link whose Is method panics only for the rate-limit sentinels asked here,
+// reports no event, and the abort is reported as the quiet sites report one
+// (reportQuietly): the status lookup has already answered err below 500 here,
+// so it does not meet that abort.
+func emitResponseRefused(ctx context.Context, c *Chain, err error, failed string, s *session.Session) {
+	if !refused(ctx, c, err) || depfault.Silent(ctx, err) {
 		return
 	}
 
+	walk := walkRefusal(err)
+	rateLimited := walk.is(mfa.ErrVerifyAttemptsExhausted, mfa.ErrVerifyThrottled)
+
 	switch {
-	case errors.Is(err, mfa.ErrVerifyAttemptsExhausted), errors.Is(err, mfa.ErrVerifyThrottled):
+	case walk.abort != nil:
+		c.reportQuietly(ctx, err, walk.abort)
+	case rateLimited:
 		emitEvent(ctx, sessionEvent(event.ExcessRateLimitExceeded, event.OutcomeFailure, s))
 	default:
 		emitEvent(ctx, sessionEvent(failed, event.OutcomeFailure, s))

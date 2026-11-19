@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -260,7 +259,18 @@ func (v *dpopVerifier) checkNonce(ctx context.Context, claim *string) (stale boo
 
 	plain, err := v.cfg.NonceCipher.Open(ctx, sealed, []byte(nonceAdditionalData))
 	if err != nil {
-		if hangup.ByCaller(ctx, err) || errors.Is(err, session.ErrCipherUnavailable) {
+		failed, abort := v.openFailed(ctx, err)
+		if abort != nil {
+			// A cipher whose error cannot be read is a cipher that failed:
+			// never a refused nonce, which would ask the client to retry
+			// against the same cipher. Its error goes no further; the
+			// failure is answered behind the cipher's unavailable sentinel.
+			v.reportAbort(ctx, abort)
+
+			return false, v.nonceFailure(ctx, session.ErrCipherUnavailable)
+		}
+
+		if failed {
 			return false, v.nonceFailure(ctx, err)
 		}
 
@@ -280,6 +290,35 @@ func (v *dpopVerifier) checkNonce(ctx context.Context, claim *string) (stale boo
 	return now.Sub(issued) >= v.cfg.NonceLifetime/2, nil
 }
 
+// openFailed reports whether err, the nonce cipher's failure to open a nonce,
+// is the cipher failing rather than a nonce it refused: the request's own end
+// (hangup.ByCaller), or a cipher that could not reach its keys
+// (session.ErrCipherUnavailable).
+//
+// The cipher is the consumer's, so err is read through the library's bounded
+// walk, the hang-up check included. It also returns the abort that stopped
+// either walk, nil when none did; failed is false then.
+func (v *dpopVerifier) openFailed(ctx context.Context, err error) (failed bool, abort error) {
+	hungUp, abort := hangup.ByCallerWalk(ctx, err)
+	if abort != nil || hungUp {
+		return hungUp, abort
+	}
+
+	walk := walkRefusal(err)
+	unavailable := walk.is(session.ErrCipherUnavailable)
+
+	return unavailable, walk.abort
+}
+
+// reportAbort reports abort, met by the verifier reading a dependency's error
+// that the request then fails without: the dispatch never meets it, so it is
+// reported here, once, through the chain's logger and sampler under the
+// dispatch's per-reason key.
+func (v *dpopVerifier) reportAbort(ctx context.Context, abort error) {
+	logSampled(ctx, v.sampler, v.log, slog.LevelError, v.now(),
+		classificationAbortedKey(abort), msgClassificationAborted, classificationAbortedAttrs(abort)...)
+}
+
 // refuseNonce records a proof refused for its nonce and returns the refusal.
 func (v *dpopVerifier) refuseNonce(ctx context.Context) error {
 	v.log.LogAttrs(ctx, slog.LevelDebug, msgDPoPRefused, slog.String("check", reasonProofNonce))
@@ -288,12 +327,38 @@ func (v *dpopVerifier) refuseNonce(ctx context.Context) error {
 }
 
 // chargesProofRefusal reports whether an issuing endpoint that charges its
-// source charges err, the failure of an issuing proof check. Only an invalid
-// proof is charged. A refusal asking for a nonce is the protocol's normal
-// first step, and a replay store or nonce cipher that failed is a dependency
-// failure, neither of which the client's request caused.
-func chargesProofRefusal(err error) bool {
-	return errors.Is(err, ErrInvalidDPoPProof) && !errors.Is(err, ErrDPoPNonceRequired)
+// source charges err, the failure of an issuing proof check on ex. Only an
+// invalid proof is charged. A refusal asking for a nonce is the protocol's
+// normal first step, and a replay store or nonce cipher that failed is a
+// dependency failure, neither of which the client's request caused.
+func chargesProofRefusal(ex *Exchange, err error) bool {
+	_, charged := readProofFailure(ex, err)
+
+	return charged
+}
+
+// readProofFailure reads err, the failure of an issuing proof check on ex:
+// whether it asks for the server's nonce (ErrDPoPNonceRequired), and whether
+// it is an invalid proof an endpoint charges (chargesProofRefusal).
+//
+// err carries the replay store's or the nonce cipher's error when either
+// failed, and both are the consumer's, so it is read through one bounded
+// walk. One the walk gives up on is neither, so it is never charged and never
+// answered with a nonce, and the abort is reported once for the exchange, as
+// the quiet sites report one (reportQuietlyOnce): the DPoP challenge on the way
+// out reads the same error.
+func readProofFailure(ex *Exchange, err error) (nonceRequired, charged bool) {
+	walk := walkRefusal(err)
+	nonceRequired = walk.is(ErrDPoPNonceRequired)
+	invalid := !nonceRequired && walk.is(ErrInvalidDPoPProof)
+
+	if walk.abort != nil {
+		ex.reportQuietlyOnce(ex.Context(), err, walk.abort)
+
+		return false, false
+	}
+
+	return nonceRequired, invalid
 }
 
 // dpopResponseKey is the context key under which the challenge interceptor
@@ -356,7 +421,14 @@ func (c *dpopChallenge) Intercept(ex *Exchange, next Next) error {
 		return nil
 	}
 
-	return c.v.challenge(ex.Context(), ex.Writer, err)
+	// Every DPoP chain on the exchange challenges the same refused error, so
+	// the abort is reported once for the exchange, not once per run.
+	out, abort := c.v.challenge(ex.Context(), ex.Writer, err)
+	if abort != nil {
+		ex.reportQuietlyOnce(ex.Context(), err, abort)
+	}
+
+	return out
 }
 
 // challenge sets on w the WWW-Authenticate challenge err calls for, and
@@ -364,7 +436,9 @@ func (c *dpopChallenge) Intercept(ex *Exchange, next Next) error {
 //
 //   - ErrDPoPNonceRequired: DPoP error="use_dpop_nonce", and a fresh nonce
 //     in DPoP-Nonce; a cipher that cannot seal one fails the request as a
-//     dependency failure instead;
+//     dependency failure instead. With server nonces off (DPoP.Nonce), only a
+//     consumer's error can ask for a nonce, and it is answered as the invalid
+//     proof it matches, with no nonce;
 //   - any other ErrInvalidDPoPProof: DPoP error="invalid_dpop_proof";
 //   - a request refused for want of a caller (ErrAuthenticationRequired):
 //     DPoP with no error, and a Bearer challenge beside it unless DPoP is
@@ -373,28 +447,53 @@ func (c *dpopChallenge) Intercept(ex *Exchange, next Next) error {
 // Each DPoP challenge names the accepted algorithms, and none names the
 // check that failed. Every other error is returned as it came, with no
 // challenge.
-func (v *dpopVerifier) challenge(ctx context.Context, w guardauth.HeaderWriter, err error) error {
+//
+// err may be a consumer's, a guard's authorizer's among them, so it is read
+// through one bounded walk. One the walk gives up on gets no challenge and is
+// returned as it came, with the abort that stopped the walk; nil when none
+// did. It reports nothing: each caller reports by the rule of whoever answers
+// err, the chain's own interceptor by reportQuietly, a guard by its own (it is
+// the guardauth.Challenger the chain publishes).
+func (v *dpopVerifier) challenge(ctx context.Context, w guardauth.HeaderWriter, err error) (out, abort error) {
+	walk := walkRefusal(err)
+	nonceRequired := walk.is(ErrDPoPNonceRequired)
+	invalidProof := !nonceRequired && walk.is(ErrInvalidDPoPProof)
+	mustAuthenticate := !nonceRequired && !invalidProof &&
+		walk.is(ErrAuthenticationRequired, authorize.ErrAuthenticationRequired)
+
+	if walk.abort != nil {
+		return err, walk.abort
+	}
+
+	// Only a consumer's error can ask for a nonce on a chain whose server
+	// nonces are off, and there is no nonce source to issue one from. It is
+	// the invalid proof its sentinel matches, and is answered as one, with no
+	// nonce.
+	if nonceRequired && !v.cfg.Nonce {
+		nonceRequired, invalidProof = false, true
+	}
+
 	algs := "algs=" + strconv.Quote(v.algorithmNames())
 
 	switch {
-	case errors.Is(err, ErrDPoPNonceRequired):
+	case nonceRequired:
 		nonce, _, serr := v.issueNonce(ctx, false)
 		if serr != nil {
-			return serr
+			return serr, nil
 		}
 
 		w.AddHeader(headerWWWAuthenticate, `DPoP error="use_dpop_nonce", `+algs)
 		setNonce(w, nonce)
-	case errors.Is(err, ErrInvalidDPoPProof):
+	case invalidProof:
 		w.AddHeader(headerWWWAuthenticate, `DPoP error="invalid_dpop_proof", `+algs)
-	case errors.Is(err, ErrAuthenticationRequired), errors.Is(err, authorize.ErrAuthenticationRequired):
+	case mustAuthenticate:
 		w.AddHeader(headerWWWAuthenticate, "DPoP "+algs)
 		if !v.cfg.Require {
 			w.AddHeader(headerWWWAuthenticate, "Bearer")
 		}
 	}
 
-	return err
+	return err, nil
 }
 
 // algorithmNames is the accepted proof algorithms, space-separated, as a

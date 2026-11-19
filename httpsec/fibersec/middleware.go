@@ -161,7 +161,19 @@ func Middleware(chain *httpsec.Chain) fiber.Handler {
 			// the bounded walk also covers an interceptor that wrapped it on the way
 			// out, and never a refusal the chain made itself.
 			if nextErr != nil {
-				chain, abort := errwalk.Flatten(err)
+				// A refusal a guard built is classified, and an abort already
+				// reported, where it was built: walking it again would report
+				// the same abort twice. Only the value the route returned counts
+				// (err is a *RefusalError here, so the comparison cannot meet an
+				// uncomparable dynamic type); one an interceptor wrapped still
+				// takes the walk below.
+				if _, built := classified(err); built && err == nextErr { //nolint:errorlint // identity of the value the route returned
+					return err
+				}
+
+				var buf [walkBuffer]error
+
+				chain, abort := errwalk.FlattenInto(buf[:], err)
 				if abort != nil {
 					return abortedRefusal(err, abort)
 				}

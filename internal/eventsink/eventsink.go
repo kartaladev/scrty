@@ -14,7 +14,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"log/slog"
 
@@ -22,6 +21,7 @@ import (
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/errwalk"
 	"github.com/kartaladev/scrty/internal/hangup"
 )
 
@@ -135,10 +135,29 @@ func (o *Own) Report(ctx context.Context, e event.Event, log *slog.Logger) {
 // when it is an authorization denial (authorize.ErrAccessDenied) and the
 // request's own context had not ended, naming the caller ctx carries. Any
 // other refusal, a caller that has not authenticated or an authorizer that
-// could not answer, reports nothing.
-func GuardRefused(ctx context.Context, err error) {
-	if !Enabled(ctx) || !errors.Is(err, authorize.ErrAccessDenied) || hangup.ByCaller(ctx, err) {
-		return
+// could not answer, reports nothing. A request that carries no Emitter is not
+// inspected at all, and nil is returned.
+//
+// err is the consumer's authorizer's or extractor's, so it is walked under the
+// library's bounded, recovering walk, the hang-up check included. An err the
+// walk gives up on, a cyclic chain, a fan-out of joins or a link whose Unwrap
+// or Is method panics, reports no event: its match is not guessed from a
+// partial walk. The abort that stopped the walk is returned, one of errwalk's
+// own values, unwrapped, and nil when none did.
+//
+// GuardRefused writes no record of an abort. The guard decides whether one is
+// written, because only the guard knows whether its own classification of err
+// will meet and report the same abort: a link whose Is method panics only for
+// the sentinel asked here is one that classification may never meet, and a
+// consumer's guard error handler classifies nothing.
+func GuardRefused(ctx context.Context, err error) (abort error) {
+	if !Enabled(ctx) {
+		return nil
+	}
+
+	denied, abort := guardDenied(ctx, err)
+	if abort != nil || !denied {
+		return abort
 	}
 
 	e := event.Event{Name: event.AuthzFail, Outcome: event.OutcomeFailure}
@@ -147,6 +166,30 @@ func GuardRefused(ctx context.Context, err error) {
 	}
 
 	Send(ctx, e)
+
+	return nil
+}
+
+// guardDenied reports whether err is a denial GuardRefused reports: it matches
+// authorize.ErrAccessDenied and is not ctx's own ending. It also returns the
+// abort that stopped either walk, nil when none did; denied is false then.
+func guardDenied(ctx context.Context, err error) (denied bool, abort error) {
+	chain, abort := errwalk.Flatten(err)
+	if abort != nil {
+		return false, abort
+	}
+
+	matched, abort := errwalk.Is(chain, authorize.ErrAccessDenied)
+	if abort != nil || !matched {
+		return false, abort
+	}
+
+	hungUp, abort := hangup.ByCallerWalk(ctx, err)
+	if abort != nil || hungUp {
+		return false, abort
+	}
+
+	return true, nil
 }
 
 // factorKey is the context key the first factor a request is judging is

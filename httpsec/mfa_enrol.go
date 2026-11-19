@@ -483,17 +483,17 @@ func (i *enrolmentInterceptor) serve(
 	run func(*Exchange, *session.Session, mfa.Enroller) error,
 ) error {
 	if s == nil {
-		return i.refused(ex.Context(), endpoint, ErrAuthenticationRequired)
+		return i.refused(ex, endpoint, ErrAuthenticationRequired)
 	}
 
 	name, ok := oneSegmentBelow(ex.Request.Path(), prefix)
 	method, known := i.methods[name]
 
 	if !ok || !known {
-		return i.refused(ex.Context(), endpoint, ErrUnknownMFAMethod)
+		return i.refused(ex, endpoint, ErrUnknownMFAMethod)
 	}
 
-	return i.refused(ex.Context(), endpoint, run(ex, s, method))
+	return i.refused(ex, endpoint, run(ex, s, method))
 }
 
 // The names the path's records give its endpoints.
@@ -514,19 +514,29 @@ const (
 // user, the same channel twice) carries neither. A gate refusal is not
 // recorded here: it is the challenge the confined session is expected to
 // meet, not a request an endpoint turned down.
-func (i *enrolmentInterceptor) refused(ctx context.Context, endpoint string, err error) error {
+//
+// err may carry a consumer's method's error, so it is read through one
+// bounded walk (refusalReason). One the walk gives up on is recorded with the
+// unknown reason and nothing of the error, and its abort is reported through
+// the exchange's answering chain, as the quiet sites report one
+// (reportQuietly).
+func (i *enrolmentInterceptor) refused(ex *Exchange, endpoint string, err error) error {
 	if err == nil {
 		return nil
 	}
 
-	reason, level := refusalReason(err)
+	ctx := ex.Context()
+
+	reason, level, fault, abort := refusalReason(err)
+	if abort != nil {
+		ex.answeringChain().reportQuietly(ctx, err, abort)
+	}
 
 	attrs := []slog.Attr{slog.String("endpoint", endpoint)}
 
 	// A record names its reason once: diag.Failure writes it for a
 	// dependency's failure, and a plain attribute does for the rest.
-	var fault *enrolmentFault
-	if errors.As(err, &fault) {
+	if fault != nil {
 		attrs = append(attrs, diag.Failure(reason, fault.err)...)
 	} else {
 		attrs = append(attrs, slog.String("reason", reason))
@@ -542,20 +552,26 @@ const msgEnrolmentRefused = "httpsec: an enrolment request was refused"
 
 // refusalReason is the fixed category err is recorded by, and the level: an
 // outage is an error, a user at their limit a warning, and any other refusal —
-// a wrong code, an unreadable one — is what users do, and informational.
-func refusalReason(err error) (string, slog.Level) {
-	var fault *enrolmentFault
-	if errors.As(err, &fault) {
-		return fault.reason, slog.LevelError
+// a wrong code, an unreadable one — is what users do, and informational. It
+// also returns the enrolment fault err carries, nil for none.
+//
+// err is read through one bounded walk, as errors.As and errors.Is would read
+// it. It returns the abort that stopped the walk, nil when none did; the
+// reason is then the unknown one, at error, and fault is nil.
+func refusalReason(err error) (reason string, level slog.Level, fault *enrolmentFault, abort error) {
+	walk := walkRefusal(err)
+
+	if found, ok := refusalAs[*enrolmentFault](&walk); ok {
+		return found.reason, slog.LevelError, found, nil
 	}
 
 	for _, r := range refusalReasons {
-		if errors.Is(err, r.err) {
-			return r.reason, r.level
+		if walk.is(r.err) {
+			return r.reason, r.level, nil, nil
 		}
 	}
 
-	return reasonUnknown, slog.LevelError
+	return reasonUnknown, slog.LevelError, nil, walk.abort
 }
 
 // refusalReasons are the library refusals an enrolment endpoint answers with,

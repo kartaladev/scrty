@@ -669,15 +669,6 @@ func (c *Chain) statusQuietly(ctx context.Context, err error) int {
 	return status
 }
 
-// statusUnreported is the status lookup gives err, never reporting an abort.
-// It is for refused, whose callers hold no chain; making each of them report
-// is left to the refusal-path sites that are to walk the error themselves.
-func statusUnreported(err error) int {
-	status, _, _ := lookup(err)
-
-	return status
-}
-
 // lookup is LookupStatus without reporting: it also returns the abort that
 // stopped the classification, nil when none did, and never logs. The status
 // is 500 and ok false whenever abort is non-nil. abort is one of errwalk's own
@@ -686,13 +677,19 @@ func statusUnreported(err error) int {
 // The checks run in a fixed order, and the first that matches decides: an
 // issuing failure, ErrChallengeUnavailable, the OpenID Provider's and a
 // recovery's dependency failures, a challenge, the status table, a library
-// fault, and the named dependency sentinels.
+// fault, and the named dependency sentinels. Each list of sentinels is matched
+// with one errwalk.Index scan, which answers exactly as one errwalk.Is per
+// sentinel in the list's order would.
 func lookup(err error) (status int, ok bool, abort error) {
 	unrecognised := func(stop error) (int, bool, error) {
 		return http.StatusInternalServerError, false, stop
 	}
 
-	chain, abort := errwalk.Flatten(err)
+	// The chain is walked into this frame's own array, so a chain of up to
+	// walkBuffer nodes takes no heap allocation.
+	var buf [walkBuffer]error
+
+	chain, abort := errwalk.FlattenInto(buf[:], err)
 	if abort != nil {
 		return unrecognised(abort)
 	}
@@ -714,12 +711,10 @@ func lookup(err error) (status int, ok bool, abort error) {
 	// error wraps: an outage never reads to the client as a refusal. And a
 	// dependency of the OpenID Provider or of a recovery that failed, whatever
 	// its own error wraps.
-	for _, sentinel := range [...]error{ErrChallengeUnavailable, oidcprovider.ErrDependency, recovery.ErrDependency} {
-		if found, stop := errwalk.Is(chain, sentinel); stop != nil {
-			return unrecognised(stop)
-		} else if found {
-			return http.StatusInternalServerError, true, nil
-		}
+	if i, stop := errwalk.Index(chain, unavailableTargets); stop != nil {
+		return unrecognised(stop)
+	} else if i >= 0 {
+		return http.StatusInternalServerError, true, nil
 	}
 
 	// A nil *ChallengeError carries no kind to answer: the walk skips it, and
@@ -735,12 +730,11 @@ func lookup(err error) (status int, ok bool, abort error) {
 		}
 	}
 
-	for _, row := range statusTable {
-		if found, stop := errwalk.Is(chain, row.err); stop != nil {
-			return unrecognised(stop)
-		} else if found {
-			return row.status, true, nil
-		}
+	// The first row, in table order, that any node matches decides.
+	if i, stop := errwalk.Index(chain, statusTargets); stop != nil {
+		return unrecognised(stop)
+	} else if i >= 0 {
+		return statusTable[i].status, true, nil
 	}
 
 	// What remains matched no row, so a library dependency failure is 500
@@ -752,16 +746,46 @@ func lookup(err error) (status int, ok bool, abort error) {
 		return http.StatusInternalServerError, true, nil
 	}
 
-	for _, sentinel := range dependencySentinels {
-		if found, stop := errwalk.Is(chain, sentinel); stop != nil {
-			return unrecognised(stop)
-		} else if found {
-			return http.StatusInternalServerError, true, nil
-		}
+	if i, stop := errwalk.Index(chain, dependencyTargets); stop != nil {
+		return unrecognised(stop)
+	} else if i >= 0 {
+		return http.StatusInternalServerError, true, nil
 	}
 
 	return unrecognised(nil)
 }
+
+// unavailableSentinels are the dependency failures answered 500 before a
+// challenge or the status table is read, whatever their own errors wrap: a
+// challenge verifier that could not answer, and a failed dependency of the
+// OpenID Provider or of a recovery.
+var unavailableSentinels = []error{ErrChallengeUnavailable, oidcprovider.ErrDependency, recovery.ErrDependency}
+
+// unavailableTargets, statusTargets and dependencyTargets are the sentinel
+// lists lookup matches, prepared once for errwalk.Index in their tables' own
+// order, so a classification scans each list under one recover and allocates
+// nothing for it. Index returns a position in the list it was given, so
+// statusTargets[i] is statusTable[i].err.
+var (
+	unavailableTargets = errwalk.NewTargets(unavailableSentinels...)
+	statusTargets      = errwalk.NewTargets(statusSentinels(statusTable)...)
+	dependencyTargets  = errwalk.NewTargets(dependencySentinels...)
+)
+
+// statusSentinels are the sentinels of rows, in rows' order.
+func statusSentinels(rows []statusRow) []error {
+	out := make([]error, len(rows))
+	for i, row := range rows {
+		out[i] = row.err
+	}
+
+	return out
+}
+
+// walkBuffer is how many chain nodes lookup holds on its own stack. The
+// error shapes a request raises are a handful of nodes; a longer chain still
+// classifies, and only grows onto the heap.
+const walkBuffer = 16
 
 // dependencySentinels are the library's named dependency-unavailable
 // failures that no row above answers: each is 500, and LookupStatus

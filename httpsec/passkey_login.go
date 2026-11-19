@@ -567,19 +567,32 @@ func (i *passwordlessInterceptor) finish(ex *Exchange) error {
 	}
 
 	res, err := i.manager.Authenticate(ctx, body, binding)
-	if errors.Is(err, passkey.ErrMalformedResponse) {
-		return refusedAs(ErrCredentialsMissing, textCredentialsMissing, err)
-	}
-
 	if err != nil {
-		emitPasskeyRefused(ctx, err)
+		// The failure may be the consumer's login check's, so it is read
+		// through the bounded walk. One the walk gives up on is not a
+		// malformed response, reports no event, and its abort is reported as
+		// the quiet sites report one (reportQuietly).
+		walk := walkRefusal(err)
+		malformed := walk.is(passkey.ErrMalformedResponse)
+
+		if walk.abort != nil {
+			ex.answeringChain().reportQuietly(ctx, err, walk.abort)
+
+			return err
+		}
+
+		if malformed {
+			return refusedAs(ErrCredentialsMissing, textCredentialsMissing, err)
+		}
+
+		emitPasskeyRefused(ctx, ex.answeringChain(), err)
 
 		return err
 	}
 
 	details, err := i.loadUser(ex, res.User)
 	if err != nil {
-		emitPasskeyRefused(ctx, err)
+		emitPasskeyRefused(ctx, ex.answeringChain(), err)
 
 		return err
 	}
@@ -622,9 +635,21 @@ func (i *passwordlessInterceptor) finish(ex *Exchange) error {
 // failure, with its cause kept beneath it), a consumer login check's own
 // error, and a request whose own context ended before the verdict report
 // nothing.
-func emitPasskeyRefused(ctx context.Context, err error) {
-	refusal := errors.Is(err, authenticate.ErrAuthenticationFailed) ||
-		errors.Is(err, passkey.ErrPending) || errors.Is(err, passkey.ErrSuspended)
+//
+// err may be a consumer's, a login check's or a user loader's, so whether it
+// is a refusal is read through one bounded walk. One the walk gives up on
+// reports no event, and its abort is reported through c, the exchange's
+// answering chain, as the quiet sites report one (reportQuietly).
+func emitPasskeyRefused(ctx context.Context, c *Chain, err error) {
+	walk := walkRefusal(err)
+	refusal := walk.is(authenticate.ErrAuthenticationFailed, passkey.ErrPending, passkey.ErrSuspended)
+
+	if walk.abort != nil {
+		c.reportQuietly(ctx, err, walk.abort)
+
+		return
+	}
+
 	if !refusal || depfault.Silent(ctx, err) {
 		return
 	}

@@ -129,10 +129,18 @@ type candidate struct {
 }
 
 // statusTypes are the types of one status, in the order they are tried.
+//
+// specificTargets are the targets of specifics, candidate by candidate and
+// each candidate's in its own order, prepared once for errwalk.Index; the
+// target at position i belongs to specifics[specificOf[i]]. The first target,
+// in that order, that any node matches chooses its candidate, exactly as
+// trying each candidate's targets one errwalk.Is at a time would.
 type statusTypes struct {
-	challenges []candidate
-	specifics  []candidate
-	fallback   *candidate
+	challenges      []candidate
+	specifics       []candidate
+	specificTargets errwalk.Targets
+	specificOf      []int
+	fallback        *candidate
 }
 
 // groupByStatus orders the types of each status: challenge types, then
@@ -156,6 +164,16 @@ func groupByStatus(bySub map[string]*prblm.Type) map[int]*statusTypes {
 		case st.fallback == nil:
 			st.fallback = &c
 		}
+	}
+	for _, st := range out {
+		var targets []error
+		for i, c := range st.specifics {
+			for _, target := range c.sel.targets {
+				targets = append(targets, target)
+				st.specificOf = append(st.specificOf, i)
+			}
+		}
+		st.specificTargets = errwalk.NewTargets(targets...)
 	}
 	return out
 }
@@ -243,7 +261,11 @@ func (p *Problems) mapError(_ context.Context, err error) *prblm.Problem {
 	// serves every selector below. It gives up only on a chain that answers
 	// differently each time it is asked; the lookup already reported what it
 	// saw, so the mapper writes no record of its own and answers nothing.
-	chain, abort := errwalk.Flatten(err)
+	// Walked into this frame's own array: a chain of up to 16 nodes takes no
+	// heap allocation, and a longer one only grows onto the heap.
+	var buf [16]error
+
+	chain, abort := errwalk.FlattenInto(buf[:], err)
 	if abort != nil {
 		return nil //nolint:nilerr // an abort answers nothing; the lookup logged it
 	}
@@ -261,16 +283,13 @@ func (p *Problems) mapError(_ context.Context, err error) *prblm.Problem {
 			}
 		}
 	}
-	for _, c := range st.specifics {
-		for _, target := range c.sel.targets {
-			matched, abort := errwalk.Is(chain, target)
-			if abort != nil {
-				return nil //nolint:nilerr // see above
-			}
-			if matched {
-				return p.specificProblem(c, chain, err)
-			}
-		}
+	// One scan over every specific target of the status, under one recover.
+	i, abort := errwalk.Index(chain, st.specificTargets)
+	if abort != nil {
+		return nil //nolint:nilerr // see above
+	}
+	if i >= 0 {
+		return p.specificProblem(st.specifics[st.specificOf[i]], chain, err)
 	}
 	if st.fallback == nil {
 		return prblm.New(status, prblm.WithCause(err))

@@ -14,6 +14,7 @@ import (
 
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/internal/eventsink"
+	"github.com/kartaladev/scrty/internal/guardauth"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
@@ -265,6 +266,7 @@ func (c *Chain) Assemble(terminal Next) Next {
 		// Nested runs share the record, so one refusal is reported once.
 		if ex.terminalCount() == 0 {
 			ex.refusalReported = false
+			ex.abortReported = false
 		}
 
 		// A chain entered again on a request it is already running on, such
@@ -381,11 +383,16 @@ type chainRun struct {
 	gatesBegun atomic.Bool
 }
 
-// Value answers chainRunKey with the run, and every other key from the
-// context the run began on.
+// Value answers chainRunKey with the run, guardauth.LookupKey with the status
+// lookup a guard behind the chain asks about its refusal (lookupAbort), and
+// every other key from the context the run began on. Answering the lookup
+// here, rather than storing it on the context, costs a request nothing.
 func (r *chainRun) Value(key any) any {
-	if _, ok := key.(chainRunKey); ok {
+	switch key.(type) {
+	case chainRunKey:
 		return r
+	case guardauth.LookupKey:
+		return guardauth.Lookup(lookupAbort)
 	}
 
 	return r.Context.Value(key)

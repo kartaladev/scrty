@@ -379,6 +379,15 @@ type Exchange struct {
 	// that run's refusal.
 	refusalReported bool
 
+	// abortReported is whether a refusal-path check on this exchange has
+	// already reported an aborted classification of the refused error (the
+	// DPoP challenge, emitRefusal), so the same check in a chain this one is
+	// assembled inside, meeting the same abort, does not report it again with
+	// sampling off. It is shared and cleared as refusalReported is. It does
+	// not stop the refusal event: an abort the challenge met may be one the
+	// event's own check never asks about.
+	abortReported bool
+
 	// renewal is the identifier of a session the resolution core let through
 	// to the renewal endpoint without publishing it: one presented after its
 	// grace window under unused-successor recovery, on a request that is the

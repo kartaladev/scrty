@@ -272,7 +272,7 @@ func (g *passwordChangeGate) resolve(ex *Exchange) error {
 		// The consumer's error is the refusal, unchanged: they know why they
 		// refused, and restating it here would lose that. Only a refusal is
 		// reported: a store the function could not reach decided nothing.
-		if refused(ctx, err) {
+		if refused(ctx, ex.answeringChain(), err) {
 			emitEvent(ctx, sessionEvent(event.AuthnPasswordChangeFail, event.OutcomeFailure, s))
 		}
 

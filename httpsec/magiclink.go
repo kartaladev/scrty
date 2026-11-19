@@ -451,7 +451,7 @@ func (i *magicLinkInterceptor) consume(ex *Exchange) error {
 	// failure of the replay store or nonce cipher are not.
 	binding, err := issuingBinding(ctx, ex.dpop(), ex.certBinding(), ex.Request, ex.bearerCredential)
 	if err != nil {
-		if chargesProofRefusal(err) {
+		if chargesProofRefusal(ex, err) {
 			recordSourceFailure(ctx, i.guard, src)
 		}
 
