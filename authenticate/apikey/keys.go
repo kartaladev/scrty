@@ -20,6 +20,7 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -449,6 +450,8 @@ func (m *Keys) Verify(ctx context.Context, presented string) (identity.Principal
 	}
 
 	rec, err := m.store.Get(ctx, keyID)
+	// A chain that cannot be walked is an outage, never the not-found branch.
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		// ErrKeyNotFound included: an unknown key and an unreachable store are
 		// the same answer to whoever asked. Only the log tells them apart, and
@@ -486,7 +489,9 @@ func (m *Keys) Verify(ctx context.Context, presented string) (identity.Principal
 
 	// Best effort: a key that works must not stop working because the store
 	// could not record when it was last used.
-	if err := m.store.TouchLastUsed(ctx, rec.ID, now); err != nil {
+	err = m.store.TouchLastUsed(ctx, rec.ID, now)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		m.log(ctx, slog.LevelWarn, "apikey: could not record last use",
 			append([]slog.Attr{slog.String("key_id", rec.ID.String())}, diag.Failure("key-store", err)...)...)
 	}
@@ -538,6 +543,7 @@ func levelFor(err error) slog.Level {
 // inside their own implementation of Store.
 func (m *Keys) Revoke(ctx context.Context, keyID id.ID) error {
 	_, err := m.store.Revoke(ctx, keyID, m.clock.Now())
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	return keyStoreFailed(err, "apikey: could not revoke the key")
 }
@@ -611,6 +617,7 @@ func keyStoreFailed(err error, text string) error {
 // say — this package neither opens nor requires one.
 func (m *Keys) Rotate(ctx context.Context, keyID id.ID, lifetime time.Duration) (string, Key, error) {
 	existing, err := m.store.Get(ctx, keyID)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return "", Key{}, keyStoreFailed(err, "apikey: could not read the key to rotate")
 	}
