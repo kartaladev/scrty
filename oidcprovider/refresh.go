@@ -17,6 +17,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/oplineage"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
@@ -219,11 +220,14 @@ func parseRefreshToken(raw string) (id.ID, string, bool) {
 // writes nothing, because the family a request names is no proof of anything (R8).
 func (p *Provider) liveGrant(ctx context.Context, family id.ID, rc *RegisteredClient, now time.Time) (*Grant, error) {
 	grant, err := p.stores.grants.Load(ctx, family)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return nil, refuseGrant()
 	case err != nil:
 		return nil, dependencyFailure(ctx, err, "oidcprovider: read the refresh token's grant")
+	case grant == nil:
+		return nil, dependencyFailure(ctx, errNoRecord, "oidcprovider: read the refresh token's grant")
 	case grant.Revoked || grant.ClientID != rc.ID || !now.Before(grant.ExpiresAt):
 		return nil, refuseGrant()
 	}
@@ -294,7 +298,7 @@ func (p *Provider) markReuse(ctx context.Context, record *session.Session, now t
 	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	defer cancel()
 	newly, err := p.stores.grants.Revoke(detached, record.FamilyID, CauseReuse, now)
-	if err != nil {
+	if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke a reused refresh token's grant")
 	}
 	p.reportReuse(ctx, record.UserID, newly)
@@ -343,6 +347,7 @@ func (p *Provider) answerLineage(ctx context.Context, err error, family id.ID, n
 		defer cancel()
 
 		newly, revokeErr := p.stores.grants.Revoke(detached, family, CauseReuse, now)
+		revokeErr = porterr.SanitizeTo(ctx, p.cfg.logger, revokeErr, porterr.ErrUnwalkable)
 		if revokeErr == nil {
 			p.reportReuse(ctx, "", newly)
 		}
@@ -367,6 +372,7 @@ func (p *Provider) answerLineage(ctx context.Context, err error, family id.ID, n
 // retry through its code record, and a refresh token has no such record.
 func (p *Provider) judgeGrantUser(ctx context.Context, grant *Grant, now time.Time) error {
 	details, err := p.users.LoadByUserID(ctx, grant.User)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound):
 	case err != nil:
@@ -378,7 +384,7 @@ func (p *Provider) judgeGrantUser(ctx context.Context, grant *Grant, now time.Ti
 	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	defer cancel()
 	newly, err := p.stores.grants.Revoke(detached, grant.Family, CauseUserDisabled, now)
-	if err != nil {
+	if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke a grant whose user has gone")
 	}
 	if newly {
@@ -471,7 +477,8 @@ func (m *refreshMint) once(ctx context.Context) error {
 		}
 	}
 	if access.record != nil {
-		if err := m.p.stores.accessTokens.Create(ctx, access.record); err != nil {
+		err = m.p.stores.accessTokens.Create(ctx, access.record)
+		if err = porterr.SanitizeTo(ctx, m.p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 			m.err = dependencyFailure(ctx, err, "oidcprovider: store the access token")
 
 			return m.err
