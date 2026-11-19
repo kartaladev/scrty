@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/policy"
 )
 
@@ -363,6 +364,7 @@ func (o *observedAttempts) record(ctx context.Context, username string, at time.
 	}
 
 	count, err := p.store.FailureCount(ctx, username, at.Add(-p.window))
+	err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		p.logger.LogAttrs(ctx, slog.LevelError, msgReportLost, diag.Failure("attempt-store", err)...)
 
@@ -448,6 +450,7 @@ func (o *observedAttempts) Reset(ctx context.Context, username string) error {
 	// cannot be read does not stop the reset: clearing is what the caller
 	// asked for, and only the report depends on the count.
 	count, countErr := p.store.FailureCount(ctx, username, now.Add(-p.window))
+	countErr = porterr.SanitizeTo(ctx, p.logger, countErr, porterr.ErrUnwalkable)
 
 	// With a failure-streak limit the streak is read too, to tell a release from a clearing.
 	// Without it the policy cannot tell which one the reset was, so it
@@ -458,6 +461,7 @@ func (o *observedAttempts) Reset(ctx context.Context, username string) error {
 	)
 	if p.streaks != nil {
 		streak, streakErr = p.streaks.FailureStreak(ctx, username, now.Add(-p.capRetention))
+		streakErr = porterr.SanitizeTo(ctx, p.logger, streakErr, porterr.ErrUnwalkable)
 	}
 
 	if err := p.store.Reset(ctx, username); err != nil {
