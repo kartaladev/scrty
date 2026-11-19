@@ -25,6 +25,8 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
+//go:generate mockgen -destination=idgenerator_mock_test.go -package=apikey_test -typed github.com/kartaladev/scrty/pkg/id Generator
+
 // compensatingRevokeTimeout bounds the revoke of a replacement that a lost
 // rotation undoes, which runs detached from the caller's cancellation.
 const compensatingRevokeTimeout = 5 * time.Second
@@ -367,6 +369,7 @@ func (m *Keys) Issue(
 	}
 
 	keyID, err := m.ids.NewID()
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return "", Key{}, fmt.Errorf("apikey: could not mint an identifier: %w", err)
 	}
@@ -394,7 +397,9 @@ func (m *Keys) Issue(
 		rec.ExpiresAt = &expires
 	}
 
-	if err := m.store.Put(ctx, rec); err != nil {
+	err = m.store.Put(ctx, rec)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return "", Key{}, diag.Wrap(err, "apikey: could not store the issued key")
 	}
 
@@ -413,6 +418,7 @@ func (m *Keys) Issue(
 // its own detail logs it inside their own implementation of Store.
 func (m *Keys) List(ctx context.Context, principal identity.UserID) ([]Key, error) {
 	keys, err := m.store.List(ctx, principal)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, diag.Wrap(err, "apikey: could not list the principal's keys")
 	}
@@ -639,6 +645,7 @@ func (m *Keys) Rotate(ctx context.Context, keyID id.ID, lifetime time.Duration) 
 	revoked := false
 	if existing.liveAt(at) {
 		revoked, err = m.store.Revoke(ctx, keyID, at)
+		err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 		if err != nil {
 			// The old key may still be live (the failed revoke may even have
 			// committed, then errored), and the replacement was handed to
@@ -682,6 +689,7 @@ func (m *Keys) revokeReplacement(ctx context.Context, replacement id.ID) error {
 	defer cancel()
 
 	_, err := m.store.Revoke(undoCtx, replacement, m.clock.Now())
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	return err
 }

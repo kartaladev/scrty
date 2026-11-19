@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -23,7 +24,9 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate/apikey"
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/porterr"
+	"github.com/kartaladev/scrty/pkg/id"
 )
 
 // keyPortErrSecret is the text every hostile error here returns, so a test can
@@ -33,6 +36,10 @@ const keyPortErrSecret = "key-store-secret-text"
 // keyPortErrRowEnv names the row a child process runs. It is empty in the
 // parent.
 const keyPortErrRowEnv = "SCRTY_APIKEY_PORTERR_ROW"
+
+// keyPortErrRanMarker prefixes the line a child prints, followed by the row's
+// name, after the row ran and passed.
+const keyPortErrRanMarker = "SCRTY_APIKEY_PORTERR_RAN: "
 
 // keyCycleOne contains itself through Unwrap() error.
 type keyCycleOne struct{}
@@ -85,6 +92,9 @@ func keyFanOut(depth int) error {
 	return err
 }
 
+// keyUUID matches the identifiers Rotate's messages name, which differ per run.
+var keyUUID = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+
 // errKeyStoreDown is the plain outage the parity runs fail with.
 var errKeyStoreDown = errors.New("key store: connection refused")
 
@@ -96,7 +106,32 @@ const (
 	siteVerifyTouch keySite = "Verify's TouchLastUsed"
 	siteRevoke      keySite = "Revoke's Revoke"
 	siteRotateGet   keySite = "Rotate's Get"
+
+	siteIssuePut keySite = "Issue's Put"
+	siteIssueID  keySite = "Issue's NewID"
+	siteList     keySite = "List"
+
+	// siteRotateRevoke fails the old key's revoke; the compensating revoke of
+	// the replacement then succeeds.
+	siteRotateRevoke keySite = "Rotate's Revoke of the old key"
+
+	// siteRotateUndo fails the compensating revoke of the replacement after the
+	// old key's revoke failed with a plain outage.
+	siteRotateUndo keySite = "Rotate's compensating Revoke"
+
+	// siteRotateBoth fails both revokes with the row's error.
+	siteRotateBoth keySite = "Rotate's two Revokes"
 )
+
+// keyAbortRecords is how many abort records a row whose every hostile error
+// aborts writes: one per hostile error, at most one each.
+func keyAbortRecords(site keySite) int {
+	if site == siteRotateBoth {
+		return 2
+	}
+
+	return 1
+}
 
 // keyOutcome is what one call through a failing Store produced. Every error
 // classification is made inside the bound, so a hostile chain that reaches the
@@ -114,6 +149,10 @@ type keyOutcome struct {
 
 	// verified is Verify returning a principal.
 	verified bool
+
+	// live is how many of the principal's keys the real store holds unrevoked
+	// after the call: a key left issued by a failed Issue or Rotate shows here.
+	live int
 
 	// events are the security events the manager's own sink received.
 	events int
@@ -155,16 +194,50 @@ func runKeySite(t *testing.T, ctx context.Context, site keySite, storeErr error)
 		store.EXPECT().TouchLastUsed(gomock.Any(), rec.ID, gomock.Any()).Return(storeErr)
 	case siteRevoke:
 		store.EXPECT().Revoke(gomock.Any(), rec.ID, gomock.Any()).Return(false, storeErr)
+	case siteIssuePut:
+		store.EXPECT().Put(gomock.Any(), gomock.Any()).Return(storeErr)
+	case siteList:
+		store.EXPECT().List(gomock.Any(), identity.UserID("svc-billing")).Return(nil, storeErr)
+	case siteRotateRevoke, siteRotateUndo, siteRotateBoth:
+		store.EXPECT().Get(gomock.Any(), rec.ID).DoAndReturn(inner.Get)
+		store.EXPECT().Put(gomock.Any(), gomock.Any()).DoAndReturn(inner.Put)
+
+		oldErr, undoErr := storeErr, error(nil)
+
+		switch site {
+		case siteRotateUndo:
+			oldErr, undoErr = errKeyStoreDown, storeErr
+		case siteRotateBoth:
+			undoErr = storeErr
+		}
+
+		store.EXPECT().Revoke(gomock.Any(), rec.ID, gomock.Any()).Return(false, oldErr)
+
+		if undoErr != nil {
+			store.EXPECT().Revoke(gomock.Any(), gomock.Not(rec.ID), gomock.Any()).Return(false, undoErr)
+		} else {
+			store.EXPECT().Revoke(gomock.Any(), gomock.Not(rec.ID), gomock.Any()).DoAndReturn(inner.Revoke)
+		}
 	}
 
 	events := &keyEvents{}
 	buf := &keySyncBuffer{}
 
-	keys, err := apikey.New(
+	opts := []apikey.Option{
 		apikey.WithStore(store),
 		apikey.WithClock(clk),
 		apikey.WithSecurityEvents(events.sink),
-		apikey.WithLogger(slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))))
+		apikey.WithLogger(slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))),
+	}
+
+	if site == siteIssueID {
+		ids := NewMockGenerator(gomock.NewController(t))
+		ids.EXPECT().NewID().Return(id.ID{}, storeErr)
+
+		opts = append(opts, apikey.WithIDGenerator(ids))
+	}
+
+	keys, err := apikey.New(opts...)
 	require.NoError(t, err)
 
 	type result struct {
@@ -193,13 +266,19 @@ func runKeySite(t *testing.T, ctx context.Context, site keySite, storeErr error)
 			out.verified = err == nil && p.ID != ""
 		case siteRevoke:
 			out.err = keys.Revoke(ctx, rec.ID)
-		case siteRotateGet:
+		case siteRotateGet, siteRotateRevoke, siteRotateUndo, siteRotateBoth:
 			_, _, err := keys.Rotate(ctx, rec.ID, time.Hour)
+			out.err = err
+		case siteIssuePut, siteIssueID:
+			_, _, err := keys.Issue(ctx, "svc-billing", "second", []string{"invoices:read"}, time.Hour)
+			out.err = err
+		case siteList:
+			_, err := keys.List(ctx, "svc-billing")
 			out.err = err
 		}
 
 		if out.err != nil {
-			out.text = out.err.Error()
+			out.text = keyUUID.ReplaceAllString(out.err.Error(), "<id>")
 			out.verificationFailed = out.err == apikey.ErrVerificationFailed //nolint:errorlint // identity is the claim
 			out.notFound = errors.Is(out.err, apikey.ErrKeyNotFound)
 			out.rotationRefused = errors.Is(out.err, apikey.ErrRotationRefused)
@@ -221,6 +300,15 @@ func runKeySite(t *testing.T, ctx context.Context, site keySite, storeErr error)
 
 	out := r.out
 	out.events = len(events.all())
+
+	held, err := inner.List(t.Context(), "svc-billing")
+	require.NoError(t, err)
+
+	for _, k := range held {
+		if k.RevokedAt == nil {
+			out.live++
+		}
+	}
 
 	for _, rec := range keyJSONRecords(t, buf.Bytes()) {
 		switch rec["msg"] {
@@ -341,7 +429,13 @@ func TestPortErrors_KeyStore(t *testing.T) { //nolint:paralleltest // it replace
 		assert.Equal(t, plain.verified, got.verified, "the same verification result")
 		assert.Equal(t, plain.notFound, got.notFound, "never the not-found answer")
 		assert.Equal(t, plain.rotationRefused, got.rotationRefused)
-		assert.Equal(t, plain.text, got.text, "the same fixed text")
+		assert.Equal(t, plain.live, got.live, "the same keys left live")
+
+		if site != siteIssueID {
+			// Issue's identifier failure wraps the error's text into its own;
+			// the sanitized fault's text stands in for it.
+			assert.Equal(t, plain.text, got.text, "the same fixed text")
+		}
 		assert.Equal(t, plain.events, got.events, "the same security events")
 		assert.Equal(t, plain.failures, got.failures, "the same verification-failed record")
 		assert.Equal(t, plain.touches, got.touches, "the same last-use record")
@@ -355,12 +449,15 @@ func TestPortErrors_KeyStore(t *testing.T) { //nolint:paralleltest // it replace
 		case siteVerifyTouch:
 			require.True(t, plain.verified, "precondition: a failed last-use write leaves the verification successful")
 			assert.Equal(t, []string{"WARN"}, got.touches)
-		case siteRevoke, siteRotateGet:
+		case siteRevoke, siteRotateGet, siteIssuePut, siteIssueID, siteList,
+			siteRotateRevoke, siteRotateUndo, siteRotateBoth:
 			require.Error(t, plain.err)
 			assert.False(t, got.notFound, "an outage never reads as ErrKeyNotFound")
 		}
 
-		if got.err != nil {
+		// Issue's identifier failure quotes the consumer's error text, as it
+		// always did, when the walk completes and nothing is sanitized.
+		if got.err != nil && (site != siteIssueID || len(got.aborts) > 0) {
 			assert.NotContains(t, got.text, keyPortErrSecret)
 		}
 	}
@@ -374,7 +471,7 @@ func TestPortErrors_KeyStore(t *testing.T) { //nolint:paralleltest // it replace
 
 			sameAsPlain(t, site, plain, got)
 
-			if site == siteRevoke || site == siteRotateGet {
+			if site != siteVerifyGet && site != siteVerifyTouch {
 				assert.True(t, got.unwalkable, "the store failure wraps the sanitizer's fault")
 			}
 
@@ -388,19 +485,25 @@ func TestPortErrors_KeyStore(t *testing.T) { //nolint:paralleltest // it replace
 				assert.Equal(t, []string{"DEBUG"}, wrong.failures, "precondition: a wrong key is debug level")
 			}
 
-			require.Len(t, got.aborts, 1, "one abort record, on the manager's logger")
-			assert.Equal(t, "ERROR", got.aborts[0]["level"])
-			assert.Equal(t, reason, got.aborts[0]["reason"])
+			require.Len(t, got.aborts, keyAbortRecords(site), "one abort record per hostile error, on the manager's logger")
 
-			raw, err := json.Marshal(got.aborts[0])
-			require.NoError(t, err)
-			assert.NotContains(t, string(raw), keyPortErrSecret, "the record quotes the error")
+			for _, abort := range got.aborts {
+				assert.Equal(t, "ERROR", abort["level"])
+				assert.Equal(t, reason, abort["reason"])
+
+				raw, err := json.Marshal(abort)
+				require.NoError(t, err)
+				assert.NotContains(t, string(raw), keyPortErrSecret, "the record quotes the error")
+			}
 		}
 	}
 
 	var cases []testCase
 
-	for _, site := range []keySite{siteVerifyGet, siteVerifyTouch, siteRevoke, siteRotateGet} {
+	for _, site := range []keySite{
+		siteVerifyGet, siteVerifyTouch, siteRevoke, siteRotateGet,
+		siteIssuePut, siteIssueID, siteList, siteRotateRevoke, siteRotateUndo, siteRotateBoth,
+	} {
 		prefix := string(site) + ": "
 
 		cases = append(cases,
@@ -470,6 +573,11 @@ func TestPortErrors_KeyStore(t *testing.T) { //nolint:paralleltest // it replace
 			for _, rec := range keyJSONRecords(t, defaults.Bytes()) {
 				assert.NotEqual(t, porterr.MsgClassificationAborted, rec["msg"], "an abort record went to slog.Default()")
 			}
+
+			if only != "" && !t.Failed() {
+				// Stdout, so the parent's CombinedOutput carries it.
+				_, _ = os.Stdout.WriteString(keyPortErrRanMarker + tc.name + "\n")
+			}
 		})
 	}
 }
@@ -494,4 +602,9 @@ func keyPortErrInChild(t *testing.T, row string) {
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	require.NoError(t, err, "the child failed:\n%s", strings.Join(lines[:min(len(lines), 8)], "\n"))
+
+	// A child whose row name matched no case skips every row and exits 0: it
+	// proves it ran the row only by printing the marker after the row passed.
+	require.Contains(t, string(out), keyPortErrRanMarker+row,
+		"the child never ran the row: its name matches no case")
 }
