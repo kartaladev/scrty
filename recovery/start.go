@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -85,6 +86,7 @@ func (r *Recoverer) start(ctx context.Context, username string) identity.UserID 
 	subject := string(details.ID)
 
 	address, err := r.resolver(ctx, details)
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgStartContactFailed, diag.Failure("contact-resolver", err)...)
 
@@ -119,7 +121,9 @@ func (r *Recoverer) start(ctx context.Context, username string) identity.UserID 
 	// account to another address.
 	msg := notify.Message{To: address, Subject: subjectLine, TextBody: body}
 
-	if err := r.sender.Send(ctx, msg); err != nil {
+	err = r.sender.Send(ctx, msg)
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgStartSendFailed, diag.Failure("sender", err)...)
 	}
 
@@ -136,6 +140,9 @@ func (r *Recoverer) resolveForStart(ctx context.Context, username string) (*iden
 	}
 
 	details, err := r.users.LoadByUsername(ctx, username)
+	// An error whose chain cannot be walked is an outage, never an unknown
+	// username, even when it claims to wrap identity.ErrUserNotFound.
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound):
