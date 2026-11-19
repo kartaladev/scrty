@@ -17,6 +17,7 @@ import (
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
@@ -197,6 +198,10 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 	defer upgrade.Discard()
 
 	auth, err := b.authn.Authenticate(verifyCtx, identity.NewUsernamePassword(username, password))
+	// The authenticator may be the consumer's, and so is its error. One whose
+	// chain cannot be walked becomes a fault matching ErrUnavailable, so it is
+	// answered, charged and recorded exactly as a user-store outage is.
+	err = porterr.SanitizeTo(ctx, b.log, err, authenticate.ErrUnavailable)
 	if err != nil {
 		// A user store that could not answer judged no credential, and a load
 		// the request's own context ended compared no password, so neither is
@@ -226,7 +231,10 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 			defer cancel()
 
 			recordCtx := eventsink.WithFactor(bounded, factor.Basic)
-			if recErr := b.attempts.RecordFailure(recordCtx, username, now); recErr != nil {
+			recErr := b.attempts.RecordFailure(recordCtx, username, now)
+			// Only logged, but sanitized so an error that cannot be walked is
+			// recorded as an abort too.
+			if recErr = porterr.SanitizeTo(ctx, b.log, recErr, porterr.ErrUnwalkable); recErr != nil {
 				b.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
 					diag.Failure("attempt-store", recErr)...)
 			}
@@ -252,7 +260,10 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 	// A proven password supersedes the guesses before it, as at the login
 	// form: a Basic client's typos must not add up to a lock its owner keeps
 	// hitting with the right password.
-	if err := b.attempts.Reset(ctx, username); err != nil {
+	err = b.attempts.Reset(ctx, username)
+	// Only logged, but sanitized so an error that cannot be walked is recorded
+	// as an abort too.
+	if err = porterr.SanitizeTo(ctx, b.log, err, porterr.ErrUnwalkable); err != nil {
 		b.log.LogAttrs(ctx, slog.LevelError, msgAttemptsNotReset,
 			diag.Failure("attempt-store", err)...)
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -203,6 +204,10 @@ func (i *apiKeyInterceptor) checkOwner(
 	}
 
 	details, err := i.owners.LoadByUserID(ctx, owner)
+	// The loader is the consumer's, and so is its error. One whose chain
+	// cannot be walked becomes a fault that matches neither ErrUserNotFound
+	// nor the request's cancellation, so the outage branch answers it.
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
 
 	switch {
 	case err == nil && details != nil && details.ID != owner:
