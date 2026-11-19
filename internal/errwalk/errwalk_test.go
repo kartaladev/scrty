@@ -133,9 +133,12 @@ func names(c errwalk.Chain) []string {
 	return out
 }
 
-// flattenWithin runs Flatten under a deadline, so a walk that hangs fails the
+// walkFunc is a walk under test: Flatten, or FlattenInto with some buffer.
+type walkFunc func(err error) (errwalk.Chain, error)
+
+// flattenWithin runs walk under a deadline, so a walk that hangs fails the
 // test instead of the whole run.
-func flattenWithin(t *testing.T, err error, d time.Duration) (errwalk.Chain, time.Duration, error) {
+func flattenWithin(t *testing.T, walk walkFunc, err error, d time.Duration) (errwalk.Chain, time.Duration, error) {
 	t.Helper()
 
 	type result struct {
@@ -147,7 +150,7 @@ func flattenWithin(t *testing.T, err error, d time.Duration) (errwalk.Chain, tim
 	start := time.Now()
 
 	go func() {
-		c, abort := errwalk.Flatten(err)
+		c, abort := walk(err)
 		done <- result{c: c, abort: abort}
 	}()
 
@@ -155,7 +158,7 @@ func flattenWithin(t *testing.T, err error, d time.Duration) (errwalk.Chain, tim
 	case r := <-done:
 		return r.c, time.Since(start), r.abort
 	case <-time.After(d):
-		t.Fatalf("Flatten did not return within %s", d)
+		t.Fatalf("the walk did not return within %s", d)
 
 		return nil, 0, nil
 	}
@@ -168,15 +171,17 @@ func requireBudget(t *testing.T, c errwalk.Chain, abort error) {
 	assert.Nil(t, c, "an aborted walk returns no chain")
 }
 
-func TestFlatten(t *testing.T) {
-	t.Parallel()
+// flattenCase is one shape of error chain with the outcome a walk of it must
+// have.
+type flattenCase struct {
+	name   string
+	err    error
+	assert func(t *testing.T, c errwalk.Chain, abort error, elapsed time.Duration)
+}
 
-	type testCase struct {
-		name   string
-		err    error
-		assert func(t *testing.T, c errwalk.Chain, abort error, elapsed time.Duration)
-	}
-
+// flattenCases builds every walk shape afresh. Some nodes count their Unwrap
+// calls and a case asserts the count, so one build serves one walk.
+func flattenCases() []flattenCase {
 	// order: root, then depth first, through both Unwrap forms. a1 ends its
 	// branch with a nil Unwrap() error; the nil entry in root's kids is free.
 	a1 := leaf("a1")
@@ -213,7 +218,7 @@ func TestFlatten(t *testing.T) {
 	joinCycle := errors.Join(errors.New("join head"), joinTail)
 	joinTail.err = joinCycle
 
-	cases := []testCase{
+	return []flattenCase{
 		{
 			name: "root first, then depth first, each Unwrap called once",
 			err:  ordered,
@@ -420,12 +425,16 @@ func TestFlatten(t *testing.T) {
 			},
 		},
 	}
+}
 
-	for _, tc := range cases {
+func TestFlatten(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range flattenCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, elapsed, abort := flattenWithin(t, tc.err, 2*time.Second)
+			got, elapsed, abort := flattenWithin(t, errwalk.Flatten, tc.err, 2*time.Second)
 			tc.assert(t, got, abort, elapsed)
 		})
 	}
@@ -672,8 +681,27 @@ func TestMatch(t *testing.T) {
 				chain:  errwalk.Chain{other, panicIs{}, sentinel},
 				target: sentinel,
 				assert: func(t *testing.T, ok bool, abort error) {
+					t.Helper()
 					requirePanic(t, abort, "is boom")
 					assert.False(t, ok)
+				},
+			},
+			{
+				name:   "a panicking Is on the second node, after the first said no, aborts with its frames",
+				chain:  errwalk.Chain{isMethod{match: other}, panicIs{}, sentinel},
+				target: sentinel,
+				assert: func(t *testing.T, ok bool, abort error) {
+					t.Helper()
+					requirePanic(t, abort, "is boom")
+					assert.False(t, ok)
+
+					var pe *errwalk.PanicError
+					require.ErrorAs(t, abort, &pe)
+
+					functions := frameFunctions(pe.Frames)
+					require.GreaterOrEqual(t, len(functions), 2, "frames: %v", functions)
+					assert.Equal(t, "runtime.gopanic", functions[0])
+					assert.Contains(t, functions[1], "errwalk_test.panicIs.Is")
 				},
 			},
 			{

@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"sync/atomic"
 )
 
 // Budget is the most entries Flatten examines. Examining one more aborts the
@@ -65,11 +66,60 @@ type Chain []error
 // errors.As visit them. The abort is nil, wraps ErrBudget, or is a
 // *PanicError; on an abort the Chain is nil. A nil err, or a nil pointer err,
 // gives an empty Chain and no abort. See the package doc for the rules.
+//
+// It is FlattenInto with no buffer, so a non-empty Chain is on the heap.
 func Flatten(err error) (Chain, error) {
+	return FlattenInto(nil, err)
+}
+
+// pendingSize is how many entries still to examine FlattenInto holds on its
+// own stack before it grows that list onto the heap. A wrap holds 1 at a time,
+// and a join as many as it has members, so short chains stay well under it.
+const pendingSize = 16
+
+// FlattenInto is Flatten that appends the nodes into buf[:0], and returns
+// that slice: a chain that fits cap(buf) takes no heap allocation, and only a
+// longer one grows onto the heap, as append grows. Every Flatten rule holds
+// unchanged, and on an abort the Chain is nil, not buf.
+//
+// The walk overwrites buf's elements from index 0, up to the chain's length
+// or cap(buf), whichever is less, even when it aborts; whatever buf held is
+// ignored. The returned Chain shares buf's array while it fits, so it is valid
+// only while buf is, and buf must not be written while the Chain is in use. A
+// caller passes a fixed array on its own stack:
+//
+//	var buf [16]error
+//	chain, abort := errwalk.FlattenInto(buf[:], err)
+//
+// One deferred recover covers the whole walk, not one per Unwrap call: a panic
+// in any Unwrap aborts the whole walk either way.
+func FlattenInto(buf []error, err error) (chain Chain, abort error) {
+	done := false
+
+	noteArmed()
+
+	defer func() {
+		// done is read first, so a walk that returned never calls recover.
+		if !done {
+			chain, abort = nil, &PanicError{Value: recover(), Frames: panicFrames()}
+		}
+	}()
+
+	chain, abort = flatten(buf, err)
+	done = true
+
+	return chain, abort
+}
+
+// flatten is FlattenInto's walk, run under FlattenInto's recover.
+func flatten(buf []error, err error) (Chain, error) {
 	var (
-		chain Chain
-		// stack holds the entries not yet examined, nil entries included.
-		stack    = []error{err}
+		chain = Chain(buf[:0])
+		// stack holds the entries not yet examined, nil entries included. It
+		// starts in a fixed array on this frame, so a chain whose pending
+		// entries fit allocates nothing for them.
+		pending  [pendingSize]error
+		stack    = append(pending[:0], err)
 		examined int
 	)
 
@@ -86,11 +136,7 @@ func Flatten(err error) (Chain, error) {
 
 		switch u := node.(type) { //nolint:errorlint // the walk is the unwrapping
 		case interface{ Unwrap() error }:
-			next, abort := recovering(u.Unwrap)
-			if abort != nil {
-				return nil, abort
-			}
-
+			next := u.Unwrap()
 			if next == nil {
 				continue
 			}
@@ -101,10 +147,7 @@ func Flatten(err error) (Chain, error) {
 
 			stack = append(stack, next)
 		case interface{ Unwrap() []error }:
-			kids, abort := recovering(u.Unwrap)
-			if abort != nil {
-				return nil, abort
-			}
+			kids := u.Unwrap()
 
 			// Every pending entry is examined later and counts 1, so the
 			// walk is over budget as soon as the pending ones would be.
@@ -113,8 +156,8 @@ func Flatten(err error) (Chain, error) {
 			}
 
 			// Pushed in reverse, so they pop in slice order.
-			for _, kid := range slices.Backward(kids) {
-				stack = append(stack, kid)
+			for i := len(kids) - 1; i >= 0; i-- {
+				stack = append(stack, kids[i])
 			}
 		}
 	}
@@ -126,67 +169,174 @@ func Flatten(err error) (Chain, error) {
 // when target's type is comparable, or by the node's own Is(error) bool
 // method. A panicking Is method, or a == that panics, aborts with a
 // *PanicError. A nil target matches nothing, since a Chain holds no nil.
-func Is(c Chain, target error) (bool, error) {
+//
+// One deferred recover covers the whole scan, not one per node: any panic
+// aborts the whole call either way, and arming a recover per node was most of
+// a classification's time.
+func Is(c Chain, target error) (matched bool, abort error) {
 	if target == nil {
 		return false, nil
 	}
 
-	targetComparable := reflect.TypeOf(target).Comparable()
+	// == is taken only when target's type is comparable, so a target of an
+	// incomparable type never panics for it. Between interface values, ==
+	// first compares their dynamic types and is false, without calling any
+	// type's equality, when they differ: that is the same-type guard, at the
+	// cost of one word compare. A node of target's own comparable type that
+	// holds an incomparable value can still panic, which the recover catches.
+	compare := reflect.TypeOf(target).Comparable()
+	done := false
+
+	noteArmed()
+
+	defer func() {
+		// done is read first, so a scan that returned never calls recover.
+		if !done {
+			matched, abort = false, &PanicError{Value: recover(), Frames: panicFrames()}
+		}
+	}()
 
 	for _, node := range c {
-		if targetComparable {
-			eq, abort := recovering(func() bool { return node == target }) //nolint:errorlint // the == step errors.Is takes on each node
-			if abort != nil {
-				return false, abort
-			}
+		if compare && node == target { //nolint:errorlint // the == step errors.Is takes on each node
+			matched = true
 
-			if eq {
-				return true, nil
-			}
+			break
 		}
 
-		if x, ok := node.(interface{ Is(error) bool }); ok {
-			matched, abort := recovering(func() bool { return x.Is(target) })
-			if abort != nil {
-				return false, abort
+		if x, ok := node.(interface{ Is(error) bool }); ok && x.Is(target) {
+			matched = true
+
+			break
+		}
+	}
+
+	done = true
+
+	return matched, nil
+}
+
+// Targets is an ordered list of Is targets, prepared once for Index: each
+// target's comparability is read when the list is built, not on every scan.
+// The zero value is an empty list.
+type Targets struct {
+	errs    []error
+	compare []bool
+}
+
+// NewTargets prepares errs, in order, for Index. It copies errs, so a later
+// change to the caller's slice does not change the list. A nil entry keeps its
+// position and matches nothing, as a nil target of Is matches nothing.
+func NewTargets(errs ...error) Targets {
+	t := Targets{
+		errs:    slices.Clone(errs),
+		compare: make([]bool, len(errs)),
+	}
+
+	for i, target := range t.errs {
+		t.compare[i] = target != nil && reflect.TypeOf(target).Comparable()
+	}
+
+	return t
+}
+
+// Len is the number of targets, nil entries included.
+func (t Targets) Len() int { return len(t.errs) }
+
+// Index returns the position in t of the first target, in t's order, that a
+// node of c matches, or -1 when none does. Each target is tried over every node
+// of c before the next target is tried, so the result is exactly that of
+// calling Is once per target in t's order and stopping at the first match: a
+// later target never wins over an earlier one, even when it matches an earlier
+// node. A node matches a target as Is says.
+//
+// One deferred recover covers the whole scan, every target and every node. A
+// panicking Is method, or a == that panics, aborts with a *PanicError and -1,
+// as Is does; a panic reached before any target matched aborts even though a
+// later target would have matched.
+func Index(c Chain, t Targets) (index int, abort error) {
+	index = -1
+	done := false
+
+	noteArmed()
+
+	defer func() {
+		// done is read first, so a scan that returned never calls recover.
+		if !done {
+			index, abort = -1, &PanicError{Value: recover(), Frames: panicFrames()}
+		}
+	}()
+
+	// Target by target, each over every node: the order of one Is per
+	// target. compare is the guard Is computes per call, read once by
+	// NewTargets.
+scan:
+	for j, target := range t.errs {
+		if target == nil {
+			continue
+		}
+
+		compare := t.compare[j]
+
+		for _, node := range c {
+			if compare && node == target { //nolint:errorlint // the == step errors.Is takes on each node
+				index = j
+
+				break scan
 			}
 
-			if matched {
-				return true, nil
+			if x, ok := node.(interface{ Is(error) bool }); ok && x.Is(target) {
+				index = j
+
+				break scan
 			}
 		}
 	}
 
-	return false, nil
+	done = true
+
+	return index, nil
 }
 
 // As returns the first node of c, in order, that is a T: by type assertion,
 // or through the node's own As(any) bool method with a *T target. For a
 // pointer or interface T, a nil result is no match, and the scan continues. A
-// panicking As method aborts with a *PanicError.
-func As[T error](c Chain) (T, bool, error) {
-	var zero T
+// panicking As method aborts with a *PanicError. As Is does, it arms one
+// deferred recover for the whole scan.
+func As[T error](c Chain) (found T, matched bool, abort error) {
+	done := false
+
+	noteArmed()
+
+	defer func() {
+		// done is read first, so a scan that returned never calls recover.
+		if !done {
+			var zero T
+
+			found, matched, abort = zero, false, &PanicError{Value: recover(), Frames: panicFrames()}
+		}
+	}()
 
 	for _, node := range c {
 		if v, ok := node.(T); ok && !isNil(v) { //nolint:errorlint // the direct type match errors.As makes on each node
-			return v, true, nil
+			found, matched = v, true
+
+			break
 		}
 
 		if x, ok := node.(interface{ As(any) bool }); ok {
 			var v T
 
-			matched, abort := recovering(func() bool { return x.As(&v) })
-			if abort != nil {
-				return zero, false, abort
-			}
+			if x.As(&v) && !isNil(v) {
+				found, matched = v, true
 
-			if matched && !isNil(v) {
-				return v, true, nil
+				break
 			}
 		}
 	}
 
-	return zero, false, nil
+	done = true
+
+	return found, matched, nil
 }
 
 // Reason names an abort for reporting: "budget", "panic", or "" for a nil
@@ -203,22 +353,34 @@ func Reason(abort error) string {
 	}
 }
 
-// recovering calls f and turns a panic into a *PanicError. It tells a panic
-// from a return with a flag, because recover returns nil for panic(nil) under
-// GODEBUG=panicnil=1.
-func recovering[R any](f func() R) (r R, abort error) {
-	done := false
+// armHook, when set, is called each time a deferred recover is armed. It is
+// nil outside tests. It is atomic so that a goroutine still classifying when a
+// test sets or clears it is not a data race.
+var armHook atomic.Pointer[func()]
 
-	defer func() {
-		if v := recover(); !done {
-			abort = &PanicError{Value: v, Frames: panicFrames()}
-		}
-	}()
+// SetArmHook makes f be called each time Flatten, FlattenInto, Is, As or
+// Index arms its deferred recover, and returns the function that restores the
+// hook it replaced. A nil f removes the hook. It exists for this module's tests
+// that pin how many recovers one classification arms; production code never
+// sets it. The hook is process-wide, so a test that sets it must not run in
+// parallel with others that classify, and f must be safe to call from any
+// goroutine.
+func SetArmHook(f func()) (restore func()) {
+	var next *func()
+	if f != nil {
+		next = &f
+	}
 
-	r = f()
-	done = true
+	prev := armHook.Swap(next)
 
-	return r, nil
+	return func() { armHook.Store(prev) }
+}
+
+// noteArmed calls the arm hook, if one is set.
+func noteArmed() {
+	if h := armHook.Load(); h != nil {
+		(*h)()
+	}
 }
 
 // panicFrames returns the program counters of the panicking stack. It must be

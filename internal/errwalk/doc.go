@@ -52,6 +52,14 @@
 // an As that reports true without setting the target, is no match, and the
 // scan continues. "First match" means first in list order.
 //
+// Index matches many targets, prepared once with NewTargets, in one scan. It
+// tries each target over every node before the next target, so it answers
+// exactly as one Is per target in order would, stopping at the first that
+// matches.
+//
+// Flatten, Is, As and Index each arm one deferred recover for the whole walk
+// or scan, never one per node, method call or target.
+//
 // # Aborts
 //
 // An abort means the classification failed and must fail closed. Flatten

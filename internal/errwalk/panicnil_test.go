@@ -32,4 +32,13 @@ func TestFlatten_PanicNilAborts(t *testing.T) {
 	require.GreaterOrEqual(t, len(functions), 2, "frames: %v", functions)
 	assert.Equal(t, "runtime.gopanic", functions[0])
 	assert.Contains(t, functions[1], "errwalk_test.panicNilUnwrap.Unwrap")
+
+	// A walk into a caller's buffer aborts the same way, with no chain.
+	var buf [16]error
+
+	into, intoAbort := errwalk.FlattenInto(buf[:], panicNilUnwrap{})
+	require.ErrorAs(t, intoAbort, &pe)
+	assert.Nil(t, pe.Value)
+	assert.Equal(t, "panic", errwalk.Reason(intoAbort))
+	assert.Nil(t, into)
 }

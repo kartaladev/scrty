@@ -69,7 +69,9 @@ func (e *RefusalError) Unwrap() []error { return []error{e.refusal, e.status} }
 // walk aborts — a cycle, too many links, a panicking method — is answered 500
 // and reported once, here, without calling anything on it.
 func newRefusal(err error) error {
-	if _, abort := errwalk.Flatten(err); abort != nil {
+	var buf [walkBuffer]error
+
+	if _, abort := errwalk.FlattenInto(buf[:], err); abort != nil {
 		return abortedRefusal(err, abort)
 	}
 
@@ -153,7 +155,9 @@ func handlerStatus(err error) int {
 		return status
 	}
 
-	chain, abort := errwalk.Flatten(err)
+	var buf [walkBuffer]error
+
+	chain, abort := errwalk.FlattenInto(buf[:], err)
 	if abort != nil {
 		return failClosed(abort)
 	}
@@ -174,6 +178,11 @@ func handlerStatus(err error) int {
 
 	return httpsec.StatusForError(err)
 }
+
+// walkBuffer is how many chain nodes fibersec's walks hold on the caller's
+// stack. A chain that fits takes no heap allocation; a longer one still
+// walks, and only grows onto the heap.
+const walkBuffer = 16
 
 // failClosed reports an abort in fibersec's own walk and answers 500.
 func failClosed(abort error) int {
