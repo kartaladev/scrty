@@ -17,6 +17,7 @@ import (
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/pkg/logsample"
@@ -712,6 +713,8 @@ func writeEnrolmentDocument(ex *Exchange, body any) error {
 // nothing.
 func (i *enrolmentInterceptor) throttled(ctx context.Context, l ratelimit.Limiter, key string, s *session.Session) error {
 	exceeded, err := l.Exceeded(ctx, key)
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return newEnrolmentFault(reasonLimiterUnavailable, msgLimiterUndecided, err,
 			mfa.ErrEnrolmentThrottled)

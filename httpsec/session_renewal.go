@@ -255,6 +255,8 @@ func rotationFailure(err, issueErr error) error {
 // charge outlives a client that hangs up.
 func (r *sessionRenewal) admit(ctx context.Context, key string) error {
 	exceeded, err := r.limiter.Exceeded(ctx, key)
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		r.logger.WarnContext(ctx, "the renewal limiter could not answer; the renewal is refused")
 
