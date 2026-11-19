@@ -341,8 +341,10 @@ func (o *observedAttempts) record(ctx context.Context, username string, at time.
 	)
 	if p.streaks != nil {
 		streak, setHold, streakErr = p.streaks.AddStreakFailure(ctx, username, at, at.Add(-p.capRetention), p.capLimit)
+		streakErr = porterr.SanitizeTo(ctx, p.logger, streakErr, porterr.ErrUnwalkable)
 	}
 	logErr := p.store.RecordFailure(ctx, username, at)
+	logErr = porterr.SanitizeTo(ctx, p.logger, logErr, porterr.ErrUnwalkable)
 
 	// The hold is reported by the one write the store says set it, whatever
 	// became of the log: no later write sets it again, so a report lost here
@@ -442,7 +444,7 @@ func (o *observedAttempts) Reset(ctx context.Context, username string) error {
 	if p.observer == nil {
 		// Nothing to report, so nothing to count first. The store's Reset
 		// clears the streak, hold included, with the log.
-		return p.store.Reset(ctx, username)
+		return porterr.SanitizeTo(ctx, p.logger, p.store.Reset(ctx, username), porterr.ErrUnwalkable)
 	}
 	now := p.clock.Now()
 
@@ -464,7 +466,7 @@ func (o *observedAttempts) Reset(ctx context.Context, username string) error {
 		streakErr = porterr.SanitizeTo(ctx, p.logger, streakErr, porterr.ErrUnwalkable)
 	}
 
-	if err := p.store.Reset(ctx, username); err != nil {
+	if err := porterr.SanitizeTo(ctx, p.logger, p.store.Reset(ctx, username), porterr.ErrUnwalkable); err != nil {
 		return err
 	}
 
@@ -485,5 +487,7 @@ func (o *observedAttempts) Reset(ctx context.Context, username string) error {
 }
 
 func (o *observedAttempts) FailureCount(ctx context.Context, username string, since time.Time) (int, error) {
-	return o.p.store.FailureCount(ctx, username, since)
+	count, err := o.p.store.FailureCount(ctx, username, since)
+
+	return count, porterr.SanitizeTo(ctx, o.p.logger, err, porterr.ErrUnwalkable)
 }
