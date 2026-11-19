@@ -19,6 +19,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/pkg/logsample"
@@ -156,6 +157,7 @@ func (h *Handoff) Issue(ctx context.Context, res CallbackResult) (string, error)
 	secret := base64.RawURLEncoding.EncodeToString(raw[handoffTokenIDBytes:])
 
 	recID, err := h.ids.NewID()
+	err = porterr.SanitizeTo(ctx, h.log, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return "", fmt.Errorf("oidc: naming a handoff record: %w", err)
 	}
@@ -176,7 +178,9 @@ func (h *Handoff) Issue(ctx context.Context, res CallbackResult) (string, error)
 		CreatedAt:  now,
 		ExpiresAt:  now.Add(HandoffTTL),
 	}
-	if err := h.store.Insert(ctx, rec); err != nil {
+	err = h.store.Insert(ctx, rec)
+	err = porterr.SanitizeTo(ctx, h.log, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return "", diag.Wrap(err, "oidc: storing a handoff code")
 	}
 
@@ -289,6 +293,7 @@ func (h *Handoff) Redeem(ctx context.Context, code string, checks ...RedeemCheck
 	}
 
 	rec, err := h.store.FindByTokenID(ctx, tokenID)
+	err = porterr.SanitizeTo(ctx, h.log, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrHandoffNotFound):
 		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "unknown")
@@ -312,6 +317,7 @@ func (h *Handoff) Redeem(ctx context.Context, code string, checks ...RedeemCheck
 	}
 
 	details, err := h.users.LoadByUserID(ctx, rec.UserID)
+	err = porterr.SanitizeTo(ctx, h.log, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound):
 		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "user_not_found")
@@ -353,6 +359,7 @@ func (h *Handoff) Redeem(ctx context.Context, code string, checks ...RedeemCheck
 		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "expired")
 	}
 	err = h.store.Consume(ctx, rec.TokenID, now)
+	err = porterr.SanitizeTo(ctx, h.log, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrHandoffNotFound):
 		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "consume_lost")
@@ -458,7 +465,9 @@ func (h *Handoff) FlushRefusalLogs() error {
 // expired is never deleted. A store error is returned with whatever count the
 // store reported. HandoffExpiryTask wraps it as a task.
 func (h *Handoff) PurgeExpired(ctx context.Context) (int, error) {
-	return h.store.DeleteExpired(ctx, h.clock.Now())
+	n, err := h.store.DeleteExpired(ctx, h.clock.Now())
+
+	return n, porterr.SanitizeTo(ctx, h.log, err, porterr.ErrUnwalkable)
 }
 
 // HandoffOption customises a Handoff at construction.
