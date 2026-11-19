@@ -343,10 +343,16 @@ func (p *Provider) loadCodeRecord(ctx context.Context, tokenID id.ID) (*CodeReco
 		return nil, refuseGrant()
 	case err != nil:
 		return nil, dependencyFailure(ctx, err, "oidcprovider: load the code record")
+	case record == nil:
+		return nil, dependencyFailure(ctx, errNoRecord, "oidcprovider: load the code record")
 	}
 
 	return record, nil
 }
+
+// errNoRecord stands for a store whose load answered neither a record nor an error, which breaks
+// its port's contract. It is answered as that store failing, never as a record missing.
+var errNoRecord = errors.New("oidcprovider: a store answered neither a record nor an error")
 
 // codeBindingsHold compares the request with what the code was issued for. The redirect URI
 // is compared exactly, and always required, because an authorization request cannot leave
@@ -414,6 +420,8 @@ func (p *Provider) judgeCodeNow(ctx context.Context, record *CodeRecord) error {
 	case errors.Is(err, ErrNotFound):
 	case err != nil:
 		return dependencyFailure(ctx, err, "oidcprovider: read the code's grant")
+	case recorded == nil:
+		return dependencyFailure(ctx, errNoRecord, "oidcprovider: read the code's grant")
 	case recorded.Revoked:
 		return refuseGrant()
 	}
@@ -604,11 +612,14 @@ func (p *Provider) refuseSpentCode(ctx context.Context, r TokenRequest, rc *Regi
 	// Read on the detached context so a caller who left still revokes, but judged on the
 	// caller's: only the caller's own ending is a hang-up, and the budget running out is not.
 	record, err := p.stores.codes.Load(detached, tokenID)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return refuseGrant()
 	case err != nil:
 		return dependencyFailure(ctx, err, "oidcprovider: load the code record")
+	case record == nil:
+		return dependencyFailure(ctx, errNoRecord, "oidcprovider: load the code record")
 	}
 	if record.ClientID != rc.ID || !codeBindingsHold(r, record, rc) {
 		return refuseGrant()
@@ -652,6 +663,7 @@ func splitCode(code string) (id.ID, string, bool) {
 // Opaque access tokens need nothing here, because their grant is checked when they are read.
 func (p *Provider) revokeReplayed(ctx, detached context.Context, record *CodeRecord, now time.Time) error {
 	newly, grantErr := p.stores.grants.Revoke(detached, record.GrantFamily, CauseCodeReplay, now)
+	grantErr = porterr.SanitizeTo(ctx, p.cfg.logger, grantErr, porterr.ErrUnwalkable)
 	if grantErr == nil {
 		p.reportCodeReplay(ctx, record, newly)
 	}
