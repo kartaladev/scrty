@@ -298,7 +298,12 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
   - Verify with `go test -race -count=1 ./...` (root).
 - [ ] 10.9a The rest of 10.9 (design decision 11 failure rows). Each item needs a failing test first.
   - `dpopAnswersChallenge` (`oidc_consents.go`) and the switch in `emitResponseRefused` (`challenge_spend.go`) use the walk. An `Is` that panics only for the sentinel each one checks no longer escapes.
-  - A guard refusal behind `WithGuardErrorHandler`, whose `GuardRefused` event or DPoP challenge aborts, writes exactly one record to the default logger. It fails with 0 records first.
+  - A guard refusal behind `WithGuardErrorHandler`, whose `GuardRefused` event or DPoP challenge aborts, writes exactly one record to the default logger. It fails with 0 records first (the 10.9b re-review's rows G1, G1b, G2 and the gin probe).
+  - Remove the process-wide reporter (`eventsink.SetGuardAbortReporter`):
+    - `GuardRefused` returns its abort to the caller, and so does the guard's DPoP challenge.
+    - Each guard's `refuse` applies the reporting rule itself: httpsec `guards.go`, ginsec `guards.go` and fibersec's guard.
+    - The existing guard rows stay green.
+    - New tests pin the rule with and without `WithGuardErrorHandler`, on each of the three guards.
   - These refusal-path reads, which the 10.12 inventory found and 10.9 missed, use the walk:
     - `resolve.go` `emitLoadRefusal`;
     - `dpop_nonce.go` `NonceCipher.Open` (around line 263), and the check around line 296 if it can see a consumer error;

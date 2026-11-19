@@ -721,17 +721,40 @@ Steps:
 - The missed sites: `httpsec/resolve.go` (`emitLoadRefusal`), `httpsec/dpop_nonce.go` (around lines 263 and 296), `httpsec/signals_retry.go` (around line 155), `httpsec/oidc_login.go` (`emitCallbackRefused`), `httpsec/passkey_login.go` (`emitPasskeyRefused`), `httpsec/mfa_enrol.go` (`refusalReason`) and `oidcprovider/events.go` (around line 222).
 - Test: `httpsec/refusal_path_hostile_test.go`, plus a test in `oidcprovider`.
 
-**Interfaces:** consumes the 10.9 helpers and the reporting rule from 10.9b.
+- The guard reporting redesign:
+  - `internal/eventsink/eventsink.go`: `GuardRefused`. Remove `SetGuardAbortReporter` and the installed reporter.
+  - `internal/guardauth` (the guard challenge).
+  - The guards: `httpsec/guards.go`, `httpsec/ginsec/guards.go` and fibersec's guard file. Each module's tests get guard rows.
+
+**Interfaces:**
+- Consumes the 10.9 helpers and the reporting rule from 10.9b.
+- Produces:
+  - `eventsink.GuardRefused(ctx, err) (abort error)`. It no longer reports on its own.
+  - The guard challenge returns its abort next to the error it already returns. The exact shape is the implementer's choice, stated in the report.
+  - Each guard's `refuse` applies the rule:
+    - with `onError` set, any abort writes one record to `slog.Default()`;
+    - otherwise, it writes one only when the guard's own lookup does not abort.
+  - `httpsec`'s `reportGuardAbort` and `newEventEmitter`'s installation are removed.
 
 Steps:
 - [ ] **Step 1: Confirm the inputs.** For the three sites marked "if it can see a consumer error", follow the error back to its source with gopls. Report the result, and drop any site that only ever sees an error the library built itself.
 - [ ] **Step 2: Write the failing tests.** For each remaining site:
   - a cyclic error and a `selectiveIs` error routed through that site's real path. Expected: no hang, no panic, the event or challenge dropped, and 1 record.
-  - a guard with `WithGuardErrorHandler`, on a chain with events and separately on a DPoP chain, refusing a cyclic error. Expected: exactly 1 record on the default logger.
-- [ ] **Step 3: Watch them fail.** Expected: a hang, a panic, or `has 0`.
+  - `TestGuard_AbortReporting`, a table in each of httpsec, ginsec and fibersec. A guard refuses with each of:
+    - a cyclic error;
+    - an `isPanics` error;
+    - a `selectiveIs` that the lookup never meets.
+
+    Run each with and without the module's guard error handler, and on a chain with events and on a DPoP chain. Expected: exactly 1 record on the default logger.
+    - gin's cyclic rows are left out, because gin's own `Context.Error` hangs on them (the stated limit).
+    - The re-review's rows G1, G1b and G2 and its gin probe are among these rows.
+  - A test that `eventsink` no longer exposes a reporter setter, and that `GuardRefused` returns the abort.
+- [ ] **Step 3: Watch them fail.** Expected: a hang, a panic, or `has 0`. The handler rows fail with `has 0` today.
 - [ ] **Step 4: Implement.**
   - Each site checks through the walk.
-  - A guard reports its own abort to `slog.Default()`, and only when `WithGuardErrorHandler` is set.
+  - `GuardRefused` and the guard challenge return their abort.
+  - Each guard's `refuse` applies the rule.
+  - Remove the global reporter.
 - [ ] **Step 5: Run.** The same commands as 10.9b Step 6. Expected: PASS.
 
 ### Task 10.12: Consumer-port errors are sanitized where they enter the library
