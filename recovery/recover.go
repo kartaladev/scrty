@@ -246,7 +246,9 @@ func (r *Recoverer) verify(ctx context.Context, req Request) (*verified, error) 
 	}
 
 	if v.has(ProofPassword) {
-		if err := r.passwordCheck(ctx, req.Username, req.Password); err != nil {
+		err := r.passwordCheck(ctx, req.Username, req.Password)
+		err = porterr.SanitizeTo(ctx, r.logger, err, authenticate.ErrUnavailable)
+		if err != nil {
 			// The user store could not answer, so no proof was refused:
 			// returned as it is, unmarked, and nothing is counted against
 			// the user. The HTTP layer charges it to the source.
@@ -394,6 +396,7 @@ func (r *Recoverer) shape(req Request) ([]ProofKind, mfa.Method, []Authenticator
 // fixed text.
 func (r *Recoverer) resolveForRecover(ctx context.Context, username string) (*identity.Details, error) {
 	details, err := r.users.LoadByUsername(ctx, username)
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound), err == nil && (details == nil || !details.Active):
@@ -521,6 +524,7 @@ func refusedByStore(watch *depfault.Watch) error {
 func (r *Recoverer) checkRest(ctx context.Context, v *verified, req Request) error {
 	if v.mfa != nil {
 		enrolled, err := v.mfa.Enrolled(ctx, v.user)
+		err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 		if err != nil {
 			r.logger.LogAttrs(ctx, slog.LevelError, msgMFALookupFailed, diag.Failure("mfa-enrolment", err)...)
 
@@ -546,6 +550,7 @@ func (r *Recoverer) checkRest(ctx context.Context, v *verified, req Request) err
 
 	if r.risk != nil {
 		hold, err := r.risk(ctx, RiskInput{User: v.user, Source: req.Source, Proofs: slices.Clone(v.proofs), Now: r.clock.Now()})
+		err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 		if err != nil {
 			r.logger.LogAttrs(ctx, slog.LevelError, msgRiskFailed, diag.Failure("risk", err)...)
 
@@ -556,7 +561,11 @@ func (r *Recoverer) checkRest(ctx context.Context, v *verified, req Request) err
 	}
 
 	for _, check := range r.checks {
-		if err := check(ctx, v.user, slices.Clone(v.proofs)); err != nil {
+		err := check(ctx, v.user, slices.Clone(v.proofs))
+		// A walkable refusal is returned unchanged; one whose chain cannot
+		// be walked is replaced by a fixed error, refused as any other.
+		err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
+		if err != nil {
 			return r.refuse(ctx, v.user, err, true)
 		}
 	}
@@ -645,6 +654,7 @@ func (r *Recoverer) spendMFA(ctx context.Context, v *verified) error {
 	err := bounded(ctx, detach.WriteTimeout, func(c context.Context) error {
 		return v.mfa.Verify(c, v.user, v.mfaCode)
 	})
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return r.spendRefused(ctx, v.user, "mfa-verify", err, mfaRefusal(err))
 	}
