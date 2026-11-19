@@ -323,9 +323,10 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
   - Then the sanitizer:
     - `porterr.Sanitize(err error, unavailable error) error`, in `internal/porterr`, which every flow can import.
     - It walks `err` once. When the walk completes, it returns `err` unchanged. When the walk aborts, it returns a fixed library error that `errors.Is(_, unavailable)` matches, carries no consumer text, and reports one record.
+    - `porterr.ErrUnwalkable` is the internal sentinel for a port that has no unavailable sentinel of its own, such as the session `Store`, `identity.UserLoader` on the reload path, or `apikey.Store` management. The fixed error always matches it, so it reaches the site's catch-all branch (decision 11, "A port with no unavailable sentinel").
     - Unit-test it first.
-  - Then apply it at every port call site, in groups of at most six call sites per dispatch, in the order of the 10.12 inventory:
-    - session and bearer;
+  - Then apply it immediately after every port call whose error the library reads, log-only calls included (decision 11, "Where it goes"). Skip only calls whose error is compared with nil and dropped, and list each skip in the dispatch report. Work in groups of at most six call sites per dispatch. Dispatches that share a file run in sequence. Follow the order of the 10.12 inventory:
+    - session and bearer, including `policy/concurrent.go` `SessionCounter.CountActiveByUser` and the `UserLoader` read in `httpsec/signals_stream.go`;
     - login, password and lockout;
     - Basic, API key and JWT;
     - throttle and limiters;
@@ -333,13 +334,14 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
     - OIDC client;
     - OIDC provider (several dispatches), including the client registry read at `oidcprovider/registry.go:353` that `events.go:222` depends on (moved from 10.9a);
     - passkey;
-    - MFA and enrolment, including the `method.Verify` read at `httpsec/challenge_spend.go:174` (named by the 10.9a review);
-    - authorization;
+    - MFA and enrolment, including the `method.Verify` read at `httpsec/challenge_spend.go:174` (named by the 10.9a review), `policy/mfa_requirement.go` `MFARequirementLookup.Required`, and `httpsec/challenge.go` `ChallengeVerifier.Verify`;
+    - authorization, including `policy/engine.go` `Policy.Evaluate`;
     - token and one-time, including the `IssueWithin` read at `httpsec/challenge_spend.go:278` (named by the 10.9a review);
     - `store/seal`;
     - `expiry/sweep`, including the `PurgeExpired` read at `httpsec/challenge_spend.go:110` (named by the 10.9a review), and the webauthn `MetadataSource` in its nested module.
   - Per call site, the red test has the port's mock return a `cycleOne`, a `cycleMany` (in a subprocess) and a `panicUnwrap`. These hang, crash or panic on the current code. After the fix, the flow takes its existing branch for a failing port, and one record is written. A non-hostile parity row pins the old outcome.
   - Where that branch conceals (unknown user, unknown credential, a concealed lock, uniform recovery), assert the response is byte-identical to a plain port outage.
+  - Out of scope: the `internal/unavailable` rate-limit backends, which the library supplies (`redisstore`, `pgxstore`, `sqlstore`).
   - Verify each dispatch with `go test -race -count=1 ./...` in the affected modules.
 - [x] 10.13a The walker does not allocate for chains that fit (design decision 11, performance).
   - Add a buffer-taking walk, for example `errwalk.FlattenInto(buf []error, err error) (Chain, error)`, that fills the caller's buffer and grows onto the heap only past its capacity. Keep `Flatten`.

@@ -770,7 +770,8 @@ Steps:
 - Produces `porterr.Sanitize(err error, unavailable error) error`.
   - A nil error returns nil.
   - When `errwalk.Flatten` completes, the error is returned unchanged.
-  - When it aborts, the result is a fixed `*porterr.Fault`. `Is(unavailable)` reports true on it, its `Error()` text is fixed, it carries the abort (reason and frames), and it wraps nothing of the consumer's.
+  - When it aborts, the result is a fixed `*porterr.Fault`. `Is(unavailable)` reports true on it, and so does `Is(porterr.ErrUnwalkable)`. Its `Error()` text is fixed, it carries the abort (reason and frames), and it wraps nothing of the consumer's.
+- Produces `porterr.ErrUnwalkable`, the internal sentinel that a call site passes as `unavailable` when its port has no unavailable sentinel of its own. The `*Fault` then matches no library refusal, and the site's catch-all branch answers it.
   - It writes one record to `slog.Default()`, using the reasons and attributes from 10.3.
 - Produces `porterr.Reported(err error) bool`. A caller that holds the chain's logger and wants to report through it uses this instead. Decide in Dispatch 1 whether this is needed; prefer the simpler shape.
 - The internals use `errwalk` directly.
@@ -782,10 +783,16 @@ Steps:
   - nil gives nil;
   - a plain error comes back as the same value;
   - a wrapped `unavailable` comes back unchanged;
-  - a cycle, a fan-out and a panicking `Unwrap` each give a `*Fault`, satisfy `errors.Is(_, unavailable)`, contain no consumer text, and write 1 record.
+  - a cycle, a fan-out and a panicking `Unwrap` each give a `*Fault`, satisfy `errors.Is(_, unavailable)` and `errors.Is(_, porterr.ErrUnwalkable)`, contain no consumer text, and write 1 record;
+  - with `unavailable` set to `porterr.ErrUnwalkable`, an aborting row gives a `*Fault` that matches no library refusal sentinel.
 - [ ] **Step 3: Watch them fail, then implement, then run** `go test -race -count=1 ./internal/...`. Review, then commit.
-- [ ] **Step 4 (Dispatches 2 and on): apply the sanitizer to each port call site.** Work in the inventory's group order:
-  1. session and bearer
+- [ ] **Step 4 (Dispatches 2 and on): apply the sanitizer to each port call site.**
+  - It goes immediately after every port call whose error the library reads, log-only calls included.
+  - A call whose error is only compared with nil and then dropped is skipped. The dispatch report lists each skip with its `file:line`.
+  - At most six call sites per dispatch. Dispatches that share a file run in sequence, never in parallel.
+  - The `internal/unavailable` rate-limit backends are library-supplied, so they are out of scope.
+  - Work in the inventory's group order:
+  1. session and bearer, plus `policy/concurrent.go` (`SessionCounter.CountActiveByUser`) and `httpsec/signals_stream.go` (`UserLoader.LoadByUserID`)
   2. login, password and lockout
   3. Basic, API key and JWT
   4. throttle and limiters
@@ -793,13 +800,13 @@ Steps:
   6. OIDC client
   7. OIDC provider, in several dispatches. Includes the client registry read at `oidcprovider/registry.go:353`. Its row also covers `events.go:222`, which runs after that read: a hostile registry error must reach line 222 only as the sanitized `*porterr.Fault`
   8. passkey
-  9. MFA and enrolment. Includes the `method.Verify` read at `httpsec/challenge_spend.go:174`, with a row whose `Is` panics only for `mfa.ErrVerifyThrottled`. That row is the accepted sentinel-specific case, so its expected outcome is net/http's per-request recovery, not a sanitized answer
-  10. authorization
+  9. MFA and enrolment. Includes the `method.Verify` read at `httpsec/challenge_spend.go:174`, with a row whose `Is` panics only for `mfa.ErrVerifyThrottled`. That row is the accepted sentinel-specific case, so its expected outcome is net/http's per-request recovery, not a sanitized answer. Also `policy/mfa_requirement.go` (`MFARequirementLookup.Required`) and `httpsec/challenge.go` (`ChallengeVerifier.Verify`)
+  10. authorization, plus `policy/engine.go` (`Policy.Evaluate`)
   11. token and one-time. Includes the `IssueWithin` read at `httpsec/challenge_spend.go:278`
   12. `store/seal`
   13. `expiry/sweep`, and the `webauthn` `MetadataSource`. Includes the `PurgeExpired` read at `httpsec/challenge_spend.go:110` on the sweep path, which is not a refusal path, so its row asserts the sweep's existing failure outcome
 
-  At each call site, `err = porterr.Sanitize(err, <the port's unavailable sentinel>)` goes immediately after the port method returns. The main session names the sentinel per port when it splits a group.
+  At each call site, `err = porterr.Sanitize(err, <the port's unavailable sentinel, or porterr.ErrUnwalkable>)` goes immediately after the port method returns. The main session names the sentinel per port when it splits a group.
 - [ ] **Step 5 (each call-site dispatch): write the red tests first.**
   - `TestPortErrors_<Group>` is a table. The port's mock (`use-mockgen`) returns a `cycleOne`, a `cycleMany` in a subprocess, a `panicUnwrap`, and an outage parity error.
   - Each hostile row asserts:
