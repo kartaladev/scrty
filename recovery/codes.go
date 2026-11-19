@@ -194,6 +194,10 @@ func (c *Codes) generate(ctx context.Context, user identity.UserID, bound time.D
 
 	for i := range codes {
 		text, hash, err := newCode(c.random)
+		// The source is the consumer's, and its error sits inside newCode's
+		// lazy wrapper, which reads nothing of it: it is sanitized here, before
+		// the failure is logged or returned.
+		err = porterr.SanitizeTo(ctx, c.logger, err, porterr.ErrUnwalkable)
 		if err != nil {
 			c.logFailure(ctx, msgCodeRandomError, "random", err)
 

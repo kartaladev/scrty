@@ -17,6 +17,7 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -712,6 +713,9 @@ func (r *Recoverer) validateFlow(c *config) error {
 		}
 
 		l, err := factory.NewLimiter(namespaceUser, defaultUserLimit, defaultUserWindow)
+		// The factory's error is the consumer's, and fmt.Errorf below reads it
+		// eagerly: it is sanitized first, to the logger the options set.
+		err = porterr.SanitizeTo(context.Background(), c.logger, err, porterr.ErrUnwalkable)
 		if err != nil {
 			return fmt.Errorf("%w: limiter for namespace %q: %w", ErrConfig, namespaceUser, err)
 		}
@@ -820,6 +824,7 @@ func (r *Recoverer) Regenerate(ctx context.Context, user identity.UserID) ([]str
 	now := r.clock.Now()
 
 	details, err := r.users.LoadByUserID(ctx, user)
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 
 	switch {
 	case err != nil:

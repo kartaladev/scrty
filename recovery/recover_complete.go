@@ -506,6 +506,7 @@ func (r *Recoverer) deliver(ctx context.Context, details *identity.Details, subj
 	address, err := maybeBoundedValue(ctx, resolveBound, func(rc context.Context) (string, error) {
 		return r.resolver(rc, details)
 	})
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 
 	switch {
 	case err != nil:
@@ -518,7 +519,10 @@ func (r *Recoverer) deliver(ctx context.Context, details *identity.Details, subj
 		return
 	}
 
-	if err := r.sender.Send(ctx, notify.Message{To: address, Subject: subject, TextBody: body}); err != nil {
+	err = r.sender.Send(ctx, notify.Message{To: address, Subject: subject, TextBody: body})
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
+
+	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgNoticeSendFailed, diag.Failure("sender", err)...)
 	}
 }
