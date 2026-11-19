@@ -37,7 +37,7 @@ Whenever the chain refuses with a challenge error that carries an access token, 
 - **THEN** the response keeps `Cache-Control: public, max-age=300`
 
 ### Requirement: Classifying an error never hangs, crashes or panics
-The status lookup and the problem-details mapper SHALL classify an error with one walk, in `errors.Is` order. The walk SHALL skip a nil-pointer link without calling its methods, stop after 1,000 visited links counting repeats, and recover a panic from a link's `Unwrap`, `Is` or `As` method. A walk that stops for its budget or a panic SHALL give status 500, unrecognised.
+The status lookup and the problem-details mapper SHALL classify an error with one walk, in `errors.Is` order. The walk SHALL skip a nil-pointer link without calling its methods, stop after examining 1,000 entries (repeats and nils included), and recover a panic from a link's `Unwrap`, `Is` or `As` method. A walk that stops for its budget or a panic SHALL give status 500, unrecognised.
 
 #### Scenario: Cyclic chain
 - **WHEN** an error's chain contains itself, through `Unwrap() error` or through `Unwrap() []error`

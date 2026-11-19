@@ -221,11 +221,14 @@
 
 Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parallel. Then 10.4 (mapper), 10.6 (docs), 10.7 (gate) and 10.8 (review).
 
-- [ ] 10.1 `internal/errwalk`. Red: `TestFlatten` (table), with these cases:
+- [x] 10.1 `internal/errwalk`. Red: `TestFlatten` (table), with these cases:
   - order: root first, then depth first, through `Unwrap() error` and `Unwrap() []error`, each node's `Unwrap` called once;
-  - a nil entry in `Unwrap() []error` is skipped and does not count; a nil from `Unwrap() error` ends the branch;
-  - a nil-pointer node (`reflect` Kind `Pointer` and `IsNil`) is skipped with none of its methods called (a counter that would panic proves it), and does not count. A nil map or slice error type is not skipped;
-  - budget: 1,000 visits succeed, the 1,001st aborts with reason `budget`, and repeats count;
+  - a nil entry in `Unwrap() []error` is skipped but counts 1; a nil from `Unwrap() error` ends the branch;
+  - a nil-pointer node (`reflect` Kind `Pointer` and `IsNil`) is skipped, none of its methods is called (a counter that would panic proves it), and it counts 1. A nil map or slice error type is not skipped;
+  - budget: every examined entry counts, including the root, repeats, nil entries and typed nils. 1,000 succeed and the 1,001st aborts with reason `budget`. When the list plus the pending entries would pass 1,000, the walk aborts at once: one node with a 20,000-entry `[]error` of itself aborts without allocating proportionally, and one with a million nil entries aborts promptly;
+  - a panicking `==` (a comparable type holding an incomparable value), and `panic(nil)` under `GODEBUG=panicnil=1`, both abort with `panic`;
+  - a node over budget whose `Unwrap` would panic aborts with `budget`, because the count comes before any method call;
+  - the walk order equals the order in which stdlib `errors.Is` consults its nodes, on nested joins, a wrap inside a join, a join inside a wrap and a diamond;
   - a self-cycle through `Unwrap() error`, a self-cycle through `Unwrap() []error`, and a cycle through `errors.Join` all abort with `budget` within a test timeout;
   - 25 levels of `errors.Join(n, n)` abort with `budget` in under 100 ms;
   - a panicking `Unwrap` aborts with reason `panic` and carries the recovered value.

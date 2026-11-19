@@ -453,8 +453,8 @@
 **Spec for this group:** design.md decision 11 and its failure rows, and the `http-error-propagation` delta's two requirements: "Classifying an error never hangs, crashes or panics" and "An aborted classification is logged".
 
 **Constants pinned by the spec:**
-- The budget is 1,000 visited nodes. It counts the root and repeats, and the 1,001st node aborts.
-- Skipped nil interfaces and nil-pointer nodes cost nothing.
+- The budget is 1,000 examined entries. It counts the root, repeats, nil entries and typed nils, and the 1,001st aborts. Pending entries count too: when the list plus the pending entries would pass 1,000, the walk aborts at once.
+- A panicking `==` and `panic(nil)` both abort with `panic`. An aborted walk returns no list.
 - The typed-nil test is `reflect` Kind `Pointer` and `IsNil`.
 - The log reasons are `budget` and `panic`.
 - The log record carries no error text.
@@ -620,7 +620,7 @@
 
 - [ ] **Step 1: Write the text** that tasks.md 10.6 names.
   - Write plain prose. Do not name internal packages; in particular, no `errwalk` in public godoc.
-  - The prblm limit names v0.2.0, and says that v0.2.1 recovers prblm's status-hint step.
+  - The prblm limit names v0.2.0. It says that v0.2.1 fixes three things: it recovers the core's status-hint step, the net/http `Handler.Recover` broken-connection check, and ginprblm Recovery's broken-connection check. Cycles remain until v0.3.0.
   - CHANGELOG, Fixed: the hang, the crash, the panic, and the typed-nil `RejectedError`.
   - CHANGELOG, Changed: a challenge offered through an `As` method behind a typed nil is now found. A chain of more than 1,000 links is unrecognised, and the abort is logged.
 - [ ] **Step 2: Verify.**
