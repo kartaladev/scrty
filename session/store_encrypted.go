@@ -391,25 +391,29 @@ func withoutSealed(listed []*Session) []*Session {
 
 func (s *encryptedStore) DeleteExpired(ctx context.Context) (int, error) {
 	n, err := s.inner.DeleteExpired(ctx)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 
 	return n, storeFailed(err, "session: the inner store could not delete expired sessions")
 }
 
 func (s *encryptedStore) DeleteByExternalSession(ctx context.Context, issuer, sessionID string) (int, error) {
 	n, err := s.inner.DeleteByExternalSession(ctx, issuer, sessionID)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 
 	return n, storeFailed(err, "session: the inner store could not delete the provider session's sessions")
 }
 
 func (s *encryptedStore) DeleteByUserAndExternalIssuer(ctx context.Context, user identity.UserID, issuer string) (int, error) {
 	n, err := s.inner.DeleteByUserAndExternalIssuer(ctx, user, issuer)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 
 	return n, storeFailed(err, "session: the inner store could not delete the user's sessions from the issuer")
 }
 
 func (s *encryptedStore) RecordActivity(ctx context.Context, id string, lastAccessed, idleExpires, olderThan time.Time) error {
-	return storeFailed(s.inner.RecordActivity(ctx, id, lastAccessed, idleExpires, olderThan),
-		"session: the inner store could not record the session's activity")
+	err := porterr.Sanitize(s.inner.RecordActivity(ctx, id, lastAccessed, idleExpires, olderThan), porterr.ErrUnwalkable)
+
+	return storeFailed(err, "session: the inner store could not record the session's activity")
 }
 
 // Supersede seals the successor's ID token and CSRF token, bound to the
@@ -425,11 +429,14 @@ func (s *encryptedStore) Supersede(ctx context.Context, op Supersession) error {
 	}
 	op.Successor = successor
 
-	return storeFailed(s.inner.Supersede(ctx, op), "session: the inner store could not supersede the session")
+	err = porterr.Sanitize(s.inner.Supersede(ctx, op), porterr.ErrUnwalkable)
+
+	return storeFailed(err, "session: the inner store could not supersede the session")
 }
 
 func (s *encryptedStore) DeleteFamily(ctx context.Context, family id.ID) (int, error) {
 	n, err := s.inner.DeleteFamily(ctx, family)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 
 	return n, storeFailed(err, "session: the inner store could not delete the session family")
 }

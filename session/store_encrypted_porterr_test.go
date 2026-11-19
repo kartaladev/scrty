@@ -301,6 +301,56 @@ func peForwardFlows() []peFlow {
 
 				return got
 			}},
+		{name: "DeleteExpired on the inner store", unavailable: porterr.ErrUnwalkable,
+			run: func(t *testing.T, ctx context.Context, ctrl *gomock.Controller, err error) error {
+				sealing, inner := peStore(t, ctrl, NewMockCipher(ctrl))
+				inner.EXPECT().DeleteExpired(gomock.Any()).Return(0, err)
+
+				_, got := sealing.DeleteExpired(ctx)
+
+				return got
+			}},
+		{name: "DeleteByExternalSession on the inner store", unavailable: porterr.ErrUnwalkable,
+			run: func(t *testing.T, ctx context.Context, ctrl *gomock.Controller, err error) error {
+				sealing, inner := peStore(t, ctrl, NewMockCipher(ctrl))
+				inner.EXPECT().DeleteByExternalSession(gomock.Any(), "pe-iss", "pe-sid").Return(0, err)
+
+				_, got := sealing.DeleteByExternalSession(ctx, "pe-iss", "pe-sid")
+
+				return got
+			}},
+		{name: "DeleteByUserAndExternalIssuer on the inner store", unavailable: porterr.ErrUnwalkable,
+			run: func(t *testing.T, ctx context.Context, ctrl *gomock.Controller, err error) error {
+				sealing, inner := peStore(t, ctrl, NewMockCipher(ctrl))
+				inner.EXPECT().DeleteByUserAndExternalIssuer(gomock.Any(), user, "pe-iss").Return(0, err)
+
+				_, got := sealing.DeleteByUserAndExternalIssuer(ctx, user, "pe-iss")
+
+				return got
+			}},
+		{name: "RecordActivity on the inner store", unavailable: porterr.ErrUnwalkable,
+			run: func(t *testing.T, ctx context.Context, ctrl *gomock.Controller, err error) error {
+				sealing, inner := peStore(t, ctrl, NewMockCipher(ctrl))
+				inner.EXPECT().RecordActivity(gomock.Any(), "pe-act", createdAt, createdAt, createdAt).Return(err)
+
+				return sealing.RecordActivity(ctx, "pe-act", createdAt, createdAt, createdAt)
+			}},
+		{name: "Supersede on the inner store", unavailable: porterr.ErrUnwalkable,
+			run: func(t *testing.T, ctx context.Context, ctrl *gomock.Controller, err error) error {
+				sealing, inner := peStore(t, ctrl, NewMockCipher(ctrl))
+				inner.EXPECT().Supersede(gomock.Any(), gomock.Any()).Return(err)
+
+				return sealing.Supersede(ctx, session.Supersession{Old: "pe-old", Successor: storedSession("pe-succ")})
+			}},
+		{name: "DeleteFamily on the inner store", unavailable: porterr.ErrUnwalkable,
+			run: func(t *testing.T, ctx context.Context, ctrl *gomock.Controller, err error) error {
+				sealing, inner := peStore(t, ctrl, NewMockCipher(ctrl))
+				inner.EXPECT().DeleteFamily(gomock.Any(), storedFamily).Return(0, err)
+
+				_, got := sealing.DeleteFamily(ctx, storedFamily)
+
+				return got
+			}},
 	}
 }
 
