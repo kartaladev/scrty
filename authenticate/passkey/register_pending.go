@@ -13,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
@@ -336,6 +337,8 @@ func (m *Passkeys) ConfirmEmailCode(
 	key := EmailConfirmThrottleKey(sess.UserID)
 
 	exceeded, err := limiter.Exceeded(ctx, key)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: the confirmation limiter could not decide", mfa.ErrEnrolmentThrottled)
 	}
@@ -369,7 +372,10 @@ func (m *Passkeys) ConfirmEmailCode(
 // the caller cannot cancel, and returns the refusal. A limiter that cannot
 // record is logged by a fixed reason and does not change the outcome.
 func (m *Passkeys) refuseEmailCode(ctx context.Context, limiter ratelimit.Limiter, key string) error {
-	if err := limiter.RecordFailure(context.WithoutCancel(ctx), key); err != nil {
+	err := limiter.RecordFailure(context.WithoutCancel(ctx), key)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
+	if err != nil {
 		m.logger.LogAttrs(ctx, slog.LevelError, msgLimiterNotRecorded, diag.Failure("limiter", err)...)
 	}
 

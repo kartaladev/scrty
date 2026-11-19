@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -178,6 +179,8 @@ func (t *VerifyThrottle) resolveLimiter() error {
 // an open door.
 func (t *VerifyThrottle) Check(ctx context.Context, user identity.UserID) error {
 	exceeded, err := t.limiter.Exceeded(ctx, VerifyThrottleKey(user))
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		t.sampledFailure(ctx, slog.LevelError, msgLimiterError, reasonLimiterError, err)
 
@@ -213,7 +216,10 @@ func (t *VerifyThrottle) RecordFailure(ctx context.Context, user identity.UserID
 	// that hung up mid-attempt cannot take the guess it already made off the
 	// count. Check is left alone on purpose — refusing a question nobody is
 	// waiting for is right; declining to charge an answer already given is not.
-	if err := t.limiter.RecordFailure(context.WithoutCancel(ctx), VerifyThrottleKey(user)); err != nil {
+	err := t.limiter.RecordFailure(context.WithoutCancel(ctx), VerifyThrottleKey(user))
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
+
+	if err != nil {
 		t.sampledFailure(ctx, slog.LevelError, msgRecordError, reasonRecordError, err)
 	}
 }
