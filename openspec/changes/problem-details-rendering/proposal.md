@@ -45,6 +45,8 @@ scrty refuses requests with typed errors and, by design, renders nothing: a bare
 - `module-layout`: `httpsec/prblmsec` is added to the listed integration modules and package names, and the core module must not require `github.com/kartaladev/prblm`.
 - `framework-adapters`: the gin requirement that sends the no-route 404 immediately with an empty body gains the consumer's override, `WithRefusalsRendered()`.
 - `release-policy`: `httpsec/prblmsec` is added to the modules released in lockstep.
+- `http-error-propagation` also gains the port boundary: a consumer dependency's error is walked once where it enters the library, and one that cannot be walked is answered as that dependency's failure.
+- `magic-link`, `one-time-tokens`, `password-policy`, `diagnostic-redaction`: a consumer's refusal or write error is still returned unchanged, unless its chain cannot be walked; then the library's fixed error stands in its place.
 
 ## Impact
 

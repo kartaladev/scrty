@@ -251,6 +251,12 @@ The library also protects every error returned by a consumer-supplied port befor
   - Rejected: new public per-port sentinels. They grow the API for a case the catch-all already answers.
   - Rejected: borrowing the nearest existing sentinel. `authenticate.ErrUnavailable` answers 401 where the reload sites answer 500, so it would change their outcome.
   - The name follows prblm v0.3.0's `ErrUnwalkableError`, so the two libraries describe the case alike.
+- **The consumer's own refusal and write errors are port errors too** (maintainer's choice, 2026-11-19). A consumer's magic-link or one-time-token refusal check and the password policy's write return errors the library promised to return unchanged.
+  - The default: they are sanitized like every other port error. A walkable error still comes back unchanged, as the same value. Only an unwalkable one is replaced by the fixed error.
+  - The specs say so: magic-link, one-time-tokens, password-policy and diagnostic-redaction carry the exception, and two new http-error-propagation requirements state the boundary rule.
+  - There is no override. The consumer keeps full control of every error it can return, except one the library cannot inspect. That one could only hang or crash the library's own reads, so `library-design.md` 4 draws the line here.
+  - Where the library tells the consumer's error apart from its own by identity, it must treat the fixed error as the consumer's. Example: redemption's `countsAgainstSource` in httpsec, found by the 10.12 group 5 review.
+  - Rejected: exempting these errors and reading them with the bounded walker at every library check instead. Decision 11 already rejected per-check conversion as an invariant any later edit could break.
 - **Where the sanitizer's record goes** follows the reporting rule below.
   - A site that holds a logger calls `porterr.SanitizeTo(ctx, logger, err, unavailable)`. The record goes to that logger with the request's context, so a consumer who wired only `WithLogger` still sees port aborts, with their trace attributes.
   - A site with no logger calls `porterr.Sanitize`, which writes to `slog.Default()`.
@@ -457,6 +463,8 @@ Otherwise reasoned from scrty's own settled `framework-adapters` spec, and from 
 - [kartaladev/prblm release v0.2.1](https://github.com/kartaladev/prblm/releases/tag/v0.2.1): tags `v0.2.1` and `adapters/ginprblm/v0.2.1`, both on commit 5742e04. The prblm session confirmed that both resolve through the Go proxy. The release fixes three panics that escaped prblm's recovery: the status-hint step, net/http `Recover`'s broken-connection check, and gin Recovery's broken-connection check. It changes no API, and ginprblm v0.2.1 still requires core v0.2.0.
 
 ### Decision 11: one bounded, recovering walk
+
+**The consumer's own refusal and write errors as port errors** (2026-11-19): reasoned from scrty's own settled specs (magic-link, one-time-tokens, password-policy, diagnostic-redaction, `library-design.md` 4 and 5) and the established design. No external source bears on it.
 
 **Researched** (2026-11-19):
 - [golang/go #34957](https://github.com/golang/go/issues/34957), [#40589](https://github.com/golang/go/issues/40589) and [#70746](https://github.com/golang/go/issues/70746), opened and read by the prblm research session: all closed. The maintainers place cycle detection outside the `errors` package, so a library that must not hang protects its own walk.

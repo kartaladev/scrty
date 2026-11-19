@@ -74,6 +74,30 @@ When classifying an error stops for its budget or for a panic, the library SHALL
 - **WHEN** a chain configured with the consumer's own logger classifies a cyclic error during its error dispatch
 - **THEN** the error record is written to the consumer's logger, not to the process default
 
+### Requirement: A consumer dependency's error is walked once where it enters the library
+Where the library reads an error returned by a consumer-supplied dependency, it SHALL first walk that error's chain once, under the same bounds as classification. A dependency is a store, limiter, loader, sender, authenticator, hook, refusal check or write function. Reading covers branching on the error, wrapping it, returning it and logging it. An error only compared with nil and then dropped is not read. When the walk completes, the error SHALL pass on unchanged, as the same value.
+
+#### Scenario: Walkable error passes unchanged
+- **WHEN** a consumer's magic-link refusal check returns its own `terms-not-accepted` error
+- **THEN** redemption returns that same error value
+
+### Requirement: An unwalkable dependency error is answered as that dependency's failure
+When the walk of a consumer dependency's error stops for its budget or a panic, the library SHALL replace the error with a fixed library error and answer it exactly as that dependency failing outright. The fixed error SHALL match the dependency's own unavailable error where the call site tests for one, and no library refusal otherwise. The original error SHALL NOT travel further. One record with the reason SHALL be logged, to the component's logger if it has one.
+
+#### Scenario: Cyclic store error answered as an outage
+- **WHEN** the consumer's lockout attempt store returns an error whose chain contains itself during a form login
+- **THEN** the response is byte for byte the response to a plain failure of that store
+- **AND** one error record with reason `budget` is logged to the lockout policy's logger
+
+#### Scenario: A cycle claiming not-found is not a not-found
+- **WHEN** a consumer's user loader returns a cyclic error whose `Is` method matches the user-not-found error, during a recovery start
+- **THEN** the start is answered and logged as for a loader outage, never as for an unknown user
+
+#### Scenario: Unwalkable refusal check
+- **WHEN** a consumer's magic-link refusal check returns an error whose `Unwrap` method panics
+- **THEN** redemption returns the library's fixed error, which matches neither the invalid-link error nor any library refusal
+- **AND** the link stays redeemable, and one error record with reason `panic` is logged
+
 ## MODIFIED Requirements
 
 ### Requirement: Refusals propagate as errors, unrendered
