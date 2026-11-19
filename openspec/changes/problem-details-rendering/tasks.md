@@ -219,7 +219,7 @@
 
 ## 10. One bounded, recovering walk classifies a refusal (design decision 11)
 
-Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parallel. Then 10.4 (mapper), 10.6 (docs), 10.7 (gate) and 10.8 (review).
+Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parallel. Then 10.10 (panic frames), then 10.9 (remaining walks) and 10.4 (mapper) in parallel. Then 10.6 (docs), 10.7 (gate) and 10.8 (review).
 
 - [x] 10.1 `internal/errwalk`. Red: `TestFlatten` (table), with these cases:
   - order: root first, then depth first, through `Unwrap() error` and `Unwrap() []error`, each node's `Unwrap` called once;
@@ -260,6 +260,30 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
   - a nil `*RefusalError` ahead of a real one.
 
   Each case must reach the handler's status without hanging or panicking. Green: the `errors.As` for `*RefusalError` and `*fiber.Error` (`errors.go`) and the `errors.Is(err, nextErr)` on the refusal path (`middleware.go`) use the walk. Verify with `go -C httpsec/fibersec test -race -count=1 ./...`.
+- [ ] 10.10 Panic frames captured at recovery (design decision 11, reporting).
+  - Red: `TestFlatten_PanicCarriesFrames` in `internal/errwalk`. A panicking `Unwrap`, `Is` or `As` gives a `*PanicError` whose captured frames include the panicking method's function, not only errwalk's own functions.
+  - Red: a test in `httpsec` that the abort record's frames name the panicking method, not `lookup` or `handleError`.
+  - Red: a test in `httpsec/fibersec` that its abort record carries the panic's type and frames. This closes the open review finding that fibersec logged `reason` only.
+  - Green:
+    - the walker's deferred recover captures the stack (`runtime.Callers`) into the abort value;
+    - `internal/diag` gains a formatter that redacts these captured frames as `diag.PanicAttrs` does;
+    - the core and fibersec log helpers use it.
+
+  Verify with `go test -race -run 'Panic|Abort' -count=1 ./internal/... ./httpsec/` and `go -C httpsec/fibersec test -race -count=1 ./...`.
+- [ ] 10.9 Every other inspection of the refused error on the refusal path uses the walk (design decision 11).
+  - First inventory, with gopls, every stdlib `errors.Is` or `errors.As` that runs over the refused error before or beside the lookup, and report it. Expected:
+    - `refused()`'s outage check;
+    - `authorization.go`'s check;
+    - `answerRetryOnly` and `markPerRequestThrottle` in `signals_retry.go`;
+    - `eventsink.GuardRefused`;
+    - the DPoP guard challenger;
+    - `hangup.ByCaller`.
+  - Red: for each site, a test sends a cyclic error and an error with a panicking `Is` through that path. On the current code the first hangs and the second panics. After the fix, each gets the fail-closed outcome with no hang and no panic.
+  - Red: on a session-signals abort, one record is written as `classification-aborted` through the signals logger, not as a dependency failure.
+  - Red: a `Chain` not built by `New` that dispatches a cyclic error writes one record to the default logger.
+  - Green: each site checks over one `errwalk.Flatten`. Its existing order and outcome stay the same for every non-hostile error.
+
+  Verify with `go test -race -count=1 ./...` in the root module.
 - [ ] 10.6 Documentation. Write these:
   - godoc of `LookupStatus` and `StatusForError`: the bound, the typed-nil skip, fail-closed and the log record, and that consumer code calling stdlib `errors.Is` or `errors.As` on the same error is not protected;
   - prblmsec's package doc and the README section: the limit under prblm v0.2.0. A cycle hangs or dies in prblm's Describer step before the mapper runs, a panicking `As` escapes prblm's status-hint step, and gin's `Context.Error` walks the chain first;

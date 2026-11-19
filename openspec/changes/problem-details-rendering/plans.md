@@ -462,8 +462,9 @@
 **Order:**
 1. 10.1.
 2. 10.2, then 10.3 (same files). 10.5 runs in parallel with both.
-3. 10.4, after 10.2.
-4. 10.6, then 10.7, then 10.8.
+3. 10.10, after 10.2, 10.3 and 10.5. It touches errwalk, diag, the core's log helper and fibersec's.
+4. 10.9 and 10.4 in parallel: 10.9 owns the core refusal-path files, and 10.4 owns prblmsec.
+5. 10.6, then 10.7, then 10.8.
 
 **Review Focus:** the five things most likely to go wrong, each pinned to a task.
 1. **One request logging twice.** The chain's dispatch and an auxiliary classification on the same request (events, guards) both call the lookup. 10.3 asserts the total count across both loggers.
@@ -609,6 +610,58 @@
   - If a refusal would be classified more than once per dispatch, carry the status computed at refusal time in `RefusalError`, so the handler does not classify it again.
 - [ ] **Step 4: Run.** `go -C httpsec/fibersec test -race -count=1 ./...`. Expected: PASS.
 - [ ] **Step 5: Commit.** `fix(fibersec): refusal unwrapping uses the bounded walk`.
+
+### Task 10.10: Panic frames captured at recovery
+
+**Files:**
+- Modify: `internal/errwalk/errwalk.go`, the recovering helper and `PanicError`.
+- Modify: `internal/diag/panic.go`.
+- Modify: the core's abort-record helper in `httpsec/errors.go`, and `reportAbort` in `httpsec/fibersec/errors.go`.
+- Tests: `internal/errwalk/errwalk_test.go`, `internal/diag/panic_test.go`, `httpsec/lookup_abort_log_test.go`, `httpsec/fibersec/hostile_test.go`.
+
+**Interfaces:**
+- Produces:
+  - `PanicError` gains `Frames []uintptr`. It is filled inside the deferred recover by `runtime.Callers`, starting at the frame that panicked.
+  - `diag.PanicAttrsFrom(value any, pcs []uintptr) []slog.Attr` gives the same keys and the same redaction as `PanicAttrs`. It formats the given pcs rather than the current stack.
+  - `PanicAttrs` stays as it is for its existing callers.
+
+- [ ] **Step 1: Write the failing tests.**
+  - `TestFlatten_PanicCarriesFrames`: for a panicking `Unwrap`, `Is` and `As`, the abort's `Frames`, resolved with `runtime.CallersFrames`, include the fixture method's function name.
+  - `TestPanicAttrsFrom`: for given pcs, the keys and the redaction equal `PanicAttrs`'s.
+  - In httpsec, a row in `TestLookupStatus_AbortIsLogged`: the panic record's `frames` attribute names the fixture's panicking method, and does not start at `lookup`.
+  - In fibersec, a row in `TestErrorHandler_HostileChains`: a panic-abort record carries `panic_type` and `frames`.
+- [ ] **Step 2: Watch them fail.**
+  - `go test -run 'PanicCarriesFrames|PanicAttrsFrom|AbortIsLogged' -count=1 ./internal/... ./httpsec/`.
+  - `go -C httpsec/fibersec test -run HostileChains -count=1 ./...`.
+  - Expected:
+    - errwalk: FAIL, because `Frames` is empty;
+    - diag: FAIL, because `PanicAttrsFrom` is undefined. Stub it first, so that the test fails on its assertion and not on compilation;
+    - core: FAIL, because frames name the log site;
+    - fibersec: FAIL, because the keys are only `reason`.
+- [ ] **Step 3: Implement.**
+  - Capture the frames in the helper's defer, with a skip count that starts at the panicking frame.
+  - Both log helpers call `diag.PanicAttrsFrom(p.Value, p.Frames)`.
+- [ ] **Step 4: Run.** `go test -race -count=1 ./internal/... ./httpsec/` and `go -C httpsec/fibersec test -race -count=1 ./...`. Expected: PASS.
+- [ ] **Step 5: Commit** together with 10.5, if 10.5 is still uncommitted. Otherwise use `fix(errwalk,diag): panic frames are captured where the panic happened`.
+
+### Task 10.9: Every refusal-path inspection uses the walk
+
+**Files:**
+- Modify the sites the inventory names. Expected: `httpsec/events.go` (`refused`), `httpsec/authorization.go`, `httpsec/signals_retry.go`, `internal/eventsink` (`GuardRefused`), the DPoP guard challenger, and `hangup.ByCaller`.
+- Test: `httpsec/refusal_path_hostile_test.go`, plus a test in each internal package that changes.
+
+**Interfaces:** consumes errwalk, and the core's `lookup` and its log helper from 10.2 and 10.3. It must not change any exported signature.
+
+- [ ] **Step 1: Inventory.** Use gopls references to find each stdlib `errors.Is` or `errors.As` that runs over the refused error on the refusal path. Report the list, giving for each one its trigger condition (always, or only with events on, a DPoP chain, or an ended context).
+- [ ] **Step 2: Write the failing tests.** `TestRefusalPath_HostileChains` is a table with one row per site and condition, over a real chain configured to reach that site. Each row is run twice, once with a cyclic error and once with a panicking-`Is` error, each under a 2 s watchdog with a panic catch. Each asserts 500, no hang and no panic.
+  - Also a session-signals row: an abort writes one record with `msgClassificationAborted` on the signals logger, and none recording a dependency failure.
+  - Also a zero-value `Chain` row: one record goes to the default logger.
+- [ ] **Step 3: Watch it fail.** `go test -run TestRefusalPath_HostileChains -count=1 -timeout 60s ./httpsec/`. Expected: a hang, a fatal error or an escaped panic per row. Report each.
+- [ ] **Step 4: Implement.**
+  - Each site checks over one `errwalk.Flatten`. If the walk aborts, it takes the fail-closed path: no outage claim, no throttle mark, no event detail beyond the status.
+  - The order and outcome for every non-hostile error stay the same. Add a HEAD-parity row per site for a non-hostile error.
+- [ ] **Step 5: Run.** `go test -race -count=1 ./...` in the root module. Expected: PASS.
+- [ ] **Step 6: Commit.** `fix(httpsec): every refusal-path inspection uses the bounded walk`.
 
 ### Task 10.6: Documentation
 
