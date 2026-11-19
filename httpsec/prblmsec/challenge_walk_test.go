@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/internal/errwalk"
 	"github.com/kartaladev/scrty/policy"
 )
 
@@ -134,10 +135,11 @@ func TestMapper_ChallengeWalk(t *testing.T) {
 			assert: typed("password-change-required"),
 		},
 		{
-			// The fallback walk follows Unwrap only, as the core's does.
+			// The walk skips the typed nil and keeps going, so a challenge
+			// presented through As behind it is found, as the core finds it.
 			name:   "challenge through As behind a typed nil",
 			err:    errors.Join(typedNil, asChallenge{ch: mfa()}),
-			assert: noChallenge,
+			assert: typed("mfa-required"),
 		},
 		{
 			name:   "challenge 101 wraps deep",
@@ -145,13 +147,17 @@ func TestMapper_ChallengeWalk(t *testing.T) {
 			assert: typed("mfa-required"),
 		},
 		{
-			name:   "challenge 99 wraps deep behind a typed nil",
-			err:    errors.Join(typedNil, wrapLayers(mfa(), 99)),
+			// The join, the typed nil, Budget-3 wraps and the challenge: the
+			// challenge is the budget's last entry.
+			name:   "challenge behind a typed nil at the budget's last entry",
+			err:    errors.Join(typedNil, wrapLayers(mfa(), errwalk.Budget-3)),
 			assert: typed("mfa-required"),
 		},
 		{
-			name:   "challenge 100 wraps deep behind a typed nil",
-			err:    errors.Join(typedNil, wrapLayers(mfa(), 100)),
+			// One wrap more puts it past the budget: the walk gives up and
+			// the mapper answers nothing, as the lookup does.
+			name:   "challenge behind a typed nil one entry past the budget",
+			err:    errors.Join(typedNil, wrapLayers(mfa(), errwalk.Budget-2)),
 			assert: noChallenge,
 		},
 	}

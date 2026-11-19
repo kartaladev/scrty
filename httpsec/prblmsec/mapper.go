@@ -2,7 +2,6 @@ package prblmsec
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/kartaladev/prblm"
@@ -12,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/internal/errwalk"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
@@ -201,6 +201,12 @@ func checkMembers() error {
 // prblm's hooks (OnError, AddErrorHook) receive that problem, access_token
 // included, so a hook that logs extensions logs the token.
 //
+// A chain the core's walk gives up on (a cycle, a fan-out past its budget, a
+// link whose Unwrap, Is or As method panics) is not recognised, so the mapper
+// returns nil for it and the lookup alone logs the abort. The mapper reads the
+// chain with that same bounded, recovering walk, so it selects the challenge
+// the core's status came from, and it never calls an error's Error method.
+//
 // The mapper never sets WWW-Authenticate: a challenge header the chain set on
 // the response before refusing is kept by prblm.
 //
@@ -233,10 +239,22 @@ func (p *Problems) mapError(_ context.Context, err error) *prblm.Problem {
 		return prblm.New(status, prblm.WithCause(err))
 	}
 
+	// The lookup recognised err, so its own walk finished. One more walk
+	// serves every selector below. It gives up only on a chain that answers
+	// differently each time it is asked; the lookup already reported what it
+	// saw, so the mapper writes no record of its own and answers nothing.
+	chain, abort := errwalk.Flatten(err)
+	if abort != nil {
+		return nil //nolint:nilerr // an abort answers nothing; the lookup logged it
+	}
+
 	// A challenge is chosen only when its type has the looked-up status, so a
-	// walk that finds a challenge the core did not answer never changes the
-	// status.
-	if ch := firstNonNil[*httpsec.ChallengeError](err); ch != nil {
+	// challenge the core did not answer never changes the status.
+	ch, found, abort := errwalk.As[*httpsec.ChallengeError](chain)
+	if abort != nil {
+		return nil //nolint:nilerr // see above
+	}
+	if found {
 		for _, c := range st.challenges {
 			if c.sel.challenge(ch.Kind) {
 				return p.challengeProblem(c, ch, err)
@@ -245,15 +263,19 @@ func (p *Problems) mapError(_ context.Context, err error) *prblm.Problem {
 	}
 	for _, c := range st.specifics {
 		for _, target := range c.sel.targets {
-			if errors.Is(err, target) {
-				return p.specificProblem(c, err)
+			matched, abort := errwalk.Is(chain, target)
+			if abort != nil {
+				return nil //nolint:nilerr // see above
+			}
+			if matched {
+				return p.specificProblem(c, chain, err)
 			}
 		}
 	}
 	if st.fallback == nil {
 		return prblm.New(status, prblm.WithCause(err))
 	}
-	return p.specificProblem(*st.fallback, err)
+	return p.specificProblem(*st.fallback, chain, err)
 }
 
 // detailOf is the fixed detail of a type.
@@ -276,15 +298,26 @@ func (p *Problems) newProblem(c candidate, err error) *prblm.Problem {
 	return c.t.New(prblm.WithDetail(detailOf(c.sub)), prblm.WithCause(err))
 }
 
-func (p *Problems) specificProblem(c candidate, err error) *prblm.Problem {
+// specificProblem builds the problem of c, reading its members from chain. It
+// returns nil when that scan gives up, which only a nondeterministic chain can
+// cause.
+func (p *Problems) specificProblem(c candidate, chain errwalk.Chain, err error) *prblm.Problem {
 	prob := p.newProblem(c, err)
 	switch c.sub {
 	case subReauthRequired:
-		if r := firstNonNil[*httpsec.ReauthenticationRequiredError](err); r != nil && r.Window > 0 {
+		r, found, abort := errwalk.As[*httpsec.ReauthenticationRequiredError](chain)
+		if abort != nil {
+			return nil //nolint:nilerr // see above
+		}
+		if found && r.Window > 0 {
 			set(prob, memberMaxAge, int64(r.Window/time.Second))
 		}
 	case subPasswordRejected:
-		if rule := ruleOf(err); rule != "" {
+		rule, abort := ruleOf(chain)
+		if abort != nil {
+			return nil //nolint:nilerr // see above
+		}
+		if rule != "" {
 			set(prob, memberRule, string(rule))
 		}
 	}
@@ -316,73 +349,22 @@ func (p *Problems) challengeProblem(c candidate, ch *httpsec.ChallengeError, err
 	return prob
 }
 
-// ruleOf returns the rule of the first password.RejectedError in err's chain,
-// as a value or a non-nil pointer, or "" when there is none.
-func ruleOf(err error) password.Rule {
-	var rej password.RejectedError
-	if errors.As(err, &rej) && rej.Rule != "" {
-		return rej.Rule
+// ruleOf returns the rule of the first password.RejectedError in the chain, as
+// a value or a non-nil pointer, or "" when there is none. The abort is that of
+// the scan, which only a nondeterministic chain can give.
+func ruleOf(chain errwalk.Chain) (password.Rule, error) {
+	rej, found, abort := errwalk.As[password.RejectedError](chain)
+	if abort != nil {
+		return "", abort
 	}
-	if r := firstNonNil[*password.RejectedError](err); r != nil {
-		return r.Rule
+	if found && rej.Rule != "" {
+		return rej.Rule, nil
 	}
-	return ""
-}
 
-// maxWalkDepth bounds how deep firstNonNil's fallback walk follows Unwrap,
-// which bounds the recursion depth and work it spends on a pathologically deep
-// chain. It is the bound the
-// core's own challenge walk uses, so the two find the same challenge.
-const maxWalkDepth = 100
+	ptr, found, abort := errwalk.As[*password.RejectedError](chain)
+	if abort != nil || !found {
+		return "", abort
+	}
 
-// firstNonNil returns the first non-nil T, a pointer error type, in err's
-// chain. It keeps errors.As semantics: it tries errors.As first, so an error
-// presenting a T through its own As(any) bool method is recognised, at any
-// depth, and keeps what errors.As finds when it is non-nil. errors.As stops on
-// a typed-nil T, so when it finds nothing or a typed nil, firstNonNil falls
-// back to a walk in the order errors.As visits the chain, depth first through
-// both Unwrap() error and Unwrap() []error, which steps over a typed nil
-// instead of stopping on it, so a real value joined behind one is still found.
-// The fallback follows Unwrap only, never As methods, and stops at depth
-// maxWalkDepth (100), the outermost error being depth 0. It returns the zero T
-// when neither finds one.
-//
-// It chooses exactly as httpsec.LookupStatus chooses a challenge, so the
-// challenge whose kind decided the status is the one whose members are read.
-// An As method that panics is not recovered, as errors.As does not recover it;
-// a cyclic chain is not guarded, since errors.As, like the core's lookup,
-// loops on it without end.
-func firstNonNil[T interface {
-	comparable
-	error
-}](err error) T {
-	var zero, v T
-	if errors.As(err, &v) && v != zero {
-		return v
-	}
-	return walk[T](err, 0)
-}
-
-func walk[T interface {
-	comparable
-	error
-}](err error, depth int) T {
-	var zero T
-	if err == nil || depth > maxWalkDepth {
-		return zero
-	}
-	if v, ok := err.(T); ok && v != zero { //nolint:errorlint // the walk is the unwrapping
-		return v
-	}
-	switch u := err.(type) { //nolint:errorlint // the walk is the unwrapping
-	case interface{ Unwrap() error }:
-		return walk[T](u.Unwrap(), depth+1)
-	case interface{ Unwrap() []error }:
-		for _, e := range u.Unwrap() {
-			if v := walk[T](e, depth+1); v != zero {
-				return v
-			}
-		}
-	}
-	return zero
+	return ptr.Rule, nil
 }

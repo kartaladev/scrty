@@ -252,7 +252,7 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
   Review follow-up, both with red tests:
   - **Quiet sites under a consumer error handler.** Under `WithErrorHandler`, the quiet sites (the refusal event, the basic challenge header, OIDC consent, the session-signals checks) log an abort through the chain's logger and sampler. A chain with `WithLogger`, security events, and a handler that writes 418 without classifying, refusing a cyclic error, writes exactly one record.
   - **Per-reason sampling keys.** The sampling key is per reason, so a budget abort followed by a panic abort in one window writes two records.
-- [ ] 10.4 Mapper over the walk. Red: extend `TestMapper_ChallengeWalk` and add `TestMapper_HostileChains` in `httpsec/prblmsec`, calling `MapError` directly:
+- [x] 10.4 Mapper over the walk. Red: extend `TestMapper_ChallengeWalk` and add `TestMapper_HostileChains` in `httpsec/prblmsec`, calling `MapError` directly:
   - for each hostile chain in 10.2 the mapper's status agrees with `LookupStatus`: nil for the aborted ones;
   - the typed-nil `RejectedError` case gives the access-denied problem;
   - an aborted chain writes exactly one record, the lookup's, not a second.
