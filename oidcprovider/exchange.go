@@ -16,6 +16,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/oplineage"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
@@ -311,7 +312,8 @@ func (p *Provider) exchangeCode(ctx context.Context, r TokenRequest, rc *Registe
 		return nil, p.refuseSpentCode(ctx, r, rc, code)
 	}
 
-	if err := p.stores.grants.Create(ctx, grant); err != nil {
+	err = p.stores.grants.Create(ctx, grant)
+	if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 		return nil, dependencyFailure(ctx, err, "oidcprovider: store the grant")
 	}
 	if holdsLineage {
@@ -320,7 +322,8 @@ func (p *Provider) exchangeCode(ctx context.Context, r TokenRequest, rc *Registe
 		}
 	}
 	if access.record != nil {
-		if err := p.stores.accessTokens.Create(ctx, access.record); err != nil {
+		err := p.stores.accessTokens.Create(ctx, access.record)
+		if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 			return nil, dependencyFailure(ctx, err, "oidcprovider: store the access token")
 		}
 	}
@@ -334,6 +337,7 @@ func (p *Provider) exchangeCode(ctx context.Context, r TokenRequest, rc *Registe
 // failed part-way, whose secret no one was given.
 func (p *Provider) loadCodeRecord(ctx context.Context, tokenID id.ID) (*CodeRecord, error) {
 	record, err := p.stores.codes.Load(ctx, tokenID)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return nil, refuseGrant()
@@ -405,6 +409,7 @@ func grantLife(record *CodeRecord, rc *RegisteredClient, now time.Time) (time.Ti
 // failure: it is the one request allowed tokens.
 func (p *Provider) judgeCodeNow(ctx context.Context, record *CodeRecord) error {
 	recorded, err := p.stores.grants.Load(ctx, record.GrantFamily)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrNotFound):
 	case err != nil:
@@ -414,6 +419,7 @@ func (p *Provider) judgeCodeNow(ctx context.Context, record *CodeRecord) error {
 	}
 
 	details, err := p.users.LoadByUserID(ctx, record.SignIn.User)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound):
 		return refuseGrant()
@@ -571,6 +577,7 @@ func (p *Provider) refuseSpentCode(ctx context.Context, r TokenRequest, rc *Regi
 	defer cancel()
 
 	tok, err := p.stores.codeTokens.FindByID(detached, tokenID)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, onetime.ErrTokenNotFound):
 		return refuseGrant()
