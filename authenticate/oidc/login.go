@@ -72,7 +72,9 @@ func (m *RelyingParty) Authorize(ctx context.Context, provider, next string) (Au
 
 	var secrets [3]string // state, nonce, verifier
 	for i := range secrets {
-		if secrets[i], err = randomURLToken(m.random, flowSecretBytes); err != nil {
+		secrets[i], err = randomURLToken(m.random, flowSecretBytes)
+		err = porterr.SanitizeTo(ctx, m.log, err, porterr.ErrUnwalkable)
+		if err != nil {
 			return Authorization{}, err
 		}
 	}

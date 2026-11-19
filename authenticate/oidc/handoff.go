@@ -150,7 +150,9 @@ func (h *Handoff) Issue(ctx context.Context, res CallbackResult) (string, error)
 	}
 
 	var raw [handoffTokenIDBytes + handoffSecretBytes]byte
-	if _, err := io.ReadFull(h.random, raw[:]); err != nil {
+	_, err := io.ReadFull(h.random, raw[:])
+	err = porterr.SanitizeTo(ctx, h.log, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return "", fmt.Errorf("oidc: drawing a handoff code: %w", err)
 	}
 	tokenID := base64.RawURLEncoding.EncodeToString(raw[:handoffTokenIDBytes])
