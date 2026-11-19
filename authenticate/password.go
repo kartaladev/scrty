@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
@@ -313,6 +314,11 @@ func (a *UsernamePasswordAuthenticator) Authenticate(ctx context.Context, creden
 	presented := string(creds.Password)
 
 	details, err := a.users.LoadByUsername(ctx, creds.Username)
+	// The loader is the consumer's, and so is its error. One whose chain
+	// cannot be walked becomes a fault matching ErrUnavailable, so it takes
+	// the outage branch below and is never read as an unknown user or a
+	// hang-up; the abort is recorded once, on this provider's logger.
+	err = porterr.SanitizeTo(ctx, a.logger, err, ErrUnavailable)
 	if err != nil || details == nil {
 		// Deliberately unused: the verification is the point, not its verdict.
 		_ = a.enc.Match(presented, a.reference)

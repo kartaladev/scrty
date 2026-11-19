@@ -209,6 +209,8 @@ func NewPolicy(opts ...PolicyOption) (*Policy, error) {
 		if p.reuse, err = cfg.reuse.build(enc); err != nil {
 			return nil, err
 		}
+
+		p.reuse.logger = cfg.logger
 	}
 
 	switch {
@@ -338,6 +340,11 @@ func WithClock(clock clock.Clock) PolicyOption {
 // candidate without a check it was configured to make: today, a breach lookup
 // that failed under [Accept]. The record is at ERROR, carries fixed text and
 // the failure's Go type, and never the candidate, its hash or the error's text.
+//
+// It also receives the record of an error from the breach source or the
+// password history that the library could not walk: a cyclic, fanned-out or
+// panicking chain. The policy then answers it as that port's outage, and the
+// record carries the abort's reason, never the error's text.
 //
 // Default: slog.Default(), read when [NewPolicy] runs. A nil logger, typed nil
 // included, fails construction.

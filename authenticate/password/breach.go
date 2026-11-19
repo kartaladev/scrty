@@ -17,6 +17,7 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/outbound"
 )
 
@@ -99,6 +100,8 @@ func (r *breachRule) check(ctx context.Context, candidate string) error {
 	prefix, suffix := full[:5], full[5:]
 
 	entries, err := r.src.Range(ctx, prefix)
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		if hangup.ByCaller(ctx, err) {
 			return ctx.Err()

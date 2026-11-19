@@ -7,6 +7,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // ConditionalProvisionerRehash returns a write for a login's rehash option
@@ -61,6 +62,7 @@ func ConditionalProvisionerRehash(
 			identity.WithUserPasswordIf(replaced),
 			identity.WithUserPassword(upgraded),
 		)
+		err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 
 		switch {
 		case err == nil, errors.Is(err, identity.ErrNotUpdated), errors.Is(err, identity.ErrUserNotFound):

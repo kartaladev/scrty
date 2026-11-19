@@ -18,6 +18,7 @@ import (
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
@@ -588,6 +589,10 @@ func (l *formLogin) verifyPassword(
 	now time.Time,
 ) (*authenticate.Authentication, error) {
 	auth, err := l.authn.Authenticate(ctx, identity.NewUsernamePassword(username, password))
+	// The authenticator may be the consumer's, and so is its error. One whose
+	// chain cannot be walked becomes a fault matching ErrUnavailable, so it is
+	// answered, charged and recorded exactly as a user-store outage is.
+	err = porterr.SanitizeTo(ctx, l.log, err, authenticate.ErrUnavailable)
 	if err != nil && !credentialRefused(ctx, err) {
 		return nil, err
 	}
@@ -772,7 +777,10 @@ func (l *formLogin) recordFailure(ctx context.Context, username string, now time
 	defer cancel()
 
 	recordCtx := eventsink.WithFactor(bounded, factor.Password)
-	if err := l.attempts.RecordFailure(recordCtx, username, now); err != nil {
+	err := l.attempts.RecordFailure(recordCtx, username, now)
+	// Only logged, but sanitized so an error that cannot be walked is
+	// recorded as an abort too.
+	if err = porterr.SanitizeTo(ctx, l.log, err, porterr.ErrUnwalkable); err != nil {
 		l.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
 			diag.Failure("attempt-store", err)...)
 	}
@@ -785,7 +793,10 @@ func (l *formLogin) recordFailure(ctx context.Context, username string, now time
 // As with recordFailure, the record names the fixed reason and the store's
 // error type, never its text.
 func (l *formLogin) resetFailures(ctx context.Context, username string) {
-	if err := l.attempts.Reset(ctx, username); err != nil {
+	err := l.attempts.Reset(ctx, username)
+	// Only logged, but sanitized so an error that cannot be walked is
+	// recorded as an abort too.
+	if err = porterr.SanitizeTo(ctx, l.log, err, porterr.ErrUnwalkable); err != nil {
 		l.log.LogAttrs(ctx, slog.LevelError, msgAttemptsNotReset,
 			diag.Failure("attempt-store", err)...)
 	}

@@ -7,11 +7,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // History keeps the hashes a user's password had before its current one.
@@ -100,6 +102,10 @@ type reuseRule struct {
 	history  History
 	matchers []Encoder // the policy's encoder first, then the extras
 	depth    int
+	// logger takes the sanitizer's record when the history port returns an
+	// error that cannot be walked. NewPolicy sets it to the policy's logger;
+	// nil falls back to slog.Default() inside porterr.SanitizeTo.
+	logger *slog.Logger
 }
 
 // NoReuse adds the reuse rule: a candidate matching the user's current hash
@@ -220,7 +226,10 @@ func (r *reuseRule) check(ctx context.Context, user *identity.Details, candidate
 	var retired [][]byte
 	if n := r.depth - 1; n > 0 {
 		var err error
-		if retired, err = r.history.RecentPasswords(ctx, user.ID, n); err != nil {
+		retired, err = r.history.RecentPasswords(ctx, user.ID, n)
+		err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
+
+		if err != nil {
 			return historyError(err)
 		}
 	}
@@ -245,7 +254,8 @@ func (r *reuseRule) retire(ctx context.Context, user *identity.Details) error {
 		return nil
 	}
 
-	if err := r.history.RetirePassword(ctx, user.ID, user.Password, r.depth-1); err != nil {
+	err := r.history.RetirePassword(ctx, user.ID, user.Password, r.depth-1)
+	if err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable); err != nil {
 		return historyError(err)
 	}
 
@@ -349,6 +359,6 @@ func ProvisionerWrite(provisioner identity.UserProvisioner) (WriteFunc, error) {
 
 		_, err := provisioner.Update(ctx, user.Username, identity.WithUserPasswordChange(hash, changedAt))
 
-		return err
+		return porterr.Sanitize(err, porterr.ErrUnwalkable)
 	}, nil
 }
