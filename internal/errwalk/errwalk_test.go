@@ -135,7 +135,7 @@ func names(c errwalk.Chain) []string {
 
 // flattenWithin runs Flatten under a deadline, so a walk that hangs fails the
 // test instead of the whole run.
-func flattenWithin(t *testing.T, err error, d time.Duration) (errwalk.Chain, error, time.Duration) {
+func flattenWithin(t *testing.T, err error, d time.Duration) (errwalk.Chain, time.Duration, error) {
 	t.Helper()
 
 	type result struct {
@@ -153,11 +153,11 @@ func flattenWithin(t *testing.T, err error, d time.Duration) (errwalk.Chain, err
 
 	select {
 	case r := <-done:
-		return r.c, r.abort, time.Since(start)
+		return r.c, time.Since(start), r.abort
 	case <-time.After(d):
 		t.Fatalf("Flatten did not return within %s", d)
 
-		return nil, nil, 0
+		return nil, 0, nil
 	}
 }
 
@@ -425,7 +425,7 @@ func TestFlatten(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, abort, elapsed := flattenWithin(t, tc.err, 2*time.Second)
+			got, elapsed, abort := flattenWithin(t, tc.err, 2*time.Second)
 			tc.assert(t, got, abort, elapsed)
 		})
 	}
@@ -902,4 +902,148 @@ func TestPanicError_TextIsFixed(t *testing.T) {
 
 	assert.Equal(t, a, b)
 	assert.False(t, strings.Contains(a, "secret"))
+}
+
+// deepPanicUnwrap panics depth calls below its own Unwrap, in descendAndPanic.
+type deepPanicUnwrap struct{ depth int }
+
+func (deepPanicUnwrap) Error() string { return "deep panic unwrap" }
+
+func (e deepPanicUnwrap) Unwrap() error {
+	descendAndPanic(e.depth)
+
+	return nil
+}
+
+//go:noinline
+func descendAndPanic(depth int) {
+	if depth > 0 {
+		descendAndPanic(depth - 1)
+
+		return
+	}
+
+	panic("deep boom")
+}
+
+// frameFunctions resolves pcs to the function names they name, innermost
+// first.
+func frameFunctions(pcs []uintptr) []string {
+	if len(pcs) == 0 {
+		return nil
+	}
+
+	var out []string
+
+	frames := runtime.CallersFrames(pcs)
+	for {
+		frame, more := frames.Next()
+		out = append(out, frame.Function)
+
+		if !more {
+			return out
+		}
+	}
+}
+
+// TestFlatten_PanicCarriesFrames pins that a recovered panic carries the
+// panicking stack, captured where it panicked: the first frame is the
+// runtime's gopanic and the panicking method follows, not only errwalk's own
+// functions or whoever reads the abort later.
+func TestFlatten_PanicCarriesFrames(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// abort runs the walk or match that meets the panic.
+		abort  func() error
+		assert func(t *testing.T, functions []string)
+	}
+
+	startsAtGopanicThen := func(method string) func(t *testing.T, functions []string) {
+		return func(t *testing.T, functions []string) {
+			t.Helper()
+			require.GreaterOrEqual(t, len(functions), 2, "frames: %v", functions)
+			assert.Equal(t, "runtime.gopanic", functions[0], "the frames start at the panic")
+			assert.Contains(t, functions[1], method, "the panicking method is next")
+			assert.LessOrEqual(t, len(functions), errwalk.FrameLimit)
+		}
+	}
+
+	cases := []testCase{
+		{
+			name: "a panicking Unwrap() error",
+			abort: func() error {
+				_, abort := errwalk.Flatten(panicUnwrap{})
+
+				return abort
+			},
+			assert: startsAtGopanicThen("errwalk_test.panicUnwrap.Unwrap"),
+		},
+		{
+			name: "a panicking Unwrap() []error",
+			abort: func() error {
+				_, abort := errwalk.Flatten(panicUnwrapMany{})
+
+				return abort
+			},
+			assert: startsAtGopanicThen("errwalk_test.panicUnwrapMany.Unwrap"),
+		},
+		{
+			name: "a panicking Is",
+			abort: func() error {
+				_, abort := errwalk.Is(errwalk.Chain{panicIs{}}, errors.New("target"))
+
+				return abort
+			},
+			assert: startsAtGopanicThen("errwalk_test.panicIs.Is"),
+		},
+		{
+			name: "a panicking As",
+			abort: func() error {
+				_, _, abort := errwalk.As[*one](errwalk.Chain{panicAs{}})
+
+				return abort
+			},
+			assert: startsAtGopanicThen("errwalk_test.panicAs.As"),
+		},
+		{
+			name: "a == that panics names errwalk's comparison, through the runtime",
+			abort: func() error {
+				_, abort := errwalk.Is(errwalk.Chain{boxErr{v: []int{1}}}, boxErr{v: []int{1}})
+
+				return abort
+			},
+			assert: func(t *testing.T, functions []string) {
+				t.Helper()
+				require.NotEmpty(t, functions)
+				assert.True(t, strings.HasPrefix(functions[0], "runtime."), "a runtime error starts in the runtime: %v", functions)
+				assert.Contains(t, strings.Join(functions, "\n"), "errwalk.Is")
+			},
+		},
+		{
+			name: "a panic deeper than the limit keeps the innermost frames, bounded",
+			abort: func() error {
+				_, abort := errwalk.Flatten(deepPanicUnwrap{depth: 4 * errwalk.FrameLimit})
+
+				return abort
+			},
+			assert: func(t *testing.T, functions []string) {
+				t.Helper()
+				require.Len(t, functions, errwalk.FrameLimit)
+				assert.Equal(t, "runtime.gopanic", functions[0])
+				assert.Contains(t, functions[1], "errwalk_test.descendAndPanic")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var pe *errwalk.PanicError
+			require.ErrorAs(t, tc.abort(), &pe)
+			tc.assert(t, frameFunctions(pe.Frames))
+		})
+	}
 }

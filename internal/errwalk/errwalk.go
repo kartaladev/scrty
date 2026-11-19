@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"runtime"
 	"slices"
 )
 
@@ -35,7 +36,20 @@ func (budgetError) Unwrap() error { return ErrBudget }
 // is nil for panic(nil) under GODEBUG=panicnil=1. Error returns fixed text
 // that never includes Value, so the abort is safe to log; a caller that
 // reports Value redacts it itself.
-type PanicError struct{ Value any }
+//
+// Frames are the program counters of the panicking stack, captured inside the
+// deferred recover while that stack still exists, as runtime.Callers gives
+// them: the first is runtime.gopanic, or the runtime frame that raised a
+// runtime error, and the panicking function follows it. At most FrameLimit
+// are kept, innermost first; it is empty when the runtime gave none. Resolve
+// them with runtime.CallersFrames.
+type PanicError struct {
+	Value  any
+	Frames []uintptr
+}
+
+// FrameLimit bounds the program counters a *PanicError keeps.
+const FrameLimit = 32
 
 // Error returns fixed text, without the recovered value.
 func (*PanicError) Error() string { return "errwalk: panic during walk" }
@@ -70,7 +84,7 @@ func Flatten(err error) (Chain, error) {
 
 		chain = append(chain, node)
 
-		switch u := node.(type) {
+		switch u := node.(type) { //nolint:errorlint // the walk is the unwrapping
 		case interface{ Unwrap() error }:
 			next, abort := recovering(u.Unwrap)
 			if abort != nil {
@@ -117,11 +131,11 @@ func Is(c Chain, target error) (bool, error) {
 		return false, nil
 	}
 
-	comparable := reflect.TypeOf(target).Comparable()
+	targetComparable := reflect.TypeOf(target).Comparable()
 
 	for _, node := range c {
-		if comparable {
-			eq, abort := recovering(func() bool { return node == target })
+		if targetComparable {
+			eq, abort := recovering(func() bool { return node == target }) //nolint:errorlint // the == step errors.Is takes on each node
 			if abort != nil {
 				return false, abort
 			}
@@ -154,7 +168,7 @@ func As[T error](c Chain) (T, bool, error) {
 	var zero T
 
 	for _, node := range c {
-		if v, ok := node.(T); ok && !isNil(v) {
+		if v, ok := node.(T); ok && !isNil(v) { //nolint:errorlint // the direct type match errors.As makes on each node
 			return v, true, nil
 		}
 
@@ -179,7 +193,7 @@ func As[T error](c Chain) (T, bool, error) {
 // error or any error this package did not return. It recognises aborts by
 // type and calls no method of a foreign error.
 func Reason(abort error) string {
-	switch abort.(type) {
+	switch abort.(type) { //nolint:errorlint // only errwalk's own unwrapped abort values reach here; must not call a foreign error's methods
 	case budgetError:
 		return "budget"
 	case *PanicError:
@@ -197,7 +211,7 @@ func recovering[R any](f func() R) (r R, abort error) {
 
 	defer func() {
 		if v := recover(); !done {
-			abort = &PanicError{Value: v}
+			abort = &PanicError{Value: v, Frames: panicFrames()}
 		}
 	}()
 
@@ -205,6 +219,25 @@ func recovering[R any](f func() R) (r R, abort error) {
 	done = true
 
 	return r, nil
+}
+
+// panicFrames returns the program counters of the panicking stack. It must be
+// called directly from the deferred function that recovered, while that stack
+// still exists. The skip of 3 leaves out runtime.Callers, panicFrames and the
+// deferred function, so the first frame is runtime.gopanic (or the runtime
+// frame that raised a runtime error) and the panicking function follows it.
+// At most FrameLimit are kept; nil when the runtime gives none.
+//
+//go:noinline
+func panicFrames() []uintptr {
+	var pcs [FrameLimit]uintptr
+
+	n := runtime.Callers(3, pcs[:])
+	if n == 0 {
+		return nil
+	}
+
+	return slices.Clone(pcs[:n])
 }
 
 // isNilPointer reports whether err's dynamic value is a nil pointer. Nil maps,

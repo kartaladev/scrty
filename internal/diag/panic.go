@@ -21,18 +21,35 @@ const panicFrameLimit = 32
 func PanicAttrs(value any) []slog.Attr {
 	var pcs [panicFrameLimit]uintptr
 
-	frames := runtime.CallersFrames(pcs[:runtime.Callers(3, pcs[:])])
+	return PanicAttrsFrom(value, pcs[:runtime.Callers(3, pcs[:])])
+}
 
-	named := make([]string, 0, panicFrameLimit)
+// PanicAttrsFrom is PanicAttrs for a stack captured earlier, while it still existed: pcs as
+// runtime.Callers gives them, innermost first. A caller that recovers a panic in one place and
+// writes the record in another captures the stack where it recovered, and hands it here, so the
+// frames name where the panic happened rather than where the record is written.
+//
+// It gives the same keys and the same redaction as PanicAttrs: the value's Go type, never the
+// value, and at most 32 frames, the innermost; a frame the runtime cannot name is left out. No
+// pcs, or none it can name, gives an empty frames attribute, never a missing one. pcs is only
+// read.
+func PanicAttrsFrom(value any, pcs []uintptr) []slog.Attr {
+	pcs = pcs[:min(len(pcs), panicFrameLimit)]
 
-	for {
-		frame, more := frames.Next()
-		if frame.Function != "" {
-			named = append(named, fmt.Sprintf("%s %s:%d", frame.Function, frame.File, frame.Line))
-		}
+	named := make([]string, 0, len(pcs))
 
-		if !more {
-			break
+	if len(pcs) > 0 {
+		frames := runtime.CallersFrames(pcs)
+
+		for {
+			frame, more := frames.Next()
+			if frame.Function != "" {
+				named = append(named, fmt.Sprintf("%s %s:%d", frame.Function, frame.File, frame.Line))
+			}
+
+			if !more {
+				break
+			}
 		}
 	}
 

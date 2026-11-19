@@ -26,4 +26,10 @@ func TestFlatten_PanicNilAborts(t *testing.T) {
 	assert.Nil(t, pe.Value)
 	assert.Equal(t, "panic", errwalk.Reason(abort))
 	assert.Nil(t, c)
+
+	// The done-flag path captures the frames as a non-nil panic's does.
+	functions := frameFunctions(pe.Frames)
+	require.GreaterOrEqual(t, len(functions), 2, "frames: %v", functions)
+	assert.Equal(t, "runtime.gopanic", functions[0])
+	assert.Contains(t, functions[1], "errwalk_test.panicNilUnwrap.Unwrap")
 }
