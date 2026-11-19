@@ -3,6 +3,7 @@ package session_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -116,7 +117,7 @@ const peChildEnv = "SCRTY_SESSION_PORTERR_CHILD"
 // peInChild re-runs the current top-level test in a child process that runs
 // only the cycle-many kind, and fails unless the child exits 0 within a
 // minute. A stack overflow is fatal, so only a child can watch for one.
-func peInChild(t *testing.T) {
+func peInChild(t *testing.T, kind string) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
@@ -126,13 +127,14 @@ func peInChild(t *testing.T) {
 
 	//nolint:gosec // G204: re-runs this test binary with this test's own name
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+top+"$", "-test.count=1")
-	cmd.Env = append(os.Environ(), peChildEnv+"=1")
+	cmd.Env = append(os.Environ(), peChildEnv+"="+kind)
 
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, ctx.Err(), "the child did not finish within a minute")
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	require.NoError(t, err, "the child failed:\n%s", strings.Join(lines[:min(len(lines), 8)], "\n"))
+	requireChildRan(t, out, "encrypted/"+kind)
 }
 
 // peWithin runs call on its own goroutine and fails the test when it does not
@@ -498,23 +500,27 @@ func peProbe(got error) peFacts {
 }
 
 func TestPortErrors_EncryptedStore(t *testing.T) { //nolint:paralleltest // swaps slog.Default
-	inChildProcess := os.Getenv(peChildEnv) != ""
+	childKind := os.Getenv(peChildEnv)
+	inChildProcess := childKind != ""
 	if inChildProcess {
 		debug.SetMaxStack(64 << 20)
 	}
 
 	for _, kind := range peKinds() {
 		if kind.child && !inChildProcess {
-			t.Run(kind.name, func(t *testing.T) { peInChild(t) })
+			t.Run(kind.name, func(t *testing.T) { peInChild(t, kind.name) })
 
 			continue
 		}
-		if inChildProcess && !kind.child {
+		if inChildProcess && (!kind.child || kind.name != childKind) {
 			continue
 		}
+
+		ran := 0
 
 		for _, flow := range peFlows() {
 			t.Run(flow.name+"/"+kind.name, func(t *testing.T) {
+				ran++
 				rec := peRecording(t)
 				ctrl := gomock.NewController(t)
 
@@ -552,6 +558,10 @@ func TestPortErrors_EncryptedStore(t *testing.T) { //nolint:paralleltest // swap
 					}
 				}
 			})
+		}
+
+		if inChildProcess && ran > 0 && !t.Failed() {
+			fmt.Println(childRanMarker("encrypted/" + kind.name))
 		}
 	}
 }

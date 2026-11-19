@@ -275,6 +275,7 @@ func portInChild(t *testing.T) {
 	require.NoError(t, ctx.Err(), "the child did not finish within a minute")
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	require.NoError(t, err, "the child failed:\n%s", strings.Join(lines[:min(len(lines), 8)], "\n"))
+	requireChildRan(t, out, "signins/cycleMany")
 }
 
 // TestPortErrors_SessionStoreHostile pins that a hostile error from the session
@@ -289,6 +290,7 @@ func TestPortErrors_SessionStoreHostile(t *testing.T) { //nolint:paralleltest //
 	}
 
 	child := portRowChild()
+	ran := 0
 	cases := []testCase{
 		{name: "plain", err: func() error { return errors.New("db down") }},
 		{name: "cycleOne", err: func() error { return &portErrCycleOne{} }, reason: "budget"},
@@ -317,6 +319,7 @@ func TestPortErrors_SessionStoreHostile(t *testing.T) { //nolint:paralleltest //
 					name += "/cancelled"
 				}
 				t.Run(name, func(t *testing.T) {
+					ran++
 					plain, _, _ := portRun(t, site, errors.New("db down"), cancelled)
 					got, own, def := portRun(t, site, tc.err(), cancelled)
 
@@ -335,5 +338,9 @@ func TestPortErrors_SessionStoreHostile(t *testing.T) { //nolint:paralleltest //
 				})
 			}
 		}
+	}
+
+	if child != "" && ran > 0 && !t.Failed() {
+		fmt.Println(childRanMarker("signins/" + child))
 	}
 }

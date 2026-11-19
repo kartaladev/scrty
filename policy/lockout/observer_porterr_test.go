@@ -283,8 +283,7 @@ func obsInChild(t *testing.T, site, kind string) {
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	require.NoError(t, err, "the child failed:\n%s", strings.Join(lines[:min(len(lines), 8)], "\n"))
-	require.Contains(t, string(out), obsChildMarker("LogOnlyReads", site, kind),
-		"the child exited 0 without running its row:\n%s", strings.Join(lines[:min(len(lines), 8)], "\n"))
+	requireRanLine(t, out, obsChildMarker("LogOnlyReads", site, kind))
 }
 
 // TestObsPortErrors_LogOnlyReads pins that a hostile error from an attempt
@@ -297,17 +296,40 @@ func TestObsPortErrors_LogOnlyReads(t *testing.T) {
 		debug.SetMaxStack(64 << 20)
 	}
 
-	tests := []struct {
-		name    string
-		err     func() error
-		hostile bool
-		child   bool
-		reason  string
-	}{
-		{name: "PlainOutage", err: func() error { return errAttemptStoreDown }},
-		{name: "CycleOne", err: func() error { return &obsCycleOne{} }, hostile: true, reason: "reason=budget"},
-		{name: "PanicUnwrap", err: func() error { return obsPanicUnwrap{} }, hostile: true, reason: "reason=panic"},
-		{name: "CycleMany", err: func() error { return &obsCycleMany{} }, hostile: true, child: true, reason: "reason=budget"},
+	// noAbort asserts a walkable error writes no abort record.
+	noAbort := func(t *testing.T, own, _ string) {
+		t.Helper()
+
+		assert.Zero(t, strings.Count(own, porterr.MsgClassificationAborted),
+			"a plain outage must not write an abort record:\n%s", own)
+	}
+	// oneAbort asserts a hostile error writes exactly one abort record, with reason.
+	oneAbort := func(reason string) func(t *testing.T, own, def string) {
+		return func(t *testing.T, own, _ string) {
+			t.Helper()
+
+			assert.Equal(t, 1, strings.Count(own, porterr.MsgClassificationAborted),
+				"a hostile error must write exactly one abort record to the policy's logger:\n%s", own)
+			assert.Contains(t, own, reason)
+		}
+	}
+
+	type testCase struct {
+		name  string
+		err   func() error
+		child bool
+		// assert checks the abort records, after the checks every row shares.
+		assert func(t *testing.T, own, def string)
+	}
+
+	tests := []testCase{
+		{name: "PlainOutage", err: func() error { return errAttemptStoreDown }, assert: noAbort},
+		{name: "CycleOne", err: func() error { return &obsCycleOne{} }, assert: oneAbort("reason=budget")},
+		{name: "PanicUnwrap", err: func() error { return obsPanicUnwrap{} }, assert: oneAbort("reason=panic")},
+		{
+			name: "CycleMany", err: func() error { return &obsCycleMany{} }, child: true,
+			assert: oneAbort("reason=budget"),
+		},
 	}
 
 	for _, site := range obsSites() {
@@ -327,18 +349,9 @@ func TestObsPortErrors_LogOnlyReads(t *testing.T) {
 					assert.Zero(t, strings.Count(def, porterr.MsgClassificationAborted),
 						"the abort record went to slog.Default, not the policy's logger:\n%s", def)
 
-					if !tc.hostile {
-						assert.Zero(t, strings.Count(own, porterr.MsgClassificationAborted),
-							"a plain outage must not write an abort record:\n%s", own)
+					tc.assert(t, own, def)
 
-						return
-					}
-
-					assert.Equal(t, 1, strings.Count(own, porterr.MsgClassificationAborted),
-						"a hostile error must write exactly one abort record to the policy's logger:\n%s", own)
-					assert.Contains(t, own, tc.reason)
-
-					if tc.child {
+					if tc.child && !t.Failed() {
 						fmt.Println(obsChildMarker("LogOnlyReads", site.name, tc.name))
 					}
 				})
@@ -507,8 +520,7 @@ func obsPassInChild(t *testing.T, site, kind string) {
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	head := strings.Join(lines[:min(len(lines), 8)], "\n")
 	require.NoError(t, err, "the child failed:\n%s", head)
-	require.Contains(t, string(out), obsChildMarker("PassUp", site, kind),
-		"the child exited 0 without running its row:\n%s", head)
+	requireRanLine(t, out, obsChildMarker("PassUp", site, kind))
 }
 
 // obsPassOutcome is everything a caller can observe of one pass-up call,
@@ -578,22 +590,65 @@ func TestObsPortErrors_PassUp(t *testing.T) {
 		debug.SetMaxStack(64 << 20)
 	}
 
-	tests := []struct {
-		name    string
-		err     func() error
-		hostile bool
-		child   bool
-		reason  string
-	}{
-		{name: "PlainOutage", err: func() error { return errAttemptStoreDown }},
-		{name: "CycleOne", err: func() error { return &obsCycleOne{} }, hostile: true, reason: "reason=budget"},
-		{name: "PanicUnwrap", err: func() error { return obsPanicUnwrap{} }, hostile: true, reason: "reason=panic"},
-		{name: "PanicNil", err: func() error { return obsPanicNil{} }, hostile: true, reason: "reason=panic"},
-		{name: "FanOut", err: func() error { return obsFanOut(25) }, hostile: true, reason: "reason=budget"},
-		{name: "CycleMany", err: func() error { return &obsCycleMany{} }, hostile: true, child: true, reason: "reason=budget"},
+	// walkable asserts a walkable error is not a fault and writes no abort record.
+	walkable := func(t *testing.T, _ obsPassSite, o obsPassOutcome) {
+		t.Helper()
+
+		assert.False(t, o.isUnwalk, "a walkable error is not a fault")
+		assert.Zero(t, strings.Count(o.own, porterr.MsgClassificationAborted),
+			"a walkable error must not write an abort record:\n%s", o.own)
+	}
+	// plain asserts a plain outage comes back as itself, and is walkable.
+	plain := func(t *testing.T, site obsPassSite, o obsPassOutcome) {
+		t.Helper()
+
+		assert.True(t, o.isPlain, "a plain outage must come back as itself")
+		walkable(t, site, o)
+	}
+	// hostile asserts a hostile error comes back as a fault, with one abort
+	// record per hostile error and the given reason, and that the other
+	// port's plain error still comes back joined where the site has one.
+	hostile := func(reason string) func(t *testing.T, site obsPassSite, o obsPassOutcome) {
+		return func(t *testing.T, site obsPassSite, o obsPassOutcome) {
+			t.Helper()
+
+			want := 1
+			if site.both {
+				want = 2
+			}
+
+			assert.True(t, o.isUnwalk, "a hostile error must come back matching porterr.ErrUnwalkable")
+			assert.Equal(t, want, strings.Count(o.own, porterr.MsgClassificationAborted),
+				"a hostile error must write exactly one abort record each to the policy's logger:\n%s", o.own)
+			assert.Contains(t, o.own, reason)
+
+			if site.joined {
+				assert.True(t, o.isPlain, "the other port's plain error must still come back")
+			}
+		}
+	}
+
+	type testCase struct {
+		name  string
+		err   func() error
+		child bool
+		// assert checks the answer, after the checks every row shares.
+		assert func(t *testing.T, site obsPassSite, o obsPassOutcome)
+	}
+
+	tests := []testCase{
+		{name: "PlainOutage", err: func() error { return errAttemptStoreDown }, assert: plain},
+		{name: "CycleOne", err: func() error { return &obsCycleOne{} }, assert: hostile("reason=budget")},
+		{name: "PanicUnwrap", err: func() error { return obsPanicUnwrap{} }, assert: hostile("reason=panic")},
+		{name: "PanicNil", err: func() error { return obsPanicNil{} }, assert: hostile("reason=panic")},
+		{name: "FanOut", err: func() error { return obsFanOut(25) }, assert: hostile("reason=budget")},
+		{
+			name: "CycleMany", err: func() error { return &obsCycleMany{} }, child: true,
+			assert: hostile("reason=budget"),
+		},
 		// A typed-nil root is walked to the end, so it passes unchanged and is
 		// answered as the plain outage is: no abort record.
-		{name: "TypedNilRoot", err: func() error { return (*obsTypedNil)(nil) }},
+		{name: "TypedNilRoot", err: func() error { return (*obsTypedNil)(nil) }, assert: walkable},
 	}
 
 	for _, site := range obsPassSites() {
@@ -614,33 +669,9 @@ func TestObsPortErrors_PassUp(t *testing.T) {
 					assert.Zero(t, strings.Count(o.def, porterr.MsgClassificationAborted),
 						"the abort record went to slog.Default, not the policy's logger:\n%s", o.def)
 
-					if !tc.hostile {
-						if tc.name == "PlainOutage" {
-							assert.True(t, o.isPlain, "a plain outage must come back as itself")
-						}
+					tc.assert(t, site, o)
 
-						assert.False(t, o.isUnwalk, "a walkable error is not a fault")
-						assert.Zero(t, strings.Count(o.own, porterr.MsgClassificationAborted),
-							"a walkable error must not write an abort record:\n%s", o.own)
-
-						return
-					}
-
-					want := 1
-					if site.both {
-						want = 2
-					}
-
-					assert.True(t, o.isUnwalk, "a hostile error must come back matching porterr.ErrUnwalkable")
-					assert.Equal(t, want, strings.Count(o.own, porterr.MsgClassificationAborted),
-						"a hostile error must write exactly one abort record each to the policy's logger:\n%s", o.own)
-					assert.Contains(t, o.own, tc.reason)
-
-					if site.joined {
-						assert.True(t, o.isPlain, "the other port's plain error must still come back")
-					}
-
-					if tc.child {
+					if tc.child && !t.Failed() {
 						fmt.Println(obsChildMarker("PassUp", site.name, tc.name))
 					}
 				})

@@ -358,6 +358,26 @@ func runStoreSite(t *testing.T, ctx context.Context, site storeSite, err error) 
 	return got, logs.aborts()
 }
 
+// childRanMarker is the line a child process prints on stdout once its row has
+// run and passed. The parent requires one whole line to equal it, so a child
+// that matched no row (and so ran nothing) cannot pass.
+func childRanMarker(row string) string { return "SCRTY-SESSION-PORTERR-ROW-RAN:" + row }
+
+// requireChildRan fails unless one line of the child's combined output equals
+// the marker for row exactly: not a substring, and not a line with a suffix.
+func requireChildRan(t *testing.T, out []byte, row string) {
+	t.Helper()
+
+	want := childRanMarker(row)
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if strings.TrimSuffix(line, "\r") == want {
+			return
+		}
+	}
+
+	t.Fatalf("the child never ran row %q (no line equals %q); output:\n%s", row, want, out)
+}
+
 // childStoreRow is the row this process runs as a child, or "" in the parent.
 func childStoreRow() string {
 	row := os.Getenv(hostileStoreRowEnv)
@@ -387,6 +407,7 @@ func inStoreChild(t *testing.T, row string) {
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	require.NoError(t, err, "the child failed:\n%s", strings.Join(lines[:min(len(lines), 8)], "\n"))
+	requireChildRan(t, out, row)
 }
 
 // TestPortErrors_SessionsStorePort: a hostile error from the session Store ends in
@@ -456,6 +477,10 @@ func TestPortErrors_SessionsStorePort(t *testing.T) {
 					if tc.aborts == 1 {
 						assert.True(t, isWithin(t, got, porterr.ErrUnwalkable), "the fault matches ErrUnwalkable")
 					}
+				}
+
+				if child != "" && !t.Failed() {
+					fmt.Println(childRanMarker(row))
 				}
 			})
 		}

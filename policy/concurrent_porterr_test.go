@@ -6,6 +6,7 @@ package policy_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -69,6 +70,10 @@ func (h *recordSink) records() []slog.Record {
 }
 
 const counterRowEnv = "SCRTY_POLICY_PORTERR_ROW"
+
+// counterRanMarker is the line the child prints on stdout once its row has run
+// and passed; the parent requires one whole line to equal it.
+func counterRanMarker(row string) string { return "SCRTY-POLICY-PORTERR-ROW-RAN:" + row }
 
 // evaluateWithin runs Evaluate with a counter that fails with err, on its own
 // goroutine, and fails the test when it hangs or panics.
@@ -149,7 +154,7 @@ func TestConcurrentSessions_PortErrors(t *testing.T) { //nolint:paralleltest // 
 	}
 
 	for _, tc := range cases {
-		if childRow != "" && !tc.child {
+		if childRow != "" && (!tc.child || tc.name != childRow) {
 			continue
 		}
 
@@ -160,13 +165,22 @@ func TestConcurrentSessions_PortErrors(t *testing.T) { //nolint:paralleltest // 
 
 				//nolint:gosec // G204: re-runs this test binary with this test's own name
 				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestConcurrentSessions_PortErrors$", "-test.count=1")
-				cmd.Env = append(os.Environ(), counterRowEnv+"=1")
+				cmd.Env = append(os.Environ(), counterRowEnv+"="+tc.name)
 
 				out, err := cmd.CombinedOutput()
 				require.NoError(t, ctx.Err(), "the child did not finish within a minute")
 
 				lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 				require.NoError(t, err, "the child failed:\n%s", strings.Join(lines[:min(len(lines), 8)], "\n"))
+
+				want := counterRanMarker(tc.name)
+				ran := false
+				for line := range strings.SplitSeq(string(out), "\n") {
+					if strings.TrimSuffix(line, "\r") == want {
+						ran = true
+					}
+				}
+				require.True(t, ran, "the child never ran row %q (no line equals %q); output:\n%s", tc.name, want, out)
 
 				return
 			}
@@ -197,6 +211,10 @@ func TestConcurrentSessions_PortErrors(t *testing.T) { //nolint:paralleltest // 
 				return true
 			})
 			assert.Equal(t, tc.reason, reason)
+
+			if childRow != "" && !t.Failed() {
+				fmt.Println(counterRanMarker(tc.name))
+			}
 		})
 	}
 }

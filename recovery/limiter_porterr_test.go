@@ -142,6 +142,9 @@ type limOutcome struct {
 	// siteRecords are the levels of the site's failure record.
 	siteRecords []string
 
+	// siteFull are the site's failure records in full.
+	siteFull []map[string]any
+
 	// aborts are the sanitizer's records on the site's component logger, and
 	// otherAborts those on the other component's logger.
 	aborts      []map[string]any
@@ -302,6 +305,7 @@ func runLimSite(t *testing.T, ctx context.Context, site limSite, limErr error) l
 		switch rec["msg"] {
 		case limSiteMessage(site):
 			out.siteRecords = append(out.siteRecords, rec["level"].(string))
+			out.siteFull = append(out.siteFull, rec)
 		case porterr.MsgClassificationAborted:
 			out.aborts = append(out.aborts, rec)
 		}
@@ -433,6 +437,11 @@ func TestPortErrors_Limiter(t *testing.T) { //nolint:paralleltest // it replaces
 
 		assert.NotContains(t, got.text, limPortErrSecret)
 		assert.Equal(t, []string{"ERROR"}, got.siteRecords, "one error-level failure record")
+
+		require.Len(t, got.siteFull, 1, "one failure record, in full")
+		siteRaw, err := json.Marshal(got.siteFull[0])
+		require.NoError(t, err)
+		assert.NotContains(t, string(siteRaw), limPortErrSecret, "the site's failure record quotes the error")
 	}
 
 	asOutage := func(site limSite, reason string) func(t *testing.T, plain, got limOutcome) {
@@ -551,6 +560,14 @@ func limPortErrInChild(t *testing.T, row string) {
 
 	// A child whose row name matched no case skips every row and exits 0: it
 	// proves it ran the row only by printing the marker after the row passed.
-	require.Contains(t, string(out), limPortErrRanMarker+row,
-		"the child never ran the row: its name matches no case")
+	// One whole line must equal the marker: not a substring of the output, and
+	// not a line with a suffix.
+	want := limPortErrRanMarker + row
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if strings.TrimSuffix(line, "\r") == want {
+			return
+		}
+	}
+
+	t.Fatalf("the child never ran row %q: no line equals %q; output:\n%s", row, want, out)
 }

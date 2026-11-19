@@ -6,6 +6,7 @@ package lockout_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -487,6 +488,10 @@ func TestLockoutPortErrors(t *testing.T) { //nolint:paralleltest // it replaces 
 					}
 
 					assert.Empty(t, defaults.aborts(), "none on slog.Default()")
+
+					if childRow != "" && !t.Failed() {
+						fmt.Println(lockoutPortRanMarker(row))
+					}
 				})
 			}
 		}
@@ -587,6 +592,24 @@ func TestLockoutPortErrors_DefaultLogger(t *testing.T) { //nolint:paralleltest /
 	}
 }
 
+// lockoutPortRanMarker is the line a child prints on stdout once its row has
+// run and passed.
+func lockoutPortRanMarker(row string) string { return "SCRTY-LOCKOUT-PORTERR-ROW-RAN:" + row }
+
+// requireRanLine fails unless one line of the child's combined output equals
+// marker exactly: not a substring, and not a line with a suffix.
+func requireRanLine(t *testing.T, out []byte, marker string) {
+	t.Helper()
+
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if strings.TrimSuffix(line, "\r") == marker {
+			return
+		}
+	}
+
+	t.Fatalf("the child exited 0 without running its row (no line equals %q); output:\n%s", marker, out)
+}
+
 // lockoutPortInChild re-runs the current top-level test in a child process
 // limited to row, and fails unless it exits 0 within a minute: a stack
 // overflow is fatal and only a child can watch for one.
@@ -607,4 +630,5 @@ func lockoutPortInChild(t *testing.T, row string) {
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	require.NoError(t, err, "the child failed:\n%s", strings.Join(lines[:min(len(lines), 8)], "\n"))
+	requireRanLine(t, out, lockoutPortRanMarker(row))
 }
