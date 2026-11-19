@@ -16,6 +16,7 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
@@ -281,6 +282,7 @@ func (r *Recoverer) recover(ctx context.Context, req Request) (*Result, error) {
 	ctx = context.WithoutCancel(ctx)
 
 	rid, err := r.ids.NewID()
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgIDFailed, diag.Failure("id-generator", err)...)
 
@@ -305,6 +307,7 @@ func (r *Recoverer) recover(ctx context.Context, req Request) (*Result, error) {
 
 	rec.CompletedAt = now
 	err = bounded(ctx, detach.WriteTimeout, func(c context.Context) error { return r.records.Insert(c, rec) })
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgRecordFailed, diag.Failure("record-store", err)...)
 
@@ -357,6 +360,7 @@ func (r *Recoverer) issueSession(
 	}
 
 	credential, err := r.issue(ctx, p.Session(), details)
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		level := slog.LevelError
 		if hangup.ByCaller(ctx, err) {
@@ -422,6 +426,7 @@ func (r *Recoverer) complete(ctx context.Context, c completion, now time.Time) (
 		err := bounded(ctx, detach.RevocationTimeout, func(bc context.Context) error {
 			return r.grants.RevokeUserGrants(bc, c.user, grantRevocationCause)
 		})
+		err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 		if err != nil {
 			r.logger.LogAttrs(ctx, slog.LevelError, msgGrantsFailed, diag.Failure("grant-revoker", err)...)
 			r.events.Report(ctx, event.Event{

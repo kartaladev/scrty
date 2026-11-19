@@ -423,6 +423,7 @@ func (r *Recoverer) finish(ctx context.Context, completionToken string, opts ...
 	completed, err := boundedValue(ctx, detach.WriteTimeout, func(c context.Context) (bool, error) {
 		return r.records.Complete(c, rec.ID, now)
 	})
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgRecordFailed, diag.Failure("record-store", err)...)
 
@@ -571,7 +572,9 @@ func (r *Recoverer) Cancel(ctx context.Context, cancelToken string) {
 // record store's, behind fixed text; the caller refuses the login on it,
 // which fails closed.
 func (r *Recoverer) CancelPending(ctx context.Context, user identity.UserID) error {
-	if _, err := r.records.CancelPending(ctx, user, r.clock.Now()); err != nil {
+	_, err := r.records.CancelPending(ctx, user, r.clock.Now())
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgCancelPendingFailed, diag.Failure("record-store", err)...)
 
 		return diag.Wrap(err, errTextRecordStore)

@@ -438,6 +438,16 @@ func TestPortErrors_Recover(t *testing.T) { //nolint:paralleltest // it replaces
 		)
 	}
 
+	// A cycle claiming context.Canceled, on a context the caller cancelled,
+	// is an outage: never taken for the caller having hung up.
+	for _, site := range []recSite{recLoader, recPassword} {
+		cases = append(cases, testCase{
+			name: string(site) + ": a cycle claiming context.Canceled on a cancelled context is an outage",
+			site: site, err: &recClaimCycle{claims: context.Canceled}, ctx: cancelled,
+			assert: asOutage(site, "budget"),
+		})
+	}
+
 	// A consumer's own refusal that its chain shows finite is returned as it
 	// is: the sanitizer changes nothing for it.
 	cases = append(cases, testCase{
