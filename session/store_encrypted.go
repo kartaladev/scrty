@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -177,6 +178,7 @@ func (s *encryptedStore) sealed(ctx context.Context, sess *Session, csrf bool) (
 	out := sess.clone()
 	if sess.ExternalIDToken != "" {
 		envelope, err := s.cipher.Seal(ctx, []byte(sess.ExternalIDToken), additionalData(sess.ID))
+		err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 		if err != nil {
 			return nil, diag.Wrap(err, "session: the provider ID token of the session could not be sealed")
 		}
@@ -186,6 +188,7 @@ func (s *encryptedStore) sealed(ctx context.Context, sess *Session, csrf bool) (
 	out.CSRFToken = ""
 	if csrf && sess.CSRFToken != "" {
 		envelope, err := s.cipher.Seal(ctx, []byte(sess.CSRFToken), csrfAdditionalData(sess.ID))
+		err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 		if err != nil {
 			return nil, diag.Wrap(err, "session: the CSRF token of the session could not be sealed")
 		}
@@ -201,7 +204,9 @@ func (s *encryptedStore) Create(ctx context.Context, sess *Session) error {
 		return err
 	}
 
-	return storeFailed(s.inner.Create(ctx, out), "session: the inner store could not create the session")
+	err = porterr.Sanitize(s.inner.Create(ctx, out), porterr.ErrUnwalkable)
+
+	return storeFailed(err, "session: the inner store could not create the session")
 }
 
 func (s *encryptedStore) Save(ctx context.Context, sess *Session) error {
@@ -210,7 +215,9 @@ func (s *encryptedStore) Save(ctx context.Context, sess *Session) error {
 		return err
 	}
 
-	return storeFailed(s.inner.Save(ctx, out), "session: the inner store could not save the session")
+	err = porterr.Sanitize(s.inner.Save(ctx, out), porterr.ErrUnwalkable)
+
+	return storeFailed(err, "session: the inner store could not save the session")
 }
 
 // Load opens the stored ID token and CSRF token and returns the session with
@@ -231,6 +238,7 @@ func (s *encryptedStore) Save(ctx context.Context, sess *Session) error {
 // revoked comes back.
 func (s *encryptedStore) Load(ctx context.Context, id string) (*Session, error) {
 	sess, err := s.inner.Load(ctx, id)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, storeFailed(err, "session: the inner store could not load the session")
 	}
@@ -269,6 +277,7 @@ func (s *encryptedStore) open(ctx context.Context, stored string, aad []byte, un
 	}
 
 	plaintext, err := s.cipher.Open(ctx, envelope, aad)
+	err = porterr.Sanitize(err, ErrCipherUnavailable)
 	if err != nil {
 		return "", openFailed(err, unreadable, outage)
 	}

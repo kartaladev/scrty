@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 )
@@ -169,6 +170,8 @@ func (r *sessionResolver) resolve(ex *Exchange, id string) error {
 	// admit loaded for this request has just been read, so it is not read again.
 	if details == nil {
 		details, err = r.users.LoadByUserID(ctx, s.UserID)
+		err = porterr.SanitizeTo(ctx, r.log, err, porterr.ErrUnwalkable)
+
 		if err != nil {
 			return classifyReload(ctx, err)
 		}

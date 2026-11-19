@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // ErrAlreadyCommitted refuses a Prepared.Commit after the first, whether the
@@ -194,7 +195,9 @@ func (p *Prepared) Commit(ctx context.Context) (*Session, error) {
 		return nil, ErrAlreadyCommitted
 	}
 
-	if err := p.m.store.Create(ctx, p.s); err != nil {
+	err := p.m.store.Create(ctx, p.s)
+	err = porterr.SanitizeTo(ctx, p.m.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return nil, storeFailed(err, "session: the session could not be created")
 	}
 

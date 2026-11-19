@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
@@ -380,6 +381,8 @@ func (r *sessionRenewal) user(
 		var err error
 
 		details, err = r.users.LoadByUserID(ctx, s.UserID)
+		err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
+
 		if err != nil {
 			return nil, nil, classifyReload(ctx, err)
 		}

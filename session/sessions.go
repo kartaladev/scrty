@@ -16,6 +16,7 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -400,6 +401,7 @@ func (m *Sessions) load(ctx context.Context, id string, p purpose) (*Session, er
 // text.
 func (m *Sessions) loadStored(ctx context.Context, id, text string) (*Session, error) {
 	s, err := m.store.Load(ctx, id)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, storeFailed(err, text)
 	}
@@ -461,6 +463,7 @@ func (m *Sessions) reloadSuperseded(ctx context.Context, id string, p purpose, e
 // the store's text left out.
 func (m *Sessions) markPresented(ctx context.Context, s *Session, now time.Time) error {
 	err := m.store.MarkPresented(ctx, s.ID, now)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case err == nil:
 		s.FirstPresentedAt = now
@@ -513,7 +516,9 @@ func (m *Sessions) Touch(ctx context.Context, sess *Session) error {
 	if idle.After(sess.AbsoluteExpiresAt) {
 		idle = sess.AbsoluteExpiresAt
 	}
-	if err := m.store.RecordActivity(ctx, sess.ID, now, idle, now.Add(-m.touchInterval)); err != nil {
+	err := m.store.RecordActivity(ctx, sess.ID, now, idle, now.Add(-m.touchInterval))
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return storeFailed(err, "session: the session's activity could not be saved")
 	}
 	sess.LastAccessedAt = now
@@ -527,7 +532,10 @@ func (m *Sessions) Touch(ctx context.Context, sess *Session) error {
 // one that was rotated without grace since it was loaded, which is written
 // to no more than a deleted one.
 func (m *Sessions) Save(ctx context.Context, sess *Session) error {
-	return storeFailed(m.store.Save(ctx, sess), "session: the session could not be saved")
+	err := m.store.Save(ctx, sess)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
+	return storeFailed(err, "session: the session could not be saved")
 }
 
 // Delete removes the session with this identifier, and reports EndDeleted to the end observers: one
@@ -555,7 +563,9 @@ func (m *Sessions) Delete(ctx context.Context, id string) error {
 		report.User, report.Family = s.UserID, s.FamilyID
 	}
 
-	if err := m.store.Delete(ctx, id); err != nil {
+	err = m.store.Delete(ctx, id)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return storeFailed(err, "session: the session could not be deleted")
 	}
 	m.reportEnd(ctx, report)
@@ -566,7 +576,9 @@ func (m *Sessions) Delete(ctx context.Context, id string) error {
 // DeleteByUser removes every session of this user, expired ones included: a
 // caller ending a user's sessions wants them gone, not filtered.
 func (m *Sessions) DeleteByUser(ctx context.Context, user identity.UserID) error {
-	if err := m.store.DeleteByUser(ctx, user); err != nil {
+	err := m.store.DeleteByUser(ctx, user)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return storeFailed(err, "session: the user's sessions could not be deleted")
 	}
 	m.reportEnd(ctx, EndReport{Cause: EndUserSessions, User: user})
@@ -606,6 +618,7 @@ func (m *Sessions) DeleteByUserExcept(ctx context.Context, user identity.UserID,
 	}
 
 	n, err := m.store.DeleteByUserExcept(ctx, user, keep)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return n, storeFailed(err, "session: the user's other sessions could not be deleted")
 	}
@@ -619,6 +632,7 @@ func (m *Sessions) DeleteByUserExcept(ctx context.Context, user identity.UserID,
 // counted, so a renewed sign-in counts once however often it is renewed.
 func (m *Sessions) CountActiveByUser(ctx context.Context, user identity.UserID) (int, error) {
 	n, err := m.store.CountActiveByUser(ctx, user)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return n, storeFailed(err, "session: the user's active sessions could not be counted")
 	}
@@ -629,6 +643,7 @@ func (m *Sessions) CountActiveByUser(ctx context.Context, user identity.UserID) 
 // DeleteExpired removes every expired session and reports how many went.
 func (m *Sessions) DeleteExpired(ctx context.Context) (int, error) {
 	n, err := m.store.DeleteExpired(ctx)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return n, storeFailed(err, "session: expired sessions could not be deleted")
 	}
@@ -644,6 +659,7 @@ func (m *Sessions) DeleteExpired(ctx context.Context) (int, error) {
 // error.
 func (m *Sessions) DeleteByExternalSession(ctx context.Context, issuer, sessionID string) (int, error) {
 	n, err := m.store.DeleteByExternalSession(ctx, issuer, sessionID)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return n, storeFailed(err, "session: the provider session's sessions could not be deleted")
 	}
@@ -658,6 +674,7 @@ func (m *Sessions) DeleteByExternalSession(ctx context.Context, issuer, sessionI
 // and reports how many went. An empty issuer ends nothing and is not an error.
 func (m *Sessions) DeleteByUserAndExternalIssuer(ctx context.Context, user identity.UserID, issuer string) (int, error) {
 	n, err := m.store.DeleteByUserAndExternalIssuer(ctx, user, issuer)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return n, storeFailed(err, "session: the user's sessions from the issuer could not be deleted")
 	}
@@ -709,6 +726,7 @@ func (m *Sessions) endFamily(ctx context.Context, family id.ID, report EndReport
 	}
 
 	n, err := m.store.DeleteFamily(ctx, family)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return n, storeFailed(err, "session: the family's sessions could not be deleted")
 	}
@@ -989,6 +1007,7 @@ func (m *Sessions) RotateIssuing(
 		Now:               now,
 		Strict:            true,
 	})
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, "", storeFailed(err, "session: the rotated session could not be created")
 	}

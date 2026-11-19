@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
@@ -352,6 +353,7 @@ func (e *sessionSignals) readStream(ctx context.Context, user identity.UserID, f
 	}
 
 	details, err := e.cfg.Users.LoadByUserID(ctx, user)
+	err = porterr.SanitizeTo(ctx, e.log, err, porterr.ErrUnwalkable)
 
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound):
