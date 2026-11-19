@@ -239,7 +239,16 @@ The Go maintainers have declined cycle detection in `errors` (golang/go #34957, 
 - the DPoP guard challenger;
 - the caller-hang-up check.
 
-Each of these inspects the error before or beside the lookup, so an unbounded one would hang the request before the lookup could stop it (task 10.9). Its rules are pinned, and prblm adopts the same rules for its v0.3.0 hardening, so a consumer sees one rule across both libraries.
+Each of these inspects the error before or beside the lookup, so an unbounded one would hang the request before the lookup could stop it (task 10.9).
+
+The walk also covers every read of an error returned by a consumer-supplied port in the middle of a flow, before that error becomes a refusal or a dependency failure (task 10.12). Examples: the session store, the rate limiter, the Basic authenticator, the API-key store, and the login, recovery and OIDC ports. A port is the consumer's code, but the library's guarantee is that classifying any error it is handed never hangs, crashes or panics. A store bug must not become a stuck request.
+
+Where a mid-flow read aborts, the flow takes its fail-closed branch:
+- the request is refused as a dependency failure, 500;
+- the abort is never mistaken for a not-found, a throttle or an outage;
+- one record is written under the reporting rules below.
+
+Performance: the walk replaces repeated stdlib traversals with one flatten per classification. Task 10.13 benchmarks it against `main` on typical chains, so this rule does not cost a hot path. Its rules are pinned, and prblm adopts the same rules for its v0.3.0 hardening, so a consumer sees one rule across both libraries.
 - **Order:** root first, then depth first, in the order `errors.Is` and `errors.As` visit. Each visited node's `Unwrap` is called once. A nil entry in an `Unwrap() []error` is skipped. A nil result from `Unwrap() error` ends that branch.
 - **Matching:** a node matches a target as `errors.Is` or `errors.As` would: by `==` when the target's type is comparable, by a direct type match, or by the node's own `Is` or `As` method. "First match" means first in list order, so precedence is unchanged. For a pointer or interface target, a match whose value is nil is not a match: neither a nil node nor an `As` that reports true but sets nothing.
 - **Typed nil:** a node whose dynamic value is a nil pointer (`reflect` Kind `Pointer` and `IsNil`) is skipped entirely, and none of its methods is called. Nil maps, slices, funcs and chans are not treated as nil. A typed-nil root yields an empty list. That is not an abort, so the lookup falls through to 500, unrecognised.
@@ -300,6 +309,9 @@ Each of these inspects the error before or beside the lookup, so an unbounded on
   - a chain mounted in fiber or gin also carries `WithErrorHandler`, which applies to net/http only, so the adapter's classification and the quiet site both report. |
 | Two abort reasons in one sampling window | Handled, tested (task 10.3 review) | The sampling key is per reason (`classification-aborted:budget`, `classification-aborted:panic`), so a budget abort never hides a later panic abort |
 | A hostile error recurs on every request through a path that logs to the default logger (guards, a consumer's `WithErrorHandler` calling the free functions, the gin and fiber adapters, the mapper) | Accepted, documented | The chain's own dispatch is sampled through the chain's sampler. These paths have no sampler, and adding one would mean process-global state. They write one record per aborted classification, and the consumer limits the rate in its own slog handler. The godoc says so |
+| A consumer port (store, limiter, authenticator) returns a cyclic or panicking error that the library reads mid-flow | Handled, tested (task 10.12) | The read uses the walk. On an abort the flow refuses as a dependency failure, 500, and one record is written. The abort is never mistaken for a not-found, a throttle or an outage |
+| A guard refusal behind `WithGuardErrorHandler`, whose security event or DPoP challenge aborts | Handled, tested (task 10.9 follow-up) | The consumer's guard handler replaces the guard's own classification, so the guard reports the abort itself to the default logger (guards hold no chain logger). Nothing aborts unseen |
+| A selective `Is` method that panics only for one sentinel, reached after the lookup succeeded (DPoP answer check, response-refused event switch) | Handled, tested (task 10.9 follow-up) | Uses the walk. The abort drops the extra challenge or event and is reported once |
 | Another inspection of the refused error runs before or beside the lookup, on the refusal path | Handled, tested (task 10.9) | It uses the same walk. A cyclic or panicking error can no longer hang or crash the request before the lookup's bound applies |
 | A consumer wants a larger budget or a different typed-nil rule | Accepted, documented (decision 11) | No option. A configurable bound could reopen the hang, so the rules are fixed (`library-design.md` 4). The consumer controls only where the record goes |
 | `Methods` nil vs empty | Handled, tested | Omitted vs `[]` |

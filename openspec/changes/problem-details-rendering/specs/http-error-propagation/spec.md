@@ -55,6 +55,10 @@ The status lookup and the problem-details mapper SHALL classify an error with on
 - **WHEN** a nil `*password.RejectedError` is joined ahead of the access-denied refusal
 - **THEN** the lookup returns 403 and recognised, without panicking
 
+#### Scenario: A consumer store returns a cyclic error
+- **WHEN** the consumer's session store returns an error whose chain contains itself while a bearer request is resolved
+- **THEN** the request is refused with 500 without hanging, and one error record with reason `budget` is logged
+
 #### Scenario: Challenge offered through an As method behind a typed nil
 - **WHEN** a nil `*ChallengeError` is joined ahead of an error whose own `As` method presents a challenge
 - **THEN** the lookup returns that challenge's status

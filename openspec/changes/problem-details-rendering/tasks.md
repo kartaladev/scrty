@@ -219,7 +219,7 @@
 
 ## 10. One bounded, recovering walk classifies a refusal (design decision 11)
 
-Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parallel. Then 10.10 (panic frames), then 10.9 (remaining walks) and 10.4 (mapper) in parallel. Then 10.11 (prblm v0.2.1), then 10.6 (docs), 10.7 (gate) and 10.8 (review).
+Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parallel. Then 10.10 (panic frames), then 10.9 (remaining walks) and 10.4 (mapper) in parallel. Then 10.9a (follow-up), then 10.12 (port errors, in groups) and 10.13 (benchmark). Then 10.11 (prblm v0.2.1), then 10.6 (docs), 10.7 (gate) and 10.8 (review).
 
 - [x] 10.1 `internal/errwalk`. Red: `TestFlatten` (table), with these cases:
   - order: root first, then depth first, through `Unwrap() error` and `Unwrap() []error`, each node's `Unwrap` called once;
@@ -288,6 +288,18 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
   - Green: each site checks over one `errwalk.Flatten`. Its existing order and outcome stay the same for every non-hostile error.
 
   Verify with `go test -race -count=1 ./...` in the root module.
+- [ ] 10.9a 10.9 follow-up (design decision 11 failure rows).
+  - Red, then green: `dpopAnswersChallenge` (`oidc_consents.go`) and the switch in `emitResponseRefused` (`challenge_spend.go`) use the walk. An `Is` that panics only for the sentinel each one checks no longer escapes.
+  - Red, then green: a guard refusal behind `WithGuardErrorHandler`, whose `GuardRefused` event or DPoP challenge aborts, writes exactly one record to the default logger. The test fails with 0 records first.
+  - Verify with `go test -race -count=1 ./...` in the root module.
+- [ ] 10.12 Reads of consumer-port errors mid-flow use the walk (design decision 11).
+  - Inventory first, with gopls. Find every stdlib `errors.Is`, `errors.As` or `errors.AsType` in the root module that reads an error a consumer-supplied port returned: session, identity, credential, attempt, throttle, history, recovery and OIDC stores; the authenticator; the API-key store; limiters; notifiers. Group the sites by package or flow, and report each group's size.
+  - Then work the groups in sequential dispatches of at most six sites each. For each site, the red test sends a port error that is a cycle (each `Unwrap` form) and one with a panicking `Is`. On the current code these hang, crash or panic. After the fix, the site takes its fail-closed branch: refused as a dependency failure, 500, and one record written. A non-hostile parity row pins the existing outcome.
+  - Verify each dispatch with `go test -race -count=1 ./...` in the root module.
+- [ ] 10.13 Benchmark the classification (design decision 11, performance).
+  - Add `BenchmarkLookupStatus` and `BenchmarkMapError`. Their rows are: a bare sentinel, a 5-deep wrap, a 3-way join with a challenge, an unknown error, and a 50-link chain.
+  - Run each against `main` (a `git archive` export) and against the branch, with `-count=10 -benchmem`, and compare them with `benchstat`.
+  - Report the deltas. A regression above 10% on any row is a finding: it goes back as a fix, or is recorded in design.md with its reason.
 - [ ] 10.11 Require prblm v0.2.1 (design decision 8).
   - Require `github.com/kartaladev/prblm v0.2.1` in `httpsec/prblmsec`.
   - In `test`, require it together with `adapters/ginprblm v0.2.1`. `adapters/fiberprblm` stays on v0.2.0.
