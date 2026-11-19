@@ -225,6 +225,86 @@ func peStore(t *testing.T, ctrl *gomock.Controller, cipher session.Cipher) (sess
 }
 
 func peFlows() []peFlow {
+	return append(peSealingFlows(), peForwardFlows()...)
+}
+
+// peFamilyStore is an inner store that also offers the narrowed family read.
+type peFamilyStore struct {
+	*MockStore
+	*MockFamilyReader
+}
+
+// peForwardFlows are the inner-store calls the decorator only forwards: each
+// answers a hostile error as it answers a plain outage.
+func peForwardFlows() []peFlow {
+	user := testUser
+
+	return []peFlow{
+		{name: "Delete on the inner store", unavailable: porterr.ErrUnwalkable,
+			run: func(t *testing.T, ctx context.Context, ctrl *gomock.Controller, err error) error {
+				sealing, inner := peStore(t, ctrl, NewMockCipher(ctrl))
+				inner.EXPECT().Delete(gomock.Any(), "pe-del").Return(err)
+
+				return sealing.Delete(ctx, "pe-del")
+			}},
+		{name: "DeleteByUser on the inner store", unavailable: porterr.ErrUnwalkable,
+			run: func(t *testing.T, ctx context.Context, ctrl *gomock.Controller, err error) error {
+				sealing, inner := peStore(t, ctrl, NewMockCipher(ctrl))
+				inner.EXPECT().DeleteByUser(gomock.Any(), user).Return(err)
+
+				return sealing.DeleteByUser(ctx, user)
+			}},
+		{name: "DeleteByUserExcept on the inner store", unavailable: porterr.ErrUnwalkable,
+			run: func(t *testing.T, ctx context.Context, ctrl *gomock.Controller, err error) error {
+				sealing, inner := peStore(t, ctrl, NewMockCipher(ctrl))
+				inner.EXPECT().DeleteByUserExcept(gomock.Any(), user, "keep").Return(0, err)
+
+				_, got := sealing.DeleteByUserExcept(ctx, user, "keep")
+
+				return got
+			}},
+		{name: "CountActiveByUser on the inner store", unavailable: porterr.ErrUnwalkable,
+			run: func(t *testing.T, ctx context.Context, ctrl *gomock.Controller, err error) error {
+				sealing, inner := peStore(t, ctrl, NewMockCipher(ctrl))
+				inner.EXPECT().CountActiveByUser(gomock.Any(), user).Return(0, err)
+
+				_, got := sealing.CountActiveByUser(ctx, user)
+
+				return got
+			}},
+		{name: "ListByUser on the inner store", unavailable: porterr.ErrUnwalkable,
+			run: func(t *testing.T, ctx context.Context, ctrl *gomock.Controller, err error) error {
+				sealing, inner := peStore(t, ctrl, NewMockCipher(ctrl))
+				inner.EXPECT().ListByUser(gomock.Any(), user, gomock.Any()).Return(nil, err)
+
+				_, got := sealing.ListByUser(ctx, user, createdAt)
+
+				return got
+			}},
+		{name: "ListByFamily on the inner family reader", unavailable: porterr.ErrUnwalkable,
+			run: func(t *testing.T, ctx context.Context, ctrl *gomock.Controller, err error) error {
+				inner := peFamilyStore{NewMockStore(ctrl), NewMockFamilyReader(ctrl)}
+				sealing, serr := session.NewEncryptedStore(inner, NewMockCipher(ctrl))
+				require.NoError(t, serr)
+				inner.MockFamilyReader.EXPECT().ListByFamily(gomock.Any(), user, storedFamily, gomock.Any()).Return(nil, err)
+
+				_, got := sealing.(session.FamilyReader).ListByFamily(ctx, user, storedFamily, createdAt)
+
+				return got
+			}},
+		{name: "ListByFamily through the inner listing", unavailable: porterr.ErrUnwalkable,
+			run: func(t *testing.T, ctx context.Context, ctrl *gomock.Controller, err error) error {
+				sealing, inner := peStore(t, ctrl, NewMockCipher(ctrl))
+				inner.EXPECT().ListByUser(gomock.Any(), user, gomock.Any()).Return(nil, err)
+
+				_, got := sealing.(session.FamilyReader).ListByFamily(ctx, user, storedFamily, createdAt)
+
+				return got
+			}},
+	}
+}
+
+func peSealingFlows() []peFlow {
 	return []peFlow{
 		{name: "Create on the inner store", unavailable: porterr.ErrUnwalkable,
 			run: func(t *testing.T, ctx context.Context, ctrl *gomock.Controller, err error) error {
@@ -407,5 +487,37 @@ func TestPortErrors_EncryptedStore(t *testing.T) { //nolint:paralleltest // swap
 				}
 			})
 		}
+	}
+}
+
+// TestPortErrors_EncryptedStore_ForwardedSentinels: a real sentinel from the
+// inner store still comes back as itself from every forwarded call, and a
+// hostile error never matches one.
+func TestPortErrors_EncryptedStore_ForwardedSentinels(t *testing.T) { //nolint:paralleltest // swaps slog.Default
+	sentinels := []error{
+		session.ErrNotFound, session.ErrSuperseded, session.ErrSuccessorAdvanced, session.ErrExpired,
+	}
+
+	for _, flow := range peForwardFlows() {
+		for _, sentinel := range sentinels {
+			t.Run(flow.name+"/"+sentinel.Error(), func(t *testing.T) {
+				peRecording(t)
+
+				got := peWithin(t, func() error { return flow.run(t, t.Context(), gomock.NewController(t), sentinel) })
+
+				assert.True(t, got == sentinel, "the bare sentinel comes back as itself, got %v", got) //nolint:errorlint // identity
+				assert.False(t, peWithin(t, func() bool { return errors.Is(got, porterr.ErrUnwalkable) }))
+			})
+		}
+
+		t.Run(flow.name+"/a hostile error matches no sentinel", func(t *testing.T) {
+			peRecording(t)
+
+			got := peWithin(t, func() error { return flow.run(t, t.Context(), gomock.NewController(t), &peCycleOne{}) })
+
+			for _, sentinel := range sentinels {
+				assert.False(t, peWithin(t, func() bool { return errors.Is(got, sentinel) }), "%v", sentinel)
+			}
+		})
 	}
 }

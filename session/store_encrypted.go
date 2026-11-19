@@ -306,21 +306,27 @@ func openFailed(err error, unreadable, outage string) error {
 }
 
 func (s *encryptedStore) Delete(ctx context.Context, id string) error {
-	return storeFailed(s.inner.Delete(ctx, id), "session: the inner store could not delete the session")
+	err := porterr.Sanitize(s.inner.Delete(ctx, id), porterr.ErrUnwalkable)
+
+	return storeFailed(err, "session: the inner store could not delete the session")
 }
 
 func (s *encryptedStore) DeleteByUser(ctx context.Context, user identity.UserID) error {
-	return storeFailed(s.inner.DeleteByUser(ctx, user), "session: the inner store could not delete the user's sessions")
+	err := porterr.Sanitize(s.inner.DeleteByUser(ctx, user), porterr.ErrUnwalkable)
+
+	return storeFailed(err, "session: the inner store could not delete the user's sessions")
 }
 
 func (s *encryptedStore) DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error) {
 	n, err := s.inner.DeleteByUserExcept(ctx, user, keep)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 
 	return n, storeFailed(err, "session: the inner store could not delete the user's other sessions")
 }
 
 func (s *encryptedStore) CountActiveByUser(ctx context.Context, user identity.UserID) (int, error) {
 	n, err := s.inner.CountActiveByUser(ctx, user)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 
 	return n, storeFailed(err, "session: the inner store could not count the user's active sessions")
 }
@@ -331,6 +337,7 @@ func (s *encryptedStore) CountActiveByUser(ctx context.Context, user identity.Us
 // needing a token loads the session.
 func (s *encryptedStore) ListByUser(ctx context.Context, user identity.UserID, now time.Time) ([]*Session, error) {
 	listed, err := s.inner.ListByUser(ctx, user, now)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, storeFailed(err, "session: the inner store could not list the user's sessions")
 	}
@@ -351,6 +358,7 @@ func (s *encryptedStore) ListByFamily(ctx context.Context, user identity.UserID,
 
 	if reader, ok := s.inner.(FamilyReader); ok {
 		listed, err := reader.ListByFamily(ctx, user, family, now)
+		err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 		if err != nil {
 			return nil, storeFailed(err, text)
 		}
@@ -359,6 +367,7 @@ func (s *encryptedStore) ListByFamily(ctx context.Context, user identity.UserID,
 	}
 
 	listed, err := s.inner.ListByUser(ctx, user, now)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, storeFailed(err, text)
 	}

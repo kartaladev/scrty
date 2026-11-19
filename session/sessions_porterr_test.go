@@ -593,26 +593,32 @@ func TestPortErrors_SessionsStorePort_SentinelsUnchanged(t *testing.T) {
 			)
 
 			const id = "porterr-1"
-			var got error
-			switch tc.site {
-			case "rotate_advanced":
-				store.EXPECT().Load(gomock.Any(), id).Return(liveUnpresented(id), nil).Times(1)
-				store.EXPECT().Supersede(gomock.Any(), gomock.Any()).Return(tc.err).Times(1)
-				store.EXPECT().DeleteFamily(gomock.Any(), graceFamily).Return(1, nil).Times(1)
-				_, _, got = m.RotateWithGrace(t.Context(), liveUnpresented(id), session.DefaultRenewalGrace)
-			case "rotate_hostile":
-				// No DeleteFamily is expected: a call would fail the mock.
-				store.EXPECT().Load(gomock.Any(), id).Return(liveUnpresented(id), nil).Times(1)
-				store.EXPECT().Supersede(gomock.Any(), gomock.Any()).Return(tc.err).Times(1)
-				_, _, got = m.RotateWithGrace(t.Context(), liveUnpresented(id), session.DefaultRenewalGrace)
-			case "Load":
-				store.EXPECT().Load(gomock.Any(), id).Return(nil, tc.err).Times(1)
-				_, got = m.Load(t.Context(), id)
-			default:
-				store.EXPECT().Load(gomock.Any(), id).Return(storedSession(id), nil).MinTimes(1)
-				store.EXPECT().MarkPresented(gomock.Any(), id, createdAt).Return(tc.err).Times(1)
-				_, got = m.Load(t.Context(), id)
-			}
+			// The call runs within a bound: on an unsanitized cycle the sites' own
+			// errors.Is never ends, and that must fail the row, not hang the package.
+			got := withinTwoSeconds(t, func() error {
+				var got error
+				switch tc.site {
+				case "rotate_advanced":
+					store.EXPECT().Load(gomock.Any(), id).Return(liveUnpresented(id), nil).Times(1)
+					store.EXPECT().Supersede(gomock.Any(), gomock.Any()).Return(tc.err).Times(1)
+					store.EXPECT().DeleteFamily(gomock.Any(), graceFamily).Return(1, nil).Times(1)
+					_, _, got = m.RotateWithGrace(t.Context(), liveUnpresented(id), session.DefaultRenewalGrace)
+				case "rotate_hostile":
+					// No DeleteFamily is expected: a call would fail the mock.
+					store.EXPECT().Load(gomock.Any(), id).Return(liveUnpresented(id), nil).Times(1)
+					store.EXPECT().Supersede(gomock.Any(), gomock.Any()).Return(tc.err).Times(1)
+					_, _, got = m.RotateWithGrace(t.Context(), liveUnpresented(id), session.DefaultRenewalGrace)
+				case "Load":
+					store.EXPECT().Load(gomock.Any(), id).Return(nil, tc.err).Times(1)
+					_, got = m.Load(t.Context(), id)
+				default:
+					store.EXPECT().Load(gomock.Any(), id).Return(storedSession(id), nil).MinTimes(1)
+					store.EXPECT().MarkPresented(gomock.Any(), id, createdAt).Return(tc.err).Times(1)
+					_, got = m.Load(t.Context(), id)
+				}
+
+				return got
+			})
 
 			tc.assert(t, got)
 		})
