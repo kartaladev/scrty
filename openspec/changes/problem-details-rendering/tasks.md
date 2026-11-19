@@ -217,6 +217,57 @@
 
 - [x] 9.1 A whole-branch review (Opus, fresh agent) against every requirement in this change's five spec deltas and the consumer documentation of group 7, which first enumerates how the change fails (`defensive-coding.md`). Findings go back to a fresh dispatch of the owning group. Verify that the review is clean and that 8.3 is re-run green after fixes.
 
+## 10. One bounded, recovering walk classifies a refusal (design decision 11)
+
+Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parallel. Then 10.4 (mapper), 10.6 (docs), 10.7 (gate) and 10.8 (review).
+
+- [ ] 10.1 `internal/errwalk`. Red: `TestFlatten` (table), with these cases:
+  - order: root first, then depth first, through `Unwrap() error` and `Unwrap() []error`, each node's `Unwrap` called once;
+  - a nil entry in `Unwrap() []error` is skipped and does not count; a nil from `Unwrap() error` ends the branch;
+  - a nil-pointer node (`reflect` Kind `Pointer` and `IsNil`) is skipped with none of its methods called (a counter that would panic proves it), and does not count. A nil map or slice error type is not skipped;
+  - budget: 1,000 visits succeed, the 1,001st aborts with reason `budget`, and repeats count;
+  - a self-cycle through `Unwrap() error`, a self-cycle through `Unwrap() []error`, and a cycle through `errors.Join` all abort with `budget` within a test timeout;
+  - 25 levels of `errors.Join(n, n)` abort with `budget` in under 100 ms;
+  - a panicking `Unwrap` aborts with reason `panic` and carries the recovered value.
+
+  Also `TestMatch` for the matching helpers over the list: `Is` matches by `==` when comparable or by the node's `Is` method; `As[T]` matches by type or by the node's `As` method, first in list order; a panicking `Is` or `As` aborts with `panic`. Green: implement. Verify with `go test -race -run 'TestFlatten|TestMatch' -count=1 ./internal/errwalk/`.
+- [ ] 10.2 Core lookup over the walk. Red: `TestLookupStatus_HostileChains` (table) in `httpsec`, with these cases:
+  - a self-cycle through each `Unwrap` form: `(500, false)`;
+  - a fan-out of 25 levels: `(500, false)`, promptly;
+  - a panicking `Is` method and a panicking `As` method: `(500, false)`, no escape;
+  - a nil `*password.RejectedError` joined ahead of `authorize.ErrAccessDenied`: `(403, true)`;
+  - a nil `*ChallengeError` joined ahead of an error whose `As` presents a challenge: that challenge's status;
+  - a challenge 1,000 links in is found, and one past the budget gives `(500, false)`.
+
+  The cycle and fan-out cases hang or crash before the change, so run them in a subprocess or under a timeout so that the red step is observable. Green: `LookupStatus` flattens once and classifies every check over the list. `firstChallenge` and its fallback are replaced. `StatusForError` stays `s, _ := LookupStatus(err)`. Update `TestStatusForError_ChallengeWalk`'s fallback-depth cases to the new rules. All existing lookup, agreement and inventory tests stay green. Verify with `go test -race -run 'LookupStatus|StatusForError|Challenge' -count=1 ./httpsec/`.
+- [ ] 10.3 Reporting. Red: `TestLookupStatus_AbortIsLogged`:
+  - a cyclic error looked up once through the free function writes exactly one Error record to `slog.Default()` (swapped for the test, not in parallel), with reason `budget` and no error text;
+  - a panicking `Is` writes one record with reason `panic`.
+
+  `TestChain_AbortLogsToChainLogger`: a chain built with the consumer's `WithLogger` that dispatches a cyclic error writes the record to that logger and nothing to the default. Green: an unexported lookup variant returns the abort. The chain's error dispatch logs it with the chain's logger, using `diag.PanicAttrs` for a panic. The exported functions log to `slog.Default()`. Verify with `go test -race -run 'Abort' -count=1 ./httpsec/`.
+- [ ] 10.4 Mapper over the walk. Red: extend `TestMapper_ChallengeWalk` and add `TestMapper_HostileChains` in `httpsec/prblmsec`, calling `MapError` directly:
+  - for each hostile chain in 10.2 the mapper's status agrees with `LookupStatus`: nil for the aborted ones;
+  - the typed-nil `RejectedError` case gives the access-denied problem;
+  - an aborted chain writes exactly one record, the lookup's, not a second.
+
+  Green: `firstNonNil`, the specifics loop and `ruleOf` classify over the walk's list. The mapper returns nil without walking again when the lookup reports unrecognised. Verify with `go -C httpsec/prblmsec test -race -count=1 ./...`.
+- [ ] 10.5 fibersec refusal unwrapping over the walk. Red: `TestErrorHandler_HostileChains` in `httpsec/fibersec`, with these cases:
+  - a cyclic error;
+  - a panicking `As`;
+  - a nil `*RefusalError` ahead of a real one.
+
+  Each case must reach the handler's status without hanging or panicking. Green: the `errors.As` for `*RefusalError` and `*fiber.Error` (`errors.go`) and the `errors.Is(err, nextErr)` on the refusal path (`middleware.go`) use the walk. Verify with `go -C httpsec/fibersec test -race -count=1 ./...`.
+- [ ] 10.6 Documentation. Write these:
+  - godoc of `LookupStatus` and `StatusForError`: the bound, the typed-nil skip, fail-closed and the log record, and that consumer code calling stdlib `errors.Is` or `errors.As` on the same error is not protected;
+  - prblmsec's package doc and the README section: the limit under prblm v0.2.0. A cycle hangs or dies in prblm's Describer step before the mapper runs, a panicking `As` escapes prblm's status-hint step, and gin's `Context.Error` walks the chain first;
+  - CHANGELOG `[Unreleased]`:
+    - Fixed: the status lookup no longer hangs, crashes or panics on a cyclic, fanned-out or panicking error chain, or on a typed-nil `*password.RejectedError`;
+    - Changed: a challenge offered through an `As` method behind a typed nil is now found, and a chain over 1,000 links is unrecognised.
+
+  Verify with `go doc ./httpsec LookupStatus` and `gofmt -l .`.
+- [ ] 10.7 Re-run the 8.3 gate in full, the `test` module on an idle machine.
+- [ ] 10.8 A whole-branch review (Opus, fresh agent) against decision 11 and the two new `http-error-propagation` requirements. It first enumerates how the change fails. Findings go back to a fresh dispatch of the owning task.
+
 ## Workflow follow-up
 
 - Archive with `/opsx:archive` after merge; the next lockstep release tags `httpsec/prblmsec/vX.Y.Z` (maintainer).

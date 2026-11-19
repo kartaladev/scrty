@@ -445,3 +445,197 @@
 
 - [ ] **Step 1:** Dispatch a fresh Opus reviewer with the five spec deltas, the consumer documentation (Tasks 7.1–6.4), `design.md` (its decisions and failure-mode table), and `git diff origin/main...HEAD`. It enumerates failures category by category before judging (`defensive-coding.md`), and marks claimed defects `REPRODUCED` or `UNREPRODUCED` (`defect-claims.md`).
 - [ ] **Step 2:** Send each finding to a fresh dispatch of its owning task's group, then re-run Task 8.3. Expected: the review is clean and the gate is green.
+
+---
+
+## Group 10: one bounded, recovering walk (design decision 11)
+
+**Spec for this group:** design.md decision 11 and its failure rows, and the `http-error-propagation` delta's two requirements: "Classifying an error never hangs, crashes or panics" and "An aborted classification is logged".
+
+**Constants pinned by the spec:**
+- The budget is 1,000 visited nodes. It counts the root and repeats, and the 1,001st node aborts.
+- Skipped nil interfaces and nil-pointer nodes cost nothing.
+- The typed-nil test is `reflect` Kind `Pointer` and `IsNil`.
+- The log reasons are `budget` and `panic`.
+- The log record carries no error text.
+
+**Order:**
+1. 10.1.
+2. 10.2, then 10.3 (same files). 10.5 runs in parallel with both.
+3. 10.4, after 10.2.
+4. 10.6, then 10.7, then 10.8.
+
+**Review Focus:** the five things most likely to go wrong, each pinned to a task.
+1. **One request logging twice.** The chain's dispatch and an auxiliary classification on the same request (events, guards) both call the lookup. 10.3 asserts the total count across both loggers.
+2. **A flood of records.** A hostile error recurs on every request. The chain's record goes through the chain's existing log sampler, and 10.3 asserts that a second identical abort inside the sampling window writes nothing.
+3. **fibersec classifying one refusal more than once per request.** 10.5 asserts one record per dispatch.
+4. **The mapper and the lookup disagreeing on a hostile chain**, because they walk separately. 10.4 asserts agreement case by case.
+5. **A typed nil inside an `As` method's result**, where an `As` sets its target to a nil pointer. It counts as no match, and the scan continues. 10.1's `TestMatch` covers it.
+
+### Task 10.1: `internal/errwalk`
+
+**Files:** Create `internal/errwalk/errwalk.go`. Test: `internal/errwalk/errwalk_test.go`.
+
+**Interfaces:**
+- Produces:
+  - `const Budget = 1000`.
+  - `var ErrBudget, ErrPanic error`. They never reach consumers.
+  - `type PanicError struct{ Value any }`. `Error()` is fixed text and does not include the value. `Unwrap()` returns `ErrPanic`.
+  - `type Chain []error`.
+  - `func Flatten(err error) (Chain, error)`. The returned error is nil, wraps `ErrBudget`, or is a `*PanicError`.
+  - `func Is(c Chain, target error) (bool, error)`.
+  - `func As[T error](c Chain) (T, bool, error)`.
+  - `func Reason(abort error) string`, which returns `"budget"`, `"panic"` or `""`.
+
+- [ ] **Step 1: Write the failing tests.**
+  - `TestFlatten` is a table with `assert` closures. It covers the cases in tasks.md 10.1, using these test-only fixtures:
+    - `cycleOne`, whose `Unwrap() error` returns itself;
+    - `cycleMany`, whose `Unwrap() []error` contains itself;
+    - `fanout(n)`, which is `errors.Join(f, f)` nested n levels;
+    - `bomb`, a pointer type whose every method panics, used as a typed nil to prove nothing is called;
+    - `panicUnwrap`.
+  - Budget rows: a linear chain of 1,000 nodes succeeds with `len == 1000`. One of 1,001 nodes gives `errors.Is(abort, ErrBudget)`.
+  - Cycle and fan-out rows run under a 2 s deadline. The fan-out row asserts it takes under 100 ms.
+  - `TestMatch` is a table:
+    - `Is` matches by `==` and by an `Is` method.
+    - `As` matches by type and by an `As` method, first in list order.
+    - An `As` that sets its target to a nil pointer gives no match, and the scan continues.
+    - A panicking `Is` or `As` gives a `*PanicError` carrying the panic value.
+- [ ] **Step 2: Watch it fail.** First add stubs that return zero values, so the package compiles. Then run `go test -run 'TestFlatten|TestMatch' -count=1 ./internal/errwalk/`. Expected: the order, budget and abort rows FAIL on their assertions.
+- [ ] **Step 3: Implement.**
+  - Walk with an explicit stack, not recursion, so nodes come out in list order.
+  - Count every visit.
+  - Run the reflect nil-pointer check before calling any method on a node.
+  - Wrap each `Unwrap`, `Is` and `As` call in a small helper that uses `recover`.
+- [ ] **Step 4: Run.** `go test -race -count=1 ./internal/errwalk/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `feat(errwalk): one bounded, recovering walk over an error chain`.
+
+### Task 10.2: Core lookup over the walk
+
+**Files:**
+- Modify `httpsec/errors.go`: `LookupStatus` changes, and `firstChallenge` and `findChallenge` are removed.
+- Test: `httpsec/lookup_hostile_test.go`. Also update `httpsec/challenge_walk_test.go`.
+
+**Interfaces:**
+- Consumes 10.1.
+- Produces `func lookup(err error) (status int, ok bool, abort error)`. It is unexported and never logs.
+- `LookupStatus` and `StatusForError` keep their signatures.
+
+- [ ] **Step 1: Write the failing test.** `TestLookupStatus_HostileChains` is a table with the cases in tasks.md 10.2. Each case asserts `(status, ok)`. The fixtures are test-only copies of 10.1's.
+- [ ] **Step 2: Watch it fail.**
+  - Run the cycle and fan-out rows: `go test -run 'TestLookupStatus_HostileChains' -count=1 -timeout 30s ./httpsec/`. Expected: a timeout, or `fatal error: stack overflow`.
+  - Then run the panic and typed-nil rows on their own. Expected: an escaped panic, or a wrong status.
+  - Report both outputs.
+- [ ] **Step 3: Implement.**
+  - `lookup` flattens the chain once. If the walk aborts, it returns `(500, false, abort)`.
+  - Otherwise it runs every existing check, in the same order, using `errwalk.Is` and `errwalk.As` over the chain.
+  - A match call that aborts is handled the same way.
+  - `LookupStatus` calls `lookup`. The logging is added in 10.3.
+- [ ] **Step 4: Update `TestStatusForError_ChallengeWalk`.** Its rows for a challenge behind a typed nil, at increasing depth, now find the challenge, so replace them with rows at the 1,000 and 1,001 budget boundary.
+- [ ] **Step 5: Run.** `go test -race -run 'LookupStatus|StatusForError|Challenge' -count=1 ./httpsec/`, then `go test -race -count=1 ./httpsec/...`. Expected: PASS, with the agreement and inventory tests unchanged.
+- [ ] **Step 6: Commit** together with 10.3.
+
+### Task 10.3: Reporting an aborted classification
+
+**Files:**
+- Modify `httpsec/errors.go` (`LookupStatus`) and `httpsec/nethttp.go` (`handleError`).
+- Modify every other in-package caller of `StatusForError` and `LookupStatus`.
+- Test: `httpsec/lookup_abort_log_test.go`.
+
+**Interfaces:**
+- Consumes `lookup` from 10.2.
+- Produces the constant `msgClassificationAborted = "httpsec: error classification aborted"` and the attribute key `reason`.
+
+- [ ] **Step 1: Inventory the callers.** Find them with gopls references, and classify each one:
+  - **dispatch** callers set the response status: the default branch of `handleError`, and `refuse` in `guards.go`;
+  - **auxiliary** callers classify for their own purposes: events, signals, basic, oidc_consents.
+
+  Report the list.
+- [ ] **Step 2: Write the failing tests.**
+  - `TestLookupStatus_AbortIsLogged` must not run in parallel, because it swaps `slog.Default()` for a recording handler.
+    - A cyclic error writes exactly one Error record with `reason=budget`, and the record does not contain the fixture's error text.
+    - A panicking `Is` writes one record with `reason=panic`.
+  - `TestChain_AbortLogsToChainLogger` builds a chain with `WithLogger(recording)`, and an interceptor returns a cyclic error through the default error handler. It asserts:
+    - the response is 500;
+    - exactly 1 record goes to the chain logger and 0 to the default;
+    - a second identical request inside the sampling window adds no record.
+- [ ] **Step 3: Watch it fail.** `go test -run 'Abort' -count=1 ./httpsec/`. Expected: FAIL, with 0 records.
+- [ ] **Step 4: Implement.**
+  - `LookupStatus` logs to `slog.Default()` when the lookup aborts. For a `*errwalk.PanicError`, the record carries `diag.PanicAttrs(v)`.
+  - Dispatch sites call `lookup`. They log through the chain's logger with `logSampled`, under the key `classification-aborted`. Guards have no chain logger, so they log to the default.
+  - Auxiliary sites call `lookup` and ignore the abort, so one request writes one record.
+- [ ] **Step 5: Run.** `go test -race -count=1 ./httpsec/...`. Expected: PASS.
+- [ ] **Step 6: Commit 10.2 and 10.3.** `fix(httpsec): classifying an error never hangs, crashes or panics`.
+
+### Task 10.4: Mapper over the walk
+
+**Files:**
+- Modify `httpsec/prblmsec/mapper.go`: `mapError`, the specifics loop and `ruleOf` change, and `firstNonNil` and `walk` are removed.
+- Test: `httpsec/prblmsec/hostile_test.go`. Also update `challenge_walk_test.go`.
+
+**Interfaces:** consumes 10.1, plus `httpsec.LookupStatus` as changed by 10.2 and 10.3.
+
+- [ ] **Step 1: Write the failing test.** `TestMapper_HostileChains` is a table that calls `p.Mapper().MapError(t.Context(), err)` directly, never through `prblm.Respond`. It asserts:
+  - the problem's status equals `httpsec.LookupStatus(err)`, and the problem is nil when `ok` is false;
+  - a typed-nil `RejectedError` joined ahead of access-denied gives the type `.../security/access-denied`;
+  - an aborted chain writes exactly one record, with `slog.Default()` swapped. This case must not run in parallel.
+- [ ] **Step 2: Watch it fail.** `go -C httpsec/prblmsec test -run TestMapper_HostileChains -count=1 -timeout 30s ./...`. Expected: the typed-nil case fails with an escaped panic, or the lookup and the mapper disagree. Report the output.
+- [ ] **Step 3: Implement.**
+  - `mapError` returns nil immediately when `LookupStatus` reports `ok == false`, so it never walks a chain that aborted.
+  - Otherwise it flattens the chain once and runs every selector over it, using `errwalk.Is` and `errwalk.As`.
+  - `ruleOf` tries `password.RejectedError` by value, then by pointer, through `errwalk.As`.
+  - If this second walk aborts, which only a nondeterministic error can cause, the mapper returns nil and logs nothing.
+- [ ] **Step 4: Run.** `go -C httpsec/prblmsec test -race -count=1 ./...` and `go -C test test -race -run TestProblemParity -count=1 ./`. Expected: PASS.
+- [ ] **Step 5: Commit.** `fix(prblmsec): the mapper classifies with the core's bounded walk`.
+
+### Task 10.5: fibersec refusal unwrapping
+
+**Files:**
+- Modify `httpsec/fibersec/errors.go` (the `errors.As` at about line 74) and `httpsec/fibersec/middleware.go` (the `errors.Is(err, nextErr)` at about line 163).
+- Test: `httpsec/fibersec/hostile_test.go`.
+
+**Interfaces:** consumes 10.1 and `httpsec.StatusForError`. It must not depend on unexported names from 10.3.
+
+- [ ] **Step 1: Write the failing test.** `TestErrorHandler_HostileChains` is a table that runs a fiber app with the chain mounted and `ErrorHandler` installed. Cases:
+  - a cyclic error gives 500;
+  - a panicking `As` gives 500;
+  - a typed-nil `*RefusalError` joined ahead of a real one gives the real one's status.
+
+  Every case also asserts no hang (a 2 s deadline) and no panic. With `slog.Default()` swapped, one dispatch writes at most one record.
+- [ ] **Step 2: Watch it fail.** `go -C httpsec/fibersec test -run TestErrorHandler_HostileChains -count=1 -timeout 30s ./...`. Expected: a hang, a fatal error or a panic on the hostile rows. Report it.
+- [ ] **Step 3: Implement.**
+  - Replace those two calls with `errwalk.As` and `errwalk.Is` over a single `Flatten`.
+  - If the walk aborts, answer `fiber.StatusInternalServerError`.
+  - If a refusal would be classified more than once per dispatch, carry the status computed at refusal time in `RefusalError`, so the handler does not classify it again.
+- [ ] **Step 4: Run.** `go -C httpsec/fibersec test -race -count=1 ./...`. Expected: PASS.
+- [ ] **Step 5: Commit.** `fix(fibersec): refusal unwrapping uses the bounded walk`.
+
+### Task 10.6: Documentation
+
+**Files:**
+- `httpsec/errors.go`: the godoc of `LookupStatus` and `StatusForError`.
+- `httpsec/prblmsec/doc.go`.
+- `README.md`: the prblmsec section.
+- `CHANGELOG.md`: `[Unreleased]`.
+
+- [ ] **Step 1: Write the text** that tasks.md 10.6 names.
+  - Write plain prose. Do not name internal packages; in particular, no `errwalk` in public godoc.
+  - The prblm limit names v0.2.0, and says that v0.2.1 recovers prblm's status-hint step.
+  - CHANGELOG, Fixed: the hang, the crash, the panic, and the typed-nil `RejectedError`.
+  - CHANGELOG, Changed: a challenge offered through an `As` method behind a typed nil is now found. A chain of more than 1,000 links is unrecognised, and the abort is logged.
+- [ ] **Step 2: Verify.**
+  - `go doc ./httpsec LookupStatus` shows the bound and the fail-closed rule.
+  - `gofmt -l .` and `go vet ./...` are clean.
+- [ ] **Step 3: Commit.** `docs: the bounded classification and the prblm v0.2.0 limit`.
+
+### Task 10.7: Gate
+
+- [ ] **Step 1:** Re-run Task 8.3's commands, with the `test` module run alone on an idle machine. Expected:
+  - every module passes vet and `test -race`;
+  - gofmt and `go work sync` are clean;
+  - govulncheck reports only the known GO-2026-5932, which nothing calls.
+
+### Task 10.8: Whole-branch review
+
+- [ ] **Step 1:** Dispatch a fresh Opus reviewer. Give it decision 11, its failure rows, the two new requirements, and the branch diff against `main`. It enumerates how the change can fail before judging, and labels every claim REPRODUCED or UNREPRODUCED.
+- [ ] **Step 2:** Send each finding to a fresh dispatch of the task that owns it, then re-run 10.7. Expected: the review is clean.

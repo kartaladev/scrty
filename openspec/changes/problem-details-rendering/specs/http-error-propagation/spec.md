@@ -36,6 +36,40 @@ Whenever the chain refuses with a challenge error that carries an access token, 
 - **WHEN** a consumer middleware sets `Cache-Control: public, max-age=300` before the chain, and a refusal carries a challenge error with no token
 - **THEN** the response keeps `Cache-Control: public, max-age=300`
 
+### Requirement: Classifying an error never hangs, crashes or panics
+The status lookup and the problem-details mapper SHALL classify an error with one walk, in `errors.Is` order. The walk SHALL skip a nil-pointer link without calling its methods, stop after 1,000 visited links counting repeats, and recover a panic from a link's `Unwrap`, `Is` or `As` method. A walk that stops for its budget or a panic SHALL give status 500, unrecognised.
+
+#### Scenario: Cyclic chain
+- **WHEN** an error's chain contains itself, through `Unwrap() error` or through `Unwrap() []error`
+- **THEN** the lookup returns 500 and unrecognised, without hanging or overflowing the stack, and one error record with reason `budget` is logged
+
+#### Scenario: Fan-out chain
+- **WHEN** an error is 25 levels of an error joined with itself, with no cycle
+- **THEN** the lookup returns 500 and unrecognised promptly, and one error record with reason `budget` is logged
+
+#### Scenario: A link's method panics
+- **WHEN** a link in the chain has an `Is` or `As` method that panics
+- **THEN** the lookup returns 500 and unrecognised, the panic does not escape, and one error record with reason `panic` is logged
+
+#### Scenario: Typed nil ahead of a refusal
+- **WHEN** a nil `*password.RejectedError` is joined ahead of the access-denied refusal
+- **THEN** the lookup returns 403 and recognised, without panicking
+
+#### Scenario: Challenge offered through an As method behind a typed nil
+- **WHEN** a nil `*ChallengeError` is joined ahead of an error whose own `As` method presents a challenge
+- **THEN** the lookup returns that challenge's status
+
+### Requirement: An aborted classification is logged
+When classifying an error stops for its budget or for a panic, the library SHALL log one error record for that error. The record SHALL carry the reason (`budget` or `panic`) and SHALL NOT carry the error's text. It SHALL go to the chain's logger where the caller holds one, and otherwise to the process default logger.
+
+#### Scenario: One record per aborted error
+- **WHEN** a cyclic error is classified once
+- **THEN** exactly one error record with reason `budget` is logged, and it does not contain the error's text
+
+#### Scenario: Consumer chooses the logger
+- **WHEN** a chain configured with the consumer's own logger classifies a cyclic error during its error dispatch
+- **THEN** the error record is written to the consumer's logger, not to the process default
+
 ## MODIFIED Requirements
 
 ### Requirement: Refusals propagate as errors, unrendered

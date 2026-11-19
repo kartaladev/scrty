@@ -217,6 +217,44 @@ Consumers learn scrty from three places, and the module is documented in each:
 | A refusal of another status on an unrouted path | Handled, tested | Unaffected: only the 404 was ever sent early |
 | A gin guard used globally, refusing 404 on an unrouted path (a consumer authorizer returning a 404-mapped sentinel) | Accepted, documented | Guards do not take the option, so the 404 is committed with an empty body, which fails closed as on net/http. `WithGuardErrorHandler` renders guard refusals directly. A guard option is not worth its API cost |
 
+### 11. One bounded, recovering walk classifies a refusal
+
+Before this decision, the core lookup and the mapper classified an error with stdlib `errors.Is` and `errors.As`, about 80 full chain walks for one unrecognised error, plus a nil-skipping fallback. The stdlib calls have no bound and no recovery. On a consumer-built error that misbehaves, they fail in ways the library cannot stop:
+- a cycle through `Unwrap() error` loops forever;
+- a cycle through `Unwrap() []error` overflows the stack, a fatal error that `recover` cannot catch;
+- a join that fans out costs seconds with no cycle at all: 25 levels of `errors.Join(n, n)` took 4.25 s in prblm's probe;
+- an error's own `Is` or `As` method may panic;
+- a typed nil makes `errors.As` stop on it, and makes a value-receiver `Is` panic (`password.RejectedError`).
+
+The Go maintainers have declined cycle detection in `errors` (golang/go #34957, #40589, #70746), so the library has to protect its own classification.
+
+**Decision.** A single walker in `internal/errwalk` flattens the chain once. The core lookup (`LookupStatus`, `StatusForError`), the prblmsec mapper and fibersec's refusal unwrapping all classify by scanning that one list, so they cannot disagree. Its rules are pinned, and prblm adopts the same rules for its v0.3.0 hardening, so a consumer sees one rule across both libraries.
+- **Order:** root first, then depth first, the order `errors.Is` and `errors.As` visit. Each node's `Unwrap` is called once. A nil entry in an `Unwrap() []error` is skipped and costs nothing. A nil result from `Unwrap() error` ends that branch.
+- **Matching:** a node matches a target as `errors.Is` or `errors.As` would: by `==` when comparable, a direct type match, or its own `Is` or `As` method. "First match" means first in list order, so precedence is unchanged.
+- **Typed nil:** a node whose dynamic value is a nil pointer (`reflect` Kind `Pointer` and `IsNil`) is skipped entirely. None of its methods is called, and it costs nothing. Nil maps, slices, funcs and chans are not treated as nil.
+- **Budget:** each node appended to the list counts 1, the root and repeats included. Appending the 1,001st node aborts the walk. The count is taken when a node is visited, before any of its methods is called.
+- **Panic:** a panic in a node's `Unwrap`, `Is` or `As` call, made during the walk, is recovered and aborts the walk.
+- **Abort outcome:** both aborts (budget, panic) fail closed. The lookup answers 500, unrecognised (`ok == false`). The mapper, which starts from the lookup, then returns nil, as for any unrecognised error, and prblm answers with its own 500. The mapper never walks the chain again after the lookup aborted, so it adds no second record. Nothing guesses what an unreached or panicking link would have said.
+- **Reporting:** one Error-level slog record per aborted classification, with a constant message, a `reason` attribute (`panic` or `budget`) and, for a panic, the redacted panic attributes (`diag.PanicAttrs`). The walker reports the abort to its caller and never logs by itself. A caller that holds the chain's logger (the chain's error dispatch, session signals) logs there. The free functions `LookupStatus` and `StatusForError`, the prblmsec mapper and the gin and fiber adapters log to `slog.Default()`. The reasons are internal, not exported.
+
+**Default and override.** The rules have no options. The bound and the fail-closed outcome are a guarantee, not a preference, and a consumer who could raise the budget could reopen the hang (`library-design.md` 4). The consumer controls where the record goes, through the chain's `WithLogger` or `slog.SetDefault`.
+
+**What it changes against `main`:**
+- A challenge more than 1,000 links deep is no longer found. That is an unrealistic chain.
+- A typed nil whose methods are nil-safe and meaningful is ignored, where stdlib would honour it. The library builds no such error.
+- A challenge offered through an `As` method behind a typed nil is now found, because the walk keeps going past the nil.
+- A typed-nil `*password.RejectedError` no longer panics the lookup. It is skipped, and the rest of the chain decides.
+
+**The line scrty cannot cross.** The walker protects scrty's own classification only.
+- Consumer code that calls stdlib `errors.Is` or `errors.As` on the same error still sees the typed nil, and still hangs or panics. The hardened lookup and stdlib-based code can therefore disagree about one error.
+- prblm v0.2.0 walks the error itself, before or outside the scrty mapper. Its Describer step hangs or dies on a cycle before the mapper runs. A panicking `As` method escapes `Respond` from its status-hint step. gin's own `Context.Error` and fiberprblm's hint walk the chain too.
+- prblm v0.2.1 recovers the status-hint step, and v0.3.0 is to adopt this walker's rules. Until then, the godoc and README state the limit.
+
+**Alternatives.**
+- A depth limit only: rejected, because it does not stop fan-out.
+- Skipping a panicking link and continuing: rejected. The skipped link may be the one that decided precedence, a concealed lock for example, so the answer could reveal what concealment hides.
+- A new exported `ClassifyError(err) (status, ok, fault)`: rejected for now. It adds public API, and every adapter would have to change to call it.
+
 ### Failure modes
 
 | Failure | State | Outcome |
@@ -225,13 +263,14 @@ Consumers learn scrty from three places, and the module is documented in each:
 | Recognised dependency failure wrapping a driver error (`53300`) | Handled, tested | 500 `about:blank`, not the driver mapper's status |
 | Concealed lock / user-store outage | Handled, tested | Byte-identical to a wrong password |
 | Challenge wrapping a sentinel | Handled, tested | Challenge's type and status |
-| Typed-nil `*ChallengeError` in the chain | Handled, tested | Treated as no challenge: no members, no panic. Status is still `LookupStatus`'s. A real challenge joined behind it is still found |
-| An error presents itself as a `*ChallengeError` only through its own `As(any) bool` method | Handled, tested (task 2.6, whole-branch review finding) | Recognised as that challenge, as `errors.As` recognises it on `main`: its status, type and members. The core's lookup and the mapper both try `errors.As` first and keep a non-nil result, then fall back to the walk that steps over a typed-nil challenge. The nil-skipping walk must not drop what `errors.As` finds |
-| A challenge deeper than 100 levels | Handled, tested (task 2.6) | Reached through `errors.As`, it is found at any depth, as on `main`. The nil-skipping fallback, which runs only when `errors.As` stops on a typed nil, stops above depth 100 and reports no challenge, so the rest of the chain decides the status (usually 500, fail closed) |
-| A challenge offered only through an `As` method and joined behind a typed-nil `*ChallengeError` | Accepted, tested (task 2.6) | `errors.As` stops on the typed nil, and the fallback follows `Unwrap` only, so that challenge is not found. The rest of the chain decides: another challenge or refusal in it, else 500, a refusal that leaks nothing. Both walks agree. On `main` the same chain panicked. Closing it would mean re-implementing `As` dispatch in the fallback for an error shape nothing in the library builds |
-| A cyclic error chain | Accepted | `errors.Is` and `errors.As` have no depth bound. A cycle through `Unwrap() error` makes the lookup loop forever. A cycle through `Unwrap() []error` overflows the stack, a fatal error that ends the process. Both happen on `main` too, and in every caller of the standard library. Only the fallback walk is bounded. A cyclic chain is a consumer bug, and the library cannot detect one without re-implementing the standard library's unwrapping |
-| A typed-nil `*password.RejectedError` in the chain (whole-branch review) | Accepted, out of scope | `RejectedError.Is` has a value receiver, so any `errors.Is` on the chain calls it through the nil pointer and panics before its body runs: `StatusForError`, `LookupStatus` and the consumer's own `errors.Is` alike, as on `main`. Only consumer code builds one; the library returns `RejectedError` by value. The only real fix is pointer receivers, a breaking change to the password package's public API (a value-target `errors.As` would then panic), so it is decided in its own change, not here |
-| An error's `As` method panics | Accepted | Not recovered, as `errors.As` does not recover it. On net/http the panic reaches the server's recovery; prblm contains a panic inside a mapper |
+| Typed-nil pointer in the chain (`*ChallengeError`, `*password.RejectedError`, any type) | Handled, tested (decision 11) | The walker skips the node entirely and calls none of its methods, so a value-receiver `Is` cannot panic. The rest of the chain decides: a real challenge or refusal joined behind it is found. Consumer code calling stdlib `errors.As` on the same error still sees the nil |
+| An error presents itself as a `*ChallengeError` only through its own `As(any) bool` method | Handled, tested (decision 11) | Recognised as that challenge, as `errors.As` recognises it: its status, type and members. This also holds when it is joined behind a typed nil, because the walker keeps going past the nil |
+| A challenge more than 1,000 links into the chain | Handled, tested (decision 11) | The walk's budget runs out. The classification fails closed with 500, unrecognised, and is reported with reason `budget`. Legitimate chains are far below the budget |
+| A cyclic error chain, through `Unwrap() error` or `Unwrap() []error` | Handled, tested (decision 11) | The budget stops the walk at 1,001 visited links: no hang, no stack overflow. The result is 500, unrecognised, reported with reason `budget`. prblm v0.2.0's own walks still hang or die on the same error before the scrty mapper runs, and so does consumer code calling stdlib. Documented as the line scrty cannot cross |
+| A join that fans out (`errors.Join(n, n)` nested) with no cycle | Handled, tested (decision 11) | The budget counts repeats, so the walk stops after 1,000 visits instead of 2^depth. The result is 500, unrecognised, reported with reason `budget` |
+| An error's own `Unwrap`, `Is` or `As` method panics during the walk | Handled, tested (decision 11) | Recovered. The classification aborts and fails closed with 500, unrecognised, and is reported with reason `panic` and the redacted panic attributes. It never guesses what the panicking link would have said. Under prblm v0.2.0 a panicking `As` method still escapes `Respond` from prblm's own status-hint step; v0.2.1 recovers it |
+| An aborted classification nobody can see | Handled, tested (decision 11) | One Error-level slog record per abort, to the chain's logger where the caller holds it, else `slog.Default()`. The record carries a constant message and the reason, and never the error text |
+| A consumer wants a larger budget or a different typed-nil rule | Accepted, documented (decision 11) | No option. A configurable bound could reopen the hang, so the rules are fixed (`library-design.md` 4). The consumer controls only where the record goes |
 | `Methods` nil vs empty | Handled, tested | Omitted vs `[]` |
 | `Window <= 0`, or a rejection without `RejectedError` | Handled, tested | `max_age` / `rule` omitted |
 | Token present without `TokenType` (consumer-built) | Handled, tested | `access_token` only |
@@ -325,3 +364,26 @@ Otherwise reasoned from scrty's own settled `framework-adapters` spec, and from 
 
 **Researched** (2026-11-18; live figures drift):
 - [kartaladev/prblm repository metadata](https://github.com/kartaladev/prblm): MIT, tags `v0.1.0` and `v0.2.0`, 0 stars, last push 2026-11-18. The core `go.mod` has no requirements.
+
+### Decision 11: one bounded, recovering walk
+
+**Researched** (2026-11-19):
+- [golang/go #34957](https://github.com/golang/go/issues/34957), [#40589](https://github.com/golang/go/issues/40589) and [#70746](https://github.com/golang/go/issues/70746), opened and read by the prblm research session: all closed. The maintainers place cycle detection outside the `errors` package, so a library that must not hang protects its own walk.
+- Go 1.27.4 `src/errors/wrap.go`, read from the toolchain: `Is` and `As` loop over `Unwrap() error` and recurse over `Unwrap() []error`, with no cycle check, no bound and no `recover`.
+- kartaladev/prblm v0.2.0 (`handler.go`, `builtins.go`, `panic.go`, `respond.go`), read from the module cache and probed by the prblm research session. Every outcome was reproduced with a named probe test.
+  - The handler runs its Describer, mapper, built-in and status-hint steps in that order. Every chain walk in it is unbounded.
+  - A cycle hangs or overflows the stack in the first step.
+  - A panicking `As` method escapes from the status-hint step.
+  - A typed nil yields a wrong 500 or 413.
+  - 25 levels of `errors.Join(n, n)` take 4.25 s.
+- prblm maintainer decisions relayed by the prblm session (2026-11-19):
+  - v0.2.1 recovers the status-hint step and arms `Recover`'s fallback before its broken-connection check, in the core and in `adapters/ginprblm`.
+  - v0.3.0 adopts the same walker rules as this decision: the 1,000-link budget counting repeats, typed-nil skip by `reflect` Kind `Pointer` and `IsNil`, recover-and-fail-closed only around the error's own methods, and one report per error.
+- github.com/pkg/errors v0.9.1 `errors.go:275-288`, read by the prblm research session: `Cause` loops with no bound. This is established practice that leaves the guard to the caller.
+
+**Primary documentation:**
+- [Go `errors` package](https://pkg.go.dev/errors): how `Is` and `As` walk the tree, and when `As` panics.
+- [Go spec, Method sets](https://go.dev/ref/spec#Method_sets): calling a value-receiver method through a nil pointer dereferences it.
+- [Go `reflect` package](https://pkg.go.dev/reflect): `Kind`, `Pointer` and `IsNil`, the typed-nil test.
+
+Otherwise reasoned from scrty's settled `http-error-propagation` and `diagnostic-redaction` specs and the repository's existing panic-reporting pattern (`diag.PanicAttrs`).
