@@ -10,7 +10,7 @@
 - **gin.** `ginsec.Middleware` gains a variadic `WithRefusalsRendered()` option, so an error middleware that writes immediately can render the chain's own 404s on paths gin has no route for. `ginprblm` defers the header and renders them with or without it (design decision 10, finding of 2026-11-18).
 - **Parity.** The test module checks that net/http, gin (`ginprblm`) and fiber (`fiberprblm`) all render the same problem.
 
-**Tech Stack:** Go 1.27, prblm v0.2.0 (`ginprblm` and `fiberprblm` v0.2.0 in tests only), testify, gin v1.12, fiber v3.
+**Tech Stack:** Go 1.27, prblm v0.3.0 (`ginprblm` and `fiberprblm` v0.3.0 in tests only; task 10.11 moves the pins from v0.2.x), testify, gin v1.12, fiber v3.
 
 **Spec:** `openspec/changes/problem-details-rendering/` (`proposal.md`, `design.md`, `specs/*/spec.md`, `tasks.md`). Executors read the design's decisions and failure-mode table along with this plan.
 
@@ -819,11 +819,46 @@ Steps:
   - Watch the hostile rows hang, crash or panic before the fix.
 - [ ] **Step 6 (each call-site dispatch): run** `go test -race -count=1 ./...` in each module the dispatch touches. Review, then commit per group: `fix: <group> port errors are sanitized at the boundary`.
 
+### Task 10.15: A generator that answers the nil identifier is a failing dependency (design decision 13)
+
+**Spec for this task:** design.md decision 13 and its four failure rows; the `http-error-propagation` delta's requirement "A generator that answers the nil identifier is a failing dependency".
+
+**Order:** after 10.12 has landed in the packages a lane touches, and before 10.14's lanes (never two agents in one package). Lane a first; lanes b to h then run in parallel by package.
+
+**Interfaces (lane a produces; every other lane consumes):**
+- `internal/idgen`: `func New(g id.Generator) (id.ID, error)` and `var ErrNil = errors.New("the identifier generator returned the nil identifier")` (fixed text, no consumer data).
+  - The generator's error comes back unchanged, whatever the identifier.
+  - No error and `id.Nil` gives `ErrNil`.
+  - Otherwise the identifier comes back with a nil error.
+  - It writes no record and recovers no panic.
+
+**Review Focus for this task:**
+1. **A generator answering the nil identifier at the OpenID Provider's grant family.** Expect `server_error`, with no grant and no code stored, never one family shared by two grants. Lane b pins it (row `nil family`).
+2. **A store backend asked to insert under the nil identifier.** Expect an error and no row. Lanes f to h pin it per backend, against a real database.
+3. **A generator returning an error and the nil identifier together.** Expect the generator's own error, not `ErrNil`, so the 10.12 sanitizer still sees the consumer's error. Lane a pins it (row `error with nil id`).
+4. **A nil generator given to `passkey`'s option.** Expect `passkey`'s `ErrConfig`, whose text names the option. Lane e pins it.
+5. **The two sites that already refuse.** Expect them unchanged: the session family's configuration error and TOTP's own refusal. A row each pins them (lanes c and d).
+
+- [ ] **Step 1 (lane a, Sonnet): write the failing test.** `TestNew` in `internal/idgen/idgen_test.go`, a table in the `assert`-closure form, with rows:
+  - `nil id` (`ErrNil`);
+  - `good id` (the id, nil error);
+  - `error with nil id` and `error with good id` (the generator's error, `errors.Is` holds, `ErrNil` does not match).
+- [ ] **Step 2: watch it fail.** Add a stub `New` that returns `g.NewID()` so the test compiles. Run `go test -count=1 -run TestNew ./internal/idgen/`. Expected: FAIL on `nil id` (nil error returned).
+- [ ] **Step 3: implement** `New` and `ErrNil`, and write the godoc naming the contract it enforces. Run green. Verify, then a Sonnet review, the isolation check, and commit: `feat(idgen): refuse a generator's nil identifier`.
+- [ ] **Step 4 (lanes b to h): one dispatch per lane, at most six sites each.** Per site, write the red row first, in the package's existing test style. A generator mock answers `(id.Nil, nil)`: today the site stores under the nil identifier (or, at the grant family, two grants share one family). After the fix the site answers its failing-generator outcome, with nothing stored. A good-identifier row pins the old outcome. Then replace `g.NewID()` with `idgen.New(g)`, keeping the 10.12 sanitizer right after the call. Lanes:
+  - **b** (Opus reviewer) `oidcprovider`: `code.go` grant family (pins Review Focus 1), `accesstoken.go`, `pending.go`, `idtoken.go`.
+  - **c** `authenticate`: `password.go`, `jwt.go`; `authenticate/apikey`: `keys.go`; `authenticate/oidc`: `broker_provision.go`, `handoff.go`; plus a row pinning `session/prepared.go`'s configuration error (Review Focus 5).
+  - **d** `recovery`: `recover_complete.go`; `token/onetime`: `tokens.go`; plus a row pinning `authenticate/mfa/totp.go`'s refusal (Review Focus 5).
+  - **e** `authenticate/passkey`: `register.go`, and the generator option refuses nil with `ErrConfig` (red: a nil generator builds today; pins Review Focus 4).
+  - **f** `store/sqlstore`, **g** `store/pgxstore`, **h** `store/gormstore`: 16 sites each (flows, identity and grants, recovery codes, consent, assertion ids, browser sessions, clients, passkey handles, attempts, password history, MFA enrolment, sessions, signing keys). Each backend's red rows run against its existing testcontainers helper (`use-testcontainers`) and assert the row count is unchanged (Review Focus 2). Each backend is one lane, split into dispatches of at most six sites, run in order.
+- [ ] **Step 5 (each dispatch): watch the red rows fail, implement, run green.** Run `go test -race -p 2 -count=1` on the dispatch's packages, in their own module. Then a Sonnet review (Opus for lane b), the isolation check, and commit: `fix(<pkg>): refuse a generator's nil identifier`.
+- [ ] **Step 6: close the task.** `rg -n 'NewID\(\)' --glob '!**/*_test.go' --glob '!.claude/**'` lists only `internal/idgen`, `session/prepared.go`, `authenticate/mfa/totp.go` and the generators themselves. Tick 10.15.
+
 ### Task 10.14: Records land where the consumer configured (design decision 12)
 
 **Spec for this task:** design.md decision 12 and its failure rows; the `http-error-propagation` delta's requirements "A component's records go where the consumer configured" and "A nil logger option is a configuration error"; the `password-policy` delta (breach logger) and the `email-notification` delta (delivery-failure records).
 
-**Order:** after every 10.12 call-site dispatch has landed in the packages a lane touches (never two agents in one package). Lane a first. Lanes b to f then run in parallel by package. Each lane is split into dispatches of at most six components, run in order, each with a fresh agent.
+**Order:** after every 10.12 call-site dispatch and every 10.15 dispatch has landed in the packages a lane touches (never two agents in one package). Lane a first. Lanes b to f then run in parallel by package. Each lane is split into dispatches of at most six components, run in order, each with a fresh agent.
 
 **Interfaces (lane a produces; every other lane consumes):**
 - `ctxlog.Routing() *slog.Logger` returns a new routing logger. Its handler resolves per record: `From(ctx)` when that is non-nil and not itself a routing logger, else `slog.Default()` at that moment. `WithAttrs` and `WithGroup` are recorded and replayed onto the resolved handler. Each routing logger keeps the last logger it resolved for a record with a request context (`atomic.Pointer[slog.Logger]`).
@@ -914,22 +949,26 @@ Steps:
   - Expected: allocations are no higher than the baseline on the short rows.
   - A remaining time regression above 10% goes back to the main session, with a profile.
 - [ ] **Step 5: Run** all suites and lint. Review, then commit: `perf(errwalk): flatten into a caller buffer`.
-### Task 10.11: Require prblm v0.2.1
+### Task 10.11: Require prblm v0.3.0 and take the open Dependabot bumps
 
-**Files:** `httpsec/prblmsec/go.mod` and `go.sum`, `test/go.mod` and `go.sum`, `go.work.sum`, `test/problem_parity_test.go`.
+**Spec for this task:** design.md decision 8 (revised 2026-11-20) and the failure rows that name prblm v0.3.0.
 
-- [ ] **Step 1: Write the failing test.**
-  - Add a `TestProblemParity` case where the route returns an error whose `As` panics.
-  - With prblmsec registered, net/http and gin answer 500 `application/problem+json`, with no panic past the server.
-  - fiber gets the same answer, because fibersec's own walk aborts first.
-- [ ] **Step 2: Watch it fail on v0.2.0.** Run `go -C test test -run TestProblemParity -count=1 ./`. Expected: FAIL on net/http, with the panic escaping prblm's `Respond` (status hint).
-- [ ] **Step 3: Bump.**
-  - `go -C httpsec/prblmsec get github.com/kartaladev/prblm@v0.2.1`.
-  - `go -C test get github.com/kartaladev/prblm@v0.2.1 github.com/kartaladev/prblm/adapters/ginprblm@v0.2.1`.
-  - `go work sync`, then `go mod tidy` in each changed module.
-  - Check that no `go.sum` lost its `/go.mod h1:` lines.
-- [ ] **Step 4: Run.** `go -C httpsec/prblmsec test -race -count=1 ./...` and `go -C test test -race -run TestProblemParity -count=1 ./`. Expected: PASS.
-- [ ] **Step 5: Commit.** `build: require prblm v0.2.1`.
+**Files:** `httpsec/prblmsec/go.mod` and `go.sum`; `test/go.mod` and `go.sum`; `go.work.sum`; `test/problem_parity_test.go`; and the `go.mod` and `go.sum` of every module a Dependabot bump touches (on 2026-11-20: root, `test`, `httpsec/fibersec`, `tools`, `expiry/sweep`, `authenticate/passkey/webauthn`, `store/pgxstore`).
+
+- [ ] **Step 1 (main session): re-list and research.** Run `gh pr list --author app/dependabot --state open`. For each bump read its release notes and its OSV record. A breaking change or an advisory goes to the maintainer before it is taken. Write the final bump list into the dispatch prompt.
+- [ ] **Step 2: write the failing parity rows.** Add two `TestProblemParity` cases:
+  - `panicking As`: the route returns an error whose `As` panics;
+  - `cyclic chain`: the route returns an error whose `Unwrap() error` returns itself.
+  With prblmsec registered, net/http, gin and fiber each answer 500 `application/problem+json`, with no panic past the server and no hang (each request bounded by a 5s deadline).
+- [ ] **Step 3: watch them fail on the current pins.** Run `go -C test test -run TestProblemParity -count=1 ./`. Expected: FAIL. `cyclic chain` hangs in prblm's own step on v0.2.x; `panicking As` escapes on fiberprblm v0.2.0.
+- [ ] **Step 4: bump.**
+  - `go -C httpsec/prblmsec get github.com/kartaladev/prblm@v0.3.0`.
+  - `go -C test get github.com/kartaladev/prblm@v0.3.0 github.com/kartaladev/prblm/adapters/ginprblm@v0.3.0 github.com/kartaladev/prblm/adapters/fiberprblm@v0.3.0`.
+  - Each Dependabot bump with `go -C <module> get <path>@<version>`.
+  - `go work sync`, then `go mod tidy` in each changed module. Check that no `go.sum` lost its `/go.mod h1:` lines.
+- [ ] **Step 5: check the upgrade notes.** Search scrty (`rg --glob '!.claude/**'`) for hooks that look for `*prblm.PanicError`, for `prblm.WithStatus` joined beside a sentinel, and for `*prblm.Received`. Report each use, and what it now answers.
+- [ ] **Step 6: run.** `go test -race -p 2 -count=1 ./...` in every changed module, the `test` module last and alone. Expected: PASS, including the two new parity rows.
+- [ ] **Step 7: review and commit.** A Sonnet review, then the isolation check. Commit `build: require prblm v0.3.0` and `build(deps): take the open Dependabot bumps` separately. After the branch merges, ask the maintainer whether to close the superseded Dependabot PRs.
 
 ### Task 10.6: Documentation
 
@@ -941,15 +980,17 @@ Steps:
 
 - [ ] **Step 1: Write the text** that tasks.md 10.6 names.
   - Write plain prose. Do not name internal packages; in particular, no `errwalk` in public godoc.
-  - The prblm limit names v0.2.0. It says that v0.2.1 fixes three things: it recovers the core's status-hint step, the net/http `Handler.Recover` broken-connection check, and ginprblm Recovery's broken-connection check. Cycles remain until v0.3.0.
+  - The prblm limit under v0.3.0: prblm bounds its own walks and answers a cyclic or panicking error with the safe 500 before the mapper runs. What stays unprotected is consumer code calling stdlib `errors.Is` or `errors.As`, and gin's `Context.Error`, which walks the chain first.
   - CHANGELOG, Fixed: the hang, the crash, the panic, and the typed-nil `RejectedError`.
   - CHANGELOG, Changed: a challenge offered through an `As` method behind a typed nil is now found. A chain of more than 1,000 links is unrecognised, and the abort is logged.
   - CHANGELOG, Changed (decision 12): component records go to the chain's logger inside a chain when the component has no logger option; `slog.Default()` is read when a record is written; a nil logger option fails construction in every component.
+  - CHANGELOG (decision 13): Fixed, a generator answering the nil identifier is refused as a failing dependency; Changed, `passkey`'s nil generator option is a configuration error.
+  - CHANGELOG, Changed: prblm v0.3.0 (core, `ginprblm`, `fiberprblm`) and the Dependabot bumps 10.11 took.
   - Check with `go doc` that every component's logger option names the routing default (written by 10.14's lanes).
 - [ ] **Step 2: Verify.**
   - `go doc ./httpsec LookupStatus` shows the bound and the fail-closed rule.
   - `gofmt -l .` and `go vet ./...` are clean.
-- [ ] **Step 3: Commit.** `docs: the bounded classification and the prblm v0.2.0 limit`.
+- [ ] **Step 3: Commit.** `docs: the bounded classification, record routing and nil identifiers`.
 
 ### Task 10.7: Gate
 
@@ -960,5 +1001,5 @@ Steps:
 
 ### Task 10.8: Whole-branch review
 
-- [ ] **Step 1:** Dispatch a fresh Opus reviewer. Give it decisions 11 and 12, their failure rows, the new `http-error-propagation` requirements and the `password-policy` and `email-notification` deltas, and the branch diff against `main`. It enumerates how the change can fail before judging, and labels every claim REPRODUCED or UNREPRODUCED.
+- [ ] **Step 1:** Dispatch a fresh Opus reviewer. Give it decisions 11, 12 and 13, their failure rows, the new `http-error-propagation` requirements and the `password-policy` and `email-notification` deltas, and the branch diff against `main`. It enumerates how the change can fail before judging, and labels every claim REPRODUCED or UNREPRODUCED.
 - [ ] **Step 2:** Send each finding to a fresh dispatch of the task that owns it, then re-run 10.7. Expected: the review is clean.

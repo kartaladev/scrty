@@ -109,6 +109,21 @@ Where the OpenID Provider loads a record or a user from a consumer's store or us
 - **THEN** the revocation is answered as a dependency failure, never 200, and the process does not panic
 - **AND** the link stays redeemable, and one error record with reason `panic` is logged
 
+### Requirement: A generator that answers the nil identifier is a failing dependency
+Wherever the library asks an identifier generator for a new identifier, an answer of the nil identifier with no error SHALL be treated as that generator failing. Nothing SHALL be stored under the nil identifier, and the operation SHALL answer as it does when the generator returns an error. A nil generator given to any component's identifier-generator option SHALL fail that component's construction with its configuration error.
+
+#### Scenario: The provider's generator answers the nil identifier
+- **WHEN** the OpenID Provider's identifier generator answers the nil identifier with no error while an authorization code is issued
+- **THEN** the authorization request is answered `server_error`, and no code or grant is stored
+
+#### Scenario: A store backend's generator answers the nil identifier
+- **WHEN** a SQL store backend's identifier generator answers the nil identifier with no error while a row is inserted
+- **THEN** the store returns an error, and no row is written
+
+#### Scenario: Nil generator option
+- **WHEN** a consumer passes a nil generator to a component's identifier-generator option
+- **THEN** the component's constructor returns its configuration error naming the option
+
 ### Requirement: A component's records go where the consumer configured
 Every log record a library component writes SHALL go to that component's own logger when the consumer configured one. Otherwise it SHALL go to the logger of the chain handling the request, when that chain has a logger of its own or runs inside a chain that has one. Otherwise it SHALL go to the process default logger as it stands when the record is written. Whether a record is written SHALL follow the level of the logger it goes to.
 

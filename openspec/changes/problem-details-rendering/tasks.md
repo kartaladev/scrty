@@ -219,7 +219,7 @@
 
 ## 10. One bounded, recovering walk classifies a refusal (design decision 11)
 
-Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parallel. Then 10.10 (panic frames), then 10.9 (remaining walks) and 10.4 (mapper) in parallel. Then 10.9b (10.9 review fixes) and 10.13a (no-allocation walk) in parallel, then 10.9a, then 10.12 (internals, sanitizer, then call sites in groups). Then 10.11 (prblm v0.2.1), then 10.6 (docs), 10.7 (gate) and 10.8 (review).
+Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parallel. Then 10.10 (panic frames), then 10.9 (remaining walks) and 10.4 (mapper) in parallel. Then 10.9b (10.9 review fixes) and 10.13a (no-allocation walk) in parallel, then 10.9a, then 10.12 (internals, sanitizer, then call sites in groups). Then 10.15 (nil identifiers), then 10.14 (record routing). Then 10.11 (prblm v0.3.0 and the Dependabot bumps), then 10.6 (docs), 10.7 (gate) and 10.8 (review).
 
 - [x] 10.1 `internal/errwalk`. Red: `TestFlatten` (table), with these cases:
   - order: root first, then depth first, through `Unwrap() error` and `Unwrap() []error`, each node's `Unwrap` called once;
@@ -343,7 +343,17 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
   - Where that branch conceals (unknown user, unknown credential, a concealed lock, uniform recovery), assert the response is byte-identical to a plain port outage.
   - Out of scope: the `internal/unavailable` rate-limit backends, which the library supplies (`redisstore`, `pgxstore`, `sqlstore`).
   - Verify each dispatch with `go test -race -count=1 ./...` in the affected modules.
-- [ ] 10.14 Records land where the consumer configured (design decision 12). Starts once every 10.12 call-site dispatch in a package has landed, so no two agents edit one package. Lanes run in order a, then b to f in parallel by package, each a fresh dispatch of at most six components.
+- [ ] 10.15 A generator that answers the nil identifier is a failing dependency (design decision 13). Runs after 10.12 and before 10.14 in each package, so no two agents edit one package.
+  - **a. Foundation** (Sonnet): `internal/idgen.New(g id.Generator) (id.ID, error)` and the sentinel `ErrNil`. Red first, as a table: a generator answering the nil identifier gives `ErrNil`; a generator error comes back unchanged (`errors.Is` on it holds, and `ErrNil` does not match); a good identifier comes back as it is. Godoc names the contract it enforces.
+  - **b. Call sites**, one dispatch per lane of at most six packages' worth of sites, lanes in parallel by package. Each site replaces `g.NewID()` with `idgen.New(g)` and keeps its 10.12 sanitizer. Red first per site: a generator mock answering `(id.Nil, nil)` makes the site store something under the nil identifier (or, at the OpenID Provider, join one grant family), and after the fix the site answers its failing-generator outcome with nothing stored. A good-identifier row pins the old outcome. The 2026-11-20 inventory:
+    - `oidcprovider`: `code.go` grant family, `accesstoken.go`, `pending.go`, `idtoken.go`;
+    - `authenticate`: `password.go`, `jwt.go`; `authenticate/apikey`: `keys.go`; `authenticate/oidc`: `broker_provision.go`, `handoff.go`; `authenticate/passkey`: `register.go`, plus the generator option refusing nil with `ErrConfig` (red: a nil generator builds today);
+    - `recovery`: `recover_complete.go`; `token/onetime`: `tokens.go`;
+    - `store/sqlstore`, `store/pgxstore`, `store/gormstore`: 16 sites each (flows, identity and grants, recovery codes, consent, assertion ids, browser sessions, clients, passkey handles, attempts, password history, MFA enrolment, sessions, signing keys). Store tests use the existing testcontainers helpers (`use-testcontainers`); one dispatch per backend.
+  - Unchanged, with a row each pinning it: `session/prepared.go` (the family stays a configuration error) and `authenticate/mfa/totp.go` (its own refusal).
+  - After each dispatch: verify, then a fresh reviewer (Sonnet; Opus for the OpenID Provider lane), then the isolation check and commit. Close with `rg 'NewID\(\)' --glob '!**/*_test.go'` showing only `internal/idgen`, the two unchanged sites and the generators themselves.
+  - CHANGELOG `[Unreleased]` (written in 10.6): Fixed, a generator answering the nil identifier is refused; Changed, `passkey`'s nil generator option is a configuration error.
+- [ ] 10.14 Records land where the consumer configured (design decision 12). Starts once every 10.12 and 10.15 dispatch in a package has landed, so no two agents edit one package. Lanes run in order a, then b to f in parallel by package, each a fresh dispatch of at most six components.
   - **a. Foundation** (Opus: other lanes compile against it):
     - `internal/ctxlog` gains the routing logger, whose handler resolves per record: the chain's logger on the context, else `slog.Default().Handler()` read at record time. It never delegates to a routing handler, and it replays `WithAttrs`/`WithGroup` onto the resolved handler. Red first: `testing/slogtest.TestHandler`, plus rows for chain logger, no chain, `SetDefault` after construction, a detached context (`WithoutCancel`), a context rebuilt from `Background`, a routing logger found on the context, a typed-nil or wrong-type value, and `Enabled` following the resolved level.
     - A helper for sampled components keeps the last resolved logger (`atomic.Pointer`) for suppressed-count summaries.
@@ -374,15 +384,25 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
   - Add `BenchmarkLookupStatus` and `BenchmarkMapError`. Their rows are: a bare sentinel, a 5-deep wrap, a 3-way join with a challenge, an unknown error, and a 50-link chain.
   - Run each against the pre-walk baseline `c1bf3e97` (a `git archive` export; `main` has no `LookupStatus` or prblmsec) and against the branch, with `-count=10 -benchmem`, and compare them with `benchstat`.
   - Report the deltas. A regression above 10% on any row is a finding: it goes back as a fix, or is recorded in design.md with its reason.
-- [ ] 10.11 Require prblm v0.2.1 (design decision 8).
-  - Require `github.com/kartaladev/prblm v0.2.1` in `httpsec/prblmsec`.
-  - In `test`, require it together with `adapters/ginprblm v0.2.1`. `adapters/fiberprblm` stays on v0.2.0.
+- [ ] 10.11 Require prblm v0.3.0 and take the open Dependabot bumps (design decision 8).
+  - First re-list the open Dependabot PRs (`gh pr list --author app/dependabot --state open`). For each bump read its release notes and its OSV record. A bump with a breaking change or an advisory goes to the maintainer before it is taken. On 2026-11-20 they were:
+    - root: `gofiber/fiber/v3` 3.7.0, `klauspost/compress` 1.20.4, `golang.org/x/crypto` 0.59.0, `pressly/goose/v3` 3.30.1, `golang.org/x/sync` 0.25.0;
+    - `test`: `klauspost/compress` 1.20.4, `pressly/goose/v3` 3.30.1, `jackc/pgx/v5` 5.13.0, `valyala/fasthttp` 1.78.0, `gofiber/fiber/v3` 3.7.0;
+    - `httpsec/fibersec`: `valyala/fasthttp` 1.78.0, `gofiber/fiber/v3` 3.7.0;
+    - `tools`: `golang.org/x/mod` 0.43.0;
+    - `expiry/sweep`: `go-co-op/gocron/v2` 2.23.1;
+    - `authenticate/passkey/webauthn`: `golang.org/x/sync` 0.25.0;
+    - `store/pgxstore`: `jackc/pgx/v5` 5.13.0.
+  - Require `github.com/kartaladev/prblm v0.3.0` in `httpsec/prblmsec`. In `test`, require it together with `adapters/ginprblm v0.3.0` and `adapters/fiberprblm v0.3.0`.
   - Run `go work sync`, then `go mod tidy` in each changed module. Check that no `go.sum` lost its `/go.mod h1:` lines.
-  - Red: a `TestProblemParity` case where the route fails with an error whose own `As` method panics. With prblmsec registered, net/http and gin answer a 500 problem, and nothing escapes. On v0.2.0 the panic escapes `Respond`. Run it before the bump to see that.
-  - Verify with `go -C httpsec/prblmsec test -race -count=1 ./...` and `go -C test test -race -run TestProblemParity -count=1 ./`.
+  - Red, before the bump: `TestProblemParity` cases where the route fails with (a) an error whose own `As` method panics and (b) a cyclic error chain. With prblmsec registered, net/http, gin and fiber each answer a 500 problem, nothing escapes and nothing hangs. On the current pins the panic escapes or the cycle hangs in prblm's own step; run them first to see it.
+  - Check scrty against v0.3.0's upgrade notes: hooks that look for `*PanicError`, a `WithStatus` hint joined beside a sentinel, and a typed-nil `*Received`. Report each use found, and what it now answers.
+  - Verify with `go test -race -p 2 -count=1 ./...` in every changed module, the `test` module last and alone.
+  - After the branch merges, ask the maintainer whether to close the superseded Dependabot PRs.
 - [ ] 10.6 Documentation. Write these:
   - godoc of `LookupStatus` and `StatusForError`: the bound, the typed-nil skip, fail-closed and the log record, and that consumer code calling stdlib `errors.Is` or `errors.As` on the same error is not protected;
-  - prblmsec's package doc and the README section: the limit under prblm v0.2.0. A cycle hangs or dies in prblm's Describer step before the mapper runs, a panicking `As` escapes prblm's status-hint step, and gin's `Context.Error` walks the chain first;
+  - prblmsec's package doc and the README section: under prblm v0.3.0 prblm bounds its own walks, so a cyclic or panicking error is answered with the safe 500 before the mapper runs; what is still not protected is consumer code calling stdlib `errors.Is` or `errors.As`, and gin's `Context.Error`, which walks the chain first;
+  - CHANGELOG entries for decision 13 (see 10.15), and the prblm v0.3.0 and dependency bumps under Changed;
   - CHANGELOG `[Unreleased]`:
     - Fixed: the status lookup no longer hangs, crashes or panics on a cyclic, fanned-out or panicking error chain, or on a typed-nil `*password.RejectedError`;
     - Changed: a challenge offered through an `As` method behind a typed nil is now found, and a chain over 1,000 links is unrecognised.
@@ -391,7 +411,7 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
 
   Verify with `go doc ./httpsec LookupStatus` and `gofmt -l .`.
 - [ ] 10.7 Re-run the 8.3 gate in full, the `test` module on an idle machine.
-- [ ] 10.8 A whole-branch review (Opus, fresh agent) against decisions 11 and 12 and the new `http-error-propagation` requirements. It first enumerates how the change fails. Findings go back to a fresh dispatch of the owning task.
+- [ ] 10.8 A whole-branch review (Opus, fresh agent) against decisions 11, 12 and 13 and the new `http-error-propagation` requirements. It first enumerates how the change fails. Findings go back to a fresh dispatch of the owning task.
 
 ## Workflow follow-up
 

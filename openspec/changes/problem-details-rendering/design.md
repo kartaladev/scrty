@@ -151,11 +151,13 @@ guards, _ := httpsec.NewGuards(az, httpsec.WithGuardErrorHandler(h.Write))
 
 ### 8. Dependency, layout and release
 
-- **Versions.**
-  - `prblmsec` requires `github.com/kartaladev/prblm v0.2.1`.
-  - The test module also requires `adapters/ginprblm v0.2.1` and `adapters/fiberprblm v0.2.0`.
-  - v0.2.1 is a patch release with no API change. It recovers three panics v0.2.0 let escape: the status-hint step, net/http `Handler.Recover`'s broken-connection check, and gin Recovery's broken-connection check.
-  - ginprblm v0.2.1 still requires core v0.2.0, so both are required explicitly (task 10.11).
+- **Versions** (revised 2026-11-20, when prblm v0.3.0 was tagged before task 10.11 ran).
+  - `prblmsec` requires `github.com/kartaladev/prblm v0.3.0`.
+  - The test module also requires `adapters/ginprblm v0.3.0` and `adapters/fiberprblm v0.3.0`. Both adapters require core v0.3.0 and use its bounded walk, so all three move together.
+  - v0.3.0 changes no exported identifier. It walks each error chain once, in `errors.Is` order, within 1,000 entries, and answers a cyclic, too-deep or panicking error (in `Unwrap`, `Is` or `As`) with the safe 500 at once. prblm's own steps therefore no longer hang, overflow the stack or let a panic escape before scrty's mapper runs, which closes the limit this design documented under v0.2.0 and v0.2.1.
+  - Behaviour that changes for a consumer: hooks receive a note wrapping `prblm.ErrUnwalkableError` instead of `*PanicError` reports; a `WithStatus` hint joined beside a sentinel is decided by `errors.Is` order; typed-nil pointers in the chain are skipped. Task 10.11 checks scrty against each.
+  - v0.2.1, the version first planned, recovered three panics v0.2.0 let escape but kept prblm's unbounded walks.
+- **Other dependencies** (user's request, 2026-11-20). Task 10.11 also takes the bumps the open Dependabot PRs propose, in every workspace module, so the branch lands on current dependencies. Each bump's release notes and OSV record are read first, and a breaking change or advisory goes to the maintainer before it is taken.
 - **Where the module is listed.** `go.work`, `.github/dependabot.yml`, `tools/repocheck`'s module expectations, `RELEASING.md`'s module list, and the lockstep tag set (`httpsec/prblmsec/vX.Y.Z`).
 - **Live figures** (read 2026-11-18; they drift): prblm is MIT, its tags are `v0.1.0` and `v0.2.0`, its last push was 2026-11-18, and it has 0 stars. Both projects have the same owner. The release gate's `govulncheck` and SBOM steps cover the new module like any published module (`supply-chain`).
 
@@ -354,6 +356,25 @@ Maintainer's choice, 2026-11-20: every record of every component, in this change
 - A nil logger option fails construction in every component.
 - The same component logs to the chain inside a chain and to the default outside one.
 
+### 13. A generator that answers the nil identifier is a failing dependency
+
+Maintainer's choice, 2026-11-20: every place scrty asks a consumer-replaceable `id.Generator` for a new identifier, in this change (raised by the 10.12 7j review). `id.Nil` means "no identifier", and no generator scrty ships returns it, but nothing stopped a consumer's generator from answering `(id.Nil, nil)`. The 2026-11-20 inventory found 62 production call sites. Two already refused the nil identifier: the session family (a configuration error) and TOTP's enrolment generation. Everywhere else the nil identifier was used as a real one. In the OpenID Provider every grant would join one family, so revoking one family could revoke other users' grants; in the store backends rows would be keyed on the nil identifier.
+
+**Decision.**
+- A new `internal/idgen` package has one function, `New(g id.Generator) (id.ID, error)`. It calls `NewID`, returns the generator's error unchanged, and returns the fixed sentinel `idgen.ErrNil` ("the identifier generator returned the nil identifier", no consumer data) when the answer is the nil identifier with no error.
+- Each of the 60 remaining call sites calls it in place of `NewID`. The site's existing branch for a failing generator answers `ErrNil`, so the outcome is that site's dependency failure (the OpenID Provider's `server_error`, a store's failure error, a refused issuance). Nothing is stored under the nil identifier. The task 10.12 sanitizer stays where it is, right after the call.
+- The two sites that already refuse keep their behaviour: the session family stays a configuration error (the settled sessions behaviour), and TOTP keeps its own refusal.
+- The store backends (`sqlstore`, `pgxstore`, `gormstore`) use it too, so a row is never inserted under the nil identifier.
+- `idgen.New` writes no record of its own. The site's failure branch reports it as it reports any generator failure.
+- `passkey`'s generator option is the only one that ignores a nil generator. It now refuses nil with `passkey`'s configuration error, as every other component's option does (`library-design.md` 6). This changes an option tagged in v0.1.x and goes in the CHANGELOG under Changed.
+
+**Default and override.** No option. The generator stays replaceable as before; the contract that it never answers the nil identifier is now enforced instead of assumed.
+
+**Rejected.**
+- Accepting and documenting it: a shared grant family breaks isolation between users, and the consumer cannot see it happen.
+- A nil check written out at each site: 60 copies, any of which can be forgotten. One helper keeps the rule in one place.
+- Retrying on the nil identifier: it hides a broken generator, and it needs a bound and a policy the consumer did not ask for.
+
 ### Failure modes
 
 | Failure | State | Outcome |
@@ -365,11 +386,11 @@ Maintainer's choice, 2026-11-20: every record of every component, in this change
 | Typed-nil pointer in the chain (`*ChallengeError`, `*password.RejectedError`, any type) | Handled, tested (decision 11) | The walker skips the node entirely and calls none of its methods, so a value-receiver `Is` cannot panic. The rest of the chain decides: a real challenge or refusal joined behind it is found. Consumer code calling stdlib `errors.As` on the same error still sees the nil |
 | An error presents itself as a `*ChallengeError` only through its own `As(any) bool` method | Handled, tested (decision 11) | Recognised as that challenge, as `errors.As` recognises it: its status, type and members. This also holds when it is joined behind a typed nil, because the walker keeps going past the nil |
 | A challenge more than 1,000 links into the chain | Handled, tested (decision 11) | The walk's budget runs out. The classification fails closed with 500, unrecognised, and is reported with reason `budget`. Legitimate chains are far below the budget |
-| A cyclic error chain, through `Unwrap() error` or `Unwrap() []error` | Handled, tested (decision 11) | The budget stops the walk at 1,001 visited links: no hang, no stack overflow. The result is 500, unrecognised, reported with reason `budget`. prblm v0.2.0's own walks still hang or die on the same error before the scrty mapper runs, and so does consumer code calling stdlib. Documented as the line scrty cannot cross |
+| A cyclic error chain, through `Unwrap() error` or `Unwrap() []error` | Handled, tested (decision 11) | The budget stops the walk at 1,001 visited links: no hang, no stack overflow. The result is 500, unrecognised, reported with reason `budget`. Under prblm v0.2.x, prblm's own walks hung or died on the same error before the scrty mapper ran; v0.3.0 bounds them too and answers the safe 500 (decision 8). Consumer code calling stdlib still hangs or dies on it. Documented as the line scrty cannot cross |
 | One node's `Unwrap() []error` is huge: many copies of itself, or millions of nil entries | Handled, tested (decision 11, task 10.1 review) | Pending entries and nil entries count against the budget, so the walk aborts at once, without allocating in proportion or scanning the slice repeatedly. The result is 500, unrecognised, reported with reason `budget` |
 | `panic(nil)` from a node's method, under `GODEBUG=panicnil=1` | Handled, tested (task 10.1 review) | A call that did not return normally counts as a panic. The walk aborts with reason `panic` and never passes the call as a silent success |
 | A join that fans out (`errors.Join(n, n)` nested) with no cycle | Handled, tested (decision 11) | The budget counts repeats, so the walk stops after 1,000 visits instead of 2^depth. The result is 500, unrecognised, reported with reason `budget` |
-| An error's own `Unwrap`, `Is` or `As` method panics during the walk | Handled, tested (decision 11) | Recovered. The classification aborts and fails closed with 500, unrecognised, and is reported with reason `panic` and the redacted panic attributes. It never guesses what the panicking link would have said. Under prblm v0.2.0 a panicking `As` method still escapes `Respond` from prblm's own status-hint step; v0.2.1 recovers it |
+| An error's own `Unwrap`, `Is` or `As` method panics during the walk | Handled, tested (decision 11) | Recovered. The classification aborts and fails closed with 500, unrecognised, and is reported with reason `panic` and the redacted panic attributes. It never guesses what the panicking link would have said. Under prblm v0.2.0 a panicking `As` method still escaped `Respond` from prblm's own status-hint step; v0.2.1 recovered it, and v0.3.0 answers it with the safe 500 before any step runs (decision 8) |
 | An aborted classification nobody can see | Handled, tested (decision 11) | One Error-level slog record per abort, to the chain's logger where the caller holds it, else `slog.Default()`. The record carries a constant message and the reason, and never the error text |
 | A consumer's own middleware, outside the fiber adapter, wraps a refusal whose classification already aborted | Accepted, documented (task 10.5 review) | The adapter classifies the wrapped error again, as it did on `main`, so the request writes a second record. The rule is one record per aborted classification, so this over-reports and never goes silent. Avoiding it would mean hiding the refusal's inner error from the consumer's own `errors.Is`, or exporting a way to see an abort, and neither is worth it for an error a consumer wrapped twice |
 | A consumer's `WithErrorHandler` replaces the chain's dispatch, and an inspection inside the library aborts (the refusal event, the basic challenge header, OIDC consent, session signals) | Handled, tested (task 10.3 review) | The chain's dispatch classifies nothing under a consumer handler, so the quiet sites report instead.
@@ -417,6 +438,10 @@ No process-wide reporter is installed. A process-wide reporter could not see eac
 | A record written with `context.Background()` inside a request (construction-time warnings, the memory limiter's warnings, background key rotation and expiry runs, `LookupStatus`, fibersec's abort report) | Accepted, documented (decision 12) | No request context exists, so it goes to the component's option, else `slog.Default()`. Each call that has a request context in scope passes it; the 10.14 inventory lists those that cannot |
 | A consumer `slog.Handler` panics in `Enabled` or `Handle` | Accepted (decision 12) | The routing handler does not recover it, as `slog` itself does not. The panic is the consumer's handler's, as it was before with a consumer logger |
 | A new `slog.Default()` capture added by a later edit | Handled (decision 12) | `forbidigo` rejects `slog.Default()` outside `internal/ctxlog` |
+| A consumer's identifier generator answers the nil identifier with no error | Handled, tested (decision 13) | `idgen.New` returns `idgen.ErrNil`, and the site takes its branch for a failing generator: a dependency failure, nothing stored. The session family keeps its configuration error and TOTP its own refusal |
+| A consumer's identifier generator panics in `NewID` | Accepted (decision 13) | Not recovered, as before. net/http recovers it per request; elsewhere the caller's recovery policy decides. No library-owned goroutine calls a generator |
+| A consumer's identifier generator answers the same non-nil identifier twice | Accepted (decision 13) | Not checked: detecting it needs memory of every identifier issued. The store's own uniqueness answers it where the identifier is a key, as a store failure |
+| A nil generator given to `passkey`'s generator option | Handled, tested (decision 13) | `passkey`'s configuration error, naming the option, as every other component's generator option already does |
 | `Methods` nil vs empty | Handled, tested | Omitted vs `[]` |
 | `Window <= 0`, or a rejection without `RejectedError` | Handled, tested | `max_age` / `rule` omitted |
 | Token present without `TokenType` (consumer-built) | Handled, tested | `access_token` only |
@@ -521,6 +546,10 @@ Otherwise reasoned from scrty's own settled `framework-adapters` spec, and from 
 **Researched** (2026-11-19):
 - [kartaladev/prblm release v0.2.1](https://github.com/kartaladev/prblm/releases/tag/v0.2.1): tags `v0.2.1` and `adapters/ginprblm/v0.2.1`, both on commit 5742e04. The prblm session confirmed that both resolve through the Go proxy. The release fixes three panics that escaped prblm's recovery: the status-hint step, net/http `Recover`'s broken-connection check, and gin Recovery's broken-connection check. It changes no API, and ginprblm v0.2.1 still requires core v0.2.0.
 
+**Researched** (2026-11-20):
+- [kartaladev/prblm release v0.3.0](https://github.com/kartaladev/prblm/releases/tag/v0.3.0), published 2026-11-20: core `v0.3.0` (commit 678dfc5), `adapters/ginprblm/v0.3.0` and `adapters/fiberprblm/v0.3.0` (commit a881cbb, both requiring core v0.3.0), `mappers/validatormap/v0.1.1`. The prblm session reported that all resolve through the Go proxy. Its "Upgrading from v0.2.1" section is the source of the behaviour changes listed in decision 8.
+- The open Dependabot PRs of kartaladev/scrty (16 on 2026-11-20; the list drifts, and task 10.11 re-reads it).
+
 ### Decision 11: one bounded, recovering walk
 
 **The consumer's own refusal and write errors as port errors** (2026-11-19): reasoned from scrty's own settled specs (magic-link, one-time-tokens, password-policy, diagnostic-redaction, `library-design.md` 4 and 5) and the established design. No external source bears on it.
@@ -559,3 +588,10 @@ Otherwise reasoned from scrty's settled `http-error-propagation` and `diagnostic
 - [`testing/slogtest`](https://pkg.go.dev/testing/slogtest): the handler-contract test the routing handler is checked against.
 
 The nil-option rule and the scope are the maintainer's choices, reasoned from `library-design.md` 6 and 7.
+
+### Decision 13: a generator that answers the nil identifier
+
+**Researched** (2026-11-20):
+- The scrty inventory of `id.Generator.NewID` call sites (62 in production, 2 already refusing the nil identifier), and `pkg/id` godoc: `Nil` "means 'no identifier', and no generator scrty ships returns it"; the `Generator` godoc promises nothing about it.
+
+Otherwise reasoned from scrty's own settled specs: the `sessions` requirement that family identifiers come from a replaceable generator, and the `security-state-stores` requirement that a family revocation naming the nil identifier is refused. The scope is the maintainer's choice.
