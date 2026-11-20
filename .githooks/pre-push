@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Installed by `make hooks`. Runs the checks CI skips while the repository
+# variable SCRTY_SKIP_LONG_CHECKS is 'true'. Skip once with `git push --no-verify`.
+set -euo pipefail
+exec make --no-print-directory pre-pr

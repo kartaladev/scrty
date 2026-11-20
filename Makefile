@@ -44,7 +44,7 @@ export PATH := $(BIN):$(PATH)
 # workspace, so the per-module loops below skip it; tools-check gates it instead.
 MODULES := $(shell go list -m -f '{{.Dir}}')
 
-.PHONY: tools tools-check check fmt-check vet lint test test-isolated vuln generate-check pincheck sbom release-gate release-check release-tags spec-check conformance
+.PHONY: tools tools-check check pre-pr hooks fmt-check vet lint test test-isolated vuln generate-check pincheck sbom release-gate release-check release-tags spec-check conformance
 
 # GOWORK=off because tools/ is deliberately outside go.work: in workspace mode the
 # tool pattern resolves against the workspace modules, which declare no tools.
@@ -89,6 +89,21 @@ tools-check: $(BIN)/golangci-lint
 # that make -j never runs it beside the rest of the suite.
 check: tools pincheck tools-check fmt-check vet lint test vuln generate-check
 	@$(MAKE) --no-print-directory test-isolated
+
+# pre-pr is what to run before pushing while CI skips its long-running checks
+# (repository variable SCRTY_SKIP_LONG_CHECKS): every build gate and the test
+# suite, the OpenID conformance plans, and spec validation. Needs Docker. CI's
+# second PostgreSQL leg is not repeated here; run it with
+#   SCRTY_TEST_POSTGRES_IMAGE=postgres:15.19-alpine make test
+pre-pr: check
+	@$(MAKE) --no-print-directory conformance
+	@$(MAKE) --no-print-directory spec-check
+
+# hooks points git at .githooks, whose pre-push runs pre-pr. Opt-in; undo with
+#   git config --unset core.hooksPath
+hooks:
+	git config core.hooksPath .githooks
+	@echo "hooks: pre-push now runs make pre-pr (skip once with git push --no-verify)"
 
 # The .go files git knows about: tracked, plus untracked that are not ignored. Walking
 # the module directories with `gofmt -l <dir>` also entered git-ignored directories
