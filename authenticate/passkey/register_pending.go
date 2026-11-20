@@ -164,7 +164,10 @@ func (m *Passkeys) removeUnsettled(ctx context.Context, c *Credential) {
 	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unsettledDeleteTimeout)
 	defer cancel()
 
-	if _, err := m.credentials.Delete(dctx, c.User, c.ID); err != nil {
+	_, err := m.credentials.Delete(dctx, c.User, c.ID)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
+	if err != nil {
 		attrs := append([]slog.Attr{credentialAttr(c.ID)}, diag.Failure("delete", err)...)
 		m.sampled(ctx, slog.LevelError, "delete|unsettled", msgUnsettledNotRemoved, attrs...)
 	}
@@ -189,6 +192,8 @@ func (m *Passkeys) deleteAbandoned(
 	}
 
 	held, err := m.credentials.List(ctx, user)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return diag.Wrap(err, "passkey: could not list the user's passkeys")
 	}
@@ -198,7 +203,10 @@ func (m *Passkeys) deleteAbandoned(
 			continue
 		}
 
-		if _, err := m.credentials.Delete(ctx, user, c.ID); err != nil {
+		_, err = m.credentials.Delete(ctx, user, c.ID)
+		err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
+		if err != nil {
 			return diag.Wrap(err, "passkey: could not remove an abandoned registration")
 		}
 	}
@@ -357,6 +365,8 @@ func (m *Passkeys) ConfirmEmailCode(
 	}
 
 	stored, charged, err := m.credentials.ChargeEmailAttempt(ctx, sess.UserID, c.ID, m.clock.Now())
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not charge an attempt against the emailed code")
 	}
@@ -401,6 +411,8 @@ func isEmailCode(code string) bool {
 // awaiting returns user's pending passkey whose reason r is set, or nil.
 func (m *Passkeys) awaiting(ctx context.Context, user identity.UserID, r PendingReason) (*Credential, error) {
 	held, err := m.credentials.List(ctx, user)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not list the user's passkeys")
 	}
@@ -421,6 +433,8 @@ func (m *Passkeys) clearReason(
 	ctx context.Context, c *Credential, r PendingReason, rc RegistrationContext,
 ) (*Credential, error) {
 	state, cleared, err := m.credentials.ClearReason(ctx, c.User, c.ID, r)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not clear the pending reason")
 	}
