@@ -30,6 +30,7 @@ import (
 type mpeOutcome struct {
 	failed          bool
 	ok              bool // the found or accepted flag the site returned
+	count           int  // the attempt count a charge returned
 	alreadyEnrolled bool // mfa.ErrAlreadyEnrolled
 	decryption      bool // seal.ErrDecryptionFailed
 	unknownKey      bool // seal.ErrUnknownKeyID
@@ -90,6 +91,28 @@ func mpeWithin(t *testing.T, call func() mpeOutcome) mpeOutcome {
 	}
 }
 
+// mpeProving is an inner enrolment store that also keeps device proofs: the
+// two generated mocks side by side, so the sealing store built over it
+// implements mfa.DeviceProofStore.
+type mpeProving struct {
+	*MockEnrolmentStore
+	*MockDeviceProofStore
+}
+
+// mpeProvingStore wraps a proving inner in the sealing enrolment store and
+// returns its device-proof side.
+func mpeProvingStore(t *testing.T, ctrl *gomock.Controller) (*MockDeviceProofStore, mfa.DeviceProofStore) {
+	t.Helper()
+
+	proofs := NewMockDeviceProofStore(ctrl)
+	store := mpeStore(t, mpeProving{NewMockEnrolmentStore(ctrl), proofs})
+
+	p, ok := store.(mfa.DeviceProofStore)
+	require.True(t, ok)
+
+	return proofs, p
+}
+
 // mpeStore wraps inner in the sealing enrolment store.
 func mpeStore(t *testing.T, inner mfa.EnrolmentStore) mfa.EnrolmentStore {
 	t.Helper()
@@ -101,7 +124,9 @@ func mpeStore(t *testing.T, inner mfa.EnrolmentStore) mfa.EnrolmentStore {
 }
 
 // mpeSite is one call on the inner enrolment store in mfa.go: run arranges
-// the inner store's mock to return err and drives the sealing store.
+// the inner store's mock to return err and drives the sealing store. The
+// device-proof sites ignore the inner and the store they are handed and build
+// a proving pair of their own, because the inner needs the device-proof side.
 type mpeSite struct {
 	name string
 	run  func(t *testing.T, ctx context.Context, inner *MockEnrolmentStore, store mfa.EnrolmentStore, err error) mpeOutcome
@@ -173,6 +198,41 @@ func mpeSites() []mpeSite {
 					ok, got := store.RefundVerifyAttempt(ctx, userRef, time.Now())
 
 					return mpeClassify(ok, got)
+				})
+			}},
+		{name: "ProveDevice asks the inner store's device proofs",
+			run: func(t *testing.T, ctx context.Context, _ *MockEnrolmentStore, _ mfa.EnrolmentStore, err error) mpeOutcome {
+				proofs, p := mpeProvingStore(t, gomock.NewController(t))
+				proofs.EXPECT().ProveDevice(gomock.Any(), userRef, gen, int64(9), nil, codeUntil, codeIssuedAt).Return(true, err)
+
+				return mpeWithin(t, func() mpeOutcome {
+					ok, got := p.ProveDevice(ctx, userRef, gen, 9, nil, codeUntil, codeIssuedAt)
+
+					return mpeClassify(ok, got)
+				})
+			}},
+		{name: "Complete asks the inner store's device proofs",
+			run: func(t *testing.T, ctx context.Context, _ *MockEnrolmentStore, _ mfa.EnrolmentStore, err error) mpeOutcome {
+				proofs, p := mpeProvingStore(t, gomock.NewController(t))
+				proofs.EXPECT().Complete(gomock.Any(), userRef, gen, codeIssuedAt).Return(true, err)
+
+				return mpeWithin(t, func() mpeOutcome {
+					ok, got := p.Complete(ctx, userRef, gen, codeIssuedAt)
+
+					return mpeClassify(ok, got)
+				})
+			}},
+		{name: "ChargeEmailCode asks the inner store's device proofs",
+			run: func(t *testing.T, ctx context.Context, _ *MockEnrolmentStore, _ mfa.EnrolmentStore, err error) mpeOutcome {
+				proofs, p := mpeProvingStore(t, gomock.NewController(t))
+				proofs.EXPECT().ChargeEmailCode(gomock.Any(), userRef, gen, codeIssuedAt).Return(3, true, err)
+
+				return mpeWithin(t, func() mpeOutcome {
+					n, ok, got := p.ChargeEmailCode(ctx, userRef, gen, codeIssuedAt)
+					o := mpeClassify(ok, got)
+					o.count = n
+
+					return o
 				})
 			}},
 	}
@@ -330,7 +390,7 @@ func TestPortErrors_SealEnrolmentStoreOutcomes(t *testing.T) {
 		assert func(t *testing.T, o mpeOutcome, aborts int)
 	}
 
-	get, putPending, confirm, _, del, _ := 0, 1, 2, 3, 4, 5
+	get, putPending, confirm, _, del, _, proveDevice, _, chargeEmailCode := 0, 1, 2, 3, 4, 5, 6, 7, 8
 
 	cases := []testCase{
 		{name: "Get: a plain failure stays a failure, with no consumer text", site: get,
@@ -369,6 +429,22 @@ func TestPortErrors_SealEnrolmentStoreOutcomes(t *testing.T) {
 			assert: func(t *testing.T, o mpeOutcome, aborts int) {
 				assert.True(t, o.failed)
 				assert.False(t, o.alreadyEnrolled)
+				assert.Zero(t, aborts)
+			}},
+		{name: "ProveDevice: ErrAlreadyEnrolled from the device proofs comes back as the bare sentinel", site: proveDevice,
+			err: fmt.Errorf("store: %w: %s", mfa.ErrAlreadyEnrolled, cpeSecret),
+			assert: func(t *testing.T, o mpeOutcome, aborts int) {
+				assert.True(t, o.alreadyEnrolled)
+				assert.Equal(t, mfa.ErrAlreadyEnrolled.Error(), o.text)
+				assert.Zero(t, aborts)
+			}},
+		{name: "ChargeEmailCode: a plain failure stays a failure, with no consumer text and no record",
+			site: chargeEmailCode, err: errors.New("db down: " + cpeSecret),
+			assert: func(t *testing.T, o mpeOutcome, aborts int) {
+				assert.True(t, o.failed)
+				assert.False(t, o.alreadyEnrolled)
+				assert.False(t, o.unwalkable)
+				assert.NotContains(t, o.text, cpeSecret)
 				assert.Zero(t, aborts)
 			}},
 		{name: "Delete: a plain failure stays a failure", site: del,

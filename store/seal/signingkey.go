@@ -6,6 +6,7 @@ import (
 
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/token/signingkey"
 )
 
@@ -57,6 +58,13 @@ type signingKeyStore struct {
 // of inner, or of cipher while sealing, is returned the same way; nothing is
 // stored when sealing fails.
 //
+// An error of inner that cannot be walked, from Store or LoadAll, is replaced
+// by a fixed error and one record is written to slog.Default(): it is answered
+// as a failure of inner, never as ErrDecryptionFailed or ErrUnknownKeyID. An
+// error of cipher that cannot be walked while sealing is replaced by a fixed
+// error matching ErrUnavailable, and answered as an outage of cipher. The
+// cipher's Open, the store's Delete and the re-seal path are not yet sanitized.
+//
 // Delete forwards to inner, since it has nothing to seal.
 //
 // By default a load re-seals, under the active key, every key that opened
@@ -92,19 +100,24 @@ func NewSigningKeyStore(
 // Store seals the private material of a copy of rec and stores the copy.
 func (s *signingKeyStore) Store(ctx context.Context, rec signingkey.Record) error {
 	sealed, err := s.cipher.Seal(ctx, rec.Private, SigningKeyAAD(rec.Kid))
+	err = porterr.Sanitize(err, ErrUnavailable)
 	if err != nil {
 		return diag.Wrap(err, "seal: the signing key's private material could not be sealed")
 	}
 
 	rec.Private = sealed
 
-	return diag.Wrap(s.inner.Store(ctx, rec), "seal: the inner store could not store the signing key")
+	err = s.inner.Store(ctx, rec)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+
+	return diag.Wrap(err, "seal: the inner store could not store the signing key")
 }
 
 // LoadAll loads every record and opens its private material, failing the whole
 // load when any record will not open.
 func (s *signingKeyStore) LoadAll(ctx context.Context) ([]signingkey.Record, error) {
 	loaded, err := s.inner.LoadAll(ctx)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, diag.Wrap(err, "seal: the inner store could not load the signing keys")
 	}

@@ -30,6 +30,7 @@ import (
 //
 //go:generate mockgen -source=mfa.go -package=seal_test -destination=mfa_mock_test.go -typed
 //go:generate mockgen -source=../../authenticate/mfa/store.go -package=seal_test -destination=enrolmentstore_mock_test.go -typed -exclude_interfaces=DeviceProofStore
+//go:generate mockgen -source=../../authenticate/mfa/store.go -package=seal_test -destination=deviceproofstore_mock_test.go -typed -exclude_interfaces=EnrolmentStore
 type EnrolmentResealer interface {
 	// ResealEnrolmentSecret replaces the secret stored for user with resealed,
 	// only if the stored value still equals old.
@@ -101,8 +102,11 @@ type provingEnrolmentStore struct {
 // matching ErrUnavailable, and one record is written to slog.Default(): it is
 // answered as an outage of cipher, never as ErrDecryptionFailed or
 // ErrUnknownKeyID. A cipher error dropped by a re-seal on read (ActiveKeyID or
-// Seal) is never walked. Errors of the device-proof calls ProveDevice,
-// Complete and ChargeEmailCode of inner are not yet sanitized.
+// Seal) is never walked. An error of the device-proof calls
+// ProveDevice, Complete and ChargeEmailCode of inner that cannot be walked is
+// replaced the same way: it is answered as a failure of inner, never as
+// mfa.ErrAlreadyEnrolled, so a write or a charge that claims success beside it
+// is still refused.
 //
 // By default a read that opens a secret under a key other than the active
 // one re-seals it under the active key and hands the old and new values to resealer.
@@ -293,6 +297,7 @@ func (s provingEnrolmentStore) ProveDevice(
 	}
 
 	ok, err := s.proofs.ProveDevice(ctx, user, gen, step, code, codeUntil, at)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 
 	return ok, enrolmentFailed(err, "seal: the inner store could not record the device proof")
 }
@@ -300,6 +305,7 @@ func (s provingEnrolmentStore) ProveDevice(
 // Complete passes through to the inner store's device proofs.
 func (s provingEnrolmentStore) Complete(ctx context.Context, user identity.UserID, gen id.ID, at time.Time) (bool, error) {
 	ok, err := s.proofs.Complete(ctx, user, gen, at)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 
 	return ok, enrolmentFailed(err, "seal: the inner store could not complete the MFA enrolment")
 }
@@ -309,6 +315,7 @@ func (s provingEnrolmentStore) ChargeEmailCode(
 	ctx context.Context, user identity.UserID, gen id.ID, at time.Time,
 ) (int, bool, error) {
 	n, ok, err := s.proofs.ChargeEmailCode(ctx, user, gen, at)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 
 	return n, ok, enrolmentFailed(err, "seal: the inner store could not charge the emailed code")
 }
