@@ -182,7 +182,18 @@ func New(ctx context.Context, opts ...Option) (*Keys, error) {
 // because a manager that only verifies may never be started, and would
 // otherwise publish it for as long as the process lived.
 func (km *Keys) loadFromStore(ctx context.Context) error {
-	recs, err := km.store.LoadAll(ctx)
+	var recs []Record
+
+	// Unguarded: construction runs on the caller's goroutine, so a panic in the
+	// store stays the caller's own. The error is sanitized all the same, since
+	// it is returned to that caller, who may inspect it.
+	err := km.storeCall(ctx, false, whatStoreLoad, func() error {
+		var loadErr error
+
+		recs, loadErr = km.store.LoadAll(ctx)
+
+		return loadErr
+	})
 	if err != nil {
 		return diag.Wrap(err, "signingkey: load keys")
 	}
@@ -415,7 +426,7 @@ func (km *Keys) mintAndStore(ctx context.Context, alg Alg, guarded bool) (string
 	if err != nil {
 		return "", &failure{err: err, reason: reasonGenerate, cause: err}
 	}
-	err = km.consumer(ctx, guarded, whatStoreWrite, func() error { return km.store.Store(ctx, rec) })
+	err = km.storeCall(ctx, guarded, whatStoreWrite, func() error { return km.store.Store(ctx, rec) })
 	if err != nil {
 		return "", &failure{
 			err:    diag.Wrap(err, fmt.Sprintf("signingkey: store %s key", alg)),
@@ -752,7 +763,11 @@ func WithLogger(logger *slog.Logger) Option {
 // stage, never the store's own text; the store's error stays reachable
 // through errors.Is and errors.As, so a consumer who wants its full detail
 // inspects it deliberately or logs it inside their own implementation of
-// KeyStore.
+// KeyStore. The one exception is a store error whose chain cannot be read
+// safely (a cycle, a fan-out past the library's budget, an Unwrap that
+// panics): it is replaced where it enters by a fixed fault that matches no
+// error of the store's, with one Error record on the manager's logger saying
+// the chain was abandoned and why, never its text.
 //
 // The hook runs synchronously on the background loop that failed, which fixes
 // what it may do:

@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/internal/recovered"
 )
 
@@ -145,6 +146,30 @@ func (km *Keys) consumer(ctx context.Context, guarded bool, what string, f func(
 	return recovered.Call(ctx, km.logger, what, f)
 }
 
+// storeCall runs f, a call into the consumer's KeyStore, under consumer, and
+// sanitizes the error f returns where it enters the manager: a chain that
+// cannot be walked (a cycle, a fan-out past the budget, an Unwrap that panics)
+// becomes a fixed porterr.Fault, with one record on the manager's logger,
+// before anything wraps, logs, reports or returns it. A chain that can be
+// walked passes through as the same error, so a consumer's own errors stay
+// reachable through errors.Is and errors.As, and a recovered.ErrPanicked stays
+// the plain sentinel it is.
+//
+// The sanitizer runs inside the recovered call, not after it: it writes its
+// record through the consumer's logger, whose handler is consumer code, and on
+// a loop's goroutine a handler that panics must cost the record and not the
+// process. The failure is then reported as the consumer's code panicking, the
+// same outcome as any other panic from the store.
+//
+// The fault unwraps to porterr.ErrUnwalkable, which no branch here tests for,
+// so a hostile error takes the catch-all branch a plain store failure takes.
+// A cancelled ctx does not stop the record.
+func (km *Keys) storeCall(ctx context.Context, guarded bool, what string, f func() error) error {
+	return km.consumer(ctx, guarded, what, func() error {
+		return porterr.SanitizeTo(ctx, km.logger, f(), porterr.ErrUnwalkable)
+	})
+}
+
 // now reads the consumer's clock under consumer. A panic gives the zero time
 // and recovered.ErrPanicked.
 func (km *Keys) now(ctx context.Context, guarded bool) (at time.Time, err error) {
@@ -160,7 +185,7 @@ func (km *Keys) now(ctx context.Context, guarded bool) (at time.Time, err error)
 // loadAll lists the store under consumer. A panic gives no records and
 // recovered.ErrPanicked. Only the loops call it.
 func (km *Keys) loadAll(ctx context.Context) (recs []Record, err error) {
-	err = km.consumer(ctx, true, whatStoreLoad, func() error {
+	err = km.storeCall(ctx, true, whatStoreLoad, func() error {
 		var loadErr error
 
 		recs, loadErr = km.store.LoadAll(ctx)
@@ -517,7 +542,7 @@ func (km *Keys) deleteRetired(ctx context.Context, now time.Time) {
 		return
 	}
 
-	if err := km.consumer(ctx, true, whatStoreDelete, func() error {
+	if err := km.storeCall(ctx, true, whatStoreDelete, func() error {
 		return km.store.Delete(ctx, retired...)
 	}); err != nil {
 		km.report(ctx, opHousekeep, "", &failure{
