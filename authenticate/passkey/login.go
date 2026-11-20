@@ -14,6 +14,7 @@ import (
 	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/token/onetime"
@@ -179,6 +180,7 @@ func (m *Passkeys) Authenticate(ctx context.Context, body []byte, binding string
 	}
 
 	parsed, err := m.verifier.ParseAssertion(body)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil || nilcheck.IsNil(parsed) {
 		_ = m.refused(ctx, "malformed", id.Nil)
 
@@ -195,6 +197,7 @@ func (m *Passkeys) Authenticate(ctx context.Context, body []byte, binding string
 	}
 
 	c, err := m.credentials.FindByCredentialID(ctx, parsed.CredentialID())
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	switch {
 	case errors.Is(err, ErrNotFound):
@@ -295,6 +298,7 @@ func (m *Passkeys) matchHandle(ctx context.Context, c *Credential, handle []byte
 	}
 
 	user, ok, err := m.handles.UserFor(ctx, handle)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return diag.Wrap(err, "passkey: could not look up the user handle")
 	}
@@ -340,6 +344,7 @@ func (m *Passkeys) checkAssertion(
 	ctx context.Context, p ParsedAssertion, c *Credential, exp AssertionExpectation,
 ) (*AssertionResult, error) {
 	res, err := m.verifier.VerifyAssertion(ctx, p, c, exp)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	switch {
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
@@ -387,6 +392,7 @@ func (m *Passkeys) acceptAssertion(ctx context.Context, c *Credential, res *Asse
 // the store refuses is handled by the clone rule (see CloneResponse).
 func (m *Passkeys) recordUse(ctx context.Context, c *Credential, res *AssertionResult) error {
 	recorded, err := m.credentials.RecordAssertion(ctx, c.ID, res.SignCount, res.BackupState, m.clock.Now())
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return diag.Wrap(err, "passkey: could not record the assertion")
 	}
