@@ -165,6 +165,9 @@ func (c *Codes) resolveLimiter() error {
 	}
 
 	l, err := factory.NewLimiter(namespaceCodes, defaultCodeLimit, defaultCodeWindow)
+	// The factory's error is the consumer's, and fmt.Errorf below reads it
+	// eagerly: it is sanitized first, to the logger the options set.
+	err = porterr.SanitizeTo(context.Background(), c.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return fmt.Errorf("%w: limiter for namespace %q: %w", ErrConfig, namespaceCodes, err)
 	}
@@ -211,6 +214,7 @@ func (c *Codes) generate(ctx context.Context, user identity.UserID, bound time.D
 	err := maybeBounded(ctx, bound, func(sctx context.Context) error {
 		return c.store.ReplaceSet(sctx, user, hashes, c.clock.Now())
 	})
+	err = porterr.SanitizeTo(ctx, c.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		c.logFailure(ctx, msgCodeStoreError, "store", err)
 
@@ -248,6 +252,7 @@ func (c *Codes) remaining(ctx context.Context, user identity.UserID, bound time.
 	n, err := maybeBoundedValue(ctx, bound, func(sctx context.Context) (int, error) {
 		return c.store.Remaining(sctx, user)
 	})
+	err = porterr.SanitizeTo(ctx, c.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		c.logFailure(ctx, msgCodeStoreError, "store", err)
 
@@ -303,6 +308,7 @@ func (c *Codes) check(ctx context.Context, user identity.UserID, presented strin
 	}
 
 	matched, err := c.store.Match(ctx, user, hash[:])
+	err = porterr.SanitizeTo(ctx, c.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		c.logFailure(ctx, msgCodeStoreError, "store", err)
 
@@ -326,6 +332,7 @@ func (c *Codes) spend(ctx context.Context, user identity.UserID, hash [32]byte) 
 	ok, err := boundedValue(ctx, detach.WriteTimeout, func(sctx context.Context) (bool, error) {
 		return c.store.Spend(sctx, user, hash[:], c.clock.Now())
 	})
+	err = porterr.SanitizeTo(ctx, c.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		c.logFailure(ctx, msgCodeStoreError, "store", err)
 
