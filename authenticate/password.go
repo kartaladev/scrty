@@ -9,6 +9,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/idgen"
@@ -433,13 +434,20 @@ func (a *UsernamePasswordAuthenticator) Authenticate(ctx context.Context, creden
 // ErrAuthenticationFailed joined with ctx's error, and with its cause when
 // that is a different error. It carries nothing of the loader's own error,
 // whose text may quote what the store holds.
+//
+// The cause is consumer input, read under the bounded walk: one the walk gives
+// up on is left out, as it may hang or panic whoever reads the returned error
+// next. The hang-up check that led here read the same cause and recorded its
+// abort, so this read records none.
 func endedByCaller(ctx context.Context) error {
 	ctxErr := ctx.Err()
-	if cause := context.Cause(ctx); cause != nil && !errors.Is(ctxErr, cause) {
-		return errors.Join(ErrAuthenticationFailed, ctxErr, cause)
+	errs := []error{ErrAuthenticationFailed, ctxErr}
+
+	if matched, abort := detach.CauseWalk(ctx, ctxErr); !matched && abort == nil {
+		errs = append(errs, context.Cause(ctx))
 	}
 
-	return errors.Join(ErrAuthenticationFailed, ctxErr)
+	return errors.Join(errs...)
 }
 
 // usableHash reports whether the stored hash is one the encoder would verify,

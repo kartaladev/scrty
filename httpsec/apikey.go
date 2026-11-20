@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/apikey"
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/porterr"
@@ -258,8 +259,12 @@ func callerEndedAPIKey(ctx context.Context) error {
 	ctxErr := ctx.Err()
 	errs := []error{refusedAPIKey(), ctxErr}
 
-	if cause := context.Cause(ctx); !errors.Is(cause, ctxErr) {
-		errs = append(errs, cause)
+	// The cause is the middleware's: it is read under the bounded walk, and one
+	// the walk gives up on is left out, as it may hang or panic whoever reads
+	// the returned error next. The hang-up check that led here read the same
+	// cause and recorded its abort, so this read records none.
+	if matched, abort := detach.CauseWalk(ctx, ctxErr); !matched && abort == nil {
+		errs = append(errs, context.Cause(ctx))
 	}
 
 	return errors.Join(errs...)

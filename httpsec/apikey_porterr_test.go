@@ -86,6 +86,14 @@ func apiKeyOwnerThrough(t *testing.T, ctx context.Context, portErr error, leaves
 func apiKeyOwnerSequence(t *testing.T, ctx context.Context, errs []error, leaves bool) apiKeyPortOutcome {
 	t.Helper()
 
+	return apiKeyOwnerSequenceCause(t, ctx, errs, leaves, context.Canceled)
+}
+
+// apiKeyOwnerSequenceCause is apiKeyOwnerSequence where a loader that leaves
+// ends the request with cause.
+func apiKeyOwnerSequenceCause(t *testing.T, ctx context.Context, errs []error, leaves bool, cause error) apiKeyPortOutcome {
+	t.Helper()
+
 	require.NotEmpty(t, errs, "at least one request")
 
 	ctrl := gomock.NewController(t)
@@ -116,7 +124,7 @@ func apiKeyOwnerSequence(t *testing.T, ctx context.Context, errs []error, leaves
 			mu.Unlock()
 
 			if leaves {
-				leave(ctx, context.Canceled)
+				leave(ctx, cause)
 			}
 
 			return nil, portErr
