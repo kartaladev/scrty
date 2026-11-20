@@ -92,7 +92,7 @@ type rstOutcome struct {
 	err      error
 	text     string
 	calls    []string
-	panicked any
+	panicked bool
 	hung     bool
 }
 
@@ -156,10 +156,16 @@ func runRstSite(t *testing.T, ctx context.Context, site rstSite, portErr error) 
 	done := make(chan rstOutcome, 1)
 
 	go func() {
-		var out rstOutcome
+		var (
+			out      rstOutcome
+			returned bool
+		)
 
 		defer func() {
-			out.panicked = recover()
+			// returned, not recover's value, tells a panic: the package's
+			// tests run under panicnil=1, where a panic(nil) recovers as nil.
+			_ = recover()
+			out.panicked = !returned
 			mu.Lock()
 			out.calls = slices.Clone(calls)
 			mu.Unlock()
@@ -167,6 +173,8 @@ func runRstSite(t *testing.T, ctx context.Context, site rstSite, portErr error) 
 		}()
 
 		out.err = mfa.ResetEnrolment(ctx, "u-1", deps)
+		returned = true
+
 		if out.err != nil {
 			out.text = out.err.Error()
 		}
@@ -305,14 +313,14 @@ func TestPortErrors_Reset(t *testing.T) { //nolint:paralleltest // it replaces s
 
 			plain := runRstSite(t, ctx, tc.site, errRstDown)
 			require.False(t, plain.hung)
-			require.Nil(t, plain.panicked)
+			require.False(t, plain.panicked, "the reset panicked on a plain outage")
 			require.Error(t, plain.err, "the plain outage is returned")
 			require.ErrorIs(t, plain.err, errRstDown)
 			require.Empty(t, rstAborts(t, defaults.Bytes()), "a plain outage writes no abort record")
 
 			got := runRstSite(t, ctx, tc.site, tc.err)
 			require.False(t, got.hung, "the reset hung on a hostile error")
-			require.Nil(t, got.panicked, "the reset panicked on a hostile error")
+			require.False(t, got.panicked, "the reset panicked on a hostile error")
 
 			require.Error(t, got.err)
 			assert.Equal(t, plain.text, got.text, "the same fixed text as a plain outage")

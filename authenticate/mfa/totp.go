@@ -454,12 +454,18 @@ func (t *TOTP) BeginEnrolmentGeneration(
 			"mfa: totp account label must not contain ':', got %q", accountLabel)
 	}
 
+	// The random source's and the generator's errors are sanitized before
+	// fmt.Errorf wraps them, so an unwalkable one never enters the chain this
+	// returns.
 	secret := make([]byte, secretBytes)
-	if _, err := io.ReadFull(t.random, secret); err != nil {
+	_, err := io.ReadFull(t.random, secret)
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return Provisioning{}, id.Nil, fmt.Errorf("mfa: totp could not read a secret: %w", err)
 	}
 
 	gen, err := t.ids.NewID()
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return Provisioning{}, id.Nil, fmt.Errorf("mfa: totp could not draw an enrolment generation: %w", err)
 	}
@@ -472,12 +478,16 @@ func (t *TOTP) BeginEnrolmentGeneration(
 
 	encoded := encodeSecret(secret)
 
-	if err := t.store.PutPending(ctx, Enrolment{
+	// A bare ErrAlreadyEnrolled walks to the end and passes as itself; an
+	// unwalkable error, whatever it claims, becomes the outage.
+	err = t.store.PutPending(ctx, Enrolment{
 		User:       user,
 		Secret:     secret,
 		CreatedAt:  t.clock.Now(),
 		Generation: gen,
-	}); err != nil {
+	})
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return Provisioning{}, id.Nil, enrolmentStoreFailed(err, "mfa: totp could not store the pending enrolment")
 	}
 
@@ -561,6 +571,7 @@ func (t *TOTP) ConfirmEnrolment(ctx context.Context, user identity.UserID, code 
 	// against, and the store's write requires no device proof, so a begin or a
 	// proof landing since the read confirms nothing.
 	confirmed, err := t.store.Confirm(ctx, user, e.Generation, step, t.clock.Now())
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return enrolmentStoreFailed(err, "mfa: totp could not confirm the enrolment")
 	}
@@ -587,7 +598,9 @@ func (t *TOTP) ConfirmEnrolment(ctx context.Context, user identity.UserID, code 
 // failure is returned with the package's own text, the store's error still
 // matching by identity.
 func (t *TOTP) RemoveEnrolment(ctx context.Context, user identity.UserID) error {
-	if err := t.store.Delete(ctx, user); err != nil {
+	err := t.store.Delete(ctx, user)
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return enrolmentStoreFailed(err, "mfa: totp could not remove the enrolment")
 	}
 
