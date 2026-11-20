@@ -274,7 +274,8 @@ func (p *Provider) parkLogout(ctx context.Context, req endSessionRequest, flowSe
 
 // browserSignIn is the sign-in of the browser's session, and nil when it holds none, which is an
 // answer and no failure. A logout asks nothing more of it: a user since deactivated, or a sign-in
-// too old to answer a request, can still be logged out.
+// too old to answer a request, can still be logged out. A store answering neither a session nor an
+// error breaks its contract: that is a dependency failure, which ends nothing, and never no session.
 func (p *Provider) browserSignIn(ctx context.Context, secret string) (*SignIn, error) {
 	if !p.cfg.browserSessions {
 		return nil, nil //nolint:nilnil // no session is an answer
@@ -291,6 +292,8 @@ func (p *Provider) browserSignIn(ctx context.Context, secret string) (*SignIn, e
 		return nil, nil //nolint:nilnil // no session is an answer
 	case err != nil:
 		return nil, dependencyFailure(ctx, err, "oidcprovider: load the browser session")
+	case session == nil:
+		return nil, dependencyFailure(ctx, errNoRecord, "oidcprovider: load the browser session")
 	}
 
 	return &session.SignIn, nil

@@ -150,8 +150,9 @@ func splitHandle(handle string) (id.ID, []byte, bool) {
 
 // loadPending returns the unexpired request the handle names, when the flow secret is
 // the one it was parked with. Every way of failing that is the requester's answers
-// ErrUnknownHandle, so a guess learns nothing from which it was. The stage is the
-// caller's to judge.
+// ErrUnknownHandle, so a guess learns nothing from which it was. A store answering
+// neither a request nor an error breaks its contract, and is a dependency failure, never
+// an unknown handle. The stage is the caller's to judge.
 func (p *Provider) loadPending(ctx context.Context, handle, flowSecret string) (*PendingRequest, error) {
 	recordID, handleDigest, ok := splitHandle(handle)
 	if !ok {
@@ -169,6 +170,8 @@ func (p *Provider) loadPending(ctx context.Context, handle, flowSecret string) (
 		return nil, ErrUnknownHandle
 	case err != nil:
 		return nil, dependencyFailure(ctx, err, "oidcprovider: load the pending request")
+	case r == nil:
+		return nil, dependencyFailure(ctx, errNoRecord, "oidcprovider: load the pending request")
 	}
 
 	bound := subtle.ConstantTimeCompare(r.FlowDigest, flowDigest) == 1

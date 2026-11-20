@@ -16,6 +16,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/lifecycle"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/outbound"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token"
@@ -143,7 +144,8 @@ func (p *Provider) deliverLogout(ctx context.Context, c ClientToNotify, posting 
 		return failureOf(c, failureSign, err)
 	}
 	posting.Store(true)
-	if err := p.logoutDelivery.Deliver(ctx, rc.BackChannelLogoutURI, raw); err != nil {
+	err = p.logoutDelivery.Deliver(ctx, rc.BackChannelLogoutURI, raw)
+	if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 		return failureOf(c, deliveryReason(err), err)
 	}
 
@@ -220,6 +222,8 @@ func (p *Provider) logLostLogoutReports(lost lostReports) {
 // outboundLogoutDelivery is the default: one form POST through a confined client.
 type outboundLogoutDelivery struct {
 	out *outbound.Client
+	// logger takes the record of a transport error whose chain cannot be walked.
+	logger *slog.Logger
 }
 
 // Deliver implements LogoutDelivery. 200 and 204 are success (Back-Channel Logout §2.8), whatever body
@@ -227,6 +231,10 @@ type outboundLogoutDelivery struct {
 func (d outboundLogoutDelivery) Deliver(ctx context.Context, uri, logoutToken string) error {
 	status, err := d.out.PostFormStatus(ctx, uri, url.Values{logoutTokenParam: {logoutToken}}, nil)
 	if err != nil {
+		// The transport is a port: a hostile error is made walkable here, naming errLogoutPost, so it is
+		// reported as a failed post, as a plain transport error is.
+		err = porterr.SanitizeTo(ctx, d.logger, err, errLogoutPost)
+
 		return diag.Wrap(err, logoutPostText, errLogoutPost)
 	}
 	if status != http.StatusOK && status != http.StatusNoContent {
@@ -258,7 +266,7 @@ func (c *config) buildLogoutDelivery() (LogoutDelivery, error) {
 	case c.logoutDeliverySet:
 		return c.logoutDelivery, nil
 	case c.outboundSet && !c.logoutOutboundSet:
-		return outboundLogoutDelivery{out: c.outbound.WithoutRedirects()}, nil
+		return outboundLogoutDelivery{out: c.outbound.WithoutRedirects(), logger: c.logger}, nil
 	}
 
 	// Later options win, so the cap goes last, and what a consumer gives cannot bring redirects back. The
@@ -273,7 +281,7 @@ func (c *config) buildLogoutDelivery() (LogoutDelivery, error) {
 		return nil, fmt.Errorf("%w: WithLogoutOutbound: %w", ErrConfig, err)
 	}
 
-	return outboundLogoutDelivery{out: out}, nil
+	return outboundLogoutDelivery{out: out, logger: c.logger}, nil
 }
 
 // newLogoutTransport keeps no connection: a logout token is rare, and a kept connection is goroutines
