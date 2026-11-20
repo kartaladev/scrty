@@ -388,6 +388,9 @@ func (p *Policy) Check(ctx context.Context, user *identity.Details, candidate st
 
 	if p.words != nil {
 		words, err := p.words(ctx, user)
+		// The words function is the consumer's, and so is its error: a hostile
+		// chain comes back as the library's fixed error, never inspected raw.
+		err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable)
 		if err != nil {
 			return err
 		}
@@ -474,7 +477,9 @@ func (p *Policy) Change(ctx context.Context, user *identity.Details, candidate s
 		}
 	}
 
-	return write(ctx, user, hash, p.clock.Now())
+	// The write function is the consumer's, and so is its error: a hostile
+	// chain comes back as the library's fixed error, a walkable one unchanged.
+	return porterr.SanitizeTo(ctx, p.logger, write(ctx, user, hash, p.clock.Now()), porterr.ErrUnwalkable)
 }
 
 // containsContextWord reports whether candidate equals any of words, or
