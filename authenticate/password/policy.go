@@ -10,6 +10,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 )
 
@@ -96,6 +97,7 @@ type Policy struct {
 	reuse     *reuseRule          // nil: the reuse rule is off
 	enc       Encoder
 	clock     clock.Clock
+	logger    *slog.Logger // where the boundary sanitizer records an aborted walk
 }
 
 // PolicyOption configures a [Policy].
@@ -202,6 +204,7 @@ func NewPolicy(opts ...PolicyOption) (*Policy, error) {
 		breach:    cfg.breach,
 		enc:       enc,
 		clock:     cfg.clock,
+		logger:    cfg.logger,
 	}
 
 	if cfg.reuse != nil {
@@ -452,6 +455,9 @@ func (p *Policy) Change(ctx context.Context, user *identity.Details, candidate s
 	// Encode before retiring: a refusal, an encoder's too-long one included,
 	// must leave the history untouched.
 	hash, err := p.enc.Encode(candidate)
+	// The encoder is the consumer's, and so is its error: a hostile chain
+	// takes the plain failure branch below, never the too-long refusal.
+	err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable)
 	if errors.Is(err, ErrTooLong) {
 		// An encoder that states no limit through InputLimiter reaches here: the
 		// candidate is too long for it, which is the user's to fix, not a failure.
