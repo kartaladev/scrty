@@ -124,6 +124,17 @@ Wherever the library asks an identifier generator for a new identifier, an answe
 - **WHEN** a consumer passes a nil generator to a component's identifier-generator option
 - **THEN** the component's constructor returns its configuration error naming the option
 
+### Requirement: Consumer code that panics on a library goroutine does not take the process down
+Where the library runs consumer code on a goroutine it started itself, a panic in that code SHALL be recovered where the code is called. The operation SHALL answer as it does when that dependency fails, one error record SHALL be written without the panic value's text, and a loop or scheduler SHALL go on running.
+
+#### Scenario: The metadata fetch panics
+- **WHEN** the consumer's WebAuthn metadata fetch panics while a registration is verified
+- **THEN** the registration is refused as it is when the metadata is unavailable, one error record is written, and the process keeps running
+
+#### Scenario: A key store panics during rotation
+- **WHEN** the consumer's signing-key store panics during a scheduled rotation
+- **THEN** the rotation is reported as failed, one error record is written, and the next rotation still runs
+
 ### Requirement: A component's records go where the consumer configured
 Every log record a library component writes SHALL go to that component's own logger when the consumer configured one. Otherwise it SHALL go to the logger of the chain handling the request, when that chain has a logger of its own or runs inside a chain that has one. Otherwise it SHALL go to the process default logger as it stands when the record is written. Whether a record is written SHALL follow the level of the logger it goes to.
 

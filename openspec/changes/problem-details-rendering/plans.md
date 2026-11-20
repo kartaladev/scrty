@@ -854,11 +854,47 @@ Steps:
 - [ ] **Step 5 (each dispatch): watch the red rows fail, implement, run green.** Run `go test -race -p 2 -count=1` on the dispatch's packages, in their own module. Then a Sonnet review (Opus for lane b), the isolation check, and commit: `fix(<pkg>): refuse a generator's nil identifier`.
 - [ ] **Step 6: close the task.** `rg -n 'NewID\(\)' --glob '!**/*_test.go' --glob '!.claude/**'` lists only `internal/idgen`, `session/prepared.go`, `authenticate/mfa/totp.go` and the generators themselves. Tick 10.15.
 
+### Task 10.16: Consumer code that panics on a library goroutine is recovered (design decision 14)
+
+**Spec for this task:** design.md decision 14 and its three failure rows; the `http-error-propagation` delta's requirement "Consumer code that panics on a library goroutine does not take the process down".
+
+**Order:** after 10.12 has landed in a lane's package, beside 10.15, before 10.14 (never two agents in one package). Lane a first; lanes b to f then in parallel by package.
+
+**Interfaces (lane a produces; lanes b to f consume):**
+- `internal/recovered`: `func Call(ctx context.Context, log *slog.Logger, what string, f func() error) error` and `var ErrPanicked = errors.New("recovered: the consumer's code panicked")`.
+  - No panic: `f`'s error comes back unchanged (nil included).
+  - A panic, including `panic(nil)` (detected by a `returned` flag, not by `recover() != nil`): returns `ErrPanicked` and writes one Error record to `log` with message `"consumer code panicked"`, attribute `what`, and `diag.PanicAttrs`; never the panic value's text.
+  - A nil `log` writes to `slog.Default()` until 10.14 routes it.
+  - It never re-panics.
+
+**Review Focus for this task:**
+1. **`panic(nil)` from consumer code under `panicnil=1`.** Expect `ErrPanicked` and one record, never a silent success. Lane a pins it (row `panic(nil)`).
+2. **A panic value whose `String()` or `Error()` itself panics or holds a secret.** Expect the record to carry only the value's Go type and the frames. Lane a pins it (row `value with a hostile Error method`).
+3. **The metadata fetch panicking while several registrations wait on the same flight.** Expect every waiter to get the metadata outage, and the process to keep running. Lane b pins it (row `two waiters`).
+4. **A rotation loop whose key store panics on every run.** Expect each run to be reported failed and the loop to keep its schedule, never stop silently. Lane d pins it (row `panics twice`).
+5. **gocron's own behaviour on a job panic.** Expect it to be pinned, whatever it is, before scrty wraps the locker, observer and clock. Lane f's first step.
+
+- [ ] **Step 1 (lane a, Sonnet): write the failing test.** `TestCall` in `internal/recovered/recovered_test.go`, a table in the `assert`-closure form, with rows:
+  - `no panic, nil` and `no panic, error` (the error unchanged, 0 records);
+  - `panic with a string`, `panic with an error`, `runtime error (nil map write)`, `panic(nil)` (`ErrPanicked`, 1 Error record with `what` and the panic type);
+  - `value with a hostile Error method` (the record has no text from the value).
+  The package's test file carries `//go:debug panicnil=1`.
+- [ ] **Step 2: watch it fail.** Add a stub `Call` that returns `f()` so the test compiles. Run `go test -count=1 -run TestCall ./internal/recovered/`. Expected: the panic rows panic out of the test.
+- [ ] **Step 3: implement** `Call` and `ErrPanicked`, and write the godoc naming the guarantee. Run green. Verify, then a Sonnet review, the isolation check, and commit: `feat(recovered): recover consumer code run on a library goroutine`.
+- [ ] **Step 4 (lanes b to f): one dispatch per package.** Per site, the red row runs in a child process (the parent re-execs the test binary with an env var naming the row, requires one output line equal to the marker, and asserts the exit). Today the child dies with the consumer's panic. After the fix, the consumer call runs inside `recovered.Call` with the component's logger, the site answers its existing outage, and the next call, iteration or job runs. Lanes:
+  - **b** (Opus) `authenticate/passkey/webauthn`: `metadataCache.refresh`'s `c.fetch` (`metadata.go`, inside the `DoChan` flight). Outage: `errMetadataUnavailable`; the registration is refused (pins Review Focus 3).
+  - **c** (Opus) `authenticate/oidc`: the remote fetch in `remote.go`'s `DoChan` flight. Outage: its fetch failure.
+  - **d** (Sonnet) `token/signingkey`: the rotation loops' calls to the key store, the error hook and the clock (`keys_lifecycle.go`, `keys_rotate.go`). The iteration is reported failed through the error hook's path, and the loop goes on (pins Review Focus 4).
+  - **e** (Sonnet) `session`: the memory store's housekeeping clock (`store_memory.go`). The cycle is skipped and housekeeping goes on.
+  - **f** (Sonnet) `expiry/sweep`: first a row pinning what gocron does with a job that panics (Review Focus 5); then the locker, observer and clock calls around a scheduled job (`sweeper.go`). The run is reported failed and the scheduler goes on.
+- [ ] **Step 5 (each dispatch): watch the red rows fail, implement, run green.** Run `go test -race -p 2 -count=1` on the dispatch's packages in their own module. Then a review (Opus for lanes b and c, Sonnet for the others), the isolation check, and commit: `fix(<pkg>): recover consumer code that panics on the library's goroutine`.
+- [ ] **Step 6: close the task.** Re-run the sweep's search (singleflight `DoChan`, `go ` statements, `wg.Go`) and confirm every listed site is recovered or named in design.md's accepted rows. Tick 10.16.
+
 ### Task 10.14: Records land where the consumer configured (design decision 12)
 
 **Spec for this task:** design.md decision 12 and its failure rows; the `http-error-propagation` delta's requirements "A component's records go where the consumer configured" and "A nil logger option is a configuration error"; the `password-policy` delta (breach logger) and the `email-notification` delta (delivery-failure records).
 
-**Order:** after every 10.12 call-site dispatch and every 10.15 dispatch has landed in the packages a lane touches (never two agents in one package). Lane a first. Lanes b to f then run in parallel by package. Each lane is split into dispatches of at most six components, run in order, each with a fresh agent.
+**Order:** after every 10.12, 10.15 and 10.16 dispatch has landed in the packages a lane touches (never two agents in one package). Lane a first. Lanes b to f then run in parallel by package. Each lane is split into dispatches of at most six components, run in order, each with a fresh agent.
 
 **Interfaces (lane a produces; every other lane consumes):**
 - `ctxlog.Routing() *slog.Logger` returns a new routing logger. Its handler resolves per record: `From(ctx)` when that is non-nil and not itself a routing logger, else `slog.Default()` at that moment. `WithAttrs` and `WithGroup` are recorded and replayed onto the resolved handler. Each routing logger keeps the last logger it resolved for a record with a request context (`atomic.Pointer[slog.Logger]`).
@@ -1001,5 +1037,5 @@ Steps:
 
 ### Task 10.8: Whole-branch review
 
-- [ ] **Step 1:** Dispatch a fresh Opus reviewer. Give it decisions 11, 12 and 13, their failure rows, the new `http-error-propagation` requirements and the `password-policy` and `email-notification` deltas, and the branch diff against `main`. It enumerates how the change can fail before judging, and labels every claim REPRODUCED or UNREPRODUCED.
+- [ ] **Step 1:** Dispatch a fresh Opus reviewer. Give it decisions 11 to 14, their failure rows, the new `http-error-propagation` requirements and the `password-policy` and `email-notification` deltas, and the branch diff against `main`. It enumerates how the change can fail before judging, and labels every claim REPRODUCED or UNREPRODUCED.
 - [ ] **Step 2:** Send each finding to a fresh dispatch of the task that owns it, then re-run 10.7. Expected: the review is clean.

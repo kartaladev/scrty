@@ -375,6 +375,28 @@ Maintainer's choice, 2026-11-20: every place scrty asks a consumer-replaceable `
 - A nil check written out at each site: 60 copies, any of which can be forgotten. One helper keeps the rule in one place.
 - Retrying on the nil identifier: it hides a broken generator, and it needs a bound and a policy the consumer did not ask for.
 
+### 14. A consumer panic on a goroutine the library started is recovered
+
+Maintainer's choice, 2026-11-20: fix it in this change, after a sweep. Decision 11 accepts a consumer port that panics because net/http recovers the panic per request. That holds only on the request's own goroutine. The 10.12 P5 dispatch reproduced the exception: a consumer WebAuthn metadata fetch that panics runs inside singleflight's `DoChan`, which re-raises the panic on a goroutine of its own, so no request recovery sees it and the process exits. The sweep of the same day listed every goroutine the library starts that calls consumer code. Seven already recover (the queued notifier, back-channel delivery and its report lanes, the signal bus, the signal stream's reads, sign-in notices, the client-keys fetch). These do not:
+- the WebAuthn metadata refresh (`DoChan`, the consumer fetch);
+- the OIDC relying party's remote fetch (`DoChan`, through the consumer's HTTP client);
+- the signing-key manager's rotation loops (the key store, the error hook, the clock);
+- the memory session store's housekeeping (the clock);
+- the expiry sweeper's scheduled jobs, around the task itself, which the runner already recovers (the locker, the observer, the clock).
+
+**Decision.**
+- A new `internal/recovered` package has `Call(ctx context.Context, log *slog.Logger, what string, f func() error) (err error)`. It runs `f`, recovers a panic, including `panic(nil)` (detected by whether `f` returned), writes one Error record with `diag.PanicAttrs` and the constant message naming `what`, and returns the fixed sentinel `recovered.ErrPanicked`. It never re-panics.
+- Each listed site wraps its consumer call in it, on the library's goroutine, and answers the site's existing outage: the metadata refresh answers `errMetadataUnavailable` (the registration is refused, as on a fetch outage); the remote fetch answers its fetch failure; a rotation loop iteration reports a failed run through the error hook's path and the loop goes on; housekeeping skips the cycle and goes on; a sweeper job reports a failed run and the scheduler goes on.
+- The panic is recovered where the consumer code is called, not around the goroutine as a whole, so a loop survives and keeps its state.
+- The fasthttp connection watcher in `fibersec` is left as it is: the connection is fasthttp's, not a port the consumer configures (accepted row).
+
+**Default and override.** No option. The guarantee is that consumer code run on a library goroutine never takes the process down; the record goes where decision 12 routes it.
+
+**Rejected.**
+- Recovering around each goroutine's whole body: a rotation loop or a scheduler would end on the first panic and stop working silently.
+- Replacing singleflight's `DoChan` with `Do`: `Do` re-panics in every waiting caller, and the waiting callers have different requests; the first panic still ends the shared flight for all of them.
+- Leaving it documented: a crash from consumer code on a library goroutine is the outcome decision 11 promises cannot happen.
+
 ### Failure modes
 
 | Failure | State | Outcome |
@@ -441,6 +463,9 @@ No process-wide reporter is installed. A process-wide reporter could not see eac
 | A consumer's identifier generator answers the nil identifier with no error | Handled, tested (decision 13) | `idgen.New` returns `idgen.ErrNil`, and the site takes its branch for a failing generator: a dependency failure, nothing stored. The session family keeps its configuration error and TOTP its own refusal |
 | A consumer's identifier generator panics in `NewID` | Accepted (decision 13) | Not recovered, as before. net/http recovers it per request; elsewhere the caller's recovery policy decides. No library-owned goroutine calls a generator |
 | A consumer's identifier generator answers the same non-nil identifier twice | Accepted (decision 13) | Not checked: detecting it needs memory of every identifier issued. The store's own uniqueness answers it where the identifier is a key, as a store failure |
+| Consumer code panics on a goroutine the library started (the metadata refresh, the remote fetch, signing-key rotation, session housekeeping, sweeper jobs) | Handled, tested (decision 14) | Recovered where the consumer code is called. One Error record with the panic's type and frames, never its value's text; the site answers its existing outage, and a loop or scheduler goes on. `panic(nil)` counts as a panic. Before, the process exited (reproduced for the metadata fetch) |
+| A consumer panic on a request's own goroutine | Accepted (decisions 11 and 14) | Not recovered by the library. net/http recovers it per request; elsewhere the caller's recovery policy decides |
+| A panicking `net.Conn` under fibersec's client watcher | Accepted (decision 14) | The connection is fasthttp's, not a consumer port. Left unrecovered |
 | A nil generator given to `passkey`'s generator option | Handled, tested (decision 13) | `passkey`'s configuration error, naming the option, as every other component's generator option already does |
 | `Methods` nil vs empty | Handled, tested | Omitted vs `[]` |
 | `Window <= 0`, or a rejection without `RejectedError` | Handled, tested | `max_age` / `rule` omitted |
@@ -595,3 +620,14 @@ The nil-option rule and the scope are the maintainer's choices, reasoned from `l
 - The scrty inventory of `id.Generator.NewID` call sites (62 in production, 2 already refusing the nil identifier), and `pkg/id` godoc: `Nil` "means 'no identifier', and no generator scrty ships returns it"; the `Generator` godoc promises nothing about it.
 
 Otherwise reasoned from scrty's own settled specs: the `sessions` requirement that family identifiers come from a replaceable generator, and the `security-state-stores` requirement that a family revocation naming the nil identifier is refused. The scope is the maintainer's choice.
+
+### Decision 14: a consumer panic on a library goroutine
+
+**Researched** (2026-11-20):
+- golang.org/x/sync v0.24.0 `singleflight` (`singleflight.go`, read from the module cache by the P5 dispatch, which reproduced the crash): `DoChan` runs the function on a new goroutine and re-raises a panic there with `go panic(e)`, so no caller can recover it.
+- The scrty sweep of library-started goroutines (22 sites, 3 singleflight uses), and the house patterns that already recover consumer code on such goroutines: `internal/eventsink.Deliver`, `internal/storekit.BestEffort`, the queued notifier's workers, back-channel delivery.
+
+**Primary documentation:**
+- [Go spec, Handling panics](https://go.dev/ref/spec#Handling_panics): `recover` stops a panic only in the deferred functions of the panicking goroutine.
+
+The scope is the maintainer's choice.

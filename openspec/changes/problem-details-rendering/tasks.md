@@ -219,7 +219,7 @@
 
 ## 10. One bounded, recovering walk classifies a refusal (design decision 11)
 
-Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parallel. Then 10.10 (panic frames), then 10.9 (remaining walks) and 10.4 (mapper) in parallel. Then 10.9b (10.9 review fixes) and 10.13a (no-allocation walk) in parallel, then 10.9a, then 10.12 (internals, sanitizer, then call sites in groups). Then 10.15 (nil identifiers), then 10.14 (record routing). Then 10.11 (prblm v0.3.0 and the Dependabot bumps), then 10.6 (docs), 10.7 (gate) and 10.8 (review).
+Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parallel. Then 10.10 (panic frames), then 10.9 (remaining walks) and 10.4 (mapper) in parallel. Then 10.9b (10.9 review fixes) and 10.13a (no-allocation walk) in parallel, then 10.9a, then 10.12 (internals, sanitizer, then call sites in groups). Then 10.15 (nil identifiers) and 10.16 (panics on library goroutines), then 10.14 (record routing). Then 10.11 (prblm v0.3.0 and the Dependabot bumps), then 10.6 (docs), 10.7 (gate) and 10.8 (review).
 
 - [x] 10.1 `internal/errwalk`. Red: `TestFlatten` (table), with these cases:
   - order: root first, then depth first, through `Unwrap() error` and `Unwrap() []error`, each node's `Unwrap` called once;
@@ -353,7 +353,17 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
   - Unchanged, with a row each pinning it: `session/prepared.go` (the family stays a configuration error) and `authenticate/mfa/totp.go` (its own refusal).
   - After each dispatch: verify, then a fresh reviewer (Sonnet; Opus for the OpenID Provider lane), then the isolation check and commit. Close with `rg 'NewID\(\)' --glob '!**/*_test.go'` showing only `internal/idgen`, the two unchanged sites and the generators themselves.
   - CHANGELOG `[Unreleased]` (written in 10.6): Fixed, a generator answering the nil identifier is refused; Changed, `passkey`'s nil generator option is a configuration error.
-- [ ] 10.14 Records land where the consumer configured (design decision 12). Starts once every 10.12 and 10.15 dispatch in a package has landed, so no two agents edit one package. Lanes run in order a, then b to f in parallel by package, each a fresh dispatch of at most six components.
+- [ ] 10.16 Consumer code that panics on a library goroutine is recovered (design decision 14). Runs after 10.12 and beside 10.15, never two agents in one package.
+  - **a. Foundation** (Sonnet): `internal/recovered.Call(ctx, log, what, f func() error) error` and the sentinel `ErrPanicked`. Red first, as a table: a panic with a value, `panic(nil)`, a runtime error and no panic. Each panic gives `ErrPanicked` and one Error record carrying `diag.PanicAttrs` but never the value's text; `f`'s own error comes back unchanged; it never re-panics.
+  - **b. Sites** from the 2026-11-20 sweep, one dispatch per package, Opus for the singleflight lanes, Sonnet for the rest. Red first per site: the consumer code panics, and today the process exits (run the row in a child process and assert the child's exit) or the loop stops. After the fix the site answers its outage, one record is written, and the next call, iteration or job runs.
+    - `authenticate/passkey/webauthn`: the metadata refresh's fetch (`DoChan`); answers `errMetadataUnavailable`, and the registration is refused.
+    - `authenticate/oidc`: the remote fetch (`DoChan`) through the consumer's HTTP client; answers the fetch failure.
+    - `token/signingkey`: the rotation loops' store, error-hook and clock calls; the iteration is reported failed and the loop goes on.
+    - `session`: the memory store's housekeeping clock; the cycle is skipped and housekeeping goes on.
+    - `expiry/sweep`: the locker, observer and clock around a scheduled job (the task itself is already recovered by the runner); the run is reported failed and the scheduler goes on. First check whether gocron recovers job panics, and pin what it does.
+  - Unchanged, with the reason in design.md: the fibersec client watcher.
+  - After each dispatch: verify, a fresh reviewer, the isolation check, commit.
+- [ ] 10.14 Records land where the consumer configured (design decision 12). Starts once every 10.12, 10.15 and 10.16 dispatch in a package has landed, so no two agents edit one package. Lanes run in order a, then b to f in parallel by package, each a fresh dispatch of at most six components.
   - **a. Foundation** (Opus: other lanes compile against it):
     - `internal/ctxlog` gains the routing logger, whose handler resolves per record: the chain's logger on the context, else `slog.Default().Handler()` read at record time. It never delegates to a routing handler, and it replays `WithAttrs`/`WithGroup` onto the resolved handler. Red first: `testing/slogtest.TestHandler`, plus rows for chain logger, no chain, `SetDefault` after construction, a detached context (`WithoutCancel`), a context rebuilt from `Background`, a routing logger found on the context, a typed-nil or wrong-type value, and `Enabled` following the resolved level.
     - A helper for sampled components keeps the last resolved logger (`atomic.Pointer`) for suppressed-count summaries.
@@ -411,7 +421,7 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
 
   Verify with `go doc ./httpsec LookupStatus` and `gofmt -l .`.
 - [ ] 10.7 Re-run the 8.3 gate in full, the `test` module on an idle machine.
-- [ ] 10.8 A whole-branch review (Opus, fresh agent) against decisions 11, 12 and 13 and the new `http-error-propagation` requirements. It first enumerates how the change fails. Findings go back to a fresh dispatch of the owning task.
+- [ ] 10.8 A whole-branch review (Opus, fresh agent) against decisions 11 to 14 and the new `http-error-propagation` requirements. It first enumerates how the change fails. Findings go back to a fresh dispatch of the owning task.
 
 ## Workflow follow-up
 
