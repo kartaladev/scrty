@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 const (
@@ -172,12 +173,14 @@ func (c *WayBackCheck) HasWayBack(ctx context.Context, user identity.UserID) (bo
 	}
 
 	kinds, err := c.linkedLogins(ctx, user)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 	if err != nil {
 		return false, diag.Wrap(err, errTextWayBackLinks)
 	}
 
 	for _, k := range kinds {
 		ok, err := c.admits(ctx, user, k)
+		err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 		if err != nil {
 			return false, diag.Wrap(err, errTextWayBackAdmit)
 		}
@@ -201,6 +204,7 @@ func admittedByKind(_ context.Context, _ identity.UserID, kind factor.Kind) (boo
 // taken as a user with no password.
 func (c *WayBackCheck) pairsWithIssuedCode(ctx context.Context, user identity.UserID) (bool, error) {
 	d, err := c.users.LoadByUserID(ctx, user)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 	if err != nil {
 		return false, diag.Wrap(err, errTextWayBackUser)
 	}
@@ -228,8 +232,12 @@ func (c *WayBackCheck) pairsWithIssuedCode(ctx context.Context, user identity.Us
 // holds otherwise.
 func usable(ctx context.Context, k AuthenticatorKind, user identity.UserID) ([]AuthenticatorRef, error) {
 	if u, ok := k.(UsableLister); ok {
-		return u.Usable(ctx, user)
+		refs, err := u.Usable(ctx, user)
+
+		return refs, porterr.Sanitize(err, porterr.ErrUnwalkable)
 	}
 
-	return k.Held(ctx, user)
+	refs, err := k.Held(ctx, user)
+
+	return refs, porterr.Sanitize(err, porterr.ErrUnwalkable)
 }

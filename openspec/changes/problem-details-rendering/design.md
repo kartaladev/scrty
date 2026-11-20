@@ -264,7 +264,8 @@ The library also protects every error returned by a consumer-supplied port befor
       - the encrypting session store (`NewEncryptedStore`);
       - the concurrent-sessions policy;
       - `ProvisionerWrite` and `ConditionalProvisionerRehash`;
-      - the recovery authenticator-reset planner (`Held`, the reset policy, `Remove`), even under a `Recoverer` built with `WithLogger` (10.12 group 5 review).
+      - the recovery authenticator-reset planner (`Held`, the reset policy, `Remove`), even under a `Recoverer` built with `WithLogger` (10.12 group 5 review);
+      - recovery's MFA enrolments kind and the way-back check (`HasWayBack`), which take no logger option.
     - Wrapping one of them in a component that has `WithLogger`, such as `Sessions` over an encrypted store, still sends that record to the default logger.
     - Accepted (10.12 group 1 review): the record is written, never lost, and only one is written. A second `Sanitize` on the `Fault` writes nothing. A logger option on each would add exported API outside this change.
   - A nil logger means `slog.Default()`.

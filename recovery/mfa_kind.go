@@ -10,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // MFAKind is the Kind of the authenticators MFAEnrolments lists: one reference
@@ -89,6 +90,7 @@ func (k mfaKind) enrolled(ctx context.Context, user identity.UserID, withChannel
 
 	for _, m := range k.methods {
 		enrolled, err := m.Enrolled(ctx, user)
+		err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 		if err != nil {
 			return nil, diag.Wrap(err, errTextMFALookup)
 		}
@@ -113,7 +115,9 @@ func (k mfaKind) Remove(ctx context.Context, user identity.UserID, refs []Authen
 			continue
 		}
 
-		if err := r.RemoveEnrolment(ctx, user); err != nil {
+		err := r.RemoveEnrolment(ctx, user)
+		err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+		if err != nil {
 			return diag.Wrap(err, errTextMFARemoval)
 		}
 	}
