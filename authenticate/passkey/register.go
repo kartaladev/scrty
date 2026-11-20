@@ -14,6 +14,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
@@ -59,6 +60,8 @@ func (m *Passkeys) BeginRegistration(
 	user := sess.UserID
 
 	details, err := m.users.LoadByUserID(ctx, user)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not load the user")
 	}
@@ -78,6 +81,8 @@ func (m *Passkeys) BeginRegistration(
 	}
 
 	held, err := m.credentials.List(ctx, user)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not list the user's passkeys")
 	}
@@ -124,6 +129,8 @@ func (m *Passkeys) handle(ctx context.Context, s *session.Session) ([]byte, erro
 	}
 
 	handle, err := m.handles.Assign(ctx, s.UserID, offered)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not assign a user handle")
 	}
@@ -306,6 +313,8 @@ func (m *Passkeys) FinishRegistration(
 	}
 
 	held, err := m.credentials.Count(ctx, sess.UserID)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not count the user's passkeys")
 	}
@@ -315,6 +324,8 @@ func (m *Passkeys) FinishRegistration(
 	}
 
 	cid, err := m.ids.NewID()
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not mint a credential identifier")
 	}
@@ -343,6 +354,7 @@ func (m *Passkeys) FinishRegistration(
 	}
 
 	stored, err := m.credentials.InsertWithin(ctx, c, m.passkeyLimit)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	switch {
 	case errors.Is(err, ErrDuplicateCredential):
@@ -384,6 +396,8 @@ func (m *Passkeys) noSyncedPasskey(ctx context.Context, c *Credential) bool {
 	}
 
 	held, err := m.credentials.List(ctx, c.User)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		m.sampled(ctx, slog.LevelError, "list|synced", msgSyncedUnknown, diag.Failure("list", err)...)
 
