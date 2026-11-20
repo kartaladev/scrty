@@ -58,12 +58,15 @@ type signingKeyStore struct {
 // of inner, or of cipher while sealing, is returned the same way; nothing is
 // stored when sealing fails.
 //
-// An error of inner that cannot be walked, from Store or LoadAll, is replaced
-// by a fixed error and one record is written to slog.Default(): it is answered
-// as a failure of inner, never as ErrDecryptionFailed or ErrUnknownKeyID. An
-// error of cipher that cannot be walked while sealing is replaced by a fixed
-// error matching ErrUnavailable, and answered as an outage of cipher. The
-// cipher's Open, the store's Delete and the re-seal path are not yet sanitized.
+// An error of inner that cannot be walked, from Store, LoadAll or Delete, is
+// replaced by a fixed error and one record is written to slog.Default(): it is
+// answered as a failure of inner, never as ErrDecryptionFailed or
+// ErrUnknownKeyID. An error of cipher that cannot be walked, while sealing or
+// while opening a key in LoadAll, is replaced by a fixed error matching
+// ErrUnavailable, and answered as an outage of cipher: it fails the load as
+// any outage does, and never reads as ErrDecryptionFailed or ErrUnknownKeyID.
+// The errors of the re-seal path (ActiveKeyID, the re-seal's Seal and the
+// resealer) are only compared with nil or dropped, so they are not walked.
 //
 // Delete forwards to inner, since it has nothing to seal.
 //
@@ -135,6 +138,7 @@ func (s *signingKeyStore) LoadAll(ctx context.Context) ([]signingkey.Record, err
 	for i := range recs {
 		aad := SigningKeyAAD(recs[i].Kid)
 		plaintext, keyID, err := s.cipher.Open(ctx, recs[i].Private, aad)
+		err = porterr.Sanitize(err, ErrUnavailable)
 		if err != nil {
 			return nil, diag.Wrap(err, "seal: a stored signing key could not be opened")
 		}
@@ -155,7 +159,10 @@ func (s *signingKeyStore) LoadAll(ctx context.Context) ([]signingkey.Record, err
 // Delete forwards to inner: a delete has nothing to seal or open. A failure is
 // returned with fixed text, inner's error reachable through errors.Is and errors.As.
 func (s *signingKeyStore) Delete(ctx context.Context, kids ...string) error {
-	return diag.Wrap(s.inner.Delete(ctx, kids...), "seal: the inner store could not delete the signing keys")
+	err := s.inner.Delete(ctx, kids...)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+
+	return diag.Wrap(err, "seal: the inner store could not delete the signing keys")
 }
 
 // staleKey is a loaded record, by index, that opened under a retired key: the

@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"runtime/debug"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,9 +20,42 @@ import (
 )
 
 // The hostile error types, the abort recorder, the outcome type and the
-// bound, the child-process helper and the default swap are the ones
+// bound, the child-process env var and the default swap are the ones
 // cipher_porterr_test.go and mfa_porterr_test.go declare for this package's
-// port tests.
+// port tests. The child-process marker is this file's own.
+
+func skeChildMarker(row string) string { return "SCRTY-SEAL-SIGNINGKEY-PORTERR-ROW-RAN:" + row }
+
+// skeInChild re-runs the current top-level test in a child process limited to
+// row, and fails unless the child exits 0 within a minute and prints a line
+// equal to row's marker, which it does only after the row passed.
+func skeInChild(t *testing.T, row string) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+
+	top, _, _ := strings.Cut(t.Name(), "/")
+
+	//nolint:gosec // G204: re-runs this test binary with this test's own name
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+top+"$", "-test.count=1")
+	cmd.Env = append(os.Environ(), mpeChildEnv+"="+row)
+
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, ctx.Err(), "the child did not finish within a minute")
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	require.NoError(t, err, "the child failed:\n%s", strings.Join(lines[:min(len(lines), 8)], "\n"))
+
+	want := skeChildMarker(row)
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if strings.TrimSuffix(line, "\r") == want {
+			return
+		}
+	}
+
+	t.Fatalf("the child never ran row %q (no line equals %q); output:\n%s", row, want, out)
+}
 
 // skeSite is one port call in signingkey.go: run arranges the port's mock to
 // return err and drives the sealing signing-key store.
@@ -71,6 +107,30 @@ func skeSites() []skeSite {
 					return mpeClassify(len(recs) > 0, got)
 				})
 			}},
+		{name: "LoadAll opens a stored key", cipher: true,
+			run: func(t *testing.T, ctx context.Context, err error) mpeOutcome {
+				ctrl := gomock.NewController(t)
+				inner := NewMockKeyStore(ctrl)
+				inner.EXPECT().LoadAll(gomock.Any()).Return([]signingkey.Record{signingRecord("kid-a", 1)}, nil)
+				c := NewMockCipher(ctrl)
+				c.EXPECT().Open(gomock.Any(), gomock.Any(), seal.SigningKeyAAD("kid-a")).Return(nil, "", err)
+				store := skeStore(t, inner, c)
+
+				return mpeWithin(t, func() mpeOutcome {
+					recs, got := store.LoadAll(ctx)
+
+					return mpeClassify(len(recs) > 0, got)
+				})
+			}},
+		{name: "Delete asks the inner store",
+			run: func(t *testing.T, ctx context.Context, err error) mpeOutcome {
+				ctrl := gomock.NewController(t)
+				inner := NewMockKeyStore(ctrl)
+				inner.EXPECT().Delete(gomock.Any(), "kid-a").Return(err)
+				store := skeStore(t, inner, newCiphers(t).current)
+
+				return mpeWithin(t, func() mpeOutcome { return mpeClassify(false, store.Delete(ctx, "kid-a")) })
+			}},
 	}
 }
 
@@ -101,7 +161,7 @@ func TestPortErrors_SealSigningKeyStore(t *testing.T) {
 
 			t.Run(row, func(t *testing.T) {
 				if child == "" && kind.child {
-					mpeInChild(t, row)
+					skeInChild(t, row)
 
 					return
 				}
@@ -142,7 +202,7 @@ func TestPortErrors_SealSigningKeyStore(t *testing.T) {
 				}
 
 				if child != "" && !t.Failed() {
-					fmt.Println(mpeChildMarker(row))
+					fmt.Println(skeChildMarker(row))
 				}
 			})
 		}
@@ -159,7 +219,7 @@ func TestPortErrors_SealSigningKeyStoreOutcomes(t *testing.T) {
 		assert func(t *testing.T, o mpeOutcome, aborts int)
 	}
 
-	sealSite, storeSite, loadSite := 0, 1, 2
+	sealSite, storeSite, loadSite, openSite, deleteSite := 0, 1, 2, 3, 4
 
 	cases := []testCase{
 		{name: "Store: a cipher error matching ErrUnavailable stays an outage, no record", site: sealSite,
@@ -188,6 +248,35 @@ func TestPortErrors_SealSigningKeyStoreOutcomes(t *testing.T) {
 			assert: func(t *testing.T, o mpeOutcome, aborts int) {
 				assert.True(t, o.decryption)
 				assert.False(t, o.unwalkable)
+				assert.Zero(t, aborts)
+			}},
+		{name: "LoadAll: an Open error matching ErrDecryptionFailed stays a refusal, no record", site: openSite,
+			err: fmt.Errorf("aead: %w", seal.ErrDecryptionFailed),
+			assert: func(t *testing.T, o mpeOutcome, aborts int) {
+				assert.True(t, o.decryption)
+				assert.False(t, o.unwalkable)
+				assert.Zero(t, aborts)
+			}},
+		{name: "LoadAll: an Open error matching ErrUnknownKeyID stays an unknown key, no record", site: openSite,
+			err: fmt.Errorf("ring: %w", seal.ErrUnknownKeyID),
+			assert: func(t *testing.T, o mpeOutcome, aborts int) {
+				assert.True(t, o.unknownKey)
+				assert.False(t, o.unwalkable)
+				assert.Zero(t, aborts)
+			}},
+		{name: "LoadAll: an Open error matching ErrUnavailable stays an outage, no record", site: openSite,
+			err: fmt.Errorf("kms: %w", seal.ErrUnavailable),
+			assert: func(t *testing.T, o mpeOutcome, aborts int) {
+				assert.True(t, o.unavailable)
+				assert.False(t, o.unwalkable)
+				assert.Zero(t, aborts)
+			}},
+		{name: "Delete: an inner failure stays a failure with no consumer text", site: deleteSite,
+			err: errors.New("db down: " + cpeSecret),
+			assert: func(t *testing.T, o mpeOutcome, aborts int) {
+				assert.True(t, o.failed)
+				assert.False(t, o.unwalkable)
+				assert.NotContains(t, o.text, cpeSecret)
 				assert.Zero(t, aborts)
 			}},
 	}
