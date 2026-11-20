@@ -10,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -88,7 +89,13 @@ type provingEnrolmentStore struct {
 // and carries none of the failing error's text, and still matches that error
 // through errors.Is and errors.As; an inner error matching
 // mfa.ErrAlreadyEnrolled comes back as that sentinel itself, bare, with no
-// store text. Nothing is stored when sealing fails.
+// store text. Nothing is stored when sealing fails. An error of inner whose
+// chain cannot be walked (a cycle, a fan-out past the library's budget, a
+// panicking Unwrap) on Get, PutPending, Confirm, AcceptStep, Delete or
+// ChargeVerifyAttempt is replaced by a fixed error that matches none of this
+// package's or mfa's sentinels, and one record is written to slog.Default():
+// it is answered as a failure of inner, never as mfa.ErrAlreadyEnrolled or a
+// value that does not open.
 //
 // By default a read that opens a secret under a key other than the active
 // one re-seals it under the active key and hands the old and new values to resealer.
@@ -137,6 +144,9 @@ func NewEnrolmentStore(
 // emailed code.
 func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enrolment, bool, error) {
 	e, found, err := s.inner.Get(ctx, user)
+	// The inner store's error is the consumer's: one the walk cannot read is
+	// answered as a failed read, never as a value that does not open.
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 	if err != nil {
 		return mfa.Enrolment{}, false, diag.Wrap(err, "seal: the inner store could not read the MFA enrolment")
 	}
@@ -199,7 +209,12 @@ func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error 
 
 	e.Secret = sealed
 
-	return enrolmentFailed(s.inner.PutPending(ctx, e), "seal: the inner store could not store the pending MFA enrolment")
+	err = s.inner.PutPending(ctx, e)
+	// Sanitized before enrolmentFailed reads it: a hostile error must not be
+	// asked whether it is ErrAlreadyEnrolled.
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+
+	return enrolmentFailed(err, "seal: the inner store could not store the pending MFA enrolment")
 }
 
 // Confirm passes through to inner.
@@ -207,6 +222,7 @@ func (s *enrolmentStore) Confirm(
 	ctx context.Context, user identity.UserID, gen id.ID, step int64, at time.Time,
 ) (bool, error) {
 	ok, err := s.inner.Confirm(ctx, user, gen, step, at)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 
 	return ok, enrolmentFailed(err, "seal: the inner store could not confirm the MFA enrolment")
 }
@@ -214,13 +230,17 @@ func (s *enrolmentStore) Confirm(
 // AcceptStep passes through to inner.
 func (s *enrolmentStore) AcceptStep(ctx context.Context, user identity.UserID, gen id.ID, step int64) (bool, error) {
 	ok, err := s.inner.AcceptStep(ctx, user, gen, step)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 
 	return ok, enrolmentFailed(err, "seal: the inner store could not accept the MFA time step")
 }
 
 // Delete passes through to inner.
 func (s *enrolmentStore) Delete(ctx context.Context, user identity.UserID) error {
-	return enrolmentFailed(s.inner.Delete(ctx, user), "seal: the inner store could not delete the MFA enrolment")
+	err := s.inner.Delete(ctx, user)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+
+	return enrolmentFailed(err, "seal: the inner store could not delete the MFA enrolment")
 }
 
 // ChargeVerifyAttempt passes through to inner. The instant, limit and window
@@ -230,6 +250,7 @@ func (s *enrolmentStore) ChargeVerifyAttempt(
 	ctx context.Context, user identity.UserID, at time.Time, limit int, window time.Duration,
 ) (time.Time, bool, error) {
 	until, ok, err := s.inner.ChargeVerifyAttempt(ctx, user, at, limit, window)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 
 	return until, ok, enrolmentFailed(err, "seal: the inner store could not charge the TOTP verification attempt")
 }
