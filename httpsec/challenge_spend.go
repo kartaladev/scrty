@@ -319,7 +319,7 @@ func challengeManagers(
 		// that failed from a challenge that was not good.
 		mgr, err := onetime.New(purpose(m.Name()),
 			onetime.WithTokenTTL(ttl),
-			onetime.WithStore(depfault.Store(store)),
+			onetime.WithStore(depfault.Store(store, c.logger)),
 			onetime.WithClock(c.clock),
 			onetime.WithLogger(c.logger))
 		if err != nil {

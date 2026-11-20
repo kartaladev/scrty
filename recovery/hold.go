@@ -148,7 +148,7 @@ func (r *Recoverer) validateHolds(c *config) error {
 // tokens that live for ttl.
 func (r *Recoverer) holdTokens(purpose string, ttl time.Duration) (*onetime.Tokens, error) {
 	m, err := onetime.New(purpose,
-		onetime.WithStore(depfault.Store(r.holdStore)), onetime.WithTokenTTL(ttl), onetime.WithClock(r.clock), onetime.WithLogger(r.logger))
+		onetime.WithStore(depfault.Store(r.holdStore, r.logger)), onetime.WithTokenTTL(ttl), onetime.WithClock(r.clock), onetime.WithLogger(r.logger))
 	if err != nil {
 		return nil, fmt.Errorf("%w: hold tokens: %w", ErrConfig, err)
 	}

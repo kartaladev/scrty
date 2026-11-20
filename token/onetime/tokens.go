@@ -16,6 +16,7 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -290,6 +291,8 @@ func (m *Tokens) Issue(ctx context.Context, subject string, opts ...IssueOption)
 	}
 
 	if err := m.store.Insert(ctx, tok); err != nil {
+		err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 		return "", Token{}, diag.Wrap(err, "onetime: store token")
 	}
 
@@ -322,6 +325,7 @@ func (m *Tokens) IssueWithin(
 	}
 
 	stored, err := m.store.InsertWithin(ctx, tok, tok.IssuedAt.Add(-m.issuanceWindow), limit)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return "", Token{}, diag.Wrap(err, "onetime: store token")
 	}
@@ -417,6 +421,7 @@ func (m *Tokens) Check(ctx context.Context, presented, binding string) (Checked,
 	}
 
 	rec, err := m.store.FindByID(ctx, tokenID)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		// ErrTokenNotFound is the store answering, not failing: a record that
 		// is not there is an ordinary refusal and says nothing about the
@@ -485,6 +490,7 @@ func (m *Tokens) Consume(ctx context.Context, checked Checked) error {
 	}
 
 	if err := m.store.Consume(ctx, checked.token.ID, now); err != nil {
+		err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 		if !errors.Is(err, ErrTokenNotFound) {
 			m.logStoreFailure(ctx, "onetime: marking the token consumed failed", checked.token.ID, err)
 		}
@@ -521,7 +527,12 @@ func (m *Tokens) logStoreFailure(ctx context.Context, msg string, tokenID id.ID,
 // nothing: a check that returns an error has that error returned unchanged —
 // not wrapped, not replaced by ErrInvalidToken — and the token stays redeemable
 // until it expires. A holder turned away by a rate limit or a pending
-// enrolment can come back and use the link they were sent.
+// enrolment can come back and use the link they were sent. The one exception
+// is an error whose chain cannot be inspected (a cycle, a fan-out, an Unwrap
+// that panics): it is returned as the library's fixed error, which quotes
+// nothing of it, with one record on the manager's logger, and the token still
+// stays redeemable. An error the store returns is concealed as ErrInvalidToken
+// as before; an unwalkable one is recorded once, on the manager's logger.
 //
 // A nil check is skipped, so a caller may assemble the slice conditionally
 // without guarding each entry.
@@ -546,7 +557,10 @@ func (m *Tokens) Redeem(ctx context.Context, presented, binding string, checks .
 			continue
 		}
 		if err := check(ctx, c.token); err != nil {
-			return Token{}, err
+			// The check is the caller's code, and so is its error: it is
+			// returned unchanged when its chain can be walked, and as the
+			// sanitizer's fault, with fixed text, when it cannot.
+			return Token{}, porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 		}
 	}
 
@@ -577,6 +591,7 @@ func (m *Tokens) IssuedCount(ctx context.Context, subject string) (int, error) {
 	since := m.clock.Now().Add(-m.issuanceWindow)
 
 	n, err := m.store.CountRecentBySubject(ctx, m.purpose, subject, since)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return 0, diag.Wrap(err, "onetime: count recent issuance")
 	}
@@ -606,6 +621,7 @@ func (m *Tokens) PurgeExpired(ctx context.Context) (int, error) {
 	}
 
 	removed, err := reaper.DeleteExpiredBefore(ctx, m.purpose, m.clock.Now().Add(-m.issuanceWindow))
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return 0, diag.Wrap(err, "onetime: purge expired tokens")
 	}

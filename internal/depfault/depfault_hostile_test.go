@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/internal/depfault"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -258,7 +259,8 @@ func TestSilent_HostileChains(t *testing.T) {
 // TestStore_RecordsHostileChainsAsFailures pins that the decorator's look into
 // a store's error is bounded and recovering: an error it cannot walk is not
 // the store's "no such token" answer, so it is recorded as the failure it may
-// be, and the call still answers with the store's own error.
+// be, and the call answers with the sanitizer's fault, the same value the
+// Watch holds, never the store's own error.
 func TestStore_RecordsHostileChainsAsFailures(t *testing.T) {
 	t.Parallel()
 
@@ -276,7 +278,19 @@ func TestStore_RecordsHostileChainsAsFailures(t *testing.T) {
 		assert     func(t *testing.T, err error, got watched)
 	}
 
-	recorded := func(t *testing.T, err error, got watched) {
+	recorded := func(t *testing.T, storeErr error, got watched) {
+		t.Helper()
+		assert.True(t, got.err == got.failure, "the call and the Watch hold different errors") //nolint:errorlint // identity
+		require.ErrorIs(t, got.err, porterr.ErrUnwalkable)
+		assert.NotErrorIs(t, got.err, onetime.ErrTokenNotFound, "an unwalkable error was answered as no-such-token")
+		assert.False(t, got.err == storeErr, "the call answered with the store's own error") //nolint:errorlint // identity
+		assert.Error(t, got.failure, "the hostile chain was not recorded as a failure")
+		assert.False(t, depfault.Silent(t.Context(), got.failure), "the unwalkable fault was recorded as a refusal")
+	}
+
+	// The sanitizer's walk calls Unwrap only, so an error whose Is panics
+	// passes through unchanged: the call and the Watch hold the store's own.
+	recordedAsOwn := func(t *testing.T, err error, got watched) {
 		t.Helper()
 		assert.True(t, err == got.err, "the call did not answer with the store's own error") //nolint:errorlint // identity
 		assert.True(t, err == got.failure, "the failure recorded is not the store's error")  //nolint:errorlint // identity
@@ -286,7 +300,7 @@ func TestStore_RecordsHostileChainsAsFailures(t *testing.T) {
 		{name: "a cycle through Unwrap() error", err: func() error { return &cycleOne{} }, assert: recorded},
 		{name: "a cycle through Unwrap() []error", err: func() error { return &cycleMany{} }, subprocess: true, assert: recorded},
 		{name: "a link whose Unwrap panics", err: func() error { return fmt.Errorf("x: %w", panicUnwrap{}) }, assert: recorded},
-		{name: "a link whose Is panics", err: func() error { return fmt.Errorf("x: %w", isPanics{}) }, assert: recorded},
+		{name: "a link whose Is panics", err: func() error { return fmt.Errorf("x: %w", isPanics{}) }, assert: recordedAsOwn},
 		{name: "a join that fans out", err: func() error { return fanOut(25) }, assert: recorded},
 		{
 			name: "a walkable wrapped no-such-token answer is not a failure, as before",
@@ -315,7 +329,7 @@ func TestStore_RecordsHostileChainsAsFailures(t *testing.T) {
 
 			err := tc.err()
 			ctx, w := depfault.Watching(t.Context())
-			s := depfault.Store(failingStore{findErr: err})
+			s := depfault.Store(failingStore{findErr: err}, nil)
 
 			tc.assert(t, err, within(t, func() watched {
 				_, got := s.FindByID(ctx, id.Nil)

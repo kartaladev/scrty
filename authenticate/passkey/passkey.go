@@ -246,7 +246,7 @@ func New(deps Deps, opts ...Option) (*Passkeys, error) {
 	m.registration = reg
 
 	login, err := onetime.New(loginPurpose,
-		onetime.WithStore(depfault.Store(challenges)),
+		onetime.WithStore(depfault.Store(challenges, m.logger)),
 		onetime.WithTokenTTL(m.ttl),
 		onetime.WithIssuanceWindow(m.ttl),
 		onetime.WithClock(m.clock),

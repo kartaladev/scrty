@@ -646,7 +646,7 @@ func (r *Recoverer) validateIssued(c *config) error {
 
 	topts := []onetime.Option{onetime.WithTokenTTL(c.issuedTTL), onetime.WithClock(c.clock), onetime.WithLogger(c.logger)}
 	if c.issuedStoreSet {
-		topts = append(topts, onetime.WithStore(depfault.Store(c.issuedStore)))
+		topts = append(topts, onetime.WithStore(depfault.Store(c.issuedStore, c.logger)))
 	}
 
 	m, err := onetime.New(IssuedCodePurpose, topts...)
