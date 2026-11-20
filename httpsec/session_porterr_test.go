@@ -7,11 +7,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"regexp"
 	"runtime/debug"
 	"strings"
@@ -39,6 +39,10 @@ func (unwrapPanics) Unwrap() error { panic(isPanicMessage) }
 
 // porterrRowEnv names the row a child process runs. It is empty in the parent.
 const porterrRowEnv = "SCRTY_HTTPSEC_PORTERR_ROW"
+
+// porterrRan is what a child prints, as a line of its own followed by the
+// row's name, once that row has run and passed.
+const porterrRan = "porterr-row-ran:"
 
 // porterrWithin bounds how long one request through a hostile port may take.
 const porterrWithin = 5 * time.Second
@@ -274,20 +278,7 @@ func porterrServe(t *testing.T, site portErrSite, err error, logger *slog.Logger
 func porterrInChild(t *testing.T, row string) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
-
-	top, _, _ := strings.Cut(t.Name(), "/")
-
-	//nolint:gosec // G204: re-runs this test binary with this test's own name
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+top+"$", "-test.count=1")
-	cmd.Env = append(os.Environ(), porterrRowEnv+"="+row)
-
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, ctx.Err(), "the child did not finish within a minute")
-
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	require.NoError(t, err, "the child failed:\n%s", strings.Join(lines[:min(len(lines), 8)], "\n"))
+	limiterPortErrInChild(t, porterrRowEnv, porterrRan, row)
 }
 
 // TestPortErrors_UserAndVerifierSites pins that a hostile error from the token
@@ -301,7 +292,7 @@ func TestPortErrors_UserAndVerifierSites(t *testing.T) { //nolint:paralleltest /
 	}
 
 	for _, site := range portErrSites() {
-		if childRow != "" && childRow != site.name {
+		if childRow != "" && !strings.HasPrefix(childRow, site.name+"/") {
 			continue
 		}
 
@@ -316,13 +307,14 @@ func TestPortErrors_UserAndVerifierSites(t *testing.T) { //nolint:paralleltest /
 		require.Empty(t, abortRecords(defaults.records()))
 
 		for _, kind := range portErrKinds() {
-			if childRow != "" && !kind.child {
+			row := site.name + "/" + kind.name
+			if childRow != "" && (!kind.child || childRow != row) {
 				continue
 			}
 
-			t.Run(site.name+"/"+kind.name, func(t *testing.T) {
+			t.Run(row, func(t *testing.T) {
 				if kind.child && childRow == "" {
-					porterrInChild(t, site.name)
+					porterrInChild(t, row)
 
 					return
 				}
@@ -340,6 +332,10 @@ func TestPortErrors_UserAndVerifierSites(t *testing.T) { //nolint:paralleltest /
 				require.Len(t, aborts, 1, "one abort record, on the chain's logger")
 				assertAbortRecord(t, aborts[0], kind.reason)
 				assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
+
+				if childRow != "" && !t.Failed() {
+					fmt.Fprintln(os.Stdout, porterrRan+row)
+				}
 			})
 		}
 	}

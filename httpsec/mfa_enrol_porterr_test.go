@@ -16,6 +16,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/notify"
 )
 
 // enrolPortErrRowEnv names the row a child process runs. It is empty in the
@@ -103,6 +105,10 @@ func limiterPortErrInChild(t *testing.T, envName, marker, row string) {
 type limiterAsk struct {
 	mu            sync.Mutex
 	asked, charge int
+
+	// dormant makes the limiter healthy and uncounted while set, so a request
+	// that must pass it first can be served before the hostile one.
+	dormant atomic.Bool
 }
 
 func (a *limiterAsk) counts() (asked, charged int) {
@@ -120,6 +126,10 @@ func hostileLimiter(t *testing.T, a *limiterAsk, err error, cancel context.Cance
 	l := NewMockLimiter(gomock.NewController(t))
 	l.EXPECT().Exceeded(gomock.Any(), gomock.Any()).AnyTimes().
 		DoAndReturn(func(context.Context, string) (bool, error) {
+			if a.dormant.Load() {
+				return false, nil
+			}
+
 			a.mu.Lock()
 			a.asked++
 			a.mu.Unlock()
@@ -132,6 +142,10 @@ func hostileLimiter(t *testing.T, a *limiterAsk, err error, cancel context.Cance
 		})
 	l.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).AnyTimes().
 		DoAndReturn(func(context.Context, string) error {
+			if a.dormant.Load() {
+				return nil
+			}
+
 			a.mu.Lock()
 			a.charge++
 			a.mu.Unlock()
@@ -164,6 +178,11 @@ type enrolLimiterSite struct {
 	// confirm serves a begin first and then a confirm with a valid code,
 	// rather than a begin alone.
 	confirm bool
+
+	// email serves the emailed-code redemption: a begin and a confirm that
+	// prove the device while the limiter is healthy, then the redemption of the
+	// code emailed for it, with the limiter failing. It is set with confirm.
+	email bool
 }
 
 func enrolLimiterSites() []enrolLimiterSite {
@@ -176,6 +195,12 @@ func enrolLimiterSites() []enrolLimiterSite {
 			name:    "the confirmation limiter's check",
 			limit:   func(l *MockLimiter) httpsec.EnrolmentOption { return httpsec.WithEnrolmentConfirmLimiter(l) },
 			confirm: true,
+		},
+		{
+			name:    "the emailed-code redemption's check",
+			limit:   func(l *MockLimiter) httpsec.EnrolmentOption { return httpsec.WithEnrolmentConfirmLimiter(l) },
+			confirm: true,
+			email:   true,
 		},
 	}
 }
@@ -201,9 +226,41 @@ func enrolThrough(t *testing.T, site enrolLimiterSite, portErr error, cancelDuri
 	h.enrolOpts = append(h.enrolOpts, site.limit(hostileLimiter(t, ask, portErr, onAsk)))
 	h.extra = append(h.extra, httpsec.WithLogger(slog.New(logs)))
 
+	o := &outbox{}
+
+	h.sender.EXPECT().Send(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, m notify.Message) error {
+			o.mu.Lock()
+			o.sent = append(o.sent, m)
+			o.mu.Unlock()
+
+			return nil
+		})
+
 	c := h.chain(t, h.enrolmentOnly(t, factor.Password))
 
 	rec := loginServeWithin
+
+	if site.email {
+		ask.dormant.Store(true)
+
+		begin := rec(t, c, post(t.Context(), enrolBeginPath, ""))
+		require.Equal(t, http.StatusOK, begin.Code, "the begin before the proof")
+
+		var doc beginBody
+		require.NoError(t, json.Unmarshal(begin.Body.Bytes(), &doc))
+
+		proof := rec(t, c, post(t.Context(), enrolConfirmPath, "code="+h.codeFor(t, doc.Secret)))
+		require.Less(t, proof.Code, http.StatusBadRequest, "the proof before the redemption")
+
+		emailed := lastEmailedCode(t, o)
+
+		ask.dormant.Store(false)
+
+		out := rec(t, c, emailCodeRequest(ctx, emailed))
+
+		return enrolOutcomeOf(t, h, out.Code, out.Header(), out.Body.String(), ask, logs)
+	}
 
 	if site.confirm {
 		// The begin is the harness's own, healthy one, under a context that

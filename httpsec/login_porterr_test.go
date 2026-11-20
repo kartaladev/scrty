@@ -6,12 +6,12 @@ package httpsec_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"os/exec"
 	"regexp"
 	"runtime/debug"
 	"strings"
@@ -34,6 +34,10 @@ import (
 // loginPortErrRowEnv names the row a child process runs. It is empty in the
 // parent.
 const loginPortErrRowEnv = "SCRTY_HTTPSEC_LOGIN_PORTERR_ROW"
+
+// loginPortErrRan is what a child prints, as a line of its own followed by
+// the row's name, once that row has run and passed.
+const loginPortErrRan = "login-porterr-row-ran:"
 
 // The records the login and password-change sites write for a failing
 // attempt store, whatever its error.
@@ -560,6 +564,10 @@ func TestPortErrors_LoginAndPasswordChange(t *testing.T) { //nolint:paralleltest
 						wrong := site.serve(t, ctx, site.wrong)
 						assertOutageAgainstWrongPassword(t, plain, wrong, got)
 					}
+
+					if childRow != "" && !t.Failed() {
+						fmt.Fprintln(os.Stdout, loginPortErrRan+row)
+					}
 				})
 			}
 		}
@@ -595,18 +603,5 @@ func assertOutageAgainstWrongPassword(t *testing.T, plain, wrong, got loginPortO
 func loginPortErrInChild(t *testing.T, row string) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
-
-	top, _, _ := strings.Cut(t.Name(), "/")
-
-	//nolint:gosec // G204: re-runs this test binary with this test's own name
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+top+"$", "-test.count=1")
-	cmd.Env = append(os.Environ(), loginPortErrRowEnv+"="+row)
-
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, ctx.Err(), "the child did not finish within a minute")
-
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	require.NoError(t, err, "the child failed:\n%s", strings.Join(lines[:min(len(lines), 8)], "\n"))
+	limiterPortErrInChild(t, loginPortErrRowEnv, loginPortErrRan, row)
 }

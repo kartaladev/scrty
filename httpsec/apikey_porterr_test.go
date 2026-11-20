@@ -9,13 +9,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"os"
-	"os/exec"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -78,6 +76,18 @@ func (o apiKeyPortOutcome) count(msg string) int {
 func apiKeyOwnerThrough(t *testing.T, ctx context.Context, portErr error, leaves bool) apiKeyPortOutcome {
 	t.Helper()
 
+	return apiKeyOwnerSequence(t, ctx, []error{portErr}, leaves)
+}
+
+// apiKeyOwnerSequence serves one request per element of errs, in order,
+// through one chain, whose user loader fails with that element on that
+// request. The counts are cumulative and the response and records are the last
+// request's, so the records of the earlier ones only fill the log sampler.
+func apiKeyOwnerSequence(t *testing.T, ctx context.Context, errs []error, leaves bool) apiKeyPortOutcome {
+	t.Helper()
+
+	require.NotEmpty(t, errs, "at least one request")
+
 	ctrl := gomock.NewController(t)
 
 	var (
@@ -101,6 +111,7 @@ func apiKeyOwnerThrough(t *testing.T, ctx context.Context, portErr error, leaves
 	users.EXPECT().LoadByUserID(gomock.Any(), apiKeyPrincipal).
 		DoAndReturn(func(ctx context.Context, _ identity.UserID) (*identity.Details, error) {
 			mu.Lock()
+			portErr := errs[min(out.loads, len(errs)-1)]
 			out.loads++
 			mu.Unlock()
 
@@ -118,13 +129,20 @@ func apiKeyOwnerThrough(t *testing.T, ctx context.Context, portErr error, leaves
 		httpsec.EnableAPIKey(h.keys, httpsec.WithAPIKeyLimiter(limiter), httpsec.WithAPIKeyOwners(users)))
 	require.NoError(t, err)
 
-	built := len(logs.records())
+	var (
+		rec   *httptest.ResponseRecorder
+		built int
+	)
 
-	req := rawBasicRequest(ctx, "")
-	req.RemoteAddr = apiKeySource + ":51000"
-	req.Header.Set("Authorization", httpsec.DefaultAPIKeyScheme+h.valid)
+	for range errs {
+		built = len(logs.records())
 
-	rec := loginServeWithin(t, chain, req)
+		req := rawBasicRequest(ctx, "")
+		req.RemoteAddr = apiKeySource + ":51000"
+		req.Header.Set("Authorization", httpsec.DefaultAPIKeyScheme+h.valid)
+
+		rec = loginServeWithin(t, chain, req)
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -133,6 +151,24 @@ func apiKeyOwnerThrough(t *testing.T, ctx context.Context, portErr error, leaves
 	out.logs = logs.records()[built:]
 
 	return out
+}
+
+// TestPortErrors_APIKeyOwnerAbortRecordNotSampled pins that the abort record
+// of a hostile owner-load error is written whatever the log sampler holds:
+// after a plain outage has used the site's own sampler key, and a hostile one
+// the abort's, a third request still writes exactly one abort record, while
+// the site's own outage record is held back.
+func TestPortErrors_APIKeyOwnerAbortRecordNotSampled(t *testing.T) { //nolint:paralleltest // it replaces slog.Default()
+	defaults := swapDefaultLogger(t)
+
+	got := apiKeyOwnerSequence(t, t.Context(), []error{errOwnerStoreDown, &cycleOne{}, &cycleOne{}}, false)
+
+	assert.Zero(t, got.count(apiKeyPortErrOwnerUnavailable), "the site's own record is sampled out")
+
+	aborts := abortRecords(got.logs)
+	require.Len(t, aborts, 1, "the abort record is not sampled away")
+	assertAbortRecord(t, aborts[0], "budget")
+	assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
 }
 
 // TestPortErrors_APIKeyOwner pins that a hostile error from the API-key
@@ -240,19 +276,5 @@ func TestPortErrors_APIKeyOwner(t *testing.T) { //nolint:paralleltest // it repl
 func apiKeyPortErrInChild(t *testing.T, row string) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
-
-	top, _, _ := strings.Cut(t.Name(), "/")
-
-	//nolint:gosec // G204: re-runs this test binary with this test's own name
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+top+"$", "-test.count=1")
-	cmd.Env = append(os.Environ(), apiKeyPortErrRowEnv+"="+row)
-
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, ctx.Err(), "the child did not finish within a minute")
-
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	require.NoError(t, err, "the child failed:\n%s", strings.Join(lines[:min(len(lines), 8)], "\n"))
-	assert.Contains(t, string(out), apiKeyPortErrRan+row+"\n", "the child ran its row")
+	limiterPortErrInChild(t, apiKeyPortErrRowEnv, apiKeyPortErrRan, row)
 }

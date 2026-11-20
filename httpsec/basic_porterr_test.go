@@ -8,10 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http/httptest"
 	"os"
-	"os/exec"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -76,15 +75,43 @@ type basicPortSite struct {
 func basicAuthThrough(t *testing.T, ctx context.Context, ports basicPorts, logger *slog.Logger) loginPortOutcome {
 	t.Helper()
 
+	return basicAuthSequence(t, ctx, []basicPorts{ports}, logger, nil)
+}
+
+// basicAuthSequence serves one request per element of seq, in order, through
+// one chain, each answered as its element says. The counts it returns are
+// cumulative over every request and the response is the last one's. beforeLast,
+// when set, runs just before the last request, so a caller can tell the
+// records that request wrote from those of the ones before it.
+func basicAuthSequence(
+	t *testing.T, ctx context.Context, seq []basicPorts, logger *slog.Logger, beforeLast func(),
+) loginPortOutcome {
+	t.Helper()
+
+	require.NotEmpty(t, seq, "at least one request")
+
 	ctrl := gomock.NewController(t)
 
 	var (
 		mu  sync.Mutex
 		out loginPortOutcome
+		cur = seq[0]
 	)
 
+	answer := func() basicPorts {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return cur
+	}
+
 	authn := NewMockAuthenticator(ctrl)
-	authn.EXPECT().Authenticate(gomock.Any(), gomock.Any()).Return(ports.auth, ports.authErr).AnyTimes()
+	authn.EXPECT().Authenticate(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(context.Context, identity.Credentials) (*authenticate.Authentication, error) {
+			p := answer()
+
+			return p.auth, p.authErr
+		}).AnyTimes()
 
 	attempts := NewMockAttemptStore(ctrl)
 	attempts.EXPECT().FailureCount(gomock.Any(), gomock.Any(), gomock.Any()).Return(0, nil).AnyTimes()
@@ -95,7 +122,7 @@ func basicAuthThrough(t *testing.T, ctx context.Context, ports basicPorts, logge
 
 			out.recorded++
 
-			return ports.recordErr
+			return cur.recordErr
 		}).AnyTimes()
 	attempts.EXPECT().Reset(gomock.Any(), "ada").
 		DoAndReturn(func(context.Context, string) error {
@@ -104,7 +131,7 @@ func basicAuthThrough(t *testing.T, ctx context.Context, ports basicPorts, logge
 
 			out.resets++
 
-			return ports.resetErr
+			return cur.resetErr
 		}).AnyTimes()
 
 	limiter := NewMockLimiter(ctrl)
@@ -128,7 +155,19 @@ func basicAuthThrough(t *testing.T, ctx context.Context, ports basicPorts, logge
 			httpsec.WithBasicAuthLimiter(limiter)))
 	require.NoError(t, err)
 
-	rec := loginServeWithin(t, chain, basicRequest(ctx, "ada", "guess"))
+	var rec *httptest.ResponseRecorder
+
+	for i, ports := range seq {
+		mu.Lock()
+		cur = ports
+		mu.Unlock()
+
+		if i == len(seq)-1 && beforeLast != nil {
+			beforeLast()
+		}
+
+		rec = loginServeWithin(t, chain, basicRequest(ctx, "ada", "guess"))
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -186,6 +225,18 @@ func basicPortErrKinds() []loginPortErrKind {
 		{
 			name: "cycle wrapping context.Canceled", err: &loginCanceledCycle{}, reason: "budget",
 			child: true, site: basicAuthenticatorSite, ctx: "cancelled",
+		},
+		// The stdlib reads these two as the authenticator's own sentinels,
+		// since errors.Is finds one before it loops; sanitized, both are the
+		// outage a plain ErrUnavailable is, and neither a failed login.
+		{
+			name: "cycle wrapping ErrUnavailable", err: &throttleCycleWrapping{sentinel: authenticate.ErrUnavailable},
+			reason: "budget", child: true, site: basicAuthenticatorSite,
+		},
+		{
+			name:   "cycle wrapping ErrAuthenticationFailed",
+			err:    &throttleCycleWrapping{sentinel: authenticate.ErrAuthenticationFailed},
+			reason: "budget", child: true, site: basicAuthenticatorSite,
 		},
 		// Walked to the end, so it passes unchanged and is answered as any
 		// plain error no branch recognises.
@@ -289,6 +340,35 @@ func TestPortErrors_BasicAuth(t *testing.T) { //nolint:paralleltest // it replac
 	}
 }
 
+// TestPortErrors_BasicAbortRecordNotSampled pins that the abort record of a
+// hostile port error is written whatever the log sampler holds: after a plain
+// outage and then a hostile request have gone through the chain, a third
+// request still writes exactly one abort record. Basic's own records for these
+// ports are not sampled, so the saturation is the abort reason's own key.
+func TestPortErrors_BasicAbortRecordNotSampled(t *testing.T) { //nolint:paralleltest // it replaces slog.Default()
+	for _, site := range basicPortSites() {
+		t.Run(site.name, func(t *testing.T) {
+			defaults := swapDefaultLogger(t)
+
+			logs := &capturingHandler{}
+			before := 0
+
+			hostile := site.ports(&cycleOne{})
+			seq := []basicPorts{site.ports(site.plain), hostile, hostile}
+
+			basicAuthSequence(t, t.Context(), seq, slog.New(logs), func() { before = len(logs.records()) })
+
+			last := logs.records()[before:]
+			aborts := abortRecords(last)
+
+			require.Len(t, aborts, 1, "the abort record is not sampled away")
+			assertAbortRecord(t, aborts[0], "budget")
+
+			assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
+		})
+	}
+}
+
 // basicPortErrInChild re-runs the current top-level test in a child process
 // limited to row, and fails unless it exits 0 within a minute having run the
 // row: a stack overflow is fatal and only a child can watch for one, and a row
@@ -296,19 +376,5 @@ func TestPortErrors_BasicAuth(t *testing.T) { //nolint:paralleltest // it replac
 func basicPortErrInChild(t *testing.T, row string) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
-
-	top, _, _ := strings.Cut(t.Name(), "/")
-
-	//nolint:gosec // G204: re-runs this test binary with this test's own name
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+top+"$", "-test.count=1")
-	cmd.Env = append(os.Environ(), basicPortErrRowEnv+"="+row)
-
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, ctx.Err(), "the child did not finish within a minute")
-
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	require.NoError(t, err, "the child failed:\n%s", strings.Join(lines[:min(len(lines), 8)], "\n"))
-	assert.Contains(t, string(out), basicPortErrRan+row+"\n", "the child ran its row")
+	limiterPortErrInChild(t, basicPortErrRowEnv, basicPortErrRan, row)
 }

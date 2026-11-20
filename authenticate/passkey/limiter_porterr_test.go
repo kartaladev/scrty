@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -392,6 +393,9 @@ func limiterPortErrInChild(t *testing.T, row string) {
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	require.NoError(t, err, "the child failed:\n%s", strings.Join(lines[:min(len(lines), 8)], "\n"))
-	require.Contains(t, string(out), limiterRanMarker+row,
-		"the child never ran the row: its name matches no case")
+	marker := limiterRanMarker + row
+	ran := slices.ContainsFunc(strings.Split(string(out), "\n"), func(line string) bool {
+		return strings.TrimSuffix(line, "\r") == marker
+	})
+	require.True(t, ran, "the child never ran row %q: no output line equals %q:\n%s", row, marker, string(out))
 }
