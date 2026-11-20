@@ -13,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/policy"
@@ -331,7 +332,7 @@ func (m *Passkeys) FinishRegistration(
 		return nil, ErrPerUserLimitReached
 	}
 
-	cid, err := m.ids.NewID()
+	cid, err := idgen.New(m.ids)
 	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	if err != nil {

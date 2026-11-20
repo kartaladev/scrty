@@ -837,7 +837,7 @@ Steps:
 1. **A generator answering the nil identifier at the OpenID Provider's grant family.** Expect `server_error`, with no grant and no code stored, never one family shared by two grants. Lane b pins it (row `nil family`).
 2. **A store backend asked to insert under the nil identifier.** Expect an error and no row. Lanes f to h pin it per backend, against a real database.
 3. **A generator returning an error and the nil identifier together.** Expect the generator's own error, not `ErrNil`, so the 10.12 sanitizer still sees the consumer's error. Lane a pins it (row `error with nil id`).
-4. **A nil generator given to `passkey`'s option.** Expect `passkey`'s `ErrConfig`, whose text names the option. Lane e pins it.
+4. **A nil or typed-nil generator given to `passkey`'s option.** Expect `passkey`'s `ErrConfig`, whose text names the identifier generator. This is already the behaviour on `main`; lane e pins it.
 5. **The two sites that already refuse.** Expect them unchanged: the session family's configuration error and TOTP's own refusal. A row each pins them (lanes c and d).
 
 - [ ] **Step 1 (lane a, Sonnet): write the failing test.** `TestNew` in `internal/idgen/idgen_test.go`, a table in the `assert`-closure form, with rows:
@@ -850,7 +850,7 @@ Steps:
   - **b** (Opus reviewer) `oidcprovider`: `code.go` grant family (pins Review Focus 1), `accesstoken.go`, `pending.go`, `idtoken.go`.
   - **c** `authenticate`: `password.go`, `jwt.go`; `authenticate/apikey`: `keys.go`; `authenticate/oidc`: `broker_provision.go`, `handoff.go`; plus a row pinning `session/prepared.go`'s configuration error (Review Focus 5).
   - **d** `recovery`: `recover_complete.go`; `token/onetime`: `tokens.go`; plus a row pinning `authenticate/mfa/totp.go`'s refusal (Review Focus 5).
-  - **e** `authenticate/passkey`: `register.go`, and the generator option refuses nil with `ErrConfig` (red: a nil generator builds today; pins Review Focus 4).
+  - **e** `authenticate/passkey`: `register.go`, and a row pinning the generator option's existing `ErrConfig` refusal of nil and typed-nil (Review Focus 4).
   - **f** `store/sqlstore`, **g** `store/pgxstore`, **h** `store/gormstore`: 16 sites each (flows, identity and grants, recovery codes, consent, assertion ids, browser sessions, clients, passkey handles, attempts, password history, MFA enrolment, sessions, signing keys). Each backend's red rows run against its existing testcontainers helper (`use-testcontainers`) and assert the row count is unchanged (Review Focus 2). Each backend is one lane, split into dispatches of at most six sites, run in order.
 - [ ] **Step 5 (each dispatch): watch the red rows fail, implement, run green.** Run `go test -race -p 2 -count=1` on the dispatch's packages, in their own module. Then a Sonnet review (Opus for lane b), the isolation check, and commit: `fix(<pkg>): refuse a generator's nil identifier`.
 - [ ] **Step 6: close the task.** `rg -n 'NewID\(\)' --glob '!**/*_test.go' --glob '!.claude/**'` lists only `internal/idgen`, `session/prepared.go`, `authenticate/mfa/totp.go` and the generators themselves. Tick 10.15.
@@ -1023,7 +1023,7 @@ Steps:
   - CHANGELOG, Fixed: the hang, the crash, the panic, and the typed-nil `RejectedError`.
   - CHANGELOG, Changed: a challenge offered through an `As` method behind a typed nil is now found. A chain of more than 1,000 links is unrecognised, and the abort is logged.
   - CHANGELOG, Changed (decision 12): component records go to the chain's logger inside a chain when the component has no logger option; `slog.Default()` is read when a record is written; a nil logger option fails construction in every component.
-  - CHANGELOG (decision 13): Fixed, a generator answering the nil identifier is refused as a failing dependency; Changed, `passkey`'s nil generator option is a configuration error.
+  - CHANGELOG (decision 13): Fixed, a generator answering the nil identifier is refused as a failing dependency.
   - CHANGELOG, Changed: prblm v0.3.0 (core, `ginprblm`, `fiberprblm`) and the Dependabot bumps 10.11 took.
   - Check with `go doc` that every component's logger option names the routing default (written by 10.14's lanes).
 - [ ] **Step 2: Verify.**

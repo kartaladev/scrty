@@ -367,7 +367,7 @@ Maintainer's choice, 2026-11-20: every place scrty asks a consumer-replaceable `
 - The store backends (`sqlstore`, `pgxstore`, `gormstore`) use it too, so a row is never inserted under the nil identifier.
 - `idgen.New` writes no record of its own. The site's failure branch reports it as it reports any generator failure.
 - A nil generator, untyped or typed, is answered with the fixed sentinel `idgen.ErrNoGenerator`, never a panic (10.15a review). Constructors already refuse a nil generator, so only a library bug reaches it. A panic inside the consumer's `NewID` is not recovered by `New`; see the failure row.
-- `passkey`'s generator option is the only one that ignores a nil generator. It now refuses nil with `passkey`'s configuration error, as every other component's option does (`library-design.md` 6). This changes an option tagged in v0.1.x and goes in the CHANGELOG under Changed.
+- `passkey`'s generator option already refuses a nil or typed-nil generator with `passkey`'s configuration error, as every other component's option does (`library-design.md` 6). The 2026-11-20 inventory said otherwise; the 10.15 lane e dispatch found the refusal on `main` and pinned it with a typed-nil row. No option changes, so there is no CHANGELOG entry under Changed.
 
 **Default and override.** No option. The generator stays replaceable as before; the contract that it never answers the nil identifier is now enforced instead of assumed.
 
@@ -472,7 +472,7 @@ No process-wide reporter is installed. A process-wide reporter could not see eac
 | Consumer code panics on a goroutine the library started (the metadata refresh, the remote fetch, signing-key rotation, session housekeeping, sweeper jobs) | Handled, tested (decision 14) | Recovered where the consumer code is called. One Error record with the panic's type and frames, never its value's text; the site answers its existing outage, and a loop or scheduler goes on. `panic(nil)` counts as a panic. Before, the process exited (reproduced for the metadata fetch) |
 | A consumer panic on a request's own goroutine | Accepted (decisions 11 and 14) | Not recovered by the library. net/http recovers it per request; elsewhere the caller's recovery policy decides |
 | A panicking `net.Conn` under fibersec's client watcher | Accepted (decision 14) | The connection is fasthttp's, not a consumer port. Left unrecovered |
-| A nil generator given to `passkey`'s generator option | Handled, tested (decision 13) | `passkey`'s configuration error, naming the option, as every other component's generator option already does |
+| A nil generator, untyped or typed, given to `passkey`'s generator option | Handled, tested (decision 13; already so on `main`, pinned in 10.15) | `passkey`'s configuration error, naming the identifier generator, as every other component's generator option does |
 | `Methods` nil vs empty | Handled, tested | Omitted vs `[]` |
 | `Window <= 0`, or a rejection without `RejectedError` | Handled, tested | `max_age` / `rule` omitted |
 | Token present without `TokenType` (consumer-built) | Handled, tested | `access_token` only |
