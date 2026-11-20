@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -136,6 +137,7 @@ func (t *TOTP) ProveDevice(
 	}
 
 	e, ok, err := t.store.Get(ctx, user)
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return "", enrolmentStoreFailed(err, msgReadFailed)
 	}
@@ -162,7 +164,7 @@ func (t *TOTP) ProveDevice(
 	)
 
 	if emailCode {
-		emailed, err = t.drawEmailCode()
+		emailed, err = t.drawEmailCode(ctx)
 		if err != nil {
 			return "", err
 		}
@@ -171,6 +173,7 @@ func (t *TOTP) ProveDevice(
 	}
 
 	proven, err := t.proofs.ProveDevice(ctx, user, gen, step, codeBytes, codeUntil, now)
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return "", deviceProofStoreFailed(err, "mfa: totp could not record the device proof")
 	}
@@ -188,8 +191,11 @@ func (t *TOTP) ProveDevice(
 }
 
 // drawEmailCode draws a uniform 6-digit code from the method's random source.
-func (t *TOTP) drawEmailCode() (string, error) {
+// The source's error is sanitized before fmt.Errorf wraps it, so an
+// unwalkable one never enters the chain or the text this returns.
+func (t *TOTP) drawEmailCode(ctx context.Context) (string, error) {
 	n, err := rand.Int(t.random, big.NewInt(emailCodeSpace))
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return "", fmt.Errorf("mfa: totp could not draw an emailed code: %w", err)
 	}
@@ -223,6 +229,7 @@ func (t *TOTP) CompleteEnrolment(ctx context.Context, user identity.UserID, gen 
 	}
 
 	e, ok, err := t.store.Get(ctx, user)
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return enrolmentStoreFailed(err, msgReadFailed)
 	}
@@ -239,6 +246,7 @@ func (t *TOTP) CompleteEnrolment(ctx context.Context, user identity.UserID, gen 
 	}
 
 	completed, err := t.proofs.Complete(ctx, user, gen, t.clock.Now())
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return deviceProofStoreFailed(err, msgCompleteFailed)
 	}
@@ -292,6 +300,7 @@ func (t *TOTP) RedeemEmailCode(ctx context.Context, user identity.UserID, gen id
 	}
 
 	e, ok, err := t.store.Get(ctx, user)
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return enrolmentStoreFailed(err, msgReadFailed)
 	}
