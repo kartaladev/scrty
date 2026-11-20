@@ -27,6 +27,8 @@ import (
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/eventsink"
+	"github.com/kartaladev/scrty/internal/idgen"
+	"github.com/kartaladev/scrty/internal/idgen/idgentest"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -340,6 +342,29 @@ func TestAPIKeyConsumerOverrides(t *testing.T) {
 	})
 }
 
+// nilIDGenerator is a generator that answers the nil identifier with no error.
+func nilIDGenerator(t *testing.T) *idgentest.MockGenerator {
+	t.Helper()
+
+	g := idgentest.NewMockGenerator(gomock.NewController(t))
+	g.EXPECT().NewID().Return(id.Nil, nil).AnyTimes()
+
+	return g
+}
+
+// errIDGeneratorDown is the plain outage errIDGenerator fails with.
+var errIDGeneratorDown = errors.New("id generator: unavailable")
+
+// errIDGenerator is a generator that fails with a plain outage.
+func errIDGenerator(t *testing.T) *idgentest.MockGenerator {
+	t.Helper()
+
+	g := idgentest.NewMockGenerator(gomock.NewController(t))
+	g.EXPECT().NewID().Return(id.Nil, errIDGeneratorDown).AnyTimes()
+
+	return g
+}
+
 // fixedIDs is a generator that always mints the same identifier.
 type fixedIDs struct {
 	value id.ID
@@ -356,6 +381,7 @@ func TestManagerIssue(t *testing.T) {
 		lifetime  time.Duration
 		random    io.Reader
 		digest    func([]byte) []byte
+		ids       id.Generator
 		assert    func(t *testing.T, presented string, rec apikey.Key, err error, stored int)
 	}
 
@@ -428,6 +454,30 @@ func TestManagerIssue(t *testing.T) {
 			},
 		},
 		{
+			name:      "a generator failure stores nothing",
+			principal: "svc-billing",
+			ids:       errIDGenerator(t),
+			assert: func(t *testing.T, presented string, _ apikey.Key, err error, stored int) {
+				require.ErrorIs(t, err, errIDGeneratorDown)
+				assert.Contains(t, err.Error(), "apikey: could not mint an identifier")
+				assert.Empty(t, presented, "a secret must not be handed out when no identifier was minted")
+				assert.Zero(t, stored)
+			},
+		},
+		{
+			name:      "a generator answering the nil identifier stores nothing",
+			principal: "svc-billing",
+			ids:       nilIDGenerator(t),
+			assert: func(t *testing.T, presented string, _ apikey.Key, err error, stored int) {
+				require.ErrorIs(t, err, idgen.ErrNil)
+				assert.Contains(t, err.Error(), "apikey: could not mint an identifier",
+					"the same wrapping as a plain generator failure")
+				assert.NotErrorIs(t, err, errIDGeneratorDown)
+				assert.Empty(t, presented, "a secret must not be handed out under the nil identifier")
+				assert.Zero(t, stored)
+			},
+		},
+		{
 			// The secret drawn here starts with a zero byte, the one input
 			// this consumer digest returns nothing for.
 			name:      "a digest returning nothing for the secret stores nothing",
@@ -457,6 +507,9 @@ func TestManagerIssue(t *testing.T) {
 			}
 			if tc.digest != nil {
 				opts = append(opts, apikey.WithDigest(tc.digest))
+			}
+			if tc.ids != nil {
+				opts = append(opts, apikey.WithIDGenerator(tc.ids))
 			}
 
 			m, err := apikey.New(opts...)

@@ -20,6 +20,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -1565,6 +1566,27 @@ func TestAuthenticationIdentifier(t *testing.T) {
 				t.Helper()
 
 				require.ErrorIs(t, err, errNoIdentifier)
+				assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed,
+					"a failure to name the event was reported as a decision about the caller")
+				assert.Nil(t, first)
+			},
+		},
+		{
+			name: "a generator answering the nil identifier is a generator failure, never a result under it",
+			opts: func(t *testing.T, ctrl *gomock.Controller) []authenticate.PasswordOption {
+				t.Helper()
+
+				ids := NewMockGenerator(ctrl)
+				ids.EXPECT().NewID().Return(id.Nil, nil).AnyTimes()
+
+				return []authenticate.PasswordOption{authenticate.WithPasswordIDGenerator(ids)}
+			},
+			assert: func(t *testing.T, first, _ *authenticate.Authentication, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, idgen.ErrNil)
+				assert.Contains(t, err.Error(), "authenticate: naming the authentication",
+					"the same wrapping as a plain generator failure")
 				assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed,
 					"a failure to name the event was reported as a decision about the caller")
 				assert.Nil(t, first)

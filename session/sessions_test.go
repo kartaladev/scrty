@@ -22,6 +22,8 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/idgen"
+	"github.com/kartaladev/scrty/internal/idgen/idgentest"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -3174,6 +3176,22 @@ func TestCreate_RefusesAnUnusableFamilyIdentifier(t *testing.T) {
 			gen:  fixedGenerator{value: id.Nil},
 			assert: func(t *testing.T, err error, stored int) {
 				require.ErrorIs(t, err, session.ErrConfig, "a generator returning the nil identifier is a wiring fault")
+				assert.Zero(t, stored, "a session with no family reached the store")
+			},
+		},
+		{
+			// The session family stays a configuration error: the shared
+			// identifier check does not replace it.
+			name: "a mock generator answering the nil identifier with no error is still a configuration error",
+			gen: func() id.Generator {
+				g := idgentest.NewMockGenerator(gomock.NewController(t))
+				g.EXPECT().NewID().Return(id.Nil, nil).AnyTimes()
+
+				return g
+			}(),
+			assert: func(t *testing.T, err error, stored int) {
+				require.ErrorIs(t, err, session.ErrConfig)
+				assert.NotErrorIs(t, err, idgen.ErrNil, "the family check must not turn into the shared check's error")
 				assert.Zero(t, stored, "a session with no family reached the store")
 			},
 		},

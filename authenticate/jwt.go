@@ -9,6 +9,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -240,7 +241,7 @@ func (a *JWTAuthenticator) eventID(claims *token.Claims) (id.ID, error) {
 		return fromToken, nil
 	}
 
-	generated, err := a.ids.NewID()
+	generated, err := idgen.New(a.ids)
 	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 	if err != nil {
 		return id.Nil, fmt.Errorf("authenticate: naming the authentication: %w", err)

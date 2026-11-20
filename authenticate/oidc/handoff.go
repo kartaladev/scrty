@@ -18,6 +18,7 @@ import (
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
@@ -158,7 +159,7 @@ func (h *Handoff) Issue(ctx context.Context, res CallbackResult) (string, error)
 	tokenID := base64.RawURLEncoding.EncodeToString(raw[:handoffTokenIDBytes])
 	secret := base64.RawURLEncoding.EncodeToString(raw[handoffTokenIDBytes:])
 
-	recID, err := h.ids.NewID()
+	recID, err := idgen.New(h.ids)
 	err = porterr.SanitizeTo(ctx, h.log, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return "", fmt.Errorf("oidc: naming a handoff record: %w", err)

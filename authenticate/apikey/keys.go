@@ -19,6 +19,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
@@ -368,7 +369,7 @@ func (m *Keys) Issue(
 		return "", Key{}, fmt.Errorf("apikey: could not read a secret: %w", err)
 	}
 
-	keyID, err := m.ids.NewID()
+	keyID, err := idgen.New(m.ids)
 	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return "", Key{}, fmt.Errorf("apikey: could not mint an identifier: %w", err)

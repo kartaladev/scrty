@@ -9,6 +9,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/ascii"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/porterr"
 )
 
@@ -30,7 +31,7 @@ func (b *Broker) provision(ctx context.Context, ext ExternalIdentity) (*identity
 		return nil, ErrProvisioningRefused
 	}
 
-	linkID, err := b.ids.NewID()
+	linkID, err := idgen.New(b.ids)
 	err = porterr.SanitizeTo(ctx, b.log, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, fmt.Errorf("oidc: generating a link identifier: %w", err)

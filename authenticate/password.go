@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -398,7 +399,8 @@ func (a *UsernamePasswordAuthenticator) Authenticate(ctx context.Context, creden
 	// Named before the wipe, so a generator that cannot mint an identifier
 	// leaves the caller holding the credentials it presented rather than a
 	// wiped buffer and an error.
-	eventID, err := a.ids.NewID()
+	eventID, err := idgen.New(a.ids)
+	err = porterr.SanitizeTo(ctx, a.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, fmt.Errorf("authenticate: naming the authentication: %w", err)
 	}
