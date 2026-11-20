@@ -366,6 +366,7 @@ const voidingCode = ""
 func VoidEmailCode(ctx context.Context, enroller Enroller, user identity.UserID, gen id.ID) error {
 	for range MaxEmailCodeAttempts {
 		err := enroller.RedeemEmailCode(ctx, user, gen, voidingCode)
+		err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 
 		switch {
 		case err == nil:

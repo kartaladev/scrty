@@ -357,6 +357,7 @@ func TestPortErrors_TOTPStore(t *testing.T) { //nolint:paralleltest // it replac
 				assert.NotContains(t, string(raw), ptotpSecret)
 
 				if got.err != nil {
+					ptotpRequireFault(t, got.err)
 					require.ErrorIs(t, got.err, porterr.ErrUnwalkable, "the fixed error, not the hostile one")
 					assert.NotErrorIs(t, got.err, mfa.ErrInvalidCode)
 					assert.NotErrorIs(t, got.err, mfa.ErrVerifyAttemptsExhausted)
@@ -396,6 +397,46 @@ func ptotpPortErrInChild(t *testing.T, row string) {
 		return strings.TrimSuffix(line, "\r") == marker
 	})
 	require.True(t, ran, "the child never ran row %q: no output line equals %q:\n%s", row, marker, string(out))
+}
+
+// ptotpIsFault reports whether err is, or wraps, a *porterr.Fault, reading its
+// chain with a bounded walk of its own: stdlib errors.As and errors.Is follow a
+// cycle forever, so a row that checks the returned error with them hangs the
+// whole package, silently, when the error is the raw hostile one. It
+// recovers an Unwrap that panics, which then reads as no fault.
+func ptotpIsFault(err error) (found bool) {
+	defer func() { _ = recover() }()
+
+	const budget = 256
+
+	queue := []error{err}
+
+	for steps := 0; len(queue) > 0 && steps < budget; steps++ {
+		e := queue[0]
+		queue = queue[1:]
+
+		switch u := e.(type) {
+		case nil:
+		case *porterr.Fault:
+			return true
+		case interface{ Unwrap() error }:
+			queue = append(queue, u.Unwrap())
+		case interface{ Unwrap() []error }:
+			queue = append(queue, u.Unwrap()...)
+		}
+	}
+
+	return false
+}
+
+// ptotpRequireFault fails fast, with a message, when err is not the fixed
+// fault a sanitized hostile error becomes. It is called before any stdlib
+// errors.Is or errors.As on the returned error.
+func ptotpRequireFault(t *testing.T, err error) {
+	t.Helper()
+
+	require.True(t, ptotpIsFault(err),
+		"the returned error is not a *porterr.Fault: the hostile error came back unsanitized")
 }
 
 // ptotpEnrolledCycle claims ErrAlreadyEnrolled through a chain that cycles back
@@ -630,6 +671,7 @@ func TestPortErrors_TOTPEnrolment(t *testing.T) { //nolint:paralleltest // it re
 				require.NoError(t, err)
 				assert.NotContains(t, string(raw), ptotpSecret)
 
+				ptotpRequireFault(t, got.err)
 				require.NotErrorIs(t, got.err, mfa.ErrAlreadyEnrolled, "a hostile error is never \"already enrolled\"")
 				require.ErrorIs(t, got.err, porterr.ErrUnwalkable, "the fixed error, not the hostile one")
 				assert.NotErrorIs(t, got.err, mfa.ErrInvalidCode)

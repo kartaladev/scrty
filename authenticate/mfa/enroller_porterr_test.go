@@ -19,6 +19,7 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,7 +29,9 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/porterr"
+	"github.com/kartaladev/scrty/pkg/id"
 )
 
 // penrStore is an enrolment store that also implements DeviceProofStore,
@@ -298,12 +301,147 @@ func TestPortErrors_Enroller(t *testing.T) { //nolint:paralleltest // it replace
 				require.NoError(t, err)
 				assert.NotContains(t, string(raw), ptotpSecret)
 
+				ptotpRequireFault(t, got.err)
 				require.NotErrorIs(t, got.err, mfa.ErrInvalidCode, "a hostile error is never a wrong code")
 				require.ErrorIs(t, got.err, porterr.ErrUnwalkable, "the fixed error, not the hostile one")
 				assert.NotErrorIs(t, got.err, mfa.ErrEmailCodeInvalid)
 			} else {
 				require.ErrorIs(t, got.err, tc.err, "a walkable error is kept")
 				assert.NotErrorIs(t, got.err, mfa.ErrInvalidCode)
+			}
+
+			if only != "" && !t.Failed() {
+				_, _ = os.Stdout.WriteString(ptotpRanMarker + tc.name + "\n")
+			}
+		})
+	}
+}
+
+// penrVoidEnroller is the consumer's Enroller that VoidEmailCode works
+// through: only RedeemEmailCode is answered, with err, and every call is
+// counted. Any other method panics on the nil embedded Enroller, so the test
+// fails if VoidEmailCode ever calls one.
+type penrVoidEnroller struct {
+	mfa.Enroller
+
+	err   error
+	calls atomic.Int32
+}
+
+func (e *penrVoidEnroller) RedeemEmailCode(context.Context, identity.UserID, id.ID, string) error {
+	e.calls.Add(1)
+
+	return e.err
+}
+
+// TestPortErrors_VoidEmailCode pins that the Enroller's RedeemEmailCode failing
+// with an error whose chain cannot be walked, when VoidEmailCode calls it,
+// ends exactly as a plain outage does: voiding stops after that one call and
+// returns an error that is the fixed fault, never ErrEmailCodeInvalid, so a
+// hostile chain that claims a wrong code is not read as one and voiding does
+// not go on to report success. VoidEmailCode holds no logger, so the one abort
+// record goes to slog.Default(). A walkable error is returned unchanged.
+func TestPortErrors_VoidEmailCode(t *testing.T) { //nolint:paralleltest // it replaces slog.Default()
+	only := os.Getenv(ptotpRowEnv)
+	if only != "" {
+		debug.SetMaxStack(64 << 20)
+	}
+
+	cancelled := func(ctx context.Context) context.Context {
+		cctx, cancel := context.WithCancel(ctx)
+		cancel()
+
+		return cctx
+	}
+
+	type testCase struct {
+		name string
+		err  error
+		ctx  func(ctx context.Context) context.Context
+
+		// child runs the row in a child process: unsanitized, it overflows the
+		// stack fatally.
+		child bool
+
+		// aborts is the number of abort records expected on slog.Default().
+		aborts int
+		// reason is the abort record's reason, when aborts is 1.
+		reason string
+	}
+
+	cases := []testCase{
+		{name: "a cycle through Unwrap() error", err: &ptotpCycleOne{}, aborts: 1, reason: "budget"},
+		{name: "a cycle through Unwrap() []error", err: &ptotpCycleMany{}, child: true, aborts: 1, reason: "budget"},
+		{name: "a link whose Unwrap panics", err: ptotpPanicUnwrap{}, aborts: 1, reason: "panic"},
+		{name: "a link whose Unwrap panics with nil", err: ptotpPanicNilUnwrap{}, aborts: 1, reason: "panic"},
+		{name: "a join that fans out", err: ptotpFanOut(25), aborts: 1, reason: "budget"},
+		{name: "a cycle on a context the caller cancelled", err: &ptotpCycleOne{}, ctx: cancelled,
+			aborts: 1, reason: "budget"},
+		{name: "a typed-nil root walks to the end", err: (*ptotpTypedNil)(nil)},
+		{name: "a cycle that leads with ErrEmailCodeInvalid", err: &penrEmailInvalidCycle{}, child: true,
+			aborts: 1, reason: "budget"},
+	}
+
+	for _, tc := range cases {
+		if only != "" && only != tc.name {
+			continue
+		}
+
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.child && only == "" {
+				ptotpPortErrInChild(t, tc.name)
+
+				return
+			}
+
+			defaults := rstDefaultRecords(t)
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			void := func(portErr error) (ptotpOutcome, int) {
+				e := &penrVoidEnroller{err: portErr}
+				out := ptotpBounded(t, &rstSyncBuffer{}, func(out *ptotpOutcome) {
+					out.err = mfa.VoidEmailCode(ctx, e, "u-1", fixtureGen)
+				})
+
+				return out, int(e.calls.Load())
+			}
+
+			plain, plainCalls := void(errPtotpDown)
+			require.False(t, plain.hung)
+			require.False(t, plain.panicked)
+			require.ErrorIs(t, plain.err, errPtotpDown, "the plain outage is returned")
+			require.NotErrorIs(t, plain.err, mfa.ErrEmailCodeInvalid)
+			require.Equal(t, 1, plainCalls, "a plain outage stops voiding at once")
+			require.Empty(t, rstAborts(t, defaults.Bytes()), "a plain outage writes no abort record")
+
+			got, calls := void(tc.err)
+			require.False(t, got.hung, "voiding hung on a hostile error")
+			require.False(t, got.panicked, "voiding panicked on a hostile error")
+			require.Error(t, got.err, "refused as the plain outage is")
+			require.Equal(t, plainCalls, calls, "voiding stops at the failing call, as for a plain outage")
+
+			aborts := rstAborts(t, defaults.Bytes())
+			require.Len(t, aborts, tc.aborts, "abort records on slog.Default()")
+
+			if tc.aborts == 1 {
+				ptotpRequireFault(t, got.err)
+				assert.Equal(t, tc.reason, aborts[0]["reason"])
+				assert.Equal(t, new(porterr.Fault).Error(), got.text, "the fixed fault's text")
+				assert.NotContains(t, got.text, ptotpSecret)
+
+				raw, err := json.Marshal(aborts[0])
+				require.NoError(t, err)
+				assert.NotContains(t, string(raw), ptotpSecret)
+
+				require.NotErrorIs(t, got.err, mfa.ErrEmailCodeInvalid, "a hostile error is never a wrong code")
+				require.ErrorIs(t, got.err, porterr.ErrUnwalkable, "the fixed error, not the hostile one")
+			} else {
+				require.ErrorIs(t, got.err, tc.err, "a walkable error is kept")
+				assert.NotErrorIs(t, got.err, mfa.ErrEmailCodeInvalid)
 			}
 
 			if only != "" && !t.Failed() {

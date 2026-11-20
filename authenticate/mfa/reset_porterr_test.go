@@ -331,6 +331,7 @@ func TestPortErrors_Reset(t *testing.T) { //nolint:paralleltest // it replaces s
 			require.Len(t, aborts, tc.aborts)
 
 			if tc.aborts == 1 {
+				ptotpRequireFault(t, got.err)
 				require.ErrorIs(t, got.err, porterr.ErrUnwalkable, "the fixed error, not the hostile one")
 				assert.Equal(t, tc.reason, aborts[0]["reason"])
 
