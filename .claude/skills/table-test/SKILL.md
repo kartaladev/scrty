@@ -107,6 +107,13 @@ For components returning only `error`, drop `result` from the closure signature:
 1. **Use an `assert` closure on every case — not `want`/`wantErr` fields.**
    The closure receives `(t *testing.T, result T, err error)`, or `(t *testing.T, err error)` if the component returns only `error`. Every case must populate it; there is no "default assertion".
 
+   **One exception: a uniform-invariant matrix.** A table may use one shared assertion block, run after every row, instead of per-row closures, when all of these hold:
+   - every row asserts the *same* invariants, and the rows differ only in the input that provokes them (for example a matrix of hostile errors that must each end with no hang, the same outcome as a plain outage, and exactly one abort record);
+   - no row needs an assertion the others do not; a row that does gets its own closure, or moves to its own table;
+   - the shared block is written once, in the test function, and states the invariant it checks in a one-line comment above it.
+
+   The shared block is a statement that the rows are interchangeable. If that stops being true, go back to closures.
+
 2. **Use `testify/assert` and `testify/require` from `github.com/stretchr/testify`.**
    Use `require` for preconditions that must halt the case (e.g., `require.NoError` before dereferencing a result); use `assert` for independent checks that should all report on failure.
 
