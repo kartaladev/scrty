@@ -262,7 +262,10 @@ func (m *Passkeys) sendEmailCode(
 
 	subject, body := m.messages.EmailCode(code, until)
 
-	if err := m.sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body}); err != nil {
+	err = m.sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body})
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
+	if err != nil {
 		return diag.Wrap(err, "passkey: could not queue the emailed code")
 	}
 

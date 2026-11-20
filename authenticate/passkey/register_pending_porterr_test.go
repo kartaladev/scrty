@@ -27,8 +27,10 @@ import (
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/porterr"
+	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/ratelimit"
+	"github.com/kartaladev/scrty/recovery"
 )
 
 // ppendRowEnv names the row a child process runs. It is empty in the parent.
@@ -52,7 +54,18 @@ const (
 	ppendListAwait    plogSite = "ConfirmEmailCode's awaiting List"
 	ppendCharge       plogSite = "ConfirmEmailCode's ChargeEmailAttempt"
 	ppendClear        plogSite = "ConfirmEmailCode's ClearReason"
+	ppendSendCode     plogSite = "FinishRegistration's emailed-code Send"
+	ppendLoadContact  plogSite = "FinishRegistration's emailed-code LoadByUserID"
+	ppendListWayBack  plogSite = "FinishRegistration's way-back awaiting List"
+	ppendWayBack      plogSite = "FinishRegistration's way-back check"
+	ppendGenerate     plogSite = "FinishRegistration's saved-code Generate"
+	ppendConfirmSaved plogSite = "ConfirmSavedCode's saved-code Confirm"
 )
+
+// ppendRecoverySites are the sites a row reaches only with saved codes wired.
+// Their ports are the saved-code store behind recovery.Codes and the way-back
+// check, which sanitize at their own boundary.
+var ppendRecoverySites = []plogSite{ppendListWayBack, ppendWayBack, ppendGenerate, ppendConfirmSaved}
 
 // ppendCreds fails the call its ports name. A Delete after a passkey was
 // stored while armed is the unsettled finish's removal; any other is the
@@ -65,7 +78,7 @@ type ppendCreds struct {
 }
 
 func (s ppendCreds) List(ctx context.Context, user identity.UserID) ([]*passkey.Credential, error) {
-	for _, site := range []plogSite{ppendListAbandon, ppendListAwait} {
+	for _, site := range []plogSite{ppendListAbandon, ppendListAwait, ppendListWayBack} {
 		if err := s.ports.fails(site); err != nil {
 			return nil, err
 		}
@@ -116,6 +129,77 @@ func (s ppendCreds) ClearReason(
 	return s.MemoryCredentialStore.ClearReason(ctx, user, cid, r)
 }
 
+// ppendSender fails the emailed code's Send, and is non-blocking as a queued
+// sender is.
+type ppendSender struct {
+	notify.Sender
+
+	ports *plogPorts
+}
+
+func (s ppendSender) Send(ctx context.Context, msg notify.Message) error {
+	if err := s.ports.fails(ppendSendCode); err != nil {
+		return err
+	}
+
+	return s.Sender.Send(ctx, msg)
+}
+
+func (ppendSender) NonBlocking() bool { return true }
+
+// ppendUsers fails the user load that addresses the emailed code.
+type ppendUsers struct {
+	identity.UserLoader
+
+	ports *plogPorts
+}
+
+func (u ppendUsers) LoadByUserID(ctx context.Context, user identity.UserID) (*identity.Details, error) {
+	if err := u.ports.fails(ppendLoadContact); err != nil {
+		return nil, err
+	}
+
+	return u.UserLoader.LoadByUserID(ctx, user)
+}
+
+// ppendCodeStore is the consumer's saved-code store: it fails the call its
+// ports name, and counts the sets it replaced while armed.
+type ppendCodeStore struct {
+	*recovery.MemoryCodeStore
+
+	ports    *plogPorts
+	replaced *atomic.Int32
+}
+
+func (s ppendCodeStore) ReplaceSet(ctx context.Context, user identity.UserID, hashes [][]byte, at time.Time) error {
+	if err := s.ports.fails(ppendGenerate); err != nil {
+		return err
+	}
+
+	err := s.MemoryCodeStore.ReplaceSet(ctx, user, hashes, at)
+	if err == nil && s.ports.armed.Load() {
+		s.replaced.Add(1)
+	}
+
+	return err
+}
+
+func (s ppendCodeStore) Match(ctx context.Context, user identity.UserID, hash []byte) (bool, error) {
+	if err := s.ports.fails(ppendConfirmSaved); err != nil {
+		return false, err
+	}
+
+	return s.MemoryCodeStore.Match(ctx, user, hash)
+}
+
+func (s ppendCodeStore) Remaining(ctx context.Context, user identity.UserID) (int, error) {
+	if err := s.ports.fails(ppendWayBack); err != nil {
+		return 0, err
+	}
+
+	return s.MemoryCodeStore.Remaining(ctx, user)
+}
+
 // ppendLimiter is a permissive confirmation limiter that counts the refusals
 // recorded on it.
 type ppendLimiter struct {
@@ -143,13 +227,16 @@ type ppendOutcome struct {
 	rateLimited  bool // ratelimit.ErrThrottled
 	invalidCode  bool // mfa.ErrInvalidCode
 	emailInvalid bool // mfa.ErrEmailCodeInvalid
+	codeRefused  bool // recovery.ErrRefused
+	claimed      bool // the row's claimed sentinel, checked before every other
 	interrupted  bool // matches context.Canceled or context.DeadlineExceeded
 	returned     bool // a registration result or an activated passkey came back
 
-	stored   int   // passkeys the user holds afterwards
-	pending  int   // of which pending
-	sent     int   // messages the sender queued
-	failures int32 // refusals counted on the confirmation limiter
+	stored    int   // passkeys the user holds afterwards
+	pending   int   // of which pending
+	sent      int   // messages the sender queued
+	failures  int32 // refusals counted on the confirmation limiter
+	generated int32 // saved-code sets replaced once the port was armed
 
 	// notRemoved are the manager's "could not be removed" records.
 	notRemoved []map[string]any
@@ -158,10 +245,13 @@ type ppendOutcome struct {
 }
 
 // runPendingSite runs the pending-registration call site names against a
-// consumer credential store that fails it with portErr. When cancelDuring is
-// set the failing call cancels the caller's context first. It fails the test
-// when the call, or the classification of its error, hangs or panics.
-func runPendingSite(t *testing.T, site plogSite, portErr error, cancelDuring bool) ppendOutcome {
+// consumer port that fails it with portErr. When cancelDuring is set the
+// failing call cancels the caller's context first. claims, when set, is the
+// sentinel a claim row's error claims: it is classified first, so an error
+// taken for it is reported as such before a later check can hang. It fails
+// the test when the call, or the classification of its error, hangs or
+// panics.
+func runPendingSite(t *testing.T, site plogSite, portErr, claims error, cancelDuring bool) ppendOutcome {
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -174,8 +264,18 @@ func runPendingSite(t *testing.T, site plogSite, portErr error, cancelDuring boo
 
 	f := newFixture(t)
 	f.deps.Credentials = ppendCreds{MemoryCredentialStore: f.creds, ports: ports, inserted: &atomic.Bool{}}
+	f.deps.Sender = ppendSender{Sender: f.deps.Sender, ports: ports}
+	f.deps.Users = ppendUsers{UserLoader: f.deps.Users, ports: ports}
 
 	logs := &logBuffer{}
+	replaced := &atomic.Int32{}
+
+	if slices.Contains(ppendRecoverySites, site) {
+		store := ppendCodeStore{MemoryCodeStore: recovery.NewMemoryCodeStore(), ports: ports, replaced: replaced}
+		f.deps.Recovery = recoveryDeps(t, f, recovery.WayBackDeps{},
+			recovery.WithCodesStore(store), recovery.WithCodesLogger(logs.logger()))
+	}
+
 	m := f.manager(t, passkey.WithLogger(logs.logger()))
 	s := enrolmentSession("sess-a", "u-1")
 	limiter := &ppendLimiter{Limiter: permissive(t)}
@@ -183,11 +283,19 @@ func runPendingSite(t *testing.T, site plogSite, portErr error, cancelDuring boo
 
 	// finishing begins a registration, before the port is armed, and returns
 	// the call that finishes it.
-	finishing := func(ctx context.Context, credID string) func() (bool, error) {
+	finish := func(ctx context.Context, credID string) func() (*passkey.RegistrationResult, error) {
 		challenge := f.begin(t, m, s)
 
+		return func() (*passkey.RegistrationResult, error) {
+			return m.FinishRegistration(ctx, s, regBody(challenge, credID, ""), rc)
+		}
+	}
+
+	finishing := func(ctx context.Context, credID string) func() (bool, error) {
+		run := finish(ctx, credID)
+
 		return func() (bool, error) {
-			res, err := m.FinishRegistration(ctx, s, regBody(challenge, credID, ""), rc)
+			res, err := run()
 
 			return res != nil, err
 		}
@@ -196,7 +304,7 @@ func runPendingSite(t *testing.T, site plogSite, portErr error, cancelDuring boo
 	var call func() (bool, error)
 
 	switch site {
-	case ppendListAbandon:
+	case ppendListAbandon, ppendSendCode, ppendLoadContact, ppendListWayBack, ppendWayBack, ppendGenerate:
 		call = finishing(ctx, "cred-a")
 	case ppendDelAbandon:
 		_, err := finishing(t.Context(), "cred-a")()
@@ -209,6 +317,17 @@ func runPendingSite(t *testing.T, site plogSite, portErr error, cancelDuring boo
 	case ppendDelUnsettled:
 		f.sendErr = errors.New("sender: queue full")
 		call = finishing(ctx, "cred-a")
+	case ppendConfirmSaved:
+		res, err := finish(t.Context(), "cred-a")()
+		require.NoError(t, err)
+		require.NotEmpty(t, res.RecoveryCodes, "the finish showed saved codes")
+
+		code := res.RecoveryCodes[0]
+		call = func() (bool, error) {
+			c, err := m.ConfirmSavedCode(ctx, s, code, rc)
+
+			return c != nil, err
+		}
 	default:
 		_, err := finishing(t.Context(), "cred-a")()
 		require.NoError(t, err)
@@ -224,6 +343,10 @@ func runPendingSite(t *testing.T, site plogSite, portErr error, cancelDuring boo
 	ports.armed.Store(true)
 
 	done := make(chan ppendOutcome, 1)
+
+	// claimedHit is set as soon as the error is taken for the claimed
+	// sentinel, so a run that then hangs still reports the misclassification.
+	var claimedHit atomic.Bool
 
 	go func() {
 		returned := false
@@ -243,6 +366,11 @@ func runPendingSite(t *testing.T, site plogSite, portErr error, cancelDuring boo
 		// raw hangs here, and fails the run as a hang.
 		out.err, out.returned = err, got
 		if err != nil {
+			if claims != nil && errors.Is(err, claims) {
+				claimedHit.Store(true)
+				out.claimed = true
+			}
+
 			out.text = err.Error()
 			out.authFailed = errors.Is(err, authenticate.ErrAuthenticationFailed)
 			out.limit = errors.Is(err, passkey.ErrPerUserLimitReached)
@@ -250,6 +378,7 @@ func runPendingSite(t *testing.T, site plogSite, portErr error, cancelDuring boo
 			out.rateLimited = errors.Is(err, ratelimit.ErrThrottled)
 			out.invalidCode = errors.Is(err, mfa.ErrInvalidCode)
 			out.emailInvalid = errors.Is(err, mfa.ErrEmailCodeInvalid)
+			out.codeRefused = errors.Is(err, recovery.ErrRefused)
 			out.interrupted = errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 		}
 
@@ -263,6 +392,7 @@ func runPendingSite(t *testing.T, site plogSite, portErr error, cancelDuring boo
 	case out = <-done:
 		require.False(t, out.panicked, "a hostile port error escaped as a panic")
 	case <-time.After(5 * time.Second):
+		require.False(t, claimedHit.Load(), "the error was taken for %v, then its classification hung", claims)
 		require.FailNow(t, "a hostile port error hung the call, or its classification")
 	}
 
@@ -278,6 +408,7 @@ func runPendingSite(t *testing.T, site plogSite, portErr error, cancelDuring boo
 
 	out.sent = len(f.messages())
 	out.failures = limiter.failures.Load()
+	out.generated = replaced.Load()
 
 	for _, rec := range plogRecords(t, logs.String()) {
 		switch rec["msg"] {
@@ -304,10 +435,19 @@ func runPendingSite(t *testing.T, site plogSite, portErr error, cancelDuring boo
 //   - the confirmation's listing, attempt charge or reason clearing failing is
 //     an error: never a confirmed passkey, never a refused code counted on the
 //     limiter, never a throttle, even when the error claims one of those or
-//     the caller's context was cancelled during the call.
+//     the caller's context was cancelled during the call;
+//   - the emailed code's Send, or the user load that addresses it, failing
+//     fails the finish and removes the passkey it stored;
+//   - with saved codes wired, the way-back check's listing or saved-code count
+//     failing refuses the finish before anything is stored, generated or
+//     sent; the saved-code set's write failing removes the stored passkey; and
+//     the saved-code confirmation's lookup failing is an error, never
+//     recovery.ErrCodeThrottled or recovery.ErrRefused, whichever it claims.
 //
 // The sanitizer writes one record to the manager's own logger and none to
-// slog.Default().
+// slog.Default(). The saved-code rows reach their port through recovery.Codes,
+// which sanitizes at its own boundary to the logger it was given, here the
+// manager's: they pin that the pending flow still answers them as an outage.
 func TestPortErrors_RegisterPending(t *testing.T) { //nolint:paralleltest // it replaces slog.Default()
 	only := os.Getenv(ppendRowEnv)
 	if only != "" {
@@ -321,6 +461,9 @@ func TestPortErrors_RegisterPending(t *testing.T) { //nolint:paralleltest // it 
 
 		// cancelDuring makes the failing call cancel the caller's context.
 		cancelDuring bool
+
+		// claims is the sentinel a claim row's error claims.
+		claims error
 
 		// child runs the row in a child process: unsanitized, it overflows the
 		// stack fatally.
@@ -340,6 +483,8 @@ func TestPortErrors_RegisterPending(t *testing.T) { //nolint:paralleltest // it 
 		assert.Equal(t, plain.rateLimited, got.rateLimited)
 		assert.Equal(t, plain.invalidCode, got.invalidCode)
 		assert.Equal(t, plain.emailInvalid, got.emailInvalid)
+		assert.Equal(t, plain.codeRefused, got.codeRefused)
+		assert.Equal(t, plain.generated, got.generated, "the same saved-code sets generated")
 		assert.Equal(t, plain.interrupted, got.interrupted)
 		assert.Equal(t, plain.returned, got.returned)
 		assert.Equal(t, plain.stored, got.stored, "the same passkeys stored")
@@ -356,6 +501,8 @@ func TestPortErrors_RegisterPending(t *testing.T) { //nolint:paralleltest // it 
 		assert.False(t, got.throttled, "an outage is never a throttle")
 		assert.False(t, got.rateLimited, "an outage is never a throttle")
 		assert.False(t, got.invalidCode, "an outage is never a refused code")
+		assert.False(t, got.codeRefused, "an outage is never a refused saved code")
+		assert.False(t, got.claimed, "an outage is never the sentinel its error claims")
 		assert.False(t, got.interrupted, "an outage is not an interrupted call")
 
 		switch site {
@@ -375,6 +522,15 @@ func TestPortErrors_RegisterPending(t *testing.T) { //nolint:paralleltest // it 
 					assert.NotContains(t, s, plogSecret, "the record quotes the error")
 				}
 			}
+		case ppendSendCode, ppendLoadContact, ppendGenerate:
+			assert.Zero(t, got.stored, "the unsettled passkey is removed")
+			assert.Zero(t, got.sent, "no code is sent")
+			assert.Zero(t, got.generated, "no saved codes are generated")
+			assert.Empty(t, got.notRemoved, "the removal succeeded")
+		case ppendListWayBack, ppendWayBack:
+			assert.Zero(t, got.stored, "no passkey is stored")
+			assert.Zero(t, got.generated, "no saved codes are generated")
+			assert.Zero(t, got.sent, "no code is sent")
 		default:
 			assert.Equal(t, 1, got.pending, "the passkey stays pending")
 			assert.Zero(t, got.failures, "no refused code is counted")
@@ -405,10 +561,19 @@ func TestPortErrors_RegisterPending(t *testing.T) { //nolint:paralleltest // it 
 		ppendListAwait:   {mfa.ErrEmailCodeInvalid},
 		ppendCharge:      {mfa.ErrEnrolmentThrottled, mfa.ErrEmailCodeInvalid, ratelimit.ErrThrottled},
 		ppendClear:       {mfa.ErrInvalidCode},
+		ppendSendCode:    {passkey.ErrPerUserLimitReached, authenticate.ErrAuthenticationFailed},
+		ppendLoadContact: {passkey.ErrPerUserLimitReached, authenticate.ErrAuthenticationFailed},
+		ppendListWayBack: {passkey.ErrPerUserLimitReached},
+		ppendWayBack:     {passkey.ErrPerUserLimitReached},
+		ppendGenerate:    {passkey.ErrPerUserLimitReached},
+		ppendConfirmSaved: {
+			recovery.ErrCodeThrottled, recovery.ErrRefused, mfa.ErrInvalidCode, ratelimit.ErrThrottled,
+		},
 	}
 
 	sanitized := []plogSite{
 		ppendListAbandon, ppendDelAbandon, ppendDelUnsettled, ppendListAwait, ppendCharge, ppendClear,
+		ppendSendCode, ppendLoadContact, ppendListWayBack, ppendWayBack, ppendGenerate, ppendConfirmSaved,
 	}
 
 	var cases []testCase
@@ -442,7 +607,7 @@ func TestPortErrors_RegisterPending(t *testing.T) { //nolint:paralleltest // it 
 		for _, sentinel := range claimed[site] {
 			cases = append(cases, testCase{
 				name: prefix + "a cycle claiming " + sentinel.Error(), site: site, err: &plogClaim{claims: sentinel},
-				assert: asOutage(site, "budget"),
+				claims: sentinel, assert: asOutage(site, "budget"),
 			})
 		}
 	}
@@ -454,17 +619,17 @@ func TestPortErrors_RegisterPending(t *testing.T) { //nolint:paralleltest // it 
 
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.child && only == "" {
-				ppendPortErrInChild(t, tc.name)
+				portErrInChild(t, ppendRowEnv, ppendRanMarker, tc.name)
 
 				return
 			}
 
 			defaults := pregDefaultRecords(t)
 
-			plain := runPendingSite(t, tc.site, plogOutage, tc.cancelDuring)
+			plain := runPendingSite(t, tc.site, plogOutage, nil, tc.cancelDuring)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := runPendingSite(t, tc.site, tc.err, tc.cancelDuring)
+			got := runPendingSite(t, tc.site, tc.err, tc.claims, tc.cancelDuring)
 			tc.assert(t, plain, got)
 
 			for _, rec := range plogRecords(t, defaults.String()) {
@@ -479,10 +644,10 @@ func TestPortErrors_RegisterPending(t *testing.T) { //nolint:paralleltest // it 
 	}
 }
 
-// ppendPortErrInChild re-runs the current top-level test in a child process
-// limited to row, and fails unless it exits 0 within a minute and prints, as
-// one whole output line, the marker proving it ran the row.
-func ppendPortErrInChild(t *testing.T, row string) {
+// portErrInChild re-runs the current top-level test in a child process with
+// env naming row, and fails unless it exits 0 within a minute and prints, as
+// one whole output line, ranMarker followed by row, proving it ran the row.
+func portErrInChild(t *testing.T, env, ranMarker, row string) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(t.Context(), ppendChildRowDeadline)
@@ -492,7 +657,7 @@ func ppendPortErrInChild(t *testing.T, row string) {
 
 	//nolint:gosec // G204: re-runs this test binary with this test's own name
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+top+"$", "-test.count=1")
-	cmd.Env = append(os.Environ(), ppendRowEnv+"="+row)
+	cmd.Env = append(os.Environ(), env+"="+row)
 
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, ctx.Err(), "the child did not finish within a minute")
@@ -500,7 +665,7 @@ func ppendPortErrInChild(t *testing.T, row string) {
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	require.NoError(t, err, "the child failed:\n%s", strings.Join(lines[:min(len(lines), 8)], "\n"))
 
-	marker := ppendRanMarker + row
+	marker := ranMarker + row
 	ran := slices.ContainsFunc(strings.Split(string(out), "\n"), func(line string) bool {
 		return strings.TrimSuffix(line, "\r") == marker
 	})
