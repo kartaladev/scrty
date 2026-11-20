@@ -8,6 +8,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // The errors this package returns, which callers identify with errors.Is.
@@ -232,11 +233,18 @@ func NewFirstOf(authorizers ...Authorizer) (*FirstOf, error) {
 //
 // An authorizer's error is returned as it came, so an outage inside a
 // consumer's own authorizer still matches its cause and is never rewritten as a
-// decision about the caller. Only the case where every authorizer declined
+// decision about the caller. The one exception is an error whose chain cannot
+// be walked (a cycle, a fan-out past the library's budget, a panicking Unwrap):
+// it is replaced by a fixed fault that matches no declination, so it stops the
+// manager as an outage would. Only the case where every authorizer declined
 // produces an error of this package's own, and that error is a denial.
 func (m *FirstOf) Authorize(ctx context.Context, attrs Attributes) error {
 	for _, a := range m.authorizers {
-		err := a.Authorize(ctx, attrs)
+		// The authorizer is the consumer's, and so is its error. One whose chain
+		// cannot be walked becomes a fault that matches no declination, so a
+		// hostile authorizer is never skipped for a later one to grant: it stops
+		// the manager as a plain outage from it does.
+		err := porterr.Sanitize(a.Authorize(ctx, attrs), porterr.ErrUnwalkable)
 		if errors.Is(err, ErrUnsupportedAttributes) {
 			continue
 		}

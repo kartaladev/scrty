@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // OwnershipAuthorizer judges OwnershipAttributes by asking the consumer's own
@@ -56,7 +57,11 @@ func (a *OwnershipAuthorizer) Authorize(ctx context.Context, attrs Attributes) e
 		return fmt.Errorf("%w: the request carries no subject to own anything", ErrAccessDenied)
 	}
 
+	// Both functions are the consumer's. Their errors are sanitized before they
+	// are wrapped, so nothing behind this authorizer walks a chain that cannot
+	// be walked; an unwalkable one is an outage like any other failure here.
 	id, err := owned.ResolveID(ctx)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 	if err != nil {
 		return fmt.Errorf("authorize: resolve %s/%s identifier: %w", owned.Group, owned.Resource, err)
 	}
@@ -65,6 +70,7 @@ func (a *OwnershipAuthorizer) Authorize(ctx context.Context, attrs Attributes) e
 	// trimming or case-folding it here would look up a different record than
 	// the one the request named.
 	isOwner, err := owned.OwnedBy(ctx, subject, id)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 	if err != nil {
 		// The ownership answer is not read when the check failed, however it
 		// was returned: a function that reports an error has not judged, and

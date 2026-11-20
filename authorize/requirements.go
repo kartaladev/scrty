@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // Requirement decides whether the request carried by ctx may proceed.
@@ -165,7 +166,10 @@ func AnyOf(requirements ...Requirement) Requirement {
 				continue
 			}
 
-			err := required(ctx)
+			// A member may be the consumer's own function. An error from it whose
+			// chain cannot be walked becomes a fault that is no demand to
+			// authenticate, so it counts as a plain failure of that member does.
+			err := porterr.Sanitize(required(ctx), porterr.ErrUnwalkable)
 			if err == nil {
 				return nil
 			}
