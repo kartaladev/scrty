@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
@@ -64,10 +65,12 @@ func (p *Provider) EndSignIn(ctx context.Context, sel SignInSelector) ([]ClientT
 	// anything that reports, so that nothing a report does can leave either undone.
 	browserCtx, endBrowsers := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	_, browserErr := p.stores.browserSessions.DeleteBySignIn(browserCtx, sel)
+	browserErr = porterr.SanitizeTo(browserCtx, p.cfg.logger, browserErr, porterr.ErrUnwalkable)
 	endBrowsers()
 
 	grantCtx, endGrants := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	ended, grantErr := p.stores.grants.EndSignIns(grantCtx, sel, p.cfg.clock.Now())
+	grantErr = porterr.SanitizeTo(grantCtx, p.cfg.logger, grantErr, porterr.ErrUnwalkable)
 	endGrants()
 
 	clients := clientsToNotify(ended)
@@ -87,6 +90,7 @@ func (p *Provider) EndSignIn(ctx context.Context, sel SignInSelector) ([]ClientT
 func (p *Provider) endGrantsOf(ctx context.Context, sel SignInSelector) error {
 	grantCtx, endGrants := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	ended, err := p.stores.grants.EndSignIns(grantCtx, sel, p.cfg.clock.Now())
+	err = porterr.SanitizeTo(grantCtx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	endGrants()
 
 	handCtx, endHandOn := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
@@ -222,6 +226,7 @@ func (p *Provider) RevokeUserGrants(ctx context.Context, user identity.UserID, c
 	defer cancel()
 
 	ended, err := p.stores.grants.RevokeByUser(detached, user, RevocationCause(cause), p.cfg.clock.Now())
+	err = porterr.SanitizeTo(detached, p.cfg.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke the user's grants")
 	}
@@ -249,6 +254,7 @@ type ConsentView struct {
 // that cannot answer matches ErrDependency, and a caller who left matches its own context's error.
 func (p *Provider) Consents(ctx context.Context, user identity.UserID) ([]ConsentView, error) {
 	consents, err := p.stores.consents.ListByUser(ctx, user)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, dependencyFailure(ctx, err, "oidcprovider: list the user's consents")
 	}
@@ -294,6 +300,7 @@ func (p *Provider) RevokeConsent(ctx context.Context, user identity.UserID, clie
 	// may spend a budget, and the grants' time must not be what the consent's write is left with.
 	grantCtx, endGrants := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	ended, err := p.stores.grants.RevokeByUserAndClient(grantCtx, user, clientID, CauseConsentRevoked, p.cfg.clock.Now())
+	err = porterr.SanitizeTo(grantCtx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	endGrants()
 	if err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke the consent's grants")
@@ -303,6 +310,7 @@ func (p *Provider) RevokeConsent(ctx context.Context, user identity.UserID, clie
 	consentCtx, endConsent := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	defer endConsent()
 	forgotten, err := p.stores.consents.Revoke(consentCtx, user, clientID)
+	err = porterr.SanitizeTo(consentCtx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: forget the consent")
 	}
