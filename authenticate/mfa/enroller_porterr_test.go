@@ -3,7 +3,8 @@ package mfa_test
 // This file covers the enrolment path's port calls: TestPortErrors_Enroller
 // the enrolment store's reads in ProveDevice, CompleteEnrolment and
 // RedeemEmailCode, the random source that draws the emailed code, and the
-// device-proof store's ProveDevice and CompleteEnrolment's Complete. It
+// device-proof store's ProveDevice, ChargeEmailCode, and Complete in both
+// CompleteEnrolment and RedeemEmailCode. It
 // replaces slog.Default() for its duration, so it does not run in parallel,
 // and it restores the logger it found.
 //
@@ -45,6 +46,14 @@ type penrInvalidCycle struct{}
 func (*penrInvalidCycle) Error() string     { return ptotpSecret }
 func (c *penrInvalidCycle) Unwrap() []error { return []error{mfa.ErrInvalidCode, c} }
 
+// penrEmailInvalidCycle claims ErrEmailCodeInvalid through a chain that cycles
+// back to itself: stdlib errors.Is finds the sentinel first and answers "wrong
+// emailed code", while anything that walks past it never ends.
+type penrEmailInvalidCycle struct{}
+
+func (*penrEmailInvalidCycle) Error() string     { return ptotpSecret }
+func (c *penrEmailInvalidCycle) Unwrap() []error { return []error{mfa.ErrEmailCodeInvalid, c} }
+
 // penrSite names the enrolment-path port call a row fails, and the entry
 // point that reaches it.
 type penrSite string
@@ -56,9 +65,24 @@ const (
 	penrCompleteGet penrSite = "CompleteEnrolment's Get"
 	penrComplete    penrSite = "CompleteEnrolment's Complete"
 	penrRedeemGet   penrSite = "RedeemEmailCode's Get"
+	penrCharge      penrSite = "RedeemEmailCode's ChargeEmailCode"
+	penrRedeemDone  penrSite = "RedeemEmailCode's Complete"
 )
 
-var penrSites = []penrSite{penrProveGet, penrRandom, penrProveProof, penrCompleteGet, penrComplete, penrRedeemGet}
+var penrSites = []penrSite{
+	penrProveGet, penrRandom, penrProveProof, penrCompleteGet, penrComplete, penrRedeemGet,
+	penrCharge, penrRedeemDone,
+}
+
+// penrRedeems reports whether site is reached through RedeemEmailCode, whose
+// refusals are ErrEmailCodeInvalid rather than ErrInvalidCode.
+func penrRedeems(site penrSite) bool {
+	return site == penrRedeemGet || site == penrCharge || site == penrRedeemDone
+}
+
+// penrRedeemCode is the code a RedeemEmailCode row presents, and the one the
+// enrolment it reads holds, so only the port's error can refuse it.
+const penrRedeemCode = "123456"
 
 // penrEager reports whether site's error is wrapped with fmt.Errorf, so a
 // walkable error's own text ends the returned text.
@@ -67,9 +91,10 @@ func penrEager(site penrSite) bool { return site == penrRandom }
 // runPenrSite calls the entry point that reaches site, with that port failing
 // with portErr and every earlier call answered as a healthy port does. A call
 // the flow must not make has no expectation, so gomock fails the test if the
-// flow makes it: a proof whose code could not be drawn records nothing. A
-// failing read claims "not found" and a failing write claims success, so the
-// error alone must decide. The outcome's provisioned field reports whether
+// flow makes it: a proof whose code could not be drawn records nothing, and a
+// charge that failed reads nothing and writes nothing. A failing read claims
+// "not found", a failing charge claims the attempt was allowed, and a failing
+// write claims success, so the error alone must decide. The outcome's provisioned field reports whether
 // ProveDevice handed back an emailed code. It is bounded: a hang is reported,
 // not waited for.
 func runPenrSite(t *testing.T, ctx context.Context, site penrSite, portErr error) ptotpOutcome {
@@ -105,6 +130,16 @@ func runPenrSite(t *testing.T, ctx context.Context, site penrSite, portErr error
 	case penrRedeemGet:
 		proofs.EXPECT().ChargeEmailCode(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(1, true, nil)
 		enrol.EXPECT().Get(gomock.Any(), gomock.Any()).Return(mfa.Enrolment{}, false, portErr)
+	case penrCharge:
+		proofs.EXPECT().ChargeEmailCode(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(1, true, portErr)
+	case penrRedeemDone:
+		issued := proven
+		issued.EmailCode = []byte(penrRedeemCode)
+		issued.EmailCodeUntil = ptotpNow.Add(time.Minute)
+
+		proofs.EXPECT().ChargeEmailCode(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(1, true, nil)
+		enrol.EXPECT().Get(gomock.Any(), gomock.Any()).Return(issued, true, nil)
+		proofs.EXPECT().Complete(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(true, portErr)
 	}
 
 	totpm, err := mfa.NewTOTP(store, "scrty-test", opts...)
@@ -115,8 +150,8 @@ func runPenrSite(t *testing.T, ctx context.Context, site penrSite, portErr error
 		switch site {
 		case penrCompleteGet, penrComplete:
 			out.err = totpm.CompleteEnrolment(ctx, "u-1", fixtureGen)
-		case penrRedeemGet:
-			out.err = totpm.RedeemEmailCode(ctx, "u-1", fixtureGen, "123456")
+		case penrRedeemGet, penrCharge, penrRedeemDone:
+			out.err = totpm.RedeemEmailCode(ctx, "u-1", fixtureGen, penrRedeemCode)
 		default:
 			var emailed string
 			emailed, out.err = totpm.ProveDevice(ctx, "u-1", fixtureGen, code, true, time.Minute)
@@ -127,7 +162,8 @@ func runPenrSite(t *testing.T, ctx context.Context, site penrSite, portErr error
 
 // TestPortErrors_Enroller pins that an enrolment-path port (the enrolment
 // store's reads, the emailed code's random source, and the device-proof
-// store's ProveDevice and Complete) failing with an error whose chain cannot
+// store's ProveDevice, ChargeEmailCode and both Completes) failing with an
+// error whose chain cannot
 // be walked ends exactly as a plain outage does: refused, no emailed code
 // handed back, nothing proven or confirmed, the same records, and never
 // ErrInvalidCode or ErrEmailCodeInvalid, whatever the hostile chain claims. A
@@ -184,6 +220,14 @@ func TestPortErrors_Enroller(t *testing.T) { //nolint:paralleltest // it replace
 			testCase{name: p + "a cycle that leads with ErrInvalidCode", site: site, err: &penrInvalidCycle{},
 				child: true, aborts: 1, reason: "budget"},
 		)
+
+		// RedeemEmailCode refuses with ErrEmailCodeInvalid, so its sites also
+		// get a chain claiming that: unsanitized, it reads as a wrong emailed
+		// code rather than an outage.
+		if penrRedeems(site) {
+			cases = append(cases, testCase{name: p + "a cycle that leads with ErrEmailCodeInvalid", site: site,
+				err: &penrEmailInvalidCycle{}, child: true, aborts: 1, reason: "budget"})
+		}
 	}
 
 	fault := new(porterr.Fault).Error()

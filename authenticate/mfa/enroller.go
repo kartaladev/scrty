@@ -289,6 +289,7 @@ func (t *TOTP) RedeemEmailCode(ctx context.Context, user identity.UserID, gen id
 	}
 
 	attempt, charged, err := t.proofs.ChargeEmailCode(ctx, user, gen, t.clock.Now())
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return deviceProofStoreFailed(err, "mfa: totp could not charge an attempt against the emailed code")
 	}
@@ -320,6 +321,7 @@ func (t *TOTP) RedeemEmailCode(ctx context.Context, user identity.UserID, gen id
 	}
 
 	completed, err := t.proofs.Complete(ctx, user, gen, t.clock.Now())
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return deviceProofStoreFailed(err, msgCompleteFailed)
 	}
