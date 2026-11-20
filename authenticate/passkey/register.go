@@ -212,7 +212,9 @@ type RegistrationResult struct {
 //     requirement. A refused attestation is ErrAttestationRefused. Authenticator
 //     data reporting the backup state without backup eligibility, which
 //     WebAuthn Level 3 rules out, is refused whatever the verifier accepted.
-//  4. Run the consumer's registration check; its error is returned unchanged.
+//  4. Run the consumer's registration check; its error is returned unchanged,
+//     unless its chain cannot be walked (a cycle, a fan-out, a panicking
+//     Unwrap), which is answered with a fixed library error instead.
 //  5. Decide the passkey's pending reasons, remove the user's passkeys left
 //     pending by an abandoned registration that the new one replaces, and draw
 //     the emailed code when one is needed. Nothing is generated or sent yet.
@@ -261,6 +263,8 @@ func (m *Passkeys) FinishRegistration(
 	}
 
 	parsed, err := m.verifier.ParseRegistration(body)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: unreadable registration response", ErrMalformedResponse)
 	}
@@ -275,6 +279,9 @@ func (m *Passkeys) FinishRegistration(
 	}
 
 	nc, err := m.verifier.VerifyRegistration(ctx, parsed, RegistrationExpectation{Challenge: challenge, UV: m.uv})
+	// Sanitized before the attestation check: an unwalkable error, one that
+	// claims ErrAttestationRefused included, is the verifier failing.
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	switch {
 	case errors.Is(err, ErrAttestationRefused):
@@ -301,7 +308,8 @@ func (m *Passkeys) FinishRegistration(
 			AttestationFormat:  nc.AttestationFormat,
 			AttestationTrusted: nc.AttestationTrusted,
 		}); err != nil {
-			return nil, err
+			// Returned unchanged when walkable; the fixed fault when not.
+			return nil, porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 		}
 	}
 

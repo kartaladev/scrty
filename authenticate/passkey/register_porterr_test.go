@@ -96,6 +96,9 @@ const (
 	pregNewID     pregSite = "FinishRegistration's NewID"
 	pregInsert    pregSite = "FinishRegistration's InsertWithin"
 	pregListLog   pregSite = "FinishRegistration's synced-passkey List"
+	pregParse     pregSite = "FinishRegistration's ParseRegistration"
+	pregVerify    pregSite = "FinishRegistration's VerifyRegistration"
+	pregCheck     pregSite = "FinishRegistration's registration check"
 )
 
 // pregPorts are the consumer ports of one row. Each fails only the call its
@@ -190,6 +193,32 @@ func (g pregIDs) NewID() (id.ID, error) {
 	return g.inner.NewID()
 }
 
+// pregVerifier is the consumer's verifier: it fails the parse or the
+// verification its ports name.
+type pregVerifier struct {
+	passkey.Verifier
+
+	ports *pregPorts
+}
+
+func (v pregVerifier) ParseRegistration(body []byte) (passkey.ParsedRegistration, error) {
+	if err := v.ports.fails(pregParse); err != nil {
+		return nil, err
+	}
+
+	return v.Verifier.ParseRegistration(body)
+}
+
+func (v pregVerifier) VerifyRegistration(
+	ctx context.Context, p passkey.ParsedRegistration, exp passkey.RegistrationExpectation,
+) (*passkey.CredentialInput, error) {
+	if err := v.ports.fails(pregVerify); err != nil {
+		return nil, err
+	}
+
+	return v.Verifier.VerifyRegistration(ctx, p, exp)
+}
+
 // pregOutcome is what one registration call through a failing port produced.
 type pregOutcome struct {
 	err      error
@@ -199,6 +228,9 @@ type pregOutcome struct {
 	userNotFound bool
 	authFailed   bool
 	limit        bool
+	malformed    bool // passkey.ErrMalformedResponse
+	attestation  bool // passkey.ErrAttestationRefused
+	unwalkable   bool // porterr.ErrUnwalkable
 
 	stored    int  // credentials the user holds afterwards
 	creations int  // creation options rendered, so challenges issued
@@ -276,10 +308,21 @@ func runRegisterSite(t *testing.T, site pregSite, portErr error, cancelDuring bo
 	f.deps.Users = users
 	f.deps.Credentials = creds
 	f.deps.Handles = pregHandles{MemoryHandleStore: passkey.NewMemoryHandleStore(), ports: ports}
+	f.deps.Verifier = pregVerifier{Verifier: f.deps.Verifier, ports: ports}
 
 	logs := &logBuffer{}
-	m := f.manager(t, passkey.WithLogger(logs.logger()),
-		passkey.WithIDGenerator(pregIDs{inner: id.NewV7Generator(), ports: ports}))
+	opts := []passkey.Option{
+		passkey.WithLogger(logs.logger()),
+		passkey.WithIDGenerator(pregIDs{inner: id.NewV7Generator(), ports: ports}),
+	}
+
+	if site == pregCheck {
+		opts = append(opts, passkey.WithRegistrationCheck(func(context.Context, passkey.RegistrationFacts) error {
+			return ports.fails(pregCheck)
+		}))
+	}
+
+	m := f.manager(t, opts...)
 	s := enrolmentSession("sess-a", "u-1")
 
 	var call func() (*passkey.RegistrationResult, error)
@@ -335,6 +378,9 @@ func runRegisterSite(t *testing.T, site pregSite, portErr error, cancelDuring bo
 			out.userNotFound = errors.Is(err, identity.ErrUserNotFound)
 			out.authFailed = errors.Is(err, authenticate.ErrAuthenticationFailed)
 			out.limit = errors.Is(err, passkey.ErrPerUserLimitReached)
+			out.malformed = errors.Is(err, passkey.ErrMalformedResponse)
+			out.attestation = errors.Is(err, passkey.ErrAttestationRefused)
+			out.unwalkable = errors.Is(err, porterr.ErrUnwalkable)
 		}
 
 		returned = true
@@ -416,16 +462,23 @@ func TestPortErrors_Register(t *testing.T) { //nolint:paralleltest // it replace
 	sameAsPlain := func(t *testing.T, site pregSite, plain, got pregOutcome) {
 		t.Helper()
 
-		assert.Equal(t, plain.text, got.text, "the same fixed text")
+		if site != pregCheck {
+			// The check's error is returned unchanged when walkable, so only
+			// its outcome, not its text, is the plain outage's.
+			assert.Equal(t, plain.text, got.text, "the same fixed text")
+			assert.NotContains(t, got.text, pregSecret)
+		}
+
 		assert.Equal(t, plain.userNotFound, got.userNotFound)
 		assert.Equal(t, plain.authFailed, got.authFailed)
 		assert.Equal(t, plain.limit, got.limit)
+		assert.Equal(t, plain.malformed, got.malformed)
+		assert.Equal(t, plain.attestation, got.attestation)
 		assert.Equal(t, plain.stored, got.stored, "the same stored state")
 		assert.Equal(t, plain.creations, got.creations, "the same issued challenges")
 		assert.Equal(t, plain.hasResult, got.hasResult)
 		assert.Equal(t, plain.noSynced, got.noSynced)
 		assert.Equal(t, plain.failures, got.failures, "the same outage record")
-		assert.NotContains(t, got.text, pregSecret)
 
 		switch site {
 		case pregLoad:
@@ -453,6 +506,20 @@ func TestPortErrors_Register(t *testing.T) { //nolint:paralleltest // it replace
 			assert.Equal(t, 1, got.stored)
 			assert.False(t, got.noSynced, "unknown is answered false")
 			assert.Equal(t, []string{"ERROR"}, got.failures)
+		case pregParse:
+			require.Error(t, got.err)
+			assert.True(t, got.malformed, "an unreadable response")
+			assert.Zero(t, got.stored)
+		case pregVerify:
+			require.Error(t, got.err)
+			assert.True(t, got.authFailed, "a verifier that fails refuses the ceremony")
+			assert.False(t, got.attestation, "an outage is never an attestation refusal")
+			assert.False(t, got.hasResult, "never a successful registration")
+			assert.Zero(t, got.stored, "nothing is stored")
+		case pregCheck:
+			require.Error(t, got.err)
+			assert.False(t, got.hasResult)
+			assert.Zero(t, got.stored, "nothing is stored")
 		}
 	}
 
@@ -461,6 +528,13 @@ func TestPortErrors_Register(t *testing.T) { //nolint:paralleltest // it replace
 			t.Helper()
 
 			sameAsPlain(t, site, plain, got)
+
+			if site == pregCheck {
+				// An unwalkable refusal is the fixed fault, never the
+				// consumer's error or its text.
+				assert.True(t, got.unwalkable, "the fixed fault")
+				assert.NotContains(t, got.text, pregSecret)
+			}
 
 			require.Len(t, got.aborts, 1, "one abort record, on the manager's logger")
 			assert.Equal(t, "ERROR", got.aborts[0]["level"])
@@ -476,9 +550,14 @@ func TestPortErrors_Register(t *testing.T) { //nolint:paralleltest // it replace
 		pregLoad:   identity.ErrUserNotFound,
 		pregCount:  passkey.ErrPerUserLimitReached,
 		pregInsert: passkey.ErrDuplicateCredential,
+		pregVerify: passkey.ErrAttestationRefused,
+		pregCheck:  passkey.ErrAttestationRefused,
 	}
 
-	sites := []pregSite{pregLoad, pregListBegin, pregAssign, pregCount, pregNewID, pregInsert, pregListLog}
+	sites := []pregSite{
+		pregLoad, pregListBegin, pregAssign, pregCount, pregNewID, pregInsert, pregListLog,
+		pregParse, pregVerify, pregCheck,
+	}
 
 	var cases []testCase
 
@@ -523,6 +602,34 @@ func TestPortErrors_Register(t *testing.T) { //nolint:paralleltest // it replace
 			t.Helper()
 
 			require.ErrorIs(t, got.err, authenticate.ErrAuthenticationFailed)
+			assert.Zero(t, got.stored)
+			assert.Empty(t, got.aborts, "a walkable error writes no abort record")
+		},
+	})
+
+	cases = append(cases, testCase{
+		name: string(pregVerify) + ": a walkable attestation refusal keeps its outcome", site: pregVerify,
+		err: fmt.Errorf("verifier: %w", passkey.ErrAttestationRefused),
+		assert: func(t *testing.T, _, got pregOutcome) {
+			t.Helper()
+
+			require.ErrorIs(t, got.err, passkey.ErrAttestationRefused)
+			assert.False(t, got.authFailed)
+			assert.False(t, got.hasResult)
+			assert.Zero(t, got.stored)
+			assert.Empty(t, got.aborts, "a walkable error writes no abort record")
+		},
+	})
+
+	checkRefusal := fmt.Errorf("policy: %w", passkey.ErrAttestationRefused)
+
+	cases = append(cases, testCase{
+		name: string(pregCheck) + ": a walkable refusal is returned unchanged", site: pregCheck,
+		err: checkRefusal,
+		assert: func(t *testing.T, _, got pregOutcome) {
+			t.Helper()
+
+			assert.Same(t, checkRefusal, got.err, "the consumer's refusal, unchanged")
 			assert.Zero(t, got.stored)
 			assert.Empty(t, got.aborts, "a walkable error writes no abort record")
 		},

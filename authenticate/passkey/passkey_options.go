@@ -146,8 +146,11 @@ func WithSynchronousDelivery() Option {
 
 // WithRegistrationCheck adds a consumer check that runs on every verified
 // registration, after verification and before anything is stored. There is
-// none by default. An error it returns refuses the registration and is
-// returned unchanged, and nothing is stored. A consumer can use it to apply a
+// none by default. An error it returns refuses the registration, and nothing
+// is stored. The error is returned unchanged, unless its chain cannot be
+// walked (a cycle, a fan-out, or an Unwrap that panics): that refusal is
+// answered with a fixed library error instead, and one record is written to
+// the manager's logger. A consumer can use it to apply a
 // stricter policy to some users only, such as refusing backup-eligible
 // passkeys for administrators. A nil check is a configuration error.
 func WithRegistrationCheck(fn func(ctx context.Context, facts RegistrationFacts) error) Option {

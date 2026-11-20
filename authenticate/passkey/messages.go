@@ -193,6 +193,13 @@ func (m *Passkeys) contactOf(ctx context.Context, user identity.UserID, resolve 
 	details, err := m.users.LoadByUserID(ctx, user)
 	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
+	// A loader answering no details and no error breaks its contract: it
+	// means the user was not found, and the resolver, often the consumer's,
+	// is never handed no details.
+	if err == nil && details == nil {
+		err = identity.ErrUserNotFound
+	}
+
 	if err != nil {
 		return "", diag.Wrap(err, "passkey: could not load the user")
 	}
@@ -202,6 +209,8 @@ func (m *Passkeys) contactOf(ctx context.Context, user identity.UserID, resolve 
 	}
 
 	to, err := resolve(ctx, details)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return "", diag.Wrap(err, "passkey: could not resolve the user's contact address")
 	}
@@ -220,6 +229,15 @@ func (m *Passkeys) boundedContactOf(
 
 	cancelLoad()
 
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
+	// A loader answering no details and no error breaks its contract: it
+	// means the user was not found, and the resolver, often the consumer's,
+	// is never handed no details.
+	if err == nil && details == nil {
+		err = identity.ErrUserNotFound
+	}
+
 	if err != nil {
 		return "", diag.Wrap(err, "passkey: could not load the user")
 	}
@@ -232,6 +250,8 @@ func (m *Passkeys) boundedContactOf(
 	to, err := resolve(resolveCtx, details)
 
 	cancelResolve()
+
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	if err != nil {
 		return "", diag.Wrap(err, "passkey: could not resolve the user's contact address")
