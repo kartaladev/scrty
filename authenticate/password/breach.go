@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -99,7 +100,7 @@ func (r *breachRule) check(ctx context.Context, candidate string) error {
 	full := strings.ToUpper(hex.EncodeToString(sum[:]))
 	prefix, suffix := full[:5], full[5:]
 
-	entries, err := r.src.Range(ctx, prefix)
+	entries, err := r.src.Range(ctxlog.With(ctx, r.logger), prefix)
 	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 
 	if err != nil {

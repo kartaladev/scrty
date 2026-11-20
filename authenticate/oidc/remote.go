@@ -16,6 +16,7 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jwk"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/origin"
 	"github.com/kartaladev/scrty/internal/recovered"
 )
@@ -504,7 +505,7 @@ func (m *RelyingParty) fetchKeys(ctx context.Context, p Provider, md metadata) (
 		return nil, fmt.Errorf("%w: provider %q: key set: %s", ErrDiscoveryFailed, p.Name, fmt.Sprintf(format, args...))
 	}
 
-	res, err := m.out.Get(ctx, md.JWKSURI, nil)
+	res, err := m.out.Get(ctxlog.With(ctx, m.log), md.JWKSURI, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: provider %q: key set: %w", ErrDiscoveryFailed, p.Name, err)
 	}
@@ -643,7 +644,7 @@ func (m *RelyingParty) fetchMetadata(ctx context.Context, p Provider) (metadata,
 		return metadata{}, fmt.Errorf("%w: provider %q: discovery: %s", ErrDiscoveryFailed, p.Name, fmt.Sprintf(format, args...))
 	}
 
-	res, err := m.out.Get(ctx, strings.TrimSuffix(p.Issuer, "/")+wellKnownPath, nil)
+	res, err := m.out.Get(ctxlog.With(ctx, m.log), strings.TrimSuffix(p.Issuer, "/")+wellKnownPath, nil)
 	if err != nil {
 		return metadata{}, fmt.Errorf("%w: provider %q: discovery: %w", ErrDiscoveryFailed, p.Name, err)
 	}

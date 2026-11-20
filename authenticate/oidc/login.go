@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/origin"
 	"github.com/kartaladev/scrty/internal/porterr"
@@ -368,7 +369,7 @@ func (m *RelyingParty) exchange(ctx context.Context, p Provider, md metadata, co
 		form.Set("client_secret", p.ClientSecret)
 	}
 
-	res, err := m.out.PostForm(ctx, md.TokenEndpoint, form, header)
+	res, err := m.out.PostForm(ctxlog.With(ctx, m.log), md.TokenEndpoint, form, header)
 	if err != nil {
 		return "", fmt.Errorf("%w: provider %q: %w", ErrExchangeFailed, p.Name, err)
 	}

@@ -158,6 +158,7 @@ func New(deps Deps, opts ...Option) (*Provider, error) {
 		limits:         limits,
 		keySets: &clientKeySets{
 			out:      out,
+			logger:   cfg.logger,
 			clock:    cfg.clock,
 			ttl:      cfg.keysTTL,
 			cooldown: cfg.keysRefetchCooldown,

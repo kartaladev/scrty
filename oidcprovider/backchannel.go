@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/lifecycle"
 	"github.com/kartaladev/scrty/internal/porterr"
@@ -229,11 +230,20 @@ type outboundLogoutDelivery struct {
 // Deliver implements LogoutDelivery. 200 and 204 are success (Back-Channel Logout §2.8), whatever body
 // comes with them, none of which is read.
 func (d outboundLogoutDelivery) Deliver(ctx context.Context, uri, logoutToken string) error {
-	status, err := d.out.PostFormStatus(ctx, uri, url.Values{logoutTokenParam: {logoutToken}}, nil)
+	// The component's logger takes the outbound client's abort record for a hostile transport error.
+	status, err := d.out.PostFormStatus(ctxlog.With(ctx, d.logger), uri, url.Values{logoutTokenParam: {logoutToken}}, nil)
 	if err != nil {
-		// The transport is a port: a hostile error is made walkable here, naming errLogoutPost, so it is
-		// reported as a failed post, as a plain transport error is.
+		// Defence in depth: the outbound client already sanitizes the transport's error, so this walk
+		// does not abort today; it keeps the site safe should that change. The failure is classified
+		// as a post by diag.Wrap's kind below, whatever the cause.
 		err = porterr.SanitizeTo(ctx, d.logger, err, errLogoutPost)
+		// The outbound client has already replaced a hostile transport error with the
+		// sanitizer's fault, wrapped under its own context. The fault stands alone as
+		// the cause, as it does when this site is the one that makes it.
+		var fault *porterr.Fault
+		if errors.As(err, &fault) {
+			err = fault
+		}
 
 		return diag.Wrap(err, logoutPostText, errLogoutPost)
 	}

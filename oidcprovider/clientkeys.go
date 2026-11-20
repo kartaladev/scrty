@@ -3,6 +3,7 @@ package oidcprovider
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jwk"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/outbound"
 	"github.com/kartaladev/scrty/pkg/clock"
 )
@@ -30,6 +32,7 @@ const fetchFailureText = "oidcprovider: fetch client key set"
 // in place of a failed fetch, because that would keep a withdrawn key working.
 type clientKeySets struct {
 	out      *outbound.Client
+	logger   *slog.Logger // the provider's; takes the outbound client's abort record
 	clock    clock.Clock
 	ttl      time.Duration
 	cooldown time.Duration
@@ -149,7 +152,7 @@ func (c *clientKeySets) fetch(ctx context.Context, uri string) (set jwk.Set, err
 		}
 	}()
 
-	res, err := c.out.Get(ctx, uri, nil)
+	res, err := c.out.Get(ctxlog.With(ctx, c.logger), uri, nil)
 	if err != nil {
 		return nil, dependencyFailure(ctx, err, fetchFailureText)
 	}

@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/outbound"
 )
@@ -315,4 +316,80 @@ func poInChild(t *testing.T, row string) {
 	}
 
 	t.Fatalf("the child never ran row %q: no line equals %q; output:\n%s", row, want, out)
+}
+
+// TestOutboundPortErrors_ContextLogger: the abort record of a hostile transport
+// error goes to the logger the request context carries, and to slog.Default()
+// only when the context carries none.
+func TestOutboundPortErrors_ContextLogger(t *testing.T) { //nolint:paralleltest // it replaces slog.Default()
+	type testCase struct {
+		name   string
+		body   bool
+		ctx    func(ctx context.Context, carried *slog.Logger) context.Context
+		assert func(t *testing.T, carried, defaults []map[string]any)
+	}
+
+	withLogger := func(ctx context.Context, carried *slog.Logger) context.Context {
+		return ctxlog.With(ctx, carried)
+	}
+
+	cases := []testCase{
+		{
+			name: "the transport's error goes to the context's logger",
+			ctx:  withLogger,
+			assert: func(t *testing.T, carried, defaults []map[string]any) {
+				assert.Len(t, carried, 1)
+				assert.Empty(t, defaults)
+			},
+		},
+		{
+			name: "the body read's error goes to the context's logger",
+			body: true,
+			ctx:  withLogger,
+			assert: func(t *testing.T, carried, defaults []map[string]any) {
+				assert.Len(t, carried, 1)
+				assert.Empty(t, defaults)
+			},
+		},
+		{
+			name: "a context with no logger falls back to slog.Default()",
+			ctx:  func(ctx context.Context, _ *slog.Logger) context.Context { return ctx },
+			assert: func(t *testing.T, carried, defaults []map[string]any) {
+				assert.Empty(t, carried)
+				assert.Len(t, defaults, 1)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defaults, carriedBuf := &poBuffer{}, &poBuffer{}
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(defaults, nil)))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			c, err := outbound.New(
+				outbound.WithHTTPClient(&http.Client{Transport: poTransport{err: &poCycleOne{}, body: tc.body}}),
+				outbound.WithAllowedSchemes("https"),
+			)
+			require.NoError(t, err)
+
+			ctx := tc.ctx(t.Context(), slog.New(slog.NewJSONHandler(carriedBuf, nil)))
+			_, err = c.Get(ctx, "https://idp.example/x", nil)
+			require.Error(t, err)
+
+			abortsOf := func(b *poBuffer) []map[string]any {
+				var out []map[string]any
+				for _, rec := range b.records(t) {
+					if rec["msg"] == porterr.MsgClassificationAborted {
+						out = append(out, rec)
+					}
+				}
+
+				return out
+			}
+
+			tc.assert(t, abortsOf(carriedBuf), abortsOf(defaults))
+		})
+	}
 }
