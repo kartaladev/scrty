@@ -502,3 +502,232 @@ func pe7jInChild(t *testing.T, row string) {
 
 	t.Fatalf("the child never ran row %q: no line equals %q; output:\n%s", row, want, out)
 }
+
+// pe7mRowEnv names the row a child process of TestPortErrors_IDTokenJTI runs.
+// It is empty in the parent.
+const pe7mRowEnv = "SCRTY_OIDCPROVIDER_PE7M_PORTERR_ROW"
+
+// pe7mRanMarker prefixes the line a child prints, followed by the row's name,
+// after the row ran and passed.
+const pe7mRanMarker = "SCRTY_OIDCPROVIDER_PE7M_PORTERR_RAN: "
+
+// pe7mJTI is the site TestPortErrors_IDTokenJTI fails: the identifier an ID
+// token's jti is drawn from. It is a pe7fSite so the shared hostile rows and
+// their not-found sentinel lookup apply.
+const pe7mJTI pe7fSite = "the ID token's id.Generator.NewID"
+
+// pe7mIDs mints with a working generator, and fails the second identifier
+// asked for once armed: the opaque client's code exchange draws the access
+// token's identifier first and the ID token's jti second.
+type pe7mIDs struct {
+	next  markedIDs
+	armed *atomic.Bool
+	calls *atomic.Int32
+	err   error
+}
+
+func (g *pe7mIDs) NewID() (id.ID, error) {
+	if g.armed.Load() && g.calls.Add(1) == 2 {
+		return id.ID{}, g.err
+	}
+
+	return g.next.NewID()
+}
+
+// pe7mRun exchanges an opaque-app code for openid on ctx while the ID token's
+// jti fails with portErr, then exchanges it again with every port working. It
+// fails the test when the call hangs, lets a panic escape, or never reaches
+// the site.
+func pe7mRun(t *testing.T, ctx context.Context, portErr error) pe7fOutcome {
+	t.Helper()
+
+	logs := &lockedBuffer{}
+	logger := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	var (
+		armed atomic.Bool
+		calls atomic.Int32
+	)
+
+	f := pe7bFixture(t, activeUsers(t),
+		oidcprovider.WithIDGenerator(&pe7mIDs{armed: &armed, calls: &calls, err: portErr}),
+		oidcprovider.WithLogger(logger),
+	)
+
+	c := issueCodeFor(t, f, opaqueClient, func(v url.Values) {
+		asClient(v, opaqueClient, opaqueRedirect)
+		v.Set("scope", "openid")
+	}, testSignIn(f, "u-1"), "openid")
+	exchange := confidentialExchange(opaqueClient, opaqueRedirect, c, nil)
+
+	armed.Store(true)
+
+	out := pe7eBounded(t, func() pe7fOutcome {
+		res, err := f.p.Token(ctx, exchange)
+		o := pe7fOutcome{answered: res != nil}
+		o.pe7dOutcome = pe7dClassify(err)
+
+		return o
+	})
+
+	armed.Store(false)
+	require.GreaterOrEqual(t, calls.Load(), int32(2), "the exchange reached the ID token's identifier")
+
+	res, err := f.p.Token(t.Context(), exchange)
+	out.afterOK = res != nil
+	out.afterCode = pe7dClassify(err).code
+
+	for _, rec := range pe7bJSONRecords(t, logs.String()) {
+		if rec["msg"] == porterr.MsgClassificationAborted {
+			out.aborts = append(out.aborts, rec)
+		}
+	}
+
+	return out
+}
+
+// TestPortErrors_IDTokenJTI pins that the identifier an ID token's jti is
+// drawn from, failing with an error whose chain cannot be walked, is answered
+// as a plain outage of the generator is: no ID token and no tokens at all, a
+// dependency failure with the same fixed text, never a protocol refusal, and
+// the code still redeemable once the generator works. The sanitizer writes one
+// record, to the provider's logger, and none to slog.Default().
+func TestPortErrors_IDTokenJTI(t *testing.T) { //nolint:paralleltest // it replaces slog.Default()
+	only := os.Getenv(pe7mRowEnv)
+	if only != "" {
+		debug.SetMaxStack(64 << 20)
+	}
+
+	type testCase struct {
+		name   string
+		err    error
+		child  bool
+		ctx    func(ctx context.Context) context.Context
+		assert func(t *testing.T, plain, got pe7fOutcome)
+	}
+
+	same := func(t *testing.T, plain, got pe7fOutcome) {
+		t.Helper()
+
+		assert.Equal(t, plain.answered, got.answered, "no tokens, as after a plain outage")
+		assert.Equal(t, plain.dependency, got.dependency, "the same dependency class")
+		assert.Equal(t, plain.text, got.text, "the same fixed text")
+		assert.Equal(t, plain.notFound, got.notFound)
+		assert.Equal(t, plain.canceled, got.canceled)
+		assert.Equal(t, plain.code, got.code, "never a protocol refusal")
+		assert.Equal(t, plain.afterOK, got.afterOK, "the code answered afterwards as after a plain outage")
+		assert.Equal(t, plain.afterCode, got.afterCode)
+		assert.NotContains(t, got.text, pe7bSecret)
+	}
+
+	asOutage := func(reason string) func(*testing.T, pe7fOutcome, pe7fOutcome) {
+		return func(t *testing.T, plain, got pe7fOutcome) {
+			t.Helper()
+
+			same(t, plain, got)
+			assert.True(t, got.unwalkable, "the failure carries the sanitizer's fault")
+			pe7eOneAbort(t, got.aborts, nil, reason)
+		}
+	}
+
+	walked := func(t *testing.T, plain, got pe7fOutcome) {
+		t.Helper()
+
+		same(t, plain, got)
+		assert.False(t, got.unwalkable, "a walkable error is passed on unchanged")
+		assert.Empty(t, got.aborts, "a walk that completes writes no abort record")
+	}
+
+	var cases []testCase
+
+	prefix := string(pe7mJTI) + ": "
+
+	for _, row := range pe7fRows() {
+		tc := testCase{name: prefix + row.name, err: row.err(pe7mJTI), child: row.child, assert: asOutage(row.reason)}
+		if row.cancel {
+			tc.ctx = pe7eCancelled
+		}
+
+		cases = append(cases, tc)
+	}
+
+	cases = append(cases,
+		testCase{
+			name: prefix + "a typed-nil root walks to the end and is answered as an outage",
+			err:  (*pe7bTypedNil)(nil), assert: walked,
+		},
+		testCase{name: prefix + "a plain outage, against itself", err: pe7bErrDown, assert: walked},
+	)
+
+	for _, tc := range cases {
+		if only != "" && only != tc.name {
+			continue
+		}
+
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.child && only == "" {
+				pe7mInChild(t, tc.name)
+
+				return
+			}
+
+			defaults := pe7cSwapDefault(t)
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			plain := pe7mRun(t, ctx, pe7bErrDown)
+			require.True(t, plain.dependency, "precondition: a plain outage is a dependency failure")
+			require.Empty(t, plain.code, "precondition: a plain outage is no protocol refusal")
+			require.False(t, plain.answered, "precondition: a plain outage answers nothing")
+			require.Contains(t, plain.text, "sign the ID token", "precondition: the ID token's jti failed")
+			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
+
+			got := pe7mRun(t, ctx, tc.err)
+			tc.assert(t, plain, got)
+
+			pe7cNoDefaultAbort(t, defaults)
+
+			if only != "" && !t.Failed() {
+				// Stdout, so the parent's CombinedOutput carries it.
+				_, _ = os.Stdout.WriteString(pe7mRanMarker + tc.name + "\n")
+			}
+		})
+	}
+}
+
+// pe7mInChild re-runs the current top-level test in a child process limited
+// to row, and fails unless it exits 0 within a minute and prints the marker
+// that shows it ran the row: a stack overflow is fatal and only a child can
+// watch for one.
+func pe7mInChild(t *testing.T, row string) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+
+	top, _, _ := strings.Cut(t.Name(), "/")
+
+	//nolint:gosec // G204: re-runs this test binary with this test's own name
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+top+"$", "-test.count=1")
+	cmd.Env = append(os.Environ(), pe7mRowEnv+"="+row)
+
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, ctx.Err(), "the child did not finish within a minute")
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	require.NoError(t, err, "the child failed:\n%s", strings.Join(lines[:min(len(lines), 12)], "\n"))
+
+	// One whole line must equal the marker: a child whose row matched no case
+	// exits 0 having run nothing.
+	want := pe7mRanMarker + row
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if strings.TrimSuffix(line, "\r") == want {
+			return
+		}
+	}
+
+	t.Fatalf("the child never ran row %q: no line equals %q; output:\n%s", row, want, out)
+}
