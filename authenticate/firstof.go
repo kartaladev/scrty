@@ -8,6 +8,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
 
@@ -65,6 +66,12 @@ func NewFirstOf(delegates ...Authenticator) (*FirstOf, error) {
 // or collapsed into a refusal. When every delegate skips,
 // ErrNoEligibleAuthenticator says so.
 //
+// A delegate error whose chain cannot be walked (a cycle, a fan-out past the
+// walk's budget, an Unwrap that panics) is never read as a skip, whatever it
+// claims: it is replaced by a fixed fault matching porterr.ErrUnwalkable and
+// no sentinel of this package, which ends the walk as any other outage does,
+// and one record of the abort is written to slog.Default().
+//
 // A deciding delegate that reports no error but no result, or a result with no
 // principal, is turned into ErrAuthenticationFailed here. This is the single
 // choke point that lets every caller read Principal after a nil error without
@@ -73,6 +80,12 @@ func NewFirstOf(delegates ...Authenticator) (*FirstOf, error) {
 func (m *FirstOf) Authenticate(ctx context.Context, credentials identity.Credentials) (*Authentication, error) {
 	for _, d := range m.delegates {
 		a, err := d.Authenticate(ctx, credentials)
+		// The delegate is the consumer's, and so is its error. One whose
+		// chain cannot be walked becomes a fault that matches no skip, so a
+		// hostile delegate is never passed over for a later one to
+		// authenticate: it stops the walk as a plain outage from it does.
+		// FirstOf holds no logger, so the abort record goes to the default.
+		err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 		if errors.Is(err, ErrUnsupportedCredentials) || errors.Is(err, ErrNoEligibleAuthenticator) {
 			continue
 		}

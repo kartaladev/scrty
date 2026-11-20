@@ -170,7 +170,10 @@ func TestPortErrors_JWTCredentialsCleanup(t *testing.T) { //nolint:paralleltest 
 		{name: "a cycle through Unwrap() []error", err: &jwtCycleMany{}, child: true, assert: asCleanupFailure},
 		{name: "a link whose Unwrap panics", err: jwtPanicUnwrap{}, assert: asCleanupFailure},
 		{name: "a link whose Unwrap panics with nil", err: jwtPanicNilUnwrap{}, assert: asCleanupFailure},
-		{name: "a join that fans out", err: jwtFanOut(25), assert: asCleanupFailure},
+		// Depth 10 holds 2,047 entries, past the walk's budget of 1,000, yet an
+		// unsanitized stdlib walk of it ends in microseconds: the row fails on
+		// its assertions, never by leaving a walk spinning past the bound.
+		{name: "a join that fans out", err: jwtFanOut(10), assert: asCleanupFailure},
 		{name: "a cycle on a context the caller cancelled", err: &jwtCycleOne{}, ctx: cancelled, assert: asCleanupFailure},
 		{
 			name: "a typed-nil root walks to the end and passes unchanged", err: (*jwtTypedNil)(nil), passes: true,
