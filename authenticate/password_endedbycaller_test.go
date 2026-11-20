@@ -72,6 +72,15 @@ func TestEndedByCaller_CauseIsConsumerInput(t *testing.T) { //nolint:paralleltes
 
 			assert.ErrorIs(t, err, errCallerLeft)
 		}},
+		{
+			name:  "a walkable cause wrapping the context's error stays joined",
+			cause: fmt.Errorf("%w: %w", errCallerLeft, context.Canceled),
+			assert: func(t *testing.T, err error) {
+				t.Helper()
+
+				assert.ErrorIs(t, err, errCallerLeft)
+			},
+		},
 		{name: "self-cycle through Unwrap() error", cause: &causeCycleOne{}, child: true, assert: dropped},
 		{name: "self-cycle through Unwrap() []error", cause: &causeCycleMany{}, child: true, assert: dropped},
 		{name: "panicking Unwrap", cause: causeUnwrapPanics{}, child: true, assert: dropped},

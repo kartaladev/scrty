@@ -365,7 +365,10 @@ func (m *Keys) Issue(
 	// Everything that can fail without touching the store happens first, so a
 	// failure here leaves nothing behind.
 	secret := make([]byte, secretBytes)
-	if _, err := io.ReadFull(m.random, secret); err != nil {
+	_, err := io.ReadFull(m.random, secret)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
+	if err != nil {
 		return "", Key{}, fmt.Errorf("apikey: could not read a secret: %w", err)
 	}
 

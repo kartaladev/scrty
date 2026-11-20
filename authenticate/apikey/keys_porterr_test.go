@@ -109,7 +109,10 @@ const (
 
 	siteIssuePut keySite = "Issue's Put"
 	siteIssueID  keySite = "Issue's NewID"
-	siteList     keySite = "List"
+
+	// siteIssueRandom fails the random source Issue draws a secret from.
+	siteIssueRandom keySite = "Issue's random read"
+	siteList        keySite = "List"
 
 	// siteRotateRevoke fails the old key's revoke; the compensating revoke of
 	// the replacement then succeeds.
@@ -230,6 +233,10 @@ func runKeySite(t *testing.T, ctx context.Context, site keySite, storeErr error)
 		apikey.WithLogger(slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))),
 	}
 
+	if site == siteIssueRandom {
+		opts = append(opts, apikey.WithRandom(keyFailingReader{err: storeErr}))
+	}
+
 	if site == siteIssueID {
 		ids := NewMockGenerator(gomock.NewController(t))
 		ids.EXPECT().NewID().Return(id.ID{}, storeErr)
@@ -269,7 +276,7 @@ func runKeySite(t *testing.T, ctx context.Context, site keySite, storeErr error)
 		case siteRotateGet, siteRotateRevoke, siteRotateUndo, siteRotateBoth:
 			_, _, err := keys.Rotate(ctx, rec.ID, time.Hour)
 			out.err = err
-		case siteIssuePut, siteIssueID:
+		case siteIssuePut, siteIssueID, siteIssueRandom:
 			_, _, err := keys.Issue(ctx, "svc-billing", "second", []string{"invoices:read"}, time.Hour)
 			out.err = err
 		case siteList:
@@ -323,6 +330,11 @@ func runKeySite(t *testing.T, ctx context.Context, site keySite, storeErr error)
 
 	return out
 }
+
+// keyFailingReader is a random source that always fails with err.
+type keyFailingReader struct{ err error }
+
+func (r keyFailingReader) Read([]byte) (int, error) { return 0, r.err }
 
 // keySyncBuffer is a bytes.Buffer safe for the handler and the test to share.
 type keySyncBuffer struct {
@@ -431,7 +443,7 @@ func TestPortErrors_KeyStore(t *testing.T) { //nolint:paralleltest // it replace
 		assert.Equal(t, plain.rotationRefused, got.rotationRefused)
 		assert.Equal(t, plain.live, got.live, "the same keys left live")
 
-		if site != siteIssueID {
+		if site != siteIssueID && site != siteIssueRandom {
 			// Issue's identifier failure wraps the error's text into its own;
 			// the sanitized fault's text stands in for it.
 			assert.Equal(t, plain.text, got.text, "the same fixed text")
@@ -449,7 +461,7 @@ func TestPortErrors_KeyStore(t *testing.T) { //nolint:paralleltest // it replace
 		case siteVerifyTouch:
 			require.True(t, plain.verified, "precondition: a failed last-use write leaves the verification successful")
 			assert.Equal(t, []string{"WARN"}, got.touches)
-		case siteRevoke, siteRotateGet, siteIssuePut, siteIssueID, siteList,
+		case siteRevoke, siteRotateGet, siteIssuePut, siteIssueID, siteIssueRandom, siteList,
 			siteRotateRevoke, siteRotateUndo, siteRotateBoth:
 			require.Error(t, plain.err)
 			assert.False(t, got.notFound, "an outage never reads as ErrKeyNotFound")
@@ -457,7 +469,7 @@ func TestPortErrors_KeyStore(t *testing.T) { //nolint:paralleltest // it replace
 
 		// Issue's identifier failure quotes the consumer's error text, as it
 		// always did, when the walk completes and nothing is sanitized.
-		if got.err != nil && (site != siteIssueID || len(got.aborts) > 0) {
+		if got.err != nil && ((site != siteIssueID && site != siteIssueRandom) || len(got.aborts) > 0) {
 			assert.NotContains(t, got.text, keyPortErrSecret)
 		}
 	}
@@ -502,7 +514,7 @@ func TestPortErrors_KeyStore(t *testing.T) { //nolint:paralleltest // it replace
 
 	for _, site := range []keySite{
 		siteVerifyGet, siteVerifyTouch, siteRevoke, siteRotateGet,
-		siteIssuePut, siteIssueID, siteList, siteRotateRevoke, siteRotateUndo, siteRotateBoth,
+		siteIssuePut, siteIssueID, siteIssueRandom, siteList, siteRotateRevoke, siteRotateUndo, siteRotateBoth,
 	} {
 		prefix := string(site) + ": "
 

@@ -443,8 +443,11 @@ func endedByCaller(ctx context.Context) error {
 	ctxErr := ctx.Err()
 	errs := []error{ErrAuthenticationFailed, ctxErr}
 
-	if matched, abort := detach.CauseWalk(ctx, ctxErr); !matched && abort == nil {
-		errs = append(errs, context.Cause(ctx))
+	// The walk is only the abort check: the cause is joined unless it is
+	// ctx's own error itself, as it was before the walk was bounded.
+	_, abort := detach.CauseWalk(ctx, ctxErr)
+	if cause := context.Cause(ctx); abort == nil && cause != nil && cause != ctxErr { //nolint:errorlint // identity is the claim
+		errs = append(errs, cause)
 	}
 
 	return errors.Join(errs...)
