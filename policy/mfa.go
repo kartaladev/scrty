@@ -10,8 +10,10 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
@@ -416,7 +418,7 @@ func (p *MFA) Evaluate(ctx context.Context, in *Input) Decision {
 		}
 
 		met, err := federatedMet(ctx, p.federated.src, in)
-		if err != nil {
+		if err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable); err != nil {
 			return Decision{
 				Outcome: Deny,
 				Reason: diag.Wrap(err,
@@ -429,7 +431,7 @@ func (p *MFA) Evaluate(ctx context.Context, in *Input) Decision {
 		}
 	}
 
-	usable, err := UsableMFAMethods(ctx, p.methods, in.User, in.FirstFactor)
+	usable, err := usableMFAMethods(ctx, p.logger, p.methods, in.User, in.FirstFactor)
 	if err != nil {
 		return denyUnreadableEnrolment(err)
 	}
@@ -458,8 +460,12 @@ func (p *MFA) Evaluate(ctx context.Context, in *Input) Decision {
 func (p *MFA) enrolledOnAny(ctx context.Context, user identity.UserID) (bool, error) {
 	for _, m := range p.methods {
 		enrolled, err := m.Enrolled(ctx, user)
-		if err != nil || enrolled {
-			return enrolled, err
+		if err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable); err != nil {
+			return false, err
+		}
+
+		if enrolled {
+			return true, nil
 		}
 	}
 
@@ -588,16 +594,32 @@ var (
 // asked in order and the first error stops the walk. A user enrolled on
 // nothing usable is an empty result and no error.
 //
+// A lookup error whose chain cannot be walked (a cycle, a fan-out past budget,
+// a panicking Unwrap) is returned as the library's fault in its place, still
+// with no methods, and one record of it is written with ctx: inside an httpsec
+// chain, to the chain's logger, and otherwise to slog.Default(). This function
+// holds no logger of its own.
+//
 // methods must hold no absent entry; the policy constructors refuse a set that
 // does.
 func UsableMFAMethods(
 	ctx context.Context, methods []MFAMethodLookup, user identity.UserID, first factor.Kind,
 ) ([]MFAMethodLookup, error) {
+	return usableMFAMethods(ctx, ctxlog.From(ctx), methods, user, first)
+}
+
+// usableMFAMethods is UsableMFAMethods writing the record of an unwalkable
+// lookup error to logger, or to slog.Default() when logger is nil. A policy
+// that holds its own logger asks through it, so the record lands with the
+// policy's other records.
+func usableMFAMethods(
+	ctx context.Context, logger *slog.Logger, methods []MFAMethodLookup, user identity.UserID, first factor.Kind,
+) ([]MFAMethodLookup, error) {
 	var usable []MFAMethodLookup
 
 	for _, m := range methods {
 		enrolled, err := m.Enrolled(ctx, user)
-		if err != nil {
+		if err = porterr.SanitizeTo(ctx, logger, err, porterr.ErrUnwalkable); err != nil {
 			return nil, err
 		}
 

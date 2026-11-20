@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -258,6 +259,10 @@ type refusalSite struct {
 	// parity is the non-hostile error, and parityAssert what it is answered.
 	parity       error
 	parityAssert func(t *testing.T, g refusalGot)
+	// unwalkable, when set, is what an error whose chain cannot be walked (the
+	// cyclic rows) is answered at a site that meets it only after the library
+	// has replaced it with its own fault, in place of the fail-closed 500.
+	unwalkable func(err error) func(t *testing.T, g refusalGot)
 }
 
 // TestRefusalPath_HostileChains pins that every inspection of the refused
@@ -314,6 +319,49 @@ func TestRefusalPath_HostileChains(t *testing.T) { //nolint:paralleltest // it r
 
 			return behindChain(t, nil, opts...), plainRequest(t.Context())
 		}
+	}
+
+	// streamDenial asks for the signal stream past a per-request policy that
+	// denies with reason, on a chain of its own, and returns what it answered,
+	// what it counted and what it recorded.
+	type streamAnswer struct {
+		status     int
+		body       string
+		retryAfter string
+		stats      httpsec.SessionSignalStats
+		messages   []string
+		aborts     []slog.Record
+	}
+
+	streamDenial := func(t *testing.T, reason error) streamAnswer {
+		t.Helper()
+
+		logs := &capturingHandler{}
+		bearer, sid := signedInBearer(t)
+
+		chain, err := httpsec.New(httpsec.WithLogger(slog.New(logs)), bearer, deniedPerRequestBy(t, reason),
+			httpsec.EnableSessionSignals(httpsec.SessionSignals{}))
+		require.NoError(t, err)
+
+		rec := serveRefusalWithin(t, chain.Middleware()(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Error("the route ran behind a refusal")
+		})), streamRequest(t.Context(), sid))
+
+		a := streamAnswer{
+			status:     rec.Code,
+			body:       rec.Body.String(),
+			retryAfter: rec.Header().Get("Retry-After"),
+			stats:      chain.SessionSignalStats(),
+			aborts:     abortRecords(logs.records()),
+		}
+
+		for _, r := range logs.records() {
+			if r.Message != msgClassificationAborted {
+				a.messages = append(a.messages, r.Message)
+			}
+		}
+
+		return a
 	}
 
 	sites := []refusalSite{
@@ -415,6 +463,46 @@ func TestRefusalPath_HostileChains(t *testing.T) { //nolint:paralleltest // it r
 				assert.Equal(t, http.StatusOK, g.status, "a throttled sign-in is told only to retry")
 				assert.Empty(t, g.chainAborts)
 			},
+			// The policy engine replaces a deny reason it cannot walk with
+			// the library's fault before the stream sees it, so the stream
+			// answers it as it answers a plain deny with a reason it does not
+			// recognise: told only to retry, counted as a reload failure and
+			// recorded as a dependency failure, with the one abort record on
+			// the chain's logger.
+			unwalkable: func(err error) func(*testing.T, refusalGot) {
+				return func(t *testing.T, g refusalGot) {
+					t.Helper()
+					assert.Equal(t, http.StatusOK, g.status, "told only to retry")
+					assert.Empty(t, g.header.Values("WWW-Authenticate"))
+
+					for name, values := range g.header {
+						assert.NotContains(t, strings.Join(values, " "), hostileSecret, "header %s quotes the error", name)
+					}
+
+					require.Len(t, g.chainAborts, 1, "one record, through the chain's logger")
+					assertAbortRecord(t, g.chainAborts[0], "budget")
+					assert.Empty(t, g.defaultAborts)
+
+					// Parity with a plain deny whose reason the stream does
+					// not recognise, each on a chain of its own.
+					hostile := streamDenial(t, err)
+					plain := streamDenial(t, errors.New("a reason the stream does not recognise"))
+
+					assert.Equal(t, plain.status, hostile.status, "answered as the plain reason is")
+					// The retry delay is jittered, so the bodies are compared
+					// with its digits masked: each is a retry and nothing else.
+					digits := regexp.MustCompile(`[0-9]+`)
+					assert.Equal(t, "retry: N\n\n", digits.ReplaceAllString(plain.body, "N"), "the plain reason is told only to retry")
+					assert.Equal(t, digits.ReplaceAllString(plain.body, "N"), digits.ReplaceAllString(hostile.body, "N"))
+					assert.Equal(t, plain.retryAfter, hostile.retryAfter)
+					assert.EqualValues(t, 1, plain.stats.ReloadFailures, "the plain reason is a reload failure")
+					assert.Equal(t, plain.stats, hostile.stats, "counted as the plain reason is")
+					assert.Equal(t, plain.messages, hostile.messages, "recorded as the plain reason is")
+					assert.Contains(t, strings.Join(plain.messages, "\n"), streamDependencyFailed)
+					assert.Empty(t, plain.aborts)
+					assert.Len(t, hostile.aborts, 1)
+				}
+			},
 		},
 		{
 			name: "a per-request policy's denial, events on",
@@ -455,11 +543,19 @@ func TestRefusalPath_HostileChains(t *testing.T) { //nolint:paralleltest // it r
 	var cases []testCase
 
 	for _, s := range sites {
-		cases = append(cases,
-			testCase{name: s.name + "/cyclic", err: &cycleOne{}, build: s.build,
-				assert: failClosed(http.StatusInternalServerError, "budget")},
-			testCase{name: s.name + "/cyclic join", err: &cycleMany{}, build: s.build,
-				assert: failClosed(http.StatusInternalServerError, "budget")},
+		cyclic := func(err error) testCase {
+			tc := testCase{err: err, build: s.build, assert: failClosed(http.StatusInternalServerError, "budget")}
+			if s.unwalkable != nil {
+				tc.assert = s.unwalkable(err)
+			}
+
+			return tc
+		}
+
+		one, many := cyclic(&cycleOne{}), cyclic(&cycleMany{})
+		one.name, many.name = s.name+"/cyclic", s.name+"/cyclic join"
+
+		cases = append(cases, one, many,
 			testCase{name: s.name + "/panicking Is", err: isPanics{}, build: s.build,
 				assert: failClosed(http.StatusInternalServerError, "panic")},
 			testCase{name: s.name + "/as before", err: s.parity, build: s.build, assert: s.parityAssert},

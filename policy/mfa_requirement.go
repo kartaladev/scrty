@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
@@ -381,7 +382,7 @@ func (p *MFARequirement) Evaluate(ctx context.Context, in *Input) Decision {
 	decided := phase == PostAuthentication || phase == PerRequest
 	if federated && decided {
 		met, err := federatedMet(ctx, p.federated.src, in)
-		if err != nil {
+		if err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable); err != nil {
 			p.reportSourceFailure(ctx, in, err)
 
 			return Decision{
@@ -477,7 +478,12 @@ func (p *MFARequirement) isRequired(ctx context.Context, in *Input) (bool, error
 		return true, nil
 	}
 
-	return p.required.Required(ctx, in.User)
+	required, err := p.required.Required(ctx, in.User)
+	if err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable); err != nil {
+		return false, err
+	}
+
+	return required, nil
 }
 
 // hasUsableEnrolment answers step 10 through UsableMFAMethods, the one
@@ -487,7 +493,7 @@ func (p *MFARequirement) isRequired(ctx context.Context, in *Input) (bool, error
 // first factor had not already proved. A lookup failure on any method is an
 // error, never a shorter list.
 func (p *MFARequirement) hasUsableEnrolment(ctx context.Context, in *Input) (bool, error) {
-	usable, err := UsableMFAMethods(ctx, p.methods, in.User, in.FirstFactor)
+	usable, err := usableMFAMethods(ctx, p.logger, p.methods, in.User, in.FirstFactor)
 	if err != nil {
 		return false, err
 	}

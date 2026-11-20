@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/expiry"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/guardauth"
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -384,15 +385,27 @@ type chainRun struct {
 }
 
 // Value answers chainRunKey with the run, guardauth.LookupKey with the status
-// lookup a guard behind the chain asks about its refusal (lookupAbort), and
-// every other key from the context the run began on. Answering the lookup
-// here, rather than storing it on the context, costs a request nothing.
+// lookup a guard behind the chain asks about its refusal (lookupAbort),
+// ctxlog.Key with the chain's logger, and every other key from the context
+// the run began on. Answering the lookup and the logger here, rather than
+// storing them on the context, costs a request nothing.
+//
+// The logger is how a component with no logger of its own that the chain
+// runs — the policy engine, policy.UsableMFAMethods — writes its records where
+// the chain writes its own. It is answered here, the one place every request
+// through the chain passes, rather than at each call into such a component,
+// so no call site can forget it. It is the chain's configuration, not the
+// request's: a context kept past its run answers it still, and carries no
+// other request's data. A run of another chain nested inside this one answers
+// first, with its own logger.
 func (r *chainRun) Value(key any) any {
 	switch key.(type) {
 	case chainRunKey:
 		return r
 	case guardauth.LookupKey:
 		return guardauth.Lookup(lookupAbort)
+	case ctxlog.Key:
+		return r.chain.logger
 	}
 
 	return r.Context.Value(key)
