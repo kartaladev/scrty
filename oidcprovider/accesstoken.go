@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token"
 	"github.com/kartaladev/scrty/token/signingkey"
@@ -178,7 +179,7 @@ func (p *Provider) mintAccessToken(
 
 	if rc.OpaqueAccessTokens {
 		tokenID, err := p.cfg.ids.NewID()
-		if err != nil {
+		if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 			return nil, dependencyFailure(ctx, err, "oidcprovider: mint an access token's identifier")
 		}
 		secret, digest, err := p.mintSecret()
@@ -285,11 +286,14 @@ func (p *Provider) VerifyAccessToken(ctx context.Context, raw string) (*AccessTo
 // client or user. Its row is what ends a token, and a store that cannot answer is no verdict.
 func (p *Provider) requireGrantHolds(ctx context.Context, at *AccessToken) error {
 	grant, err := p.stores.grants.Load(ctx, at.GrantFamily)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return refuseToken()
 	case err != nil:
 		return dependencyFailure(ctx, err, "oidcprovider: read the access token's grant")
+	case grant == nil:
+		return dependencyFailure(ctx, errNoRecord, "oidcprovider: read the access token's grant")
 	case grant.Revoked || !p.cfg.clock.Now().Before(grant.ExpiresAt):
 		return refuseToken()
 	case grant.ClientID != at.ClientID || grant.User != at.Subject:
@@ -314,11 +318,14 @@ func (p *Provider) readOpaqueAccessToken(ctx context.Context, raw string) (*Acce
 	}
 
 	record, err := p.stores.accessTokens.Load(ctx, tokenID)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return nil, refuseToken()
 	case err != nil:
 		return nil, dependencyFailure(ctx, err, "oidcprovider: read the access token")
+	case record == nil:
+		return nil, dependencyFailure(ctx, errNoRecord, "oidcprovider: read the access token")
 	case subtle.ConstantTimeCompare(digest, record.Digest) != 1:
 		return nil, refuseToken()
 	case record.Revoked || !p.cfg.clock.Now().Before(record.ExpiresAt):

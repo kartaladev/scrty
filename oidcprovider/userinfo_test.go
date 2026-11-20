@@ -416,9 +416,10 @@ func TestProvider_UserInfo(t *testing.T) {
 			assert:  invalidToken,
 		},
 		{
-			name:    "a loader answering nothing is invalid_token",
+			name:    "a loader answering neither a user nor an error is a dependency failure, never invalid_token",
+			source:  never,
 			arrange: withUser(func(u *exchangeUsers) { u.answersNothing = true }),
-			assert:  invalidToken,
+			assert:  dependencyFailed,
 		},
 		{
 			name:    "a user store outage is a dependency failure, never invalid_token",

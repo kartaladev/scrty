@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // claimSub is the one claim every UserInfo answer holds.
@@ -18,7 +19,8 @@ const claimSub = "sub"
 // A token past its expiry, and one whose grant is revoked, expired or gone, read again here
 // as a token verified a moment ago may have lost it, is refused too. Each of those is invalid_token.
 // A token good in every other way lacking openid is insufficient_scope. A missing or disabled user
-// is invalid_token, and nothing is revoked: this answers a read, and a refresh is what revokes.
+// is invalid_token, and nothing is revoked: this answers a read, and a refresh is what revokes. A
+// loader answering neither a user nor an error is no verdict on the user: it is the loader failing.
 //
 // The answer always holds sub, the token's subject, which is the ID token's for the same grant. The
 // rest comes from the ClaimSource given to WithClaimSource, or by default from the user just loaded.
@@ -40,19 +42,24 @@ func (p *Provider) UserInfo(ctx context.Context, at *AccessToken) (map[string]an
 	}
 
 	details, err := p.users.LoadByUserID(ctx, at.Subject)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound):
 		return nil, refuseToken()
 	case err != nil:
 		return nil, dependencyFailure(ctx, err, "oidcprovider: load the token's user")
-	case details == nil || details.ID != at.Subject || !details.Active:
+	case details == nil:
+		// A loader reports a missing user with ErrUserNotFound, so an answer of nothing breaks
+		// its contract: it says nothing of the user, and is answered as the loader failing.
+		return nil, dependencyFailure(ctx, errNoRecord, "oidcprovider: load the token's user")
+	case details.ID != at.Subject || !details.Active:
 		return nil, refuseToken()
 	}
 
 	claims := identityClaims(details, at.Scopes)
 	if p.cfg.claimSource != nil {
 		claims, err = p.cfg.claimSource.Claims(ctx, at.Subject, slices.Clone(at.Scopes))
-		if err != nil {
+		if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 			return nil, dependencyFailure(ctx, err, "oidcprovider: read the user's claims")
 		}
 	}
