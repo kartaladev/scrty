@@ -8,6 +8,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
@@ -280,7 +281,7 @@ func (i *reauthInterceptor) offered(ctx context.Context, s *session.Session) ([]
 	if i.mfa != nil {
 		for _, m := range i.mfa.methods {
 			enrolled, err := m.Enrolled(ctx, s.UserID)
-			if err != nil {
+			if err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable); err != nil {
 				return nil, false, diag.Wrap(err, msgReauthMethodsUnavailable)
 			}
 
@@ -307,7 +308,7 @@ func (i *reauthInterceptor) passwordOffered(ctx context.Context, s *session.Sess
 	if i.mfa != nil {
 		for _, m := range i.mfa.methods {
 			enrolled, err := m.Enrolled(ctx, s.UserID)
-			if err != nil {
+			if err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable); err != nil {
 				return false, diag.Wrap(err, msgReauthMethodsUnavailable)
 			}
 

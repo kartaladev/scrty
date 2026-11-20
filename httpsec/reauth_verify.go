@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/assurance"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
@@ -94,7 +95,7 @@ func (i *reauthInterceptor) verify(ex *Exchange) error {
 	}
 
 	// Steps 4 to 8.
-	if err := checkResponse(ex, i.mfa.throttle, i.challenges, method, s, event.ReauthenticationFail); err != nil {
+	if err := checkResponse(ex, i.log, i.mfa.throttle, i.challenges, method, s, event.ReauthenticationFail); err != nil {
 		return err
 	}
 
@@ -280,7 +281,7 @@ func (i *reauthInterceptor) admitMethod(
 	// an unrelated method's lookup cannot cause a downgrade here. A failure of
 	// this lookup refuses, behind fixed text.
 	enrolled, err := method.Enrolled(ex.Context(), s.UserID)
-	if err != nil {
+	if err = porterr.SanitizeTo(ex.Context(), i.log, err, porterr.ErrUnwalkable); err != nil {
 		return nil, nil, diag.Wrap(err, msgReauthMethodsUnavailable)
 	}
 

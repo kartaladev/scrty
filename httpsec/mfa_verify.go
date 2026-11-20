@@ -297,7 +297,7 @@ func (i *mfaInterceptor) verify(ex *Exchange) error {
 	}
 
 	// Steps 5 to 8.
-	if err := checkResponse(ex, i.throttle, i.challenges, method, s, event.MFAVerifyFail); err != nil {
+	if err := checkResponse(ex, i.log, i.throttle, i.challenges, method, s, event.MFAVerifyFail); err != nil {
 		return err
 	}
 

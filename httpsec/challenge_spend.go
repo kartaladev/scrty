@@ -10,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
@@ -135,7 +136,8 @@ func sweepExpired(
 //     (mfa.ErrVerifyThrottled): neither is a guess.
 //
 // The two endpoints differ in the throttle and the challenges they pass, never
-// in this order.
+// in this order. log is the endpoint's component logger, the one the record of
+// a method error that cannot be walked goes to.
 //
 // A response refused at step 3 or 4 is reported on the session as the event
 // named failed (security events); a refused attempt charge is reported as
@@ -143,6 +145,7 @@ func sweepExpired(
 // request whose own context ended report nothing here.
 func checkResponse(
 	ex *Exchange,
+	log *slog.Logger,
 	throttle *mfa.VerifyThrottle,
 	challenges map[string]*onetime.Tokens,
 	method mfa.Method,
@@ -170,7 +173,14 @@ func checkResponse(
 		}
 	}
 
-	if err := method.Verify(ctx, user, response); err != nil {
+	// The method is the consumer's, so its error is sanitized before the
+	// stdlib reads it below (porterr.SanitizeTo, its one abort record to the
+	// logger of the chain handling the request): one whose chain cannot be
+	// walked is a dependency failure, charged as any other failure is, and
+	// never reads as a refused authenticator or a throttle that charges
+	// nothing.
+	err = porterr.SanitizeTo(ctx, log, method.Verify(ctx, user, response), porterr.ErrUnwalkable)
+	if err != nil {
 		if !errors.Is(err, mfa.ErrAuthenticatorRefused) && !errors.Is(err, mfa.ErrVerifyThrottled) {
 			throttle.RecordFailure(ctx, user)
 		}
