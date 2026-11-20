@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/lifecycle"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // QueuedSender hands each message to a pool of workers and returns as soon as
@@ -332,6 +333,9 @@ func (s *QueuedSender) work() {
 // through [diag.Failure] (reason "send"), and a recovered panic is logged as
 // reason "panic" with the recovered value's Go type, never the value itself —
 // a custom sender's panic value can quote exactly what its error text can.
+// A failure whose error chain cannot be walked (a cycle, a fan-out, a
+// panicking Unwrap) also writes one abort record to the sender's logger, and
+// is then logged as a plain failure.
 //
 // The timeout bounds an inner sender that honours context cancellation
 // mid-transfer. SMTPSender does. A custom sender that ignores its context can
@@ -350,7 +354,15 @@ func (s *QueuedSender) deliver(q queued) {
 	ctx, cancel := context.WithTimeout(q.ctx, s.timeout)
 	defer cancel()
 
-	if err := s.inner.Send(ctx, q.msg); err != nil {
+	err := s.inner.Send(ctx, q.msg)
+
+	// The consumer's error is read by a goroutine the library owns, so it
+	// enters through the bounded walk even though it is only logged: a hostile
+	// chain is reported once, to this sender's logger, and the delivery is
+	// recorded as a plain outage.
+	err = porterr.SanitizeTo(ctx, s.logger, err, porterr.ErrUnwalkable)
+
+	if err != nil {
 		s.logger.LogAttrs(ctx, slog.LevelError,
 			"notify: delivery failed", diag.Failure("send", err)...)
 	}
