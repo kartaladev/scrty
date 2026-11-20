@@ -175,7 +175,7 @@ func (a *JWTAuthenticator) Authenticate(ctx context.Context, credentials identit
 	}
 
 	claims, err := a.verifier.Verify(ctx, creds.Token())
-	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	if err != nil {
 		if errors.Is(err, token.ErrInvalid) {
 			return nil, errors.Join(ErrAuthenticationFailed, err)
@@ -199,7 +199,12 @@ func (a *JWTAuthenticator) Authenticate(ctx context.Context, credentials identit
 	// password is wiped: nothing downstream needs the credential, and a result
 	// that carried it would spread it into every log and trace that records
 	// what authenticated the request.
-	if err := creds.Cleanup(); err != nil {
+	//
+	// The cleanup error is the credential's, and so is its chain. One that
+	// cannot be walked becomes a fault matching porterr.ErrUnwalkable, so
+	// the fixed text below is all the caller reads and wrapping it never
+	// walks the hostile chain; a failed wipe stays an error either way.
+	if err := porterr.SanitizeTo(ctx, nil, creds.Cleanup(), porterr.ErrUnwalkable); err != nil {
 		return nil, diag.Wrap(err, "authenticate: clearing the presented token")
 	}
 
