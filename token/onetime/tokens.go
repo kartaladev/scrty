@@ -286,7 +286,7 @@ const secretBytes = 32
 // insert are each reported, and none of them leaves a record behind or hands
 // back a token nobody would honour.
 func (m *Tokens) Issue(ctx context.Context, subject string, opts ...IssueOption) (string, Token, error) {
-	presented, tok, err := m.mint(subject, opts)
+	presented, tok, err := m.mint(ctx, subject, opts)
 	if err != nil {
 		return "", Token{}, err
 	}
@@ -320,7 +320,7 @@ func (m *Tokens) Issue(ctx context.Context, subject string, opts ...IssueOption)
 func (m *Tokens) IssueWithin(
 	ctx context.Context, subject string, limit int, opts ...IssueOption,
 ) (string, Token, error) {
-	presented, tok, err := m.mint(subject, opts)
+	presented, tok, err := m.mint(ctx, subject, opts)
 	if err != nil {
 		return "", Token{}, err
 	}
@@ -339,7 +339,7 @@ func (m *Tokens) IssueWithin(
 
 // mint draws a token for subject and returns its presented form and the
 // record to store, writing nothing.
-func (m *Tokens) mint(subject string, opts []IssueOption) (string, Token, error) {
+func (m *Tokens) mint(ctx context.Context, subject string, opts []IssueOption) (string, Token, error) {
 	if subject == "" {
 		return "", Token{}, ErrSubjectRequired
 	}
@@ -353,12 +353,16 @@ func (m *Tokens) mint(subject string, opts []IssueOption) (string, Token, error)
 
 	raw := make([]byte, secretBytes)
 	if _, err := io.ReadFull(m.random, raw); err != nil {
+		err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 		return "", Token{}, fmt.Errorf("onetime: read random source: %w", err)
 	}
 	secret := base64.RawURLEncoding.EncodeToString(raw)
 
 	tokenID, err := idgen.New(m.ids)
 	if err != nil {
+		err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 		return "", Token{}, fmt.Errorf("onetime: generate token identifier: %w", err)
 	}
 

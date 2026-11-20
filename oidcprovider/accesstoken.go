@@ -183,7 +183,7 @@ func (p *Provider) mintAccessToken(
 		if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 			return nil, dependencyFailure(ctx, err, "oidcprovider: mint an access token's identifier")
 		}
-		secret, digest, err := p.mintSecret()
+		secret, digest, err := p.mintSecret(ctx)
 		if err != nil {
 			return nil, dependencyFailure(ctx, err, "oidcprovider: mint an access token's secret")
 		}

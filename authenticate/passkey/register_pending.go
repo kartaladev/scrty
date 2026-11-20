@@ -113,7 +113,7 @@ func (m *Passkeys) planPending(
 	}
 
 	if p.reasons&PendingEmailCode != 0 {
-		code, err := m.drawEmailCode()
+		code, err := m.drawEmailCode(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -240,9 +240,11 @@ func (m *Passkeys) hasWayBack(ctx context.Context, user identity.UserID) (bool, 
 }
 
 // drawEmailCode draws a uniform 6-digit code from the manager's random source.
-func (m *Passkeys) drawEmailCode() (string, error) {
+func (m *Passkeys) drawEmailCode(ctx context.Context) (string, error) {
 	n, err := rand.Int(m.random, big.NewInt(emailCodeSpace))
 	if err != nil {
+		err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 		return "", diag.Wrap(err, "passkey: could not draw an emailed code")
 	}
 

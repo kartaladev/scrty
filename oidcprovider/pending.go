@@ -66,10 +66,10 @@ func digestEncoded(encoded string) ([]byte, bool) {
 }
 
 // mintSecret returns a new secret, encoded, and its digest.
-func (p *Provider) mintSecret() (string, []byte, error) {
+func (p *Provider) mintSecret(ctx context.Context) (string, []byte, error) {
 	raw := make([]byte, flowSecretBytes)
 	if _, err := io.ReadFull(p.cfg.random, raw); err != nil {
-		return "", nil, err
+		return "", nil, porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	}
 
 	return secretEncoding.EncodeToString(raw), digestSecret(raw), nil
@@ -79,12 +79,12 @@ func (p *Provider) mintSecret() (string, []byte, error) {
 // can each be resumed, and mints one for a browser holding none. What it keeps, it judges
 // by shape alone: the cookie's __Host- prefix is what stops anyone else planting a value,
 // and the store cannot be asked who holds a digest.
-func (p *Provider) flowFor(given string) (string, []byte, error) {
+func (p *Provider) flowFor(ctx context.Context, given string) (string, []byte, error) {
 	if digest, ok := digestEncoded(given); ok {
 		return given, digest, nil
 	}
 
-	return p.mintSecret()
+	return p.mintSecret(ctx)
 }
 
 // park stores a validated request under a new handle, and answers with the login page.
@@ -105,11 +105,11 @@ func (p *Provider) parkRequest(ctx context.Context, req *PendingRequest, flowSec
 
 // parkAt is parkRequest for a request waiting at stage.
 func (p *Provider) parkAt(ctx context.Context, req *PendingRequest, flowSecret string, stage Stage) (string, string, error) {
-	secret, handleDigest, err := p.mintSecret()
+	secret, handleDigest, err := p.mintSecret(ctx)
 	if err != nil {
 		return "", "", dependencyFailure(ctx, err, "oidcprovider: mint a handle")
 	}
-	flow, flowDigest, err := p.flowFor(flowSecret)
+	flow, flowDigest, err := p.flowFor(ctx, flowSecret)
 	if err != nil {
 		return "", "", dependencyFailure(ctx, err, "oidcprovider: mint a flow secret")
 	}

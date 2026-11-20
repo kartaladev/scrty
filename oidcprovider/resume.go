@@ -474,7 +474,7 @@ func (p *Provider) putBrowserSession(ctx context.Context, s SignIn, idle time.Du
 		return "", nil
 	}
 
-	secret, digest, err := p.mintSecret()
+	secret, digest, err := p.mintSecret(ctx)
 	if err != nil {
 		return "", dependencyFailure(ctx, err, "oidcprovider: mint a browser session")
 	}

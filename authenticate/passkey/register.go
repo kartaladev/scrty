@@ -129,6 +129,8 @@ func (m *Passkeys) BeginRegistration(
 func (m *Passkeys) handle(ctx context.Context, s *session.Session) ([]byte, error) {
 	offered := make([]byte, HandleSize)
 	if _, err := io.ReadFull(m.random, offered); err != nil {
+		err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 		return nil, diag.Wrap(err, "passkey: could not draw a user handle")
 	}
 
