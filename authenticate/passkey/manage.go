@@ -13,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
@@ -47,6 +48,7 @@ type Summary struct {
 // It admits no session: the caller serves it to full sessions only.
 func (m *Passkeys) List(ctx context.Context, user identity.UserID) ([]Summary, error) {
 	all, err := m.credentials.List(ctx, user)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not list the user's passkeys")
 	}
@@ -90,6 +92,7 @@ func (m *Passkeys) Rename(ctx context.Context, user identity.UserID, cid id.ID, 
 	}
 
 	renamed, err := m.credentials.Rename(ctx, user, cid, NormalizeName(name, c.CreatedAt))
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return diag.Wrap(err, "passkey: could not rename the passkey")
 	}
@@ -161,12 +164,16 @@ func (m *Passkeys) Remove(
 	}
 
 	if end {
-		if _, err := m.sessions.DeleteByUserExcept(ctx, sess.UserID, sess.ID); err != nil {
+		_, err := m.sessions.DeleteByUserExcept(ctx, sess.UserID, sess.ID)
+		err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
+		if err != nil {
 			return diag.Wrap(err, "passkey: could not end the user's other sessions")
 		}
 	}
 
 	removed, err := m.credentials.Delete(ctx, sess.UserID, cid)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return diag.Wrap(err, "passkey: could not remove the passkey")
 	}
@@ -198,6 +205,7 @@ func (m *Passkeys) endOtherSessionsAgain(ctx context.Context, s *session.Session
 	// the caller. The log below keeps the request's values, not the bound.
 	callCtx, cancel := detach.Bounded(ctx, detach.RevocationTimeout)
 	_, err := m.sessions.DeleteByUserExcept(callCtx, s.UserID, s.ID)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	cancel()
 
@@ -222,6 +230,7 @@ func (m *Passkeys) admitRemoval(ctx context.Context, s *session.Session, rc Regi
 // findOwn returns user's credential cid, or ErrNotFound when it is not one.
 func (m *Passkeys) findOwn(ctx context.Context, user identity.UserID, cid id.ID) (*Credential, error) {
 	c, err := m.credentials.Find(ctx, user, cid)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	switch {
 	case errors.Is(err, ErrNotFound):

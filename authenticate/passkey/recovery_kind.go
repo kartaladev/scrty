@@ -7,6 +7,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/recovery"
 )
@@ -109,6 +110,7 @@ func (k recoveryKind) list(ctx context.Context, user identity.UserID) ([]*Creden
 	}
 
 	all, err := k.credentials.List(ctx, user)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not list the user's passkeys")
 	}
@@ -133,7 +135,10 @@ func (k recoveryKind) Remove(ctx context.Context, user identity.UserID, refs []r
 			continue
 		}
 
-		if _, err := k.credentials.Delete(ctx, user, cid); err != nil {
+		_, err = k.credentials.Delete(ctx, user, cid)
+		err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
+
+		if err != nil {
 			return diag.Wrap(err, "passkey: could not remove a passkey")
 		}
 	}
