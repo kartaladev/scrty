@@ -15,6 +15,7 @@ import (
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/notify"
@@ -281,7 +282,7 @@ func (r *Recoverer) recover(ctx context.Context, req Request) (*Result, error) {
 
 	ctx = context.WithoutCancel(ctx)
 
-	rid, err := r.ids.NewID()
+	rid, err := idgen.New(r.ids)
 	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgIDFailed, diag.Failure("id-generator", err)...)

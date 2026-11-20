@@ -3,8 +3,6 @@
 // shape is not "call the manager once and assert on the result": they issue a
 // thousand tokens, race many callers, call through a mock store the table's
 // runner does not build, or read the package's own source.
-//
-//go:generate mockgen -source=../../pkg/id/generator.go -package=onetime_test -destination=idgenerator_mock_test.go -typed
 
 package onetime_test
 
@@ -35,6 +33,8 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/expiry"
+	"github.com/kartaladev/scrty/internal/idgen"
+	"github.com/kartaladev/scrty/internal/idgen/idgentest"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token/onetime"
@@ -425,7 +425,7 @@ func TestIssue(t *testing.T) {
 			manager: func(t *testing.T, clk *clockwork.FakeClock) (*onetime.Tokens, *onetime.MemoryStore) {
 				t.Helper()
 
-				gen := NewMockGenerator(gomock.NewController(t))
+				gen := idgentest.NewMockGenerator(gomock.NewController(t))
 				gen.EXPECT().NewID().Return(id.Nil, errNoEntropy)
 
 				return newManager(t, clk, onetime.WithIDGenerator(gen))
@@ -437,12 +437,31 @@ func TestIssue(t *testing.T) {
 			},
 		},
 		{
+			name:    "an identifier generator answering the nil identifier is a failing generator",
+			subject: "ada@example.com",
+			manager: func(t *testing.T, clk *clockwork.FakeClock) (*onetime.Tokens, *onetime.MemoryStore) {
+				t.Helper()
+
+				gen := idgentest.NewMockGenerator(gomock.NewController(t))
+				gen.EXPECT().NewID().Return(id.Nil, nil)
+
+				return newManager(t, clk, onetime.WithIDGenerator(gen))
+			},
+			assert: func(t *testing.T, store *onetime.MemoryStore, presented string, tok onetime.Token, err error) {
+				require.ErrorIs(t, err, idgen.ErrNil)
+				assert.ErrorContains(t, err, "onetime: generate token identifier", "the plain generator failure's outcome")
+				assert.Empty(t, presented, "a token under the nil identifier was handed out")
+				assert.Zero(t, tok)
+				assert.Zero(t, store.Len(), "a failed issuance still wrote a record")
+			},
+		},
+		{
 			name:    "a consumer generator supplies the record identifier",
 			subject: "ada@example.com",
 			manager: func(t *testing.T, clk *clockwork.FakeClock) (*onetime.Tokens, *onetime.MemoryStore) {
 				t.Helper()
 
-				gen := NewMockGenerator(gomock.NewController(t))
+				gen := idgentest.NewMockGenerator(gomock.NewController(t))
 				gen.EXPECT().NewID().Return(id.MustParse("01999f00-0000-7000-8000-00000000abcd"), nil)
 
 				return newManager(t, clk, onetime.WithIDGenerator(gen))

@@ -453,6 +453,8 @@ func TestPutPendingStartsGeneration(t *testing.T) {
 			},
 			assert: func(t *testing.T, got any, err error) {
 				require.Error(t, err, "a nil generation could never be proven or completed")
+				assert.EqualError(t, err, "mfa: totp identifier generator returned the nil identifier",
+					"TOTP keeps its own refusal of a nil generation, unchanged")
 				assert.False(t, got.(bool), "no unprovable enrolment is left behind")
 			},
 		},

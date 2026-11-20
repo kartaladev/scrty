@@ -15,6 +15,7 @@ import (
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
@@ -356,7 +357,7 @@ func (m *Tokens) mint(subject string, opts []IssueOption) (string, Token, error)
 	}
 	secret := base64.RawURLEncoding.EncodeToString(raw)
 
-	tokenID, err := m.ids.NewID()
+	tokenID, err := idgen.New(m.ids)
 	if err != nil {
 		return "", Token{}, fmt.Errorf("onetime: generate token identifier: %w", err)
 	}
