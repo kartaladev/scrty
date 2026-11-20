@@ -32,6 +32,7 @@ scrty refuses requests with typed errors and, by design, renders nothing: a bare
   - **`ginprblm` does not need it:** its middleware defers the response header, so it renders that 404 with or without the option.
   - **Default:** unchanged.
   - **Without an error middleware:** gin's generic `404 page not found` text is sent. That is still a 404, and carries no scrty text.
+- **Records land where the consumer configured** (design decision 12). Every component's log records go to its own logger option, else to the logger of the chain handling the request, else to the process default read when the record is written. A nil logger option fails construction in every component.
 - **Spec amendment:** the core still includes no body renderer. The settled "no problem-details renderer" requirement is narrowed to the core module, and the one renderer lives in the opt-in module.
 - Module layout, release and supply-chain lists gain `httpsec/prblmsec`, including Dependabot and the module checks. The cross-framework parity tests (net/http, gin through `ginprblm`, fiber through `fiberprblm`) live in the test module.
 
@@ -47,6 +48,7 @@ scrty refuses requests with typed errors and, by design, renders nothing: a bare
 - `release-policy`: `httpsec/prblmsec` is added to the modules released in lockstep.
 - `http-error-propagation` also gains the port boundary: a consumer dependency's error is walked once where it enters the library, and one that cannot be walked is answered as that dependency's failure.
 - `magic-link`, `one-time-tokens`, `password-policy`, `diagnostic-redaction`: a consumer's refusal or write error is still returned unchanged, unless its chain cannot be walked; then the library's fixed error stands in its place.
+- `http-error-propagation` also gains the logging rule of decision 12. `password-policy`'s breach-check logger and `email-notification`'s delivery-failure records follow it.
 
 ## Impact
 
@@ -57,7 +59,8 @@ scrty refuses requests with typed errors and, by design, renders nothing: a bare
 - **Consumer documentation:** runnable examples and a package overview in `prblmsec`, and a new README section, "Problem details (RFC 9457)". It also adds pointers to `prblmsec` where `httpsec`, `ginsec`, `fibersec` and the README tell consumers to render refusals themselves.
 - **Repository tooling:** `tools/repocheck`'s module list, `.github/dependabot.yml`, `RELEASING.md` and `CHANGELOG.md`.
 - **Dependency:** `github.com/kartaladev/prblm` v0.2.0 (MIT, standard library only), in `httpsec/prblmsec` and `test` only.
-- **Compatibility:** additive before the next tag, with no change to any default response. A consumer who does not import `prblmsec` sees no difference.
+- **Compatibility:** no change to any default response. Decision 12 changes where component records go by default and refuses a nil logger option, on options tagged in v0.1.x; the CHANGELOG lists both under Changed. Otherwise a consumer who does not import `prblmsec` sees no difference.
+- **Logging (decision 12):** `internal/ctxlog` gains the routing logger; about 25 components' constructors, logger options and godoc; `httpsec/chain.go`; `internal/porterr`; `.golangci.yml` (`forbidigo`).
 
 ## References
 

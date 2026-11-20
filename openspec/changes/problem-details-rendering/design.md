@@ -257,25 +257,13 @@ The library also protects every error returned by a consumer-supplied port befor
   - There is no override. The consumer keeps full control of every error it can return, except one the library cannot inspect. That one could only hang or crash the library's own reads, so `library-design.md` 4 draws the line here.
   - Where the library tells the consumer's error apart from its own by identity, it must treat the fixed error as the consumer's. Example: redemption's `countsAgainstSource` in httpsec, found by the 10.12 group 5 review.
   - Rejected: exempting these errors and reading them with the bounded walker at every library check instead. Decision 11 already rejected per-check conversion as an invariant any later edit could break.
-- **Where the sanitizer's record goes** follows the reporting rule below.
-  - A site that holds a logger calls `porterr.SanitizeTo(ctx, logger, err, unavailable)`. The record goes to that logger with the request's context, so a consumer who wired only `WithLogger` still sees port aborts, with their trace attributes.
-  - A site with no logger calls `porterr.Sanitize`, which writes to `slog.Default()`.
-    - Components built without a logger option fall here:
-      - the encrypting session store (`NewEncryptedStore`);
-      - the concurrent-sessions policy;
-      - `ProvisionerWrite` and `ConditionalProvisionerRehash`;
-      - the recovery authenticator-reset planner (`Held`, the reset policy, `Remove`), even under a `Recoverer` built with `WithLogger` (10.12 group 5 review);
-      - recovery's MFA enrolments kind and the way-back check (`HasWayBack`), which take no logger option;
-      - the MFA enrolment reset (`ResetEnrolment`), a free function a consumer puts behind its own administration route. It takes no logger option and reports to the default logger, as its events already do. It does not read the chain's context logger, since the library never runs it inside a chain (10.12 M3 review).
-    - Wrapping one of them in a component that has `WithLogger`, such as `Sessions` over an encrypted store, still sends that record to the default logger.
-    - Accepted (10.12 group 1 review): the record is written, never lost, and only one is written. A second `Sanitize` on the `Fault` writes nothing. A logger option on each would add exported API outside this change.
-  - A component with no logger of its own that runs inside a chain takes the chain's logger from the request context (maintainer's choice, 2026-11-20: the record must land where the consumer configured).
-    - These components are the policy engine (a consumer policy's deny reason) and `policy.UsableMFAMethods` (the consumer's method lookups).
-    - The chain puts its logger on the context under an internal key, so no exported API is added. Outside a chain, they use `slog.Default()`.
-    - A policy that holds its own logger uses that logger.
-    - Rejected: new exported logger options on `Engine` and `UsableMFAMethods`. A context key reaches the same logger without growing a tagged module's API.
-    - Rejected: accepting the default logger. A consumer who wired only `WithLogger` would lose records that the chain used to write.
-  - A nil logger means `slog.Default()`.
+- **Where the sanitizer's record goes** follows decision 12: the component's own logger option, else the logger of the chain handling the request, else `slog.Default()` at record time.
+  - A site whose component holds a logger calls `porterr.SanitizeTo(ctx, logger, err, unavailable)`. Under decision 12 that logger is the consumer's option or the routing default, so the record lands where the consumer configured, with the request's context and its trace attributes.
+  - A site whose component has no logger at all calls `porterr.SanitizeTo(ctx, nil, err, unavailable)` when a context is in scope. A nil logger resolves exactly as the routing default does. `porterr.Sanitize`, which has no context, remains only where no context is in scope (the JWT event id).
+    - Components built without a logger option fall here: the encrypting session store (`NewEncryptedStore`), the concurrent-sessions policy, `ProvisionerWrite` and `ConditionalProvisionerRehash`, the recovery authenticator-reset planner, recovery's MFA enrolments kind and the way-back check, the MFA enrolment reset (`ResetEnrolment`), the policy engine and `policy.UsableMFAMethods`.
+    - Inside a chain their records reach the chain's logger; outside one, `slog.Default()`.
+    - Superseded (maintainer's choice, 2026-11-20, decision 12): the first cut sent these to the default logger even inside a chain (accepted by the 10.12 group 1 review), and an intermediate cut limited the context lookup to the policy engine and `UsableMFAMethods`.
+    - Rejected: new exported logger options on each of them. The routing default reaches the same logger without growing a tagged module's API.
   - The sanitizer's record is not sampled, as on the default-logger paths (failure row "A hostile error recurs on every request").
   - Found by the dispatch 1 review: the first cut always wrote to the default logger.
 - **The outcome of an abort is the site's existing branch for a failing port, not a new 500.** That branch was already designed to conceal: a user-store outage reads exactly like a wrong password, and recovery start is uniform. So an abort is never a not-found, a throttle or an outage claim, and never an enumeration oracle.
@@ -328,6 +316,44 @@ Its rules are pinned, and prblm adopts the same rules for its v0.3.0 hardening, 
 - Skipping a panicking link and continuing: rejected. The skipped link may be the one that decided precedence, a concealed lock for example, so the answer could reveal what concealment hides.
 - A new exported `ClassifyError(err) (status, ok, fault)`: rejected for now. It adds public API, and every adapter would have to change to call it.
 
+### 12. A record lands where the consumer configured
+
+Maintainer's choice, 2026-11-20: every record of every component, in this change. Before, about 25 components filled `slog.Default()` into their logger at construction. A consumer who configured only the chain's `httpsec.WithLogger` therefore saw the chain's own records there, and every component's records (including the 10.12 port aborts) on the process default. The captured default was also stale: a consumer who called `slog.SetDefault` after wiring got records rewritten through the old default's bridge. Verified on Go 1.27.4: an Error record came out at INFO level, a Debug record was dropped, and the context was lost.
+
+**Decision.** Each record resolves its destination when it is written, in this order:
+1. the component's own logger option, when the consumer gave one;
+2. else the logger of the chain handling the request, read from the record's context;
+3. else `slog.Default()`, read at record time.
+
+**Mechanism: a routing handler, not a nil field** (10.14 audit, 2026-11-20).
+- `internal/ctxlog` gains a constructor for a logger whose `slog.Handler` routes. For each record, `Enabled` and `Handle` look up the chain's logger on the context and delegate to its handler, else to `slog.Default().Handler()` at that moment. `WithAttrs` and `WithGroup` are recorded and replayed onto the resolved handler.
+- Every component's constructor fills this routing logger where it filled `slog.Default()`. Its logger option replaces it. The field is never nil.
+- Call sites do not change: they keep calling `c.logger.LogAttrs(ctx, …)`. There is no per-site lookup to forget, and loggers a component hands to its children (passkey to `onetime`, `depfault`, the memory limiter) route too.
+- `slog.Handler` receives the logging call's context so that handlers can read its values (`log/slog` documentation), so routing at the handler is idiomatic slog.
+- The chain answers the internal context key (`ctxlog.Key`) from its per-request run value only when it was given `WithLogger`. Otherwise it delegates to the enclosing context, so an enclosing chain's logger is found and the innermost configured chain wins. It never answers a nil or a routing logger. The chain's own default is the routing logger too.
+- `porterr.SanitizeTo` with a nil logger resolves as the routing logger does.
+- A lint rule (`forbidigo`) bans `slog.Default()` outside `internal/ctxlog`, so no new capture can appear.
+- Rejected:
+  - A nil logger field with a resolve call at each of about 200 log sites. A forgotten site would use the wrong logger or panic (a nil `*slog.Logger` panics on `LogAttrs`, verified). Nothing would catch it, and it breaks the construction checks that refuse a nil field and the wiring that hands a logger on.
+  - Passing the chain's logger at wiring time. Consumers build components before the chain, and one component can serve two chains.
+  - Installing a handler through `slog.SetDefault`. That changes process-global state, which a library must not do.
+  - An attribute-only contextual handler (trace ids). It does not move a record to another destination.
+
+**A nil logger option is a configuration error** (maintainer's choice, 2026-11-20). Every component's logger option refuses nil with that component's `ErrConfig` from its constructor, naming the option. Before, about 13 options ignored nil and the rest refused it. A nil there is almost always an uninitialised variable, and leaving the option out already means "route". This is a compatibility change on options tagged in v0.1.0 and v0.1.1 (`library-design.md` 7), recorded in the CHANGELOG under Changed.
+
+**Samplers.** A component keeps one sampler. Sampling exists to stop a flood, and a component's key space is what floods.
+- Two chains sharing a component with different loggers share its windows. A record for chain B can be suppressed while chain A's is written (accepted, documented).
+- The suppressed-count summary has no request context. It goes to the component's own option, else to the logger the component last resolved for a sampled record, which is held in an `atomic.Pointer`, else the routing default. One burst is not split across two destinations.
+- Nothing is keyed by `*slog.Logger`, so nothing grows with the loggers seen.
+
+**Default and override.** The default routes as above. The consumer overrides per component with its logger option, per chain with `httpsec.WithLogger`, and for everything else with `slog.SetDefault`, which now takes effect even after wiring.
+
+**What it changes against `main`:**
+- Records of a component used inside a chain now go to the chain's logger when the component has no option, and are filtered by that logger's level. A chain logger at Warn drops a component's Info and Debug records that used to reach the default.
+- `slog.SetDefault` after construction is honoured.
+- A nil logger option fails construction in every component.
+- The same component logs to the chain inside a chain and to the default outside one.
+
 ### Failure modes
 
 | Failure | State | Outcome |
@@ -359,7 +385,7 @@ Its rules are pinned, and prblm adopts the same rules for its v0.3.0 hardening, 
 - **Lockout effect (10.12 group 2.1 review).** Suppose a consumer's authenticator answers a real wrong password with a hostile chain. Then, as for an outage, nothing is recorded against the username, so per-account lockout does not advance for those attempts. The source throttle is still charged, and an Error-level abort record is written. This is fail-closed: the attempt is refused. Only the consumer's own authenticator can produce such a chain, never the client |
 | A consumer limiter factory (`NewLimiter`) returns an error with a hostile `Error` method at construction | Accepted (10.12 inventory) | The constructor formats the factory's error text into its configuration error. A hanging or panicking `Error` method therefore fails at startup, which is the consumer's own wiring code, before any traffic. No request path is exposed |
 | A consumer port returns an error whose `Is` panics only for one particular sentinel | Accepted, documented (task 10.12) | It passes the sanitizer's walk, which calls no `Is`, and panics at a later stdlib check. net/http's per-request recovery catches it: the request fails, and the process neither hangs nor crashes. Outside net/http (a job, a CLI, a gRPC handler calling a component such as `apikey.Keys` directly), the panic reaches the caller's goroutine unrecovered by the library, and the caller's own recovery policy decides (10.12 group 3.2a review). Where the goroutine is the library's own, there is no caller to decide: the expiry runner and sweeper run tasks and the lock listener on scheduler goroutines with no recover, so a stdlib read there would crash the process, against the expiry-sweeping requirement that the process SHALL NOT crash. Those reads therefore use the bounded walk, which recovers the panic and answers a plain failure, or a cancellation skip for a context error (10.12 E1 review, reproduced). One accepted gap remains: an error that truly matches `ErrTaskPanicked` and panics only on `context.Canceled` gets the right reason but no abort record, since the walk stops at the first match. Converting every check behind every port (about 180) was weighed and declined in favour of the sanitizer.
-| A consumer store's load returns no record and no error, breaking its port contract | Handled, tested (task 10.12, OIDC provider) | Answered as that store failing outright: a dependency failure (server_error) through an unexported fixed sentinel, never a not-found reading such as `invalid_grant` or a revocation's 200. Refusing instead would let a replay go unrevoked or report a revocation that did nothing. Applies to every load the 10.12 OIDC provider dispatches touch (7c review), including `identity.UserLoader` (maintainer's choice, 2026-11-20): its contract makes a miss `ErrUserNotFound`, so a load with no user and no error is a broken contract, not a missing user. Refresh answers server_error and revokes nothing, the browser session answers server_error instead of the login page, and the code exchange and UserInfo answer a dependency failure instead of `invalid_grant` or `invalid_token`. This departs from the established design, which read such an answer as a missing user and so revoked the grant on refresh: a revocation on a contract-breaking answer cannot be undone, while a server_error can be retried. Rejected: keeping the established reading (7d review). |
+| A consumer store's load returns no record and no error, breaking its port contract | Handled, tested (task 10.12, OIDC provider) | Answered as that store failing outright: a dependency failure (server_error) through an unexported fixed sentinel, never a not-found reading such as `invalid_grant` or a revocation's 200. Refusing instead would let a replay go unrevoked or report a revocation that did nothing. Applies to every single-record load the 10.12 OIDC provider dispatches touch (7c review), the remembered-consent load included (7h review; before, it read as nothing remembered and re-prompted consent), and `identity.UserLoader` (maintainer's choice, 2026-11-20): its contract makes a miss `ErrUserNotFound`, so a load with no user and no error is a broken contract, not a missing user. Refresh answers server_error and revokes nothing, the browser session answers server_error instead of the login page, and the code exchange and UserInfo answer a dependency failure instead of `invalid_grant` or `invalid_token`. This departs from the established design, which read such an answer as a missing user and so revoked the grant on refresh: a revocation on a contract-breaking answer cannot be undone, while a server_error can be retried. Rejected: keeping the established reading (7d review). |
 | A consumer's claim source answers neither claims nor an error | Accepted (task 10.12, 7f review) | Not a load of a record: no claims is a valid answer, so UserInfo answers `sub` alone, as before. Only a store or user loader answering nothing breaks a contract. |
 | A consumer port returns an unwalkable error while the caller has already hung up | Accepted, tested (task 10.12) | The fixed error matches only the port's unavailable sentinel, so the site answers a dependency failure, not "the caller left", and writes an Error-level abort record. It fails closed and matches what a plain outage on a live request returns; only the log level differs from a plain hang-up (10.12 group 7a review).
 - **The hang-up check:** one place answers differently. If the `Is` panics only when asked about the context's own error, the bounded hang-up check (`hangup.ByCaller`) aborts and treats the error as not a hang-up, instead of panicking. The caller then reads the error as "not a hang-up". Where the check guards an outage branch, that branch writes an Error-level failure record or answers a dependency failure. Where it sits inside a predicate such as `X && hangup.ByCaller(...)` (the login and recovery password loads), the attempt counts as a failed credential: the throttle is charged and a failed-authentication event is emitted. Either way the abort fails closed, but it is not reported as `classification-aborted` |
@@ -377,6 +403,20 @@ No process-wide reporter is installed. A process-wide reporter could not see eac
 | A selective `Is` method that panics only for one sentinel, reached after the lookup succeeded (DPoP answer check, response-refused event switch) | Handled, tested (task 10.9 follow-up) | Uses the walk. The abort drops the extra challenge or event and is reported once. This covers the response-refused switch on the spend path only. On the MFA `Verify` path, `Verify`'s error is read with stdlib `errors.Is` (`mfa.ErrVerifyThrottled`) before the switch runs. That read is at a consumer port, so it falls under the accepted port row and the task 10.12 sanitizer (10.9a review) |
 | Another inspection of the refused error runs before or beside the lookup, on the refusal path | Handled, tested (task 10.9) | It uses the same walk. A cyclic or panicking error can no longer hang or crash the request before the lookup's bound applies |
 | A consumer wants a larger budget or a different typed-nil rule | Accepted, documented (decision 11) | No option. A configurable bound could reopen the hang, so the rules are fixed (`library-design.md` 4). The consumer controls only where the record goes |
+| A component without a logger option writes a record while handling a request in a chain that has `WithLogger` | Handled, tested (decision 12) | The routing logger resolves the chain's logger from the record's context, so the record is written there and not to `slog.Default()` |
+| A component's own logger option and a chain logger are both present | Handled, tested (decision 12) | The option wins |
+| A component writes a record outside any chain, or on a context rebuilt from `context.Background()` | Handled, tested (decision 12) | `slog.Default()` at record time. A context detached with `context.WithoutCancel` keeps its values, so it still reaches the chain's logger |
+| The consumer calls `slog.SetDefault` after building components | Handled, tested (decision 12) | Honoured: the default is read at record time, never captured. Before, the captured default rewrote records through the old bridge (level lost, Debug dropped, context lost; verified on Go 1.27.4) |
+| Nested chains, the inner one without `WithLogger` | Handled, tested (decision 12; 10.12 A1 review N1) | The inner run delegates the key to the enclosing context, so the outer chain's logger is used. With both configured, the inner one wins |
+| The routing logger is found on the context (a chain configured with it, or a value placed by mistake) | Handled, tested (decision 12) | The handler never delegates to a routing handler; it falls to `slog.Default()`. No self-loop |
+| A typed-nil or wrong-type value under the internal key | Handled, tested (decision 12) | Treated as absent |
+| A nil logger passed to any component's logger option | Handled, tested (decision 12, maintainer's choice) | The constructor returns that component's `ErrConfig`, naming the option |
+| A chain logger at a higher level than the default | Accepted, documented (decision 12) | `Enabled` follows the resolved handler, so a component's lower-level records are dropped as the consumer's chain logger dictates. The godoc and the spec say so |
+| A component shared by two chains with different loggers, under sampling | Accepted, documented (decision 12) | One sampler window per key across both. The first record of chain B in a window can be suppressed while chain A's was written |
+| A sampler's suppressed-count summary, which has no request context | Handled, tested (decision 12) | It goes to the component's option, else the logger last resolved for a sampled record, else the routing default, so a burst is not split |
+| A record written with `context.Background()` inside a request (construction-time warnings, the memory limiter's warnings, background key rotation and expiry runs, `LookupStatus`, fibersec's abort report) | Accepted, documented (decision 12) | No request context exists, so it goes to the component's option, else `slog.Default()`. Each call that has a request context in scope passes it; the 10.14 inventory lists those that cannot |
+| A consumer `slog.Handler` panics in `Enabled` or `Handle` | Accepted (decision 12) | The routing handler does not recover it, as `slog` itself does not. The panic is the consumer's handler's, as it was before with a consumer logger |
+| A new `slog.Default()` capture added by a later edit | Handled (decision 12) | `forbidigo` rejects `slog.Default()` outside `internal/ctxlog` |
 | `Methods` nil vs empty | Handled, tested | Omitted vs `[]` |
 | `Window <= 0`, or a rejection without `RejectedError` | Handled, tested | `max_age` / `rule` omitted |
 | Token present without `TokenType` (consumer-built) | Handled, tested | `access_token` only |
@@ -411,7 +451,14 @@ No process-wide reporter is installed. A process-wide reporter could not see eac
 
 ## Migration Plan
 
-Additive. It ships in the next lockstep release with a `CHANGELOG.md` entry under Added: the new module, `LookupStatus` and `ChallengeError.TokenType`. Rollback means not registering the mapper. Removing the module before a tag costs nothing.
+Mostly additive. It ships in the next lockstep release with a `CHANGELOG.md` entry under Added: the new module, `LookupStatus` and `ChallengeError.TokenType`. Rollback means not registering the mapper. Removing the module before a tag costs nothing.
+
+Decision 12 is not additive. The CHANGELOG lists under Changed:
+- component records now go to the chain's logger inside a chain;
+- `slog.SetDefault` after wiring is honoured;
+- a nil logger option fails construction.
+
+A consumer who wants the old destination passes `slog.Default()` explicitly to each component's logger option.
 
 ## References
 
@@ -498,3 +545,17 @@ Otherwise reasoned from scrty's own settled `framework-adapters` spec, and from 
 - [Go `reflect` package](https://pkg.go.dev/reflect): `Kind`, `Pointer` and `IsNil`, the typed-nil test.
 
 Otherwise reasoned from scrty's settled `http-error-propagation` and `diagnostic-redaction` specs and the repository's existing panic-reporting pattern (`diag.PanicAttrs`).
+
+### Decision 12: a record lands where the consumer configured
+
+**Researched** (2026-11-20, by two 10.14 audit agents; claims they could not verify are left out):
+- [Go `context` package](https://pkg.go.dev/context): values are for request-scoped data that transits APIs, not optional parameters; the `Value` contract (same result for the same key) that the chain's run value keeps.
+- [golang/go #58243](https://github.com/golang/go/issues/58243): a Go maintainer's view that a logger in a context is acceptable, and the removal of `NewContext`, `FromContext` and `Ctx` from the slog proposal over the hidden-dependency objection. The reason this design keeps the context lookup internal and puts it in a handler, not in an exported accessor.
+- [zerolog](https://pkg.go.dev/github.com/rs/zerolog) (`Ctx`), [logr](https://pkg.go.dev/github.com/go-logr/logr) (`NewContext`, `FromContext`, `FromContextAsSlogLogger`), [go-grpc-middleware v1 ctxzap](https://pkg.go.dev/github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap) and [v2 logging](https://pkg.go.dev/github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/logging): established practice is split between carrying a logger in a context and carrying only fields.
+- Go 1.27.4 `log/slog` (`logger.go` `SetDefault` and `handlerWriter`, `handler.go` `defaultHandler`), read from the toolchain, and a scratch program: a captured default loses level, Debug records and context after `SetDefault`; a nil `*slog.Logger` panics on `LogAttrs`.
+
+**Primary documentation:**
+- [`log/slog` `Handler`](https://pkg.go.dev/log/slog#Handler): `Enabled` and `Handle` receive the call's context so a handler can use its values.
+- [`testing/slogtest`](https://pkg.go.dev/testing/slogtest): the handler-contract test the routing handler is checked against.
+
+The nil-option rule and the scope are the maintainer's choices, reasoned from `library-design.md` 6 and 7.

@@ -343,6 +343,28 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
   - Where that branch conceals (unknown user, unknown credential, a concealed lock, uniform recovery), assert the response is byte-identical to a plain port outage.
   - Out of scope: the `internal/unavailable` rate-limit backends, which the library supplies (`redisstore`, `pgxstore`, `sqlstore`).
   - Verify each dispatch with `go test -race -count=1 ./...` in the affected modules.
+- [ ] 10.14 Records land where the consumer configured (design decision 12). Starts once every 10.12 call-site dispatch in a package has landed, so no two agents edit one package. Lanes run in order a, then b to f in parallel by package, each a fresh dispatch of at most six components.
+  - **a. Foundation** (Opus: other lanes compile against it):
+    - `internal/ctxlog` gains the routing logger, whose handler resolves per record: the chain's logger on the context, else `slog.Default().Handler()` read at record time. It never delegates to a routing handler, and it replays `WithAttrs`/`WithGroup` onto the resolved handler. Red first: `testing/slogtest.TestHandler`, plus rows for chain logger, no chain, `SetDefault` after construction, a detached context (`WithoutCancel`), a context rebuilt from `Background`, a routing logger found on the context, a typed-nil or wrong-type value, and `Enabled` following the resolved level.
+    - A helper for sampled components keeps the last resolved logger (`atomic.Pointer`) for suppressed-count summaries.
+    - `httpsec/chain.go`: `chainRun.Value` answers `ctxlog.Key` only when the chain was given `WithLogger`, else delegates to the enclosing context. The chain's own default is the routing logger. Rows: nested chains with the inner one unconfigured reach the outer logger, and both configured gives the inner one (the 10.12 A1 review's N1).
+    - `internal/porterr`: a nil logger resolves as the routing logger does.
+    - `.golangci.yml`: `forbidigo` bans `slog.Default()` outside `internal/ctxlog`. The existing hits are listed, for the lanes to remove.
+  - Every component lane applies the same steps to each component:
+    - the constructor fills the routing logger where it filled `slog.Default()`;
+    - the logger option refuses nil with that component's `ErrConfig`, naming the option (a "given" flag where the option cannot return an error);
+    - a call with a request context in scope passes it, never `context.Background()`;
+    - a no-logger `porterr.Sanitize` site with a context becomes `SanitizeTo(ctx, nil, …)`;
+    - a sampled component's summary uses the last resolved logger;
+    - the godoc names the new default.
+    Red first, per component: no option inside a configured chain reaches the chain's logger; the component's option wins; no chain reaches `slog.Default()` as set at record time; a nil option fails construction. A guard such as `if m.logger == nil { return }` (`apikey/keys.go`) is removed, test-first.
+  - **b. httpsec and its adapters:** the guards, events, sign-in notices, `nethttp.go`'s fallback, `internal/guardauth`, and `fibersec`'s and `ginsec`'s abort reports.
+  - **c. Policy, session and seal:** `policy.MFA`, `MFARequirement`, the concurrent-sessions policy, `policy/lockout`, `session.Sessions` and the encrypted store, and `store/seal`.
+  - **d. Authenticate, first half:** the password authenticator, `password.Policy` (breach logger, spec delta), `apikey`, `jwt`, and `mfa` (throttle, TOTP, reset).
+  - **e. Authenticate, second half, and providers:** `magiclink`, `passkey`, `oidc` (broker, relying party, handoff), `oidcprovider`, `recovery` (`Recoverer`, `Codes`, its kinds, the planner, way-back), and `authorize`.
+  - **f. Infrastructure:** `token/onetime`, `token/signingkey`, `ratelimit` (guard, memory limiter, `redisstore`), `internal/unavailable` with the `pgxstore` and `sqlstore` limiter options, `notify` (SMTP, queued; spec delta), `expiry` (runner, `sweep`), and `internal/depfault`.
+  - After each lane: verify, then a fresh reviewer (Opus for a, Sonnet for the others), then the isolation check and commit. When every lane is in, `golangci-lint run` shows no `forbidigo` hit, and `rg 'slog\.Default\(\)'` outside `internal/ctxlog` and tests is empty.
+  - Verify with `go test -race -p 2 -count=1 ./...` in each changed module.
 - [x] 10.13a The walker does not allocate for chains that fit (design decision 11, performance).
   - Add a buffer-taking walk, for example `errwalk.FlattenInto(buf []error, err error) (Chain, error)`, that fills the caller's buffer and grows onto the heap only past its capacity. Keep `Flatten`.
   - The lookup, the mapper and fibersec use it with a stack array, for example `var buf [16]error`. Choose the size from the benchmark rows.
@@ -364,10 +386,12 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
   - CHANGELOG `[Unreleased]`:
     - Fixed: the status lookup no longer hangs, crashes or panics on a cyclic, fanned-out or panicking error chain, or on a typed-nil `*password.RejectedError`;
     - Changed: a challenge offered through an `As` method behind a typed nil is now found, and a chain over 1,000 links is unrecognised.
+    - Changed (decision 12): component records go to the chain's logger inside a chain when the component has no logger option; `slog.Default()` is read when a record is written, so `slog.SetDefault` after wiring is honoured; a nil logger option fails construction in every component;
+  - every component's logger-option godoc names the routing default (lanes 10.14 b to f write it; 10.6 checks it with `go doc`);
 
   Verify with `go doc ./httpsec LookupStatus` and `gofmt -l .`.
 - [ ] 10.7 Re-run the 8.3 gate in full, the `test` module on an idle machine.
-- [ ] 10.8 A whole-branch review (Opus, fresh agent) against decision 11 and the two new `http-error-propagation` requirements. It first enumerates how the change fails. Findings go back to a fresh dispatch of the owning task.
+- [ ] 10.8 A whole-branch review (Opus, fresh agent) against decisions 11 and 12 and the new `http-error-propagation` requirements. It first enumerates how the change fails. Findings go back to a fresh dispatch of the owning task.
 
 ## Workflow follow-up
 

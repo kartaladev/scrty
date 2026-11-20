@@ -109,6 +109,36 @@ Where the OpenID Provider loads a record or a user from a consumer's store or us
 - **THEN** the revocation is answered as a dependency failure, never 200, and the process does not panic
 - **AND** the link stays redeemable, and one error record with reason `panic` is logged
 
+### Requirement: A component's records go where the consumer configured
+Every log record a library component writes SHALL go to that component's own logger when the consumer configured one. Otherwise it SHALL go to the logger of the chain handling the request, when that chain has a logger of its own or runs inside a chain that has one. Otherwise it SHALL go to the process default logger as it stands when the record is written. Whether a record is written SHALL follow the level of the logger it goes to.
+
+#### Scenario: Chain logger reaches a component without its own
+- **WHEN** a passkey sign-in fails at its credential store inside a chain configured with the consumer's logger, and the passkey component was built without a logger
+- **THEN** the component's failure record is written to the chain's logger and not to the process default
+
+#### Scenario: The component's own logger wins
+- **WHEN** the same component was built with its own logger
+- **THEN** the record is written to the component's logger and not to the chain's
+
+#### Scenario: Outside a chain
+- **WHEN** the component writes a record while running outside any chain
+- **THEN** the record is written to the process default logger
+
+#### Scenario: Default replaced after wiring
+- **WHEN** the consumer replaces the process default logger after building the component, and the component then writes a record outside any chain
+- **THEN** the record is written to the new default logger at its own level
+
+#### Scenario: Nested chains
+- **WHEN** a chain without a logger runs inside a chain configured with the consumer's logger, and a component without a logger writes a record during the request
+- **THEN** the record is written to the outer chain's logger
+
+### Requirement: A nil logger option is a configuration error
+A nil logger given to any component's logger option SHALL fail that component's construction with its configuration error, naming the option. Leaving the option out SHALL be the only way to ask for the default routing.
+
+#### Scenario: Nil logger option
+- **WHEN** a consumer passes a nil logger to a component's logger option
+- **THEN** the component's constructor returns its configuration error naming the option
+
 ## MODIFIED Requirements
 
 ### Requirement: Refusals propagate as errors, unrendered

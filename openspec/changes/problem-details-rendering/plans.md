@@ -467,6 +467,7 @@
 5. 10.13 (the benchmark files are already written), 10.9b and 10.13a in parallel. 10.9b owns the refusal-path files: `events.go`, `authorization.go`, `dpop_nonce.go`, `signals_retry.go` and `resolve.go`. 10.13a owns `internal/errwalk`, the lookup in `errors.go`, the mapper and fibersec.
 6. 10.9a, after 10.9b. It shares `dpop_nonce.go`, `resolve.go` and `signals_retry.go`.
 7. 10.12, after 10.9a and 10.13a, in sequential dispatches: the internals, then the sanitizer, then the call-site groups.
+7a. 10.14 (decision 12), after 10.12's call-site dispatches in the packages each lane touches: lane a first, then lanes b to f by package.
 8. 10.11, after 10.4 and once nothing else is running `test/`. It changes prblmsec's go.mod and the test module.
 9. 10.6, then 10.7, then 10.8.
 
@@ -818,6 +819,64 @@ Steps:
   - Watch the hostile rows hang, crash or panic before the fix.
 - [ ] **Step 6 (each call-site dispatch): run** `go test -race -count=1 ./...` in each module the dispatch touches. Review, then commit per group: `fix: <group> port errors are sanitized at the boundary`.
 
+### Task 10.14: Records land where the consumer configured (design decision 12)
+
+**Spec for this task:** design.md decision 12 and its failure rows; the `http-error-propagation` delta's requirements "A component's records go where the consumer configured" and "A nil logger option is a configuration error"; the `password-policy` delta (breach logger) and the `email-notification` delta (delivery-failure records).
+
+**Order:** after every 10.12 call-site dispatch has landed in the packages a lane touches (never two agents in one package). Lane a first. Lanes b to f then run in parallel by package. Each lane is split into dispatches of at most six components, run in order, each with a fresh agent.
+
+**Interfaces (lane a produces; every other lane consumes):**
+- `ctxlog.Routing() *slog.Logger` returns a new routing logger. Its handler resolves per record: `From(ctx)` when that is non-nil and not itself a routing logger, else `slog.Default()` at that moment. `WithAttrs` and `WithGroup` are recorded and replayed onto the resolved handler. Each routing logger keeps the last logger it resolved for a record with a request context (`atomic.Pointer[slog.Logger]`).
+- `ctxlog.Summary(l *slog.Logger) *slog.Logger` returns `l` when it is not a routing logger. For a routing logger it returns the last logger that logger resolved, else `l`. Samplers' suppressed-count reporters log through it.
+- `ctxlog.Key`, `With` and `From` stay as they are. `From` never returns a routing logger, a typed nil or a wrong-type value.
+- `porterr.SanitizeTo(ctx, nil, …)` writes through the routing resolution, not `slog.Default()` directly.
+- The chain answers `ctxlog.Key` only when `WithLogger` was given. Its unconfigured default is `ctxlog.Routing()`.
+
+**Review Focus for this task:**
+1. **A consumer who calls `slog.SetDefault` after wiring.** Expect records at their own level, Debug kept, context kept. Lane a pins it (`TestRouting`, row `SetDefault after construction`).
+2. **A chain logger at Warn.** Expect a component's Info records dropped, with `Enabled` answering false. Lane a pins it (row `Enabled follows the resolved level`).
+3. **A component logging on `context.Background()` while a request context is in scope.** The record misses the chain. Each lane's report lists every `context.Background()` or `context.TODO()` log call in its components, and fixes the ones that have a request context in scope, test-first.
+4. **A component handed to a child** (passkey's `onetime` manager, `depfault.Store`, the memory limiter). Expect the child to route too. Lane e pins the passkey to `onetime` case.
+5. **A nil option on a component whose option cannot return an error.** Expect the constructor to fail. Each lane adds the row.
+
+- [ ] **Step 1 (lane a, Opus): write the failing tests.**
+  - `TestRouting` in `internal/ctxlog` runs `slogtest.TestHandler` against a routing logger over a JSON handler. Its table rows, each asserting where the record lands:
+    - `chain logger on ctx`;
+    - `no chain` (to `slog.Default()`);
+    - `SetDefault after construction`: level kept, Debug kept, a ctx attribute kept;
+    - `detached with WithoutCancel` (to the chain);
+    - `rebuilt from Background` (to the default);
+    - `routing logger on ctx` (to the default, no loop);
+    - `typed-nil value` and `wrong-type value` (to the default);
+    - `Enabled follows the resolved level`;
+    - `WithAttrs and WithGroup replayed`.
+  - `TestSummary` asserts the last-resolved rule, with one goroutine and with `-race` concurrency.
+  - `httpsec`: `TestChainLogger_Nested`, with rows for an unconfigured inner chain (outer logger), both configured (inner logger) and neither configured (default). Add an unconfigured-chain row to the existing `ctxlog.Key` test.
+  - `internal/porterr`: a `SanitizeTo` nil-logger row asserting the record reaches the chain's logger on ctx.
+- [ ] **Step 2: watch them fail.** Run `go test -race -count=1 -run 'TestRouting|TestSummary|TestChainLogger_Nested|TestSanitizeTo' ./internal/... ./httpsec/`. Expected: compile-clean failures, either undefined behaviour asserted through existing APIs or records on the wrong logger. A compile error is not the red step: add the stub `Routing()` first.
+- [ ] **Step 3: implement** `ctxlog.Routing` and `ctxlog.Summary`, the chain's conditional answer and routing default, and porterr's nil-logger resolution. Add a `forbidigo` rule to `.golangci.yml` for `^slog\.Default$`, excluding `internal/ctxlog` and `_test.go`. Record the existing hits in the report; do not fix them here.
+- [ ] **Step 4: verify** `go test -race -p 2 -count=1 ./internal/... ./httpsec/...` and `go vet`. Then an Opus review, the isolation check, and commit: `feat(log): records route to the chain's logger, else the default at record time`.
+- [ ] **Step 5 (lanes b to f, Sonnet): one dispatch per group of at most six components.** For each component, write the red rows first in `<pkg>_logroute_test.go`, as table `TestLogRoute_<Component>`:
+  - `no option, inside a configured chain` (record on the chain's logger, none on the default; the chain's logger is placed with `ctxlog.With` in unit tests, or by a real chain where the package already has chain tests);
+  - `own option wins`;
+  - `no chain` (on `slog.Default()` as swapped at record time; non-parallel, restored with `t.Cleanup`);
+  - `nil option` (the component's `ErrConfig`, whose text names the option).
+  Then:
+  - the constructor default becomes `ctxlog.Routing()`;
+  - the option refuses nil (a "given" flag checked in the constructor where the option returns nothing);
+  - a summary reporter logs through `ctxlog.Summary(c.logger)`;
+  - a log call with a request context in scope passes it;
+  - a no-logger `porterr.Sanitize` site with a context becomes `SanitizeTo(ctx, nil, …)`;
+  - the godoc names the default: "the logger of the chain handling the request, else slog.Default() when the record is written".
+  Dispatches:
+  - **b** `httpsec`: guards, events, sign-in notices, the `nethttp.go` fallback; `internal/guardauth`; `ginsec` and `fibersec` abort reports.
+  - **c** `policy.MFA`, `policy.MFARequirement`, the concurrent-sessions policy, `policy/lockout`, `session.Sessions` with the encrypted store, `store/seal`.
+  - **d1** the password authenticator, `password.Policy` (with the delta's "Chain logger" scenario), `apikey` (remove the nil guard at `keys.go:518`, test-first). **d2** `jwt`, and `mfa` throttle, TOTP and reset.
+  - **e1** `magiclink`, `passkey` (pins Review Focus 4), `oidc` broker, relying party and handoff. **e2** `oidcprovider`, `recovery` (`Recoverer`, `Codes`, its kinds, the planner, way-back), `authorize`.
+  - **f1** `token/onetime`, `token/signingkey`, `ratelimit` guard, memory limiter and `redisstore`. **f2** `internal/unavailable` with the `pgxstore` and `sqlstore` limiter options, `notify` SMTP and queued (with the delta's "queuing request's chain" scenario), `expiry` runner and `sweep`, `internal/depfault`.
+- [ ] **Step 6 (each dispatch): watch the red rows fail.** `no option, inside a configured chain` lands on the default, and `nil option` is accepted or ignored. Implement, then run `go test -race -p 2 -count=1` on the dispatch's packages. Then a Sonnet review, the isolation check, and commit: `feat(<pkg>): records go where the consumer configured`.
+- [ ] **Step 7: close the task.** Run `golangci-lint run ./...` in every module: no `forbidigo` hit. `rg 'slog\.Default\(\)' --glob '!*_test.go' --glob '!internal/ctxlog/**' --glob '!.claude/**'` prints nothing. Tick 10.14.
+
 ### Task 10.13: Benchmark the classification
 
 **Files:** `httpsec/lookup_bench_test.go` and `httpsec/prblmsec/mapper_bench_test.go`. Both are written already.
@@ -885,6 +944,8 @@ Steps:
   - The prblm limit names v0.2.0. It says that v0.2.1 fixes three things: it recovers the core's status-hint step, the net/http `Handler.Recover` broken-connection check, and ginprblm Recovery's broken-connection check. Cycles remain until v0.3.0.
   - CHANGELOG, Fixed: the hang, the crash, the panic, and the typed-nil `RejectedError`.
   - CHANGELOG, Changed: a challenge offered through an `As` method behind a typed nil is now found. A chain of more than 1,000 links is unrecognised, and the abort is logged.
+  - CHANGELOG, Changed (decision 12): component records go to the chain's logger inside a chain when the component has no logger option; `slog.Default()` is read when a record is written; a nil logger option fails construction in every component.
+  - Check with `go doc` that every component's logger option names the routing default (written by 10.14's lanes).
 - [ ] **Step 2: Verify.**
   - `go doc ./httpsec LookupStatus` shows the bound and the fail-closed rule.
   - `gofmt -l .` and `go vet ./...` are clean.
@@ -899,5 +960,5 @@ Steps:
 
 ### Task 10.8: Whole-branch review
 
-- [ ] **Step 1:** Dispatch a fresh Opus reviewer. Give it decision 11, its failure rows, the two new requirements, and the branch diff against `main`. It enumerates how the change can fail before judging, and labels every claim REPRODUCED or UNREPRODUCED.
+- [ ] **Step 1:** Dispatch a fresh Opus reviewer. Give it decisions 11 and 12, their failure rows, the new `http-error-propagation` requirements and the `password-policy` and `email-notification` deltas, and the branch diff against `main`. It enumerates how the change can fail before judging, and labels every claim REPRODUCED or UNREPRODUCED.
 - [ ] **Step 2:** Send each finding to a fresh dispatch of the task that owns it, then re-run 10.7. Expected: the review is clean.
