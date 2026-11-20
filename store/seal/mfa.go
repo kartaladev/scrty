@@ -91,11 +91,18 @@ type provingEnrolmentStore struct {
 // mfa.ErrAlreadyEnrolled comes back as that sentinel itself, bare, with no
 // store text. Nothing is stored when sealing fails. An error of inner whose
 // chain cannot be walked (a cycle, a fan-out past the library's budget, a
-// panicking Unwrap) on Get, PutPending, Confirm, AcceptStep, Delete or
-// ChargeVerifyAttempt is replaced by a fixed error that matches none of this
-// package's or mfa's sentinels, and one record is written to slog.Default():
-// it is answered as a failure of inner, never as mfa.ErrAlreadyEnrolled or a
-// value that does not open.
+// panicking Unwrap) on Get, PutPending, Confirm, AcceptStep, Delete,
+// ChargeVerifyAttempt or RefundVerifyAttempt is replaced by a fixed error that
+// matches none of this package's or mfa's sentinels, and one record is written
+// to slog.Default(): it is answered as a failure of inner, never as
+// mfa.ErrAlreadyEnrolled or a value that does not open. An error of cipher
+// that cannot be walked, from the Open of a secret or of an emailed code, or
+// the Seal of a secret or of an emailed code, is replaced by a fixed error
+// matching ErrUnavailable, and one record is written to slog.Default(): it is
+// answered as an outage of cipher, never as ErrDecryptionFailed or
+// ErrUnknownKeyID. A cipher error dropped by a re-seal on read (ActiveKeyID or
+// Seal) is never walked. Errors of the device-proof calls ProveDevice,
+// Complete and ChargeEmailCode of inner are not yet sanitized.
 //
 // By default a read that opens a secret under a key other than the active
 // one re-seals it under the active key and hands the old and new values to resealer.
@@ -156,6 +163,9 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 
 	aad := MFASecretAAD(e.Generation, user)
 	plaintext, keyID, err := s.cipher.Open(ctx, e.Secret, aad)
+	// The cipher is the consumer's: an error the walk cannot read is answered as
+	// its outage, never as a value that does not open or a removed key.
+	err = porterr.Sanitize(err, ErrUnavailable)
 	if err != nil {
 		return mfa.Enrolment{}, false, diag.Wrap(err, "seal: the stored MFA secret could not be opened")
 	}
@@ -177,6 +187,7 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 		e.EmailCode = nil
 	default:
 		code, _, err := s.cipher.Open(ctx, e.EmailCode, MFAEmailCodeAAD(e.Generation, user))
+		err = porterr.Sanitize(err, ErrUnavailable)
 		if err != nil {
 			return mfa.Enrolment{}, false, diag.Wrap(err, "seal: the stored emailed MFA code could not be opened")
 		}
@@ -203,6 +214,7 @@ func (s *enrolmentStore) reseal(ctx context.Context, user identity.UserID, plain
 // PutPending seals the secret of a copy of e and stores the copy as pending.
 func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error {
 	sealed, err := s.cipher.Seal(ctx, e.Secret, MFASecretAAD(e.Generation, e.User))
+	err = porterr.Sanitize(err, ErrUnavailable)
 	if err != nil {
 		return diag.Wrap(err, "seal: the MFA secret could not be sealed")
 	}
@@ -258,6 +270,7 @@ func (s *enrolmentStore) ChargeVerifyAttempt(
 // RefundVerifyAttempt passes through to inner.
 func (s *enrolmentStore) RefundVerifyAttempt(ctx context.Context, user identity.UserID, until time.Time) (bool, error) {
 	ok, err := s.inner.RefundVerifyAttempt(ctx, user, until)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 
 	return ok, enrolmentFailed(err, "seal: the inner store could not give back the TOTP verification attempt")
 }
@@ -271,6 +284,7 @@ func (s provingEnrolmentStore) ProveDevice(
 ) (bool, error) {
 	if code != nil {
 		sealed, err := s.cipher.Seal(ctx, code, MFAEmailCodeAAD(gen, user))
+		err = porterr.Sanitize(err, ErrUnavailable)
 		if err != nil {
 			return false, diag.Wrap(err, "seal: the emailed MFA code could not be sealed")
 		}
