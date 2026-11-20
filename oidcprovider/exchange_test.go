@@ -1424,7 +1424,7 @@ func TestProvider_ExchangeCode(t *testing.T) {
 			assert: refusedAndUnspent,
 		},
 		{
-			name: "a loader answering with neither details nor an error is refused, unspent",
+			name: "a loader answering with neither details nor an error is a dependency failure, unspent",
 			arrange: func(t *testing.T, x *exchangeFixture) (issuedCode, oidcprovider.TokenRequest) {
 				t.Helper()
 				c := x.issue(t)
@@ -1432,7 +1432,7 @@ func TestProvider_ExchangeCode(t *testing.T) {
 
 				return c, byOwner(c)
 			},
-			assert: refusedAndUnspent,
+			assert: dependencyFailedAndUnspent,
 		},
 		{
 			name: "an offline code of a client with no refresh grant is refused past its sign-in's deadline",

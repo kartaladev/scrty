@@ -377,7 +377,11 @@ func (p *Provider) judgeGrantUser(ctx context.Context, grant *Grant, now time.Ti
 	case errors.Is(err, identity.ErrUserNotFound):
 	case err != nil:
 		return dependencyFailure(ctx, err, "oidcprovider: load the grant's user")
-	case details != nil && details.ID == grant.User && details.Active:
+	case details == nil:
+		// The loader's contract makes a miss ErrUserNotFound, so no user and no error is a
+		// loader breaking it, and no verdict on the user: nothing is revoked.
+		return dependencyFailure(ctx, errNoRecord, "oidcprovider: load the grant's user")
+	case details.ID == grant.User && details.Active:
 		return nil
 	}
 
@@ -502,7 +506,8 @@ func (m *refreshMint) discard(ctx context.Context) {
 	}
 	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	defer cancel()
-	if err := m.p.stores.accessTokens.Revoke(detached, m.stored.ID); err != nil {
+	err := m.p.stores.accessTokens.Revoke(detached, m.stored.ID)
+	if err = porterr.SanitizeTo(ctx, m.p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 		m.p.cfg.logger.LogAttrs(ctx, slog.LevelError, "oidcprovider: an access token no refresh answered could not be ended",
 			append(diag.Failure("revoke_access_token", err), slog.String("family", m.grant.Family.String()))...)
 	}
@@ -697,11 +702,14 @@ func (s firstRotationOnly) Supersede(ctx context.Context, op session.Supersessio
 // not be read would be worse.
 func (p *Provider) requireStillLive(ctx context.Context, family id.ID) error {
 	grant, err := p.stores.grants.Load(ctx, family)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return refuseGrant()
 	case err != nil:
 		return dependencyFailure(ctx, err, "oidcprovider: read the refresh token's grant")
+	case grant == nil:
+		return dependencyFailure(ctx, errNoRecord, "oidcprovider: read the refresh token's grant")
 	case grant.Revoked:
 		return refuseGrant()
 	}
@@ -722,7 +730,7 @@ func (p *Provider) revokeOnReuse(ctx context.Context, r session.ReuseReport) {
 	defer cancel()
 
 	newly, err := p.stores.grants.Revoke(detached, r.Family, CauseReuse, r.DetectedAt)
-	if err != nil {
+	if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 		p.cfg.logger.LogAttrs(ctx, slog.LevelError, "oidcprovider: a reused refresh token's grant could not be marked revoked",
 			append(diag.Failure("revoke_grant", err), slog.String("family", r.Family.String()))...)
 

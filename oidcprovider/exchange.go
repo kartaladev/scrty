@@ -433,7 +433,9 @@ func (p *Provider) judgeCodeNow(ctx context.Context, record *CodeRecord) error {
 		return refuseGrant()
 	case err != nil:
 		return dependencyFailure(ctx, err, "oidcprovider: load the code's user")
-	case details == nil || details.ID != record.SignIn.User || !details.Active:
+	case details == nil:
+		return dependencyFailure(ctx, errNoRecord, "oidcprovider: load the code's user")
+	case details.ID != record.SignIn.User || !details.Active:
 		return refuseGrant()
 	}
 

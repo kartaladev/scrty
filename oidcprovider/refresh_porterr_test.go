@@ -557,29 +557,33 @@ func TestPortErrors_RefreshGrant(t *testing.T) { //nolint:paralleltest // it rep
 	}
 }
 
-// TestPortErrors_RefreshGrantAnswersNothing pins that a grant store whose load
-// answers neither a record nor an error, breaking its contract, is answered
-// at the refresh's read of its grant as that store failing outright: the same
-// dependency failure and state as a plain outage, and no panic.
+// TestPortErrors_RefreshGrantAnswersNothing pins that a grant store or user
+// loader whose load answers neither a record nor an error, breaking its
+// contract, is answered at the refresh's read of its grant or of the grant's
+// user as that port failing outright: the same dependency failure and state as
+// a plain outage, no panic, and never a user-disabled revocation.
 func TestPortErrors_RefreshGrantAnswersNothing(t *testing.T) { //nolint:paralleltest // it replaces slog.Default()
 	type testCase struct {
-		name   string
-		site   pe7dSite
-		assert func(t *testing.T, plain, got pe7dOutcome)
+		name string
+		site pe7dSite
+		// nothing is the port error that makes site's port answer no record
+		// and no error: pe7dNoRecord for the grant store, and nil for the user
+		// loader, which then answers (nil, nil).
+		nothing error
+		assert  func(t *testing.T, plain, got pe7dOutcome)
+	}
+
+	nothingWalked := func(t *testing.T, plain, got pe7dOutcome) {
+		t.Helper()
+
+		pe7dSameAsPlain(t, plain, got)
+		assert.False(t, got.unwalkable, "no chain was walked")
+		assert.Empty(t, got.aborts, "no abort record")
 	}
 
 	cases := []testCase{
-		{
-			name: "the refresh's grant",
-			site: pe7dGrantLoad,
-			assert: func(t *testing.T, plain, got pe7dOutcome) {
-				t.Helper()
-
-				pe7dSameAsPlain(t, plain, got)
-				assert.False(t, got.unwalkable, "no chain was walked")
-				assert.Empty(t, got.aborts, "no abort record")
-			},
-		},
+		{name: "the refresh's grant", site: pe7dGrantLoad, nothing: pe7dNoRecord, assert: nothingWalked},
+		{name: "the grant's user", site: pe7dUserLoad, nothing: nil, assert: nothingWalked},
 	}
 
 	for _, tc := range cases {
@@ -587,7 +591,7 @@ func TestPortErrors_RefreshGrantAnswersNothing(t *testing.T) { //nolint:parallel
 			defaults := pe7cSwapDefault(t)
 
 			plain := pe7dRun(t, t.Context(), tc.site, pe7bErrDown)
-			got := pe7dRun(t, t.Context(), tc.site, pe7dNoRecord)
+			got := pe7dRun(t, t.Context(), tc.site, tc.nothing)
 			tc.assert(t, plain, got)
 
 			pe7cNoDefaultAbort(t, defaults)

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // isSilent reports a prompt=none request, which no page may ever answer.
@@ -74,11 +75,14 @@ func (p *Provider) sessionSignIn(ctx context.Context, secret string, req *Pendin
 	}
 
 	session, err := p.stores.browserSessions.Load(ctx, digest, now)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return SignIn{}, nil, nil
 	case err != nil:
 		return SignIn{}, nil, dependencyFailure(ctx, err, "oidcprovider: load the browser session")
+	case session == nil:
+		return SignIn{}, nil, dependencyFailure(ctx, errNoRecord, "oidcprovider: load the browser session")
 	}
 
 	s := session.SignIn
@@ -105,17 +109,22 @@ func wantsNewAuthentication(req *PendingRequest) bool {
 }
 
 // userActive reports whether the session's user still exists and may sign in, as a refresh
-// asks. A record naming someone else counts as no such user.
+// asks. A record naming someone else counts as no such user. A loader answering no user and
+// no error breaks its contract, which makes a miss ErrUserNotFound, so it is a dependency
+// failure and no verdict on the user.
 func (p *Provider) userActive(ctx context.Context, user identity.UserID) (bool, error) {
 	details, err := p.users.LoadByUserID(ctx, user)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound):
 		return false, nil
 	case err != nil:
 		return false, dependencyFailure(ctx, err, "oidcprovider: load the browser session's user")
+	case details == nil:
+		return false, dependencyFailure(ctx, errNoRecord, "oidcprovider: load the browser session's user")
 	}
 
-	return details != nil && details.ID == user && details.Active, nil
+	return details.ID == user && details.Active, nil
 }
 
 // issueFromSession answers with a code for everything the request asked. The session is
@@ -151,7 +160,8 @@ func (p *Provider) parkAtConsent(
 	if err != nil {
 		return AuthorizeResult{}, err
 	}
-	if err := p.stores.pendingRequests.Advance(ctx, req.HandleDigest, StageLogin, StageConsent, &s); err != nil {
+	err = p.stores.pendingRequests.Advance(ctx, req.HandleDigest, StageLogin, StageConsent, &s)
+	if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 		return AuthorizeResult{}, dependencyFailure(ctx, err, "oidcprovider: move the request to its consent stage")
 	}
 	p.touchBrowserSession(ctx, digest, in.IdleTimeout, now)

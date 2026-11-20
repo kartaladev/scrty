@@ -96,6 +96,17 @@ When the walk of a consumer dependency's error stops for its budget or a panic, 
 #### Scenario: Unwalkable refusal check
 - **WHEN** a consumer's magic-link refusal check returns an error whose `Unwrap` method panics
 - **THEN** redemption returns the library's fixed error, which matches neither the invalid-link error nor any library refusal
+
+### Requirement: A load that answers neither a record nor an error is a dependency failure
+Where the OpenID Provider loads a record or a user from a consumer's store or user loader, an answer with neither a record nor an error SHALL be treated as that dependency failing outright. It SHALL never be read as a missing record or a missing user, and it SHALL revoke and delete nothing. A user loader reports a missing user with the user-not-found error, so this answer breaks its contract.
+
+#### Scenario: A user loader answers nothing during a refresh
+- **WHEN** the consumer's user loader answers neither a user nor an error while a refresh token is redeemed
+- **THEN** the refresh is answered `server_error`, the grant is not revoked, and its refresh tokens still work once the loader answers again
+
+#### Scenario: A grant store answers nothing during revocation
+- **WHEN** the consumer's grant store answers neither a grant nor an error while a refresh token is revoked
+- **THEN** the revocation is answered as a dependency failure, never 200, and the process does not panic
 - **AND** the link stays redeemable, and one error record with reason `panic` is logged
 
 ## MODIFIED Requirements
