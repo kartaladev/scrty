@@ -510,7 +510,8 @@ func (p *Provider) dropBrowserSession(ctx context.Context, old, replacement stri
 	if !ok {
 		return
 	}
-	if err := p.stores.browserSessions.Delete(ctx, digest); err != nil {
+	err := p.stores.browserSessions.Delete(ctx, digest)
+	if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 		p.logFailedAfterSpend(ctx, "oidcprovider: the replaced browser session could not be deleted", err)
 	}
 }
