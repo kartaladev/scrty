@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token"
@@ -178,7 +179,7 @@ func (p *Provider) mintAccessToken(
 	confirmation := confirmationOf(binding)
 
 	if rc.OpaqueAccessTokens {
-		tokenID, err := p.cfg.ids.NewID()
+		tokenID, err := idgen.New(p.cfg.ids)
 		if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 			return nil, dependencyFailure(ctx, err, "oidcprovider: mint an access token's identifier")
 		}

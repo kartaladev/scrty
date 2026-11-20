@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -112,7 +113,7 @@ func (p *Provider) parkAt(ctx context.Context, req *PendingRequest, flowSecret s
 	if err != nil {
 		return "", "", dependencyFailure(ctx, err, "oidcprovider: mint a flow secret")
 	}
-	recordID, err := p.cfg.ids.NewID()
+	recordID, err := idgen.New(p.cfg.ids)
 	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return "", "", dependencyFailure(ctx, err, "oidcprovider: mint a pending request identifier")

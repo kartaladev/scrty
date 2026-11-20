@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/token"
@@ -56,7 +57,7 @@ func (p *Provider) issue(ctx context.Context, rc *RegisteredClient, in token.Iss
 	if !ok {
 		return "", errNoIssuer
 	}
-	jti, err := p.cfg.ids.NewID()
+	jti, err := idgen.New(p.cfg.ids)
 	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return "", err
