@@ -3226,6 +3226,20 @@ make tools-check     # the tools module's own checks
 Continuous integration runs each gate as its own job, plus CodeQL and OpenSpec validation, behind a
 single `ci-ok` result.
 
+The long-running jobs (`lint`, `test` on both database pairings, and `conformance`) are skipped
+while the repository variable `SCRTY_SKIP_LONG_CHECKS` is `true`. `ci-ok` then accepts those three
+as skipped, and no other job. A manual run of the `ci` workflow (`gh workflow run ci.yml --ref
+<branch>`) still runs every job, and deleting the variable restores full CI. While the variable is
+set, run the skipped checks yourself before pushing:
+
+```sh
+make pre-pr   # make check, make conformance and make spec-check (needs Docker and Node)
+make hooks    # opt-in: a pre-push hook runs make pre-pr (skip once with git push --no-verify)
+```
+
+`make pre-pr` tests against the default PostgreSQL image only. For CI's other pairing, run
+`SCRTY_TEST_POSTGRES_IMAGE=postgres:15.19-alpine make test`.
+
 `make spec-check` validates the settled specs, the archived changes, and the active changes touched
 against `main`, including uncommitted and untracked files. An untracked note inside a change that has
 no deltas yet therefore makes that change fail. It needs Node `>=22.12`; with a locally installed

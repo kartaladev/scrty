@@ -7,10 +7,17 @@ on:
   # gates, and every later push to it runs them again.
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  # Runs every job, the long-running ones included, whatever
+  # SCRTY_SKIP_LONG_CHECKS says.
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# Long-running checks (lint, test, conformance) run unless the repository
+# variable SCRTY_SKIP_LONG_CHECKS is 'true', and always on a manual run. Unset,
+# the variable runs everything, so deleting it restores full CI. While it is
+# 'true', run `make pre-pr` locally before pushing: it covers what CI skips.
 env:
   # The Go release the static jobs run on: the newest release the test matrix
   # below covers. Move it to the newest `go` entry there when one is added.
@@ -53,7 +60,7 @@ jobs:
 
   lint:
     name: lint
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (vars.SCRTY_SKIP_LONG_CHECKS != 'true' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -160,7 +167,7 @@ jobs:
 
   test:
     name: test (Go ${{ matrix.go }}, ${{ matrix.postgres }}, ${{ matrix.redis }})
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (vars.SCRTY_SKIP_LONG_CHECKS != 'true' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -277,7 +284,7 @@ jobs:
   # public DNS; the hosts entry keeps the job from depending on that lookup.
   conformance:
     name: conformance
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (vars.SCRTY_SKIP_LONG_CHECKS != 'true' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -308,8 +315,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: needs lists every job
         run: .github/scripts/ci-needs-check.sh .github/workflows/ci.yml ci-ok
+      # A long-running check counts as passed when skipped, but only while
+      # SCRTY_SKIP_LONG_CHECKS turns it off; any other skip still fails.
       - name: every dependency succeeded
         env:
           NEEDS: ${{ toJSON(needs) }}
+          LONG_OFF: ${{ vars.SCRTY_SKIP_LONG_CHECKS == 'true' && github.event_name != 'workflow_dispatch' }}
         run: |
-          jq -e 'to_entries | map(select(.value.result != "success")) | if length == 0 then true else (map("ci-ok: \(.key) \(.value.result)\n") | .[] | stderr) | false end' <<<"$NEEDS"
+          jq -e --argjson off "$LONG_OFF" --argjson long '["lint","test","conformance"]' 'to_entries | map(select(.value.result != "success" and ($off and .value.result == "skipped" and (.key as $k | $long | index($k))) == false)) | if length == 0 then true else (map("ci-ok: \(.key) \(.value.result)\n") | .[] | stderr) | false end' <<<"$NEEDS"
