@@ -15,6 +15,7 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/clock"
 )
@@ -274,7 +275,8 @@ func ResetEnrolment(ctx context.Context, user identity.UserID, deps ResetDeps, o
 	// user their second factors were reset would be false while one remains.
 	// The removals already done stay done.
 	for _, e := range deps.Enrolments {
-		if err := e.RemoveEnrolment(ctx, user); err != nil {
+		err := porterr.Sanitize(e.RemoveEnrolment(ctx, user), porterr.ErrUnwalkable)
+		if err != nil {
 			return diag.Wrap(err, "mfa: reset could not remove the enrolment")
 		}
 	}
@@ -286,13 +288,15 @@ func ResetEnrolment(ctx context.Context, user identity.UserID, deps ResetDeps, o
 	}, slog.Default())
 
 	if c.revokeSessions {
-		if err := deps.Sessions.DeleteByUser(ctx, user); err != nil {
+		err := porterr.Sanitize(deps.Sessions.DeleteByUser(ctx, user), porterr.ErrUnwalkable)
+		if err != nil {
 			return diag.Wrap(err, "mfa: reset removed the enrolment but could not end the sessions")
 		}
 	}
 
 	if deps.Grants != nil && !c.keepGrants {
-		if err := deps.Grants.RevokeUserGrants(ctx, user, resetGrantCause); err != nil {
+		err := porterr.Sanitize(deps.Grants.RevokeUserGrants(ctx, user, resetGrantCause), porterr.ErrUnwalkable)
+		if err != nil {
 			return diag.Wrap(err, "mfa: reset removed the enrolment but could not revoke the grants")
 		}
 	}
@@ -346,6 +350,7 @@ func (d ResetDeps) notify(
 	message func(at time.Time) (subject, body string),
 ) error {
 	details, err := d.Users.LoadByUserID(ctx, user)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 	if err != nil {
 		return diag.Wrap(err, "mfa: reset could not load the user to notify")
 	}
@@ -356,13 +361,15 @@ func (d ResetDeps) notify(
 	}
 
 	to, err := contact(ctx, details)
+	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
 	if err != nil {
 		return diag.Wrap(err, "mfa: reset could not resolve the address to notify")
 	}
 
 	subject, body := message(at)
 
-	if err := d.Sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body}); err != nil {
+	err = porterr.Sanitize(d.Sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body}), porterr.ErrUnwalkable)
+	if err != nil {
 		return diag.Wrap(err, "mfa: reset could not queue the notification")
 	}
 
