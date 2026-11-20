@@ -109,7 +109,7 @@ func (m *Passkeys) BeginRegistration(
 		return nil, diag.Wrap(err, "passkey: could not issue a registration challenge", ErrRegistrationThrottled)
 	}
 
-	return m.verifier.CreationOptions(ctx, CreationInput{
+	raw, err := m.verifier.CreationOptions(ctx, CreationInput{
 		UserHandle:  handle,
 		UserName:    name,
 		DisplayName: display,
@@ -119,6 +119,9 @@ func (m *Passkeys) BeginRegistration(
 		UV:          m.uv,
 		ResidentKey: m.residentKey,
 	})
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
+	return raw, err
 }
 
 // handle returns s's user's handle, assigning a new random one when they have

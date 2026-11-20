@@ -113,9 +113,12 @@ func (pm *MFAMethod) BeginChallenge(
 		allow[i] = Descriptor{ID: c.CredentialID, Transports: c.Transports}
 	}
 
-	return pm.m.verifier.RequestOptions(ctx, RequestInput{
+	raw, err := pm.m.verifier.RequestOptions(ctx, RequestInput{
 		Challenge: challenge, Timeout: pm.m.ttl, Allow: allow, UV: pm.m.uv,
 	})
+	err = porterr.SanitizeTo(ctx, pm.m.logger, err, porterr.ErrUnwalkable)
+
+	return raw, err
 }
 
 // PresentedChallenge returns the token string the assertion in response
