@@ -7,7 +7,11 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/internal/lifecycle"
+	"github.com/kartaladev/scrty/internal/recovered"
 )
+
+// errNilAfter is the failure of a clock whose After returned no channel.
+var errNilAfter = errors.New("signingkey: the clock's After returned a nil channel")
 
 // ErrAlreadyStarted is returned by Start on a manager whose background work has
 // already been launched.
@@ -57,12 +61,13 @@ func (km *Keys) Start(ctx context.Context) error {
 	km.started = true
 
 	loops := []struct {
+		op    string
 		every time.Duration
 		step  func(context.Context)
 	}{
-		{km.rotateEvery, km.rotateAll},
-		{km.reloadEvery, km.reload},
-		{km.housekeepEvery, km.housekeep},
+		{"rotate", km.rotateEvery, km.rotateAll},
+		{"reload", km.reloadEvery, km.reload},
+		{opHousekeep, km.housekeepEvery, km.housekeep},
 	}
 
 	workCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -73,7 +78,7 @@ func (km *Keys) Start(ctx context.Context) error {
 
 	km.wg.Add(len(loops))
 	for _, loop := range loops {
-		go km.loop(workCtx, loop.every, loop.step)
+		go km.loop(workCtx, loop.op, loop.every, loop.step)
 	}
 	// Turning the WaitGroup into a channel lets Shutdown wait for the work
 	// inside a select on its own context. This goroutine is part of the work:
@@ -94,7 +99,12 @@ func (km *Keys) Start(ctx context.Context) error {
 //
 // It ends with return, never with break: a break inside the select would leave
 // the select but not the for.
-func (km *Keys) loop(ctx context.Context, every time.Duration, step func(context.Context)) {
+//
+// The wait is the consumer's clock. If its After panics, the panic is
+// recovered, the failure is reported under op, and the loop waits that one
+// interval on the system timer instead, then runs its step as usual: it
+// neither stops nor spins.
+func (km *Keys) loop(ctx context.Context, op string, every time.Duration, step func(context.Context)) {
 	defer km.wg.Done()
 	// Flushing as the loop ends accounts for the failures the sampler still
 	// holds back. It runs before wg.Done, so a Shutdown that sees the work end
@@ -102,13 +112,47 @@ func (km *Keys) loop(ctx context.Context, every time.Duration, step func(context
 	defer km.sampler.Flush()
 
 	for {
+		tick, stop := km.nextRun(ctx, op, every)
+
 		select {
 		case <-ctx.Done():
+			stop()
+
 			return
-		case <-km.clock.After(every):
+		case <-tick:
+			stop()
 			step(ctx)
 		}
 	}
+}
+
+// nextRun returns the channel the loop waits on for its next run, and the
+// function that releases it. It is the clock's After. When that panics, it is
+// the system timer for the same interval, after the failure is reported, so a
+// clock that cannot be waited on costs the loop its controlled time and
+// nothing else.
+func (km *Keys) nextRun(ctx context.Context, op string, every time.Duration) (<-chan time.Time, func()) {
+	var tick <-chan time.Time
+
+	err := recovered.Call(ctx, km.logger, whatClockAfter, func() error {
+		tick = km.clock.After(every)
+
+		return nil
+	})
+	if err == nil && tick == nil {
+		// A nil channel never fires: waiting on it would stop the loop silently.
+		err = errNilAfter
+	}
+
+	if err == nil {
+		return tick, func() {}
+	}
+
+	km.report(ctx, op, "", clockFailure(err, "signingkey: wait for the next "+op+" run"))
+
+	timer := time.NewTimer(every)
+
+	return timer.C, func() { timer.Stop() }
 }
 
 // Shutdown ends the background work and waits for it to end, an in-flight key

@@ -386,7 +386,7 @@ func (km *Keys) mintMissing(ctx context.Context) error {
 		if have {
 			continue
 		}
-		if _, f := km.mintAndStore(ctx, alg); f != nil {
+		if _, f := km.mintAndStore(ctx, alg, false); f != nil {
 			return f.err
 		}
 	}
@@ -400,12 +400,23 @@ func (km *Keys) mintMissing(ctx context.Context) error {
 // A failure comes back as a *failure, whose err is what construction returns
 // and the error hook receives, and whose cause is the store's own error, so a
 // record names the store's error type rather than this package's wrapping.
-func (km *Keys) mintAndStore(ctx context.Context, alg Alg) (string, *failure) {
-	entry, rec, err := generateKey(alg, km.clock.Now())
+//
+// guarded says the caller is a loop the manager started, so the consumer's
+// clock and store are called under consumer, and a panic in either is a
+// failure like any other. Construction runs on the caller's own goroutine and
+// passes false: its panics stay the caller's to handle, as in every other
+// constructor.
+func (km *Keys) mintAndStore(ctx context.Context, alg Alg, guarded bool) (string, *failure) {
+	now, err := km.now(ctx, guarded)
+	if err != nil {
+		return "", clockFailure(err, fmt.Sprintf("signingkey: read the clock for a %s key", alg))
+	}
+	entry, rec, err := generateKey(alg, now)
 	if err != nil {
 		return "", &failure{err: err, reason: reasonGenerate, cause: err}
 	}
-	if err := km.store.Store(ctx, rec); err != nil {
+	err = km.consumer(ctx, guarded, whatStoreWrite, func() error { return km.store.Store(ctx, rec) })
+	if err != nil {
 		return "", &failure{
 			err:    diag.Wrap(err, fmt.Sprintf("signingkey: store %s key", alg)),
 			reason: reasonStore,
@@ -749,8 +760,13 @@ func WithLogger(logger *slog.Logger) Option {
 //   - It must be fast. The loop's next interval begins only once the hook has
 //     returned, so a hook that blocks delays every later run of that loop by
 //     as long as it blocks, and one that never returns stops it.
-//   - It must not panic. There is no recover between the hook and the loop, so
-//     a panic ends that loop and takes the process with it.
+//   - It should not panic. A panic is recovered where the hook is called: one
+//     Error record says so, the hook is not called again for that failure, the
+//     failure is still logged, and the loop goes on. The same holds for a panic
+//     in the key store or the clock (WithClock) on these loops: the run is
+//     reported to the hook as a failure, and the loop keeps its schedule. If
+//     the clock's After panics, the loop waits that interval on the system
+//     timer instead.
 //   - Do not call Shutdown from the hook. Shutdown waits for the work to end, and
 //     the work includes the loop the hook is running on, so a Shutdown called
 //     from the hook cannot see it end: it returns only when its own context
