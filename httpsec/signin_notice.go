@@ -13,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/pkg/logsample"
@@ -468,6 +469,9 @@ func (n *signInNotice) notify(ctx context.Context, s noticeSignIn, p *identity.P
 
 	if n.seen != nil {
 		seen, err := n.seen.Seen(ctx, s.user, signedIn.UserAgent)
+		// The consumer's error is logged below, which reads its chain: one
+		// that cannot be walked is reported once and logged as the fault.
+		err = porterr.SanitizeTo(ctx, n.logger, err, porterr.ErrUnwalkable)
 		if err != nil {
 			n.failed(ctx, "the seen-devices port could not answer", err)
 
@@ -479,6 +483,7 @@ func (n *signInNotice) notify(ctx context.Context, s noticeSignIn, p *identity.P
 	}
 
 	to, err := n.recipient(ctx, p)
+	err = porterr.SanitizeTo(ctx, n.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		n.failed(ctx, "the recipient could not be resolved", err)
 
@@ -486,7 +491,8 @@ func (n *signInNotice) notify(ctx context.Context, s noticeSignIn, p *identity.P
 	}
 
 	subject, body := n.message(SignInNoticeFacts{At: s.at, Device: deviceDescription(signedIn.UserAgent)})
-	if err := n.sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body}); err != nil {
+	err = n.sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body})
+	if err = porterr.SanitizeTo(ctx, n.logger, err, porterr.ErrUnwalkable); err != nil {
 		n.failed(ctx, "the notice could not be sent", err)
 	}
 }

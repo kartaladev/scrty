@@ -2,9 +2,11 @@ package httpsec
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 //go:generate mockgen -destination=keysetprovider_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/httpsec KeySetProvider
@@ -45,6 +47,10 @@ type jwksEndpoint struct {
 	// path is the endpoint's path: where the options placed it, and where it
 	// answers under the base path once resolved.
 	path endpointPath
+
+	// log is the chain's logger, where the one record of a provider error
+	// whose chain cannot be walked goes.
+	log *slog.Logger
 }
 
 // Intercept serves the key set on its own path, and passes everything else
@@ -61,6 +67,11 @@ func (j *jwksEndpoint) Intercept(ex *Exchange, next Next) error {
 
 	set, err := j.keys.JWKS(ex.Context())
 	if err != nil {
+		// An error whose chain cannot be walked is read as the provider's
+		// outage: the fault stands for it, behind the same fixed text, so the
+		// chain's classification never walks the consumer's error.
+		err = porterr.SanitizeTo(ex.Context(), j.log, err, porterr.ErrUnwalkable)
+
 		// Propagated, not swallowed. An empty set served with a 200 would tell
 		// every client that every signature is invalid, and they would cache
 		// that answer; an error says the deployment has a problem. The text is
@@ -108,6 +119,7 @@ func EnableJWKSEndpoint(keys KeySetProvider, opts ...JWKSOption) Option {
 			return requireDep(option, "key set provider", keys)
 		})
 
+		c.wire(func(ch *Chain) { j.log = ch.logger })
 		c.register(j, OrderJWKS)
 
 		return nil
