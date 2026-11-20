@@ -338,17 +338,36 @@ func (p *Provider) exchangeCode(ctx context.Context, r TokenRequest, rc *Registe
 func (p *Provider) loadCodeRecord(ctx context.Context, tokenID id.ID) (*CodeRecord, error) {
 	record, err := p.stores.codes.Load(ctx, tokenID)
 	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
-	switch {
-	case errors.Is(err, ErrNotFound):
-		return nil, refuseGrant()
-	case err != nil:
-		return nil, dependencyFailure(ctx, err, "oidcprovider: load the code record")
-	case record == nil:
-		return nil, dependencyFailure(ctx, errNoRecord, "oidcprovider: load the code record")
+	if err := checkCodeRecord(ctx, record, err); err != nil {
+		return nil, err
 	}
 
 	return record, nil
 }
+
+// checkCodeRecord judges what a code store's load answered, for the exchange and the replay alike so
+// the two cannot drift: a missing code is refused, and a failed, empty or nil-family answer is a
+// dependency failure. The error is the load's, already sanitized.
+func checkCodeRecord(ctx context.Context, record *CodeRecord, err error) error {
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return refuseGrant()
+	case err != nil:
+		return dependencyFailure(ctx, err, "oidcprovider: load the code record")
+	case record == nil:
+		return dependencyFailure(ctx, errNoRecord, "oidcprovider: load the code record")
+	case record.GrantFamily == id.Nil:
+		// A store breaking its contract, or a code issued before the nil identifier was refused:
+		// no grant may live under the nil family, so the code is not spent and nothing is issued.
+		return dependencyFailure(ctx, errNilGrantFamily, "oidcprovider: load the code record")
+	}
+
+	return nil
+}
+
+// errNilGrantFamily stands for a code record naming the nil identifier as its grant family, which
+// no issue stores. It is answered as that store failing, and carries no consumer data.
+var errNilGrantFamily = errors.New("oidcprovider: a code record names the nil grant family")
 
 // errNoRecord stands for a store whose load answered neither a record nor an error, which breaks
 // its port's contract. It is answered as that store failing, never as a record missing.
@@ -615,13 +634,8 @@ func (p *Provider) refuseSpentCode(ctx context.Context, r TokenRequest, rc *Regi
 	// caller's: only the caller's own ending is a hang-up, and the budget running out is not.
 	record, err := p.stores.codes.Load(detached, tokenID)
 	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
-	switch {
-	case errors.Is(err, ErrNotFound):
-		return refuseGrant()
-	case err != nil:
-		return dependencyFailure(ctx, err, "oidcprovider: load the code record")
-	case record == nil:
-		return dependencyFailure(ctx, errNoRecord, "oidcprovider: load the code record")
+	if err := checkCodeRecord(ctx, record, err); err != nil {
+		return err
 	}
 	if record.ClientID != rc.ID || !codeBindingsHold(r, record, rc) {
 		return refuseGrant()

@@ -1320,6 +1320,43 @@ func TestProvider_ExchangeCode(t *testing.T) {
 			assert: dependencyFailedAndUnspent,
 		},
 		{
+			name: "a stored code whose grant family is the nil identifier fails, unspent, storing no grant",
+			opts: func(t *testing.T) []oidcprovider.Option {
+				t.Helper()
+				memory, err := oidcprovider.NewMemoryCodeStore()
+				require.NoError(t, err)
+				codes := NewMockCodeStore(gomock.NewController(t))
+				codes.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(memory.Create)
+				codes.EXPECT().Load(gomock.Any(), gomock.Any()).DoAndReturn(
+					func(ctx context.Context, tokenID id.ID) (*oidcprovider.CodeRecord, error) {
+						record, err := memory.Load(ctx, tokenID)
+						if err != nil {
+							return nil, err
+						}
+						broken := *record
+						broken.GrantFamily = id.Nil
+
+						return &broken, nil
+					})
+
+				return []oidcprovider.Option{oidcprovider.WithCodeStore(codes)}
+			},
+			arrange: func(t *testing.T, x *exchangeFixture) (issuedCode, oidcprovider.TokenRequest) {
+				t.Helper()
+				c := x.issue(t)
+
+				return c, billingExchange(c, nil)
+			},
+			assert: func(t *testing.T, x *exchangeFixture, c issuedCode, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				assertDependencyFailure(t, err)
+				assert.Nil(t, res, "no tokens are issued")
+				assertUnspent(t, x, c)
+				_, loadErr := x.p.GrantsForTest().Load(t.Context(), id.Nil)
+				assert.ErrorIs(t, loadErr, oidcprovider.ErrNotFound, "no grant is stored under the nil family")
+			},
+		},
+		{
 			name: "a code-token store that cannot answer fails, rather than calling the code bad",
 			opts: func(t *testing.T) []oidcprovider.Option {
 				t.Helper()
@@ -1911,6 +1948,55 @@ func TestProvider_CodeReplay(t *testing.T) {
 			},
 		}
 	}
+	// nilFamilyRecord is a replay whose record the store answers under the nil family, the first
+	// exchange having been made while it answered truly. A grant stored under the nil family
+	// belongs to nothing this code issued, and must survive.
+	nilFamilyRecord := func() testCase {
+		var armed atomic.Bool
+
+		return testCase{
+			name: "a replay whose record names the nil grant family fails, and revokes nothing",
+			opts: func(t *testing.T) []oidcprovider.Option {
+				t.Helper()
+				memory, err := oidcprovider.NewMemoryCodeStore()
+				require.NoError(t, err)
+				codes := NewMockCodeStore(gomock.NewController(t))
+				codes.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(memory.Create)
+				codes.EXPECT().Load(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, tokenID id.ID) (*oidcprovider.CodeRecord, error) {
+					record, err := memory.Load(ctx, tokenID)
+					if err != nil || !armed.Load() {
+						return record, err
+					}
+					broken := *record
+					broken.GrantFamily = id.Nil
+
+					return &broken, nil
+				}).AnyTimes()
+
+				return []oidcprovider.Option{oidcprovider.WithCodeStore(codes)}
+			},
+			run: func(t *testing.T, x *exchangeFixture, _ *barrierGrants) {
+				t.Helper()
+				c := x.issue(t)
+				spendAsAnotherClient(t, x, c)
+				bystander := &oidcprovider.Grant{
+					Family:   id.Nil,
+					User:     "u-bystander",
+					ClientID: "billing-web",
+					Scopes:   []string{"openid"},
+				}
+				require.NoError(t, x.p.GrantsForTest().Create(t.Context(), bystander))
+				armed.Store(true)
+
+				_, err := x.p.Token(t.Context(), billingExchange(c, nil))
+				assertDependencyFailure(t, err)
+
+				stored, err := x.p.GrantsForTest().Load(t.Context(), id.Nil)
+				require.NoError(t, err)
+				assert.False(t, stored.Revoked, "a grant under the nil family was revoked by a replay that named it")
+			},
+		}
+	}
 	// vanishingToken is a replay whose token store answers nothing at all on the second look,
 	// neither a token nor an error.
 	vanishingToken := func() testCase {
@@ -1953,6 +2039,7 @@ func TestProvider_CodeReplay(t *testing.T) {
 
 	cases := []testCase{
 		recordUnreadable(),
+		nilFamilyRecord(),
 		vanishingToken(),
 		invalidReplay("a wrong verifier", nil, confidential(wrongVerifier)),
 		invalidReplay("no verifier", nil, confidential(noVerifier)),
