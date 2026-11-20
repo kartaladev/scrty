@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/errwalk"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 )
 
@@ -358,6 +360,13 @@ func (r *Runner) execute(ctx context.Context, t Task) (res Result) {
 		defer cancel()
 	}
 	res.Removed, res.Err = t.Run(runCtx)
+	// Run is the consumer's, or wraps the owner's store: its error is a port
+	// error. It is sanitized before report classifies it, so a cycle, a
+	// fan-out or a panicking Unwrap is reported as a plain failure rather than
+	// hanging or panicking the runner. The abort record goes to the runner's
+	// logger. The sanitizer calls Unwrap only; report reads the result through
+	// the bounded walk too, for an Is method that panics on one sentinel.
+	res.Err = porterr.SanitizeTo(ctx, r.logger, res.Err, porterr.ErrUnwalkable)
 	return res
 }
 
@@ -371,11 +380,11 @@ func (r *Runner) report(ctx context.Context, res Result) {
 	task := slog.String("task", res.Task)
 	switch {
 	case res.Skipped:
-		attrs := append([]slog.Attr{task}, diag.Failure(skipReason(res.Err), res.Err)...)
+		attrs := append([]slog.Attr{task}, diag.Failure(r.skipReason(ctx, res.Err), res.Err)...)
 		r.logger.LogAttrs(ctx, slog.LevelWarn, "expiry task skipped", attrs...)
 	case res.Err != nil:
 		attrs := append([]slog.Attr{task, slog.Int("removed", res.Removed), slog.Duration("elapsed", res.Elapsed)},
-			diag.Failure(failReason(res.Err), res.Err)...)
+			diag.Failure(r.failReason(ctx, res.Err), res.Err)...)
 		r.logger.LogAttrs(ctx, slog.LevelError, "expiry task failed", attrs...)
 	default:
 		r.logger.LogAttrs(ctx, slog.LevelDebug, "expiry task finished",
@@ -386,22 +395,85 @@ func (r *Runner) report(ctx context.Context, res Result) {
 	}
 }
 
-// skipReason is the fixed word a skipped record carries.
-func skipReason(err error) string {
-	if errors.Is(err, ErrTaskBusy) {
+// skipTargets are the sentinels a skipped record's classification reads, in
+// order: ErrTaskBusy gives "busy", and the cancellations, like no match,
+// "cancelled". The cancellations name no reason of their own; they are read
+// here so that an error whose Is method panics on them is caught, and
+// reported, by this classification rather than only by diag.Failure, which
+// writes no record of an abort.
+var skipTargets = errwalk.NewTargets(ErrTaskBusy, context.Canceled, context.DeadlineExceeded)
+
+// failTargets are the sentinels a failed record's classification reads, in
+// order: ErrTaskPanicked gives "panic", ErrPurgeUnsupported
+// "purge-unsupported", and the cancellations, like no match, "purge". The
+// cancellations are read for the reason skipTargets gives.
+var failTargets = errwalk.NewTargets(ErrTaskPanicked, ErrPurgeUnsupported, context.Canceled, context.DeadlineExceeded)
+
+// walkBuffer is how many nodes of a chain a classification holds on its
+// caller's stack before it grows onto the heap.
+const walkBuffer = 16
+
+// skipReason is the fixed word a skipped record carries. err is ctx.Err() of
+// the caller's context, which may be the consumer's own Context, or the
+// runner's own ErrTaskBusy; it is read through the bounded, recovering walk.
+// A walk that aborts is no match ("cancelled"), and is reported.
+func (r *Runner) skipReason(ctx context.Context, err error) string {
+	if r.classify(ctx, err, skipTargets) == 0 {
 		return "busy"
 	}
+
 	return "cancelled"
 }
 
-// failReason is the fixed word a failed record carries.
-func failReason(err error) string {
-	switch {
-	case errors.Is(err, ErrTaskPanicked):
+// failReason is the fixed word a failed record carries. err is the sanitized
+// task error, or the runner's own ErrTaskPanicked. The sanitizer's walk calls
+// Unwrap only, so an Is method that panics for one sentinel passes it; err is
+// therefore read through the bounded, recovering walk, never stdlib
+// errors.Is. A walk that aborts is no match ("purge": a plain failure, never
+// "panic" or "purge-unsupported"), and is reported.
+func (r *Runner) failReason(ctx context.Context, err error) string {
+	switch r.classify(ctx, err, failTargets) {
+	case 0:
 		return "panic"
-	case errors.Is(err, ErrPurgeUnsupported):
+	case 1:
 		return "purge-unsupported"
 	default:
 		return "purge"
 	}
+}
+
+// classify returns the position in targets of the first target err matches,
+// as errwalk.Index gives it, or -1 when none does or the walk aborts. An abort
+// writes the one record of this classification to the runner's logger. A
+// fault the sanitizer built walks to the end and matches by its own Is, so an
+// error the sanitizer has already reported is never reported again here.
+func (r *Runner) classify(ctx context.Context, err error, targets errwalk.Targets) int {
+	var buf [walkBuffer]error
+
+	chain, abort := errwalk.FlattenInto(buf[:], err)
+	if abort == nil {
+		var i int
+		if i, abort = errwalk.Index(chain, targets); abort == nil {
+			return i
+		}
+	}
+
+	r.reportAbort(ctx, abort)
+
+	return -1
+}
+
+// reportAbort writes the one Error record of an aborted classification to
+// the runner's logger, with the message every aborted classification in the
+// library writes, the reason ("budget" or "panic") and, for a panic, its Go
+// type and the frames where it panicked; never the error's text or the
+// panic's value.
+func (r *Runner) reportAbort(ctx context.Context, abort error) {
+	attrs := []slog.Attr{slog.String("reason", errwalk.Reason(abort))}
+
+	if p, ok := abort.(*errwalk.PanicError); ok && p != nil { //nolint:errorlint // errwalk's own value, never wrapped
+		attrs = append(attrs, diag.PanicAttrsFrom(p.Value, p.Frames)...)
+	}
+
+	r.logger.LogAttrs(ctx, slog.LevelError, porterr.MsgClassificationAborted, attrs...)
 }

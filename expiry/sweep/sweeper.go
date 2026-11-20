@@ -14,7 +14,10 @@ import (
 	"github.com/jonboulle/clockwork"
 
 	"github.com/kartaladev/scrty/expiry"
+	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/errwalk"
 	"github.com/kartaladev/scrty/internal/lifecycle"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // JobPrefix starts the name of every job a Sweeper schedules: the job for the
@@ -372,6 +375,12 @@ func (s *Sweeper) schedule(ctx context.Context, j job) error {
 // values, handed to the logger with the record.
 func (s *Sweeper) lockFailed(ctx context.Context, task string) func(uuid.UUID, string, error) {
 	return func(_ uuid.UUID, jobName string, err error) {
+		// The locker is the consumer's, so its error is a port error. gocron
+		// hands it here untouched; it is sanitized before it is read, so a
+		// cycle, a fan-out or a panicking Unwrap is recorded as a plain lock
+		// failure rather than hanging or crashing gocron's goroutine. The
+		// abort record goes to the sweeper's logger.
+		err = porterr.SanitizeTo(ctx, s.cfg.logger, err, porterr.ErrUnwalkable)
 		attrs := []slog.Attr{
 			slog.String("task", task),
 			slog.String("job", jobName),
@@ -380,12 +389,50 @@ func (s *Sweeper) lockFailed(ctx context.Context, task string) func(uuid.UUID, s
 			slog.String("reason", "lock"),
 			slog.String("error_type", fmt.Sprintf("%T", err)),
 		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if s.lockCancelled(ctx, err) {
 			attrs = append(attrs, slog.Bool("cancelled", true))
 		}
 		s.cfg.logger.LogAttrs(ctx, slog.LevelError,
 			"sweep: distributed lock failed; run skipped", attrs...)
 	}
+}
+
+// cancellations are the context errors a lock-failure record flags as
+// cancelled.
+var cancellations = errwalk.NewTargets(context.Canceled, context.DeadlineExceeded)
+
+// walkBuffer is how many nodes of a chain lockCancelled holds on its caller's
+// stack before it grows onto the heap.
+const walkBuffer = 16
+
+// lockCancelled reports whether err, a sanitized lock error, is or wraps a
+// context cancellation or deadline. The sanitizer's walk calls Unwrap only,
+// so an Is method that panics when asked about one sentinel passes it; err is
+// therefore read through the bounded, recovering walk, never stdlib
+// errors.Is, on gocron's goroutine, which has no recover. A walk that aborts
+// is not a cancellation (nothing in a chain that could not be read shows the
+// caller hung up), and writes the one record of this read to the sweeper's
+// logger. A fault the sanitizer built walks to the end, so an error the
+// sanitizer has already reported is never reported again here.
+func (s *Sweeper) lockCancelled(ctx context.Context, err error) bool {
+	var buf [walkBuffer]error
+
+	chain, abort := errwalk.FlattenInto(buf[:], err)
+	if abort == nil {
+		var i int
+		if i, abort = errwalk.Index(chain, cancellations); abort == nil {
+			return i >= 0
+		}
+	}
+
+	attrs := []slog.Attr{slog.String("reason", errwalk.Reason(abort))}
+	if p, ok := abort.(*errwalk.PanicError); ok && p != nil { //nolint:errorlint // errwalk's own value, never wrapped
+		attrs = append(attrs, diag.PanicAttrsFrom(p.Value, p.Frames)...)
+	}
+
+	s.cfg.logger.LogAttrs(ctx, slog.LevelError, porterr.MsgClassificationAborted, attrs...)
+
+	return false
 }
 
 // Shutdown stops scheduling, cancels the context of any run in progress, and
