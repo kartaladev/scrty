@@ -5,12 +5,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/lifecycle"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/recovered"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -175,15 +177,69 @@ func (s *MemoryStore) housekeep(ctx context.Context, done chan<- struct{}) {
 	defer close(done)
 
 	for {
+		tick, stop := s.nextRun(ctx)
+
 		select {
 		case <-ctx.Done():
+			stop()
+
 			return
-		case <-s.clock.After(s.interval):
-			// The only error this store returns is none, and there is no
-			// caller to hand one to from a background loop.
-			_, _ = s.DeleteExpired(ctx)
+		case <-tick:
+			stop()
+			s.sweep(ctx)
 		}
 	}
+}
+
+// sweep runs one housekeeping cycle. DeleteExpired reads the consumer's clock,
+// and a panic there skips this cycle only: the loop keeps its schedule and the
+// next cycle runs. recovered.Call writes the one record; the panic's text is
+// never in it. The only error DeleteExpired returns is none, and there is no
+// caller to hand one to from a background loop.
+func (s *MemoryStore) sweep(ctx context.Context) {
+	_ = recovered.Call(ctx, nil, "session memory store clock Now", func() error {
+		_, err := s.DeleteExpired(ctx)
+
+		return err
+	})
+}
+
+// nextRun returns the channel the loop waits on for its next cycle and the
+// function that releases it. It is the clock's After. When that panics or
+// returns a nil channel, which would never fire and so stop the loop silently,
+// it reports the failure and waits one interval on the system timer instead:
+// a clock that cannot be waited on costs the loop its controlled time and
+// nothing else, and the wait keeps the loop from spinning.
+func (s *MemoryStore) nextRun(ctx context.Context) (<-chan time.Time, func()) {
+	var tick <-chan time.Time
+
+	err := recovered.Call(ctx, nil, "session memory store clock After", func() error {
+		tick = s.clock.After(s.interval)
+
+		return nil
+	})
+	if err == nil && tick != nil {
+		return tick, func() {}
+	}
+	if err == nil {
+		logNilAfter(ctx)
+	}
+
+	timer := time.NewTimer(s.interval)
+
+	return timer.C, func() { timer.Stop() }
+}
+
+// logNilAfter writes the nil-channel record. It runs on the housekeeping
+// goroutine, where a panic in a consumer's slog handler would end the process,
+// so a panic from the handler is recovered; the record is then lost, and the
+// loop goes on waiting on the system timer.
+func logNilAfter(ctx context.Context) {
+	defer func() { _ = recover() }()
+
+	slog.LogAttrs(ctx, slog.LevelError,
+		"session: the memory store's clock returned a nil channel from After; waiting on the system timer",
+		slog.String("what", "session memory store clock After"))
 }
 
 // Shutdown ends housekeeping and waits for it to end, so no sweep is in
