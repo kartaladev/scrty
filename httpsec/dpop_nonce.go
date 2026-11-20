@@ -17,6 +17,7 @@ import (
 	"github.com/kartaladev/scrty/internal/guardauth"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -226,6 +227,11 @@ func (v *dpopVerifier) sealNonce(ctx context.Context, s *nonceSeal, now time.Tim
 
 	sealed, err := v.cfg.NonceCipher.Seal(ctx, plain[:], []byte(nonceAdditionalData))
 	if err != nil {
+		// An error whose chain cannot be walked is the cipher failing, as
+		// any Seal failure is: the fault stands for it, recorded once on the
+		// chain's logger, and is what every waiter on this seal is handed.
+		err = porterr.SanitizeTo(ctx, v.log, err, porterr.ErrUnwalkable)
+
 		s.err, s.hungUp = err, hangup.ByCaller(ctx, err)
 
 		return "", false, v.nonceFailure(ctx, err)
