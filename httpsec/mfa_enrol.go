@@ -638,16 +638,22 @@ func (i *enrolmentInterceptor) begin(ex *Exchange, s *session.Session, method mf
 	}
 
 	details, err := i.users.LoadByUserID(ctx, s.UserID)
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return newEnrolmentFault(reasonUserUnloadable, msgUserUnloadable, err)
 	}
 
 	label, err := i.label(ctx, details)
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return newEnrolmentFault(reasonLabelUnresolved, msgLabelUnresolved, err)
 	}
 
 	provisioning, gen, err := method.BeginEnrolmentGeneration(ctx, s.UserID, label)
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
 	if errors.Is(err, mfa.ErrAlreadyEnrolled) {
 		// The store decides this refusal, and may word it itself.
 		return refusedAs(mfa.ErrAlreadyEnrolled, textMFAAlreadyEnrolled, err)
@@ -810,6 +816,8 @@ func (i *enrolmentInterceptor) confirm(ex *Exchange, s *session.Session, method 
 	gen := s.EnrolmentGeneration
 
 	emailed, err := method.ProveDevice(ctx, s.UserID, gen, code, i.emailConfirmation, enrolmentEmailCodeTTL)
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		if errors.Is(err, mfa.ErrInvalidCode) {
 			i.record(ctx, i.confirmLimiter, key, limiterConfirm)
@@ -823,7 +831,10 @@ func (i *enrolmentInterceptor) confirm(ex *Exchange, s *session.Session, method 
 	if i.emailConfirmation {
 		subject, body := i.messages.Code(emailed, i.now().Add(enrolmentEmailCodeTTL))
 
-		if err := i.sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body}); err != nil {
+		err := i.sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body})
+		err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
+		if err != nil {
 			i.voidEmailCode(ctx, method, s.UserID, gen)
 
 			return newEnrolmentFault(reasonSendRefused, msgSendRefused, err)
@@ -834,7 +845,10 @@ func (i *enrolmentInterceptor) confirm(ex *Exchange, s *session.Session, method 
 		return nil
 	}
 
-	if err := method.CompleteEnrolment(ctx, s.UserID, gen); err != nil {
+	err = method.CompleteEnrolment(ctx, s.UserID, gen)
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
+	if err != nil {
 		if errors.Is(err, mfa.ErrInvalidCode) {
 			return refusedAs(mfa.ErrInvalidCode, textMFAInvalidCode, err)
 		}
@@ -963,11 +977,15 @@ const msgEnrolmentNotNotified = "httpsec: the user could not be notified of a co
 // *enrolmentFault, whose text is fixed.
 func (i *enrolmentInterceptor) contactOf(ctx context.Context, user identity.UserID) (string, error) {
 	details, err := i.users.LoadByUserID(ctx, user)
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return "", newEnrolmentFault(reasonUserUnloadable, msgUserUnloadable, err)
 	}
 
 	to, err := i.contact(ctx, details)
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return "", newEnrolmentFault(reasonContactUnresolved, msgContactUnresolved, err)
 	}
@@ -984,6 +1002,8 @@ func (i *enrolmentInterceptor) boundedContactOf(ctx context.Context, user identi
 	defer cancelLoad()
 
 	details, err := i.users.LoadByUserID(load, user)
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return "", newEnrolmentFault(reasonUserUnloadable, msgUserUnloadable, err)
 	}
@@ -992,6 +1012,8 @@ func (i *enrolmentInterceptor) boundedContactOf(ctx context.Context, user identi
 	defer cancelResolve()
 
 	to, err := i.contact(resolve, details)
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return "", newEnrolmentFault(reasonContactUnresolved, msgContactUnresolved, err)
 	}
@@ -1119,7 +1141,10 @@ func (i *enrolmentInterceptor) redeemEmailCode(ex *Exchange, s *session.Session,
 		return err
 	}
 
-	if err := method.RedeemEmailCode(ctx, s.UserID, s.EnrolmentGeneration, code); err != nil {
+	err = method.RedeemEmailCode(ctx, s.UserID, s.EnrolmentGeneration, code)
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
+	if err != nil {
 		if errors.Is(err, mfa.ErrInvalidCode) {
 			i.record(ctx, i.confirmLimiter, key, limiterConfirm)
 
