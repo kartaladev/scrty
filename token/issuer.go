@@ -189,7 +189,7 @@ func (i *Issuer) Issue(ctx context.Context, in Issue) (string, error) {
 		return "", err
 	}
 
-	return cfg.sign(claims, kid, signer, in.Type)
+	return cfg.sign(ctx, claims, kid, signer, in.Type)
 }
 
 // checkIssue refuses a request for a token that names no one, or no kind, or no
