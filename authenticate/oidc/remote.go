@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/kartaladev/scrty/internal/origin"
+	"github.com/kartaladev/scrty/internal/recovered"
 )
 
 // DefaultDiscoveryTTL is how long a provider's discovery document and key
@@ -92,6 +93,15 @@ type keyCache struct {
 
 	mu      sync.Mutex
 	entries map[string]*cacheEntry
+}
+
+// locked runs f with mu held, and releases mu however f ends, a panic
+// included. f reads and writes entries only: the clock is read before, and no
+// consumer code runs inside, so a slow or panicking consumer never holds mu.
+func (c *keyCache) locked(f func()) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	f()
 }
 
 // entry returns the entry for key, creating an empty one. Call it with mu
@@ -182,16 +192,22 @@ func (m *RelyingParty) keysFor(ctx context.Context, provider, kid string) (jwk.S
 	}
 
 	c := &m.cache
-	c.mu.Lock()
-	e := c.entry(key)
-	fresh, v := c.fresh(e, m.clock.Now()), *e
-	c.mu.Unlock()
+	now := m.clock.Now()
+	var (
+		e     *cacheEntry
+		fresh bool
+		v     cacheEntry
+	)
+	c.locked(func() {
+		e = c.entry(key)
+		fresh, v = c.fresh(e, now), *e
+	})
 
 	if fresh {
 		if hasKeyID(v.keys, kid) {
 			return v.keys, nil
 		}
-		v, err := m.shared(ctx, key, e, fetch, true)
+		v, err := m.shared(ctx, key, e, now, fetch, true)
 		if errors.Is(err, errCooledDown) {
 			err = nil // no refetch was sent; v is the current set
 		}
@@ -233,13 +249,20 @@ func hasKeyID(set jwk.Set, kid string) bool {
 func (m *RelyingParty) cached(ctx context.Context, key string, fetch func(context.Context) (cacheEntry, error), usable func(cacheEntry) bool) (cacheEntry, error) {
 	c := &m.cache
 
-	c.mu.Lock()
-	e := c.entry(key)
-	v, done, err := c.settled(e, m.clock.Now())
-	c.mu.Unlock()
+	now := m.clock.Now()
+	var (
+		e    *cacheEntry
+		v    cacheEntry
+		done bool
+		err  error
+	)
+	c.locked(func() {
+		e = c.entry(key)
+		v, done, err = c.settled(e, now)
+	})
 
 	if !done {
-		v, err = m.shared(ctx, key, e, fetch, false)
+		v, err = m.shared(ctx, key, e, now, fetch, false)
 	}
 	if err == nil || ctx.Err() != nil || c.stale == 0 {
 		return v, err
@@ -254,10 +277,10 @@ func (m *RelyingParty) cached(ctx context.Context, key string, fetch func(contex
 func (m *RelyingParty) staleOr(ctx context.Context, key string, e *cacheEntry, usable func(cacheEntry) bool, err error) (cacheEntry, error) {
 	c := &m.cache
 
-	c.mu.Lock()
-	v := *e
-	age := m.clock.Now().Sub(v.fetched)
-	c.mu.Unlock()
+	now := m.clock.Now()
+	var v cacheEntry
+	c.locked(func() { v = *e })
+	age := now.Sub(v.fetched)
 
 	if v.fetched.IsZero() || age < c.ttl || age > c.ttl+c.stale || (usable != nil && !usable(v)) {
 		return cacheEntry{}, err
@@ -286,52 +309,19 @@ func (m *RelyingParty) staleOr(ctx context.Context, key string, e *cacheEntry, u
 // share its result instead of being refused. Inside the cooldown it returns
 // the current entry with errCooledDown, marked not attempted.
 //
-// A failed fetch that reached the network opens a backoff window.
-func (m *RelyingParty) shared(ctx context.Context, key string, e *cacheEntry, fetch func(context.Context) (cacheEntry, error), forKid bool) (cacheEntry, error) {
+// A failed fetch that reached the network opens a backoff window. So does a
+// panic anywhere in the flight (see refresh).
+//
+// now is the caller's latest read of the clock, which refresh falls back on
+// when the clock panics before a failure can be timed.
+func (m *RelyingParty) shared(ctx context.Context, key string, e *cacheEntry, now time.Time, fetch func(context.Context) (cacheEntry, error), forKid bool) (cacheEntry, error) {
 	if err := ctx.Err(); err != nil {
 		return cacheEntry{}, err
 	}
 	c := &m.cache
 
 	ch := c.flight.DoChan(key, func() (any, error) {
-		c.mu.Lock()
-		now := m.clock.Now()
-		if forKid && c.fresh(e, now) {
-			switch {
-			case now.Before(e.cooled):
-				v := *e
-				c.mu.Unlock()
-				return v, notAttempted(errCooledDown)
-			case now.Before(e.until):
-				c.mu.Unlock()
-				return cacheEntry{}, notAttempted(e.err)
-			}
-			e.cooled = now.Add(c.cooldown)
-		} else if v, done, err := c.settled(e, now); done {
-			// A flight that finished since the caller looked may have filled
-			// the entry or opened a window: honour it, so one window never
-			// sends two requests.
-			c.mu.Unlock()
-			return v, err
-		}
-		c.mu.Unlock()
-
-		v, err := fetch(context.WithoutCancel(ctx))
-
-		c.mu.Lock()
-		if err != nil {
-			attrs, log := m.recordFailure(key, e, err)
-			c.mu.Unlock()
-			if log {
-				m.log.LogAttrs(context.WithoutCancel(ctx), slog.LevelWarn, "oidc provider fetch failed; backing off", attrs...)
-			}
-			return cacheEntry{}, err
-		}
-		e.md, e.keys, e.fetched = v.md, v.keys, m.clock.Now()
-		e.err, e.until, e.misses = nil, time.Time{}, 0
-		result := *e
-		c.mu.Unlock()
-		return result, nil
+		return m.refresh(context.WithoutCancel(ctx), key, e, now, fetch, forKid)
 	})
 
 	select {
@@ -348,6 +338,117 @@ func (m *RelyingParty) shared(ctx context.Context, key string, e *cacheEntry, fe
 	}
 }
 
+// refresh is the body of shared's flight. It runs on a goroutine singleflight
+// starts, with no request recovery above it, and singleflight re-raises a
+// flight's panic where nothing can recover it. The flight calls consumer code
+// (the clock, the outbound client's Transport) and parses the provider's
+// answer, so its whole work runs under recovered.Call, named after the
+// resource. A panic is reported once, at Error, to the relying party's logger
+// without the panic value's text, and answered as a fetch failure:
+// ErrDiscoveryFailed wrapping recovered.ErrPanicked, which every waiter on the
+// flight receives and which opens a backoff window.
+//
+// mu is only ever held through keyCache.locked, so a panic leaves it released,
+// and the entry is written whole or not at all: a value and its fetch time
+// together, or a failure and its window together.
+func (m *RelyingParty) refresh(ctx context.Context, key string, e *cacheEntry, seen time.Time, fetch func(context.Context) (cacheEntry, error), forKid bool) (cacheEntry, error) {
+	kind, provider, _ := strings.Cut(key, ":")
+	what := resourceName(kind) + " refresh"
+
+	var v cacheEntry
+	returned := false
+	err := recovered.Call(ctx, m.log, what, func() error {
+		var err error
+		v, err = m.refreshEntry(ctx, e, &seen, fetch, forKid)
+		returned = true
+		return err
+	})
+	if !returned {
+		err = fmt.Errorf("%w: provider %q: %s: %w", ErrDiscoveryFailed, provider, resourceName(kind), err)
+	}
+	if err == nil || errors.Is(err, errNotAttempted) {
+		return v, err
+	}
+
+	// The failure is timed by a fresh read. A clock that panics here too is
+	// reported like the first panic, and the failure is timed by the latest
+	// read that returned instead, so the window still opens.
+	now := seen
+	_ = recovered.Call(ctx, m.log, what, func() error { //nolint:errcheck // a panic is reported by Call; seen stands in
+		now = m.clock.Now()
+		return nil
+	})
+
+	var (
+		attrs []slog.Attr
+		log   bool
+	)
+	m.cache.locked(func() { attrs, log = m.recordFailure(key, e, err, now) })
+	if log {
+		// The relying party's logger is the consumer's handler, and this runs
+		// on the flight's goroutine, where a panic would be re-raised by
+		// singleflight beyond recovery. The failure is already recorded, so
+		// a handler that panics loses only this record.
+		_ = recovered.Call(ctx, m.log, what, func() error { //nolint:errcheck // a panic is reported by Call; the answer is err
+			m.log.LogAttrs(ctx, slog.LevelWarn, "oidc provider fetch failed; backing off", attrs...)
+			return nil
+		})
+	}
+	return cacheEntry{}, err
+}
+
+// refreshEntry re-checks e, fetches when it still needs a fetch, and stores a
+// success in e. It returns a fetch failure unrecorded, for refresh to record.
+// Every clock read is stored in seen as it returns.
+//
+// forKid asks for a refetch of a fresh key set that lacks a key id; see
+// shared.
+func (m *RelyingParty) refreshEntry(ctx context.Context, e *cacheEntry, seen *time.Time, fetch func(context.Context) (cacheEntry, error), forKid bool) (cacheEntry, error) {
+	c := &m.cache
+
+	now := m.clock.Now()
+	*seen = now
+	var (
+		v    cacheEntry
+		done bool
+		err  error
+	)
+	c.locked(func() {
+		if forKid && c.fresh(e, now) {
+			switch {
+			case now.Before(e.cooled):
+				v, done, err = *e, true, notAttempted(errCooledDown)
+			case now.Before(e.until):
+				done, err = true, notAttempted(e.err)
+			default:
+				e.cooled = now.Add(c.cooldown)
+			}
+			return
+		}
+		// A flight that finished since the caller looked may have filled the
+		// entry or opened a window: honour it, so one window never sends two
+		// requests.
+		v, done, err = c.settled(e, now)
+	})
+	if done {
+		return v, err
+	}
+
+	got, err := fetch(ctx)
+	if err != nil {
+		return cacheEntry{}, err
+	}
+
+	now = m.clock.Now()
+	*seen = now
+	c.locked(func() {
+		e.md, e.keys, e.fetched = got.md, got.keys, now
+		e.err, e.until, e.misses = nil, time.Time{}, 0
+		v = *e
+	})
+	return v, nil
+}
+
 // settled answers from e without a fetch when it can: its value while fresh,
 // or its recorded failure, marked not attempted, inside a backoff window.
 // Call it with mu held.
@@ -362,19 +463,20 @@ func (c *keyCache) settled(e *cacheEntry, now time.Time) (cacheEntry, bool, erro
 }
 
 // recordFailure opens the next backoff window for a failure that reached the
-// network. A not-attempted failure changes nothing. Call it with mu held.
+// network, at now. A not-attempted failure changes nothing. Call it with mu
+// held.
 //
 // It returns the attributes for the "backing off" log record the transition
 // warrants, and whether one is warranted at all, instead of writing the log
 // itself: the caller logs after releasing mu, so a slow slog handler stalls
 // no other provider's lookups.
-func (m *RelyingParty) recordFailure(key string, e *cacheEntry, err error) ([]slog.Attr, bool) {
+func (m *RelyingParty) recordFailure(key string, e *cacheEntry, err error, now time.Time) ([]slog.Attr, bool) {
 	if errors.Is(err, errNotAttempted) {
 		return nil, false
 	}
 	e.misses++
 	window := m.cache.backoff(e.misses)
-	e.err, e.until = err, m.clock.Now().Add(window)
+	e.err, e.until = err, now.Add(window)
 
 	kind, provider, _ := strings.Cut(key, ":")
 	return []slog.Attr{
