@@ -17,6 +17,7 @@ import (
 	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -664,6 +665,12 @@ func (i *passwordlessInterceptor) loadUser(ex *Exchange, user identity.UserID) (
 	ctx := ex.Context()
 
 	details, err := i.users.LoadByUserID(ctx, user)
+
+	// The loader is the consumer's, so its error is walked once, bounded,
+	// before errors.Is reads it (porterr.SanitizeTo, its one abort record to
+	// the chain's logger): one the walk gives up on is an outage, answered as
+	// a plain loader outage is, never as an unknown user.
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
 
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound):
