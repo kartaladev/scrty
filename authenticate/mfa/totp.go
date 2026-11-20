@@ -22,6 +22,7 @@ import (
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -230,6 +231,7 @@ func (t *TOTP) Verify(ctx context.Context, user identity.UserID, response []byte
 	code := string(response)
 
 	e, ok, err := t.store.Get(ctx, user)
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return enrolmentStoreFailed(err, msgReadFailed)
 	}
@@ -241,6 +243,7 @@ func (t *TOTP) Verify(ctx context.Context, user identity.UserID, response []byte
 	}
 
 	until, charged, err := t.store.ChargeVerifyAttempt(ctx, user, t.clock.Now(), t.verifyLimit, t.verifyWindow)
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return enrolmentStoreFailed(err, "mfa: totp could not charge the verification attempt")
 	}
@@ -262,6 +265,7 @@ func (t *TOTP) Verify(ctx context.Context, user identity.UserID, response []byte
 	// against: a removal and a re-enrolment landing since the read must not
 	// let the old secret's code count for the new one.
 	accepted, err := t.store.AcceptStep(ctx, user, e.Generation, step)
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return enrolmentStoreFailed(err, "mfa: totp could not record the accepted step")
 	}
@@ -282,6 +286,8 @@ func (t *TOTP) Verify(ctx context.Context, user identity.UserID, response []byte
 	_, err = t.store.RefundVerifyAttempt(refundCtx, user, until)
 	cancelRefund()
 
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		t.record(ctx, slog.LevelWarn, msgGiveBackFailed, user, diag.Failure("enrolment-store", err)...)
 	}
@@ -299,6 +305,7 @@ func (t *TOTP) Verify(ctx context.Context, user identity.UserID, response []byte
 // the package's own; the store's error still matches by identity.
 func (t *TOTP) Enrolled(ctx context.Context, user identity.UserID) (bool, error) {
 	e, ok, err := t.store.Get(ctx, user)
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return false, enrolmentStoreFailed(err, msgReadFailed)
 	}
@@ -536,6 +543,7 @@ func (t *TOTP) provisioningURI(label, secret string) string {
 // band, and must never be reachable from a session the enrolment path confines.
 func (t *TOTP) ConfirmEnrolment(ctx context.Context, user identity.UserID, code string) error {
 	e, ok, err := t.store.Get(ctx, user)
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return enrolmentStoreFailed(err, msgReadFailed)
 	}
