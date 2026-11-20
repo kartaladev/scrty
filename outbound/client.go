@@ -13,6 +13,7 @@ import (
 
 	"github.com/kartaladev/scrty/internal/ascii"
 	"github.com/kartaladev/scrty/internal/origin"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // ErrRefused is wrapped by every refusal this package makes about where a
@@ -485,6 +486,8 @@ func (c *Client) do(
 		// One byte more than the bound is read, so that a document exactly at it is
 		// accepted and the first byte over it is seen without reading the rest.
 		read, err := io.ReadAll(io.LimitReader(res.Body, c.maxBytes+1))
+		// The body is the consumer's Transport's too: sanitized where it enters.
+		err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 		if err != nil {
 			return fmt.Errorf("outbound: reading the response from %s: %w", rawURL, err)
 		}
@@ -531,6 +534,10 @@ func (c *Client) exchange(
 	}
 
 	res, err := c.hc.Do(req)
+	// The consumer's http.Client is a port: its Transport's error is read by
+	// callers behind this one (errors.Is on a flight goroutine), so a chain that
+	// cannot be walked is replaced here, before it is wrapped or inspected.
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return fmt.Errorf("outbound: %s %s: %w", method, rawURL, err)
 	}
