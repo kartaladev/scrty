@@ -295,7 +295,12 @@ func issueChallenge(ex *Exchange, s *session.Session, cm mfa.ChallengeMethod, is
 		return diag.Wrap(err, iss.notIssued)
 	}
 
+	// The method is the consumer's, so its error is sanitized before it is
+	// wrapped and travels on (porterr.SanitizeTo, its one abort record to the
+	// logger of the endpoint): one whose chain cannot be walked is a method
+	// that failed, refused behind iss.notIssued as any other failure is.
 	data, err := cm.BeginChallenge(ctx, s.UserID, challenge)
+	err = porterr.SanitizeTo(ctx, iss.log, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return diag.Wrap(err, iss.notIssued)
 	}

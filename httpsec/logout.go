@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/session"
 )
@@ -203,6 +204,12 @@ func (l *logout) endSessionURL(ex *Exchange) string {
 	ctx := ex.Context()
 
 	target, err := l.endSession.EndSessionURL(ctx, ex.Session, logoutState(ex.Request))
+
+	// The step is the consumer's, so its error is sanitized before the log
+	// reads it (porterr.SanitizeTo, its one abort record to the chain's
+	// logger): the log is the only reader, so one whose chain cannot be walked
+	// is logged as any other failure, and the abort is recorded beside it.
+	err = porterr.SanitizeTo(ctx, l.log, err, porterr.ErrUnwalkable)
 	if err != nil {
 		l.log.LogAttrs(ctx, slog.LevelWarn,
 			"httpsec: the session was ended but the provider's end-session URL could not be built",
