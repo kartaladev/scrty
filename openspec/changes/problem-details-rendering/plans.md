@@ -831,6 +831,7 @@ Steps:
   - No error and `id.Nil` gives `ErrNil`.
   - Otherwise the identifier comes back with a nil error.
   - It writes no record and recovers no panic.
+- `MockGenerator`, the typed `mockgen` double for `id.Generator` (`//go:generate mockgen -typed`, placed by `use-mockgen`'s consumer rule so every lane's tests can import it). Lanes b to h use it in place of the hand-written generator stubs in the tests they touch. A stub in a test 10.15 does not touch stays.
 
 **Review Focus for this task:**
 1. **A generator answering the nil identifier at the OpenID Provider's grant family.** Expect `server_error`, with no grant and no code stored, never one family shared by two grants. Lane b pins it (row `nil family`).
@@ -844,8 +845,8 @@ Steps:
   - `good id` (the id, nil error);
   - `error with nil id` and `error with good id` (the generator's error, `errors.Is` holds, `ErrNil` does not match).
 - [ ] **Step 2: watch it fail.** Add a stub `New` that returns `g.NewID()` so the test compiles. Run `go test -count=1 -run TestNew ./internal/idgen/`. Expected: FAIL on `nil id` (nil error returned).
-- [ ] **Step 3: implement** `New` and `ErrNil`, and write the godoc naming the contract it enforces. Run green. Verify, then a Sonnet review, the isolation check, and commit: `feat(idgen): refuse a generator's nil identifier`.
-- [ ] **Step 4 (lanes b to h): one dispatch per lane, at most six sites each.** Per site, write the red row first, in the package's existing test style. A generator mock answers `(id.Nil, nil)`: today the site stores under the nil identifier (or, at the grant family, two grants share one family). After the fix the site answers its failing-generator outcome, with nothing stored. A good-identifier row pins the old outcome. Then replace `g.NewID()` with `idgen.New(g)`, keeping the 10.12 sanitizer right after the call. Lanes:
+- [ ] **Step 3: implement** `New` and `ErrNil`, and write the godoc naming the contract it enforces. Generate `MockGenerator` and switch `TestNew`'s generator to it. Run green. Verify, then a Sonnet review, the isolation check, and commit: `feat(idgen): refuse a generator's nil identifier`.
+- [ ] **Step 4 (lanes b to h): one dispatch per lane, at most six sites each.** Per site, write the red row first, in the package's existing test style. A generator mock answers `(id.Nil, nil)`: today the site stores under the nil identifier (or, at the grant family, two grants share one family). After the fix the site answers its failing-generator outcome, with nothing stored. A good-identifier row pins the old outcome. The generator in each red row is a `MockGenerator`, and a hand-written stub in a test the lane edits is replaced by it. Then replace `g.NewID()` with `idgen.New(g)`, keeping the 10.12 sanitizer right after the call. Lanes:
   - **b** (Opus reviewer) `oidcprovider`: `code.go` grant family (pins Review Focus 1), `accesstoken.go`, `pending.go`, `idtoken.go`.
   - **c** `authenticate`: `password.go`, `jwt.go`; `authenticate/apikey`: `keys.go`; `authenticate/oidc`: `broker_provision.go`, `handoff.go`; plus a row pinning `session/prepared.go`'s configuration error (Review Focus 5).
   - **d** `recovery`: `recover_complete.go`; `token/onetime`: `tokens.go`; plus a row pinning `authenticate/mfa/totp.go`'s refusal (Review Focus 5).
@@ -902,6 +903,7 @@ Steps:
 - `ctxlog.Key`, `With` and `From` stay as they are. `From` never returns a routing logger, a typed nil or a wrong-type value.
 - `porterr.SanitizeTo(ctx, nil, …)` writes through the routing resolution, not `slog.Default()` directly.
 - The chain answers `ctxlog.Key` only when `WithLogger` was given. Its unconfigured default is `ctxlog.Routing()`.
+- `porterr.ReportAbort(ctx context.Context, logger *slog.Logger, abort error)` writes the walk-abort record: Error level, the existing constant message, the reason, and the redacted panic attributes, never the error's text. A nil logger resolves through routing. It replaces the private copies: `guardauth.ReportAbort` (which then delegates or is removed), fibersec's `reportAbort`, the expiry runner's `reportAbort`, and porterr's own `report`. The sampled reporters (`Chain.reportAbort` and the DPoP verifier's) keep their sampler and call `ReportAbort` for the record.
 
 **Review Focus for this task:**
 1. **A consumer who calls `slog.SetDefault` after wiring.** Expect records at their own level, Debug kept, context kept. Lane a pins it (`TestRouting`, row `SetDefault after construction`).
@@ -924,8 +926,9 @@ Steps:
   - `TestSummary` asserts the last-resolved rule, with one goroutine and with `-race` concurrency.
   - `httpsec`: `TestChainLogger_Nested`, with rows for an unconfigured inner chain (outer logger), both configured (inner logger) and neither configured (default). Add an unconfigured-chain row to the existing `ctxlog.Key` test.
   - `internal/porterr`: a `SanitizeTo` nil-logger row asserting the record reaches the chain's logger on ctx.
+  - `internal/porterr`: `TestReportAbort`, with rows `budget`, `panic` and `panic(nil)`, asserting one Error record with the constant message, the reason, and no error text. The existing abort-record tests in `httpsec`, `httpsec/fibersec`, `internal/guardauth` and `expiry` are the behaviour pin: run them before and after the extraction, unchanged.
 - [ ] **Step 2: watch them fail.** Run `go test -race -count=1 -run 'TestRouting|TestSummary|TestChainLogger_Nested|TestSanitizeTo' ./internal/... ./httpsec/`. Expected: compile-clean failures, either undefined behaviour asserted through existing APIs or records on the wrong logger. A compile error is not the red step: add the stub `Routing()` first.
-- [ ] **Step 3: implement** `ctxlog.Routing` and `ctxlog.Summary`, the chain's conditional answer and routing default, and porterr's nil-logger resolution. Add a `forbidigo` rule to `.golangci.yml` for `^slog\.Default$`, excluding `internal/ctxlog` and `_test.go`. Record the existing hits in the report; do not fix them here.
+- [ ] **Step 3: implement** `ctxlog.Routing` and `ctxlog.Summary`, the chain's conditional answer and routing default, and porterr's nil-logger resolution. Extract `porterr.ReportAbort` and point the copies at it, leaving every existing abort-record test unedited and green. Add a `forbidigo` rule to `.golangci.yml` for `^slog\.Default$`, excluding `internal/ctxlog` and `_test.go`. Record the existing hits in the report; do not fix them here.
 - [ ] **Step 4: verify** `go test -race -p 2 -count=1 ./internal/... ./httpsec/...` and `go vet`. Then an Opus review, the isolation check, and commit: `feat(log): records route to the chain's logger, else the default at record time`.
 - [ ] **Step 5 (lanes b to f, Sonnet): one dispatch per group of at most six components.** For each component, write the red rows first in `<pkg>_logroute_test.go`, as table `TestLogRoute_<Component>`:
   - `no option, inside a configured chain` (record on the chain's logger, none on the default; the chain's logger is placed with `ctxlog.With` in unit tests, or by a real chain where the package already has chain tests);
@@ -942,9 +945,9 @@ Steps:
   Dispatches:
   - **b** `httpsec`: guards, events, sign-in notices, the `nethttp.go` fallback; `internal/guardauth`; `ginsec` and `fibersec` abort reports.
   - **c** `policy.MFA`, `policy.MFARequirement`, the concurrent-sessions policy, `policy/lockout`, `session.Sessions` with the encrypted store, `store/seal`.
-  - **d1** the password authenticator, `password.Policy` (with the delta's "Chain logger" scenario), `apikey` (remove the nil guard at `keys.go:518`, test-first). **d2** `jwt`, and `mfa` throttle, TOTP and reset.
+  - **d1** the password authenticator, `password.Policy` (with the delta's "Chain logger" scenario), `apikey` (remove the nil guard at `keys.go:518`, test-first), and `FirstOf` (its godoc stops naming `slog.Default()` as the abort record's destination). **d2** `jwt`, and `mfa` throttle, TOTP and reset.
   - **e1** `magiclink`, `passkey` (pins Review Focus 4), `oidc` broker, relying party and handoff. **e2** `oidcprovider`, `recovery` (`Recoverer`, `Codes`, its kinds, the planner, way-back), `authorize`.
-  - **f1** `token/onetime`, `token/signingkey`, `ratelimit` guard, memory limiter and `redisstore`. **f2** `internal/unavailable` with the `pgxstore` and `sqlstore` limiter options, `notify` SMTP and queued (with the delta's "queuing request's chain" scenario), `expiry` runner and `sweep`, `internal/depfault`.
+  - **f1** `token` (the generator's key-source and signer sanitizers; add rows in `oidcprovider/issue_porterr_test.go` asserting their abort records reach the provider's chain logger and none reach the default), `token/onetime`, `token/signingkey`, `ratelimit` guard, memory limiter and `redisstore`. **f2** `internal/unavailable` with the `pgxstore` and `sqlstore` limiter options, `notify` SMTP and queued (with the delta's "queuing request's chain" scenario), `expiry` runner and `sweep`, `internal/depfault`.
 - [ ] **Step 6 (each dispatch): watch the red rows fail.** `no option, inside a configured chain` lands on the default, and `nil option` is accepted or ignored. Implement, then run `go test -race -p 2 -count=1` on the dispatch's packages. Then a Sonnet review, the isolation check, and commit: `feat(<pkg>): records go where the consumer configured`.
 - [ ] **Step 7: close the task.** Run `golangci-lint run ./...` in every module: no `forbidigo` hit. `rg 'slog\.Default\(\)' --glob '!*_test.go' --glob '!internal/ctxlog/**' --glob '!.claude/**'` prints nothing. Tick 10.14.
 
