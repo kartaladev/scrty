@@ -11,6 +11,7 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jwt"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -284,6 +285,7 @@ func (p *Provider) browserSignIn(ctx context.Context, secret string) (*SignIn, e
 	}
 
 	session, err := p.stores.browserSessions.Load(ctx, digest, p.cfg.clock.Now())
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return nil, nil //nolint:nilnil // no session is an answer

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -112,6 +113,7 @@ func (p *Provider) parkAt(ctx context.Context, req *PendingRequest, flowSecret s
 		return "", "", dependencyFailure(ctx, err, "oidcprovider: mint a flow secret")
 	}
 	recordID, err := p.cfg.ids.NewID()
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return "", "", dependencyFailure(ctx, err, "oidcprovider: mint a pending request identifier")
 	}
@@ -123,7 +125,8 @@ func (p *Provider) parkAt(ctx context.Context, req *PendingRequest, flowSecret s
 	req.ParkedAt = now
 	req.ExpiresAt = now.Add(p.cfg.pendingLifetime)
 	req.Stage = stage
-	if err := p.stores.pendingRequests.Create(ctx, req); err != nil {
+	err = p.stores.pendingRequests.Create(ctx, req)
+	if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 		return "", "", dependencyFailure(ctx, err, "oidcprovider: park the request")
 	}
 
@@ -160,6 +163,7 @@ func (p *Provider) loadPending(ctx context.Context, handle, flowSecret string) (
 	}
 
 	r, err := p.stores.pendingRequests.Load(ctx, handleDigest)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return nil, ErrUnknownHandle
