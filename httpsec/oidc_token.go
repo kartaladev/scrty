@@ -139,7 +139,7 @@ func (g *oidcTokenGroup) serve(ex *Exchange, _ Next) error {
 		return writeOIDCRefusal(ex, oidcprovider.CodeInvalidClient)
 	}
 
-	creds, err := readOIDCClientRequest(ex.Request, g.bodyLimit)
+	creds, err := readOIDCClientRequest(ex.Context(), ex.Request, g.bodyLimit)
 	if err != nil {
 		return g.throttle.answer(ex, src, err)
 	}

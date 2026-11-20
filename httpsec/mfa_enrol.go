@@ -797,7 +797,7 @@ func (i *enrolmentInterceptor) confirm(ex *Exchange, s *session.Session, method 
 		return err
 	}
 
-	code, err := postedField(ex.Request, "code")
+	code, err := postedField(ex.Context(), ex.Request, "code")
 	if err != nil {
 		return err
 	}
@@ -1136,7 +1136,7 @@ func (i *enrolmentInterceptor) redeemEmailCode(ex *Exchange, s *session.Session,
 		return err
 	}
 
-	code, err := postedField(ex.Request, "code")
+	code, err := postedField(ex.Context(), ex.Request, "code")
 	if err != nil {
 		return err
 	}

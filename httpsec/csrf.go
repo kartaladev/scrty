@@ -634,7 +634,7 @@ func CheckCSRFToken(ex *Exchange, sess *session.Session) error {
 	}
 
 	if r.unsafe {
-		presented := r.layer.presentedToken(ex.Request)
+		presented := r.layer.presentedToken(ex.Context(), ex.Request)
 		if presented == "" {
 			return ErrCrossSiteRequest
 		}
@@ -660,7 +660,7 @@ func CheckCSRFToken(ex *Exchange, sess *session.Session) error {
 }
 
 // presentedToken reads the token the request carries, "" for none.
-func (l *csrfLayer) presentedToken(req Request) string {
+func (l *csrfLayer) presentedToken(ctx context.Context, req Request) string {
 	if tok := req.Header(l.header); tok != "" {
 		return tok
 	}
@@ -669,7 +669,7 @@ func (l *csrfLayer) presentedToken(req Request) string {
 		return ""
 	}
 
-	tok, err := postedFieldLimited(req, l.field, csrfFormBodyLimit)
+	tok, err := postedFieldLimited(ctx, req, l.field, csrfFormBodyLimit)
 	if err != nil {
 		return ""
 	}

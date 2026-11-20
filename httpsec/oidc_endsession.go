@@ -132,7 +132,7 @@ func (g *oidcEndSessionGroup) serve(ex *Exchange, _ Next) error {
 		return ErrOIDCThrottled
 	}
 
-	params, err := readOIDCAuthorizeParams(ex.Request, g.bodyLimit)
+	params, err := readOIDCAuthorizeParams(ex.Context(), ex.Request, g.bodyLimit)
 	if err != nil {
 		if errors.Is(err, ErrOIDCInvalidAuthorization) {
 			return ErrOIDCInvalidEndSession

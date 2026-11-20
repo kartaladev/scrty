@@ -1,12 +1,15 @@
 package httpsec
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"mime"
 	"net/url"
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/internal/ctxlog"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // postedFieldBodyLimit is how many request body bytes postedField reads. A
@@ -15,8 +18,28 @@ const postedFieldBodyLimit int64 = 4 << 10
 
 // postedField reads name from the POST body, bounded at postedFieldBodyLimit.
 // See postedFieldLimited for the rules.
-func postedField(r Request, name string) (string, error) {
-	return postedFieldLimited(r, name, postedFieldBodyLimit)
+func postedField(ctx context.Context, r Request, name string) (string, error) {
+	return postedFieldLimited(ctx, r, name, postedFieldBodyLimit)
+}
+
+// readBody is r.Body(limit) with its error sanitized where it enters.
+//
+// A Request that is not the library's own adapter is the consumer's
+// integration, a port, so its Body error is the consumer's: one whose chain
+// cannot be walked (a cycle, a fan-out, an Unwrap that panics) becomes
+// porterr's fault before any check reads it, with its one abort record on the
+// logger of the chain handling the request (ctxlog). The fault matches
+// porterr.ErrUnwalkable and never ErrRequestTooLarge, so a hostile error that
+// claims to be too large is answered as any other failed read is. A walkable
+// error comes back as it was, so a genuine ErrRequestTooLarge still answers as
+// too large. On an error the body is nil.
+func readBody(ctx context.Context, r Request, limit int64) ([]byte, error) {
+	body, err := r.Body(limit)
+	if err = porterr.SanitizeTo(ctx, ctxlog.From(ctx), err, porterr.ErrUnwalkable); err != nil {
+		return nil, err
+	}
+
+	return body, nil
 }
 
 // postedFieldLimited reads name from the POST body, and only from it, reading
@@ -32,9 +55,10 @@ func postedField(r Request, name string) (string, error) {
 // included, one that does not parse, or one without the field or with it empty
 // — is ErrCredentialsMissing, never an empty value: a code nobody could read
 // was not presented, so it must not be judged, or charged, as a wrong one. A
-// body over the limit is ErrRequestTooLarge.
-func postedFieldLimited(r Request, name string, limit int64) (string, error) {
-	body, err := r.Body(limit)
+// body over the limit is ErrRequestTooLarge. The body's error is sanitized
+// (readBody) before it is read.
+func postedFieldLimited(ctx context.Context, r Request, name string, limit int64) (string, error) {
+	body, err := readBody(ctx, r, limit)
 	if errors.Is(err, ErrRequestTooLarge) {
 		return "", ErrRequestTooLarge
 	}
@@ -84,17 +108,17 @@ func declaresForm(contentType string) bool {
 // was presented. A format neither constructor built is refused as unreadable
 // rather than read some default way; mfa.LookupsFor refuses such a method at
 // construction, so this is a guard, not a path.
-func readResponse(r Request, f mfa.ResponseFormat) ([]byte, error) {
+func readResponse(ctx context.Context, r Request, f mfa.ResponseFormat) ([]byte, error) {
 	switch f.Kind() {
 	case mfa.ResponseFormField:
-		value, err := postedFieldLimited(r, f.Field(), f.Limit())
+		value, err := postedFieldLimited(ctx, r, f.Field(), f.Limit())
 		if err != nil {
 			return nil, err
 		}
 
 		return []byte(value), nil
 	case mfa.ResponseJSONBody:
-		return postedJSON(r, f.Limit())
+		return postedJSON(ctx, r, f.Limit())
 	default:
 		return nil, ErrCredentialsMissing
 	}
@@ -108,9 +132,10 @@ func readResponse(r Request, f mfa.ResponseFormat) ([]byte, error) {
 // document. Anything else, an empty body included, is ErrCredentialsMissing: a
 // response nobody could read was not presented. A body over the limit is
 // ErrRequestTooLarge. The document is returned byte for byte; what it means is
-// the method's business.
-func postedJSON(r Request, limit int64) ([]byte, error) {
-	body, err := r.Body(limit)
+// the method's business. The body's error is sanitized (readBody) before it is
+// read.
+func postedJSON(ctx context.Context, r Request, limit int64) ([]byte, error) {
+	body, err := readBody(ctx, r, limit)
 	if errors.Is(err, ErrRequestTooLarge) {
 		return nil, ErrRequestTooLarge
 	}

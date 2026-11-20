@@ -159,7 +159,7 @@ func checkResponse(
 		return err
 	}
 
-	response, err := readResponse(ex.Request, method.Response())
+	response, err := readResponse(ctx, ex.Request, method.Response())
 	if err != nil {
 		return err
 	}

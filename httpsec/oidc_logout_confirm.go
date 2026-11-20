@@ -1,6 +1,7 @@
 package httpsec
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -142,7 +143,7 @@ func (g *oidcLogoutConfirmGroup) serve(ex *Exchange, _ Next) error {
 		return ErrOIDCThrottled
 	}
 
-	doc, err := readOIDCLogoutConfirm(ex.Request, g.bodyLimit)
+	doc, err := readOIDCLogoutConfirm(ex.Context(), ex.Request, g.bodyLimit)
 	if err != nil {
 		return err
 	}
@@ -176,8 +177,8 @@ func (g *oidcLogoutConfirmGroup) serve(ex *Exchange, _ Next) error {
 
 // readOIDCLogoutConfirm reads the document a page posts. A body that is neither declared as JSON
 // nor readable as it names no handle the provider could judge, so it is answered as an unknown one.
-func readOIDCLogoutConfirm(r Request, limit int64) (oidcLogoutConfirmRequest, error) {
-	body, err := r.Body(limit)
+func readOIDCLogoutConfirm(ctx context.Context, r Request, limit int64) (oidcLogoutConfirmRequest, error) {
+	body, err := readBody(ctx, r, limit)
 	if err != nil {
 		return oidcLogoutConfirmRequest{}, err
 	}

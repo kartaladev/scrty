@@ -1,6 +1,7 @@
 package httpsec
 
 import (
+	"context"
 	"encoding/hex"
 	"net/http"
 	"net/url"
@@ -183,7 +184,7 @@ func (p *passkeyInterceptor) list(ex *Exchange, s *session.Session) error {
 // field; a missing name is the empty name, which the manager replaces with
 // the default date name.
 func (p *passkeyInterceptor) rename(ex *Exchange, s *session.Session) error {
-	cid, values, err := postedPasskeyID(ex.Request)
+	cid, values, err := postedPasskeyID(ex.Context(), ex.Request)
 	if err != nil {
 		return err
 	}
@@ -199,7 +200,7 @@ func (p *passkeyInterceptor) rename(ex *Exchange, s *session.Session) error {
 // assurance and freshness admission. The optional "other_sessions" field
 // chooses whether the user's other sessions end with it.
 func (p *passkeyInterceptor) remove(ex *Exchange, s *session.Session) error {
-	cid, values, err := postedPasskeyID(ex.Request)
+	cid, values, err := postedPasskeyID(ex.Context(), ex.Request)
 	if err != nil {
 		return err
 	}
@@ -249,15 +250,15 @@ func otherSessionsChoice(values url.Values) ([]passkey.RemoveOption, error) {
 // without the field, is ErrCredentialsMissing. An identifier that does not
 // parse names no passkey of the user, so it is passkey.ErrNotFound, the same
 // refusal as another user's identifier; its text is not repeated.
-func postedPasskeyID(r Request) (id.ID, url.Values, error) {
-	raw, err := postedFieldLimited(r, "id", passkeyManageBodyLimit)
+func postedPasskeyID(ctx context.Context, r Request) (id.ID, url.Values, error) {
+	raw, err := postedFieldLimited(ctx, r, "id", passkeyManageBodyLimit)
 	if err != nil {
 		return id.Nil, nil, err
 	}
 
 	// The body has been read and parsed whole by the call above; reading it
 	// again answers the same bytes.
-	body, err := r.Body(passkeyManageBodyLimit)
+	body, err := readBody(ctx, r, passkeyManageBodyLimit)
 	if err != nil {
 		return id.Nil, nil, refusedAs(ErrCredentialsMissing, textCredentialsMissing, err)
 	}

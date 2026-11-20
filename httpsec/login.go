@@ -341,7 +341,7 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 		return next(ex)
 	}
 
-	username, password, fields, err := l.bind(ex.Request)
+	username, password, fields, err := l.bind(ex.Context(), ex.Request)
 	if err != nil {
 		return err
 	}
@@ -650,8 +650,8 @@ func (l *formLogin) checkPassword(ctx context.Context, username string, password
 // The body is read under the bound first, because everything after it parses
 // what was read: an unauthenticated endpoint that parses before it bounds has
 // already spent the memory the bound exists to cap.
-func (l *formLogin) bind(r Request) (string, []byte, LoginFields, error) {
-	body, err := r.Body(l.bodyLimit)
+func (l *formLogin) bind(ctx context.Context, r Request) (string, []byte, LoginFields, error) {
+	body, err := readBody(ctx, r, l.bodyLimit)
 	if err != nil {
 		return "", nil, LoginFields{}, err
 	}

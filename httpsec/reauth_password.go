@@ -71,7 +71,7 @@ func (i *reauthInterceptor) reprove(ex *Exchange) error {
 
 	l := i.login
 
-	password, err := readPassword(l, ex.Request)
+	password, err := readPassword(ex.Context(), l, ex.Request)
 	if err != nil {
 		return err
 	}
@@ -189,8 +189,8 @@ func refuseReproofChallenge(enforced map[policy.ChallengeKind]bool, kind policy.
 // field form login reads the password from, or the JSON member of that name
 // when the form yields none. Every other field, a username included, is
 // ignored.
-func readPassword(l *formLogin, r Request) ([]byte, error) {
-	body, err := r.Body(l.bodyLimit)
+func readPassword(ctx context.Context, l *formLogin, r Request) ([]byte, error) {
+	body, err := readBody(ctx, r, l.bodyLimit)
 	if err != nil {
 		return nil, err
 	}

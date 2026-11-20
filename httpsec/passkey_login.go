@@ -548,7 +548,7 @@ func (i *passwordlessInterceptor) cookie(value string, maxAge int) *Cookie {
 func (i *passwordlessInterceptor) finish(ex *Exchange) error {
 	ex.Writer.SetCookie(i.cookie("", -1))
 
-	body, err := postedJSON(ex.Request, passkey.AssertionBodyLimit)
+	body, err := postedJSON(ex.Context(), ex.Request, passkey.AssertionBodyLimit)
 	if err != nil {
 		return err
 	}

@@ -16,7 +16,9 @@ import (
 	"slices"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 )
 
@@ -461,6 +463,9 @@ func (h *httpResponseWriter) Stream(ctx context.Context, contentType string, bod
 		rc:     http.NewResponseController(h.w),
 		window: h.streamWindow,
 		cancel: cancel,
+		sanitize: func(err error) error {
+			return porterr.SanitizeTo(ctx, ctxlog.From(ctx), err, porterr.ErrUnwalkable)
+		},
 	}
 	if ew.window == 0 {
 		ew.window = StreamWriteWindow
@@ -521,7 +526,7 @@ func (h *httpResponseWriter) sendHead(ew *httpEventWriter, contentType string) e
 	_, moves := bottom.(interface{ SetWriteDeadline(time.Time) error })
 
 	if reporter, ok := bottom.(flushErrorer); ok && !moves {
-		err := reporter.FlushError()
+		err := ew.sanitize(reporter.FlushError())
 		if errors.Is(err, http.ErrNotSupported) {
 			takeBackType()
 
@@ -628,6 +633,15 @@ type httpEventWriter struct {
 	rc     *http.ResponseController
 	window time.Duration
 	cancel context.CancelFunc
+
+	// sanitize is porterr.SanitizeTo on the stream's context, with its one
+	// abort record on the logger that context carries (ctxlog). A writer below
+	// the adapter may be a consumer middleware's, so an error read from its
+	// FlushError or SetWriteDeadline is a port's error: one whose chain cannot
+	// be walked becomes porterr's fault before any check reads it, which
+	// matches neither http.ErrNotSupported nor anything else the stream tests,
+	// and so is answered as any other failed flush or deadline is.
+	sanitize func(error) error
 }
 
 // extend moves the write deadline. A writer with no deadline to move is not a
@@ -635,7 +649,7 @@ type httpEventWriter struct {
 func (e *httpEventWriter) extend() error {
 	// The system clock and never the chain's: this is a real socket's deadline,
 	// which a controlled clock would set in the wrong place.
-	err := e.rc.SetWriteDeadline(clock.System().Now().Add(e.window))
+	err := e.sanitize(e.rc.SetWriteDeadline(clock.System().Now().Add(e.window)))
 	if err == nil || errors.Is(err, http.ErrNotSupported) {
 		return nil
 	}
@@ -664,7 +678,7 @@ func (e *httpEventWriter) Flush() error {
 		return err
 	}
 
-	err := e.rc.Flush()
+	err := e.sanitize(e.rc.Flush())
 	if err != nil {
 		e.cancel()
 	}
