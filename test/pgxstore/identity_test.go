@@ -11,8 +11,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/idgen"
+	"github.com/kartaladev/scrty/internal/idgen/idgentest"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/store/pgxstore"
@@ -346,6 +349,33 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 			},
 		},
 		{
+			name: "a generator answering the nil id for the user writes nothing",
+			assert: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+				// Call 1 is the user.
+				s := newIdentityStore(t, pool, pgxstore.WithIDGenerator(nilOnCall(t, 1)))
+
+				_, err := s.Provision(ctx, "nil-user-id", identity.WithUserRoles("admin"))
+				require.ErrorIs(t, err, idgen.ErrNil)
+				assert.Zero(t, userRowCount(ctx, t, pool, "nil-user-id"), "a user was stored under the nil id")
+			},
+		},
+		{
+			name: "a generator answering the nil id for a grant writes nothing",
+			assert: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+				// Call 1 is the user, call 2 the first grant.
+				s := newIdentityStore(t, pool, pgxstore.WithIDGenerator(nilOnCall(t, 2)))
+
+				_, err := s.Provision(ctx, "nil-grant-id", identity.WithUserRoles("admin", "viewer"))
+				require.ErrorIs(t, err, idgen.ErrNil)
+				assert.Zero(t, userRowCount(ctx, t, pool, "nil-grant-id"), "a user was stored")
+
+				var n int
+				require.NoError(t, pool.QueryRow(ctx,
+					`SELECT count(*) FROM assigned_roles WHERE id = $1`, id.Nil.String()).Scan(&n))
+				assert.Zero(t, n, "a grant was stored under the nil id")
+			},
+		},
+		{
 			name: "a provision failing after its user row, outside a caller's transaction, stores nothing",
 			assert: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 				// The generator mints fresh identifiers, except that the
@@ -539,4 +569,29 @@ func TestIdentityStore_StoredRowTheConnectionCannotEncode(t *testing.T) {
 			tc.assert(t, d, err)
 		})
 	}
+}
+
+// nilOnCall is a generator that mints from the default generator and answers
+// the nil identifier, with no error, on its n-th call (1-based).
+func nilOnCall(t *testing.T, n int) *idgentest.MockGenerator {
+	t.Helper()
+
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+	g := idgentest.NewMockGenerator(gomock.NewController(t))
+	g.EXPECT().NewID().DoAndReturn(func() (id.ID, error) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		calls++
+		if calls == n {
+			return id.Nil, nil
+		}
+
+		return seedIDs.NewID()
+	}).AnyTimes()
+
+	return g
 }

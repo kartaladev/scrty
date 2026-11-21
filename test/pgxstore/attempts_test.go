@@ -9,7 +9,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
+	"github.com/kartaladev/scrty/internal/idgen"
+	"github.com/kartaladev/scrty/internal/idgen/idgentest"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
@@ -117,6 +120,15 @@ func TestAttemptStore_IDs(t *testing.T) {
 			},
 		},
 		{
+			name:     "a generator answering the nil id is refused like a failing one, and nothing is written",
+			username: "nil-id-generator",
+			opts:     []pgxstore.Option{pgxstore.WithIDGenerator(nilIDGenerator(t))},
+			assert: func(t *testing.T, err error, username string) {
+				require.ErrorIs(t, err, idgen.ErrNil)
+				assert.Empty(t, storefix.AttemptIDs(t.Context(), t, db, username), "a row was stored under the nil id")
+			},
+		},
+		{
 			name:     "a username holding a NUL byte is refused without echoing it, never truncated",
 			username: "a\x00b-canary-41",
 			assert: func(t *testing.T, err error, _ string) {
@@ -142,6 +154,69 @@ func TestAttemptStore_IDs(t *testing.T) {
 
 			err := newAttemptStore(t, conn.Pool, tc.opts...).RecordFailure(t.Context(), tc.username, at)
 			tc.assert(t, err, tc.username)
+		})
+	}
+}
+
+// nilIDGenerator is a consumer generator that answers the nil identifier with
+// no error, once or more.
+func nilIDGenerator(t *testing.T) *idgentest.MockGenerator {
+	t.Helper()
+
+	g := idgentest.NewMockGenerator(gomock.NewController(t))
+	g.EXPECT().NewID().Return(id.Nil, nil).AnyTimes()
+
+	return g
+}
+
+// TestAttemptStore_StreakNilID pins that a generator answering the nil
+// identifier makes the streak write refuse and store nothing, and that a good
+// identifier still stores the failure.
+func TestAttemptStore_StreakNilID(t *testing.T) {
+	t.Parallel()
+
+	conn := migrated(t)
+	at := time.Date(2030, 1, 1, 10, 0, 0, 0, time.UTC)
+
+	type testCase struct {
+		name     string
+		username string
+		gen      func(t *testing.T) id.Generator
+		assert   func(t *testing.T, err error, rows int)
+	}
+
+	cases := []testCase{
+		{
+			name:     "a good id stores the failure",
+			username: "streak-good-id",
+			gen:      func(*testing.T) id.Generator { return id.NewV7Generator() },
+			assert: func(t *testing.T, err error, rows int) {
+				require.NoError(t, err)
+				assert.Equal(t, 1, rows)
+			},
+		},
+		{
+			name:     "the nil id is refused and nothing is stored",
+			username: "streak-nil-id",
+			gen:      func(t *testing.T) id.Generator { return nilIDGenerator(t) },
+			assert: func(t *testing.T, err error, rows int) {
+				require.ErrorIs(t, err, idgen.ErrNil)
+				assert.Zero(t, rows, "a streak row was stored under the nil id")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := newAttemptStore(t, conn.Pool, pgxstore.WithIDGenerator(tc.gen(t)))
+			_, _, err := s.AddStreakFailure(t.Context(), tc.username, at, at.Add(-time.Hour), 5)
+
+			var rows int
+			require.NoError(t, conn.Pool.QueryRow(t.Context(),
+				`SELECT count(*) FROM login_failure_streaks WHERE username = $1`, tc.username).Scan(&rows))
+			tc.assert(t, err, rows)
 		})
 	}
 }
