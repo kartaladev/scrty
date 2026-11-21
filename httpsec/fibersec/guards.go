@@ -166,7 +166,7 @@ func (g *Guards) guard(judge judgement) fiber.Handler {
 		ctx := fc.Context()
 
 		if _, ok := identity.PrincipalFromContext(ctx); !ok {
-			return newRefusal(authenticationRequired())
+			return newRefusal(ctx, authenticationRequired())
 		}
 
 		az, ok := g.authorizerFor(ctx)
@@ -192,7 +192,8 @@ func (g *Guards) guard(judge judgement) fiber.Handler {
 // The event walks err, and returns the abort that stopped the walk instead of
 // reporting it. A fiber guard has no error handler of its own: the refusal is
 // classified once, as it is wrapped (newRefusal), which reports an abort it
-// meets. So the guard writes one record, to slog.Default(), only when that
+// meets. So the guard writes one record, to the logger of the chain handling the request, else to
+// slog.Default() when it is written, only when that
 // classification, the lookup of the chain in front (guardauth.LookupAborts),
 // does not abort: an abort only the event met, such as an Is method that
 // panics only for the authorization denial it asks about. The DPoP challenge
@@ -203,7 +204,7 @@ func refused(ctx context.Context, err error) error {
 		guardauth.ReportAbort(ctx, abort)
 	}
 
-	return newRefusal(err) //nolint:contextcheck // newRefusal takes no context, and its record carries none
+	return newRefusal(ctx, err)
 }
 
 // authenticationRequired refuses a request that has not said who it is.

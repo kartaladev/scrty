@@ -273,6 +273,7 @@ func (c *Chain) Assemble(terminal Next) Next {
 		if ex.terminalCount() == 0 {
 			ex.refusalReported = false
 			ex.abortReported = false
+			ex.runCtx = nil
 		}
 
 		// A chain entered again on a request it is already running on, such
@@ -302,6 +303,15 @@ func (c *Chain) Assemble(terminal Next) Next {
 		// nor an earlier pass of this run leaves it set.
 		run := &chainRun{Context: ex.Context(), chain: c, method: method, path: path, parent: outer}
 		ex.SetContext(run)
+
+		// The outermost run's context outlives its step (runCtx is not put
+		// back), so an adapter answering a refusal made before its route ran
+		// classifies and reports it on this chain's lookup and logger. A run
+		// nested on the exchange leaves it to the outermost one, the chain the
+		// adapter mounted.
+		if ex.runCtx == nil {
+			ex.runCtx = run
+		}
 
 		defer run.done.Store(true)
 
@@ -1121,7 +1131,17 @@ func (c *config) reportSuppressedRefusals(key string, suppressed int) {
 // goroutine's request context has nothing to do with the counts being reported,
 // so the record is written without one.
 func summariseRefusals(log *slog.Logger, key string, suppressed int) {
-	log.LogAttrs(context.Background(), slog.LevelWarn, msgRefusalsSuppressed,
+	summariseSuppressed(log, msgRefusalsSuppressed, key, suppressed)
+}
+
+// summariseSuppressed writes the summary record msg of a sampler's suppressed
+// counts for key. The record has no request context, so it goes through
+// ctxlog.Summary(log): log itself when the consumer gave one, else the logger
+// of the chain the component last resolved a record to, else slog.Default() as
+// it is when the record is written. One burst is not split across two
+// destinations.
+func summariseSuppressed(log *slog.Logger, msg, key string, suppressed int) {
+	ctxlog.Summary(log).LogAttrs(context.Background(), slog.LevelWarn, msg,
 		slog.String("key", key),
 		slog.Int("suppressed", suppressed))
 }

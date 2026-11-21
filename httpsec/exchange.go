@@ -10,6 +10,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/guardauth"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
@@ -439,6 +440,34 @@ type Exchange struct {
 	extra     []runTerminal
 
 	ctx context.Context
+
+	// runCtx is the context of the outermost run made on this exchange, nil
+	// before one starts. It is not in runScope, so it outlives the run's step,
+	// which puts ctx back: an adapter answering a refusal an interceptor made
+	// before the route ran reads it, through guardauth.RunContext, for the
+	// chain's status lookup and logger, which the restored ctx no longer
+	// answers. It is cleared as an outermost run starts, as refusalReported
+	// is, so an exchange run again reports on that run's context. Only the
+	// module reads it; there is no public getter. It keeps nothing alive the
+	// exchange did not already: the run's context derives from ctx, and an
+	// exchange is built per request (NewExchange) and never pooled.
+	runCtx context.Context //nolint:containedctx // read after the run's step returns, see above
+}
+
+// runContextOf is how guardauth.RunContext reads an exchange's runCtx: the
+// adapters are outside this package, and the field is not public API.
+func runContextOf(exchange any) context.Context {
+	e, ok := exchange.(*Exchange)
+	if !ok || e == nil || e.runCtx == nil {
+		return nil
+	}
+
+	return e.runCtx
+}
+
+//nolint:gochecknoinits // installs the module-internal reader of runCtx before any request
+func init() {
+	guardauth.SetRunContext(runContextOf)
 }
 
 // runTerminal is one run in progress on an exchange: the chain running and the

@@ -169,7 +169,8 @@ func WithGuardErrorHandler(fn func(gc *gin.Context, err error)) GuardOption {
 //
 // The refusal's security event and the challenge each walk err, and return
 // the abort that stopped the walk instead of reporting it. The guard writes
-// one record per refusal whose classification aborted, to slog.Default(),
+// one record per refusal whose classification aborted, to the logger of the chain handling the request (read from the
+// request context), else to slog.Default() when the record is written,
 // since guards hold no chain logger:
 //
 //   - with WithGuardErrorHandler, the guard classifies nothing of its own, so

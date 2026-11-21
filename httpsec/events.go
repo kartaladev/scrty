@@ -261,7 +261,8 @@ func emitRefusal(ex *Exchange, err error) {
 // reported through c, the exchange's answering chain, by the quiet sites'
 // rule (reportQuietly). The status lookup reports its own abort as
 // statusQuietly does: only under a consumer's error handler, where the
-// dispatch classifies nothing. A nil c reports to slog.Default().
+// dispatch classifies nothing. A nil c reports to the logger the context carries, else to
+// slog.Default() when the record is written.
 func refused(ctx context.Context, c *Chain, err error) bool {
 	if err == nil {
 		return false
@@ -370,7 +371,8 @@ func refusalAs[T error](w *refusalWalk) (T, bool) {
 //
 // The lookup runs here, on the abort path alone, so a request whose
 // inspections do not abort pays nothing for the rule. A record goes through
-// c's logger and sampler, or to slog.Default() when no chain is running.
+// c's logger and sampler, or, when no chain is running, to the logger the
+// context carries, else to slog.Default() when the record is written.
 func (c *Chain) reportQuietly(ctx context.Context, err, abort error) {
 	if c != nil && c.errorHandler != nil {
 		c.logClassificationAborted(ctx, abort)

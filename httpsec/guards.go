@@ -3,7 +3,6 @@ package httpsec
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"time"
 
@@ -11,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/guardauth"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 )
 
@@ -165,8 +165,9 @@ func WithGuardErrorHandler(fn func(w http.ResponseWriter, r *http.Request, err e
 //
 // The refusal's security event and the challenge each walk err, and return
 // the abort that stopped the walk instead of reporting it. The guard writes
-// one record per refusal whose classification aborted, to slog.Default(),
-// since guards hold no chain logger:
+// one record per refusal whose classification aborted, to the logger of the chain handling the
+// request (the request context carries it), else to slog.Default() when the
+// record is written, since guards hold no logger of their own:
 //
 //   - with WithGuardErrorHandler, the guard classifies nothing of its own, so
 //     the first abort either walk met is reported;
@@ -187,7 +188,7 @@ func (g *Guards) refuse(w http.ResponseWriter, r *http.Request, err error) {
 
 	if g.onError != nil {
 		if walkAbort != nil {
-			logClassificationAborted(ctx, slog.Default(), walkAbort)
+			porterr.ReportAbort(ctx, nil, walkAbort)
 		}
 
 		g.onError(w, r, err)
@@ -202,9 +203,9 @@ func (g *Guards) refuse(w http.ResponseWriter, r *http.Request, err error) {
 
 	switch {
 	case abort != nil:
-		logClassificationAborted(ctx, slog.Default(), abort)
+		porterr.ReportAbort(ctx, nil, abort)
 	case walkAbort != nil:
-		logClassificationAborted(ctx, slog.Default(), walkAbort)
+		porterr.ReportAbort(ctx, nil, walkAbort)
 	}
 
 	w.WriteHeader(status)

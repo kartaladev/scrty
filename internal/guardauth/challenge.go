@@ -93,3 +93,26 @@ const MsgClassificationAborted = porterr.MsgClassificationAborted
 func ReportAbort(ctx context.Context, abort error) {
 	porterr.ReportAbort(ctx, nil, abort)
 }
+
+// ReportLookupAbort asks the status lookup of the chain the request passed
+// through whether it aborts on err and, when it does, writes its one record
+// through ReportAbort, so it reaches the logger of that chain. It reports
+// whether the lookup aborted: the status is then 500, as httpsec.LookupStatus
+// answers, and the caller must not ask LookupStatus too, which would write a
+// second record on slog.Default(), the one place a context-free call can
+// reach. With no chain lookup on ctx it reports false and writes nothing.
+func ReportLookupAbort(ctx context.Context, err error) bool {
+	lookup, ok := ctx.Value(LookupKey{}).(Lookup)
+	if !ok || lookup == nil {
+		return false
+	}
+
+	abort := lookup(err)
+	if abort == nil {
+		return false
+	}
+
+	ReportAbort(ctx, abort)
+
+	return true
+}

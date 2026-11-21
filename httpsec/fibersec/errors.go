@@ -8,6 +8,7 @@ import (
 
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/internal/errwalk"
+	"github.com/kartaladev/scrty/internal/guardauth"
 	"github.com/kartaladev/scrty/internal/porterr"
 )
 
@@ -67,18 +68,18 @@ func (e *RefusalError) Unwrap() []error { return []error{e.refusal, e.status} }
 // error handler that answers it does not walk the chain again. A chain whose
 // walk aborts — a cycle, too many links, a panicking method — is answered 500
 // and reported once, here, without calling anything on it.
-func newRefusal(err error) error {
+func newRefusal(ctx context.Context, err error) error {
 	var buf [walkBuffer]error
 
 	if _, abort := errwalk.FlattenInto(buf[:], err); abort != nil {
-		return abortedRefusal(err, abort)
+		return abortedRefusal(ctx, err, abort)
 	}
 
 	// fibersec's walk succeeded, so it writes no record. The core's own
 	// classification can still abort, on an Is or As method that panics, which
 	// Flatten never calls; the core then writes the record itself. Either way
 	// the request has one.
-	status := httpsec.StatusForError(err)
+	status := statusFor(ctx, err)
 
 	return &RefusalError{refusal: err, status: fiber.NewError(status)}
 }
@@ -87,8 +88,8 @@ func newRefusal(err error) error {
 // and writes the one record of it. The record carries the reason only: the
 // error's text is never read, since a hostile node's Error method is not
 // trusted either.
-func abortedRefusal(err, abort error) error {
-	reportAbort(abort)
+func abortedRefusal(ctx context.Context, err, abort error) error {
+	reportAbort(ctx, abort)
 
 	return &RefusalError{refusal: err, status: fiber.NewError(http.StatusInternalServerError)}
 }
@@ -96,11 +97,11 @@ func abortedRefusal(err, abort error) error {
 // reportAbort writes the Error record for an aborted classification through
 // porterr.ReportAbort, as the core's own lookup does: a constant message, the
 // reason, and for a recovered panic its Go type and the frames the walk
-// captured where it panicked, never its value or the error's text. No context
-// reaches here, so the record carries none and goes to slog.Default() at
-// record time.
-func reportAbort(abort error) {
-	porterr.ReportAbort(context.Background(), nil, abort)
+// captured where it panicked, never its value or the error's text. The record
+// goes to the logger of the chain handling the request, read from ctx, else to
+// slog.Default() when it is written.
+func reportAbort(ctx context.Context, abort error) {
+	porterr.ReportAbort(ctx, nil, abort)
 }
 
 // ErrorHandler answers a refusal with the mapped status and an empty body.
@@ -126,7 +127,7 @@ func reportAbort(abort error) {
 // answers authenticate.ErrUnavailable with 503 reopens the oracles
 // httpsec.StatusForError warns of.
 func ErrorHandler(ctx fiber.Ctx, err error) error {
-	ctx.Status(handlerStatus(err))
+	ctx.Status(handlerStatus(ctx.Context(), err))
 
 	return nil
 }
@@ -144,7 +145,7 @@ func ErrorHandler(ctx fiber.Ctx, err error) error {
 // here, and the core is never asked about that error. An abort in the core's
 // classification is reported by the core. So the handler never reports one
 // error twice.
-func handlerStatus(err error) int {
+func handlerStatus(ctx context.Context, err error) int {
 	if status, ok := classified(err); ok {
 		return status
 	}
@@ -153,24 +154,24 @@ func handlerStatus(err error) int {
 
 	chain, abort := errwalk.FlattenInto(buf[:], err)
 	if abort != nil {
-		return failClosed(abort)
+		return failClosed(ctx, abort)
 	}
 
 	if _, found, abort := errwalk.As[*RefusalError](chain); abort != nil {
-		return failClosed(abort)
+		return failClosed(ctx, abort)
 	} else if found {
-		return httpsec.StatusForError(err)
+		return statusFor(ctx, err)
 	}
 
 	// An error carrying a fiber status that is not a refusal — a route's own
 	// 422, the router's 404 — keeps that status.
 	if fe, found, abort := errwalk.As[*fiber.Error](chain); abort != nil {
-		return failClosed(abort)
+		return failClosed(ctx, abort)
 	} else if found {
 		return fe.Code
 	}
 
-	return httpsec.StatusForError(err)
+	return statusFor(ctx, err)
 }
 
 // walkBuffer is how many chain nodes fibersec's walks hold on the caller's
@@ -179,8 +180,8 @@ func handlerStatus(err error) int {
 const walkBuffer = 16
 
 // failClosed reports an abort in fibersec's own walk and answers 500.
-func failClosed(abort error) int {
-	reportAbort(abort)
+func failClosed(ctx context.Context, abort error) int {
+	reportAbort(ctx, abort)
 
 	return http.StatusInternalServerError
 }
@@ -208,4 +209,17 @@ func MapError(err error) (int, any) {
 	}
 
 	return status, fiber.Map{"error": http.StatusText(status)}
+}
+
+// statusFor is the status the core classifies err with, for a request whose
+// context is ctx. The core's lookup takes no context, so an abort it meets
+// would be written to slog.Default(): the chain's own lookup is asked first,
+// and an abort it meets is written to the logger of the chain handling the
+// request and answered 500, as the core answers it, without asking again.
+func statusFor(ctx context.Context, err error) int {
+	if guardauth.ReportLookupAbort(ctx, err) {
+		return http.StatusInternalServerError
+	}
+
+	return httpsec.StatusForError(err) //nolint:contextcheck // the core's lookup takes no context, and it reports no abort here
 }

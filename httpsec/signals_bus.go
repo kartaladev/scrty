@@ -107,11 +107,11 @@ type signalHub struct {
 
 // SignInsEnded raises what an end report says. It is called inside the caller's
 // transaction, so raise never blocks.
-func (h *signalHub) SignInsEnded(_ context.Context, r session.EndReport) {
+func (h *signalHub) SignInsEnded(ctx context.Context, r session.EndReport) {
 	if e, ok := envelopeForEnd(r); ok {
 		// A report's end has happened whatever the bus does, and the heartbeat ends
 		// the stream if this one is dropped.
-		_ = h.raise(e) //nolint:contextcheck // detached on purpose: a bus outlives the request
+		_ = h.raise(ctx, e)
 	}
 }
 
@@ -124,13 +124,13 @@ func (h *signalHub) SignInsEnded(_ context.Context, r session.EndReport) {
 // end report ignores. A signal raised after a close goes nowhere, and raise returns
 // ErrSignalsBusy for that too, on either bus, because nil would tell a consumer its signal
 // was sent. It counts no drop then: nothing has fallen behind.
-func (h *signalHub) raise(e SignalEnvelope) error {
+func (h *signalHub) raise(ctx context.Context, e SignalEnvelope) error {
 	if h.closed.Load() {
 		return ErrSignalsBusy
 	}
 
 	if h.bus == nil {
-		h.deliver(e)
+		h.deliver(ctx, e)
 
 		return nil
 	}
@@ -150,7 +150,7 @@ func (h *signalHub) raise(e SignalEnvelope) error {
 	// A close racing this one leaves the queue nil or unread, which is no drop.
 	if !h.closed.Load() {
 		h.dropped.Add(1)
-		h.logSampled(slog.LevelWarn, "queue-full", msgBusQueueFull)
+		h.logSampled(ctx, slog.LevelWarn, "queue-full", msgBusQueueFull)
 	}
 
 	return ErrSignalsBusy
@@ -231,7 +231,7 @@ func (h *signalHub) publish(ctx context.Context, e SignalEnvelope) (panicked boo
 		h.failures.Add(1)
 	case err != nil && !h.closed.Load():
 		h.failures.Add(1)
-		h.logSampled(slog.LevelWarn, "publish-failed", msgBusPublishFailed, //nolint:contextcheck // detached on purpose: a bus outlives the request
+		h.logSampled(ctx, slog.LevelWarn, "publish-failed", msgBusPublishFailed, //nolint:contextcheck // detached on purpose: a bus outlives the request
 			slog.String("error_type", fmt.Sprintf("%T", err)),
 			slog.Bool("timed_out", errors.Is(ctx.Err(), context.DeadlineExceeded)),
 		)
@@ -276,17 +276,17 @@ func (h *signalHub) subscribe(ctx context.Context) {
 
 	var err error
 
-	if h.guarded(func() { err = h.bus.Subscribe(ctx, h.deliver) }) || ctx.Err() != nil { //nolint:contextcheck // detached on purpose: a bus outlives the request
+	if h.guarded(func() { err = h.bus.Subscribe(ctx, func(e SignalEnvelope) { h.deliver(ctx, e) }) }) || ctx.Err() != nil { //nolint:contextcheck // detached on purpose: a bus outlives the request
 		return
 	}
 
 	if err == nil {
-		h.logSampled(slog.LevelWarn, "subscribe-returned", msgBusSubscribeReturned) //nolint:contextcheck // detached on purpose: a bus outlives the request
+		h.logSampled(ctx, slog.LevelWarn, "subscribe-returned", msgBusSubscribeReturned) //nolint:contextcheck // detached on purpose: a bus outlives the request
 
 		return
 	}
 
-	h.logSampled(slog.LevelWarn, "subscribe-failed", msgBusSubscribeFailed, //nolint:contextcheck // detached on purpose: a bus outlives the request
+	h.logSampled(ctx, slog.LevelWarn, "subscribe-failed", msgBusSubscribeFailed, //nolint:contextcheck // detached on purpose: a bus outlives the request
 		slog.String("error_type", fmt.Sprintf("%T", err)))
 }
 
@@ -319,10 +319,10 @@ func nextBusBackoff(delay time.Duration) time.Duration {
 // Its own code cannot panic, and logSampled recovers its own, but the chain's clock is the
 // consumer's, and a consumer's bus may call this on a goroutine of its own, where nothing else
 // could recover it.
-func (h *signalHub) deliver(e SignalEnvelope) {
+func (h *signalHub) deliver(ctx context.Context, e SignalEnvelope) {
 	defer func() {
 		if v := recover(); v != nil {
-			h.logPanicSampled(v)
+			h.logPanicSampled(ctx, v)
 		}
 	}()
 
@@ -334,17 +334,17 @@ func (h *signalHub) deliver(e SignalEnvelope) {
 	case e.Name == string(SignalSessionEnded):
 		h.deliverEnd(e)
 	case e.Name == string(SignalCredentialChanged):
-		h.deliverCredentialChange(e)
+		h.deliverCredentialChange(ctx, e)
 	case strings.HasPrefix(e.Name, appSignalPrefix):
 		if !validAppSignalName(e.Name) || !validSignalData(e.Data) {
-			h.logDropped(dropInvalidAppSignal)
+			h.logDropped(ctx, dropInvalidAppSignal)
 
 			return
 		}
 
-		h.deliverToUser(e, slices.Clone(e.Data))
+		h.deliverToUser(ctx, e, slices.Clone(e.Data))
 	default:
-		h.logDropped(dropUnknownName)
+		h.logDropped(ctx, dropUnknownName)
 	}
 }
 
@@ -380,15 +380,15 @@ func knownEndReason(reason string) string {
 
 // deliverCredentialChange queues a credential change holding a known kind, rebuilt from that
 // kind, so that what a bus's sender adds beside it never reaches a browser.
-func (h *signalHub) deliverCredentialChange(e SignalEnvelope) {
+func (h *signalHub) deliverCredentialChange(ctx context.Context, e SignalEnvelope) {
 	data, ok := credentialChangeData(e.Data)
 	if !ok {
-		h.logDropped(dropInvalidKind)
+		h.logDropped(ctx, dropInvalidKind)
 
 		return
 	}
 
-	h.deliverToUser(e, data)
+	h.deliverToUser(ctx, e, data)
 }
 
 // credentialChangeData is the data a stream sends for raw, and false when raw is not valid
@@ -420,10 +420,10 @@ func credentialChangeData(raw json.RawMessage) (json.RawMessage, bool) {
 // deliverToUser offers a signal to the user's streams, and counts and logs what their full
 // queues dropped. data must be the hub's own, since it stays queued after a bus has returned,
 // and a bus may reuse its buffer.
-func (h *signalHub) deliverToUser(e SignalEnvelope, data json.RawMessage) {
+func (h *signalHub) deliverToUser(ctx context.Context, e SignalEnvelope, data json.RawMessage) {
 	if n := h.registry.deliverSignal(e.User, queuedSignal{name: e.Name, data: data}); n > 0 {
 		h.streamDropped.Add(uint64(n))
-		h.logSampled(slog.LevelWarn, "stream-queue-full", msgBusStreamQueueFull, slog.Int("streams", n))
+		h.logSampled(ctx, slog.LevelWarn, "stream-queue-full", msgBusStreamQueueFull, slog.Int("streams", n))
 	}
 }
 
@@ -452,18 +452,18 @@ func (h *signalHub) stats() (subscribed bool, dropped, streamDropped, failures u
 }
 
 // logDropped logs an envelope deliver refused, with nothing from the envelope.
-func (h *signalHub) logDropped(why string) {
-	h.logSampled(slog.LevelWarn, "dropped"+sampleKeySeparator+why, msgBusEnvelopeDropped, slog.String("why", why))
+func (h *signalHub) logDropped(ctx context.Context, why string) {
+	h.logSampled(ctx, slog.LevelWarn, "dropped"+sampleKeySeparator+why, msgBusEnvelopeDropped, slog.String("why", why))
 }
 
 // logSampled writes one of the bus's records through the chain's sampler. The logger, its
 // sampler's reporter and the clock are the consumer's, and this runs in a caller's
 // transaction and on goroutines nothing else recovers, so a panic in them goes no further.
-func (h *signalHub) logSampled(level slog.Level, key, msg string, attrs ...slog.Attr) {
+func (h *signalHub) logSampled(ctx context.Context, level slog.Level, key, msg string, attrs ...slog.Attr) {
 	defer func() { _ = recover() }()
 
 	attrs = append(attrs, slog.String("flow", busFlow))
-	logSampled(context.Background(), h.sampler, h.log, level, h.clock.Now(), busFlow+sampleKeySeparator+key, msg, attrs...)
+	logSampled(ctxOrBackground(ctx), h.sampler, h.log, level, h.clock.Now(), busFlow+sampleKeySeparator+key, msg, attrs...)
 }
 
 // guarded calls fn, a call into a consumer's bus, and reports whether it panicked. A panic is
@@ -502,10 +502,10 @@ func (h *signalHub) logPanic(value any) {
 
 // logPanicSampled logs a recovered panic through the sampler, for deliver, which a bus calls
 // once per envelope with no backoff between, so that a panic in it could write a record for each.
-func (h *signalHub) logPanicSampled(value any) {
+func (h *signalHub) logPanicSampled(ctx context.Context, value any) {
 	defer func() { _ = recover() }()
 
-	logSampled(context.Background(), h.sampler, h.log, slog.LevelError, h.panicTime(),
+	logSampled(ctxOrBackground(ctx), h.sampler, h.log, slog.LevelError, h.panicTime(),
 		busFlow+sampleKeySeparator+"deliver-panic", msgBusPanicked, panicAttrs(panicPhaseBus, value)...)
 }
 
@@ -523,4 +523,14 @@ func (h *signalHub) panicTime() (now time.Time) {
 // a consumer's bus or loader.
 func panicAttrs(phase string, value any) []slog.Attr {
 	return append([]slog.Attr{slog.String("phase", phase)}, diag.PanicAttrs(value)...)
+}
+
+// ctxOrBackground is ctx, or context.Background() for a nil one a consumer's
+// call handed in, so a handler that reads the context never meets nil.
+func ctxOrBackground(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+
+	return ctx
 }

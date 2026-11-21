@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/errwalk"
 	"github.com/kartaladev/scrty/internal/guardauth"
 )
@@ -276,6 +277,70 @@ func TestReportAbort(t *testing.T) { //nolint:paralleltest // it replaces slog.D
 			})
 
 			tc.assert(t, attrs)
+		})
+	}
+}
+
+// TestReportLookupAbort pins that an abort of the chain's status lookup is
+// written to the logger of the chain handling the request, once, and that a
+// lookup that does not abort, or no lookup at all, writes nothing.
+func TestReportLookupAbort(t *testing.T) { //nolint:paralleltest // it replaces slog.Default()
+	_, budget := errwalk.Flatten(&cycle{})
+
+	type testCase struct {
+		name   string
+		ctx    func(ctx context.Context, chain *slog.Logger) context.Context
+		assert func(t *testing.T, aborted bool, chain, def *records)
+	}
+
+	withLookup := func(abort error) func(ctx context.Context, chain *slog.Logger) context.Context {
+		return func(ctx context.Context, chain *slog.Logger) context.Context {
+			var lookup guardauth.Lookup = func(error) error { return abort }
+
+			return context.WithValue(ctxlog.With(ctx, chain), guardauth.LookupKey{}, lookup)
+		}
+	}
+
+	cases := []testCase{
+		{
+			name: "no option, inside a configured chain, the lookup aborts",
+			ctx:  withLookup(budget),
+			assert: func(t *testing.T, aborted bool, chain, def *records) {
+				assert.True(t, aborted)
+				assert.Len(t, chain.recs, 1, "the record did not land on the chain's logger")
+				assert.Empty(t, def.recs, "the record landed on the default")
+			},
+		},
+		{
+			name: "the lookup does not abort",
+			ctx:  withLookup(nil),
+			assert: func(t *testing.T, aborted bool, chain, def *records) {
+				assert.False(t, aborted)
+				assert.Empty(t, chain.recs)
+				assert.Empty(t, def.recs)
+			},
+		},
+		{
+			name: "no chain lookup on the context",
+			ctx:  func(ctx context.Context, _ *slog.Logger) context.Context { return ctx },
+			assert: func(t *testing.T, aborted bool, chain, def *records) {
+				assert.False(t, aborted)
+				assert.Empty(t, chain.recs)
+				assert.Empty(t, def.recs)
+			},
+		},
+	}
+
+	for _, tc := range cases { //nolint:paralleltest // it replaces slog.Default()
+		t.Run(tc.name, func(t *testing.T) {
+			chain, def := &records{}, &records{}
+			prev := slog.Default()
+			slog.SetDefault(slog.New(def))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			aborted := guardauth.ReportLookupAbort(tc.ctx(t.Context(), slog.New(chain)), errors.New("refused"))
+
+			tc.assert(t, aborted, chain, def)
 		})
 	}
 }

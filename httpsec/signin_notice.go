@@ -410,12 +410,7 @@ const (
 // dropped logs a notice that was not started because every slot was taken,
 // sampled through the chain's sampler, naming no user, device or address.
 func (n *signInNotice) dropped(ctx context.Context) {
-	logger := n.logger
-	if logger == nil {
-		logger = slog.Default()
-	}
-
-	logSampled(ctx, n.sampler, logger, slog.LevelWarn, n.now(), signInNoticeDroppedKey, msgSignInNoticeDropped,
+	logSampled(ctx, n.sampler, n.logger, slog.LevelWarn, n.now(), signInNoticeDroppedKey, msgSignInNoticeDropped,
 		slog.Int("concurrency", n.concurrency))
 }
 
@@ -500,12 +495,7 @@ func (n *signInNotice) notify(ctx context.Context, s noticeSignIn, p *identity.P
 // failed logs a notice that was not sent, with a fixed reason and the
 // error's type, never its text, the user, the device or the address.
 func (n *signInNotice) failed(ctx context.Context, reason string, err error) {
-	logger := n.logger
-	if logger == nil {
-		logger = slog.Default()
-	}
-
-	logger.LogAttrs(ctx, slog.LevelError, "httpsec: a sign-in notice was not sent",
+	n.logger.LogAttrs(ctx, slog.LevelError, "httpsec: a sign-in notice was not sent",
 		diag.Failure(reason, err)...)
 }
 

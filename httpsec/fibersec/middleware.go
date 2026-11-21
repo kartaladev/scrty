@@ -7,6 +7,7 @@ import (
 
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/internal/errwalk"
+	"github.com/kartaladev/scrty/internal/guardauth"
 )
 
 // Middleware runs the chain in front of the fiber handlers registered after it.
@@ -114,6 +115,14 @@ func Middleware(chain *httpsec.Chain) fiber.Handler {
 		// route's to answer and is not a refusal of the request.
 		var nextErr error
 
+		// reportCtx is the context an abort is reported on: the chain's, whose
+		// run has ended and so no longer answers the logger of the chain once
+		// ex.Context() is read back, as the route's context still does. It is
+		// the route's once the remaining handlers have run, and until then
+		// nothing but the exchange's own, which the chain restored when its
+		// run ended.
+		var reportCtx context.Context
+
 		outer := fc.Context()
 
 		//nolint:contextcheck // ex.Context() derives from fc.Context(), which is what is written back here
@@ -130,6 +139,7 @@ func Middleware(chain *httpsec.Chain) fiber.Handler {
 			// chain's side is WithoutCancel so the context package's cause
 			// lookup falls through to fiber's context, not the chain's cancel.
 			fc.SetContext(routeContext{Context: outer, chain: context.WithoutCancel(ex.Context())})
+			reportCtx = fc.Context()
 
 			nextErr = fc.Next()
 
@@ -175,12 +185,12 @@ func Middleware(chain *httpsec.Chain) fiber.Handler {
 
 				chain, abort := errwalk.FlattenInto(buf[:], err)
 				if abort != nil {
-					return abortedRefusal(err, abort)
+					return abortedRefusal(reportOn(reportCtx, ex), err, abort)
 				}
 
 				same, abort := errwalk.Is(chain, nextErr)
 				if abort != nil {
-					return abortedRefusal(err, abort)
+					return abortedRefusal(reportOn(reportCtx, ex), err, abort)
 				}
 
 				if same {
@@ -188,7 +198,7 @@ func Middleware(chain *httpsec.Chain) fiber.Handler {
 				}
 			}
 
-			return newRefusal(err)
+			return newRefusal(reportOn(reportCtx, ex), err)
 		}
 
 		refused = false
@@ -223,4 +233,21 @@ func (c routeContext) Value(key any) any {
 	}
 
 	return c.Context.Value(key)
+}
+
+// reportOn is the context an abort found after the chain ran is reported on:
+// the route's, when the remaining handlers ran; else, for a refusal an
+// interceptor made before the route, the context of the chain's run, which
+// answers the chain's lookup and logger after its step has put the exchange's
+// own context back; else the exchange's, when no run was made on it.
+func reportOn(routeCtx context.Context, ex *httpsec.Exchange) context.Context {
+	if routeCtx != nil {
+		return routeCtx
+	}
+
+	if runCtx := guardauth.RunContext(ex); runCtx != nil {
+		return runCtx
+	}
+
+	return ex.Context()
 }

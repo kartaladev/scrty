@@ -185,8 +185,7 @@ func (i *enrolmentInterceptor) flushRefusalLogs() error {
 // request's context has nothing to do with the counts, so it is written
 // without one.
 func (i *enrolmentInterceptor) reportSuppressed(key string, suppressed int) {
-	i.log.LogAttrs(context.Background(), slog.LevelWarn, msgEnrolmentLogsSuppressed,
-		slog.String("key", key), slog.Int("suppressed", suppressed))
+	summariseSuppressed(i.log, msgEnrolmentLogsSuppressed, key, suppressed)
 }
 
 // msgEnrolmentLogsSuppressed is the record the path's reporter writes.

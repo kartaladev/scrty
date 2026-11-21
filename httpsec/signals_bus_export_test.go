@@ -1,6 +1,7 @@
 package httpsec
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"time"
@@ -52,13 +53,18 @@ func (p *SignalHubProbe) Settings() (queue int, timeout time.Duration) {
 }
 
 // Raise is signalHub.raise.
-func (p *SignalHubProbe) Raise(e SignalEnvelope) error { return p.h.raise(e) }
+func (p *SignalHubProbe) Raise(e SignalEnvelope) error { return p.h.raise(context.Background(), e) }
+
+// RaiseContext is signalHub.raise on a request's context.
+func (p *SignalHubProbe) RaiseContext(ctx context.Context, e SignalEnvelope) error {
+	return p.h.raise(ctx, e)
+}
 
 // Start is signalHub.start.
 func (p *SignalHubProbe) Start() { p.h.start() }
 
 // Deliver is signalHub.deliver.
-func (p *SignalHubProbe) Deliver(e SignalEnvelope) { p.h.deliver(e) }
+func (p *SignalHubProbe) Deliver(e SignalEnvelope) { p.h.deliver(context.Background(), e) }
 
 // Close is signalHub.close.
 func (p *SignalHubProbe) Close() { p.h.close() }

@@ -360,8 +360,7 @@ func (i *recoveryInterceptor) wire(c *Chain) {
 // request's context has nothing to do with the counts, so it is written
 // without one.
 func (i *recoveryInterceptor) reportSuppressed(key string, suppressed int) {
-	i.log.LogAttrs(context.Background(), slog.LevelWarn, msgRecoveryLogsSuppressed,
-		slog.String("key", key), slog.Int("suppressed", suppressed))
+	summariseSuppressed(i.log, msgRecoveryLogsSuppressed, key, suppressed)
 }
 
 // flushRefusalLogs reports what the endpoints' own sampler and both source

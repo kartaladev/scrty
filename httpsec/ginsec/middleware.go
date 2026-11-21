@@ -1,11 +1,13 @@
 package ginsec
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/internal/guardauth"
 )
 
 // Middleware runs the chain in front of the gin handlers registered after it.
@@ -116,7 +118,19 @@ func Middleware(chain *httpsec.Chain, opts ...Option) gin.HandlerFunc {
 			gc.Request.Context(), request, httpsec.NewHTTPResponseWriter(streamWriter{gc.Writer}))
 
 		if err := run(ex); err != nil {
-			cfg.refuse(gc, err)
+			// A refusal an interceptor made before the route reaches here
+			// with gc.Request still on the context the chain began on, which
+			// answers neither the chain's lookup nor its logger: the run's
+			// context does, after its step returned. Once the route ran,
+			// gc.Request carries that context already.
+			ctx := gc.Request.Context()
+			if !reached {
+				if runCtx := guardauth.RunContext(ex); runCtx != nil {
+					ctx = runCtx
+				}
+			}
+
+			cfg.refuse(ctx, gc, err)
 
 			return
 		}
@@ -156,11 +170,15 @@ func Middleware(chain *httpsec.Chain, opts ...Option) gin.HandlerFunc {
 // WithRefusalsRendered that case is left open too, because the consumer has
 // declared an error middleware that renders it. Every other refusal, and every
 // 404 on a route gin did match, is left exactly as above.
-func (cfg config) refuse(gc *gin.Context, err error) {
+//
+// ctx is the context the refusal is classified on, and an abort that
+// classification meets reported on: one that answers the logger and status
+// lookup of the chain handling the request.
+func (cfg config) refuse(ctx context.Context, gc *gin.Context, err error) {
 	_ = gc.Error(err)
 
 	if !gc.Writer.Written() {
-		status := httpsec.StatusForError(err)
+		status := statusFor(ctx, err)
 		gc.Status(status)
 
 		if status == http.StatusNotFound && gc.FullPath() == "" && !cfg.refusalsRendered {
@@ -178,5 +196,18 @@ func (cfg config) refuse(gc *gin.Context, err error) {
 // empty body, even when Middleware was given the option. To render guard
 // refusals, use WithGuardErrorHandler.
 func refuse(gc *gin.Context, err error) {
-	config{}.refuse(gc, err)
+	config{}.refuse(gc.Request.Context(), gc, err)
+}
+
+// statusFor is the status the core classifies err with, for a request whose
+// context is ctx. The core's lookup takes no context, so an abort it meets
+// would be written to slog.Default(): the chain's own lookup is asked first,
+// and an abort it meets is written to the logger of the chain handling the
+// request and answered 500, as the core answers it, without asking again.
+func statusFor(ctx context.Context, err error) int {
+	if guardauth.ReportLookupAbort(ctx, err) {
+		return http.StatusInternalServerError
+	}
+
+	return httpsec.StatusForError(err) //nolint:contextcheck // the core's lookup takes no context, and it reports no abort here
 }

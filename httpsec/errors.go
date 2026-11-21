@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"time"
 
@@ -19,6 +18,7 @@ import (
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/errwalk"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
@@ -579,26 +579,23 @@ func StatusForError(err error) int {
 // as (500, false), unrecognised, and never as a guess at what the unreached
 // link would have said.
 //
-// Each walk that gives up writes one Error record to slog.Default(), with the
-// message "httpsec: error classification aborted" and a reason attribute,
-// "budget" or "panic"; a panic adds its Go type and where it happened,
-// never its value. The record never carries the error's text, and no method of
-// the error is called to write it. Called once per request by a consumer's
+// Each walk that gives up writes one Error record with the message
+// "httpsec: error classification aborted" and a reason attribute, "budget" or
+// "panic"; a panic adds its Go type and where it happened, never its value.
+// The slog.Default() destination applies to LookupStatus alone (and to
+// StatusForError, which calls it): it takes no context, so it cannot find the
+// logger of a chain, and writes the record to slog.Default() as it is when the
+// record is written. The record never carries the error's text, and no method
+// of the error is called to write it. Called once per request by a consumer's
 // error handler, it writes one record per aborted request, unsampled. The
 // chain's own error dispatch does not call it: it writes the record to the
 // chain's logger, sampled (WithLogger, WithRefusalLogInterval).
 func LookupStatus(err error) (status int, ok bool) {
 	status, ok, abort := lookup(err)
 	if abort != nil {
-		// It takes no context, so the record carries none.
-		attrs := classificationAbortedAttrs(abort)
-		args := make([]any, len(attrs))
-
-		for i, a := range attrs {
-			args[i] = a
-		}
-
-		slog.Default().Error(msgClassificationAborted, args...)
+		// It takes no context, so the record carries none and goes to
+		// slog.Default() as it is when the record is written.
+		porterr.ReportAbort(context.Background(), nil, abort)
 	}
 
 	return status, ok
@@ -619,27 +616,6 @@ const (
 // request or of many, write one record.
 func classificationAbortedKey(abort error) string {
 	return classificationAbortedKeyPrefix + errwalk.Reason(abort)
-}
-
-// classificationAbortedAttrs are the attributes of an aborted classification's
-// record: the reason, and for a recovered panic its redacted attributes, whose
-// frames are those the walk captured as it recovered, so they name where the
-// panic happened rather than this record's writer. abort is one of errwalk's
-// own values; nothing is read from it but its type, a panic's captured frames
-// and its recovered value, which is described by type only.
-func classificationAbortedAttrs(abort error) []slog.Attr {
-	attrs := []slog.Attr{slog.String("reason", errwalk.Reason(abort))}
-
-	if p, ok := abort.(*errwalk.PanicError); ok && p != nil { //nolint:errorlint // errwalk's own value, never wrapped
-		attrs = append(attrs, diag.PanicAttrsFrom(p.Value, p.Frames)...)
-	}
-
-	return attrs
-}
-
-// logClassificationAborted writes one unsampled record of abort to log.
-func logClassificationAborted(ctx context.Context, log *slog.Logger, abort error) {
-	log.LogAttrs(ctx, slog.LevelError, msgClassificationAborted, classificationAbortedAttrs(abort)...)
 }
 
 // statusQuietly is the status lookup gives err, for code inside a run that
