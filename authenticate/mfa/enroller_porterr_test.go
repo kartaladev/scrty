@@ -18,7 +18,6 @@ import (
 	"log/slog"
 	"os"
 	"runtime/debug"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -86,10 +85,6 @@ func penrRedeems(site penrSite) bool {
 // penrRedeemCode is the code a RedeemEmailCode row presents, and the one the
 // enrolment it reads holds, so only the port's error can refuse it.
 const penrRedeemCode = "123456"
-
-// penrEager reports whether site's error is wrapped with fmt.Errorf, so a
-// walkable error's own text ends the returned text.
-func penrEager(site penrSite) bool { return site == penrRandom }
 
 // runPenrSite calls the entry point that reaches site, with that port failing
 // with portErr and every earlier call answered as a healthy port does. A call
@@ -233,8 +228,6 @@ func TestPortErrors_Enroller(t *testing.T) { //nolint:paralleltest // it replace
 		}
 	}
 
-	fault := new(porterr.Fault).Error()
-
 	for _, tc := range cases {
 		if only != "" && only != tc.name {
 			continue
@@ -274,22 +267,10 @@ func TestPortErrors_Enroller(t *testing.T) { //nolint:paralleltest // it replace
 			require.Len(t, got.aborts, tc.aborts, "abort records on the method's logger")
 			require.Empty(t, rstAborts(t, defaults.Bytes()), "no abort record on slog.Default()")
 
-			if penrEager(tc.site) {
-				prefix, ok := strings.CutSuffix(plain.text, errPtotpDown.Error())
-				require.True(t, ok, "the plain outage's text ends with the port's: %q", plain.text)
-
-				if tc.aborts == 1 {
-					assert.Equal(t, prefix+fault, got.text, "the method's text, then the fixed fault's")
-				} else {
-					assert.Equal(t, prefix+tc.err.Error(), got.text, "a walkable error is wrapped unchanged")
-				}
-			} else {
-				assert.Equal(t, plain.text, got.text, "the same fixed text as a plain outage")
-			}
-
-			if tc.aborts == 1 || !penrEager(tc.site) {
-				assert.NotContains(t, got.text, ptotpSecret)
-			}
+			// The returned text is the library's fixed text at every site, so a
+			// hostile or walkable error alike leaves the same text as a plain outage.
+			assert.Equal(t, plain.text, got.text, "the same fixed text as a plain outage")
+			assert.NotContains(t, got.text, ptotpSecret)
 
 			assert.False(t, got.provisioned, "no emailed code is handed back on a failing port")
 			assert.Equal(t, plain.msgs, got.msgs, "the same records, abort aside")

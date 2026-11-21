@@ -475,10 +475,6 @@ const (
 
 var ptotpEnrolSites = []ptotpEnrolSite{ptotpRandom, ptotpNewID, ptotpPutPending, ptotpConfirm, ptotpDelete}
 
-// ptotpEager reports whether site's error is wrapped with fmt.Errorf, so a
-// walkable error's own text ends the returned text.
-func ptotpEager(site ptotpEnrolSite) bool { return site == ptotpRandom || site == ptotpNewID }
-
 // runPtotpEnrolSite calls the entry point that reaches site, with that port
 // failing with portErr and every earlier call answered as a healthy port
 // does. A call the flow must not make has no expectation, so gomock fails the
@@ -603,8 +599,6 @@ func TestPortErrors_TOTPEnrolment(t *testing.T) { //nolint:paralleltest // it re
 			site: ptotpPutPending, err: ptotpEnrolledClaim{}, aborts: 1, reason: "panic"},
 	)
 
-	fault := new(porterr.Fault).Error()
-
 	for _, tc := range cases {
 		if only != "" && only != tc.name {
 			continue
@@ -644,22 +638,8 @@ func TestPortErrors_TOTPEnrolment(t *testing.T) { //nolint:paralleltest // it re
 			require.Len(t, got.aborts, tc.aborts, "abort records on the method's logger")
 			require.Empty(t, rstAborts(t, defaults.Bytes()), "no abort record on slog.Default()")
 
-			if ptotpEager(tc.site) {
-				prefix, ok := strings.CutSuffix(plain.text, errPtotpDown.Error())
-				require.True(t, ok, "the plain outage's text ends with the port's: %q", plain.text)
-
-				if tc.aborts == 1 {
-					assert.Equal(t, prefix+fault, got.text, "the method's text, then the fixed fault's")
-				} else {
-					assert.Equal(t, prefix+tc.err.Error(), got.text, "a walkable error is wrapped unchanged")
-				}
-			} else {
-				assert.Equal(t, plain.text, got.text, "the same fixed text as a plain outage")
-			}
-
-			if tc.aborts == 1 || !ptotpEager(tc.site) {
-				assert.NotContains(t, got.text, ptotpSecret)
-			}
+			assert.Equal(t, plain.text, got.text, "the same fixed text as a plain outage")
+			assert.NotContains(t, got.text, ptotpSecret)
 
 			assert.False(t, got.provisioned, "nothing is provisioned on a failing port")
 			assert.Equal(t, plain.msgs, got.msgs, "the same records, abort aside")

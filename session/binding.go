@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/porterr"
 )
 
@@ -98,7 +99,7 @@ func (m *Sessions) newCSRFToken(ctx context.Context) (string, error) {
 	// anything checks it.
 	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
-		return "", fmt.Errorf("session: reading %d random bytes for a CSRF token: %w", csrfTokenBytes, err)
+		return "", diag.Wrap(err, "session: reading the random bytes for a CSRF token")
 	}
 
 	return base64.RawURLEncoding.EncodeToString(raw), nil

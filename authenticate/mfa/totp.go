@@ -462,13 +462,13 @@ func (t *TOTP) BeginEnrolmentGeneration(
 	_, err := io.ReadFull(t.random, secret)
 	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
-		return Provisioning{}, id.Nil, fmt.Errorf("mfa: totp could not read a secret: %w", err)
+		return Provisioning{}, id.Nil, diag.Wrap(err, "mfa: totp could not read a secret")
 	}
 
 	gen, err := t.ids.NewID()
 	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
-		return Provisioning{}, id.Nil, fmt.Errorf("mfa: totp could not draw an enrolment generation: %w", err)
+		return Provisioning{}, id.Nil, diag.Wrap(err, "mfa: totp could not draw an enrolment generation")
 	}
 
 	// The nil generation matches nothing on the device-proof port, so an

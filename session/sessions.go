@@ -296,7 +296,7 @@ func (m *Sessions) newIdentifier(ctx context.Context) (string, error) {
 	// anything checks it.
 	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
-		return "", fmt.Errorf("session: reading %d random bytes for a session identifier: %w", identifierBytes, err)
+		return "", diag.Wrap(err, "session: reading the random bytes for a session identifier")
 	}
 
 	return base64.RawURLEncoding.EncodeToString(raw), nil

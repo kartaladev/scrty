@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/porterr"
 )
 
@@ -78,7 +79,7 @@ func (m *Sessions) prepare(ctx context.Context, user identity.UserID, opts ...Cr
 	// family below stays the session's own configuration error.
 	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
-		return nil, fmt.Errorf("session: generating a family identifier: %w", err)
+		return nil, diag.Wrap(err, "session: generating a family identifier")
 	}
 	if family.IsZero() {
 		return nil, fmt.Errorf("%w: the family identifier generator returned the nil identifier", ErrConfig)

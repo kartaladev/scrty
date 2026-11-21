@@ -447,7 +447,7 @@ func TestIssue(t *testing.T) {
 			},
 			assert: func(t *testing.T, store *onetime.MemoryStore, presented string, tok onetime.Token, err error) {
 				require.ErrorIs(t, err, idgen.ErrNil)
-				assert.ErrorContains(t, err, "onetime: generate token identifier", "the plain generator failure's outcome")
+				assert.Equal(t, idgen.ErrNil.Error(), err.Error(), "the library's own sentinel, bare")
 				assert.Empty(t, presented, "a token under the nil identifier was handed out")
 				assert.Zero(t, tok)
 				assert.Zero(t, store.Len(), "a failed issuance still wrote a record")

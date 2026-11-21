@@ -410,7 +410,7 @@ func (s *SMTPSender) transfer(callerCtx context.Context, from string, msg Messag
 	// server that greets and then stalls is bounded exactly as one that never
 	// greets.
 	if err := conn.SetDeadline(deadline); err != nil {
-		return fmt.Errorf("notify: setting the connection deadline: %w", err)
+		return diag.Wrap(err, "notify: setting the connection deadline failed")
 	}
 
 	// net/smtp blocks in a read that no context reaches. Forcing the deadline

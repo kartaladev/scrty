@@ -359,7 +359,7 @@ func (m *Tokens) mint(ctx context.Context, subject string, opts []IssueOption) (
 	if _, err := io.ReadFull(m.random, raw); err != nil {
 		err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
-		return "", Token{}, fmt.Errorf("onetime: read random source: %w", err)
+		return "", Token{}, diag.Wrap(err, "onetime: read random source")
 	}
 	secret := base64.RawURLEncoding.EncodeToString(raw)
 
@@ -367,7 +367,13 @@ func (m *Tokens) mint(ctx context.Context, subject string, opts []IssueOption) (
 	if err != nil {
 		err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
-		return "", Token{}, fmt.Errorf("onetime: generate token identifier: %w", err)
+		// Only the library's own sentinel is returned bare; a consumer's
+		// error gets fixed text and must not match idgen.ErrNil.
+		if err == idgen.ErrNil { //nolint:errorlint // the bare sentinel, by identity
+			return "", Token{}, err
+		}
+
+		return "", Token{}, diag.Wrap(err, "onetime: generate token identifier")
 	}
 
 	now := m.clock.Now()

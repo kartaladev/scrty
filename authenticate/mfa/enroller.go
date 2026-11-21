@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -191,13 +192,14 @@ func (t *TOTP) ProveDevice(
 }
 
 // drawEmailCode draws a uniform 6-digit code from the method's random source.
-// The source's error is sanitized before fmt.Errorf wraps it, so an
-// unwalkable one never enters the chain or the text this returns.
+// The source's error is sanitized before it is wrapped, so an unwalkable one
+// never enters the chain, and diag.Wrap gives the result fixed library text,
+// so the source's own text never reaches the caller.
 func (t *TOTP) drawEmailCode(ctx context.Context) (string, error) {
 	n, err := rand.Int(t.random, big.NewInt(emailCodeSpace))
 	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
-		return "", fmt.Errorf("mfa: totp could not draw an emailed code: %w", err)
+		return "", diag.Wrap(err, "mfa: totp could not draw an emailed code")
 	}
 
 	return fmt.Sprintf("%0*d", emailCodeDigits, n.Int64()), nil
