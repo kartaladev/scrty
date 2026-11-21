@@ -67,6 +67,27 @@ func TestSQLStore_NilIdentifierFromGenerator(t *testing.T) {
 				return newEnrolmentStore(t, db, storefix.TestCipher(t), sqlstore.WithIDGenerator(g)).
 					PutPending(ctx, storefix.Pending("nil-id-user", "TOTP"))
 			}},
+		{"passkey user handles", "passkey_user_handles", "assign passkey user handle",
+			func(t *testing.T, ctx context.Context, db *sql.DB, g id.Generator) error {
+				_, err := newPasskeyHandleStore(t, db, sqlstore.WithIDGenerator(g)).
+					Assign(ctx, "nil-id-user", storefix.PasskeyOffer("nil-id-user", 0))
+				return err
+			}},
+		{"recovery codes", "recovery_codes", "replace recovery codes",
+			func(t *testing.T, ctx context.Context, db *sql.DB, g id.Generator) error {
+				return newRecoveryCodeStore(t, db, sqlstore.WithIDGenerator(g)).
+					ReplaceSet(ctx, "nil-id-user", recoveryHashes("nil-id", 1), recoveryAt)
+			}},
+		{"sessions", "sessions", "session: the inner store could not create the session",
+			func(t *testing.T, ctx context.Context, db *sql.DB, g id.Generator) error {
+				return newSessionStore(t, db, storefix.TestCipher(t), sqlstore.WithIDGenerator(g)).
+					Create(ctx, storefix.DurableSession("nil-id", opTime))
+			}},
+		{"signing keys", "signing_keys", "seal: the inner store could not store the signing key",
+			func(t *testing.T, ctx context.Context, db *sql.DB, g id.Generator) error {
+				return newSigningKeyStore(t, db, storefix.TestCipher(t), sqlstore.WithIDGenerator(g)).
+					Store(ctx, storefix.SigningKey("nil-id-kid", []byte("private")))
+			}},
 	}
 
 	type testCase struct {
@@ -128,4 +149,74 @@ func TestSQLStore_NilIdentifierFromGenerator(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSQLStore_NilIdentifierLeavesStoredRecordUnchanged pins, against a real
+// database, that a write which would replace an existing record keeps that
+// record when the generator answers the nil identifier.
+func TestSQLStore_NilIdentifierLeavesStoredRecordUnchanged(t *testing.T) {
+	t.Parallel()
+
+	nilGen := func(t *testing.T) id.Generator {
+		g := idgentest.NewMockGenerator(gomock.NewController(t))
+		g.EXPECT().NewID().Return(id.Nil, nil).AnyTimes()
+
+		return g
+	}
+
+	t.Run("recovery codes keep the old set", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+		db := migratedDB(t).DB
+		const user = "nil-id-replace"
+		require.NoError(t, newRecoveryCodeStore(t, db).ReplaceSet(ctx, user, recoveryHashes("old", 2), recoveryAt))
+
+		err := newRecoveryCodeStore(t, db, sqlstore.WithIDGenerator(nilGen(t))).
+			ReplaceSet(ctx, user, recoveryHashes("new", 3), recoveryAt)
+		require.ErrorIs(t, err, idgen.ErrNil)
+
+		left, err := newRecoveryCodeStore(t, db).Remaining(ctx, user)
+		require.NoError(t, err)
+		assert.Equal(t, 2, left)
+	})
+
+	t.Run("clients keep the old client", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+		db := migratedDB(t).DB
+		old := confidentialClient("c-keep")
+		require.NoError(t, newClientStore(t, db).Put(ctx, old))
+		before, err := newClientStore(t, db).Client(ctx, "c-keep")
+		require.NoError(t, err)
+
+		changed := old
+		changed.Name = "Renamed"
+		err = newClientStore(t, db, sqlstore.WithIDGenerator(nilGen(t))).Put(ctx, changed)
+		require.ErrorIs(t, err, idgen.ErrNil)
+
+		after, err := newClientStore(t, db).Client(ctx, "c-keep")
+		require.NoError(t, err)
+		assert.Equal(t, before, after)
+		assert.Equal(t, old.Name, after.Name)
+	})
+
+	t.Run("signing keys keep the old key", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+		db := migratedDB(t).DB
+		c := storefix.TestCipher(t)
+		require.NoError(t, newSigningKeyStore(t, db, c).Store(ctx, storefix.SigningKey("kid-1", []byte("old"))))
+
+		err := newSigningKeyStore(t, db, c, sqlstore.WithIDGenerator(nilGen(t))).
+			Store(ctx, storefix.SigningKey("kid-1", []byte("new")))
+		require.ErrorIs(t, err, idgen.ErrNil)
+
+		got, err := newSigningKeyStore(t, db, c).LoadAll(ctx)
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		assert.Equal(t, []byte("old"), got[0].Private)
+	})
 }

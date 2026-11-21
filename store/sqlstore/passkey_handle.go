@@ -9,6 +9,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
 )
@@ -66,7 +67,7 @@ func (s *PasskeyHandleStore) Assign(ctx context.Context, user identity.UserID, o
 	if err := storekit.CheckStorable(storekit.Text("user", string(user))); err != nil {
 		return nil, failed(op, err)
 	}
-	rowID, err := s.c.ids.NewID()
+	rowID, err := idgen.New(s.c.ids)
 	if err != nil {
 		return nil, failed(op, err)
 	}
