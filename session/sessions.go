@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -48,6 +49,7 @@ type Sessions struct {
 	absoluteTimeout time.Duration
 	clock           clock.Clock
 	logger          *slog.Logger
+	loggerSupplied  bool
 	random          io.Reader
 
 	// families generates the family identifier every Create starts. It is the
@@ -184,16 +186,16 @@ const perProcessWarning = "session: the default in-memory store keeps sessions i
 // the instant it is created, so the manager would look like it worked and
 // nobody would stay logged in.
 //
-// Every port and function this takes is refused when nil, with one exception:
-// a nil logger is ignored, because "do not log from this component" is a
-// reading a nil logger plainly has, while a nil clock has no reading other
-// than a mistake.
+// Every port and function this takes is refused when nil, a nil logger
+// included: leaving WithLogger out already means "route to the chain's logger,
+// else slog.Default()", so a nil one is almost always an uninitialised
+// variable.
 func New(opts ...Option) (*Sessions, error) {
 	m := &Sessions{
 		idleTimeout:     defaultIdleTimeout,
 		absoluteTimeout: defaultAbsoluteTimeout,
 		clock:           clock.System(),
-		logger:          slog.Default(),
+		logger:          ctxlog.Routing(),
 		random:          rand.Reader,
 	}
 	for _, opt := range opts {
@@ -228,6 +230,11 @@ func New(opts ...Option) (*Sessions, error) {
 	}
 	if err := m.events.Err("WithSecurityEvents"); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrConfig, err)
+	}
+	if m.loggerSupplied && m.logger == nil {
+		return nil, fmt.Errorf("%w: WithLogger was given a nil logger, which is almost always an "+
+			"uninitialised variable; leave the option out to route to the chain's logger, "+
+			"else slog.Default()", ErrConfig)
 	}
 	if m.reuseObserverSupplied && m.reuseObserver == nil {
 		return nil, fmt.Errorf("%w: reuse observer must not be nil", ErrConfig)
@@ -316,7 +323,7 @@ func (m *Sessions) newIdentifier(ctx context.Context) (string, error) {
 // storing it; Prepare and Prepared.Commit split the two, and CreateIssuing
 // runs an issuing step between them.
 func (m *Sessions) Create(ctx context.Context, user identity.UserID, opts ...CreateOption) (*Session, error) {
-	p, err := m.Prepare(user, opts...)
+	p, err := m.prepare(ctx, user, opts...)
 	if err != nil {
 		return nil, err
 	}

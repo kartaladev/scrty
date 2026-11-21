@@ -144,7 +144,7 @@ func (p *ConcurrentSessions) Phases() []Phase { return []Phase{PostAuthenticatio
 // is not repeated in the reason.
 func (p *ConcurrentSessions) Evaluate(ctx context.Context, in *Input) Decision {
 	count, err := p.counter.CountActiveByUser(ctx, in.User)
-	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 
 	if err != nil {
 		return Decision{

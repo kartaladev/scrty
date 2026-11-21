@@ -174,17 +174,17 @@ func WithObserver(observer Observer) Option {
 // WithLogger replaces where the policy writes the records about its
 // observer: a report lost because the store could not count a failure it had
 // recorded or a reset that could not count what it cleared, and an observer
-// that panicked. The default is slog.Default. A nil
-// logger is ignored rather than refused: it has an obvious safe reading, that
-// the caller does not want to choose this policy's logger.
+// that panicked. The default is the logger of the chain handling the request,
+// else slog.Default() when the record is written. A nil logger is a
+// configuration error from New, wrapping policy.ErrConfig: it is almost always
+// an uninitialised variable, and leaving the option out already means "route".
 //
 // Its records carry fixed text, the report's kind and the dependency's error
 // type; never a dependency's error text, and never the submitted identifier.
 func WithLogger(logger *slog.Logger) Option {
 	return func(p *Policy) {
-		if logger != nil {
-			p.logger = logger
-		}
+		p.logger = logger
+		p.setLogger = true
 	}
 }
 

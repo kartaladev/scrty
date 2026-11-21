@@ -100,7 +100,7 @@ type AEADCipher struct {
 // matching the ring's error through errors.Is and errors.As. A ring error
 // whose chain cannot be walked (a cycle, a fan-out past the library's budget,
 // a panicking Unwrap) is replaced by a fixed error matching ErrUnavailable, and
-// one record is written to slog.Default(): it is answered as the ring's
+// one record is written, with the call's context, to the logger of the chain handling the request, else slog.Default() when the record is written: it is answered as the ring's
 // outage, never as ErrUnknownKeyID. No error carries key bytes or plaintext.
 //
 // Limit: a random 96-bit nonce is safe for about 2^32 seals under one key;
@@ -149,7 +149,7 @@ func (c *AEADCipher) Open(ctx context.Context, sealed, aad []byte) ([]byte, stri
 	key, err := c.kr.ByID(ctx, id)
 	// A keyring's error the walk cannot read is answered as the ring's outage,
 	// never as ErrUnknownKeyID: that would read as a removed key.
-	err = porterr.Sanitize(err, ErrUnavailable)
+	err = porterr.SanitizeTo(ctx, nil, err, ErrUnavailable)
 	if errors.Is(err, ErrUnknownKeyID) {
 		return nil, id, diag.Wrap(err, "seal: unknown key id: the keyring does not hold the key the value was sealed under",
 			ErrUnknownKeyID)
@@ -186,7 +186,7 @@ var _ Cipher = (*AEADCipher)(nil)
 // checked, so Seal and ActiveKeyID can never disagree about it.
 func (c *AEADCipher) active(ctx context.Context) (string, []byte, error) {
 	id, key, err := c.kr.Active(ctx)
-	err = porterr.Sanitize(err, ErrUnavailable)
+	err = porterr.SanitizeTo(ctx, nil, err, ErrUnavailable)
 	if err != nil {
 		return "", nil, diag.Wrap(err, "seal: the keyring could not provide the active key")
 	}
@@ -385,8 +385,8 @@ type sessionCipher struct {
 // as a store failure, and any other, which the session store answers, on an
 // open, as session.ErrUnreadable. An error of cipher whose chain cannot be
 // walked is replaced by a fixed error matching ErrUnavailable, so it is
-// reported as session.ErrCipherUnavailable, and one record is written to
-// slog.Default().
+// reported as session.ErrCipherUnavailable, and one record is written, with the
+// call's context, to the logger of the chain handling the request, else slog.Default() when the record is written.
 //
 // A nil cipher, typed nil included, gives a nil session.Cipher, so
 // session.NewEncryptedStore refuses it with session.ErrConfig instead of the
@@ -403,7 +403,7 @@ func SessionCipher(cipher Cipher) session.Cipher {
 // outage as session.ErrCipherUnavailable.
 func (s sessionCipher) Seal(ctx context.Context, plaintext, additionalData []byte) ([]byte, error) {
 	sealed, err := s.c.Seal(ctx, plaintext, additionalData)
-	err = porterr.Sanitize(err, ErrUnavailable)
+	err = porterr.SanitizeTo(ctx, nil, err, ErrUnavailable)
 	if err != nil {
 		return nil, sessionError(err)
 	}
@@ -415,7 +415,7 @@ func (s sessionCipher) Seal(ctx context.Context, plaintext, additionalData []byt
 // key id and reporting an outage as session.ErrCipherUnavailable.
 func (s sessionCipher) Open(ctx context.Context, ciphertext, additionalData []byte) ([]byte, error) {
 	plaintext, _, err := s.c.Open(ctx, ciphertext, additionalData)
-	err = porterr.Sanitize(err, ErrUnavailable)
+	err = porterr.SanitizeTo(ctx, nil, err, ErrUnavailable)
 	if err != nil {
 		return nil, sessionError(err)
 	}

@@ -546,20 +546,6 @@ func TestManagerLogger(t *testing.T) {
 
 		assert.Empty(t, buf.String(), "a consumer who supplied their own store was warned about the default")
 	})
-
-	t.Run("a nil logger constructs and logs nowhere in particular", func(t *testing.T) {
-		t.Parallel()
-
-		// Refusing a nil logger would make logging mandatory; ignoring it
-		// leaves the caller on slog.Default(), which is what "do not
-		// configure this" reasonably means.
-		m, err := session.New(session.WithLogger(nil))
-		require.NoError(t, err)
-		require.NotNil(t, m)
-
-		_, err = m.Create(t.Context(), testUser)
-		assert.NoError(t, err, "a nil logger reached a log call")
-	})
 }
 
 func TestConsumerStoreServesEveryOperation(t *testing.T) {
@@ -702,14 +688,11 @@ func TestNewManager(t *testing.T) {
 			assert: configError,
 		},
 		{
-			// A nil logger has an obvious safe reading — do not log from this
-			// component — and refusing it would make logging mandatory.
-			name: "a nil logger is ignored rather than refused",
-			opts: []session.Option{session.WithLogger(nil)},
-			assert: func(t *testing.T, m *session.Sessions, err error) {
-				require.NoError(t, err)
-				assert.NotNil(t, m)
-			},
+			// A nil logger is almost always an uninitialised variable: leaving
+			// the option out already means "route".
+			name:   "a nil logger is refused",
+			opts:   []session.Option{session.WithLogger(nil)},
+			assert: configError,
 		},
 		{
 			name: "max absolute lifetime below the timeout is refused",

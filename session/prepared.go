@@ -58,10 +58,16 @@ type Prepared struct {
 // issuing step between them.
 func (m *Sessions) Prepare(user identity.UserID, opts ...CreateOption) (*Prepared, error) {
 	// Prepare takes no context, because it touches no store: the abort record of
-	// a hostile source error is written with a background one, to the manager's
-	// logger. The exported signature is not changed for it.
-	ctx := context.Background()
+	// a hostile source error is written with a background one, which no chain
+	// can be read from, so it goes to the manager's own logger, else the
+	// default. Create and CreateIssuing have a request context and pass it to
+	// prepare, so their record reaches the chain's logger. The exported
+	// signature is not changed for it.
+	return m.prepare(context.Background(), user, opts...)
+}
 
+// prepare is Prepare writing the record of a hostile source error with ctx.
+func (m *Sessions) prepare(ctx context.Context, user identity.UserID, opts ...CreateOption) (*Prepared, error) {
 	id, err := m.newIdentifier(ctx)
 	if err != nil {
 		return nil, err
@@ -279,7 +285,7 @@ func (m *Sessions) CreateIssuing(
 	issue func(sess *Session) (string, error),
 	opts ...CreateOption,
 ) (*Session, string, error) {
-	p, err := m.Prepare(user, opts...)
+	p, err := m.prepare(ctx, user, opts...)
 	if err != nil {
 		return nil, "", err
 	}

@@ -167,20 +167,20 @@ func WithMFASameChannelEnrolment(mode SameChannelMode) MFAOption {
 }
 
 // WithMFALogger replaces where the policy writes its same-channel
-// warnings. The default is slog.Default.
+// warnings and its lookup-failure records. The default is the logger of the
+// chain handling the request, else slog.Default() when the record is written.
 //
 // Its records name the user by the opaque reference in Input.User, on purpose,
 // with the first factor and the channel; they never carry a dependency's error
 // text.
 //
-// A nil logger is ignored rather than refused: it has an obvious safe reading —
-// the caller does not want to choose this policy's logger — and refusing it
-// would make configuring logging mandatory.
+// A nil logger is a configuration error from NewMFA, wrapping ErrConfig: it is
+// almost always an uninitialised variable, and leaving the option out already
+// means "route to the chain's logger, else the default".
 func WithMFALogger(logger *slog.Logger) MFAOption {
 	return mfaOption(func(p *MFA) {
-		if logger != nil {
-			p.logger = logger
-		}
+		p.logger = logger
+		p.loggerGiven = true
 	})
 }
 
@@ -260,6 +260,7 @@ type MFA struct {
 	federated               federatedSource
 	challengeUnmetFederated bool
 	logger                  *slog.Logger
+	loggerGiven             bool
 	clock                   clock.Clock
 	logInterval             time.Duration
 	sampler                 *logsample.Sampler
@@ -327,14 +328,15 @@ type MFA struct {
 // Defaults: SameChannelRefuse (WithMFASameChannelEnrolment),
 // factor.Kind.MFAExempt (WithMFAExemption), no federated assurance source
 // (WithFederatedAssuranceSource), federated logins allowed without a local
-// challenge (WithMFAFederatedChallengeWhenUnmet), slog.Default
+// challenge (WithMFAFederatedChallengeWhenUnmet), the logger of the chain
+// handling the request, else slog.Default() when the record is written
 // (WithMFALogger), clock.System() (WithMFAClock) and
 // DefaultLogInterval for its sampled records (WithMFALogInterval).
 func NewMFA(methods []MFAMethodLookup, opts ...MFAOption) (*MFA, error) {
 	p := &MFA{
 		sameChannel: SameChannelRefuse,
 		exempt:      factor.Kind.MFAExempt,
-		logger:      slog.Default(),
+		logger:      ctxlog.Routing(),
 		clock:       clock.System(),
 		logInterval: DefaultLogInterval,
 	}
@@ -342,6 +344,13 @@ func NewMFA(methods []MFAMethodLookup, opts ...MFAOption) (*MFA, error) {
 		if opt != nil {
 			opt.applyMFA(p)
 		}
+	}
+
+	if p.loggerGiven && p.logger == nil {
+		return nil, fmt.Errorf(
+			"%w: WithMFALogger was given a nil logger, which is almost always an uninitialised "+
+				"variable; leave the option out to route to the chain's logger, else slog.Default()",
+			ErrConfig)
 	}
 
 	checked, err := checkMFAMethods(methods, "second-factor challenge policy", true)
@@ -535,7 +544,8 @@ func (p *MFA) sampled(ctx context.Context, level slog.Level, msg, key string, at
 // reportSuppressed accounts for counts the sampler is about to discard, so a
 // burst that stops before its window elapses is still reported in full.
 func (p *MFA) reportSuppressed(key string, suppressed int) {
-	p.logger.LogAttrs(context.Background(), slog.LevelWarn, msgMFASuppressed,
+	// A summary has no request context: it goes where the last sampled record went.
+	ctxlog.Summary(p.logger).LogAttrs(context.Background(), slog.LevelWarn, msgMFASuppressed,
 		slog.String("key", key),
 		slog.Int("suppressed", suppressed))
 }
@@ -605,11 +615,12 @@ var (
 func UsableMFAMethods(
 	ctx context.Context, methods []MFAMethodLookup, user identity.UserID, first factor.Kind,
 ) ([]MFAMethodLookup, error) {
-	return usableMFAMethods(ctx, ctxlog.From(ctx), methods, user, first)
+	return usableMFAMethods(ctx, nil, methods, user, first)
 }
 
 // usableMFAMethods is UsableMFAMethods writing the record of an unwalkable
-// lookup error to logger, or to slog.Default() when logger is nil. A policy
+// lookup error to logger, or when logger is nil to the logger of the chain
+// handling the request, else slog.Default() when the record is written. A policy
 // that holds its own logger asks through it, so the record lands with the
 // policy's other records.
 func usableMFAMethods(

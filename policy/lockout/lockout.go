@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/expiry"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -212,6 +213,7 @@ type Policy struct {
 	observer    Observer
 	setObserver bool
 	logger      *slog.Logger
+	setLogger   bool
 
 	// events is the sink WithSecurityEvents gave the policy, for the locks it
 	// decides outside a chain.
@@ -241,7 +243,8 @@ type Policy struct {
 // (WithWindowFailureLimit); a bounded in-memory store (WithAttemptStore), which
 // keeps failures only as long as this policy needs them (the window, or the
 // failure-streak retention when longer), and the system clock (WithClock); no lockout observer (WithObserver),
-// no security-event sink of its own (WithSecurityEvents), and slog.Default
+// no security-event sink of its own (WithSecurityEvents), and the logger of the
+// chain handling the request, else slog.Default() when the record is written,
 // for its records (WithLogger). WithSliding replaces
 // the escalating wait with a sliding lock.
 //
@@ -273,7 +276,7 @@ func New(opts ...Option) (*Policy, error) {
 		firstWait:   defaultLockoutFirstWait,
 		longestWait: defaultLockoutLongestWait,
 		ceiling:     defaultLockoutCeiling,
-		logger:      slog.Default(),
+		logger:      ctxlog.Routing(),
 
 		capRetention: defaultLockoutCapRetention,
 	}
@@ -342,6 +345,12 @@ func New(opts ...Option) (*Policy, error) {
 
 	if err := p.events.Err("WithSecurityEvents"); err != nil {
 		return nil, fmt.Errorf("%w: lockout: %w", policy.ErrConfig, err)
+	}
+
+	if p.setLogger && p.logger == nil {
+		return nil, fmt.Errorf("%w: WithLogger was given a nil logger, which is almost always an "+
+			"uninitialised variable; leave the option out to route to the chain's logger, "+
+			"else slog.Default()", policy.ErrConfig)
 	}
 
 	if p.setObserver && p.observer == nil {

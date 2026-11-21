@@ -548,9 +548,9 @@ func TestLockoutPortErrorsMatchUnwalkable(t *testing.T) { //nolint:paralleltest 
 }
 
 // TestLockoutPortErrors_DefaultLogger pins where the abort record goes when
-// the consumer chose no logger: a policy built without WithLogger, or with
-// WithLogger(nil), which is ignored, reports a hostile store error once to the
-// slog.Default() it was built with, and still denies as a plain outage does.
+// the consumer chose no logger: a policy built without WithLogger reports a
+// hostile store error once to slog.Default(), and still denies as a plain
+// outage does. (WithLogger(nil) is refused: TestLogRoute_Lockout.)
 func TestLockoutPortErrors_DefaultLogger(t *testing.T) { //nolint:paralleltest // it replaces slog.Default()
 	type testCase struct {
 		name   string
@@ -570,7 +570,6 @@ func TestLockoutPortErrors_DefaultLogger(t *testing.T) { //nolint:paralleltest /
 
 	cases := []testCase{
 		{name: "no WithLogger", assert: deniedOnce},
-		{name: "WithLogger(nil) is ignored", opts: []lockout.Option{lockout.WithLogger(nil)}, assert: deniedOnce},
 	}
 
 	for _, tc := range cases {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/porterr"
@@ -69,6 +70,7 @@ type MFARequirement struct {
 	federatedMode  FederatedAssuranceMode
 	phaseOf        func(context.Context, *Input) (Phase, bool)
 	logger         *slog.Logger
+	loggerGiven    bool
 	clock          clock.Clock
 	logInterval    time.Duration
 	sampler        *logsample.Sampler
@@ -203,7 +205,8 @@ type MFARequirement struct {
 // factor.Kind.MFAExempt (WithMFAExemption), no federated assurance source
 // (WithFederatedAssuranceSource), FederatedAssuranceChallenge
 // (WithMFARequirementFederatedAssurance), the phase from the context
-// (WithMFARequirementPhaseSource), slog.Default (WithMFARequirementLogger),
+// (WithMFARequirementPhaseSource), the logger of the chain handling the request,
+// else slog.Default() when the record is written (WithMFARequirementLogger),
 // clock.System() (WithMFARequirementClock), DefaultLogInterval for its sampled
 // records (WithMFARequirementLogInterval) and no enrolment path
 // (WithMFAEnrolmentPath).
@@ -216,7 +219,7 @@ func NewMFARequirement(
 		required:    required,
 		exempt:      factor.Kind.MFAExempt,
 		phaseOf:     phaseOfContext,
-		logger:      slog.Default(),
+		logger:      ctxlog.Routing(),
 		clock:       clock.System(),
 		logInterval: DefaultLogInterval,
 	}
@@ -226,6 +229,12 @@ func NewMFARequirement(
 		}
 	}
 
+	if p.loggerGiven && p.logger == nil {
+		return nil, fmt.Errorf(
+			"%w: WithMFARequirementLogger was given a nil logger, which is almost always an "+
+				"uninitialised variable; leave the option out to route to the chain's logger, "+
+				"else slog.Default()", ErrConfig)
+	}
 	if !p.requiredForAll && nilcheck.IsNil(p.required) {
 		return nil, fmt.Errorf("%w: %w", ErrConfig, ErrMFARequirementLookupMissing)
 	}
@@ -608,7 +617,8 @@ func (p *MFARequirement) sampled(
 
 // reportSuppressed accounts for counts the sampler is about to discard.
 func (p *MFARequirement) reportSuppressed(key string, suppressed int) {
-	p.logger.LogAttrs(context.Background(), slog.LevelWarn, msgRequirementSuppressed,
+	// A summary has no request context: it goes where the last sampled record went.
+	ctxlog.Summary(p.logger).LogAttrs(context.Background(), slog.LevelWarn, msgRequirementSuppressed,
 		slog.String("key", key),
 		slog.Int("suppressed", suppressed))
 }

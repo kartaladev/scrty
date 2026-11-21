@@ -95,11 +95,11 @@ type provingEnrolmentStore struct {
 // panicking Unwrap) on Get, PutPending, Confirm, AcceptStep, Delete,
 // ChargeVerifyAttempt or RefundVerifyAttempt is replaced by a fixed error that
 // matches none of this package's or mfa's sentinels, and one record is written
-// to slog.Default(): it is answered as a failure of inner, never as
+// with the call's context, to the logger of the chain handling the request, else slog.Default() when the record is written: it is answered as a failure of inner, never as
 // mfa.ErrAlreadyEnrolled or a value that does not open. An error of cipher
 // that cannot be walked, from the Open of a secret or of an emailed code, or
 // the Seal of a secret or of an emailed code, is replaced by a fixed error
-// matching ErrUnavailable, and one record is written to slog.Default(): it is
+// matching ErrUnavailable, and one record is written, with the call's context, to the logger of the chain handling the request, else slog.Default() when the record is written: it is
 // answered as an outage of cipher, never as ErrDecryptionFailed or
 // ErrUnknownKeyID. A cipher error dropped by a re-seal on read (ActiveKeyID or
 // Seal) is never walked. An error of the device-proof calls
@@ -157,7 +157,7 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 	e, found, err := s.inner.Get(ctx, user)
 	// The inner store's error is the consumer's: one the walk cannot read is
 	// answered as a failed read, never as a value that does not open.
-	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return mfa.Enrolment{}, false, diag.Wrap(err, "seal: the inner store could not read the MFA enrolment")
 	}
@@ -169,7 +169,7 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 	plaintext, keyID, err := s.cipher.Open(ctx, e.Secret, aad)
 	// The cipher is the consumer's: an error the walk cannot read is answered as
 	// its outage, never as a value that does not open or a removed key.
-	err = porterr.Sanitize(err, ErrUnavailable)
+	err = porterr.SanitizeTo(ctx, nil, err, ErrUnavailable)
 	if err != nil {
 		return mfa.Enrolment{}, false, diag.Wrap(err, "seal: the stored MFA secret could not be opened")
 	}
@@ -191,7 +191,7 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 		e.EmailCode = nil
 	default:
 		code, _, err := s.cipher.Open(ctx, e.EmailCode, MFAEmailCodeAAD(e.Generation, user))
-		err = porterr.Sanitize(err, ErrUnavailable)
+		err = porterr.SanitizeTo(ctx, nil, err, ErrUnavailable)
 		if err != nil {
 			return mfa.Enrolment{}, false, diag.Wrap(err, "seal: the stored emailed MFA code could not be opened")
 		}
@@ -218,7 +218,7 @@ func (s *enrolmentStore) reseal(ctx context.Context, user identity.UserID, plain
 // PutPending seals the secret of a copy of e and stores the copy as pending.
 func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error {
 	sealed, err := s.cipher.Seal(ctx, e.Secret, MFASecretAAD(e.Generation, e.User))
-	err = porterr.Sanitize(err, ErrUnavailable)
+	err = porterr.SanitizeTo(ctx, nil, err, ErrUnavailable)
 	if err != nil {
 		return diag.Wrap(err, "seal: the MFA secret could not be sealed")
 	}
@@ -228,7 +228,7 @@ func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error 
 	err = s.inner.PutPending(ctx, e)
 	// Sanitized before enrolmentFailed reads it: a hostile error must not be
 	// asked whether it is ErrAlreadyEnrolled.
-	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 
 	return enrolmentFailed(err, "seal: the inner store could not store the pending MFA enrolment")
 }
@@ -238,7 +238,7 @@ func (s *enrolmentStore) Confirm(
 	ctx context.Context, user identity.UserID, gen id.ID, step int64, at time.Time,
 ) (bool, error) {
 	ok, err := s.inner.Confirm(ctx, user, gen, step, at)
-	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 
 	return ok, enrolmentFailed(err, "seal: the inner store could not confirm the MFA enrolment")
 }
@@ -246,7 +246,7 @@ func (s *enrolmentStore) Confirm(
 // AcceptStep passes through to inner.
 func (s *enrolmentStore) AcceptStep(ctx context.Context, user identity.UserID, gen id.ID, step int64) (bool, error) {
 	ok, err := s.inner.AcceptStep(ctx, user, gen, step)
-	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 
 	return ok, enrolmentFailed(err, "seal: the inner store could not accept the MFA time step")
 }
@@ -254,7 +254,7 @@ func (s *enrolmentStore) AcceptStep(ctx context.Context, user identity.UserID, g
 // Delete passes through to inner.
 func (s *enrolmentStore) Delete(ctx context.Context, user identity.UserID) error {
 	err := s.inner.Delete(ctx, user)
-	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 
 	return enrolmentFailed(err, "seal: the inner store could not delete the MFA enrolment")
 }
@@ -266,7 +266,7 @@ func (s *enrolmentStore) ChargeVerifyAttempt(
 	ctx context.Context, user identity.UserID, at time.Time, limit int, window time.Duration,
 ) (time.Time, bool, error) {
 	until, ok, err := s.inner.ChargeVerifyAttempt(ctx, user, at, limit, window)
-	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 
 	return until, ok, enrolmentFailed(err, "seal: the inner store could not charge the TOTP verification attempt")
 }
@@ -274,7 +274,7 @@ func (s *enrolmentStore) ChargeVerifyAttempt(
 // RefundVerifyAttempt passes through to inner.
 func (s *enrolmentStore) RefundVerifyAttempt(ctx context.Context, user identity.UserID, until time.Time) (bool, error) {
 	ok, err := s.inner.RefundVerifyAttempt(ctx, user, until)
-	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 
 	return ok, enrolmentFailed(err, "seal: the inner store could not give back the TOTP verification attempt")
 }
@@ -288,7 +288,7 @@ func (s provingEnrolmentStore) ProveDevice(
 ) (bool, error) {
 	if code != nil {
 		sealed, err := s.cipher.Seal(ctx, code, MFAEmailCodeAAD(gen, user))
-		err = porterr.Sanitize(err, ErrUnavailable)
+		err = porterr.SanitizeTo(ctx, nil, err, ErrUnavailable)
 		if err != nil {
 			return false, diag.Wrap(err, "seal: the emailed MFA code could not be sealed")
 		}
@@ -297,7 +297,7 @@ func (s provingEnrolmentStore) ProveDevice(
 	}
 
 	ok, err := s.proofs.ProveDevice(ctx, user, gen, step, code, codeUntil, at)
-	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 
 	return ok, enrolmentFailed(err, "seal: the inner store could not record the device proof")
 }
@@ -305,7 +305,7 @@ func (s provingEnrolmentStore) ProveDevice(
 // Complete passes through to the inner store's device proofs.
 func (s provingEnrolmentStore) Complete(ctx context.Context, user identity.UserID, gen id.ID, at time.Time) (bool, error) {
 	ok, err := s.proofs.Complete(ctx, user, gen, at)
-	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 
 	return ok, enrolmentFailed(err, "seal: the inner store could not complete the MFA enrolment")
 }
@@ -315,7 +315,7 @@ func (s provingEnrolmentStore) ChargeEmailCode(
 	ctx context.Context, user identity.UserID, gen id.ID, at time.Time,
 ) (int, bool, error) {
 	n, ok, err := s.proofs.ChargeEmailCode(ctx, user, gen, at)
-	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 
 	return n, ok, enrolmentFailed(err, "seal: the inner store could not charge the emailed code")
 }
