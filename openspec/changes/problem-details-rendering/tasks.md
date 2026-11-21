@@ -414,7 +414,7 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
   - Check scrty against v0.3.0's upgrade notes: hooks that look for `*PanicError`, a `WithStatus` hint joined beside a sentinel, and a typed-nil `*Received`. Report each use found, and what it now answers.
   - Verify with `go test -race -p 2 -count=1 ./...` in every changed module, the `test` module last and alone.
   - After the branch merges, ask the maintainer whether to close the superseded Dependabot PRs.
-- [ ] 10.6 Documentation. Write these:
+- [x] 10.6 Documentation. Write these:
   - godoc of `LookupStatus` and `StatusForError`: the bound, the typed-nil skip, fail-closed and the log record, and that consumer code calling stdlib `errors.Is` or `errors.As` on the same error is not protected;
   - prblmsec's package doc and the README section: under prblm v0.3.0 prblm bounds its own walks, so a cyclic or panicking error is answered with the safe 500 before the mapper runs; what is still not protected is consumer code calling stdlib `errors.Is` or `errors.As`, and gin's `Context.Error`, which walks the chain first;
   - CHANGELOG entries for decision 13 (see 10.15), and the prblm v0.3.0 and dependency bumps under Changed;

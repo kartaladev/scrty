@@ -533,9 +533,19 @@ var statusTable = []statusRow{
 // user's load reads more than a miss does, known users answer 503 and unknown
 // ones 401, revealing which usernames exist.
 //
-// LookupStatus returns the same status and also reports whether the error was
-// recognised; StatusForError is defined through it, and reports a
-// classification that gave up as LookupStatus does.
+// The walk of the error chain is bounded, and it fails closed: a chain it
+// cannot walk to the end, because it is cyclic, fans out past the budget of
+// 1,000 entries, or has a link whose Unwrap, Is or As method panics, is answered
+// 500 and is not recognised. A nil-pointer link is skipped without calling any
+// of its methods. LookupStatus returns the same status and also reports whether
+// the error was recognised; StatusForError is defined through it, and reports a
+// classification that gave up as LookupStatus does, including the log record
+// described there.
+//
+// The bound protects this function only. A consumer's own code that calls
+// errors.Is or errors.As from the standard library on the same error is not
+// protected: on a cyclic chain it can still loop, and on a panicking link it
+// still panics.
 func StatusForError(err error) int {
 	status, _ := LookupStatus(err)
 
@@ -577,16 +587,17 @@ func StatusForError(err error) int {
 // included, or when a link's Unwrap, Is or As method panics. A walk that gives
 // up, on a cyclic chain, a fan-out of joins or a panicking link, is reported
 // as (500, false), unrecognised, and never as a guess at what the unreached
-// link would have said.
+// link would have said. The bound covers this function's walk only: errors.Is
+// and errors.As from the standard library, called by consumer code on the same
+// error, are not bounded by it.
 //
 // Each walk that gives up writes one Error record with the message
 // "httpsec: error classification aborted" and a reason attribute, "budget" or
 // "panic"; a panic adds its Go type and where it happened, never its value.
-// The slog.Default() destination applies to LookupStatus alone (and to
-// StatusForError, which calls it): it takes no context, so it cannot find the
-// logger of a chain, and writes the record to slog.Default() as it is when the
-// record is written. The record never carries the error's text, and no method
-// of the error is called to write it. Called once per request by a consumer's
+// LookupStatus (and StatusForError, which calls it) takes no context, so it
+// cannot find the logger of a chain: it writes the record to slog.Default() as
+// that logger is at the moment the record is written. The record never
+// carries the error's text, and no method of the error is called to write it. Called once per request by a consumer's
 // error handler, it writes one record per aborted request, unsampled. The
 // chain's own error dispatch does not call it: it writes the record to the
 // chain's logger, sampled (WithLogger, WithRefusalLogInterval).

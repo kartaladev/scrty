@@ -220,9 +220,10 @@ func WithSMTPTLSConfig(tlsConfig *tls.Config) SMTPOption {
 // own.
 func WithSMTPDialer(dial DialFunc) SMTPOption { return func(s *SMTPSender) { s.dial = dial } }
 
-// WithSMTPLogger replaces where the sender writes its logs. The default is
-// slog.Default, captured when the sender is built, so a consumer who
-// configures nothing still hears about mail that was never delivered.
+// WithSMTPLogger replaces where the sender writes its logs. The default is the
+// logger of the chain handling the request, else slog.Default() when the record
+// is written, so a consumer who configures nothing still hears about mail that
+// was never delivered. A nil logger fails NewSMTPSender with ErrConfig.
 //
 // Records name the server host and the failure by a fixed reason and the
 // error's Go type. They never carry the error's own text, the recipient, the

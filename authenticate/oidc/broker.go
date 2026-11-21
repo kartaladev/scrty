@@ -75,11 +75,12 @@ var _ IdentityBroker = (*Broker)(nil)
 // NewBroker returns a broker that resolves identities through links and loads
 // linked users through users.
 //
-// Both are required: a nil link store or user loader, including a nil pointer
-// inside a non-nil interface, fails with ErrConfig and identity.ErrMissingPort
-// naming the port. The library's in-memory link store is NewMemoryLinkStore.
-// With no options the broker provisions no one (see WithBrokerJIT), logs to the logger of the chain handling the request, else slog.Default() when the record is written, reads
-// time from clock.System() and draws link identifiers from id.NewV7Generator().
+// Both are required: a nil link store or user loader, including a nil pointer inside a non-nil
+// interface, fails with ErrConfig and identity.ErrMissingPort naming the port. The library's
+// in-memory link store is NewMemoryLinkStore. With no options the broker provisions no one (see
+// WithBrokerJIT), logs to the logger of the chain handling the request, else slog.Default() when
+// the record is written, reads time from clock.System() and draws link identifiers from
+// id.NewV7Generator().
 func NewBroker(links LinkStore, users identity.UserLoader, opts ...BrokerOption) (*Broker, error) {
 	if nilcheck.IsNil(links) {
 		return nil, fmt.Errorf("%w: %w", ErrConfig, identity.MissingPort("link store"))
@@ -369,9 +370,12 @@ func (e *redactedError) Unwrap() error { return e.err }
 type BrokerOption func(*Broker) error
 
 // WithBrokerLogger replaces the logger the broker writes refusals and
-// failures to. The default is the logger of the chain handling the request, else slog.Default() when the record is written. No record carries a claim
-// value, a subject, a user reference or a username; an email appears only as
-// its domain.
+// failures to. The default is the logger of the chain handling the request,
+// else slog.Default() when the record is written. A nil logger fails
+// construction with ErrConfig.
+//
+// No record carries a claim value, a subject, a user reference or a username;
+// an email appears only as its domain.
 func WithBrokerLogger(logger *slog.Logger) BrokerOption {
 	return func(b *Broker) error {
 		if logger == nil {

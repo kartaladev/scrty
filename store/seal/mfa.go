@@ -86,27 +86,24 @@ type provingEnrolmentStore struct {
 // that removes its key fail every read of the user's enrolment. The clock
 // defaults to clock.System(); WithClock replaces it.
 //
-// A failure of cipher or of inner is returned behind fixed text that names no user
-// and carries none of the failing error's text, and still matches that error
-// through errors.Is and errors.As; an inner error matching
-// mfa.ErrAlreadyEnrolled comes back as that sentinel itself, bare, with no
-// store text. Nothing is stored when sealing fails. An error of inner whose
-// chain cannot be walked (a cycle, a fan-out past the library's budget, a
-// panicking Unwrap) on Get, PutPending, Confirm, AcceptStep, Delete,
-// ChargeVerifyAttempt or RefundVerifyAttempt is replaced by a fixed error that
-// matches none of this package's or mfa's sentinels, and one record is written
-// with the call's context, to the logger of the chain handling the request, else slog.Default() when the record is written: it is answered as a failure of inner, never as
-// mfa.ErrAlreadyEnrolled or a value that does not open. An error of cipher
-// that cannot be walked, from the Open of a secret or of an emailed code, or
-// the Seal of a secret or of an emailed code, is replaced by a fixed error
-// matching ErrUnavailable, and one record is written, with the call's context, to the logger of the chain handling the request, else slog.Default() when the record is written: it is
-// answered as an outage of cipher, never as ErrDecryptionFailed or
-// ErrUnknownKeyID. A cipher error dropped by a re-seal on read (ActiveKeyID or
-// Seal) is never walked. An error of the device-proof calls
-// ProveDevice, Complete and ChargeEmailCode of inner that cannot be walked is
-// replaced the same way: it is answered as a failure of inner, never as
-// mfa.ErrAlreadyEnrolled, so a write or a charge that claims success beside it
-// is still refused.
+// A failure of cipher or of inner is returned behind fixed text that names no user and carries none
+// of the failing error's text, and still matches that error through errors.Is and errors.As; an
+// inner error matching mfa.ErrAlreadyEnrolled comes back as that sentinel itself, bare, with no
+// store text. Nothing is stored when sealing fails. An error of inner whose chain cannot be walked
+// (a cycle, a fan-out past the library's budget, a panicking Unwrap) on Get, PutPending, Confirm,
+// AcceptStep, Delete, ChargeVerifyAttempt or RefundVerifyAttempt is replaced by a fixed error that
+// matches none of this package's or mfa's sentinels, and one record is written with the call's
+// context, to the logger of the chain handling the request, else slog.Default() when the record is
+// written: it is answered as a failure of inner, never as mfa.ErrAlreadyEnrolled or a value that
+// does not open. An error of cipher that cannot be walked, from the Open of a secret or of an
+// emailed code, or the Seal of a secret or of an emailed code, is replaced by a fixed error
+// matching ErrUnavailable, and one record is written, with the call's context, to the logger of the
+// chain handling the request, else slog.Default() when the record is written: it is answered as an
+// outage of cipher, never as ErrDecryptionFailed or ErrUnknownKeyID. A cipher error dropped by a
+// re-seal on read (ActiveKeyID or Seal) is never walked. An error of the device-proof calls
+// ProveDevice, Complete and ChargeEmailCode of inner that cannot be walked is replaced the same
+// way: it is answered as a failure of inner, never as mfa.ErrAlreadyEnrolled, so a write or a
+// charge that claims success beside it is still refused.
 //
 // By default a read that opens a secret under a key other than the active
 // one re-seals it under the active key and hands the old and new values to resealer.

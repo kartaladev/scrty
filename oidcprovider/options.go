@@ -462,8 +462,8 @@ func WithIDGenerator(ids id.Generator) Option {
 }
 
 // WithLogger replaces the logger. The default is the logger of the chain handling the request,
-// else slog.Default() when the record is written, and the logger must not be nil, typed nil
-// included. With a logger given, the provider's records, and those of the token issuing,
+// else slog.Default() when the record is written. A nil logger, typed nil included, fails
+// construction with ErrConfig. With a logger given, the provider's records, and those of the token issuing,
 // verification and outbound calls it makes on a request, go to it rather than to the chain's.
 func WithLogger(logger *slog.Logger) Option {
 	return func(c *config) { c.logger = logger }

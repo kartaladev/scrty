@@ -213,11 +213,11 @@ func WithMemoryLimiterClock(clk clock.Clock) MemoryOption {
 
 // WithMemoryLimiterLogger sets where the limiter writes its per-replica warning.
 // Default: the logger of the chain handling the request, else slog.Default()
-// when the record is written.
+// when the record is written. A nil logger fails construction with ErrConfig.
 //
-// The warning is written once, on first use, so with the default it lands on the
-// chain of whichever request reaches the limiter first. Sending it to a logger the consumer
-// controls is what lets it be routed or silenced; it is not suppressible by
+// The warning is written once, on first use, so with the default it lands on
+// the chain of whichever request reaches the limiter first. Sending it to a
+// logger the consumer controls is what lets it be routed or silenced; it is not suppressible by
 // option, because a limit that is silently multiplied by the replica count is
 // exactly the misunderstanding worth one record.
 func WithMemoryLimiterLogger(logger *slog.Logger) MemoryOption {

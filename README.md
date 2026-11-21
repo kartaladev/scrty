@@ -3338,6 +3338,11 @@ h := prblm.NewHandler(prblm.WithNamespace("/probs"), prblm.WithMappers(lockPage)
   response immediately. A gin deployment with no renderer at all answers those 404s with an empty body.
 - **A context error scrty does not recognise is prblm's to map.** The integration reports no match for a
   deadline or cancellation it did not raise.
+- **A cyclic or panicking error is answered safely, where scrty or prblm walks it.** With prblm v0.3.0
+  and later, prblm bounds its own walks, so such an error is answered with the safe 500 before scrty's
+  mapper runs, and the mapper walks through the bounded `httpsec.LookupStatus`. Not protected: your own
+  calls to the standard library's `errors.Is` or `errors.As` on the error, and gin's `Context.Error`,
+  which walks the chain before any renderer runs.
 
 ## Known limitations
 

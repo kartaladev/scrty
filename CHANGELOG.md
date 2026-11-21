@@ -33,10 +33,106 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
   set, so a credential handed out with a challenge is never cacheable. A challenge without a token
   leaves `Cache-Control` as it was. An error handler that sets `Cache-Control` again after the
   refusal overrides this.
+- A challenge offered through an `As` method behind a typed-nil `*ChallengeError` is now found, and
+  an error chain of more than 1,000 links is unrecognised by `httpsec.LookupStatus` and
+  `httpsec.StatusForError` (status 500, not recognised).
+- **BREAKING (records).** Where a component writes its records is now decided when each record is
+  written. In order: the component's own logger option, else the logger of the `httpsec` chain
+  handling the request (`httpsec.WithLogger`), else `slog.Default()` as it is at that moment.
+  - A component without a logger option, used inside a chain, now writes to the chain's logger and
+    is filtered by its level. A chain logger at Warn drops the Info and Debug records that used to
+    reach the default.
+  - `slog.SetDefault` called after wiring is honoured. Before, each component kept the default it
+    saw at construction.
+  - The same component writes to the chain's logger inside a chain and to `slog.Default()` outside
+    one. A chain answers its logger to components only when `httpsec.WithLogger` was given.
+  - To keep the old destination, pass `slog.Default()` to the component's logger option.
+  - The chain-built source guards' suppressed-records summary now reads `ratelimit: refusal records
+    suppressed` with a `flow` attribute (it read `httpsec: refusal logs suppressed`). A consumer
+    `WithRefusalLogReporter` still receives it.
+  - A sampler's suppressed-count summary goes where that key's own records went, so a summary that
+    names a user never reaches another chain's log. Before, it went to the last logger the component
+    had resolved.
+- **BREAKING (configuration).** A nil logger option now fails construction with the component's
+  `ErrConfig`, naming the option. These options ignored nil before, which meant "use the default" or
+  "do not log": `authenticate.WithPasswordLogger`, `apikey.WithLogger`, `session.WithLogger`,
+  `lockout.WithLogger`, `policy.WithMFALogger`, `policy.WithMFARequirementLogger`,
+  `magiclink.WithLogger`, `passkey.WithLogger`, `recovery.WithLogger`, `recovery.WithCodesLogger`,
+  `onetime.WithLogger`, `notify.WithSMTPLogger` and `notify.WithQueueLogger`. The OpenID Provider's
+  `WithLogger` now refuses a typed nil as well. To get the default, leave the option out. The other
+  logger options already refused nil, as `redisstore.WithLogger` does.
+- **BREAKING (consumer errors).** An error returned by a consumer-supplied port (a store, limiter,
+  loader, sender, authenticator, hook, refusal check, write function, key source, signer or the
+  `http.Client` behind the outbound calls) is read once where it enters the library. A walkable
+  error passes unchanged. An error that cannot be walked (a cycle, a fan-out, a panicking `Unwrap`)
+  is replaced by a fixed error, one Error record is written, and the site answers as it does when
+  that dependency is down. A store or user loader that answers neither a record nor an error is now
+  a dependency failure, never a missing record or user. Before, a hostile error could make a flow
+  treat a fault as "not found", "refused" or "unsupported".
+- **BREAKING (identifier generators).** An `id.Generator` that answers the nil identifier with no
+  error is now a failing dependency at every place the library asks it for an identifier, the
+  `sqlstore`, `pgxstore` and `gormstore` backends included. The caller sees that site's own failure
+  (the OpenID Provider's `server_error`, a store's failure error, a refused issuance), and nothing
+  is stored under the nil identifier. The session family keeps its configuration error.
+- A panic in consumer code that the library runs on a goroutine of its own is recovered, with one
+  Error record, instead of ending the process. The site then answers its outage and carries on: the
+  WebAuthn metadata refresh (`passkey/webauthn`; registration is refused), the OIDC relying party's
+  discovery and key-set fetches (`ErrDiscoveryFailed`), the `signingkey` rotation loops, the memory
+  `session` store's housekeeping, and the `expiry/sweep` scheduled jobs (locker, observer, clock).
+- The `prblmsec` module requires `github.com/kartaladev/prblm` v0.3.0, and the test module requires
+  its `ginprblm` and `fiberprblm` adapters at v0.3.0. prblm now bounds its own walks. Its hooks
+  receive a note wrapping `prblm.ErrUnwalkableError` instead of `*PanicError` reports, a `WithStatus`
+  hint joined beside a sentinel is decided in `errors.Is` order, and typed-nil pointers in a chain
+  are skipped.
+- Dependencies are updated across the workspace modules: `gofiber/fiber/v3` 3.7.0 (its static
+  middleware now confines symlinks by default), `valyala/fasthttp` 1.78.0,
+  `klauspost/compress` 1.20.4, `golang.org/x/crypto` 0.59.0, `golang.org/x/sync` 0.25.0,
+  `golang.org/x/mod` 0.43.0 (tools), `pressly/goose/v3` 3.30.1, `jackc/pgx/v5` 5.13.0 and
+  `go-co-op/gocron/v2` 2.23.1.
 
 ### Fixed
 
-- `httpsec.StatusForError` no longer panics on a typed-nil `*ChallengeError` in the error chain.
+- `httpsec.LookupStatus` and `httpsec.StatusForError` no longer hang, crash or panic on a cyclic,
+  fanned-out or panicking error chain, or on a typed-nil `*ChallengeError` or
+  `*password.RejectedError` in it. They read the chain once, within 1,000 entries, and recover a
+  panicking `Unwrap`, `Is` or `As`. An unreadable chain is unrecognised (500) and writes one
+  redacted Error record. The `prblmsec` mapper and `fibersec` classify through the same bounded walk.
+  Consumer code that calls stdlib `errors.Is` or `errors.As` on the same error is not protected.
+- Refusal-path reads of an error (request cancellation causes, a consumer `httpsec.Request`'s body
+  read, the outbound client's transport and body errors) use the same bounded walk, so a hostile
+  error no longer hangs or crashes the request.
+- Hostile consumer-port errors no longer change a security outcome. Each of these used to read a
+  cycle or fan-out that claimed "not found", "refused" or "unsupported" as that answer:
+  - the authenticator chain `authenticate.FirstOf` skipped a delegate and authenticated through the
+    next one, and an `authorize.FirstOf` chain skipped a consumer authorizer, so the next one could grant
+    access;
+  - the OIDC provider's code exchange issued tokens, a code replay revoked nothing, a refresh revoked
+    the grant on a user-loader fault, and revocation and introspection answered as if the token store
+    had worked;
+  - the OIDC broker provisioned a duplicate user, back-channel logout ended nothing, and a consent
+    store fault parked the request at the consent page;
+  - passkey sign-in and the passkey second factor answered a credential-store fault as an unknown
+    credential, passwordless login answered a user-loader fault as an unknown user, and recovery and
+    magic-link flows no longer log or refuse a store fault as an unknown user;
+  - step-up verification charged nothing for a refusal, and the sealed MFA store read
+    `ErrAlreadyEnrolled` where it had not been returned;
+  - magic-link redemption charged the client's source for a hostile consumer check, and MFA
+    enrolment answered 500 and charged its limiter twice where a plain outage answers 401.
+- The expiry sweeper no longer crashes the process when a consumer error's `Is` method panics on a
+  scheduler goroutine, and a lock answered as nil no longer panics `gocron`. A scheduler timer that
+  never fires no longer hangs shutdown, and the memory `session` store's housekeeping no longer
+  stops silently on a nil timer channel.
+- The OpenID Provider no longer stores an authorization code under the nil grant family when the
+  identifier generator answers the nil identifier, so one family can no longer span users' grants.
+  The code exchange and a replay refuse a stored code that names the nil family, and a store that
+  answers neither a pending request nor a browser session no longer causes a nil dereference.
+- The store backends no longer write a row under the nil identifier. Before, a nil identifier could
+  overwrite an existing signing key or replace a recovery-code set.
+- Hostile errors no longer hang their caller where the library handed them back raw: the password
+  policy's write and context-words errors, the password authenticator's event-id generator, the
+  signing-key manager's store errors, the token generator's key-source and signer errors, and the
+  sealed MFA store's cipher errors. A random-source error is no longer rendered eagerly by
+  `fmt.Errorf` before it is checked.
 
 ## [0.1.1] - 2026-11-11
 

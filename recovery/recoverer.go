@@ -320,11 +320,15 @@ func WithSecurityEvents(sink event.Sink) Option {
 	return func(c *config) { c.events.Set(sink) }
 }
 
-// WithLogger replaces the logger of the Recoverer's own records.
+// WithLogger replaces the logger of the Recoverer's own records. The default is
+// the logger of the chain handling the request, else slog.Default() when the
+// record is written. A nil logger, typed nil included, fails NewRecoverer with
+// ErrConfig.
+//
 // The reset planner, the MFAEnrolments kind and WayBackCheck hold no logger:
-// their abort records follow the chain's logger, else slog.Default(). The default is the logger of the chain
-// handling the request, else slog.Default() when the record is written. A nil
-// logger, typed nil included, fails NewRecoverer with ErrConfig. No record carries a username, an address, a code or a token.
+// their abort records follow the chain's logger, else slog.Default().
+//
+// No record carries a username, an address, a code or a token.
 func WithLogger(logger *slog.Logger) Option {
 	return func(c *config) { c.logger = logger }
 }

@@ -86,10 +86,11 @@ type Handoff struct {
 //
 //	handoffs, err := oidc.NewHandoff(oidc.NewMemoryHandoffStore(), users)
 //
-// With no options it draws codes from crypto/rand.Reader (WithHandoffRandom),
-// reads time from clock.System() (WithHandoffClock), names records with
-// id.NewV7Generator() (WithHandoffIDGenerator) and logs to the logger of the chain handling the request, else slog.Default() when the record is written
-// (WithHandoffLogger). Every error it returns wraps ErrConfig.
+// With no options it draws codes from crypto/rand.Reader (WithHandoffRandom), reads time from
+// clock.System() (WithHandoffClock), names records with id.NewV7Generator()
+// (WithHandoffIDGenerator) and logs to the logger of the chain handling the request, else
+// slog.Default() when the record is written (WithHandoffLogger). Every error it returns wraps
+// ErrConfig.
 //
 // A record of a redemption the store or users failed carries a fixed reason
 // and the error's Go type, never the dependency's own text; a consumer who
@@ -534,7 +535,9 @@ func WithHandoffIDGenerator(ids id.Generator) HandoffOption {
 }
 
 // WithHandoffLogger replaces the logger every refused and failed redemption
-// is reported to. The default is the logger of the chain handling the request, else slog.Default() when the record is written. A nil logger is refused.
+// is reported to. The default is the logger of the chain handling the request,
+// else slog.Default() when the record is written. A nil logger fails
+// construction with ErrConfig.
 //
 // Redemption returns one error whatever went wrong, so this log is the only
 // place the cause appears: a miss, an inactive user or a reference mismatch at

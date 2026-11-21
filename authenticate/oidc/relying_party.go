@@ -71,18 +71,16 @@ type roleSyncing interface{ RoleSyncProviders() []string }
 // NewRelyingParty returns a manager for the registry's providers that resolves
 // identities through broker.
 //
-// Both are required: a manager with no provider or no way to resolve an
-// identity cannot complete a login, so a nil registry, or a nil broker
-// (identity.MissingPort), is a wiring mistake. A nil pointer inside a non-nil
-// interface counts as nil. With no options it sends every
-// request through outbound.New(), draws secrets from crypto/rand.Reader, reads
-// time from clock.System(), logs to the logger of the chain handling the request, else slog.Default() when the record is written, and holds login flows for
-// DefaultFlowTTL in a NewMemoryFlowStore sharing its clock and random source,
-// judges provider token times within DefaultClockSkew (WithClockSkew), and
-// accepts logout tokens issued up to DefaultLogoutTokenMaxAge ago
-// (WithLogoutTokenMaxAge), and gives every provider the default Assurance,
-// accepting amr "mfa" only (WithProviderAssurance), matched per provider
-// unless WithAssuranceEvaluator replaces the matching.
+// Both are required: a manager with no provider or no way to resolve an identity cannot complete a
+// login, so a nil registry, or a nil broker (identity.MissingPort), is a wiring mistake. A nil
+// pointer inside a non-nil interface counts as nil. With no options it sends every request through
+// outbound.New(), draws secrets from crypto/rand.Reader, reads time from clock.System(), logs to
+// the logger of the chain handling the request, else slog.Default() when the record is written, and
+// holds login flows for DefaultFlowTTL in a NewMemoryFlowStore sharing its clock and random source,
+// judges provider token times within DefaultClockSkew (WithClockSkew), and accepts logout tokens
+// issued up to DefaultLogoutTokenMaxAge ago (WithLogoutTokenMaxAge), and gives every provider the
+// default Assurance, accepting amr "mfa" only (WithProviderAssurance), matched per provider unless
+// WithAssuranceEvaluator replaces the matching.
 //
 // It sends no request. Provider metadata and key sets are fetched on first
 // use, or by Prefetch, and cached for DefaultDiscoveryTTL, with a failure
@@ -418,7 +416,9 @@ func WithFlowTTL(ttl time.Duration) Option {
 }
 
 // WithLogger replaces the logger refusals and provider failures are reported
-// to. The default is the logger of the chain handling the request, else slog.Default() when the record is written.
+// to. The default is the logger of the chain handling the request, else
+// slog.Default() when the record is written. A nil logger fails construction
+// with ErrConfig.
 //
 // No record this package writes carries a token, a client secret, a PKCE
 // verifier, a state, a nonce, a handoff code or a claim value.

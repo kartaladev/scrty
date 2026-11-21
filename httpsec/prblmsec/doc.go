@@ -188,4 +188,11 @@
 //   - A context error scrty does not recognise, such as a deadline exceeded, is
 //     prblm's to map: the integration reports no match and prblm's built-in
 //     mappers and safe fallback decide it.
+//   - A cyclic or panicking error is answered safely, but only where scrty or
+//     prblm walks it. With prblm v0.3.0 and later, prblm bounds its own walks, so
+//     such an error is answered with the safe 500 before scrty's mapper runs, and
+//     the mapper itself walks through the bounded httpsec.LookupStatus. Code
+//     outside both is not protected: a consumer's own call to the standard
+//     library's errors.Is or errors.As on the error, and gin's Context.Error,
+//     which walks the chain before any renderer runs.
 package prblmsec

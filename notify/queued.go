@@ -201,9 +201,12 @@ func WithQueueSendTimeout(timeout time.Duration) QueuedOption {
 	return func(c *queuedConfig) { c.timeout = timeout }
 }
 
-// WithQueueLogger replaces where the sender writes its logs. The default is
-// slog.Default, captured when the sender is built, so a consumer who
-// configures nothing still hears about mail that was never delivered.
+// WithQueueLogger replaces where the sender writes its logs. The default is the
+// logger of the chain handling the request that queued the message, else
+// slog.Default() when the record is written, so a consumer who configures
+// nothing still hears about mail that was never delivered. A record written by
+// a worker with no request, such as one about a worker that ended, goes to
+// slog.Default(). A nil logger fails NewQueuedSender with ErrConfig.
 //
 // Records report a dropped message, a failed delivery, a panic in the wrapped
 // sender and a wrapped sender that ended its goroutine. None of them carries

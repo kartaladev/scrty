@@ -12,11 +12,11 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/test/internal/idgenmock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/store/migrate"
 	"github.com/kartaladev/scrty/store/sqlstore"
 	"github.com/kartaladev/scrty/test"
+	"github.com/kartaladev/scrty/test/internal/idgenmock"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 )
 

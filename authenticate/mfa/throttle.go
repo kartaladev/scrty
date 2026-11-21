@@ -376,8 +376,8 @@ func WithThrottleSecurityEvents(sink event.Sink) ThrottleOption {
 
 // WithThrottleLogger replaces the default destination for throttle records, the
 // logger of the chain handling the request, else slog.Default() when the record
-// is written. A nil logger is a configuration error; a consumer who wants silence
-// supplies a logger with a discarding handler, which says so at the wiring.
+// is written. A nil logger fails construction with ErrConfig; a consumer who wants
+// silence supplies a logger with a discarding handler, which says so at the wiring.
 //
 // A limiter-failure record carries a fixed reason ("limiter-error" or
 // "record-error") and the limiter's error's Go type, never its text; a

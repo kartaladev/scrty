@@ -189,11 +189,11 @@ func WithRandom(src io.Reader) Option {
 	}
 }
 
-// WithIDGenerator replaces the generator of credential and challenge
-// identifiers. The default is id.NewV7Generator. A nil generator, including a
-// nil pointer held in the interface, is a configuration error: New returns an error wrapping ErrConfig that names the identifier
-// generator. A generator that answers the nil identifier with no error is
-// treated as a failing generator, never stored under that identifier.
+// WithIDGenerator replaces the generator of credential and challenge identifiers. The default is
+// id.NewV7Generator. A nil generator, including a nil pointer held in the interface, is a
+// configuration error: New returns an error wrapping ErrConfig that names the identifier generator.
+// A generator that answers the nil identifier with no error is treated as a failing generator,
+// never stored under that identifier.
 func WithIDGenerator(ids id.Generator) Option {
 	return func(m *Passkeys) {
 		m.ids = ids

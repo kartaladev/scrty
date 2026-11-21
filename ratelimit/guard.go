@@ -195,7 +195,7 @@ func WithSourceGuardKeyer(keyer *SourceKeyer) GuardOption {
 
 // WithSourceGuardLogger sets where the guard writes its refusal records.
 // Default: the logger of the chain handling the request, else slog.Default()
-// when the record is written.
+// when the record is written. A nil logger fails construction with ErrConfig.
 //
 // A record about a throttled source names its address on purpose — the point
 // of the record is to say who was refused. A record about the limiter itself

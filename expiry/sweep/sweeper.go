@@ -155,7 +155,8 @@ func WithClock(clock clockwork.Clock) Option {
 
 // WithLogger sets where the sweeper logs a distributed lock failure.
 // Default: the logger of the chain handling the request, else slog.Default()
-// when the record is written. A run's own outcome is logged by the runner
+// when the record is written. A lock taken by the sweeper's own schedule has no request, so
+// its record goes to slog.Default(). A run's own outcome is logged by the runner
 // (expiry.WithLogger), not here. A lock failure record carries the task and
 // job names, a fixed reason and the error's Go type, never the error's text,
 // which comes from the consumer's locker. When the error is, or wraps,

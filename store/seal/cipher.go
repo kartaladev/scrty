@@ -90,18 +90,17 @@ type AEADCipher struct {
 // with ErrConfig; the cipher never falls back to a shorter key or
 // to storing plaintext.
 //
-// Open returns ErrDecryptionFailed for every value that does not open — wrong
-// key, wrong aad, altered or truncated bytes, or bytes that were never sealed —
-// and ErrUnknownKeyID, never matching ErrDecryptionFailed, when the value
-// names a key kr does not hold. With ErrUnknownKeyID it still returns the id
-// the value names, so an operator can tell which key to restore; that id is
-// read from the stored value and is never part of the error's text (see
-// ErrUnknownKeyID). A failure of kr itself is returned behind fixed text,
-// matching the ring's error through errors.Is and errors.As. A ring error
-// whose chain cannot be walked (a cycle, a fan-out past the library's budget,
-// a panicking Unwrap) is replaced by a fixed error matching ErrUnavailable, and
-// one record is written, with the call's context, to the logger of the chain handling the request, else slog.Default() when the record is written: it is answered as the ring's
-// outage, never as ErrUnknownKeyID. No error carries key bytes or plaintext.
+// Open returns ErrDecryptionFailed for every value that does not open — wrong key, wrong aad,
+// altered or truncated bytes, or bytes that were never sealed — and ErrUnknownKeyID, never matching
+// ErrDecryptionFailed, when the value names a key kr does not hold. With ErrUnknownKeyID it still
+// returns the id the value names, so an operator can tell which key to restore; that id is read
+// from the stored value and is never part of the error's text (see ErrUnknownKeyID). A failure of
+// kr itself is returned behind fixed text, matching the ring's error through errors.Is and
+// errors.As. A ring error whose chain cannot be walked (a cycle, a fan-out past the library's
+// budget, a panicking Unwrap) is replaced by a fixed error matching ErrUnavailable, and one record
+// is written, with the call's context, to the logger of the chain handling the request, else
+// slog.Default() when the record is written: it is answered as the ring's outage, never as
+// ErrUnknownKeyID. No error carries key bytes or plaintext.
 //
 // Limit: a random 96-bit nonce is safe for about 2^32 seals under one key;
 // past that, the chance of a repeated nonce, which breaks GCM's
@@ -377,16 +376,15 @@ type sessionCipher struct {
 // reports, and passes cipher the context the session store gives it.
 //
 // An error of cipher matching ErrUnavailable, from Seal or Open, is reported as
-// session.ErrCipherUnavailable, joined with cipher's error so ErrUnavailable and
-// its cause still match. The session store answers such an open failure as a
-// store failure rather than as session.ErrUnreadable, so a cipher marks an
-// outage once, with ErrUnavailable, for every store. Every other error of cipher
-// is returned unchanged: a context error, which the session store also treats
-// as a store failure, and any other, which the session store answers, on an
-// open, as session.ErrUnreadable. An error of cipher whose chain cannot be
-// walked is replaced by a fixed error matching ErrUnavailable, so it is
-// reported as session.ErrCipherUnavailable, and one record is written, with the
-// call's context, to the logger of the chain handling the request, else slog.Default() when the record is written.
+// session.ErrCipherUnavailable, joined with cipher's error so ErrUnavailable and its cause still
+// match. The session store answers such an open failure as a store failure rather than as
+// session.ErrUnreadable, so a cipher marks an outage once, with ErrUnavailable, for every store.
+// Every other error of cipher is returned unchanged: a context error, which the session store also
+// treats as a store failure, and any other, which the session store answers, on an open, as
+// session.ErrUnreadable. An error of cipher whose chain cannot be walked is replaced by a fixed
+// error matching ErrUnavailable, so it is reported as session.ErrCipherUnavailable, and one record
+// is written, with the call's context, to the logger of the chain handling the request, else
+// slog.Default() when the record is written.
 //
 // A nil cipher, typed nil included, gives a nil session.Cipher, so
 // session.NewEncryptedStore refuses it with session.ErrConfig instead of the

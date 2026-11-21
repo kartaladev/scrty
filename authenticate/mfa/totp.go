@@ -752,8 +752,8 @@ func WithRandom(src io.Reader) Option {
 // operator can tell whose second factor was used or changed; the reference is
 // the consumer's own identifier, not an address or a name. A failed store's
 // error text is never written; a consumer who wants it logs it inside their own
-// EnrolmentStore. A nil logger is a configuration error; a consumer who wants
-// silence supplies one with a discarding handler, which says so at the wiring.
+// EnrolmentStore. A nil logger fails construction with ErrConfig; a consumer who
+// wants silence supplies one with a discarding handler, which says so at the wiring.
 func WithLogger(logger *slog.Logger) Option {
 	return func(t *TOTP) { t.logger = logger }
 }
