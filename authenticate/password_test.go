@@ -1136,18 +1136,16 @@ func TestRefusalLogRecords(t *testing.T) {
 func TestPasswordAuthenticatorLoggerDefaults(t *testing.T) {
 	t.Parallel()
 
-	t.Run("a nil logger is ignored rather than refused", func(t *testing.T) {
+	t.Run("a nil logger is refused at construction", func(t *testing.T) {
 		t.Parallel()
 
 		ctrl := gomock.NewController(t)
 		enc := NewMockEncoder(ctrl)
-		enc.EXPECT().Encode(gomock.Any()).Return([]byte("$fake$reference"), nil)
 
-		auth, err := authenticate.NewUsernamePasswordAuthenticator(NewMockUserLoader(ctrl),
+		_, err := authenticate.NewUsernamePasswordAuthenticator(NewMockUserLoader(ctrl),
 			authenticate.WithPasswordEncoder(enc),
 			authenticate.WithPasswordLogger(nil))
-		require.NoError(t, err, "a nil logger made logging mandatory")
-		assert.NotNil(t, auth)
+		require.ErrorIs(t, err, authenticate.ErrConfig)
 	})
 
 	t.Run("flushing a provider that suppressed nothing reports nothing", func(t *testing.T) {

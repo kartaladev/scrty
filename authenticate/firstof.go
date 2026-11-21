@@ -70,7 +70,8 @@ func NewFirstOf(delegates ...Authenticator) (*FirstOf, error) {
 // walk's budget, an Unwrap that panics) is never read as a skip, whatever it
 // claims: it is replaced by a fixed fault matching porterr.ErrUnwalkable and
 // no sentinel of this package, which ends the walk as any other outage does,
-// and one record of the abort is written to slog.Default().
+// and one record of the abort is written to the logger of the chain handling the
+// request, else to slog.Default() when the record is written.
 //
 // A deciding delegate that reports no error but no result, or a result with no
 // principal, is turned into ErrAuthenticationFailed here. This is the single
@@ -84,7 +85,8 @@ func (m *FirstOf) Authenticate(ctx context.Context, credentials identity.Credent
 		// chain cannot be walked becomes a fault that matches no skip, so a
 		// hostile delegate is never passed over for a later one to
 		// authenticate: it stops the walk as a plain outage from it does.
-		// FirstOf holds no logger, so the abort record goes to the default.
+		// FirstOf holds no logger, so the abort record goes to the chain's logger,
+		// else the default, as SanitizeTo routes it.
 		err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 		if errors.Is(err, ErrUnsupportedCredentials) || errors.Is(err, ErrNoEligibleAuthenticator) {
 			continue

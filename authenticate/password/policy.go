@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
@@ -85,7 +86,8 @@ const (
 // The policy never logs a candidate, a hash or a context word, and does not
 // keep the candidate after a call returns. Its one log record is a
 // breach-lookup failure accepted under Accept, written at ERROR with fixed
-// text to the logger WithPolicyLogger sets (default slog.Default()). A Policy
+// text to the logger WithPolicyLogger sets (default: the logger of the chain
+// handling the request, else slog.Default() when the record is written). A Policy
 // is safe for concurrent use.
 type Policy struct {
 	minLength int
@@ -142,8 +144,9 @@ type policyConfig struct {
 //   - the Argon2id encoder at its defaults, which encodes a change and is the
 //     first matcher of the reuse rule ([WithEncoder] replaces it); and
 //   - the system clock ([WithClock] replaces it); and
-//   - slog.Default() as the logger of what the policy accepts without a
-//     check ([WithPolicyLogger] replaces it).
+//   - the logger of the chain handling the request, else slog.Default() when
+//     the record is written, for what the policy accepts without a check
+//     ([WithPolicyLogger] replaces it).
 //
 // Every option replaces or adds only what it names. The same encoder's
 // [Upgrader] decides, at a login, whether a stored hash is outdated: see
@@ -156,7 +159,7 @@ func NewPolicy(opts ...PolicyOption) (*Policy, error) {
 		minLength: DefaultMinLength,
 		maxLength: DefaultMaxLength,
 		clock:     clock.System(),
-		logger:    slog.Default(),
+		logger:    ctxlog.Routing(),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -349,8 +352,9 @@ func WithClock(clock clock.Clock) PolicyOption {
 // panicking chain. The policy then answers it as that port's outage, and the
 // record carries the abort's reason, never the error's text.
 //
-// Default: slog.Default(), read when [NewPolicy] runs. A nil logger, typed nil
-// included, fails construction.
+// Default: the logger of the chain handling the request, else slog.Default()
+// when the record is written. A nil logger, typed nil included, fails
+// construction.
 func WithPolicyLogger(logger *slog.Logger) PolicyOption {
 	return func(c *policyConfig) { c.logger = logger }
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/idgen"
@@ -191,20 +192,16 @@ func WithSecurityEvents(sink event.Sink) Option {
 	return func(m *Keys) { m.events.Set(sink) }
 }
 
-// WithLogger replaces the logger. The default is slog.Default().
+// WithLogger replaces the logger. The default is the logger of the chain
+// handling the request, else slog.Default() when the record is written.
 //
-// A nil logger is ignored rather than refused: unlike a clock, a nil logger has
-// an obvious safe reading — the caller does not want this component's logs —
-// and refusing it would make logging mandatory. Only the causes of a
+// A nil logger, typed nil included, fails New with ErrConfig: the default needs
+// no option, so a nil here is a wiring mistake. Only the causes of a
 // verification refusal are logged, at debug for an unknown key and at error for
 // a store that could not answer, and no log this package writes carries a
 // presented key or a secret.
 func WithLogger(logger *slog.Logger) Option {
-	return func(m *Keys) {
-		if logger != nil {
-			m.logger = logger
-		}
-	}
+	return func(m *Keys) { m.logger = logger }
 }
 
 // validPrefix reports whether p is 1 to 16 lowercase ASCII letters or digits.
@@ -230,9 +227,7 @@ func validPrefix(p string) bool {
 //
 // A prefix that is not 1 to 16 lowercase ASCII letters or digits is refused
 // here rather than left to produce keys nothing can split, and every port and
-// function is refused when nil, with one exception: a nil logger is ignored,
-// because "do not log from this component" is a reading a nil logger plainly
-// has, while a nil clock has no reading other than a mistake.
+// function is refused when nil, the logger included.
 //
 // A record of a failed store read or write carries a fixed reason and the
 // error's Go type, never the store's own text; a consumer who wants that
@@ -245,7 +240,7 @@ func New(opts ...Option) (*Keys, error) {
 		digest: sha256Digest,
 		ids:    id.NewV7Generator(),
 		clock:  clock.System(),
-		logger: slog.Default(),
+		logger: ctxlog.Routing(),
 		random: rand.Reader,
 	}
 
@@ -271,6 +266,9 @@ func New(opts ...Option) (*Keys, error) {
 	}
 	if nilcheck.IsNil(m.clock) {
 		return nil, fmt.Errorf("%w: clock must not be nil", ErrConfig)
+	}
+	if nilcheck.IsNil(m.logger) {
+		return nil, fmt.Errorf("%w: the logger is nil; WithLogger needs a logger", ErrConfig)
 	}
 	if nilcheck.IsNil(m.random) {
 		return nil, fmt.Errorf("%w: random source must not be nil", ErrConfig)
@@ -516,13 +514,8 @@ func (m *Keys) Verify(ctx context.Context, presented string) (identity.Principal
 	}, rec, nil
 }
 
-// log writes through the configured logger, and writes nothing when the
-// consumer supplied none.
+// log writes through the configured logger, which New guarantees is set.
 func (m *Keys) log(ctx context.Context, level slog.Level, msg string, attrs ...slog.Attr) {
-	if m.logger == nil {
-		return
-	}
-
 	m.logger.LogAttrs(ctx, level, msg, attrs...)
 }
 

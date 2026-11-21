@@ -104,7 +104,8 @@ type reuseRule struct {
 	depth    int
 	// logger takes the sanitizer's record when the history port returns an
 	// error that cannot be walked. NewPolicy sets it to the policy's logger;
-	// nil falls back to slog.Default() inside porterr.SanitizeTo.
+	// nil routes inside porterr.SanitizeTo: the chain's logger, else the
+	// default.
 	logger *slog.Logger
 }
 
@@ -359,6 +360,6 @@ func ProvisionerWrite(provisioner identity.UserProvisioner) (WriteFunc, error) {
 
 		_, err := provisioner.Update(ctx, user.Username, identity.WithUserPasswordChange(hash, changedAt))
 
-		return porterr.Sanitize(err, porterr.ErrUnwalkable)
+		return porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	}, nil
 }

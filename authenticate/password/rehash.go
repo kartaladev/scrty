@@ -62,7 +62,7 @@ func ConditionalProvisionerRehash(
 			identity.WithUserPasswordIf(replaced),
 			identity.WithUserPassword(upgraded),
 		)
-		err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+		err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 
 		switch {
 		case err == nil, errors.Is(err, identity.ErrNotUpdated), errors.Is(err, identity.ErrUserNotFound):

@@ -162,13 +162,11 @@ func TestNewAPIKeyManager(t *testing.T) {
 			},
 		},
 		{
-			// A nil logger has an obvious reading — "do not log from this
-			// component" — so it is ignored rather than refused.
-			name: "a nil logger is accepted",
+			name: "a nil logger is refused",
 			opts: []apikey.Option{apikey.WithLogger(nil)},
 			assert: func(t *testing.T, m *apikey.Keys, err error) {
-				require.NoError(t, err)
-				assert.Equal(t, "sk", m.Prefix())
+				require.ErrorIs(t, err, apikey.ErrConfig)
+				assert.Nil(t, m)
 			},
 		},
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
@@ -93,19 +94,13 @@ func WithPasswordLogInterval(interval time.Duration) PasswordOption {
 	return func(a *UsernamePasswordAuthenticator) { a.logEvery = interval; a.logEverySet = true }
 }
 
-// WithPasswordLogger replaces the logger. The default is
-// slog.Default().
+// WithPasswordLogger replaces the logger. The default is the logger of the
+// chain handling the request, else slog.Default() when the record is written.
 //
-// A nil logger is ignored rather than refused: unlike a port the provider
-// cannot work without, a nil logger has an obvious safe reading — the caller
-// does not want to choose this component's logger — and refusing it would make
-// configuring logging mandatory.
+// A nil logger, typed nil included, fails construction with [ErrConfig]: the
+// default needs no option, so a nil here is a wiring mistake.
 func WithPasswordLogger(logger *slog.Logger) PasswordOption {
-	return func(a *UsernamePasswordAuthenticator) {
-		if logger != nil {
-			a.logger = logger
-		}
-	}
+	return func(a *UsernamePasswordAuthenticator) { a.logger = logger; a.loggerSet = true }
 }
 
 // WithPasswordUsernameInRefusalLogs writes the submitted username in refusal records,
@@ -158,6 +153,7 @@ type UsernamePasswordAuthenticator struct {
 	idsSet bool
 
 	logger      *slog.Logger
+	loggerSet   bool // WithPasswordLogger was applied
 	logEvery    time.Duration
 	logEverySet bool
 
@@ -229,8 +225,11 @@ func NewUsernamePasswordAuthenticator(
 		a.ids = id.NewV7Generator()
 	}
 
+	if a.loggerSet && nilcheck.IsNil(a.logger) {
+		return nil, fmt.Errorf("%w: the logger is nil; WithPasswordLogger needs a logger", ErrConfig)
+	}
 	if a.logger == nil {
-		a.logger = slog.Default()
+		a.logger = ctxlog.Routing()
 	}
 	if !a.logEverySet {
 		a.logEvery = defaultRefusalLogInterval
@@ -518,7 +517,7 @@ func (a *UsernamePasswordAuthenticator) refuse(ctx context.Context, level slog.L
 // say one refusal happened where there were fifty. It runs on the goroutine
 // whose Allow or FlushRefusalLogs call triggered it, so it only logs.
 func (a *UsernamePasswordAuthenticator) reportSuppressed(reason string, suppressed int) {
-	a.logger.LogAttrs(context.Background(), slog.LevelInfo, "authentication refusals suppressed",
+	ctxlog.Summary(a.logger).LogAttrs(context.Background(), slog.LevelInfo, "authentication refusals suppressed",
 		slog.String("reason", reason),
 		slog.Int("suppressed", suppressed))
 }
