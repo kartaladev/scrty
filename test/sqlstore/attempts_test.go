@@ -9,6 +9,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/kartaladev/scrty/internal/idgen"
+	"github.com/kartaladev/scrty/internal/idgen/idgentest"
 
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -78,7 +82,18 @@ func TestAttemptStore_IDs(t *testing.T) {
 		name     string
 		username string
 		opts     []sqlstore.Option
-		assert   func(t *testing.T, err error, username string)
+		// ids, when set, is the generator the store mints from.
+		ids    func(t *testing.T) id.Generator
+		assert func(t *testing.T, err error, username string)
+	}
+
+	answering := func(got id.ID, err error) func(t *testing.T) id.Generator {
+		return func(t *testing.T) id.Generator {
+			g := idgentest.NewMockGenerator(gomock.NewController(t))
+			g.EXPECT().NewID().Return(got, err).AnyTimes()
+
+			return g
+		}
 	}
 
 	cases := []testCase{
@@ -106,11 +121,19 @@ func TestAttemptStore_IDs(t *testing.T) {
 		{
 			name:     "a generator failure is returned wrapped, and nothing is written",
 			username: "failing-generator",
-			opts: []sqlstore.Option{sqlstore.WithIDGenerator(storefix.GeneratorFunc(func() (id.ID, error) {
-				return id.Nil, errGenerator
-			}))},
+			ids:      answering(id.Nil, errGenerator),
 			assert: func(t *testing.T, err error, username string) {
 				require.ErrorIs(t, err, errGenerator)
+				assert.Empty(t, storefix.AttemptIDs(t.Context(), t, db, username))
+			},
+		},
+		{
+			name:     "a generator answering the nil id fails like a generator failure, and nothing is written",
+			username: "nil-id-generator",
+			ids:      answering(id.Nil, nil),
+			assert: func(t *testing.T, err error, username string) {
+				require.ErrorIs(t, err, idgen.ErrNil)
+				assert.Contains(t, err.Error(), "record login failure")
 				assert.Empty(t, storefix.AttemptIDs(t.Context(), t, db, username))
 			},
 		},
@@ -138,8 +161,85 @@ func TestAttemptStore_IDs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := newAttemptStore(t, db, tc.opts...).RecordFailure(t.Context(), tc.username, at)
+			opts := tc.opts
+			if tc.ids != nil {
+				opts = append(opts[:len(opts):len(opts)], sqlstore.WithIDGenerator(tc.ids(t)))
+			}
+			err := newAttemptStore(t, db, opts...).RecordFailure(t.Context(), tc.username, at)
 			tc.assert(t, err, tc.username)
+		})
+	}
+}
+
+// TestAttemptStore_StreakIDs pins that a streak's identifier comes from a
+// generator that never answers the nil id: one that does fails the add and
+// writes no streak.
+func TestAttemptStore_StreakIDs(t *testing.T) {
+	t.Parallel()
+
+	db := migratedDB(t).DB
+	at := time.Date(2030, 1, 1, 10, 0, 0, 0, time.UTC)
+	errGenerator := errors.New("generator exhausted")
+
+	type testCase struct {
+		name     string
+		username string
+		got      id.ID
+		genErr   error
+		assert   func(t *testing.T, streak lockout.FailureStreak, err error, username string)
+	}
+
+	streakRows := func(t *testing.T, username string) int {
+		t.Helper()
+
+		var n int
+		require.NoError(t, db.QueryRowContext(t.Context(),
+			`SELECT count(*) FROM login_failure_streaks WHERE username = $1`, username).Scan(&n))
+
+		return n
+	}
+
+	cases := []testCase{
+		{
+			name:     "a good id adds the streak",
+			username: "streak-good-id",
+			got:      storefix.NewID(t),
+			assert: func(t *testing.T, streak lockout.FailureStreak, err error, username string) {
+				require.NoError(t, err)
+				assert.Equal(t, 1, streak.Failures)
+				assert.Equal(t, 1, streakRows(t, username))
+			},
+		},
+		{
+			name:     "a generator failure fails the add and writes nothing",
+			username: "streak-failing-generator",
+			genErr:   errGenerator,
+			assert: func(t *testing.T, _ lockout.FailureStreak, err error, username string) {
+				require.ErrorIs(t, err, errGenerator)
+				assert.Zero(t, streakRows(t, username))
+			},
+		},
+		{
+			name:     "a generator answering the nil id fails the add like a generator failure and writes nothing",
+			username: "streak-nil-id",
+			assert: func(t *testing.T, _ lockout.FailureStreak, err error, username string) {
+				require.ErrorIs(t, err, idgen.ErrNil)
+				assert.Contains(t, err.Error(), "add to login failure streak")
+				assert.Zero(t, streakRows(t, username))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			g := idgentest.NewMockGenerator(gomock.NewController(t))
+			g.EXPECT().NewID().Return(tc.got, tc.genErr).AnyTimes()
+			s := newAttemptStore(t, db, sqlstore.WithIDGenerator(g))
+
+			streak, _, err := s.AddStreakFailure(t.Context(), tc.username, at, at.Add(-time.Hour), 5)
+			tc.assert(t, streak, err, tc.username)
 		})
 	}
 }

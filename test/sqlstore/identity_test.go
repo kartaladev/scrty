@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/store/sqlstore"
@@ -333,6 +334,27 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 
 				_, err = s.LoadByUsername(ctx, "generator-fails")
 				require.ErrorIs(t, err, identity.ErrUserNotFound)
+			},
+		},
+		{
+			name: "a generator answering the nil id for the user writes nothing",
+			assert: func(t *testing.T, ctx context.Context, conn test.PostgresConn) {
+				s := newIdentityStore(t, conn.DB, sqlstore.WithIDGenerator(idsThenNil(t, 0)))
+
+				_, err := s.Provision(ctx, "nil-user-id", identity.WithUserRoles("admin"))
+				require.ErrorIs(t, err, idgen.ErrNil)
+				assert.Zero(t, userRowCount(ctx, t, conn.DB, "nil-user-id"))
+			},
+		},
+		{
+			name: "a generator answering the nil id for a grant writes nothing",
+			assert: func(t *testing.T, ctx context.Context, conn test.PostgresConn) {
+				// Call 1 is the user, call 2 the first grant.
+				s := newIdentityStore(t, conn.DB, sqlstore.WithIDGenerator(idsThenNil(t, 1)))
+
+				_, err := s.Provision(ctx, "nil-grant-id", identity.WithUserRoles("admin"))
+				require.ErrorIs(t, err, idgen.ErrNil)
+				assert.Zero(t, userRowCount(ctx, t, conn.DB, "nil-grant-id"))
 			},
 		},
 		{

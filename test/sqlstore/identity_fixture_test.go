@@ -9,12 +9,15 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/idgen/idgentest"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/store/migrate"
 	"github.com/kartaladev/scrty/store/sqlstore"
 	"github.com/kartaladev/scrty/test"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 )
 
 // migratedIdentityDB starts PostgreSQL with both migration sets applied, the
@@ -314,4 +317,20 @@ func (g *failingIDs) NewID() (id.ID, error) {
 	}
 
 	return seedIDs.NewID()
+}
+
+// idsThenNil is a generator that mints good fresh identifiers and then answers
+// the nil identifier with no error on every later call.
+func idsThenNil(t *testing.T, good int) id.Generator {
+	t.Helper()
+
+	g := idgentest.NewMockGenerator(gomock.NewController(t))
+	calls := make([]any, 0, good+1)
+	for range good {
+		calls = append(calls, g.EXPECT().NewID().Return(storefix.NewID(t), nil))
+	}
+	calls = append(calls, g.EXPECT().NewID().Return(id.Nil, nil).AnyTimes())
+	gomock.InOrder(calls...)
+
+	return g
 }
