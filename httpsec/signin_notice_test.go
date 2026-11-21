@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,6 +29,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/policy/lockout"
@@ -106,12 +108,26 @@ type noticeSetup struct {
 	opts    []httpsec.SignInNoticeOption
 	sendErr error
 
+	// sendPanics makes the sender panic, after it records the message.
+	sendPanics bool
+
+	// logger, when set, is the chain's logger in place of the fixture's
+	// buffer.
+	logger *slog.Logger
+
 	// seen, when set, wires a mocked seen-devices port it sets expectations
 	// on.
 	seen func(m *MockSeenDevices)
 
 	// listGate, when set, holds every listing until it is closed.
 	listGate <-chan struct{}
+
+	// routing builds the chain without WithLogger, so its logger is the
+	// routing default, which writes where the request's context says.
+	routing bool
+
+	// chainOpts are further chain options.
+	chainOpts []httpsec.Option
 }
 
 func newNoticeFixture(t *testing.T, setup noticeSetup) *noticeFixture {
@@ -146,6 +162,10 @@ func newNoticeFixture(t *testing.T, setup noticeSetup) *noticeFixture {
 
 		f.sent = append(f.sent, m)
 
+		if setup.sendPanics {
+			panic("sender bug")
+		}
+
 		return setup.sendErr
 	}).AnyTimes()
 
@@ -160,15 +180,23 @@ func newNoticeFixture(t *testing.T, setup noticeSetup) *noticeFixture {
 
 	var err error
 
-	f.chain, err = httpsec.New(
-		httpsec.WithClock(f.clk),
-		httpsec.WithLogger(slog.New(slog.NewTextHandler(f.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))),
+	logger := slog.New(slog.NewTextHandler(f.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	if setup.logger != nil {
+		logger = setup.logger
+	}
+
+	chainOpts := append([]httpsec.Option{httpsec.WithClock(f.clk)}, setup.chainOpts...)
+	if !setup.routing {
+		chainOpts = append(chainOpts, httpsec.WithLogger(logger))
+	}
+
+	f.chain, err = httpsec.New(append(chainOpts,
 		httpsec.EnableFormLogin(httpsec.FormLoginDeps{
 			Authenticator: authn, Sessions: f.sessions, Attempts: lockoutPolicy.Attempts(),
 		}),
 		httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: f.sessions, Users: NewMockUserLoader(ctrl)}),
 		httpsec.EnableSignInNotice(nonBlockingSender{sender}, opts...),
-	)
+	)...)
 	require.NoError(t, err)
 
 	return f
@@ -1180,4 +1208,134 @@ func TestSignInMetadata_RecordedWithoutNotice(t *testing.T) {
 			assert.Equal(t, userAgent, signIns[0].UserAgent)
 		})
 	}
+}
+
+// panickingHandler is a consumer slog.Handler that panics when it writes a
+// record at or above level.
+type panickingHandler struct{ level slog.Level }
+
+func (panickingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h panickingHandler) Handle(_ context.Context, r slog.Record) error {
+	if r.Level >= h.level {
+		panic("handler down")
+	}
+
+	return nil
+}
+
+func (h panickingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h panickingHandler) WithGroup(string) slog.Handler      { return h }
+
+// noticeLogPanicRowEnv names the row a child process of
+// TestSignInNotice_SurvivesPanickingLogHandler runs. It is empty in the parent.
+const noticeLogPanicRowEnv = "SCRTY_HTTPSEC_NOTICE_LOGPANIC_ROW"
+
+// noticeLogPanicRan is the line a child prints, followed by its row, once its
+// row has run to the end.
+const noticeLogPanicRan = "notice-logpanic-row-ran:"
+
+// TestSignInNotice_SurvivesPanickingLogHandler pins that a chain logger whose
+// handler panics loses only the record: the notice's goroutine, which logs
+// from inside its own recovery, does not end the process, and the next notice
+// is still attempted. Each row runs in a child process, because the failure is
+// the process ending.
+func TestSignInNotice_SurvivesPanickingLogHandler(t *testing.T) {
+	type testCase struct {
+		name  string
+		setup noticeSetup
+	}
+
+	// Every record the notice's goroutine writes is at Error, so a handler
+	// that panics on Error panics on all of them, including the report of the
+	// panic the goroutine recovered. Records below Error are the request
+	// path's, which net/http recovers and this test does not cover.
+	cases := []testCase{
+		{name: "a failing sender", setup: noticeSetup{
+			sendErr: errors.New("smtp down"), logger: slog.New(panickingHandler{level: slog.LevelError}),
+		}},
+		{name: "a panicking sender", setup: noticeSetup{
+			sendPanics: true, logger: slog.New(panickingHandler{level: slog.LevelError}),
+		}},
+	}
+
+	childRow := os.Getenv(noticeLogPanicRowEnv)
+
+	for _, tc := range cases {
+		if childRow != "" && childRow != tc.name {
+			continue
+		}
+
+		t.Run(tc.name, func(t *testing.T) {
+			if childRow == "" {
+				limiterPortErrInChild(t, noticeLogPanicRowEnv, noticeLogPanicRan, tc.name)
+
+				return
+			}
+
+			f := newNoticeFixture(t, tc.setup)
+			f.signedIn(t, "u-1", uaFirefoxLinux)
+
+			require.NoError(t, f.login(t, uaSafariMac).err)
+			require.NoError(t, f.login(t, uaChromeWindows).err)
+			assert.Len(t, f.messages(), 2, "the later notice was still attempted")
+
+			println(noticeLogPanicRan + tc.name) //nolint:forbidigo // the marker is how the parent sees the row ran
+		})
+	}
+}
+
+// TestSignInNotice_DroppedRoutesToTheRequestsChain pins that, under a chain
+// built without WithLogger, a dropped notice's record and its suppressed-count
+// summary go to the chain logger the request's context carries, not to
+// slog.Default().
+func TestSignInNotice_DroppedRoutesToTheRequestsChain(t *testing.T) { //nolint:paralleltest // it replaces slog.Default()
+	const (
+		prompt  = 5 * time.Second
+		dropMsg = "httpsec: a sign-in notice was dropped: too many are in progress"
+		sumMsg  = "httpsec: refusal logs suppressed"
+	)
+
+	def := swapDefaultLogger(t)
+	chainLogs := &capturingHandler{}
+
+	gate := make(chan struct{})
+	release := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(release)
+
+	f := newNoticeFixture(t, noticeSetup{
+		listGate:  gate,
+		routing:   true,
+		chainOpts: []httpsec.Option{httpsec.WithRefusalLogInterval(time.Hour)},
+		opts:      []httpsec.SignInNoticeOption{httpsec.WithSignInNoticeConcurrency(1)},
+	})
+
+	ctx := ctxlog.With(t.Context(), slog.New(chainLogs))
+
+	f.loginOn(ctx, uaSafariMac)
+	require.Eventually(t, func() bool { return f.store.lists.Load() == 1 }, prompt, 5*time.Millisecond)
+
+	// The second is dropped and logged, the third is held back by the
+	// sampler and counted.
+	f.loginOn(ctx, uaChromeWindows)
+	f.loginOn(ctx, uaChromeWindows)
+	httpsec.ChainSamplerProbe(f.chain).Flush()
+
+	count := func(h *capturingHandler, msg string) (n int) {
+		for _, r := range h.records() {
+			if r.Message == msg {
+				n++
+			}
+		}
+
+		return n
+	}
+
+	assert.Equal(t, 1, count(chainLogs, dropMsg), "the dropped record did not reach the request's chain")
+	assert.Equal(t, 1, count(chainLogs, sumMsg), "the summary did not reach the request's chain")
+	assert.Zero(t, count(def, dropMsg), "the dropped record landed on the default")
+	assert.Zero(t, count(def, sumMsg), "the summary landed on the default")
+
+	release()
+	f.pending.Wait()
 }

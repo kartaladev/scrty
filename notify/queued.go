@@ -34,6 +34,11 @@ type QueuedSender struct {
 	timeout time.Duration
 	logger  *slog.Logger
 
+	// workerLog is logger as the worker goroutines write to it: its handler is
+	// consumer code, and a handler that panics loses only the record (see
+	// guardedHandler). Send writes to logger itself, on the caller's goroutine.
+	workerLog *slog.Logger
+
 	// drained is closed once every worker has returned, which happens only
 	// after Shutdown closes the queue and the workers have emptied it. Every
 	// Shutdown call waits on it, so a later call waits for the same drain.
@@ -126,6 +131,7 @@ func NewQueuedSender(inner Sender, opts ...QueuedOption) (*QueuedSender, error) 
 		logger:  cfg.logger,
 		drained: make(chan struct{}),
 	}
+	s.workerLog = slog.New(guardedHandler{log: cfg.logger})
 
 	for range cfg.workers {
 		s.wg.Go(s.work)
@@ -320,7 +326,7 @@ func (s *QueuedSender) work() {
 
 		s.wg.Go(s.work)
 
-		s.logger.LogAttrs(current.ctx, slog.LevelError,
+		s.workerLog.LogAttrs(current.ctx, slog.LevelError,
 			"notify: sender ended its goroutine while delivering",
 			slog.String("reason", "goexit"))
 	}()
@@ -359,7 +365,7 @@ func (s *QueuedSender) work() {
 func (s *QueuedSender) deliver(q queued) {
 	defer func() {
 		if r := recover(); r != nil {
-			s.logger.LogAttrs(q.ctx, slog.LevelError,
+			s.workerLog.LogAttrs(q.ctx, slog.LevelError,
 				"notify: sender panicked while delivering",
 				slog.String("reason", "panic"),
 				slog.String("value_type", fmt.Sprintf("%T", r)))
@@ -375,10 +381,10 @@ func (s *QueuedSender) deliver(q queued) {
 	// enters through the bounded walk even though it is only logged: a hostile
 	// chain is reported once, to this sender's logger, and the delivery is
 	// recorded as a plain outage.
-	err = porterr.SanitizeTo(ctx, s.logger, err, porterr.ErrUnwalkable)
+	err = porterr.SanitizeTo(ctx, s.workerLog, err, porterr.ErrUnwalkable)
 
 	if err != nil {
-		s.logger.LogAttrs(ctx, slog.LevelError,
+		s.workerLog.LogAttrs(ctx, slog.LevelError,
 			"notify: delivery failed", diag.Failure("send", err)...)
 	}
 }
@@ -420,4 +426,41 @@ func (s *QueuedSender) Shutdown(ctx context.Context) error {
 
 	// A drain that has already finished wins over a ctx that is already done.
 	return lifecycle.Await(ctx, s.drained)
+}
+
+// guardedHandler is the handler of the logger the workers write to. It resolves
+// the sender's logger as that logger does (a routing logger reads the record's
+// context) and recovers a panic from the consumer's handler, so the record is
+// lost and nothing else: not the delivery, not the worker, not the process. A
+// panic here would otherwise escape deliver's own recover and end the process,
+// and be mistaken on the way out for a goroutine that ended. Nothing is written
+// about the panic, since it would go to the handler that just panicked.
+type guardedHandler struct{ log *slog.Logger }
+
+func (h guardedHandler) Enabled(ctx context.Context, level slog.Level) (on bool) {
+	defer func() {
+		if recover() != nil {
+			on = false
+		}
+	}()
+
+	return h.log.Enabled(ctx, level)
+}
+
+func (h guardedHandler) Handle(ctx context.Context, r slog.Record) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = nil
+		}
+	}()
+
+	return h.log.Handler().Handle(ctx, r)
+}
+
+func (h guardedHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return guardedHandler{log: slog.New(h.log.Handler().WithAttrs(attrs))}
+}
+
+func (h guardedHandler) WithGroup(name string) slog.Handler {
+	return guardedHandler{log: slog.New(h.log.Handler().WithGroup(name))}
 }
