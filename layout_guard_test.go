@@ -64,6 +64,7 @@ var integrationModules = []string{
 	"github.com/google/go-tpm",
 	"github.com/redis/go-redis",
 	"github.com/testcontainers/testcontainers-go/modules/redis",
+	"github.com/kartaladev/prblm",
 }
 
 type requirement struct {
@@ -565,6 +566,7 @@ var integrationTable = []integrationEntry{
 	{"expiry/sweep", "sweep", "the sweeper extends expiry"},
 	{"httpsec/ginsec", "ginsec", "the Gin adapter extends httpsec"},
 	{"httpsec/fibersec", "fibersec", "the Fiber adapter extends httpsec"},
+	{"httpsec/prblmsec", "prblmsec", "the problem-details renderer extends httpsec"},
 }
 
 // integrationDirs lists, by directory relative to the repository root, every

@@ -341,7 +341,8 @@ func WithMagicLinkResponder(fn MagicLinkResponder) MagicLinkOption {
 //
 // Default: none. Each check receives the resolved principal and the user's
 // password-change time, and the first that returns an error stops the
-// redemption, leaving the link redeemable and returning that error unchanged.
+// redemption, leaving the link redeemable and returning that error unchanged,
+// or the library's fixed error in its place when its chain cannot be walked.
 //
 // A check must have no side effects: several racing redemptions of one link may
 // each run it, and only one of them will go on to spend the link.

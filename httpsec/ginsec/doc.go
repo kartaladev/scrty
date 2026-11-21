@@ -68,6 +68,30 @@
 // error middleware cannot re-render it — every other refusal, including a 404
 // on a route gin did match, keeps the rule above.
 //
+// A consumer whose error middleware renders every refusal declares it with
+// WithRefusalsRendered, and that 404 is then left open for it too:
+//
+//	engine.Use(errorMiddleware())                                   // first
+//	engine.Use(ginsec.Middleware(chain, ginsec.WithRefusalsRendered()))
+//
+// The library cannot check the declaration. If it is broken (no error
+// middleware, one registered after Middleware, or one that skips some errors),
+// such a request is answered with gin's own "404 page not found" text, which carries no
+// refusal text but differs from the other adapters' empty 404.
+//
+// To answer refusals as RFC 9457 problem documents, register prblm's gin
+// middleware, ginprblm.Middleware, before the chain, with the prblmsec module's
+// option (github.com/kartaladev/scrty/httpsec/prblmsec):
+//
+//	engine.Use(ginprblm.Middleware(prblm.WithNamespace("/probs"), problems.Option()))
+//	engine.Use(ginsec.Middleware(chain))
+//
+// That needs no option here. ginprblm defers the response header, so it renders
+// even the chain's own 404 for a request gin matched no route for, with or
+// without WithRefusalsRendered. The option is for a consumer's own error
+// middleware that writes the response immediately, as above; a gin deployment
+// with no renderer at all answers that 404 with an empty body.
+//
 // # Client addresses
 //
 // The adapter hands the chain the raw transport peer, the Host header, the

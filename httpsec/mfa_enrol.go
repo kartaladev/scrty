@@ -14,12 +14,13 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
@@ -82,7 +83,7 @@ type enrolmentInterceptor struct {
 	// sampler the sampler built from it at assembly, when the chain's logger
 	// is known.
 	logInterval time.Duration
-	sampler     *logsample.Sampler
+	sampler     *refusalSampler
 }
 
 // check is the half of the construction checks that needs nothing but this
@@ -153,7 +154,7 @@ func (i *enrolmentInterceptor) prefixes() []string {
 // that logger.
 func (i *enrolmentInterceptor) wire(c *Chain) {
 	i.log = c.logger
-	i.sampler = logsample.New(i.logInterval, logsample.WithReporter(i.reportSuppressed))
+	i.sampler = newRefusalSampler(i.logInterval, i.reportSuppressed)
 }
 
 // logSampled writes one of the path's records, unless the sampler is holding
@@ -183,9 +184,8 @@ func (i *enrolmentInterceptor) flushRefusalLogs() error {
 // forget. It runs on whichever request or flush evicted the key, and that
 // request's context has nothing to do with the counts, so it is written
 // without one.
-func (i *enrolmentInterceptor) reportSuppressed(key string, suppressed int) {
-	i.log.LogAttrs(context.Background(), slog.LevelWarn, msgEnrolmentLogsSuppressed,
-		slog.String("key", key), slog.Int("suppressed", suppressed))
+func (i *enrolmentInterceptor) reportSuppressed(sum *ctxlog.Summaries, key string, suppressed int) {
+	summariseSuppressed(sum, i.log, msgEnrolmentLogsSuppressed, key, suppressed)
 }
 
 // msgEnrolmentLogsSuppressed is the record the path's reporter writes.
@@ -483,17 +483,17 @@ func (i *enrolmentInterceptor) serve(
 	run func(*Exchange, *session.Session, mfa.Enroller) error,
 ) error {
 	if s == nil {
-		return i.refused(ex.Context(), endpoint, ErrAuthenticationRequired)
+		return i.refused(ex, endpoint, ErrAuthenticationRequired)
 	}
 
 	name, ok := oneSegmentBelow(ex.Request.Path(), prefix)
 	method, known := i.methods[name]
 
 	if !ok || !known {
-		return i.refused(ex.Context(), endpoint, ErrUnknownMFAMethod)
+		return i.refused(ex, endpoint, ErrUnknownMFAMethod)
 	}
 
-	return i.refused(ex.Context(), endpoint, run(ex, s, method))
+	return i.refused(ex, endpoint, run(ex, s, method))
 }
 
 // The names the path's records give its endpoints.
@@ -514,19 +514,29 @@ const (
 // user, the same channel twice) carries neither. A gate refusal is not
 // recorded here: it is the challenge the confined session is expected to
 // meet, not a request an endpoint turned down.
-func (i *enrolmentInterceptor) refused(ctx context.Context, endpoint string, err error) error {
+//
+// err may carry a consumer's method's error, so it is read through one
+// bounded walk (refusalReason). One the walk gives up on is recorded with the
+// unknown reason and nothing of the error, and its abort is reported through
+// the exchange's answering chain, as the quiet sites report one
+// (reportQuietly).
+func (i *enrolmentInterceptor) refused(ex *Exchange, endpoint string, err error) error {
 	if err == nil {
 		return nil
 	}
 
-	reason, level := refusalReason(err)
+	ctx := ex.Context()
+
+	reason, level, fault, abort := refusalReason(err)
+	if abort != nil {
+		ex.answeringChain().reportQuietly(ctx, err, abort)
+	}
 
 	attrs := []slog.Attr{slog.String("endpoint", endpoint)}
 
 	// A record names its reason once: diag.Failure writes it for a
 	// dependency's failure, and a plain attribute does for the rest.
-	var fault *enrolmentFault
-	if errors.As(err, &fault) {
+	if fault != nil {
 		attrs = append(attrs, diag.Failure(reason, fault.err)...)
 	} else {
 		attrs = append(attrs, slog.String("reason", reason))
@@ -542,20 +552,26 @@ const msgEnrolmentRefused = "httpsec: an enrolment request was refused"
 
 // refusalReason is the fixed category err is recorded by, and the level: an
 // outage is an error, a user at their limit a warning, and any other refusal —
-// a wrong code, an unreadable one — is what users do, and informational.
-func refusalReason(err error) (string, slog.Level) {
-	var fault *enrolmentFault
-	if errors.As(err, &fault) {
-		return fault.reason, slog.LevelError
+// a wrong code, an unreadable one — is what users do, and informational. It
+// also returns the enrolment fault err carries, nil for none.
+//
+// err is read through one bounded walk, as errors.As and errors.Is would read
+// it. It returns the abort that stopped the walk, nil when none did; the
+// reason is then the unknown one, at error, and fault is nil.
+func refusalReason(err error) (reason string, level slog.Level, fault *enrolmentFault, abort error) {
+	walk := walkRefusal(err)
+
+	if found, ok := refusalAs[*enrolmentFault](&walk); ok {
+		return found.reason, slog.LevelError, found, nil
 	}
 
 	for _, r := range refusalReasons {
-		if errors.Is(err, r.err) {
-			return r.reason, r.level
+		if walk.is(r.err) {
+			return r.reason, r.level, nil, nil
 		}
 	}
 
-	return reasonUnknown, slog.LevelError
+	return reasonUnknown, slog.LevelError, nil, walk.abort
 }
 
 // refusalReasons are the library refusals an enrolment endpoint answers with,
@@ -621,16 +637,22 @@ func (i *enrolmentInterceptor) begin(ex *Exchange, s *session.Session, method mf
 	}
 
 	details, err := i.users.LoadByUserID(ctx, s.UserID)
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return newEnrolmentFault(reasonUserUnloadable, msgUserUnloadable, err)
 	}
 
 	label, err := i.label(ctx, details)
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return newEnrolmentFault(reasonLabelUnresolved, msgLabelUnresolved, err)
 	}
 
 	provisioning, gen, err := method.BeginEnrolmentGeneration(ctx, s.UserID, label)
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
 	if errors.Is(err, mfa.ErrAlreadyEnrolled) {
 		// The store decides this refusal, and may word it itself.
 		return refusedAs(mfa.ErrAlreadyEnrolled, textMFAAlreadyEnrolled, err)
@@ -696,6 +718,8 @@ func writeEnrolmentDocument(ex *Exchange, body any) error {
 // nothing.
 func (i *enrolmentInterceptor) throttled(ctx context.Context, l ratelimit.Limiter, key string, s *session.Session) error {
 	exceeded, err := l.Exceeded(ctx, key)
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return newEnrolmentFault(reasonLimiterUnavailable, msgLimiterUndecided, err,
 			mfa.ErrEnrolmentThrottled)
@@ -772,7 +796,7 @@ func (i *enrolmentInterceptor) confirm(ex *Exchange, s *session.Session, method 
 		return err
 	}
 
-	code, err := postedField(ex.Request, "code")
+	code, err := postedField(ex.Context(), ex.Request, "code")
 	if err != nil {
 		return err
 	}
@@ -791,6 +815,8 @@ func (i *enrolmentInterceptor) confirm(ex *Exchange, s *session.Session, method 
 	gen := s.EnrolmentGeneration
 
 	emailed, err := method.ProveDevice(ctx, s.UserID, gen, code, i.emailConfirmation, enrolmentEmailCodeTTL)
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		if errors.Is(err, mfa.ErrInvalidCode) {
 			i.record(ctx, i.confirmLimiter, key, limiterConfirm)
@@ -804,7 +830,10 @@ func (i *enrolmentInterceptor) confirm(ex *Exchange, s *session.Session, method 
 	if i.emailConfirmation {
 		subject, body := i.messages.Code(emailed, i.now().Add(enrolmentEmailCodeTTL))
 
-		if err := i.sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body}); err != nil {
+		err := i.sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body})
+		err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
+		if err != nil {
 			i.voidEmailCode(ctx, method, s.UserID, gen)
 
 			return newEnrolmentFault(reasonSendRefused, msgSendRefused, err)
@@ -815,7 +844,10 @@ func (i *enrolmentInterceptor) confirm(ex *Exchange, s *session.Session, method 
 		return nil
 	}
 
-	if err := method.CompleteEnrolment(ctx, s.UserID, gen); err != nil {
+	err = method.CompleteEnrolment(ctx, s.UserID, gen)
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
+	if err != nil {
 		if errors.Is(err, mfa.ErrInvalidCode) {
 			return refusedAs(mfa.ErrInvalidCode, textMFAInvalidCode, err)
 		}
@@ -944,11 +976,15 @@ const msgEnrolmentNotNotified = "httpsec: the user could not be notified of a co
 // *enrolmentFault, whose text is fixed.
 func (i *enrolmentInterceptor) contactOf(ctx context.Context, user identity.UserID) (string, error) {
 	details, err := i.users.LoadByUserID(ctx, user)
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return "", newEnrolmentFault(reasonUserUnloadable, msgUserUnloadable, err)
 	}
 
 	to, err := i.contact(ctx, details)
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return "", newEnrolmentFault(reasonContactUnresolved, msgContactUnresolved, err)
 	}
@@ -965,6 +1001,8 @@ func (i *enrolmentInterceptor) boundedContactOf(ctx context.Context, user identi
 	defer cancelLoad()
 
 	details, err := i.users.LoadByUserID(load, user)
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return "", newEnrolmentFault(reasonUserUnloadable, msgUserUnloadable, err)
 	}
@@ -973,6 +1011,8 @@ func (i *enrolmentInterceptor) boundedContactOf(ctx context.Context, user identi
 	defer cancelResolve()
 
 	to, err := i.contact(resolve, details)
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return "", newEnrolmentFault(reasonContactUnresolved, msgContactUnresolved, err)
 	}
@@ -1095,12 +1135,15 @@ func (i *enrolmentInterceptor) redeemEmailCode(ex *Exchange, s *session.Session,
 		return err
 	}
 
-	code, err := postedField(ex.Request, "code")
+	code, err := postedField(ex.Context(), ex.Request, "code")
 	if err != nil {
 		return err
 	}
 
-	if err := method.RedeemEmailCode(ctx, s.UserID, s.EnrolmentGeneration, code); err != nil {
+	err = method.RedeemEmailCode(ctx, s.UserID, s.EnrolmentGeneration, code)
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
+
+	if err != nil {
 		if errors.Is(err, mfa.ErrInvalidCode) {
 			i.record(ctx, i.confirmLimiter, key, limiterConfirm)
 

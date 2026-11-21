@@ -172,7 +172,7 @@ func (g *oidcUserInfoGroup) readHeaderOrForm(ex *Exchange) (raw string, underDPo
 		return raw, underDPoP, nil
 	}
 
-	body, err := r.Body(g.bodyLimit)
+	body, err := readBody(ex.Context(), r, g.bodyLimit)
 
 	switch {
 	case errors.Is(err, ErrRequestTooLarge):

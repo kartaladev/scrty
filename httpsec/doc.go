@@ -104,7 +104,10 @@
 // consumer's own error handling agrees with the library on everything it does
 // not handle itself. An error the mapping does not recognise is a server
 // fault, never a quiet success, and a request whose interceptor returned an
-// error never reaches the downstream handler.
+// error never reaches the downstream handler. LookupStatus returns the same
+// status and also reports whether the library recognised the error as its own,
+// so an error handler chaining several mappers leaves the library's refusals
+// and dependency failures to it and answers only the rest.
 //
 // The refusals this package defines itself are ErrAuthenticationRequired,
 // ErrCredentialsMissing and ErrRequestTooLarge; everything else a consumer
@@ -117,6 +120,13 @@
 // login, Basic and account recovery's password proof answer it as a wrong
 // password, joined to the lock so a consumer's handler still sees it, and
 // WithLockDisclosure answers it with the lock itself, mapped to 429.
+//
+// The ready-made renderer is the prblmsec module,
+// github.com/kartaladev/scrty/httpsec/prblmsec: it answers each refusal as an
+// RFC 9457 problem document through prblm, with the status StatusForError
+// gives and a type a client can act on, and delivers a challenge's token. Set
+// its prblm handler's Write as WithErrorHandler on net/http; gin and fiber use
+// prblm's own adapters, as that module documents.
 //
 // WithErrorHandler replaces what a refusal is answered with on the net/http
 // chain only. A framework that already owns how a request is refused keeps that

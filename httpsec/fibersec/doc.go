@@ -79,6 +79,15 @@
 // empty body instead, and MapError gives the status and a minimal body to a
 // consumer's own handler.
 //
+// To answer refusals as RFC 9457 problem documents, set prblm's
+// fiberprblm.ErrorHandler, with the prblmsec module's option
+// (github.com/kartaladev/scrty/httpsec/prblmsec), as fiber.Config.ErrorHandler
+// in place of ErrorHandler:
+//
+//	app := fiber.New(fiber.Config{
+//		ErrorHandler: fiberprblm.ErrorHandler(prblm.WithNamespace("/probs"), problems.Option()),
+//	})
+//
 // The chain's own httpsec.WithErrorHandler governs the net/http chain only. It
 // does not run here: on fiber a refusal goes to fiber's error handler, which is
 // where a fiber application already handles every other error.

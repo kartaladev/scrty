@@ -262,12 +262,9 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 			assert: refused,
 		},
 		{
-			name: "a nil lockout logger is ignored",
-			opts: []lockout.Option{lockout.WithLogger(nil)},
-			assert: func(t *testing.T, p *lockout.Policy, err error) {
-				require.NoError(t, err)
-				assert.NotNil(t, p)
-			},
+			name:   "a nil lockout logger is refused",
+			opts:   []lockout.Option{lockout.WithLogger(nil)},
+			assert: refused,
 		},
 		{
 			name: "no options construct the documented defaults",

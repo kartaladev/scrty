@@ -17,6 +17,7 @@ import (
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
@@ -147,7 +148,7 @@ func (r *Recoverer) validateHolds(c *config) error {
 // tokens that live for ttl.
 func (r *Recoverer) holdTokens(purpose string, ttl time.Duration) (*onetime.Tokens, error) {
 	m, err := onetime.New(purpose,
-		onetime.WithStore(depfault.Store(r.holdStore)), onetime.WithTokenTTL(ttl), onetime.WithClock(r.clock), onetime.WithLogger(r.logger))
+		onetime.WithStore(depfault.Store(r.holdStore, r.logger)), onetime.WithTokenTTL(ttl), onetime.WithClock(r.clock), onetime.WithLogger(r.logger))
 	if err != nil {
 		return nil, fmt.Errorf("%w: hold tokens: %w", ErrConfig, err)
 	}
@@ -231,6 +232,7 @@ const errTextHoldToken = "recovery: a hold token could not be issued"
 // its other codes while the hold runs.
 func (r *Recoverer) startHold(ctx context.Context, v *verified, rec Record, hold time.Duration) (*Result, error) {
 	err := bounded(ctx, detach.WriteTimeout, func(c context.Context) error { return r.records.Insert(c, rec) })
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgRecordFailed, diag.Failure("record-store", err)...)
 
@@ -253,6 +255,7 @@ func (r *Recoverer) startHold(ctx context.Context, v *verified, rec Record, hold
 		_, err := boundedValue(ctx, detach.WriteTimeout, func(c context.Context) (int, error) {
 			return r.codes.store.DeleteUser(c, rec.User)
 		})
+		err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 		if err != nil {
 			r.logger.LogAttrs(ctx, slog.LevelError, msgHoldCodesFailed, diag.Failure("code-store", err)...)
 
@@ -376,6 +379,7 @@ func (r *Recoverer) finish(ctx context.Context, completionToken string, opts ...
 	}
 
 	details, err := r.users.LoadByUserID(ctx, rec.User)
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound), err == nil && (details == nil || !details.Active):
@@ -419,6 +423,7 @@ func (r *Recoverer) finish(ctx context.Context, completionToken string, opts ...
 	completed, err := boundedValue(ctx, detach.WriteTimeout, func(c context.Context) (bool, error) {
 		return r.records.Complete(c, rec.ID, now)
 	})
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgRecordFailed, diag.Failure("record-store", err)...)
 
@@ -461,6 +466,7 @@ func (r *Recoverer) findHeld(ctx context.Context, m *onetime.Tokens, token, refu
 	}
 
 	rec, err := r.records.Find(ctx, rid)
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 
 	switch {
 	case errors.Is(err, ErrRecordNotFound), err == nil && rec == nil:
@@ -525,6 +531,7 @@ func (r *Recoverer) Cancel(ctx context.Context, cancelToken string) {
 	n, err := boundedValue(ctx, detach.WriteTimeout, func(c context.Context) (int, error) {
 		return r.records.Cancel(c, rec.ID, now)
 	})
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgCancelFailed, diag.Failure("record-store", err)...)
 
@@ -541,6 +548,7 @@ func (r *Recoverer) Cancel(ctx context.Context, cancelToken string) {
 	details, err := boundedValue(ctx, detach.WriteTimeout, func(c context.Context) (*identity.Details, error) {
 		return r.users.LoadByUserID(c, rec.User)
 	})
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 
 	switch {
 	case err != nil:
@@ -564,7 +572,9 @@ func (r *Recoverer) Cancel(ctx context.Context, cancelToken string) {
 // record store's, behind fixed text; the caller refuses the login on it,
 // which fails closed.
 func (r *Recoverer) CancelPending(ctx context.Context, user identity.UserID) error {
-	if _, err := r.records.CancelPending(ctx, user, r.clock.Now()); err != nil {
+	_, err := r.records.CancelPending(ctx, user, r.clock.Now())
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgCancelPendingFailed, diag.Failure("record-store", err)...)
 
 		return diag.Wrap(err, errTextRecordStore)

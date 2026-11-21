@@ -5,6 +5,7 @@ import (
 	"crypto"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/lestrrat-go/jwx/v4/jws"
@@ -13,6 +14,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/token/signingkey"
 )
@@ -60,7 +62,10 @@ type Generator interface {
 	// A key source's own crypto.Signer failing to sign comes back behind
 	// fixed library text too. In each case the source's or the signer's own
 	// error stays reachable through errors.Is and errors.As, but its text
-	// never is.
+	// never is. An error whose chain cannot be walked (a cycle, a fan-out, a
+	// panicking Unwrap) is replaced by a fixed library error and takes the
+	// branch a plain failure of the same call takes, whatever it claims to
+	// be: never a missing key.
 	Generate(ctx context.Context, id string, principal *identity.Principal) (string, error)
 
 	// SubjectMode reports which of the principal's values Generate writes as the
@@ -335,7 +340,7 @@ func (g *JWTGenerator) GenerateWith(
 		return "", fmt.Errorf("token: build claims: %w", err)
 	}
 
-	return cfg.sign(claims, kid, signer, cfg.tokenType)
+	return cfg.sign(ctx, claims, kid, signer, cfg.tokenType)
 }
 
 // currentSigner asks the key source for the signer of the configured algorithm.
@@ -345,6 +350,10 @@ func (g *JWTGenerator) GenerateWith(
 // here outlives this call.
 func (c *config) currentSigner(ctx context.Context) (string, crypto.Signer, error) {
 	kid, signer, err := c.keys.Signer(ctx, c.alg)
+	// Before ErrNoKey is asked for: an error the walk cannot read, whatever it
+	// claims to be, becomes a fixed one that matches no ErrNoKey, so it takes
+	// the outage branch below and never reads as a missing key.
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, signingkey.ErrNoKey):
 		// Never fall back to another algorithm, and never to an unsigned
@@ -369,7 +378,10 @@ func (c *config) currentSigner(ctx context.Context) (string, crypto.Signer, erro
 // the key. Signing with the crypto.Signer the key source handed over avoids a
 // round trip through a JWK, which would re-encode and re-decode the private key
 // on every call and discard its precomputed values.
-func (c *config) sign(claims jwt.Token, kid string, signer crypto.Signer, typ string) (string, error) {
+//
+// ctx is not handed to the signer, which carries its own: it only tags the
+// record of a signer's error the walk could not read (see portSigner).
+func (c *config) sign(ctx context.Context, claims jwt.Token, kid string, signer crypto.Signer, typ string) (string, error) {
 	headers := jws.NewHeaders()
 	if err := headers.Set(jws.KeyIDKey, kid); err != nil {
 		return "", fmt.Errorf("token: set key identifier: %w", err)
@@ -379,7 +391,7 @@ func (c *config) sign(claims jwt.Token, kid string, signer crypto.Signer, typ st
 	}
 
 	signed, err := jwt.Sign(claims,
-		jwt.WithKey(c.signature, signer, jws.WithProtectedHeaders(headers)))
+		jwt.WithKey(c.signature, portSigner{Signer: signer, ctx: ctx}, jws.WithProtectedHeaders(headers)))
 	if err != nil {
 		// The failure may be the consumer's own crypto.Signer refusing to
 		// sign — a KMS or HSM outage, say — so its error is kept reachable
@@ -388,6 +400,29 @@ func (c *config) sign(claims jwt.Token, kid string, signer crypto.Signer, typ st
 	}
 
 	return string(signed), nil
+}
+
+// portSigner is the key source's crypto.Signer with the error of its Sign
+// sanitized (internal/porterr) the moment it returns, still inside the JOSE
+// stack. The stack wraps that error with fmt.Errorf, rendering its text before
+// jwt.Sign returns, so sanitizing after jwt.Sign would be too late for an error
+// whose text alone is unbounded: a join that fans out. Public is the signer's
+// own, and the stack still refuses a key of another family than the algorithm
+// through it.
+//
+// It holds ctx only for the life of the one sign call that built it, to tag
+// the abort record; the signer itself is never handed ctx.
+type portSigner struct {
+	crypto.Signer
+
+	ctx context.Context //nolint:containedctx // lives for one sign call only, and only tags a record
+}
+
+func (s portSigner) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	signature, err := s.Signer.Sign(rand, digest, opts)
+	err = porterr.SanitizeTo(s.ctx, nil, err, porterr.ErrUnwalkable)
+
+	return signature, err
 }
 
 // textSignerUnavailable is the text of a key source that did not answer, whether

@@ -1,6 +1,10 @@
 package guardauth
 
-import "context"
+import (
+	"context"
+
+	"github.com/kartaladev/scrty/internal/porterr"
+)
 
 // HeaderWriter is the part of a response a challenge is set on. The chain's
 // own ResponseWriter, and each adapter's, satisfy it.
@@ -17,7 +21,13 @@ type HeaderWriter interface {
 // such as a WWW-Authenticate header, and returns the error the request fails
 // with: err itself, or a dependency failure that kept the challenge from
 // being set.
-type Challenger func(ctx context.Context, w HeaderWriter, err error) error
+//
+// err may be a consumer's, so a Challenger reads it through the library's
+// bounded walk. It also returns the abort that stopped that walk, nil when
+// none did, and writes no record of it: the guard that asked decides whether
+// one is written (see LookupAborts). On an abort it sets no challenge and
+// returns err as it came.
+type Challenger func(ctx context.Context, w HeaderWriter, err error) (out, abort error)
 
 // challengerKey is the context key a chain publishes its Challenger under.
 type challengerKey struct{}
@@ -29,13 +39,80 @@ func WithChallenger(ctx context.Context, c Challenger) context.Context {
 }
 
 // Challenge sets on w the challenge the chain the request passed through
-// would answer err with, and returns the error the request fails with. With
-// no chain challenge published on ctx it sets nothing and returns err.
-func Challenge(ctx context.Context, w HeaderWriter, err error) error {
+// would answer err with, and returns the error the request fails with and the
+// abort that stopped the challenger's walk of err. With no chain challenge
+// published on ctx it sets nothing and returns err and no abort.
+func Challenge(ctx context.Context, w HeaderWriter, err error) (out, abort error) {
 	c, ok := ctx.Value(challengerKey{}).(Challenger)
 	if !ok || c == nil {
-		return err
+		return err, nil
 	}
 
 	return c(ctx, w, err)
+}
+
+// LookupKey is the context key a running chain answers with its status
+// lookup, a Lookup. The chain's run context answers it from its own Value
+// method, so publishing it costs a request nothing.
+type LookupKey struct{}
+
+// Lookup returns the abort that stopped the chain's status lookup of err, the
+// classification a guard's default answer and the adapters' error handlers
+// make, and nil when none did. It writes no record.
+type Lookup func(err error) (abort error)
+
+// LookupAborts reports whether the status lookup of the chain the request
+// passed through aborts on err.
+//
+// A guard asks it to decide whether to report an abort its own walk met: when
+// the lookup that answers the refusal aborts too, the lookup reports, and the
+// guard stays quiet. With no chain lookup on ctx it reports false, so the
+// guard reports what it met: over-reporting, never silence. A guard's own
+// walks run only behind a chain, which always answers it.
+func LookupAborts(ctx context.Context, err error) bool {
+	lookup, ok := ctx.Value(LookupKey{}).(Lookup)
+	if !ok || lookup == nil {
+		return false
+	}
+
+	return lookup(err) != nil
+}
+
+// MsgClassificationAborted is the record a guard writes for an aborted
+// classification it reports itself. It is the text the chain's own lookup
+// writes, so one search finds every such record.
+const MsgClassificationAborted = porterr.MsgClassificationAborted
+
+// ReportAbort writes one Error record of abort, an abort a guard's walk met,
+// through porterr.ReportAbort: the constant MsgClassificationAborted, the
+// abort's reason and, for a recovered panic, the panic's Go type and the
+// frames captured where it panicked; never the error's text or the panic's
+// value. A guard holds no logger of its own, so the record goes to the logger
+// of the chain handling the request, read from ctx, else slog.Default() when
+// it is written.
+func ReportAbort(ctx context.Context, abort error) {
+	porterr.ReportAbort(ctx, nil, abort)
+}
+
+// ReportLookupAbort asks the status lookup of the chain the request passed
+// through whether it aborts on err and, when it does, writes its one record
+// through ReportAbort, so it reaches the logger of that chain. It reports
+// whether the lookup aborted: the status is then 500, as httpsec.LookupStatus
+// answers, and the caller must not ask LookupStatus too, which would write a
+// second record on slog.Default(), the one place a context-free call can
+// reach. With no chain lookup on ctx it reports false and writes nothing.
+func ReportLookupAbort(ctx context.Context, err error) bool {
+	lookup, ok := ctx.Value(LookupKey{}).(Lookup)
+	if !ok || lookup == nil {
+		return false
+	}
+
+	abort := lookup(err)
+	if abort == nil {
+		return false
+	}
+
+	ReportAbort(ctx, abort)
+
+	return true
 }

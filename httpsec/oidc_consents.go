@@ -190,7 +190,7 @@ func (c *oidcConsentClients) Intercept(ex *Exchange, next Next) error {
 // (dpopAnswersChallenge): this one would stand ahead of it, and a client reading the first line would
 // not see the error it has to act on.
 func (op *oidcEndpoints) challengeOIDCSignIn(ex *Exchange, err error) error {
-	if err == nil || StatusForError(err) != http.StatusUnauthorized {
+	if err == nil || ex.answeringChain().statusQuietly(ex.Context(), err) != http.StatusUnauthorized {
 		return err
 	}
 
@@ -201,7 +201,17 @@ func (op *oidcEndpoints) challengeOIDCSignIn(ex *Exchange, err error) error {
 		return err
 	}
 
-	if dpopAnswersChallenge(err) {
+	answered, abort := dpopAnswersChallenge(err)
+	if abort != nil {
+		// No challenge is guessed from a walk that gave up. The DPoP
+		// challenge on the way out meets the same abort, so it is reported
+		// once for the exchange.
+		ex.reportQuietlyOnce(ex.Context(), err, abort)
+
+		return err
+	}
+
+	if answered {
 		return err
 	}
 
@@ -215,9 +225,15 @@ func (op *oidcEndpoints) challengeOIDCSignIn(ex *Exchange, err error) error {
 
 // dpopAnswersChallenge reports whether dpopVerifier.challenge sets a challenge for err, which it does
 // for exactly these errors. A test holds the two to one set.
-func dpopAnswersChallenge(err error) bool {
-	return errors.Is(err, ErrDPoPNonceRequired) || errors.Is(err, ErrInvalidDPoPProof) ||
-		errors.Is(err, ErrAuthenticationRequired) || errors.Is(err, authorize.ErrAuthenticationRequired)
+//
+// err may be a consumer's, so it is read through one bounded walk, as the challenge reads it. It also
+// returns the abort that stopped the walk, nil when none did; answered is false then, and nothing is
+// reported here.
+func dpopAnswersChallenge(err error) (answered bool, abort error) {
+	walk := walkRefusal(err)
+	answered = walk.is(ErrDPoPNonceRequired, ErrInvalidDPoPProof, ErrAuthenticationRequired, authorize.ErrAuthenticationRequired)
+
+	return answered, walk.abort
 }
 
 // bearerRefusalChallenge is the challenge for a 401 with DPoP off: invalid_token for a request that

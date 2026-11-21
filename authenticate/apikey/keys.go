@@ -17,12 +17,17 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
+
+//go:generate mockgen -destination=idgenerator_mock_test.go -package=apikey_test -typed github.com/kartaladev/scrty/pkg/id Generator
 
 // compensatingRevokeTimeout bounds the revoke of a replacement that a lost
 // rotation undoes, which runs detached from the caller's cancellation.
@@ -187,20 +192,16 @@ func WithSecurityEvents(sink event.Sink) Option {
 	return func(m *Keys) { m.events.Set(sink) }
 }
 
-// WithLogger replaces the logger. The default is slog.Default().
+// WithLogger replaces the logger. The default is the logger of the chain
+// handling the request, else slog.Default() when the record is written.
 //
-// A nil logger is ignored rather than refused: unlike a clock, a nil logger has
-// an obvious safe reading — the caller does not want this component's logs —
-// and refusing it would make logging mandatory. Only the causes of a
+// A nil logger, typed nil included, fails New with ErrConfig: the default needs
+// no option, so a nil here is a wiring mistake. Only the causes of a
 // verification refusal are logged, at debug for an unknown key and at error for
 // a store that could not answer, and no log this package writes carries a
 // presented key or a secret.
 func WithLogger(logger *slog.Logger) Option {
-	return func(m *Keys) {
-		if logger != nil {
-			m.logger = logger
-		}
-	}
+	return func(m *Keys) { m.logger = logger }
 }
 
 // validPrefix reports whether p is 1 to 16 lowercase ASCII letters or digits.
@@ -226,9 +227,7 @@ func validPrefix(p string) bool {
 //
 // A prefix that is not 1 to 16 lowercase ASCII letters or digits is refused
 // here rather than left to produce keys nothing can split, and every port and
-// function is refused when nil, with one exception: a nil logger is ignored,
-// because "do not log from this component" is a reading a nil logger plainly
-// has, while a nil clock has no reading other than a mistake.
+// function is refused when nil, the logger included.
 //
 // A record of a failed store read or write carries a fixed reason and the
 // error's Go type, never the store's own text; a consumer who wants that
@@ -241,7 +240,7 @@ func New(opts ...Option) (*Keys, error) {
 		digest: sha256Digest,
 		ids:    id.NewV7Generator(),
 		clock:  clock.System(),
-		logger: slog.Default(),
+		logger: ctxlog.Routing(),
 		random: rand.Reader,
 	}
 
@@ -267,6 +266,9 @@ func New(opts ...Option) (*Keys, error) {
 	}
 	if nilcheck.IsNil(m.clock) {
 		return nil, fmt.Errorf("%w: clock must not be nil", ErrConfig)
+	}
+	if nilcheck.IsNil(m.logger) {
+		return nil, fmt.Errorf("%w: the logger is nil; WithLogger needs a logger", ErrConfig)
 	}
 	if nilcheck.IsNil(m.random) {
 		return nil, fmt.Errorf("%w: random source must not be nil", ErrConfig)
@@ -361,11 +363,15 @@ func (m *Keys) Issue(
 	// Everything that can fail without touching the store happens first, so a
 	// failure here leaves nothing behind.
 	secret := make([]byte, secretBytes)
-	if _, err := io.ReadFull(m.random, secret); err != nil {
+	_, err := io.ReadFull(m.random, secret)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
+	if err != nil {
 		return "", Key{}, fmt.Errorf("apikey: could not read a secret: %w", err)
 	}
 
-	keyID, err := m.ids.NewID()
+	keyID, err := idgen.New(m.ids)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return "", Key{}, fmt.Errorf("apikey: could not mint an identifier: %w", err)
 	}
@@ -393,7 +399,9 @@ func (m *Keys) Issue(
 		rec.ExpiresAt = &expires
 	}
 
-	if err := m.store.Put(ctx, rec); err != nil {
+	err = m.store.Put(ctx, rec)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return "", Key{}, diag.Wrap(err, "apikey: could not store the issued key")
 	}
 
@@ -412,6 +420,7 @@ func (m *Keys) Issue(
 // its own detail logs it inside their own implementation of Store.
 func (m *Keys) List(ctx context.Context, principal identity.UserID) ([]Key, error) {
 	keys, err := m.store.List(ctx, principal)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, diag.Wrap(err, "apikey: could not list the principal's keys")
 	}
@@ -449,6 +458,8 @@ func (m *Keys) Verify(ctx context.Context, presented string) (identity.Principal
 	}
 
 	rec, err := m.store.Get(ctx, keyID)
+	// A chain that cannot be walked is an outage, never the not-found branch.
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		// ErrKeyNotFound included: an unknown key and an unreachable store are
 		// the same answer to whoever asked. Only the log tells them apart, and
@@ -486,7 +497,9 @@ func (m *Keys) Verify(ctx context.Context, presented string) (identity.Principal
 
 	// Best effort: a key that works must not stop working because the store
 	// could not record when it was last used.
-	if err := m.store.TouchLastUsed(ctx, rec.ID, now); err != nil {
+	err = m.store.TouchLastUsed(ctx, rec.ID, now)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		m.log(ctx, slog.LevelWarn, "apikey: could not record last use",
 			append([]slog.Attr{slog.String("key_id", rec.ID.String())}, diag.Failure("key-store", err)...)...)
 	}
@@ -501,13 +514,8 @@ func (m *Keys) Verify(ctx context.Context, presented string) (identity.Principal
 	}, rec, nil
 }
 
-// log writes through the configured logger, and writes nothing when the
-// consumer supplied none.
+// log writes through the configured logger, which New guarantees is set.
 func (m *Keys) log(ctx context.Context, level slog.Level, msg string, attrs ...slog.Attr) {
-	if m.logger == nil {
-		return
-	}
-
 	m.logger.LogAttrs(ctx, level, msg, attrs...)
 }
 
@@ -538,6 +546,7 @@ func levelFor(err error) slog.Level {
 // inside their own implementation of Store.
 func (m *Keys) Revoke(ctx context.Context, keyID id.ID) error {
 	_, err := m.store.Revoke(ctx, keyID, m.clock.Now())
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	return keyStoreFailed(err, "apikey: could not revoke the key")
 }
@@ -611,6 +620,7 @@ func keyStoreFailed(err error, text string) error {
 // say — this package neither opens nor requires one.
 func (m *Keys) Rotate(ctx context.Context, keyID id.ID, lifetime time.Duration) (string, Key, error) {
 	existing, err := m.store.Get(ctx, keyID)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return "", Key{}, keyStoreFailed(err, "apikey: could not read the key to rotate")
 	}
@@ -632,6 +642,7 @@ func (m *Keys) Rotate(ctx context.Context, keyID id.ID, lifetime time.Duration) 
 	revoked := false
 	if existing.liveAt(at) {
 		revoked, err = m.store.Revoke(ctx, keyID, at)
+		err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 		if err != nil {
 			// The old key may still be live (the failed revoke may even have
 			// committed, then errored), and the replacement was handed to
@@ -675,6 +686,7 @@ func (m *Keys) revokeReplacement(ctx context.Context, replacement id.ID) error {
 	defer cancel()
 
 	_, err := m.store.Revoke(undoCtx, replacement, m.clock.Now())
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	return err
 }

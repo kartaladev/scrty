@@ -1,11 +1,13 @@
 package ginsec
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/internal/guardauth"
 )
 
 // Middleware runs the chain in front of the gin handlers registered after it.
@@ -35,9 +37,10 @@ import (
 // default "404 page not found" body there whenever nothing has been written,
 // which the other adapters never send for the same refusal; committing an
 // empty body keeps the three answering alike, at the cost that a consumer's
-// own gin error middleware cannot re-render that one case. Every other
-// refusal, and every 404 on a route gin did match, still leaves the status
-// open for it.
+// own gin error middleware cannot re-render that one case, unless the
+// consumer passes WithRefusalsRendered to declare that its error middleware
+// renders every refusal. Every other refusal, and every 404 on a route gin did
+// match, still leaves the status open for it.
 //
 // The chain's own WithErrorHandler is the net/http entrypoint's, and does not
 // run here: on gin the refusal goes to gin's error channel instead, which is
@@ -73,10 +76,12 @@ import (
 // after c.Next() returns. A request refused before the chain reached the gin
 // handlers keeps its c.Request; one refused after them (an interceptor that
 // returns an error after next) keeps the chain's context.
-func Middleware(chain *httpsec.Chain) gin.HandlerFunc {
+func Middleware(chain *httpsec.Chain, opts ...Option) gin.HandlerFunc {
 	if chain == nil {
 		panic("ginsec: Middleware needs a chain; a nil one would serve every request unguarded")
 	}
+
+	cfg := newConfig(opts)
 
 	return func(gc *gin.Context) {
 		// The raw transport peer and headers, never gin's ClientIP: gin trusts
@@ -113,7 +118,19 @@ func Middleware(chain *httpsec.Chain) gin.HandlerFunc {
 			gc.Request.Context(), request, httpsec.NewHTTPResponseWriter(streamWriter{gc.Writer}))
 
 		if err := run(ex); err != nil {
-			refuse(gc, err)
+			// A refusal an interceptor made before the route reaches here
+			// with gc.Request still on the context the chain began on, which
+			// answers neither the chain's lookup nor its logger: the run's
+			// context does, after its step returned. Once the route ran,
+			// gc.Request carries that context already.
+			ctx := gc.Request.Context()
+			if !reached {
+				if runCtx := guardauth.RunContext(ex); runCtx != nil {
+					ctx = runCtx
+				}
+			}
+
+			cfg.refuse(ctx, gc, err)
 
 			return
 		}
@@ -149,19 +166,48 @@ func Middleware(chain *httpsec.Chain) gin.HandlerFunc {
 // a body the net/http and fiber adapters never send for the same refusal, and
 // the only way to keep the three answering alike. The cost is that a
 // consumer's own gin error middleware cannot re-render this one case: by the
-// time it runs, the empty body is already on the wire. Every other refusal,
-// and every 404 on a route gin did match, is left exactly as above.
-func refuse(gc *gin.Context, err error) {
+// time it runs, the empty body is already on the wire. With
+// WithRefusalsRendered that case is left open too, because the consumer has
+// declared an error middleware that renders it. Every other refusal, and every
+// 404 on a route gin did match, is left exactly as above.
+//
+// ctx is the context the refusal is classified on, and an abort that
+// classification meets reported on: one that answers the logger and status
+// lookup of the chain handling the request.
+func (cfg config) refuse(ctx context.Context, gc *gin.Context, err error) {
 	_ = gc.Error(err)
 
 	if !gc.Writer.Written() {
-		status := httpsec.StatusForError(err)
+		status := statusFor(ctx, err)
 		gc.Status(status)
 
-		if status == http.StatusNotFound && gc.FullPath() == "" {
+		if status == http.StatusNotFound && gc.FullPath() == "" && !cfg.refusalsRendered {
 			gc.Writer.WriteHeaderNow()
 		}
 	}
 
 	gc.Abort()
+}
+
+// refuse answers a refusal with the default configuration. The guards answer
+// through it, so they never see WithRefusalsRendered. On a route gin matched,
+// which is where guards normally run, the option has no effect anyway. A guard
+// used globally on a path gin has no route for still commits a 404 with an
+// empty body, even when Middleware was given the option. To render guard
+// refusals, use WithGuardErrorHandler.
+func refuse(gc *gin.Context, err error) {
+	config{}.refuse(gc.Request.Context(), gc, err)
+}
+
+// statusFor is the status the core classifies err with, for a request whose
+// context is ctx. The core's lookup takes no context, so an abort it meets
+// would be written to slog.Default(): the chain's own lookup is asked first,
+// and an abort it meets is written to the logger of the chain handling the
+// request and answered 500, as the core answers it, without asking again.
+func statusFor(ctx context.Context, err error) int {
+	if guardauth.ReportLookupAbort(ctx, err) {
+		return http.StatusInternalServerError
+	}
+
+	return httpsec.StatusForError(err) //nolint:contextcheck // the core's lookup takes no context, and it reports no abort here
 }

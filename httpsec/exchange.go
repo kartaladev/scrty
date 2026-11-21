@@ -10,6 +10,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/guardauth"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
@@ -379,6 +380,15 @@ type Exchange struct {
 	// that run's refusal.
 	refusalReported bool
 
+	// abortReported is whether a refusal-path check on this exchange has
+	// already reported an aborted classification of the refused error (the
+	// DPoP challenge, emitRefusal), so the same check in a chain this one is
+	// assembled inside, meeting the same abort, does not report it again with
+	// sampling off. It is shared and cleared as refusalReported is. It does
+	// not stop the refusal event: an abort the challenge met may be one the
+	// event's own check never asks about.
+	abortReported bool
+
 	// renewal is the identifier of a session the resolution core let through
 	// to the renewal endpoint without publishing it: one presented after its
 	// grace window under unused-successor recovery, on a request that is the
@@ -430,6 +440,34 @@ type Exchange struct {
 	extra     []runTerminal
 
 	ctx context.Context
+
+	// runCtx is the context of the outermost run made on this exchange, nil
+	// before one starts. It is not in runScope, so it outlives the run's step,
+	// which puts ctx back: an adapter answering a refusal an interceptor made
+	// before the route ran reads it, through guardauth.RunContext, for the
+	// chain's status lookup and logger, which the restored ctx no longer
+	// answers. It is cleared as an outermost run starts, as refusalReported
+	// is, so an exchange run again reports on that run's context. Only the
+	// module reads it; there is no public getter. It keeps nothing alive the
+	// exchange did not already: the run's context derives from ctx, and an
+	// exchange is built per request (NewExchange) and never pooled.
+	runCtx context.Context //nolint:containedctx // read after the run's step returns, see above
+}
+
+// runContextOf is how guardauth.RunContext reads an exchange's runCtx: the
+// adapters are outside this package, and the field is not public API.
+func runContextOf(exchange any) context.Context {
+	e, ok := exchange.(*Exchange)
+	if !ok || e == nil || e.runCtx == nil {
+		return nil
+	}
+
+	return e.runCtx
+}
+
+//nolint:gochecknoinits // installs the module-internal reader of runCtx before any request
+func init() {
+	guardauth.SetRunContext(runContextOf)
 }
 
 // runTerminal is one run in progress on an exchange: the chain running and the
@@ -545,6 +583,22 @@ func (e *Exchange) publishingChain() *Chain {
 	}
 
 	return nil
+}
+
+// answeringChain returns the chain that answers an error refused on e: the
+// run at the bottom of the stack, whose middleware or adapter created the
+// exchange and dispatches what the run returns. A chain assembled inside
+// another on e (inner.Assemble(next)) answers nothing of its own: its error
+// travels out through the outer run, whose dispatch, or whose consumer's error
+// handler, answers it. The quiet classification sites report an abort through
+// this chain (statusQuietly), so the report follows whoever answers. It is nil
+// when no run is in progress on e, and a nil chain reports nothing.
+func (e *Exchange) answeringChain() *Chain {
+	if e.terminalCount() == 0 {
+		return nil
+	}
+
+	return e.terminalAt(0).chain
 }
 
 // publishingRun returns the position of the run publishingChain names, or -1

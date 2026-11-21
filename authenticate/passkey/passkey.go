@@ -20,6 +20,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -136,7 +137,9 @@ type Passkeys struct {
 	ids           id.Generator
 	idsSet        bool
 	logger        *slog.Logger
+	loggerSet     bool
 	sampler       *logsample.Sampler
+	summaries     ctxlog.Summaries
 	logInterval   time.Duration
 	compare       func(stored, presented string) bool
 }
@@ -192,7 +195,7 @@ func New(deps Deps, opts ...Option) (*Passkeys, error) {
 		clock:         clock.System(),
 		random:        rand.Reader,
 		ids:           id.NewV7Generator(),
-		logger:        slog.Default(),
+		logger:        ctxlog.Routing(),
 		logInterval:   defaultLogInterval,
 		compare:       constantTimeEqual,
 	}
@@ -246,7 +249,7 @@ func New(deps Deps, opts ...Option) (*Passkeys, error) {
 	m.registration = reg
 
 	login, err := onetime.New(loginPurpose,
-		onetime.WithStore(depfault.Store(challenges)),
+		onetime.WithStore(depfault.Store(challenges, m.logger)),
 		onetime.WithTokenTTL(m.ttl),
 		onetime.WithIssuanceWindow(m.ttl),
 		onetime.WithClock(m.clock),
@@ -333,6 +336,8 @@ func (m *Passkeys) validate() error {
 		missing = "the clock must not be nil"
 	case m.randomSet && nilcheck.IsNil(m.random):
 		missing = "the random source must not be nil"
+	case m.loggerSet && m.logger == nil:
+		missing = "WithLogger was given no logger"
 	case m.idsSet && nilcheck.IsNil(m.ids):
 		missing = "the identifier generator must not be nil"
 	case m.messagesSet && nilcheck.IsNil(m.messages):
@@ -569,6 +574,8 @@ func (m *Passkeys) sampled(ctx context.Context, level slog.Level, key, msg strin
 		return
 	}
 
+	m.summaries.Note(ctx, m.logger, key)
+
 	attrs = append(attrs, slog.String("key", key))
 	if suppressed > 0 {
 		attrs = append(attrs, slog.Int("suppressed", suppressed))
@@ -580,7 +587,8 @@ func (m *Passkeys) sampled(ctx context.Context, level slog.Level, key, msg strin
 // reportSuppressed is the sampler's reporter: it writes how many records
 // under key the sampler held back.
 func (m *Passkeys) reportSuppressed(key string, suppressed int) {
-	m.logger.LogAttrs(context.Background(), slog.LevelInfo, msgSuppressed,
+	// A summary has no request of its own: it goes where key's last record did.
+	m.summaries.For(m.logger, key).LogAttrs(context.Background(), slog.LevelInfo, msgSuppressed,
 		slog.String("key", key), slog.Int("suppressed", suppressed))
 }
 

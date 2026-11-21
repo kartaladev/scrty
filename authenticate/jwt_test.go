@@ -13,6 +13,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token"
 	"github.com/kartaladev/scrty/token/signingkey"
@@ -304,6 +305,29 @@ func TestJwtAuthenticatorAuthenticate(t *testing.T) {
 				t.Helper()
 
 				require.ErrorIs(t, err, errNoIdentifier)
+				assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed,
+					"a failure to name the event was reported as a decision about the caller")
+				assert.Nil(t, got)
+			},
+		},
+		{
+			name:     "a generator answering the nil identifier is a generator failure, never a result under it",
+			verifier: verifies(token.NewClaims("ada", "opaque-issuer-reference")),
+			opts: func(t *testing.T, ctrl *gomock.Controller) []authenticate.JWTOption {
+				t.Helper()
+
+				ids := NewMockGenerator(ctrl)
+				ids.EXPECT().NewID().Return(id.Nil, nil)
+
+				return []authenticate.JWTOption{authenticate.WithJWTIDGenerator(ids)}
+			},
+			assert: func(t *testing.T, got *authenticate.Authentication, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, idgen.ErrNil)
+				assert.Contains(t, err.Error(), "authenticate: naming the authentication",
+					"the same wrapping as a plain generator failure")
+				assert.NotErrorIs(t, err, token.ErrInvalid, "the same class as a plain generator failure")
 				assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed,
 					"a failure to name the event was reported as a decision about the caller")
 				assert.Nil(t, got)

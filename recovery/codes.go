@@ -14,11 +14,13 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/ratelimit"
 )
@@ -98,13 +100,13 @@ type Codes struct {
 //
 // A set size outside 1–100, a low threshold below zero, or a store, limiter,
 // clock or random source given as nil (typed nil included) is a configuration
-// error wrapping ErrConfig. A nil logger is ignored.
+// error wrapping ErrConfig, the logger included.
 func NewCodes(opts ...CodesOption) (*Codes, error) {
 	c := &Codes{
 		store:        NewMemoryCodeStore(),
 		clock:        clock.System(),
 		random:       rand.Reader,
-		logger:       slog.Default(),
+		logger:       ctxlog.Routing(),
 		setSize:      defaultSetSize,
 		lowThreshold: defaultLowThreshold,
 	}
@@ -115,6 +117,9 @@ func NewCodes(opts ...CodesOption) (*Codes, error) {
 		}
 	}
 
+	if nilcheck.IsNil(c.logger) {
+		return nil, fmt.Errorf("%w: WithCodesLogger was given no logger", ErrConfig)
+	}
 	if c.setSize < 1 || c.setSize > maxSetSize {
 		return nil, fmt.Errorf("%w: set size must be between 1 and %d, got %d", ErrConfig, maxSetSize, c.setSize)
 	}
@@ -164,6 +169,9 @@ func (c *Codes) resolveLimiter() error {
 	}
 
 	l, err := factory.NewLimiter(namespaceCodes, defaultCodeLimit, defaultCodeWindow)
+	// The factory's error is the consumer's, and fmt.Errorf below reads it
+	// eagerly: it is sanitized first, to the logger the options set.
+	err = porterr.SanitizeTo(context.Background(), c.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return fmt.Errorf("%w: limiter for namespace %q: %w", ErrConfig, namespaceCodes, err)
 	}
@@ -193,6 +201,10 @@ func (c *Codes) generate(ctx context.Context, user identity.UserID, bound time.D
 
 	for i := range codes {
 		text, hash, err := newCode(c.random)
+		// The source is the consumer's, and its error sits inside newCode's
+		// lazy wrapper, which reads nothing of it: it is sanitized here, before
+		// the failure is logged or returned.
+		err = porterr.SanitizeTo(ctx, c.logger, err, porterr.ErrUnwalkable)
 		if err != nil {
 			c.logFailure(ctx, msgCodeRandomError, "random", err)
 
@@ -206,6 +218,7 @@ func (c *Codes) generate(ctx context.Context, user identity.UserID, bound time.D
 	err := maybeBounded(ctx, bound, func(sctx context.Context) error {
 		return c.store.ReplaceSet(sctx, user, hashes, c.clock.Now())
 	})
+	err = porterr.SanitizeTo(ctx, c.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		c.logFailure(ctx, msgCodeStoreError, "store", err)
 
@@ -243,6 +256,7 @@ func (c *Codes) remaining(ctx context.Context, user identity.UserID, bound time.
 	n, err := maybeBoundedValue(ctx, bound, func(sctx context.Context) (int, error) {
 		return c.store.Remaining(sctx, user)
 	})
+	err = porterr.SanitizeTo(ctx, c.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		c.logFailure(ctx, msgCodeStoreError, "store", err)
 
@@ -282,6 +296,7 @@ func (c *Codes) check(ctx context.Context, user identity.UserID, presented strin
 	key := CodeThrottleKey(user)
 
 	receipt, exceeded, err := c.limiter.Charge(context.WithoutCancel(ctx), key)
+	err = porterr.SanitizeTo(ctx, c.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		c.logFailure(ctx, msgCodeLimiterError, "limiter", err)
 
@@ -297,6 +312,7 @@ func (c *Codes) check(ctx context.Context, user identity.UserID, presented strin
 	}
 
 	matched, err := c.store.Match(ctx, user, hash[:])
+	err = porterr.SanitizeTo(ctx, c.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		c.logFailure(ctx, msgCodeStoreError, "store", err)
 
@@ -320,6 +336,7 @@ func (c *Codes) spend(ctx context.Context, user identity.UserID, hash [32]byte) 
 	ok, err := boundedValue(ctx, detach.WriteTimeout, func(sctx context.Context) (bool, error) {
 		return c.store.Spend(sctx, user, hash[:], c.clock.Now())
 	})
+	err = porterr.SanitizeTo(ctx, c.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		c.logFailure(ctx, msgCodeStoreError, "store", err)
 
@@ -338,7 +355,9 @@ func (c *Codes) spend(ctx context.Context, user identity.UserID, hash [32]byte) 
 // code stays valid, and the charge stays counted until its window passes, so
 // the user loses one attempt.
 func (c *Codes) refund(ctx context.Context, r ratelimit.Receipt) {
-	if err := c.limiter.Refund(context.WithoutCancel(ctx), r); err != nil {
+	err := c.limiter.Refund(context.WithoutCancel(ctx), r)
+	err = porterr.SanitizeTo(ctx, c.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		c.logFailure(ctx, msgCodeRefundError, "limiter", err)
 	}
 }

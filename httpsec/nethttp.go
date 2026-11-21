@@ -15,7 +15,9 @@ import (
 	"slices"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 )
 
@@ -460,6 +462,9 @@ func (h *httpResponseWriter) Stream(ctx context.Context, contentType string, bod
 		rc:     http.NewResponseController(h.w),
 		window: h.streamWindow,
 		cancel: cancel,
+		sanitize: func(err error) error {
+			return porterr.SanitizeTo(ctx, ctxlog.From(ctx), err, porterr.ErrUnwalkable)
+		},
 	}
 	if ew.window == 0 {
 		ew.window = StreamWriteWindow
@@ -520,7 +525,7 @@ func (h *httpResponseWriter) sendHead(ew *httpEventWriter, contentType string) e
 	_, moves := bottom.(interface{ SetWriteDeadline(time.Time) error })
 
 	if reporter, ok := bottom.(flushErrorer); ok && !moves {
-		err := reporter.FlushError()
+		err := ew.sanitize(reporter.FlushError())
 		if errors.Is(err, http.ErrNotSupported) {
 			takeBackType()
 
@@ -627,6 +632,15 @@ type httpEventWriter struct {
 	rc     *http.ResponseController
 	window time.Duration
 	cancel context.CancelFunc
+
+	// sanitize is porterr.SanitizeTo on the stream's context, with its one
+	// abort record on the logger that context carries (ctxlog). A writer below
+	// the adapter may be a consumer middleware's, so an error read from its
+	// FlushError or SetWriteDeadline is a port's error: one whose chain cannot
+	// be walked becomes porterr's fault before any check reads it, which
+	// matches neither http.ErrNotSupported nor anything else the stream tests,
+	// and so is answered as any other failed flush or deadline is.
+	sanitize func(error) error
 }
 
 // extend moves the write deadline. A writer with no deadline to move is not a
@@ -634,7 +648,7 @@ type httpEventWriter struct {
 func (e *httpEventWriter) extend() error {
 	// The system clock and never the chain's: this is a real socket's deadline,
 	// which a controlled clock would set in the wrong place.
-	err := e.rc.SetWriteDeadline(clock.System().Now().Add(e.window))
+	err := e.sanitize(e.rc.SetWriteDeadline(clock.System().Now().Add(e.window)))
 	if err == nil || errors.Is(err, http.ErrNotSupported) {
 		return nil
 	}
@@ -663,7 +677,7 @@ func (e *httpEventWriter) Flush() error {
 		return err
 	}
 
-	err := e.rc.Flush()
+	err := e.sanitize(e.rc.Flush())
 	if err != nil {
 		e.cancel()
 	}
@@ -741,7 +755,7 @@ func (c *Chain) Middleware() func(http.Handler) http.Handler {
 			})
 
 			if err := run(ex); err != nil {
-				c.handleError(ex, w, r, err)
+				c.handleError(ex, w, r, err) //nolint:contextcheck // a record it writes goes on ex.Context(), derived from r.Context()
 			}
 		})
 	}
@@ -765,5 +779,26 @@ func (c *Chain) handleError(ex *Exchange, w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	ex.Writer.WriteHeader(StatusForError(err))
+	status, _, abort := lookup(err)
+	if abort != nil {
+		c.logClassificationAborted(ex.Context(), abort)
+	}
+
+	ex.Writer.WriteHeader(status)
+}
+
+// logClassificationAborted reports a classification of a refusal that gave
+// up, through the chain's logger and sampler under the abort's per-reason key
+// (classificationAbortedKey), so a hostile error that recurs on every request
+// writes one record per reason per window. A Chain that did not come from New
+// has no logger, sampler or clock of its own: it writes unsampled, at the
+// system clock's time, through porterr.ReportAbort's routing (the logger ctx
+// carries, else slog.Default() at record time).
+func (c *Chain) logClassificationAborted(ctx context.Context, abort error) {
+	now := clock.System().Now
+	if c.perRequest != nil && c.perRequest.now != nil {
+		now = c.perRequest.now
+	}
+
+	reportAbortSampled(ctx, c.sampler, c.logger, now(), abort)
 }

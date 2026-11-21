@@ -9,6 +9,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/notify"
 )
 
@@ -180,7 +181,9 @@ func (m *Passkeys) sendNotice(
 		subject, body = m.messages.Suspended(n)
 	}
 
-	return m.sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body})
+	err = m.sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body})
+
+	return porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 }
 
 // contactOf loads user and resolves their contact address by resolve, or by
@@ -188,6 +191,15 @@ func (m *Passkeys) sendNotice(
 // deadline and cancellation apply.
 func (m *Passkeys) contactOf(ctx context.Context, user identity.UserID, resolve mfa.ContactResolver) (string, error) {
 	details, err := m.users.LoadByUserID(ctx, user)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
+	// A loader answering no details and no error breaks its contract: it
+	// means the user was not found, and the resolver, often the consumer's,
+	// is never handed no details.
+	if err == nil && details == nil {
+		err = identity.ErrUserNotFound
+	}
+
 	if err != nil {
 		return "", diag.Wrap(err, "passkey: could not load the user")
 	}
@@ -197,6 +209,8 @@ func (m *Passkeys) contactOf(ctx context.Context, user identity.UserID, resolve 
 	}
 
 	to, err := resolve(ctx, details)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return "", diag.Wrap(err, "passkey: could not resolve the user's contact address")
 	}
@@ -215,6 +229,15 @@ func (m *Passkeys) boundedContactOf(
 
 	cancelLoad()
 
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
+	// A loader answering no details and no error breaks its contract: it
+	// means the user was not found, and the resolver, often the consumer's,
+	// is never handed no details.
+	if err == nil && details == nil {
+		err = identity.ErrUserNotFound
+	}
+
 	if err != nil {
 		return "", diag.Wrap(err, "passkey: could not load the user")
 	}
@@ -227,6 +250,8 @@ func (m *Passkeys) boundedContactOf(
 	to, err := resolve(resolveCtx, details)
 
 	cancelResolve()
+
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	if err != nil {
 		return "", diag.Wrap(err, "passkey: could not resolve the user's contact address")

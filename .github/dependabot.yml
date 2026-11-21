@@ -30,6 +30,9 @@ updates:
     directory: /httpsec/ginsec
     schedule: {interval: weekly}
   - package-ecosystem: gomod
+    directory: /httpsec/prblmsec
+    schedule: {interval: weekly}
+  - package-ecosystem: gomod
     directory: /ratelimit/redisstore
     schedule: {interval: weekly}
   - package-ecosystem: gomod

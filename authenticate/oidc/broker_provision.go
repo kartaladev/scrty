@@ -9,6 +9,8 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/ascii"
+	"github.com/kartaladev/scrty/internal/idgen"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // provision creates and links a user for ext, which has no link, when the
@@ -29,13 +31,17 @@ func (b *Broker) provision(ctx context.Context, ext ExternalIdentity) (*identity
 		return nil, ErrProvisioningRefused
 	}
 
-	linkID, err := b.ids.NewID()
+	linkID, err := idgen.New(b.ids)
+	err = porterr.SanitizeTo(ctx, b.log, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, fmt.Errorf("oidc: generating a link identifier: %w", err)
 	}
 
 	values := identifying{subject: ext.Subject, emails: []string{ext.Email}}
 	det, err := b.provisioner.Provision(ctx, ext.Email, b.provisionOptions(ctx, ext)...)
+	// A chain that cannot be walked is a provisioner fault, never a taken
+	// username (ErrProvisioningRefused).
+	err = porterr.SanitizeTo(ctx, b.log, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, identity.ErrUserExists):
 		b.refusal(ctx, slog.LevelWarn, "provisioning refused: the username is taken", ext.Provider, ext.Email)
@@ -58,6 +64,9 @@ func (b *Broker) provision(ctx context.Context, ext ExternalIdentity) (*identity
 		CreatedAt: b.clock.Now(),
 	}
 	if err := b.links.Insert(ctx, l); err != nil {
+		// Before redact, whose Error reads the cause's text: a chain that
+		// cannot be walked is logged and returned as the fault's fixed text.
+		err = porterr.SanitizeTo(ctx, b.log, err, porterr.ErrUnwalkable)
 		err = redact(err, values)
 		b.log.LogAttrs(ctx, slog.LevelError,
 			"oidc: a provisioned user could not be linked; later logins of this identity "+
@@ -181,6 +190,7 @@ func (b *Broker) mirror(ctx context.Context, ext ExternalIdentity, l *Link, det 
 	}
 
 	updated, err := b.provisioner.Update(ctx, det.Username, opts...)
+	err = porterr.SanitizeTo(ctx, b.log, err, porterr.ErrUnwalkable)
 	if err == nil && updated == nil {
 		err = errors.New("the user provisioner returned no user")
 	}
@@ -190,8 +200,10 @@ func (b *Broker) mirror(ctx context.Context, ext ExternalIdentity, l *Link, det 
 			emails:  []string{ext.Email, l.Email},
 			names:   []string{det.Username, l.Username, string(det.ID)},
 		})
-		write, suppressed := b.sampler.Allow("oidc.broker:mirror-update-failed:"+ext.Provider, b.clock.Now())
+		key := "oidc.broker:mirror-update-failed:" + ext.Provider
+		write, suppressed := b.sampler.Allow(key, b.clock.Now())
 		if write {
+			b.summaries.Note(ctx, b.log, key)
 			b.log.LogAttrs(ctx, slog.LevelError,
 				"oidc: claim mirroring could not update the user; the login continues with the stored values",
 				slog.String("provider", ext.Provider),

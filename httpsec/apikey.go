@@ -11,9 +11,10 @@ import (
 	"github.com/kartaladev/scrty/authenticate/apikey"
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
-	"github.com/kartaladev/scrty/pkg/logsample"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 )
@@ -47,7 +48,7 @@ type apiKeyInterceptor struct {
 
 	engine  *policy.Engine
 	log     *slog.Logger
-	sampler *logsample.Sampler
+	sampler *refusalSampler
 	guard   sourceGuard
 
 	limiter ratelimit.Limiter
@@ -203,6 +204,10 @@ func (i *apiKeyInterceptor) checkOwner(
 	}
 
 	details, err := i.owners.LoadByUserID(ctx, owner)
+	// The loader is the consumer's, and so is its error. One whose chain
+	// cannot be walked becomes a fault that matches neither ErrUserNotFound
+	// nor the request's cancellation, so the outage branch answers it.
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
 
 	switch {
 	case err == nil && details != nil && details.ID != owner:
@@ -253,8 +258,12 @@ func callerEndedAPIKey(ctx context.Context) error {
 	ctxErr := ctx.Err()
 	errs := []error{refusedAPIKey(), ctxErr}
 
-	if cause := context.Cause(ctx); !errors.Is(cause, ctxErr) {
-		errs = append(errs, cause)
+	// The cause is the middleware's: it is read under the bounded walk, and one
+	// the walk gives up on is left out, as it may hang or panic whoever reads
+	// the returned error next. The hang-up check that led here read the same
+	// cause and recorded its abort, so this read records none.
+	if matched, abort := detach.CauseWalk(ctx, ctxErr); !matched && abort == nil {
+		errs = append(errs, context.Cause(ctx))
 	}
 
 	return errors.Join(errs...)

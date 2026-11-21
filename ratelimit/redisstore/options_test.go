@@ -1,7 +1,6 @@
 package redisstore_test
 
 import (
-	"log/slog"
 	"testing"
 	"time"
 
@@ -37,7 +36,7 @@ func TestNewLimiter_DecoratorConfig(t *testing.T) {
 				assert.Equal(t, def.Timeout, cfg.Timeout)
 				assert.Equal(t, def.ProbeInterval, cfg.ProbeInterval)
 				assert.Equal(t, ratelimit.DefaultLogInterval, cfg.LogInterval)
-				assert.Same(t, slog.Default(), cfg.Logger)
+				assert.NotNil(t, cfg.Logger, "the routing logger, pinned by TestLogRoute_Limiter")
 				assert.NotNil(t, cfg.Clock)
 			},
 		},

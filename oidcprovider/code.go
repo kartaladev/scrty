@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"slices"
 
+	"github.com/kartaladev/scrty/internal/idgen"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/token/onetime"
 )
 
@@ -39,7 +41,8 @@ func (p *Provider) codeTokens() (*onetime.Tokens, error) {
 func (p *Provider) issueCode(
 	ctx context.Context, r *PendingRequest, rc *RegisteredClient, s SignIn, scopes []string,
 ) (string, error) {
-	family, err := p.cfg.ids.NewID()
+	family, err := idgen.New(p.cfg.ids)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return "", dependencyFailure(ctx, err, "oidcprovider: mint a grant family")
 	}
@@ -67,6 +70,7 @@ func (p *Provider) issueCode(
 		EndsWithSignIn: rc.EndGrantsWithSignIn,
 		ExpiresAt:      tok.ExpiresAt,
 	})
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return "", dependencyFailure(ctx, err, "oidcprovider: store the code record")
 	}

@@ -80,9 +80,9 @@
 // default it replaces: the store (NewMemoryStore, which does not survive a
 // restart), the prefix ("sk"), the digest (SHA-256), the identifier generator
 // (id.NewV7Generator), the clock (clock.System()), the random source
-// (crypto/rand.Reader) and the logger (slog.Default). A nil value is a
-// configuration error for every one of them except the logger, where nil is
-// read as "do not log from this component".
+// (crypto/rand.Reader) and the logger (the logger of the chain handling the
+// request, else slog.Default() when the record is written). A nil value is a
+// configuration error for every one of them.
 //
 // A wiring mistake — an impossible prefix, a nil port — is a configuration
 // error from New, before any key is issued.

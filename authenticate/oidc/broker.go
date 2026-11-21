@@ -13,7 +13,9 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/pkg/logsample"
@@ -30,8 +32,10 @@ type Broker struct {
 	users   identity.UserLoader
 	log     *slog.Logger
 	sampler *logsample.Sampler
-	ids     id.Generator
-	clock   clock.Clock
+	// summaries remembers where each sampler key's last record went.
+	summaries ctxlog.Summaries
+	ids       id.Generator
+	clock     clock.Clock
 
 	// Provisioning, per provider. jitDomains tells "configured empty" from
 	// "not configured" by the presence of the key.
@@ -71,11 +75,12 @@ var _ IdentityBroker = (*Broker)(nil)
 // NewBroker returns a broker that resolves identities through links and loads
 // linked users through users.
 //
-// Both are required: a nil link store or user loader, including a nil pointer
-// inside a non-nil interface, fails with ErrConfig and identity.ErrMissingPort
-// naming the port. The library's in-memory link store is NewMemoryLinkStore.
-// With no options the broker provisions no one (see WithBrokerJIT), logs to slog.Default(), reads
-// time from clock.System() and draws link identifiers from id.NewV7Generator().
+// Both are required: a nil link store or user loader, including a nil pointer inside a non-nil
+// interface, fails with ErrConfig and identity.ErrMissingPort naming the port. The library's
+// in-memory link store is NewMemoryLinkStore. With no options the broker provisions no one (see
+// WithBrokerJIT), logs to the logger of the chain handling the request, else slog.Default() when
+// the record is written, reads time from clock.System() and draws link identifiers from
+// id.NewV7Generator().
 func NewBroker(links LinkStore, users identity.UserLoader, opts ...BrokerOption) (*Broker, error) {
 	if nilcheck.IsNil(links) {
 		return nil, fmt.Errorf("%w: %w", ErrConfig, identity.MissingPort("link store"))
@@ -103,7 +108,7 @@ func NewBroker(links LinkStore, users identity.UserLoader, opts ...BrokerOption)
 	}
 
 	if b.log == nil {
-		b.log = slog.Default()
+		b.log = ctxlog.Routing()
 	}
 	if b.clock == nil {
 		b.clock = clock.System()
@@ -169,6 +174,9 @@ func (b *Broker) nameProvider(provider string) {
 // username and user reference redacted.
 func (b *Broker) Broker(ctx context.Context, ext ExternalIdentity) (*identity.Principal, error) {
 	l, err := b.links.FindByExternal(ctx, ext.Provider, ext.Issuer, ext.Subject)
+	// Before the ErrLinkNotFound check: a chain that cannot be walked is a
+	// store fault, never "no link", which would provision a duplicate user.
+	err = porterr.SanitizeTo(ctx, b.log, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrLinkNotFound):
 		return b.provision(ctx, ext)
@@ -192,6 +200,8 @@ func (b *Broker) Broker(ctx context.Context, ext ExternalIdentity) (*identity.Pr
 // reference.
 func (b *Broker) resolveLinked(ctx context.Context, ext ExternalIdentity, l *Link) (*identity.Details, error) {
 	det, err := b.users.LoadByUserID(ctx, l.UserID)
+	// A chain that cannot be walked is a loader fault, never ErrUserNotFound.
+	err = porterr.SanitizeTo(ctx, b.log, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound):
 		b.refusal(ctx, slog.LevelWarn, "a link names a user that no longer exists", l.Provider, l.Email)
@@ -237,10 +247,12 @@ func (b *Broker) RoleSyncProviders() []string {
 // refusal logs one refusal through the sampler, naming the provider and the
 // domain of the email, never the email itself, a subject or a reference.
 func (b *Broker) refusal(ctx context.Context, level slog.Level, msg, provider, email string) {
-	write, suppressed := b.sampler.Allow("oidc.broker:"+msg+":"+provider, b.clock.Now())
+	key := "oidc.broker:" + msg + ":" + provider
+	write, suppressed := b.sampler.Allow(key, b.clock.Now())
 	if !write {
 		return
 	}
+	b.summaries.Note(ctx, b.log, key)
 	b.log.LogAttrs(ctx, level, "oidc: "+msg,
 		slog.String("provider", provider),
 		slog.String("email_domain", emailDomain(email)),
@@ -249,7 +261,7 @@ func (b *Broker) refusal(ctx context.Context, level slog.Level, msg, provider, e
 
 // reportSuppressed writes the count of refusal records the sampler held back.
 func (b *Broker) reportSuppressed(key string, suppressed int) {
-	b.log.LogAttrs(context.Background(), slog.LevelInfo, "oidc broker refusals suppressed",
+	b.summaries.For(b.log, key).LogAttrs(context.Background(), slog.LevelInfo, "oidc broker refusals suppressed",
 		slog.String("reason", key),
 		slog.Int("suppressed", suppressed))
 }
@@ -358,9 +370,12 @@ func (e *redactedError) Unwrap() error { return e.err }
 type BrokerOption func(*Broker) error
 
 // WithBrokerLogger replaces the logger the broker writes refusals and
-// failures to. The default is slog.Default(). No record carries a claim
-// value, a subject, a user reference or a username; an email appears only as
-// its domain.
+// failures to. The default is the logger of the chain handling the request,
+// else slog.Default() when the record is written. A nil logger fails
+// construction with ErrConfig.
+//
+// No record carries a claim value, a subject, a user reference or a username;
+// an email appears only as its domain.
 func WithBrokerLogger(logger *slog.Logger) BrokerOption {
 	return func(b *Broker) error {
 		if logger == nil {

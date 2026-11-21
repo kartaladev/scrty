@@ -12,7 +12,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
-	"github.com/kartaladev/scrty/pkg/logsample"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -34,7 +34,7 @@ type bearerToken struct {
 	// log is the chain's logger, and sampler the chain's refusal-log sampler,
 	// both handed over by wire.
 	log     *slog.Logger
-	sampler *logsample.Sampler
+	sampler *refusalSampler
 
 	// resolver is the resolution core the bearer joins once its token has
 	// verified, built by wire over the bearer's own session manager and user
@@ -104,6 +104,8 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 	ctx := ex.Context()
 
 	claims, err := b.verifier.Verify(ctx, presented)
+	err = porterr.SanitizeTo(ctx, b.log, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return b.notVerified(ex, err)
 	}
@@ -198,6 +200,8 @@ func (b *bearerToken) admitSubject(ctx context.Context, subject string, s *sessi
 	}
 
 	details, err := b.users.LoadByUsername(ctx, subject)
+	err = porterr.SanitizeTo(ctx, b.log, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return nil, classifyReload(ctx, err)
 	}

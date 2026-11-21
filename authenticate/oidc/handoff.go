@@ -17,8 +17,11 @@ import (
 
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/pkg/logsample"
@@ -69,6 +72,8 @@ type Handoff struct {
 	ids     id.Generator
 	log     *slog.Logger
 	sampler *logsample.Sampler
+	// summaries remembers where each sampler key's last record went.
+	summaries ctxlog.Summaries
 }
 
 // NewHandoff returns a manager that keeps codes in store and resolves
@@ -81,10 +86,11 @@ type Handoff struct {
 //
 //	handoffs, err := oidc.NewHandoff(oidc.NewMemoryHandoffStore(), users)
 //
-// With no options it draws codes from crypto/rand.Reader (WithHandoffRandom),
-// reads time from clock.System() (WithHandoffClock), names records with
-// id.NewV7Generator() (WithHandoffIDGenerator) and logs to slog.Default()
-// (WithHandoffLogger). Every error it returns wraps ErrConfig.
+// With no options it draws codes from crypto/rand.Reader (WithHandoffRandom), reads time from
+// clock.System() (WithHandoffClock), names records with id.NewV7Generator()
+// (WithHandoffIDGenerator) and logs to the logger of the chain handling the request, else
+// slog.Default() when the record is written (WithHandoffLogger). Every error it returns wraps
+// ErrConfig.
 //
 // A record of a redemption the store or users failed carries a fixed reason
 // and the error's Go type, never the dependency's own text; a consumer who
@@ -118,7 +124,7 @@ func NewHandoff(store HandoffStore, users identity.UserLoader, opts ...HandoffOp
 		h.ids = id.NewV7Generator()
 	}
 	if h.log == nil {
-		h.log = slog.Default()
+		h.log = ctxlog.Routing()
 	}
 	h.sampler = logsample.New(handoffLogInterval, logsample.WithReporter(h.reportSuppressed))
 
@@ -149,13 +155,16 @@ func (h *Handoff) Issue(ctx context.Context, res CallbackResult) (string, error)
 	}
 
 	var raw [handoffTokenIDBytes + handoffSecretBytes]byte
-	if _, err := io.ReadFull(h.random, raw[:]); err != nil {
+	_, err := io.ReadFull(h.random, raw[:])
+	err = porterr.SanitizeTo(ctx, h.log, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return "", fmt.Errorf("oidc: drawing a handoff code: %w", err)
 	}
 	tokenID := base64.RawURLEncoding.EncodeToString(raw[:handoffTokenIDBytes])
 	secret := base64.RawURLEncoding.EncodeToString(raw[handoffTokenIDBytes:])
 
-	recID, err := h.ids.NewID()
+	recID, err := idgen.New(h.ids)
+	err = porterr.SanitizeTo(ctx, h.log, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return "", fmt.Errorf("oidc: naming a handoff record: %w", err)
 	}
@@ -176,7 +185,9 @@ func (h *Handoff) Issue(ctx context.Context, res CallbackResult) (string, error)
 		CreatedAt:  now,
 		ExpiresAt:  now.Add(HandoffTTL),
 	}
-	if err := h.store.Insert(ctx, rec); err != nil {
+	err = h.store.Insert(ctx, rec)
+	err = porterr.SanitizeTo(ctx, h.log, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return "", diag.Wrap(err, "oidc: storing a handoff code")
 	}
 
@@ -192,7 +203,7 @@ func handoffDigest(secret string) []byte {
 
 // reportSuppressed writes the count of refusal records the sampler held back.
 func (h *Handoff) reportSuppressed(reason string, suppressed int) {
-	h.log.LogAttrs(context.Background(), slog.LevelInfo, "oidc handoff refusals suppressed",
+	h.summaries.For(h.log, reason).LogAttrs(context.Background(), slog.LevelInfo, "oidc handoff refusals suppressed",
 		slog.String("reason", reason),
 		slog.Int("suppressed", suppressed))
 }
@@ -289,6 +300,7 @@ func (h *Handoff) Redeem(ctx context.Context, code string, checks ...RedeemCheck
 	}
 
 	rec, err := h.store.FindByTokenID(ctx, tokenID)
+	err = porterr.SanitizeTo(ctx, h.log, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrHandoffNotFound):
 		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "unknown")
@@ -312,6 +324,7 @@ func (h *Handoff) Redeem(ctx context.Context, code string, checks ...RedeemCheck
 	}
 
 	details, err := h.users.LoadByUserID(ctx, rec.UserID)
+	err = porterr.SanitizeTo(ctx, h.log, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound):
 		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "user_not_found")
@@ -353,6 +366,7 @@ func (h *Handoff) Redeem(ctx context.Context, code string, checks ...RedeemCheck
 		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "expired")
 	}
 	err = h.store.Consume(ctx, rec.TokenID, now)
+	err = porterr.SanitizeTo(ctx, h.log, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrHandoffNotFound):
 		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "consume_lost")
@@ -423,8 +437,10 @@ func (h *Handoff) refuseFailure(ctx context.Context, reason, op string, err erro
 // the sampling window from the reason attribute where a reason has more than
 // one call site (refuseFailure's op), and is otherwise the reason itself.
 func (h *Handoff) record(ctx context.Context, level slog.Level, key string, attrs ...slog.Attr) error {
-	write, suppressed := h.sampler.Allow("oidc.handoff."+key, h.clock.Now())
+	sampled := "oidc.handoff." + key
+	write, suppressed := h.sampler.Allow(sampled, h.clock.Now())
 	if write {
+		h.summaries.Note(ctx, h.log, sampled)
 		h.log.LogAttrs(ctx, level, "oidc handoff redemption refused",
 			append(attrs, slog.Int("suppressed", suppressed))...)
 	}
@@ -458,7 +474,9 @@ func (h *Handoff) FlushRefusalLogs() error {
 // expired is never deleted. A store error is returned with whatever count the
 // store reported. HandoffExpiryTask wraps it as a task.
 func (h *Handoff) PurgeExpired(ctx context.Context) (int, error) {
-	return h.store.DeleteExpired(ctx, h.clock.Now())
+	n, err := h.store.DeleteExpired(ctx, h.clock.Now())
+
+	return n, porterr.SanitizeTo(ctx, h.log, err, porterr.ErrUnwalkable)
 }
 
 // HandoffOption customises a Handoff at construction.
@@ -517,7 +535,9 @@ func WithHandoffIDGenerator(ids id.Generator) HandoffOption {
 }
 
 // WithHandoffLogger replaces the logger every refused and failed redemption
-// is reported to. The default is slog.Default(). A nil logger is refused.
+// is reported to. The default is the logger of the chain handling the request,
+// else slog.Default() when the record is written. A nil logger fails
+// construction with ErrConfig.
 //
 // Redemption returns one error whatever went wrong, so this log is the only
 // place the cause appears: a miss, an inactive user or a reference mismatch at

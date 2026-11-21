@@ -9,7 +9,7 @@ import (
 
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
-	"github.com/kartaladev/scrty/pkg/logsample"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 )
@@ -239,7 +239,7 @@ type challengeGate struct {
 	// log and sampler are the chain's, handed over once it exists, and now
 	// is the chain's clock.
 	log     *slog.Logger
-	sampler *logsample.Sampler
+	sampler *refusalSampler
 	now     func() time.Time
 }
 
@@ -587,6 +587,11 @@ func (g *challengeGate) signals(ctx context.Context, q challengeQuery) Challenge
 
 	if q.identifier != "" && q.attempts != nil {
 		n, err := q.attempts.FailureCount(ctx, q.identifier, g.now().Add(-g.window))
+		// The store is the consumer's and its error is only logged here, but
+		// the log path reads it, so it is sanitized first: one whose chain
+		// cannot be walked is recorded once, to the chain's logger, and reads
+		// as the plain outage it stands for.
+		err = porterr.SanitizeTo(ctx, g.log, err, porterr.ErrUnwalkable)
 		if err != nil {
 			g.logUnread(ctx, q.flow, err)
 		}
@@ -631,6 +636,8 @@ func (g *challengeGate) ask(ctx context.Context, r Request, q challengeQuery) er
 	}
 
 	decision, err := g.verifier.Verify(ctx, r, g.signals(ctx, q))
+	err = porterr.SanitizeTo(ctx, g.log, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		attrs := append([]slog.Attr{slog.String("flow", string(q.flow))},
 			diag.Failure(reasonChallengeVerifier, err)...)

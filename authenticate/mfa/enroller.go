@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -136,6 +138,7 @@ func (t *TOTP) ProveDevice(
 	}
 
 	e, ok, err := t.store.Get(ctx, user)
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return "", enrolmentStoreFailed(err, msgReadFailed)
 	}
@@ -162,7 +165,7 @@ func (t *TOTP) ProveDevice(
 	)
 
 	if emailCode {
-		emailed, err = t.drawEmailCode()
+		emailed, err = t.drawEmailCode(ctx)
 		if err != nil {
 			return "", err
 		}
@@ -171,6 +174,7 @@ func (t *TOTP) ProveDevice(
 	}
 
 	proven, err := t.proofs.ProveDevice(ctx, user, gen, step, codeBytes, codeUntil, now)
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return "", deviceProofStoreFailed(err, "mfa: totp could not record the device proof")
 	}
@@ -188,10 +192,14 @@ func (t *TOTP) ProveDevice(
 }
 
 // drawEmailCode draws a uniform 6-digit code from the method's random source.
-func (t *TOTP) drawEmailCode() (string, error) {
+// The source's error is sanitized before it is wrapped, so an unwalkable one
+// never enters the chain, and diag.Wrap gives the result fixed library text,
+// so the source's own text never reaches the caller.
+func (t *TOTP) drawEmailCode(ctx context.Context) (string, error) {
 	n, err := rand.Int(t.random, big.NewInt(emailCodeSpace))
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
-		return "", fmt.Errorf("mfa: totp could not draw an emailed code: %w", err)
+		return "", diag.Wrap(err, "mfa: totp could not draw an emailed code")
 	}
 
 	return fmt.Sprintf("%0*d", emailCodeDigits, n.Int64()), nil
@@ -223,6 +231,7 @@ func (t *TOTP) CompleteEnrolment(ctx context.Context, user identity.UserID, gen 
 	}
 
 	e, ok, err := t.store.Get(ctx, user)
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return enrolmentStoreFailed(err, msgReadFailed)
 	}
@@ -239,6 +248,7 @@ func (t *TOTP) CompleteEnrolment(ctx context.Context, user identity.UserID, gen 
 	}
 
 	completed, err := t.proofs.Complete(ctx, user, gen, t.clock.Now())
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return deviceProofStoreFailed(err, msgCompleteFailed)
 	}
@@ -281,6 +291,7 @@ func (t *TOTP) RedeemEmailCode(ctx context.Context, user identity.UserID, gen id
 	}
 
 	attempt, charged, err := t.proofs.ChargeEmailCode(ctx, user, gen, t.clock.Now())
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return deviceProofStoreFailed(err, "mfa: totp could not charge an attempt against the emailed code")
 	}
@@ -292,6 +303,7 @@ func (t *TOTP) RedeemEmailCode(ctx context.Context, user identity.UserID, gen id
 	}
 
 	e, ok, err := t.store.Get(ctx, user)
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return enrolmentStoreFailed(err, msgReadFailed)
 	}
@@ -311,6 +323,7 @@ func (t *TOTP) RedeemEmailCode(ctx context.Context, user identity.UserID, gen id
 	}
 
 	completed, err := t.proofs.Complete(ctx, user, gen, t.clock.Now())
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return deviceProofStoreFailed(err, msgCompleteFailed)
 	}
@@ -355,6 +368,7 @@ const voidingCode = ""
 func VoidEmailCode(ctx context.Context, enroller Enroller, user identity.UserID, gen id.ID) error {
 	for range MaxEmailCodeAttempts {
 		err := enroller.RedeemEmailCode(ctx, user, gen, voidingCode)
+		err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 
 		switch {
 		case err == nil:

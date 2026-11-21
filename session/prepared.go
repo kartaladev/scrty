@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // ErrAlreadyCommitted refuses a Prepared.Commit after the first, whether the
@@ -56,14 +58,28 @@ type Prepared struct {
 // Create is Prepare followed by Commit; CreateIssuing is the two with an
 // issuing step between them.
 func (m *Sessions) Prepare(user identity.UserID, opts ...CreateOption) (*Prepared, error) {
-	id, err := m.newIdentifier()
+	// Prepare takes no context, because it touches no store: the abort record of
+	// a hostile source error is written with a background one, which no chain
+	// can be read from, so it goes to the manager's own logger, else the
+	// default. Create and CreateIssuing have a request context and pass it to
+	// prepare, so their record reaches the chain's logger. The exported
+	// signature is not changed for it.
+	return m.prepare(context.Background(), user, opts...)
+}
+
+// prepare is Prepare writing the record of a hostile source error with ctx.
+func (m *Sessions) prepare(ctx context.Context, user identity.UserID, opts ...CreateOption) (*Prepared, error) {
+	id, err := m.newIdentifier(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	family, err := m.families.NewID()
+	// The generator is the consumer's: its error is walked once, bounded. A nil
+	// family below stays the session's own configuration error.
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
-		return nil, fmt.Errorf("session: generating a family identifier: %w", err)
+		return nil, diag.Wrap(err, "session: generating a family identifier")
 	}
 	if family.IsZero() {
 		return nil, fmt.Errorf("%w: the family identifier generator returned the nil identifier", ErrConfig)
@@ -94,7 +110,7 @@ func (m *Sessions) Prepare(user identity.UserID, opts ...CreateOption) (*Prepare
 	}
 	if s.csrfRequested {
 		s.csrfRequested = false
-		if s.CSRFToken, err = m.newCSRFToken(); err != nil {
+		if s.CSRFToken, err = m.newCSRFToken(ctx); err != nil {
 			return nil, err
 		}
 	}
@@ -194,7 +210,9 @@ func (p *Prepared) Commit(ctx context.Context) (*Session, error) {
 		return nil, ErrAlreadyCommitted
 	}
 
-	if err := p.m.store.Create(ctx, p.s); err != nil {
+	err := p.m.store.Create(ctx, p.s)
+	err = porterr.SanitizeTo(ctx, p.m.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return nil, storeFailed(err, "session: the session could not be created")
 	}
 
@@ -268,7 +286,7 @@ func (m *Sessions) CreateIssuing(
 	issue func(sess *Session) (string, error),
 	opts ...CreateOption,
 ) (*Session, string, error) {
-	p, err := m.Prepare(user, opts...)
+	p, err := m.prepare(ctx, user, opts...)
 	if err != nil {
 		return nil, "", err
 	}

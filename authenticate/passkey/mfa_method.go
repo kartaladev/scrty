@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -112,9 +113,12 @@ func (pm *MFAMethod) BeginChallenge(
 		allow[i] = Descriptor{ID: c.CredentialID, Transports: c.Transports}
 	}
 
-	return pm.m.verifier.RequestOptions(ctx, RequestInput{
+	raw, err := pm.m.verifier.RequestOptions(ctx, RequestInput{
 		Challenge: challenge, Timeout: pm.m.ttl, Allow: allow, UV: pm.m.uv,
 	})
+	err = porterr.SanitizeTo(ctx, pm.m.logger, err, porterr.ErrUnwalkable)
+
+	return raw, err
 }
 
 // PresentedChallenge returns the token string the assertion in response
@@ -123,6 +127,7 @@ func (pm *MFAMethod) BeginChallenge(
 // a non-empty string, is an error.
 func (pm *MFAMethod) PresentedChallenge(response []byte) (string, error) {
 	parsed, err := pm.m.verifier.ParseAssertion(response)
+	err = porterr.SanitizeTo(context.Background(), pm.m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return "", diag.Wrap(err, "passkey: unreadable assertion response", ErrMalformedResponse)
 	}
@@ -192,6 +197,7 @@ func (pm *MFAMethod) Verify(ctx context.Context, user identity.UserID, response 
 	}
 
 	c, err := m.credentials.FindByCredentialID(ctx, parsed.CredentialID())
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	switch {
 	case errors.Is(err, ErrNotFound):
@@ -225,6 +231,7 @@ func (pm *MFAMethod) Verify(ctx context.Context, user identity.UserID, response 
 	// is accepted.
 	if handle := parsed.UserHandle(); len(handle) > 0 {
 		owner, ok, err := m.handles.UserFor(ctx, handle)
+		err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 		if err != nil {
 			return diag.Wrap(err, "passkey: could not look up the user handle")
 		}
@@ -246,7 +253,9 @@ func (pm *MFAMethod) Verify(ctx context.Context, user identity.UserID, response 
 // RemoveEnrolment removes every passkey user holds, in every state, for the
 // operator reset. A user with none is not an error.
 func (pm *MFAMethod) RemoveEnrolment(ctx context.Context, user identity.UserID) error {
-	if _, err := pm.m.credentials.DeleteUser(ctx, user); err != nil {
+	_, err := pm.m.credentials.DeleteUser(ctx, user)
+	err = porterr.SanitizeTo(ctx, pm.m.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return diag.Wrap(err, "passkey: could not remove the user's passkeys")
 	}
 
@@ -257,6 +266,7 @@ func (pm *MFAMethod) RemoveEnrolment(ctx context.Context, user identity.UserID) 
 // store failure is an error, never an empty list.
 func (m *Passkeys) activeCredentials(ctx context.Context, user identity.UserID) ([]*Credential, error) {
 	all, err := m.credentials.List(ctx, user)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not list the user's passkeys")
 	}

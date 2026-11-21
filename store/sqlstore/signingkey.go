@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/store/seal"
@@ -71,7 +72,7 @@ func (s *signingKeyStore) Store(ctx context.Context, rec signingkey.Record) erro
 	); err != nil {
 		return failed(op, err)
 	}
-	rowID, err := s.c.ids.NewID()
+	rowID, err := idgen.New(s.c.ids)
 	if err != nil {
 		return failed(op, err)
 	}

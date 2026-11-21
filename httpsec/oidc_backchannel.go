@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 //go:generate mockgen -destination=linkstore_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/authenticate/oidc LinkStore
@@ -159,6 +160,10 @@ func (i *oidcInterceptor) endBackchannelSessions(
 	link, err := lookupBounded(ctx, func(ctx context.Context) (*oidc.Link, error) {
 		return links.FindByExternal(ctx, provider, claims.Issuer, claims.Subject)
 	})
+	// Sanitized under ctx, not the lookup's bound, before anything inspects
+	// it: a fault must never read as an unlinked subject, which would answer
+	// 200 and end nothing.
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, oidc.ErrLinkNotFound):
 		// No user was ever linked to this subject, so none of its sessions

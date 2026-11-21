@@ -61,7 +61,9 @@ func TestDPoPAnswersChallenge_AgreesWithTheChallenge(t *testing.T) {
 
 	for _, tc := range cases {
 		w := &challengeRecorder{header: http.Header{}}
-		require.ErrorIs(t, v.challenge(t.Context(), w, tc.err), tc.err, tc.name)
+		out, abort := v.challenge(t.Context(), w, tc.err)
+		require.NoError(t, abort, tc.name)
+		require.ErrorIs(t, out, tc.err, tc.name)
 
 		answered := len(w.header.Values(headerWWWAuthenticate)) > 0
 		if answered {
@@ -69,7 +71,9 @@ func TestDPoPAnswersChallenge_AgreesWithTheChallenge(t *testing.T) {
 		}
 
 		t.Run(tc.name, func(t *testing.T) {
-			tc.assert(t, dpopAnswersChallenge(tc.err), answered)
+			predicate, abort := dpopAnswersChallenge(tc.err)
+			require.NoError(t, abort)
+			tc.assert(t, predicate, answered)
 		})
 	}
 

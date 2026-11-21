@@ -174,7 +174,7 @@ func (g *oidcResumeGroup) serve(ex *Exchange, _ Next) error {
 		return err
 	}
 
-	doc, err := readOIDCResumeRequest(ex.Request, g.bodyLimit)
+	doc, err := readOIDCResumeRequest(ex.Context(), ex.Request, g.bodyLimit)
 	if err != nil {
 		return err
 	}
@@ -317,8 +317,8 @@ func (g *oidcResumeGroup) resumeSignIn(ex *Exchange) (*oidcprovider.SignIn, erro
 // readOIDCResumeRequest reads the document a page posts. It must be declared as JSON,
 // which a cross-site form cannot send, on top of what CSRF protection judges. A body that
 // is neither says nothing the provider could judge.
-func readOIDCResumeRequest(r Request, limit int64) (oidcResumeRequest, error) {
-	body, err := r.Body(limit)
+func readOIDCResumeRequest(ctx context.Context, r Request, limit int64) (oidcResumeRequest, error) {
+	body, err := readBody(ctx, r, limit)
 	if err != nil {
 		return oidcResumeRequest{}, err
 	}

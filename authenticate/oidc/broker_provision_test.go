@@ -15,7 +15,32 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/idgen"
+	"github.com/kartaladev/scrty/pkg/id"
 )
+
+// nilIDGenerator is a generator that answers the nil identifier with no error.
+func nilIDGenerator(t *testing.T) *MockHandoffIDGenerator {
+	t.Helper()
+
+	g := NewMockHandoffIDGenerator(gomock.NewController(t))
+	g.EXPECT().NewID().Return(id.Nil, nil).AnyTimes()
+
+	return g
+}
+
+// errIDGeneratorDown is the plain outage errIDGenerator fails with.
+var errIDGeneratorDown = errors.New("id generator: unavailable")
+
+// errIDGenerator is a generator that fails with a plain outage.
+func errIDGenerator(t *testing.T) *MockHandoffIDGenerator {
+	t.Helper()
+
+	g := NewMockHandoffIDGenerator(gomock.NewController(t))
+	g.EXPECT().NewID().Return(id.Nil, errIDGeneratorDown).AnyTimes()
+
+	return g
+}
 
 // provisionHarness is what one provisioning row runs against.
 type provisionHarness struct {
@@ -232,6 +257,36 @@ func TestBrokerProvisioning(t *testing.T) {
 			expect: func(provisionHarness) {},
 			assert: func(t *testing.T, h provisionHarness, ext oidc.ExternalIdentity, p *identity.Principal, err error) {
 				refusedProvisioning(t, p, err)
+				h.assertNoLink(t, ext)
+			},
+		},
+		{
+			name: "a generator failure provisions nothing and links nothing",
+			ext:  provisionIdentity("corp", "bob@corp.example"),
+			opts: []oidc.BrokerOption{oidc.WithBrokerJIT("corp"), oidc.WithBrokerIDGenerator(errIDGenerator(t))},
+			// No Provision expectation: the link is named before the user is created.
+			expect: func(provisionHarness) {},
+			assert: func(t *testing.T, h provisionHarness, ext oidc.ExternalIdentity, p *identity.Principal, err error) {
+				require.ErrorIs(t, err, errIDGeneratorDown)
+				assert.Contains(t, err.Error(), "oidc: generating a link identifier")
+				assert.NotErrorIs(t, err, oidc.ErrProvisioningRefused, "an outage is not a refusal")
+				assert.Nil(t, p)
+				h.assertNoLink(t, ext)
+			},
+		},
+		{
+			name: "a generator answering the nil identifier provisions nothing and links nothing",
+			ext:  provisionIdentity("corp", "bob@corp.example"),
+			opts: []oidc.BrokerOption{oidc.WithBrokerJIT("corp"), oidc.WithBrokerIDGenerator(nilIDGenerator(t))},
+			// No Provision expectation: the link is named before the user is created.
+			expect: func(provisionHarness) {},
+			assert: func(t *testing.T, h provisionHarness, ext oidc.ExternalIdentity, p *identity.Principal, err error) {
+				require.ErrorIs(t, err, idgen.ErrNil)
+				assert.Contains(t, err.Error(), "oidc: generating a link identifier",
+					"the same wrapping as a plain generator failure")
+				assert.NotErrorIs(t, err, errIDGeneratorDown)
+				assert.NotErrorIs(t, err, oidc.ErrProvisioningRefused, "an outage is not a refusal")
+				assert.Nil(t, p)
 				h.assertNoLink(t, ext)
 			},
 		},

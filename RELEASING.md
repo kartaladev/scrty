@@ -1,16 +1,17 @@
 # Releasing scrty
 
-Every release gives all nine published modules the same version, and tags them at one commit. Pushing
+Every release gives all ten published modules the same version, and tags them at one commit. Pushing
 the tags and publishing the release are the **maintainer's** actions: no automation and no agent
 creates or pushes a tag.
 
-The published modules are listed in `release-modules.txt` (the eight nested ones) plus the root:
+The published modules are listed in `release-modules.txt` (the nine nested ones) plus the root:
 
 | Module | Tag for `vX.Y.Z` |
 |---|---|
 | `github.com/kartaladev/scrty` | `vX.Y.Z` |
 | `github.com/kartaladev/scrty/httpsec/fibersec` | `httpsec/fibersec/vX.Y.Z` |
 | `github.com/kartaladev/scrty/httpsec/ginsec` | `httpsec/ginsec/vX.Y.Z` |
+| `github.com/kartaladev/scrty/httpsec/prblmsec` | `httpsec/prblmsec/vX.Y.Z` |
 | `github.com/kartaladev/scrty/store/gormstore` | `store/gormstore/vX.Y.Z` |
 | `github.com/kartaladev/scrty/authenticate/passkey/webauthn` | `authenticate/passkey/webauthn/vX.Y.Z` |
 | `github.com/kartaladev/scrty/store/pgxstore` | `store/pgxstore/vX.Y.Z` |
@@ -36,7 +37,12 @@ In `CHANGELOG.md`, move the contents of `## [Unreleased]` into a new entry heade
 vulnerability under `Security`. Add or update the link references at the foot of the changelog
 (`[Unreleased]` comparing the new tag with `HEAD`, and `[X.Y.Z]` comparing it with the previous tag;
 for the first release, `[0.1.0]` links to the tag itself). In `SECURITY.md`, make the supported-versions table name the new
-`X.Y.x` line only, and update the same sentence in `README.md`.
+`X.Y.x` line only, and update the same sentence in `README.md`. In `README.md`, also make every
+`go get` line name the release version (the value of `$VERSION`, not the variable). Where a module
+ships for the first time in this release, replace its `@<version>` placeholders
+(`grep -n '<version>' README.md` finds them), move its line in the Install section into the list of
+modules installed at one version, and remove the notes saying it ships from the next release, both
+in the Install section and in the module's own section.
 
 ```sh
 git diff -- CHANGELOG.md SECURITY.md README.md
@@ -50,6 +56,7 @@ Run from the repository root; `go mod edit -C <dir>` edits that directory's `go.
 ```sh
 go mod edit -C httpsec/fibersec                 -require=github.com/kartaladev/scrty@$VERSION
 go mod edit -C httpsec/ginsec                   -require=github.com/kartaladev/scrty@$VERSION
+go mod edit -C httpsec/prblmsec                 -require=github.com/kartaladev/scrty@$VERSION
 go mod edit -C store/gormstore                  -require=github.com/kartaladev/scrty@$VERSION
 go mod edit -C authenticate/passkey/webauthn    -require=github.com/kartaladev/scrty@$VERSION
 go mod edit -C store/pgxstore                   -require=github.com/kartaladev/scrty@$VERSION
@@ -58,12 +65,13 @@ go mod edit -C expiry/sweep                     -require=github.com/kartaladev/s
 go mod edit -C test                             -require=github.com/kartaladev/scrty@$VERSION
 ```
 
-The `test` module also requires six sibling modules:
+The `test` module also requires seven sibling modules:
 
 ```sh
 go mod edit -C test -require=github.com/kartaladev/scrty/authenticate/passkey/webauthn@$VERSION
 go mod edit -C test -require=github.com/kartaladev/scrty/httpsec/fibersec@$VERSION
 go mod edit -C test -require=github.com/kartaladev/scrty/httpsec/ginsec@$VERSION
+go mod edit -C test -require=github.com/kartaladev/scrty/httpsec/prblmsec@$VERSION
 go mod edit -C test -require=github.com/kartaladev/scrty/ratelimit/redisstore@$VERSION
 go mod edit -C test -require=github.com/kartaladev/scrty/store/gormstore@$VERSION
 go mod edit -C test -require=github.com/kartaladev/scrty/store/pgxstore@$VERSION
@@ -127,7 +135,7 @@ The gate reads `HEAD` once, when it starts, and gates that commit. It fails if `
 working tree changes before it ends, and on success prints a line starting `release-check: passed
 for $VERSION at commit <sha>`. Note the commit: step 6 tags it.
 
-With `SBOM_DIR` unset, the gate empties `.bin/sbom` when it starts, before any of its other refusals, and writes the nine SBOMs to
+With `SBOM_DIR` unset, the gate empties `.bin/sbom` when it starts, before any of its other refusals, and writes the ten SBOMs to
 `.bin/sbom/*.cdx.json` only when every step has passed, so a refused or failed run leaves the
 directory empty. Keep them: step 9 attaches
 exactly these files. They must come from this run, on the commit that step 6 tags, not from an earlier
@@ -150,19 +158,20 @@ is on, because `SECURITY.md` names it as the only reporting channel.
 make release-tags VERSION=$VERSION
 ```
 
-The target prints nine `git tag -a` commands for the current commit, one for the root and one for
+The target prints ten `git tag -a` commands for the current commit, one for the root and one for
 each nested module, and creates nothing. Check that the commit is the one step 4 gated, then run the
-printed commands. `git tag --points-at HEAD` lists the nine tags afterwards.
+printed commands. `git tag --points-at HEAD` lists the ten tags afterwards.
 
 ### 7. Push the tags
 
-Pushing a tag is the maintainer's action. Push the eight nested tags in one atomic push, so either
+Pushing a tag is the maintainer's action. Push the nine nested tags in one atomic push, so either
 all of them reach the remote or none does:
 
 ```sh
 git push --atomic origin \
   httpsec/fibersec/$VERSION \
   httpsec/ginsec/$VERSION \
+  httpsec/prblmsec/$VERSION \
   store/gormstore/$VERSION \
   authenticate/passkey/webauthn/$VERSION \
   store/pgxstore/$VERSION \
@@ -215,7 +224,7 @@ scripts/release-probe.sh $VERSION
 
 ### 9. Publish the release notes and attach the SBOMs
 
-Write the changelog entry for `$VERSION` to a file, without its heading, and publish it with the nine
+Write the changelog entry for `$VERSION` to a file, without its heading, and publish it with the ten
 SBOMs of step 4:
 
 ```sh
@@ -223,10 +232,10 @@ gh release create $VERSION --verify-tag --title $VERSION --notes-file <entry> .b
 ```
 
 `--verify-tag` aborts if the tag is not on the remote, so `gh` never creates a tag for you. Before
-running it, check that `.bin/sbom` holds nine files, each naming `$VERSION`:
+running it, check that `.bin/sbom` holds ten files, each naming `$VERSION`:
 
 ```sh
-ls .bin/sbom/*.cdx.json | wc -l   # prints 9
+ls .bin/sbom/*.cdx.json | wc -l   # prints 10
 for f in .bin/sbom/*.cdx.json; do jq -e --arg v "$VERSION" '.metadata.component.version == $v' "$f" >/dev/null || echo "wrong: $f"; done   # prints nothing
 ```
 

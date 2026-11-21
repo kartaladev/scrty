@@ -20,6 +20,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -1135,18 +1136,16 @@ func TestRefusalLogRecords(t *testing.T) {
 func TestPasswordAuthenticatorLoggerDefaults(t *testing.T) {
 	t.Parallel()
 
-	t.Run("a nil logger is ignored rather than refused", func(t *testing.T) {
+	t.Run("a nil logger is refused at construction", func(t *testing.T) {
 		t.Parallel()
 
 		ctrl := gomock.NewController(t)
 		enc := NewMockEncoder(ctrl)
-		enc.EXPECT().Encode(gomock.Any()).Return([]byte("$fake$reference"), nil)
 
-		auth, err := authenticate.NewUsernamePasswordAuthenticator(NewMockUserLoader(ctrl),
+		_, err := authenticate.NewUsernamePasswordAuthenticator(NewMockUserLoader(ctrl),
 			authenticate.WithPasswordEncoder(enc),
 			authenticate.WithPasswordLogger(nil))
-		require.NoError(t, err, "a nil logger made logging mandatory")
-		assert.NotNil(t, auth)
+		require.ErrorIs(t, err, authenticate.ErrConfig)
 	})
 
 	t.Run("flushing a provider that suppressed nothing reports nothing", func(t *testing.T) {
@@ -1565,6 +1564,27 @@ func TestAuthenticationIdentifier(t *testing.T) {
 				t.Helper()
 
 				require.ErrorIs(t, err, errNoIdentifier)
+				assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed,
+					"a failure to name the event was reported as a decision about the caller")
+				assert.Nil(t, first)
+			},
+		},
+		{
+			name: "a generator answering the nil identifier is a generator failure, never a result under it",
+			opts: func(t *testing.T, ctrl *gomock.Controller) []authenticate.PasswordOption {
+				t.Helper()
+
+				ids := NewMockGenerator(ctrl)
+				ids.EXPECT().NewID().Return(id.Nil, nil).AnyTimes()
+
+				return []authenticate.PasswordOption{authenticate.WithPasswordIDGenerator(ids)}
+			},
+			assert: func(t *testing.T, first, _ *authenticate.Authentication, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, idgen.ErrNil)
+				assert.Contains(t, err.Error(), "authenticate: naming the authentication",
+					"the same wrapping as a plain generator failure")
 				assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed,
 					"a failure to name the event was reported as a decision about the caller")
 				assert.Nil(t, first)

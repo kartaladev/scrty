@@ -10,9 +10,9 @@ import (
 
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/event"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
@@ -482,7 +482,7 @@ func requireDep(option, dependency string, v any) error {
 // enabled.
 func New(opts ...Option) (*Chain, error) {
 	c := &config{
-		logger:     slog.Default(),
+		logger:     ctxlog.Routing(),
 		ipv6Prefix: defaultIPv6SourcePrefix,
 
 		aggregateBits:       defaultIPv6AggregatePrefix,
@@ -732,6 +732,7 @@ func (c *config) build() (*Chain, error) {
 		registrations:     c.ordered(),
 		engine:            c.engine,
 		logger:            c.logger,
+		loggerGiven:       c.loggerGiven,
 		enrolmentLifetime: c.enrolmentLifetime,
 		enforced:          c.enforcedChallenges(),
 		mfa:               c.mfaOf(),
@@ -748,7 +749,7 @@ func (c *config) build() (*Chain, error) {
 	// The sampler is built here rather than by the option, because the default
 	// reporter writes through the chain's logger and there is no chain until
 	// every option has been applied.
-	chain.sampler = logsample.New(c.refusalInterval, logsample.WithReporter(chain.reportRefusals))
+	chain.sampler = newRefusalSampler(c.refusalInterval, chain.reportRefusals)
 
 	chain.perRequest = &perRequestPhase{
 		engine:            c.engine,
@@ -878,8 +879,16 @@ func WithChallengeEnforcer(kind policy.ChallengeKind) Option {
 
 // WithLogger writes the chain's own records through logger.
 //
-// Default: slog.Default(), so a consumer who configures logging once for their
-// application sees the chain's records without wiring anything here.
+// Default: the logger of an enclosing chain handling the request, else
+// slog.Default() when the record is written, so a consumer who configures
+// logging once for their application sees the chain's records without wiring
+// anything here, and a later slog.SetDefault takes effect.
+//
+// The logger given here is also the one the chain hands to the components it
+// runs: a component with no logger option of its own writes its records here
+// for a request through this chain. A chain given no logger answers none, so
+// with one chain mounted inside another, the innermost chain given a logger
+// wins.
 //
 // A nil logger is refused rather than taken as "log nothing": the records this
 // chain writes are refusals and outages, and silently dropping them is not a
@@ -1230,6 +1239,10 @@ func WithLockDisclosure() Option {
 //
 // A handler that answers authenticate.ErrUnavailable with 503 reopens the
 // oracles StatusForError warns of.
+//
+// For a ready-made handler that renders every refusal as an RFC 9457 problem
+// and delivers a challenge's token, use the prblmsec module
+// (github.com/kartaladev/scrty/httpsec/prblmsec) with a prblm handler's Write.
 //
 // It governs the net/http chain and nothing else, by design. A framework that
 // already owns how a request is refused keeps that ownership: on gin the

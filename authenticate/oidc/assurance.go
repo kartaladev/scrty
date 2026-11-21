@@ -9,6 +9,7 @@ import (
 	"unicode"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/policy"
 )
 
@@ -235,6 +236,7 @@ func (m *RelyingParty) MeetsAssurance(ctx context.Context, user identity.UserID,
 			AMR:      ev.AMR(),
 			ACR:      ev.ACR(),
 		})
+		err = porterr.SanitizeTo(ctx, m.log, err, porterr.ErrUnwalkable)
 		if err != nil {
 			// Never met alongside an error, whatever the evaluator answered.
 			return false, err

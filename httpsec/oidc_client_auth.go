@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/oidcprovider"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/ratelimit"
 )
 
@@ -67,7 +66,7 @@ type oidcClientThrottle struct {
 	limiter ratelimit.Limiter
 
 	guard   sourceGuard
-	sampler *logsample.Sampler
+	sampler *refusalSampler
 }
 
 // settle builds the guard under flow, from a group's settle.
@@ -140,7 +139,7 @@ func (t *oidcClientThrottle) answer(ex *Exchange, src ratelimit.Source, err erro
 // that parses, when the Authorization header is repeated, or when the raw query names a
 // credential, which it finds whether or not the framework parsed the pair, and
 // ErrRequestTooLarge for a body over limit, which is read before anything is parsed.
-func readOIDCClientRequest(r Request, limit int64) (oidcprovider.ClientCredentials, error) {
+func readOIDCClientRequest(ctx context.Context, r Request, limit int64) (oidcprovider.ClientCredentials, error) {
 	refused := func() (oidcprovider.ClientCredentials, error) {
 		return oidcprovider.ClientCredentials{}, &oidcprovider.Error{Code: oidcprovider.CodeInvalidRequest}
 	}
@@ -149,7 +148,7 @@ func readOIDCClientRequest(r Request, limit int64) (oidcprovider.ClientCredentia
 		return refused()
 	}
 
-	body, err := r.Body(limit)
+	body, err := readBody(ctx, r, limit)
 
 	switch {
 	case errors.Is(err, ErrRequestTooLarge):

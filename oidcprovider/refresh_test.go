@@ -999,11 +999,21 @@ func TestProvider_Refresh(t *testing.T) {
 			assert: refusedUserRevokes,
 		},
 		{
-			name: "a loader answering with neither details nor an error is no live user, and the grant is revoked",
+			name: "a loader answering with neither details nor an error is a dependency failure, and nothing is revoked",
 			arrange: func(_ *testing.T, f *refreshFixture, _ *refreshScene) {
 				f.users.set(func(u *exchangeUsers) { u.answersNothing = true })
 			},
-			assert: refusedUserRevokes,
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				assertDependencyFailure(t, err)
+				assert.Nil(t, res)
+				assertUntouched(t, f, s)
+				assert.False(t, grantNow(t, f, s).Revoked)
+				assert.NotZero(t, f.liveHeads(t), "the family stays: a broken loader is no verdict on the user")
+
+				f.users.set(func(u *exchangeUsers) { u.answersNothing = false })
+				assertRefreshWorks(t, f, s, s.first.RefreshToken)
+			},
 		},
 		{
 			name: "a disabled user's token past its grace is reuse: the lineage is judged before the user",

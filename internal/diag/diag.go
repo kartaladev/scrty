@@ -28,11 +28,12 @@ package diag
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"reflect"
 	"slices"
+
+	"github.com/kartaladev/scrty/internal/errwalk"
 )
 
 // Failure returns the attributes a log record carries for a failed dependency:
@@ -47,29 +48,93 @@ import (
 // the fault's cause, looked through again while the cause is itself a fault.
 // A fault's own type says only that the library wrapped a failure, not what
 // failed, and whatever wraps a fault adds nothing about the dependency either.
+//
+// err is read through one bounded, recovering walk (internal/errwalk), since
+// a consumer's error reaches here before anything else inspects it. When the
+// walk aborts (a cycle, a fan-out past the walk's budget, or a panicking
+// Unwrap, Is or As), the record names err's outermost type and carries no
+// cancelled attribute: nothing in a chain that could not be read shows the
+// caller hung up, so the failure is recorded as a failure. Failure writes no
+// record of the abort itself; the record its caller writes is the one that
+// tells the failure, and the code that classifies the same error reports the
+// abort.
 func Failure(reason string, err error) []slog.Attr {
-	attrs := []slog.Attr{
-		slog.String("reason", reason),
-		slog.String("error_type", fmt.Sprintf("%T", causeOf(err))),
+	var buf [walkBuffer]error
+
+	chain, abort := errwalk.FlattenInto(buf[:], err)
+
+	cause := err
+	if abort == nil {
+		cause = causeIn(err, chain)
 	}
 
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		attrs = append(attrs, slog.Bool("cancelled", true))
+	attrs := []slog.Attr{
+		slog.String("reason", reason),
+		slog.String("error_type", fmt.Sprintf("%T", cause)),
+	}
+
+	if abort == nil {
+		if i, _ := errwalk.Index(chain, cancellations); i >= 0 {
+			attrs = append(attrs, slog.Bool("cancelled", true))
+		}
 	}
 
 	return attrs
 }
 
+// walkBuffer is how many nodes of a chain a walk holds on its caller's stack
+// before it grows onto the heap.
+const walkBuffer = 16
+
+// cancellations are the context errors a record flags as cancelled. A walk
+// that aborts while matching them (a panicking Is) is no match.
+var cancellations = errwalk.NewTargets(context.Canceled, context.DeadlineExceeded)
+
 // causeOf returns the error whose type a record names: the cause of the
 // innermost [Fault] in err's chain, or err itself when it holds no fault. A
-// fault built without a cause is its own answer.
+// fault built without a cause is its own answer. When err's chain cannot be
+// walked, err is its own answer.
 func causeOf(err error) error {
-	var fault *Fault
-	for errors.As(err, &fault) && fault.cause != nil {
-		err = fault.cause
+	var buf [walkBuffer]error
+
+	chain, abort := errwalk.FlattenInto(buf[:], err)
+	if abort != nil {
+		return err
 	}
 
-	return err
+	return causeIn(err, chain)
+}
+
+// causeIn is causeOf for an err whose chain has already been walked. Each
+// fault's cause is walked again to find the next fault inside it, as
+// errors.As would be asked again. Every walk is bounded, and so is the
+// descent: when a walk aborts, an As method panics, or the walks together
+// examine more than errwalk.Budget nodes (an Unwrap that answers a new fault
+// on every call never runs out of them), err is its own answer.
+func causeIn(err error, chain errwalk.Chain) error {
+	var buf [walkBuffer]error
+
+	cause, examined := err, len(chain)
+
+	for {
+		fault, found, abort := errwalk.As[*Fault](chain)
+
+		switch {
+		case abort != nil:
+			return err
+		case !found || fault.cause == nil:
+			return cause
+		}
+
+		cause = fault.cause
+
+		chain, abort = errwalk.FlattenInto(buf[:], cause)
+		examined += len(chain)
+
+		if abort != nil || examined > errwalk.Budget {
+			return err
+		}
+	}
 }
 
 // Fault is an error whose text is fixed library text, and which unwraps to the

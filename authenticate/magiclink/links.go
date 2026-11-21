@@ -16,9 +16,11 @@ import (
 
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/origin"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -46,8 +48,9 @@ var ErrConfig = errors.New("magiclink: invalid configuration")
 // the link. The cause is logged server-side instead.
 //
 // Only two redemption errors are not this one: a consumer refusal check's own
-// error, which is returned unchanged, and a policy denial the consumer's check
-// reports.
+// error, returned unchanged when its chain can be walked and replaced by the
+// library's fixed error when it cannot, and a policy denial the consumer's
+// check reports.
 var ErrInvalidLink = errors.New("magiclink: invalid link")
 
 // BindingNonceLength is the length of RequestResult.BindingNonce whenever
@@ -112,7 +115,9 @@ type Redemption struct {
 // The first check that returns an error stops the redemption, later checks do
 // not run, and the error is returned to the caller unchanged — it is the
 // consumer's contract with their own caller, and the library has no business
-// rewriting it.
+// rewriting it. The one exception is an error whose chain cannot be walked (a
+// cycle, a fan-out past the bound, a panicking Unwrap): the library cannot
+// inspect it, so its fixed error is returned in its place.
 type Check func(ctx context.Context, principal identity.Principal, passwordChangedAt time.Time) error
 
 // AddressResolver turns a submitted address into the user it belongs to.
@@ -142,6 +147,7 @@ type Links struct {
 	binding       bool
 	random        io.Reader
 	logger        *slog.Logger
+	loggerGiven   bool
 
 	acceptSyncDelivery bool
 }
@@ -164,7 +170,7 @@ type Links struct {
 // submitted address passed to the user loader as a username
 // (WithAddressResolver), a neutral plain-text message naming no product
 // (WithRenderer), same-device binding on (WithSameDeviceBinding), crypto/rand
-// for the binding value (WithRandom), slog.Default for the log (WithLogger),
+// for the binding value (WithRandom), the chain's logger, else slog.Default, for the log (WithLogger),
 // and delivery that must not block (WithSynchronousDelivery accepts one that
 // does).
 //
@@ -189,7 +195,7 @@ func New(
 		renderer:      defaultRenderer,
 		binding:       true,
 		random:        rand.Reader,
-		logger:        slog.Default(),
+		logger:        ctxlog.Routing(),
 	}
 
 	for _, opt := range opts {
@@ -230,6 +236,10 @@ func New(
 	}
 	if nilcheck.IsNil(m.random) {
 		return nil, fmt.Errorf("%w: WithRandom was given no random source", ErrConfig)
+	}
+
+	if m.loggerGiven && m.logger == nil {
+		return nil, fmt.Errorf("%w: WithLogger was given no logger", ErrConfig)
 	}
 
 	if m.resolver == nil {
@@ -373,7 +383,7 @@ func (m *Links) Request(ctx context.Context, address, next string) RequestResult
 	var result RequestResult
 
 	if m.binding {
-		nonce, err := m.newBindingNonce()
+		nonce, err := m.newBindingNonce(ctx)
 		if err != nil {
 			m.logger.LogAttrs(ctx, slog.LevelError,
 				"magiclink: the random source failed and no link was issued",
@@ -423,7 +433,9 @@ func (m *Links) Request(ctx context.Context, address, next string) RequestResult
 	// for one account to another address.
 	msg.To = address
 
-	if err := m.sender.Send(ctx, msg); err != nil {
+	err = m.sender.Send(ctx, msg)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		m.logger.LogAttrs(ctx, slog.LevelError,
 			"magiclink: the sign-in message could not be sent", diag.Failure("sender", err)...)
 	}
@@ -440,6 +452,9 @@ func (m *Links) Request(ctx context.Context, address, next string) RequestResult
 // enumeration this flow exists to prevent, moved one layer down.
 func (m *Links) resolve(ctx context.Context, address string) (*identity.Details, bool) {
 	details, err := m.resolver(ctx, address)
+	// Before the not-found check: a hostile chain that wraps ErrUserNotFound
+	// is an outage, never an unknown address.
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound):
@@ -468,9 +483,15 @@ func (m *Links) resolve(ctx context.Context, address string) (*identity.Details,
 }
 
 // newBindingNonce draws the value a link is bound to.
-func (m *Links) newBindingNonce() (string, error) {
+//
+// The source is the consumer's port (WithRandom): its error is sanitized before
+// anything reads it, so a hostile one is answered as any other failed read.
+func (m *Links) newBindingNonce(ctx context.Context) (string, error) {
 	raw := make([]byte, bindingNonceBytes)
-	if _, err := io.ReadFull(m.random, raw); err != nil {
+
+	_, err := io.ReadFull(m.random, raw)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return "", fmt.Errorf("magiclink: read random source: %w", err)
 	}
 
@@ -535,7 +556,8 @@ func defaultRenderer(link, _ string) notify.Message {
 //
 // Every failure except a consumer check's is ErrInvalidLink: a caller cannot
 // tell a wrong token from a disabled user from a store outage. A consumer
-// check's error is returned unchanged.
+// check's error is returned unchanged, or as the library's fixed error when
+// its chain cannot be walked.
 func (m *Links) Redeem(ctx context.Context, token, bindingNonce string, checks ...Check) (Redemption, error) {
 	var (
 		resolved Redemption
@@ -572,7 +594,12 @@ func (m *Links) Redeem(ctx context.Context, token, bindingNonce string, checks .
 		}
 
 		all = append(all, func(ctx context.Context, _ onetime.Token) error {
-			if err := check(ctx, resolved.Principal, resolved.PasswordChangedAt); err != nil {
+			err := check(ctx, resolved.Principal, resolved.PasswordChangedAt)
+			// redemptionError reads it with errors.Is: a hostile chain becomes
+			// the sanitizer's fault, returned as the check's error, never
+			// ErrInvalidLink.
+			err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+			if err != nil {
 				refusal = err
 
 				return err
@@ -604,6 +631,7 @@ func (m *Links) resolveRedemption(ctx context.Context, tok onetime.Token) (*iden
 	user := identity.UserID(tok.Subject)
 
 	details, err := m.users.LoadByUserID(ctx, user)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound):
@@ -632,9 +660,9 @@ func (m *Links) resolveRedemption(ctx context.Context, tok onetime.Token) (*iden
 // redemptionError maps a failure from the token capability to what the caller
 // sees.
 //
-// A consumer's own check error passes through unchanged, because it is the
-// consumer's contract with their own caller and the library has no business
-// rewriting it. Everything else becomes ErrInvalidLink, logged at debug for
+// A consumer's own check error passes through as the check returned it, already
+// sanitized: unchanged when its chain can be walked, the library's fixed error
+// when it cannot. Everything else becomes ErrInvalidLink, logged at debug for
 // the traffic that is simply wrong and at error for the traffic that means
 // something is broken. No record here carries the presented token or the
 // binding value.

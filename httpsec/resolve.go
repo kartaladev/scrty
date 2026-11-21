@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 )
@@ -105,7 +106,21 @@ func (r *sessionResolver) resolve(ex *Exchange, id string) error {
 
 	s, err := r.sessions.Load(ctx, id)
 	if err != nil {
-		if errors.Is(err, session.ErrUnreadable) {
+		// The store is the consumer's, so its error is read through one
+		// bounded walk. One the walk gives up on is no verdict on the
+		// session: it is the store's failure, answered behind fixed text as
+		// classifyLoad answers any other, with no event. Its error goes no
+		// further, since every check of the refusal on the way out would
+		// walk it again; errLoadUnreadable stands in its place. The dispatch
+		// then cannot meet the abort, so it is reported here, once.
+		load := readLoadFailure(err)
+		if load.abort != nil {
+			ex.answeringChain().reportAbort(ctx, load.abort)
+
+			return diag.Wrap(errLoadUnreadable, textSessionNotResolved)
+		}
+
+		if load.unreadable {
 			// Visible to an operator, because it means a sealing key was
 			// retired while sessions sealed under it were still live. The
 			// caller is answered "log in again", because that is the remedy
@@ -125,8 +140,7 @@ func (r *sessionResolver) resolve(ex *Exchange, id string) error {
 		// and no handler sees it authenticated; the endpoint, which always
 		// answers its own requests, loads it for renewal. Every other request
 		// is refused as for any ended session.
-		if errors.Is(err, session.ErrRenewalRequired) &&
-			r.renewal != nil && r.renewal.answers(ex.Request) {
+		if load.renewalRequired && r.renewal != nil && r.renewal.answers(ex.Request) {
 			// The session is judged once the endpoint loads it, as admit
 			// judges one loaded here, so a late credential presented by the
 			// wrong sender, or naming someone other than the session's user, is
@@ -137,9 +151,9 @@ func (r *sessionResolver) resolve(ex *Exchange, id string) error {
 			return nil
 		}
 
-		emitLoadRefusal(ctx, err)
+		emitLoadRefusal(ctx, load)
 
-		return classifyLoad(ctx, err)
+		return classifyLoad(ctx, err, load)
 	}
 
 	var details *identity.Details
@@ -156,6 +170,8 @@ func (r *sessionResolver) resolve(ex *Exchange, id string) error {
 	// admit loaded for this request has just been read, so it is not read again.
 	if details == nil {
 		details, err = r.users.LoadByUserID(ctx, s.UserID)
+		err = porterr.SanitizeTo(ctx, r.log, err, porterr.ErrUnwalkable)
+
 		if err != nil {
 			return classifyReload(ctx, err)
 		}
@@ -204,13 +220,13 @@ func (r *sessionResolver) resolve(ex *Exchange, id string) error {
 // Only a refusal matches ErrAuthenticationRequired, which is how a caller
 // tells a refused presentation, to be charged to its source, from a request
 // that reached no verdict.
-func classifyLoad(ctx context.Context, err error) error {
+//
+// load is err as readLoadFailure read it, so err is walked once.
+func classifyLoad(ctx context.Context, err error, load loadFailure) error {
 	switch {
-	case errors.Is(err, session.ErrReused):
+	case load.reused:
 		return errors.Join(ErrAuthenticationRequired, err)
-	case errors.Is(err, session.ErrNotFound),
-		errors.Is(err, session.ErrExpired),
-		errors.Is(err, session.ErrUnreadable):
+	case load.notFound, load.expired, load.unreadable:
 		return ErrAuthenticationRequired
 	case hangup.ByCaller(ctx, err):
 		return diag.Wrap(err, textSessionLoadEnded, ctx.Err())
@@ -316,7 +332,7 @@ func (ex *Exchange) evaluatePerRequest(
 	switch d.Outcome {
 	case policy.Deny:
 		err := policyDenyReason(d)
-		emitPerRequestDenial(ctx, err, s)
+		emitPerRequestDenial(ctx, ex.answeringChain(), err, s)
 
 		return ex.markPerRequestThrottle(err)
 	case policy.Challenge:
@@ -422,24 +438,69 @@ const msgSessionUnreadable = "httpsec: a session could not be decrypted"
 // could not be decrypted, and a load the request's own context ended report
 // nothing, and a superseded session presented again is the reuse observer's
 // to report.
-func emitLoadRefusal(ctx context.Context, err error) {
+func emitLoadRefusal(ctx context.Context, load loadFailure) {
 	switch {
-	case errors.Is(err, session.ErrReused):
-	case errors.Is(err, session.ErrExpired):
+	case load.reused:
+	case load.expired:
 		emitEvent(ctx, event.Event{Name: event.SessionUseAfterExpire, Outcome: event.OutcomeFailure})
-	case errors.Is(err, session.ErrNotFound):
+	case load.notFound:
 		emitEvent(ctx, event.Event{Name: event.AuthnLoginFail, Outcome: event.OutcomeFailure})
 	}
+}
+
+// errLoadUnreadable stands, behind textSessionNotResolved, for a session
+// store's error that the bounded walk gave up on, so nothing of it reaches the
+// checks the refusal meets on its way out.
+var errLoadUnreadable = errors.New("httpsec: the session store's error could not be read")
+
+// loadFailure is a failed session load's error, read once: which of the
+// manager's verdicts it matches, as errors.Is would answer each, or the abort
+// that stopped the walk, when every verdict reads false.
+type loadFailure struct {
+	unreadable, renewalRequired, reused, expired, notFound bool
+
+	abort error
+}
+
+// readLoadFailure reads err, a session load's failure, through one bounded
+// walk. The store behind the manager is the consumer's, so err may be
+// cyclic, fanned out or carry a panicking method; such an err matches no
+// verdict, and its abort is returned for the caller to report.
+func readLoadFailure(err error) loadFailure {
+	walk := walkRefusal(err)
+
+	f := loadFailure{
+		unreadable:      walk.is(session.ErrUnreadable),
+		renewalRequired: walk.is(session.ErrRenewalRequired),
+		reused:          walk.is(session.ErrReused),
+		expired:         walk.is(session.ErrExpired),
+		notFound:        walk.is(session.ErrNotFound),
+	}
+
+	if walk.abort != nil {
+		return loadFailure{abort: walk.abort}
+	}
+
+	return f
 }
 
 // emitPerRequestDenial reports a per-request policy's denial of s: an idle
 // session as event.SessionExpired, and any other refusal as
 // event.AuthzFail.
-func emitPerRequestDenial(ctx context.Context, err error, s *session.Session) {
+//
+// err is the consumer's policy's reason, so it is read through one bounded
+// walk. A reason the walk gives up on reports nothing; the abort is reported
+// as the quiet sites report one, through c, the answering chain.
+func emitPerRequestDenial(ctx context.Context, c *Chain, err error, s *session.Session) {
+	walk := walkRefusal(err)
+	idle := walk.is(policy.ErrSessionIdle)
+
 	switch {
-	case errors.Is(err, policy.ErrSessionIdle):
+	case walk.abort != nil:
+		c.reportQuietly(ctx, err, walk.abort)
+	case idle:
 		emitEvent(ctx, sessionEvent(event.SessionExpired, event.OutcomeFailure, s))
-	case refused(ctx, err):
+	case refused(ctx, c, err):
 		emitEvent(ctx, sessionEvent(event.AuthzFail, event.OutcomeFailure, s))
 	}
 }

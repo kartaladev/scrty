@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -612,8 +614,10 @@ var errCSRFNotJudged = newConfigError("CheckCSRFToken was called on a request CS
 // WithCSRFTokenNames), and checked through the configured CSRFTokens source.
 // A token that is absent or empty is refused without asking the source. A
 // refusal is ErrCrossSiteRequest; any other failure of the source is returned
-// as it is. No error names the token. When it passes, sess is the sign-in
-// CSRFToken reads the token of.
+// as it is, unless its chain cannot be inspected (a cycle, a fan-out, an Unwrap
+// that panics): that is returned as a fixed error matching no refusal, and
+// reported once to the chain's logger. No error names the token. When it
+// passes, sess is the sign-in CSRFToken reads the token of.
 //
 // It fails closed, with an error wrapping ErrConfig (answered 500), when the
 // CSRF layer has not judged the request: the authenticator runs outside the
@@ -630,12 +634,20 @@ func CheckCSRFToken(ex *Exchange, sess *session.Session) error {
 	}
 
 	if r.unsafe {
-		presented := r.layer.presentedToken(ex.Request)
+		presented := r.layer.presentedToken(ex.Context(), ex.Request)
 		if presented == "" {
 			return ErrCrossSiteRequest
 		}
 
-		if err := r.layer.tokens.Verify(ex.Context(), sess, presented); err != nil {
+		// The source is the consumer's, so its error is sanitized before it
+		// travels on (porterr.SanitizeTo, its one abort record to the logger
+		// of the chain handling the request): one whose chain cannot be
+		// walked is a source that failed, answered as any other failure of
+		// the source is, and never as a refusal or a pass.
+		ctx := ex.Context()
+
+		err := r.layer.tokens.Verify(ctx, sess, presented)
+		if err = porterr.SanitizeTo(ctx, ctxlog.From(ctx), err, porterr.ErrUnwalkable); err != nil {
 			return err
 		}
 	}
@@ -648,7 +660,7 @@ func CheckCSRFToken(ex *Exchange, sess *session.Session) error {
 }
 
 // presentedToken reads the token the request carries, "" for none.
-func (l *csrfLayer) presentedToken(req Request) string {
+func (l *csrfLayer) presentedToken(ctx context.Context, req Request) string {
 	if tok := req.Header(l.header); tok != "" {
 		return tok
 	}
@@ -657,7 +669,7 @@ func (l *csrfLayer) presentedToken(req Request) string {
 		return ""
 	}
 
-	tok, err := postedFieldLimited(req, l.field, csrfFormBodyLimit)
+	tok, err := postedFieldLimited(ctx, req, l.field, csrfFormBodyLimit)
 	if err != nil {
 		return ""
 	}

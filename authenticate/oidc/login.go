@@ -13,8 +13,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/origin"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // Authorization is where to send a browser to start a login, and the flow it
@@ -71,7 +73,9 @@ func (m *RelyingParty) Authorize(ctx context.Context, provider, next string) (Au
 
 	var secrets [3]string // state, nonce, verifier
 	for i := range secrets {
-		if secrets[i], err = randomURLToken(m.random, flowSecretBytes); err != nil {
+		secrets[i], err = randomURLToken(m.random, flowSecretBytes)
+		err = porterr.SanitizeTo(ctx, m.log, err, porterr.ErrUnwalkable)
+		if err != nil {
 			return Authorization{}, err
 		}
 	}
@@ -81,6 +85,7 @@ func (m *RelyingParty) Authorize(ctx context.Context, provider, next string) (Au
 	handle, err := m.flows.Begin(ctx, Flow{
 		Provider: p.Name, State: state, Nonce: nonce, Verifier: verifier, Next: next, ExpiresAt: expires,
 	})
+	err = porterr.SanitizeTo(ctx, m.log, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return Authorization{}, diag.Wrap(err, "oidc: storing the login flow")
 	}
@@ -184,6 +189,10 @@ func (m *RelyingParty) Callback(ctx context.Context, provider, code, state, hand
 		EmailVerified: claims.EmailVerified,
 		Claims:        claims.Claims,
 	})
+	// A chain that cannot be walked is the broker failing, never the
+	// link-state refusal (ErrNoLinkedAccount, ErrProvisioningRefused) it
+	// might claim.
+	err = porterr.SanitizeTo(ctx, m.log, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return CallbackResult{}, err
 	}
@@ -242,6 +251,9 @@ func (m *RelyingParty) AbortFlow(ctx context.Context, provider, state, handle st
 // their own implementation of FlowStore.
 func (m *RelyingParty) completeFlow(ctx context.Context, provider, state, handle string) (Flow, error) {
 	f, err := m.flows.Complete(ctx, handle, provider, state)
+	// Before the ErrInvalidState check: a chain that cannot be walked is a
+	// store fault, never a refusal.
+	err = porterr.SanitizeTo(ctx, m.log, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrInvalidState):
 		return Flow{}, ErrInvalidState
@@ -261,10 +273,12 @@ func (m *RelyingParty) completeFlow(ctx context.Context, provider, state, handle
 // [RelyingParty]'s package doc). Neither carries a token, a state, a nonce or a
 // claim value.
 func (m *RelyingParty) logCallbackRefusal(ctx context.Context, level slog.Level, reason, provider string, cause error) {
-	write, suppressed := m.sampler.Allow("oidc.callback:"+reason+":"+provider, m.clock.Now())
+	key := "oidc.callback:" + reason + ":" + provider
+	write, suppressed := m.sampler.Allow(key, m.clock.Now())
 	if !write {
 		return
 	}
+	m.summaries.Note(ctx, m.log, key)
 	m.log.LogAttrs(ctx, level, "oidc callback failed",
 		slog.String("reason", reason),
 		slog.String("provider", provider),
@@ -278,10 +292,12 @@ func (m *RelyingParty) logCallbackRefusal(ctx context.Context, level slog.Level,
 // text, so a consumer who wants that detail logs it inside their own
 // implementation of FlowStore.
 func (m *RelyingParty) logCallbackFailure(ctx context.Context, provider, reason string, err error) {
-	write, suppressed := m.sampler.Allow("oidc.callback:"+reason+":"+provider, m.clock.Now())
+	key := "oidc.callback:" + reason + ":" + provider
+	write, suppressed := m.sampler.Allow(key, m.clock.Now())
 	if !write {
 		return
 	}
+	m.summaries.Note(ctx, m.log, key)
 	attrs := append([]slog.Attr{
 		slog.String("provider", provider),
 		slog.Int("suppressed", suppressed),
@@ -301,10 +317,12 @@ const malformedAssuranceReason = "malformed-assurance-claim"
 // "oidc.callback:malformed-assurance-claim:<provider>", so a provider whose
 // every token is malformed writes one record per sampling window.
 func (m *RelyingParty) logMalformedAssurance(ctx context.Context, provider, claim string) {
-	write, suppressed := m.sampler.Allow("oidc.callback:"+malformedAssuranceReason+":"+provider, m.clock.Now())
+	key := "oidc.callback:" + malformedAssuranceReason + ":" + provider
+	write, suppressed := m.sampler.Allow(key, m.clock.Now())
 	if !write {
 		return
 	}
+	m.summaries.Note(ctx, m.log, key)
 	m.log.LogAttrs(ctx, slog.LevelWarn, "oidc assurance claim ignored",
 		slog.String("reason", malformedAssuranceReason),
 		slog.String("provider", provider),
@@ -357,7 +375,7 @@ func (m *RelyingParty) exchange(ctx context.Context, p Provider, md metadata, co
 		form.Set("client_secret", p.ClientSecret)
 	}
 
-	res, err := m.out.PostForm(ctx, md.TokenEndpoint, form, header)
+	res, err := m.out.PostForm(ctxlog.With(ctx, m.log), md.TokenEndpoint, form, header)
 	if err != nil {
 		return "", fmt.Errorf("%w: provider %q: %w", ErrExchangeFailed, p.Name, err)
 	}
@@ -390,10 +408,12 @@ func (m *RelyingParty) exchange(ctx context.Context, p Provider, md metadata, co
 // sampler, keyed by provider and reason. attrs never carry a credential: the
 // only provider text they may hold is a refused answer's body, truncated.
 func (m *RelyingParty) logExchangeFailure(ctx context.Context, provider, reason string, attrs ...slog.Attr) {
-	write, suppressed := m.sampler.Allow("oidc.exchange:"+reason+":"+provider, m.clock.Now())
+	key := "oidc.exchange:" + reason + ":" + provider
+	write, suppressed := m.sampler.Allow(key, m.clock.Now())
 	if !write {
 		return
 	}
+	m.summaries.Note(ctx, m.log, key)
 	attrs = append([]slog.Attr{
 		slog.String("provider", provider),
 		slog.String("reason", reason),

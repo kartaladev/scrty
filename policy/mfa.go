@@ -10,8 +10,10 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
@@ -165,20 +167,20 @@ func WithMFASameChannelEnrolment(mode SameChannelMode) MFAOption {
 }
 
 // WithMFALogger replaces where the policy writes its same-channel
-// warnings. The default is slog.Default.
+// warnings and its lookup-failure records. The default is the logger of the
+// chain handling the request, else slog.Default() when the record is written.
 //
 // Its records name the user by the opaque reference in Input.User, on purpose,
 // with the first factor and the channel; they never carry a dependency's error
 // text.
 //
-// A nil logger is ignored rather than refused: it has an obvious safe reading —
-// the caller does not want to choose this policy's logger — and refusing it
-// would make configuring logging mandatory.
+// A nil logger is a configuration error from NewMFA, wrapping ErrConfig: it is
+// almost always an uninitialised variable, and leaving the option out already
+// means "route to the chain's logger, else the default".
 func WithMFALogger(logger *slog.Logger) MFAOption {
 	return mfaOption(func(p *MFA) {
-		if logger != nil {
-			p.logger = logger
-		}
+		p.logger = logger
+		p.loggerGiven = true
 	})
 }
 
@@ -258,9 +260,11 @@ type MFA struct {
 	federated               federatedSource
 	challengeUnmetFederated bool
 	logger                  *slog.Logger
+	loggerGiven             bool
 	clock                   clock.Clock
 	logInterval             time.Duration
 	sampler                 *logsample.Sampler
+	summaries               ctxlog.Summaries
 }
 
 // NewMFA returns the second-factor challenge policy, which turns a
@@ -325,14 +329,15 @@ type MFA struct {
 // Defaults: SameChannelRefuse (WithMFASameChannelEnrolment),
 // factor.Kind.MFAExempt (WithMFAExemption), no federated assurance source
 // (WithFederatedAssuranceSource), federated logins allowed without a local
-// challenge (WithMFAFederatedChallengeWhenUnmet), slog.Default
+// challenge (WithMFAFederatedChallengeWhenUnmet), the logger of the chain
+// handling the request, else slog.Default() when the record is written
 // (WithMFALogger), clock.System() (WithMFAClock) and
 // DefaultLogInterval for its sampled records (WithMFALogInterval).
 func NewMFA(methods []MFAMethodLookup, opts ...MFAOption) (*MFA, error) {
 	p := &MFA{
 		sameChannel: SameChannelRefuse,
 		exempt:      factor.Kind.MFAExempt,
-		logger:      slog.Default(),
+		logger:      ctxlog.Routing(),
 		clock:       clock.System(),
 		logInterval: DefaultLogInterval,
 	}
@@ -340,6 +345,13 @@ func NewMFA(methods []MFAMethodLookup, opts ...MFAOption) (*MFA, error) {
 		if opt != nil {
 			opt.applyMFA(p)
 		}
+	}
+
+	if p.loggerGiven && p.logger == nil {
+		return nil, fmt.Errorf(
+			"%w: WithMFALogger was given a nil logger, which is almost always an uninitialised "+
+				"variable; leave the option out to route to the chain's logger, else slog.Default()",
+			ErrConfig)
 	}
 
 	checked, err := checkMFAMethods(methods, "second-factor challenge policy", true)
@@ -416,7 +428,7 @@ func (p *MFA) Evaluate(ctx context.Context, in *Input) Decision {
 		}
 
 		met, err := federatedMet(ctx, p.federated.src, in)
-		if err != nil {
+		if err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable); err != nil {
 			return Decision{
 				Outcome: Deny,
 				Reason: diag.Wrap(err,
@@ -429,7 +441,7 @@ func (p *MFA) Evaluate(ctx context.Context, in *Input) Decision {
 		}
 	}
 
-	usable, err := UsableMFAMethods(ctx, p.methods, in.User, in.FirstFactor)
+	usable, err := usableMFAMethods(ctx, p.logger, p.methods, in.User, in.FirstFactor)
 	if err != nil {
 		return denyUnreadableEnrolment(err)
 	}
@@ -458,8 +470,12 @@ func (p *MFA) Evaluate(ctx context.Context, in *Input) Decision {
 func (p *MFA) enrolledOnAny(ctx context.Context, user identity.UserID) (bool, error) {
 	for _, m := range p.methods {
 		enrolled, err := m.Enrolled(ctx, user)
-		if err != nil || enrolled {
-			return enrolled, err
+		if err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable); err != nil {
+			return false, err
+		}
+
+		if enrolled {
+			return true, nil
 		}
 	}
 
@@ -524,12 +540,14 @@ func (p *MFA) sampled(ctx context.Context, level slog.Level, msg, key string, at
 	}
 
 	p.logger.LogAttrs(ctx, level, msg, append(attrs, slog.Int("suppressed", suppressed))...)
+	p.summaries.Note(ctx, p.logger, key)
 }
 
 // reportSuppressed accounts for counts the sampler is about to discard, so a
 // burst that stops before its window elapses is still reported in full.
 func (p *MFA) reportSuppressed(key string, suppressed int) {
-	p.logger.LogAttrs(context.Background(), slog.LevelWarn, msgMFASuppressed,
+	// A summary has no request context: it goes where the key's last record went.
+	p.summaries.For(p.logger, key).LogAttrs(context.Background(), slog.LevelWarn, msgMFASuppressed,
 		slog.String("key", key),
 		slog.Int("suppressed", suppressed))
 }
@@ -588,16 +606,33 @@ var (
 // asked in order and the first error stops the walk. A user enrolled on
 // nothing usable is an empty result and no error.
 //
+// A lookup error whose chain cannot be walked (a cycle, a fan-out past budget,
+// a panicking Unwrap) is returned as the library's fault in its place, still
+// with no methods, and one record of it is written with ctx: inside an httpsec
+// chain, to the chain's logger, and otherwise to slog.Default(). This function
+// holds no logger of its own.
+//
 // methods must hold no absent entry; the policy constructors refuse a set that
 // does.
 func UsableMFAMethods(
 	ctx context.Context, methods []MFAMethodLookup, user identity.UserID, first factor.Kind,
 ) ([]MFAMethodLookup, error) {
+	return usableMFAMethods(ctx, nil, methods, user, first)
+}
+
+// usableMFAMethods is UsableMFAMethods writing the record of an unwalkable
+// lookup error to logger, or when logger is nil to the logger of the chain
+// handling the request, else slog.Default() when the record is written. A policy
+// that holds its own logger asks through it, so the record lands with the
+// policy's other records.
+func usableMFAMethods(
+	ctx context.Context, logger *slog.Logger, methods []MFAMethodLookup, user identity.UserID, first factor.Kind,
+) ([]MFAMethodLookup, error) {
 	var usable []MFAMethodLookup
 
 	for _, m := range methods {
 		enrolled, err := m.Enrolled(ctx, user)
-		if err != nil {
+		if err = porterr.SanitizeTo(ctx, logger, err, porterr.ErrUnwalkable); err != nil {
 			return nil, err
 		}
 

@@ -11,7 +11,6 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/ratelimit"
 )
 
@@ -76,8 +75,11 @@ func (c *config) rateLimiterFactory() ratelimit.LimiterFactory {
 // the chain's logger, samples its refusal records over logInterval, the window
 // the endpoint's own records are sampled over, on the chain's clock (which
 // leaves a limiter's own sense of time alone), and reports the counts it
-// suppressed to the chain's refusal-log reporter (WithRefusalLogReporter, or
-// the chain's default summary record). Its throttled-source record is the only
+// suppressed to the consumer's WithRefusalLogReporter when one was given;
+// otherwise the guard writes its own summary record ("ratelimit: refusal
+// records suppressed", with a flow attribute), through the logger option when
+// there is one, else the chain the key's records went to, else the default
+// logger. Its throttled-source record is the only
 // one a throttled attempt produces.
 //
 // Unless the chain turned it off (WithoutIPv6Aggregate), the guard also counts
@@ -119,8 +121,14 @@ func (c *config) resolveSourceGuard(
 		ratelimit.WithSourceGuardLogger(c.logger),
 		ratelimit.WithSourceGuardKeyer(c.keyer),
 		ratelimit.WithSourceGuardLogInterval(logInterval),
-		ratelimit.WithSourceGuardLogReporter(c.refusalLogReporter()),
 		ratelimit.WithSourceGuardClock(c.clock),
+	}
+
+	// Only a consumer's reporter replaces the guard's own: the guard's default
+	// one remembers where each key's records went and sends its summary there,
+	// which a reporter that cannot see those records could not do.
+	if c.refusalReporter != nil {
+		opts = append(opts, ratelimit.WithSourceGuardLogReporter(c.refusalReporter))
 	}
 
 	aggregate, err := c.aggregateLimiter(option, flow, own, limit, window)
@@ -266,7 +274,7 @@ func sourceThrottled(
 	ctx context.Context,
 	g sourceGuard,
 	clientAddr, flow string,
-	s *logsample.Sampler,
+	s *refusalSampler,
 	log *slog.Logger,
 	now time.Time,
 ) (ratelimit.Source, error) {

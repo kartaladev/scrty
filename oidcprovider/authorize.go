@@ -17,6 +17,7 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jws"
 	"github.com/lestrrat-go/jwx/v4/jwt"
 
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/token"
 	"github.com/kartaladev/scrty/token/signingkey"
 )
@@ -683,6 +684,7 @@ func (p *Provider) judgeHintToken(ctx context.Context, raw string) (jwt.Token, h
 	}
 
 	published, err := p.keys.VerificationKeys(ctx)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, hintRefused, dependencyFailure(ctx, err, "oidcprovider: read the verification keys")
 	}

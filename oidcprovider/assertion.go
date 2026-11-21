@@ -15,6 +15,7 @@ import (
 
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 //go:generate mockgen -source=assertion.go -package=oidcprovider_test -destination=assertion_mock_test.go -typed
@@ -230,6 +231,7 @@ func (p *Provider) authenticateAssertion(ctx context.Context, got presented) (*R
 	}
 
 	fresh, err := p.stores.assertionIDs.Record(ctx, rc.ID, a.jti, a.expires)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case err != nil:
 		return nil, dependencyFailure(ctx, err, "oidcprovider: record client assertion")

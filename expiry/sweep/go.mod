@@ -3,7 +3,7 @@ module github.com/kartaladev/scrty/expiry/sweep
 go 1.27
 
 require (
-	github.com/go-co-op/gocron/v2 v2.23.0
+	github.com/go-co-op/gocron/v2 v2.23.1
 	github.com/google/uuid v1.6.0
 	github.com/jonboulle/clockwork v0.5.0
 	github.com/kartaladev/scrty v0.1.1
@@ -14,7 +14,7 @@ require (
 
 require (
 	github.com/robfig/cron/v3 v3.0.1 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
+	go.yaml.in/yaml/v3 v3.0.6 // indirect
 )
 
 // The core module is not tagged yet, so there is no version to require. It is

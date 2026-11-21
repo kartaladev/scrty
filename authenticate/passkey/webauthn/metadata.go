@@ -21,6 +21,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/recovered"
 	"github.com/kartaladev/scrty/outbound"
 	"github.com/kartaladev/scrty/pkg/clock"
 )
@@ -266,6 +267,10 @@ func (c *metadataCache) configErr() error {
 
 var errMetadataUnavailable = errors.New("webauthn: attestation metadata unavailable")
 
+// metadataRefreshWhat names the metadata refresh in the record written when
+// code on its flight panics.
+const metadataRefreshWhat = "metadata refresh"
+
 // provider returns the cached metadata while it is fresh. Otherwise it joins
 // the fetch in flight, or starts one, and waits for it as long as ctx allows.
 //
@@ -317,9 +322,32 @@ func (c *metadataCache) fresh(now time.Time) metadata.Provider {
 	return nil
 }
 
-// refresh fetches, checks and caches the BLOB. Only one refresh runs at a
-// time, as the single flight's function.
+// refresh runs one refresh as the single flight's function. Its whole work
+// runs on singleflight's goroutine, where no request recovery sees a panic and
+// one would end the process: the consumer's fetch and clock, the library's
+// decode of the fetched bytes, and the cache build. A panic in any of them is
+// recovered here, recorded without its value, and answered as an outage, with
+// nothing cached: the cache's lock is never held across a call that can panic,
+// and its state changes only in the one locked step that ends a refresh.
 func (c *metadataCache) refresh(ctx context.Context) (metadata.Provider, error) {
+	var p metadata.Provider
+
+	err := recovered.Call(ctx, nil, metadataRefreshWhat, func() error {
+		var refreshErr error
+		p, refreshErr = c.fetchAndCache(ctx)
+
+		return refreshErr
+	})
+	if err != nil {
+		return nil, errMetadataUnavailable
+	}
+
+	return p, nil
+}
+
+// fetchAndCache fetches, checks and caches the BLOB. refresh is its only
+// caller.
+func (c *metadataCache) fetchAndCache(ctx context.Context) (metadata.Provider, error) {
 	now := c.clock.Now()
 
 	c.mu.Lock()

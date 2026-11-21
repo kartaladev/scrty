@@ -13,7 +13,9 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
@@ -59,6 +61,8 @@ func (m *Passkeys) BeginRegistration(
 	user := sess.UserID
 
 	details, err := m.users.LoadByUserID(ctx, user)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not load the user")
 	}
@@ -78,6 +82,8 @@ func (m *Passkeys) BeginRegistration(
 	}
 
 	held, err := m.credentials.List(ctx, user)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not list the user's passkeys")
 	}
@@ -103,7 +109,7 @@ func (m *Passkeys) BeginRegistration(
 		return nil, diag.Wrap(err, "passkey: could not issue a registration challenge", ErrRegistrationThrottled)
 	}
 
-	return m.verifier.CreationOptions(ctx, CreationInput{
+	raw, err := m.verifier.CreationOptions(ctx, CreationInput{
 		UserHandle:  handle,
 		UserName:    name,
 		DisplayName: display,
@@ -113,6 +119,9 @@ func (m *Passkeys) BeginRegistration(
 		UV:          m.uv,
 		ResidentKey: m.residentKey,
 	})
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
+	return raw, err
 }
 
 // handle returns s's user's handle, assigning a new random one when they have
@@ -120,10 +129,14 @@ func (m *Passkeys) BeginRegistration(
 func (m *Passkeys) handle(ctx context.Context, s *session.Session) ([]byte, error) {
 	offered := make([]byte, HandleSize)
 	if _, err := io.ReadFull(m.random, offered); err != nil {
+		err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 		return nil, diag.Wrap(err, "passkey: could not draw a user handle")
 	}
 
 	handle, err := m.handles.Assign(ctx, s.UserID, offered)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not assign a user handle")
 	}
@@ -205,7 +218,9 @@ type RegistrationResult struct {
 //     requirement. A refused attestation is ErrAttestationRefused. Authenticator
 //     data reporting the backup state without backup eligibility, which
 //     WebAuthn Level 3 rules out, is refused whatever the verifier accepted.
-//  4. Run the consumer's registration check; its error is returned unchanged.
+//  4. Run the consumer's registration check; its error is returned unchanged,
+//     unless its chain cannot be walked (a cycle, a fan-out, a panicking
+//     Unwrap), which is answered with a fixed library error instead.
 //  5. Decide the passkey's pending reasons, remove the user's passkeys left
 //     pending by an abandoned registration that the new one replaces, and draw
 //     the emailed code when one is needed. Nothing is generated or sent yet.
@@ -254,6 +269,8 @@ func (m *Passkeys) FinishRegistration(
 	}
 
 	parsed, err := m.verifier.ParseRegistration(body)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: unreadable registration response", ErrMalformedResponse)
 	}
@@ -268,6 +285,9 @@ func (m *Passkeys) FinishRegistration(
 	}
 
 	nc, err := m.verifier.VerifyRegistration(ctx, parsed, RegistrationExpectation{Challenge: challenge, UV: m.uv})
+	// Sanitized before the attestation check: an unwalkable error, one that
+	// claims ErrAttestationRefused included, is the verifier failing.
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	switch {
 	case errors.Is(err, ErrAttestationRefused):
@@ -294,7 +314,8 @@ func (m *Passkeys) FinishRegistration(
 			AttestationFormat:  nc.AttestationFormat,
 			AttestationTrusted: nc.AttestationTrusted,
 		}); err != nil {
-			return nil, err
+			// Returned unchanged when walkable; the fixed fault when not.
+			return nil, porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 		}
 	}
 
@@ -306,6 +327,8 @@ func (m *Passkeys) FinishRegistration(
 	}
 
 	held, err := m.credentials.Count(ctx, sess.UserID)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not count the user's passkeys")
 	}
@@ -314,7 +337,9 @@ func (m *Passkeys) FinishRegistration(
 		return nil, ErrPerUserLimitReached
 	}
 
-	cid, err := m.ids.NewID()
+	cid, err := idgen.New(m.ids)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not mint a credential identifier")
 	}
@@ -343,6 +368,7 @@ func (m *Passkeys) FinishRegistration(
 	}
 
 	stored, err := m.credentials.InsertWithin(ctx, c, m.passkeyLimit)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	switch {
 	case errors.Is(err, ErrDuplicateCredential):
@@ -384,6 +410,8 @@ func (m *Passkeys) noSyncedPasskey(ctx context.Context, c *Credential) bool {
 	}
 
 	held, err := m.credentials.List(ctx, c.User)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		m.sampled(ctx, slog.LevelError, "list|synced", msgSyncedUnknown, diag.Failure("list", err)...)
 

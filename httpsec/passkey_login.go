@@ -17,7 +17,7 @@ import (
 	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/pkg/logsample"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
@@ -84,7 +84,7 @@ type passwordlessInterceptor struct {
 	// the login tail's settings.
 	engine  *policy.Engine
 	log     *slog.Logger
-	sampler *logsample.Sampler
+	sampler *refusalSampler
 
 	enrolmentLifetime time.Duration
 	enforced          map[policy.ChallengeKind]bool
@@ -426,7 +426,7 @@ func (i *passwordlessInterceptor) resolve(option string, c *config) error {
 func (i *passwordlessInterceptor) wire(c *Chain) {
 	i.engine = c.engine
 	i.log = c.logger
-	i.sampler = i.newSampler(c)
+	i.sampler = newPasswordlessSampler(c, i.manager.LogInterval())
 	i.enrolmentLifetime = c.enrolmentLifetime
 	i.enforced = c.enforced
 	i.challengeMethods = c.challengeMethods
@@ -437,8 +437,8 @@ func (i *passwordlessInterceptor) wire(c *Chain) {
 // passkey logs governs their refusals too, not the chain's
 // WithRefusalLogInterval. Held-back counts go to the chain's reporter, the
 // consumer's when WithRefusalLogReporter gave one.
-func (i *passwordlessInterceptor) newSampler(c *Chain) *logsample.Sampler {
-	return logsample.New(i.manager.LogInterval(), logsample.WithReporter(c.reportRefusals))
+func newPasswordlessSampler(c *Chain, interval time.Duration) *refusalSampler {
+	return newRefusalSampler(interval, c.reportRefusals)
 }
 
 // flushRefusalLogs reports what the begin's source guard and the endpoints'
@@ -547,7 +547,7 @@ func (i *passwordlessInterceptor) cookie(value string, maxAge int) *Cookie {
 func (i *passwordlessInterceptor) finish(ex *Exchange) error {
 	ex.Writer.SetCookie(i.cookie("", -1))
 
-	body, err := postedJSON(ex.Request, passkey.AssertionBodyLimit)
+	body, err := postedJSON(ex.Context(), ex.Request, passkey.AssertionBodyLimit)
 	if err != nil {
 		return err
 	}
@@ -567,19 +567,32 @@ func (i *passwordlessInterceptor) finish(ex *Exchange) error {
 	}
 
 	res, err := i.manager.Authenticate(ctx, body, binding)
-	if errors.Is(err, passkey.ErrMalformedResponse) {
-		return refusedAs(ErrCredentialsMissing, textCredentialsMissing, err)
-	}
-
 	if err != nil {
-		emitPasskeyRefused(ctx, err)
+		// The failure may be the consumer's login check's, so it is read
+		// through the bounded walk. One the walk gives up on is not a
+		// malformed response, reports no event, and its abort is reported as
+		// the quiet sites report one (reportQuietly).
+		walk := walkRefusal(err)
+		malformed := walk.is(passkey.ErrMalformedResponse)
+
+		if walk.abort != nil {
+			ex.answeringChain().reportQuietly(ctx, err, walk.abort)
+
+			return err
+		}
+
+		if malformed {
+			return refusedAs(ErrCredentialsMissing, textCredentialsMissing, err)
+		}
+
+		emitPasskeyRefused(ctx, ex.answeringChain(), err)
 
 		return err
 	}
 
 	details, err := i.loadUser(ex, res.User)
 	if err != nil {
-		emitPasskeyRefused(ctx, err)
+		emitPasskeyRefused(ctx, ex.answeringChain(), err)
 
 		return err
 	}
@@ -622,9 +635,21 @@ func (i *passwordlessInterceptor) finish(ex *Exchange) error {
 // failure, with its cause kept beneath it), a consumer login check's own
 // error, and a request whose own context ended before the verdict report
 // nothing.
-func emitPasskeyRefused(ctx context.Context, err error) {
-	refusal := errors.Is(err, authenticate.ErrAuthenticationFailed) ||
-		errors.Is(err, passkey.ErrPending) || errors.Is(err, passkey.ErrSuspended)
+//
+// err may be a consumer's, a login check's or a user loader's, so whether it
+// is a refusal is read through one bounded walk. One the walk gives up on
+// reports no event, and its abort is reported through c, the exchange's
+// answering chain, as the quiet sites report one (reportQuietly).
+func emitPasskeyRefused(ctx context.Context, c *Chain, err error) {
+	walk := walkRefusal(err)
+	refusal := walk.is(authenticate.ErrAuthenticationFailed, passkey.ErrPending, passkey.ErrSuspended)
+
+	if walk.abort != nil {
+		c.reportQuietly(ctx, err, walk.abort)
+
+		return
+	}
+
 	if !refusal || depfault.Silent(ctx, err) {
 		return
 	}
@@ -639,6 +664,12 @@ func (i *passwordlessInterceptor) loadUser(ex *Exchange, user identity.UserID) (
 	ctx := ex.Context()
 
 	details, err := i.users.LoadByUserID(ctx, user)
+
+	// The loader is the consumer's, so its error is walked once, bounded,
+	// before errors.Is reads it (porterr.SanitizeTo, its one abort record to
+	// the chain's logger): one the walk gives up on is an outage, answered as
+	// a plain loader outage is, never as an unknown user.
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
 
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound):

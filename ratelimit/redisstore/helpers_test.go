@@ -23,6 +23,8 @@ type recorder struct {
 	// info is the reply to INFO; CONFIG GET answers noeviction, and SCRIPT
 	// LOAD a digest, so Verify can run against a recorder.
 	info string
+	// configErr, when set, is the reply to CONFIG GET.
+	configErr error
 }
 
 func (r *recorder) DialHook(redis.DialHook) redis.DialHook {
@@ -45,6 +47,10 @@ func (r *recorder) ProcessHook(redis.ProcessHook) redis.ProcessHook {
 		case *redis.StringCmd:
 			c.SetVal(r.info) // INFO, and SCRIPT LOAD, whose digest is unused
 		case *redis.MapStringStringCmd:
+			if r.configErr != nil {
+				c.SetErr(r.configErr)
+				return nil
+			}
 			c.SetVal(map[string]string{"maxmemory-policy": "noeviction"})
 		}
 		return nil

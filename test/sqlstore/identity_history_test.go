@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/store/sqlstore"
 	"github.com/kartaladev/scrty/test"
@@ -88,6 +89,21 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 				got, err := s.RecentPasswords(ctx, user, 10)
 				require.NoError(t, err)
 				assert.Equal(t, [][]byte{h2, h1}, got, "order is the order of retiring, not of identifiers")
+			},
+		},
+		{
+			name: "a generator answering the nil id fails the retiring and writes no entry",
+			assert: func(t *testing.T, ctx context.Context, conn test.PostgresConn) {
+				s := newIdentityStore(t, conn.DB, sqlstore.WithIDGenerator(idsThenNil(t, 0)))
+				user := newHistoryUser(t)
+
+				err := s.RetirePassword(ctx, user, h1, 3)
+				require.ErrorIs(t, err, idgen.ErrNil)
+
+				var n int
+				require.NoError(t, conn.DB.QueryRowContext(ctx,
+					`SELECT count(*) FROM password_history WHERE user_id = $1`, string(user)).Scan(&n))
+				assert.Zero(t, n, "a history entry was stored under the nil identifier")
 			},
 		},
 		{

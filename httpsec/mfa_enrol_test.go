@@ -2417,12 +2417,25 @@ func failingResolver(err error) func(context.Context, *identity.Details) (string
 	return func(context.Context, *identity.Details) (string, error) { return "", err }
 }
 
+// mfaEnrolAuditPrefix opens the message of every audit record the MFA TOTP
+// enroller writes.
+const mfaEnrolAuditPrefix = "mfa: totp enrolment "
+
 // noRecordCarries asserts that no captured record, message or attribute,
 // contains secret.
+//
+// Records whose message starts with mfaEnrolAuditPrefix are skipped: they are
+// the MFA enroller's own audit records, which name the user by design, and
+// decision 12 routes them to the chain's logger, the one these tests capture.
+// The guarantee here concerns httpsec's own records.
 func noRecordCarries(t *testing.T, logs *capturingHandler, secret string) {
 	t.Helper()
 
 	for _, r := range logs.records() {
+		if strings.HasPrefix(r.Message, mfaEnrolAuditPrefix) {
+			continue
+		}
+
 		assert.NotContains(t, r.Message, secret)
 
 		r.Attrs(func(a slog.Attr) bool {

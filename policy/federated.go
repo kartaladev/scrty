@@ -111,7 +111,9 @@ func (f federatedSource) validate(policyName string) error {
 // by. It meets nothing, and asks no one, when there is no source, when the
 // first factor is not on the federated channel, or when the evidence asserts
 // nothing. Otherwise the source decides, and its error is returned unchanged
-// for the caller to deny with.
+// for the caller to deny with; an answer that carries an error is never met,
+// whatever it claimed. The error is the consumer's: each caller sanitizes it
+// (porterr) with its own logger before reading it.
 func federatedMet(ctx context.Context, src FederatedAssuranceSource, in *Input) (bool, error) {
 	if nilcheck.IsNil(src) ||
 		in.FirstFactor.Channel() != factor.Federated ||

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/event"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token"
 )
@@ -303,7 +304,8 @@ func (p *Provider) resumeConsent(ctx context.Context, in ResumeInput, r *Pending
 	p.reportConsent(ctx, event.ConsentGiven, s.User, r.ClientID)
 
 	offline := slices.Contains(granted, scopeOffline)
-	if err := p.stores.consents.Give(ctx, s.User, r.ClientID, granted, offline, now); err != nil {
+	err = p.stores.consents.Give(ctx, s.User, r.ClientID, granted, offline, now)
+	if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 		p.logFailedAfterSpend(ctx, "oidcprovider: a consent the user gave could not be remembered", err)
 	}
 
@@ -326,11 +328,16 @@ func (p *Provider) consentSignIn(ctx context.Context, in ResumeInput, now time.T
 	}
 
 	session, err := p.stores.browserSessions.Load(ctx, digest, now)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return SignIn{}, nil, ErrReauthenticate
 	case err != nil:
 		return SignIn{}, nil, dependencyFailure(ctx, err, "oidcprovider: load the browser session")
+	case session == nil:
+		// A store reports a missing session with ErrNotFound, so an answer of nothing breaks
+		// its contract: it says nothing of the session, and is answered as the store failing.
+		return SignIn{}, nil, dependencyFailure(ctx, errNoRecord, "oidcprovider: load the browser session")
 	}
 
 	active, err := p.userActive(ctx, session.SignIn.User)
@@ -355,6 +362,7 @@ func (p *Provider) confirmBrowserSession(ctx context.Context, digest []byte, idl
 		return nil
 	}
 	err := p.stores.browserSessions.Touch(ctx, digest, now.Add(browserSessionIdle(idle)))
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return ErrReauthenticate
@@ -390,7 +398,8 @@ func (p *Provider) touchBrowserSession(ctx context.Context, digest []byte, idle 
 	if digest == nil {
 		return
 	}
-	if err := p.stores.browserSessions.Touch(ctx, digest, now.Add(browserSessionIdle(idle))); err != nil {
+	err := p.stores.browserSessions.Touch(ctx, digest, now.Add(browserSessionIdle(idle)))
+	if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 		p.logFailedAfterSpend(ctx, "oidcprovider: a browser session's use could not be recorded", err)
 	}
 }
@@ -437,6 +446,7 @@ func freshEnough(r *PendingRequest, s SignIn, now time.Time) bool {
 // stage is gone, which is the same answer as any other spent stage.
 func (p *Provider) spendStage(ctx context.Context, r *PendingRequest, from, to Stage, s *SignIn) error {
 	err := p.stores.pendingRequests.Advance(ctx, r.HandleDigest, from, to, s)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return ErrUnknownHandle
@@ -464,7 +474,7 @@ func (p *Provider) putBrowserSession(ctx context.Context, s SignIn, idle time.Du
 		return "", nil
 	}
 
-	secret, digest, err := p.mintSecret()
+	secret, digest, err := p.mintSecret(ctx)
 	if err != nil {
 		return "", dependencyFailure(ctx, err, "oidcprovider: mint a browser session")
 	}
@@ -474,7 +484,7 @@ func (p *Provider) putBrowserSession(ctx context.Context, s SignIn, idle time.Du
 		IdleExpiresAt:     now.Add(browserSessionIdle(idle)),
 		AbsoluteExpiresAt: s.AbsoluteExpiresAt,
 	})
-	if err != nil {
+	if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 		return "", dependencyFailure(ctx, err, "oidcprovider: store the browser session")
 	}
 
@@ -500,7 +510,8 @@ func (p *Provider) dropBrowserSession(ctx context.Context, old, replacement stri
 	if !ok {
 		return
 	}
-	if err := p.stores.browserSessions.Delete(ctx, digest); err != nil {
+	err := p.stores.browserSessions.Delete(ctx, digest)
+	if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 		p.logFailedAfterSpend(ctx, "oidcprovider: the replaced browser session could not be deleted", err)
 	}
 }

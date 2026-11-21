@@ -14,7 +14,6 @@ import (
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -116,7 +115,7 @@ type mfaInterceptor struct {
 	// log and sampler are the chain's, handed over once the chain exists: a
 	// sweep that fails is logged through them.
 	log     *slog.Logger
-	sampler *logsample.Sampler
+	sampler *refusalSampler
 
 	// listing is the method-listing endpoint's configuration, and nil while
 	// the endpoint is off (WithMFAMethodListing).
@@ -297,7 +296,7 @@ func (i *mfaInterceptor) verify(ex *Exchange) error {
 	}
 
 	// Steps 5 to 8.
-	if err := checkResponse(ex, i.throttle, i.challenges, method, s, event.MFAVerifyFail); err != nil {
+	if err := checkResponse(ex, i.log, i.throttle, i.challenges, method, s, event.MFAVerifyFail); err != nil {
 		return err
 	}
 
@@ -599,7 +598,9 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session, raised policy
 	// carrying the rotated session and its credential for the consumer's
 	// prompt, and never through the success responder.
 	if raised != policy.ChallengeNone {
-		return &ChallengeError{Kind: raised, Session: rotated, Token: tok}
+		return refuseWithChallenge(ex, &ChallengeError{
+			Kind: raised, Session: rotated, Token: tok, TokenType: challengeTokenType(tok, rotated),
+		})
 	}
 
 	return i.respond(ex, MFAResult{Token: tok, Session: rotated, TokenType: tokenTypeOf(rotated)})
@@ -669,7 +670,7 @@ func (i *mfaInterceptor) gate(ex *Exchange, next Next) error {
 
 	// No token: the caller already holds the credential this session was
 	// reached with, and a gate issues nothing.
-	return i.challenge(ex.Context(), s, "")
+	return i.challenge(ex, s, "")
 }
 
 // isLogoutRequest reports whether r is the logout the chain was configured
@@ -695,13 +696,16 @@ const msgMFAMethodsUnavailable = "httpsec: the usable MFA methods could not be l
 // endpoint would refuse as not usable. A lookup that fails replaces the
 // challenge with that failure, behind fixed text: a partial list would hide a
 // method the user holds, and an empty one would read as "nothing left".
-func (i *mfaInterceptor) challenge(ctx context.Context, s *session.Session, token string) error {
-	methods, err := i.usableMethods(ctx, s.UserID, s.FirstFactor)
+func (i *mfaInterceptor) challenge(ex *Exchange, s *session.Session, token string) error {
+	methods, err := i.usableMethods(ex.Context(), s.UserID, s.FirstFactor)
 	if err != nil {
 		return err
 	}
 
-	return &ChallengeError{Kind: policy.ChallengeMFA, Session: s, Token: token, Methods: methods}
+	return refuseWithChallenge(ex, &ChallengeError{
+		Kind: policy.ChallengeMFA, Session: s, Token: token,
+		TokenType: challengeTokenType(token, s), Methods: methods,
+	})
 }
 
 // usableMethods is the methods a second-factor challenge to user, whose first

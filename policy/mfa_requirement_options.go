@@ -113,7 +113,8 @@ func WithMFARequiredForAll() MFARequirementOption {
 }
 
 // WithMFARequirementLogger replaces where the policy writes its refusal and
-// lookup-failure records. The default is slog.Default.
+// lookup-failure records. The default is the logger of the chain handling the
+// request, else slog.Default() when the record is written.
 //
 // Every record names the user by the opaque reference in Input.User, on
 // purpose. A lookup-failure record carries the fixed reason
@@ -121,13 +122,13 @@ func WithMFARequiredForAll() MFARequirementOption {
 // wants the lookup's full error logs it inside their own
 // identity.MFARequirementLookup.
 //
-// A nil logger is ignored rather than refused, so configuring logging stays
-// optional.
+// A nil logger is a configuration error from NewMFARequirement, wrapping
+// ErrConfig: it is almost always an uninitialised variable, and leaving the
+// option out already means "route to the chain's logger, else the default".
 func WithMFARequirementLogger(logger *slog.Logger) MFARequirementOption {
 	return mfaRequirementOption(func(p *MFARequirement) {
-		if logger != nil {
-			p.logger = logger
-		}
+		p.logger = logger
+		p.loggerGiven = true
 	})
 }
 

@@ -14,7 +14,7 @@ import (
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/pkg/logsample"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -53,9 +53,18 @@ type credentialIssuer func(ctx context.Context, s *session.Session, p *identity.
 // carries the session's binding as its cnf claim, so the two never differ.
 // The generator is the consumer's, so its error comes back behind fixed text,
 // marked as an issuing failure (issuingFailure).
-func signedTokens(g token.Generator) credentialIssuer {
+//
+// The generator's error is sanitized the moment it returns, before the mark
+// wraps it (porterr.SanitizeTo, its one abort record to log, the chain's
+// logger): one whose chain cannot be walked becomes the library's fixed error
+// and is marked like any other. The mark therefore always survives, so every
+// caller that recognises an issuing failure by it (a redemption that does not
+// charge one to the source, the default status mapping that answers it 500)
+// recognises a hostile one exactly as it does a plain one.
+func signedTokens(g token.Generator, log *slog.Logger) credentialIssuer {
 	return func(ctx context.Context, s *session.Session, p *identity.Principal) (string, error) {
 		tok, err := generateFor(ctx, g, s, p)
+		err = porterr.SanitizeTo(ctx, log, err, porterr.ErrUnwalkable)
 		if err != nil {
 			return "", issuingFailure(err, msgTokenNotIssued)
 		}
@@ -127,13 +136,15 @@ func issueSessionReference(_ context.Context, s *session.Session, _ *identity.Pr
 // credentialIssuer is the issuer an endpoint holding the token generator g
 // issues through on this chain: the session reference when EnableSessionBearer
 // is on, and g otherwise. Assembly has already refused a generator in the
-// first case and a missing one in the second.
+// first case and a missing one in the second. A generator's error is
+// sanitized onto the chain's logger; every caller asks for its issuer once the
+// options have all been applied, so that is the logger the chain settled on.
 func (c *config) credentialIssuer(g token.Generator) credentialIssuer {
 	if c.sessionBearer {
 		return issueSessionReference
 	}
 
-	return signedTokens(g)
+	return signedTokens(g, c.logger)
 }
 
 // errNoUserIdentifier is the cause of an authentication whose principal has no
@@ -209,7 +220,7 @@ type loginTailDeps struct {
 	// logger and refusal-log sampler, and its clock. A nil log or clock writes
 	// no record, which only a test seam leaves it.
 	log     *slog.Logger
-	sampler *logsample.Sampler
+	sampler *refusalSampler
 	now     func() time.Time
 
 	// challengeMethods looks up the methods a raised challenge offers: the
@@ -641,7 +652,7 @@ func prepareLogin(
 	// until commit stores it.
 	issue := deps.issue
 	if issue == nil {
-		issue = signedTokens(deps.tokens)
+		issue = signedTokens(deps.tokens, deps.log)
 	}
 
 	tok, err := issue(ctx, s, in.Principal)
@@ -697,10 +708,26 @@ func (l *preparedLogin) commit(ex *Exchange) (string, error) {
 	emitSignIn(ctx, s, l.afterFailures)
 
 	if l.decision.Outcome == policy.Challenge {
-		return l.token, &ChallengeError{Kind: l.decision.Challenge, Session: s, Token: l.token, Methods: l.methods}
+		return l.token, refuseWithChallenge(ex, &ChallengeError{
+			Kind: l.decision.Challenge, Session: s, Token: l.token,
+			TokenType: challengeTokenType(l.token, s), Methods: l.methods,
+		})
 	}
 
 	return l.token, nil
+}
+
+// refuseWithChallenge returns ch as the refusal, first marking the response
+// no-store when ch carries a credential. The set replaces whatever cache policy
+// an outer layer or an earlier interceptor put on the response, so a token handed
+// out with a challenge is never stored by a shared cache. A challenge without a
+// token leaves the consumer's policy as it is.
+func refuseWithChallenge(ex *Exchange, ch *ChallengeError) error {
+	if ch.Token != "" {
+		ex.Writer.SetHeader("Cache-Control", "no-store")
+	}
+
+	return ch
 }
 
 // emitSignIn reports a stored sign-in: its session, its credential, and the

@@ -319,22 +319,6 @@ func TestLockoutObserver(t *testing.T) {
 			},
 		},
 		{
-			name: "a nil lockout logger leaves the logger in place",
-			opts: []lockout.Option{lockout.WithLogger(nil)},
-			store: func(t *testing.T) policy.AttemptStore {
-				s := NewMockAttemptStore(gomock.NewController(t))
-				s.EXPECT().RecordFailure(gomock.Any(), "ada", lockoutNow).Return(nil)
-				s.EXPECT().FailureCount(gomock.Any(), "ada", gomock.Any()).Return(0, errAttemptStoreDown)
-
-				return s
-			},
-			act: record("ada"),
-			assert: func(t *testing.T, _ []lockout.Report, err error, logs string) {
-				require.NoError(t, err)
-				assert.Contains(t, logs, "lockout: a lockout report was lost")
-			},
-		},
-		{
 			// Only the report is lost: recording the failure is what the caller
 			// asked for, and a count that cannot be read must not undo it.
 			name: "a failure recorded but not countable loses only its report",

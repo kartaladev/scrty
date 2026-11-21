@@ -132,6 +132,9 @@ func validate(client redis.UniversalClient, namespace string, limit int, window 
 		return fmt.Errorf("%w: the key prefix is empty, so the limiter's keys would be unmarked", ratelimit.ErrConfig)
 	case cfg.clockSet && nilcheck.IsNil(cfg.clock):
 		return fmt.Errorf("%w: the limiter clock is nil", ratelimit.ErrConfig)
+	case cfg.loggerGiven && cfg.unavailable.Logger == nil:
+		return fmt.Errorf("%w: WithLogger was given no logger: the logger is nil, so outage records would be lost",
+			ratelimit.ErrConfig)
 	}
 	if err := replicaReads(client); err != nil {
 		return err

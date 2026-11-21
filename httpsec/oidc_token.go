@@ -1,7 +1,6 @@
 package httpsec
 
 import (
-	"errors"
 	"net/http"
 
 	"github.com/kartaladev/scrty/oidcprovider"
@@ -140,7 +139,7 @@ func (g *oidcTokenGroup) serve(ex *Exchange, _ Next) error {
 		return writeOIDCRefusal(ex, oidcprovider.CodeInvalidClient)
 	}
 
-	creds, err := readOIDCClientRequest(ex.Request, g.bodyLimit)
+	creds, err := readOIDCClientRequest(ex.Context(), ex.Request, g.bodyLimit)
 	if err != nil {
 		return g.throttle.answer(ex, src, err)
 	}
@@ -183,9 +182,14 @@ func oidcBinding(b session.KeyBinding) oidcprovider.Binding {
 //
 // Asking for a nonce is the protocol's first step, and is charged to no one. A cipher that
 // cannot seal the nonce, like a replay store that failed, is a dependency failure.
+//
+// err may carry a consumer's replay store's or nonce cipher's error, so it is read once, through the
+// bounded walk (readProofFailure). One the walk gives up on is returned as it came, uncharged.
 func (g *oidcTokenGroup) refuseProof(ex *Exchange, src ratelimit.Source, err error) error {
+	nonceRequired, charged := readProofFailure(ex, err)
+
 	switch {
-	case errors.Is(err, ErrDPoPNonceRequired):
+	case nonceRequired:
 		nonce, _, serr := ex.dpop().issueNonce(ex.Context(), false)
 		if serr != nil {
 			return serr
@@ -194,7 +198,7 @@ func (g *oidcTokenGroup) refuseProof(ex *Exchange, src ratelimit.Source, err err
 		setNonce(ex.Writer, nonce)
 
 		return writeOIDCRefusal(ex, oidcprovider.CodeUseDPoPNonce)
-	case chargesProofRefusal(err):
+	case charged:
 		g.throttle.charge(ex.Context(), src)
 
 		return writeOIDCRefusal(ex, oidcprovider.CodeInvalidDPoPProof)

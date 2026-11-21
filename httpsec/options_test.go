@@ -30,6 +30,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
@@ -1004,7 +1005,15 @@ func TestNewDefaults(t *testing.T) {
 			opts: func(_ *testing.T) []httpsec.Option { return nil },
 			assert: func(t *testing.T, s httpsec.ChainSettings) {
 				assert.Nil(t, s.PolicyEngine, "with no engine every phase allows")
-				assert.Same(t, slog.Default(), s.Logger)
+				// The default routes: it is not the default captured at
+				// construction, and a record on a context carrying a chain's
+				// logger lands there.
+				require.NotNil(t, s.Logger)
+				assert.NotSame(t, slog.Default(), s.Logger)
+
+				carried := &capturingHandler{}
+				s.Logger.InfoContext(ctxlog.With(t.Context(), slog.New(carried)), "routed")
+				require.Len(t, carried.records(), 1, "the default logger did not route to the logger on the context")
 				assert.Equal(t, time.Minute, s.RefusalLogInterval)
 				assert.Nil(t, s.RefusalLogReporter, "the default summary reporter is supplied where the sampler is built")
 			},

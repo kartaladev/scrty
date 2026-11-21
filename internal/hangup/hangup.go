@@ -25,9 +25,9 @@ package hangup
 
 import (
 	"context"
-	"errors"
 
 	"github.com/kartaladev/scrty/internal/detach"
+	"github.com/kartaladev/scrty/internal/errwalk"
 )
 
 // ByCaller reports whether err is ctx's own ending rather than a dependency
@@ -44,15 +44,51 @@ import (
 // A context whose bound from [detach.Bounded] has passed is not the caller's
 // ending, whatever err matches: the library gave up waiting on the dependency,
 // so ByCaller reports false and the failure is an outage.
+//
+// err is walked once, under the library's bounded, recovering walk, and only
+// once ctx has ended. An err the walk gives up on, a cyclic chain, a fan-out
+// of joins or a link whose Unwrap or Is method panics, is not a hang-up: its
+// match is not guessed from a partial walk, and the caller treats it as the
+// failure it may be. ByCaller reports nothing and drops the abort, since it
+// cannot know whether anything else will meet it; a caller that can report
+// an abort asks [ByCallerWalk] instead.
 func ByCaller(ctx context.Context, err error) bool {
+	hungUp, _ := ByCallerWalk(ctx, err)
+
+	return hungUp
+}
+
+// ByCallerWalk is [ByCaller], also returning the abort that stopped its walk
+// of err: nil when the walk completed or never ran, because ctx is live or its
+// bound from [detach.Bounded] has passed. On an abort hungUp is false, as
+// ByCaller answers. The abort is one of errwalk's own values, unwrapped, so
+// errwalk.Reason names it, and the caller decides whether and where to report
+// it. ByCallerWalk reports nothing itself.
+func ByCallerWalk(ctx context.Context, err error) (hungUp bool, abort error) {
 	if detach.BoundReached(ctx) {
-		return false
+		return false, nil
 	}
 
 	ctxErr := ctx.Err()
 	if ctxErr == nil {
-		return false
+		return false, nil
 	}
 
-	return errors.Is(err, ctxErr) || errors.Is(err, context.Cause(ctx))
+	chain, abort := errwalk.Flatten(err)
+	if abort != nil {
+		return false, abort
+	}
+
+	for _, target := range [...]error{ctxErr, context.Cause(ctx)} {
+		found, abort := errwalk.Is(chain, target)
+		if abort != nil {
+			return false, abort
+		}
+
+		if found {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }

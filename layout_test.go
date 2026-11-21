@@ -278,6 +278,16 @@ func TestCoreDependencies(t *testing.T) {
 			assert: hasViolation("go.mod", "github.com/testcontainers/testcontainers-go/modules/postgres"),
 		},
 		{
+			name:   "the prblm problem-details library is an integration module",
+			reqs:   []requirement{{Path: "github.com/kartaladev/prblm"}},
+			assert: hasViolation("go.mod", "github.com/kartaladev/prblm"),
+		},
+		{
+			name:   "a prblm framework adapter is an integration module",
+			reqs:   []requirement{{Path: "github.com/kartaladev/prblm/adapters/ginprblm"}},
+			assert: hasViolation("go.mod", "github.com/kartaladev/prblm/adapters/ginprblm"),
+		},
+		{
 			name:   "a major-version path of a listed driver is refused",
 			reqs:   []requirement{{Path: "github.com/jackc/pgx/v5"}},
 			assert: hasViolation("go.mod", "github.com/jackc/pgx/v5"),

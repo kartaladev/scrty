@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/outbound"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
@@ -36,7 +38,9 @@ type RelyingParty struct {
 	broker   IdentityBroker
 	log      *slog.Logger
 	sampler  *logsample.Sampler
-	cache    keyCache
+	// summaries remembers where each sampler key's last record went.
+	summaries ctxlog.Summaries
+	cache     keyCache
 
 	skew    time.Duration // leeway on token times; see WithClockSkew
 	skewSet bool          // whether WithClockSkew chose skew, zero included
@@ -67,18 +71,16 @@ type roleSyncing interface{ RoleSyncProviders() []string }
 // NewRelyingParty returns a manager for the registry's providers that resolves
 // identities through broker.
 //
-// Both are required: a manager with no provider or no way to resolve an
-// identity cannot complete a login, so a nil registry, or a nil broker
-// (identity.MissingPort), is a wiring mistake. A nil pointer inside a non-nil
-// interface counts as nil. With no options it sends every
-// request through outbound.New(), draws secrets from crypto/rand.Reader, reads
-// time from clock.System(), logs to slog.Default(), and holds login flows for
-// DefaultFlowTTL in a NewMemoryFlowStore sharing its clock and random source,
-// judges provider token times within DefaultClockSkew (WithClockSkew), and
-// accepts logout tokens issued up to DefaultLogoutTokenMaxAge ago
-// (WithLogoutTokenMaxAge), and gives every provider the default Assurance,
-// accepting amr "mfa" only (WithProviderAssurance), matched per provider
-// unless WithAssuranceEvaluator replaces the matching.
+// Both are required: a manager with no provider or no way to resolve an identity cannot complete a
+// login, so a nil registry, or a nil broker (identity.MissingPort), is a wiring mistake. A nil
+// pointer inside a non-nil interface counts as nil. With no options it sends every request through
+// outbound.New(), draws secrets from crypto/rand.Reader, reads time from clock.System(), logs to
+// the logger of the chain handling the request, else slog.Default() when the record is written, and
+// holds login flows for DefaultFlowTTL in a NewMemoryFlowStore sharing its clock and random source,
+// judges provider token times within DefaultClockSkew (WithClockSkew), and accepts logout tokens
+// issued up to DefaultLogoutTokenMaxAge ago (WithLogoutTokenMaxAge), and gives every provider the
+// default Assurance, accepting amr "mfa" only (WithProviderAssurance), matched per provider unless
+// WithAssuranceEvaluator replaces the matching.
 //
 // It sends no request. Provider metadata and key sets are fetched on first
 // use, or by Prefetch, and cached for DefaultDiscoveryTTL, with a failure
@@ -138,7 +140,7 @@ func NewRelyingParty(registry *Registry, broker IdentityBroker, opts ...Option) 
 		m.clock = clock.System()
 	}
 	if m.log == nil {
-		m.log = slog.Default()
+		m.log = ctxlog.Routing()
 	}
 	if m.flows == nil {
 		s, err := NewMemoryFlowStore(WithMemoryFlowStoreClock(m.clock), WithMemoryFlowStoreRandom(m.random))
@@ -241,7 +243,7 @@ func (m *RelyingParty) checkBrokerProviders() error {
 
 // reportSuppressed writes the count of refusal records the sampler held back.
 func (m *RelyingParty) reportSuppressed(key string, suppressed int) {
-	m.log.LogAttrs(context.Background(), slog.LevelInfo, "oidc refusals suppressed",
+	m.summaries.For(m.log, key).LogAttrs(context.Background(), slog.LevelInfo, "oidc refusals suppressed",
 		slog.String("reason", key),
 		slog.Int("suppressed", suppressed))
 }
@@ -311,7 +313,8 @@ func (m *RelyingParty) RoleSyncProviders() []string {
 // is never deleted. A flow store error is returned with whatever count the
 // store reported. FlowExpiryTask wraps it as a task.
 func (m *RelyingParty) PurgeExpiredFlows(ctx context.Context) (int, error) {
-	return m.flows.DeleteExpired(ctx, m.clock.Now())
+	n, err := m.flows.DeleteExpired(ctx, m.clock.Now())
+	return n, porterr.SanitizeTo(ctx, m.log, err, porterr.ErrUnwalkable)
 }
 
 // Option customises a RelyingParty at construction.
@@ -413,7 +416,9 @@ func WithFlowTTL(ttl time.Duration) Option {
 }
 
 // WithLogger replaces the logger refusals and provider failures are reported
-// to. The default is slog.Default().
+// to. The default is the logger of the chain handling the request, else
+// slog.Default() when the record is written. A nil logger fails construction
+// with ErrConfig.
 //
 // No record this package writes carries a token, a client secret, a PKCE
 // verifier, a state, a nonce, a handoff code or a claim value.

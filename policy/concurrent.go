@@ -8,6 +8,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 //go:generate mockgen -source=concurrent.go -package=policy_test -destination=concurrent_mock_test.go -typed
@@ -143,6 +144,8 @@ func (p *ConcurrentSessions) Phases() []Phase { return []Phase{PostAuthenticatio
 // is not repeated in the reason.
 func (p *ConcurrentSessions) Evaluate(ctx context.Context, in *Input) Decision {
 	count, err := p.counter.CountActiveByUser(ctx, in.User)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return Decision{
 			Outcome: Deny,

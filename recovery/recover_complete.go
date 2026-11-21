@@ -15,7 +15,9 @@ import (
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
@@ -280,7 +282,8 @@ func (r *Recoverer) recover(ctx context.Context, req Request) (*Result, error) {
 
 	ctx = context.WithoutCancel(ctx)
 
-	rid, err := r.ids.NewID()
+	rid, err := idgen.New(r.ids)
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgIDFailed, diag.Failure("id-generator", err)...)
 
@@ -305,6 +308,7 @@ func (r *Recoverer) recover(ctx context.Context, req Request) (*Result, error) {
 
 	rec.CompletedAt = now
 	err = bounded(ctx, detach.WriteTimeout, func(c context.Context) error { return r.records.Insert(c, rec) })
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgRecordFailed, diag.Failure("record-store", err)...)
 
@@ -357,6 +361,7 @@ func (r *Recoverer) issueSession(
 	}
 
 	credential, err := r.issue(ctx, p.Session(), details)
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		level := slog.LevelError
 		if hangup.ByCaller(ctx, err) {
@@ -422,6 +427,7 @@ func (r *Recoverer) complete(ctx context.Context, c completion, now time.Time) (
 		err := bounded(ctx, detach.RevocationTimeout, func(bc context.Context) error {
 			return r.grants.RevokeUserGrants(bc, c.user, grantRevocationCause)
 		})
+		err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 		if err != nil {
 			r.logger.LogAttrs(ctx, slog.LevelError, msgGrantsFailed, diag.Failure("grant-revoker", err)...)
 			r.events.Report(ctx, event.Event{
@@ -501,6 +507,7 @@ func (r *Recoverer) deliver(ctx context.Context, details *identity.Details, subj
 	address, err := maybeBoundedValue(ctx, resolveBound, func(rc context.Context) (string, error) {
 		return r.resolver(rc, details)
 	})
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 
 	switch {
 	case err != nil:
@@ -513,7 +520,10 @@ func (r *Recoverer) deliver(ctx context.Context, details *identity.Details, subj
 		return
 	}
 
-	if err := r.sender.Send(ctx, notify.Message{To: address, Subject: subject, TextBody: body}); err != nil {
+	err = r.sender.Send(ctx, notify.Message{To: address, Subject: subject, TextBody: body})
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
+
+	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgNoticeSendFailed, diag.Failure("sender", err)...)
 	}
 }

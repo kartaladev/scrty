@@ -31,11 +31,25 @@ const flowSecretBytes = 32
 func randomURLToken(r io.Reader, n int) (string, error) {
 	b := make([]byte, n)
 	if _, err := io.ReadFull(r, b); err != nil {
-		return "", fmt.Errorf("oidc: drawing a random value: %w", err)
+		return "", &randomDrawError{cause: err}
 	}
 
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
+
+// randomDrawError is what randomURLToken returns for a failed read. It builds
+// its text only when asked, where fmt.Errorf would build it on the spot:
+// the cause is the consumer's random source's error, and rendering one that
+// is a join fanning out takes seconds before any caller can sanitize it. The
+// text is the one fmt.Errorf gave, and fmt still recovers a cause whose
+// Error panics. Deferring the text also means a cause is never rendered
+// before the port sanitizer walks it, and that walk calls only Unwrap.
+type randomDrawError struct{ cause error }
+
+func (e *randomDrawError) Error() string {
+	return fmt.Sprintf("oidc: drawing a random value: %v", e.cause)
+}
+func (e *randomDrawError) Unwrap() error { return e.cause }
 
 // s256Challenge returns the PKCE S256 code challenge for verifier:
 // base64url(SHA-256(verifier)) without padding (RFC 7636, section 4.2).

@@ -12,6 +12,9 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
+	"github.com/kartaladev/scrty/internal/idgen"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token"
 	"github.com/kartaladev/scrty/token/signingkey"
@@ -177,11 +180,11 @@ func (p *Provider) mintAccessToken(
 	confirmation := confirmationOf(binding)
 
 	if rc.OpaqueAccessTokens {
-		tokenID, err := p.cfg.ids.NewID()
-		if err != nil {
+		tokenID, err := idgen.New(p.cfg.ids)
+		if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 			return nil, dependencyFailure(ctx, err, "oidcprovider: mint an access token's identifier")
 		}
-		secret, digest, err := p.mintSecret()
+		secret, digest, err := p.mintSecret(ctx)
 		if err != nil {
 			return nil, dependencyFailure(ctx, err, "oidcprovider: mint an access token's secret")
 		}
@@ -285,11 +288,14 @@ func (p *Provider) VerifyAccessToken(ctx context.Context, raw string) (*AccessTo
 // client or user. Its row is what ends a token, and a store that cannot answer is no verdict.
 func (p *Provider) requireGrantHolds(ctx context.Context, at *AccessToken) error {
 	grant, err := p.stores.grants.Load(ctx, at.GrantFamily)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return refuseToken()
 	case err != nil:
 		return dependencyFailure(ctx, err, "oidcprovider: read the access token's grant")
+	case grant == nil:
+		return dependencyFailure(ctx, errNoRecord, "oidcprovider: read the access token's grant")
 	case grant.Revoked || !p.cfg.clock.Now().Before(grant.ExpiresAt):
 		return refuseToken()
 	case grant.ClientID != at.ClientID || grant.User != at.Subject:
@@ -314,11 +320,14 @@ func (p *Provider) readOpaqueAccessToken(ctx context.Context, raw string) (*Acce
 	}
 
 	record, err := p.stores.accessTokens.Load(ctx, tokenID)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return nil, refuseToken()
 	case err != nil:
 		return nil, dependencyFailure(ctx, err, "oidcprovider: read the access token")
+	case record == nil:
+		return nil, dependencyFailure(ctx, errNoRecord, "oidcprovider: read the access token")
 	case subtle.ConstantTimeCompare(digest, record.Digest) != 1:
 		return nil, refuseToken()
 	case record.Revoked || !p.cfg.clock.Now().Before(record.ExpiresAt):
@@ -346,7 +355,9 @@ func (p *Provider) readOpaqueAccessToken(ctx context.Context, raw string) (*Acce
 // a DPoP key and a certificate when the provider binds a token to one, is refused rather than
 // read as the one it kept or as no binding.
 func (p *Provider) readJWTAccessToken(ctx context.Context, raw string) (*AccessToken, error) {
-	claims, err := p.accessVerifier.Verify(ctx, raw)
+	// The verifier holds no logger: the provider's own logger, when one was given, takes the abort
+	// record of a key source error it sanitizes.
+	claims, err := p.accessVerifier.Verify(ctxlog.With(ctx, p.cfg.logger), raw)
 	switch {
 	case errors.Is(err, token.ErrInvalid):
 		return nil, refuseToken()

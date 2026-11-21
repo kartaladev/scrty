@@ -3,10 +3,12 @@ package passkey
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/recovery"
 )
@@ -24,7 +26,12 @@ var errNoRecoveryStore = fmt.Errorf("%w: the passkey recovery kind has no creden
 
 // recoveryKind is the passkey authenticator kind of the account-recovery
 // reset; see (*Passkeys).RecoveryKind.
-type recoveryKind struct{ credentials CredentialStore }
+type recoveryKind struct {
+	credentials CredentialStore
+	// logger is the manager's, or nil for a kind built by NewRecoveryKind, whose
+	// abort records then go where an unconfigured component's do.
+	logger *slog.Logger
+}
 
 var (
 	_ recovery.AuthenticatorKind = recoveryKind{}
@@ -50,7 +57,9 @@ var (
 //
 // A failed listing is an error, never an empty list. A passkey is never a
 // recovery proof.
-func (m *Passkeys) RecoveryKind() recovery.AuthenticatorKind { return NewRecoveryKind(m.credentials) }
+func (m *Passkeys) RecoveryKind() recovery.AuthenticatorKind {
+	return recoveryKind{credentials: m.credentials, logger: m.logger}
+}
 
 // NewRecoveryKind returns the passkey authenticator kind over credentials, the
 // same kind (*Passkeys).RecoveryKind reports, without needing a Passkeys value.
@@ -109,6 +118,7 @@ func (k recoveryKind) list(ctx context.Context, user identity.UserID) ([]*Creden
 	}
 
 	all, err := k.credentials.List(ctx, user)
+	err = porterr.SanitizeTo(ctx, k.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not list the user's passkeys")
 	}
@@ -133,7 +143,10 @@ func (k recoveryKind) Remove(ctx context.Context, user identity.UserID, refs []r
 			continue
 		}
 
-		if _, err := k.credentials.Delete(ctx, user, cid); err != nil {
+		_, err = k.credentials.Delete(ctx, user, cid)
+		err = porterr.SanitizeTo(ctx, k.logger, err, porterr.ErrUnwalkable)
+
+		if err != nil {
 			return diag.Wrap(err, "passkey: could not remove a passkey")
 		}
 	}

@@ -89,7 +89,7 @@ func (m *Sessions) SignInState(ctx context.Context, user identity.UserID, family
 	}
 
 	now := m.clock.Now()
-	listed, err := readFamily(ctx, m.store, user, family, now)
+	listed, err := readFamily(ctx, m.logger, m.store, user, family, now)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			err = errListingAnsweredNotFound

@@ -16,6 +16,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/oplineage"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
@@ -311,7 +312,8 @@ func (p *Provider) exchangeCode(ctx context.Context, r TokenRequest, rc *Registe
 		return nil, p.refuseSpentCode(ctx, r, rc, code)
 	}
 
-	if err := p.stores.grants.Create(ctx, grant); err != nil {
+	err = p.stores.grants.Create(ctx, grant)
+	if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 		return nil, dependencyFailure(ctx, err, "oidcprovider: store the grant")
 	}
 	if holdsLineage {
@@ -320,7 +322,8 @@ func (p *Provider) exchangeCode(ctx context.Context, r TokenRequest, rc *Registe
 		}
 	}
 	if access.record != nil {
-		if err := p.stores.accessTokens.Create(ctx, access.record); err != nil {
+		err := p.stores.accessTokens.Create(ctx, access.record)
+		if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 			return nil, dependencyFailure(ctx, err, "oidcprovider: store the access token")
 		}
 	}
@@ -334,15 +337,41 @@ func (p *Provider) exchangeCode(ctx context.Context, r TokenRequest, rc *Registe
 // failed part-way, whose secret no one was given.
 func (p *Provider) loadCodeRecord(ctx context.Context, tokenID id.ID) (*CodeRecord, error) {
 	record, err := p.stores.codes.Load(ctx, tokenID)
-	switch {
-	case errors.Is(err, ErrNotFound):
-		return nil, refuseGrant()
-	case err != nil:
-		return nil, dependencyFailure(ctx, err, "oidcprovider: load the code record")
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
+	if err := checkCodeRecord(ctx, record, err); err != nil {
+		return nil, err
 	}
 
 	return record, nil
 }
+
+// checkCodeRecord judges what a code store's load answered, for the exchange and the replay alike so
+// the two cannot drift: a missing code is refused, and a failed, empty or nil-family answer is a
+// dependency failure. The error is the load's, already sanitized.
+func checkCodeRecord(ctx context.Context, record *CodeRecord, err error) error {
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return refuseGrant()
+	case err != nil:
+		return dependencyFailure(ctx, err, "oidcprovider: load the code record")
+	case record == nil:
+		return dependencyFailure(ctx, errNoRecord, "oidcprovider: load the code record")
+	case record.GrantFamily == id.Nil:
+		// A store breaking its contract, or a code issued before the nil identifier was refused:
+		// no grant may live under the nil family, so the code is not spent and nothing is issued.
+		return dependencyFailure(ctx, errNilGrantFamily, "oidcprovider: load the code record")
+	}
+
+	return nil
+}
+
+// errNilGrantFamily stands for a code record naming the nil identifier as its grant family, which
+// no issue stores. It is answered as that store failing, and carries no consumer data.
+var errNilGrantFamily = errors.New("oidcprovider: a code record names the nil grant family")
+
+// errNoRecord stands for a store whose load answered neither a record nor an error, which breaks
+// its port's contract. It is answered as that store failing, never as a record missing.
+var errNoRecord = errors.New("oidcprovider: a store answered neither a record nor an error")
 
 // codeBindingsHold compares the request with what the code was issued for. The redirect URI
 // is compared exactly, and always required, because an authorization request cannot leave
@@ -405,21 +434,27 @@ func grantLife(record *CodeRecord, rc *RegisteredClient, now time.Time) (time.Ti
 // failure: it is the one request allowed tokens.
 func (p *Provider) judgeCodeNow(ctx context.Context, record *CodeRecord) error {
 	recorded, err := p.stores.grants.Load(ctx, record.GrantFamily)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrNotFound):
 	case err != nil:
 		return dependencyFailure(ctx, err, "oidcprovider: read the code's grant")
+	case recorded == nil:
+		return dependencyFailure(ctx, errNoRecord, "oidcprovider: read the code's grant")
 	case recorded.Revoked:
 		return refuseGrant()
 	}
 
 	details, err := p.users.LoadByUserID(ctx, record.SignIn.User)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound):
 		return refuseGrant()
 	case err != nil:
 		return dependencyFailure(ctx, err, "oidcprovider: load the code's user")
-	case details == nil || details.ID != record.SignIn.User || !details.Active:
+	case details == nil:
+		return dependencyFailure(ctx, errNoRecord, "oidcprovider: load the code's user")
+	case details.ID != record.SignIn.User || !details.Active:
 		return refuseGrant()
 	}
 
@@ -571,6 +606,7 @@ func (p *Provider) refuseSpentCode(ctx context.Context, r TokenRequest, rc *Regi
 	defer cancel()
 
 	tok, err := p.stores.codeTokens.FindByID(detached, tokenID)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, onetime.ErrTokenNotFound):
 		return refuseGrant()
@@ -597,11 +633,9 @@ func (p *Provider) refuseSpentCode(ctx context.Context, r TokenRequest, rc *Regi
 	// Read on the detached context so a caller who left still revokes, but judged on the
 	// caller's: only the caller's own ending is a hang-up, and the budget running out is not.
 	record, err := p.stores.codes.Load(detached, tokenID)
-	switch {
-	case errors.Is(err, ErrNotFound):
-		return refuseGrant()
-	case err != nil:
-		return dependencyFailure(ctx, err, "oidcprovider: load the code record")
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
+	if err := checkCodeRecord(ctx, record, err); err != nil {
+		return err
 	}
 	if record.ClientID != rc.ID || !codeBindingsHold(r, record, rc) {
 		return refuseGrant()
@@ -645,6 +679,7 @@ func splitCode(code string) (id.ID, string, bool) {
 // Opaque access tokens need nothing here, because their grant is checked when they are read.
 func (p *Provider) revokeReplayed(ctx, detached context.Context, record *CodeRecord, now time.Time) error {
 	newly, grantErr := p.stores.grants.Revoke(detached, record.GrantFamily, CauseCodeReplay, now)
+	grantErr = porterr.SanitizeTo(ctx, p.cfg.logger, grantErr, porterr.ErrUnwalkable)
 	if grantErr == nil {
 		p.reportCodeReplay(ctx, record, newly)
 	}

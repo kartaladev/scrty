@@ -33,7 +33,7 @@ func (p *passkeyInterceptor) begin(ex *Exchange, s *session.Session) error {
 // verifier cannot read is answered as missing credentials, as an unreadable
 // body is, with the core's refusal still reachable through errors.Is.
 func (p *passkeyInterceptor) finish(ex *Exchange, s *session.Session) error {
-	body, err := postedJSON(ex.Request, passkey.RegistrationBodyLimit)
+	body, err := postedJSON(ex.Context(), ex.Request, passkey.RegistrationBodyLimit)
 	if err != nil {
 		return err
 	}
@@ -220,7 +220,7 @@ type confirmFunc func(
 // confirm reads the code, runs the confirmation and answers 204. A code the
 // endpoint cannot read is ErrCredentialsMissing and reaches no limiter.
 func (p *passkeyInterceptor) confirm(ex *Exchange, s *session.Session, run confirmFunc) error {
-	code, err := postedFieldLimited(ex.Request, "code", passkeyCodeBodyLimit)
+	code, err := postedFieldLimited(ex.Context(), ex.Request, "code", passkeyCodeBodyLimit)
 	if err != nil {
 		return err
 	}

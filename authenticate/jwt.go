@@ -9,7 +9,9 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token"
 )
@@ -174,6 +176,7 @@ func (a *JWTAuthenticator) Authenticate(ctx context.Context, credentials identit
 	}
 
 	claims, err := a.verifier.Verify(ctx, creds.Token())
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	if err != nil {
 		if errors.Is(err, token.ErrInvalid) {
 			return nil, errors.Join(ErrAuthenticationFailed, err)
@@ -188,7 +191,7 @@ func (a *JWTAuthenticator) Authenticate(ctx context.Context, credentials identit
 		return nil, ErrAuthenticationFailed
 	}
 
-	eventID, err := a.eventID(claims)
+	eventID, err := a.eventID(ctx, claims)
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +200,12 @@ func (a *JWTAuthenticator) Authenticate(ctx context.Context, credentials identit
 	// password is wiped: nothing downstream needs the credential, and a result
 	// that carried it would spread it into every log and trace that records
 	// what authenticated the request.
-	if err := creds.Cleanup(); err != nil {
+	//
+	// The cleanup error is the credential's, and so is its chain. One that
+	// cannot be walked becomes a fault matching porterr.ErrUnwalkable, so
+	// the fixed text below is all the caller reads and wrapping it never
+	// walks the hostile chain; a failed wipe stays an error either way.
+	if err := porterr.SanitizeTo(ctx, nil, creds.Cleanup(), porterr.ErrUnwalkable); err != nil {
 		return nil, diag.Wrap(err, "authenticate: clearing the presented token")
 	}
 
@@ -228,12 +236,13 @@ func (a *JWTAuthenticator) principal(subject string) *identity.Principal {
 // not a UUID would refuse a perfectly valid credential over a detail this
 // library does not own. Such a token is named by the generator instead: the
 // event is still named, and only the correspondence with the token is lost.
-func (a *JWTAuthenticator) eventID(claims *token.Claims) (id.ID, error) {
+func (a *JWTAuthenticator) eventID(ctx context.Context, claims *token.Claims) (id.ID, error) {
 	if fromToken, err := id.Parse(claims.ID()); err == nil {
 		return fromToken, nil
 	}
 
-	generated, err := a.ids.NewID()
+	generated, err := idgen.New(a.ids)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return id.Nil, fmt.Errorf("authenticate: naming the authentication: %w", err)
 	}

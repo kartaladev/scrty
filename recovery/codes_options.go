@@ -142,16 +142,13 @@ func WithCodesClock(clk clock.Clock) CodesOption { return func(c *Codes) { c.clo
 // where this deployment's randomness comes from.
 func WithCodesRandom(src io.Reader) CodesOption { return func(c *Codes) { c.random = src } }
 
-// WithCodesLogger replaces the logger. The default is slog.Default().
+// WithCodesLogger replaces the logger. The default is the logger of the chain
+// handling the request, else slog.Default() when the record is written.
 //
-// A nil logger is ignored rather than refused: it has an obvious safe reading,
-// that the caller does not want this component's logs. Only dependency
+// A nil logger, typed nil included, fails NewCodes with ErrConfig: the default
+// needs no option, so a nil here is a wiring mistake. Only dependency
 // failures are logged, as a fixed reason and the error's Go type, and no
 // record carries a code, a hash or a user reference.
 func WithCodesLogger(logger *slog.Logger) CodesOption {
-	return func(c *Codes) {
-		if logger != nil {
-			c.logger = logger
-		}
-	}
+	return func(c *Codes) { c.logger = logger }
 }
