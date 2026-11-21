@@ -75,7 +75,8 @@
 // default it replaces. Option covers the built-in method: six digits, a
 // thirty-second step, clock.System() and crypto/rand. ThrottleOption covers the
 // throttle: the in-memory limiter above, a one-minute log-sampling window and
-// slog.Default.
+// the logger of the chain handling the request, else slog.Default() when the
+// record is written.
 //
 // Two things have no default the library can supply. EnrolmentStore is the one
 // a method cannot invent, so NewTOTP takes it as an argument;

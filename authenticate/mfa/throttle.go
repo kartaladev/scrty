@@ -8,6 +8,7 @@ import (
 
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -91,7 +92,8 @@ type VerifyThrottle struct {
 //
 // Defaults: an in-memory limiter of 5 failures per 15 minutes
 // (WithThrottleLimiter), a one-minute log-sampling window (WithThrottleLogInterval),
-// slog.Default (WithThrottleLogger) and clock.System() (WithThrottleClock). The log
+// the logger of the chain handling the request, else slog.Default() when the
+// record is written (WithThrottleLogger) and clock.System() (WithThrottleClock). The log
 // interval governs MFA verification records alone, so an attacker hammering
 // one user cannot silence any other part of the library.
 //
@@ -101,7 +103,7 @@ type VerifyThrottle struct {
 // construction failure matches ErrConfig.
 func NewVerifyThrottle(opts ...ThrottleOption) (*VerifyThrottle, error) {
 	t := &VerifyThrottle{
-		logger:      slog.Default(),
+		logger:      ctxlog.Routing(),
 		clock:       clock.System(),
 		logInterval: time.Minute,
 	}
@@ -113,7 +115,7 @@ func NewVerifyThrottle(opts ...ThrottleOption) (*VerifyThrottle, error) {
 	}
 
 	if t.logger == nil {
-		return nil, fmt.Errorf("%w: verification throttle logger must not be nil", ErrConfig)
+		return nil, fmt.Errorf("%w: verification throttle logger (WithThrottleLogger) must not be nil", ErrConfig)
 	}
 
 	if nilcheck.IsNil(t.clock) {
@@ -279,7 +281,7 @@ func (t *VerifyThrottle) sampledFailure(ctx context.Context, level slog.Level, m
 // reportSuppressed accounts for counts the sampler is about to discard, so a
 // burst that stops before its window closes is still visible as a number.
 func (t *VerifyThrottle) reportSuppressed(key string, suppressed int) {
-	t.logger.LogAttrs(context.Background(), slog.LevelWarn,
+	ctxlog.Summary(t.logger).LogAttrs(context.Background(), slog.LevelWarn,
 		"mfa: verification refusals suppressed",
 		slog.String("reason", key),
 		slog.Int("suppressed", suppressed))
@@ -367,8 +369,9 @@ func WithThrottleSecurityEvents(sink event.Sink) ThrottleOption {
 	return func(t *VerifyThrottle) { t.events.Set(sink) }
 }
 
-// WithThrottleLogger replaces slog.Default as the destination for throttle
-// records. A nil logger is a configuration error; a consumer who wants silence
+// WithThrottleLogger replaces the default destination for throttle records, the
+// logger of the chain handling the request, else slog.Default() when the record
+// is written. A nil logger is a configuration error; a consumer who wants silence
 // supplies a logger with a discarding handler, which says so at the wiring.
 //
 // A limiter-failure record carries a fixed reason ("limiter-error" or

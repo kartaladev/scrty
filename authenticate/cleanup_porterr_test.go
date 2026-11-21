@@ -117,8 +117,9 @@ func authenticateThroughCleanup(t *testing.T, ctx context.Context, cleanupErr er
 // fails with an error whose chain cannot be walked is answered as a plain
 // cleanup failure is: the same fixed text, never a success and never a
 // refusal. The returned error can be walked and printed without a hang, and
-// the sanitizer writes one record to slog.Default(), the provider holding no
-// logger of its own.
+// the sanitizer writes one record to the logger of the chain handling the
+// request, else to slog.Default() as it is when the record is written (here
+// no chain, so the default), the provider holding no logger of its own.
 func TestPortErrors_JWTCredentialsCleanup(t *testing.T) { //nolint:paralleltest // it replaces slog.Default()
 	only := os.Getenv(cleanupPortErrRowEnv)
 	if only != "" {

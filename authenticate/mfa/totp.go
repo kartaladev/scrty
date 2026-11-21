@@ -19,6 +19,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -90,7 +91,7 @@ func NewTOTP(store EnrolmentStore, issuer string, opts ...Option) (*TOTP, error)
 		clock:  clock.System(),
 		random: rand.Reader,
 		ids:    id.NewV7Generator(),
-		logger: slog.Default(),
+		logger: ctxlog.Routing(),
 
 		verifyLimit:  DefaultVerifyAttemptLimit,
 		verifyWindow: DefaultVerifyAttemptWindow,
@@ -144,7 +145,7 @@ func NewTOTP(store EnrolmentStore, issuer string, opts ...Option) (*TOTP, error)
 	}
 
 	if t.logger == nil {
-		return nil, fmt.Errorf("%w: totp logger must not be nil", ErrConfig)
+		return nil, fmt.Errorf("%w: totp logger (WithLogger) must not be nil", ErrConfig)
 	}
 
 	if nilcheck.IsNil(t.ids) {
@@ -740,9 +741,10 @@ func WithRandom(src io.Reader) Option {
 	return func(t *TOTP) { t.random = src }
 }
 
-// WithLogger replaces slog.Default as the destination for the records this
-// method writes: a verification refused or accepted, and an enrolment begun,
-// confirmed or removed.
+// WithLogger replaces the default destination for the records this method
+// writes (a verification refused or accepted, and an enrolment begun,
+// confirmed or removed): the logger of the chain handling the request, else
+// slog.Default() when the record is written.
 //
 // No record carries a presented code, an enrolment secret or a provisioning
 // URI, whatever logger is given. Every record names the method and, on purpose,
@@ -750,9 +752,8 @@ func WithRandom(src io.Reader) Option {
 // operator can tell whose second factor was used or changed; the reference is
 // the consumer's own identifier, not an address or a name. A failed store's
 // error text is never written; a consumer who wants it logs it inside their own
-// EnrolmentStore. A nil logger is a configuration error; a
-// consumer who wants silence supplies one with a discarding handler, which says
-// so at the wiring.
+// EnrolmentStore. A nil logger is a configuration error; a consumer who wants
+// silence supplies one with a discarding handler, which says so at the wiring.
 func WithLogger(logger *slog.Logger) Option {
 	return func(t *TOTP) { t.logger = logger }
 }

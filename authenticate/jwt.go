@@ -191,7 +191,7 @@ func (a *JWTAuthenticator) Authenticate(ctx context.Context, credentials identit
 		return nil, ErrAuthenticationFailed
 	}
 
-	eventID, err := a.eventID(claims)
+	eventID, err := a.eventID(ctx, claims)
 	if err != nil {
 		return nil, err
 	}
@@ -236,13 +236,13 @@ func (a *JWTAuthenticator) principal(subject string) *identity.Principal {
 // not a UUID would refuse a perfectly valid credential over a detail this
 // library does not own. Such a token is named by the generator instead: the
 // event is still named, and only the correspondence with the token is lost.
-func (a *JWTAuthenticator) eventID(claims *token.Claims) (id.ID, error) {
+func (a *JWTAuthenticator) eventID(ctx context.Context, claims *token.Claims) (id.ID, error) {
 	if fromToken, err := id.Parse(claims.ID()); err == nil {
 		return fromToken, nil
 	}
 
 	generated, err := idgen.New(a.ids)
-	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return id.Nil, fmt.Errorf("authenticate: naming the authentication: %w", err)
 	}

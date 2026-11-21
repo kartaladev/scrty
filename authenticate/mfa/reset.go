@@ -7,11 +7,11 @@ package mfa
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -191,9 +191,10 @@ func WithResetMessage(build func(at time.Time) (subject, body string)) ResetOpti
 //
 // The sink is called synchronously, before the sessions are ended, with a
 // context from which the caller's cancellation has been removed. A panic in it
-// is recovered and logged through slog.Default, the reset having no logger of
-// its own, without the event's contents, and the reset goes on; a sink that
-// blocks holds the reset (see event.Sink). A nil sink, or the option given
+// is recovered and logged, without the event's contents, to the logger of the
+// chain handling the request, else to slog.Default() when the record is
+// written, since the reset has no logger of its own; the reset goes on. A sink
+// that blocks holds the reset (see event.Sink). A nil sink, or the option given
 // twice, is an ErrConfig, returned before anything is removed.
 //
 // The library gives the sink's context no deadline; bound your own work.
@@ -275,7 +276,7 @@ func ResetEnrolment(ctx context.Context, user identity.UserID, deps ResetDeps, o
 	// user their second factors were reset would be false while one remains.
 	// The removals already done stay done.
 	for _, e := range deps.Enrolments {
-		err := porterr.Sanitize(e.RemoveEnrolment(ctx, user), porterr.ErrUnwalkable)
+		err := porterr.SanitizeTo(ctx, nil, e.RemoveEnrolment(ctx, user), porterr.ErrUnwalkable)
 		if err != nil {
 			return diag.Wrap(err, "mfa: reset could not remove the enrolment")
 		}
@@ -285,17 +286,17 @@ func ResetEnrolment(ctx context.Context, user identity.UserID, deps ResetDeps, o
 	// watches: the removals are never undone, whatever follows.
 	c.events.Report(ctx, event.Event{
 		Name: event.MFARemoved, At: c.clock.Now(), Outcome: event.OutcomeSuccess, User: user,
-	}, slog.Default())
+	}, ctxlog.Routing())
 
 	if c.revokeSessions {
-		err := porterr.Sanitize(deps.Sessions.DeleteByUser(ctx, user), porterr.ErrUnwalkable)
+		err := porterr.SanitizeTo(ctx, nil, deps.Sessions.DeleteByUser(ctx, user), porterr.ErrUnwalkable)
 		if err != nil {
 			return diag.Wrap(err, "mfa: reset removed the enrolment but could not end the sessions")
 		}
 	}
 
 	if deps.Grants != nil && !c.keepGrants {
-		err := porterr.Sanitize(deps.Grants.RevokeUserGrants(ctx, user, resetGrantCause), porterr.ErrUnwalkable)
+		err := porterr.SanitizeTo(ctx, nil, deps.Grants.RevokeUserGrants(ctx, user, resetGrantCause), porterr.ErrUnwalkable)
 		if err != nil {
 			return diag.Wrap(err, "mfa: reset removed the enrolment but could not revoke the grants")
 		}
@@ -350,7 +351,7 @@ func (d ResetDeps) notify(
 	message func(at time.Time) (subject, body string),
 ) error {
 	details, err := d.Users.LoadByUserID(ctx, user)
-	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return diag.Wrap(err, "mfa: reset could not load the user to notify")
 	}
@@ -361,14 +362,14 @@ func (d ResetDeps) notify(
 	}
 
 	to, err := contact(ctx, details)
-	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return diag.Wrap(err, "mfa: reset could not resolve the address to notify")
 	}
 
 	subject, body := message(at)
 
-	err = porterr.Sanitize(d.Sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body}), porterr.ErrUnwalkable)
+	err = porterr.SanitizeTo(ctx, nil, d.Sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body}), porterr.ErrUnwalkable)
 	if err != nil {
 		return diag.Wrap(err, "mfa: reset could not queue the notification")
 	}
