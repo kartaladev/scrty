@@ -157,7 +157,7 @@ guards, _ := httpsec.NewGuards(az, httpsec.WithGuardErrorHandler(h.Write))
   - v0.3.0 changes no exported identifier. It walks each error chain once, in `errors.Is` order, within 1,000 entries, and answers a cyclic, too-deep or panicking error (in `Unwrap`, `Is` or `As`) with the safe 500 at once. prblm's own steps therefore no longer hang, overflow the stack or let a panic escape before scrty's mapper runs, which closes the limit this design documented under v0.2.0 and v0.2.1.
   - Behaviour that changes for a consumer: hooks receive a note wrapping `prblm.ErrUnwalkableError` instead of `*PanicError` reports; a `WithStatus` hint joined beside a sentinel is decided by `errors.Is` order; typed-nil pointers in the chain are skipped. Task 10.11 checks scrty against each.
   - v0.2.1, the version first planned, recovered three panics v0.2.0 let escape but kept prblm's unbounded walks.
-- **Other dependencies** (user's request, 2026-11-20). Task 10.11 also takes the bumps the open Dependabot PRs propose, in every workspace module, so the branch lands on current dependencies. Each bump's release notes and OSV record are read first, and a breaking change or advisory goes to the maintainer before it is taken.
+- **Other dependencies** (user's request, 2026-11-20). Task 10.11 also takes the bumps the open Dependabot PRs propose, in every workspace module, so the branch lands on current dependencies. Each bump's release notes and OSV record are read first, and a breaking change or advisory goes to the maintainer before it is taken. Read on 2026-11-21 (16 PRs, ten distinct bumps): none breaks an API scrty uses. The maintainer confirmed v0.3.0 after its behaviour changes were put to them, and chose exactly the Dependabot versions over newer patch releases (fasthttp 1.79.0, klauspost/compress 1.20.5, gocron 2.23.2, unassessed), which arrive in a later round. Taken: fiber/v3 3.7.0, fasthttp 1.78.0, klauspost/compress 1.20.4, x/crypto 0.59.0 (fixes GO-2026-5932 in `openpgp`, which scrty does not import), x/sync 0.25.0, x/mod 0.43.0 (tools), goose/v3 3.30.1, pgx/v5 5.13.0 (its changelog names a `Rows.Values` panic fix, GHSA-w9rp-vfrh-q8vv, that OSV did not return on that date; it also stops putting `sslcert`/`sslkey` into `TLSConfig.Certificates`), gocron/v2 2.23.1.
 - **Where the module is listed.** `go.work`, `.github/dependabot.yml`, `tools/repocheck`'s module expectations, `RELEASING.md`'s module list, and the lockstep tag set (`httpsec/prblmsec/vX.Y.Z`).
 - **Live figures** (read 2026-11-18; they drift): prblm is MIT, its tags are `v0.1.0` and `v0.2.0`, its last push was 2026-11-18, and it has 0 stars. Both projects have the same owner. The release gate's `govulncheck` and SBOM steps cover the new module like any published module (`supply-chain`).
 
@@ -592,6 +592,17 @@ Otherwise reasoned from scrty's own settled `framework-adapters` spec, and from 
 **Researched** (2026-11-20):
 - [kartaladev/prblm release v0.3.0](https://github.com/kartaladev/prblm/releases/tag/v0.3.0), published 2026-11-20: core `v0.3.0` (commit 678dfc5), `adapters/ginprblm/v0.3.0` and `adapters/fiberprblm/v0.3.0` (commit a881cbb, both requiring core v0.3.0), `mappers/validatormap/v0.1.1`. The prblm session reported that all resolve through the Go proxy. Its "Upgrading from v0.2.1" section is the source of the behaviour changes listed in decision 8.
 - The open Dependabot PRs of kartaladev/scrty (16 on 2026-11-20; the list drifts, and task 10.11 re-reads it).
+
+**Researched** (2026-11-21), for the bumps task 10.11 takes:
+- [OSV query API](https://api.osv.dev/v1/query): no advisory on any FROM or TO version except [GO-2026-5932](https://api.osv.dev/v1/vulns/GO-2026-5932) (x/crypto `openpgp`, fixed in 0.59.0, not imported by scrty).
+- [Go module proxy](https://proxy.golang.org): the `go` directive of each TO version; none above 1.27.
+- [gofiber/fiber v3.7.0](https://github.com/gofiber/fiber/releases/tag/v3.7.0): static middleware confines symlinks by default; other additions opt-in.
+- [valyala/fasthttp v1.78.0](https://github.com/valyala/fasthttp/releases/tag/v1.78.0): no API break; client redirect, chunked-EOF and parsing behaviour changes.
+- [klauspost/compress v1.20.4](https://github.com/klauspost/compress/releases/tag/v1.20.4): bug fixes, gzhttp among them.
+- [golang.org/x/crypto](https://go.googlesource.com/crypto), [x/sync](https://go.googlesource.com/sync), [x/mod](https://go.googlesource.com/mod) commit logs between the tags: SSH-only, a `syncmap` rename, a dependency update.
+- [pressly/goose v3.30.1](https://github.com/pressly/goose/releases/tag/v3.30.1) and v3.30.0: parser, ENVSUB and version-sort fixes.
+- [jackc/pgx CHANGELOG, 5.13.0](https://github.com/jackc/pgx/blob/master/CHANGELOG.md): the `Rows.Values` panic fix and the TLS certificate change.
+- [go-co-op/gocron v2.23.1](https://github.com/go-co-op/gocron/releases/tag/v2.23.1): DST and stop-time fixes.
 
 ### Decision 11: one bounded, recovering walk
 

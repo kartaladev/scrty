@@ -399,7 +399,7 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
   - Add `BenchmarkLookupStatus` and `BenchmarkMapError`. Their rows are: a bare sentinel, a 5-deep wrap, a 3-way join with a challenge, an unknown error, and a 50-link chain.
   - Run each against the pre-walk baseline `c1bf3e97` (a `git archive` export; `main` has no `LookupStatus` or prblmsec) and against the branch, with `-count=10 -benchmem`, and compare them with `benchstat`.
   - Report the deltas. A regression above 10% on any row is a finding: it goes back as a fix, or is recorded in design.md with its reason.
-- [ ] 10.11 Require prblm v0.3.0 and take the open Dependabot bumps (design decision 8).
+- [x] 10.11 Require prblm v0.3.0 and take the open Dependabot bumps (design decision 8).
   - First re-list the open Dependabot PRs (`gh pr list --author app/dependabot --state open`). For each bump read its release notes and its OSV record. A bump with a breaking change or an advisory goes to the maintainer before it is taken. On 2026-11-20 they were:
     - root: `gofiber/fiber/v3` 3.7.0, `klauspost/compress` 1.20.4, `golang.org/x/crypto` 0.59.0, `pressly/goose/v3` 3.30.1, `golang.org/x/sync` 0.25.0;
     - `test`: `klauspost/compress` 1.20.4, `pressly/goose/v3` 3.30.1, `jackc/pgx/v5` 5.13.0, `valyala/fasthttp` 1.78.0, `gofiber/fiber/v3` 3.7.0;

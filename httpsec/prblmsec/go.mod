@@ -3,7 +3,7 @@ module github.com/kartaladev/scrty/httpsec/prblmsec
 go 1.27
 
 require (
-	github.com/kartaladev/prblm v0.2.0
+	github.com/kartaladev/prblm v0.3.0
 	github.com/kartaladev/scrty v0.1.1
 	github.com/stretchr/testify v1.12.1
 )
@@ -15,9 +15,9 @@ require (
 	github.com/lestrrat-go/option/v3 v3.0.0-alpha1 // indirect
 	github.com/pquerna/otp v1.5.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.6 // indirect
-	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/crypto v0.59.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
 )
 
 // The core module is not tagged yet, so there is no version to require. It is

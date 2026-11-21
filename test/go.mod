@@ -5,11 +5,11 @@ go 1.27
 require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/gofiber/fiber/v3 v3.7.0
-	github.com/jackc/pgx/v5 v5.12.0
+	github.com/jackc/pgx/v5 v5.13.0
 	github.com/jonboulle/clockwork v0.5.0
-	github.com/kartaladev/prblm v0.2.0
-	github.com/kartaladev/prblm/adapters/fiberprblm v0.2.0
-	github.com/kartaladev/prblm/adapters/ginprblm v0.2.0
+	github.com/kartaladev/prblm v0.3.0
+	github.com/kartaladev/prblm/adapters/fiberprblm v0.3.0
+	github.com/kartaladev/prblm/adapters/ginprblm v0.3.0
 	github.com/kartaladev/scrty v0.1.1
 	github.com/kartaladev/scrty/authenticate/passkey/webauthn v0.1.1
 	github.com/kartaladev/scrty/httpsec/fibersec v0.1.1
@@ -18,10 +18,10 @@ require (
 	github.com/kartaladev/scrty/ratelimit/redisstore v0.1.1
 	github.com/kartaladev/scrty/store/gormstore v0.1.1
 	github.com/kartaladev/scrty/store/pgxstore v0.1.1
-	github.com/klauspost/compress v1.20.3
+	github.com/klauspost/compress v1.20.4
 	github.com/lestrrat-go/jwx/v4 v4.6.0
 	github.com/pquerna/otp v1.5.0
-	github.com/pressly/goose/v3 v3.29.0
+	github.com/pressly/goose/v3 v3.30.1
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go v0.45.0
@@ -37,7 +37,7 @@ require (
 require (
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20261006220739-8c912ac31dd4 // indirect
-	github.com/Microsoft/go-winio v0.6.3 // indirect
+	github.com/Microsoft/go-winio v0.6.4 // indirect
 	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect
@@ -89,7 +89,7 @@ require (
 	github.com/mattn/go-colorable v0.1.16 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mdelapenya/tlscert v0.2.0 // indirect
-	github.com/mfridman/interpolate v0.0.2 // indirect
+	github.com/mfridman/interpolate v0.2.0 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/go-archive v0.3.3 // indirect
 	github.com/moby/moby/api v1.56.1 // indirect
@@ -131,11 +131,11 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.6 // indirect
 	golang.org/x/arch v0.22.0 // indirect
-	golang.org/x/crypto v0.58.0 // indirect
+	golang.org/x/crypto v0.59.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )
 
