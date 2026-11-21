@@ -61,6 +61,11 @@ func TestStores_NilGeneratedID(t *testing.T) {
 	good6 := id.MustParse("00000000-0000-4000-8000-0000000000b6")
 	good7 := id.MustParse("00000000-0000-4000-8000-0000000000b7")
 	good8 := id.MustParse("00000000-0000-4000-8000-0000000000b8")
+	good9 := id.MustParse("00000000-0000-4000-8000-0000000000b9")
+	good10 := id.MustParse("00000000-0000-4000-8000-0000000000c1")
+	good11 := id.MustParse("00000000-0000-4000-8000-0000000000c2")
+	good12 := id.MustParse("00000000-0000-4000-8000-0000000000c3")
+	cipher := storefix.TestCipher(t)
 	at := time.Date(2030, 1, 1, 10, 0, 0, 0, time.UTC)
 
 	type testCase struct {
@@ -318,6 +323,127 @@ func TestStores_NilGeneratedID(t *testing.T) {
 				s := newEnrolmentStore(t, d.db, storefix.TestCipher(t), gormstore.WithIDGenerator(sequenceIDs(t, good8)))
 				require.NoError(t, s.PutPending(ctx, storefix.Pending("mfa-good-user", "TOTP-GOOD")))
 				assert.Equal(t, 1, rowsOf(ctx, t, d, "mfa_enrolments", good8))
+			},
+		},
+		{
+			name: "passkey handle assign nil id",
+			assert: func(t *testing.T, ctx context.Context, d database) {
+				s := newPasskeyHandleStore(t, d.db, gormstore.WithIDGenerator(sequenceIDs(t, id.Nil)))
+				_, err := s.Assign(ctx, "nil-id-user", storefix.PasskeyOffer("nil-id-user", 0))
+				refused(t, err, "assign passkey user handle")
+				assert.Zero(t, nilRows(ctx, t, d, "passkey_user_handles"))
+			},
+		},
+		{
+			name: "passkey handle assign good id",
+			assert: func(t *testing.T, ctx context.Context, d database) {
+				s := newPasskeyHandleStore(t, d.db, gormstore.WithIDGenerator(sequenceIDs(t, good9)))
+				_, err := s.Assign(ctx, "good-id-user", storefix.PasskeyOffer("good-id-user", 0))
+				require.NoError(t, err)
+				assert.Equal(t, 1, rowsOf(ctx, t, d, "passkey_user_handles", good9))
+			},
+		},
+		{
+			name: "recovery codes replace nil id",
+			assert: func(t *testing.T, ctx context.Context, d database) {
+				s := newRecoveryCodeStore(t, d.db, gormstore.WithIDGenerator(sequenceIDs(t, id.Nil)))
+				refused(t, s.ReplaceSet(ctx, "nil-id-user", recoveryHashes("nil-id", 1), recoveryAt), "replace recovery codes")
+				assert.Zero(t, nilRows(ctx, t, d, "recovery_codes"))
+			},
+		},
+		{
+			name: "recovery codes replace good id",
+			assert: func(t *testing.T, ctx context.Context, d database) {
+				s := newRecoveryCodeStore(t, d.db, gormstore.WithIDGenerator(sequenceIDs(t, good10)))
+				require.NoError(t, s.ReplaceSet(ctx, "good-id-user", recoveryHashes("good-id", 1), recoveryAt))
+				assert.Equal(t, 1, rowsOf(ctx, t, d, "recovery_codes", good10))
+			},
+		},
+		{
+			name: "recovery codes replace nil id keeps the old set",
+			assert: func(t *testing.T, ctx context.Context, d database) {
+				const user = "nil-id-replace"
+				require.NoError(t, newRecoveryCodeStore(t, d.db).ReplaceSet(ctx, user, recoveryHashes("old", 2), recoveryAt))
+
+				s := newRecoveryCodeStore(t, d.db, gormstore.WithIDGenerator(sequenceIDs(t, id.Nil)))
+				refused(t, s.ReplaceSet(ctx, user, recoveryHashes("new", 3), recoveryAt), "replace recovery codes")
+
+				left, err := newRecoveryCodeStore(t, d.db).Remaining(ctx, user)
+				require.NoError(t, err)
+				assert.Equal(t, 2, left, "the old set must survive the rolled-back replace")
+			},
+		},
+		{
+			name: "session create nil id",
+			assert: func(t *testing.T, ctx context.Context, d database) {
+				s := newSessionStore(t, d.db, cipher, gormstore.WithIDGenerator(sequenceIDs(t, id.Nil)))
+				refusedText(t, s.Create(ctx, storefix.DurableSession("nil-id", opTime)),
+					"session: the inner store could not create the session")
+				assert.Zero(t, nilRows(ctx, t, d, "sessions"))
+			},
+		},
+		{
+			name: "session create good id",
+			assert: func(t *testing.T, ctx context.Context, d database) {
+				s := newSessionStore(t, d.db, cipher, gormstore.WithIDGenerator(sequenceIDs(t, good11)))
+				require.NoError(t, s.Create(ctx, storefix.DurableSession("good-id", opTime)))
+				assert.Equal(t, 1, rowsOf(ctx, t, d, "sessions", good11))
+			},
+		},
+		{
+			name: "signing key store nil id",
+			assert: func(t *testing.T, ctx context.Context, d database) {
+				s := newSigningKeyStore(t, d.db, cipher, gormstore.WithIDGenerator(sequenceIDs(t, id.Nil)))
+				refusedText(t, s.Store(ctx, storefix.SigningKey("nil-id-kid", []byte("private"))),
+					"seal: the inner store could not store the signing key")
+				assert.Zero(t, nilRows(ctx, t, d, "signing_keys"))
+			},
+		},
+		{
+			name: "signing key store good id",
+			assert: func(t *testing.T, ctx context.Context, d database) {
+				s := newSigningKeyStore(t, d.db, cipher, gormstore.WithIDGenerator(sequenceIDs(t, good12)))
+				require.NoError(t, s.Store(ctx, storefix.SigningKey("good-id-kid", []byte("private"))))
+				assert.Equal(t, 1, rowsOf(ctx, t, d, "signing_keys", good12))
+			},
+		},
+		{
+			name: "signing key store nil id keeps the old key",
+			assert: func(t *testing.T, ctx context.Context, d database) {
+				require.NoError(t, newSigningKeyStore(t, d.db, cipher).Store(ctx, storefix.SigningKey("kid-keep", []byte("old"))))
+
+				s := newSigningKeyStore(t, d.db, cipher, gormstore.WithIDGenerator(sequenceIDs(t, id.Nil)))
+				refusedText(t, s.Store(ctx, storefix.SigningKey("kid-keep", []byte("new"))),
+					"seal: the inner store could not store the signing key")
+
+				all, err := newSigningKeyStore(t, d.db, cipher).LoadAll(ctx)
+				require.NoError(t, err)
+				var found bool
+				for _, r := range all {
+					if r.Kid == "kid-keep" {
+						found = true
+						assert.Equal(t, []byte("old"), r.Private)
+					}
+				}
+				assert.True(t, found, "the old key must still be stored")
+			},
+		},
+		{
+			name: "client put nil id keeps the old client",
+			assert: func(t *testing.T, ctx context.Context, d database) {
+				old := confidentialClient("c-keep")
+				require.NoError(t, newClientStore(t, d.db).Put(ctx, old))
+				before, err := newClientStore(t, d.db).Client(ctx, "c-keep")
+				require.NoError(t, err)
+
+				changed := old
+				changed.Name = "Renamed"
+				refused(t, newClientStore(t, d.db, gormstore.WithIDGenerator(sequenceIDs(t, id.Nil))).Put(ctx, changed), "put client")
+
+				after, err := newClientStore(t, d.db).Client(ctx, "c-keep")
+				require.NoError(t, err)
+				assert.Equal(t, before, after)
+				assert.Equal(t, old.Name, after.Name)
 			},
 		},
 	}
