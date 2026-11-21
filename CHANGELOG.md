@@ -133,6 +133,14 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
   signing-key manager's store errors, the token generator's key-source and signer errors, and the
   sealed MFA store's cipher errors. A random-source error is no longer rendered eagerly by
   `fmt.Errorf` before it is checked.
+- A consumer `slog.Handler` that panics no longer ends the process from the queued notifier's
+  workers or the sign-in notice goroutine, and a consumer clock that panics no longer ends it from
+  the OpenID Provider's client-key-set fetch, which now answers a dependency failure and no longer
+  calls the clock while holding its lock. A panicking handler loses only that record.
+- A dependency's error text no longer reaches the returned error of TOTP enrolment, the MFA
+  emailed-code draw, one-time token issue, the `session` manager's identifiers and CSRF token, or
+  the SMTP sender's connection deadline. Each carries fixed library text, and `errors.Is` still
+  finds the cause.
 
 ## [0.1.1] - 2026-11-11
 

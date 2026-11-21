@@ -426,7 +426,7 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
 
   Verify with `go doc ./httpsec LookupStatus` and `gofmt -l .`.
 - [x] 10.7 Re-run the 8.3 gate in full, the `test` module on an idle machine.
-- [ ] 10.8 A whole-branch review (Opus, fresh agent) against decisions 11 to 14 and the new `http-error-propagation` requirements. It first enumerates how the change fails. Findings go back to a fresh dispatch of the owning task.
+- [x] 10.8 A whole-branch review (Opus, fresh agent) against decisions 11 to 14 and the new `http-error-propagation` requirements. It first enumerates how the change fails. Findings go back to a fresh dispatch of the owning task.
 
 ## Workflow follow-up
 
