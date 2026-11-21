@@ -70,6 +70,23 @@ func TestStores_GeneratorAnswers(t *testing.T) {
 				return newEnrolmentStore(t, pool, cipher, opt).PutPending(ctx, mfa.Enrolment{
 					User: "u-1", Secret: []byte("secret"), CreatedAt: opTime})
 			}},
+		{"passkey user handle assign", "pgxstore: assign passkey user handle:", "passkey_user_handles",
+			func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, opt pgxstore.Option) error {
+				_, err := newPasskeyHandleStore(t, pool, opt).Assign(ctx, "nil-id-user", storefix.PasskeyOffer("nil-id-user", 0))
+				return err
+			}},
+		{"recovery codes replace", "pgxstore: replace recovery codes:", "recovery_codes",
+			func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, opt pgxstore.Option) error {
+				return newRecoveryCodeStore(t, pool, opt).ReplaceSet(ctx, "nil-id-user", recoveryHashes("nil-id", 1), recoveryAt)
+			}},
+		{"session create", "session: the inner store could not create the session", "sessions",
+			func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, opt pgxstore.Option) error {
+				return newSessionStore(t, pool, cipher, opt).Create(ctx, storefix.DurableSession("nil-id", opTime))
+			}},
+		{"signing key store", "seal: the inner store could not store the signing key", "signing_keys",
+			func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, opt pgxstore.Option) error {
+				return newSigningKeyStore(t, pool, cipher, opt).Store(ctx, storefix.SigningKey("nil-id-kid", []byte("private")))
+			}},
 	}
 
 	nilGen := func(t *testing.T) pgxstore.Option {
@@ -118,4 +135,77 @@ func TestStores_GeneratorAnswers(t *testing.T) {
 			})
 		})
 	}
+}
+
+// TestStores_NilIdentifierLeavesStoredRecordUnchanged pins, against a real
+// database, that a write which would replace an existing record keeps that
+// record when the generator answers the nil identifier.
+func TestStores_NilIdentifierLeavesStoredRecordUnchanged(t *testing.T) {
+	t.Parallel()
+
+	conn := migrated(t)
+	cipher := storefix.TestCipher(t)
+
+	nilGen := func(t *testing.T) pgxstore.Option {
+		g := idgentest.NewMockGenerator(gomock.NewController(t))
+		g.EXPECT().NewID().Return(id.Nil, nil).AnyTimes()
+
+		return pgxstore.WithIDGenerator(g)
+	}
+
+	t.Run("client put keeps the old client", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+		old := confidentialClient("c-keep")
+		require.NoError(t, newClientStore(t, conn.Pool).Put(ctx, old))
+		before, err := newClientStore(t, conn.Pool).Client(ctx, "c-keep")
+		require.NoError(t, err)
+
+		changed := old
+		changed.Name = "Renamed"
+		err = newClientStore(t, conn.Pool, nilGen(t)).Put(ctx, changed)
+		require.ErrorIs(t, err, idgen.ErrNil)
+
+		after, err := newClientStore(t, conn.Pool).Client(ctx, "c-keep")
+		require.NoError(t, err)
+		assert.Equal(t, before, after)
+		assert.Equal(t, old.Name, after.Name)
+	})
+
+	t.Run("recovery codes replace keeps the old set", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+		const user = "nil-id-replace"
+		require.NoError(t, newRecoveryCodeStore(t, conn.Pool).ReplaceSet(ctx, user, recoveryHashes("old", 2), recoveryAt))
+
+		err := newRecoveryCodeStore(t, conn.Pool, nilGen(t)).ReplaceSet(ctx, user, recoveryHashes("new", 3), recoveryAt)
+		require.ErrorIs(t, err, idgen.ErrNil)
+
+		left, err := newRecoveryCodeStore(t, conn.Pool).Remaining(ctx, user)
+		require.NoError(t, err)
+		assert.Equal(t, 2, left, "the old set must survive the rolled-back replace")
+	})
+
+	t.Run("signing key store keeps the old key", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+		require.NoError(t, newSigningKeyStore(t, conn.Pool, cipher).Store(ctx, storefix.SigningKey("kid-keep", []byte("old"))))
+
+		err := newSigningKeyStore(t, conn.Pool, cipher, nilGen(t)).Store(ctx, storefix.SigningKey("kid-keep", []byte("new")))
+		require.ErrorIs(t, err, idgen.ErrNil)
+
+		all, err := newSigningKeyStore(t, conn.Pool, cipher).LoadAll(ctx)
+		require.NoError(t, err)
+		var found bool
+		for _, r := range all {
+			if r.Kid == "kid-keep" {
+				found = true
+				assert.Equal(t, []byte("old"), r.Private)
+			}
+		}
+		assert.True(t, found, "the old key must still be stored")
+	})
 }

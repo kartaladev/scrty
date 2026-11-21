@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/recovery"
@@ -96,7 +97,7 @@ func (s *RecoveryCodeStore) ReplaceSet(ctx context.Context, user identity.UserID
 		}
 		created := storekit.Time(at)
 		for _, h := range hashes {
-			rowID, err := s.c.ids.NewID()
+			rowID, err := idgen.New(s.c.ids)
 			if err != nil {
 				return failed(op, err)
 			}
