@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/errwalk"
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -171,7 +172,8 @@ func WithObserver(fn func(Result)) Option {
 	}
 }
 
-// WithLogger sets where each task run is logged. Default: slog.Default().
+// WithLogger sets where each task run is logged. Default: the logger of the
+// chain handling the request, else slog.Default() when the record is written.
 // A successful run is logged at DEBUG with its removed count, a failed run at
 // ERROR, and a skipped run at WARN. Every record names the task. A failed or
 // skipped record says what went wrong with a fixed reason (purge, panic,
@@ -239,7 +241,7 @@ func NewRunner(tasks []Task, opts ...Option) (*Runner, error) {
 		tasks:   slices.Clone(tasks),
 		byName:  byName,
 		running: make(map[string]bool, len(tasks)),
-		logger:  slog.Default(),
+		logger:  ctxlog.Routing(),
 		clock:   clock.System(),
 	}
 	for i, opt := range opts {

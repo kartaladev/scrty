@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 )
@@ -43,15 +44,16 @@ type DialFunc func(ctx context.Context, network, address string) (net.Conn, erro
 // An SMTPSender is safe for concurrent use: it holds no per-send state and
 // opens a fresh connection for every message.
 type SMTPSender struct {
-	host       string
-	port       int
-	from       string
-	auth       smtp.Auth
-	timeout    time.Duration
-	opportunis bool
-	dial       DialFunc
-	logger     *slog.Logger
-	tlsConfig  *tls.Config
+	host        string
+	port        int
+	from        string
+	auth        smtp.Auth
+	timeout     time.Duration
+	opportunis  bool
+	dial        DialFunc
+	logger      *slog.Logger
+	loggerGiven bool
+	tlsConfig   *tls.Config
 }
 
 // NewSMTPSender builds a sender for host.
@@ -59,25 +61,33 @@ type SMTPSender struct {
 // Defaults: port 587 (WithSMTPPort), no AUTH (WithSMTPAuth), no default sender
 // address (WithSMTPFrom), a 30-second bound on the whole send
 // (WithSMTPTimeout), STARTTLS required (WithSMTPOpportunisticTLS relaxes it),
-// a net.Dialer (WithSMTPDialer) and slog's default logger (WithSMTPLogger).
+// a net.Dialer (WithSMTPDialer) and, for the logger (WithSMTPLogger), the logger
+// of the chain handling the request, else slog.Default() when the record is
+// written.
 //
 // Construction fails, wrapping ErrConfig, when host is empty, when the port is
-// outside 1 to 65535, when the timeout is zero or less, or when the dialler is
-// nil. Each is a wiring mistake that would otherwise only surface at the first
-// send, which for a sign-in link means in production, for one user, silently.
+// outside 1 to 65535, when the timeout is zero or less, when the dialler is
+// nil, or when WithSMTPLogger was given a nil logger. Each is a wiring mistake
+// that would otherwise only surface at the first send, which for a sign-in
+// link means in production, for one user, silently.
 func NewSMTPSender(host string, opts ...SMTPOption) (*SMTPSender, error) {
 	s := &SMTPSender{
 		host:    host,
 		port:    defaultSMTPPort,
 		timeout: defaultSMTPTimeout,
 		dial:    (&net.Dialer{}).DialContext,
-		logger:  slog.Default(),
+		logger:  ctxlog.Routing(),
 	}
 
 	for _, opt := range opts {
 		if opt != nil {
 			opt(s)
 		}
+	}
+
+	if s.loggerGiven && s.logger == nil {
+		return nil, fmt.Errorf("%w: WithSMTPLogger was given a nil logger, so delivery failures would be lost; "+
+			"pass slog.New(slog.DiscardHandler) to silence them", ErrConfig)
 	}
 
 	if s.host == "" {
@@ -228,9 +238,8 @@ func WithSMTPDialer(dial DialFunc) SMTPOption { return func(s *SMTPSender) { s.d
 // a failed delivery no caller is told of is otherwise invisible.
 func WithSMTPLogger(logger *slog.Logger) SMTPOption {
 	return func(s *SMTPSender) {
-		if logger != nil {
-			s.logger = logger
-		}
+		s.logger = logger
+		s.loggerGiven = true
 	}
 }
 

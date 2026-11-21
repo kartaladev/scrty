@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/lifecycle"
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -67,9 +68,13 @@ type queued struct {
 //
 // Defaults: 2 workers (WithQueueWorkers), a queue of 256 messages
 // (WithQueueMaxMessages), a 30-second bound on each delivery (WithQueueSendTimeout)
-// and slog's default logger (WithQueueLogger). Construction fails, wrapping
-// ErrConfig, on an absent inner sender — a nil interface or one holding a nil
-// pointer — or a worker count, queue size or send timeout of zero or less.
+// and, for the logger (WithQueueLogger), the logger of the chain handling the
+// request that queued the message, else slog.Default() when the record is
+// written.
+//
+// Construction fails, wrapping ErrConfig, on an absent inner sender — a nil
+// interface or one holding a nil pointer — or a worker count, queue size or
+// send timeout of zero or less.
 //
 // The workers start here, and there is no Start. They run detached from any
 // caller's context until Shutdown, which the consumer calls when the process
@@ -79,7 +84,7 @@ func NewQueuedSender(inner Sender, opts ...QueuedOption) (*QueuedSender, error) 
 		workers: defaultQueueWorkers,
 		size:    defaultQueueSize,
 		timeout: defaultQueueSendTimeout,
-		logger:  slog.Default(),
+		logger:  ctxlog.Routing(),
 	}
 
 	for _, opt := range opts {
@@ -93,6 +98,11 @@ func NewQueuedSender(inner Sender, opts ...QueuedOption) (*QueuedSender, error) 
 	// delivery panics inside a worker rather than here.
 	if nilcheck.IsNil(inner) {
 		return nil, fmt.Errorf("%w: queued sender requires a sender to wrap", ErrConfig)
+	}
+
+	if cfg.loggerGiven && cfg.logger == nil {
+		return nil, fmt.Errorf("%w: WithQueueLogger was given a nil logger, so delivery failures would be lost; "+
+			"pass slog.New(slog.DiscardHandler) to silence them", ErrConfig)
 	}
 
 	if cfg.workers <= 0 {
@@ -156,6 +166,9 @@ type queuedConfig struct {
 	size    int
 	timeout time.Duration
 	logger  *slog.Logger
+
+	// loggerGiven is set by WithQueueLogger, so a nil logger is told from none.
+	loggerGiven bool
 }
 
 // QueuedOption configures a QueuedSender. Every option names the default it
@@ -208,9 +221,8 @@ func WithQueueSendTimeout(timeout time.Duration) QueuedOption {
 // read instead of leaving it to a default.
 func WithQueueLogger(logger *slog.Logger) QueuedOption {
 	return func(c *queuedConfig) {
-		if logger != nil {
-			c.logger = logger
-		}
+		c.logger = logger
+		c.loggerGiven = true
 	}
 }
 

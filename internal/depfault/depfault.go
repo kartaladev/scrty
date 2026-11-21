@@ -125,7 +125,8 @@ func (w *Watch) note(err error) {
 // included: an error whose chain can be walked is returned as the same value,
 // and one that cannot (a cycle, a fan-out, a panicking Unwrap) is returned,
 // and recorded, as a porterr fault matching porterr.ErrUnwalkable, with one
-// abort record on logger (slog.Default() when logger is nil). Such a fault
+// abort record on logger (when logger is nil: the logger of the chain handling
+// the request, else slog.Default() when the record is written). Such a fault
 // never matches onetime.ErrTokenNotFound, so it reads as the failure it may
 // be. Every other value a call returns passes through unchanged.
 func Store(s onetime.Store, logger *slog.Logger) onetime.Store {

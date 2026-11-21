@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
@@ -70,8 +71,9 @@ type Config struct {
 	// by, and what the fall-back limiter stamps with. Default: clock.System().
 	Clock clock.Clock
 
-	// Logger receives the degraded-mode transition records. Default:
-	// slog.Default().
+	// Logger receives the degraded-mode transition records. Default: the
+	// logger of the chain handling the request, else slog.Default() when the
+	// record is written. A nil Logger is refused with ratelimit.ErrConfig.
 	Logger *slog.Logger
 
 	// LogInterval is how long, in UnavailableAllow mode, one written outage
@@ -89,7 +91,7 @@ func DefaultConfig() Config {
 		Timeout:       DefaultTimeout,
 		ProbeInterval: DefaultProbeInterval,
 		Clock:         clock.System(),
-		Logger:        slog.Default(),
+		Logger:        ctxlog.Routing(),
 		LogInterval:   ratelimit.DefaultLogInterval,
 	}
 }
@@ -559,7 +561,10 @@ func (l *limiter) logAllowing(ctx context.Context) {
 // counts, written when the backend is back or when the count ages out. It runs
 // on the goroutine whose call triggered it, with no request context of its own.
 func (l *limiter) reportSuppressed(namespace string, suppressed int) {
-	l.logger.LogAttrs(context.Background(), slog.LevelWarn, msgAllowSupp,
+	// lane g: convert to ctxlog.Summaries, which remembers the destination per
+	// key. Until then the summary goes where the logger last resolved a record.
+	summary := ctxlog.Summary(l.logger) //nolint:staticcheck // SA1019: lane g converts it to ctxlog.Summaries
+	summary.LogAttrs(context.Background(), slog.LevelWarn, msgAllowSupp,
 		slog.String("namespace", namespace), slog.Int("suppressed", suppressed))
 }
 

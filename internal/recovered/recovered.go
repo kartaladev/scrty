@@ -16,6 +16,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 )
 
@@ -27,6 +28,10 @@ var ErrPanicked = errors.New("recovered: the consumer's code panicked")
 // errNilFunc is what Call returns for a nil f. Passing nil is a programming
 // error inside the library, not consumer input.
 var errNilFunc = errors.New("recovered: no function to call")
+
+// routing is the logger a nil log stands for. It holds no state of its own, so
+// one serves every call.
+var routing = ctxlog.Routing()
 
 const panicMessage = "consumer code panicked"
 
@@ -43,10 +48,9 @@ const panicMessage = "consumer code panicked"
 // diag.PanicAttrs of the value: the value's Go type and the frames where it
 // happened, never the value's text.
 //
-// log is where the record goes. A nil log writes to slog.Default() at that
-// moment; the change that routes component records through the request's
-// logger will resolve a nil log there. A nil ctx is replaced by
-// context.Background() for the record.
+// log is where the record goes. A nil log routes the record: to the logger of
+// the chain ctx carries, else to slog.Default() as it is when the record is
+// written. A nil ctx is replaced by context.Background() for the record.
 //
 // A nil f is a programming error in the library. Call refuses it by returning
 // an error (which is not ErrPanicked) and writes no record, instead of
@@ -88,7 +92,7 @@ func report(ctx context.Context, log *slog.Logger, what string, value any) {
 		ctx = context.Background()
 	}
 	if log == nil {
-		log = slog.Default()
+		log = routing
 	}
 	attrs := append([]slog.Attr{slog.String("what", what)}, diag.PanicAttrs(value)...)
 	log.LogAttrs(ctx, slog.LevelError, panicMessage, attrs...)

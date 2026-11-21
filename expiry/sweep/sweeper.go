@@ -14,6 +14,7 @@ import (
 	"github.com/jonboulle/clockwork"
 
 	"github.com/kartaladev/scrty/expiry"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/errwalk"
 	"github.com/kartaladev/scrty/internal/lifecycle"
@@ -153,7 +154,8 @@ func WithClock(clock clockwork.Clock) Option {
 }
 
 // WithLogger sets where the sweeper logs a distributed lock failure.
-// Default: slog.Default(). A run's own outcome is logged by the runner
+// Default: the logger of the chain handling the request, else slog.Default()
+// when the record is written. A run's own outcome is logged by the runner
 // (expiry.WithLogger), not here. A lock failure record carries the task and
 // job names, a fixed reason and the error's Go type, never the error's text,
 // which comes from the consumer's locker. When the error is, or wraps,
@@ -272,7 +274,7 @@ func New(runner *expiry.Runner, opts ...Option) (*Sweeper, error) {
 		return nil, fmt.Errorf("%w: nil runner", ErrInvalidOption)
 	}
 
-	cfg := config{clock: clockwork.NewRealClock(), logger: slog.Default(), stopTimeout: defaultStopTimeout}
+	cfg := config{clock: clockwork.NewRealClock(), logger: ctxlog.Routing(), stopTimeout: defaultStopTimeout}
 	for i, opt := range opts {
 		if opt == nil {
 			return nil, fmt.Errorf("%w: option %d is nil", ErrInvalidOption, i)
