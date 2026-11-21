@@ -16,6 +16,7 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jwk"
 
 	"github.com/kartaladev/scrty/event"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -117,7 +118,7 @@ type Keys struct {
 // (WithLogInterval); deleting a key from the store one key lifetime after its
 // retire time (WithRetiredKeyGrace, WithRetiredKeysKept); an in-memory store
 // that does not survive a restart (WithKeyStore); clock.System(), the system
-// clock (WithClock); slog.Default() (WithLogger); and no error hook
+// clock (WithClock); the chain's logger, else slog.Default() (WithLogger); and no error hook
 // (WithErrorHook).
 //
 // A configuration that cannot work — an unsupported algorithm, a non-positive
@@ -142,7 +143,7 @@ func New(ctx context.Context, opts ...Option) (*Keys, error) {
 		sampleWindow:   defaultSampleWindow,
 		store:          NewMemoryKeyStore(),
 		clock:          clock.System(),
-		logger:         slog.Default(),
+		logger:         ctxlog.Routing(),
 	}
 	for _, opt := range opts {
 		// A nil option is skipped, so a caller building the slice
@@ -744,7 +745,11 @@ func WithClock(clk clock.Timed) Option {
 }
 
 // WithLogger sets where rotation, reload and housekeeping failures are logged.
-// Default: slog.Default().
+// Default: the logger of the chain handling the request, else slog.Default()
+// when the record is written. A record written from a background loop has no
+// request, so it goes to slog.Default().
+//
+// A nil logger is a configuration error from New.
 //
 // Records are written from the background loops, under the rules
 // WithErrorHook describes: a handler that blocks holds up the loop that is
@@ -838,7 +843,7 @@ func (km *Keys) validate() error {
 	}
 
 	if isNilPort(km.logger) {
-		return fmt.Errorf("%w: logger must not be nil", ErrConfig)
+		return fmt.Errorf("%w: WithLogger: logger must not be nil", ErrConfig)
 	}
 
 	if err := km.events.Err("WithSecurityEvents"); err != nil {

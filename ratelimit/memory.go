@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
 )
@@ -154,14 +155,15 @@ type MemoryLimiter struct {
 //     WithMemoryLimiterMaxKeys; a maximum of zero or less is a configuration
 //     error wrapping ErrConfig;
 //   - clock.System(), replaceable with WithMemoryLimiterClock;
-//   - slog.Default, replaceable with WithMemoryLimiterLogger.
+//   - the logger of the chain handling the request, else slog.Default() when the
+//     record is written, replaceable with WithMemoryLimiterLogger.
 func NewMemoryLimiter(limit int, window time.Duration, opts ...MemoryOption) (*MemoryLimiter, error) {
 	l := &MemoryLimiter{
 		limit:   limit,
 		window:  window,
 		maxKeys: DefaultMemoryLimiterMaxKeys,
 		clock:   clock.System(),
-		logger:  slog.Default(),
+		logger:  ctxlog.Routing(),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -183,7 +185,7 @@ func NewMemoryLimiter(limit int, window time.Duration, opts ...MemoryOption) (*M
 		return nil, fmt.Errorf("%w: the clock is nil, so no failure could be stamped", ErrConfig)
 	}
 	if l.logger == nil {
-		return nil, fmt.Errorf("%w: the logger is nil, so the per-replica warning would be lost", ErrConfig)
+		return nil, fmt.Errorf("%w: WithMemoryLimiterLogger was given no logger, so the per-replica warning would be lost", ErrConfig)
 	}
 
 	l.seed = maphash.MakeSeed()
@@ -210,9 +212,11 @@ func WithMemoryLimiterClock(clk clock.Clock) MemoryOption {
 }
 
 // WithMemoryLimiterLogger sets where the limiter writes its per-replica warning.
-// Default: slog.Default.
+// Default: the logger of the chain handling the request, else slog.Default()
+// when the record is written.
 //
-// The warning is written once, on first use. Sending it to a logger the consumer
+// The warning is written once, on first use, so with the default it lands on the
+// chain of whichever request reaches the limiter first. Sending it to a logger the consumer
 // controls is what lets it be routed or silenced; it is not suppressible by
 // option, because a limit that is silently multiplied by the replica count is
 // exactly the misunderstanding worth one record.
@@ -289,7 +293,7 @@ func (f memoryFactory) NewLimiter(_ string, limit int, window time.Duration) (Li
 // number of keys, is reported as exceeded with an error wrapping
 // ErrLimiterFull, for the same reason.
 func (l *MemoryLimiter) Exceeded(ctx context.Context, key string) (bool, error) {
-	l.warnOnce.Do(l.warnPerReplica)
+	l.warnOnce.Do(func() { l.warnPerReplica(ctx) })
 
 	if err := ctx.Err(); err != nil {
 		return true, fmt.Errorf("ratelimit: check %q: %w", key, err)
@@ -304,7 +308,7 @@ func (l *MemoryLimiter) Exceeded(ctx context.Context, key string) (bool, error) 
 	l.release(s.sweepLocked(now, l.window))
 
 	if _, ok := s.keys[key]; !ok && l.held.Load() >= int64(l.maxKeys) {
-		l.warnFull(now)
+		l.warnFull(ctx, now)
 
 		return true, fmt.Errorf("ratelimit: check %q: %w", key, ErrLimiterFull)
 	}
@@ -321,8 +325,8 @@ func (l *MemoryLimiter) Exceeded(ctx context.Context, key string) (bool, error) 
 //
 // A failure for a key the limiter does not hold, while it holds its maximum
 // number of keys, is not stored, and the error returned wraps ErrLimiterFull.
-func (l *MemoryLimiter) RecordFailure(_ context.Context, key string) error {
-	l.warnOnce.Do(l.warnPerReplica)
+func (l *MemoryLimiter) RecordFailure(ctx context.Context, key string) error {
+	l.warnOnce.Do(func() { l.warnPerReplica(ctx) })
 
 	now := l.clock.Now()
 	s := l.shardFor(key)
@@ -335,7 +339,7 @@ func (l *MemoryLimiter) RecordFailure(_ context.Context, key string) error {
 	// The shard lock keeps key's presence fixed until the stamp is stored, so
 	// a new key reserves its place exactly once.
 	if _, ok := s.keys[key]; !ok && !l.reserve() {
-		l.warnFull(now)
+		l.warnFull(ctx, now)
 
 		return fmt.Errorf("ratelimit: record %q: %w", key, ErrLimiterFull)
 	}
@@ -425,7 +429,7 @@ func (l *MemoryLimiter) release(removed int) {
 // a record another caller has just written; treating that as a step back would
 // write the warning twice in one window. A clock stepped back by a window or
 // more re-arms the warning rather than silencing it until the clock catches up.
-func (l *MemoryLimiter) warnFull(now time.Time) {
+func (l *MemoryLimiter) warnFull(ctx context.Context, now time.Time) {
 	at := now.UnixNano()
 	last := l.warnedFullAt.Load()
 	window := int64(l.window)
@@ -436,7 +440,7 @@ func (l *MemoryLimiter) warnFull(now time.Time) {
 		return
 	}
 
-	l.logger.Warn(fullWarning, slog.Int("max_keys", l.maxKeys), slog.Duration("window", l.window))
+	l.logger.LogAttrs(ctx, slog.LevelWarn, fullWarning, slog.Int("max_keys", l.maxKeys), slog.Duration("window", l.window))
 }
 
 // shardFor returns the shard that holds key.
@@ -446,8 +450,8 @@ func (l *MemoryLimiter) shardFor(key string) *memoryShard {
 
 // warnPerReplica states the default limiter's one limit where an operator will
 // meet it: in the logs of the process that is applying it.
-func (l *MemoryLimiter) warnPerReplica() {
-	l.logger.Warn(perReplicaWarning, slog.Int("limit", l.limit), slog.Duration("window", l.window))
+func (l *MemoryLimiter) warnPerReplica(ctx context.Context) {
+	l.logger.LogAttrs(ctx, slog.LevelWarn, perReplicaWarning, slog.Int("limit", l.limit), slog.Duration("window", l.window))
 }
 
 // dropOldest removes the oldest stamp, which bounds a key at limit stamps.
@@ -540,7 +544,7 @@ var _ RecentFailureReporter = (*MemoryLimiter)(nil)
 // of keys, is refused with an error wrapping ErrLimiterFull, and nothing is
 // stored. A key it holds is charged as below the maximum.
 func (l *MemoryLimiter) Charge(ctx context.Context, key string) (Receipt, bool, error) {
-	l.warnOnce.Do(l.warnPerReplica)
+	l.warnOnce.Do(func() { l.warnPerReplica(ctx) })
 
 	if err := ctx.Err(); err != nil {
 		return Receipt{}, true, fmt.Errorf("ratelimit: charge %q: %w", key, err)
@@ -559,7 +563,7 @@ func (l *MemoryLimiter) Charge(ctx context.Context, key string) (Receipt, bool, 
 			return Receipt{}, true, nil
 		}
 	} else if !l.reserve() {
-		l.warnFull(now)
+		l.warnFull(ctx, now)
 
 		return Receipt{}, true, fmt.Errorf("ratelimit: charge %q: %w", key, ErrLimiterFull)
 	}

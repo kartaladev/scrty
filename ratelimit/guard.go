@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/porterr"
@@ -116,7 +117,7 @@ type SourceGuard struct {
 // limits, so it is refused at wiring time rather than discovered under attack.
 //
 // Defaults: a SourceKeyer with its own defaults (WithSourceGuardKeyer),
-// slog.Default (WithSourceGuardLogger), clock.System() (WithSourceGuardClock),
+// the chain's logger, else slog.Default (WithSourceGuardLogger), clock.System() (WithSourceGuardClock),
 // DefaultLogInterval for refusal sampling (WithSourceGuardLogInterval), a
 // summary record through the logger for the counts sampling suppressed
 // (WithSourceGuardLogReporter), and no IPv6 aggregate
@@ -131,7 +132,7 @@ func NewSourceGuard(flow string, limiter Limiter, opts ...GuardOption) (*SourceG
 		flow:        flow,
 		limiter:     limiter,
 		keyer:       keyer,
-		logger:      slog.Default(),
+		logger:      ctxlog.Routing(),
 		clock:       clock.System(),
 		logInterval: DefaultLogInterval,
 	}
@@ -165,7 +166,7 @@ func NewSourceGuard(flow string, limiter Limiter, opts ...GuardOption) (*SourceG
 		return nil, err
 	}
 	if g.logger == nil {
-		return nil, fmt.Errorf("%w: the logger is nil, so refusals would go unreported", ErrConfig)
+		return nil, fmt.Errorf("%w: WithSourceGuardLogger was given no logger, so refusals would go unreported", ErrConfig)
 	}
 	if nilcheck.IsNil(g.clock) {
 		return nil, fmt.Errorf("%w: the clock is nil, so refusal records could not be sampled", ErrConfig)
@@ -192,7 +193,8 @@ func WithSourceGuardKeyer(keyer *SourceKeyer) GuardOption {
 }
 
 // WithSourceGuardLogger sets where the guard writes its refusal records.
-// Default: slog.Default.
+// Default: the logger of the chain handling the request, else slog.Default()
+// when the record is written.
 //
 // A record about a throttled source names its address on purpose — the point
 // of the record is to say who was refused. A record about the limiter itself
@@ -661,6 +663,9 @@ func (g *SourceGuard) sampled(ctx context.Context, level slog.Level, msg, key st
 // burst that stops before its window elapses is still reported in full. It runs
 // on the goroutine that triggered the eviction, so it only writes one record.
 func (g *SourceGuard) reportSuppressed(key string, suppressed int) {
+	// lane g: the summary has no request context, so it goes to slog.Default()
+	// at that moment; the per-key ctxlog.Summaries sweep routes it to the
+	// chain the key was written in.
 	g.logger.LogAttrs(context.Background(), slog.LevelWarn, msgSuppressed,
 		slog.String("flow", g.flow),
 		slog.String("key", key),

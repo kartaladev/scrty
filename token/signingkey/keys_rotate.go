@@ -227,6 +227,9 @@ type failure struct {
 // The sampler's reporter contract carries no context, so there is none to
 // propagate here.
 func (km *Keys) reportSuppressed(key string, suppressed int) {
+	// lane g: the summary has no request context, so it goes to slog.Default()
+	// at that moment; the per-key ctxlog.Summaries sweep routes it to the
+	// chain the key was written in.
 	op, alg, _ := strings.Cut(key, sampleKeySeparator)
 	km.logGuarded(context.Background(), "signingkey: repeated failures suppressed",
 		failureAttrs(op, alg, suppressed))

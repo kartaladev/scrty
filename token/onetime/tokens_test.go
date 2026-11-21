@@ -196,13 +196,10 @@ func TestNewManager(t *testing.T) {
 			assert:  configError,
 		},
 		{
-			name:    "a nil logger is ignored rather than refused",
+			name:    "a nil logger is refused, because the default is the routing logger",
 			purpose: "magic-link",
 			opts:    []onetime.Option{onetime.WithLogger(nil)},
-			assert: func(t *testing.T, m *onetime.Tokens, err error) {
-				require.NoError(t, err)
-				require.NotNil(t, m)
-			},
+			assert:  configError,
 		},
 		{
 			name:    "a consumer logger is accepted",

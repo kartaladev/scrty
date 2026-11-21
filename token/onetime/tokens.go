@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/expiry"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/idgen"
@@ -47,6 +48,7 @@ type Tokens struct {
 	ids            id.Generator
 	clock          clock.Clock
 	logger         *slog.Logger
+	loggerGiven    bool
 	random         io.Reader
 }
 
@@ -131,18 +133,17 @@ func WithIDGenerator(ids id.Generator) Option { return func(m *Tokens) { m.ids =
 // does.
 func WithClock(clk clock.Clock) Option { return func(m *Tokens) { m.clock = clk } }
 
-// WithLogger replaces the logger. The default is slog.Default().
+// WithLogger replaces the logger. The default is the logger of the chain
+// handling the request, else slog.Default() when the record is written.
 //
-// A nil logger is ignored rather than refused: unlike a clock, a nil logger has
-// an obvious safe reading — the caller does not want this component's logs —
-// and refusing it would make logging mandatory. Only store failures are logged,
-// at error level, and no log this package writes carries a presented token, a
-// secret or a binding.
+// A nil logger is refused by New with ErrConfig: the default is the routing
+// one, so "do not configure this" is spelt by leaving the option out. Only
+// store failures are logged, at error level, and no log this package writes
+// carries a presented token, a secret or a binding.
 func WithLogger(logger *slog.Logger) Option {
 	return func(m *Tokens) {
-		if logger != nil {
-			m.logger = logger
-		}
+		m.logger = logger
+		m.loggerGiven = true
 	}
 }
 
@@ -206,7 +207,7 @@ func New(purpose string, opts ...Option) (*Tokens, error) {
 		issuanceWindow: defaultIssuanceWindow,
 		ids:            id.NewV7Generator(),
 		clock:          clock.System(),
-		logger:         slog.Default(),
+		logger:         ctxlog.Routing(),
 		random:         rand.Reader,
 	}
 	for _, opt := range opts {
@@ -232,6 +233,9 @@ func New(purpose string, opts ...Option) (*Tokens, error) {
 	}
 	if nilcheck.IsNil(m.clock) {
 		return nil, fmt.Errorf("%w: clock must not be nil", ErrConfig)
+	}
+	if m.loggerGiven && m.logger == nil {
+		return nil, fmt.Errorf("%w: WithLogger was given no logger", ErrConfig)
 	}
 	if nilcheck.IsNil(m.random) {
 		return nil, fmt.Errorf("%w: random source must not be nil", ErrConfig)
