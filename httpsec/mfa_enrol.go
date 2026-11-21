@@ -14,13 +14,13 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
@@ -83,7 +83,7 @@ type enrolmentInterceptor struct {
 	// sampler the sampler built from it at assembly, when the chain's logger
 	// is known.
 	logInterval time.Duration
-	sampler     *logsample.Sampler
+	sampler     *refusalSampler
 }
 
 // check is the half of the construction checks that needs nothing but this
@@ -154,7 +154,7 @@ func (i *enrolmentInterceptor) prefixes() []string {
 // that logger.
 func (i *enrolmentInterceptor) wire(c *Chain) {
 	i.log = c.logger
-	i.sampler = logsample.New(i.logInterval, logsample.WithReporter(i.reportSuppressed))
+	i.sampler = newRefusalSampler(i.logInterval, i.reportSuppressed)
 }
 
 // logSampled writes one of the path's records, unless the sampler is holding
@@ -184,8 +184,8 @@ func (i *enrolmentInterceptor) flushRefusalLogs() error {
 // forget. It runs on whichever request or flush evicted the key, and that
 // request's context has nothing to do with the counts, so it is written
 // without one.
-func (i *enrolmentInterceptor) reportSuppressed(key string, suppressed int) {
-	summariseSuppressed(i.log, msgEnrolmentLogsSuppressed, key, suppressed)
+func (i *enrolmentInterceptor) reportSuppressed(sum *ctxlog.Summaries, key string, suppressed int) {
+	summariseSuppressed(sum, i.log, msgEnrolmentLogsSuppressed, key, suppressed)
 }
 
 // msgEnrolmentLogsSuppressed is the record the path's reporter writes.

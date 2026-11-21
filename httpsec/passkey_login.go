@@ -18,7 +18,6 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/porterr"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
@@ -85,7 +84,7 @@ type passwordlessInterceptor struct {
 	// the login tail's settings.
 	engine  *policy.Engine
 	log     *slog.Logger
-	sampler *logsample.Sampler
+	sampler *refusalSampler
 
 	enrolmentLifetime time.Duration
 	enforced          map[policy.ChallengeKind]bool
@@ -427,7 +426,7 @@ func (i *passwordlessInterceptor) resolve(option string, c *config) error {
 func (i *passwordlessInterceptor) wire(c *Chain) {
 	i.engine = c.engine
 	i.log = c.logger
-	i.sampler = i.newSampler(c)
+	i.sampler = newPasswordlessSampler(c, i.manager.LogInterval())
 	i.enrolmentLifetime = c.enrolmentLifetime
 	i.enforced = c.enforced
 	i.challengeMethods = c.challengeMethods
@@ -438,8 +437,8 @@ func (i *passwordlessInterceptor) wire(c *Chain) {
 // passkey logs governs their refusals too, not the chain's
 // WithRefusalLogInterval. Held-back counts go to the chain's reporter, the
 // consumer's when WithRefusalLogReporter gave one.
-func (i *passwordlessInterceptor) newSampler(c *Chain) *logsample.Sampler {
-	return logsample.New(i.manager.LogInterval(), logsample.WithReporter(c.reportRefusals))
+func newPasswordlessSampler(c *Chain, interval time.Duration) *refusalSampler {
+	return newRefusalSampler(interval, c.reportRefusals)
 }
 
 // flushRefusalLogs reports what the begin's source guard and the endpoints'

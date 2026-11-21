@@ -14,7 +14,6 @@ import (
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -116,7 +115,7 @@ type mfaInterceptor struct {
 	// log and sampler are the chain's, handed over once the chain exists: a
 	// sweep that fails is logged through them.
 	log     *slog.Logger
-	sampler *logsample.Sampler
+	sampler *refusalSampler
 
 	// listing is the method-listing endpoint's configuration, and nil while
 	// the endpoint is off (WithMFAMethodListing).

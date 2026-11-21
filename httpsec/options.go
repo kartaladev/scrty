@@ -13,7 +13,6 @@ import (
 	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
@@ -750,7 +749,7 @@ func (c *config) build() (*Chain, error) {
 	// The sampler is built here rather than by the option, because the default
 	// reporter writes through the chain's logger and there is no chain until
 	// every option has been applied.
-	chain.sampler = logsample.New(c.refusalInterval, logsample.WithReporter(chain.reportRefusals))
+	chain.sampler = newRefusalSampler(c.refusalInterval, chain.reportRefusals)
 
 	chain.perRequest = &perRequestPhase{
 		engine:            c.engine,

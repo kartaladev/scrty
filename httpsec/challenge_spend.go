@@ -11,7 +11,6 @@ import (
 	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/porterr"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -94,7 +93,7 @@ func sweepExpired(
 	clock *sweepClock,
 	now func() time.Time,
 	flow, msg, method string,
-	sampler *logsample.Sampler,
+	sampler *refusalSampler,
 	log *slog.Logger,
 ) {
 	claimed, due := clock.claim(now(), mgr.IssuanceWindow())
@@ -252,7 +251,7 @@ type challengeIssue struct {
 	// failed sweep; now, sampler and log are the endpoint's own.
 	sweepFlow, notPurged string
 	now                  func() time.Time
-	sampler              *logsample.Sampler
+	sampler              *refusalSampler
 	log                  *slog.Logger
 }
 

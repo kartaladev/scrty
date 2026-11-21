@@ -16,7 +16,6 @@ import (
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -71,7 +70,7 @@ type signInNotice struct {
 	// logger and sampler are the chain's, and now reads the chain's clock,
 	// handed over once the chain exists.
 	logger  *slog.Logger
-	sampler *logsample.Sampler
+	sampler *refusalSampler
 	now     func() time.Time
 
 	matches   func(signedIn, known session.SignIn) bool

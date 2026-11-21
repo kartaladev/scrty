@@ -13,7 +13,6 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/porterr"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -35,7 +34,7 @@ type bearerToken struct {
 	// log is the chain's logger, and sampler the chain's refusal-log sampler,
 	// both handed over by wire.
 	log     *slog.Logger
-	sampler *logsample.Sampler
+	sampler *refusalSampler
 
 	// resolver is the resolution core the bearer joins once its token has
 	// verified, built by wire over the bearer's own session manager and user

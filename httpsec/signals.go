@@ -18,7 +18,6 @@ import (
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -544,7 +543,7 @@ type sessionSignals struct {
 	// chain's. All three are settled last, by wire.
 	cors    *corsLayer
 	log     *slog.Logger
-	sampler *logsample.Sampler
+	sampler *refusalSampler
 }
 
 // settle fills the defaults and refuses what cannot work, once every option has

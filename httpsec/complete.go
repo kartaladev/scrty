@@ -15,7 +15,6 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/porterr"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -221,7 +220,7 @@ type loginTailDeps struct {
 	// logger and refusal-log sampler, and its clock. A nil log or clock writes
 	// no record, which only a test seam leaves it.
 	log     *slog.Logger
-	sampler *logsample.Sampler
+	sampler *refusalSampler
 	now     func() time.Time
 
 	// challengeMethods looks up the methods a raised challenge offers: the

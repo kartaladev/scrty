@@ -15,7 +15,6 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/porterr"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 )
@@ -49,7 +48,7 @@ type apiKeyInterceptor struct {
 
 	engine  *policy.Engine
 	log     *slog.Logger
-	sampler *logsample.Sampler
+	sampler *refusalSampler
 	guard   sourceGuard
 
 	limiter ratelimit.Limiter

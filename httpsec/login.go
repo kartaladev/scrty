@@ -148,7 +148,7 @@ type formLogin struct {
 	// guard is the password-login source guard, settled at assembly
 	// (wirePasswordLogin), and sampler the chain's, handed over by wire.
 	guard   sourceGuard
-	sampler *logsample.Sampler
+	sampler *refusalSampler
 
 	// flow is the flow guard was built under, so the records the seam writes
 	// name the limiter that is answering: the shared passwordLoginFlow, or

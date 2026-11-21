@@ -14,7 +14,6 @@ import (
 
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/clock"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -85,7 +84,7 @@ type signalHub struct {
 	// chain's, set by wire.
 	clock   clock.Timed
 	log     *slog.Logger
-	sampler *logsample.Sampler
+	sampler *refusalSampler
 
 	// launched runs launch at most once, and close uses it up when nothing has started, so
 	// nothing can start afterwards. outbox and cancel are set inside it, and read only

@@ -13,7 +13,6 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/origin"
 	"github.com/kartaladev/scrty/internal/porterr"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
@@ -151,7 +150,7 @@ type magicLinkInterceptor struct {
 
 	engine  *policy.Engine
 	log     *slog.Logger
-	sampler *logsample.Sampler
+	sampler *refusalSampler
 	guard   sourceGuard
 
 	// enrolmentLifetime is how long a session the login tail marks for an

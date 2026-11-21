@@ -86,11 +86,11 @@ type Chain struct {
 
 	// reportRefusals is the reporter every sampler of the chain reports to:
 	// refusalReporter, or else the default summary record. It is never nil.
-	reportRefusals func(key string, suppressed int)
+	reportRefusals summaryReporter
 
 	// sampler bounds the chain's own refusal records. It is built once, at
 	// construction, so every request of every flow shares one set of windows.
-	sampler *logsample.Sampler
+	sampler *refusalSampler
 
 	// clients resolves each request's client address, host and transport
 	// security before the first interceptor runs (clientResolver.begin).
@@ -162,8 +162,12 @@ type refusalLogFlusher interface{ flushRefusalLogs() error }
 //     password-login guard they share), EnableAPIKey, EnableMagicLink, handoff
 //     redemption under EnableOIDCLogin, the passwordless begin under
 //     EnablePasskeys and EnableAccountRecovery, whether built over the default
-//     limiter or over one the consumer supplied. Each keeps its own sampler,
-//     but reports to the chain's reporter, as item 1 does.
+//     limiter or over one the consumer supplied. Each keeps its own sampler.
+//     It reports to the consumer's WithRefusalLogReporter when one was given;
+//     otherwise it writes its own summary ("ratelimit: refusal records
+//     suppressed", with a flow attribute), through the logger option when
+//     there is one, else the chain the key's records went to, else the
+//     default logger.
 //  5. The authenticator given to EnableFormLogin or EnableBasicAuth, when it
 //     implements logsample.Flusher.
 //  6. The oidc.RelyingParty given to EnableOIDCLogin, which in turn flushes its
@@ -1073,6 +1077,56 @@ func (i *mfaInterceptor) expiryTasks() []expiry.Task {
 // whose counts are about to be discarded.
 const msgRefusalsSuppressed = "httpsec: refusal logs suppressed"
 
+// summaryReporter is what a sampler reports a key's held-back count to. sum
+// is the sampler's own Summaries, which remembers where each key's records
+// went; a reporter the consumer supplied has no use for it.
+type summaryReporter func(sum *ctxlog.Summaries, key string, suppressed int)
+
+// refusalSampler is a component's log sampler together with the Summaries
+// that remembers where each of its keys was last written, so the summary of
+// a key goes to the destination the key's own records went to and to no
+// other chain's log. A nil refusalSampler writes every record.
+type refusalSampler struct {
+	inner     *logsample.Sampler
+	summaries ctxlog.Summaries
+}
+
+// newRefusalSampler builds a sampler over interval whose held-back counts go
+// to report, together with the sampler's own Summaries.
+func newRefusalSampler(interval time.Duration, report summaryReporter) *refusalSampler {
+	s := &refusalSampler{}
+	s.inner = logsample.New(interval, logsample.WithReporter(func(key string, suppressed int) {
+		report(&s.summaries, key, suppressed)
+	}))
+
+	return s
+}
+
+// Allow is logsample.Sampler.Allow; a nil s allows everything.
+func (s *refusalSampler) Allow(key string, now time.Time) (bool, int) {
+	if s == nil {
+		return true, 0
+	}
+
+	return s.inner.Allow(key, now)
+}
+
+// Flush is logsample.Sampler.Flush; a nil s has nothing to report.
+func (s *refusalSampler) Flush() {
+	if s != nil {
+		s.inner.Flush()
+	}
+}
+
+// note remembers where the record for key, which the sampler just let through,
+// is written. It is called only after the suppression gate: a record the
+// sampler held back is written nowhere, so it must not move its key's summary.
+func (s *refusalSampler) note(ctx context.Context, log *slog.Logger, key string) {
+	if s != nil {
+		s.summaries.Note(ctx, log, key)
+	}
+}
+
 // logSampled writes at most one record per key per window, carrying the count
 // it stood in for.
 //
@@ -1081,7 +1135,7 @@ const msgRefusalsSuppressed = "httpsec: refusal logs suppressed"
 // who would rather have every line says so through WithRefusalLogInterval.
 func logSampled(
 	ctx context.Context,
-	s *logsample.Sampler,
+	s *refusalSampler,
 	log *slog.Logger,
 	level slog.Level,
 	now time.Time,
@@ -1092,6 +1146,8 @@ func logSampled(
 	if !write {
 		return
 	}
+
+	s.note(ctx, log, key)
 
 	if suppressed > 0 {
 		// Attached only when it says something. Padding every ordinary record
@@ -1108,12 +1164,12 @@ func logSampled(
 // through the chain's logger.
 //
 // It is resolved after every option has been applied, because which reporter
-// and which logger that is is not settled until then. The source guards the
-// chain builds report through it too, so a consumer's reporter receives their
-// throttled-source counts like the chain's own.
-func (c *config) refusalLogReporter() func(key string, suppressed int) {
+// and which logger that is is not settled until then.
+func (c *config) refusalLogReporter() summaryReporter {
 	if c.refusalReporter != nil {
-		return c.refusalReporter
+		report := c.refusalReporter
+
+		return func(_ *ctxlog.Summaries, key string, suppressed int) { report(key, suppressed) }
 	}
 
 	return c.reportSuppressedRefusals
@@ -1121,27 +1177,18 @@ func (c *config) refusalLogReporter() func(key string, suppressed int) {
 
 // reportSuppressedRefusals is the default reporter before the chain exists:
 // the same summary record, through the logger the options settled on.
-func (c *config) reportSuppressedRefusals(key string, suppressed int) {
-	summariseRefusals(c.logger, key, suppressed)
-}
-
-// summariseRefusals writes the default summary record for key.
-//
-// It runs on whichever goroutine's refusal or flush evicted the key, and that
-// goroutine's request context has nothing to do with the counts being reported,
-// so the record is written without one.
-func summariseRefusals(log *slog.Logger, key string, suppressed int) {
-	summariseSuppressed(log, msgRefusalsSuppressed, key, suppressed)
+func (c *config) reportSuppressedRefusals(sum *ctxlog.Summaries, key string, suppressed int) {
+	summariseSuppressed(sum, c.logger, msgRefusalsSuppressed, key, suppressed)
 }
 
 // summariseSuppressed writes the summary record msg of a sampler's suppressed
-// counts for key. The record has no request context, so it goes through
-// ctxlog.Summary(log): log itself when the consumer gave one, else the logger
-// of the chain the component last resolved a record to, else slog.Default() as
-// it is when the record is written. One burst is not split across two
-// destinations.
-func summariseSuppressed(log *slog.Logger, msg, key string, suppressed int) {
-	ctxlog.Summary(log).LogAttrs(context.Background(), slog.LevelWarn, msg,
+// counts for key. The record has no request context, so it goes where sum
+// remembers key's own records went (ctxlog.Summaries.For): log itself when
+// the consumer gave one, else the chain whose record for key was written
+// last, else slog.Default() as it is when the record is written. It is never
+// another chain's logger, because a key can carry a user identifier.
+func summariseSuppressed(sum *ctxlog.Summaries, log *slog.Logger, msg, key string, suppressed int) {
+	sum.For(log, key).LogAttrs(context.Background(), slog.LevelWarn, msg,
 		slog.String("key", key),
 		slog.Int("suppressed", suppressed))
 }

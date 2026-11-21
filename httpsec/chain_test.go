@@ -2577,7 +2577,7 @@ func TestRefusalLogReporter(t *testing.T) {
 			assert: func(t *testing.T, records []slog.Record, _ []reporterCall) {
 				require.Len(t, records, 2, "one sampled warning, then one summary")
 				assert.Equal(t, guardThrottledMsg, records[0].Message)
-				assert.Equal(t, "httpsec: refusal logs suppressed", records[1].Message)
+				assert.Equal(t, summaryGuard, records[1].Message)
 				assert.Equal(t, slog.LevelWarn, records[1].Level)
 
 				key, ok := attrValue(records[1], "key")

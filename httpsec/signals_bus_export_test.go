@@ -26,6 +26,11 @@ type SignalHubProbe struct{ h *signalHub }
 // NewSignalHubProbe builds a hub with an empty registry that caps nothing a test reaches, as
 // settle and wire build one.
 func NewSignalHubProbe(setup SignalHubSetup) *SignalHubProbe {
+	var sampler *refusalSampler
+	if setup.Sampler != nil {
+		sampler = &refusalSampler{inner: setup.Sampler}
+	}
+
 	return &SignalHubProbe{h: &signalHub{
 		registry: newSignalRegistry(signalLimits{perSignIn: 64, perUser: 64, total: 64}),
 		bus:      setup.Bus,
@@ -33,7 +38,7 @@ func NewSignalHubProbe(setup SignalHubSetup) *SignalHubProbe {
 		timeout:  setup.Timeout,
 		clock:    setup.Clock,
 		log:      setup.Log,
-		sampler:  setup.Sampler,
+		sampler:  sampler,
 	}}
 }
 

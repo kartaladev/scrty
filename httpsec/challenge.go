@@ -10,7 +10,6 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/porterr"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 )
@@ -240,7 +239,7 @@ type challengeGate struct {
 	// log and sampler are the chain's, handed over once it exists, and now
 	// is the chain's clock.
 	log     *slog.Logger
-	sampler *logsample.Sampler
+	sampler *refusalSampler
 	now     func() time.Time
 }
 

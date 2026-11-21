@@ -12,7 +12,7 @@ import (
 
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/pkg/logsample"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
@@ -106,7 +106,7 @@ type recoveryInterceptor struct {
 	// and sampler the sampler built from it once the chain's logger is known.
 	logInterval time.Duration
 	log         *slog.Logger
-	sampler     *logsample.Sampler
+	sampler     *refusalSampler
 
 	// automation is the automation-challenge gate when it was selected for the
 	// start, settled at assembly, and nil otherwise.
@@ -352,15 +352,15 @@ func (c *config) cancelHeldAtLogin(cancel heldRecoveryCanceller) {
 // builds the endpoints' own log sampler, whose reporter writes through it.
 func (i *recoveryInterceptor) wire(c *Chain) {
 	i.log = c.logger
-	i.sampler = logsample.New(i.logInterval, logsample.WithReporter(i.reportSuppressed))
+	i.sampler = newRefusalSampler(i.logInterval, i.reportSuppressed)
 }
 
 // reportSuppressed writes what the sampler held back for key and is about to
 // forget. It runs on whichever request or flush evicted the key, and that
 // request's context has nothing to do with the counts, so it is written
 // without one.
-func (i *recoveryInterceptor) reportSuppressed(key string, suppressed int) {
-	summariseSuppressed(i.log, msgRecoveryLogsSuppressed, key, suppressed)
+func (i *recoveryInterceptor) reportSuppressed(sum *ctxlog.Summaries, key string, suppressed int) {
+	summariseSuppressed(sum, i.log, msgRecoveryLogsSuppressed, key, suppressed)
 }
 
 // flushRefusalLogs reports what the endpoints' own sampler and both source

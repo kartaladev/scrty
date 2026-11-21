@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/oidcprovider"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/ratelimit"
 )
 
@@ -67,7 +66,7 @@ type oidcClientThrottle struct {
 	limiter ratelimit.Limiter
 
 	guard   sourceGuard
-	sampler *logsample.Sampler
+	sampler *refusalSampler
 }
 
 // settle builds the guard under flow, from a group's settle.

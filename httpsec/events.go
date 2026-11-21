@@ -14,7 +14,6 @@ import (
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/porterr"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -405,11 +404,15 @@ func (c *Chain) reportAbort(ctx context.Context, abort error) {
 // count of the records it stands in for as "suppressed" when there are any. A
 // nil s, or one built with an interval of zero or less, writes every record. A
 // nil log resolves as porterr.ReportAbort resolves it.
-func reportAbortSampled(ctx context.Context, s *logsample.Sampler, log *slog.Logger, now time.Time, abort error) {
-	write, suppressed := s.Allow(classificationAbortedKey(abort), now)
+func reportAbortSampled(ctx context.Context, s *refusalSampler, log *slog.Logger, now time.Time, abort error) {
+	key := classificationAbortedKey(abort)
+
+	write, suppressed := s.Allow(key, now)
 	if !write {
 		return
 	}
+
+	s.note(ctx, log, key)
 
 	if suppressed > 0 {
 		// Attached only when it says something, as logSampled does.

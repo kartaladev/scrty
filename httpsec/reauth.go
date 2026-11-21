@@ -9,7 +9,6 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/porterr"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -162,7 +161,7 @@ type reauthInterceptor struct {
 	sessions *session.Sessions
 	now      func() time.Time
 	log      *slog.Logger
-	sampler  *logsample.Sampler
+	sampler  *refusalSampler
 }
 
 // resolvePaths places the endpoints under base. Every sub-path is derived from
