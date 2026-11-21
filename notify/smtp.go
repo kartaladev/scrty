@@ -67,7 +67,10 @@ type SMTPSender struct {
 //
 // Construction fails, wrapping ErrConfig, when host is empty, when the port is
 // outside 1 to 65535, when the timeout is zero or less, when the dialler is
-// nil, or when WithSMTPLogger was given a nil logger. Each is a wiring mistake
+// nil, or when WithSMTPLogger was given a nil logger. It fails, wrapping
+// ErrUnsafeHeaderValue, when the default sender (WithSMTPFrom) contains a
+// carriage return or line feed, since it is written into the From header of
+// every message that names no sender of its own. Each is a wiring mistake
 // that would otherwise only surface at the first send, which for a sign-in
 // link means in production, for one user, silently.
 func NewSMTPSender(host string, opts ...SMTPOption) (*SMTPSender, error) {
@@ -104,6 +107,13 @@ func NewSMTPSender(host string, opts ...SMTPOption) (*SMTPSender, error) {
 
 	if s.dial == nil {
 		return nil, fmt.Errorf("%w: smtp dialler must not be nil", ErrConfig)
+	}
+
+	// The default sender is written into the From header of a message that
+	// names none, and Send only checks the message's own fields. The value is
+	// never quoted in the error.
+	if hasLineBreak(s.from) {
+		return nil, fmt.Errorf("%w: default sender", ErrUnsafeHeaderValue)
 	}
 
 	if s.tlsConfig == nil {
@@ -160,6 +170,10 @@ func WithSMTPTimeout(timeout time.Duration) SMTPOption {
 // WithSMTPFrom replaces the sender address used for a message that names none.
 // The default is no default address, in which case such a message fails before
 // any network activity. A message's own From always wins.
+//
+// An address containing a carriage return or line feed would inject headers
+// into every message that relies on the default, so NewSMTPSender refuses it,
+// wrapping ErrUnsafeHeaderValue.
 func WithSMTPFrom(addr string) SMTPOption { return func(s *SMTPSender) { s.from = addr } }
 
 // WithSMTPAuth replaces the credentials presented to the server. The default

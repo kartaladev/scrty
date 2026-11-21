@@ -141,6 +141,9 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
   emailed-code draw, one-time token issue, the `session` manager's identifiers and CSRF token, or
   the SMTP sender's connection deadline. Each carries fixed library text, and `errors.Is` still
   finds the cause.
+- `notify.NewSMTPSender` refuses a default sender (`WithSMTPFrom`) that contains a carriage return
+  or line feed, wrapping `ErrUnsafeHeaderValue`. Such a value was written unchecked into the `From`
+  header of every message that named no sender of its own.
 
 ## [0.1.1] - 2026-11-11
 

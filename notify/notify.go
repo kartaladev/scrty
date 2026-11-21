@@ -62,9 +62,10 @@ type NonBlocking interface {
 var (
 	// ErrUnsafeHeaderValue refuses a message whose recipient, sender or
 	// subject contains a carriage return or line feed, before anything is
-	// sent. The value is never stripped or escaped instead: escaping changes
-	// the caller's content silently, and header folding is easy to get subtly
-	// wrong.
+	// sent. NewSMTPSender returns it too, for a default sender (WithSMTPFrom)
+	// with a line break. The value is never stripped or escaped instead:
+	// escaping changes the caller's content silently, and header folding is
+	// easy to get subtly wrong.
 	ErrUnsafeHeaderValue = errors.New("notify: header value contains a line break")
 
 	// ErrQueueFull reports that a queued sender dropped a message because its
@@ -106,10 +107,15 @@ func refuseUnsafeHeaders(msg Message) error {
 		// The error names the field but never quotes the value: the value is
 		// attacker-supplied, and it goes into whatever records the caller's
 		// error.
-		if strings.ContainsAny(f.value, "\r\n") {
+		if hasLineBreak(f.value) {
 			return fmt.Errorf("%w: %s", ErrUnsafeHeaderValue, f.name)
 		}
 	}
 
 	return nil
 }
+
+// hasLineBreak reports whether a value bound for a header contains a carriage
+// return or line feed. It is the one test both the message check and
+// NewSMTPSender's default-sender check use, so the two cannot drift.
+func hasLineBreak(v string) bool { return strings.ContainsAny(v, "\r\n") }
