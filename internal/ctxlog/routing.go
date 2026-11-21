@@ -39,7 +39,8 @@ import (
 // call, as it would from any slog call on the same goroutine.
 //
 // Each routing logger keeps the last chain logger it resolved for a record,
-// shared with the loggers derived from it, for [Summary]. It is safe for
+// shared with the loggers derived from it, for the deprecated [Summary]; a
+// sampled component uses [Summaries] instead. It is safe for
 // concurrent use as far as the handlers it resolves to are.
 func Routing() *slog.Logger {
 	return slog.New(&routingHandler{state: &routingState{}})
@@ -50,6 +51,12 @@ func Routing() *slog.Logger {
 // route; for a routing logger, the chain logger it last resolved a record to,
 // with l's own With and WithGroup calls applied, else l, which then resolves
 // to slog.Default() at that moment. A nil l answers nil.
+//
+// Deprecated: the last chain logger is not the chain the summarised key was
+// written in, so a component serving several chains can write one chain's
+// key, which may name a user, into another chain's log. Use [Summaries],
+// which remembers the destination per key. Summary stays until its remaining
+// callers are converted.
 func Summary(l *slog.Logger) *slog.Logger {
 	h := routingOf(l)
 	if h == nil {
@@ -85,6 +92,11 @@ type routingHandler struct {
 	// cache is the last replay of ops, and the logger it was built on. It is
 	// per handler, not shared: a derived handler has other ops.
 	cache atomic.Pointer[replayed]
+
+	// defaultOnly makes the handler ignore the logger ctx carries and resolve
+	// every record to slog.Default(), read at that moment. Only
+	// [Summaries.For] builds one, for a summary with no remembered destination.
+	defaultOnly bool
 }
 
 // replayed is a routing handler's ops replayed onto from's handler. It is
@@ -117,8 +129,10 @@ func isRouting(l *slog.Logger) bool { return routingOf(l) != nil }
 // resolve returns the logger ctx carries, else nil, and the handler the
 // record goes to, with the recorded operations replayed onto it.
 func (h *routingHandler) resolve(ctx context.Context) (*slog.Logger, slog.Handler) {
-	if l := From(ctx); l != nil {
-		return l, h.loggerFor(l).Handler()
+	if !h.defaultOnly {
+		if l := From(ctx); l != nil {
+			return l, h.loggerFor(l).Handler()
+		}
 	}
 
 	def := slog.Default()
@@ -215,5 +229,14 @@ func (h *routingHandler) with(o op) *routingHandler {
 	ops := make([]op, len(h.ops), len(h.ops)+1)
 	copy(ops, h.ops)
 
-	return &routingHandler{state: h.state, ops: append(ops, o)}
+	return &routingHandler{state: h.state, ops: append(ops, o), defaultOnly: h.defaultOnly}
+}
+
+// toDefault returns a logger with h's recorded operations that writes every
+// record to slog.Default(), read at that moment, whatever logger the record's
+// context carries. Its state is its own, so it never moves what [Summary]
+// answers for h. h's ops are shared, which is safe: they are never written
+// after they are built.
+func (h *routingHandler) toDefault() *slog.Logger {
+	return slog.New(&routingHandler{state: &routingState{}, ops: h.ops, defaultOnly: true})
 }
