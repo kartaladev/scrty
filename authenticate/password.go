@@ -164,6 +164,9 @@ type UsernamePasswordAuthenticator struct {
 	// refusals holds back repeated refusal records. Its reporter writes to the
 	// same logger, so nothing it suppresses is lost.
 	refusals *logsample.Sampler
+	// summaries remembers where each reason's last record went, so its
+	// summary goes there and nowhere else.
+	summaries ctxlog.Summaries
 
 	// reference is the hash an unknown username is verified against, so that
 	// path costs the same as a known one. It is produced once, at construction.
@@ -501,6 +504,8 @@ func (a *UsernamePasswordAuthenticator) refuse(ctx context.Context, level slog.L
 		return
 	}
 
+	a.summaries.Note(ctx, a.logger, reason)
+
 	attrs := append([]slog.Attr{}, recordAttrs...)
 	if a.logUsername {
 		attrs = append(attrs, slog.String("username", username))
@@ -517,7 +522,7 @@ func (a *UsernamePasswordAuthenticator) refuse(ctx context.Context, level slog.L
 // say one refusal happened where there were fifty. It runs on the goroutine
 // whose Allow or FlushRefusalLogs call triggered it, so it only logs.
 func (a *UsernamePasswordAuthenticator) reportSuppressed(reason string, suppressed int) {
-	ctxlog.Summary(a.logger).LogAttrs(context.Background(), slog.LevelInfo, "authentication refusals suppressed",
+	a.summaries.For(a.logger, reason).LogAttrs(context.Background(), slog.LevelInfo, "authentication refusals suppressed",
 		slog.String("reason", reason),
 		slog.Int("suppressed", suppressed))
 }

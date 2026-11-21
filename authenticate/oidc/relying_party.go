@@ -38,7 +38,9 @@ type RelyingParty struct {
 	broker   IdentityBroker
 	log      *slog.Logger
 	sampler  *logsample.Sampler
-	cache    keyCache
+	// summaries remembers where each sampler key's last record went.
+	summaries ctxlog.Summaries
+	cache     keyCache
 
 	skew    time.Duration // leeway on token times; see WithClockSkew
 	skewSet bool          // whether WithClockSkew chose skew, zero included
@@ -243,7 +245,7 @@ func (m *RelyingParty) checkBrokerProviders() error {
 
 // reportSuppressed writes the count of refusal records the sampler held back.
 func (m *RelyingParty) reportSuppressed(key string, suppressed int) {
-	ctxlog.Summary(m.log).LogAttrs(context.Background(), slog.LevelInfo, "oidc refusals suppressed",
+	m.summaries.For(m.log, key).LogAttrs(context.Background(), slog.LevelInfo, "oidc refusals suppressed",
 		slog.String("reason", key),
 		slog.Int("suppressed", suppressed))
 }

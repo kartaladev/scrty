@@ -93,6 +93,7 @@ type SourceGuard struct {
 	logInterval time.Duration
 	reporter    func(key string, suppressed int)
 	sampler     *logsample.Sampler
+	summaries   ctxlog.Summaries
 
 	// The IPv6 aggregate (WithSourceGuardIPv6Aggregate). aggregateSet records
 	// that the option was given at all, so that a zero prefix or a nil limiter
@@ -656,6 +657,7 @@ func (g *SourceGuard) sampled(ctx context.Context, level slog.Level, msg, key st
 
 	g.logger.LogAttrs(ctx, level, msg,
 		append(attrs, slog.String("flow", g.flow), slog.Int("suppressed", suppressed))...)
+	g.summaries.Note(ctx, g.logger, key)
 }
 
 // reportSuppressed is the default summary reporter (WithSourceGuardLogReporter).
@@ -663,10 +665,8 @@ func (g *SourceGuard) sampled(ctx context.Context, level slog.Level, msg, key st
 // burst that stops before its window elapses is still reported in full. It runs
 // on the goroutine that triggered the eviction, so it only writes one record.
 func (g *SourceGuard) reportSuppressed(key string, suppressed int) {
-	// lane g: the summary has no request context, so it goes to slog.Default()
-	// at that moment; the per-key ctxlog.Summaries sweep routes it to the
-	// chain the key was written in.
-	g.logger.LogAttrs(context.Background(), slog.LevelWarn, msgSuppressed,
+	// A summary has no request context: it goes where the key's last record went.
+	g.summaries.For(g.logger, key).LogAttrs(context.Background(), slog.LevelWarn, msgSuppressed,
 		slog.String("flow", g.flow),
 		slog.String("key", key),
 		slog.Int("suppressed", suppressed))

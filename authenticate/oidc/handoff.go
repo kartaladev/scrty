@@ -72,6 +72,8 @@ type Handoff struct {
 	ids     id.Generator
 	log     *slog.Logger
 	sampler *logsample.Sampler
+	// summaries remembers where each sampler key's last record went.
+	summaries ctxlog.Summaries
 }
 
 // NewHandoff returns a manager that keeps codes in store and resolves
@@ -200,7 +202,7 @@ func handoffDigest(secret string) []byte {
 
 // reportSuppressed writes the count of refusal records the sampler held back.
 func (h *Handoff) reportSuppressed(reason string, suppressed int) {
-	ctxlog.Summary(h.log).LogAttrs(context.Background(), slog.LevelInfo, "oidc handoff refusals suppressed",
+	h.summaries.For(h.log, reason).LogAttrs(context.Background(), slog.LevelInfo, "oidc handoff refusals suppressed",
 		slog.String("reason", reason),
 		slog.Int("suppressed", suppressed))
 }
@@ -434,8 +436,10 @@ func (h *Handoff) refuseFailure(ctx context.Context, reason, op string, err erro
 // the sampling window from the reason attribute where a reason has more than
 // one call site (refuseFailure's op), and is otherwise the reason itself.
 func (h *Handoff) record(ctx context.Context, level slog.Level, key string, attrs ...slog.Attr) error {
-	write, suppressed := h.sampler.Allow("oidc.handoff."+key, h.clock.Now())
+	sampled := "oidc.handoff." + key
+	write, suppressed := h.sampler.Allow(sampled, h.clock.Now())
 	if write {
+		h.summaries.Note(ctx, h.log, sampled)
 		h.log.LogAttrs(ctx, level, "oidc handoff redemption refused",
 			append(attrs, slog.Int("suppressed", suppressed))...)
 	}

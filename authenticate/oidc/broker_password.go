@@ -102,6 +102,7 @@ func (b *Broker) passwordClaimIgnored(ctx context.Context, provider string, reas
 		if !write {
 			return
 		}
+		b.summaries.Note(ctx, b.log, key)
 		attrs = append(attrs, slog.Int("suppressed", suppressed))
 	}
 	attrs = append([]slog.Attr{slog.String("provider", provider)}, attrs...)

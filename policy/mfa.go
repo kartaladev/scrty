@@ -264,6 +264,7 @@ type MFA struct {
 	clock                   clock.Clock
 	logInterval             time.Duration
 	sampler                 *logsample.Sampler
+	summaries               ctxlog.Summaries
 }
 
 // NewMFA returns the second-factor challenge policy, which turns a
@@ -539,13 +540,14 @@ func (p *MFA) sampled(ctx context.Context, level slog.Level, msg, key string, at
 	}
 
 	p.logger.LogAttrs(ctx, level, msg, append(attrs, slog.Int("suppressed", suppressed))...)
+	p.summaries.Note(ctx, p.logger, key)
 }
 
 // reportSuppressed accounts for counts the sampler is about to discard, so a
 // burst that stops before its window elapses is still reported in full.
 func (p *MFA) reportSuppressed(key string, suppressed int) {
-	// A summary has no request context: it goes where the last sampled record went.
-	ctxlog.Summary(p.logger).LogAttrs(context.Background(), slog.LevelWarn, msgMFASuppressed,
+	// A summary has no request context: it goes where the key's last record went.
+	p.summaries.For(p.logger, key).LogAttrs(context.Background(), slog.LevelWarn, msgMFASuppressed,
 		slog.String("key", key),
 		slog.Int("suppressed", suppressed))
 }

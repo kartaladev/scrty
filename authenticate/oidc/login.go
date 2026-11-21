@@ -273,10 +273,12 @@ func (m *RelyingParty) completeFlow(ctx context.Context, provider, state, handle
 // [RelyingParty]'s package doc). Neither carries a token, a state, a nonce or a
 // claim value.
 func (m *RelyingParty) logCallbackRefusal(ctx context.Context, level slog.Level, reason, provider string, cause error) {
-	write, suppressed := m.sampler.Allow("oidc.callback:"+reason+":"+provider, m.clock.Now())
+	key := "oidc.callback:" + reason + ":" + provider
+	write, suppressed := m.sampler.Allow(key, m.clock.Now())
 	if !write {
 		return
 	}
+	m.summaries.Note(ctx, m.log, key)
 	m.log.LogAttrs(ctx, level, "oidc callback failed",
 		slog.String("reason", reason),
 		slog.String("provider", provider),
@@ -290,10 +292,12 @@ func (m *RelyingParty) logCallbackRefusal(ctx context.Context, level slog.Level,
 // text, so a consumer who wants that detail logs it inside their own
 // implementation of FlowStore.
 func (m *RelyingParty) logCallbackFailure(ctx context.Context, provider, reason string, err error) {
-	write, suppressed := m.sampler.Allow("oidc.callback:"+reason+":"+provider, m.clock.Now())
+	key := "oidc.callback:" + reason + ":" + provider
+	write, suppressed := m.sampler.Allow(key, m.clock.Now())
 	if !write {
 		return
 	}
+	m.summaries.Note(ctx, m.log, key)
 	attrs := append([]slog.Attr{
 		slog.String("provider", provider),
 		slog.Int("suppressed", suppressed),
@@ -313,10 +317,12 @@ const malformedAssuranceReason = "malformed-assurance-claim"
 // "oidc.callback:malformed-assurance-claim:<provider>", so a provider whose
 // every token is malformed writes one record per sampling window.
 func (m *RelyingParty) logMalformedAssurance(ctx context.Context, provider, claim string) {
-	write, suppressed := m.sampler.Allow("oidc.callback:"+malformedAssuranceReason+":"+provider, m.clock.Now())
+	key := "oidc.callback:" + malformedAssuranceReason + ":" + provider
+	write, suppressed := m.sampler.Allow(key, m.clock.Now())
 	if !write {
 		return
 	}
+	m.summaries.Note(ctx, m.log, key)
 	m.log.LogAttrs(ctx, slog.LevelWarn, "oidc assurance claim ignored",
 		slog.String("reason", malformedAssuranceReason),
 		slog.String("provider", provider),
@@ -402,10 +408,12 @@ func (m *RelyingParty) exchange(ctx context.Context, p Provider, md metadata, co
 // sampler, keyed by provider and reason. attrs never carry a credential: the
 // only provider text they may hold is a refused answer's body, truncated.
 func (m *RelyingParty) logExchangeFailure(ctx context.Context, provider, reason string, attrs ...slog.Attr) {
-	write, suppressed := m.sampler.Allow("oidc.exchange:"+reason+":"+provider, m.clock.Now())
+	key := "oidc.exchange:" + reason + ":" + provider
+	write, suppressed := m.sampler.Allow(key, m.clock.Now())
 	if !write {
 		return
 	}
+	m.summaries.Note(ctx, m.log, key)
 	attrs = append([]slog.Attr{
 		slog.String("provider", provider),
 		slog.String("reason", reason),

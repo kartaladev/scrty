@@ -93,16 +93,21 @@ func (km *Keys) report(ctx context.Context, op string, alg Alg, f *failure) {
 	}
 
 	suppressed := 0
+	sampled := false
 	if now, err := km.now(ctx, true); err == nil {
 		var write bool
+		sampled = true
 
 		write, suppressed = km.sampler.Allow(sampleKey(op, alg), now)
 		if !write {
 			return
 		}
 	}
-	km.logGuarded(ctx, "signingkey: "+op+" failed",
+	km.logGuarded(ctx, km.logger, "signingkey: "+op+" failed",
 		slices.Concat(failureAttrs(op, alg, suppressed), f.attrs, diag.Failure(f.reason, f.cause)))
+	if sampled {
+		km.summaries.Note(ctx, km.logger, sampleKey(op, alg))
+	}
 }
 
 // opHousekeep is the operation a housekeeping failure is sampled and recorded by.
@@ -227,22 +232,22 @@ type failure struct {
 // The sampler's reporter contract carries no context, so there is none to
 // propagate here.
 func (km *Keys) reportSuppressed(key string, suppressed int) {
-	// lane g: the summary has no request context, so it goes to slog.Default()
-	// at that moment; the per-key ctxlog.Summaries sweep routes it to the
-	// chain the key was written in.
+	// A summary has no request context: it goes where the key's last record
+	// went. The key is the sampler's composite one, which is what Note saw.
 	op, alg, _ := strings.Cut(key, sampleKeySeparator)
-	km.logGuarded(context.Background(), "signingkey: repeated failures suppressed",
+	km.logGuarded(context.Background(), km.summaries.For(km.logger, key), "signingkey: repeated failures suppressed",
 		failureAttrs(op, alg, suppressed))
 }
 
-// logGuarded writes one Error record on the manager's logger from a loop
-// goroutine, where the logger's handler is consumer code. A handler that
-// panics is recovered: the record is lost, and the loop goes on. Call's own
-// record of the panic goes to the same logger, and Call swallows a panic
-// from that write too, so nothing here recurses or re-panics.
-func (km *Keys) logGuarded(ctx context.Context, msg string, attrs []slog.Attr) {
-	_ = recovered.Call(ctx, km.logger, whatLogger, func() error {
-		km.logger.LogAttrs(ctx, slog.LevelError, msg, attrs...)
+// logGuarded writes one Error record on logger, the manager's or the one a
+// summary follows, from a loop goroutine, where the logger's handler is
+// consumer code. A handler that panics is recovered: the record is lost, and
+// the loop goes on. Call's own record of the panic goes to the same logger,
+// and Call swallows a panic from that write too, so nothing here recurses or
+// re-panics.
+func (km *Keys) logGuarded(ctx context.Context, logger *slog.Logger, msg string, attrs []slog.Attr) {
+	_ = recovered.Call(ctx, logger, whatLogger, func() error {
+		logger.LogAttrs(ctx, slog.LevelError, msg, attrs...)
 
 		return nil
 	})

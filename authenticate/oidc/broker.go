@@ -32,8 +32,10 @@ type Broker struct {
 	users   identity.UserLoader
 	log     *slog.Logger
 	sampler *logsample.Sampler
-	ids     id.Generator
-	clock   clock.Clock
+	// summaries remembers where each sampler key's last record went.
+	summaries ctxlog.Summaries
+	ids       id.Generator
+	clock     clock.Clock
 
 	// Provisioning, per provider. jitDomains tells "configured empty" from
 	// "not configured" by the presence of the key.
@@ -244,10 +246,12 @@ func (b *Broker) RoleSyncProviders() []string {
 // refusal logs one refusal through the sampler, naming the provider and the
 // domain of the email, never the email itself, a subject or a reference.
 func (b *Broker) refusal(ctx context.Context, level slog.Level, msg, provider, email string) {
-	write, suppressed := b.sampler.Allow("oidc.broker:"+msg+":"+provider, b.clock.Now())
+	key := "oidc.broker:" + msg + ":" + provider
+	write, suppressed := b.sampler.Allow(key, b.clock.Now())
 	if !write {
 		return
 	}
+	b.summaries.Note(ctx, b.log, key)
 	b.log.LogAttrs(ctx, level, "oidc: "+msg,
 		slog.String("provider", provider),
 		slog.String("email_domain", emailDomain(email)),
@@ -256,7 +260,7 @@ func (b *Broker) refusal(ctx context.Context, level slog.Level, msg, provider, e
 
 // reportSuppressed writes the count of refusal records the sampler held back.
 func (b *Broker) reportSuppressed(key string, suppressed int) {
-	ctxlog.Summary(b.log).LogAttrs(context.Background(), slog.LevelInfo, "oidc broker refusals suppressed",
+	b.summaries.For(b.log, key).LogAttrs(context.Background(), slog.LevelInfo, "oidc broker refusals suppressed",
 		slog.String("reason", key),
 		slog.Int("suppressed", suppressed))
 }

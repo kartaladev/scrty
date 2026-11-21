@@ -74,6 +74,7 @@ type MFARequirement struct {
 	clock          clock.Clock
 	logInterval    time.Duration
 	sampler        *logsample.Sampler
+	summaries      ctxlog.Summaries
 
 	// enrolment is the enrolment path, or nil while it is off.
 	enrolment *enrolmentPath
@@ -613,12 +614,13 @@ func (p *MFARequirement) sampled(
 	}
 
 	p.logger.LogAttrs(ctx, level, msg, append(attrs, slog.Int("suppressed", suppressed))...)
+	p.summaries.Note(ctx, p.logger, key)
 }
 
 // reportSuppressed accounts for counts the sampler is about to discard.
 func (p *MFARequirement) reportSuppressed(key string, suppressed int) {
-	// A summary has no request context: it goes where the last sampled record went.
-	ctxlog.Summary(p.logger).LogAttrs(context.Background(), slog.LevelWarn, msgRequirementSuppressed,
+	// A summary has no request context: it goes where the key's last record went.
+	p.summaries.For(p.logger, key).LogAttrs(context.Background(), slog.LevelWarn, msgRequirementSuppressed,
 		slog.String("key", key),
 		slog.Int("suppressed", suppressed))
 }

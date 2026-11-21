@@ -69,6 +69,7 @@ type VerifyThrottle struct {
 	limiter     ratelimit.Limiter
 	logger      *slog.Logger
 	sampler     *logsample.Sampler
+	summaries   ctxlog.Summaries
 	clock       clock.Clock
 	logInterval time.Duration
 
@@ -258,6 +259,8 @@ func (t *VerifyThrottle) sampled(ctx context.Context, level slog.Level, msg, rea
 		return
 	}
 
+	t.summaries.Note(ctx, t.logger, reason)
+
 	t.logger.LogAttrs(ctx, level, msg,
 		slog.String("reason", reason),
 		slog.Int("suppressed", suppressed))
@@ -274,6 +277,8 @@ func (t *VerifyThrottle) sampledFailure(ctx context.Context, level slog.Level, m
 		return
 	}
 
+	t.summaries.Note(ctx, t.logger, reason)
+
 	t.logger.LogAttrs(ctx, level, msg,
 		append(diag.Failure(reason, err), slog.Int("suppressed", suppressed))...)
 }
@@ -281,7 +286,7 @@ func (t *VerifyThrottle) sampledFailure(ctx context.Context, level slog.Level, m
 // reportSuppressed accounts for counts the sampler is about to discard, so a
 // burst that stops before its window closes is still visible as a number.
 func (t *VerifyThrottle) reportSuppressed(key string, suppressed int) {
-	ctxlog.Summary(t.logger).LogAttrs(context.Background(), slog.LevelWarn,
+	t.summaries.For(t.logger, key).LogAttrs(context.Background(), slog.LevelWarn,
 		"mfa: verification refusals suppressed",
 		slog.String("reason", key),
 		slog.Int("suppressed", suppressed))

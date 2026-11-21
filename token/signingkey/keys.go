@@ -76,6 +76,7 @@ type Keys struct {
 	logger       *slog.Logger
 	errorHook    func(error)
 	sampler      *logsample.Sampler
+	summaries    ctxlog.Summaries
 
 	// events is the sink WithSecurityEvents gave, kept so a nil sink or the
 	// option given twice is refused rather than read as none or as the last.

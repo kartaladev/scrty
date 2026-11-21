@@ -139,6 +139,7 @@ type Passkeys struct {
 	logger        *slog.Logger
 	loggerSet     bool
 	sampler       *logsample.Sampler
+	summaries     ctxlog.Summaries
 	logInterval   time.Duration
 	compare       func(stored, presented string) bool
 }
@@ -573,6 +574,8 @@ func (m *Passkeys) sampled(ctx context.Context, level slog.Level, key, msg strin
 		return
 	}
 
+	m.summaries.Note(ctx, m.logger, key)
+
 	attrs = append(attrs, slog.String("key", key))
 	if suppressed > 0 {
 		attrs = append(attrs, slog.Int("suppressed", suppressed))
@@ -584,8 +587,8 @@ func (m *Passkeys) sampled(ctx context.Context, level slog.Level, key, msg strin
 // reportSuppressed is the sampler's reporter: it writes how many records
 // under key the sampler held back.
 func (m *Passkeys) reportSuppressed(key string, suppressed int) {
-	// A summary has no request of its own: it goes where the last record did.
-	ctxlog.Summary(m.logger).LogAttrs(context.Background(), slog.LevelInfo, msgSuppressed,
+	// A summary has no request of its own: it goes where key's last record did.
+	m.summaries.For(m.logger, key).LogAttrs(context.Background(), slog.LevelInfo, msgSuppressed,
 		slog.String("key", key), slog.Int("suppressed", suppressed))
 }
 
