@@ -367,7 +367,7 @@ func (m *Sessions) RotateWithGraceIssuing(
 		return nil, 0, "", ErrExpired
 	}
 
-	id, err := m.newIdentifier()
+	id, err := m.newIdentifier(ctx)
 	if err != nil {
 		return nil, 0, "", err
 	}

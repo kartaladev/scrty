@@ -154,6 +154,10 @@ func assertOneAbortOnChain(t *testing.T, got redemptionPortOutcome, reason strin
 }
 
 func redemptionPortSites() []redemptionPortSite {
+	// sessionLogs is the session manager's logger of the row being run, set by
+	// that site's configure. Rows run one after another.
+	var sessionLogs *capturingHandler
+
 	return []redemptionPortSite{
 		{
 			name: "the consumer's refusal check",
@@ -211,7 +215,11 @@ func redemptionPortSites() []redemptionPortSite {
 			// very value the redeemer hands back, walkable or not.
 			name: "the session manager's random source, beside a consumer check that passes",
 			configure: func(t *testing.T, h *magicLinkHarness, portErr error) {
-				sessions, err := session.New(session.WithRandom(failingRandom{err: portErr}))
+				sessionLogs = &capturingHandler{}
+
+				sessions, err := session.New(
+					session.WithRandom(failingRandom{err: portErr}),
+					session.WithLogger(slog.New(sessionLogs)))
 				require.NoError(t, err)
 
 				h.sessions = sessions
@@ -223,18 +231,18 @@ func redemptionPortSites() []redemptionPortSite {
 
 				assert.Zero(t, plain.charged, "a failure to build the session is never counted")
 				assertRedemptionParity(t, plain, got)
-				assertOneAbortOnChain(t, got, reason)
-			},
-			// The session package wraps the reader's error with fmt.Errorf,
-			// which reads its text: a join fanning out 2^25 ways is slow to
-			// print before the walk ever sees it. That is the session
-			// package's call site, not the redemption's.
-			skip: func(kind string) string {
-				if kind == "join fanning out" {
-					return "the session package formats the reader's error text before httpsec sees it"
+				assert.Empty(t, abortRecords(got.chainLogs), "none on the chain's logger")
+				assert.Empty(t, abortRecords(got.linkLogs), "none on the link manager's logger")
+
+				aborts := abortRecords(sessionLogs.records())
+				if reason == "" {
+					assert.Empty(t, aborts, "a walk that completes writes no abort record")
+
+					return
 				}
 
-				return ""
+				require.Len(t, aborts, 1, "one abort record, on the session manager's logger")
+				assertAbortRecord(t, aborts[0], reason)
 			},
 		},
 		{

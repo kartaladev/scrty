@@ -57,12 +57,20 @@ type Prepared struct {
 // Create is Prepare followed by Commit; CreateIssuing is the two with an
 // issuing step between them.
 func (m *Sessions) Prepare(user identity.UserID, opts ...CreateOption) (*Prepared, error) {
-	id, err := m.newIdentifier()
+	// Prepare takes no context, because it touches no store: the abort record of
+	// a hostile source error is written with a background one, to the manager's
+	// logger. The exported signature is not changed for it.
+	ctx := context.Background()
+
+	id, err := m.newIdentifier(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	family, err := m.families.NewID()
+	// The generator is the consumer's: its error is walked once, bounded. A nil
+	// family below stays the session's own configuration error.
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, fmt.Errorf("session: generating a family identifier: %w", err)
 	}
@@ -95,7 +103,7 @@ func (m *Sessions) Prepare(user identity.UserID, opts ...CreateOption) (*Prepare
 	}
 	if s.csrfRequested {
 		s.csrfRequested = false
-		if s.CSRFToken, err = m.newCSRFToken(); err != nil {
+		if s.CSRFToken, err = m.newCSRFToken(ctx); err != nil {
 			return nil, err
 		}
 	}

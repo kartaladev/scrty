@@ -282,9 +282,13 @@ const identifierBytes = 32
 // source — a counter, the clock, a shorter read — would hand out an identifier
 // that looks exactly like a good one and can be guessed, and nothing later in
 // the request would notice.
-func (m *Sessions) newIdentifier() (string, error) {
+func (m *Sessions) newIdentifier(ctx context.Context) (string, error) {
 	raw := make([]byte, identifierBytes)
-	if _, err := io.ReadFull(m.random, raw); err != nil {
+	_, err := io.ReadFull(m.random, raw)
+	// The reader is the consumer's: its error is walked once, bounded, before
+	// anything checks it.
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return "", fmt.Errorf("session: reading %d random bytes for a session identifier: %w", identifierBytes, err)
 	}
 
@@ -947,7 +951,7 @@ func (m *Sessions) RotateIssuing(
 		return nil, "", ErrExpired
 	}
 
-	id, err := m.newIdentifier()
+	id, err := m.newIdentifier(ctx)
 	if err != nil {
 		return nil, "", err
 	}

@@ -1,9 +1,12 @@
 package session
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
+
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // KeyBinding binds a sign-in to a key its holder proves possession of:
@@ -88,9 +91,13 @@ func WithCSRFToken() CreateOption {
 
 // newCSRFToken reads csrfTokenBytes from the manager's random source and
 // encodes them URL-safe without padding.
-func (m *Sessions) newCSRFToken() (string, error) {
+func (m *Sessions) newCSRFToken(ctx context.Context) (string, error) {
 	raw := make([]byte, csrfTokenBytes)
-	if _, err := io.ReadFull(m.random, raw); err != nil {
+	_, err := io.ReadFull(m.random, raw)
+	// The reader is the consumer's: its error is walked once, bounded, before
+	// anything checks it.
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return "", fmt.Errorf("session: reading %d random bytes for a CSRF token: %w", csrfTokenBytes, err)
 	}
 
