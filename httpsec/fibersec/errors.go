@@ -2,14 +2,13 @@ package fibersec
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 
 	"github.com/gofiber/fiber/v3"
 
 	"github.com/kartaladev/scrty/httpsec"
-	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/errwalk"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // RefusalError is what the chain returns to fiber when it refuses a request.
@@ -94,19 +93,14 @@ func abortedRefusal(err, abort error) error {
 	return &RefusalError{refusal: err, status: fiber.NewError(http.StatusInternalServerError)}
 }
 
-// reportAbort writes the Error record for an aborted classification to
-// slog.Default(), as the core's own lookup does: a constant message, the
+// reportAbort writes the Error record for an aborted classification through
+// porterr.ReportAbort, as the core's own lookup does: a constant message, the
 // reason, and for a recovered panic its Go type and the frames the walk
-// captured where it panicked, never its value or the error's text.
+// captured where it panicked, never its value or the error's text. No context
+// reaches here, so the record carries none and goes to slog.Default() at
+// record time.
 func reportAbort(abort error) {
-	attrs := []slog.Attr{slog.String("reason", errwalk.Reason(abort))}
-
-	if p, ok := abort.(*errwalk.PanicError); ok && p != nil { //nolint:errorlint // errwalk's own value, never wrapped
-		attrs = append(attrs, diag.PanicAttrsFrom(p.Value, p.Frames)...)
-	}
-
-	// No context reaches here, so the record carries none.
-	slog.Default().LogAttrs(context.Background(), slog.LevelError, "httpsec: error classification aborted", attrs...)
+	porterr.ReportAbort(context.Background(), nil, abort)
 }
 
 // ErrorHandler answers a refusal with the mapped status and an empty body.

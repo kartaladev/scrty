@@ -48,6 +48,11 @@ type Chain struct {
 	engine *policy.Engine
 	logger *slog.Logger
 
+	// loggerGiven is whether the consumer gave WithLogger. Only then does a
+	// run answer ctxlog.Key with logger; otherwise logger routes, and a run
+	// leaves the key to the context it began on (chainRun.Value).
+	loggerGiven bool
+
 	// enrolmentLifetime is how long a session marked for an enrolment
 	// challenge may live, handed to every built-in that marks one.
 	enrolmentLifetime time.Duration
@@ -386,8 +391,8 @@ type chainRun struct {
 
 // Value answers chainRunKey with the run, guardauth.LookupKey with the status
 // lookup a guard behind the chain asks about its refusal (lookupAbort),
-// ctxlog.Key with the chain's logger, and every other key from the context
-// the run began on. Answering the lookup and the logger here, rather than
+// ctxlog.Key with the chain's logger when the consumer gave one (WithLogger),
+// and every other key from the context the run began on. Answering the lookup and the logger here, rather than
 // storing them on the context, costs a request nothing.
 //
 // The logger is how a component with no logger of its own that the chain
@@ -397,7 +402,10 @@ type chainRun struct {
 // so no call site can forget it. It is the chain's configuration, not the
 // request's: a context kept past its run answers it still, and carries no
 // other request's data. A run of another chain nested inside this one answers
-// first, with its own logger.
+// first, with its own logger. A chain given no logger answers none here: its
+// default is a routing logger, which names no destination of its own, so the
+// key is left to the context the run began on, where an enclosing chain's
+// logger is found. The innermost chain given a logger wins.
 func (r *chainRun) Value(key any) any {
 	switch key.(type) {
 	case chainRunKey:
@@ -405,7 +413,9 @@ func (r *chainRun) Value(key any) any {
 	case guardauth.LookupKey:
 		return guardauth.Lookup(lookupAbort)
 	case ctxlog.Key:
-		return r.chain.logger
+		if r.chain.loggerGiven {
+			return r.chain.logger
+		}
 	}
 
 	return r.Context.Value(key)

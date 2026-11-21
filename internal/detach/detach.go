@@ -14,11 +14,8 @@ package detach
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"time"
 
-	"github.com/kartaladev/scrty/internal/ctxlog"
-	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/errwalk"
 	"github.com/kartaladev/scrty/internal/porterr"
 )
@@ -80,8 +77,8 @@ func BoundReached(ctx context.Context) bool {
 // answers matched false, as an unrelated cause does, and aborted true; its
 // match is not guessed from a partial walk. The abort is recorded once, at
 // error level, on the logger ctx carries (the chain's own) or else
-// slog.Default(), with a constant message and the reason, never the error's
-// text. A caller that holds the cause for another purpose, such as joining it
+// slog.Default() at record time, with a constant message and the reason, never
+// the error's text. A caller that holds the cause for another purpose, such as joining it
 // into a returned error, leaves it out when aborted.
 //
 // The record is written once per call: several hang-up checks on one request
@@ -110,18 +107,9 @@ func CauseWalk(ctx context.Context, target error) (matched bool, abort error) {
 	return errwalk.Is(chain, target)
 }
 
-// reportAbort writes the one record of an aborted walk.
+// reportAbort writes the one record of an aborted walk through
+// porterr.ReportAbort, which routes it: the logger ctx carries, else
+// slog.Default() when the record is written.
 func reportAbort(ctx context.Context, abort error) {
-	logger := ctxlog.From(ctx)
-	if logger == nil {
-		logger = slog.Default()
-	}
-
-	attrs := []slog.Attr{slog.String("reason", errwalk.Reason(abort))}
-
-	if p, ok := abort.(*errwalk.PanicError); ok && p != nil { //nolint:errorlint // errwalk's own value, never wrapped
-		attrs = append(attrs, diag.PanicAttrsFrom(p.Value, p.Frames)...)
-	}
-
-	logger.LogAttrs(ctx, slog.LevelError, porterr.MsgClassificationAborted, attrs...)
+	porterr.ReportAbort(ctx, nil, abort)
 }

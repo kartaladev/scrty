@@ -464,16 +464,10 @@ func (r *Runner) classify(ctx context.Context, err error, targets errwalk.Target
 }
 
 // reportAbort writes the one Error record of an aborted classification to
-// the runner's logger, with the message every aborted classification in the
-// library writes, the reason ("budget" or "panic") and, for a panic, its Go
-// type and the frames where it panicked; never the error's text or the
-// panic's value.
+// the runner's logger, through porterr.ReportAbort: the message every aborted
+// classification in the library writes, the reason ("budget" or "panic") and,
+// for a panic, its Go type and the frames where it panicked; never the error's
+// text or the panic's value.
 func (r *Runner) reportAbort(ctx context.Context, abort error) {
-	attrs := []slog.Attr{slog.String("reason", errwalk.Reason(abort))}
-
-	if p, ok := abort.(*errwalk.PanicError); ok && p != nil { //nolint:errorlint // errwalk's own value, never wrapped
-		attrs = append(attrs, diag.PanicAttrsFrom(p.Value, p.Frames)...)
-	}
-
-	r.logger.LogAttrs(ctx, slog.LevelError, porterr.MsgClassificationAborted, attrs...)
+	porterr.ReportAbort(ctx, r.logger, abort)
 }

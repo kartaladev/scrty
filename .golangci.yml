@@ -26,6 +26,12 @@ linters:
           msg: a dependency's error text must not reach a record or returned error; use internal/diag
         - pattern: '^slog\.Any$'
           msg: use typed attrs; for errors use diag.Failure
+        # A logger captured from slog.Default() ignores the chain's logger and
+        # a later slog.SetDefault. Records route through internal/ctxlog, the
+        # one place allowed to read the default, when a record is written.
+        - pattern: '^slog\.Default$'
+          pkg: '^log/slog$'
+          msg: use ctxlog.Routing() (or porterr.ReportAbort with a nil logger); the default is read per record in internal/ctxlog only
   exclusions:
     paths:
       - testdata
@@ -36,6 +42,10 @@ linters:
       - linters:
           - forbidigo
         path: ^internal/diag/
+      - linters:
+          - forbidigo
+        path: ^internal/ctxlog/
+        text: slog\.Default
       - linters:
           - forbidigo
         path: ^test/

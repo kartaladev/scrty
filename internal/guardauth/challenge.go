@@ -2,10 +2,8 @@ package guardauth
 
 import (
 	"context"
-	"log/slog"
 
-	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/internal/errwalk"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // HeaderWriter is the part of a response a challenge is set on. The chain's
@@ -83,24 +81,15 @@ func LookupAborts(ctx context.Context, err error) bool {
 // MsgClassificationAborted is the record a guard writes for an aborted
 // classification it reports itself. It is the text the chain's own lookup
 // writes, so one search finds every such record.
-const MsgClassificationAborted = "httpsec: error classification aborted"
+const MsgClassificationAborted = porterr.MsgClassificationAborted
 
 // ReportAbort writes one Error record of abort, an abort a guard's walk met,
-// to slog.Default(): a guard holds no chain logger. The record carries the
-// constant MsgClassificationAborted, the abort's reason and, for a recovered
-// panic, the panic's Go type and the frames captured where it panicked; never
-// the error's text or the panic's value.
+// through porterr.ReportAbort: the constant MsgClassificationAborted, the
+// abort's reason and, for a recovered panic, the panic's Go type and the
+// frames captured where it panicked; never the error's text or the panic's
+// value. A guard holds no logger of its own, so the record goes to the logger
+// of the chain handling the request, read from ctx, else slog.Default() when
+// it is written.
 func ReportAbort(ctx context.Context, abort error) {
-	slog.Default().LogAttrs(ctx, slog.LevelError, MsgClassificationAborted, abortAttrs(abort)...)
-}
-
-// abortAttrs is the record's attributes for abort.
-func abortAttrs(abort error) []slog.Attr {
-	attrs := []slog.Attr{slog.String("reason", errwalk.Reason(abort))}
-
-	if p, ok := abort.(*errwalk.PanicError); ok && p != nil { //nolint:errorlint // errwalk's own value, never wrapped
-		attrs = append(attrs, diag.PanicAttrsFrom(p.Value, p.Frames)...)
-	}
-
-	return attrs
+	porterr.ReportAbort(ctx, nil, abort)
 }

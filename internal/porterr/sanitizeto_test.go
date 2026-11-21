@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/porterr"
 )
 
@@ -59,6 +60,7 @@ func TestSanitizeTo(t *testing.T) {
 		ctx       func(ctx context.Context) context.Context // nil means a context carrying the request id
 		nilCtx    bool
 		nilLogger bool
+		chain     bool         // the given recorder is the chain logger ctx carries
 		handler   slog.Handler // nil means the given recorder
 		assert    func(t *testing.T, out outcome)
 	}
@@ -99,6 +101,16 @@ func TestSanitizeTo(t *testing.T) {
 				assert.Empty(t, out.given.all())
 				require.Len(t, out.def.all(), 1)
 				assert.Equal(t, "req-1", attrsOf(out.def.all()[0])["request_id"], "the default logger's handler was not handed the context")
+			},
+		},
+		{
+			name:      "a nil logger writes the one record to the chain logger the context carries",
+			err:       func() error { return &cycleOne{} },
+			nilLogger: true,
+			chain:     true,
+			assert: func(t *testing.T, out outcome) {
+				oneOnGiven(t, out)
+				assert.Equal(t, "req-1", attrsOf(out.given.all()[0])["request_id"])
 			},
 		},
 		{
@@ -164,6 +176,10 @@ func TestSanitizeTo(t *testing.T) {
 			ctx := context.WithValue(t.Context(), ctxKey{}, "req-1")
 			if tc.ctx != nil {
 				ctx = tc.ctx(ctx)
+			}
+
+			if tc.chain {
+				ctx = ctxlog.With(ctx, slog.New(out.given))
 			}
 
 			if tc.nilCtx {

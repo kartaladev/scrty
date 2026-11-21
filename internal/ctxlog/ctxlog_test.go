@@ -110,6 +110,24 @@ func TestFrom(t *testing.T) {
 			},
 		},
 		{
+			name: "a routing logger under the key answers nil",
+			ctx: func(ctx context.Context) context.Context {
+				return keyAnswerer{Context: ctx, logger: ctxlog.Routing()}
+			},
+			assert: func(t *testing.T, got *slog.Logger) {
+				assert.Nil(t, got)
+			},
+		},
+		{
+			name: "a routing logger is ignored, keeping the one already carried",
+			ctx: func(ctx context.Context) context.Context {
+				return ctxlog.With(ctxlog.With(ctx, outer), ctxlog.Routing().With("k", "v"))
+			},
+			assert: func(t *testing.T, got *slog.Logger) {
+				assert.Same(t, outer, got)
+			},
+		},
+		{
 			name: "a cancelled context still answers its logger",
 			ctx: func(ctx context.Context) context.Context {
 				cctx, cancel := context.WithCancel(ctxlog.With(ctx, outer))

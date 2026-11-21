@@ -13,6 +13,8 @@ import (
 	"github.com/kartaladev/scrty/internal/errwalk"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/internal/porterr"
+	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -383,16 +385,38 @@ func (c *Chain) reportQuietly(ctx context.Context, err, abort error) {
 
 // reportAbort reports abort, met by an inspection that runs after the lookup
 // answered: the dispatch will not meet it, so it is reported whatever handler
-// answers, through c's logger and sampler, or to slog.Default() when no chain
-// is running.
+// answers, through c's logger and sampler, or, when no chain is running,
+// through porterr.ReportAbort's routing: the logger ctx carries, else
+// slog.Default() at record time.
 func (c *Chain) reportAbort(ctx context.Context, abort error) {
 	if c == nil {
-		logClassificationAborted(ctx, slog.Default(), abort)
+		porterr.ReportAbort(ctx, nil, abort)
 
 		return
 	}
 
 	c.logClassificationAborted(ctx, abort)
+}
+
+// reportAbortSampled writes abort's record through porterr.ReportAbort, at
+// most once per reason per window of s (classificationAbortedKey), with the
+// count of the records it stands in for as "suppressed" when there are any. A
+// nil s, or one built with an interval of zero or less, writes every record. A
+// nil log resolves as porterr.ReportAbort resolves it.
+func reportAbortSampled(ctx context.Context, s *logsample.Sampler, log *slog.Logger, now time.Time, abort error) {
+	write, suppressed := s.Allow(classificationAbortedKey(abort), now)
+	if !write {
+		return
+	}
+
+	if suppressed > 0 {
+		// Attached only when it says something, as logSampled does.
+		porterr.ReportAbort(ctx, log, abort, slog.Int("suppressed", suppressed))
+
+		return
+	}
+
+	porterr.ReportAbort(ctx, log, abort)
 }
 
 // reportQuietlyOnce reports abort by the quiet sites' rule (reportQuietly)

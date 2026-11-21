@@ -19,6 +19,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/errwalk"
 )
@@ -105,14 +106,15 @@ func (f *Fault) Abort() error {
 //     panic(nil) included. The fault matches unavailable through errors.Is,
 //     so the flow takes its existing branch for a failing port.
 //
-// An aborted walk writes exactly one Error record to slog.Default(), with the
-// message [MsgClassificationAborted], the reason ("budget" or "panic") and,
-// for a panic, its Go type and the frames where it panicked, never the panic's
-// value or the error's text. A walk that completes writes nothing. Sanitize
-// has no options: the default logger is the consumer's to route, through
+// An aborted walk writes exactly one Error record ([ReportAbort]) to
+// slog.Default() at record time, with the message [MsgClassificationAborted],
+// the reason ("budget" or "panic") and, for a panic, its Go type and the frames
+// where it panicked, never the panic's value or the error's text. A walk that
+// completes writes nothing. Sanitize has no options: it holds no request
+// context, so the default logger is the consumer's to route, through
 // slog.SetDefault. A caller that holds a request context or its own logger
-// uses [SanitizeTo]; Sanitize is SanitizeTo with context.Background() and the
-// default logger. A fault handed to Sanitize again passes through, with no
+// uses [SanitizeTo]; Sanitize is SanitizeTo with context.Background() and a
+// nil logger. A fault handed to Sanitize again passes through, with no
 // second record.
 //
 // unavailable is the port's own unavailable sentinel, a package-level value at
@@ -133,9 +135,10 @@ func Sanitize(err, unavailable error) error {
 }
 
 // SanitizeTo is [Sanitize] with the destination of the abort record chosen by
-// the caller: the one record goes to logger, handed ctx, so a handler that
-// reads the context (a request id, a trace) tags it. A nil logger is
-// slog.Default(), the one Sanitize writes to. A nil ctx is
+// the caller: the one record ([ReportAbort]) goes to logger, handed ctx, so a
+// handler that reads the context (a request id, a trace) tags it. A nil logger
+// resolves for the record: the logger of the chain handling the request, read
+// from ctx, else slog.Default() at that moment. A nil ctx is
 // context.Background(): a logging path does not panic over it. Everything else
 // is as for Sanitize, including that a nil unavailable panics on every call
 // and that a walk that completes writes nothing.
@@ -161,22 +164,40 @@ func SanitizeTo(ctx context.Context, logger *slog.Logger, err, unavailable error
 		return err
 	}
 
-	report(ctx, logger, abort)
+	ReportAbort(ctx, logger, abort)
 
 	return &Fault{unavailable: unavailable, abort: abort}
 }
 
-// report writes the one record of an aborted walk to logger, or to
-// slog.Default() when logger is nil, with ctx, or context.Background() when
-// ctx is nil. Nothing is read from abort but its type, a panic's captured
-// frames and the Go type of its recovered value.
-func report(ctx context.Context, logger *slog.Logger, abort error) {
+// routing is the logger a nil logger resolves to: the chain's logger the
+// record's context carries, else slog.Default() when the record is written.
+var routing = ctxlog.Routing()
+
+// ReportAbort writes the one record of an aborted walk, abort, which is one of
+// errwalk's own values: Error level, the message [MsgClassificationAborted],
+// the reason ("budget" or "panic") and, for a recovered panic, its Go type and
+// the frames captured where it panicked, then extra, in order: a sampled
+// reporter's suppressed count. It never reads the error's text or the panic's
+// value. Every reporter of an aborted classification in the
+// library writes its record through it.
+//
+// logger is the destination. A nil logger resolves for the record as a
+// routing logger does (internal/ctxlog): the logger of the chain handling the
+// request, read from ctx, else slog.Default() at that moment. A nil ctx is
+// context.Background(). A nil abort writes the record with an empty reason:
+// a caller reporting nothing is a library bug, and a record shows it.
+//
+// A cancelled ctx does not stop the record. A handler that panics is the
+// consumer's own code: its panic escapes, as from any slog call, and is not
+// recovered. ReportAbort keeps no state and is safe for concurrent use as far
+// as logger is.
+func ReportAbort(ctx context.Context, logger *slog.Logger, abort error, extra ...slog.Attr) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
 	if logger == nil {
-		logger = slog.Default()
+		logger = routing
 	}
 
 	attrs := []slog.Attr{slog.String("reason", errwalk.Reason(abort))}
@@ -184,6 +205,8 @@ func report(ctx context.Context, logger *slog.Logger, abort error) {
 	if p, ok := abort.(*errwalk.PanicError); ok && p != nil { //nolint:errorlint // errwalk's own value, never wrapped
 		attrs = append(attrs, diag.PanicAttrsFrom(p.Value, p.Frames)...)
 	}
+
+	attrs = append(attrs, extra...)
 
 	logger.LogAttrs(ctx, slog.LevelError, MsgClassificationAborted, attrs...)
 }

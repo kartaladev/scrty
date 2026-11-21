@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"errors"
 	"io"
-	"log/slog"
 	"math"
 	"mime"
 	"mime/multipart"
@@ -792,19 +791,14 @@ func (c *Chain) handleError(ex *Exchange, w http.ResponseWriter, r *http.Request
 // up, through the chain's logger and sampler under the abort's per-reason key
 // (classificationAbortedKey), so a hostile error that recurs on every request
 // writes one record per reason per window. A Chain that did not come from New
-// has no logger, sampler or clock of its own: it writes to slog.Default(),
-// unsampled, at the system clock's time.
+// has no logger, sampler or clock of its own: it writes unsampled, at the
+// system clock's time, through porterr.ReportAbort's routing (the logger ctx
+// carries, else slog.Default() at record time).
 func (c *Chain) logClassificationAborted(ctx context.Context, abort error) {
-	log := c.logger
-	if log == nil {
-		log = slog.Default()
-	}
-
 	now := clock.System().Now
 	if c.perRequest != nil && c.perRequest.now != nil {
 		now = c.perRequest.now
 	}
 
-	logSampled(ctx, c.sampler, log, slog.LevelError, now(),
-		classificationAbortedKey(abort), msgClassificationAborted, classificationAbortedAttrs(abort)...)
+	reportAbortSampled(ctx, c.sampler, c.logger, now(), abort)
 }

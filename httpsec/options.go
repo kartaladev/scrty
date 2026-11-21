@@ -10,6 +10,7 @@ import (
 
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/event"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
@@ -482,7 +483,7 @@ func requireDep(option, dependency string, v any) error {
 // enabled.
 func New(opts ...Option) (*Chain, error) {
 	c := &config{
-		logger:     slog.Default(),
+		logger:     ctxlog.Routing(),
 		ipv6Prefix: defaultIPv6SourcePrefix,
 
 		aggregateBits:       defaultIPv6AggregatePrefix,
@@ -732,6 +733,7 @@ func (c *config) build() (*Chain, error) {
 		registrations:     c.ordered(),
 		engine:            c.engine,
 		logger:            c.logger,
+		loggerGiven:       c.loggerGiven,
 		enrolmentLifetime: c.enrolmentLifetime,
 		enforced:          c.enforcedChallenges(),
 		mfa:               c.mfaOf(),
@@ -878,8 +880,16 @@ func WithChallengeEnforcer(kind policy.ChallengeKind) Option {
 
 // WithLogger writes the chain's own records through logger.
 //
-// Default: slog.Default(), so a consumer who configures logging once for their
-// application sees the chain's records without wiring anything here.
+// Default: the logger of an enclosing chain handling the request, else
+// slog.Default() when the record is written, so a consumer who configures
+// logging once for their application sees the chain's records without wiring
+// anything here, and a later slog.SetDefault takes effect.
+//
+// The logger given here is also the one the chain hands to the components it
+// runs: a component with no logger option of its own writes its records here
+// for a request through this chain. A chain given no logger answers none, so
+// with one chain mounted inside another, the innermost chain given a logger
+// wins.
 //
 // A nil logger is refused rather than taken as "log nothing": the records this
 // chain writes are refusals and outages, and silently dropping them is not a

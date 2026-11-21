@@ -321,8 +321,7 @@ func (v *dpopVerifier) openFailed(ctx context.Context, err error) (failed bool, 
 // reported here, once, through the chain's logger and sampler under the
 // dispatch's per-reason key.
 func (v *dpopVerifier) reportAbort(ctx context.Context, abort error) {
-	logSampled(ctx, v.sampler, v.log, slog.LevelError, v.now(),
-		classificationAbortedKey(abort), msgClassificationAborted, classificationAbortedAttrs(abort)...)
+	reportAbortSampled(ctx, v.sampler, v.log, v.now(), abort)
 }
 
 // refuseNonce records a proof refused for its nonce and returns the refusal.
