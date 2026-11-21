@@ -17,6 +17,7 @@ import (
 
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -85,7 +86,7 @@ type Handoff struct {
 //
 // With no options it draws codes from crypto/rand.Reader (WithHandoffRandom),
 // reads time from clock.System() (WithHandoffClock), names records with
-// id.NewV7Generator() (WithHandoffIDGenerator) and logs to slog.Default()
+// id.NewV7Generator() (WithHandoffIDGenerator) and logs to the logger of the chain handling the request, else slog.Default() when the record is written
 // (WithHandoffLogger). Every error it returns wraps ErrConfig.
 //
 // A record of a redemption the store or users failed carries a fixed reason
@@ -120,7 +121,7 @@ func NewHandoff(store HandoffStore, users identity.UserLoader, opts ...HandoffOp
 		h.ids = id.NewV7Generator()
 	}
 	if h.log == nil {
-		h.log = slog.Default()
+		h.log = ctxlog.Routing()
 	}
 	h.sampler = logsample.New(handoffLogInterval, logsample.WithReporter(h.reportSuppressed))
 
@@ -199,7 +200,7 @@ func handoffDigest(secret string) []byte {
 
 // reportSuppressed writes the count of refusal records the sampler held back.
 func (h *Handoff) reportSuppressed(reason string, suppressed int) {
-	h.log.LogAttrs(context.Background(), slog.LevelInfo, "oidc handoff refusals suppressed",
+	ctxlog.Summary(h.log).LogAttrs(context.Background(), slog.LevelInfo, "oidc handoff refusals suppressed",
 		slog.String("reason", reason),
 		slog.Int("suppressed", suppressed))
 }
@@ -529,7 +530,7 @@ func WithHandoffIDGenerator(ids id.Generator) HandoffOption {
 }
 
 // WithHandoffLogger replaces the logger every refused and failed redemption
-// is reported to. The default is slog.Default(). A nil logger is refused.
+// is reported to. The default is the logger of the chain handling the request, else slog.Default() when the record is written. A nil logger is refused.
 //
 // Redemption returns one error whatever went wrong, so this log is the only
 // place the cause appears: a miss, an inactive user or a reference mismatch at

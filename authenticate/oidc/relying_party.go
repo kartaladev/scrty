@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/outbound"
@@ -73,7 +74,7 @@ type roleSyncing interface{ RoleSyncProviders() []string }
 // (identity.MissingPort), is a wiring mistake. A nil pointer inside a non-nil
 // interface counts as nil. With no options it sends every
 // request through outbound.New(), draws secrets from crypto/rand.Reader, reads
-// time from clock.System(), logs to slog.Default(), and holds login flows for
+// time from clock.System(), logs to the logger of the chain handling the request, else slog.Default() when the record is written, and holds login flows for
 // DefaultFlowTTL in a NewMemoryFlowStore sharing its clock and random source,
 // judges provider token times within DefaultClockSkew (WithClockSkew), and
 // accepts logout tokens issued up to DefaultLogoutTokenMaxAge ago
@@ -139,7 +140,7 @@ func NewRelyingParty(registry *Registry, broker IdentityBroker, opts ...Option) 
 		m.clock = clock.System()
 	}
 	if m.log == nil {
-		m.log = slog.Default()
+		m.log = ctxlog.Routing()
 	}
 	if m.flows == nil {
 		s, err := NewMemoryFlowStore(WithMemoryFlowStoreClock(m.clock), WithMemoryFlowStoreRandom(m.random))
@@ -242,7 +243,7 @@ func (m *RelyingParty) checkBrokerProviders() error {
 
 // reportSuppressed writes the count of refusal records the sampler held back.
 func (m *RelyingParty) reportSuppressed(key string, suppressed int) {
-	m.log.LogAttrs(context.Background(), slog.LevelInfo, "oidc refusals suppressed",
+	ctxlog.Summary(m.log).LogAttrs(context.Background(), slog.LevelInfo, "oidc refusals suppressed",
 		slog.String("reason", key),
 		slog.Int("suppressed", suppressed))
 }
@@ -415,7 +416,7 @@ func WithFlowTTL(ttl time.Duration) Option {
 }
 
 // WithLogger replaces the logger refusals and provider failures are reported
-// to. The default is slog.Default().
+// to. The default is the logger of the chain handling the request, else slog.Default() when the record is written.
 //
 // No record this package writes carries a token, a client secret, a PKCE
 // verifier, a state, a nonce, a handoff code or a claim value.

@@ -201,13 +201,15 @@ func WithIDGenerator(ids id.Generator) Option {
 	}
 }
 
-// WithLogger replaces the logger. The default is slog.Default(). A nil logger
-// is ignored.
+// WithLogger replaces the logger. The default is the logger of the chain
+// handling the request, else slog.Default() when the record is written. The
+// manager's one-time challenge managers, its sampler's summary and its default
+// confirm limiter write to the same logger. A nil logger is refused by New
+// with an error wrapping ErrConfig.
 func WithLogger(logger *slog.Logger) Option {
 	return func(m *Passkeys) {
-		if logger != nil {
-			m.logger = logger
-		}
+		m.logger = logger
+		m.loggerSet = true
 	}
 }
 

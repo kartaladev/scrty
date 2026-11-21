@@ -16,6 +16,7 @@ import (
 
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/origin"
@@ -146,6 +147,7 @@ type Links struct {
 	binding       bool
 	random        io.Reader
 	logger        *slog.Logger
+	loggerGiven   bool
 
 	acceptSyncDelivery bool
 }
@@ -168,7 +170,7 @@ type Links struct {
 // submitted address passed to the user loader as a username
 // (WithAddressResolver), a neutral plain-text message naming no product
 // (WithRenderer), same-device binding on (WithSameDeviceBinding), crypto/rand
-// for the binding value (WithRandom), slog.Default for the log (WithLogger),
+// for the binding value (WithRandom), the chain's logger, else slog.Default, for the log (WithLogger),
 // and delivery that must not block (WithSynchronousDelivery accepts one that
 // does).
 //
@@ -193,7 +195,7 @@ func New(
 		renderer:      defaultRenderer,
 		binding:       true,
 		random:        rand.Reader,
-		logger:        slog.Default(),
+		logger:        ctxlog.Routing(),
 	}
 
 	for _, opt := range opts {
@@ -234,6 +236,10 @@ func New(
 	}
 	if nilcheck.IsNil(m.random) {
 		return nil, fmt.Errorf("%w: WithRandom was given no random source", ErrConfig)
+	}
+
+	if m.loggerGiven && m.logger == nil {
+		return nil, fmt.Errorf("%w: WithLogger was given no logger", ErrConfig)
 	}
 
 	if m.resolver == nil {

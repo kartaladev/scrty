@@ -13,6 +13,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
@@ -75,7 +76,7 @@ var _ IdentityBroker = (*Broker)(nil)
 // Both are required: a nil link store or user loader, including a nil pointer
 // inside a non-nil interface, fails with ErrConfig and identity.ErrMissingPort
 // naming the port. The library's in-memory link store is NewMemoryLinkStore.
-// With no options the broker provisions no one (see WithBrokerJIT), logs to slog.Default(), reads
+// With no options the broker provisions no one (see WithBrokerJIT), logs to the logger of the chain handling the request, else slog.Default() when the record is written, reads
 // time from clock.System() and draws link identifiers from id.NewV7Generator().
 func NewBroker(links LinkStore, users identity.UserLoader, opts ...BrokerOption) (*Broker, error) {
 	if nilcheck.IsNil(links) {
@@ -104,7 +105,7 @@ func NewBroker(links LinkStore, users identity.UserLoader, opts ...BrokerOption)
 	}
 
 	if b.log == nil {
-		b.log = slog.Default()
+		b.log = ctxlog.Routing()
 	}
 	if b.clock == nil {
 		b.clock = clock.System()
@@ -255,7 +256,7 @@ func (b *Broker) refusal(ctx context.Context, level slog.Level, msg, provider, e
 
 // reportSuppressed writes the count of refusal records the sampler held back.
 func (b *Broker) reportSuppressed(key string, suppressed int) {
-	b.log.LogAttrs(context.Background(), slog.LevelInfo, "oidc broker refusals suppressed",
+	ctxlog.Summary(b.log).LogAttrs(context.Background(), slog.LevelInfo, "oidc broker refusals suppressed",
 		slog.String("reason", key),
 		slog.Int("suppressed", suppressed))
 }
@@ -364,7 +365,7 @@ func (e *redactedError) Unwrap() error { return e.err }
 type BrokerOption func(*Broker) error
 
 // WithBrokerLogger replaces the logger the broker writes refusals and
-// failures to. The default is slog.Default(). No record carries a claim
+// failures to. The default is the logger of the chain handling the request, else slog.Default() when the record is written. No record carries a claim
 // value, a subject, a user reference or a username; an email appears only as
 // its domain.
 func WithBrokerLogger(logger *slog.Logger) BrokerOption {
