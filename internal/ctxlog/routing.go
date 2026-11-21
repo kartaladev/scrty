@@ -38,52 +38,18 @@ import (
 // A consumer handler that panics is not recovered: its panic escapes the log
 // call, as it would from any slog call on the same goroutine.
 //
-// Each routing logger keeps the last chain logger it resolved for a record,
-// shared with the loggers derived from it, for the deprecated [Summary]; a
-// sampled component uses [Summaries] instead. It is safe for
-// concurrent use as far as the handlers it resolves to are.
+// A sampled component routes its suppressed-count summaries with [Summaries].
+// It is safe for concurrent use as far as the handlers it resolves to are.
 func Routing() *slog.Logger {
-	return slog.New(&routingHandler{state: &routingState{}})
-}
-
-// Summary returns the logger a sampler's suppressed-count summary, which has
-// no request context of its own, is written through: l itself when l does not
-// route; for a routing logger, the chain logger it last resolved a record to,
-// with l's own With and WithGroup calls applied, else l, which then resolves
-// to slog.Default() at that moment. A nil l answers nil.
-//
-// Deprecated: the last chain logger is not the chain the summarised key was
-// written in, so a component serving several chains can write one chain's
-// key, which may name a user, into another chain's log. Use [Summaries],
-// which remembers the destination per key. Summary stays until its remaining
-// callers are converted.
-func Summary(l *slog.Logger) *slog.Logger {
-	h := routingOf(l)
-	if h == nil {
-		return l
-	}
-
-	if last := h.state.last.Load(); last != nil {
-		return h.loggerFor(last)
-	}
-
-	return l
+	return slog.New(&routingHandler{})
 }
 
 // fallback is the handler a routing logger writes to when slog.Default() is
 // itself a routing logger. Tests replace it.
 var fallback slog.Handler = slog.NewTextHandler(os.Stderr, nil)
 
-// routingState is shared by a routing logger and every logger derived from it.
-type routingState struct {
-	// last is the chain logger a record was last resolved to.
-	last atomic.Pointer[slog.Logger]
-}
-
 // routingHandler resolves its destination for each record.
 type routingHandler struct {
-	state *routingState
-
 	// ops are the WithAttrs and WithGroup calls made on the way to this
 	// handler, in order. The slice is never written after it is built: a
 	// derived handler gets a copy with one more entry.
@@ -126,12 +92,12 @@ func routingOf(l *slog.Logger) *routingHandler {
 // isRouting reports whether l is a routing logger.
 func isRouting(l *slog.Logger) bool { return routingOf(l) != nil }
 
-// resolve returns the logger ctx carries, else nil, and the handler the
-// record goes to, with the recorded operations replayed onto it.
-func (h *routingHandler) resolve(ctx context.Context) (*slog.Logger, slog.Handler) {
+// resolve returns the handler the record goes to, with the recorded
+// operations replayed onto it: the logger ctx carries, else slog.Default().
+func (h *routingHandler) resolve(ctx context.Context) slog.Handler {
 	if !h.defaultOnly {
 		if l := From(ctx); l != nil {
-			return l, h.loggerFor(l).Handler()
+			return h.loggerFor(l).Handler()
 		}
 	}
 
@@ -139,10 +105,10 @@ func (h *routingHandler) resolve(ctx context.Context) (*slog.Logger, slog.Handle
 	if isRouting(def) {
 		// Only a library bug installs this; it is not cached, so a test's
 		// SwapFallback is always seen.
-		return nil, h.replay(fallback)
+		return h.replay(fallback)
 	}
 
-	return nil, h.loggerFor(def).Handler()
+	return h.loggerFor(def).Handler()
 }
 
 // loggerFor returns to with h's recorded operations applied: to itself when
@@ -186,20 +152,14 @@ func (h *routingHandler) replay(base slog.Handler) slog.Handler {
 
 // Enabled answers as the handler ctx resolves to does.
 func (h *routingHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	_, to := h.resolve(ctx)
+	to := h.resolve(ctx)
 
 	return to.Enabled(ctx, level)
 }
 
-// Handle hands r, with ctx, to the handler ctx resolves to, and remembers a
-// chain logger it resolved to for Summary. It writes the shared pointer only
-// when it changes, so loggers routing many records to one chain do not contend
-// on its cache line.
+// Handle hands r, with ctx, to the handler ctx resolves to.
 func (h *routingHandler) Handle(ctx context.Context, r slog.Record) error {
-	l, to := h.resolve(ctx)
-	if l != nil && h.state.last.Load() != l {
-		h.state.last.Store(l)
-	}
+	to := h.resolve(ctx)
 
 	return to.Handle(ctx, r)
 }
@@ -223,20 +183,19 @@ func (h *routingHandler) WithGroup(name string) slog.Handler {
 	return h.with(op{group: name})
 }
 
-// with returns a handler sharing h's state, with o appended to a copy of h's
+// with returns a handler with o appended to a copy of h's
 // operations.
 func (h *routingHandler) with(o op) *routingHandler {
 	ops := make([]op, len(h.ops), len(h.ops)+1)
 	copy(ops, h.ops)
 
-	return &routingHandler{state: h.state, ops: append(ops, o), defaultOnly: h.defaultOnly}
+	return &routingHandler{ops: append(ops, o), defaultOnly: h.defaultOnly}
 }
 
 // toDefault returns a logger with h's recorded operations that writes every
 // record to slog.Default(), read at that moment, whatever logger the record's
-// context carries. Its state is its own, so it never moves what [Summary]
-// answers for h. h's ops are shared, which is safe: they are never written
+// context carries. h's ops are shared, which is safe: they are never written
 // after they are built.
 func (h *routingHandler) toDefault() *slog.Logger {
-	return slog.New(&routingHandler{state: &routingState{}, ops: h.ops, defaultOnly: true})
+	return slog.New(&routingHandler{ops: h.ops, defaultOnly: true})
 }
