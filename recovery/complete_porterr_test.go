@@ -123,15 +123,15 @@ type cmpOutcome struct {
 // runCmpSite runs the flow that reaches the site's call, on ctx, against a
 // port that fails that call with portErr. It fails the test when the flow, or
 // the classification of its error, hangs or lets a panic escape.
-func runCmpSite(t *testing.T, ctx context.Context, site cmpSite, portErr error) cmpOutcome {
+func runCmpSite(ctx context.Context, t *testing.T, site cmpSite, portErr error) cmpOutcome {
 	t.Helper()
 
-	e := newCompleteEnv(t)
+	e := newCompleteEnv(t) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	logs := &syncBuffer{}
 	logger := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	own := &recoveryEvents{}
 	rid := newRecordID(t)
-	prior := e.priorSessions(t, 1)
+	prior := e.priorSessions(t, 1) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 
 	extra := []recovery.Option{recovery.WithSecurityEvents(own.sink), recovery.WithLogger(logger)}
 	deps := e.completeDeps()
@@ -151,7 +151,7 @@ func runCmpSite(t *testing.T, ctx context.Context, site cmpSite, portErr error) 
 		reset = func() { e.faults.arm(faultRecordsComplete, nil) }
 	case cmpCancelPending:
 		deps.Records = cmpRecords{RecordStore: e.records, err: portErr}
-		require.NoError(t, e.records.Insert(t.Context(), recovery.Record{
+		require.NoError(t, e.records.Insert(t.Context(), recovery.Record{ //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 			ID: rid, User: anaID, StartedAt: e.clock.Now(), NotBefore: e.clock.Now().Add(72 * time.Hour),
 		}))
 
@@ -177,7 +177,7 @@ func runCmpSite(t *testing.T, ctx context.Context, site cmpSite, portErr error) 
 			func(context.Context, identity.UserID, string) error {
 				// The first revocation, before the sessions end, succeeds: only
 				// the one after them is the site.
-				if e.loads(t, prior[0]) {
+				if e.loads(t, prior[0]) { //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 					return nil
 				}
 
@@ -193,7 +193,7 @@ func runCmpSite(t *testing.T, ctx context.Context, site cmpSite, portErr error) 
 	if site == cmpFinishComplete {
 		held, _, heldID := e.faultyHold(t, extra...)
 		rid, r = heldID, held
-		h := heldRecovery(t.Context(), t, r, req)
+		h := heldRecovery(t.Context(), t, r, req) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 
 		e.clock.Advance(73 * time.Hour)
 		e.faults.arm(faultRecordsComplete, portErr)
@@ -262,10 +262,10 @@ func runCmpSite(t *testing.T, ctx context.Context, site cmpSite, portErr error) 
 		out.events = append(out.events, cmpEvent{name: ev.Name, outcome: ev.Outcome, user: ev.User})
 	}
 
-	out.state = holdRecordState(t, e, rid)
-	out.savedUsable = e.savedUsable(t.Context(), t, e.saved[0])
-	out.issuedUsable = e.issuedUsable(t.Context(), t, r, anaID, e.issued)
-	out.priorKept = e.loads(t, prior[0])
+	out.state = holdRecordState(t, e, rid)                                //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
+	out.savedUsable = e.savedUsable(t.Context(), t, e.saved[0])           //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
+	out.issuedUsable = e.issuedUsable(t.Context(), t, r, anaID, e.issued) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
+	out.priorKept = e.loads(t, prior[0])                                  //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	out.recovered = len(e.out.recoveredNotices())
 	out.raw = logs.String()
 
@@ -457,10 +457,10 @@ func TestPortErrors_Complete(t *testing.T) { //nolint:paralleltest // it replace
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := runCmpSite(t, ctx, tc.site, errCmpPortDown)
+			plain := runCmpSite(ctx, t, tc.site, errCmpPortDown)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := runCmpSite(t, ctx, tc.site, tc.err)
+			got := runCmpSite(ctx, t, tc.site, tc.err)
 			tc.assert(t, plain, got)
 
 			for _, rec := range limJSONRecords(t, defaults.String()) {

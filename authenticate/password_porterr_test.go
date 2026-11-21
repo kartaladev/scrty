@@ -27,7 +27,7 @@ import (
 
 // passwordPortErrSecret is the text every hostile error here returns, so a
 // test can assert no record and no returned error quotes it.
-const passwordPortErrSecret = "user-store-secret-text"
+const passwordPortErrSecret = "user-store-secret-text" //nolint:gosec // G101: a fixture, not a credential
 
 // msgPortErrAborted is the record the boundary sanitizer writes for a port
 // error whose chain it could not walk.
@@ -152,7 +152,7 @@ type loaderOutcome struct {
 // authenticateThroughLoader runs one Authenticate on ctx against a provider
 // whose loader fails with loadErr. It fails the test when the call hangs or
 // lets a panic escape.
-func authenticateThroughLoader(t *testing.T, ctx context.Context, loadErr error) loaderOutcome {
+func authenticateThroughLoader(ctx context.Context, t *testing.T, loadErr error) loaderOutcome {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -177,7 +177,7 @@ func authenticateThroughLoader(t *testing.T, ctx context.Context, loadErr error)
 	}).AnyTimes()
 
 	buf := &syncBuffer{}
-	auth, err := authenticate.NewUsernamePasswordAuthenticator(users,
+	auth, err := authenticate.NewUsernamePasswordAuthenticator(users, //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		authenticate.WithPasswordEncoder(enc),
 		authenticate.WithPasswordLogger(slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))))
 	require.NoError(t, err)
@@ -416,10 +416,10 @@ func TestPortErrors_PasswordUserLoader(t *testing.T) { //nolint:paralleltest // 
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := authenticateThroughLoader(t, ctx, errLoaderDown)
+			plain := authenticateThroughLoader(ctx, t, errLoaderDown)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := authenticateThroughLoader(t, ctx, tc.err)
+			got := authenticateThroughLoader(ctx, t, tc.err)
 			tc.assert(t, plain, got)
 
 			for _, rec := range jsonRecords(t, defaults.Bytes()) {

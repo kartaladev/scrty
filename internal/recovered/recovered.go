@@ -84,7 +84,7 @@ func Call(ctx context.Context, log *slog.Logger, what string, f func() error) (e
 
 // report writes the one record. Call's deferred function calls it while the
 // panicking stack still exists, so diag.PanicAttrs sees the frames.
-func report(ctx context.Context, log *slog.Logger, what string, value any) {
+func report(ctx context.Context, log *slog.Logger, what string, value any) { //nolint:contextcheck // the caller's ctx is used; only a nil one is replaced, as the record still needs a context
 	// A consumer's slog handler can panic too; the guarantee is that Call
 	// never re-panics, and there is nowhere left to report this one.
 	defer func() { _ = recover() }()

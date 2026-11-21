@@ -203,7 +203,7 @@ func crBounded(t *testing.T, call func() crOutcome) crOutcome {
 
 // runCRSite runs the flow that reaches the site's call, on ctx, against a port
 // that fails that call with portErr.
-func runCRSite(t *testing.T, ctx context.Context, site crSite, portErr error) crOutcome {
+func runCRSite(ctx context.Context, t *testing.T, site crSite, portErr error) crOutcome {
 	t.Helper()
 
 	own := &syncBuffer{}
@@ -234,10 +234,10 @@ func runCRSite(t *testing.T, ctx context.Context, site crSite, portErr error) cr
 		healthy, err := recovery.NewCodes(recovery.WithCodesStore(base))
 		require.NoError(t, err)
 
-		codes, err := healthy.Generate(t.Context(), anaID)
+		codes, err := healthy.Generate(t.Context(), anaID) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		require.NoError(t, err)
 
-		hash, err := healthy.Check(t.Context(), anaID, codes[0])
+		hash, err := healthy.Check(t.Context(), anaID, codes[0]) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		require.NoError(t, err)
 
 		c, err := recovery.NewCodes(recovery.WithCodesStore(crStore{MemoryCodeStore: base, site: site, err: portErr}),
@@ -264,11 +264,11 @@ func runCRSite(t *testing.T, ctx context.Context, site crSite, portErr error) cr
 			return o
 		})
 
-		out.kept, err = base.Remaining(t.Context(), anaID)
+		out.kept, err = base.Remaining(t.Context(), anaID) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		require.NoError(t, err)
 	default:
 		onDefault = true
-		out = runCRReset(t, ctx, ctrl, site, portErr)
+		out = runCRReset(ctx, t, ctrl, site, portErr)
 	}
 
 	out.crSplit(t, onDefault, own.String(), def.String())
@@ -278,7 +278,7 @@ func runCRSite(t *testing.T, ctx context.Context, site crSite, portErr error) cr
 
 // runCRReset runs the planner's listing, policy or removal against a kind or
 // policy that fails with portErr. The planner has no logger.
-func runCRReset(t *testing.T, ctx context.Context, ctrl *gomock.Controller, site crSite, portErr error) crOutcome {
+func runCRReset(ctx context.Context, t *testing.T, ctrl *gomock.Controller, site crSite, portErr error) crOutcome {
 	t.Helper()
 
 	first := namedKind(ctrl, recovery.MFAKind)
@@ -494,11 +494,11 @@ func TestPortErrors_CodesReset(t *testing.T) { //nolint:paralleltest // it repla
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := runCRSite(t, ctx, tc.site, errCRPortDown)
+			plain := runCRSite(ctx, t, tc.site, errCRPortDown)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 			require.Zero(t, plain.elsewhere, "a plain outage writes no abort record")
 
-			got := runCRSite(t, ctx, tc.site, tc.err)
+			got := runCRSite(ctx, t, tc.site, tc.err)
 			tc.assert(t, plain, got)
 
 			if only != "" && !t.Failed() {

@@ -124,7 +124,7 @@ func TestEndedByCaller_CauseIsConsumerInput(t *testing.T) { //nolint:paralleltes
 			}
 
 			if childRow != "" && !t.Failed() {
-				fmt.Fprintln(os.Stdout, endedByCallerRan+tc.name)
+				_, _ = fmt.Fprintln(os.Stdout, endedByCallerRan+tc.name)
 			}
 		})
 	}

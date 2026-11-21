@@ -41,12 +41,12 @@ const pe7bRowEnv = "SCRTY_OIDCPROVIDER_PE7B_PORTERR_ROW"
 // after the row ran and passed.
 const pe7bRanMarker = "SCRTY_OIDCPROVIDER_PE7B_PORTERR_RAN: "
 
-// pe7bErrDown is the plain outage the parity runs fail with.
-var pe7bErrDown = errors.New("pe7b: connection refused, " + pe7bSecret)
+// errPe7bDown is the plain outage the parity runs fail with.
+var errPe7bDown = errors.New("pe7b: connection refused, " + pe7bSecret)
 
-// pe7bErrCheckDown is the plain outage the code's check meets first, so that
+// errPe7bCheckDown is the plain outage the code's check meets first, so that
 // the exchange asks the code-token store again, directly.
-var pe7bErrCheckDown = errors.New("pe7b: the check's read failed")
+var errPe7bCheckDown = errors.New("pe7b: the check's read failed")
 
 // pe7bCycleOne contains itself through Unwrap() error.
 type pe7bCycleOne struct{}
@@ -153,7 +153,7 @@ type pe7bOutcome struct {
 // pe7bRun issues an opaque-app code, then exchanges it on ctx while site's
 // port call fails with portErr. It fails the test when the call hangs or lets a
 // panic escape.
-func pe7bRun(t *testing.T, ctx context.Context, site pe7bSite, portErr error) pe7bOutcome {
+func pe7bRun(ctx context.Context, t *testing.T, site pe7bSite, portErr error) pe7bOutcome {
 	t.Helper()
 
 	logs := &lockedBuffer{}
@@ -235,7 +235,7 @@ func pe7bRun(t *testing.T, ctx context.Context, site pe7bSite, portErr error) pe
 				// follows it is the site.
 				switch finds.Add(1) {
 				case 1:
-					return nil, pe7bErrCheckDown
+					return nil, errPe7bCheckDown
 				case 2:
 					return nil, portErr
 				}
@@ -262,7 +262,7 @@ func pe7bRun(t *testing.T, ctx context.Context, site pe7bSite, portErr error) pe
 		oidcprovider.WithLogger(logger),
 	)
 
-	c := issueCodeFor(t, f, opaqueClient, func(v url.Values) {
+	c := issueCodeFor(t, f, opaqueClient, func(v url.Values) { //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		asClient(v, opaqueClient, opaqueRedirect)
 		v.Set("scope", "openid")
 	}, testSignIn(f, "u-1"), "openid")
@@ -318,13 +318,13 @@ func pe7bRun(t *testing.T, ctx context.Context, site pe7bSite, portErr error) pe
 	}
 
 	tokenID := tokenIDOf(t, c.code)
-	stored, err := memTokens.FindByID(t.Context(), tokenID)
+	stored, err := memTokens.FindByID(t.Context(), tokenID) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	require.NoError(t, err)
 	out.spent = !stored.ConsumedAt.IsZero()
 
-	record, err := memCodes.Load(t.Context(), tokenID)
+	record, err := memCodes.Load(t.Context(), tokenID) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	require.NoError(t, err)
-	_, err = memGrants.Load(t.Context(), record.GrantFamily)
+	_, err = memGrants.Load(t.Context(), record.GrantFamily) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	if !errors.Is(err, oidcprovider.ErrNotFound) {
 		require.NoError(t, err)
 		out.grantStored = true
@@ -554,7 +554,7 @@ func TestPortErrors_CodeExchange(t *testing.T) { //nolint:paralleltest // it rep
 			},
 			testCase{
 				name: prefix + "a plain outage, against itself",
-				site: site, err: pe7bErrDown, assert: walked,
+				site: site, err: errPe7bDown, assert: walked,
 			},
 		)
 	}
@@ -581,10 +581,10 @@ func TestPortErrors_CodeExchange(t *testing.T) { //nolint:paralleltest // it rep
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := pe7bRun(t, ctx, tc.site, pe7bErrDown)
+			plain := pe7bRun(ctx, t, tc.site, errPe7bDown)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := pe7bRun(t, ctx, tc.site, tc.err)
+			got := pe7bRun(ctx, t, tc.site, tc.err)
 			tc.assert(t, plain, got)
 
 			for _, rec := range pe7bJSONRecords(t, defaults.String()) {

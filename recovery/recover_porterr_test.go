@@ -134,10 +134,10 @@ type recOutcome struct {
 // runRecSite runs Recover on ctx against a port that fails the site's call
 // with portErr. It fails the test when Recover, or the classification of its
 // error, hangs or lets a panic escape.
-func runRecSite(t *testing.T, ctx context.Context, site recSite, portErr error) recOutcome {
+func runRecSite(ctx context.Context, t *testing.T, site recSite, portErr error) recOutcome {
 	t.Helper()
 
-	e := newCompleteEnv(t)
+	e := newCompleteEnv(t) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	logs := &syncBuffer{}
 	logger := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	own := &recoveryEvents{}
@@ -232,8 +232,8 @@ func runRecSite(t *testing.T, ctx context.Context, site recSite, portErr error) 
 
 	out.failures = e.failures.Load()
 	out.notices = len(e.out.messages())
-	out.issuedUsable = e.issuedUsable(t.Context(), t, r, anaID, e.issued)
-	out.savedUsable = e.savedUsable(t.Context(), t, e.saved[0])
+	out.issuedUsable = e.issuedUsable(t.Context(), t, r, anaID, e.issued) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
+	out.savedUsable = e.savedUsable(t.Context(), t, e.saved[0])           //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	out.raw = logs.String()
 
 	for _, rec := range limJSONRecords(t, out.raw) {
@@ -486,10 +486,10 @@ func TestPortErrors_Recover(t *testing.T) { //nolint:paralleltest // it replaces
 				plainErr = recPlain(tc.site)
 			}
 
-			plain := runRecSite(t, ctx, tc.site, plainErr)
+			plain := runRecSite(ctx, t, tc.site, plainErr)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := runRecSite(t, ctx, tc.site, tc.err)
+			got := runRecSite(ctx, t, tc.site, tc.err)
 			tc.assert(t, plain, got)
 
 			for _, rec := range limJSONRecords(t, defaults.String()) {

@@ -188,7 +188,7 @@ func TestKeys_LoopSurvivesConsumerPlumbing(t *testing.T) { //nolint:paralleltest
 			row(t)
 
 			if !t.Failed() {
-				fmt.Fprintln(os.Stdout, survivalRan+name)
+				_, _ = fmt.Fprintln(os.Stdout, survivalRan+name)
 			}
 		})
 	}

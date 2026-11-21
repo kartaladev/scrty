@@ -27,10 +27,10 @@ import (
 )
 
 // spSecret is text no record may quote.
-const spSecret = "sp-secret: ana@example.com"
+const spSecret = "sp-secret: ana@example.com" //nolint:gosec // G101: a fixture no record may quote, not a credential
 
-// spErrDown is the plain outage the parity runs fail with.
-var spErrDown = errors.New("sp: connection refused, " + spSecret)
+// errSPDown is the plain outage the parity runs fail with.
+var errSPDown = errors.New("sp: connection refused, " + spSecret)
 
 // spPanicNilUnwrap is an error whose Unwrap panics with nil.
 type spPanicNilUnwrap struct{}
@@ -136,7 +136,7 @@ type spOutcome struct {
 
 // spRun calls method through depfault.Store on ctx, with a Watch, while the
 // consumer's store fails it with portErr and answers 3 (and true) beside it.
-func spRun(t *testing.T, ctx context.Context, method spMethod, portErr error) spOutcome {
+func spRun(ctx context.Context, t *testing.T, method spMethod, portErr error) spOutcome {
 	t.Helper()
 
 	defaults := &spBuffer{}
@@ -319,7 +319,7 @@ func TestPortErrors_Store(t *testing.T) { //nolint:paralleltest // it replaces s
 				name:   prefix + "a typed-nil root is the same value",
 				method: method, err: (*spTypedNil)(nil), assert: unchanged(method),
 			},
-			testCase{name: prefix + "a plain outage, against itself", method: method, err: spErrDown, assert: unchanged(method)},
+			testCase{name: prefix + "a plain outage, against itself", method: method, err: errSPDown, assert: unchanged(method)},
 		)
 	}
 
@@ -342,11 +342,11 @@ func TestPortErrors_Store(t *testing.T) { //nolint:paralleltest // it replaces s
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := spRun(t, ctx, tc.method, spErrDown)
+			plain := spRun(ctx, t, tc.method, errSPDown)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 			require.Empty(t, plain.defaults, "a plain outage writes no abort record")
 
-			tc.assert(t, plain, spRun(t, ctx, tc.method, tc.err))
+			tc.assert(t, plain, spRun(ctx, t, tc.method, tc.err))
 		})
 	}
 }

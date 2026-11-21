@@ -73,7 +73,7 @@ func TestLogRoute_Authorize(t *testing.T) { //nolint:paralleltest // it replaces
 					ctx = ctxlog.With(ctx, azJSON(onChain))
 				}
 
-				azBounded(t, ctx, fc.flow, &azCycleOne{})
+				azBounded(ctx, t, fc.flow, &azCycleOne{})
 
 				if chain {
 					assert.Contains(t, onChain.String(), porterr.MsgClassificationAborted, "the chain's logger takes the record")

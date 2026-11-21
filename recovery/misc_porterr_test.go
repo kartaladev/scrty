@@ -162,17 +162,17 @@ func miscBounded(t *testing.T, call func() miscOutcome) miscOutcome {
 
 // runMiscSite runs the flow that reaches the site's call, on ctx, against a
 // port that fails that call with portErr.
-func runMiscSite(t *testing.T, ctx context.Context, site miscSite, portErr error) miscOutcome {
+func runMiscSite(ctx context.Context, t *testing.T, site miscSite, portErr error) miscOutcome {
 	t.Helper()
 
 	logs := &syncBuffer{}
 	logger := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	if site == miscRandom {
-		return runMiscRandom(t, ctx, portErr, logs, logger)
+		return runMiscRandom(ctx, t, portErr, logs, logger)
 	}
 
-	e := newCompleteEnv(t)
+	e := newCompleteEnv(t) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	own := &recoveryEvents{}
 	extra := []recovery.Option{recovery.WithSecurityEvents(own.sink), recovery.WithLogger(logger)}
 	deps := e.completeDeps()
@@ -229,9 +229,9 @@ func runMiscSite(t *testing.T, ctx context.Context, site miscSite, portErr error
 
 			o := miscOutcome{}
 			o.miscClassify(err)
-			o.issuedUsable = e.issuedUsable(t.Context(), t, r, anaID, e.issued)
+			o.issuedUsable = e.issuedUsable(t.Context(), t, r, anaID, e.issued) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 
-			if e.savedUsable(t.Context(), t, e.saved[0]) {
+			if e.savedUsable(t.Context(), t, e.saved[0]) { //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 				o.kept = 1
 			}
 
@@ -264,7 +264,7 @@ func runMiscSite(t *testing.T, ctx context.Context, site miscSite, portErr error
 
 // runMiscRandom runs a saved-code set's generation against a random source
 // that fails with portErr, over a store that already holds a set.
-func runMiscRandom(t *testing.T, ctx context.Context, portErr error, logs *syncBuffer, logger *slog.Logger) miscOutcome {
+func runMiscRandom(ctx context.Context, t *testing.T, portErr error, logs *syncBuffer, logger *slog.Logger) miscOutcome {
 	t.Helper()
 
 	store := recovery.NewMemoryCodeStore()
@@ -272,7 +272,7 @@ func runMiscRandom(t *testing.T, ctx context.Context, portErr error, logs *syncB
 	first, err := recovery.NewCodes(recovery.WithCodesStore(store))
 	require.NoError(t, err)
 
-	_, err = first.Generate(t.Context(), anaID)
+	_, err = first.Generate(t.Context(), anaID) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	require.NoError(t, err)
 
 	failing, err := recovery.NewCodes(recovery.WithCodesStore(store), recovery.WithCodesLogger(logger),
@@ -288,7 +288,7 @@ func runMiscRandom(t *testing.T, ctx context.Context, portErr error, logs *syncB
 		return o
 	})
 
-	remaining, err := store.Remaining(t.Context(), anaID)
+	remaining, err := store.Remaining(t.Context(), anaID) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	require.NoError(t, err)
 
 	out.kept = remaining
@@ -472,10 +472,10 @@ func TestPortErrors_Misc(t *testing.T) { //nolint:paralleltest // it replaces sl
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := runMiscSite(t, ctx, tc.site, errMiscPortDown)
+			plain := runMiscSite(ctx, t, tc.site, errMiscPortDown)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := runMiscSite(t, ctx, tc.site, tc.err)
+			got := runMiscSite(ctx, t, tc.site, tc.err)
 			tc.assert(t, plain, got)
 
 			for _, rec := range limJSONRecords(t, defaults.String()) {

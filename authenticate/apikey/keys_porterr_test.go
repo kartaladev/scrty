@@ -172,7 +172,7 @@ type keyOutcome struct {
 // runKeySite runs the call site names on ctx against a manager whose Store
 // fails that call with storeErr. It fails the test when the call hangs or lets
 // a panic escape.
-func runKeySite(t *testing.T, ctx context.Context, site keySite, storeErr error) keyOutcome {
+func runKeySite(ctx context.Context, t *testing.T, site keySite, storeErr error) keyOutcome {
 	t.Helper()
 
 	clk := clockwork.NewFakeClockAt(time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC))
@@ -181,7 +181,7 @@ func runKeySite(t *testing.T, ctx context.Context, site keySite, storeErr error)
 	issuer, err := apikey.New(apikey.WithStore(inner), apikey.WithClock(clk))
 	require.NoError(t, err)
 
-	presented, rec, err := issuer.Issue(t.Context(), "svc-billing", "nightly export",
+	presented, rec, err := issuer.Issue(t.Context(), "svc-billing", "nightly export", //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		[]string{"invoices:read"}, 24*time.Hour)
 	require.NoError(t, err)
 
@@ -308,7 +308,7 @@ func runKeySite(t *testing.T, ctx context.Context, site keySite, storeErr error)
 	out := r.out
 	out.events = len(events.all())
 
-	held, err := inner.List(t.Context(), "svc-billing")
+	held, err := inner.List(t.Context(), "svc-billing") //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	require.NoError(t, err)
 
 	for _, k := range held {
@@ -571,15 +571,15 @@ func TestPortErrors_KeyStore(t *testing.T) { //nolint:paralleltest // it replace
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := runKeySite(t, ctx, tc.site, errKeyStoreDown)
+			plain := runKeySite(ctx, t, tc.site, errKeyStoreDown)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
 			var wrong keyOutcome
 			if tc.site == siteVerifyGet {
-				wrong = runKeySite(t, ctx, tc.site, apikey.ErrKeyNotFound)
+				wrong = runKeySite(ctx, t, tc.site, apikey.ErrKeyNotFound)
 			}
 
-			got := runKeySite(t, ctx, tc.site, tc.err)
+			got := runKeySite(ctx, t, tc.site, tc.err)
 			tc.assert(t, plain, wrong, got)
 
 			for _, rec := range keyJSONRecords(t, defaults.Bytes()) {

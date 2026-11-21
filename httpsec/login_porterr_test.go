@@ -209,7 +209,7 @@ func loginPortErrKinds() []loginPortErrKind {
 
 // formLoginThrough serves one form login on ctx whose ports answer as ports
 // says, counting what the attempt store and the source limiter were asked.
-func formLoginThrough(t *testing.T, ctx context.Context, ports loginPorts, logger *slog.Logger) loginPortOutcome {
+func formLoginThrough(ctx context.Context, t *testing.T, ports loginPorts, logger *slog.Logger) loginPortOutcome {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -290,7 +290,7 @@ var loginValidUntil = regexp.MustCompile(`"valid_until":"[^"]*"`)
 
 // passwordChangeThrough serves one successful password change on ctx, whose
 // form-login attempt store fails to clear with resetErr.
-func passwordChangeThrough(t *testing.T, ctx context.Context, resetErr error, logger *slog.Logger) loginPortOutcome {
+func passwordChangeThrough(ctx context.Context, t *testing.T, resetErr error, logger *slog.Logger) loginPortOutcome {
 	t.Helper()
 
 	var (
@@ -403,7 +403,7 @@ func loginPortSites() []loginPortSite {
 			t.Helper()
 
 			logs := &capturingHandler{}
-			out := formLoginThrough(t, ctx, ports(portErr), slog.New(logs))
+			out := formLoginThrough(ctx, t, ports(portErr), slog.New(logs))
 			out.logs = logs.records()
 
 			return out
@@ -444,7 +444,7 @@ func loginPortSites() []loginPortSite {
 				t.Helper()
 
 				logs := &capturingHandler{}
-				out := passwordChangeThrough(t, ctx, portErr, slog.New(logs))
+				out := passwordChangeThrough(ctx, t, portErr, slog.New(logs))
 				out.logs = logs.records()
 
 				return out
@@ -566,7 +566,7 @@ func TestPortErrors_LoginAndPasswordChange(t *testing.T) { //nolint:paralleltest
 					}
 
 					if childRow != "" && !t.Failed() {
-						fmt.Fprintln(os.Stdout, loginPortErrRan+row)
+						_, _ = fmt.Fprintln(os.Stdout, loginPortErrRan+row)
 					}
 				})
 			}

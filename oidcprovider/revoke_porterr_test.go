@@ -36,9 +36,9 @@ const pe7cRowEnv = "SCRTY_OIDCPROVIDER_PE7C_PORTERR_ROW"
 // after the row ran and passed.
 const pe7cRanMarker = "SCRTY_OIDCPROVIDER_PE7C_PORTERR_RAN: "
 
-// pe7cNoRecord is no error a port returns: a site's double given it answers
+// errPe7cNoRecord is no error a port returns: a site's double given it answers
 // a load with neither a record nor an error, a port breaking its contract.
-var pe7cNoRecord = errors.New("pe7c: answer no record and no error")
+var errPe7cNoRecord = errors.New("pe7c: answer no record and no error")
 
 // pe7cSite names the port call a row fails, and through it the flow it runs.
 type pe7cSite string
@@ -92,7 +92,7 @@ type pe7cOutcome struct {
 // site's flow on ctx while site's port call fails with portErr. Every site but
 // the first exchange's runs after a successful exchange. It fails the test
 // when the flow hangs or lets a panic escape.
-func pe7cRun(t *testing.T, ctx context.Context, site pe7cSite, portErr error) pe7cOutcome {
+func pe7cRun(ctx context.Context, t *testing.T, site pe7cSite, portErr error) pe7cOutcome {
 	t.Helper()
 
 	logs := &lockedBuffer{}
@@ -125,7 +125,7 @@ func pe7cRun(t *testing.T, ctx context.Context, site pe7cSite, portErr error) pe
 	grants.EXPECT().Load(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(ctx context.Context, family id.ID) (*oidcprovider.Grant, error) {
 			if failing(pe7cExchangeGrantLoad) || failing(pe7cRevokeGrantLoad) {
-				if portErr == pe7cNoRecord { //nolint:errorlint // identity: errors.Is would walk the hostile error
+				if portErr == errPe7cNoRecord { //nolint:errorlint // identity: errors.Is would walk the hostile error
 					return nil, nil
 				}
 
@@ -175,7 +175,7 @@ func pe7cRun(t *testing.T, ctx context.Context, site pe7cSite, portErr error) pe
 	codes.EXPECT().Load(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(ctx context.Context, tokenID id.ID) (*oidcprovider.CodeRecord, error) {
 			if failing(pe7cExchangeCodeLoad) || failing(pe7cReplayCodeLoad) {
-				if portErr == pe7cNoRecord { //nolint:errorlint // identity: errors.Is would walk the hostile error
+				if portErr == errPe7cNoRecord { //nolint:errorlint // identity: errors.Is would walk the hostile error
 					return nil, nil
 				}
 
@@ -202,7 +202,7 @@ func pe7cRun(t *testing.T, ctx context.Context, site pe7cSite, portErr error) pe
 		oidcprovider.WithLogger(logger),
 	)
 
-	c := issueCodeFor(t, f, opaqueClient, func(v url.Values) {
+	c := issueCodeFor(t, f, opaqueClient, func(v url.Values) { //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		asClient(v, opaqueClient, opaqueRedirect)
 		v.Set("scope", "openid offline_access")
 	}, testSignIn(f, "u-1"), "openid", "offline_access")
@@ -220,7 +220,7 @@ func pe7cRun(t *testing.T, ctx context.Context, site pe7cSite, portErr error) pe
 			return res != nil, err
 		}
 	default:
-		first, err = f.p.Token(t.Context(), exchange)
+		first, err = f.p.Token(t.Context(), exchange) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		require.NoError(t, err, "precondition: the first exchange succeeds")
 		require.NotEmpty(t, first.RefreshToken, "precondition: the grant holds a refresh token")
 		require.True(t, strings.HasPrefix(first.AccessToken, "at."), "precondition: the access token is opaque")
@@ -301,13 +301,13 @@ func pe7cRun(t *testing.T, ctx context.Context, site pe7cSite, portErr error) pe
 	armed.Store(false)
 
 	tokenID := tokenIDOf(t, c.code)
-	stored, err := memTokens.FindByID(t.Context(), tokenID)
+	stored, err := memTokens.FindByID(t.Context(), tokenID) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	require.NoError(t, err)
 	out.spent = !stored.ConsumedAt.IsZero()
 
-	record, err := memCodes.Load(t.Context(), tokenID)
+	record, err := memCodes.Load(t.Context(), tokenID) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	require.NoError(t, err)
-	grant, err := memGrants.Load(t.Context(), record.GrantFamily)
+	grant, err := memGrants.Load(t.Context(), record.GrantFamily) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	if !errors.Is(err, oidcprovider.ErrNotFound) {
 		require.NoError(t, err)
 		out.grantStored = true
@@ -315,13 +315,13 @@ func pe7cRun(t *testing.T, ctx context.Context, site pe7cSite, portErr error) pe
 	}
 
 	if tokenID := accessID.Load(); tokenID != nil {
-		held, err := memAccess.Load(t.Context(), *tokenID)
+		held, err := memAccess.Load(t.Context(), *tokenID) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		require.NoError(t, err)
 		out.accessRevoked = held.Revoked
 	}
 
 	if first != nil {
-		answer, err := f.p.Introspect(t.Context(), oidcprovider.ClientCredentials{Authorization: basic(opaqueClient, exchangeSecret)},
+		answer, err := f.p.Introspect(t.Context(), oidcprovider.ClientCredentials{Authorization: basic(opaqueClient, exchangeSecret)}, //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 			url.Values{"token": {first.RefreshToken}})
 		require.NoError(t, err)
 		out.refreshActive, _ = answer["active"].(bool)
@@ -491,7 +491,7 @@ func TestPortErrors_ReplayAndRevocation(t *testing.T) { //nolint:paralleltest //
 			},
 			testCase{
 				name: prefix + "a plain outage, against itself",
-				site: site, err: pe7bErrDown, assert: walked,
+				site: site, err: errPe7bDown, assert: walked,
 			},
 		)
 	}
@@ -515,10 +515,10 @@ func TestPortErrors_ReplayAndRevocation(t *testing.T) { //nolint:paralleltest //
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := pe7cRun(t, ctx, tc.site, pe7bErrDown)
+			plain := pe7cRun(ctx, t, tc.site, errPe7bDown)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := pe7cRun(t, ctx, tc.site, tc.err)
+			got := pe7cRun(ctx, t, tc.site, tc.err)
 			tc.assert(t, plain, got)
 
 			pe7cNoDefaultAbort(t, defaults)
@@ -561,8 +561,8 @@ func TestPortErrors_StoreAnswersNothing(t *testing.T) { //nolint:paralleltest //
 		t.Run(tc.name, func(t *testing.T) {
 			defaults := pe7cSwapDefault(t)
 
-			plain := pe7cRun(t, t.Context(), tc.site, pe7bErrDown)
-			got := pe7cRun(t, t.Context(), tc.site, pe7cNoRecord)
+			plain := pe7cRun(t.Context(), t, tc.site, errPe7bDown)
+			got := pe7cRun(t.Context(), t, tc.site, errPe7cNoRecord)
 			tc.assert(t, plain, got)
 
 			pe7cNoDefaultAbort(t, defaults)

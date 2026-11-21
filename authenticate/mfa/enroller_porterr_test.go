@@ -95,7 +95,7 @@ const penrRedeemCode = "123456"
 // write claims success, so the error alone must decide. The outcome's provisioned field reports whether
 // ProveDevice handed back an emailed code. It is bounded: a hang is reported,
 // not waited for.
-func runPenrSite(t *testing.T, ctx context.Context, site penrSite, portErr error) ptotpOutcome {
+func runPenrSite(ctx context.Context, t *testing.T, site penrSite, portErr error) ptotpOutcome {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -247,7 +247,7 @@ func TestPortErrors_Enroller(t *testing.T) { //nolint:paralleltest // it replace
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := runPenrSite(t, ctx, tc.site, errPtotpDown)
+			plain := runPenrSite(ctx, t, tc.site, errPtotpDown)
 			require.False(t, plain.hung)
 			require.False(t, plain.panicked)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
@@ -257,7 +257,7 @@ func TestPortErrors_Enroller(t *testing.T) { //nolint:paralleltest // it replace
 			require.False(t, plain.provisioned)
 			require.Empty(t, plain.msgs, "a plain outage records no change")
 
-			got := runPenrSite(t, ctx, tc.site, tc.err)
+			got := runPenrSite(ctx, t, tc.site, tc.err)
 			require.False(t, got.hung, "the enrolment path hung on a hostile error")
 			require.False(t, got.panicked, "the enrolment path panicked on a hostile error")
 			require.Error(t, got.err, "refused as the plain outage is")

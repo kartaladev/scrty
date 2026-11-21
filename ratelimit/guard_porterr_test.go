@@ -357,7 +357,7 @@ func guardPortErrKinds() []guardPortErrKind {
 // guardRunWithin runs site on its own goroutine and fails the test when it
 // does not return within guardWithin or lets a panic escape. A stack overflow
 // still kills the process: only a child process can watch for one.
-func guardRunWithin(t *testing.T, site guardPortSite, ctx context.Context, portErr error) guardPortOutcome {
+func guardRunWithin(ctx context.Context, t *testing.T, site guardPortSite, portErr error) guardPortOutcome {
 	t.Helper()
 
 	type result struct {
@@ -470,12 +470,12 @@ func TestPortErrors_SourceGuard(t *testing.T) { //nolint:paralleltest // it repl
 						ctx = c.ctx(ctx)
 					}
 
-					plain := guardRunWithin(t, site, ctx, plainOutage)
+					plain := guardRunWithin(ctx, t, site, plainOutage)
 					require.Empty(t, plain.aborts, "the plain outage writes no abort record")
 					require.NotEmpty(t, plain.records, "the plain outage is reported")
 					require.Zero(t, plain.fullReason, "the plain outage is not a full limiter")
 
-					got := guardRunWithin(t, site, ctx, kind.err)
+					got := guardRunWithin(ctx, t, site, kind.err)
 
 					assert.Equal(t, plain.refused, got.refused, "refused")
 					assert.Equal(t, plain.throttled, got.throttled, "matches ErrThrottled")
@@ -495,7 +495,7 @@ func TestPortErrors_SourceGuard(t *testing.T) { //nolint:paralleltest // it repl
 					assert.Empty(t, guardAborts(defaults.all()), "none on slog.Default()")
 
 					if childRow != "" && !t.Failed() {
-						fmt.Fprintln(os.Stdout, guardPortErrRan+row)
+						_, _ = fmt.Fprintln(os.Stdout, guardPortErrRan+row)
 					}
 				})
 			}
@@ -531,7 +531,7 @@ func TestPortErrors_SourceGuardAbortRecordIsNotSampled(t *testing.T) { //nolint:
 		},
 	}
 
-	got := guardRunWithin(t, site, t.Context(), &guardCycleOne{})
+	got := guardRunWithin(t.Context(), t, site, &guardCycleOne{})
 
 	assert.Len(t, got.records, 1, "the not-counted record is sampled")
 	require.Len(t, got.aborts, 2, "one abort record per hostile error, unsampled")

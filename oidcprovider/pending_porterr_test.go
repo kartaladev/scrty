@@ -80,7 +80,7 @@ type pe7jOutcome struct {
 // pe7jRun calls site's flow on ctx while site's port call fails with portErr.
 // It fails the test when the call hangs, lets a panic escape, or never reaches
 // site.
-func pe7jRun(t *testing.T, ctx context.Context, site pe7eSite, portErr error) pe7jOutcome {
+func pe7jRun(ctx context.Context, t *testing.T, site pe7eSite, portErr error) pe7jOutcome {
 	t.Helper()
 
 	logs := &lockedBuffer{}
@@ -121,7 +121,7 @@ func pe7jRun(t *testing.T, ctx context.Context, site pe7eSite, portErr error) pe
 	require.NoError(t, err)
 	digest := digestOf(t, pe7eSessionSecret)
 
-	require.NoError(t, memSessions.Put(t.Context(), &oidcprovider.BrowserSession{
+	require.NoError(t, memSessions.Put(t.Context(), &oidcprovider.BrowserSession{ //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		Digest: digest,
 		SignIn: oidcprovider.SignIn{
 			User: user, Family: family, AuthenticatedAt: now.Add(-time.Minute), AMR: []string{"pwd"},
@@ -130,8 +130,8 @@ func pe7jRun(t *testing.T, ctx context.Context, site pe7eSite, portErr error) pe
 		IdleExpiresAt:     now.Add(time.Minute),
 		AbsoluteExpiresAt: now.Add(time.Hour),
 	}))
-	require.NoError(t, memConsents.Give(t.Context(), user, "billing-web", []string{"openid", "profile"}, false, now))
-	require.NoError(t, memGrants.Create(t.Context(), &oidcprovider.Grant{
+	require.NoError(t, memConsents.Give(t.Context(), user, "billing-web", []string{"openid", "profile"}, false, now)) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
+	require.NoError(t, memGrants.Create(t.Context(), &oidcprovider.Grant{                                             //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		Family: grantFamily, User: user, ClientID: "billing-web", Scopes: []string{"openid"},
 		SignInFamily: family, AuthTime: now, CreatedAt: now, ExpiresAt: now.Add(time.Hour),
 	}))
@@ -223,7 +223,7 @@ func pe7jRun(t *testing.T, ctx context.Context, site pe7eSite, portErr error) pe
 
 	switch site {
 	case pe7jPendingLoad:
-		res, err := p.Authorize(t.Context(), oidcprovider.AuthorizeInput{Params: authzParams()})
+		res, err := p.Authorize(t.Context(), oidcprovider.AuthorizeInput{Params: authzParams()}) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		require.NoError(t, err)
 
 		loc, err := url.Parse(res.Location)
@@ -231,7 +231,7 @@ func pe7jRun(t *testing.T, ctx context.Context, site pe7eSite, portErr error) pe
 
 		handle, flow = loc.Query().Get(oidcprovider.HandleParam), res.FlowSecret
 	case pe7jSessionLoad:
-		res, err := p.EndSession(t.Context(), oidcprovider.EndSessionInput{Params: url.Values{}})
+		res, err := p.EndSession(t.Context(), oidcprovider.EndSessionInput{Params: url.Values{}}) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		require.NoError(t, err)
 
 		loc, err := url.Parse(res.Location)
@@ -296,15 +296,15 @@ func pe7jRun(t *testing.T, ctx context.Context, site pe7eSite, portErr error) pe
 	armed.Store(false)
 	require.Positive(t, hits.Load(), "the call reached %s", site)
 
-	held, err := p.CodesForTest().UnspentByClient(t.Context(), user, "billing-web")
+	held, err := p.CodesForTest().UnspentByClient(t.Context(), user, "billing-web") //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	require.NoError(t, err)
 	out.codes = len(held)
 
-	g, err := memGrants.Load(t.Context(), grantFamily)
+	g, err := memGrants.Load(t.Context(), grantFamily) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	require.NoError(t, err)
 	out.grantEnded = !g.SignInEndedAt.IsZero()
 
-	_, err = memSessions.Load(t.Context(), digest, now)
+	_, err = memSessions.Load(t.Context(), digest, now) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	out.sessionHeld = err == nil
 
 	out.aborts, _ = pe7eAbortsAndLogs(t, logs.String(), "")
@@ -397,7 +397,7 @@ func TestPortErrors_ParkLoadAndCode(t *testing.T) { //nolint:paralleltest // it 
 				name: prefix + "a typed-nil root walks to the end and is answered as an outage",
 				site: site, err: (*pe7bTypedNil)(nil), assert: walked,
 			},
-			testCase{name: prefix + "a plain outage, against itself", site: site, err: pe7bErrDown, assert: walked},
+			testCase{name: prefix + "a plain outage, against itself", site: site, err: errPe7bDown, assert: walked},
 		)
 	}
 
@@ -448,14 +448,14 @@ func TestPortErrors_ParkLoadAndCode(t *testing.T) { //nolint:paralleltest // it 
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := pe7jRun(t, ctx, tc.site, pe7bErrDown)
+			plain := pe7jRun(ctx, t, tc.site, errPe7bDown)
 			// An authorization request answers a dependency failure at the redirect URI,
 			// the other calls return it.
 			require.True(t, plain.failed && plain.dependency || plain.errorCode == "server_error",
 				"precondition: a plain outage is a dependency failure, or a server_error at the redirect URI")
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := pe7jRun(t, ctx, tc.site, tc.err)
+			got := pe7jRun(ctx, t, tc.site, tc.err)
 			tc.assert(t, plain, got)
 
 			pe7cNoDefaultAbort(t, defaults)
@@ -538,7 +538,7 @@ func (g *pe7mIDs) NewID() (id.ID, error) {
 // jti fails with portErr, then exchanges it again with every port working. It
 // fails the test when the call hangs, lets a panic escape, or never reaches
 // the site.
-func pe7mRun(t *testing.T, ctx context.Context, portErr error) pe7fOutcome {
+func pe7mRun(ctx context.Context, t *testing.T, portErr error) pe7fOutcome {
 	t.Helper()
 
 	logs := &lockedBuffer{}
@@ -554,7 +554,7 @@ func pe7mRun(t *testing.T, ctx context.Context, portErr error) pe7fOutcome {
 		oidcprovider.WithLogger(logger),
 	)
 
-	c := issueCodeFor(t, f, opaqueClient, func(v url.Values) {
+	c := issueCodeFor(t, f, opaqueClient, func(v url.Values) { //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		asClient(v, opaqueClient, opaqueRedirect)
 		v.Set("scope", "openid")
 	}, testSignIn(f, "u-1"), "openid")
@@ -573,7 +573,7 @@ func pe7mRun(t *testing.T, ctx context.Context, portErr error) pe7fOutcome {
 	armed.Store(false)
 	require.GreaterOrEqual(t, calls.Load(), int32(2), "the exchange reached the ID token's identifier")
 
-	res, err := f.p.Token(t.Context(), exchange)
+	res, err := f.p.Token(t.Context(), exchange) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	out.afterOK = res != nil
 	out.afterCode = pe7dClassify(err).code
 
@@ -656,7 +656,7 @@ func TestPortErrors_IDTokenJTI(t *testing.T) { //nolint:paralleltest // it repla
 			name: prefix + "a typed-nil root walks to the end and is answered as an outage",
 			err:  (*pe7bTypedNil)(nil), assert: walked,
 		},
-		testCase{name: prefix + "a plain outage, against itself", err: pe7bErrDown, assert: walked},
+		testCase{name: prefix + "a plain outage, against itself", err: errPe7bDown, assert: walked},
 	)
 
 	for _, tc := range cases {
@@ -678,14 +678,14 @@ func TestPortErrors_IDTokenJTI(t *testing.T) { //nolint:paralleltest // it repla
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := pe7mRun(t, ctx, pe7bErrDown)
+			plain := pe7mRun(ctx, t, errPe7bDown)
 			require.True(t, plain.dependency, "precondition: a plain outage is a dependency failure")
 			require.Empty(t, plain.code, "precondition: a plain outage is no protocol refusal")
 			require.False(t, plain.answered, "precondition: a plain outage answers nothing")
 			require.Contains(t, plain.text, "sign the ID token", "precondition: the ID token's jti failed")
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := pe7mRun(t, ctx, tc.err)
+			got := pe7mRun(ctx, t, tc.err)
 			tc.assert(t, plain, got)
 
 			pe7cNoDefaultAbort(t, defaults)

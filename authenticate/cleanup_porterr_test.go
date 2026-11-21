@@ -48,7 +48,7 @@ type cleanupOutcome struct {
 // authenticateThroughCleanup runs one Authenticate on ctx over a credential
 // whose Cleanup fails with cleanupErr. It walks the returned error the way a
 // caller's errors.Is does, and fails the test when any of it hangs or panics.
-func authenticateThroughCleanup(t *testing.T, ctx context.Context, cleanupErr error) cleanupOutcome {
+func authenticateThroughCleanup(ctx context.Context, t *testing.T, cleanupErr error) cleanupOutcome {
 	t.Helper()
 
 	defaults := defaultRecords(t)
@@ -205,10 +205,10 @@ func TestPortErrors_JWTCredentialsCleanup(t *testing.T) { //nolint:paralleltest 
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := authenticateThroughCleanup(t, ctx, errCleanupDown)
+			plain := authenticateThroughCleanup(ctx, t, errCleanupDown)
 			require.Zero(t, plain.aborts, "a plain failure writes no abort record")
 
-			got := authenticateThroughCleanup(t, ctx, tc.err)
+			got := authenticateThroughCleanup(ctx, t, tc.err)
 			tc.assert(t, plain, got)
 
 			if tc.passes {

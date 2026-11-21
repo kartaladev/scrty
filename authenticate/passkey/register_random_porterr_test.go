@@ -294,7 +294,7 @@ func TestPortErrors_RegisterRandom(t *testing.T) { //nolint:paralleltest // it r
 				name: prefix + "a typed-nil root walks to the end and is answered as an error",
 				site: site, err: (*pregTypedNil)(nil), assert: walked,
 			},
-			testCase{name: prefix + "a plain error, against itself", site: site, err: pregOutage, assert: walked},
+			testCase{name: prefix + "a plain error, against itself", site: site, err: errPregOutage, assert: walked},
 		)
 	}
 
@@ -310,7 +310,7 @@ func TestPortErrors_RegisterRandom(t *testing.T) { //nolint:paralleltest // it r
 				return
 			}
 
-			plain := prandRun(t, tc.site, pregOutage)
+			plain := prandRun(t, tc.site, errPregOutage)
 			require.Empty(t, plain.aborts, "a plain error writes no abort record")
 			require.Empty(t, plain.defaults, "a plain error writes no abort record")
 

@@ -49,7 +49,7 @@ func TestLogRoute_Passkeys(t *testing.T) {
 	run := func(t *testing.T, ctx context.Context, opts ...passkey.Option) {
 		t.Helper()
 
-		e := newLoginEnv(t, nil)
+		e := newLoginEnv(t, nil) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		e.challenges.err = errors.New("dial tcp: connection refused")
 		e.f.deps.Challenges = findFailsChallenges{e.challenges}
 		e.m = e.f.manager(t, opts...)

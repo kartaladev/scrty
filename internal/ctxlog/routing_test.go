@@ -290,9 +290,9 @@ type ctxInjector struct {
 	ctx context.Context //nolint:containedctx // the context under test
 }
 
-func (c ctxInjector) Enabled(_ context.Context, l slog.Level) bool { return c.h.Enabled(c.ctx, l) }
+func (c ctxInjector) Enabled(_ context.Context, l slog.Level) bool { return c.h.Enabled(c.ctx, l) } //nolint:contextcheck // the injected context is the one under test; the one passed in is ignored on purpose
 
-func (c ctxInjector) Handle(_ context.Context, r slog.Record) error { return c.h.Handle(c.ctx, r) }
+func (c ctxInjector) Handle(_ context.Context, r slog.Record) error { return c.h.Handle(c.ctx, r) } //nolint:contextcheck // the injected context is the one under test; the one passed in is ignored on purpose
 
 func (c ctxInjector) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return ctxInjector{c.h.WithAttrs(attrs), c.ctx}

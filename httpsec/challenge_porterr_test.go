@@ -374,7 +374,7 @@ func runStepUpPortErrors(t *testing.T, envName, marker string, sites []stepUpPor
 					assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
 
 					if childRow != "" && !t.Failed() {
-						fmt.Fprintln(os.Stdout, marker+row)
+						_, _ = fmt.Fprintln(os.Stdout, marker+row)
 					}
 				})
 			}

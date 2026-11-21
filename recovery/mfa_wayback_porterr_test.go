@@ -154,7 +154,7 @@ func wbCheck(t *testing.T, deps recovery.WayBackDeps) *recovery.WayBackCheck {
 
 // runWBSite runs the flow that reaches the site's call, on ctx, against a port
 // that fails that call with portErr.
-func runWBSite(t *testing.T, ctx context.Context, site wbSite, portErr error) wbOutcome {
+func runWBSite(ctx context.Context, t *testing.T, site wbSite, portErr error) wbOutcome {
 	t.Helper()
 
 	def := limDefaultRecords(t)
@@ -410,11 +410,11 @@ func TestPortErrors_MFAWayBack(t *testing.T) { //nolint:paralleltest // it repla
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := runWBSite(t, ctx, tc.site, errWBPortDown)
+			plain := runWBSite(ctx, t, tc.site, errWBPortDown)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 			require.True(t, plain.failed, "precondition: a plain outage fails the call")
 
-			got := runWBSite(t, ctx, tc.site, tc.err)
+			got := runWBSite(ctx, t, tc.site, tc.err)
 			tc.assert(t, plain, got)
 
 			if only != "" && !t.Failed() {

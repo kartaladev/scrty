@@ -153,7 +153,7 @@ func walksToEnd(err error) (ok bool) {
 		e := pending[len(pending)-1]
 		pending = pending[:len(pending)-1]
 
-		switch u := e.(type) {
+		switch u := e.(type) { //nolint:errorlint // walks Unwrap() error and Unwrap() []error by hand to visit every branch of the chain
 		case interface{ Unwrap() error }:
 			if next := u.Unwrap(); next != nil {
 				pending = append(pending, next)
@@ -536,7 +536,7 @@ func TestPortErrors_EnrolmentPorts(t *testing.T) { //nolint:paralleltest // it r
 					assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
 
 					if childRow != "" && !t.Failed() {
-						fmt.Fprintln(os.Stdout, enrolPortsRan+row)
+						_, _ = fmt.Fprintln(os.Stdout, enrolPortsRan+row)
 					}
 				})
 			}

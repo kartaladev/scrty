@@ -39,7 +39,7 @@ import (
 )
 
 // ptotpSecret is the text every hostile error here returns.
-const ptotpSecret = "totp-store-secret-text"
+const ptotpSecret = "totp-store-secret-text" //nolint:gosec // G101: a fixture, not a credential
 
 // ptotpRowEnv names the row a child process runs. It is empty in the parent.
 const ptotpRowEnv = "SCRTY_MFA_TOTP_PORTERR_ROW"
@@ -124,7 +124,7 @@ var (
 // if the flow makes it: a charge that failed never reaches AcceptStep, and a
 // step that was not accepted is never refunded. It is bounded: a hang is
 // reported, not waited for.
-func runPtotpSite(t *testing.T, ctx context.Context, site ptotpSite, portErr error) ptotpOutcome {
+func runPtotpSite(ctx context.Context, t *testing.T, site ptotpSite, portErr error) ptotpOutcome {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -323,7 +323,7 @@ func TestPortErrors_TOTPStore(t *testing.T) { //nolint:paralleltest // it replac
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := runPtotpSite(t, ctx, tc.site, errPtotpDown)
+			plain := runPtotpSite(ctx, t, tc.site, errPtotpDown)
 			require.False(t, plain.hung)
 			require.False(t, plain.panicked)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
@@ -336,7 +336,7 @@ func TestPortErrors_TOTPStore(t *testing.T) { //nolint:paralleltest // it replac
 				require.False(t, plain.enrolled)
 			}
 
-			got := runPtotpSite(t, ctx, tc.site, tc.err)
+			got := runPtotpSite(ctx, t, tc.site, tc.err)
 			require.False(t, got.hung, "the TOTP method hung on a hostile error")
 			require.False(t, got.panicked, "the TOTP method panicked on a hostile error")
 
@@ -415,7 +415,7 @@ func ptotpIsFault(err error) (found bool) {
 		e := queue[0]
 		queue = queue[1:]
 
-		switch u := e.(type) {
+		switch u := e.(type) { //nolint:errorlint // a hand-rolled chain walk: it must read Unwrap itself, and recovers a hostile one
 		case nil:
 		case *porterr.Fault:
 			return true
@@ -482,7 +482,7 @@ var ptotpEnrolSites = []ptotpEnrolSite{ptotpRandom, ptotpNewID, ptotpPutPending,
 // nothing. Each failing port that returns a result claims success beside its
 // error, so the error alone must decide. It is bounded: a hang is reported,
 // not waited for.
-func runPtotpEnrolSite(t *testing.T, ctx context.Context, site ptotpEnrolSite, portErr error) ptotpOutcome {
+func runPtotpEnrolSite(ctx context.Context, t *testing.T, site ptotpEnrolSite, portErr error) ptotpOutcome {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -618,7 +618,7 @@ func TestPortErrors_TOTPEnrolment(t *testing.T) { //nolint:paralleltest // it re
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := runPtotpEnrolSite(t, ctx, tc.site, errPtotpDown)
+			plain := runPtotpEnrolSite(ctx, t, tc.site, errPtotpDown)
 			require.False(t, plain.hung)
 			require.False(t, plain.panicked)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
@@ -628,7 +628,7 @@ func TestPortErrors_TOTPEnrolment(t *testing.T) { //nolint:paralleltest // it re
 			require.False(t, plain.provisioned)
 			require.Empty(t, plain.msgs, "a plain outage records no change")
 
-			got := runPtotpEnrolSite(t, ctx, tc.site, tc.err)
+			got := runPtotpEnrolSite(ctx, t, tc.site, tc.err)
 			require.False(t, got.hung, "the TOTP method hung on a hostile error")
 			require.False(t, got.panicked, "the TOTP method panicked on a hostile error")
 			require.Error(t, got.err, "refused as the plain outage is")

@@ -78,8 +78,8 @@ type redemptionPortSite struct {
 // flow's limiter counting what is charged. The chain logs to one capturing
 // logger, the manager to another.
 func redeemMagicLinkThrough(
-	t *testing.T,
 	ctx context.Context,
+	t *testing.T,
 	configure func(t *testing.T, h *magicLinkHarness),
 ) redemptionPortOutcome {
 	t.Helper()
@@ -104,7 +104,7 @@ func redeemMagicLinkThrough(
 	configure(t, h)
 
 	c := h.chain(t)
-	link, nonce := h.link(t, c)
+	link, nonce := h.link(t, c) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 
 	req := postValues(ctx, httpsec.DefaultMagicLinkConsumePath, magicLinkSource, url.Values{"token": {link}})
 	if nonce != "" {
@@ -387,7 +387,7 @@ func TestPortErrors_Redemption(t *testing.T) { //nolint:paralleltest // it repla
 					}
 
 					serve := func(portErr error) redemptionPortOutcome {
-						return redeemMagicLinkThrough(t, ctx, func(t *testing.T, h *magicLinkHarness) {
+						return redeemMagicLinkThrough(ctx, t, func(t *testing.T, h *magicLinkHarness) {
 							site.configure(t, h, portErr)
 						})
 					}
@@ -401,7 +401,7 @@ func TestPortErrors_Redemption(t *testing.T) { //nolint:paralleltest // it repla
 					assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
 
 					if childRow != "" && !t.Failed() {
-						fmt.Fprintln(os.Stdout, redemptionPortErrRan+row)
+						_, _ = fmt.Fprintln(os.Stdout, redemptionPortErrRan+row)
 					}
 				})
 			}
@@ -458,8 +458,8 @@ func (r failingRandom) Read([]byte) (int, error) { return 0, r.err }
 // capturing logger; the handoff manager logs to slog.Default(), which the
 // caller watches.
 func redeemOIDCHandoffThrough(
-	t *testing.T,
 	ctx context.Context,
+	t *testing.T,
 	configure func(t *testing.T, h *oidcHarness) []httpsec.OIDCOption,
 ) redemptionPortOutcome {
 	t.Helper()
@@ -477,10 +477,10 @@ func redeemOIDCHandoffThrough(
 			return nil
 		}).AnyTimes()
 
-	h := newOIDCHarness(t)
+	h := newOIDCHarness(t) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 	extra := configure(t, h)
 
-	code := h.issueHandoff(t, "")
+	code := h.issueHandoff(t, "") //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 
 	opts := append([]httpsec.Option{
 		httpsec.WithLogger(slog.New(chainLogs)),
@@ -649,7 +649,7 @@ func TestPortErrors_OIDCRedemption(t *testing.T) { //nolint:paralleltest // it r
 					}
 
 					serve := func(portErr error) redemptionPortOutcome {
-						return redeemOIDCHandoffThrough(t, ctx, func(t *testing.T, h *oidcHarness) []httpsec.OIDCOption {
+						return redeemOIDCHandoffThrough(ctx, t, func(t *testing.T, h *oidcHarness) []httpsec.OIDCOption {
 							site.configure(t, h, portErr)
 
 							if site.options == nil {
@@ -668,7 +668,7 @@ func TestPortErrors_OIDCRedemption(t *testing.T) { //nolint:paralleltest // it r
 					assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
 
 					if childRow != "" && !t.Failed() {
-						fmt.Fprintln(os.Stdout, redemptionPortErrRan+row)
+						_, _ = fmt.Fprintln(os.Stdout, redemptionPortErrRan+row)
 					}
 				})
 			}

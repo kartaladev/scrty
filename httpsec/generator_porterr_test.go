@@ -83,18 +83,18 @@ func generatorPortPaths() []generatorPortPath {
 				sessions, err := session.New()
 				require.NoError(t, err)
 
-				s, err := sessions.Create(t.Context(), testMFAUser, session.WithFirstFactor(factor.Password))
+				s, err := sessions.Create(t.Context(), testMFAUser, session.WithFirstFactor(factor.Password)) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 				require.NoError(t, err)
 
 				s.MFA = session.MFAPending
-				require.NoError(t, sessions.Save(t.Context(), s))
+				require.NoError(t, sessions.Save(t.Context(), s)) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 
 				method := mfaMethod(t, factor.AuthenticatorApp)
 				method.EXPECT().Enrolled(gomock.Any(), testMFAUser).Return(true, nil).AnyTimes()
 				method.EXPECT().Verify(gomock.Any(), testMFAUser, []byte(testMFACode)).Return(nil).AnyTimes()
 
 				chain, err := httpsec.New(httpsec.WithLogger(log),
-					carrying(s),
+					carrying(s), //nolint:contextcheck // an option to httpsec.New, a constructor that takes no context
 					httpsec.EnableMFA([]mfa.Method{method},
 						httpsec.WithMFAVerifyLimiter(countingLimiter(t, 0)),
 						httpsec.WithMFATokens(gen)),
@@ -115,7 +115,7 @@ func generatorPortPaths() []generatorPortPath {
 				sessions, err := session.New(session.WithStore(must.Must(session.NewMemoryStore())))
 				require.NoError(t, err)
 
-				s, err := sessions.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))
+				s, err := sessions.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password)) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 				require.NoError(t, err)
 
 				verifier := NewMockVerifier(ctrl)
@@ -149,10 +149,10 @@ func generatorPortPaths() []generatorPortPath {
 				d := newPwlDeployment(t)
 				d.settings = append(d.settings, httpsec.PasswordlessTokens(gen))
 				d.extra = append(d.extra, httpsec.WithLogger(log))
-				d.build(t)
+				d.build(t) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 
-				handle := d.seed(t, e2eUser, "cred-1", passkey.StateActive)
-				cookie, challenge := d.begun(t)
+				handle := d.seed(t, e2eUser, "cred-1", passkey.StateActive) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
+				cookie, challenge := d.begun(t)                             //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 
 				req := jsonPost(ctx, passwordlessFinishPath, handleAssertionBody(challenge, "cred-1", handle))
 				req.AddCookie(&http.Cookie{Name: httpsec.DefaultPasswordlessCookieName, Value: cookie}) //nolint:gosec // G124: a request cookie
@@ -167,7 +167,7 @@ func generatorPortPaths() []generatorPortPath {
 			serve: func(t *testing.T, ctx context.Context, gen token.Generator, log *slog.Logger) *httptest.ResponseRecorder {
 				t.Helper()
 
-				f := newPwFixture(t)
+				f := newPwFixture(t) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 				f.attempts.EXPECT().Reset(gomock.Any(), mfaUsername).Return(nil).AnyTimes()
 				f.reauthOpts = append(f.reauthOpts, httpsec.WithReauthenticationTokens(gen))
 				// The fixture's constructor appended its own WithLogger as the
@@ -175,10 +175,10 @@ func generatorPortPaths() []generatorPortPath {
 				// row's.
 				f.chainOpts = append(f.chainOpts[:len(f.chainOpts)-1], httpsec.WithLogger(log))
 
-				s := f.newSession(t, factor.Password, session.MFANone)
+				s := f.newSession(t, factor.Password, session.MFANone) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 				f.clock.Advance(10 * time.Minute)
 
-				c, err := f.build(nil)
+				c, err := f.build(nil) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 				require.NoError(t, err)
 
 				return loginServeWithin(t, c,
@@ -192,7 +192,7 @@ func generatorPortPaths() []generatorPortPath {
 			serve: func(t *testing.T, ctx context.Context, gen token.Generator, log *slog.Logger) *httptest.ResponseRecorder {
 				t.Helper()
 
-				h := newRecoveryHarness(t)
+				h := newRecoveryHarness(t) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 				h.chainOpts = append(h.chainOpts, httpsec.WithLogger(log))
 				h.recOpts = []httpsec.RecoveryOption{
 					httpsec.WithRecoveryTokens(gen),
@@ -202,7 +202,7 @@ func generatorPortPaths() []generatorPortPath {
 				h.build(t)
 
 				return loginServeWithin(t, h.chain, postValues(ctx, httpsec.DefaultRecoveryCompletePath, e2eSource,
-					recoveryForm(httpsec.RecoverySavedCodeParam, h.saved(t), httpsec.RecoveryPasswordParam, e2ePassword)))
+					recoveryForm(httpsec.RecoverySavedCodeParam, h.saved(t), httpsec.RecoveryPasswordParam, e2ePassword))) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 			},
 		},
 	}
@@ -310,7 +310,7 @@ func TestPortErrors_TokenGenerator(t *testing.T) { //nolint:paralleltest // it r
 					assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
 
 					if childRow != "" && !t.Failed() {
-						fmt.Fprintln(os.Stdout, redemptionPortErrRan+row)
+						_, _ = fmt.Fprintln(os.Stdout, redemptionPortErrRan+row)
 					}
 				})
 			}

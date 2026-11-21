@@ -230,13 +230,13 @@ func TestPortErrors_ReuseHistory(t *testing.T) {
 
 	type site struct {
 		name  string
-		drive func(t *testing.T, row portErrRow) (error, *recordingHandler, *recordingHandler)
+		drive func(t *testing.T, row portErrRow) (*recordingHandler, *recordingHandler, error)
 	}
 
 	sites := []site{
 		{
 			name: "RecentPasswords through Check",
-			drive: func(t *testing.T, row portErrRow) (error, *recordingHandler, *recordingHandler) {
+			drive: func(t *testing.T, row portErrRow) (*recordingHandler, *recordingHandler, error) {
 				def := swapDefaultLogger(t)
 				m := NewMockHistory(gomock.NewController(t))
 				m.EXPECT().RecentPasswords(gomock.Any(), gomock.Any(), 2).Return(nil, row.err())
@@ -247,12 +247,12 @@ func TestPortErrors_ReuseHistory(t *testing.T) {
 					return p.Check(t.Context(), &identity.Details{ID: "u1", Password: hP1}, p9)
 				})
 
-				return got, pol, def
+				return pol, def, got
 			},
 		},
 		{
 			name: "RetirePassword through Change",
-			drive: func(t *testing.T, row portErrRow) (error, *recordingHandler, *recordingHandler) {
+			drive: func(t *testing.T, row portErrRow) (*recordingHandler, *recordingHandler, error) {
 				def := swapDefaultLogger(t)
 				m := NewMockHistory(gomock.NewController(t))
 				m.EXPECT().RecentPasswords(gomock.Any(), gomock.Any(), 2).Return(nil, nil)
@@ -266,7 +266,7 @@ func TestPortErrors_ReuseHistory(t *testing.T) {
 				})
 				assert.Zero(t, w.calls, "a refused change writes nothing")
 
-				return got, pol, def
+				return pol, def, got
 			},
 		},
 	}
@@ -274,7 +274,7 @@ func TestPortErrors_ReuseHistory(t *testing.T) {
 	for _, s := range sites {
 		t.Run(s.name, func(t *testing.T) {
 			eachPortErrRow(t, func(t *testing.T, row portErrRow) {
-				got, pol, def := s.drive(t, row)
+				pol, def, got := s.drive(t, row)
 
 				// The outcome is the plain outage's: the history refusal.
 				require.True(t, isWithin(t, got, password.ErrHistoryUnavailable), "errors.Is password.ErrHistoryUnavailable")

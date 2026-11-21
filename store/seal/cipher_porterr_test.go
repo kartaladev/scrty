@@ -24,7 +24,7 @@ import (
 )
 
 // cpeSecret is consumer text no record and no returned hostile error may carry.
-const cpeSecret = "cpe-consumer-secret-do-not-leak"
+const cpeSecret = "cpe-consumer-secret-do-not-leak" //nolint:gosec // G101: a fixture, not a credential
 
 // cpeCycleOne is an error whose Unwrap() error returns itself.
 type cpeCycleOne struct{}
@@ -228,7 +228,7 @@ func cpeSites() []cpeSite {
 	return []cpeSite{
 		{name: "AEADCipher.Open asks Keyring.ByID",
 			run: func(t *testing.T, ctx context.Context, ctrl *gomock.Controller, err error) cpeOutcome {
-				envelope := cpeEnvelope(t)
+				envelope := cpeEnvelope(t) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 				kr := NewMockKeyring(ctrl)
 				kr.EXPECT().ByID(gomock.Any(), "k1").Return(keyOne, err)
 				c := cpeAEAD(t, kr)
@@ -292,7 +292,7 @@ func cpeSites() []cpeSite {
 			}},
 		{name: "SessionCipher over AEADCipher, Keyring.ByID",
 			run: func(t *testing.T, ctx context.Context, ctrl *gomock.Controller, err error) cpeOutcome {
-				envelope := cpeEnvelope(t)
+				envelope := cpeEnvelope(t) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 				kr := NewMockKeyring(ctrl)
 				kr.EXPECT().ByID(gomock.Any(), "k1").Return(keyOne, err)
 				sc := seal.SessionCipher(cpeAEAD(t, kr))

@@ -152,7 +152,7 @@ type mlOutcome struct {
 // runMLSite runs the call site names on ctx against a port that fails that
 // call with portErr. It fails the test when the call hangs or lets a panic
 // escape.
-func runMLSite(t *testing.T, ctx context.Context, site mlSite, portErr error) mlOutcome {
+func runMLSite(ctx context.Context, t *testing.T, site mlSite, portErr error) mlOutcome {
 	t.Helper()
 
 	logs := &mlSyncBuffer{}
@@ -205,7 +205,7 @@ func runMLSite(t *testing.T, ctx context.Context, site mlSite, portErr error) ml
 			magiclink.WithLogger(logger), magiclink.WithSameDeviceBinding(false))
 		require.NoError(t, err)
 
-		presented := issueFor(t, tokens, "u-1")
+		presented := issueFor(t, tokens, "u-1") //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 
 		var checks []magiclink.Check
 		if site == mlCheck {
@@ -217,7 +217,7 @@ func runMLSite(t *testing.T, ctx context.Context, site mlSite, portErr error) ml
 
 			return mlOutcome{redemption: r, err: err}
 		}
-		post = func(out *mlOutcome) {
+		post = func(out *mlOutcome) { //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 			_, err := tokens.Redeem(t.Context(), presented, "")
 			out.unspent = err == nil
 		}
@@ -493,10 +493,10 @@ func TestPortErrors_Links(t *testing.T) {
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := runMLSite(t, ctx, tc.site, errMLPortDown)
+			plain := runMLSite(ctx, t, tc.site, errMLPortDown)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := runMLSite(t, ctx, tc.site, tc.err)
+			got := runMLSite(ctx, t, tc.site, tc.err)
 			tc.assert(t, plain, got)
 
 			for _, rec := range mlJSONRecords(t, defaults.String()) {

@@ -38,8 +38,8 @@ const pmanChildRowDeadline = time.Minute
 // pmanMsgSessionsKept is the record of a second revocation pass that failed.
 const pmanMsgSessionsKept = "passkey: the user's sessions could not all be ended"
 
-// pmanOutage is the plain outage the parity runs fail with.
-var pmanOutage = errors.New("store: connection refused")
+// errPmanOutage is the plain outage the parity runs fail with.
+var errPmanOutage = errors.New("store: connection refused")
 
 // pmanSite names the port call a row fails.
 type pmanSite string
@@ -418,7 +418,7 @@ func TestPortErrors_Manage(t *testing.T) { //nolint:paralleltest // it replaces 
 				return
 			}
 
-			plain := runManageSite(t, tc.site, pmanOutage, tc.cancelDuring)
+			plain := runManageSite(t, tc.site, errPmanOutage, tc.cancelDuring)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 			require.Equal(t, 0, plain.defaultAborts)
 

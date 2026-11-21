@@ -87,7 +87,7 @@ func randomSites() []randomSite {
 			name: "Prepare_identifier_reader",
 			run: func(t *testing.T, _ context.Context, logger *slog.Logger, err error) error {
 				m, _ := manager(t, logger, session.WithRandom(&randomFlakyReader{err: err}))
-				_, got := m.Prepare(testUser)
+				_, got := m.Prepare(testUser) //nolint:contextcheck // Prepare is the call under test and takes no context
 
 				return got
 			},
@@ -181,18 +181,18 @@ func TestPortErrors_SessionsRandomSources(t *testing.T) {
 				slog.SetDefault(slog.New(defaultLogs))
 				t.Cleanup(func() { slog.SetDefault(previous) })
 
-				call := func(err error) (error, int) { //nolint:revive // the error is the first result by design of the row
+				call := func(err error) (int, error) {
 					logs := &captureHandler{}
 					got := withinTwoSeconds(t, func() error { return site.run(t, t.Context(), slog.New(logs), err) })
 
-					return got, logs.aborts()
+					return logs.aborts(), got
 				}
 
-				plain, plainAborts := call(errors.New("entropy: down"))
+				plainAborts, plain := call(errors.New("entropy: down"))
 				require.Error(t, plain)
 				require.Zero(t, plainAborts, "a plain failure writes no abort record")
 
-				got, aborts := call(tc.err())
+				aborts, got := call(tc.err())
 
 				assert.Equal(t, tc.aborts, aborts, "abort records on the manager's logger")
 				assert.Zero(t, defaultLogs.aborts(), "the manager's logger is used, not slog.Default()")

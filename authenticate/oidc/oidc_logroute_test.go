@@ -115,7 +115,7 @@ func TestLogRoute_Broker(t *testing.T) { //nolint:paralleltest // it replaces sl
 				opts = append(opts, oidc.WithBrokerLogger(own))
 			}
 
-			b, err := oidc.NewBroker(brokerSeededLinks(t), users, opts...)
+			b, err := oidc.NewBroker(brokerSeededLinks(t), users, opts...) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 			require.NoError(t, err)
 
 			_, err = b.Broker(ctx, brokerCorpIdentity())
@@ -259,7 +259,7 @@ func TestLogRoute_SuppressedSummary(t *testing.T) { //nolint:paralleltest // it 
 				users := NewMockUserLoader(gomock.NewController(t))
 				users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(nil, identity.ErrUserNotFound).AnyTimes()
 
-				b, err := oidc.NewBroker(brokerSeededLinks(t), users)
+				b, err := oidc.NewBroker(brokerSeededLinks(t), users) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 				require.NoError(t, err)
 
 				for range 3 {

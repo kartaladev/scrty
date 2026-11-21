@@ -32,13 +32,13 @@ const lockPortRowEnv = "SCRTY_SWEEP_LOCK_PORTERR_ROW"
 const lockPortRanMarker = "SCRTY_SWEEP_LOCK_PORTERR_RAN: "
 
 // lockPortSecret is text a hostile error carries that no record may quote.
-const lockPortSecret = "lock-server-secret-91c2"
+const lockPortSecret = "lock-server-secret-91c2" //nolint:gosec // G101: a fixture, not a credential
 
 // lockFailedMsg is the record the sweeper writes for a refused lock.
 const lockFailedMsg = "sweep: distributed lock failed; run skipped"
 
-// lockPortPlain is the plain lock failure every hostile row is compared with.
-var lockPortPlain = errors.New("lock server refused: " + lockPortSecret)
+// errLockPortPlain is the plain lock failure every hostile row is compared with.
+var errLockPortPlain = errors.New("lock server refused: " + lockPortSecret)
 
 type lockCycleOne struct{}
 
@@ -148,7 +148,7 @@ type lockRun struct {
 // lockRunOnce starts a sweeper on a real clock whose one task runs at once,
 // behind a locker that refuses with lockErr, waits, bounded, for the refusal's
 // record, and shuts the sweeper down.
-func lockRunOnce(t *testing.T, ctx context.Context, lockErr error) lockRun {
+func lockRunOnce(ctx context.Context, t *testing.T, lockErr error) lockRun {
 	t.Helper()
 
 	var runs atomic.Int32
@@ -337,7 +337,7 @@ func TestPortErrors_DistributedLock(t *testing.T) { //nolint:paralleltest // it 
 			child: true, assert: asFailure("budget"),
 		},
 		{name: "a typed-nil root walks to the end", err: (*lockTypedNil)(nil), assert: walked},
-		{name: "a plain failure, against itself", err: lockPortPlain, assert: walked},
+		{name: "a plain failure, against itself", err: errLockPortPlain, assert: walked},
 		// In a child: unfixed, the panic escapes on gocron's goroutine and
 		// kills the process.
 		{
@@ -372,14 +372,14 @@ func TestPortErrors_DistributedLock(t *testing.T) { //nolint:paralleltest // it 
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := lockRunOnce(t, ctx, lockPortPlain)
+			plain := lockRunOnce(ctx, t, errLockPortPlain)
 			require.Empty(t, plain.aborts, "a plain failure writes no abort record")
 			require.Equal(t, 1, plain.outcome.lockRecords)
 			require.Equal(t, "lock", plain.outcome.reason)
 			require.False(t, plain.outcome.cancelled)
 			require.Zero(t, plain.outcome.runs)
 
-			got := lockRunOnce(t, ctx, tc.err)
+			got := lockRunOnce(ctx, t, tc.err)
 			tc.assert(t, plain, got)
 
 			for _, r := range defaults.all() {
@@ -424,7 +424,7 @@ type taskRun struct {
 // taskErr and a healthy one, both run at once, waits, bounded, for the
 // failure's record and the healthy task's, and shuts the sweeper down. The
 // runner and the sweeper write to one recorder.
-func taskRunOnce(t *testing.T, ctx context.Context, taskErr error) taskRun {
+func taskRunOnce(ctx context.Context, t *testing.T, taskErr error) taskRun {
 	t.Helper()
 
 	var nextRuns atomic.Int32
@@ -555,7 +555,7 @@ func TestPortErrors_SweepTask(t *testing.T) { //nolint:paralleltest // it replac
 	// The selective rows run in a child: unfixed, the panic escapes on
 	// gocron's goroutine and kills the process.
 	cases := []testCase{
-		{name: "a plain failure, against itself", err: lockPortPlain, assert: walked},
+		{name: "a plain failure, against itself", err: errLockPortPlain, assert: walked},
 		{
 			name: "an Is that panics only for ErrTaskPanicked", err: selectiveIs{target: expiry.ErrTaskPanicked},
 			child: true, assert: selective,
@@ -591,14 +591,14 @@ func TestPortErrors_SweepTask(t *testing.T) { //nolint:paralleltest // it replac
 			slog.SetDefault(slog.New(defaults))
 			t.Cleanup(func() { slog.SetDefault(prev) })
 
-			plain := taskRunOnce(t, t.Context(), lockPortPlain)
+			plain := taskRunOnce(t.Context(), t, errLockPortPlain)
 			require.Empty(t, plain.aborts, "a plain failure writes no abort record")
 			require.Equal(t, "purge", plain.outcome.reason)
 			require.Equal(t, "expiry task failed", plain.outcome.msg)
 			require.False(t, plain.outcome.cancelled)
 			require.True(t, plain.outcome.nextRan)
 
-			got := taskRunOnce(t, t.Context(), tc.err)
+			got := taskRunOnce(t.Context(), t, tc.err)
 			tc.assert(t, plain, got)
 
 			for _, r := range defaults.all() {

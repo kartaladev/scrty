@@ -325,7 +325,7 @@ func storeSites() []storeSite {
 		{
 			name: "PreparedCommit_create",
 			run: func(ctx context.Context, m *session.Sessions, store *MockStore, err error) error {
-				p, perr := m.Prepare(testUser)
+				p, perr := m.Prepare(testUser) //nolint:contextcheck // Prepare is the call under test and takes no context
 				if perr != nil {
 					return perr
 				}
@@ -341,7 +341,7 @@ func storeSites() []storeSite {
 // runStoreSite builds a manager over a mock store and a capturing logger, runs
 // the site with err and returns what the caller saw, with the logger's abort
 // count.
-func runStoreSite(t *testing.T, ctx context.Context, site storeSite, err error) (error, int) { //nolint:revive // ctx after t is the test's own helper shape
+func runStoreSite(ctx context.Context, t *testing.T, site storeSite, err error) (int, error) {
 	t.Helper()
 
 	store := NewMockStore(gomock.NewController(t))
@@ -355,7 +355,7 @@ func runStoreSite(t *testing.T, ctx context.Context, site storeSite, err error) 
 
 	got := withinTwoSeconds(t, func() error { return site.run(ctx, m, store, err) })
 
-	return got, logs.aborts()
+	return logs.aborts(), got
 }
 
 // childRanMarker is the line a child process prints on stdout once its row has
@@ -457,10 +457,10 @@ func TestPortErrors_SessionsStorePort(t *testing.T) {
 				slog.SetDefault(slog.New(defaultLogs))
 				t.Cleanup(func() { slog.SetDefault(previous) })
 
-				plainGot, plainAborts := runStoreSite(t, t.Context(), site, errors.New("store: down"))
+				plainAborts, plainGot := runStoreSite(t.Context(), t, site, errors.New("store: down"))
 				require.Zero(t, plainAborts, "a plain outage must write no abort record")
 
-				got, aborts := runStoreSite(t, t.Context(), site, tc.err())
+				aborts, got := runStoreSite(t.Context(), t, site, tc.err())
 
 				assert.Equal(t, tc.aborts, aborts, "abort records on the manager's logger")
 				assert.Zero(t, defaultLogs.aborts(), "the manager's logger is used, not slog.Default()")
@@ -500,8 +500,8 @@ func TestPortErrors_SessionsStorePort_CancelledContext(t *testing.T) {
 		t.Run(site.name, func(t *testing.T) {
 			t.Parallel()
 
-			plainGot, _ := runStoreSite(t, ctx, site, errors.New("store: down"))
-			got, aborts := runStoreSite(t, ctx, site, &storeCycleOne{})
+			_, plainGot := runStoreSite(ctx, t, site, errors.New("store: down"))
+			aborts, got := runStoreSite(ctx, t, site, &storeCycleOne{})
 
 			assert.Equal(t, 1, aborts)
 			assert.Equal(t, plainGot == nil, got == nil)

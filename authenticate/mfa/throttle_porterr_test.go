@@ -136,7 +136,7 @@ func throttleJSONRecords(t *testing.T, out []byte) []map[string]any {
 // runThrottleSite runs the call site names on ctx against a throttle whose
 // limiter fails that call with limiterErr. It fails the test when the call
 // hangs.
-func runThrottleSite(t *testing.T, ctx context.Context, site throttleSite, limiterErr error) throttleOutcome {
+func runThrottleSite(ctx context.Context, t *testing.T, site throttleSite, limiterErr error) throttleOutcome {
 	t.Helper()
 
 	limiter := NewMockLimiter(gomock.NewController(t))
@@ -334,10 +334,10 @@ func TestPortErrors_VerifyThrottleLimiter(t *testing.T) { //nolint:paralleltest 
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := runThrottleSite(t, ctx, tc.site, errThrottleLimiterDown)
+			plain := runThrottleSite(ctx, t, tc.site, errThrottleLimiterDown)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := runThrottleSite(t, ctx, tc.site, tc.err)
+			got := runThrottleSite(ctx, t, tc.site, tc.err)
 			tc.assert(t, plain, got)
 
 			for _, rec := range throttleJSONRecords(t, defaults.Bytes()) {

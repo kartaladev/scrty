@@ -136,7 +136,7 @@ type poOutcome struct {
 
 // poRun sends one request through a client whose transport fails with portErr
 // and reports the outcome. It fails the test when the call hangs or panics.
-func poRun(t *testing.T, ctx context.Context, body, status bool, portErr error) poOutcome {
+func poRun(ctx context.Context, t *testing.T, body, status bool, portErr error) poOutcome {
 	t.Helper()
 
 	defaults := &poBuffer{}
@@ -259,12 +259,12 @@ func TestOutboundPortErrors(t *testing.T) { //nolint:paralleltest // it replaces
 					cancel()
 				}
 
-				base := poRun(t, t.Context(), p.body, p.status, errors.New("boom"))
+				base := poRun(t.Context(), t, p.body, p.status, errors.New("boom"))
 				require.Error(t, base.err)
 				assert.False(t, base.unwalk)
 				assert.Empty(t, base.aborts)
 
-				got := poRun(t, ctx, p.body, p.status, row.err)
+				got := poRun(ctx, t, p.body, p.status, row.err)
 
 				require.Error(t, got.err)
 				assert.Equal(t, base.refuse, got.refuse, "the same error class as a plain transport error")

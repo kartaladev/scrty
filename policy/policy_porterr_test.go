@@ -115,9 +115,9 @@ type peResult struct {
 type peSink int
 
 const (
-	// peOwn is the logger the component was given (lg in build), whatever the
+	// The zero value is the logger the component was given (lg in build), whatever the
 	// context carries.
-	peOwn peSink = iota
+	_ peSink = iota
 	// peContext is the logger the request context carries (the chain's,
 	// inside a chain), and slog.Default() when it carries none: the site has
 	// no logger of its own.

@@ -151,7 +151,7 @@ func boundCause(t *testing.T) error {
 // boundReachedWithin asks BoundReached on its own goroutine and fails when it
 // does not return within two seconds or lets a panic escape. A stack overflow
 // still kills the process, which only a child can watch for.
-func boundReachedWithin(t *testing.T, ctx context.Context) bool {
+func boundReachedWithin(ctx context.Context, t *testing.T) bool {
 	t.Helper()
 
 	type result struct {
@@ -236,7 +236,7 @@ func TestBoundReached_CauseIsConsumerInput(t *testing.T) { //nolint:paralleltest
 			rec := swapDefault(t)
 			ctx := causeCtx(t, tc.cause(t))
 
-			assert.Equal(t, tc.want, boundReachedWithin(t, ctx))
+			assert.Equal(t, tc.want, boundReachedWithin(ctx, t))
 
 			if tc.reason == "" {
 				assert.Empty(t, rec.aborts(), "a walk that completes writes no abort record")
@@ -245,7 +245,7 @@ func TestBoundReached_CauseIsConsumerInput(t *testing.T) { //nolint:paralleltest
 			}
 
 			if childRow != "" && !t.Failed() {
-				fmt.Fprintln(os.Stdout, hostileCauseRan+tc.name)
+				_, _ = fmt.Fprintln(os.Stdout, hostileCauseRan+tc.name)
 			}
 		})
 	}

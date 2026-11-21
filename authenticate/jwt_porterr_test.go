@@ -24,7 +24,7 @@ import (
 )
 
 // jwtPortErrSecret is the text every hostile error here returns.
-const jwtPortErrSecret = "jwt-port-secret-text"
+const jwtPortErrSecret = "jwt-port-secret-text" //nolint:gosec // G101: a fixture, not a credential
 
 // jwtPortErrRowEnv names the row a child process runs. It is empty in the
 // parent.
@@ -103,7 +103,7 @@ const (
 // failing with portErr. It returns what the call returned and how many abort
 // records reached slog.Default(), and fails the test when the call hangs or a
 // panic escapes.
-func authenticateThroughJWT(t *testing.T, ctx context.Context, site jwtSite, portErr error) (error, int) {
+func authenticateThroughJWT(ctx context.Context, t *testing.T, site jwtSite, portErr error) (int, error) {
 	t.Helper()
 
 	defaults := defaultRecords(t)
@@ -167,7 +167,7 @@ func authenticateThroughJWT(t *testing.T, ctx context.Context, site jwtSite, por
 		}
 	}
 
-	return r.err, aborts
+	return aborts, r.err
 }
 
 // TestPortErrors_JWT pins that a verifier or an identifier generator failing
@@ -291,10 +291,10 @@ func TestPortErrors_JWT(t *testing.T) { //nolint:paralleltest // it replaces slo
 				ctx = tc.ctx(ctx)
 			}
 
-			plain, plainAborts := authenticateThroughJWT(t, ctx, tc.site, errJWTPortDown)
+			plainAborts, plain := authenticateThroughJWT(ctx, t, tc.site, errJWTPortDown)
 			require.Zero(t, plainAborts, "a plain outage writes no abort record")
 
-			got, aborts := authenticateThroughJWT(t, ctx, tc.site, tc.err)
+			aborts, got := authenticateThroughJWT(ctx, t, tc.site, tc.err)
 			tc.assert(t, plain, got)
 
 			if tc.passes {

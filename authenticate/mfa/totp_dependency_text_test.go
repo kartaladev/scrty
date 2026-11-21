@@ -41,7 +41,7 @@ func TestTOTPBeginEnrolment_DependencyErrorTextIsFixed(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			tc.assert(t, runPtotpEnrolSite(t, t.Context(), tc.site, errDependencyText))
+			tc.assert(t, runPtotpEnrolSite(t.Context(), t, tc.site, errDependencyText))
 		})
 	}
 }

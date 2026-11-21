@@ -166,7 +166,7 @@ func TestPortErrors_RehashWrite(t *testing.T) { //nolint:paralleltest // it repl
 					assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
 
 					if childRow != "" && !t.Failed() {
-						fmt.Fprintln(os.Stdout, rehashPortErrRan+row)
+						_, _ = fmt.Fprintln(os.Stdout, rehashPortErrRan+row)
 					}
 				})
 			}

@@ -248,7 +248,7 @@ func (p *Problems) mapError(_ context.Context, err error) *prblm.Problem {
 		// Not built by New: no types are defined, so nothing is answered.
 		return nil
 	}
-	status, ok := httpsec.LookupStatus(err)
+	status, ok := httpsec.LookupStatus(err) //nolint:contextcheck // the core's lookup takes no context; its abort record goes to slog.Default() (design decision 11)
 	if !ok {
 		return nil
 	}

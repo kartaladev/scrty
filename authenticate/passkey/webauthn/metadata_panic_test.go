@@ -302,7 +302,7 @@ func TestMetadataSource_FetchPanics(t *testing.T) { //nolint:paralleltest // swa
 			waiters: 1,
 			failing: func() ([]byte, error) {
 				var m map[string]int
-				m[mdSecret] = 1 // assignment to entry in nil map
+				m[mdSecret] = 1 //nolint:staticcheck // SA5000: the panic is the point: a runtime error from the consumer source; assignment to entry in nil map
 
 				return nil, nil
 			},

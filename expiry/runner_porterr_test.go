@@ -29,15 +29,15 @@ const runnerPortRowEnv = "SCRTY_EXPIRY_RUNNER_PORTERR_ROW"
 const runnerPortRanMarker = "SCRTY_EXPIRY_RUNNER_PORTERR_RAN: "
 
 // runnerPortSecret is text a hostile error carries that no record may quote.
-const runnerPortSecret = "owner-store-secret-7f3a"
+const runnerPortSecret = "owner-store-secret-7f3a" //nolint:gosec // G101: a fixture, not a credential
 
 // runnerPortBound bounds one RunOnce. An unbounded errors.Is over a cycle or
 // a fan-out never returns within it.
 const runnerPortBound = 10 * time.Second
 
-// runnerPortPlain is the plain store failure every hostile row is compared
+// errRunnerPortPlain is the plain store failure every hostile row is compared
 // with.
-var runnerPortPlain = errors.New("owner store down: " + runnerPortSecret)
+var errRunnerPortPlain = errors.New("owner store down: " + runnerPortSecret)
 
 type runnerCycleOne struct{}
 
@@ -194,7 +194,7 @@ type runnerRun struct {
 	failRecord slog.Record
 }
 
-func runnerRunOnce(t *testing.T, ctx context.Context, portErr error, mode runnerMode) runnerRun {
+func runnerRunOnce(ctx context.Context, t *testing.T, portErr error, mode runnerMode) runnerRun {
 	t.Helper()
 
 	rec := &runnerRecorder{}
@@ -214,7 +214,7 @@ func runnerRunOnce(t *testing.T, ctx context.Context, portErr error, mode runner
 
 	runCtx := ctx
 	if mode.ctxErr != nil {
-		runCtx = runnerErrCtx{Context: ctx, err: mode.ctxErr}
+		runCtx = runnerErrCtx{Context: ctx, err: mode.ctxErr} //nolint:contextcheck // the case's ctx, wrapped to report an Err the case chooses
 	}
 
 	if mode.cancelDuringRun {
@@ -451,7 +451,7 @@ func TestPortErrors_RunnerTask(t *testing.T) { //nolint:paralleltest // it repla
 			child: true, assert: asFailure("budget"),
 		},
 		{name: "a typed-nil root walks to the end", err: (*runnerTypedNil)(nil), assert: walked},
-		{name: "a plain failure, against itself", err: runnerPortPlain, assert: walked},
+		{name: "a plain failure, against itself", err: errRunnerPortPlain, assert: walked},
 	}
 
 	// A task's error whose Is panics only for one sentinel: each sentinel a
@@ -512,10 +512,10 @@ func TestPortErrors_RunnerTask(t *testing.T) { //nolint:paralleltest // it repla
 
 			plainMode := tc.mode
 			if plainMode.ctxErr != nil {
-				plainMode.ctxErr = runnerPortPlain
+				plainMode.ctxErr = errRunnerPortPlain
 			}
 
-			plain := runnerRunOnce(t, t.Context(), runnerPortPlain, plainMode)
+			plain := runnerRunOnce(t.Context(), t, errRunnerPortPlain, plainMode)
 			require.Empty(t, plain.aborts, "a plain failure writes no abort record")
 
 			if tc.mode.ctxErr != nil {
@@ -527,7 +527,7 @@ func TestPortErrors_RunnerTask(t *testing.T) { //nolint:paralleltest // it repla
 				require.Equal(t, "expiry task failed", plain.outcome.msg)
 			}
 
-			got := runnerRunOnce(t, t.Context(), tc.err, tc.mode)
+			got := runnerRunOnce(t.Context(), t, tc.err, tc.mode)
 			tc.assert(t, plain, got)
 
 			for _, r := range defaults.all() {

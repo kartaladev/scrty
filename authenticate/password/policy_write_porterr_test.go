@@ -201,25 +201,25 @@ func TestPortErrors_ChangeWrite_WalkableWrapped(t *testing.T) {
 func TestPortErrors_ContextWords(t *testing.T) {
 	type site struct {
 		name  string
-		drive func(t *testing.T, p *password.Policy, row writePortErrRow) (error, int)
+		drive func(t *testing.T, p *password.Policy, row writePortErrRow) (int, error)
 	}
 
 	sites := []site{
 		{
 			name: "Check",
-			drive: func(t *testing.T, p *password.Policy, row writePortErrRow) (error, int) {
-				return within(t, func() error { return p.Check(row.ctx(t), checkUser(), p9) }), 0
+			drive: func(t *testing.T, p *password.Policy, row writePortErrRow) (int, error) {
+				return 0, within(t, func() error { return p.Check(row.ctx(t), checkUser(), p9) })
 			},
 		},
 		{
 			name: "Change",
-			drive: func(t *testing.T, p *password.Policy, row writePortErrRow) (error, int) {
+			drive: func(t *testing.T, p *password.Policy, row writePortErrRow) (int, error) {
 				w := &recordingWrite{}
 				got := within(t, func() error {
 					return p.Change(row.ctx(t), &identity.Details{ID: "u1"}, p9, w.write)
 				})
 
-				return got, w.calls
+				return w.calls, got
 			},
 		},
 	}
@@ -238,7 +238,7 @@ func TestPortErrors_ContextWords(t *testing.T) {
 				)
 				require.NoError(t, err)
 
-				got, writes := s.drive(t, p, row)
+				writes, got := s.drive(t, p, row)
 
 				require.Error(t, got)
 				assert.Zero(t, writes, "a failed check writes nothing")

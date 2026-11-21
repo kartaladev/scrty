@@ -255,7 +255,7 @@ func TestPortErrors_SignInNotice(t *testing.T) { //nolint:paralleltest // it rep
 					assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
 
 					if childRow != "" && !t.Failed() {
-						fmt.Fprintln(os.Stdout, noticePortErrRan+row)
+						_, _ = fmt.Fprintln(os.Stdout, noticePortErrRan+row)
 					}
 				})
 			}

@@ -92,7 +92,7 @@ type startOutcome struct {
 
 // runStartSite runs Start on ctx against a port that fails the site's call
 // with portErr. It fails the test when Start hangs or lets a panic escape.
-func runStartSite(t *testing.T, ctx context.Context, site startSite, portErr error) startOutcome {
+func runStartSite(ctx context.Context, t *testing.T, site startSite, portErr error) startOutcome {
 	t.Helper()
 
 	f := newFixture(t)
@@ -333,10 +333,10 @@ func TestPortErrors_Start(t *testing.T) { //nolint:paralleltest // it replaces s
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := runStartSite(t, ctx, tc.site, errStartPortDown)
+			plain := runStartSite(ctx, t, tc.site, errStartPortDown)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := runStartSite(t, ctx, tc.site, tc.err)
+			got := runStartSite(ctx, t, tc.site, tc.err)
 			tc.assert(t, plain, got)
 
 			for _, rec := range limJSONRecords(t, defaults.String()) {

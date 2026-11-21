@@ -93,14 +93,14 @@ func bodyIntegration(chain *httpsec.Chain, failing *bodyFailing) http.Handler {
 		failing.Request = httpsec.NewHTTPRequest(r)
 
 		ex := httpsec.NewExchange(r.Context(), failing, httpsec.NewHTTPResponseWriter(w))
-		run := chain.Assemble(func(*httpsec.Exchange) error {
+		run := chain.Assemble(func(*httpsec.Exchange) error { //nolint:contextcheck // Assemble builds the chain inside the consumer handler; it takes no context
 			w.WriteHeader(http.StatusTeapot)
 
 			return nil
 		})
 
 		if err := run(ex); err != nil {
-			ex.Writer.WriteHeader(httpsec.StatusForError(err))
+			ex.Writer.WriteHeader(httpsec.StatusForError(err)) //nolint:contextcheck // StatusForError takes no context; the test's context has nowhere to flow
 		}
 	})
 }
@@ -224,12 +224,12 @@ func bodySites() []bodySite {
 			world: func(t *testing.T, ctx context.Context, extra ...httpsec.Option) (*httpsec.Chain, *http.Request, *capturingHandler) {
 				h := newMFAHarness(t)
 				h.channel(factor.AuthenticatorApp)
-				s := h.pendingSession(t, factor.Password)
+				s := h.pendingSession(t, factor.Password) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 				h.limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
 				h.limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 				logs, logger := withLogs()
 
-				return h.chain(t, s, append([]httpsec.Option{logger}, extra...)...),
+				return h.chain(t, s, append([]httpsec.Option{logger}, extra...)...), //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 					post(ctx, testMFAVerifyPath, "code="+testMFACode), logs
 			},
 		},
@@ -239,10 +239,10 @@ func bodySites() []bodySite {
 				d := newPwlDeployment(t)
 				logs, logger := withLogs()
 				d.extra = append(append(d.extra, logger), extra...)
-				d.build(t)
+				d.build(t) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 
-				handle := d.seed(t, e2eUser, "cred-1", passkey.StateActive)
-				cookie, challenge := d.begun(t)
+				handle := d.seed(t, e2eUser, "cred-1", passkey.StateActive) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
+				cookie, challenge := d.begun(t)                             //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 
 				req := jsonPost(ctx, passwordlessFinishPath, handleAssertionBody(challenge, "cred-1", handle))
 				req.AddCookie(&http.Cookie{Name: httpsec.DefaultPasswordlessCookieName, Value: cookie}) //nolint:gosec // G124: a request cookie
@@ -266,11 +266,11 @@ func bodySites() []bodySite {
 		{
 			name: "password re-proof, readPassword", direct: false,
 			world: func(t *testing.T, ctx context.Context, extra ...httpsec.Option) (*httpsec.Chain, *http.Request, *capturingHandler) {
-				f := newPwFixture(t)
-				s := f.newSession(t, factor.Password, session.MFANone)
+				f := newPwFixture(t)                                   //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
+				s := f.newSession(t, factor.Password, session.MFANone) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 				f.chainOpts = append(f.chainOpts, extra...)
 
-				chain, err := f.build(nil)
+				chain, err := f.build(nil) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 				require.NoError(t, err)
 
 				return chain, passwordPost(ctx, mfaTokenFor(s.ID),
@@ -280,7 +280,7 @@ func bodySites() []bodySite {
 		{
 			name: "recovery complete, readRecoveryForm", direct: true,
 			world: func(t *testing.T, ctx context.Context, extra ...httpsec.Option) (*httpsec.Chain, *http.Request, *capturingHandler) {
-				h := newRecoveryHarness(t)
+				h := newRecoveryHarness(t) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 				logs, logger := withLogs()
 				h.chainOpts = append(append(h.chainOpts, logger), extra...)
 				h.build(t)
@@ -293,19 +293,19 @@ func bodySites() []bodySite {
 			name: "passkey rename, postedPasskeyID's second read", direct: false, pass: 1,
 			world: func(t *testing.T, ctx context.Context, extra ...httpsec.Option) (*httpsec.Chain, *http.Request, *capturingHandler) {
 				h := newPasskeyHarness(t)
-				own := seedPasskey(t, h, testMFAUser, "cred-own", passkey.StateActive)
-				s := h.sessionIn(t, factor.Password, session.MFANone)
+				own := seedPasskey(t, h, testMFAUser, "cred-own", passkey.StateActive) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
+				s := h.sessionIn(t, factor.Password, session.MFANone)                  //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 				logs, logger := withLogs()
 				h.extra = append(append(h.extra, logger), extra...)
 
-				return h.build(t, s), post(ctx, passkeyRenamePath,
+				return h.build(t, s), post(ctx, passkeyRenamePath, //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 					url.Values{"id": {own.ID.String()}, "name": {"renamed"}}.Encode()), logs
 			},
 		},
 		{
 			name: "session management, revokeAccessChosen", direct: true,
 			world: func(t *testing.T, ctx context.Context, extra ...httpsec.Option) (*httpsec.Chain, *http.Request, *capturingHandler) {
-				chain, s, logs := bodyOIDCWorld(t, extra...)
+				chain, s, logs := bodyOIDCWorld(t, extra...) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 
 				req := httptest.NewRequestWithContext(ctx, http.MethodDelete, httpsec.DefaultSessionManagementPrefix,
 					strings.NewReader(`{"revoke_application_access":true}`))
@@ -317,7 +317,7 @@ func bodySites() []bodySite {
 		{
 			name: "OIDC token, readOIDCClientRequest", direct: true,
 			world: func(t *testing.T, ctx context.Context, extra ...httpsec.Option) (*httpsec.Chain, *http.Request, *capturingHandler) {
-				chain, _, logs := bodyOIDCWorld(t, extra...)
+				chain, _, logs := bodyOIDCWorld(t, extra...) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 
 				req := bodyPOST(ctx, tokenURL, formType, exchangeOf("code").Encode())
 				req.RemoteAddr = tokenAddr
@@ -329,7 +329,7 @@ func bodySites() []bodySite {
 		{
 			name: "OIDC userinfo, the form's token", direct: true,
 			world: func(t *testing.T, ctx context.Context, extra ...httpsec.Option) (*httpsec.Chain, *http.Request, *capturingHandler) {
-				chain, _, logs := bodyOIDCWorld(t, extra...)
+				chain, _, logs := bodyOIDCWorld(t, extra...) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 
 				return chain, bodyPOST(ctx, userInfoURL, formType, "access_token=presented"), logs
 			},
@@ -337,7 +337,7 @@ func bodySites() []bodySite {
 		{
 			name: "OIDC authorize, readOIDCAuthorizeParams", direct: false,
 			world: func(t *testing.T, ctx context.Context, extra ...httpsec.Option) (*httpsec.Chain, *http.Request, *capturingHandler) {
-				chain, _, logs := bodyOIDCWorld(t, extra...)
+				chain, _, logs := bodyOIDCWorld(t, extra...) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 
 				return chain, bodyPOST(ctx, opIssuer+flowAuthorizePath, formType, flowParams(flowWeb).Encode()), logs
 			},
@@ -345,7 +345,7 @@ func bodySites() []bodySite {
 		{
 			name: "OIDC logout confirm, readOIDCLogoutConfirm", direct: false,
 			world: func(t *testing.T, ctx context.Context, extra ...httpsec.Option) (*httpsec.Chain, *http.Request, *capturingHandler) {
-				chain, _, logs := bodyOIDCWorld(t, extra...)
+				chain, _, logs := bodyOIDCWorld(t, extra...) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 
 				return chain, bodyPOST(ctx, opIssuer+logoutConfirmPath, "application/json", `{"handle":"h"}`), logs
 			},
@@ -353,7 +353,7 @@ func bodySites() []bodySite {
 		{
 			name: "OIDC resume, readOIDCResumeRequest", direct: false,
 			world: func(t *testing.T, ctx context.Context, extra ...httpsec.Option) (*httpsec.Chain, *http.Request, *capturingHandler) {
-				chain, s, logs := bodyOIDCWorld(t, extra...)
+				chain, s, logs := bodyOIDCWorld(t, extra...) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 
 				req := bodyPOST(ctx, opIssuer+flowResumePath, "application/json", flowLoginBody("h"))
 				req.Header.Set("Authorization", "Bearer "+s.ID)
@@ -448,7 +448,7 @@ func TestPortErrors_RequestBody(t *testing.T) { //nolint:paralleltest // it repl
 					assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
 
 					if childRow != "" && !t.Failed() {
-						fmt.Fprintln(os.Stdout, bodyPortErrRan+row)
+						_, _ = fmt.Fprintln(os.Stdout, bodyPortErrRan+row)
 					}
 				})
 			}

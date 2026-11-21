@@ -152,7 +152,7 @@ func TestPortErrors_LogoutEndSessionURL(t *testing.T) { //nolint:paralleltest //
 				assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
 
 				if childRow != "" && !t.Failed() {
-					fmt.Fprintln(os.Stdout, logoutPortErrRan+row)
+					_, _ = fmt.Fprintln(os.Stdout, logoutPortErrRan+row)
 				}
 			})
 		}

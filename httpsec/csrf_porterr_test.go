@@ -142,6 +142,6 @@ func TestPortErrors_CSRFTokensVerify_ClaimedRefusal(t *testing.T) { //nolint:par
 		assertAbortRecord(t, abortRecords(alone.logs)[0], "budget")
 		assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
 
-		fmt.Fprintln(os.Stdout, csrfClaimPortErrRan+row)
+		_, _ = fmt.Fprintln(os.Stdout, csrfClaimPortErrRan+row)
 	})
 }

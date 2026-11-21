@@ -397,7 +397,7 @@ func refusingLocker(t *testing.T) *MockLocker {
 	locker := NewMockLocker(ctrl)
 	locker.EXPECT().Lock(gomock.Any(), "sweep:sessions").DoAndReturn(func(context.Context, string) (gocron.Lock, error) {
 		if calls.Add(1) == 1 {
-			return nil, lockPortPlain
+			return nil, errLockPortPlain
 		}
 
 		return lock, nil

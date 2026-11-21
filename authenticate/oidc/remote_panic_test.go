@@ -234,7 +234,7 @@ func TestRemoteFetch_ConsumerTransportPanics(t *testing.T) {
 			lookup: discovery,
 			fail: func() (*http.Response, error) {
 				var m map[string]int
-				m[rpPanicSecret] = 1 // assignment to entry in nil map
+				m[rpPanicSecret] = 1 //nolint:staticcheck // SA5000: the panic is the point: a runtime error from the consumer transport; assignment to entry in nil map
 				return nil, nil
 			},
 			assert: panicked("discovery document refresh", "runtime.plainError", 1),
@@ -409,7 +409,7 @@ func TestRemoteFetch_ConsumerTransportPanics(t *testing.T) {
 			tc.assert(t, run)
 
 			if !t.Failed() {
-				os.Stdout.WriteString("\n" + rpPanicRanMarker(tc.name) + "\n") //nolint:errcheck // a lost marker fails the parent
+				_, _ = os.Stdout.WriteString("\n" + rpPanicRanMarker(tc.name) + "\n") // a lost marker fails the parent
 			}
 		})
 	}

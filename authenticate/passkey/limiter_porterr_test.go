@@ -84,9 +84,8 @@ const (
 // limiterOutcome is what one ConfirmEmailCode call through a failing limiter
 // produced.
 type limiterOutcome struct {
-	err      error
-	text     string
-	panicked bool
+	err  error
+	text string
 
 	throttled   bool
 	emailInvald bool
@@ -124,7 +123,7 @@ func limiterJSONRecords(t *testing.T, out string) []map[string]any {
 // runLimiterSite runs ConfirmEmailCode on ctx against a consumer limiter that
 // fails the call site names with limiterErr. It fails the test when the call
 // hangs.
-func runLimiterSite(t *testing.T, ctx context.Context, site limiterSite, limiterErr error) limiterOutcome {
+func runLimiterSite(ctx context.Context, t *testing.T, site limiterSite, limiterErr error) limiterOutcome {
 	t.Helper()
 
 	var out limiterOutcome
@@ -153,8 +152,8 @@ func runLimiterSite(t *testing.T, ctx context.Context, site limiterSite, limiter
 	code := "000000"
 
 	if site == limiterRecord {
-		challenge := f.begin(t, m, s)
-		_, err := m.FinishRegistration(t.Context(), s, regBody(challenge, "cred-a", ""), rc)
+		challenge := f.begin(t, m, s)                                                        //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
+		_, err := m.FinishRegistration(t.Context(), s, regBody(challenge, "cred-a", ""), rc) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		require.NoError(t, err)
 
 		code = wrongCode(emailedCode(t, f))
@@ -355,10 +354,10 @@ func TestPortErrors_ConfirmLimiter(t *testing.T) { //nolint:paralleltest // it r
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := runLimiterSite(t, ctx, tc.site, errConfirmLimiterDown)
+			plain := runLimiterSite(ctx, t, tc.site, errConfirmLimiterDown)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := runLimiterSite(t, ctx, tc.site, tc.err)
+			got := runLimiterSite(ctx, t, tc.site, tc.err)
 			tc.assert(t, plain, got)
 
 			for _, rec := range limiterJSONRecords(t, defaults.String()) {

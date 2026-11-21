@@ -78,7 +78,7 @@ type pe7iOutcome struct {
 // pe7iRun seeds a grant, a browser session and a consent of one user, then
 // calls site's flow on ctx while site's port call fails with portErr. It fails
 // the test when the call hangs, lets a panic escape, or never reaches site.
-func pe7iRun(t *testing.T, ctx context.Context, site pe7eSite, portErr error) pe7iOutcome {
+func pe7iRun(ctx context.Context, t *testing.T, site pe7eSite, portErr error) pe7iOutcome {
 	t.Helper()
 
 	logs := &lockedBuffer{}
@@ -120,18 +120,18 @@ func pe7iRun(t *testing.T, ctx context.Context, site pe7eSite, portErr error) pe
 	require.NoError(t, err)
 	digest := digestOf(t, pe7eSessionSecret)
 
-	require.NoError(t, memGrants.Create(t.Context(), &oidcprovider.Grant{
+	require.NoError(t, memGrants.Create(t.Context(), &oidcprovider.Grant{ //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		Family: grantFamily, User: user, ClientID: clientID, Scopes: []string{"openid"},
 		SignInFamily: family, AuthTime: now, CreatedAt: now, ExpiresAt: now.Add(time.Hour),
 	}))
-	require.NoError(t, memSessions.Put(t.Context(), &oidcprovider.BrowserSession{
+	require.NoError(t, memSessions.Put(t.Context(), &oidcprovider.BrowserSession{ //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		Digest: digest,
 		SignIn: oidcprovider.SignIn{
 			User: user, Family: family, AuthenticatedAt: now, AMR: []string{"pwd"}, AbsoluteExpiresAt: now.Add(time.Hour),
 		},
 		IdleExpiresAt: now.Add(time.Hour), AbsoluteExpiresAt: now.Add(time.Hour),
 	}))
-	require.NoError(t, memConsents.Give(t.Context(), user, clientID, []string{"openid"}, false, now))
+	require.NoError(t, memConsents.Give(t.Context(), user, clientID, []string{"openid"}, false, now)) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 
 	ctrl := gomock.NewController(t)
 
@@ -247,7 +247,7 @@ func pe7iRun(t *testing.T, ctx context.Context, site pe7eSite, portErr error) pe
 
 	var handle, flow string
 	if site == pe7iConfirmEnd {
-		res, err := p.EndSession(t.Context(), oidcprovider.EndSessionInput{Params: url.Values{}})
+		res, err := p.EndSession(t.Context(), oidcprovider.EndSessionInput{Params: url.Values{}}) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		require.NoError(t, err)
 
 		loc, err := url.Parse(res.Location)
@@ -314,14 +314,14 @@ func pe7iRun(t *testing.T, ctx context.Context, site pe7eSite, portErr error) pe
 	}
 	require.Positive(t, reached[site], "the call reached %s", site)
 
-	g, err := memGrants.Load(t.Context(), grantFamily)
+	g, err := memGrants.Load(t.Context(), grantFamily) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	require.NoError(t, err)
 	out.grantRevoked, out.grantEnded = g.Revoked, !g.SignInEndedAt.IsZero()
 
-	_, err = memSessions.Load(t.Context(), digest, now)
+	_, err = memSessions.Load(t.Context(), digest, now) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	out.browserHeld = err == nil
 
-	_, err = memConsents.Load(t.Context(), user, clientID)
+	_, err = memConsents.Load(t.Context(), user, clientID) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	out.consentHeld = err == nil
 
 	out.aborts, _ = pe7eAbortsAndLogs(t, logs.String(), "")
@@ -413,7 +413,7 @@ func TestPortErrors_EndAndRevoke(t *testing.T) { //nolint:paralleltest // it rep
 				name: prefix + "a typed-nil root walks to the end and is answered as an outage",
 				site: site, err: (*pe7bTypedNil)(nil), assert: walked,
 			},
-			testCase{name: prefix + "a plain outage, against itself", site: site, err: pe7bErrDown, assert: walked},
+			testCase{name: prefix + "a plain outage, against itself", site: site, err: errPe7bDown, assert: walked},
 		)
 	}
 
@@ -436,12 +436,12 @@ func TestPortErrors_EndAndRevoke(t *testing.T) { //nolint:paralleltest // it rep
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := pe7iRun(t, ctx, tc.site, pe7bErrDown)
+			plain := pe7iRun(ctx, t, tc.site, errPe7bDown)
 			require.True(t, plain.failed, "precondition: a plain outage fails the call")
 			require.True(t, plain.dependency, "precondition: a plain outage is a dependency failure")
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := pe7iRun(t, ctx, tc.site, tc.err)
+			got := pe7iRun(ctx, t, tc.site, tc.err)
 			tc.assert(t, plain, got)
 
 			pe7cNoDefaultAbort(t, defaults)

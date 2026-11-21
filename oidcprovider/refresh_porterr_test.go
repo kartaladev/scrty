@@ -38,9 +38,9 @@ const pe7dRowEnv = "SCRTY_OIDCPROVIDER_PE7D_PORTERR_ROW"
 // after the row ran and passed.
 const pe7dRanMarker = "SCRTY_OIDCPROVIDER_PE7D_PORTERR_RAN: "
 
-// pe7dNoRecord is no error a port returns: the grant store given it answers a
+// errPe7dNoRecord is no error a port returns: the grant store given it answers a
 // load with neither a record nor an error, a port breaking its contract.
-var pe7dNoRecord = errors.New("pe7d: answer no record and no error")
+var errPe7dNoRecord = errors.New("pe7d: answer no record and no error")
 
 // pe7dSite names the port call of a refresh a row fails, and through it the
 // scene the refresh starts from.
@@ -81,7 +81,7 @@ type pe7dLineage struct {
 // DeleteFamily implements session.Store.
 func (l *pe7dLineage) DeleteFamily(ctx context.Context, family id.ID) (int, error) {
 	if l.failDelete.Load() {
-		return 0, pe7bErrDown
+		return 0, errPe7bDown
 	}
 
 	return l.Store.DeleteFamily(ctx, family)
@@ -151,7 +151,7 @@ func pe7dClassify(err error) (o pe7dOutcome) {
 // site's scene, and refreshes on ctx while site's port call fails with
 // portErr. It fails the test when the refresh hangs, lets a panic escape, or
 // never reaches site.
-func pe7dRun(t *testing.T, ctx context.Context, site pe7dSite, portErr error) pe7dOutcome {
+func pe7dRun(ctx context.Context, t *testing.T, site pe7dSite, portErr error) pe7dOutcome {
 	t.Helper()
 
 	logs := &lockedBuffer{}
@@ -187,7 +187,7 @@ func pe7dRun(t *testing.T, ctx context.Context, site pe7dSite, portErr error) pe
 	grants.EXPECT().Load(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(ctx context.Context, family id.ID) (*oidcprovider.Grant, error) {
 			if armed.Load() && loads.Add(1) == 1 && site == pe7dGrantLoad {
-				if portErr == pe7dNoRecord { //nolint:errorlint // identity: errors.Is would walk the hostile error
+				if portErr == errPe7dNoRecord { //nolint:errorlint // identity: errors.Is would walk the hostile error
 					hits.Add(1)
 
 					return nil, nil
@@ -257,21 +257,21 @@ func pe7dRun(t *testing.T, ctx context.Context, site pe7dSite, portErr error) pe
 		oidcprovider.WithLogger(logger),
 	)
 
-	c := issueCodeFor(t, f, opaqueClient, func(v url.Values) {
+	c := issueCodeFor(t, f, opaqueClient, func(v url.Values) { //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		asClient(v, opaqueClient, opaqueRedirect)
 		v.Set("scope", "openid offline_access")
 	}, testSignIn(f, "u-1"), "openid", "offline_access")
-	first, err := f.p.Token(t.Context(), confidentialExchange(opaqueClient, opaqueRedirect, c, nil))
+	first, err := f.p.Token(t.Context(), confidentialExchange(opaqueClient, opaqueRedirect, c, nil)) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	require.NoError(t, err, "precondition: the exchange succeeds")
 	require.NotEmpty(t, first.RefreshToken, "precondition: the grant holds a refresh token")
-	family := grantOf(t, &exchangeFixture{parkFixture: f}, c).Family
+	family := grantOf(t, &exchangeFixture{parkFixture: f}, c).Family //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 
 	refreshOf := func(raw string) oidcprovider.TokenRequest { return refreshRequest(opaqueClient, raw, nil) }
 
 	var newest string
 
 	if pe7dReuses(site) {
-		second, err := f.p.Token(t.Context(), refreshOf(first.RefreshToken))
+		second, err := f.p.Token(t.Context(), refreshOf(first.RefreshToken)) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		require.NoError(t, err, "precondition: the first refresh succeeds")
 		newest = second.RefreshToken
 		clk.Advance(30 * time.Second)
@@ -321,25 +321,25 @@ func pe7dRun(t *testing.T, ctx context.Context, site pe7dSite, portErr error) pe
 	lineage.failDelete.Store(false)
 	require.Positive(t, hits.Load(), "the refresh reached %s", site)
 
-	grant, err := memGrants.Load(t.Context(), family)
+	grant, err := memGrants.Load(t.Context(), family) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	require.NoError(t, err)
 	out.grantRevoked, out.revokeCause = grant.Revoked, grant.RevokeCause
 
-	heads, err := memLineage.ListByUser(t.Context(), "u-1", clk.Now())
+	heads, err := memLineage.ListByUser(t.Context(), "u-1", clk.Now()) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	require.NoError(t, err)
 	out.liveHeads = len(heads)
 
 	out.stored = stored.Load()
 	close(storedIDs)
 	for tokenID := range storedIDs {
-		held, err := memAccess.Load(t.Context(), tokenID)
+		held, err := memAccess.Load(t.Context(), tokenID) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		require.NoError(t, err)
 		if !held.Revoked {
 			out.storedLive++
 		}
 	}
 
-	answer := func(raw string) pe7dAnswer {
+	answer := func(raw string) pe7dAnswer { //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		res, err := f.p.Token(t.Context(), refreshOf(raw))
 		o := pe7dClassify(err)
 
@@ -517,7 +517,7 @@ func TestPortErrors_RefreshGrant(t *testing.T) { //nolint:paralleltest // it rep
 			},
 			testCase{
 				name: prefix + "a plain outage, against itself",
-				site: site, err: pe7bErrDown, assert: walked,
+				site: site, err: errPe7bDown, assert: walked,
 			},
 		)
 	}
@@ -541,10 +541,10 @@ func TestPortErrors_RefreshGrant(t *testing.T) { //nolint:paralleltest // it rep
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := pe7dRun(t, ctx, tc.site, pe7bErrDown)
+			plain := pe7dRun(ctx, t, tc.site, errPe7bDown)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := pe7dRun(t, ctx, tc.site, tc.err)
+			got := pe7dRun(ctx, t, tc.site, tc.err)
 			tc.assert(t, plain, got)
 
 			pe7cNoDefaultAbort(t, defaults)
@@ -567,7 +567,7 @@ func TestPortErrors_RefreshGrantAnswersNothing(t *testing.T) { //nolint:parallel
 		name string
 		site pe7dSite
 		// nothing is the port error that makes site's port answer no record
-		// and no error: pe7dNoRecord for the grant store, and nil for the user
+		// and no error: errPe7dNoRecord for the grant store, and nil for the user
 		// loader, which then answers (nil, nil).
 		nothing error
 		assert  func(t *testing.T, plain, got pe7dOutcome)
@@ -582,7 +582,7 @@ func TestPortErrors_RefreshGrantAnswersNothing(t *testing.T) { //nolint:parallel
 	}
 
 	cases := []testCase{
-		{name: "the refresh's grant", site: pe7dGrantLoad, nothing: pe7dNoRecord, assert: nothingWalked},
+		{name: "the refresh's grant", site: pe7dGrantLoad, nothing: errPe7dNoRecord, assert: nothingWalked},
 		{name: "the grant's user", site: pe7dUserLoad, nothing: nil, assert: nothingWalked},
 	}
 
@@ -590,8 +590,8 @@ func TestPortErrors_RefreshGrantAnswersNothing(t *testing.T) { //nolint:parallel
 		t.Run(tc.name, func(t *testing.T) {
 			defaults := pe7cSwapDefault(t)
 
-			plain := pe7dRun(t, t.Context(), tc.site, pe7bErrDown)
-			got := pe7dRun(t, t.Context(), tc.site, tc.nothing)
+			plain := pe7dRun(t.Context(), t, tc.site, errPe7bDown)
+			got := pe7dRun(t.Context(), t, tc.site, tc.nothing)
 			tc.assert(t, plain, got)
 
 			pe7cNoDefaultAbort(t, defaults)

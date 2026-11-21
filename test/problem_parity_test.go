@@ -36,6 +36,7 @@ import (
 	"github.com/kartaladev/prblm"
 	"github.com/kartaladev/prblm/adapters/fiberprblm"
 	"github.com/kartaladev/prblm/adapters/ginprblm"
+
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
@@ -56,12 +57,13 @@ import (
 	"github.com/kartaladev/scrty/token/signingkey"
 )
 
+const parityUserID identity.UserID = "u-1"
+
 const (
-	parityUserID   identity.UserID = "u-1"
-	parityUsername                 = "ada"
-	parityPassword                 = "s3cret" //nolint:gosec // a fixture credential
-	parityPeer                     = "198.51.100.7"
-	parityOrigin                   = "http://example.com"
+	parityUsername = "ada"
+	parityPassword = "s3cret" //nolint:gosec // a fixture credential
+	parityPeer     = "198.51.100.7"
+	parityOrigin   = "http://example.com"
 
 	paritySecuredPath = "/records/r-1"
 	parityBoomPath    = "/boom"
@@ -236,7 +238,7 @@ func newParityWorld(t *testing.T) *parityWorld {
 	require.NoError(t, method.ConfirmEnrolment(t.Context(), parityUserID,
 		must.Must(totp.GenerateCode(provisioning.Secret, time.Now()))))
 
-	registry := must.Must(oidc.NewRegistry(oidc.Provider{
+	registry := must.Must(oidc.NewRegistry(oidc.Provider{ //nolint:gosec // G101: a fixture, not a credential
 		Name: "corp", Issuer: "https://idp.example", ClientID: "c", ClientSecret: "s",
 		RedirectURL:           "https://app.example/sso/callback/corp",
 		AuthorizationEndpoint: "https://idp.example/authorize",

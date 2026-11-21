@@ -29,7 +29,7 @@ import (
 )
 
 // rstSecret is the text every hostile error here returns.
-const rstSecret = "reset-port-secret-text"
+const rstSecret = "reset-port-secret-text" //nolint:gosec // G101: a fixture, not a credential
 
 // rstRowEnv names the row a child process runs. It is empty in the parent.
 const rstRowEnv = "SCRTY_MFA_RESET_PORTERR_ROW"
@@ -98,7 +98,7 @@ type rstOutcome struct {
 
 // runRstSite runs a full reset with every step on and site failing with
 // portErr. It is bounded: a hang is reported, not waited for.
-func runRstSite(t *testing.T, ctx context.Context, site rstSite, portErr error) rstOutcome {
+func runRstSite(ctx context.Context, t *testing.T, site rstSite, portErr error) rstOutcome {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -311,14 +311,14 @@ func TestPortErrors_Reset(t *testing.T) { //nolint:paralleltest // it replaces s
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := runRstSite(t, ctx, tc.site, errRstDown)
+			plain := runRstSite(ctx, t, tc.site, errRstDown)
 			require.False(t, plain.hung)
 			require.False(t, plain.panicked, "the reset panicked on a plain outage")
 			require.Error(t, plain.err, "the plain outage is returned")
 			require.ErrorIs(t, plain.err, errRstDown)
 			require.Empty(t, rstAborts(t, defaults.Bytes()), "a plain outage writes no abort record")
 
-			got := runRstSite(t, ctx, tc.site, tc.err)
+			got := runRstSite(ctx, t, tc.site, tc.err)
 			require.False(t, got.hung, "the reset hung on a hostile error")
 			require.False(t, got.panicked, "the reset panicked on a hostile error")
 

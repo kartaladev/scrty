@@ -34,9 +34,9 @@ const pe7hRowEnv = "SCRTY_OIDCPROVIDER_PE7H_PORTERR_ROW"
 // after the row ran and passed.
 const pe7hRanMarker = "SCRTY_OIDCPROVIDER_PE7H_PORTERR_RAN: "
 
-// pe7hNoRecord is not returned: a site given it answers a load with neither a
+// errPe7hNoRecord is not returned: a site given it answers a load with neither a
 // record nor an error, a port breaking its contract.
-var pe7hNoRecord = errors.New("pe7h: answer no record and no error")
+var errPe7hNoRecord = errors.New("pe7h: answer no record and no error")
 
 const (
 	// An authorization request answered from a browser session whose user
@@ -47,10 +47,10 @@ const (
 
 // pe7hAuthorizeRun holds a browser session and a remembered consent, and sends
 // an authorization request the session answers from at once, on ctx, while
-// site's port call fails with portErr. pe7hNoRecord makes the consent load
+// site's port call fails with portErr. errPe7hNoRecord makes the consent load
 // answer (nil, nil). It fails the test when the request hangs, lets a panic
 // escape, or never reaches site.
-func pe7hAuthorizeRun(t *testing.T, ctx context.Context, site pe7eSite, portErr error) pe7eAuthorizeOutcome {
+func pe7hAuthorizeRun(ctx context.Context, t *testing.T, site pe7eSite, portErr error) pe7eAuthorizeOutcome {
 	t.Helper()
 
 	logs := &lockedBuffer{}
@@ -66,12 +66,12 @@ func pe7hAuthorizeRun(t *testing.T, ctx context.Context, site pe7eSite, portErr 
 	require.NoError(t, err)
 	memConsents, err := oidcprovider.NewMemoryConsentStore()
 	require.NoError(t, err)
-	require.NoError(t, memConsents.Give(t.Context(), "u-1", "billing-web", []string{"openid", "profile"}, false, now))
+	require.NoError(t, memConsents.Give(t.Context(), "u-1", "billing-web", []string{"openid", "profile"}, false, now)) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 
 	family, err := id.NewV7Generator().NewID()
 	require.NoError(t, err)
 	digest := digestOf(t, pe7eSessionSecret)
-	require.NoError(t, memSessions.Put(t.Context(), &oidcprovider.BrowserSession{
+	require.NoError(t, memSessions.Put(t.Context(), &oidcprovider.BrowserSession{ //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		Digest: digest,
 		SignIn: oidcprovider.SignIn{
 			User: "u-1", Family: family, AuthenticatedAt: now.Add(-time.Minute), AMR: []string{"pwd"},
@@ -108,7 +108,7 @@ func pe7hAuthorizeRun(t *testing.T, ctx context.Context, site pe7eSite, portErr 
 		func(ctx context.Context, user identity.UserID, clientID string) (*oidcprovider.Consent, error) {
 			if armed.Load() && site == pe7hConsentLoad {
 				hits.Add(1)
-				if portErr == pe7hNoRecord { //nolint:errorlint // identity: errors.Is would walk the hostile error
+				if portErr == errPe7hNoRecord { //nolint:errorlint // identity: errors.Is would walk the hostile error
 					return nil, nil
 				}
 
@@ -157,12 +157,12 @@ func pe7hAuthorizeRun(t *testing.T, ctx context.Context, site pe7eSite, portErr 
 	armed.Store(false)
 	require.Positive(t, hits.Load(), "the request reached %s", site)
 
-	_, err = memSessions.Load(t.Context(), digest, now.Add(2*time.Minute))
+	_, err = memSessions.Load(t.Context(), digest, now.Add(2*time.Minute)) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	if !errors.Is(err, oidcprovider.ErrNotFound) {
 		require.NoError(t, err)
 		out.touched = true
 	}
-	out.codes = codesHeld(t, f.parkFixture, "u-1", "billing-web")
+	out.codes = codesHeld(t, f.parkFixture, "u-1", "billing-web") //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 
 	out.aborts, _ = pe7eAbortsAndLogs(t, logs.String(), "")
 
@@ -231,13 +231,13 @@ func TestPortErrors_ConsentAndSessionTouch(t *testing.T) { //nolint:paralleltest
 				name: prefix + "a typed-nil root walks to the end and is answered as an outage",
 				site: site, err: (*pe7bTypedNil)(nil), assert: walked,
 			},
-			testCase{name: prefix + "a plain outage, against itself", site: site, err: pe7bErrDown, assert: walked},
+			testCase{name: prefix + "a plain outage, against itself", site: site, err: errPe7bDown, assert: walked},
 		)
 	}
 
 	cases = append(cases, testCase{
 		name: string(pe7hConsentLoad) + ": a store answering no record and no error is answered as an outage",
-		site: pe7hConsentLoad, err: pe7hNoRecord, assert: walked,
+		site: pe7hConsentLoad, err: errPe7hNoRecord, assert: walked,
 	})
 
 	for _, tc := range cases {
@@ -259,10 +259,10 @@ func TestPortErrors_ConsentAndSessionTouch(t *testing.T) { //nolint:paralleltest
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := pe7hAuthorizeRun(t, ctx, tc.site, pe7bErrDown)
+			plain := pe7hAuthorizeRun(ctx, t, tc.site, errPe7bDown)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := pe7hAuthorizeRun(t, ctx, tc.site, tc.err)
+			got := pe7hAuthorizeRun(ctx, t, tc.site, tc.err)
 			tc.assert(t, plain, got)
 
 			pe7cNoDefaultAbort(t, defaults)
@@ -289,7 +289,7 @@ type pe7hDeleteOutcome struct {
 // the resume replaces, on ctx, while the delete of the replaced session fails
 // with portErr. It fails the test when the resume hangs, lets a panic escape,
 // or never deletes.
-func pe7hDeleteRun(t *testing.T, ctx context.Context, portErr error) pe7hDeleteOutcome {
+func pe7hDeleteRun(ctx context.Context, t *testing.T, portErr error) pe7hDeleteOutcome {
 	t.Helper()
 
 	logs := &lockedBuffer{}
@@ -323,7 +323,7 @@ func pe7hDeleteRun(t *testing.T, ctx context.Context, portErr error) pe7hDeleteO
 		oidcprovider.WithLogger(logger),
 	)
 
-	r := park(t, f.parkFixture, nil)
+	r := park(t, f.parkFixture, nil) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	signIn := testSignIn(f.parkFixture, "u-1")
 	in := r.input(&signIn)
 	in.BrowserSessionSecret = pe7eSessionSecret
@@ -380,7 +380,7 @@ func TestPortErrors_ReplacedSessionDelete(t *testing.T) { //nolint:paralleltest 
 
 	cases = append(cases,
 		testCase{name: "a typed-nil root walks to the end and is answered as an outage", err: (*pe7bTypedNil)(nil)},
-		testCase{name: "a plain outage, against itself", err: pe7bErrDown},
+		testCase{name: "a plain outage, against itself", err: errPe7bDown},
 	)
 
 	for _, tc := range cases {
@@ -402,13 +402,13 @@ func TestPortErrors_ReplacedSessionDelete(t *testing.T) { //nolint:paralleltest 
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := pe7hDeleteRun(t, ctx, pe7bErrDown)
+			plain := pe7hDeleteRun(ctx, t, errPe7bDown)
 			require.NoError(t, plain.err, "precondition: a plain failure of the delete costs no answer")
 			require.True(t, plain.hasSecret, "precondition: the resume hands out the new session")
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 			require.Len(t, plain.failures, 1, "precondition: a plain failure of the delete is logged")
 
-			got := pe7hDeleteRun(t, ctx, tc.err)
+			got := pe7hDeleteRun(ctx, t, tc.err)
 			assert.NoError(t, got.err, "the resume still wins")
 			assert.Equal(t, plain.at, got.at, "redirected to the same place")
 			assert.Equal(t, plain.hasSecret, got.hasSecret, "the new session, as for a plain failure")

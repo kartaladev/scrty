@@ -248,7 +248,7 @@ func obsSites() []obsSite {
 
 // obsRunSite provokes site with fail on a fresh logger, with slog.Default
 // swapped for another buffer, and returns what each of the two received.
-func obsRunSite(t *testing.T, ctx context.Context, site obsSite, fail error) (own, def string) {
+func obsRunSite(ctx context.Context, t *testing.T, site obsSite, fail error) (own, def string) {
 	t.Helper()
 
 	var ownBuf, defBuf bytes.Buffer
@@ -342,7 +342,7 @@ func TestObsPortErrors_LogOnlyReads(t *testing.T) {
 						return
 					}
 
-					own, def := obsRunSite(t, t.Context(), site, tc.err())
+					own, def := obsRunSite(t.Context(), t, site, tc.err())
 
 					assert.Equal(t, 1, strings.Count(own, site.msg),
 						"the site's own record must be written once, as for a plain outage:\n%s", own)
@@ -368,7 +368,7 @@ func TestObsPortErrors_CancelledContext(t *testing.T) {
 	cancel()
 
 	site := obsSites()[1]
-	own, def := obsRunSite(t, ctx, site, &obsCycleOne{})
+	own, def := obsRunSite(ctx, t, site, &obsCycleOne{})
 
 	assert.Equal(t, 1, strings.Count(own, site.msg), "the site's own record:\n%s", own)
 	assert.Equal(t, 1, strings.Count(own, porterr.MsgClassificationAborted), "the abort record:\n%s", own)
@@ -538,7 +538,7 @@ type obsPassOutcome struct {
 // obsPassRun runs site with fail over a policy logging to its own buffer, and
 // reads the returned error as a caller would, all inside one bounded call so a
 // returned error that loops forever fails the row instead of hanging it.
-func obsPassRun(t *testing.T, ctx context.Context, site obsPassSite, fail error) obsPassOutcome {
+func obsPassRun(ctx context.Context, t *testing.T, site obsPassSite, fail error) obsPassOutcome {
 	t.Helper()
 
 	var ownBuf, defBuf bytes.Buffer
@@ -661,7 +661,7 @@ func TestObsPortErrors_PassUp(t *testing.T) {
 						return
 					}
 
-					o := obsPassRun(t, t.Context(), site, tc.err())
+					o := obsPassRun(t.Context(), t, site, tc.err())
 
 					require.Error(t, o.got)
 					assert.NoError(t, o.walkAbort, "the returned error must be walkable")
@@ -689,7 +689,7 @@ func TestObsPortErrors_PassUpCancelledContext(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			cancel()
 
-			o := obsPassRun(t, ctx, site, &obsCycleOne{})
+			o := obsPassRun(ctx, t, site, &obsCycleOne{})
 
 			require.Error(t, o.got)
 			assert.True(t, o.isUnwalk, "must come back matching porterr.ErrUnwalkable")

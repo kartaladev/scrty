@@ -34,9 +34,9 @@ const prndRowEnv = "SCRTY_OIDCPROVIDER_RANDOM_PORTERR_ROW"
 const prndRanMarker = "SCRTY_OIDCPROVIDER_RANDOM_PORTERR_RAN: "
 
 // prndSecret is text no record and no response may quote.
-const prndSecret = "prnd-secret: ana@example.com"
+const prndSecret = "prnd-secret: ana@example.com" //nolint:gosec // G101: a fixture, not a credential
 
-var prndOutage = errors.New("prnd: entropy source down, " + prndSecret)
+var errPrndOutage = errors.New("prnd: entropy source down, " + prndSecret)
 
 type prndCycleOne struct{}
 
@@ -239,7 +239,7 @@ func TestPortErrors_PendingRandom(t *testing.T) { //nolint:paralleltest // it re
 
 	cases = append(cases,
 		testCase{name: "a typed-nil root walks to the end and is answered as an error", err: (*prndTypedNil)(nil), assert: walked},
-		testCase{name: "a plain error, against itself", err: prndOutage, assert: walked},
+		testCase{name: "a plain error, against itself", err: errPrndOutage, assert: walked},
 	)
 
 	for _, tc := range cases {
@@ -254,7 +254,7 @@ func TestPortErrors_PendingRandom(t *testing.T) { //nolint:paralleltest // it re
 				return
 			}
 
-			plain := prndRun(t, prndOutage)
+			plain := prndRun(t, errPrndOutage)
 			require.Empty(t, plain.aborts, "a plain error writes no abort record")
 			require.Empty(t, plain.defaults, "a plain error writes no abort record")
 

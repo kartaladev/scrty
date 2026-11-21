@@ -302,7 +302,7 @@ func TestPortErrors_BackchannelLinkStore(t *testing.T) { //nolint:paralleltest /
 				assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
 
 				if childRow != "" && !t.Failed() {
-					fmt.Fprintln(os.Stdout, backchannelPortErrRan+row)
+					_, _ = fmt.Fprintln(os.Stdout, backchannelPortErrRan+row)
 				}
 			})
 		}

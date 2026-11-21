@@ -24,7 +24,7 @@ import (
 const (
 	housekeepingRowEnv    = "SCRTY_SESSION_HOUSEKEEPING_ROW"
 	housekeepingMarker    = "housekeeping survived"
-	housekeepingSecretVal = "sekret-clock-value"
+	housekeepingSecretVal = "sekret-clock-value" //nolint:gosec // G101: a fixture, not a credential
 )
 
 // scriptedClock is a clock.Timed whose first After and first Now call run the
@@ -112,7 +112,7 @@ func housekeepingRows() map[string]housekeepingRow {
 		"after-runtime-error": {func() *scriptedClock {
 			return &scriptedClock{after: func() <-chan time.Time {
 				var m map[string]int
-				m[housekeepingSecretVal] = 1
+				m[housekeepingSecretVal] = 1 //nolint:staticcheck // SA5000: the panic is the point: a runtime error from the consumer clock
 
 				return nil
 			}}
@@ -198,7 +198,7 @@ func TestHousekeepingChild(t *testing.T) {
 func TestHousekeepingSurvivesConsumerClockFailure(t *testing.T) {
 	for name := range housekeepingRows() {
 		t.Run(name, func(t *testing.T) {
-			cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestHousekeepingChild$", "-test.count=1")
+			cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestHousekeepingChild$", "-test.count=1") //nolint:gosec // G204: this test binary re-executed with fixed arguments
 			cmd.Env = append(os.Environ(), housekeepingRowEnv+"="+name)
 			var out bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &out, &out

@@ -40,8 +40,8 @@ const pregRowEnv = "SCRTY_PASSKEY_REGISTER_PORTERR_ROW"
 // after the row ran and passed.
 const pregRanMarker = "SCRTY_PASSKEY_REGISTER_PORTERR_RAN: "
 
-// pregOutage is the plain outage the parity runs fail with.
-var pregOutage = errors.New("store: connection refused")
+// errPregOutage is the plain outage the parity runs fail with.
+var errPregOutage = errors.New("store: connection refused")
 
 type pregCycleOne struct{}
 
@@ -649,7 +649,7 @@ func TestPortErrors_Register(t *testing.T) { //nolint:paralleltest // it replace
 
 			defaults := pregDefaultRecords(t)
 
-			plain := runRegisterSite(t, tc.site, pregOutage, tc.cancelDuring)
+			plain := runRegisterSite(t, tc.site, errPregOutage, tc.cancelDuring)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
 			got := runRegisterSite(t, tc.site, tc.err, tc.cancelDuring)

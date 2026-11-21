@@ -36,7 +36,7 @@ const pe6aRanMarker = "SCRTY_OIDC_LOGIN_PORTERR_RAN: "
 
 // pe6aSecret is the text of every hostile error. No returned error and no
 // record may quote it.
-const pe6aSecret = "port-secret-6a: dsn=postgres://admin:hunter2@db"
+const pe6aSecret = "port-secret-6a: dsn=postgres://admin:hunter2@db" //nolint:gosec // G101: a fixture, not a credential
 
 // pe6aCycleOne contains itself through Unwrap() error.
 type pe6aCycleOne struct{}

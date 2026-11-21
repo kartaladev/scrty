@@ -40,8 +40,8 @@ const pe7aRowEnv = "SCRTY_OIDCPROVIDER_PE7A_PORTERR_ROW"
 // after the row ran and passed.
 const pe7aRanMarker = "SCRTY_OIDCPROVIDER_PE7A_PORTERR_RAN: "
 
-// pe7aErrDown is the plain outage the parity runs fail with.
-var pe7aErrDown = errors.New("pe7a: connection refused, " + pe7aSecret)
+// errPe7aDown is the plain outage the parity runs fail with.
+var errPe7aDown = errors.New("pe7a: connection refused, " + pe7aSecret)
 
 // pe7aCycleOne contains itself through Unwrap() error.
 type pe7aCycleOne struct{}
@@ -134,7 +134,7 @@ type pe7aOutcome struct {
 // pe7aRun runs the endpoint that reaches site's port call, on ctx, against a
 // port that fails that call with portErr. It fails the test when the call
 // hangs or lets a panic escape.
-func pe7aRun(t *testing.T, ctx context.Context, site pe7aSite, hintKey *rsa.PrivateKey, portErr error) pe7aOutcome {
+func pe7aRun(ctx context.Context, t *testing.T, site pe7aSite, hintKey *rsa.PrivateKey, portErr error) pe7aOutcome {
 	t.Helper()
 
 	logs := &lockedBuffer{}
@@ -466,10 +466,10 @@ func TestPortErrors_ProviderReads(t *testing.T) { //nolint:paralleltest // it re
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := pe7aRun(t, ctx, tc.site, hintKey, pe7aErrDown)
+			plain := pe7aRun(ctx, t, tc.site, hintKey, errPe7aDown)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := pe7aRun(t, ctx, tc.site, hintKey, tc.err)
+			got := pe7aRun(ctx, t, tc.site, hintKey, tc.err)
 			tc.assert(t, plain, got)
 
 			pe7aNoDefaultAborts(t, defaults)
@@ -611,7 +611,7 @@ func TestPortErrors_DropReportRegistry(t *testing.T) { //nolint:paralleltest // 
 
 			defaults := pe7aDefaultRecords(t)
 
-			plain := pe7aRunDrop(t, pe7aErrDown)
+			plain := pe7aRunDrop(t, errPe7aDown)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
 			got := pe7aRunDrop(t, tc.err)

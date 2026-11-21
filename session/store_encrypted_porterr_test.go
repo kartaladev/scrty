@@ -471,7 +471,7 @@ func peClass(t *testing.T, flow peFlow, got error) peFacts {
 	assert.False(t, f.unreadable, "a hostile error must not end the session")
 	assert.NotContains(t, f.text, peSecret)
 
-	if flow.unavailable == session.ErrCipherUnavailable {
+	if errors.Is(flow.unavailable, session.ErrCipherUnavailable) {
 		assert.True(t, f.cipher, "the outage branch of the cipher read")
 	}
 
@@ -543,7 +543,7 @@ func TestPortErrors_EncryptedStore(t *testing.T) { //nolint:paralleltest // swap
 				case kind.hostile:
 					f := peClass(t, flow, got)
 					assert.Len(t, rec.aborts(), 1, "exactly one abort record, to slog.Default()")
-					if flow.unavailable == porterr.ErrUnwalkable {
+					if errors.Is(flow.unavailable, porterr.ErrUnwalkable) {
 						assert.True(t, f.unwalkable)
 					}
 				case kind.name == "a typed-nil root":
@@ -551,7 +551,7 @@ func TestPortErrors_EncryptedStore(t *testing.T) { //nolint:paralleltest // swap
 				default: // already sanitized
 					f := peClass(t, flow, got)
 					assert.Empty(t, rec.aborts(), "a fault already sanitized writes no second record")
-					if flow.unavailable == session.ErrCipherUnavailable {
+					if errors.Is(flow.unavailable, session.ErrCipherUnavailable) {
 						assert.True(t, f.cipher)
 					} else {
 						assert.True(t, f.unwalkable)

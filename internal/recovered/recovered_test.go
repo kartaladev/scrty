@@ -149,7 +149,7 @@ func TestCall(t *testing.T) { // not parallel: rows swap slog's default logger
 			name: "runtime error (nil map write)",
 			f: func() error {
 				var m map[string]int
-				m["k"] = 1
+				m["k"] = 1 //nolint:staticcheck // SA5000: the panic is the point: a runtime error inside the consumer's f
 				return nil
 			},
 			assert: panicked(""),
@@ -267,7 +267,7 @@ func runLegacyChild(t *testing.T, row string) {
 	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, exe, "-test.count=1", "-test.run", "^TestCall$/^"+regexp.QuoteMeta(row)+"$")
+	cmd := exec.CommandContext(ctx, exe, "-test.count=1", "-test.run", "^TestCall$/^"+regexp.QuoteMeta(row)+"$") //nolint:gosec // G204: this test binary re-executed with fixed arguments
 	cmd.Env = append(os.Environ(), "GODEBUG=panicnil=1", childRowEnv+"="+row)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "child output:\n%s", out)

@@ -105,8 +105,8 @@ func (h mdCountingHandler) WithGroup(string) slog.Handler      { return h }
 // whose fetch answers fetchErr, bounded by mdPortErrTimeout. A panic on the
 // registration's goroutine is returned, not raised.
 func mdRegisterWithFetchError(
-	t *testing.T, ctx context.Context, fetchErr func() error,
-) (nc *passkey.CredentialInput, err error, panicked any) {
+	ctx context.Context, t *testing.T, fetchErr func() error,
+) (nc *passkey.CredentialInput, panicked any, err error) {
 	t.Helper()
 
 	e := newAttestationEnv(t)
@@ -143,7 +143,7 @@ func mdRegisterWithFetchError(
 
 	select {
 	case res := <-done:
-		return res.o.nc, res.o.err, res.panicked
+		return res.o.nc, res.panicked, res.o.err
 	case <-time.After(mdPortErrTimeout):
 		t.Fatalf("the registration did not return within %s", mdPortErrTimeout)
 		return nil, nil, nil
@@ -163,7 +163,7 @@ func TestMetadataPortErrors(t *testing.T) { //nolint:paralleltest // swaps slog.
 	slog.SetDefault(slog.New(mdCountingHandler{n: records}))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	_, outageErr, outagePanic := mdRegisterWithFetchError(t, t.Context(),
+	_, outagePanic, outageErr := mdRegisterWithFetchError(t.Context(), t,
 		func() error { return errors.New("metadata service unavailable") })
 	require.Nil(t, outagePanic)
 	require.ErrorIs(t, outageErr, passkey.ErrAttestationRefused)
@@ -253,7 +253,7 @@ func TestMetadataPortErrors(t *testing.T) { //nolint:paralleltest // swaps slog.
 				ctx = tc.ctx(ctx)
 			}
 
-			nc, err, panicked := mdRegisterWithFetchError(t, ctx, tc.fetchErr)
+			nc, panicked, err := mdRegisterWithFetchError(ctx, t, tc.fetchErr)
 			tc.assert(t, nc, err, panicked)
 
 			if childRow == tc.name && !t.Failed() {

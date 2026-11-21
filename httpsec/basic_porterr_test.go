@@ -72,10 +72,10 @@ type basicPortSite struct {
 // basicAuthThrough serves one Basic request on ctx whose ports answer as ports
 // says, through the chain's net/http middleware, counting what the attempt
 // store and the source limiter were asked. Every record goes to logger.
-func basicAuthThrough(t *testing.T, ctx context.Context, ports basicPorts, logger *slog.Logger) loginPortOutcome {
+func basicAuthThrough(ctx context.Context, t *testing.T, ports basicPorts, logger *slog.Logger) loginPortOutcome {
 	t.Helper()
 
-	return basicAuthSequence(t, ctx, []basicPorts{ports}, logger, nil)
+	return basicAuthSequence(ctx, t, []basicPorts{ports}, logger, nil)
 }
 
 // basicAuthSequence serves one request per element of seq, in order, through
@@ -84,7 +84,7 @@ func basicAuthThrough(t *testing.T, ctx context.Context, ports basicPorts, logge
 // when set, runs just before the last request, so a caller can tell the
 // records that request wrote from those of the ones before it.
 func basicAuthSequence(
-	t *testing.T, ctx context.Context, seq []basicPorts, logger *slog.Logger, beforeLast func(),
+	ctx context.Context, t *testing.T, seq []basicPorts, logger *slog.Logger, beforeLast func(),
 ) loginPortOutcome {
 	t.Helper()
 
@@ -299,7 +299,7 @@ func TestPortErrors_BasicAuth(t *testing.T) { //nolint:paralleltest // it replac
 
 					serve := func(portErr error) loginPortOutcome {
 						logs := &capturingHandler{}
-						out := basicAuthThrough(t, ctx, site.ports(portErr), slog.New(logs))
+						out := basicAuthThrough(ctx, t, site.ports(portErr), slog.New(logs))
 						out.logs = logs.records()
 
 						return out
@@ -332,7 +332,7 @@ func TestPortErrors_BasicAuth(t *testing.T) { //nolint:paralleltest // it replac
 					}
 
 					if childRow != "" && !t.Failed() {
-						fmt.Fprintln(os.Stdout, basicPortErrRan+row)
+						_, _ = fmt.Fprintln(os.Stdout, basicPortErrRan+row)
 					}
 				})
 			}
@@ -356,7 +356,7 @@ func TestPortErrors_BasicAbortRecordNotSampled(t *testing.T) { //nolint:parallel
 			hostile := site.ports(&cycleOne{})
 			seq := []basicPorts{site.ports(site.plain), hostile, hostile}
 
-			basicAuthSequence(t, t.Context(), seq, slog.New(logs), func() { before = len(logs.records()) })
+			basicAuthSequence(t.Context(), t, seq, slog.New(logs), func() { before = len(logs.records()) })
 
 			last := logs.records()[before:]
 			aborts := abortRecords(last)

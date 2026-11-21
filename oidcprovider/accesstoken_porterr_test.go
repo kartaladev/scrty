@@ -35,9 +35,9 @@ const pe7fRowEnv = "SCRTY_OIDCPROVIDER_PE7F_PORTERR_ROW"
 // after the row ran and passed.
 const pe7fRanMarker = "SCRTY_OIDCPROVIDER_PE7F_PORTERR_RAN: "
 
-// pe7fNoRecord is not returned: a site given it answers a load with neither a
+// errPe7fNoRecord is not returned: a site given it answers a load with neither a
 // record nor an error, a port breaking its contract.
-var pe7fNoRecord = errors.New("pe7f: answer no record and no error")
+var errPe7fNoRecord = errors.New("pe7f: answer no record and no error")
 
 // pe7fSite names the port call a row fails.
 type pe7fSite string
@@ -116,7 +116,7 @@ type pe7fOutcome struct {
 // entry is the exchange, and drives route's entry on ctx while route's site
 // fails with portErr. It fails the test when the call hangs, lets a panic
 // escape, or never reaches the site.
-func pe7fRun(t *testing.T, ctx context.Context, route pe7fRoute, portErr error) pe7fOutcome {
+func pe7fRun(ctx context.Context, t *testing.T, route pe7fRoute, portErr error) pe7fOutcome {
 	t.Helper()
 
 	logs := &lockedBuffer{}
@@ -130,7 +130,7 @@ func pe7fRun(t *testing.T, ctx context.Context, route pe7fRoute, portErr error) 
 	failing := func(at pe7fSite) bool { return armed.Load() && route.site == at }
 	answer := func() error {
 		hits.Add(1)
-		if portErr == pe7fNoRecord { //nolint:errorlint // identity: errors.Is would walk the hostile error
+		if portErr == errPe7fNoRecord { //nolint:errorlint // identity: errors.Is would walk the hostile error
 			return nil
 		}
 
@@ -210,7 +210,7 @@ func pe7fRun(t *testing.T, ctx context.Context, route pe7fRoute, portErr error) 
 
 	f := pe7bFixture(t, users, opts...)
 
-	c := issueCodeFor(t, f, opaqueClient, func(v url.Values) {
+	c := issueCodeFor(t, f, opaqueClient, func(v url.Values) { //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		asClient(v, opaqueClient, opaqueRedirect)
 		v.Set("scope", "openid")
 	}, testSignIn(f, "u-1"), "openid")
@@ -229,18 +229,18 @@ func pe7fRun(t *testing.T, ctx context.Context, route pe7fRoute, portErr error) 
 
 			return pe7fOutcome{answered: res != nil}, err
 		}
-		after = func() (bool, error) {
+		after = func() (bool, error) { //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 			res, err := f.p.Token(t.Context(), exchange)
 
 			return res != nil, err
 		}
 	} else {
-		first, err := f.p.Token(t.Context(), exchange)
+		first, err := f.p.Token(t.Context(), exchange) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		require.NoError(t, err, "precondition: the exchange succeeds")
 		require.True(t, strings.HasPrefix(first.AccessToken, "at."), "precondition: the access token is opaque")
 		raw := first.AccessToken
 
-		after = func() (bool, error) {
+		after = func() (bool, error) { //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 			at, err := f.p.VerifyAccessToken(t.Context(), raw)
 
 			return at != nil, err
@@ -270,7 +270,7 @@ func pe7fRun(t *testing.T, ctx context.Context, route pe7fRoute, portErr error) 
 				return pe7fOutcome{answered: err == nil}, err
 			}
 		case pe7fUserInfo:
-			at, err := f.p.VerifyAccessToken(t.Context(), raw)
+			at, err := f.p.VerifyAccessToken(t.Context(), raw) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 			require.NoError(t, err, "precondition: the token verifies")
 			flow = func(ctx context.Context) (pe7fOutcome, error) {
 				claims, err := f.p.UserInfo(ctx, at)
@@ -439,14 +439,14 @@ func pe7fTable(t *testing.T, routes []pe7fRoute) {
 				name:  prefix + "a typed-nil root walks to the end and is answered as an outage",
 				route: route, err: (*pe7bTypedNil)(nil), assert: walked,
 			},
-			testCase{name: prefix + "a plain outage, against itself", route: route, err: pe7bErrDown, assert: walked},
+			testCase{name: prefix + "a plain outage, against itself", route: route, err: errPe7bDown, assert: walked},
 		)
 
 		switch route.site {
 		case pe7fGrantLoad, pe7fAccessLoad, pe7fUserLoad:
 			cases = append(cases, testCase{
 				name:  prefix + "a port answering no record and no error is answered as an outage",
-				route: route, err: pe7fNoRecord, assert: walked,
+				route: route, err: errPe7fNoRecord, assert: walked,
 			})
 		}
 	}
@@ -470,10 +470,10 @@ func pe7fTable(t *testing.T, routes []pe7fRoute) {
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := pe7fRun(t, ctx, tc.route, pe7bErrDown)
+			plain := pe7fRun(ctx, t, tc.route, errPe7bDown)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := pe7fRun(t, ctx, tc.route, tc.err)
+			got := pe7fRun(ctx, t, tc.route, tc.err)
 			tc.assert(t, tc.route, plain, got)
 
 			pe7cNoDefaultAbort(t, defaults)

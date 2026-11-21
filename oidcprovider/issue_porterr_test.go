@@ -90,7 +90,7 @@ type pe7nOutcome struct {
 // pe7nExchange exchanges a code of billing-web, a JWT access token client,
 // while the access token's jti fails with portErr, then exchanges it again
 // with every port working.
-func pe7nExchange(t *testing.T, ctx context.Context, portErr error) pe7nOutcome {
+func pe7nExchange(ctx context.Context, t *testing.T, portErr error) pe7nOutcome {
 	t.Helper()
 
 	logs := &lockedBuffer{}
@@ -98,7 +98,7 @@ func pe7nExchange(t *testing.T, ctx context.Context, portErr error) pe7nOutcome 
 	ids := &pe7nIDs{err: portErr}
 
 	f := pe7bFixture(t, activeUsers(t), oidcprovider.WithIDGenerator(ids), oidcprovider.WithLogger(logger))
-	c := issueCodeFor(t, f, "billing-web", nil, testSignIn(f, "u-1"), "openid", "profile")
+	c := issueCodeFor(t, f, "billing-web", nil, testSignIn(f, "u-1"), "openid", "profile") //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	exchange := billingExchange(c, nil)
 
 	ids.armed.Store(true)
@@ -114,7 +114,7 @@ func pe7nExchange(t *testing.T, ctx context.Context, portErr error) pe7nOutcome 
 	ids.armed.Store(false)
 	require.Positive(t, ids.calls.Load(), "the exchange reached the token's identifier")
 
-	res, err := f.p.Token(t.Context(), exchange)
+	res, err := f.p.Token(t.Context(), exchange) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	out.afterOK = res != nil
 	out.afterCode = pe7dClassify(err).code
 
@@ -126,7 +126,7 @@ func pe7nExchange(t *testing.T, ctx context.Context, portErr error) pe7nOutcome 
 
 // pe7nLogout ends one sign-in whose client listens on its back channel while
 // the logout token's jti fails with portErr, and waits for the pool.
-func pe7nLogout(t *testing.T, ctx context.Context, portErr error) pe7nOutcome {
+func pe7nLogout(ctx context.Context, t *testing.T, portErr error) pe7nOutcome {
 	t.Helper()
 
 	logs := &lockedBuffer{}
@@ -172,7 +172,7 @@ func pe7nLogout(t *testing.T, ctx context.Context, portErr error) pe7nOutcome {
 
 // pe7nTable runs every hostile row, a typed-nil root and a plain outage of the
 // identifier generator through run, against a plain outage of the same port.
-func pe7nTable(t *testing.T, run func(*testing.T, context.Context, error) pe7nOutcome, precondition func(*testing.T, pe7nOutcome),
+func pe7nTable(t *testing.T, run func(context.Context, *testing.T, error) pe7nOutcome, precondition func(*testing.T, pe7nOutcome),
 	same func(*testing.T, pe7nOutcome, pe7nOutcome),
 ) {
 	t.Helper()
@@ -226,7 +226,7 @@ func pe7nTable(t *testing.T, run func(*testing.T, context.Context, error) pe7nOu
 			name: prefix + "a typed-nil root walks to the end and is answered as an outage",
 			err:  (*pe7bTypedNil)(nil), assert: walked,
 		},
-		testCase{name: prefix + "a plain outage, against itself", err: pe7bErrDown, assert: walked},
+		testCase{name: prefix + "a plain outage, against itself", err: errPe7bDown, assert: walked},
 	)
 
 	for _, tc := range cases {
@@ -248,11 +248,11 @@ func pe7nTable(t *testing.T, run func(*testing.T, context.Context, error) pe7nOu
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := run(t, ctx, pe7bErrDown)
+			plain := run(ctx, t, errPe7bDown)
 			precondition(t, plain)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := run(t, ctx, tc.err)
+			got := run(ctx, t, tc.err)
 			tc.assert(t, plain, got)
 
 			pe7cNoDefaultAbort(t, defaults)
@@ -417,7 +417,7 @@ func TestPortErrors_TokenKeys(t *testing.T) { //nolint:paralleltest // it replac
 
 			portErr := error(&pe7bCycleOne{})
 			if tc.plain {
-				portErr = pe7bErrDown
+				portErr = errPe7bDown
 			}
 
 			var opts []oidcprovider.Option

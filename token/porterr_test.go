@@ -31,7 +31,7 @@ import (
 
 // tpeSecret stands for the consumer's own text: it must reach no returned
 // error and no record.
-const tpeSecret = "tpe-consumer-secret-do-not-leak"
+const tpeSecret = "tpe-consumer-secret-do-not-leak" //nolint:gosec // G101: a fixture, not a credential
 
 // tpeCycleOne's Unwrap returns itself.
 type tpeCycleOne struct{}
@@ -272,12 +272,12 @@ func tpeIssuer(t *testing.T, keys signingkey.KeySource) *token.Issuer {
 func tpeFailingSignerSource(t *testing.T, err error) signingkey.KeySource {
 	t.Helper()
 
-	kid, real, signerErr := newKeySource(t).Signer(t.Context(), signingkey.RS256)
+	kid, key, signerErr := newKeySource(t).Signer(t.Context(), signingkey.RS256)
 	require.NoError(t, signerErr)
 
 	keys := NewMockKeySource(gomock.NewController(t))
 	keys.EXPECT().Signer(gomock.Any(), signingkey.RS256).
-		Return(kid, tpeFailingSigner{Signer: real, err: err}, nil).Times(1)
+		Return(kid, tpeFailingSigner{Signer: key, err: err}, nil).Times(1)
 
 	return keys
 }
@@ -293,7 +293,7 @@ func tpeSites() []tpeSite {
 	return []tpeSite{
 		{name: "Verify asks the key source for its key set",
 			run: func(t *testing.T, ctx context.Context, err error) tpeOutcome {
-				raw := signClaims(t, newKeySource(t), validClaims(time.Now()))
+				raw := signClaims(t, newKeySource(t), validClaims(time.Now())) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 				keys := NewMockKeySource(gomock.NewController(t))
 				keys.EXPECT().VerificationKeys(gomock.Any()).Return(nil, err).Times(1)
 
@@ -333,7 +333,7 @@ func tpeSites() []tpeSite {
 			}},
 		{name: "Generate has the consumer's signer sign",
 			run: func(t *testing.T, ctx context.Context, err error) tpeOutcome {
-				gen := tpeGenerator(t, tpeFailingSignerSource(t, err))
+				gen := tpeGenerator(t, tpeFailingSignerSource(t, err)) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 
 				return tpeWithin(t, func() tpeOutcome {
 					raw, got := gen.Generate(ctx, "jti-1", alice())
@@ -343,7 +343,7 @@ func tpeSites() []tpeSite {
 			}},
 		{name: "Issue has the consumer's signer sign",
 			run: func(t *testing.T, ctx context.Context, err error) tpeOutcome {
-				iss := tpeIssuer(t, tpeFailingSignerSource(t, err))
+				iss := tpeIssuer(t, tpeFailingSignerSource(t, err)) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 
 				return tpeWithin(t, func() tpeOutcome {
 					raw, got := iss.Issue(ctx, tpeIssue())

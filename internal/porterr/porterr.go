@@ -191,7 +191,7 @@ var routing = ctxlog.Routing()
 // consumer's own code: its panic escapes, as from any slog call, and is not
 // recovered. ReportAbort keeps no state and is safe for concurrent use as far
 // as logger is.
-func ReportAbort(ctx context.Context, logger *slog.Logger, abort error, extra ...slog.Attr) {
+func ReportAbort(ctx context.Context, logger *slog.Logger, abort error, extra ...slog.Attr) { //nolint:contextcheck // the caller's ctx is used; only a nil one is replaced, as the record still needs a context
 	if ctx == nil {
 		ctx = context.Background()
 	}

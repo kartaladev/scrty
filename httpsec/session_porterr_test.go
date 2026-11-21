@@ -334,7 +334,7 @@ func TestPortErrors_UserAndVerifierSites(t *testing.T) { //nolint:paralleltest /
 				assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
 
 				if childRow != "" && !t.Failed() {
-					fmt.Fprintln(os.Stdout, porterrRan+row)
+					_, _ = fmt.Fprintln(os.Stdout, porterrRan+row)
 				}
 			})
 		}
@@ -435,7 +435,7 @@ func TestPortErrors_StreamReread(t *testing.T) { //nolint:paralleltest // it rep
 				return
 			}
 
-			require.Len(t, got.reasons, int(got.total), "one abort record per failed read, on the chain's logger")
+			require.Equal(t, got.total, uint64(len(got.reasons)), "one abort record per failed read, on the chain's logger")
 			for _, reason := range got.reasons {
 				assert.Equal(t, tc.reason, reason)
 			}

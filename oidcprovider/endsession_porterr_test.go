@@ -43,9 +43,9 @@ const pe7kRowEnv = "SCRTY_OIDCPROVIDER_PE7K_PORTERR_ROW"
 // after the row ran and passed.
 const pe7kRanMarker = "SCRTY_OIDCPROVIDER_PE7K_PORTERR_RAN: "
 
-// pe7kNoRecord is not returned: a load site given it answers (nil, nil), a
+// errPe7kNoRecord is not returned: a load site given it answers (nil, nil), a
 // port breaking its contract.
-var pe7kNoRecord = errors.New("pe7k: answer no record and no error")
+var errPe7kNoRecord = errors.New("pe7k: answer no record and no error")
 
 // pe7kDeliveryFailed is the record a failed back-channel delivery writes.
 const pe7kDeliveryFailed = "oidcprovider: a logout token was not delivered"
@@ -98,7 +98,7 @@ type pe7kDeliveryOutcome struct {
 // With viaTransport, portErr is what the default delivery's HTTP transport
 // answers, so the library's own delivery wraps it; otherwise it is what a
 // consumer's delivery answers.
-func pe7kDeliverRun(t *testing.T, ctx context.Context, portErr error, viaTransport bool) pe7kDeliveryOutcome {
+func pe7kDeliverRun(ctx context.Context, t *testing.T, portErr error, viaTransport bool) pe7kDeliveryOutcome {
 	t.Helper()
 
 	logs := &lockedBuffer{}
@@ -239,7 +239,7 @@ func TestPortErrors_LogoutDelivery(t *testing.T) { //nolint:paralleltest // it r
 			name: transportSite + ": a cycle through Unwrap() []error is reported as a failed post",
 			err:  &pe7bCycleMany{}, transport: true, child: true, assert: asTransportOutage("budget"),
 		},
-		testCase{name: transportSite + ": a plain failure, against itself", err: pe7bErrDown, transport: true, assert: walked},
+		testCase{name: transportSite + ": a plain failure, against itself", err: errPe7bDown, transport: true, assert: walked},
 	)
 
 	for _, row := range pe7eRows() {
@@ -256,7 +256,7 @@ func TestPortErrors_LogoutDelivery(t *testing.T) { //nolint:paralleltest // it r
 			name: string(site) + ": a typed-nil root walks to the end and is reported as a failed delivery",
 			err:  (*pe7bTypedNil)(nil), assert: walked,
 		},
-		testCase{name: string(site) + ": a plain failure, against itself", err: pe7bErrDown, assert: walked},
+		testCase{name: string(site) + ": a plain failure, against itself", err: errPe7bDown, assert: walked},
 	)
 
 	for _, tc := range cases {
@@ -278,7 +278,7 @@ func TestPortErrors_LogoutDelivery(t *testing.T) { //nolint:paralleltest // it r
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := pe7kDeliverRun(t, ctx, pe7bErrDown, tc.transport)
+			plain := pe7kDeliverRun(ctx, t, errPe7bDown, tc.transport)
 			wantReason := "delivery"
 			if tc.transport {
 				wantReason = "post"
@@ -287,7 +287,7 @@ func TestPortErrors_LogoutDelivery(t *testing.T) { //nolint:paralleltest // it r
 			require.Equal(t, 1, plain.failureLogs, "precondition: a plain failure is logged once")
 			require.Empty(t, plain.aborts, "a plain failure writes no abort record")
 
-			got := pe7kDeliverRun(t, ctx, tc.err, tc.transport)
+			got := pe7kDeliverRun(ctx, t, tc.err, tc.transport)
 			tc.assert(t, plain, got)
 
 			pe7cNoDefaultAbort(t, defaults)
@@ -326,9 +326,9 @@ type pe7kOutcome struct {
 }
 
 // pe7kRun calls site's flow on ctx while site's port call fails with portErr,
-// or answers (nil, nil) for pe7kNoRecord. It fails the test when the call
+// or answers (nil, nil) for errPe7kNoRecord. It fails the test when the call
 // hangs, lets a panic escape, or never reaches site.
-func pe7kRun(t *testing.T, ctx context.Context, site pe7eSite, portErr error) pe7kOutcome { //nolint:gocyclo,cyclop // one fixture, every entry point
+func pe7kRun(ctx context.Context, t *testing.T, site pe7eSite, portErr error) pe7kOutcome { //nolint:gocyclo,cyclop // one fixture, every entry point
 	t.Helper()
 
 	logs := &lockedBuffer{}
@@ -367,7 +367,7 @@ func pe7kRun(t *testing.T, ctx context.Context, site pe7eSite, portErr error) pe
 	require.NoError(t, err)
 	digest := digestOf(t, pe7eSessionSecret)
 
-	require.NoError(t, memSessions.Put(t.Context(), &oidcprovider.BrowserSession{
+	require.NoError(t, memSessions.Put(t.Context(), &oidcprovider.BrowserSession{ //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		Digest: digest,
 		SignIn: oidcprovider.SignIn{
 			User: user, Family: family, AuthenticatedAt: now.Add(-time.Minute), AMR: []string{"pwd"},
@@ -376,7 +376,7 @@ func pe7kRun(t *testing.T, ctx context.Context, site pe7eSite, portErr error) pe
 		IdleExpiresAt:     now.Add(time.Minute),
 		AbsoluteExpiresAt: now.Add(time.Hour),
 	}))
-	require.NoError(t, memGrants.Create(t.Context(), &oidcprovider.Grant{
+	require.NoError(t, memGrants.Create(t.Context(), &oidcprovider.Grant{ //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		Family: grantFamily, User: user, ClientID: "billing-web", Scopes: []string{"openid"},
 		SignInFamily: family, AuthTime: now, CreatedAt: now, ExpiresAt: now.Add(time.Hour),
 	}))
@@ -388,7 +388,7 @@ func pe7kRun(t *testing.T, ctx context.Context, site pe7eSite, portErr error) pe
 	pending.EXPECT().Load(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(ctx context.Context, d []byte) (*oidcprovider.PendingRequest, error) {
 			if fail(pe7kPendingSites...) {
-				if portErr == pe7kNoRecord { //nolint:errorlint // identity: errors.Is would walk the hostile error
+				if portErr == errPe7kNoRecord { //nolint:errorlint // identity: errors.Is would walk the hostile error
 					return nil, nil
 				}
 
@@ -405,7 +405,7 @@ func pe7kRun(t *testing.T, ctx context.Context, site pe7eSite, portErr error) pe
 	sessions.EXPECT().Load(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
 		func(ctx context.Context, d []byte, at time.Time) (*oidcprovider.BrowserSession, error) {
 			if fail(pe7kBrowserSites...) {
-				if portErr == pe7kNoRecord { //nolint:errorlint // identity: errors.Is would walk the hostile error
+				if portErr == errPe7kNoRecord { //nolint:errorlint // identity: errors.Is would walk the hostile error
 					return nil, nil
 				}
 
@@ -455,7 +455,7 @@ func pe7kRun(t *testing.T, ctx context.Context, site pe7eSite, portErr error) pe
 	// The hint is an ID token of this provider naming the browser's sign-in.
 	issuerOf, err := token.NewIssuer(signing, signingkey.RS256, issuer, token.WithClock(clk))
 	require.NoError(t, err)
-	hint, err := issuerOf.Issue(t.Context(), token.Issue{
+	hint, err := issuerOf.Issue(t.Context(), token.Issue{ //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		Type: token.TypeIDToken, Subject: string(user), ID: "j-1", Audience: []string{"billing-web"},
 		Lifetime: 5 * time.Minute, Claims: map[string]any{"sid": family.String()},
 	})
@@ -479,19 +479,19 @@ func pe7kRun(t *testing.T, ctx context.Context, site pe7eSite, portErr error) pe
 
 	switch site {
 	case pe7kViewLoad, pe7kResumeLoginLoad, pe7kResumeConsentLoad:
-		res, err := p.Authorize(t.Context(), oidcprovider.AuthorizeInput{Params: authzParams()})
+		res, err := p.Authorize(t.Context(), oidcprovider.AuthorizeInput{Params: authzParams()}) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		require.NoError(t, err)
 
 		handle, flow = parkedAt(res.Location, res.FlowSecret)
 
 		if site == pe7kResumeConsentLoad {
-			_, err := p.Resume(t.Context(), oidcprovider.ResumeInput{
+			_, err := p.Resume(t.Context(), oidcprovider.ResumeInput{ //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 				Handle: handle, FlowSecret: flow, SignIn: signIn, IdleTimeout: sessionIdle,
 			})
 			require.NoError(t, err, "precondition: the login stage is answered, and consent is asked")
 		}
 	case pe7kConfirmLoad, pe7kSpendLoad, pe7kConfirmBrowser:
-		res, err := p.EndSession(t.Context(), oidcprovider.EndSessionInput{Params: url.Values{}})
+		res, err := p.EndSession(t.Context(), oidcprovider.EndSessionInput{Params: url.Values{}}) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		require.NoError(t, err)
 
 		handle, flow = parkedAt(res.Location, res.FlowSecret)
@@ -563,11 +563,11 @@ func pe7kRun(t *testing.T, ctx context.Context, site pe7eSite, portErr error) pe
 	armed.Store(false)
 	require.Positive(t, hits.Load(), "the call reached %s", site)
 
-	g, err := memGrants.Load(t.Context(), grantFamily)
+	g, err := memGrants.Load(t.Context(), grantFamily) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	require.NoError(t, err)
 	out.grantEnded = !g.SignInEndedAt.IsZero()
 
-	_, err = memSessions.Load(t.Context(), digest, now)
+	_, err = memSessions.Load(t.Context(), digest, now) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	out.sessionHeld = err == nil
 
 	var spends []map[string]any
@@ -670,7 +670,7 @@ func TestPortErrors_EndSessionAndLoads(t *testing.T) { //nolint:paralleltest // 
 	for _, site := range append(append([]pe7eSite{}, pe7kPendingSites...), pe7kBrowserSites...) {
 		cases = append(cases, testCase{
 			name: string(site) + ": a store answering no record and no error is answered as an outage",
-			site: site, err: pe7kNoRecord, assert: walked,
+			site: site, err: errPe7kNoRecord, assert: walked,
 		})
 	}
 
@@ -742,7 +742,7 @@ func TestPortErrors_EndSessionAndLoads(t *testing.T) { //nolint:paralleltest // 
 
 	// Every site's plain outage, against itself.
 	for _, site := range append([]pe7eSite{pe7kHintKeys}, append(append([]pe7eSite{}, pe7kPendingSites...), pe7kBrowserSites...)...) {
-		cases = append(cases, testCase{name: string(site) + ": a plain outage, against itself", site: site, err: pe7bErrDown, assert: walked})
+		cases = append(cases, testCase{name: string(site) + ": a plain outage, against itself", site: site, err: errPe7bDown, assert: walked})
 	}
 
 	for _, tc := range cases {
@@ -764,7 +764,7 @@ func TestPortErrors_EndSessionAndLoads(t *testing.T) { //nolint:paralleltest // 
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := pe7kRun(t, ctx, tc.site, pe7bErrDown)
+			plain := pe7kRun(ctx, t, tc.site, errPe7bDown)
 			if tc.site == pe7kSpendLoad {
 				require.Equal(t, 1, plain.spendLogs, "precondition: a plain outage is logged once")
 			} else {
@@ -774,7 +774,7 @@ func TestPortErrors_EndSessionAndLoads(t *testing.T) { //nolint:paralleltest // 
 			require.True(t, plain.sessionHeld, "precondition: a plain outage keeps the browser session")
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := pe7kRun(t, ctx, tc.site, tc.err)
+			got := pe7kRun(ctx, t, tc.site, tc.err)
 			tc.assert(t, plain, got)
 
 			pe7cNoDefaultAbort(t, defaults)

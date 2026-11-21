@@ -27,7 +27,7 @@ import (
 
 // pwlPortErrRowEnv names the row a child process runs. It is empty in the
 // parent.
-const pwlPortErrRowEnv = "SCRTY_HTTPSEC_PASSKEY_LOGIN_PORTERR_ROW"
+const pwlPortErrRowEnv = "SCRTY_HTTPSEC_PASSKEY_LOGIN_PORTERR_ROW" //nolint:gosec // G101: a fixture, not a credential
 
 // pwlPortErrRan is what a child prints, as a line of its own followed by the
 // row's name, once that row has run and passed.
@@ -269,7 +269,7 @@ func TestPortErrors_PasswordlessUserLoader(t *testing.T) { //nolint:paralleltest
 				assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
 
 				if childRow != "" && !t.Failed() {
-					fmt.Fprintln(os.Stdout, pwlPortErrRan+row)
+					_, _ = fmt.Fprintln(os.Stdout, pwlPortErrRan+row)
 				}
 			})
 		}

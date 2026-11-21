@@ -154,7 +154,7 @@ type limOutcome struct {
 // runLimSite runs the call site names on ctx against a limiter that fails that
 // call with limErr. It fails the test when the call hangs or lets a panic
 // escape.
-func runLimSite(t *testing.T, ctx context.Context, site limSite, limErr error) limOutcome {
+func runLimSite(ctx context.Context, t *testing.T, site limSite, limErr error) limOutcome {
 	t.Helper()
 
 	recLogs, codeLogs := &syncBuffer{}, &syncBuffer{}
@@ -169,7 +169,7 @@ func runLimSite(t *testing.T, ctx context.Context, site limSite, limErr error) l
 
 	switch site {
 	case limUserExceeded, limUserRecord, limCodeChargeRecover:
-		e := newCompleteEnv(t)
+		e := newCompleteEnv(t) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		own := &recoveryEvents{}
 
 		var recorded atomic.Int32
@@ -215,7 +215,7 @@ func runLimSite(t *testing.T, ctx context.Context, site limSite, limErr error) l
 
 			return limOutcome{err: err}
 		}
-		post = func(out *limOutcome) {
+		post = func(out *limOutcome) { //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 			out.events = len(own.all())
 			out.messages = len(e.out.messages())
 			out.recorded = recorded.Load()
@@ -230,7 +230,7 @@ func runLimSite(t *testing.T, ctx context.Context, site limSite, limErr error) l
 			recovery.WithCodesLogger(codeLogger))
 		require.NoError(t, err)
 
-		set, err := codes.Generate(t.Context(), anaID)
+		set, err := codes.Generate(t.Context(), anaID) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		require.NoError(t, err)
 
 		key := recovery.CodeThrottleKey(anaID)
@@ -248,7 +248,7 @@ func runLimSite(t *testing.T, ctx context.Context, site limSite, limErr error) l
 		call = func() limOutcome {
 			return limOutcome{err: codes.Confirm(ctx, anaID, set[0])}
 		}
-		post = func(out *limOutcome) {
+		post = func(out *limOutcome) { //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 			n, err := store.Remaining(t.Context(), anaID)
 			require.NoError(t, err)
 			out.remaining = n
@@ -518,10 +518,10 @@ func TestPortErrors_Limiter(t *testing.T) { //nolint:paralleltest // it replaces
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := runLimSite(t, ctx, tc.site, errLimiterDown)
+			plain := runLimSite(ctx, t, tc.site, errLimiterDown)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := runLimSite(t, ctx, tc.site, tc.err)
+			got := runLimSite(ctx, t, tc.site, tc.err)
 			tc.assert(t, plain, got)
 
 			for _, rec := range limJSONRecords(t, defaults.String()) {

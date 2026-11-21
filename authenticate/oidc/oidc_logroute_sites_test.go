@@ -190,7 +190,7 @@ func TestLogRoute_SummaryOtherSites_Broker(t *testing.T) { //nolint:paralleltest
 					for range 2 {
 						subject++
 
-						_, err := b.Broker(ctx, passwordClaimIdentity("s-"+string(rune('a'+subject)), "hunter2"))
+						_, err := b.Broker(ctx, passwordClaimIdentity("s-"+string(rune('a'+subject)), "hunter2")) //nolint:gosec // G115: a small test index
 						require.NoError(t, err)
 					}
 				}, b.FlushRefusalLogs

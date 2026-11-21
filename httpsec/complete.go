@@ -631,7 +631,7 @@ func prepareLogin(
 	}
 	create = append(create, session.WithFirstFactor(in.FirstFactor))
 
-	p, err := deps.sessions.Prepare(in.User, create...)
+	p, err := deps.sessions.Prepare(in.User, create...) //nolint:contextcheck // Prepare takes no context (it touches no store); the only thing it loses is the chain's logger for a hostile-source abort record, which goes to the manager's own logger, else slog.Default() (design.md, decision 12)
 	if err != nil {
 		return nil, err
 	}

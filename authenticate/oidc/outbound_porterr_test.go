@@ -59,13 +59,13 @@ func TestRelyingParty_HostileProviderTransportRecordsOnItsLogger(t *testing.T) {
 			var armed atomic.Bool
 			armed.Store(!tc.callback)
 
-			real := p.srv.Client()
+			served := p.srv.Client()
 			hc := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 				if armed.Load() && r.URL.Path == tc.hostilePath {
 					return nil, &obCycle{}
 				}
 
-				return real.Transport.RoundTrip(r)
+				return served.Transport.RoundTrip(r)
 			})}
 			out, err := outbound.New(outbound.WithHTTPClient(hc))
 			require.NoError(t, err)

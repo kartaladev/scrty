@@ -110,7 +110,7 @@ func TestByCaller_HostileCause(t *testing.T) { //nolint:paralleltest // it repla
 			assert.NoError(t, got.abort, "the error handed in walks clean")
 
 			if childRow != "" && !t.Failed() {
-				fmt.Fprintln(os.Stdout, hostileCauseRan+tc.name)
+				_, _ = fmt.Fprintln(os.Stdout, hostileCauseRan+tc.name)
 			}
 		})
 	}

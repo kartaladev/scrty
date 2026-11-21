@@ -366,7 +366,7 @@ func TestPortErrors_EnrolmentLimiter(t *testing.T) { //nolint:paralleltest // it
 					assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
 
 					if childRow != "" && !t.Failed() {
-						fmt.Fprintln(os.Stdout, enrolPortErrRan+row)
+						_, _ = fmt.Fprintln(os.Stdout, enrolPortErrRan+row)
 					}
 				})
 			}

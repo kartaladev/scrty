@@ -82,7 +82,7 @@ func throttleSites() []throttleSite {
 // through the chain's net/http middleware, with the flow's source and
 // aggregate limiters built by the chain's factory and answering as l says.
 // Every record goes to logger.
-func basicThrottledThrough(t *testing.T, ctx context.Context, l throttleLimiters, logger *slog.Logger) loginPortOutcome {
+func basicThrottledThrough(ctx context.Context, t *testing.T, l throttleLimiters, logger *slog.Logger) loginPortOutcome {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -252,7 +252,7 @@ func TestPortErrors_SourceThrottle(t *testing.T) { //nolint:paralleltest // it r
 
 					serve := func(l throttleLimiters) loginPortOutcome {
 						logs := &capturingHandler{}
-						out := basicThrottledThrough(t, ctx, l, slog.New(logs))
+						out := basicThrottledThrough(ctx, t, l, slog.New(logs))
 						out.logs = logs.records()
 
 						return out
@@ -291,7 +291,7 @@ func TestPortErrors_SourceThrottle(t *testing.T) { //nolint:paralleltest // it r
 					assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
 
 					if childRow != "" && !t.Failed() {
-						fmt.Fprintln(os.Stdout, throttlePortErrRan+row)
+						_, _ = fmt.Fprintln(os.Stdout, throttlePortErrRan+row)
 					}
 				})
 			}

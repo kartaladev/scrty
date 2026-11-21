@@ -177,7 +177,7 @@ func TestPortErrors_RenewalLimiter(t *testing.T) { //nolint:paralleltest // it r
 				assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
 
 				if childRow != "" && !t.Failed() {
-					fmt.Fprintln(os.Stdout, renewalPortErrRan+row)
+					_, _ = fmt.Fprintln(os.Stdout, renewalPortErrRan+row)
 				}
 			})
 		}

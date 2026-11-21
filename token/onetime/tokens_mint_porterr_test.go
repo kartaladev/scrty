@@ -229,7 +229,7 @@ func TestPortErrors_TokensMint(t *testing.T) { //nolint:paralleltest // it repla
 				},
 				testCase{
 					name:   prefix + "a plain error, against itself",
-					source: source, within: within, err: ptErrDown, assert: walked,
+					source: source, within: within, err: errPtDown, assert: walked,
 				},
 			)
 		}
@@ -263,7 +263,7 @@ func TestPortErrors_TokensMint(t *testing.T) { //nolint:paralleltest // it repla
 			var plain ptMintOutcome
 
 			if tc.err != nil {
-				plain = ptMintRun(t, tc.source, tc.within, ptErrDown)
+				plain = ptMintRun(t, tc.source, tc.within, errPtDown)
 				require.Empty(t, plain.aborts, "a plain error writes no abort record")
 				require.Empty(t, plain.defaults, "a plain error writes no abort record")
 			}

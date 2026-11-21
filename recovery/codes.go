@@ -147,6 +147,8 @@ func NewCodes(opts ...CodesOption) (*Codes, error) {
 // gave, then the in-memory default logging through the manager's logger and
 // clock. A limiter or factory replaced with nothing is refused, the factory
 // even beside an explicit limiter that would have won.
+//
+//nolint:contextcheck // runs inside NewCodes, a constructor: there is no caller context to pass
 func (c *Codes) resolveLimiter() error {
 	if c.factorySet && nilcheck.IsNil(c.factory) {
 		return fmt.Errorf("%w: code limiter factory must not be nil", ErrConfig)

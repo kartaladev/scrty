@@ -25,17 +25,17 @@ import (
 
 // apiKeyPortErrRowEnv names the row a child process runs. It is empty in the
 // parent.
-const apiKeyPortErrRowEnv = "SCRTY_HTTPSEC_APIKEY_PORTERR_ROW"
+const apiKeyPortErrRowEnv = "SCRTY_HTTPSEC_APIKEY_PORTERR_ROW" //nolint:gosec // G101: a fixture, not a credential
 
 // apiKeyPortErrRan is what a child prints once it has run its row to the end,
 // followed by the row's name. A child whose row matched nothing prints
 // nothing, and its parent fails rather than passing on an empty run.
-const apiKeyPortErrRan = "apikey-porterr-row-ran:"
+const apiKeyPortErrRan = "apikey-porterr-row-ran:" //nolint:gosec // G101: a fixture, not a credential
 
 // The owner check's records for an outage and for a caller that left.
 const (
-	apiKeyPortErrOwnerUnavailable = "httpsec: an API key's owner could not be loaded"
-	apiKeyPortErrOwnerCallerEnded = "httpsec: the caller left while an API key's owner was loaded"
+	apiKeyPortErrOwnerUnavailable = "httpsec: an API key's owner could not be loaded"              //nolint:gosec // G101: a fixture, not a credential
+	apiKeyPortErrOwnerCallerEnded = "httpsec: the caller left while an API key's owner was loaded" //nolint:gosec // G101: a fixture, not a credential
 )
 
 // errOwnerStoreDown is the user loader's plain outage, the parity row.
@@ -73,25 +73,25 @@ func (o apiKeyPortOutcome) count(msg string) int {
 // the chain's net/http middleware, whose user loader fails with portErr. With
 // leaves, the loader ends the request's context before it answers, as a
 // client hanging up mid-load does; ctx must then come from leavable.
-func apiKeyOwnerThrough(t *testing.T, ctx context.Context, portErr error, leaves bool) apiKeyPortOutcome {
+func apiKeyOwnerThrough(ctx context.Context, t *testing.T, portErr error, leaves bool) apiKeyPortOutcome {
 	t.Helper()
 
-	return apiKeyOwnerSequence(t, ctx, []error{portErr}, leaves)
+	return apiKeyOwnerSequence(ctx, t, []error{portErr}, leaves)
 }
 
 // apiKeyOwnerSequence serves one request per element of errs, in order,
 // through one chain, whose user loader fails with that element on that
 // request. The counts are cumulative and the response and records are the last
 // request's, so the records of the earlier ones only fill the log sampler.
-func apiKeyOwnerSequence(t *testing.T, ctx context.Context, errs []error, leaves bool) apiKeyPortOutcome {
+func apiKeyOwnerSequence(ctx context.Context, t *testing.T, errs []error, leaves bool) apiKeyPortOutcome {
 	t.Helper()
 
-	return apiKeyOwnerSequenceCause(t, ctx, errs, leaves, context.Canceled)
+	return apiKeyOwnerSequenceCause(ctx, t, errs, leaves, context.Canceled)
 }
 
 // apiKeyOwnerSequenceCause is apiKeyOwnerSequence where a loader that leaves
 // ends the request with cause.
-func apiKeyOwnerSequenceCause(t *testing.T, ctx context.Context, errs []error, leaves bool, cause error) apiKeyPortOutcome {
+func apiKeyOwnerSequenceCause(ctx context.Context, t *testing.T, errs []error, leaves bool, cause error) apiKeyPortOutcome {
 	t.Helper()
 
 	require.NotEmpty(t, errs, "at least one request")
@@ -130,7 +130,7 @@ func apiKeyOwnerSequenceCause(t *testing.T, ctx context.Context, errs []error, l
 			return nil, portErr
 		}).AnyTimes()
 
-	h := newAPIKeyHarness(t)
+	h := newAPIKeyHarness(t) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 	logs := &capturingHandler{}
 
 	chain, err := httpsec.New(httpsec.WithLogger(slog.New(logs)),
@@ -169,7 +169,7 @@ func apiKeyOwnerSequenceCause(t *testing.T, ctx context.Context, errs []error, l
 func TestPortErrors_APIKeyOwnerAbortRecordNotSampled(t *testing.T) { //nolint:paralleltest // it replaces slog.Default()
 	defaults := swapDefaultLogger(t)
 
-	got := apiKeyOwnerSequence(t, t.Context(), []error{errOwnerStoreDown, &cycleOne{}, &cycleOne{}}, false)
+	got := apiKeyOwnerSequence(t.Context(), t, []error{errOwnerStoreDown, &cycleOne{}, &cycleOne{}}, false)
 
 	assert.Zero(t, got.count(apiKeyPortErrOwnerUnavailable), "the site's own record is sampled out")
 
@@ -239,7 +239,7 @@ func TestPortErrors_APIKeyOwner(t *testing.T) { //nolint:paralleltest // it repl
 						ctx = leavable(ctx)
 					}
 
-					return apiKeyOwnerThrough(t, ctx, portErr, c.leaves)
+					return apiKeyOwnerThrough(ctx, t, portErr, c.leaves)
 				}
 
 				plain := serve(errOwnerStoreDown)
@@ -270,7 +270,7 @@ func TestPortErrors_APIKeyOwner(t *testing.T) { //nolint:paralleltest // it repl
 				assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
 
 				if childRow != "" && !t.Failed() {
-					fmt.Fprintln(os.Stdout, apiKeyPortErrRan+row)
+					_, _ = fmt.Fprintln(os.Stdout, apiKeyPortErrRan+row)
 				}
 			})
 		}

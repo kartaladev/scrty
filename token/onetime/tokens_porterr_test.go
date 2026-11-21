@@ -37,10 +37,10 @@ const ptRowEnv = "SCRTY_ONETIME_PORTERR_ROW"
 const ptRanMarker = "SCRTY_ONETIME_PORTERR_RAN: "
 
 // ptSecret is text no record and no returned error may quote.
-const ptSecret = "pt-secret: ana@example.com"
+const ptSecret = "pt-secret: ana@example.com" //nolint:gosec // G101: a fixture, not a credential
 
-// ptErrDown is the plain outage every parity run fails with.
-var ptErrDown = errors.New("pt: connection refused, " + ptSecret)
+// errPtDown is the plain outage every parity run fails with.
+var errPtDown = errors.New("pt: connection refused, " + ptSecret)
 
 // ptCycleOne contains itself through Unwrap() error.
 type ptCycleOne struct{}
@@ -203,7 +203,7 @@ type ptOutcome struct {
 // fails with portErr. wrapped puts depfault.Store between the manager and the
 // store, with a Watch on ctx. It fails the test when the operation hangs or
 // lets a panic escape.
-func ptRun(t *testing.T, ctx context.Context, site ptSite, wrapped bool, portErr error) ptOutcome {
+func ptRun(ctx context.Context, t *testing.T, site ptSite, wrapped bool, portErr error) ptOutcome {
 	t.Helper()
 
 	defaults := &ptBuffer{}
@@ -281,7 +281,7 @@ func ptRun(t *testing.T, ctx context.Context, site ptSite, wrapped bool, portErr
 	m, err := onetime.New("pt-purpose", onetime.WithStore(port), onetime.WithLogger(logger))
 	require.NoError(t, err)
 
-	presented, _, err := m.Issue(t.Context(), "s-1")
+	presented, _, err := m.Issue(t.Context(), "s-1") //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	require.NoError(t, err, "precondition: the seed token is issued")
 
 	var watch *depfault.Watch
@@ -388,7 +388,7 @@ func ptRun(t *testing.T, ctx context.Context, site ptSite, wrapped bool, portErr
 
 	armed.Store(false)
 
-	tok, err := mem.FindByID(t.Context(), mustTokenID(t, presented))
+	tok, err := mem.FindByID(t.Context(), mustTokenID(t, presented)) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	require.NoError(t, err)
 	out.consumed = !tok.ConsumedAt.IsZero()
 	out.stored = mem.Len()
@@ -597,7 +597,7 @@ func TestPortErrors_Tokens(t *testing.T) { //nolint:paralleltest // it replaces 
 				},
 				testCase{
 					name: prefix + "a plain outage, against itself",
-					site: site, wrapped: wrapped, err: ptErrDown, assert: walked(site),
+					site: site, wrapped: wrapped, err: errPtDown, assert: walked(site),
 				},
 			)
 		}
@@ -620,11 +620,11 @@ func TestPortErrors_Tokens(t *testing.T) { //nolint:paralleltest // it replaces 
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := ptRun(t, ctx, tc.site, tc.wrapped, ptErrDown)
+			plain := ptRun(ctx, t, tc.site, tc.wrapped, errPtDown)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 			require.Empty(t, plain.defaults, "a plain outage writes no abort record")
 
-			got := ptRun(t, ctx, tc.site, tc.wrapped, tc.err)
+			got := ptRun(ctx, t, tc.site, tc.wrapped, tc.err)
 			tc.assert(t, plain, got)
 
 			if only != "" && !t.Failed() {

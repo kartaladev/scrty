@@ -38,7 +38,7 @@ const queuedPortErrRan = "notify-queued-porterr-row-ran:"
 
 // queuedSecret is the text every hostile error and panic value carries. A
 // record that quotes it has leaked the consumer's error.
-const queuedSecret = "queued-hostile-secret-text"
+const queuedSecret = "queued-hostile-secret-text" //nolint:gosec // G101: a fixture, not a credential
 
 const queuedDeliveryFailed = "notify: delivery failed"
 
@@ -352,7 +352,7 @@ func TestQueuedSender_PortErrors(t *testing.T) { //nolint:paralleltest // it rep
 				}
 
 				if childRow != "" && !t.Failed() {
-					fmt.Fprintln(os.Stdout, queuedPortErrRan+row)
+					_, _ = fmt.Fprintln(os.Stdout, queuedPortErrRan+row)
 				}
 			})
 		}

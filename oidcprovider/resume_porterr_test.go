@@ -34,9 +34,9 @@ const pe7gRowEnv = "SCRTY_OIDCPROVIDER_PE7G_PORTERR_ROW"
 // after the row ran and passed.
 const pe7gRanMarker = "SCRTY_OIDCPROVIDER_PE7G_PORTERR_RAN: "
 
-// pe7gNoRecord is not returned: a site given it answers a load with neither a
+// errPe7gNoRecord is not returned: a site given it answers a load with neither a
 // record nor an error, a port breaking its contract.
-var pe7gNoRecord = errors.New("pe7g: answer no record and no error")
+var errPe7gNoRecord = errors.New("pe7g: answer no record and no error")
 
 // pe7gSite names the port call a row fails.
 type pe7gSite string
@@ -116,7 +116,7 @@ type pe7gOutcome struct {
 // consent stage through the browser session the login stage stored, five
 // minutes later. It fails the test when the resume hangs, lets a panic
 // escape, or never reaches site.
-func pe7gRun(t *testing.T, ctx context.Context, site pe7gSite, portErr error) pe7gOutcome {
+func pe7gRun(ctx context.Context, t *testing.T, site pe7gSite, portErr error) pe7gOutcome {
 	t.Helper()
 
 	logs := &lockedBuffer{}
@@ -130,7 +130,7 @@ func pe7gRun(t *testing.T, ctx context.Context, site pe7gSite, portErr error) pe
 	failing := func(at pe7gSite) bool { return armed.Load() && site == at }
 	answer := func() error {
 		hits.Add(1)
-		if portErr == pe7gNoRecord { //nolint:errorlint // identity: errors.Is would walk the hostile error
+		if portErr == errPe7gNoRecord { //nolint:errorlint // identity: errors.Is would walk the hostile error
 			return nil
 		}
 
@@ -243,15 +243,15 @@ func pe7gRun(t *testing.T, ctx context.Context, site pe7gSite, portErr error) pe
 
 	f := &parkFixture{p: p, store: memPending, consents: memConsents, registry: registry, clk: clk, logs: &bytes.Buffer{}}
 
-	r := park(t, f, nil)
+	r := park(t, f, nil) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	signIn := testSignIn(f, "u-1")
 	in := r.input(&signIn)
 
 	var secret string
 	if !pe7gAtLogin(site) {
-		res, err := p.Resume(t.Context(), in)
+		res, err := p.Resume(t.Context(), in) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		require.NoError(t, err, "precondition: the login stage is answered")
-		require.Equal(t, oidcprovider.StageConsent, stageOf(t, f, r), "precondition: consent is asked")
+		require.Equal(t, oidcprovider.StageConsent, stageOf(t, f, r), "precondition: consent is asked") //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		require.NotEmpty(t, res.BrowserSessionSecret, "precondition: a browser session is held")
 		secret = res.BrowserSessionSecret
 
@@ -292,9 +292,9 @@ func pe7gRun(t *testing.T, ctx context.Context, site pe7gSite, portErr error) pe
 	armed.Store(false)
 	require.Positive(t, hits.Load(), "the resume reached %s", site)
 
-	out.stage = stageOf(t, f, r)
-	out.codes = codesHeld(t, f, "u-1", "billing-web")
-	_, consentErr := memConsents.Load(t.Context(), "u-1", "billing-web")
+	out.stage = stageOf(t, f, r)                                         //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
+	out.codes = codesHeld(t, f, "u-1", "billing-web")                    //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
+	_, consentErr := memConsents.Load(t.Context(), "u-1", "billing-web") //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	if !errors.Is(consentErr, oidcprovider.ErrNotFound) {
 		require.NoError(t, consentErr)
 		out.remembered = true
@@ -302,13 +302,13 @@ func pe7gRun(t *testing.T, ctx context.Context, site pe7gSite, portErr error) pe
 	if secret != "" {
 		// The login stage's session ran out 15 minutes after it was stored,
 		// unless a touch 5 minutes later extended it.
-		_, loadErr := memSessions.Load(t.Context(), digestOf(t, secret), clk.Now().Add(11*time.Minute))
+		_, loadErr := memSessions.Load(t.Context(), digestOf(t, secret), clk.Now().Add(11*time.Minute)) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		if !errors.Is(loadErr, oidcprovider.ErrNotFound) {
 			require.NoError(t, loadErr)
 			out.touched = true
 		}
 	}
-	held, err := memSessions.DeleteExpired(t.Context(), clk.Now().Add(1000*time.Hour))
+	held, err := memSessions.DeleteExpired(t.Context(), clk.Now().Add(1000*time.Hour)) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	require.NoError(t, err)
 	out.sessions = held
 
@@ -464,14 +464,14 @@ func TestPortErrors_Resume(t *testing.T) { //nolint:paralleltest // it replaces 
 				name: prefix + "a typed-nil root walks to the end and is answered as an outage",
 				site: site, err: (*pe7bTypedNil)(nil), assert: walked,
 			},
-			testCase{name: prefix + "a plain outage, against itself", site: site, err: pe7bErrDown, assert: walked},
+			testCase{name: prefix + "a plain outage, against itself", site: site, err: errPe7bDown, assert: walked},
 		)
 
 		switch site {
 		case pe7gSessionLoad, pe7gSessionUser:
 			cases = append(cases, testCase{
 				name: prefix + "a port answering no record and no error is answered as an outage",
-				site: site, err: pe7gNoRecord, assert: walked,
+				site: site, err: errPe7gNoRecord, assert: walked,
 			})
 		}
 	}
@@ -495,10 +495,10 @@ func TestPortErrors_Resume(t *testing.T) { //nolint:paralleltest // it replaces 
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := pe7gRun(t, ctx, tc.site, pe7bErrDown)
+			plain := pe7gRun(ctx, t, tc.site, errPe7bDown)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := pe7gRun(t, ctx, tc.site, tc.err)
+			got := pe7gRun(ctx, t, tc.site, tc.err)
 			tc.assert(t, tc.site, plain, got)
 
 			pe7cNoDefaultAbort(t, defaults)

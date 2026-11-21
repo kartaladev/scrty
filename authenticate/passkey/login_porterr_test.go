@@ -30,7 +30,7 @@ import (
 
 // plogSecret is the text every hostile error here returns, so a test can
 // assert no record and no returned error quotes it.
-const plogSecret = "login-port-secret-text"
+const plogSecret = "login-port-secret-text" //nolint:gosec // G101: a fixture, not a credential
 
 // plogRowEnv names the row a child process runs. It is empty in the parent.
 const plogRowEnv = "SCRTY_PASSKEY_LOGIN_PORTERR_ROW"
@@ -49,8 +49,8 @@ const (
 	plogChildRowDeadline = time.Minute
 )
 
-// plogOutage is the plain outage the parity runs fail with.
-var plogOutage = errors.New("store: connection refused")
+// errPlogOutage is the plain outage the parity runs fail with.
+var errPlogOutage = errors.New("store: connection refused")
 
 type plogCycleOne struct{}
 
@@ -550,7 +550,7 @@ func TestPortErrors_Login(t *testing.T) { //nolint:paralleltest // it replaces s
 
 			defaults := pregDefaultRecords(t)
 
-			plain := runLoginSite(t, tc.site, plogOutage, tc.cancelDuring)
+			plain := runLoginSite(t, tc.site, errPlogOutage, tc.cancelDuring)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
 			got := runLoginSite(t, tc.site, tc.err, tc.cancelDuring)

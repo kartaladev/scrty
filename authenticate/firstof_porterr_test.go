@@ -104,15 +104,15 @@ type foOutcome struct {
 // delegateErr and whose second would authenticate. It returns the outcome and
 // the abort records slog.Default() received, and fails the test when the call
 // or the checks of its error hang or let a panic escape.
-func foRun(t *testing.T, ctx context.Context, delegateErr error) (foOutcome, []map[string]any) {
+func foRun(ctx context.Context, t *testing.T, delegateErr error) (foOutcome, []map[string]any) {
 	t.Helper()
 
-	return foRunShaped(t, ctx, delegateErr, false)
+	return foRunShaped(ctx, t, delegateErr, false)
 }
 
 // foRunShaped is foRun, and with nested set the failing delegate sits inside a
 // FirstOf of its own, which is the first delegate of the one being called.
-func foRunShaped(t *testing.T, ctx context.Context, delegateErr error, nested bool) (foOutcome, []map[string]any) {
+func foRunShaped(ctx context.Context, t *testing.T, delegateErr error, nested bool) (foOutcome, []map[string]any) {
 	t.Helper()
 
 	defaults := defaultRecords(t)
@@ -346,10 +346,10 @@ func TestPortErrors_FirstOf(t *testing.T) { //nolint:paralleltest // it replaces
 					ctx = tc.ctx(ctx)
 				}
 
-				plain, plainAborts := foRun(t, ctx, errFirstOfDelegateDown)
+				plain, plainAborts := foRun(ctx, t, errFirstOfDelegateDown)
 				require.Empty(t, plainAborts, "a plain outage writes no abort record")
 
-				got, aborts := foRun(t, ctx, tc.err(fc.claims))
+				got, aborts := foRun(ctx, t, tc.err(fc.claims))
 				tc.assert(t, plain, got, aborts)
 
 				announcePortErrRan(t, only, row)
@@ -412,7 +412,7 @@ func TestPortErrors_FirstOf_Nested(t *testing.T) { //nolint:paralleltest // it r
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, aborts := foRunShaped(t, t.Context(), tc.err, true)
+			got, aborts := foRunShaped(t.Context(), t, tc.err, true)
 			tc.assert(t, got, aborts)
 		})
 	}

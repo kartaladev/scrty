@@ -143,7 +143,7 @@ func azClassify(err, sent error, next int) azOutcome {
 
 // azFlow runs one flow with its consumer port failing with err, and returns
 // the decision.
-type azFlow func(t *testing.T, ctx context.Context, err error) azOutcome
+type azFlow func(ctx context.Context, t *testing.T, err error) azOutcome
 
 // azPrincipal is the subject every flow runs for.
 func azPrincipal(ctx context.Context) context.Context { return withRole(ctx, "clerk") }
@@ -154,7 +154,7 @@ var azPrivilege = authorize.PrivilegeAttributes{
 
 // azFirstOf: the first authorizer fails with err, the second allows. A
 // failure that is not a declination must stop the manager there.
-func azFirstOf(t *testing.T, ctx context.Context, err error) azOutcome {
+func azFirstOf(ctx context.Context, t *testing.T, err error) azOutcome {
 	ctrl := gomock.NewController(t)
 
 	var next atomic.Int32
@@ -182,7 +182,7 @@ func azFirstOf(t *testing.T, ctx context.Context, err error) azOutcome {
 
 // azPrivilegeLoad: the role loader fails with err, while handing back a grant
 // of the very privilege asked for, so taking its answer would allow.
-func azPrivilegeLoad(t *testing.T, ctx context.Context, err error) azOutcome {
+func azPrivilegeLoad(ctx context.Context, t *testing.T, err error) azOutcome {
 	roles := NewMockRoleLoader(gomock.NewController(t))
 	roles.EXPECT().LoadPrivileges(gomock.Any(), "clerk").AnyTimes().
 		Return(grantOn("billing", "invoice", map[string]bool{"read": true}), err)
@@ -198,7 +198,7 @@ func azPrivilegeLoad(t *testing.T, ctx context.Context, err error) azOutcome {
 // azOwnership builds ownership attributes whose resolver or check fails with
 // err. A failing check also answers "owner", so taking it would allow.
 func azOwnership(resolveFails bool) azFlow {
-	return func(_ *testing.T, ctx context.Context, err error) azOutcome {
+	return func(ctx context.Context, _ *testing.T, err error) azOutcome {
 		attrs := authorize.OwnershipAttributes{
 			Group:    "billing",
 			Resource: "invoice",
@@ -227,7 +227,7 @@ func azOwnership(resolveFails bool) azFlow {
 // azAnyOf: a consumer's requirement fails with err; the member after it asks
 // the caller to authenticate. A failure that is not a demand to authenticate
 // makes the answer a denial.
-func azAnyOf(_ *testing.T, ctx context.Context, err error) azOutcome {
+func azAnyOf(ctx context.Context, _ *testing.T, err error) azOutcome {
 	var next atomic.Int32
 
 	req := authorize.AnyOf(
@@ -244,7 +244,7 @@ func azAnyOf(_ *testing.T, ctx context.Context, err error) azOutcome {
 
 // azBounded runs flow inside a bound and fails the test when it hangs or lets
 // a panic escape, panic(nil) included.
-func azBounded(t *testing.T, ctx context.Context, flow azFlow, err error) azOutcome {
+func azBounded(ctx context.Context, t *testing.T, flow azFlow, err error) azOutcome {
 	t.Helper()
 
 	type result struct {
@@ -266,7 +266,7 @@ func azBounded(t *testing.T, ctx context.Context, flow azFlow, err error) azOutc
 			done <- r
 		}()
 
-		r.out = flow(t, ctx, err)
+		r.out = flow(ctx, t, err)
 		r.returned = true
 	}()
 
@@ -425,7 +425,7 @@ func TestPortErrors_Authorize(t *testing.T) { //nolint:paralleltest // it replac
 				ctx := t.Context()
 
 				before := len(sink.records())
-				plain := azBounded(t, ctx, fc.flow, errAZPortDown)
+				plain := azBounded(ctx, t, fc.flow, errAZPortDown)
 				require.Len(t, sink.records(), before, "a plain outage writes no record")
 				fc.plain(t, plain)
 
@@ -434,7 +434,7 @@ func TestPortErrors_Authorize(t *testing.T) { //nolint:paralleltest // it replac
 				}
 
 				before = len(sink.records())
-				got := azBounded(t, ctx, fc.flow, tc.err(fc.claims))
+				got := azBounded(ctx, t, fc.flow, tc.err(fc.claims))
 				recs := sink.records()[before:]
 
 				want := plain

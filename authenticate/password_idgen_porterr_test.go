@@ -42,7 +42,7 @@ type passwordIDOutcome struct {
 // authenticateThroughIDGenerator runs one Authenticate with the right
 // password against a provider whose identifier generator fails with genErr.
 // It fails the test when the call hangs or lets a panic escape.
-func authenticateThroughIDGenerator(t *testing.T, ctx context.Context, genErr error) passwordIDOutcome {
+func authenticateThroughIDGenerator(ctx context.Context, t *testing.T, genErr error) passwordIDOutcome {
 	t.Helper()
 
 	defaults := defaultRecords(t)
@@ -52,7 +52,7 @@ func authenticateThroughIDGenerator(t *testing.T, ctx context.Context, genErr er
 	ids := NewMockGenerator(ctrl)
 	ids.EXPECT().NewID().Return(id.Nil, genErr)
 
-	auth, _ := authenticatorFor(t, cheapEncoder(t),
+	auth, _ := authenticatorFor(t, cheapEncoder(t), //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		authenticate.WithPasswordIDGenerator(ids),
 		authenticate.WithPasswordLogger(slog.New(slog.NewJSONHandler(own, &slog.HandlerOptions{Level: slog.LevelDebug}))))
 
@@ -190,10 +190,10 @@ func TestPortErrors_PasswordIDGenerator(t *testing.T) { //nolint:paralleltest //
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := authenticateThroughIDGenerator(t, ctx, errNoIdentifier)
+			plain := authenticateThroughIDGenerator(ctx, t, errNoIdentifier)
 			require.Zero(t, plain.aborts, "a plain failure writes no abort record")
 
-			got := authenticateThroughIDGenerator(t, ctx, tc.err)
+			got := authenticateThroughIDGenerator(ctx, t, tc.err)
 			tc.assert(t, plain.err, got.err)
 
 			if tc.passes {

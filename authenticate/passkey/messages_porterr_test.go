@@ -259,7 +259,7 @@ func TestPortErrors_Notices(t *testing.T) { //nolint:paralleltest // it replaces
 		site plogSite
 		err  error
 
-		// plainErr is what the parity run fails with: plogOutage when nil.
+		// plainErr is what the parity run fails with: errPlogOutage when nil.
 		plainErr error
 		// noUser makes the user loader answer no user and no error.
 		noUser bool
@@ -370,7 +370,7 @@ func TestPortErrors_Notices(t *testing.T) { //nolint:paralleltest // it replaces
 	for _, site := range []plogSite{pmsgNoticeLoad, pmsgNoticeResolve, pmsgCodeResolve} {
 		cases = append(cases, testCase{
 			name: string(site) + ": a walkable error keeps its outcome", site: site,
-			err: fmt.Errorf("consumer: %w", plogOutage),
+			err: fmt.Errorf("consumer: %w", errPlogOutage),
 			assert: func(t *testing.T, plain, got pmsgOutcome) {
 				t.Helper()
 
@@ -415,7 +415,7 @@ func TestPortErrors_Notices(t *testing.T) { //nolint:paralleltest // it replaces
 
 			plainErr := tc.plainErr
 			if plainErr == nil {
-				plainErr = plogOutage
+				plainErr = errPlogOutage
 			}
 
 			plain := runMessagesSite(t, tc.site, plainErr, false, tc.cancelDuring)

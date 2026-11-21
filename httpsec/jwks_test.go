@@ -337,7 +337,7 @@ func TestJWKS_RequestContextAndOutage(t *testing.T) {
 				assert.ErrorIs(t, s.err, errKeySetUnavailable, "the provider's error stays reachable")
 				assert.NotErrorIs(t, s.err, httpsec.ErrAuthenticationRequired,
 					"a key set that cannot be read refuses nobody")
-				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(s.err))
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(s.err)) //nolint:contextcheck // StatusForError takes no context; the test's context has nowhere to flow
 				assert.Empty(t, s.rec.Body.String(), "nothing was served in its place")
 				require.NotNil(t, asked)
 				assert.Equal(t, "request-1", asked.Value(jwksMark{}))
@@ -352,7 +352,7 @@ func TestJWKS_RequestContextAndOutage(t *testing.T) {
 				require.EqualError(t, s.err, "httpsec: the public key set could not be read")
 				assert.ErrorIs(t, s.err, context.DeadlineExceeded)
 				assert.NotErrorIs(t, s.err, httpsec.ErrAuthenticationRequired)
-				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(s.err))
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(s.err)) //nolint:contextcheck // StatusForError takes no context; the test's context has nowhere to flow
 			},
 		},
 	}

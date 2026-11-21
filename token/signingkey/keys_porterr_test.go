@@ -131,7 +131,7 @@ type (
 	portCycleMany  struct{}
 	portPanicOne   struct{}
 	portPanicNil   struct{}
-	portNilPointer struct{ cause error }
+	portNilPointer struct{}
 )
 
 func (*portPlainError) Error() string { return "store: " + hostileSecret }
@@ -667,7 +667,7 @@ func TestKeys_PortErrors(t *testing.T) { //nolint:paralleltest // goleak counts 
 			row.assert(t, runPortRow(t, row))
 
 			if !t.Failed() {
-				fmt.Fprintln(os.Stdout, portRan+row.name)
+				_, _ = fmt.Fprintln(os.Stdout, portRan+row.name)
 			}
 		})
 	}

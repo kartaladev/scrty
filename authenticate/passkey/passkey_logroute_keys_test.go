@@ -121,7 +121,7 @@ func TestLogRoute_PasskeysSummaryPerKey(t *testing.T) { //nolint:paralleltest //
 			e.m = e.f.manager(t, opts...)
 
 			refuse := func(ctx context.Context, malformed bool) {
-				body := assertion(e.begin(t), func(b *assertionBody) { b.ID = "nobody's key" })
+				body := assertion(e.begin(t), func(b *assertionBody) { b.ID = "nobody's key" }) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 				if malformed {
 					body = []byte("not an assertion")
 				}

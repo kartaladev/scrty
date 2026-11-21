@@ -53,10 +53,10 @@ var dpopPortSealed = []byte("sealed-nonce")
 // dpopPortServe builds a chain whose DPoP is d, behind the outcome observer,
 // logging to its own capturing logger, and serves one DPoP-bound GET under
 // ctx whose proof carries nonce unless it is empty.
-func dpopPortServe(t *testing.T, ctx context.Context, d httpsec.DPoP, nonce string, run stepUpRun) stepUpOutcome {
+func dpopPortServe(ctx context.Context, t *testing.T, d httpsec.DPoP, nonce string, run stepUpRun) stepUpOutcome {
 	t.Helper()
 
-	world := newDPoPBearerWorld(t)
+	world := newDPoPBearerWorld(t) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 	logs := &capturingHandler{}
 	returned := &stepUpReturned{}
 
@@ -70,14 +70,14 @@ func dpopPortServe(t *testing.T, ctx context.Context, d httpsec.DPoP, nonce stri
 	require.NoError(t, err)
 
 	key := newDPoPKey(t, elliptic.P256())
-	tok := world.token(token.Confirmation{JKT: key.jkt})
+	tok := world.token(token.Confirmation{JKT: key.jkt}) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 
 	parts := key.validProof("j-1").with(map[string]any{"ath": tokenHash(tok), "iat": world.clk.Now().Unix()})
 	if nonce != "" {
 		parts = parts.with(map[string]any{"nonce": nonce})
 	}
 
-	req := dpopRequest(t, http.MethodGet, "http://example.com/api/orders", parts.sign(t)).WithContext(ctx)
+	req := dpopRequest(t, http.MethodGet, "http://example.com/api/orders", parts.sign(t)).WithContext(ctx) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 	req.Header.Set("Authorization", "DPoP "+tok)
 
 	rec, panicked := stepUpServeWithin(t, chain, req)
@@ -111,7 +111,7 @@ func dpopReplayThrough(t *testing.T, portErr error, run stepUpRun) stepUpOutcome
 			return false, portErr
 		})
 
-	return dpopPortServe(t, ctx, httpsec.DPoP{PublicURL: dpopPublicURL, Replay: store}, "", run)
+	return dpopPortServe(ctx, t, httpsec.DPoP{PublicURL: dpopPublicURL, Replay: store}, "", run)
 }
 
 // dpopSealRefusedThrough serves a proof carrying no nonce, on a chain whose
@@ -130,7 +130,7 @@ func dpopSealRefusedThrough(t *testing.T, portErr error, run stepUpRun) stepUpOu
 			return nil, portErr
 		})
 
-	return dpopPortServe(t, ctx, httpsec.DPoP{PublicURL: dpopPublicURL, Nonce: true, NonceCipher: cipher}, "", run)
+	return dpopPortServe(ctx, t, httpsec.DPoP{PublicURL: dpopPublicURL, Nonce: true, NonceCipher: cipher}, "", run)
 }
 
 // dpopSealRefreshThrough serves an accepted proof whose nonce is past half its
@@ -151,7 +151,7 @@ func dpopSealRefreshThrough(t *testing.T, portErr error, run stepUpRun) stepUpOu
 			return nil, portErr
 		})
 
-	return dpopPortServe(t, ctx, httpsec.DPoP{PublicURL: dpopPublicURL, Nonce: true, NonceCipher: cipher}, "c2VhbGVk", run)
+	return dpopPortServe(ctx, t, httpsec.DPoP{PublicURL: dpopPublicURL, Nonce: true, NonceCipher: cipher}, "c2VhbGVk", run)
 }
 
 // TestPortErrors_DPoP pins that a hostile error from the consumer's replay
@@ -185,7 +185,7 @@ func dpopOpenThrough(t *testing.T, portErr error, run stepUpRun) stepUpOutcome {
 		})
 	cipher.EXPECT().Seal(gomock.Any(), gomock.Any(), gomock.Any()).Return(dpopPortSealed, nil).AnyTimes()
 
-	return dpopPortServe(t, ctx, httpsec.DPoP{PublicURL: dpopPublicURL, Nonce: true, NonceCipher: cipher}, "c2VhbGVk", run)
+	return dpopPortServe(ctx, t, httpsec.DPoP{PublicURL: dpopPublicURL, Nonce: true, NonceCipher: cipher}, "c2VhbGVk", run)
 }
 
 // TestPortErrors_DPoPNonceOpen pins that a hostile error from the consumer's
@@ -321,7 +321,7 @@ func TestPortErrors_DPoPNonceOpen(t *testing.T) { //nolint:paralleltest // it re
 				assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
 
 				if childRow != "" && !t.Failed() {
-					fmt.Fprintln(os.Stdout, dpopOpenPortErrRan+row)
+					_, _ = fmt.Fprintln(os.Stdout, dpopOpenPortErrRan+row)
 				}
 			})
 		}
@@ -330,12 +330,12 @@ func TestPortErrors_DPoPNonceOpen(t *testing.T) { //nolint:paralleltest // it re
 
 // dpopWaitersPortErrRowEnv names the row a child process of
 // TestPortErrors_DPoPNonceSealWaiters runs. It is empty in the parent.
-const dpopWaitersPortErrRowEnv = "SCRTY_HTTPSEC_DPOP_WAITERS_PORTERR_ROW"
+const dpopWaitersPortErrRowEnv = "SCRTY_HTTPSEC_DPOP_WAITERS_PORTERR_ROW" //nolint:gosec // G101: a fixture, not a credential
 
 // dpopWaitersPortErrRan is what a child of TestPortErrors_DPoPNonceSealWaiters
 // prints, as a line of its own followed by the row's name, once it has run its
 // row to the end.
-const dpopWaitersPortErrRan = "dpop-waiters-porterr-row-ran:"
+const dpopWaitersPortErrRan = "dpop-waiters-porterr-row-ran:" //nolint:gosec // G101: a fixture, not a credential
 
 // dpopSealWaiters is how many requests wait on the one seal in progress,
 // besides the request sealing.
@@ -652,7 +652,7 @@ func TestPortErrors_DPoPNonceSealWaiters(t *testing.T) { //nolint:paralleltest /
 			assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
 
 			if childRow != "" && !t.Failed() {
-				fmt.Fprintln(os.Stdout, dpopWaitersPortErrRan+row)
+				_, _ = fmt.Fprintln(os.Stdout, dpopWaitersPortErrRan+row)
 			}
 		})
 	}

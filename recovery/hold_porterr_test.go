@@ -131,10 +131,10 @@ func holdRecordState(t *testing.T, e *completeEnv, rid id.ID) string {
 // delete; Finish and Cancel run over a recovery already held. It fails the
 // test when the flow, or the classification of its error, hangs or lets a
 // panic escape.
-func runHoldSite(t *testing.T, ctx context.Context, site holdSite, portErr error) holdOutcome {
+func runHoldSite(ctx context.Context, t *testing.T, site holdSite, portErr error) holdOutcome {
 	t.Helper()
 
-	e := newCompleteEnv(t)
+	e := newCompleteEnv(t) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	logs := &syncBuffer{}
 	logger := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	own := &recoveryEvents{}
@@ -154,7 +154,7 @@ func runHoldSite(t *testing.T, ctx context.Context, site holdSite, portErr error
 		e.faults.arm(faultCodesDeleteUser, portErr)
 		call = recoverCall
 	case holdFinishLoader, holdFinishFind:
-		h := heldRecovery(t.Context(), t, r, req)
+		h := heldRecovery(t.Context(), t, r, req) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		e.clock.Advance(73 * time.Hour)
 
 		if site == holdFinishLoader {
@@ -165,7 +165,7 @@ func runHoldSite(t *testing.T, ctx context.Context, site holdSite, portErr error
 
 		call = func(ctx context.Context) (*recovery.Result, error) { return r.Finish(ctx, h.CompletionToken) }
 	case holdCancelFind, holdCancelRecord, holdCancelLoader:
-		heldRecovery(t.Context(), t, r, req)
+		heldRecovery(t.Context(), t, r, req) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		token := e.cancelToken(t)
 
 		switch site {
@@ -235,10 +235,10 @@ func runHoldSite(t *testing.T, ctx context.Context, site holdSite, portErr error
 		out.events = append(out.events, holdEvent{name: ev.Name, outcome: ev.Outcome, user: ev.User})
 	}
 
-	out.state = holdRecordState(t, e, rid)
+	out.state = holdRecordState(t, e, rid) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	out.issued = len(tokens.purposes())
 	out.consumed = tokens.consumedPurposes()
-	out.savedUsable = e.savedUsable(t.Context(), t, e.saved[1])
+	out.savedUsable = e.savedUsable(t.Context(), t, e.saved[1]) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 	out.held = len(e.out.heldNotices())
 	out.cancelled = len(e.out.cancelledNotices())
 	out.recovered = len(e.out.recoveredNotices())
@@ -440,10 +440,10 @@ func TestPortErrors_Hold(t *testing.T) { //nolint:paralleltest // it replaces sl
 				ctx = tc.ctx(ctx)
 			}
 
-			plain := runHoldSite(t, ctx, tc.site, errHoldPortDown)
+			plain := runHoldSite(ctx, t, tc.site, errHoldPortDown)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
-			got := runHoldSite(t, ctx, tc.site, tc.err)
+			got := runHoldSite(ctx, t, tc.site, tc.err)
 			tc.assert(t, plain, got)
 
 			for _, rec := range limJSONRecords(t, defaults.String()) {

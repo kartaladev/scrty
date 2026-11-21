@@ -338,7 +338,7 @@ func TestPortErrors_Options(t *testing.T) { //nolint:paralleltest // it replaces
 
 			defaults := pregDefaultRecords(t)
 
-			plain := runOptionsSite(t, tc.site, plogOutage, tc.cancelDuring)
+			plain := runOptionsSite(t, tc.site, errPlogOutage, tc.cancelDuring)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 			require.True(t, plain.same, "a plain outage comes back unchanged")
 

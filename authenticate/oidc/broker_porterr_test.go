@@ -219,7 +219,7 @@ func pe6bRun(t *testing.T, site pe6bSite, portErr error, cancel bool) pe6bOutcom
 			rerr error
 		)
 
-		b, err := oidc.NewBroker(links, users, opts...)
+		b, err := oidc.NewBroker(links, users, opts...) //nolint:contextcheck // NewBroker is a constructor under test and takes no context
 		out.built = b != nil
 		rerr = err
 

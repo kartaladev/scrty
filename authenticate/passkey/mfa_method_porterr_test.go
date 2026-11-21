@@ -186,7 +186,7 @@ func runMFASite(t *testing.T, site plogSite, portErr error, cancelDuring bool) p
 
 		switch site {
 		case pmfaParse:
-			out.challenge, err = method.PresentedChallenge(body)
+			out.challenge, err = method.PresentedChallenge(body) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 		case pmfaListEnrol:
 			out.enrolled, err = method.Enrolled(ctx, "u-1")
 		case pmfaListBegin:
@@ -423,7 +423,7 @@ func TestPortErrors_MFAMethod(t *testing.T) { //nolint:paralleltest // it replac
 
 			defaults := pregDefaultRecords(t)
 
-			plain := runMFASite(t, tc.site, plogOutage, tc.cancelDuring)
+			plain := runMFASite(t, tc.site, errPlogOutage, tc.cancelDuring)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
 			got := runMFASite(t, tc.site, tc.err, tc.cancelDuring)

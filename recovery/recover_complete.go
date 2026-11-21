@@ -345,7 +345,7 @@ func (r *Recoverer) issueSession(
 	}
 	opts = append(opts, session.WithFirstFactor(factor.Recovery), recoveryOwn(details.ID))
 
-	p, err := r.sessions.Prepare(details.ID, opts...)
+	p, err := r.sessions.Prepare(details.ID, opts...) //nolint:contextcheck // Prepare touches no store and takes no context; its abort record goes to the manager's logger, else the default
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgSessionFailed, diag.Failure("session-build", err)...)
 

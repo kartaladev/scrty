@@ -52,7 +52,7 @@ func idNilRun(t *testing.T, site idNilSite, kind idNilKind) idNilOutcome {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
-	real := id.NewV7Generator()
+	realGen := id.NewV7Generator()
 
 	var armed, drawn atomic.Int32
 
@@ -69,7 +69,7 @@ func idNilRun(t *testing.T, site idNilSite, kind idNilKind) idNilOutcome {
 			}
 		}
 
-		return real.NewID()
+		return realGen.NewID()
 	}).AnyTimes()
 
 	opts := []oidcprovider.Option{oidcprovider.WithIDGenerator(gen)}

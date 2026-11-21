@@ -284,7 +284,7 @@ func runPendingSite(t *testing.T, site plogSite, portErr, claims error, cancelDu
 	// finishing begins a registration, before the port is armed, and returns
 	// the call that finishes it.
 	finish := func(ctx context.Context, credID string) func() (*passkey.RegistrationResult, error) {
-		challenge := f.begin(t, m, s)
+		challenge := f.begin(t, m, s) //nolint:contextcheck // fixtures are built on t.Context(); the case's ctx is the caller's
 
 		return func() (*passkey.RegistrationResult, error) {
 			return m.FinishRegistration(ctx, s, regBody(challenge, credID, ""), rc)
@@ -626,7 +626,7 @@ func TestPortErrors_RegisterPending(t *testing.T) { //nolint:paralleltest // it 
 
 			defaults := pregDefaultRecords(t)
 
-			plain := runPendingSite(t, tc.site, plogOutage, nil, tc.cancelDuring)
+			plain := runPendingSite(t, tc.site, errPlogOutage, nil, tc.cancelDuring)
 			require.Empty(t, plain.aborts, "a plain outage writes no abort record")
 
 			got := runPendingSite(t, tc.site, tc.err, tc.claims, tc.cancelDuring)

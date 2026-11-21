@@ -18,11 +18,11 @@ import (
 
 // apiKeyCauseRowEnv names the row a child process runs. It is empty in the
 // parent.
-const apiKeyCauseRowEnv = "SCRTY_HTTPSEC_APIKEY_CAUSE_ROW"
+const apiKeyCauseRowEnv = "SCRTY_HTTPSEC_APIKEY_CAUSE_ROW" //nolint:gosec // G101: a fixture, not a credential
 
 // apiKeyCauseRan is what a child prints once it has run its row to the end,
 // followed by the row's name.
-const apiKeyCauseRan = "apikey-cause-row-ran:"
+const apiKeyCauseRan = "apikey-cause-row-ran:" //nolint:gosec // G101: a fixture, not a credential
 
 // TestAPIKeyOwner_HostileCancelCause pins that the cause a request's context
 // was cancelled with, which any middleware may set, is consumer input: the
@@ -62,7 +62,7 @@ func TestAPIKeyOwner_HostileCancelCause(t *testing.T) { //nolint:paralleltest //
 			defaults := swapDefaultLogger(t)
 
 			serve := func(cause error) apiKeyPortOutcome {
-				return apiKeyOwnerSequenceCause(t, leavable(t.Context()), []error{context.Canceled}, true, cause)
+				return apiKeyOwnerSequenceCause(leavable(t.Context()), t, []error{context.Canceled}, true, cause)
 			}
 
 			plain := serve(errors.New("client gone"))
@@ -92,7 +92,7 @@ func TestAPIKeyOwner_HostileCancelCause(t *testing.T) { //nolint:paralleltest //
 			assert.Empty(t, abortRecords(defaults.records()), "none on slog.Default()")
 
 			if childRow != "" && !t.Failed() {
-				fmt.Fprintln(os.Stdout, apiKeyCauseRan+kind.name)
+				_, _ = fmt.Fprintln(os.Stdout, apiKeyCauseRan+kind.name)
 			}
 		})
 	}

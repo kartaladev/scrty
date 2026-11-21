@@ -95,7 +95,7 @@ func (k panicKind) fire() {
 		var s []int
 
 		idx := 3
-		s[idx]++
+		s[idx]++ //nolint:gosec // G602: the panic is the point: a runtime error from the consumer
 	case kindNone:
 	}
 }
@@ -516,7 +516,7 @@ func TestKeys_ConsumerPanics(t *testing.T) { //nolint:paralleltest // goleak cou
 			tc.assert(t, runHostileRow(t, tc))
 
 			if !t.Failed() {
-				fmt.Fprintln(os.Stdout, hostileRan+tc.name)
+				_, _ = fmt.Fprintln(os.Stdout, hostileRan+tc.name)
 			}
 		})
 	}
