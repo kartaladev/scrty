@@ -79,6 +79,10 @@ type WayBackOption func(*WayBackCheck)
 // than saved codes they have yet to generate. A registration flow that creates
 // an account with no password, for one, asks it before letting the user go
 // without saved codes.
+//
+// It holds no logger: the abort records of its port calls go to the logger of
+// the chain handling the request, else slog.Default() when the record is
+// written, not to WithLogger.
 type WayBackCheck struct {
 	users        identity.UserLoader
 	codes        *Codes
@@ -93,6 +97,7 @@ type WayBackCheck struct {
 // A nil Users (typed nil included), a nil Codes or a nil kind is a
 // configuration error wrapping ErrConfig. A nil Admits counts a linked login
 // only when factor.Kind.MFAExempt exempts its kind. A nil option is ignored.
+// The check's abort records follow the chain's logger, else slog.Default().
 func NewWayBackCheck(deps WayBackDeps, opts ...WayBackOption) (*WayBackCheck, error) {
 	if nilcheck.IsNil(deps.Users) {
 		return nil, fmt.Errorf("%w: way-back check: user loader must not be nil", ErrConfig)
@@ -173,14 +178,14 @@ func (c *WayBackCheck) HasWayBack(ctx context.Context, user identity.UserID) (bo
 	}
 
 	kinds, err := c.linkedLogins(ctx, user)
-	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return false, diag.Wrap(err, errTextWayBackLinks)
 	}
 
 	for _, k := range kinds {
 		ok, err := c.admits(ctx, user, k)
-		err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+		err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 		if err != nil {
 			return false, diag.Wrap(err, errTextWayBackAdmit)
 		}
@@ -204,7 +209,7 @@ func admittedByKind(_ context.Context, _ identity.UserID, kind factor.Kind) (boo
 // taken as a user with no password.
 func (c *WayBackCheck) pairsWithIssuedCode(ctx context.Context, user identity.UserID) (bool, error) {
 	d, err := c.users.LoadByUserID(ctx, user)
-	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return false, diag.Wrap(err, errTextWayBackUser)
 	}
@@ -234,10 +239,10 @@ func usable(ctx context.Context, k AuthenticatorKind, user identity.UserID) ([]A
 	if u, ok := k.(UsableLister); ok {
 		refs, err := u.Usable(ctx, user)
 
-		return refs, porterr.Sanitize(err, porterr.ErrUnwalkable)
+		return refs, porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	}
 
 	refs, err := k.Held(ctx, user)
 
-	return refs, porterr.Sanitize(err, porterr.ErrUnwalkable)
+	return refs, porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 }

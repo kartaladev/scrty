@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
@@ -99,13 +100,13 @@ type Codes struct {
 //
 // A set size outside 1–100, a low threshold below zero, or a store, limiter,
 // clock or random source given as nil (typed nil included) is a configuration
-// error wrapping ErrConfig. A nil logger is ignored.
+// error wrapping ErrConfig, the logger included.
 func NewCodes(opts ...CodesOption) (*Codes, error) {
 	c := &Codes{
 		store:        NewMemoryCodeStore(),
 		clock:        clock.System(),
 		random:       rand.Reader,
-		logger:       slog.Default(),
+		logger:       ctxlog.Routing(),
 		setSize:      defaultSetSize,
 		lowThreshold: defaultLowThreshold,
 	}
@@ -116,6 +117,9 @@ func NewCodes(opts ...CodesOption) (*Codes, error) {
 		}
 	}
 
+	if nilcheck.IsNil(c.logger) {
+		return nil, fmt.Errorf("%w: WithCodesLogger was given no logger", ErrConfig)
+	}
 	if c.setSize < 1 || c.setSize > maxSetSize {
 		return nil, fmt.Errorf("%w: set size must be between 1 and %d, got %d", ErrConfig, maxSetSize, c.setSize)
 	}

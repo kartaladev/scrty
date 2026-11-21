@@ -13,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
@@ -319,14 +320,13 @@ func WithSecurityEvents(sink event.Sink) Option {
 	return func(c *config) { c.events.Set(sink) }
 }
 
-// WithLogger replaces the logger. The default is slog.Default(). A nil logger
-// is ignored. No record carries a username, an address, a code or a token.
+// WithLogger replaces the logger of the Recoverer's own records.
+// The reset planner, the MFAEnrolments kind and WayBackCheck hold no logger:
+// their abort records follow the chain's logger, else slog.Default(). The default is the logger of the chain
+// handling the request, else slog.Default() when the record is written. A nil
+// logger, typed nil included, fails NewRecoverer with ErrConfig. No record carries a username, an address, a code or a token.
 func WithLogger(logger *slog.Logger) Option {
-	return func(c *config) {
-		if logger != nil {
-			c.logger = logger
-		}
-	}
+	return func(c *config) { c.logger = logger }
 }
 
 // WithPasswordCheck supplies the password proof's check. There is no default:
@@ -488,13 +488,17 @@ func NewRecoverer(deps Deps, opts ...Option) (*Recoverer, error) {
 
 		messages: DefaultMessages(),
 		clock:    clock.System(),
-		logger:   slog.Default(),
+		logger:   ctxlog.Routing(),
 	}
 
 	for _, opt := range opts {
 		if opt != nil {
 			opt(c)
 		}
+	}
+
+	if nilcheck.IsNil(c.logger) {
+		return nil, fmt.Errorf("%w: WithLogger was given no logger", ErrConfig)
 	}
 
 	r := &Recoverer{

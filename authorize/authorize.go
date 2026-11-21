@@ -244,7 +244,7 @@ func (m *FirstOf) Authorize(ctx context.Context, attrs Attributes) error {
 		// cannot be walked becomes a fault that matches no declination, so a
 		// hostile authorizer is never skipped for a later one to grant: it stops
 		// the manager as a plain outage from it does.
-		err := porterr.Sanitize(a.Authorize(ctx, attrs), porterr.ErrUnwalkable)
+		err := porterr.SanitizeTo(ctx, nil, a.Authorize(ctx, attrs), porterr.ErrUnwalkable)
 		if errors.Is(err, ErrUnsupportedAttributes) {
 			continue
 		}

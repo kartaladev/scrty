@@ -46,6 +46,10 @@ const (
 //
 // There is no default set: the library cannot guess which methods a consumer
 // serves.
+//
+// The returned kind holds no logger: the abort records of its port calls go to
+// the logger of the chain handling the request, else slog.Default() when the
+// record is written, not to WithLogger.
 func MFAEnrolments(methods ...mfa.Method) (AuthenticatorKind, error) {
 	if _, err := mfa.LookupsFor(methods...); err != nil {
 		return nil, fmt.Errorf("%w: mfa enrolments: %w", ErrConfig, err)
@@ -90,7 +94,7 @@ func (k mfaKind) enrolled(ctx context.Context, user identity.UserID, withChannel
 
 	for _, m := range k.methods {
 		enrolled, err := m.Enrolled(ctx, user)
-		err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+		err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 		if err != nil {
 			return nil, diag.Wrap(err, errTextMFALookup)
 		}
@@ -116,7 +120,7 @@ func (k mfaKind) Remove(ctx context.Context, user identity.UserID, refs []Authen
 		}
 
 		err := r.RemoveEnrolment(ctx, user)
-		err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+		err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 		if err != nil {
 			return diag.Wrap(err, errTextMFARemoval)
 		}

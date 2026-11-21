@@ -80,7 +80,7 @@ func TestNewRecoverer(t *testing.T) {
 		{name: "a nil contact resolver", opts: with(recovery.WithContactResolver(nil)), assert: configError},
 		{name: "a nil message builder", opts: with(recovery.WithMessages(nil)), assert: configError},
 		{name: "a nil clock", opts: with(recovery.WithClock(nil)), assert: configError},
-		{name: "a nil logger is ignored", opts: with(recovery.WithLogger(nil)), assert: ok},
+		{name: "a nil logger", opts: with(recovery.WithLogger(nil)), assert: configError},
 		{name: "a nil security-event sink", opts: with(recovery.WithSecurityEvents(nil)), assert: configError},
 		{
 			name: "the security-event sink given twice",

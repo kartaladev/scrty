@@ -169,7 +169,7 @@ func AnyOf(requirements ...Requirement) Requirement {
 			// A member may be the consumer's own function. An error from it whose
 			// chain cannot be walked becomes a fault that is no demand to
 			// authenticate, so it counts as a plain failure of that member does.
-			err := porterr.Sanitize(required(ctx), porterr.ErrUnwalkable)
+			err := porterr.SanitizeTo(ctx, nil, required(ctx), porterr.ErrUnwalkable)
 			if err == nil {
 				return nil
 			}

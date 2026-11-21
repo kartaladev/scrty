@@ -9,6 +9,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/oplineage"
@@ -155,7 +156,7 @@ func defaultConfig() config {
 		logoutQueue:         defaultLogoutQueue,
 		logoutTimeout:       defaultLogoutTimeout,
 		clock:               clock.System(),
-		logger:              slog.Default(),
+		logger:              ctxlog.Routing(),
 		random:              rand.Reader,
 	}
 }
@@ -241,7 +242,7 @@ func (c *config) validate() error {
 	if nilcheck.IsNil(c.clock) {
 		return fmt.Errorf("%w: WithClock: must not be nil", ErrConfig)
 	}
-	if c.logger == nil {
+	if nilcheck.IsNil(c.logger) {
 		return fmt.Errorf("%w: WithLogger: must not be nil", ErrConfig)
 	}
 	if c.idsSet && nilcheck.IsNil(c.idsGiven) {
@@ -460,8 +461,10 @@ func WithIDGenerator(ids id.Generator) Option {
 	return func(c *config) { c.idsGiven = ids; c.idsSet = true }
 }
 
-// WithLogger replaces the logger. The default is slog.Default(), and it must not
-// be nil.
+// WithLogger replaces the logger. The default is the logger of the chain handling the request,
+// else slog.Default() when the record is written, and the logger must not be nil, typed nil
+// included. With a logger given, the provider's records, and those of the token issuing,
+// verification and outbound calls it makes on a request, go to it rather than to the chain's.
 func WithLogger(logger *slog.Logger) Option {
 	return func(c *config) { c.logger = logger }
 }

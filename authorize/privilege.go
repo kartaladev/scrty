@@ -144,7 +144,7 @@ func (a *PrivilegeAuthorizer) Authorize(ctx context.Context, attrs Attributes) e
 	granted, err := a.roles.LoadPrivileges(ctx, role.Name)
 	// An unwalkable loader error becomes a fault that is no not-found, so it
 	// stays an outage rather than reading as "the role grants nothing".
-	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	if err != nil {
 		if errors.Is(err, identity.ErrPrivilegesNotFound) {
 			return fmt.Errorf("%w: role %q grants no privileges", ErrAccessDenied, role.Name)

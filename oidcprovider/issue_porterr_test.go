@@ -8,11 +8,14 @@ package oidcprovider_test
 // run in parallel, and they restore the logger they found.
 //
 // The key source's and the signer's errors are sanitized in the token package,
-// which logs to slog.Default(); they are not rows here.
+// and are rows of TestPortErrors_TokenKeys below: their abort records go to
+// the provider's logger, else the chain's.
 
 import (
 	"context"
+	"crypto"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -25,9 +28,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // pe7nRowEnv names the row a child process runs. It is empty in the parent.
@@ -316,6 +321,121 @@ func TestPortErrors_LogoutTokenJTI(t *testing.T) { //nolint:paralleltest // it r
 			assert.Len(t, got.failures, len(plain.failures), "the same failure records")
 			assert.Zero(t, got.handed, "no token is handed on")
 		})
+}
+
+// pe7nKeys is the exchange's key source with a failing key source or a
+// failing signer, for the two sanitizers of the token package that sit under
+// the provider's token issuing.
+type pe7nKeys struct {
+	*exchangeKeys
+
+	// sourceErr is what Signer answers with, when set.
+	sourceErr error
+	// signErr is what the signer's Sign answers with, when set.
+	signErr error
+}
+
+func (k pe7nKeys) Signer(ctx context.Context, alg signingkey.Alg) (string, crypto.Signer, error) {
+	if k.sourceErr != nil {
+		return "", nil, k.sourceErr
+	}
+
+	kid, signer, err := k.exchangeKeys.Signer(ctx, alg)
+	if err != nil || k.signErr == nil {
+		return kid, signer, err
+	}
+
+	return kid, pe7nFailingSigner{Signer: signer, err: k.signErr}, nil
+}
+
+// pe7nFailingSigner signs with an error.
+type pe7nFailingSigner struct {
+	crypto.Signer
+
+	err error
+}
+
+func (s pe7nFailingSigner) Sign(io.Reader, []byte, crypto.SignerOpts) ([]byte, error) {
+	return nil, s.err
+}
+
+// TestPortErrors_TokenKeys pins that the key source's and the signer's errors,
+// sanitized in the token package, write their abort record where the provider's
+// records go: the logger of the chain handling the request when the provider
+// was given none, the provider's own logger when it was, and never
+// slog.Default() while either is set. A plain outage of either writes no abort
+// record. It replaces slog.Default() for its duration, so it does not run in
+// parallel.
+func TestPortErrors_TokenKeys(t *testing.T) { //nolint:paralleltest // it replaces slog.Default()
+	type testCase struct {
+		name string
+		keys func(k *exchangeKeys, portErr error) pe7nKeys
+		// own gives the provider its own logger, beside the chain's.
+		own bool
+		// plain fails the port with a plain outage instead of the hostile error.
+		plain  bool
+		assert func(t *testing.T, own, chain, def *lockedBuffer)
+	}
+
+	source := func(k *exchangeKeys, err error) pe7nKeys { return pe7nKeys{exchangeKeys: k, sourceErr: err} }
+	signer := func(k *exchangeKeys, err error) pe7nKeys { return pe7nKeys{exchangeKeys: k, signErr: err} }
+
+	inChain := func(t *testing.T, _, chain, def *lockedBuffer) {
+		t.Helper()
+		assert.Len(t, lrAborts(t, chain), 1, "the chain's logger takes the record")
+		assert.Empty(t, lrAborts(t, def), "the default logger must see no abort record")
+	}
+	inOwn := func(t *testing.T, own, chain, def *lockedBuffer) {
+		t.Helper()
+		assert.Len(t, lrAborts(t, own), 1, "the provider's own logger takes the record")
+		assert.Empty(t, lrAborts(t, chain))
+		assert.Empty(t, lrAborts(t, def))
+	}
+	nowhere := func(t *testing.T, own, chain, def *lockedBuffer) {
+		t.Helper()
+		assert.Empty(t, lrAborts(t, own))
+		assert.Empty(t, lrAborts(t, chain))
+		assert.Empty(t, lrAborts(t, def))
+	}
+
+	cases := []testCase{
+		{name: "key source, inside a configured chain", keys: source, assert: inChain},
+		{name: "key source, own option wins", keys: source, own: true, assert: inOwn},
+		{name: "signer, inside a configured chain", keys: signer, assert: inChain},
+		{name: "signer, own option wins", keys: signer, own: true, assert: inOwn},
+		{name: "key source, a plain outage", keys: source, plain: true, assert: nowhere},
+		{name: "signer, a plain outage", keys: signer, plain: true, assert: nowhere},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			own, chain, def := &lockedBuffer{}, &lockedBuffer{}, &lockedBuffer{}
+
+			previous := slog.Default()
+			slog.SetDefault(lrJSON(def))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+
+			portErr := error(&pe7bCycleOne{})
+			if tc.plain {
+				portErr = pe7bErrDown
+			}
+
+			var opts []oidcprovider.Option
+			if tc.own {
+				opts = append(opts, oidcprovider.WithLogger(lrJSON(own)))
+			}
+
+			f := pe7bFixtureKeys(t, tc.keys(newExchangeKeys(t), portErr), activeUsers(t), opts...)
+			c := issueCodeFor(t, f, "billing-web", nil, testSignIn(f, "u-1"), "openid", "profile")
+
+			ctx := ctxlog.With(t.Context(), lrJSON(chain))
+
+			_, err := f.p.Token(ctx, billingExchange(c, nil))
+			require.Error(t, err, "the key source or the signer failed, so no token")
+
+			tc.assert(t, own, chain, def)
+		})
+	}
 }
 
 // pe7nInChild re-runs the current top-level test in a child process limited

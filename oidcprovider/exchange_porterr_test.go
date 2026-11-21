@@ -27,6 +27,7 @@ import (
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token/onetime"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // pe7bSecret is the text every hostile error here returns, so a test can
@@ -344,6 +345,13 @@ func pe7bRun(t *testing.T, ctx context.Context, site pe7bSite, portErr error) pe
 func pe7bFixture(t *testing.T, users identity.UserLoader, opts ...oidcprovider.Option) *parkFixture {
 	t.Helper()
 
+	return pe7bFixtureKeys(t, newExchangeKeys(t), users, opts...)
+}
+
+// pe7bFixtureKeys is pe7bFixture over a key source the row chose.
+func pe7bFixtureKeys(t *testing.T, keys signingkey.KeySource, users identity.UserLoader, opts ...oidcprovider.Option) *parkFixture {
+	t.Helper()
+
 	clk := clockwork.NewFakeClockAt(exchangeFixtureStart)
 	store, err := oidcprovider.NewMemoryPendingRequestStore()
 	require.NoError(t, err)
@@ -367,7 +375,7 @@ func pe7bFixture(t *testing.T, users identity.UserLoader, opts ...oidcprovider.O
 	p, err := oidcprovider.New(oidcprovider.Deps{
 		Issuer:       issuer,
 		Registry:     registry,
-		Keys:         newExchangeKeys(t),
+		Keys:         keys,
 		Users:        users,
 		LoginURL:     issuer + "/login",
 		ConsentURL:   issuer + "/consent",

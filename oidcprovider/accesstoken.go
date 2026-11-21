@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -354,7 +355,9 @@ func (p *Provider) readOpaqueAccessToken(ctx context.Context, raw string) (*Acce
 // a DPoP key and a certificate when the provider binds a token to one, is refused rather than
 // read as the one it kept or as no binding.
 func (p *Provider) readJWTAccessToken(ctx context.Context, raw string) (*AccessToken, error) {
-	claims, err := p.accessVerifier.Verify(ctx, raw)
+	// The verifier holds no logger: the provider's own logger, when one was given, takes the abort
+	// record of a key source error it sanitizes.
+	claims, err := p.accessVerifier.Verify(ctxlog.With(ctx, p.cfg.logger), raw)
 	switch {
 	case errors.Is(err, token.ErrInvalid):
 		return nil, refuseToken()

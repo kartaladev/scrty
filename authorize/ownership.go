@@ -61,7 +61,7 @@ func (a *OwnershipAuthorizer) Authorize(ctx context.Context, attrs Attributes) e
 	// are wrapped, so nothing behind this authorizer walks a chain that cannot
 	// be walked; an unwalkable one is an outage like any other failure here.
 	id, err := owned.ResolveID(ctx)
-	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return fmt.Errorf("authorize: resolve %s/%s identifier: %w", owned.Group, owned.Resource, err)
 	}
@@ -70,7 +70,7 @@ func (a *OwnershipAuthorizer) Authorize(ctx context.Context, attrs Attributes) e
 	// trimming or case-folding it here would look up a different record than
 	// the one the request named.
 	isOwner, err := owned.OwnedBy(ctx, subject, id)
-	err = porterr.Sanitize(err, porterr.ErrUnwalkable)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	if err != nil {
 		// The ownership answer is not read when the check failed, however it
 		// was returned: a function that reports an error has not judged, and

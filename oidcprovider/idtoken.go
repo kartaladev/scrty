@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
@@ -64,7 +65,9 @@ func (p *Provider) issue(ctx context.Context, rc *RegisteredClient, in token.Iss
 	}
 	in.ID = jti.String()
 
-	return issuer.Issue(ctx, in)
+	// The issuer's key source and signer errors are sanitized in the token package, which holds
+	// no logger: the provider's own logger, when one was given, takes their abort record.
+	return issuer.Issue(ctxlog.With(ctx, p.cfg.logger), in)
 }
 
 // mintIDToken signs grant's ID token. Everything it states of the authentication comes from
