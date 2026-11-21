@@ -1,5 +1,7 @@
 package recovery_test
 
+//go:generate mockgen -source=../pkg/id/generator.go -destination=generator_mock_test.go -package=recovery_test -typed
+
 import (
 	"context"
 	"errors"
@@ -13,7 +15,6 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/internal/idgen/idgentest"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
@@ -704,7 +705,7 @@ func TestRecoverer_IDGeneratorNilIdentifier(t *testing.T) {
 		t.Helper()
 
 		e := newCompleteEnv(t)
-		gen := idgentest.NewMockGenerator(gomock.NewController(t))
+		gen := NewMockGenerator(gomock.NewController(t))
 		gen.EXPECT().NewID().DoAndReturn(func() (id.ID, error) { return answer(t) })
 
 		_, err := e.recoverer(t, recovery.WithIDGenerator(gen)).Recover(t.Context(), savedAndIssuedReq(e))

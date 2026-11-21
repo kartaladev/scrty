@@ -18,7 +18,6 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/internal/idgen"
-	"github.com/kartaladev/scrty/internal/idgen/idgentest"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token/onetime"
@@ -68,7 +67,7 @@ func ptMintRun(t *testing.T, source ptMintSource, within bool, portErr error) pt
 
 	switch source {
 	case ptGenerator:
-		gen := idgentest.NewMockGenerator(gomock.NewController(t))
+		gen := NewMockGenerator(gomock.NewController(t))
 		gen.EXPECT().NewID().Return(id.Nil, portErr).AnyTimes()
 
 		opts = append(opts, onetime.WithIDGenerator(gen))

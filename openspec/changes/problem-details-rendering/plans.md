@@ -831,7 +831,7 @@ Steps:
   - No error and `id.Nil` gives `ErrNil`.
   - Otherwise the identifier comes back with a nil error.
   - It writes no record and recovers no panic.
-- `MockGenerator`, the typed `mockgen` double for `id.Generator` (`//go:generate mockgen -typed`, placed by `use-mockgen`'s consumer rule so every lane's tests can import it). Lanes b to h use it in place of the hand-written generator stubs in the tests they touch. A stub in a test 10.15 does not touch stays.
+- `MockGenerator`, the typed `mockgen` double for `id.Generator` (`//go:generate mockgen -typed`). The core module's layout guard forbids a shared test-double package there, so each consuming core package generates its own into a `_test.go` file, and the `test` module shares one under `test/internal/idgenmock`. Lanes b to h use it in place of the hand-written generator stubs in the tests they touch. A stub in a test 10.15 does not touch stays.
 
 **Review Focus for this task:**
 1. **A generator answering the nil identifier at the OpenID Provider's grant family.** Expect `server_error`, with no grant and no code stored, never one family shared by two grants. Lane b pins it (row `nil family`).

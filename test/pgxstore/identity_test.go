@@ -15,7 +15,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/idgen"
-	"github.com/kartaladev/scrty/internal/idgen/idgentest"
+	"github.com/kartaladev/scrty/test/internal/idgenmock"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/store/pgxstore"
@@ -573,14 +573,14 @@ func TestIdentityStore_StoredRowTheConnectionCannotEncode(t *testing.T) {
 
 // nilOnCall is a generator that mints from the default generator and answers
 // the nil identifier, with no error, on its n-th call (1-based).
-func nilOnCall(t *testing.T, n int) *idgentest.MockGenerator {
+func nilOnCall(t *testing.T, n int) *idgenmock.MockGenerator {
 	t.Helper()
 
 	var (
 		mu    sync.Mutex
 		calls int
 	)
-	g := idgentest.NewMockGenerator(gomock.NewController(t))
+	g := idgenmock.NewMockGenerator(gomock.NewController(t))
 	g.EXPECT().NewID().DoAndReturn(func() (id.ID, error) {
 		mu.Lock()
 		defer mu.Unlock()

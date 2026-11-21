@@ -12,7 +12,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/internal/idgen"
-	"github.com/kartaladev/scrty/internal/idgen/idgentest"
+	"github.com/kartaladev/scrty/test/internal/idgenmock"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
@@ -160,10 +160,10 @@ func TestAttemptStore_IDs(t *testing.T) {
 
 // nilIDGenerator is a consumer generator that answers the nil identifier with
 // no error, once or more.
-func nilIDGenerator(t *testing.T) *idgentest.MockGenerator {
+func nilIDGenerator(t *testing.T) *idgenmock.MockGenerator {
 	t.Helper()
 
-	g := idgentest.NewMockGenerator(gomock.NewController(t))
+	g := idgenmock.NewMockGenerator(gomock.NewController(t))
 	g.EXPECT().NewID().Return(id.Nil, nil).AnyTimes()
 
 	return g

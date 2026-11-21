@@ -11,7 +11,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/idgen"
-	"github.com/kartaladev/scrty/internal/idgen/idgentest"
+	"github.com/kartaladev/scrty/test/internal/idgenmock"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -21,10 +21,10 @@ import (
 
 // sequenceIDs is a MockGenerator that answers answers in order, then the
 // last one for every later call, with a nil error.
-func sequenceIDs(t *testing.T, answers ...id.ID) *idgentest.MockGenerator {
+func sequenceIDs(t *testing.T, answers ...id.ID) *idgenmock.MockGenerator {
 	t.Helper()
 
-	g := idgentest.NewMockGenerator(gomock.NewController(t))
+	g := idgenmock.NewMockGenerator(gomock.NewController(t))
 	calls := 0
 	g.EXPECT().NewID().DoAndReturn(func() (id.ID, error) {
 		got := answers[min(calls, len(answers)-1)]

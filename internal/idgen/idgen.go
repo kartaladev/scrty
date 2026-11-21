@@ -9,8 +9,6 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
-//go:generate mockgen -source=../../pkg/id/generator.go -destination=idgentest/generator_mock.go -package=idgentest -typed
-
 // ErrNil is returned by [New] when the generator answers the nil identifier
 // without an error. Its text is fixed and carries no consumer data.
 var ErrNil = errors.New("the identifier generator returned the nil identifier")

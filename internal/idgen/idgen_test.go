@@ -1,5 +1,7 @@
 package idgen_test
 
+//go:generate mockgen -source=../../pkg/id/generator.go -destination=generator_mock_test.go -package=idgen_test -typed
+
 import (
 	"errors"
 	"testing"
@@ -9,7 +11,6 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/internal/idgen"
-	"github.com/kartaladev/scrty/internal/idgen/idgentest"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -44,7 +45,7 @@ func TestNew(t *testing.T) {
 	cases := []testCase{
 		{
 			name: "nil id",
-			generator: mockReturning(func(g *idgentest.MockGenerator) {
+			generator: mockReturning(func(g *MockGenerator) {
 				g.EXPECT().NewID().Return(id.Nil, nil)
 			}),
 			assert: func(t *testing.T, got outcome) {
@@ -54,7 +55,7 @@ func TestNew(t *testing.T) {
 		},
 		{
 			name: "good id",
-			generator: mockReturning(func(g *idgentest.MockGenerator) {
+			generator: mockReturning(func(g *MockGenerator) {
 				g.EXPECT().NewID().Return(goodID, nil)
 			}),
 			assert: func(t *testing.T, got outcome) {
@@ -64,7 +65,7 @@ func TestNew(t *testing.T) {
 		},
 		{
 			name: "error with nil id",
-			generator: mockReturning(func(g *idgentest.MockGenerator) {
+			generator: mockReturning(func(g *MockGenerator) {
 				g.EXPECT().NewID().Return(id.Nil, genError)
 			}),
 			assert: func(t *testing.T, got outcome) {
@@ -75,7 +76,7 @@ func TestNew(t *testing.T) {
 		},
 		{
 			name: "error with good id",
-			generator: mockReturning(func(g *idgentest.MockGenerator) {
+			generator: mockReturning(func(g *MockGenerator) {
 				g.EXPECT().NewID().Return(goodID, genError)
 			}),
 			assert: func(t *testing.T, got outcome) {
@@ -111,7 +112,7 @@ func TestNew(t *testing.T) {
 		},
 		{
 			name: "generator panics",
-			generator: mockReturning(func(g *idgentest.MockGenerator) {
+			generator: mockReturning(func(g *MockGenerator) {
 				g.EXPECT().NewID().DoAndReturn(func() (id.ID, error) {
 					panic("the generator blew up")
 				})
@@ -133,9 +134,9 @@ func TestNew(t *testing.T) {
 }
 
 // mockReturning builds a generator double and lets expect script its answers.
-func mockReturning(expect func(g *idgentest.MockGenerator)) func(t *testing.T) id.Generator {
+func mockReturning(expect func(g *MockGenerator)) func(t *testing.T) id.Generator {
 	return func(t *testing.T) id.Generator {
-		g := idgentest.NewMockGenerator(gomock.NewController(t))
+		g := NewMockGenerator(gomock.NewController(t))
 		expect(g)
 		return g
 	}

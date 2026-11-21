@@ -14,7 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/kartaladev/scrty/internal/idgen/idgentest"
 	"github.com/kartaladev/scrty/internal/porterr"
 	scrtyid "github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
@@ -105,7 +104,7 @@ func randomSites() []randomSite {
 		{
 			name: "Create_family_generator",
 			run: func(t *testing.T, ctx context.Context, logger *slog.Logger, err error) error {
-				gen := idgentest.NewMockGenerator(gomock.NewController(t))
+				gen := NewMockGenerator(gomock.NewController(t))
 				gen.EXPECT().NewID().Return(scrtyid.Nil, err).AnyTimes()
 				m, _ := manager(t, logger, session.WithFamilyIDGenerator(gen))
 				_, got := m.Create(ctx, testUser)

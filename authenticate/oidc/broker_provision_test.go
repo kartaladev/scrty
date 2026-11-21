@@ -16,15 +16,14 @@ import (
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/idgen"
-	"github.com/kartaladev/scrty/internal/idgen/idgentest"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
 // nilIDGenerator is a generator that answers the nil identifier with no error.
-func nilIDGenerator(t *testing.T) *idgentest.MockGenerator {
+func nilIDGenerator(t *testing.T) *MockHandoffIDGenerator {
 	t.Helper()
 
-	g := idgentest.NewMockGenerator(gomock.NewController(t))
+	g := NewMockHandoffIDGenerator(gomock.NewController(t))
 	g.EXPECT().NewID().Return(id.Nil, nil).AnyTimes()
 
 	return g
@@ -34,10 +33,10 @@ func nilIDGenerator(t *testing.T) *idgentest.MockGenerator {
 var errIDGeneratorDown = errors.New("id generator: unavailable")
 
 // errIDGenerator is a generator that fails with a plain outage.
-func errIDGenerator(t *testing.T) *idgentest.MockGenerator {
+func errIDGenerator(t *testing.T) *MockHandoffIDGenerator {
 	t.Helper()
 
-	g := idgentest.NewMockGenerator(gomock.NewController(t))
+	g := NewMockHandoffIDGenerator(gomock.NewController(t))
 	g.EXPECT().NewID().Return(id.Nil, errIDGeneratorDown).AnyTimes()
 
 	return g

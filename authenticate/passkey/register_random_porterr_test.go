@@ -1,5 +1,7 @@
 package passkey_test
 
+//go:generate mockgen -source=../../pkg/id/generator.go -destination=generator_mock_test.go -package=passkey_test -typed
+
 // TestPortErrors_RegisterRandom replaces slog.Default() for its duration, so
 // it does not run in parallel, and it restores the logger it found. It shares
 // the hostile error types of register_porterr_test.go and the child-process
@@ -22,7 +24,6 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/passkey"
-	"github.com/kartaladev/scrty/internal/idgen/idgentest"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -94,7 +95,7 @@ func prandRun(t *testing.T, site prandSite, portErr error) prandOutcome {
 
 	switch site {
 	case prandGenerator:
-		gen := idgentest.NewMockGenerator(gomock.NewController(t))
+		gen := NewMockGenerator(gomock.NewController(t))
 		gen.EXPECT().NewID().Return(id.Nil, portErr).AnyTimes()
 
 		opts = append(opts, passkey.WithIDGenerator(gen))

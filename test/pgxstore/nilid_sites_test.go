@@ -14,7 +14,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/internal/idgen"
-	"github.com/kartaladev/scrty/internal/idgen/idgentest"
+	"github.com/kartaladev/scrty/test/internal/idgenmock"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -90,13 +90,13 @@ func TestStores_GeneratorAnswers(t *testing.T) {
 	}
 
 	nilGen := func(t *testing.T) pgxstore.Option {
-		g := idgentest.NewMockGenerator(gomock.NewController(t))
+		g := idgenmock.NewMockGenerator(gomock.NewController(t))
 		g.EXPECT().NewID().Return(id.Nil, nil).AnyTimes()
 
 		return pgxstore.WithIDGenerator(g)
 	}
 	failGen := func(t *testing.T) pgxstore.Option {
-		g := idgentest.NewMockGenerator(gomock.NewController(t))
+		g := idgenmock.NewMockGenerator(gomock.NewController(t))
 		g.EXPECT().NewID().Return(id.Nil, errOutage).AnyTimes()
 
 		return pgxstore.WithIDGenerator(g)
@@ -147,7 +147,7 @@ func TestStores_NilIdentifierLeavesStoredRecordUnchanged(t *testing.T) {
 	cipher := storefix.TestCipher(t)
 
 	nilGen := func(t *testing.T) pgxstore.Option {
-		g := idgentest.NewMockGenerator(gomock.NewController(t))
+		g := idgenmock.NewMockGenerator(gomock.NewController(t))
 		g.EXPECT().NewID().Return(id.Nil, nil).AnyTimes()
 
 		return pgxstore.WithIDGenerator(g)

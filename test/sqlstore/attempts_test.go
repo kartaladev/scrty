@@ -12,7 +12,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/internal/idgen"
-	"github.com/kartaladev/scrty/internal/idgen/idgentest"
+	"github.com/kartaladev/scrty/test/internal/idgenmock"
 
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -89,7 +89,7 @@ func TestAttemptStore_IDs(t *testing.T) {
 
 	answering := func(got id.ID, err error) func(t *testing.T) id.Generator {
 		return func(t *testing.T) id.Generator {
-			g := idgentest.NewMockGenerator(gomock.NewController(t))
+			g := idgenmock.NewMockGenerator(gomock.NewController(t))
 			g.EXPECT().NewID().Return(got, err).AnyTimes()
 
 			return g
@@ -234,7 +234,7 @@ func TestAttemptStore_StreakIDs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			g := idgentest.NewMockGenerator(gomock.NewController(t))
+			g := idgenmock.NewMockGenerator(gomock.NewController(t))
 			g.EXPECT().NewID().Return(tc.got, tc.genErr).AnyTimes()
 			s := newAttemptStore(t, db, sqlstore.WithIDGenerator(g))
 

@@ -1,5 +1,7 @@
 package oidcprovider_test
 
+//go:generate mockgen -source=../pkg/id/generator.go -destination=generator_mock_test.go -package=oidcprovider_test -typed
+
 // TestProvider_RefusesANilIdentifierFromTheGenerator pins the four places the provider draws an
 // identifier from the consumer's generator: a pending request's record, a grant's family, an
 // opaque access token's identifier and an ID token's jti. A generator that answers the nil
@@ -17,7 +19,6 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/internal/idgen"
-	"github.com/kartaladev/scrty/internal/idgen/idgentest"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -56,7 +57,7 @@ func idNilRun(t *testing.T, site idNilSite, kind idNilKind) idNilOutcome {
 	var armed, drawn atomic.Int32
 
 	at := map[idNilSite]int32{idNilRecord: 1, idNilFamily: 1, idNilToken: 1, idNilJTI: 2}[site]
-	gen := idgentest.NewMockGenerator(ctrl)
+	gen := NewMockGenerator(ctrl)
 	gen.EXPECT().NewID().DoAndReturn(func() (id.ID, error) {
 		if armed.Load() == 1 && drawn.Add(1) == at {
 			switch kind {

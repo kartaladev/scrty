@@ -6,6 +6,8 @@
 
 package onetime_test
 
+//go:generate mockgen -source=../../pkg/id/generator.go -destination=generator_mock_test.go -package=onetime_test -typed
+
 import (
 	"bytes"
 	"context"
@@ -34,7 +36,6 @@ import (
 
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/internal/idgen"
-	"github.com/kartaladev/scrty/internal/idgen/idgentest"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token/onetime"
@@ -425,7 +426,7 @@ func TestIssue(t *testing.T) {
 			manager: func(t *testing.T, clk *clockwork.FakeClock) (*onetime.Tokens, *onetime.MemoryStore) {
 				t.Helper()
 
-				gen := idgentest.NewMockGenerator(gomock.NewController(t))
+				gen := NewMockGenerator(gomock.NewController(t))
 				gen.EXPECT().NewID().Return(id.Nil, errNoEntropy)
 
 				return newManager(t, clk, onetime.WithIDGenerator(gen))
@@ -442,7 +443,7 @@ func TestIssue(t *testing.T) {
 			manager: func(t *testing.T, clk *clockwork.FakeClock) (*onetime.Tokens, *onetime.MemoryStore) {
 				t.Helper()
 
-				gen := idgentest.NewMockGenerator(gomock.NewController(t))
+				gen := NewMockGenerator(gomock.NewController(t))
 				gen.EXPECT().NewID().Return(id.Nil, nil)
 
 				return newManager(t, clk, onetime.WithIDGenerator(gen))
@@ -461,7 +462,7 @@ func TestIssue(t *testing.T) {
 			manager: func(t *testing.T, clk *clockwork.FakeClock) (*onetime.Tokens, *onetime.MemoryStore) {
 				t.Helper()
 
-				gen := idgentest.NewMockGenerator(gomock.NewController(t))
+				gen := NewMockGenerator(gomock.NewController(t))
 				gen.EXPECT().NewID().Return(id.MustParse("01999f00-0000-7000-8000-00000000abcd"), nil)
 
 				return newManager(t, clk, onetime.WithIDGenerator(gen))

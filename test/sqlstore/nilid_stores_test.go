@@ -12,7 +12,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/internal/idgen"
-	"github.com/kartaladev/scrty/internal/idgen/idgentest"
+	"github.com/kartaladev/scrty/test/internal/idgenmock"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -136,7 +136,7 @@ func TestSQLStore_NilIdentifierFromGenerator(t *testing.T) {
 
 					ctx := t.Context()
 					db := migratedDB(t).DB
-					g := idgentest.NewMockGenerator(gomock.NewController(t))
+					g := idgenmock.NewMockGenerator(gomock.NewController(t))
 					g.EXPECT().NewID().Return(tc.got, tc.genErr).AnyTimes()
 
 					err := s.write(t, ctx, db, g)
@@ -158,7 +158,7 @@ func TestSQLStore_NilIdentifierLeavesStoredRecordUnchanged(t *testing.T) {
 	t.Parallel()
 
 	nilGen := func(t *testing.T) id.Generator {
-		g := idgentest.NewMockGenerator(gomock.NewController(t))
+		g := idgenmock.NewMockGenerator(gomock.NewController(t))
 		g.EXPECT().NewID().Return(id.Nil, nil).AnyTimes()
 
 		return g

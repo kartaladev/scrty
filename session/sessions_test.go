@@ -1,5 +1,7 @@
 package session_test
 
+//go:generate mockgen -source=../pkg/id/generator.go -destination=generator_mock_test.go -package=session_test -typed
+
 import (
 	"bytes"
 	"context"
@@ -23,7 +25,6 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/idgen"
-	"github.com/kartaladev/scrty/internal/idgen/idgentest"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -3184,7 +3185,7 @@ func TestCreate_RefusesAnUnusableFamilyIdentifier(t *testing.T) {
 			// identifier check does not replace it.
 			name: "a mock generator answering the nil identifier with no error is still a configuration error",
 			gen: func() id.Generator {
-				g := idgentest.NewMockGenerator(gomock.NewController(t))
+				g := NewMockGenerator(gomock.NewController(t))
 				g.EXPECT().NewID().Return(id.Nil, nil).AnyTimes()
 
 				return g

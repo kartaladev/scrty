@@ -70,6 +70,16 @@ own tests, which is the condition it is chosen by.
 
 ### Consumers outside the package → a test-double package
 
+**In scrty's core module this branch is closed.** The core module's layout guard
+(`layout_guard_test.go`, `TestModuleLayout`) fails on any non-test package that
+imports `go.uber.org/mock` or declares an exported `Mock*` type, and a
+test-double package is exactly that. So in the core module, each consuming
+package generates its own mock into a `_test.go` file (the branch above, once
+per consumer), as `authenticate` and `authenticate/apikey` do for
+`id.Generator`. A shared test-double package is allowed only in the `test`
+module, which the guard exempts, for example under `test/internal/`. Run the
+root package's tests (`go test -run TestModuleLayout .`) after adding any mock.
+
 As soon as every consumer is a different package, the branch above is not
 merely worse, it is **unavailable**: a `_test.go` mock is invisible outside its
 own package's tests, so a consumer elsewhere cannot compile against it at all.

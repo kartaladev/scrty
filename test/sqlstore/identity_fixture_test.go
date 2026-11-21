@@ -12,7 +12,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/internal/idgen/idgentest"
+	"github.com/kartaladev/scrty/test/internal/idgenmock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/store/migrate"
 	"github.com/kartaladev/scrty/store/sqlstore"
@@ -324,7 +324,7 @@ func (g *failingIDs) NewID() (id.ID, error) {
 func idsThenNil(t *testing.T, good int) id.Generator {
 	t.Helper()
 
-	g := idgentest.NewMockGenerator(gomock.NewController(t))
+	g := idgenmock.NewMockGenerator(gomock.NewController(t))
 	calls := make([]any, 0, good+1)
 	for range good {
 		calls = append(calls, g.EXPECT().NewID().Return(storefix.NewID(t), nil))
