@@ -314,7 +314,7 @@ Order: 10.1 first. Then 10.2–10.3 (core) and 10.5 (fibersec) can run in parall
     - `mfa_enrol.go` `refusalReason`.
   - `oidcprovider/events.go` around line 222 moved to 10.12 (10.9a review). It reads the error only after `registry.go:353` has already read the consumer registry's error with stdlib `errors.Is`. A hostile error hangs or panics there first, so converting line 222 alone protects nothing, and the sanitizer at the registry read covers both.
   - Verify with `go test -race -count=1 ./...` (root).
-- [ ] 10.12 Consumer-port errors are sanitized where they enter the library (design decision 11).
+- [x] 10.12 Consumer-port errors are sanitized where they enter the library (design decision 11).
   - First, the internals with the most reach, read through the walk directly:
     - `diag.Failure` and `diag.causeOf` (`internal/diag/diag.go`);
     - `depfault.Silent` and `depfault.record` (`internal/depfault/depfault.go`).
