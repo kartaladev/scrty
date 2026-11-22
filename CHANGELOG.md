@@ -12,6 +12,48 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 
 ## [Unreleased]
 
+### Added
+
+- **The device authorization grant (RFC 8628).** It is off by default, and a provider turns it on
+  with `oidcprovider.WithDeviceAuthorization(entryURL, ...DeviceOption)`, which names the
+  application's own code-entry page. A client then lists `oidcprovider.GrantDeviceCode`.
+  - The chain serves the device authorization and code-entry endpoints when the grant is enabled.
+  - The device options are `WithDeviceLifetime` (default 10 minutes), `WithDevicePollInterval`
+    (default 5 seconds), `WithUserCodeFormat`, `WithUserCodeKey`, `WithUserCodeEntryLimiter` and
+    `WithDeviceAuthorizationStore`. `WithUserCodeKey` is required with a durable store, and must be
+    the same on every replica.
+  - `Client.DeviceCompleteURI` (default off) lets a client receive `verification_uri_complete`.
+    `Client.DeviceGrantsOutliveSignIn` (default off) keeps a device client's grants past the end of
+    the sign-in that approved them. Without it a device grant follows Back-Channel Logout: one without
+    `offline_access` ends with its sign-in.
+  - Consent is always asked for a device request, and the consent page reads a `Device` view of it.
+- `oidcprovider.DeviceAuthorizationStore`, the port that keeps device authorizations, and
+  `MemoryDeviceAuthorizationStore`, the default.
+- `Provider.AuthorizeDevice` and `Provider.EnterUserCode`, for an application that serves the
+  endpoints itself. The throttle on code entry lives inside `EnterUserCode`.
+- A security-state migration for the device authorization table and the new grant columns. Apply it
+  before using a durable store.
+- Seven events: `DeviceAuthorizationIssued`, `DeviceAuthorizationClaimed`,
+  `DeviceAuthorizationApproved`, `DeviceAuthorizationDenied`, `DeviceCodeExchanged`,
+  `DeviceCodeReplayed` and `UserCodeEntryThrottled`. None carries a code.
+- `Grant.Origin` and `Grant.SurvivesSignInEnd`, new fields every grant store keeps. A stored grant
+  reads as a code grant that ends with its sign-in by the rule it always had.
+- The `oidc-provider.device-authorizations` expiry task, which sweeps expired device authorizations.
+- The README's "CLI clients" section.
+
+### Changed
+
+- The grant store keeps a revocation 31 minutes, where it kept it 11, so that a revocation outlives the
+  longest device authorization.
+
+### Security
+
+- An authorization-code replay no longer revokes a grant bound to a client certificate unless the
+  replay presents the certificate. Before, a replay was judged by the DPoP key alone, so anyone holding
+  a used code could end a certificate-bound grant.
+- User-code entry charges its throttle before it looks the code up, and refunds what was not a wrong
+  code, so a concurrent burst from one source is looked up no more often than the limit allows.
+
 ## [0.2.1] - 2026-11-22
 
 A patch release that raises two dependency floors. No scrty API or behaviour changes. Upgrade every
