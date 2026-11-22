@@ -67,10 +67,10 @@ Every task is test-first: write the failing test, run it with `go test -run '<Na
 
 ## 8. Sign-in end and grant survival (D8)
 
-- [ ] 8.1 Record `SignInFamily` from the approving sign-in, plus `SurvivesSignInEnd` from the client setting. Verify that under the default a device grant without `offline_access` is revoked by `EndSignIn` and one with it survives, and that under `DeviceGrantsOutliveSignIn` the former survives.
-- [ ] 8.2 Verify that `EndGrantsWithSignIn` still revokes a device grant holding `offline_access`, and that consent revocation and `RevokeUserGrants` revoke device grants.
-- [ ] 8.3 Verify the grant's absolute lifetime cap: the sign-in deadline under the default, and the grant's own lifetime when it survives.
-- [ ] 8.4 Reach an unexchanged approval. Verify that `EndSignIn` (under the default, without `offline_access`), `RevokeConsent` and `RevokeUserGrants` between approval and poll make the poll answer `invalid_grant` with no token, through the device store's `UnspentCodes` joined to the grant store. Verify a second provider sharing both stores joins without error.
+- [x] 8.1 Record `SignInFamily` from the approving sign-in, plus `SurvivesSignInEnd` from the client setting. Verify that under the default a device grant without `offline_access` is revoked by `EndSignIn` and one with it survives, and that under `DeviceGrantsOutliveSignIn` the former survives.
+- [x] 8.2 Verify that `EndGrantsWithSignIn` still revokes a device grant holding `offline_access`, and that consent revocation and `RevokeUserGrants` revoke device grants.
+- [x] 8.3 Verify the grant's absolute lifetime cap: the sign-in deadline under the default, and the grant's own lifetime when it survives.
+- [x] 8.4 Reach an unexchanged approval. Verify that `EndSignIn` (under the default, without `offline_access`), `RevokeConsent` and `RevokeUserGrants` between approval and poll make the poll answer `invalid_grant` with no token, through the device store's `UnspentCodes` joined to the grant store. Verify a second provider sharing both stores joins without error.
 
 ## 9. Events and expiry tasks (D13)
 

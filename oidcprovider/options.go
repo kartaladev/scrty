@@ -567,9 +567,13 @@ func WithConsentStore(store ConsentStore) Option {
 
 // WithGrantStore replaces where grants are kept. The default is a MemoryGrantStore,
 // which is lost with the process and not shared between instances. It must not be nil.
-// New calls its UseCodes with the provider's code store, and returns its refusal: a grant
-// store reads one code store for good, so providers sharing a grant store must share a
-// code store too, through WithCodeStore, or New fails with an error matching ErrConfig.
+// New calls its UseCodes with the provider's code store, or with a union of it and the
+// provider's device store when the device grant is on, and returns its refusal: a grant
+// store reads that one source for good. Providers sharing a grant store must therefore
+// share the code store (WithCodeStore) and the device store (WithDeviceAuthorizationStore),
+// and enable the device grant alike, or the later New fails with an error matching
+// ErrConfig. Two device providers each on their own default memory device store cannot
+// share a grant store.
 func WithGrantStore(store GrantStore) Option {
 	return func(c *config) { c.grants, c.grantsSet = store, true }
 }

@@ -298,9 +298,8 @@ func (m *MemoryDeviceAuthorizationStore) UnspentBySignIn(_ context.Context, sel 
 
 	return m.families(func(r *DeviceAuthorization) bool {
 		a := r.Approval
-		endsWithSignIn := !a.SurvivesSignInEnd && (!a.Offline || a.EndsWithSignIn)
 
-		return (includeOffline || endsWithSignIn) &&
+		return (includeOffline || endsWithSignIn(a.Offline, a.EndsWithSignIn, a.SurvivesSignInEnd)) &&
 			sel.matches(a.User, a.SignIn.Family, a.SignIn.ExternalIssuer, a.SignIn.ExternalSessionID)
 	}), nil
 }

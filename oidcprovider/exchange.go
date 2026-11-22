@@ -442,8 +442,8 @@ func verifierHolds(verifier string, record *CodeRecord, rc *RegisteredClient) bo
 func grantLife(record *CodeRecord, rc *RegisteredClient, now time.Time) (time.Time, bool, bool) {
 	deadline := record.SignIn.AbsoluteExpiresAt
 	holdsLineage := slices.Contains(rc.GrantTypes, GrantRefreshToken)
-	endsWithSignIn := !record.Offline || record.EndsWithSignIn || !holdsLineage
-	if endsWithSignIn && !now.Before(deadline) {
+	ends := endsWithSignIn(record.Offline, record.EndsWithSignIn, false) || !holdsLineage
+	if ends && !now.Before(deadline) {
 		return time.Time{}, false, false
 	}
 	if !holdsLineage {
@@ -451,7 +451,7 @@ func grantLife(record *CodeRecord, rc *RegisteredClient, now time.Time) (time.Ti
 	}
 
 	expiresAt := now.Add(rc.GrantAbsoluteLifetime)
-	if endsWithSignIn && deadline.Before(expiresAt) {
+	if ends && deadline.Before(expiresAt) {
 		expiresAt = deadline
 	}
 

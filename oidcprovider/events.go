@@ -79,7 +79,8 @@ func (p *Provider) reportRevoked(ctx context.Context, ended []Grant, cause Revoc
 }
 
 // reportEnded reports the grants a sign-in's end revoked. The store marks each grant it returns as having
-// outlived its sign-in, and revokes those that do not: without offline_access, or tied to the sign-in.
+// outlived its sign-in, and revokes those that do not: tied to the sign-in, or holding neither
+// offline_access nor SurvivesSignInEnd.
 // A grant that survives is not a revocation, and is not reported. Nor is one that an earlier revocation
 // had already ended: it keeps that first cause, and was reported when it happened. A revocation of
 // the consumer's, whatever it spelled its cause as, is told from the end's own by its time: an end
@@ -87,7 +88,7 @@ func (p *Provider) reportRevoked(ctx context.Context, ended []Grant, cause Revoc
 func (p *Provider) reportEnded(ctx context.Context, ended []Grant) {
 	for i := range ended {
 		g := &ended[i]
-		survives := g.Offline && !g.EndsWithSignIn
+		survives := !endsWithSignIn(g.Offline, g.EndsWithSignIn, g.SurvivesSignInEnd)
 		endedEarlier := g.Revoked && (g.RevokeCause != CauseSignInEnded || !g.RevokedAt.Equal(g.SignInEndedAt))
 		if !survives && !endedEarlier {
 			p.reportGrantRevoked(ctx, g.ClientID, g.User, CauseSignInEnded)

@@ -361,8 +361,8 @@ Step 4 needs a pending lookup by device ID. Add `PendingRequestStore`-independen
 **Carried from A3's review:** the device store's `UnspentBySignIn` already leaves out `SurvivesSignInEnd` approvals unless `includeOffline`. The grant store's own sign-in end rule (`store_memory.go`, and later the SQL adapters) must apply the same `SurvivesSignInEnd` exclusion to stored grants, or ending a sign-in revokes a device grant that should outlive it. One rule throughout, where `EndsWithSignIn` wins: a grant or approval ends with its sign-in when `EndsWithSignIn || (!Offline && !SurvivesSignInEnd)`. Align the device store's `UnspentBySignIn` predicate and A7's `deviceGrantLife` to it (the provider never writes both flags, so only a store breaking its contract could tell the difference).
 
 **Files:**
-- Modify: `oidcprovider/devicetoken.go`, `oidcprovider/provider.go` (join `UseCodes(unspentUnion{codes: …, devices: …})` when the grant is enabled; the union is a comparable **value** struct), `oidcprovider/store_memory.go` (`EndSignIns` selection becomes `(!g.Offline && !g.SurvivesSignInEnd) || g.EndsWithSignIn`), `oidcprovider/events.go` (the `survives` computation matches that rule), `oidcprovider/store.go` (`GrantStore.EndSignIns` godoc states the new rule)
-- Create: `oidcprovider/unspent_union.go`, `oidcprovider/devicetoken_race_test.go`, `oidcprovider/device_signin_test.go`
+- Modify: `oidcprovider/devicetoken.go`, `oidcprovider/store_memory.go`'s `buildStores` (join `UseCodes(unspentUnion{codes: …, devices: …})` when the grant is enabled; the union is a comparable **value** struct), `oidcprovider/store_memory.go` (`EndSignIns` selection becomes `(!g.Offline && !g.SurvivesSignInEnd) || g.EndsWithSignIn`), `oidcprovider/events.go` (the `survives` computation matches that rule), `oidcprovider/store.go` (`GrantStore.EndSignIns` godoc states the new rule)
+- Create: `oidcprovider/unspent_union.go`, `oidcprovider/devicetoken_race_test.go` (7.5), `oidcprovider/device_signin_test.go` (8.x, including the end-racing-exchange test)
 
 **Interfaces — Produces:**
 ```go
@@ -413,6 +413,8 @@ The task is named `"oidc-provider.device-authorizations"` and runs `devices.Dele
 - [ ] **Step 3:** Run red, implement, and run the `event` row.
 
 ### Task B1: Migration and `sqlstore` (tasks 10.1–10.2) — Opus: durable conditional writes
+
+**Carried from A8:** the SQL grant stores' `EndSignIns` selection and `pgschema.CodeUnspentBySignIn` must apply the one rule `EndsWithSignIn || (!Offline && !SurvivesSignInEnd)` (persisting `Grant.SurvivesSignInEnd` and `Grant.Origin`), and the SQL device store's `UnspentBySignIn` the same with `includeOffline`. Until then a SQL grant store revokes a device grant that should survive its sign-in. A provider with the device grant joins `UseCodes` with a union value; the SQL grant stores' equality check (`Comparable() && a == b`) already accepts it.
 
 **Carried from A6's review:** the SQL grant stores' sweeps must keep a revocation recorded for a family with no grant row for the longest device lifetime plus a minute (31 minutes), as the memory store and `ExpiryTasks` do after A6's fix, not only the longest code lifetime.
 

@@ -146,3 +146,8 @@ func (p *Provider) DeviceStoreForTest() DeviceAuthorizationStore {
 
 	return p.cfg.device.store
 }
+
+// UnspentUnionForTest is the union New joins a grant store to when the device grant is on.
+func UnspentUnionForTest(codes, devices UnspentCodes) UnspentCodes {
+	return unspentUnion{codes: codes, devices: devices}
+}

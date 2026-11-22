@@ -336,7 +336,7 @@ type Grant struct {
 	// SurvivesSignInEnd keeps the grant past the end of its sign-in even without Offline,
 	// as a device grant of a client registered with DeviceGrantsOutliveSignIn is. It is
 	// false for every grant a code created, so a row stored before it existed keeps its
-	// meaning.
+	// meaning. EndsWithSignIn wins over it.
 	SurvivesSignInEnd bool
 	// Origin is what created the grant: OriginCode, the zero value, for a code's exchange,
 	// and OriginDevice for a device authorization's. CodeID names that code or that device
@@ -431,12 +431,14 @@ func (s SignInSelector) matches(user identity.UserID, family id.ID, issuer, sess
 // provider decides. A time a method judges by, or records, is always the caller's.
 type GrantStore interface {
 	// UseCodes names where the outstanding codes are read from. New calls it, before
-	// any traffic, with the provider's CodeStore, and returns its error. A store that was
+	// any traffic, and returns its error. What it passes is an UnspentCodes: the provider's
+	// CodeStore, or, with the device grant on, a union of that and the provider's device
+	// store. An implementation must not type-assert it to CodeStore. A store that was
 	// never given one refuses EndSignIns, RevokeByUser and RevokeByUserAndClient with an
 	// error matching ErrConfig, rather than leave a code able to outlive them.
 	//
-	// Calling it again with the same value, as a second provider sharing both stores
-	// does, changes nothing. Any other value is refused with an error matching ErrConfig,
+	// Calling it again with the same value, as a second provider sharing the same code
+	// store and device store, and enabling the device grant alike, does, changes nothing. Any other value is refused with an error matching ErrConfig,
 	// and the first stays, because replacing it would silently stop revocations reaching
 	// the first provider's codes. Values that cannot be compared count as different, and
 	// must not panic.
@@ -472,8 +474,11 @@ type GrantStore interface {
 	RevokeByUserAndClient(ctx context.Context, user identity.UserID, clientID string, cause RevocationCause, at time.Time) ([]Grant, error)
 
 	// EndSignIns records that the sign-ins sel selects have ended. Every selected grant
-	// not yet marked gets SignInEndedAt, and those without Offline, or with EndsWithSignIn,
-	// are also revoked with CauseSignInEnded. An Offline grant keeps working. It returns
+	// not yet marked gets SignInEndedAt, and those that end with their sign-in are also
+	// revoked with CauseSignInEnded: a grant with EndsWithSignIn, and one with neither
+	// Offline nor SurvivesSignInEnd. Any other grant keeps working, and EndsWithSignIn wins
+	// over both. For a code's grant, whose SurvivesSignInEnd is always false, that is one
+	// without Offline or with EndsWithSignIn. It returns
 	// copies of the grants this call newly marked, so the same end reported twice returns
 	// nothing the second time.
 	//

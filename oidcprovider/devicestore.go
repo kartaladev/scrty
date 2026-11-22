@@ -53,7 +53,7 @@ type DeviceApproval struct {
 	// EndsWithSignIn ties the grant to its sign-in even when Offline is true.
 	EndsWithSignIn bool
 	// SurvivesSignInEnd keeps the grant past the end of its sign-in even when Offline is
-	// false, as the client's DeviceGrantsOutliveSignIn asks.
+	// false, as the client's DeviceGrantsOutliveSignIn asks. EndsWithSignIn wins over it.
 	SurvivesSignInEnd bool
 }
 
@@ -125,8 +125,9 @@ var ErrUserCodeTaken = errors.New("oidcprovider: user code taken")
 // DeviceApproved and DeviceSpent alike, whatever their expiry, and lists the GrantFamily
 // of each one's Approval. A record's user is its Approval.User, and its sign-in its
 // Approval.SignIn. A record is listed by UnspentBySignIn when includeOffline is true, or
-// when it neither survives the sign-in's end (SurvivesSignInEnd) nor holds offline_access
-// (Offline) without being tied to its sign-in (EndsWithSignIn).
+// when it ends with its sign-in: it is tied to it (EndsWithSignIn), which wins over
+// everything else, or it neither holds offline_access (Offline) nor survives the
+// sign-in's end (SurvivesSignInEnd).
 type DeviceAuthorizationStore interface {
 	UnspentCodes
 

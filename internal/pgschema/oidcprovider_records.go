@@ -434,8 +434,8 @@ func (s *CodeSource) Join(codes oidcprovider.UnspentCodes) error {
 	defer s.mu.Unlock()
 
 	if s.codes != nil && !sameCodes(s.codes, codes) {
-		return fmt.Errorf("%w: GrantStore: UseCodes: this store already reads another code store, "+
-			"so two providers sharing a grant store must share their code store too", oidcprovider.ErrConfig)
+		return fmt.Errorf("%w: GrantStore: UseCodes: this store already reads outstanding codes through a different code or "+
+			"device store, or with the device grant enabled differently", oidcprovider.ErrConfig)
 	}
 	s.codes = codes
 

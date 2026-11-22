@@ -183,7 +183,7 @@ func (p *Provider) replayDeviceCode(
 //  1. the approval is read, and one missing or naming the nil family is a dependency failure;
 //  2. the approving user must still exist and be active;
 //  3. the grant's life is judged: unless the grant survives its sign-in's end
-//     (SurvivesSignInEnd, or Offline without EndsWithSignIn) and holds a lineage, a sign-in past
+//     (Offline or SurvivesSignInEnd, without EndsWithSignIn) and holds a lineage, a sign-in past
 //     its absolute deadline refuses it, and the grant ends at that deadline;
 //  4. the resources are judged against the client as it stands now, as a code's are;
 //  5. the tokens are signed, which writes nothing, so a key failure leaves the record to retry;
@@ -306,16 +306,15 @@ func (p *Provider) judgeDeviceUser(ctx context.Context, user identity.UserID) er
 // deviceGrantLife is grantLife for a device approval: how long the grant lives, whether it
 // holds a lineage, and false for a grant that would be over before it began.
 //
-// A grant survives its sign-in's end when the approval says SurvivesSignInEnd, or holds
-// offline_access without being tied to its sign-in (design D8). One that does not, and any
-// grant holding no lineage, expires by the sign-in's absolute deadline, and is refused once it
-// has passed, as a code is.
+// A grant survives its sign-in's end unless it ends with it by the one rule (design D8): tied
+// to it by EndsWithSignIn, or holding neither offline_access nor SurvivesSignInEnd, so a tie
+// wins over both. One that ends with it, and any grant holding no lineage, expires by the
+// sign-in's absolute deadline, and is refused once it has passed, as a code is.
 func deviceGrantLife(a *DeviceApproval, rc *RegisteredClient, now time.Time) (time.Time, bool, bool) {
 	deadline := a.SignIn.AbsoluteExpiresAt
 	holdsLineage := slices.Contains(rc.GrantTypes, GrantRefreshToken)
-	survives := a.SurvivesSignInEnd || a.Offline && !a.EndsWithSignIn
-	endsWithSignIn := !survives || !holdsLineage
-	if endsWithSignIn && !now.Before(deadline) {
+	capped := endsWithSignIn(a.Offline, a.EndsWithSignIn, a.SurvivesSignInEnd) || !holdsLineage
+	if capped && !now.Before(deadline) {
 		return time.Time{}, false, false
 	}
 	if !holdsLineage {
@@ -323,7 +322,7 @@ func deviceGrantLife(a *DeviceApproval, rc *RegisteredClient, now time.Time) (ti
 	}
 
 	expiresAt := now.Add(rc.GrantAbsoluteLifetime)
-	if endsWithSignIn && deadline.Before(expiresAt) {
+	if capped && deadline.Before(expiresAt) {
 		expiresAt = deadline
 	}
 
