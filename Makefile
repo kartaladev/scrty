@@ -253,6 +253,61 @@ RELEASE_VERSION_CHECK = \
 	re='$(SEMVER_RE)'; \
 	[[ $$RELEASE_VERSION =~ $$re ]] || { printf 'not a semantic version: %q\n' "$$RELEASE_VERSION"; exit 2; };
 
+# Defines release_module_base BASE DIR, which prints the base the API report of the
+# published module in DIR (`.` for the root) compares against. BASE none is none for
+# every module, without asking git. Otherwise the root tag BASE must exist, and:
+#   - the root is reported against BASE;
+#   - a nested module whose DIR/go.mod did not exist in the commit BASE points at is
+#     reported against none: it ships for the first time (or was dropped and is
+#     published again), so there is no release at BASE to compare with. Whether it
+#     existed is read from BASE's tree, never from the module's tags, which may already
+#     include the release being gated or come from an older life of the module;
+#   - a nested module that existed at BASE is reported against BASE when its tag
+#     DIR/BASE (as `release-tags` prints it) exists. Every release tags every
+#     published module, so a missing one means this clone lacks tags: it refuses.
+# It reads the repository git finds from the working directory, so release-check calls
+# it before it builds the export and clears GIT_DIR; the export has no tags.
+#
+# Every doubt refuses, printing why on stderr and returning 2, never `none`: a module
+# reported against none whose release at BASE exists would have its breaking changes
+# go unreported. So it refuses:
+#   - an empty BASE or DIR, or one that makes no valid tag name (`git show-ref` reports
+#     an invalid name as merely missing);
+#   - no root tag BASE. release-check chooses BASE from the root's own tags, so this
+#     cannot happen there; the check keeps a broken caller from passing;
+#   - a BASE tag that does not resolve to a commit;
+#   - a nested module present at BASE without its tag (fetch the tags);
+#   - any git command that fails other than with its clean "absent" answer: show-ref
+#     exit 1 for a missing tag, and an empty ls-tree listing for a path the commit's
+#     tree does not have. Any other exit, or a listing naming another path, fails.
+RELEASE_MODULE_BASE = \
+	release_module_base() { \
+		local base="$${1-}" dir="$${2-}" tag rc commit found; \
+		if [ -z "$$base" ] || [ -z "$$dir" ]; then echo "release-check: release_module_base needs a base and a module directory, got base [$$base] dir [$$dir]" >&2; return 2; fi; \
+		if [ "$$base" = none ]; then echo none; return 0; fi; \
+		if [ "$$dir" = . ]; then tag="$$base"; else tag="$$dir/$$base"; fi; \
+		git check-ref-format "refs/tags/$$tag" || { printf 'release-check: %q is not a valid tag name\n' "$$tag" >&2; return 2; }; \
+		rc=0; git show-ref --verify --quiet "refs/tags/$$base" || rc=$$?; \
+		case "$$rc" in \
+			0) ;; \
+			1) echo "release-check: the root has no tag $$base, but the base was chosen from its tags" >&2; return 2;; \
+			*) echo "release-check: looking up tag $$base failed (git exit $$rc)" >&2; return 2;; \
+		esac; \
+		if [ "$$dir" = . ]; then echo "$$base"; return 0; fi; \
+		rc=0; commit="$$(git rev-parse --verify --quiet "refs/tags/$$base^{commit}")" || rc=$$?; \
+		if [ "$$rc" -ne 0 ] || [ -z "$$commit" ]; then echo "release-check: tag $$base does not resolve to a commit (git exit $$rc)" >&2; return 2; fi; \
+		rc=0; found="$$(git ls-tree --full-tree --name-only "$$commit" -- "$$dir/go.mod")" || rc=$$?; \
+		if [ "$$rc" -ne 0 ]; then echo "release-check: looking up $$dir/go.mod at $$base failed (git exit $$rc)" >&2; return 2; fi; \
+		if [ -z "$$found" ]; then echo none; return 0; fi; \
+		if [ "$$found" != "$$dir/go.mod" ]; then printf 'release-check: looking up %s/go.mod at %s failed: git listed %q\n' "$$dir" "$$base" "$$found" >&2; return 2; fi; \
+		rc=0; git show-ref --verify --quiet "refs/tags/$$tag" || rc=$$?; \
+		case "$$rc" in \
+			0) echo "$$base"; return 0;; \
+			1) echo "release-check: $$dir existed at $$base but this clone has no tag $$tag; fetch the tags (git fetch --tags) and run it again" >&2; return 2;; \
+			*) echo "release-check: looking up tag $$tag failed (git exit $$rc)" >&2; return 2;; \
+		esac; \
+	};
+
 # The environment of every go command that reads the local proxy, set on that command
 # only and never exported. The workspace is off; the module cache is the run's own, so
 # the locally built release never reaches the developer's cache, where it would later
@@ -319,7 +374,14 @@ RELEASE_GOENV = GOWORK=off GOENV=off GOTOOLCHAIN=local GONOSUMDB=github.com/kart
 #   - each exported module's scrty `replace` lines are dropped, the go.sum lines for
 #     the modules they replaced are added from the local proxy, and the result is
 #     committed, because gorelease refuses a dirty tree and reports missing sums as an
-#     error; then gorelease runs per module against the latest `v` root tag, or none.
+#     error; then gorelease runs per module against its base (release_module_base):
+#     the latest `v` root tag below the version, or none for a module whose go.mod
+#     did not exist in that tag's commit (it ships for the first time), and for every
+#     module when there is no earlier root tag. The bases are chosen from this
+#     repository before the export is built, and each `== gorelease` line names the one
+#     used. A module that existed at that tag but has no tag of its own there (fetch
+#     the tags), or any git lookup that fails, stops the gate before anything is built:
+#     falling back to none would let that module's breaking changes pass unreported.
 # GIT_DIR and the other repository-selecting variables are cleared before any git
 # command on the export, so a run from a git hook cannot write into this repository.
 release-check:
@@ -365,6 +427,11 @@ release-check:
 	done <<< "$$tags"; \
 	if [ "$$base" = none ] && ! [[ $$RELEASE_VERSION =~ ^v0\.1\.0(-[0-9A-Za-z.-]+)?$$ ]]; then \
 		echo "release-check: no previous v tag found, but $$RELEASE_VERSION is not the first release (v0.1.0); fetch the tags (git fetch --tags) and run it again" >&2; exit 2; fi; \
+	$(RELEASE_MODULE_BASE) \
+	mbases=(); for d in $(RELEASE_DIRS); do \
+		mb="$$(release_module_base "$$base" "$$d")" || { echo "release-check: cannot tell whether $$d has a release at $$base; refusing to guess its API report base" >&2; exit 2; }; \
+		mbases+=("$$mb"); \
+	done; \
 	tmp="$${TMPDIR:-/tmp}"; \
 	tre='^/[A-Za-z0-9._+@/-]*$$'; \
 	[[ $$tmp =~ $$tre ]] || { printf 'release-check: TMPDIR must be an absolute path of letters, digits and ._+@/- only, not %q\n' "$$tmp"; exit 2; }; \
@@ -426,10 +493,11 @@ release-check:
 	done; \
 	g add -A; g commit -q --allow-empty -m "drop scrty replaces"; \
 	st="$$(g status --porcelain --untracked-files=all)"; [ -z "$$st" ] || { echo "release-check: the export is not clean:"; echo "$$st"; exit 1; }; \
-	for d in $(RELEASE_DIRS); do \
-		echo "== gorelease $$d"; \
+	i=0; for d in $(RELEASE_DIRS); do \
+		mb="$${mbases[i]}"; i=$$((i + 1)); \
+		echo "== gorelease $$d (base $$mb)"; \
 		(cd "$$work/src/$$d" && $(RELEASE_GOENV) GOFLAGS=-mod=mod GOPROXY="file://$$work/proxy,https://proxy.golang.org" \
-			"$(abspath $(BIN))/gorelease" -base="$$base" -version="$$RELEASE_VERSION"); \
+			"$(abspath $(BIN))/gorelease" -base="$$mb" -version="$$RELEASE_VERSION"); \
 	done; \
 	now="$$(git rev-parse --verify 'HEAD^{commit}')"; \
 	[ "$$now" = "$$head" ] || { echo "release-check: HEAD moved during the run, from $$head to $$now; nothing was gated, run it again"; exit 1; }; \
