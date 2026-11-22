@@ -134,16 +134,16 @@ func TestExpiryTasks(t *testing.T) {
 			},
 		},
 		{
-			name: "a revoked grant is kept until the longest code lifetime and a minute have passed",
+			name: "a revoked grant is kept until the longest code or device lifetime and a minute have passed",
 			assert: func(t *testing.T, x *exchangeFixture) {
 				ctx := t.Context()
 				g := newGrant(x, false)
 				require.NoError(t, x.p.GrantsForTest().Create(ctx, g))
 				require.NoError(t, revokeErr(x.p.GrantsForTest().Revoke(ctx, g.Family, oidcprovider.CauseCodeReplay, x.clk.Now())))
 
-				x.clk.Advance(10*time.Minute + 30*time.Second)
+				x.clk.Advance(30*time.Minute + 30*time.Second)
 				res := runExpiry(t, x.p)
-				assert.Zero(t, res["oidc-provider.grants"].Removed, "a code of the longest lifetime could still name it")
+				assert.Zero(t, res["oidc-provider.grants"].Removed, "a device approval of the longest lifetime could still name it")
 				_, err := x.p.GrantsForTest().Load(ctx, g.Family)
 				require.NoError(t, err)
 

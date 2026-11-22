@@ -5,7 +5,7 @@ Lets a client on a device without a usable browser, such as a command-line appli
 ## ADDED Requirements
 
 ### Requirement: The device grant is enabled for the provider by the consumer
-The device grant SHALL be off by default. A consumer SHALL enable it for the provider with an option naming the consumer's code-entry page. That page SHALL be an absolute URI on the issuer's origin. Another origin, or a URI with a fragment or user information, SHALL fail construction. So SHALL a URI that holds whitespace, a control character, invalid UTF-8 or a malformed query, or whose query already carries `user_code`. The error SHALL NOT repeat the URI.
+The device grant SHALL be off by default. A consumer SHALL enable it for the provider with an option naming the consumer's code-entry page. That page SHALL be an absolute URI on the issuer's origin. Another origin, or a URI with a fragment or user information, SHALL fail construction. So SHALL a URI that holds whitespace, a control character, invalid UTF-8 or a malformed query, or whose query already carries `user_code` or `result`. The error SHALL NOT repeat the URI.
 
 #### Scenario: A provider built without the option serves no device grant
 - **WHEN** the provider is built without enabling the device grant
@@ -155,6 +155,10 @@ The provider SHALL throttle failed user-code entries per source, by default 5 fa
 #### Scenario: The sixth failure is throttled
 - **WHEN** one source has entered 5 invalid user codes within 10 minutes and enters a sixth code, valid or not
 - **THEN** it is refused as throttled, and the code is not looked up
+
+#### Scenario: A concurrent burst does not exceed the limit
+- **WHEN** one source sends more concurrent entries of wrong codes than its limit allows
+- **THEN** no more of them are looked up than the limit allows, and the rest are refused as throttled
 
 #### Scenario: The consumer's own entry handler is throttled too
 - **WHEN** the consumer's handler passes the same source to the provider's entry call after 5 failures

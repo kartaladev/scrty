@@ -30,8 +30,9 @@ import (
 //     eleven minutes, which costs nothing. A code-token store that cannot purge makes the
 //     task fail with an error matching expiry.ErrPurgeUnsupported;
 //   - "oidc-provider.grants": the grants past their deadline, and the revoked ones once
-//     no code could still name them, which is the longest code lifetime plus a minute
-//     after the revocation, whatever WithCodeLifetime chose. A grant whose refresh-token
+//     no code or device approval could still name them, which is the longest lifetime
+//     either may have (a device authorization's 30 minutes) plus a minute after the
+//     revocation, whatever WithCodeLifetime and WithDeviceLifetime chose. A grant whose refresh-token
 //     lineage has gone idle or been swept stays until its own deadline or a revocation,
 //     so a sign-in's end still reaches its client;
 //   - "oidc-provider.refresh-tokens": the refresh-token lineages past their deadlines;
@@ -95,7 +96,8 @@ func (p *Provider) sweepCodes(ctx context.Context) (int, error) {
 	return tokens + records, errors.Join(tokenErr, recordErr)
 }
 
-// sweepGrants deletes the expired grants, keeping a revoked one until no code can name it.
+// sweepGrants deletes the expired grants, keeping a revoked one until no code or device
+// approval can name it.
 func (p *Provider) sweepGrants(ctx context.Context) (int, error) {
 	return p.stores.grants.DeleteExpired(ctx, p.cfg.clock.Now(), memoryKeepRevoked)
 }

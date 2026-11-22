@@ -310,6 +310,8 @@ Step 4 needs a pending lookup by device ID. Add `PendingRequestStore`-independen
 
 ### Task A7: Token endpoint — dispatch, states and slow_down (tasks 7.1–7.4) — Opus
 
+**Carried from A6's review:** `DeviceApproval` holds no resources. The exchange re-judges the record's `Resources` against the client as read at that moment, as `resolveAudience` does for codes.
+
 **Files:**
 - Create: `oidcprovider/devicetoken.go`, `oidcprovider/devicetoken_test.go`
 - Modify: `oidcprovider/exchange.go` (dispatch case only; `newGrant` gains a sibling `newDeviceGrant(record *DeviceAuthorization, rc *RegisteredClient, binding Binding, holdsLineage bool, now, expiresAt time.Time) *Grant`, without changing `newGrant`'s signature), `oidcprovider/store.go` (`Grant.Origin GrantOrigin`, `Grant.SurvivesSignInEnd bool`, `type GrantOrigin uint8; const (OriginCode GrantOrigin = iota; OriginDevice)`), `oidcprovider/errors.go` (`CodeAuthorizationPending`, `CodeSlowDown`, `CodeAccessDenied` if absent, `CodeExpiredToken`)
@@ -353,6 +355,8 @@ Step 4 needs a pending lookup by device ID. Add `PendingRequestStore`-independen
 - [ ] **Step 5:** Run red, implement, and run the `oidcprovider` row.
 
 ### Task A8: Exchange concurrency, replay, DPoP, failures, sign-in end (tasks 7.5–7.9, 8.1–8.4) — Opus: races and revocation reach
+
+**Carried from A6:** when the browser session is found gone after `Decide`, consent records `GrantStore.Revoke(family, CauseSignInEnded)` for the approval's new `GrantFamily` before any grant row exists. The exchange must create the grant over that revocation and answer `invalid_grant` with no token (test it). A sign-in passed in `ResumeInput.SignIn` can also end between the chain's check and `Decide`, with `EndSignIn` sweeping before the approval is written, so nothing revokes it. The exchange therefore re-judges the approving sign-in itself: unless the approval `SurvivesSignInEnd` or is `Offline && !EndsWithSignIn`, an approving sign-in that is no longer live gives `invalid_grant` and no token, as a code whose sign-in ended does. Test both orders.
 
 **Carried from A3's review:** the device store's `UnspentBySignIn` already leaves out `SurvivesSignInEnd` approvals unless `includeOffline`. The grant store's own sign-in end rule (`store_memory.go`, and later the SQL adapters) must apply the same `SurvivesSignInEnd` exclusion to stored grants, or ending a sign-in revokes a device grant that should outlive it.
 
@@ -409,6 +413,8 @@ The task is named `"oidc-provider.device-authorizations"` and runs `devices.Dele
 - [ ] **Step 3:** Run red, implement, and run the `event` row.
 
 ### Task B1: Migration and `sqlstore` (tasks 10.1–10.2) — Opus: durable conditional writes
+
+**Carried from A6's review:** the SQL grant stores' sweeps must keep a revocation recorded for a family with no grant row for the longest device lifetime plus a minute (31 minutes), as the memory store and `ExpiryTasks` do after A6's fix, not only the longest code lifetime.
 
 **Carried from A3:** register the suite with `storetest.DeviceAuthorizationSuite`, and the races with `storetest.RunDeviceAuthorizationRaces(t, h)`, given a full `DurableHarness` whose `PoolSize` is at least `storetest.DeviceRaceRacers` (16), as `RunGrantRaces` is registered. The suite pins microsecond precision, a spent record swept at exactly `ExpiresAt+1m`, and a refused `Create` releasing nothing. `Create`'s release and insert must run in one transaction under the unique user-code index.
 

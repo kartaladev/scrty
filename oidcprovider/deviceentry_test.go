@@ -267,6 +267,52 @@ func isThrottled(t *testing.T, res oidcprovider.AuthorizeResult, err error) {
 	assert.Empty(t, res.FlowSecret)
 }
 
+// entryReceipt is the receipt a mock limiter answers a charge of entrySource with, and
+// laterReceipt the one it answers a second charge with, when a row tells them apart.
+var (
+	entryReceipt = ratelimit.NewReceipt(entryKey, deviceNow)
+	laterReceipt = ratelimit.NewReceipt(entryKey, deviceNow.Add(time.Second))
+)
+
+// refundingLimiter is a limiter that passes every check and accepts every charge, each with a
+// receipt of its own, and requires, when the test ends, that every charge was refunded exactly
+// once: the entries it serves are charged nothing in the end.
+func refundingLimiter(t *testing.T) *MockLimiter {
+	t.Helper()
+
+	var (
+		mu       sync.Mutex
+		charged  int
+		refunded = map[ratelimit.Receipt]int{}
+	)
+	l := NewMockLimiter(gomock.NewController(t))
+	l.EXPECT().Exceeded(gomock.Any(), entryKey).Return(false, nil).AnyTimes()
+	l.EXPECT().Charge(gomock.Any(), entryKey).DoAndReturn(func(context.Context, string) (ratelimit.Receipt, bool, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		charged++
+
+		return ratelimit.NewReceipt(entryKey, deviceNow.Add(time.Duration(charged))), false, nil
+	}).AnyTimes()
+	l.EXPECT().Refund(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, r ratelimit.Receipt) error {
+		mu.Lock()
+		defer mu.Unlock()
+		refunded[r]++
+
+		return nil
+	}).AnyTimes()
+	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		assert.Len(t, refunded, charged, "every charge is refunded")
+		for r, n := range refunded {
+			assert.Equal(t, 1, n, "a receipt is refunded once: %v", r.Stamp())
+		}
+	})
+
+	return l
+}
+
 // TestEnterUserCode_Throttle pins that the throttle runs before any lookup, fails closed,
 // and is the consumer's limiter when one is given. Each row states how many lookups the
 // store may see in all; it sees none past that.
@@ -341,7 +387,12 @@ func TestEnterUserCode_Throttle(t *testing.T) {
 				t.Helper()
 				l := NewMockLimiter(gomock.NewController(t))
 				l.EXPECT().Exceeded(gomock.Any(), entryKey).Return(false, nil).Times(2)
-				l.EXPECT().RecordFailure(gomock.Any(), entryKey).Return(nil).Times(1)
+				gomock.InOrder(
+					l.EXPECT().Charge(gomock.Any(), entryKey).Return(entryReceipt, false, nil),
+					l.EXPECT().Charge(gomock.Any(), entryKey).Return(laterReceipt, false, nil),
+				)
+				// The failure keeps its charge; the success has its own refunded.
+				l.EXPECT().Refund(gomock.Any(), laterReceipt).Return(nil).Times(1)
 
 				return l
 			},
@@ -353,7 +404,7 @@ func TestEnterUserCode_Throttle(t *testing.T) {
 			lookups: 2,
 			assert: func(t *testing.T, f *entryFixture, record *oidcprovider.DeviceAuthorization, _ oidcprovider.AuthorizeResult, err error) {
 				t.Helper()
-				require.NoError(t, err, "a success charges nothing")
+				require.NoError(t, err, "a success is refunded its charge")
 				assert.Equal(t, oidcprovider.DeviceClaimed, f.stored(t, record).State)
 			},
 		},
@@ -367,6 +418,78 @@ func TestEnterUserCode_Throttle(t *testing.T) {
 				return l
 			},
 			assert: untouched,
+		},
+		{
+			name: "a charge the consumer's limiter refuses is throttled before a lookup",
+			limiter: func(t *testing.T) ratelimit.Limiter {
+				t.Helper()
+				l := NewMockLimiter(gomock.NewController(t))
+				l.EXPECT().Exceeded(gomock.Any(), entryKey).Return(false, nil)
+				l.EXPECT().Charge(gomock.Any(), entryKey).Return(ratelimit.Receipt{}, true, nil)
+
+				return l
+			},
+			assert: untouched,
+		},
+		{
+			name: "a charge the limiter cannot decide fails closed, behind fixed text, logged by type",
+			limiter: func(t *testing.T) ratelimit.Limiter {
+				t.Helper()
+				l := NewMockLimiter(gomock.NewController(t))
+				l.EXPECT().Exceeded(gomock.Any(), entryKey).Return(false, nil)
+				l.EXPECT().Charge(gomock.Any(), entryKey).Return(ratelimit.Receipt{}, true, errLimiterBoom)
+
+				return l
+			},
+			assert: func(t *testing.T, f *entryFixture, record *oidcprovider.DeviceAuthorization, res oidcprovider.AuthorizeResult, err error) {
+				t.Helper()
+				untouched(t, f, record, res, err)
+				assert.ErrorIs(t, err, errLimiterBoom, "the limiter's own failure stays reachable")
+				assert.NotContains(t, err.Error(), errLimiterBoom.Error())
+				assert.NotContains(t, f.logs.String(), errLimiterBoom.Error())
+				assert.Contains(t, f.logs.String(), "could not charge")
+			},
+		},
+		{
+			name: "a successful claim refunds its charge",
+			limiter: func(t *testing.T) ratelimit.Limiter {
+				t.Helper()
+				l := NewMockLimiter(gomock.NewController(t))
+				l.EXPECT().Exceeded(gomock.Any(), entryKey).Return(false, nil)
+				l.EXPECT().Charge(gomock.Any(), entryKey).Return(entryReceipt, false, nil)
+				l.EXPECT().Refund(gomock.Any(), entryReceipt).Return(nil).Times(1)
+
+				return l
+			},
+			lookups: 1,
+			assert: func(t *testing.T, f *entryFixture, record *oidcprovider.DeviceAuthorization, res oidcprovider.AuthorizeResult, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Equal(t, issuer+"/login", pagePath(t, res.Location))
+				assert.Equal(t, oidcprovider.DeviceClaimed, f.stored(t, record).State)
+			},
+		},
+		{
+			name: "a refund the limiter cannot make is logged by type and changes no answer",
+			limiter: func(t *testing.T) ratelimit.Limiter {
+				t.Helper()
+				l := NewMockLimiter(gomock.NewController(t))
+				l.EXPECT().Exceeded(gomock.Any(), entryKey).Return(false, nil)
+				l.EXPECT().Charge(gomock.Any(), entryKey).Return(entryReceipt, false, nil)
+				l.EXPECT().Refund(gomock.Any(), entryReceipt).Return(errLimiterBoom).Times(1)
+
+				return l
+			},
+			lookups: 1,
+			assert: func(t *testing.T, f *entryFixture, record *oidcprovider.DeviceAuthorization, res oidcprovider.AuthorizeResult, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Equal(t, issuer+"/login", pagePath(t, res.Location))
+				assert.Equal(t, oidcprovider.DeviceClaimed, f.stored(t, record).State)
+				assert.Contains(t, f.logs.String(), "could not refund")
+				assert.NotContains(t, f.logs.String(), errLimiterBoom.Error())
+				assert.NotContains(t, f.logs.String(), entryCode)
+			},
 		},
 		{
 			name:   "a source naming no single address is refused before a lookup",
@@ -465,7 +588,8 @@ func TestUseUserCodeEntryLimiter(t *testing.T) {
 		t.Helper()
 		l := NewMockLimiter(gomock.NewController(t))
 		l.EXPECT().Exceeded(gomock.Any(), entryKey).Return(false, nil).Times(1)
-		l.EXPECT().RecordFailure(gomock.Any(), entryKey).Return(nil).Times(1)
+		l.EXPECT().Charge(gomock.Any(), entryKey).Return(entryReceipt, false, nil).Times(1)
+		l.EXPECT().Refund(gomock.Any(), gomock.Any()).Times(0)
 
 		return l
 	}
@@ -776,7 +900,8 @@ func TestEnterUserCode_SingleRefusal(t *testing.T) {
 
 			limiter := NewMockLimiter(gomock.NewController(t))
 			limiter.EXPECT().Exceeded(gomock.Any(), entryKey).Return(false, nil).Times(1)
-			limiter.EXPECT().RecordFailure(gomock.Any(), entryKey).Return(nil).Times(1)
+			limiter.EXPECT().Charge(gomock.Any(), entryKey).Return(entryReceipt, false, nil).Times(1)
+			limiter.EXPECT().Refund(gomock.Any(), gomock.Any()).Times(0)
 			f := newEntryFixture(t, entrySetup{deviceOpts: []oidcprovider.DeviceOption{oidcprovider.WithUserCodeEntryLimiter(limiter)}})
 			record := f.seed(t, entryCode, func(r *oidcprovider.DeviceAuthorization) {
 				if tc.change != nil {
@@ -842,7 +967,8 @@ func TestEnterUserCode_RefusesBeforeRegistry(t *testing.T) {
 
 			limiter := NewMockLimiter(gomock.NewController(t))
 			limiter.EXPECT().Exceeded(gomock.Any(), entryKey).Return(false, nil).Times(1)
-			limiter.EXPECT().RecordFailure(gomock.Any(), entryKey).Return(nil).Times(1)
+			limiter.EXPECT().Charge(gomock.Any(), entryKey).Return(entryReceipt, false, nil).Times(1)
+			limiter.EXPECT().Refund(gomock.Any(), gomock.Any()).Times(0)
 			f := newEntryFixture(t, entrySetup{
 				deviceOpts: []oidcprovider.DeviceOption{oidcprovider.WithUserCodeEntryLimiter(limiter)},
 				registry: func(*oidcprovider.MemoryRegistry) oidcprovider.ClientRegistry {
@@ -1089,6 +1215,8 @@ func TestEnterUserCode_SameBrowserTwiceAtOnce(t *testing.T) {
 	const entries = 2
 	limiter := NewMockLimiter(gomock.NewController(t))
 	limiter.EXPECT().Exceeded(gomock.Any(), entryKey).Return(false, nil).Times(entries)
+	limiter.EXPECT().Charge(gomock.Any(), entryKey).Return(entryReceipt, false, nil).Times(entries)
+	limiter.EXPECT().Refund(gomock.Any(), entryReceipt).Return(nil).Times(entries)
 	limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Times(0)
 
 	var lookups sync.WaitGroup
@@ -1157,11 +1285,18 @@ func TestEnterUserCode_ParkFailsAfterClaim(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Only the last entry, another browser's, is charged: the failed entry and the
-			// recovering one are not.
+			// Only the last entry, another browser's, keeps its charge: the failed entry and
+			// the recovering one are refunded theirs.
 			limiter := NewMockLimiter(gomock.NewController(t))
 			limiter.EXPECT().Exceeded(gomock.Any(), entryKey).Return(false, nil).Times(3)
-			limiter.EXPECT().RecordFailure(gomock.Any(), entryKey).Return(nil).Times(1)
+			gomock.InOrder(
+				limiter.EXPECT().Charge(gomock.Any(), entryKey).Return(entryReceipt, false, nil),
+				limiter.EXPECT().Charge(gomock.Any(), entryKey).Return(laterReceipt, false, nil),
+				limiter.EXPECT().Charge(gomock.Any(), entryKey).Return(ratelimit.NewReceipt(entryKey, deviceNow.Add(time.Minute)), false, nil),
+			)
+			limiter.EXPECT().Refund(gomock.Any(), entryReceipt).Return(nil).Times(1)
+			limiter.EXPECT().Refund(gomock.Any(), laterReceipt).Return(nil).Times(1)
+			limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Times(0)
 			f := newEntryFixture(t, entrySetup{
 				deviceOpts: []oidcprovider.DeviceOption{oidcprovider.WithUserCodeEntryLimiter(limiter)},
 				pending: func(memory *oidcprovider.MemoryPendingRequestStore) oidcprovider.PendingRequestStore {
@@ -1223,8 +1358,7 @@ func TestEnterUserCode_ClaimAppliedButReportedFailed(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			limiter := NewMockLimiter(gomock.NewController(t))
-			limiter.EXPECT().Exceeded(gomock.Any(), entryKey).Return(false, nil).AnyTimes()
+			limiter := refundingLimiter(t)
 			limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Times(0)
 			f := newEntryFixture(t, entrySetup{
 				deviceOpts: []oidcprovider.DeviceOption{oidcprovider.WithUserCodeEntryLimiter(limiter)},
@@ -1266,7 +1400,7 @@ func TestEnterUserCode_ClaimAppliedButReportedFailed(t *testing.T) {
 }
 
 // TestEnterUserCode_Failures pins what a failing dependency, a wiring mistake and a caller
-// who left get: never a verdict on the code, and nothing charged to the throttle.
+// who left get: never a verdict on the code, and every charge made for it refunded.
 func TestEnterUserCode_Failures(t *testing.T) {
 	t.Parallel()
 
@@ -1274,16 +1408,16 @@ func TestEnterUserCode_Failures(t *testing.T) {
 		name   string
 		setup  func(t *testing.T) entrySetup
 		in     oidcprovider.DeviceEntryInput
+		ctx    func(ctx context.Context) context.Context
 		assert func(t *testing.T, f *entryFixture, record *oidcprovider.DeviceAuthorization, res oidcprovider.AuthorizeResult, err error)
 	}
 
-	// uncharged is a limiter that is asked, and charged nothing.
+	// uncharged is a limiter that is asked, and whose every charge is refunded, so the entry
+	// is charged nothing in the end.
 	uncharged := func(t *testing.T) oidcprovider.DeviceOption {
 		t.Helper()
-		l := NewMockLimiter(gomock.NewController(t))
-		l.EXPECT().Exceeded(gomock.Any(), entryKey).Return(false, nil).AnyTimes()
 
-		return oidcprovider.WithUserCodeEntryLimiter(l)
+		return oidcprovider.WithUserCodeEntryLimiter(refundingLimiter(t))
 	}
 	dependency := func(t *testing.T, f *entryFixture, record *oidcprovider.DeviceAuthorization, res oidcprovider.AuthorizeResult, err error) {
 		t.Helper()
@@ -1376,7 +1510,7 @@ func TestEnterUserCode_Failures(t *testing.T) {
 				t.Helper()
 				l := NewMockLimiter(gomock.NewController(t))
 				l.EXPECT().Exceeded(gomock.Any(), entryKey).Return(false, nil)
-				l.EXPECT().RecordFailure(gomock.Any(), entryKey).Return(nil)
+				l.EXPECT().Charge(gomock.Any(), entryKey).Return(entryReceipt, false, nil)
 
 				return entrySetup{
 					deviceOpts: []oidcprovider.DeviceOption{oidcprovider.WithUserCodeEntryLimiter(l)},
@@ -1423,6 +1557,40 @@ func TestEnterUserCode_Failures(t *testing.T) {
 			},
 		},
 		{
+			name: "a caller who left during the lookup is refunded its charge, and its own error stays reachable",
+			setup: func(t *testing.T) entrySetup {
+				t.Helper()
+
+				return entrySetup{
+					deviceOpts: []oidcprovider.DeviceOption{uncharged(t)},
+					devices: func(*oidcprovider.MemoryDeviceAuthorizationStore) oidcprovider.DeviceAuthorizationStore {
+						store := NewMockDeviceAuthorizationStore(gomock.NewController(t))
+						store.EXPECT().LoadByUserCode(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+							func(ctx context.Context, _ []byte, _ time.Time) (*oidcprovider.DeviceAuthorization, error) {
+								return nil, ctx.Err()
+							})
+
+						return store
+					},
+				}
+			},
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cctx
+			},
+			in: oidcprovider.DeviceEntryInput{UserCode: entryDisplay, Source: entrySource},
+			assert: func(t *testing.T, f *entryFixture, record *oidcprovider.DeviceAuthorization, res oidcprovider.AuthorizeResult, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, context.Canceled)
+				assert.NotErrorIs(t, err, oidcprovider.ErrInvalidUserCode)
+				assert.NotErrorIs(t, err, oidcprovider.ErrUserCodeThrottled)
+				assert.Empty(t, res.Location)
+				assert.Equal(t, oidcprovider.DeviceIssued, f.stored(t, record).State)
+			},
+		},
+		{
 			name: "a negative idle timeout is a wiring mistake",
 			setup: func(t *testing.T) entrySetup {
 				t.Helper()
@@ -1449,8 +1617,12 @@ func TestEnterUserCode_Failures(t *testing.T) {
 			}
 			f := newEntryFixture(t, tc.setup(t))
 			record := f.seed(t, entryCode, nil)
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
 
-			res, err := f.p.EnterUserCode(t.Context(), in)
+			res, err := f.p.EnterUserCode(ctx, in)
 			tc.assert(t, f, record, res, err)
 		})
 	}
@@ -1635,4 +1807,90 @@ func TestMemoryPendingRequestStore_DeviceFields(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, deviceID, got.DeviceAuthorizationID)
 	assert.Equal(t, entryDisplay, got.DeviceUserCode)
+}
+
+// gatedLookups is a device store whose user-code lookups are held at a gate until every one of
+// a burst of entries has either reached a lookup or been answered, so no entry of the burst
+// can see a failure another one recorded. It counts the lookups that reach it.
+type gatedLookups struct {
+	*oidcprovider.MemoryDeviceAuthorizationStore
+
+	burst   int64
+	arrived atomic.Int64
+	lookups atomic.Int64
+	gate    chan struct{}
+	once    sync.Once
+}
+
+func newGatedLookups(memory *oidcprovider.MemoryDeviceAuthorizationStore, burst int) *gatedLookups {
+	return &gatedLookups{MemoryDeviceAuthorizationStore: memory, burst: int64(burst), gate: make(chan struct{})}
+}
+
+// arrive counts one entry of the burst as having got as far as it will before the gate, and
+// opens the gate once all of them have.
+func (g *gatedLookups) arrive() {
+	if g.arrived.Add(1) == g.burst {
+		g.once.Do(func() { close(g.gate) })
+	}
+}
+
+func (g *gatedLookups) LoadByUserCode(ctx context.Context, digest []byte, now time.Time) (*oidcprovider.DeviceAuthorization, error) {
+	g.lookups.Add(1)
+	g.arrive()
+	select {
+	case <-g.gate:
+	case <-time.After(10 * time.Second):
+		return nil, errors.New("gatedLookups: the burst never all arrived")
+	}
+
+	return g.MemoryDeviceAuthorizationStore.LoadByUserCode(ctx, digest, now)
+}
+
+// TestEnterUserCode_BurstIsBounded pins that a concurrent burst of wrong codes from one source
+// is looked up no more often than the limit allows: each entry is charged before its lookup,
+// so the entries past the limit are refused as throttled however the burst interleaves.
+func TestEnterUserCode_BurstIsBounded(t *testing.T) {
+	t.Parallel()
+
+	const burst = 16
+	var gated *gatedLookups
+	f := newEntryFixture(t, entrySetup{
+		devices: func(memory *oidcprovider.MemoryDeviceAuthorizationStore) oidcprovider.DeviceAuthorizationStore {
+			gated = newGatedLookups(memory, burst)
+
+			return gated
+		},
+	})
+
+	start := make(chan struct{})
+	errs := make([]error, burst)
+	var wg sync.WaitGroup
+	for i := range burst {
+		wg.Go(func() {
+			<-start
+			_, errs[i] = f.p.EnterUserCode(t.Context(), oidcprovider.DeviceEntryInput{UserCode: otherCode, Source: entrySource})
+			if !errors.Is(errs[i], oidcprovider.ErrInvalidUserCode) {
+				gated.arrive()
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	assert.LessOrEqual(t, gated.lookups.Load(), int64(oidcprovider.DefaultUserCodeEntryLimit),
+		"no more codes are looked up than the limit allows")
+	var invalid, throttled int
+	for _, err := range errs {
+		switch {
+		case errors.Is(err, oidcprovider.ErrInvalidUserCode):
+			invalid++
+		case errors.Is(err, oidcprovider.ErrUserCodeThrottled):
+			assert.ErrorIs(t, err, ratelimit.ErrThrottled)
+			throttled++
+		default:
+			t.Errorf("an entry of the burst answered %v", err)
+		}
+	}
+	assert.Equal(t, int(oidcprovider.DefaultUserCodeEntryLimit), invalid)
+	assert.Equal(t, burst-int(oidcprovider.DefaultUserCodeEntryLimit), throttled)
 }

@@ -47,11 +47,11 @@ Every task is test-first: write the failing test, run it with `go test -run '<Na
 
 ## 6. Consent and resume for device requests (D3, D7)
 
-- [ ] 6.1 Make `consentNeeded` always ask for a device-origin request. Verify with table tests for first-party, offline pre-authorized, and remembered-consent clients.
-- [ ] 6.2 Approval in `resumeConsent`: decide the device record first, then spend the stage, then remember consent. Verify partial scopes recorded, `redirect_to` to the entry page with `result=approved`, and consent remembered.
-- [ ] 6.3 Denial. Verify the record is denied, `redirect_to` carries `result=denied`, and no consent is remembered.
-- [ ] 6.4 Expiry during sign-in and at consent. Verify that an answer after `ExpiresAt` approves nothing and redirects with `result=expired`, including the exact-boundary case.
-- [ ] 6.5 Half-applied failure. Make the stage spend fail after the device decision (store mock). Verify the device decision stands, a re-entry of the code is refused, and nothing is issued twice.
+- [x] 6.1 Make `consentNeeded` always ask for a device-origin request. Verify with table tests for first-party, offline pre-authorized, and remembered-consent clients.
+- [x] 6.2 Approval in `resumeConsent`: decide the device record first, then spend the stage, then remember consent. Verify partial scopes recorded, `redirect_to` to the entry page with `result=approved`, and consent remembered.
+- [x] 6.3 Denial. Verify the record is denied, `redirect_to` carries `result=denied`, and no consent is remembered.
+- [x] 6.4 Expiry during sign-in and at consent. Verify that an answer after `ExpiresAt` approves nothing and redirects with `result=expired`, including the exact-boundary case.
+- [x] 6.5 Half-applied failure. Make the stage spend fail after the device decision (store mock). Verify the device decision stands, a re-entry of the code is refused, and nothing is issued twice.
 
 ## 7. Token endpoint: polling and exchange (D10, D11)
 

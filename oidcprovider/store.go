@@ -477,8 +477,9 @@ type GrantStore interface {
 	// strictly before now, whatever its ExpiresAt. It returns how many it removed. It
 	// judges only by now, never by a clock of its own.
 	//
-	// keepRevoked must cover every code that could still name the grant, and one of
-	// zero or less is refused with an error matching ErrConfig.
+	// keepRevoked must cover every code, and every device approval not yet exchanged,
+	// that could still name the grant, and one of zero or less is refused with an error
+	// matching ErrConfig.
 	DeleteExpired(ctx context.Context, now time.Time, keepRevoked time.Duration) (int, error)
 }
 

@@ -173,7 +173,9 @@ func WithDevicePollInterval(d time.Duration) DeviceOption {
 // entryURL is the page where a user types the code shown on the device. It must be
 // absolute, on the issuer's origin (so https, unless the issuer is the loopback http
 // one WithLoopbackHTTPIssuer permits), and carry no fragment or user information. A
-// query is allowed. Anything else fails construction with ErrConfig. A nil DeviceOption
+// query is allowed, but not one carrying user_code, which the verification_uri_complete
+// adds, or DeviceResultParam ("result"), which the last resume adds. Anything else fails
+// construction with ErrConfig. A nil DeviceOption
 // is skipped. Given twice, the last one wins.
 func WithDeviceAuthorization(entryURL string, opts ...DeviceOption) Option {
 	return func(c *config) {
@@ -313,6 +315,12 @@ func (d *deviceConfig) validateEntryURL(issuer string) error {
 	}
 	if _, found := query["user_code"]; found {
 		return fmt.Errorf("%w: WithDeviceAuthorization: the entry URL's query must not carry user_code", ErrConfig)
+	}
+	// The last resume adds DeviceResultParam with Set, which would silently replace one the
+	// page already carries: the page could not tell its own value from the provider's.
+	if _, found := query[DeviceResultParam]; found {
+		return fmt.Errorf("%w: WithDeviceAuthorization: the entry URL's query must not carry %s, which the provider adds",
+			ErrConfig, DeviceResultParam)
 	}
 	d.entryURL = u
 

@@ -2,6 +2,7 @@ package oidcprovider
 
 import (
 	"context"
+	"crypto/hmac"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/event"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token"
@@ -25,6 +27,25 @@ const defaultBrowserSessionIdle = 30 * time.Minute
 // and a sign-in made on one is presented to another. Further ahead than this, the claim is
 // not clock skew and the sign-in is refused.
 const clockSkewLeeway = 60 * time.Second
+
+// DeviceResultParam is the query parameter a device request's last resume adds to the
+// code-entry URL (WithDeviceAuthorization), keeping any query the URL already has, so the
+// entry page can tell the user how their answer ended. It carries one of DeviceResultApproved,
+// DeviceResultDenied or DeviceResultExpired, and nothing else is added. An entry URL whose own
+// query already carries it is refused by New with an error matching ErrConfig, so the value
+// the page reads is always the provider's.
+const DeviceResultParam = "result"
+
+// The values DeviceResultParam carries.
+const (
+	// DeviceResultApproved says the user approved the device, which may now poll for tokens.
+	DeviceResultApproved = "approved"
+	// DeviceResultDenied says the user denied the device.
+	DeviceResultDenied = "denied"
+	// DeviceResultExpired says the device authorization expired before the user answered,
+	// so nothing was approved, and the user starts again on the device.
+	DeviceResultExpired = "expired"
+)
 
 // ConsentAnswer is what the consumer's consent page answered.
 type ConsentAnswer struct {
@@ -123,6 +144,18 @@ func (ResumeResult) LogValue() slog.Value { return slog.StringValue(redacted) }
 // looked at here, after the code is written. Consent is remembered only from a grant, and offline access
 // only when offline_access is among the scopes granted. A store failing to remember it
 // costs the user a later question, and not the answer they were owed, so it is logged.
+//
+// A request parked by EnterUserCode answers a device authorization, and no code is ever
+// issued for it. It is judged against the client's GrantDeviceCode instead of a redirect URI,
+// and against the device authorization, which must still be live by the provider's clock,
+// claimed by this browser and unanswered: one answered already, through this request or
+// another the same browser parked by entering the code again, is an unknown handle. Its login
+// stage always goes on to the consent page, whatever the client or remembered consent would
+// skip. Its consent answer approves or denies the device authorization, then spends the
+// stage, then remembers an approval's consent, and sends the browser to the code-entry URL
+// with DeviceResultParam added: DeviceResultApproved or DeviceResultDenied. At either stage,
+// a device authorization expired by then (at its ExpiresAt or after) approves nothing and
+// answers DeviceResultExpired, leaving the stage as it was.
 func (p *Provider) Resume(ctx context.Context, in ResumeInput) (ResumeResult, error) {
 	if in.IdleTimeout < 0 {
 		return ResumeResult{}, fmt.Errorf("%w: ResumeInput.IdleTimeout: must not be negative", ErrConfig)
@@ -161,6 +194,18 @@ func (p *Provider) Resume(ctx context.Context, in ResumeInput) (ResumeResult, er
 		})}
 	}
 
+	if r.DeviceAuthorizationID != id.Nil {
+		record, err := p.claimedDevice(ctx, r)
+		switch {
+		case errors.Is(err, errDeviceGone):
+			return p.deviceResult(DeviceResultExpired), nil
+		case err != nil:
+			return ResumeResult{}, err
+		case in.Answer != nil:
+			return p.resumeDeviceConsent(ctx, in, r, rc, record)
+		}
+	}
+
 	return resume(ctx, in, r, rc)
 }
 
@@ -173,8 +218,17 @@ func (p *Provider) Resume(ctx context.Context, in ResumeInput) (ResumeResult, er
 // caller refuses that as an unknown handle, with no redirect, because nothing says where a
 // redirect could safely go. A client that lost the refresh grant is left holding no
 // offline_access.
+//
+// A request answering a device authorization has no redirect URI, and is judged by the
+// device grant instead: a client that lost GrantDeviceCode cannot be answered, and one
+// that names a redirect URI as well is no request the provider parks. A code-flow request
+// is never judged by the device grant.
 func rejudge(r *PendingRequest, rc *RegisteredClient) (*PendingRequest, []string, bool) {
-	if !rc.MatchRedirectURI(r.RedirectURI) || !slices.Contains(rc.GrantTypes, GrantAuthorizationCode) {
+	if r.DeviceAuthorizationID != id.Nil {
+		if r.RedirectURI != "" || !slices.Contains(rc.GrantTypes, GrantDeviceCode) {
+			return nil, nil, false
+		}
+	} else if !rc.MatchRedirectURI(r.RedirectURI) || !slices.Contains(rc.GrantTypes, GrantAuthorizationCode) {
 		return nil, nil, false
 	}
 
@@ -310,6 +364,177 @@ func (p *Provider) resumeConsent(ctx context.Context, in ResumeInput, r *Pending
 	}
 
 	return ResumeResult{RedirectTo: target}, nil
+}
+
+// claimedDevice reads the device authorization a device request answers, which must still be
+// live (liveDevice), claimed and not yet answered, by the browser the request is bound to. A
+// record answered already, through this request or a sibling the same browser parked by
+// entering the code again, is ErrUnknownHandle, as is a claim bound to another flow, which
+// the provider never parks.
+func (p *Provider) claimedDevice(ctx context.Context, r *PendingRequest) (*DeviceAuthorization, error) {
+	record, err := p.liveDevice(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	if record.State != DeviceClaimed || !hmac.Equal(record.ClaimFlowDigest, r.FlowDigest) {
+		return nil, ErrUnknownHandle
+	}
+
+	return record, nil
+}
+
+// resumeDeviceConsent answers the consent stage of a device request: it approves or denies
+// the device authorization instead of issuing a code, and sends the browser back to the
+// code-entry page with DeviceResultParam saying how it ended. The sign-in is judged as
+// resumeConsent judges it.
+//
+// The device record is decided first, by one conditional write that also judges its expiry
+// by now, and the stage is spent after it. Of two answers racing through sibling requests,
+// one decides; the other finds the record decided and is an unknown handle. A decision that
+// lost to expiry is DeviceResultExpired. If the stage cannot be spent once the record is
+// decided, the decision stands and the answer is a dependency failure: the code's re-entry
+// is refused, and resuming again finds the record decided, so nothing is decided twice or
+// remembered for it.
+//
+// An approval records the approving sign-in and the grant family the exchange will create,
+// minted now so that an end of the sign-in reaches it before the exchange. When it rests on
+// the browser session, the session is looked at once the record is decided, as resumeConsent
+// looks once the code is written. A session gone by then has ended, or a look that failed
+// could not exclude that, and an approval cannot be withheld from the device as a code is from
+// the browser, so a revocation is recorded for its family, which the exchange will find, and
+// the stage is left unspent. Consent is remembered last, for an approval alone.
+func (p *Provider) resumeDeviceConsent(
+	ctx context.Context, in ResumeInput, r *PendingRequest, rc *RegisteredClient, record *DeviceAuthorization,
+) (ResumeResult, error) {
+	if r.SignIn == nil {
+		return ResumeResult{}, ErrUnknownHandle
+	}
+	now := p.cfg.clock.Now()
+	s, session, err := p.consentSignIn(ctx, in, now)
+	if err != nil {
+		return ResumeResult{}, err
+	}
+	if err := judgeSignIn(s, now); err != nil {
+		return ResumeResult{}, err
+	}
+	if s.User != r.SignIn.User {
+		return ResumeResult{}, ErrUnknownHandle
+	}
+
+	approval, err := p.deviceApproval(ctx, in.Answer, r, rc, s, now)
+	if err != nil {
+		return ResumeResult{}, err
+	}
+
+	err = p.cfg.device.store.Decide(ctx, record.ID, approval, now)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
+	switch {
+	case errors.Is(err, ErrNotFound) && record.expiredAt(now):
+		return p.deviceResult(DeviceResultExpired), nil
+	case errors.Is(err, ErrNotFound):
+		return ResumeResult{}, ErrUnknownHandle
+	case err != nil:
+		return ResumeResult{}, dependencyFailure(ctx, err, "oidcprovider: decide the device authorization")
+	}
+	p.deviceDecided(ctx, record, approval)
+
+	if approval == nil {
+		if err := p.spendStage(ctx, r, StageConsent, StageDone, nil); err != nil {
+			return ResumeResult{}, err
+		}
+		p.reportConsent(ctx, event.ConsentDenied, s.User, r.ClientID)
+		p.touchBrowserSession(ctx, session, in.IdleTimeout, now)
+
+		return p.deviceResult(DeviceResultDenied), nil
+	}
+
+	if err := p.confirmBrowserSession(ctx, session, in.IdleTimeout, now); err != nil {
+		p.withdrawDeviceApproval(ctx, approval.GrantFamily, now)
+
+		return ResumeResult{}, err
+	}
+	if err := p.spendStage(ctx, r, StageConsent, StageDone, nil); err != nil {
+		return ResumeResult{}, err
+	}
+	p.reportConsent(ctx, event.ConsentGiven, s.User, r.ClientID)
+
+	err = p.stores.consents.Give(ctx, s.User, r.ClientID, approval.GrantedScopes, approval.Offline, now)
+	if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
+		p.logFailedAfterSpend(ctx, "oidcprovider: a consent the user gave could not be remembered", err)
+	}
+
+	return p.deviceResult(DeviceResultApproved), nil
+}
+
+// deviceApproval reads a consent answer of a device request into what Decide records: nil for
+// a denial, which must name no scope, and otherwise the approval of the scopes granted, under
+// the sign-in s, with a grant family minted now. The grant ends with its sign-in as the
+// client's EndGrantsWithSignIn says, a public web client's default included, and survives that
+// end without offline_access only under DeviceGrantsOutliveSignIn.
+func (p *Provider) deviceApproval(
+	ctx context.Context, answer *ConsentAnswer, r *PendingRequest, rc *RegisteredClient, s SignIn, now time.Time,
+) (*DeviceApproval, error) {
+	if answer.Deny {
+		if len(answer.Scopes) > 0 {
+			return nil, ErrConsentMalformed
+		}
+
+		return nil, nil //nolint:nilnil // a denial records no approval, and is no failure
+	}
+
+	granted, ok := grantedScopesOf(r, answer.Scopes)
+	if !ok {
+		return nil, ErrConsentMalformed
+	}
+	if !freshEnough(r, s, now) {
+		return nil, ErrReauthenticate
+	}
+	family, err := idgen.New(p.cfg.ids)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
+		return nil, dependencyFailure(ctx, err, "oidcprovider: mint a grant family")
+	}
+	offline := slices.Contains(granted, scopeOffline)
+
+	return &DeviceApproval{
+		User:              s.User,
+		GrantedScopes:     granted,
+		SignIn:            cloneSignIn(s),
+		GrantFamily:       family,
+		Offline:           offline,
+		EndsWithSignIn:    rc.EndGrantsWithSignIn,
+		SurvivesSignInEnd: rc.DeviceGrantsOutliveSignIn && !offline,
+	}, nil
+}
+
+// deviceDecided is where a device authorization's decision is reported: approval is nil for
+// a denial. It is the one place every decision passes, once the record is written and before
+// the stage is spent, and reports nothing yet.
+func (p *Provider) deviceDecided(context.Context, *DeviceAuthorization, *DeviceApproval) {}
+
+// withdrawDeviceApproval records a revocation for the grant family of an approval whose
+// sign-in could not be confirmed after the decision, so that the exchange, which creates its
+// grant over any revocation recorded for the family, refuses it. It runs whatever became of
+// the caller, within its own budget. A failure is logged: the approval then stands, and an
+// end of its sign-in reaches it only if that end came after the decision.
+func (p *Provider) withdrawDeviceApproval(ctx context.Context, family id.ID, now time.Time) {
+	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
+	defer cancel()
+	_, err := p.stores.grants.Revoke(detached, family, CauseSignInEnded, now)
+	if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
+		p.logFailedAfterSpend(ctx, "oidcprovider: a device approval whose sign-in could not be confirmed could not be withdrawn", err)
+	}
+}
+
+// deviceResult sends the browser back to the code-entry page with DeviceResultParam set to
+// result, keeping the page's own query.
+func (p *Provider) deviceResult(result string) ResumeResult {
+	entry := *p.cfg.device.entryURL
+	query := entry.Query()
+	query.Set(DeviceResultParam, result)
+	entry.RawQuery = query.Encode()
+
+	return ResumeResult{RedirectTo: entry.String()}
 }
 
 // consentSignIn returns who is answering: the sign-in given, or the browser session's in

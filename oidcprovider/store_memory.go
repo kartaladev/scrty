@@ -507,13 +507,15 @@ func (m *MemoryConsentStore) ListByUser(_ context.Context, user identity.UserID)
 	return out, nil
 }
 
-// memoryKeepRevoked is how long a MemoryGrantStore's own sweep keeps a revocation. It
-// covers the longest code lifetime WithCodeLifetime allows, whatever the provider
-// chose, with a minute more for an exchange that spent its code just before it expired.
-// It has no option, because a shorter value would let a code outlive its revocation
-// and a longer one buys nothing: DeleteExpired takes any value, and WithGrantStore
-// replaces the store.
-const memoryKeepRevoked = maxCodeLifetime + time.Minute
+// memoryKeepRevoked is how long a revocation is kept: by a MemoryGrantStore's own sweep,
+// and by the grants expiry task for any store. It covers the longest lifetime of anything
+// that can still create a grant over a revocation recorded first — a code, under the longest
+// WithCodeLifetime allows, and a device approval, under the longest WithDeviceLifetime allows
+// — whatever the provider chose, with a minute more for an exchange made just before its
+// code or authorization expired. It has no option, because a shorter value would let a code
+// or an approval outlive its revocation and a longer one buys nothing: DeleteExpired takes any
+// value, and WithGrantStore replaces the store.
+const memoryKeepRevoked = max(maxCodeLifetime, maxDeviceLifetime) + time.Minute
 
 // memoryGrant is a stored grant, and whether an exchange has stored it, or only a
 // revocation recorded first.
@@ -562,7 +564,8 @@ var (
 // every refresh token issued before it, and a deployment of more than one instance
 // needs a shared store. What it holds stays bounded: a write that adds a record
 // forgets each grant expired by the store's clock, and each revocation older than the
-// longest code lifetime plus a minute, at most once per minute. DeleteExpired does
+// longest code or device-authorization lifetime the provider allows (30 minutes) plus a
+// minute, at most once per minute. DeleteExpired does
 // the same at the caller's time and with the caller's retention.
 type MemoryGrantStore struct {
 	mu     sync.Mutex

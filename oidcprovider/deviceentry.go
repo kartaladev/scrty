@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
@@ -135,8 +136,10 @@ func sameLimiter(a, b ratelimit.Limiter) bool {
 // the chain's code-entry endpoint or a consumer's own handler, which apply the same rules
 // through it. In order, it:
 //
-//  1. checks the source against the entry throttle (WithUserCodeEntryLimiter), before the
-//     code is read, so a throttled source learns nothing of whether its code is valid;
+//  1. checks the source against the entry throttle (WithUserCodeEntryLimiter), and charges
+//     the entry to it, both before the code is read, so a throttled source learns nothing of
+//     whether its code is valid and a concurrent burst from one source is looked up no more
+//     often than the limit allows;
 //  2. reads the code back to its raw form, with whitespace and dashes dropped and upper-cased
 //     for an alphabet with no lower-case letter (WithUserCodeFormat);
 //  3. looks up the unexpired device authorization holding it;
@@ -156,13 +159,15 @@ func sameLimiter(a, b ratelimit.Limiter) bool {
 // A refusal of the code is ErrInvalidUserCode, one error with one text, whatever the
 // reason: malformed, longer than any code could be, unknown, expired (at ExpiresAt and
 // after, by the provider's clock), claimed by another browser, answered or exchanged, or for
-// a client no longer registered for the grant. Each is charged to the throttle and leaves
-// the device authorization as it was. A source that has failed too often, that names no
-// single address, or that the limiter cannot answer for is refused before anything is read,
-// with an error matching ErrUserCodeThrottled and ratelimit.ErrThrottled; with the default,
-// that is the sixth failure in 10 minutes.
+// a client no longer registered for the grant. Each keeps the charge made before the code
+// was read, and leaves the device authorization as it was. A source that has failed too
+// often, that names no single address, or that the limiter cannot answer or charge for is
+// refused before anything is read, with an error matching ErrUserCodeThrottled and
+// ratelimit.ErrThrottled; with the default, that is the sixth failure in 10 minutes.
 //
-// Any other error is no verdict on the code and is charged to nothing. A failing store,
+// Any other outcome is no verdict on the code, and its charge is refunded: a claim, a
+// re-entry, and every error below. A refund the limiter cannot make is logged and changes no
+// answer. A failing store,
 // registry, user loader or random source matches ErrDependency behind fixed text, and a caller
 // who left matches its own context's error. When the claim may have been written, because
 // the store reported a failure for it or the request could not be parked after it, the result
@@ -181,6 +186,8 @@ func (p *Provider) EnterUserCode(ctx context.Context, in DeviceEntryInput) (Auth
 		return AuthorizeResult{}, fmt.Errorf("%w: DeviceEntryInput.IdleTimeout: must not be negative", ErrConfig)
 	}
 
+	// One load: the check, the charge and the refund all reach the same limiter, whatever
+	// UseUserCodeEntryLimiter does meanwhile.
 	throttle := cfg.entry.current.Load()
 	source, err := throttle.guard.Check(ctx, in.Source)
 	if err != nil {
@@ -188,13 +195,65 @@ func (p *Provider) EnterUserCode(ctx context.Context, in DeviceEntryInput) (Auth
 
 		return AuthorizeResult{}, &entryRefused{cause: err}
 	}
+	receipt, err := p.chargeEntry(ctx, throttle, source)
+	if err != nil {
+		p.entryThrottled(ctx)
+
+		return AuthorizeResult{}, err
+	}
 
 	res, err := p.enterCode(ctx, cfg, in)
-	if errors.Is(err, ErrInvalidUserCode) {
-		throttle.guard.RecordFailure(ctx, source)
+	if !errors.Is(err, ErrInvalidUserCode) {
+		p.refundEntry(ctx, throttle, receipt)
 	}
 
 	return res, err
+}
+
+// Log messages of the entry throttle's own failures. They carry the error's type, never its
+// text, and never the source.
+const (
+	msgEntryChargeFailed = "oidcprovider: the user-code entry limiter could not charge an entry, which is refused"
+	msgEntryRefundFailed = "oidcprovider: the user-code entry limiter could not refund an entry that was no failure"
+)
+
+// errEntryChargeText is the fixed text a charge the limiter could not decide is wrapped in.
+const errEntryChargeText = "oidcprovider: the user-code entry limiter could not charge the entry"
+
+// chargeEntry charges the entry to its source before anything of the code is read, so a
+// concurrent burst from one source cannot all pass the check before any of it is counted:
+// once the limit is reached, every further charge is refused in the limiter's one step. The
+// charge is made with the caller's cancellation stripped, so a client that hangs up cannot
+// slip past the limit. A charge refused, or one the limiter could not decide, refuses the
+// entry as throttled, failing closed; the limiter's own failure stays reachable beneath the
+// fixed text, and is logged by its type alone.
+//
+// Only the source is charged. The entry guard is built with no IPv6 aggregate, so there is no
+// aggregate count to charge.
+func (p *Provider) chargeEntry(ctx context.Context, throttle *entryThrottle, source ratelimit.Source) (ratelimit.Receipt, error) {
+	receipt, exceeded, err := throttle.limiter.Charge(context.WithoutCancel(ctx), source.Key())
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
+		p.cfg.logger.LogAttrs(ctx, slog.LevelError, msgEntryChargeFailed, diag.Failure("limiter", err)...)
+
+		return ratelimit.Receipt{}, &entryRefused{cause: diag.Wrap(err, errEntryChargeText)}
+	}
+	if exceeded {
+		return ratelimit.Receipt{}, &entryRefused{cause: ratelimit.ErrThrottled}
+	}
+
+	return receipt, nil
+}
+
+// refundEntry takes back the charge of an entry that was no failure of the code: a claim, a
+// re-entry, a failing dependency, a configuration error or a caller who left. It runs with the
+// caller's cancellation stripped, and a refund that fails is logged by the error's type alone
+// and changes no answer: the entry then stays counted until it leaves the window.
+func (p *Provider) refundEntry(ctx context.Context, throttle *entryThrottle, receipt ratelimit.Receipt) {
+	err := throttle.limiter.Refund(context.WithoutCancel(ctx), receipt)
+	if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
+		p.cfg.logger.LogAttrs(ctx, slog.LevelError, msgEntryRefundFailed, diag.Failure("limiter", err)...)
+	}
 }
 
 // entryThrottled is where a throttled entry is reported. It is the one place a throttled
@@ -202,7 +261,7 @@ func (p *Provider) EnterUserCode(ctx context.Context, in DeviceEntryInput) (Auth
 func (p *Provider) entryThrottled(context.Context) {}
 
 // enterCode is EnterUserCode past the throttle. Every refusal of the code it answers is
-// ErrInvalidUserCode itself, which the caller charges.
+// ErrInvalidUserCode itself, whose charge the caller keeps.
 func (p *Provider) enterCode(ctx context.Context, cfg *deviceConfig, in DeviceEntryInput) (AuthorizeResult, error) {
 	if len(in.UserCode) > maxEnteredUserCode {
 		return AuthorizeResult{}, ErrInvalidUserCode
@@ -368,10 +427,18 @@ func (p *Provider) parkDevice(
 	}
 }
 
-// deviceView is the device part of a pending request's view, read from the record it
-// answers, which must still be live and the one the request names. A record gone, expired
-// or replaced is ErrUnknownHandle: there is nothing left for the page to answer.
-func (p *Provider) deviceView(ctx context.Context, r *PendingRequest) (*DeviceView, error) {
+// errDeviceGone says the device authorization a pending request names is no longer live: no
+// unexpired record holds its user code, or the one that does is another record. A store
+// releases a user code only once its record has expired, and sweeps only expired records, so
+// either way the authorization the request answers has expired.
+var errDeviceGone = errors.New("oidcprovider: device authorization expired")
+
+// liveDevice reads the device authorization a pending request answers, by the user code it
+// was parked with, which must still be held by the record the request names, unexpired by the
+// provider's clock. A record gone, expired or replaced is errDeviceGone, and a provider
+// without the grant, or a code that no longer reads, ErrUnknownHandle. A failing store is a
+// dependency failure. The record's state and claim are the caller's to judge.
+func (p *Provider) liveDevice(ctx context.Context, r *PendingRequest) (*DeviceAuthorization, error) {
 	cfg := p.cfg.device
 	if cfg == nil {
 		return nil, ErrUnknownHandle
@@ -383,11 +450,26 @@ func (p *Provider) deviceView(ctx context.Context, r *PendingRequest) (*DeviceVi
 	record, err := p.deviceByUserCode(ctx, cfg, raw)
 	switch {
 	case errors.Is(err, ErrInvalidUserCode):
-		return nil, ErrUnknownHandle
+		return nil, errDeviceGone
 	case err != nil:
 		return nil, err
 	case record.ID != r.DeviceAuthorizationID:
+		return nil, errDeviceGone
+	}
+
+	return record, nil
+}
+
+// deviceView is the device part of a pending request's view, read from the record it
+// answers, which must still be live and the one the request names. A record gone, expired
+// or replaced is ErrUnknownHandle: there is nothing left for the page to answer.
+func (p *Provider) deviceView(ctx context.Context, r *PendingRequest) (*DeviceView, error) {
+	record, err := p.liveDevice(ctx, r)
+	switch {
+	case errors.Is(err, errDeviceGone):
 		return nil, ErrUnknownHandle
+	case err != nil:
+		return nil, err
 	}
 
 	return &DeviceView{UserCode: r.DeviceUserCode, RequestedAt: record.IssuedAt}, nil
