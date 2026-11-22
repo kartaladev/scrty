@@ -358,6 +358,17 @@ func TestChainEndpoints_ConditionalEntriesAbsent(t *testing.T) {
 			absent: []string{httpsec.OperationPasswordChange},
 		},
 		{
+			name: "the provider without the device grant has no device endpoints",
+			options: func(t *testing.T) []httpsec.Option {
+				f := newOPFixture(t)
+				p := f.provider(t)
+
+				return append(f.wired(t, p), httpsec.EnableOIDCProvider(p))
+			},
+			listed: []string{httpsec.OperationOAuth2Authorize, httpsec.OperationOAuth2Token},
+			absent: []string{httpsec.OperationOAuth2DeviceAuthorization, httpsec.OperationOAuth2DeviceEntry},
+		},
+		{
 			name: "the method listing off",
 			options: func(t *testing.T) []httpsec.Option {
 				return endpointsFormLoginMFA(t)
@@ -665,7 +676,10 @@ func everyBuiltInEndpoint(t *testing.T) []httpsec.Endpoint {
 	provider, err := bpChain(t, newOPFixture(t), true)
 	require.NoError(t, err)
 
-	return append(all, provider.Endpoints()...)
+	device, err := bpDeviceChain(t, newOPFixture(t), true)
+	require.NoError(t, err)
+
+	return append(append(all, provider.Endpoints()...), device.Endpoints()...)
 }
 
 // TestChainEndpoints_PinsEveryOperation pins, for every operation identifier,
@@ -768,6 +782,8 @@ func TestChainEndpoints_PinsEveryOperation(t *testing.T) {
 		{httpsec.OperationOAuth2ConsentsRevoke, "scrty.oauth2.consents.revoke", pinned(m(del), "/auth/oauth2/consents/{client}", segment, refused, signedIn, opPrefix, "scrty.oauth2.consents")},
 		{httpsec.OperationOAuth2OpenIDConfiguration, "scrty.oauth2.openid-configuration", pinned(m(get, head), "/auth/.well-known/openid-configuration", exact, refused, nothing, "EnableOIDCProvider", "")},
 		{httpsec.OperationOAuth2AuthorizationServerMetadata, "scrty.oauth2.authorization-server-metadata", pinned(m(get, head), "/.well-known/oauth-authorization-server/auth", exact, refused, nothing, "EnableOIDCProvider", "")},
+		{httpsec.OperationOAuth2DeviceAuthorization, "scrty.oauth2.device-authorization", pinned(m(post), "/auth/oauth2/device-authorization", exact, refused, clientAuthn, opPrefix, "")},
+		{httpsec.OperationOAuth2DeviceEntry, "scrty.oauth2.device-entry", pinned(m(get, post), "/auth/oauth2/device", exact, refused, nothing, opPrefix, "")},
 	}
 
 	all := everyBuiltInEndpoint(t)

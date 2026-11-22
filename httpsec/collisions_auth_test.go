@@ -10,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/internal/must"
+	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 )
@@ -421,6 +422,31 @@ func TestChainPathCollisions_AuthFeatures(t *testing.T) {
 			assert: collisionRefused("EnableOIDCProvider", "WithOIDCProviderPrefix",
 				"WithOIDCProviderPath for "+httpsec.OIDCRevoke.String(),
 				httpsec.OperationOAuth2Token, httpsec.OperationOAuth2Revoke, `"/oauth2/token"`),
+		},
+		{
+			name: "code entry at the token path",
+			build: func(t *testing.T) []httpsec.Option {
+				p := f.provider(t, oidcprovider.WithDeviceAuthorization(opIssuer+"/enter-code",
+					oidcprovider.WithUserCodeKey(deviceKey)))
+
+				return append(f.wired(t, p), httpsec.EnableOIDCProvider(p,
+					httpsec.WithOIDCProviderPath(httpsec.OIDCDeviceEntry, "/oauth2/token")))
+			},
+			assert: collisionRefused("EnableOIDCProvider", "WithOIDCProviderPrefix",
+				"WithOIDCProviderPath for "+httpsec.OIDCDeviceEntry.String(),
+				httpsec.OperationOAuth2Token, httpsec.OperationOAuth2DeviceEntry, `"/oauth2/token"`),
+		},
+		{
+			name: "device authorization at the key set path",
+			build: func(t *testing.T) []httpsec.Option {
+				p := f.provider(t, oidcprovider.WithDeviceAuthorization(opIssuer+"/enter-code",
+					oidcprovider.WithUserCodeKey(deviceKey)))
+
+				return append(f.wired(t, p), httpsec.EnableOIDCProvider(p,
+					httpsec.WithOIDCProviderPath(httpsec.OIDCDeviceAuthorization, httpsec.DefaultJWKSPath)))
+			},
+			assert: collisionRefused("EnableOIDCProvider", "WithJWKSEndpointPath",
+				httpsec.OperationOAuth2DeviceAuthorization, httpsec.OperationKeySet, `"`+httpsec.DefaultJWKSPath+`"`),
 		},
 		{
 			// http-security-chain, "Undeclared sharing": the two answer

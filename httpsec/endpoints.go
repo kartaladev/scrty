@@ -338,6 +338,12 @@ const (
 	// OperationOAuth2AuthorizationServerMetadata is the OAuth authorization
 	// server metadata document (RFC 8414).
 	OperationOAuth2AuthorizationServerMetadata = "scrty.oauth2.authorization-server-metadata"
+	// OperationOAuth2DeviceAuthorization is the provider's device authorization
+	// endpoint (RFC 8628), listed only when the provider enabled the device grant.
+	OperationOAuth2DeviceAuthorization = "scrty.oauth2.device-authorization"
+	// OperationOAuth2DeviceEntry is where a browser enters a user code, listed
+	// only when the provider enabled the device grant.
+	OperationOAuth2DeviceEntry = "scrty.oauth2.device-entry"
 )
 
 // Endpoints lists every operation of every built-in endpoint the chain

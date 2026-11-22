@@ -1322,6 +1322,7 @@ func TestOIDCProvider_Routes(t *testing.T) {
 
 	type testCase struct {
 		name   string
+		popts  []oidcprovider.Option
 		opts   []httpsec.OIDCProviderOption
 		method string
 		path   string
@@ -1342,6 +1343,9 @@ func TestOIDCProvider_Routes(t *testing.T) {
 
 	prefix := []httpsec.OIDCProviderOption{httpsec.WithOIDCProviderPrefix("/op")}
 	moved := []httpsec.OIDCProviderOption{httpsec.WithOIDCProviderPath(httpsec.OIDCToken, "/tokens")}
+	device := []oidcprovider.Option{oidcprovider.WithDeviceAuthorization(opIssuer+"/enter-code",
+		oidcprovider.WithUserCodeKey(deviceKey))}
+	activate := []httpsec.OIDCProviderOption{httpsec.WithOIDCProviderPath(httpsec.OIDCDeviceEntry, "/activate")}
 
 	cases := []testCase{
 		{name: "another path passes through", method: http.MethodGet, path: "/api/orders", assert: passesThrough},
@@ -1365,6 +1369,14 @@ func TestOIDCProvider_Routes(t *testing.T) {
 		{name: "a per-path option moves one endpoint", opts: moved, method: http.MethodPost, path: "/tokens", assert: answered},
 		{name: "the moved endpoint's default passes through", opts: moved, method: http.MethodPost, path: "/oauth2/token", assert: passesThrough},
 		{name: "a per-path option leaves the others", opts: moved, method: http.MethodPost, path: "/oauth2/revoke", assert: answered},
+		{name: "device authorization with the grant", popts: device, method: http.MethodPost, path: "/oauth2/device-authorization", assert: answered},
+		{name: "code entry with the grant", popts: device, method: http.MethodGet, path: "/oauth2/device", assert: answered},
+		{name: "device authorization without the grant passes through", method: http.MethodPost, path: "/oauth2/device-authorization", assert: passesThrough},
+		{name: "code entry without the grant passes through", method: http.MethodGet, path: "/oauth2/device", assert: passesThrough},
+		{name: "a prefix moves code entry", popts: device, opts: prefix, method: http.MethodGet, path: "/op/device", assert: answered},
+		{name: "a per-path option moves code entry", popts: device, opts: activate, method: http.MethodGet, path: "/activate", assert: answered},
+		{name: "moved code entry's default passes through", popts: device, opts: activate, method: http.MethodGet, path: "/oauth2/device", assert: passesThrough},
+		{name: "moving code entry leaves device authorization", popts: device, opts: activate, method: http.MethodPost, path: "/oauth2/device-authorization", assert: answered},
 		{
 			name:   "a per-path option holds under a prefix, whichever came first",
 			opts:   []httpsec.OIDCProviderOption{httpsec.WithOIDCProviderPath(httpsec.OIDCToken, "/tokens"), httpsec.WithOIDCProviderPrefix("/op")},
@@ -1376,7 +1388,7 @@ func TestOIDCProvider_Routes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			p := f.provider(t)
+			p := f.provider(t, tc.popts...)
 			chain, err := httpsec.New(append(f.wired(t, p), httpsec.EnableOIDCProvider(p, tc.opts...))...)
 			require.NoError(t, err)
 

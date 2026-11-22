@@ -68,6 +68,10 @@ type oidcEndpoints struct {
 	// an issuer that does not cover it, or the provider's paths, is not refused.
 	issuerBasePathWaived bool
 
+	// deviceSettings names the options given that only a provider with the device
+	// grant serves, so check refuses them on one without.
+	deviceSettings []string
+
 	// groups is the endpoint groups, one per file, in the order they are asked.
 	groups []oidcEndpointGroup
 	// sessions is the manager the chain's bearer resolves sessions through,
@@ -91,6 +95,9 @@ type oidcEndpoints struct {
 	endSession    oidcEndSessionGroup
 	logoutConfirm oidcLogoutConfirmGroup
 	consents      oidcConsentsGroup
+
+	deviceAuthorization oidcDeviceAuthorizationGroup
+	deviceEntry         oidcDeviceEntryGroup
 }
 
 // newOIDCEndpoints returns the provider's state with its groups bound, and the
@@ -106,6 +113,7 @@ func newOIDCEndpoints(p *oidcprovider.Provider, now func() time.Time) *oidcEndpo
 	op.groups = []oidcEndpointGroup{
 		&op.authorize, &op.resume, &op.token, &op.revoke, &op.userinfo,
 		&op.metadata, &op.endSession, &op.logoutConfirm, &op.consents,
+		&op.deviceAuthorization, &op.deviceEntry,
 	}
 
 	for _, g := range op.groups {
@@ -333,10 +341,22 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 //   - Revocation and introspection throttles: 10 failed client authentications per
 //     source in 15 minutes, each endpoint counted on its own (WithOIDCRevokeLimiter,
 //     WithOIDCIntrospectLimiter, or the chain's WithRateLimiterFactory).
+//   - Device endpoints: served only when the provider enabled the device grant
+//     (oidcprovider.WithDeviceAuthorization), at OIDCDeviceAuthorization and
+//     OIDCDeviceEntry. A device option or path given for a provider without the
+//     grant fails New. The device authorization endpoint's throttle is the token
+//     endpoint's rule with a budget of its own, under namespace
+//     "oidc-device-authorization" (WithOIDCDeviceAuthorizationLimiter, or the
+//     chain's WithRateLimiterFactory). Code entry is throttled by the provider
+//     itself (oidcprovider.WithUserCodeEntryLimiter); with WithRateLimiterFactory
+//     and no limiter of the consumer's on the provider, New hands the provider
+//     the factory's limiter for namespace "oidc-device-entry", and fails when the
+//     factory errs or the provider already holds another chain's.
 //   - Request bodies: DefaultLoginBodyLimit (WithOIDCAuthorizeBodyLimit,
 //     WithOIDCResumeBodyLimit, WithOIDCTokenBodyLimit, WithOIDCEndSessionBodyLimit,
 //     WithOIDCLogoutConfirmBodyLimit, WithOIDCRevokeBodyLimit,
-//     WithOIDCIntrospectBodyLimit, WithOIDCUserInfoBodyLimit).
+//     WithOIDCIntrospectBodyLimit, WithOIDCUserInfoBodyLimit,
+//     WithOIDCDeviceAuthorizationBodyLimit, WithOIDCDeviceEntryBodyLimit).
 //   - Cross-site requests: POST to the authorization, token, revocation,
 //     introspection and end-session endpoints skips CSRF protection, at the
 //     paths the provider serves them (see "Cross-site requests", below). No
@@ -812,7 +832,12 @@ func (op *oidcEndpoints) checkIssuerPath(c *config) error {
 	// configuration, so it is the path a refusal is most useful naming.
 	served := make([]string, 0, len(op.paths)+2)
 	served = append(served, op.paths[OIDCToken])
-	served = append(served, op.paths[:]...)
+
+	for e := range oidcEndpointCount {
+		if op.served(e) {
+			served = append(served, op.paths[e])
+		}
+	}
 
 	if j, ok := findInterceptor[*jwksEndpoint](c); ok {
 		served = append(served, j.path.at())
@@ -843,6 +868,7 @@ func issuerWithPath(issuer, path string) string {
 // resolved under the base path.
 func (op *oidcEndpoints) check(c *config) error {
 	for _, check := range []func(*config) error{
+		op.checkDeviceSettings,
 		op.checkIssuerPath,
 		op.checkBearer,
 		op.checkJWKS,
@@ -1220,9 +1246,19 @@ func (op *oidcEndpoints) endpoints() (outer, inner []Endpoint) {
 		at(OIDCIntrospect, OperationOAuth2Introspect, RequiresClientAuthentication, http.MethodPost),
 		at(OIDCEndSession, OperationOAuth2EndSession, RequiresNothing, http.MethodGet, http.MethodPost),
 		at(OIDCLogoutConfirm, OperationOAuth2EndSessionConfirm, RequiresNothing, http.MethodPost),
+	}
+
+	if op.deviceServed() {
+		outer = append(outer,
+			at(OIDCDeviceAuthorization, OperationOAuth2DeviceAuthorization, RequiresClientAuthentication, http.MethodPost),
+			at(OIDCDeviceEntry, OperationOAuth2DeviceEntry, RequiresNothing, http.MethodGet, http.MethodPost),
+		)
+	}
+
+	outer = append(outer,
 		document(OperationOAuth2OpenIDConfiguration, openid),
 		document(OperationOAuth2AuthorizationServerMetadata, oauth),
-	}
+	)
 
 	inner = []Endpoint{
 		at(OIDCResume, OperationOAuth2AuthorizeResume, RequiresSession, http.MethodPost),

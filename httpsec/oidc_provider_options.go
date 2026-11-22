@@ -35,6 +35,13 @@ const (
 	OIDCLogoutConfirm
 	// OIDCConsents is the user's list of consents, /consents.
 	OIDCConsents
+	// OIDCDeviceAuthorization is the device authorization endpoint (RFC 8628
+	// section 3.1), /device-authorization. It is served only when the provider
+	// enabled the device grant (oidcprovider.WithDeviceAuthorization).
+	OIDCDeviceAuthorization
+	// OIDCDeviceEntry is where a browser enters a user code, /device. It is
+	// served only when the provider enabled the device grant.
+	OIDCDeviceEntry
 
 	oidcEndpointCount
 )
@@ -51,6 +58,9 @@ var oidcEndpointNames = [oidcEndpointCount]struct{ name, suffix string }{
 	OIDCEndSession:    {"OIDCEndSession", "/logout"},
 	OIDCLogoutConfirm: {"OIDCLogoutConfirm", "/logout/confirm"},
 	OIDCConsents:      {"OIDCConsents", "/consents"},
+
+	OIDCDeviceAuthorization: {"OIDCDeviceAuthorization", "/device-authorization"},
+	OIDCDeviceEntry:         {"OIDCDeviceEntry", "/device"},
 }
 
 // String names the endpoint as its constant does.
@@ -122,6 +132,10 @@ func WithOIDCProviderPath(endpoint OIDCEndpoint, path string) OIDCProviderOption
 		p := op.overrides[endpoint]
 		p.give(setting, path)
 		op.overrides[endpoint] = p
+
+		if endpoint == OIDCDeviceAuthorization || endpoint == OIDCDeviceEntry {
+			op.deviceGrantOption(setting)
+		}
 
 		return nil
 	}

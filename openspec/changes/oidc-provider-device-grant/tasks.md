@@ -86,9 +86,9 @@ Every task is test-first: write the failing test, run it with `go test -run '<Na
 
 ## 11. Chain wiring (D6, D12)
 
-- [ ] 11.1 Add `OIDCDeviceAuthorization` and `OIDCDeviceEntry`, operation IDs and default paths, registered only when the grant is enabled. Verify the endpoint inventory, base-path, moved-path and collision tests list them only then.
-- [ ] 11.2 The device authorization endpoint handler: POST form only, TLS rule, and the token endpoint's error body with `no-store`. Verify a GET is refused, plain HTTP is refused, and a 200 has the JSON shape.
-- [ ] 11.3 The client-authentication throttle under `oidc-device-authorization` (10 per 15 minutes). Verify that the eleventh request is refused as `invalid_client`, and that the token endpoint's budget is separate.
+- [x] 11.1 Add `OIDCDeviceAuthorization` and `OIDCDeviceEntry`, operation IDs and default paths, registered only when the grant is enabled. Verify the endpoint inventory, base-path, moved-path and collision tests list them only then.
+- [x] 11.2 The device authorization endpoint handler: POST form only, TLS rule, and the token endpoint's error body with `no-store`. Verify a GET is refused, plain HTTP is refused, and a 200 has the JSON shape.
+- [x] 11.3 The client-authentication throttle under `oidc-device-authorization` (10 per 15 minutes). Verify that the eleventh request is refused as `invalid_client`, and that the token endpoint's budget is separate.
 - [ ] 11.4 The code-entry endpoint: GET with `user_code`, POST, a 303 conversion of a cookieless POST, the flow cookie, and the trusted-proxy source handed to `EnterUserCode`. Verify each, including two proxied addresses throttled separately.
 - [ ] 11.5 Pass the chain's limiter factory to the provider under `oidc-device-entry` when configured. Verify the factory's limiter is the one asked.
 - [ ] 11.6 CSRF. Verify that the device authorization endpoint is exempt (a POST with no `Origin` passes), and that a cross-site POST to code entry is refused with nothing claimed.
