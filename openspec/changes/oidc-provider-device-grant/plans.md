@@ -408,6 +408,8 @@ The task is named `"oidc-provider.device-authorizations"` and runs `devices.Dele
 
 ### Task B1: Migration and `sqlstore` (tasks 10.1–10.2) — Opus: durable conditional writes
 
+**Carried from A3:** register the suite with `storetest.DeviceAuthorizationSuite`, and the races with `storetest.RunDeviceAuthorizationRaces(t, h)`, given a full `DurableHarness` whose `PoolSize` is at least `storetest.DeviceRaceRacers` (16), as `RunGrantRaces` is registered. The suite pins microsecond precision, a spent record swept at exactly `ExpiresAt+1m`, and a refused `Create` releasing nothing. `Create`'s release and insert must run in one transaction under the unique user-code index.
+
 **Files:**
 - Create: `store/migrate/securitystate/20261122000000_oidc_provider_device.sql`, `store/sqlstore/oidcprovider_device.go`, `internal/pgschema/oidcprovider_device.go` (shared SQL and arg mapping)
 - Modify: `internal/pgschema` grant and pending mappings (new columns), `store/sqlstore/oidcprovider_grants.go` (`EndSignIns` rule), `store/sqlstore/oidcprovider_stores.go` (pending columns), `test/migrate_securitystate_test.go`, `test/sqlstore/` (suite registration)

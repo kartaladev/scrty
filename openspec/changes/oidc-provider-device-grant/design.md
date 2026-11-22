@@ -209,6 +209,7 @@ Each relevant failure, its state, and what the caller sees.
 
 | Category | Failure | State | Outcome |
 |---|---|---|---|
+| Input | device authorization request with no or an empty `scope` | handled, tested | `invalid_request`, as at the authorization endpoint. RFC 8628 makes `scope` optional, and RFC 6749 §3.3 lets the server refuse a request without one rather than assume a default, which scrty's settled authorization rules already do. |
 | Input | user code with wrong case, spaces, dashes | handled, tested | normalised (D5) |
 | Input | user code with a character outside the alphabet or the wrong length | handled, tested | `ErrInvalidUserCode`, charged to throttle |
 | Input | repeated or empty parameter, NUL or invalid UTF-8, oversized scope | handled, tested | `invalid_request`, nothing issued |
@@ -236,6 +237,7 @@ Each relevant failure, its state, and what the caller sees.
 | Time | provider restarted with in-memory store or HMAC key | accepted | flows in progress are lost. The device gets `expired_token` or `invalid_grant` and restarts. Documented. |
 | Dependencies | random source errors, short-reads, or yields only bytes rejection sampling discards | handled, tested | the draw fails with no partial code; a user-code draw stops after 256 bytes (an internal bound only a broken source reaches) and a device-code draw on the first short read |
 | Dependencies | random source fails while the default user-code key is drawn | handled, tested | `New` fails with `ErrConfig` naming `WithUserCodeKey`, without the source's error text |
+| Concurrency | the caller's context is cancelled while a device authorization is issued, including between collision attempts | handled, tested | no further attempt and nothing stored; the error matches `context.Canceled` |
 | Dependencies | device store errors on a poll | handled, tested | dependency failure (5xx), never `authorization_pending` |
 | Dependencies | limiter errors | handled, tested | fail closed: refused as throttled (`SourceGuard`) |
 | Dependencies | consumer store judges expiry by its own clock | handled, tested | conformance suite fails, naming the case |
@@ -279,6 +281,9 @@ All accessed 2026-11-20.
 **Researched:**
 - [RFC 8628, OAuth 2.0 Device Authorization Grant](https://www.rfc-editor.org/rfc/rfc8628): the request and response (§3.1–3.2), the errors and +5 s `slow_down` (§3.5), metadata (§4), threats (§5.1–5.7), and user-code advice (§6.1).
 - [golang.org/x/oauth2 v0.37.0, `deviceauth.go`](https://pkg.go.dev/golang.org/x/oauth2): the client side exists (`Config.DeviceAuth`, `Config.DeviceAccessToken`), so there is no client-side helper. Read from the local module cache.
+
+**Primary documentation:**
+- [RFC 6749, §3.3 Access Token Scope](https://www.rfc-editor.org/rfc/rfc6749#section-3.3): a server may refuse a request that omits `scope` rather than apply a default. It supports answering a device authorization request without `scope` with `invalid_request`, as scrty's authorization endpoint does.
 
 ### D2, D5, D6, D7, D9: entry, throttle, consent and phishing
 

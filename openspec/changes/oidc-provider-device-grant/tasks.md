@@ -15,7 +15,7 @@ Every task is test-first: write the failing test, run it with `go test -run '<Na
 
 ## 2. Codes (D4, D5)
 
-- [ ] 2.1 Device-code minting: 32 bytes from the provider's random source, stored as a digest. Verify the length and digest-only storage, and that a failing random source fails the request with nothing stored.
+- [x] 2.1 Device-code minting: 32 bytes from the provider's random source, stored as a digest. Verify the length and digest-only storage, and that a failing random source fails the request with nothing stored.
 - [x] 2.2 User-code generator with the default base-20, 8-character, dashed format, using rejection sampling. Verify the format regex, and verify uniformity with a deterministic random source covering the rejection branch.
 - [x] 2.3 `WithUserCodeFormat`. Verify that a 9-digit format is accepted and shown in groups of three, and that a 6-digit format, a repeated character and a non-printable character each fail construction naming the option.
 - [x] 2.4 Keyed user-code digest and `WithUserCodeKey`. Verify a random key by default, a refusal for keys under 32 bytes, a refusal for a durable store without a key (test with a stub durable marker), and that two providers sharing a key compute the same digest.
@@ -31,10 +31,10 @@ Every task is test-first: write the failing test, run it with `go test -run '<Na
 
 ## 4. Device authorization request (spec: device authorization endpoint)
 
-- [ ] 4.1 `Provider.AuthorizeDevice(ctx, credentials, form)`: client authentication as at the token endpoint, and a public client by `client_id`. Verify `invalid_client` for a wrong secret with nothing stored, `invalid_request` for a credential in the query, and `unauthorized_client` for a client without the grant.
-- [ ] 4.2 Parameter rules: repeated and empty parameters, NUL or invalid UTF-8, bounds, and scope and resource checks reused from the authorization endpoint. Verify each refusal with nothing stored and no value echoed.
-- [ ] 4.3 The response body: `device_code`, `user_code`, `verification_uri`, `expires_in`, `interval`, and `verification_uri_complete` only when the client opts in, with lifetime and interval options bounded. Verify the defaults (600 and 5), a 15-minute override, and that out-of-bound values fail construction.
-- [ ] 4.4 User-code collisions. Verify with a scripted random source that a first collision regenerates, and that 5 collisions fail as a server error with nothing stored.
+- [x] 4.1 `Provider.AuthorizeDevice(ctx, credentials, form)`: client authentication as at the token endpoint, and a public client by `client_id`. Verify `invalid_client` for a wrong secret with nothing stored, `invalid_request` for a credential in the query, and `unauthorized_client` for a client without the grant.
+- [x] 4.2 Parameter rules: repeated and empty parameters, NUL or invalid UTF-8, bounds, and scope and resource checks reused from the authorization endpoint. Verify each refusal with nothing stored and no value echoed.
+- [x] 4.3 The response body: `device_code`, `user_code`, `verification_uri`, `expires_in`, `interval`, and `verification_uri_complete` only when the client opts in, with lifetime and interval options bounded. Verify the defaults (600 and 5), a 15-minute override, and that out-of-bound values fail construction.
+- [x] 4.4 User-code collisions. Verify with a scripted random source that a first collision regenerates, and that 5 collisions fail as a server error with nothing stored.
 
 ## 5. User-code entry (D2, D5, D6)
 

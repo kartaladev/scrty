@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -38,6 +39,12 @@ type deviceConfig struct {
 	// durable store requires.
 	userCodeKey    *digestKey
 	userCodeKeySet bool
+
+	// lifetime and interval are what WithDeviceLifetime and WithDevicePollInterval gave,
+	// and lifetimeSet and intervalSet say they were given. Once New has resolved them they
+	// are the lifetime and interval the provider uses.
+	lifetime, interval       time.Duration
+	lifetimeSet, intervalSet bool
 
 	// store is what WithDeviceAuthorizationStore gave, and storeSet says it was given.
 	// Once New has resolved it, store is the store the provider keeps device
@@ -105,6 +112,48 @@ func WithUserCodeKey(key []byte) DeviceOption {
 	}
 }
 
+// The lifetime and poll interval of a device authorization, and the bounds options keep
+// them within.
+const (
+	// DefaultDeviceLifetime is how long a device code and its user code last unless
+	// WithDeviceLifetime says otherwise.
+	DefaultDeviceLifetime = 600 * time.Second
+	// DefaultDevicePollInterval is how long a device must wait between polls unless
+	// WithDevicePollInterval says otherwise.
+	DefaultDevicePollInterval = 5 * time.Second
+
+	// minDeviceLifetime and maxDeviceLifetime bound WithDeviceLifetime.
+	minDeviceLifetime = time.Minute
+	maxDeviceLifetime = 30 * time.Minute
+	// minDevicePollInterval and maxDevicePollInterval bound WithDevicePollInterval.
+	minDevicePollInterval = time.Second
+	maxDevicePollInterval = time.Minute
+)
+
+// WithDeviceLifetime replaces how long a device authorization lasts, from the moment it
+// is issued: the time the user has to enter the code and answer, and the device to
+// collect its tokens. The default is DefaultDeviceLifetime, 600 seconds. It is answered
+// as expires_in in whole seconds, so a lifetime that is no whole number of seconds is
+// answered rounded down.
+//
+// New fails with an error matching ErrConfig, naming this option, for a lifetime under a
+// minute or over 30 minutes, zero included: zero is no way to ask for the default. Given
+// twice, the last one wins.
+func WithDeviceLifetime(d time.Duration) DeviceOption {
+	return func(c *deviceConfig) { c.lifetime, c.lifetimeSet = d, true }
+}
+
+// WithDevicePollInterval replaces how long a device must wait between polls of the token
+// endpoint, which is answered as interval in whole seconds. The default is
+// DefaultDevicePollInterval, 5 seconds.
+//
+// New fails with an error matching ErrConfig, naming this option, for an interval under a
+// second or over a minute, zero included, and for one that is not strictly below the
+// lifetime. Given twice, the last one wins.
+func WithDevicePollInterval(d time.Duration) DeviceOption {
+	return func(c *deviceConfig) { c.interval, c.intervalSet = d, true }
+}
+
 // WithDeviceAuthorization enables the device authorization grant (RFC 8628). The
 // default is off: with no option, no client may list GrantDeviceCode, and
 // Provider.DeviceEnabled is false.
@@ -139,11 +188,36 @@ func (d *deviceConfig) validate(issuer string, random io.Reader) error {
 	if err := d.resolveFormat(); err != nil {
 		return err
 	}
+	if err := d.resolveTiming(); err != nil {
+		return err
+	}
 	if err := d.resolveStore(); err != nil {
 		return err
 	}
 
 	return d.resolveKey(random)
+}
+
+// resolveTiming checks the lifetime and interval given, or takes the defaults. A value
+// given is never read as unset, so a zero is out of bounds and refused.
+func (d *deviceConfig) resolveTiming() error {
+	if !d.lifetimeSet {
+		d.lifetime = DefaultDeviceLifetime
+	}
+	if !d.intervalSet {
+		d.interval = DefaultDevicePollInterval
+	}
+	if d.lifetime < minDeviceLifetime || d.lifetime > maxDeviceLifetime {
+		return fmt.Errorf("%w: WithDeviceLifetime: must be between %s and %s", ErrConfig, minDeviceLifetime, maxDeviceLifetime)
+	}
+	if d.interval < minDevicePollInterval || d.interval > maxDevicePollInterval {
+		return fmt.Errorf("%w: WithDevicePollInterval: must be between %s and %s", ErrConfig, minDevicePollInterval, maxDevicePollInterval)
+	}
+	if d.interval >= d.lifetime {
+		return fmt.Errorf("%w: WithDevicePollInterval: must be shorter than the lifetime (WithDeviceLifetime)", ErrConfig)
+	}
+
+	return nil
 }
 
 // resolveStore checks the store WithDeviceAuthorizationStore gave, or takes the default.
