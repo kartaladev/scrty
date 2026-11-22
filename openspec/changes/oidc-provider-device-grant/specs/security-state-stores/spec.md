@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Device authorizations are kept in a store with an in-memory default
-The provider SHALL keep device authorizations in a device authorization store, in memory by default. A consumer MAY supply their own. Each SQL adapter (`database/sql`, `pgx` and GORM) SHALL provide a durable one that behaves as the in-memory default does. No store SHALL hold a device code or user code in clear, and no store error SHALL carry a digest.
+The provider SHALL keep device authorizations in a device authorization store, in memory by default. A consumer MAY supply their own. Each SQL adapter (`database/sql`, `pgx` and GORM) SHALL provide a durable one that behaves as the in-memory default does. No store error SHALL carry a digest.
 
 #### Scenario: Each backend
 - **WHEN** the provider is wired with any one SQL adapter's device authorization store
@@ -10,6 +10,17 @@ The provider SHALL keep device authorizations in a device authorization store, i
 #### Scenario: A consumer's store
 - **WHEN** the consumer supplies their own device authorization store
 - **THEN** the provider keeps device authorizations there, and not in memory
+
+### Requirement: No store holds a usable device or user code in clear
+No store SHALL hold a device code, or a user code not yet claimed, in clear. A claimed user code MAY be kept in clear on the pending request it was claimed for, so that the consumer's consent page can show it back, because a claimed code is bound to one browser and yields no token.
+
+#### Scenario: Issued, not yet claimed
+- **WHEN** a device authorization is issued and no browser has entered its code
+- **THEN** every store holds only digests of its device code and user code
+
+#### Scenario: Claimed
+- **WHEN** a browser claims a user code
+- **THEN** the pending request parked for it holds the code's display form, and the device authorization store still holds only digests
 
 ### Requirement: Every device authorization transition is one conditional write
 Claiming a user code, approving or denying, recording a poll, and spending a device code SHALL each be decided by one conditional write on the record's current state. Under concurrent attempts at one transition, exactly one SHALL succeed, and a transition from a state that no longer holds SHALL write nothing.

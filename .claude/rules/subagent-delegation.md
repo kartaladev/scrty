@@ -127,7 +127,8 @@ A subagent does not reliably inherit this directory, so each prompt states for i
 - the files it owns, and the ones another agent is holding;
 - the test-first order in full: write the failing test, run it, confirm it fails **for the intended
   reason**, then implement. A compile error is not a red step;
-- the verification commands to run before reporting;
+- the verification commands to run before reporting, scoped to the changed packages and their
+  transitive dependents (`test-scope.md`), never the full suite;
 - what to report: files changed, the names of tests added, the failing output it actually saw at
   each red step, the final suite result, and anything it could not finish.
 

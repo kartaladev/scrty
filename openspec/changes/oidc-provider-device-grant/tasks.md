@@ -43,6 +43,7 @@ Every task is test-first: write the failing test, run it with `go test -run '<Na
 - [ ] 5.3 Claim and park. Verify that a valid code is claimed by one write and a pending request is parked bound to the flow secret (minted when absent). Verify a 303 to login with the handle, or to consent when a browser session answers. Verify that the claiming browser's re-entry goes to the stage reached.
 - [ ] 5.4 The pending view's `Device` part: user code as entered and normalised, request time, client. Verify that the view holds no device code, handle or flow secret.
 - [ ] 5.5 A redaction test for the new input and result types. Verify that `fmt` and `slog` output holds no code, secret or digest.
+- [ ] 5.6 Claim succeeds but parking fails (pending store mock). Verify the entry fails as a dependency error, the claiming browser's re-entry parks again and reaches login, and another browser is still refused.
 
 ## 6. Consent and resume for device requests (D3, D7)
 
@@ -69,6 +70,7 @@ Every task is test-first: write the failing test, run it with `go test -run '<Na
 - [ ] 8.1 Record `SignInFamily` from the approving sign-in, plus `SurvivesSignInEnd` from the client setting. Verify that under the default a device grant without `offline_access` is revoked by `EndSignIn` and one with it survives, and that under `DeviceGrantsOutliveSignIn` the former survives.
 - [ ] 8.2 Verify that `EndGrantsWithSignIn` still revokes a device grant holding `offline_access`, and that consent revocation and `RevokeUserGrants` revoke device grants.
 - [ ] 8.3 Verify the grant's absolute lifetime cap: the sign-in deadline under the default, and the grant's own lifetime when it survives.
+- [ ] 8.4 Reach an unexchanged approval. Verify that `EndSignIn` (under the default, without `offline_access`), `RevokeConsent` and `RevokeUserGrants` between approval and poll make the poll answer `invalid_grant` with no token, through the device store's `UnspentCodes` joined to the grant store. Verify a second provider sharing both stores joins without error.
 
 ## 9. Events and expiry tasks (D13)
 
@@ -77,7 +79,7 @@ Every task is test-first: write the failing test, run it with `go test -run '<Na
 
 ## 10. Durable stores and migration
 
-- [ ] 10.1 Write a migration test first: apply to a database populated with grants and pending requests (per `use-testcontainers`), and check the new table, the grant columns' defaults and a full rollback. See it fail. Then add the security-state migration after `20261103000000_oidc_provider.sql`.
+- [ ] 10.1 Write a migration test first: apply to a database populated with grants and pending requests (per `use-testcontainers`), and check the new table, the grant and pending-request columns' defaults and a full rollback. See it fail. Then add the security-state migration after `20261103000000_oidc_provider.sql`.
 - [ ] 10.2 `sqlstore` device authorization store and grant columns. Verify that the exported suite (3.2, 3.3) and the existing grant suites pass under `-race` on PostgreSQL 15 and 18.
 - [ ] 10.3 `pgxstore`, verified the same way.
 - [ ] 10.4 `gormstore`, verified the same way.
