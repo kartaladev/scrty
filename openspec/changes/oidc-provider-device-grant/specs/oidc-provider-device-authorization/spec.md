@@ -5,7 +5,7 @@ Lets a client on a device without a usable browser, such as a command-line appli
 ## ADDED Requirements
 
 ### Requirement: The device grant is enabled for the provider by the consumer
-The device grant SHALL be off by default. A consumer SHALL enable it for the provider with an option naming the consumer's code-entry page. That page SHALL be an absolute URI on the issuer's origin. Another origin, or a URI with a fragment, SHALL fail construction.
+The device grant SHALL be off by default. A consumer SHALL enable it for the provider with an option naming the consumer's code-entry page. That page SHALL be an absolute URI on the issuer's origin. Another origin, or a URI with a fragment or user information, SHALL fail construction. So SHALL a URI that holds whitespace, a control character, invalid UTF-8 or a malformed query, or whose query already carries `user_code`. The error SHALL NOT repeat the URI.
 
 #### Scenario: A provider built without the option serves no device grant
 - **WHEN** the provider is built without enabling the device grant
@@ -15,6 +15,10 @@ The device grant SHALL be off by default. A consumer SHALL enable it for the pro
 #### Scenario: A code-entry page on another origin fails construction
 - **WHEN** the consumer enables the device grant with a code-entry page on another origin than the issuer
 - **THEN** building the provider fails with a configuration error naming the option
+
+#### Scenario: A code-entry page whose query carries the user code fails construction
+- **WHEN** the consumer enables the device grant with a code-entry page whose query already has a `user_code` parameter
+- **THEN** building the provider fails with a configuration error naming the option and `user_code`
 
 ### Requirement: The device authorization endpoint accepts a form POST over TLS
 The device authorization endpoint SHALL accept only POST requests with a form-encoded body, over TLS as the chain reports the connection, unless the provider was built with the loopback issuer. A repeated parameter SHALL make the request invalid, a parameter without a value SHALL be treated as omitted, and an unknown parameter SHALL be ignored.

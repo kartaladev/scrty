@@ -8,10 +8,10 @@ Every task is test-first: write the failing test, run it with `go test -run '<Na
 
 ## 1. Client registration and the provider option (D1, D8, D9)
 
-- [ ] 1.1 Add `GrantDeviceCode` and `WithDeviceAuthorization(entryURL, ...DeviceOption)`. Verify with table tests that the grant is off by default, and that an entry URL on another origin, with a fragment, or relative fails construction naming the option.
-- [ ] 1.2 Validate `GrantDeviceCode` in `validateGrantTypes`. Verify that a configured client with the grant on a provider without the option fails construction, that a registry client in that state is unknown and logged with the setting, and that a device-only client needs no redirect URI.
-- [ ] 1.3 Add `Client.DeviceCompleteURI`. Verify it is off by default, and that it fails construction without the device grant (registry client: unknown).
-- [ ] 1.4 Add `Client.DeviceGrantsOutliveSignIn`. Verify it fails construction alongside `EndGrantsWithSignIn`, on a public web client under its default without `KeepPublicWebGrantsPastSignIn`, and on a client without the grant, each naming both settings. Verify it is accepted on a public native client.
+- [x] 1.1 Add `GrantDeviceCode` and `WithDeviceAuthorization(entryURL, ...DeviceOption)`. Verify with table tests that the grant is off by default, and that an entry URL on another origin, with a fragment, or relative fails construction naming the option.
+- [x] 1.2 Validate `GrantDeviceCode` in `validateGrantTypes`. Verify that a configured client with the grant on a provider without the option fails construction, that a registry client in that state is unknown and logged with the setting, and that a device-only client needs no redirect URI.
+- [x] 1.3 Add `Client.DeviceCompleteURI`. Verify it is off by default, and that it fails construction without the device grant (registry client: unknown).
+- [x] 1.4 Add `Client.DeviceGrantsOutliveSignIn`. Verify it fails construction alongside `EndGrantsWithSignIn`, on a public web client under its default without `KeepPublicWebGrantsPastSignIn`, and on a client without the grant, each naming both settings. Verify it is accepted on a public native client.
 
 ## 2. Codes (D4, D5)
 

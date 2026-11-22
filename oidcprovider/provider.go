@@ -120,6 +120,7 @@ func New(deps Deps, opts ...Option) (*Provider, error) {
 
 	limits := limitsOf(deps.Keys)
 	limits.issuer = deps.Issuer
+	limits.deviceEnabled = cfg.device != nil
 	registry, err := deps.buildRegistry(limits)
 	if err != nil {
 		return nil, err
@@ -230,6 +231,12 @@ func (d *Deps) validate(cfg *config) error {
 
 	if cfg.assertionTokenEndpointSet {
 		if err := validateTokenEndpoint(cfg.assertionTokenEndpoint, d.Issuer); err != nil {
+			return err
+		}
+	}
+
+	if cfg.device != nil {
+		if err := cfg.device.validate(d.Issuer); err != nil {
 			return err
 		}
 	}

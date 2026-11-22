@@ -239,6 +239,9 @@ Each relevant failure, its state, and what the caller sees.
 | Dependencies | consumer store judges expiry by its own clock | handled, tested | conformance suite fails, naming the case |
 | Resources | many open authorizations per client (store growth) | accepted | each lives at most 30 minutes and is swept. The device authorization endpoint's client-authentication throttle doesn't cap a public client's issuance. A per-client cap is a follow-up if needed. |
 | Resources | collision loop | handled, tested | at most 5 regenerations, then a server error |
+| Configuration | entry URL not absolute, on another origin, or with a fragment or user information | handled, tested | construction error naming `WithDeviceAuthorization`, without repeating the value |
+| Configuration | entry URL with whitespace, a control character, invalid UTF-8 or a malformed query | handled, tested | construction error naming `WithDeviceAuthorization`; such a URL cannot be typed or extended |
+| Configuration | entry URL whose query already carries `user_code` | handled, tested | construction error naming `WithDeviceAuthorization` and `user_code`, since `verification_uri_complete` appends it (D9) |
 | Configuration | client lists the grant on a provider without it | handled, tested | construction error, or unknown when read from a registry |
 | Configuration | contradictory sign-in settings | handled, tested | construction error naming both |
 | Configuration | durable store with no stable user-code key | handled, tested | construction error |

@@ -685,3 +685,161 @@ func TestClient_ResourceIdentifierIsTheIssuer_WhenRead(t *testing.T) {
 	_, err = p.ClientForTest(t.Context(), "rs")
 	assert.ErrorIs(t, err, oidcprovider.ErrClientNotFound)
 }
+
+func TestClient_DeviceGrant(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		client func(c *oidcprovider.Client)
+		// device says whether the provider enabled the grant.
+		device bool
+		assert func(t *testing.T, got *oidcprovider.RegisteredClient, err error)
+	}
+
+	// tv is a public native client with only the device grant and no redirect URI.
+	tv := func(c *oidcprovider.Client) {
+		c.Type = oidcprovider.Public
+		c.Secret = nil
+		c.ApplicationType = oidcprovider.Native
+		c.RedirectURIs = nil
+		c.GrantTypes = []oidcprovider.GrantType{oidcprovider.GrantDeviceCode}
+	}
+	with := func(mods ...func(*oidcprovider.Client)) func(*oidcprovider.Client) {
+		return func(c *oidcprovider.Client) {
+			for _, m := range mods {
+				m(c)
+			}
+		}
+	}
+	refused := func(settings ...string) func(*testing.T, *oidcprovider.RegisteredClient, error) {
+		return func(t *testing.T, _ *oidcprovider.RegisteredClient, err error) {
+			t.Helper()
+			require.ErrorIs(t, err, oidcprovider.ErrConfig)
+			assert.ErrorContains(t, err, "billing-web")
+			for _, s := range settings {
+				assert.ErrorContains(t, err, s)
+			}
+		}
+	}
+	accepted := func(t *testing.T, got *oidcprovider.RegisteredClient, err error) {
+		t.Helper()
+		require.NoError(t, err)
+		require.NotNil(t, got)
+	}
+
+	cases := []testCase{
+		{name: "the grant on a provider without it", client: tv, assert: refused("GrantTypes")},
+		{name: "a native client with only the device grant needs no redirect URI", client: tv, device: true, assert: accepted},
+		{
+			name: "a confidential client with only the device grant",
+			client: func(c *oidcprovider.Client) {
+				c.RedirectURIs = nil
+				c.GrantTypes = []oidcprovider.GrantType{oidcprovider.GrantDeviceCode}
+			},
+			device: true,
+			assert: accepted,
+		},
+		{
+			name:   "both device settings are off by default",
+			client: tv,
+			device: true,
+			assert: func(t *testing.T, got *oidcprovider.RegisteredClient, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.False(t, got.DeviceCompleteURI)
+				assert.False(t, got.DeviceGrantsOutliveSignIn)
+			},
+		},
+		{
+			name:   "the device grant beside the code grant needs the redirect URI",
+			client: with(tv, func(c *oidcprovider.Client) { c.GrantTypes = append(c.GrantTypes, oidcprovider.GrantAuthorizationCode) }),
+			device: true,
+			assert: refused("RedirectURIs"),
+		},
+		{
+			name:   "the complete URI without the grant",
+			client: func(c *oidcprovider.Client) { c.DeviceCompleteURI = true },
+			device: true,
+			assert: refused("DeviceCompleteURI"),
+		},
+		{
+			name:   "the complete URI with the grant",
+			client: with(tv, func(c *oidcprovider.Client) { c.DeviceCompleteURI = true }),
+			device: true,
+			assert: func(t *testing.T, got *oidcprovider.RegisteredClient, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.True(t, got.DeviceCompleteURI)
+			},
+		},
+		{
+			name:   "outliving the sign-in on a public native client with the grant",
+			client: with(tv, func(c *oidcprovider.Client) { c.DeviceGrantsOutliveSignIn = true }),
+			device: true,
+			assert: accepted,
+		},
+		{
+			name:   "outliving the sign-in while ending grants with it",
+			client: with(tv, func(c *oidcprovider.Client) { c.DeviceGrantsOutliveSignIn, c.EndGrantsWithSignIn = true, true }),
+			device: true,
+			assert: refused("DeviceGrantsOutliveSignIn", "EndGrantsWithSignIn"),
+		},
+		{
+			name: "outliving the sign-in on a public web client under its default",
+			client: with(tv, func(c *oidcprovider.Client) {
+				c.ApplicationType = oidcprovider.Web
+				c.RedirectURIs = []string{"https://rp.example.com/cb"}
+				c.DeviceGrantsOutliveSignIn = true
+			}),
+			device: true,
+			assert: refused("DeviceGrantsOutliveSignIn", "KeepPublicWebGrantsPastSignIn"),
+		},
+		{
+			name: "outliving the sign-in on a public web client that keeps its grants",
+			client: with(tv, func(c *oidcprovider.Client) {
+				c.ApplicationType = oidcprovider.Web
+				c.RedirectURIs = []string{"https://rp.example.com/cb"}
+				c.DeviceGrantsOutliveSignIn = true
+				c.KeepPublicWebGrantsPastSignIn = true
+			}),
+			device: true,
+			assert: accepted,
+		},
+		{
+			name:   "outliving the sign-in without the grant",
+			client: func(c *oidcprovider.Client) { c.DeviceGrantsOutliveSignIn = true },
+			device: true,
+			assert: refused("DeviceGrantsOutliveSignIn", "GrantTypes"),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := webClient()
+			tc.client(&c)
+			c.ID = "billing-web"
+
+			d := validDeps(t)
+			d.Clients = []oidcprovider.Client{c}
+			var opts []oidcprovider.Option
+			if tc.device {
+				opts = append(opts, oidcprovider.WithDeviceAuthorization(issuer+"/activate"))
+			}
+
+			p, err := oidcprovider.New(d, opts...)
+			if err != nil {
+				assert.Nil(t, p)
+				tc.assert(t, nil, err)
+
+				return
+			}
+
+			got, err := p.ClientForTest(t.Context(), c.ID)
+			require.NoError(t, err)
+			tc.assert(t, got, nil)
+		})
+	}
+}

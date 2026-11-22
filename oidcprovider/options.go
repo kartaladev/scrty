@@ -57,6 +57,8 @@ type RequestBounds struct {
 
 type config struct {
 	loopbackHTTPIssuer bool
+	// device is set by WithDeviceAuthorization, and nil leaves the device grant off.
+	device             *deviceConfig
 	browserSessions    bool
 	logoutConfirmation bool
 	// dpopEnabled says the chain verifies DPoP proofs, so a request's dpop_jkt can be honoured.
