@@ -12,6 +12,11 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-22
+
+A minor release with breaking changes, each stated under *Changed*. It adds the `httpsec/prblmsec`
+module, which ships for the first time. Upgrade every scrty module to `v0.2.0`.
+
 ### Added
 
 - **`github.com/kartaladev/scrty/httpsec/prblmsec`.** A new module that renders the chain's refusals
@@ -571,6 +576,7 @@ exported identifiers; the moves and renames change no behaviour.
 - A user-store outage during a password login no longer places a hold on a real account.
 - The limit on saved recovery codes holds when the codes are presented concurrently.
 
-[Unreleased]: https://github.com/kartaladev/scrty/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/kartaladev/scrty/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/kartaladev/scrty/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/kartaladev/scrty/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/kartaladev/scrty/releases/tag/v0.1.0
