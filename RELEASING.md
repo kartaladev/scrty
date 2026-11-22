@@ -102,7 +102,11 @@ make release-check VERSION=$VERSION
 The gate builds and tests every published module with the workspace off, checks that every nested
 module's scrty requirements name `$VERSION`, runs `release-gate` (the vulnerability check, then an
 SBOM per published module, each naming `$VERSION`) and reports each module's public API against the
-previous release. Before it builds anything, it refuses:
+previous release. The previous release is the latest `v` tag below `$VERSION`. A module whose
+`go.mod` existed in that release's commit is compared with its own tag at that release (the table
+above). A module whose `go.mod` did not exist there ships for the first time in `$VERSION` (or was
+dropped and is published again) and is reported against no base, even once its `$VERSION` tag
+exists. Each module's report line names the base it used. Before it builds anything, it refuses:
 
 - a working tree that is not clean, untracked files included, whatever `status.showUntrackedFiles`
   says;
@@ -110,6 +114,10 @@ previous release. Before it builds anything, it refuses:
 - a shallow clone, which lacks the tags the API report compares against;
 - a clone with no previous `v` tag, for any `$VERSION` but `v0.1.0` or one of its prereleases: fetch
   the tags (`git fetch --tags`) and run it again;
+- a nested module that existed at the previous release but has no tag of its own there: this clone
+  lacks tags, so fetch them (`git fetch --tags`) and run it again;
+- a module whose base it cannot establish because a git lookup failed. In neither case does it fall
+  back to no base, which would let that module's breaking changes pass unreported;
 - a relative `TMPDIR`, or one holding characters other than letters, digits and `._+@/-`;
 - a non-empty `go env GOFLAGS`, which would change what is built and tested: unset it
   (`go env -u GOFLAGS`, and `unset GOFLAGS`);
