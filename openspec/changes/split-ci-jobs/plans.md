@@ -296,7 +296,10 @@ Follow `tasks.md` 4.1 to 4.5 as written. What the main session checks at each on
   - `gh api 'repos/kartaladev/scrty/code-scanning/analyses?ref=refs/pull/<n>/merge'` lists `go` and `actions`.
   - The `codeql (go)` log shows extraction for each of the nine `go.work` modules.
   - If any module is missing, run a Sonnet dispatch that owns `ci.yml` to switch to `build-mode: manual`, with a step running `go build ./...` in each workspace module. Then re-verify, and record the outcome in design decision 5.
-- **4.4:** the second run's cache steps report hits on their own keys, and `gh api repos/kartaladev/scrty/actions/cache/usage` is under 10 GB.
+- **4.4:** measure, and record in the design's Measurements; nothing here fails the task, because cache eviction is accepted (design, Risks).
+  - From `gh run view <id> --log` on a second run, each building job's `actions/cache` restore line: a hit on its own key, or a miss with its cause (for example a job skipped on `main`, so there is nothing to restore).
+  - From `gh api repos/kartaladev/scrty/actions/cache/usage`, the total and count. From `gh api --paginate 'repos/kartaladev/scrty/actions/caches?per_page=100'`, what holds the total: per-job sizes, copies of one key held per ref, and caches from other workflows.
+  - Each reading carries its run ID and date, and a note that it drifts.
 - **4.5:** `make check`, `make spec-check` and `openspec validate split-ci-jobs --strict` all pass. Keep their output.
 
 ### Task 4.6: Whole-branch review
