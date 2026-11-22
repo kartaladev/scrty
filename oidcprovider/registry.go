@@ -16,6 +16,7 @@ import (
 
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 //go:generate mockgen -source=registry.go -package=oidcprovider_test -destination=registry_mock_test.go -typed
@@ -349,6 +350,7 @@ func (p *Provider) client(ctx context.Context, id string) (*RegisteredClient, er
 	}
 
 	rc, err := p.registry.Client(ctx, id)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrClientNotFound):
 		return nil, ErrClientNotFound

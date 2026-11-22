@@ -14,7 +14,12 @@ import (
 	"github.com/jonboulle/clockwork"
 
 	"github.com/kartaladev/scrty/expiry"
+	"github.com/kartaladev/scrty/internal/ctxlog"
+	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/errwalk"
 	"github.com/kartaladev/scrty/internal/lifecycle"
+	"github.com/kartaladev/scrty/internal/porterr"
+	"github.com/kartaladev/scrty/internal/recovered"
 )
 
 // JobPrefix starts the name of every job a Sweeper schedules: the job for the
@@ -103,6 +108,14 @@ func WithRunImmediately() Option {
 // job name before each run; they do not, and cannot, prove that a given
 // locker excludes a second replica. A nil locker, including a typed nil, fails
 // construction with ErrInvalidOption.
+//
+// A locker that panics, in Lock or in the Unlock of the lock it returned, is
+// recovered: a Lock that panics counts as a lock that failed, so the run is
+// skipped and logged as a lock failure; a locker that returns neither a lock
+// nor an error is treated the same way. Each panic writes one Error record
+// that never carries the panic's value. A Lock that panics after taking the
+// lock leaves it held, as the sweeper is handed nothing to release: the lock's
+// expiry is the locker's own.
 func WithDistributedLocker(locker gocron.Locker) Option {
 	return func(c *config) error {
 		if isNil(locker) {
@@ -124,6 +137,12 @@ func WithDistributedLocker(locker gocron.Locker) Option {
 // not set the clock a run's Elapsed is measured with; that is the runner's
 // (expiry.WithClock). A nil clock, including a typed nil, fails construction with
 // ErrInvalidOption.
+//
+// gocron calls only Now, AfterFunc and NewTimer, and the timers they return.
+// A panic in any of them is recovered with one Error record, and the call is
+// answered by the system clock; so is an AfterFunc or NewTimer that returns no
+// timer, with its own record. The schedule then follows the system clock for
+// that call instead of stopping.
 func WithClock(clock clockwork.Clock) Option {
 	return func(cfg *config) error {
 		if isNil(clock) {
@@ -135,7 +154,9 @@ func WithClock(clock clockwork.Clock) Option {
 }
 
 // WithLogger sets where the sweeper logs a distributed lock failure.
-// Default: slog.Default(). A run's own outcome is logged by the runner
+// Default: the logger of the chain handling the request, else slog.Default()
+// when the record is written. A lock taken by the sweeper's own schedule has no request, so
+// its record goes to slog.Default(). A run's own outcome is logged by the runner
 // (expiry.WithLogger), not here. A lock failure record carries the task and
 // job names, a fixed reason and the error's Go type, never the error's text,
 // which comes from the consumer's locker. When the error is, or wraps,
@@ -254,7 +275,7 @@ func New(runner *expiry.Runner, opts ...Option) (*Sweeper, error) {
 		return nil, fmt.Errorf("%w: nil runner", ErrInvalidOption)
 	}
 
-	cfg := config{clock: clockwork.NewRealClock(), logger: slog.Default(), stopTimeout: defaultStopTimeout}
+	cfg := config{clock: clockwork.NewRealClock(), logger: ctxlog.Routing(), stopTimeout: defaultStopTimeout}
 	for i, opt := range opts {
 		if opt == nil {
 			return nil, fmt.Errorf("%w: option %d is nil", ErrInvalidOption, i)
@@ -277,9 +298,14 @@ func New(runner *expiry.Runner, opts ...Option) (*Sweeper, error) {
 		jobs = append(jobs, job{task: t.Name, interval: interval})
 	}
 
-	schedOpts := []gocron.SchedulerOption{gocron.WithClock(cfg.clock), gocron.WithStopTimeout(cfg.stopTimeout)}
+	// The consumer's clock and locker are called by gocron on goroutines it
+	// owns and does not recover; the guards recover them (sweeper_guard.go).
+	schedOpts := []gocron.SchedulerOption{
+		gocron.WithClock(newGuardedClock(cfg.clock, cfg.logger)),
+		gocron.WithStopTimeout(cfg.stopTimeout),
+	}
 	if cfg.locker != nil {
-		schedOpts = append(schedOpts, gocron.WithDistributedLocker(cfg.locker))
+		schedOpts = append(schedOpts, gocron.WithDistributedLocker(guardedLocker{inner: cfg.locker, log: cfg.logger}))
 	}
 	schedOpts = append(schedOpts, cfg.extraSchedOpts...)
 	sched, err := gocron.NewScheduler(schedOpts...)
@@ -372,6 +398,21 @@ func (s *Sweeper) schedule(ctx context.Context, j job) error {
 // values, handed to the logger with the record.
 func (s *Sweeper) lockFailed(ctx context.Context, task string) func(uuid.UUID, string, error) {
 	return func(_ uuid.UUID, jobName string, err error) {
+		// The locker is the consumer's, so its error is a port error. gocron
+		// hands it here untouched; it is sanitized before it is read, so a
+		// cycle, a fan-out or a panicking Unwrap is recorded as a plain lock
+		// failure rather than hanging or crashing gocron's goroutine. The
+		// abort record goes to the sweeper's logger.
+		// SanitizeTo writes to the consumer's logger, whose handler can panic;
+		// that is recovered, and the error is then as unreadable as a cycle.
+		raw := err
+		if perr := recovered.Call(ctx, s.cfg.logger, whatLogger, func() error {
+			err = porterr.SanitizeTo(ctx, s.cfg.logger, raw, porterr.ErrUnwalkable)
+
+			return nil
+		}); perr != nil {
+			err = porterr.ErrUnwalkable
+		}
 		attrs := []slog.Attr{
 			slog.String("task", task),
 			slog.String("job", jobName),
@@ -380,12 +421,50 @@ func (s *Sweeper) lockFailed(ctx context.Context, task string) func(uuid.UUID, s
 			slog.String("reason", "lock"),
 			slog.String("error_type", fmt.Sprintf("%T", err)),
 		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if s.lockCancelled(ctx, err) {
 			attrs = append(attrs, slog.Bool("cancelled", true))
 		}
-		s.cfg.logger.LogAttrs(ctx, slog.LevelError,
+		logGuarded(ctx, s.cfg.logger, slog.LevelError,
 			"sweep: distributed lock failed; run skipped", attrs...)
 	}
+}
+
+// cancellations are the context errors a lock-failure record flags as
+// cancelled.
+var cancellations = errwalk.NewTargets(context.Canceled, context.DeadlineExceeded)
+
+// walkBuffer is how many nodes of a chain lockCancelled holds on its caller's
+// stack before it grows onto the heap.
+const walkBuffer = 16
+
+// lockCancelled reports whether err, a sanitized lock error, is or wraps a
+// context cancellation or deadline. The sanitizer's walk calls Unwrap only,
+// so an Is method that panics when asked about one sentinel passes it; err is
+// therefore read through the bounded, recovering walk, never stdlib
+// errors.Is, on gocron's goroutine, which has no recover. A walk that aborts
+// is not a cancellation (nothing in a chain that could not be read shows the
+// caller hung up), and writes the one record of this read to the sweeper's
+// logger. A fault the sanitizer built walks to the end, so an error the
+// sanitizer has already reported is never reported again here.
+func (s *Sweeper) lockCancelled(ctx context.Context, err error) bool {
+	var buf [walkBuffer]error
+
+	chain, abort := errwalk.FlattenInto(buf[:], err)
+	if abort == nil {
+		var i int
+		if i, abort = errwalk.Index(chain, cancellations); abort == nil {
+			return i >= 0
+		}
+	}
+
+	attrs := []slog.Attr{slog.String("reason", errwalk.Reason(abort))}
+	if p, ok := abort.(*errwalk.PanicError); ok && p != nil { //nolint:errorlint // errwalk's own value, never wrapped
+		attrs = append(attrs, diag.PanicAttrsFrom(p.Value, p.Frames)...)
+	}
+
+	logGuarded(ctx, s.cfg.logger, slog.LevelError, porterr.MsgClassificationAborted, attrs...)
+
+	return false
 }
 
 // Shutdown stops scheduling, cancels the context of any run in progress, and

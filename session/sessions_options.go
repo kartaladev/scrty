@@ -172,16 +172,16 @@ func WithFamilyIDGenerator(ids id.Generator) Option {
 	}
 }
 
-// WithLogger replaces the logger. The default is slog.Default().
+// WithLogger replaces the logger. The default is the logger of the chain
+// handling the request, else slog.Default() when the record is written.
 //
-// A nil logger is ignored rather than refused: unlike a clock, a nil logger
-// has an obvious safe reading — the caller does not want this component's logs
-// — and refusing it would make logging mandatory.
+// A nil logger is a configuration error from New, wrapping ErrConfig: it is
+// almost always an uninitialised variable, and leaving the option out already
+// means "route to the chain's logger, else the default".
 func WithLogger(logger *slog.Logger) Option {
 	return func(m *Sessions) {
-		if logger != nil {
-			m.logger = logger
-		}
+		m.logger = logger
+		m.loggerSupplied = true
 	}
 }
 

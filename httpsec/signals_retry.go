@@ -66,12 +66,27 @@ func (s sessionSignalsRetry) Intercept(ex *Exchange, next Next) error {
 // Stream is what guards a response that has begun: it refuses, having written nothing, and err is
 // left to the chain's mapping, whose status a writer ignores by then. A writer that cannot stream never
 // could, so that stays 501: no retry would change it.
+//
+// err may be a consumer's, so it is read through one bounded walk. One the walk gives up on is no
+// answer a retry could fix: it is returned as it came, with no retry, no outage counted and no
+// dependency-failure record, and the chain's mapping answers it 500. The abort is reported as the quiet
+// sites report one (reportQuietly), so the request writes one record, classification-aborted.
 func (e *sessionSignals) answerRetryOnly(entered context.Context, ex *Exchange, err error) error {
-	if errors.Is(err, ErrStreamingUnsupported) || errors.Is(err, ErrStreamingStarted) {
+	walk := walkRefusal(err)
+	unservable := walk.is(ErrStreamingUnsupported, ErrStreamingStarted)
+	closing := !unservable && walk.is(errStreamsClosed)
+	overCap := !unservable && walk.is(ErrTooManyStreams)
+
+	if walk.abort != nil {
+		ex.answeringChain().reportQuietly(ex.Context(), err, walk.abort) //nolint:contextcheck // the record goes on the exchange's current context; entered only classifies the failure
+
 		return err
 	}
 
-	closing, overCap := errors.Is(err, errStreamsClosed), errors.Is(err, ErrTooManyStreams)
+	if unservable {
+		return err
+	}
+
 	throttled := e.isThrottledSignIn(entered, ex, err)
 
 	if throttled {
@@ -98,13 +113,13 @@ func (e *sessionSignals) answerRetryOnly(entered context.Context, ex *Exchange, 
 		// reconnect over it to the replica it is leaving.
 		ex.Writer.SetHeader("Connection", "close")
 
-		return e.retryOnlyOr(err, e.streamOnlyRetry(ex, e.closingRetry())) //nolint:contextcheck // the answer and its records go on the exchange's current context; entered only classifies the failure
+		return e.retryOnlyOr(ex, err, e.streamOnlyRetry(ex, e.closingRetry())) //nolint:contextcheck // the answer and its records go on the exchange's current context; entered only classifies the failure
 	}
 
 	delay := jittered(e.cfg.BusyDelay, streamRetryJitter, rand.Float64()) //nolint:gosec // jitter, not a secret
 
 	if streamErr := e.streamOnlyRetry(ex, delay); streamErr != nil { //nolint:contextcheck // the answer and its records go on the exchange's current context; entered only classifies the failure
-		return e.retryOnlyOr(err, streamErr)
+		return e.retryOnlyOr(ex, err, streamErr) //nolint:contextcheck // the record goes on the exchange's current context
 	}
 
 	if overCap {
@@ -133,11 +148,26 @@ func (e *sessionSignals) answerRetryOnly(entered context.Context, ex *Exchange, 
 // retryOnlyOr is what the chain's error mapping answers once streamOnlyRetry has returned streamErr:
 // nothing when it answered, 501 for a writer that cannot stream, and otherwise the refusal it could not
 // write over a response that had begun.
-func (e *sessionSignals) retryOnlyOr(err, streamErr error) error {
-	switch {
-	case streamErr == nil:
+//
+// streamErr is the response writer's, which may be a consumer's own (NewExchange takes any
+// ResponseWriter), so it is read through one bounded walk. One the walk gives up on is not a writer that
+// cannot stream: the refusal is returned as for any other failure, and streamErr goes no further. The
+// chain's mapping then classifies err, never streamErr, so it cannot meet the abort, and it is reported
+// here, once, through the answering chain.
+func (e *sessionSignals) retryOnlyOr(ex *Exchange, err, streamErr error) error {
+	if streamErr == nil {
 		return nil
-	case errors.Is(streamErr, ErrStreamingUnsupported):
+	}
+
+	walk := walkRefusal(streamErr)
+	unsupported := walk.is(ErrStreamingUnsupported)
+
+	switch {
+	case walk.abort != nil:
+		ex.answeringChain().reportAbort(ex.Context(), walk.abort)
+
+		return err
+	case unsupported:
 		return streamErr
 	default:
 		return err
@@ -193,7 +223,18 @@ func (ex *Exchange) markPerRequestThrottle(err error) error {
 		return err
 	}
 
-	if !errors.Is(err, ratelimit.ErrThrottled) || StatusForError(err) != http.StatusUnauthorized {
+	// The reason is the consumer's policy's, so it is read through one bounded walk, and one the walk
+	// gives up on carries no mark.
+	walk := walkRefusal(err)
+	throttled := walk.is(ratelimit.ErrThrottled)
+
+	if walk.abort != nil {
+		ex.answeringChain().reportQuietly(ex.Context(), err, walk.abort)
+
+		return err
+	}
+
+	if !throttled || ex.answeringChain().statusQuietly(ex.Context(), err) != http.StatusUnauthorized {
 		return err
 	}
 
@@ -207,10 +248,17 @@ func (ex *Exchange) markPerRequestThrottle(err error) error {
 // The mark says the credential verified and its caller was published, so what is recorded is a credential
 // the chain accepted. Every other refusal records nothing: other code reads what is recorded, and a
 // credential that failed has no business being there.
+//
+// err is read through one bounded walk; one the walk gives up on records nothing.
 func (ex *Exchange) recordThrottledBearer(err error, presented string) {
-	var throttle *perRequestThrottle
-	if errors.As(err, &throttle) {
+	walk := walkRefusal(err)
+
+	if _, marked := refusalAs[*perRequestThrottle](&walk); marked {
 		ex.RecordPresentedToken(presented)
+	}
+
+	if walk.abort != nil {
+		ex.answeringChain().reportQuietly(ex.Context(), err, walk.abort)
 	}
 }
 
@@ -236,13 +284,24 @@ func (e *sessionSignals) onStreamPath(ex *Exchange) bool {
 // RetryableError is handed the policy's own reason, with the mark taken off, so that a callback comparing
 // it to ratelimit.ErrThrottled by identity or by type still reads it. A wrap a consumer made outside
 // EvaluatePerRequest is not in what it is handed.
+//
+// err is read through one bounded walk. One the walk gives up on is no throttle, and the abort is reported
+// as the quiet sites report one.
 func (e *sessionSignals) isThrottledSignIn(entered context.Context, ex *Exchange, err error) bool {
-	var throttle *perRequestThrottle
-	if !errors.As(err, &throttle) || errors.Is(entered.Err(), context.Canceled) {
+	walk := walkRefusal(err)
+
+	throttle, marked := refusalAs[*perRequestThrottle](&walk)
+	if walk.abort != nil {
+		ex.answeringChain().reportQuietly(ex.Context(), err, walk.abort) //nolint:contextcheck // the record goes on the exchange's current context; entered only classifies the failure
+
 		return false
 	}
 
-	return StatusForError(err) == http.StatusUnauthorized && e.retryable(ex, throttle.error) //nolint:contextcheck // only the classification above reads entered; a panic in RetryableError is logged on the exchange's current context
+	if !marked || errors.Is(entered.Err(), context.Canceled) {
+		return false
+	}
+
+	return ex.answeringChain().statusQuietly(ex.Context(), err) == http.StatusUnauthorized && e.retryable(ex, throttle.error) //nolint:contextcheck // only the check above reads entered; an aborted classification and a panic in RetryableError are logged on the exchange's current context
 }
 
 // isDependencyFailure reports whether err is a failure of something the request depends on, and not
@@ -267,7 +326,7 @@ func (e *sessionSignals) isDependencyFailure(entered context.Context, ex *Exchan
 		return false
 	}
 
-	return StatusForError(err) >= http.StatusInternalServerError && e.retryable(ex, err) //nolint:contextcheck // only the classification above reads entered; a panic in RetryableError is logged on the exchange's current context
+	return ex.answeringChain().statusQuietly(ex.Context(), err) >= http.StatusInternalServerError && e.retryable(ex, err) //nolint:contextcheck // only the check above reads entered; an aborted classification and a panic in RetryableError are logged on the exchange's current context
 }
 
 // retryable asks a consumer's SessionSignals.RetryableError about err. A panic in it is logged as a

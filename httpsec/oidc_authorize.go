@@ -1,6 +1,7 @@
 package httpsec
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/url"
@@ -157,7 +158,7 @@ func (g *oidcAuthorizeGroup) serve(ex *Exchange, _ Next) error {
 		return ErrOIDCThrottled
 	}
 
-	params, err := readOIDCAuthorizeParams(ex.Request, g.bodyLimit)
+	params, err := readOIDCAuthorizeParams(ex.Context(), ex.Request, g.bodyLimit)
 	if err != nil {
 		return err
 	}
@@ -237,7 +238,7 @@ func bounceOIDCPost(ex *Exchange, endpoint string, params url.Values) error {
 //
 // Every parameter is handed to the provider, which reads the ones it knows and ignores
 // the rest, so there is no list here to fall out of step with it.
-func readOIDCAuthorizeParams(r Request, limit int64) (url.Values, error) {
+func readOIDCAuthorizeParams(ctx context.Context, r Request, limit int64) (url.Values, error) {
 	if r.Method() != http.MethodPost {
 		params, err := url.ParseQuery(r.RawQuery())
 		if err != nil {
@@ -247,7 +248,7 @@ func readOIDCAuthorizeParams(r Request, limit int64) (url.Values, error) {
 		return params, nil
 	}
 
-	body, err := r.Body(limit)
+	body, err := readBody(ctx, r, limit)
 	if err != nil {
 		return nil, err
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/store/pgxstore"
@@ -279,6 +280,26 @@ func TestIdentityStore_Interrupted(t *testing.T) {
 				require.ErrorIs(t, err, genErr)
 
 				d, err := plain.LoadByUsername(ctx, "failing-rebuild")
+				require.NoError(t, err)
+				assert.Equal(t, "Before", d.Name, "the failed update renamed the user")
+				require.Len(t, d.Roles, 1)
+				assert.Equal(t, "admin", d.Roles[0].Name)
+			},
+		},
+		{
+			name: "a generator answering the nil id in an update's grant rebuild writes nothing",
+			assert: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+				plain := newIdentityStore(t, pool)
+				_, err := plain.Provision(ctx, "nil-rebuild",
+					identity.WithUserName("Before"), identity.WithUserRoles("admin"))
+				require.NoError(t, err)
+
+				s := newIdentityStore(t, pool, pgxstore.WithIDGenerator(nilOnCall(t, 1)))
+				_, err = s.Update(ctx, "nil-rebuild",
+					identity.WithUserName("After"), identity.WithUserRoles("admin", "viewer"))
+				require.ErrorIs(t, err, idgen.ErrNil)
+
+				d, err := plain.LoadByUsername(ctx, "nil-rebuild")
 				require.NoError(t, err)
 				assert.Equal(t, "Before", d.Name, "the failed update renamed the user")
 				require.Len(t, d.Roles, 1)

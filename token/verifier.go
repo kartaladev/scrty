@@ -12,6 +12,7 @@ import (
 
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/token/signingkey"
 )
@@ -25,8 +26,10 @@ type Verifier interface {
 	// failure to obtain the key set, and a context cancelled before the check
 	// finished, do not match it. A key-source failure comes back behind fixed
 	// library text rather than as itself, with the key source's own error
-	// still reachable through errors.Is and errors.As; a context cancellation
-	// is returned as itself.
+	// still reachable through errors.Is and errors.As, unless its chain
+	// cannot be walked (a cycle, a fan-out, a panicking Unwrap): that one is
+	// replaced by a fixed library error, still an outage and never ErrInvalid.
+	// A context cancellation is returned as itself.
 	//
 	// The token must be presented exactly as it was issued: one compact JWS,
 	// three unpadded base64url segments, and nothing around it. A re-encoded
@@ -202,6 +205,12 @@ func (c *config) verify(ctx context.Context, raw string) (*Claims, error) {
 	}
 
 	keys, err := c.keys.VerificationKeys(ctx)
+	// The key source is the consumer's, and so is its error. One the walk
+	// cannot read is replaced here by a fixed one, so neither this package nor
+	// a caller reading the outage with errors.Is hangs, panics, or reads it as
+	// a refused token. The package holds no logger: the abort record goes to
+	// the default one, with ctx.
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	if err != nil {
 		// Not a rejection of the token: the keys could not be obtained. This
 		// deliberately does not match ErrInvalid, so a key-service

@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/store/pgxstore"
 	identitytest "github.com/kartaladev/scrty/test/identity"
 	"github.com/kartaladev/scrty/test/internal/storefix"
@@ -254,6 +255,17 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 					assertHistoryCut(t, err, user, hash)
 					assert.Contains(t, err.Error(), "42P01", "the text keeps the driver's SQLSTATE")
 				})
+			},
+		},
+		{
+			name: "a generator answering the nil id refuses the retire and stores nothing",
+			assert: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+				s := newIdentityStore(t, pool, pgxstore.WithIDGenerator(nilOnCall(t, 1)))
+				user := newHistoryUser(t)
+
+				err := s.RetirePassword(ctx, user, []byte("$argon2id$v=19$nil-id-hash"), 3)
+				require.ErrorIs(t, err, idgen.ErrNil)
+				assert.Zero(t, historyRows(ctx, t, pool, user), "a history row was stored under the nil id")
 			},
 		},
 		{

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/policy"
 )
 
@@ -173,17 +174,17 @@ func WithObserver(observer Observer) Option {
 // WithLogger replaces where the policy writes the records about its
 // observer: a report lost because the store could not count a failure it had
 // recorded or a reset that could not count what it cleared, and an observer
-// that panicked. The default is slog.Default. A nil
-// logger is ignored rather than refused: it has an obvious safe reading, that
-// the caller does not want to choose this policy's logger.
+// that panicked. The default is the logger of the chain handling the request,
+// else slog.Default() when the record is written. A nil logger is a
+// configuration error from New, wrapping policy.ErrConfig: it is almost always
+// an uninitialised variable, and leaving the option out already means "route".
 //
 // Its records carry fixed text, the report's kind and the dependency's error
 // type; never a dependency's error text, and never the submitted identifier.
 func WithLogger(logger *slog.Logger) Option {
 	return func(p *Policy) {
-		if logger != nil {
-			p.logger = logger
-		}
+		p.logger = logger
+		p.setLogger = true
 	}
 }
 
@@ -340,8 +341,10 @@ func (o *observedAttempts) record(ctx context.Context, username string, at time.
 	)
 	if p.streaks != nil {
 		streak, setHold, streakErr = p.streaks.AddStreakFailure(ctx, username, at, at.Add(-p.capRetention), p.capLimit)
+		streakErr = porterr.SanitizeTo(ctx, p.logger, streakErr, porterr.ErrUnwalkable)
 	}
 	logErr := p.store.RecordFailure(ctx, username, at)
+	logErr = porterr.SanitizeTo(ctx, p.logger, logErr, porterr.ErrUnwalkable)
 
 	// The hold is reported by the one write the store says set it, whatever
 	// became of the log: no later write sets it again, so a report lost here
@@ -363,6 +366,7 @@ func (o *observedAttempts) record(ctx context.Context, username string, at time.
 	}
 
 	count, err := p.store.FailureCount(ctx, username, at.Add(-p.window))
+	err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		p.logger.LogAttrs(ctx, slog.LevelError, msgReportLost, diag.Failure("attempt-store", err)...)
 
@@ -440,7 +444,7 @@ func (o *observedAttempts) Reset(ctx context.Context, username string) error {
 	if p.observer == nil {
 		// Nothing to report, so nothing to count first. The store's Reset
 		// clears the streak, hold included, with the log.
-		return p.store.Reset(ctx, username)
+		return porterr.SanitizeTo(ctx, p.logger, p.store.Reset(ctx, username), porterr.ErrUnwalkable)
 	}
 	now := p.clock.Now()
 
@@ -448,6 +452,7 @@ func (o *observedAttempts) Reset(ctx context.Context, username string) error {
 	// cannot be read does not stop the reset: clearing is what the caller
 	// asked for, and only the report depends on the count.
 	count, countErr := p.store.FailureCount(ctx, username, now.Add(-p.window))
+	countErr = porterr.SanitizeTo(ctx, p.logger, countErr, porterr.ErrUnwalkable)
 
 	// With a failure-streak limit the streak is read too, to tell a release from a clearing.
 	// Without it the policy cannot tell which one the reset was, so it
@@ -458,9 +463,10 @@ func (o *observedAttempts) Reset(ctx context.Context, username string) error {
 	)
 	if p.streaks != nil {
 		streak, streakErr = p.streaks.FailureStreak(ctx, username, now.Add(-p.capRetention))
+		streakErr = porterr.SanitizeTo(ctx, p.logger, streakErr, porterr.ErrUnwalkable)
 	}
 
-	if err := p.store.Reset(ctx, username); err != nil {
+	if err := porterr.SanitizeTo(ctx, p.logger, p.store.Reset(ctx, username), porterr.ErrUnwalkable); err != nil {
 		return err
 	}
 
@@ -481,5 +487,7 @@ func (o *observedAttempts) Reset(ctx context.Context, username string) error {
 }
 
 func (o *observedAttempts) FailureCount(ctx context.Context, username string, since time.Time) (int, error) {
-	return o.p.store.FailureCount(ctx, username, since)
+	count, err := o.p.store.FailureCount(ctx, username, since)
+
+	return count, porterr.SanitizeTo(ctx, o.p.logger, err, porterr.ErrUnwalkable)
 }

@@ -197,7 +197,7 @@ func TestUnavailable_DefaultConfig(t *testing.T) {
 	assert.Equal(t, defaultTimeout, cfg.Timeout)
 	assert.Equal(t, defaultInterval, cfg.ProbeInterval)
 	assert.NotNil(t, cfg.Clock)
-	assert.Same(t, slog.Default(), cfg.Logger)
+	assert.NotNil(t, cfg.Logger)
 	assert.Equal(t, ratelimit.DefaultLogInterval, cfg.LogInterval)
 }
 

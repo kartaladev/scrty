@@ -13,9 +13,10 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
+	"github.com/kartaladev/scrty/internal/recovered"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -69,9 +70,14 @@ type signInNotice struct {
 
 	// logger and sampler are the chain's, and now reads the chain's clock,
 	// handed over once the chain exists.
-	logger  *slog.Logger
-	sampler *logsample.Sampler
-	now     func() time.Time
+	logger *slog.Logger
+
+	// requestLogger is the chain's logger as given, for the writes made on the
+	// request's goroutine, which net/http recovers a panic of. Wrapped, a
+	// routing default would no longer route.
+	requestLogger *slog.Logger
+	sampler       *refusalSampler
+	now           func() time.Time
 
 	matches   func(signedIn, known session.SignIn) bool
 	seen      SeenDevices
@@ -322,7 +328,8 @@ func EnableSignInNotice(sender notify.Sender, opts ...SignInNoticeOption) Option
 			return nil
 		})
 		c.wire(func(ch *Chain) {
-			n.logger = c.logger
+			n.logger = guardedLogger(c.logger)
+			n.requestLogger = c.logger
 			n.sampler = ch.sampler
 			n.now = c.now
 		})
@@ -409,13 +416,50 @@ const (
 // dropped logs a notice that was not started because every slot was taken,
 // sampled through the chain's sampler, naming no user, device or address.
 func (n *signInNotice) dropped(ctx context.Context) {
-	logger := n.logger
-	if logger == nil {
-		logger = slog.Default()
+	logSampled(ctx, n.sampler, n.requestLogger, slog.LevelWarn, n.now(), signInNoticeDroppedKey, msgSignInNoticeDropped,
+		slog.Int("concurrency", n.concurrency))
+}
+
+// guardedLogger returns a logger writing through log's handler, which the
+// consumer owns, so that a panic in it loses only the record being written.
+// The notice's goroutine logs from inside its own recovery, where a handler
+// that panics again would end the process. A nil log stays nil.
+func guardedLogger(log *slog.Logger) *slog.Logger {
+	if log == nil {
+		return nil
 	}
 
-	logSampled(ctx, n.sampler, logger, slog.LevelWarn, n.now(), signInNoticeDroppedKey, msgSignInNoticeDropped,
-		slog.Int("concurrency", n.concurrency))
+	return slog.New(guardedHandler{inner: log.Handler()})
+}
+
+// guardedHandler is a slog.Handler that recovers a panic in the handler it
+// wraps. A panic in Handle is recovered and reported once, by
+// [recovered.Call], and the record is lost; a panic in Enabled counts as not
+// enabled.
+type guardedHandler struct{ inner slog.Handler }
+
+func (h guardedHandler) Enabled(ctx context.Context, level slog.Level) (enabled bool) {
+	defer func() {
+		if recover() != nil {
+			enabled = false
+		}
+	}()
+
+	return h.inner.Enabled(ctx, level)
+}
+
+func (h guardedHandler) Handle(ctx context.Context, r slog.Record) error {
+	// A nil logger routes the report to the chain's logger or the default,
+	// whose own write is guarded again.
+	return recovered.Call(ctx, nil, "logger", func() error { return h.inner.Handle(ctx, r) })
+}
+
+func (h guardedHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return guardedHandler{inner: h.inner.WithAttrs(attrs)}
+}
+
+func (h guardedHandler) WithGroup(name string) slog.Handler {
+	return guardedHandler{inner: h.inner.WithGroup(name)}
 }
 
 // errNoticePanicked is what a recovered panic in the notice's work is logged
@@ -468,6 +512,9 @@ func (n *signInNotice) notify(ctx context.Context, s noticeSignIn, p *identity.P
 
 	if n.seen != nil {
 		seen, err := n.seen.Seen(ctx, s.user, signedIn.UserAgent)
+		// The consumer's error is logged below, which reads its chain: one
+		// that cannot be walked is reported once and logged as the fault.
+		err = porterr.SanitizeTo(ctx, n.logger, err, porterr.ErrUnwalkable)
 		if err != nil {
 			n.failed(ctx, "the seen-devices port could not answer", err)
 
@@ -479,6 +526,7 @@ func (n *signInNotice) notify(ctx context.Context, s noticeSignIn, p *identity.P
 	}
 
 	to, err := n.recipient(ctx, p)
+	err = porterr.SanitizeTo(ctx, n.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		n.failed(ctx, "the recipient could not be resolved", err)
 
@@ -486,7 +534,8 @@ func (n *signInNotice) notify(ctx context.Context, s noticeSignIn, p *identity.P
 	}
 
 	subject, body := n.message(SignInNoticeFacts{At: s.at, Device: deviceDescription(signedIn.UserAgent)})
-	if err := n.sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body}); err != nil {
+	err = n.sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body})
+	if err = porterr.SanitizeTo(ctx, n.logger, err, porterr.ErrUnwalkable); err != nil {
 		n.failed(ctx, "the notice could not be sent", err)
 	}
 }
@@ -494,12 +543,7 @@ func (n *signInNotice) notify(ctx context.Context, s noticeSignIn, p *identity.P
 // failed logs a notice that was not sent, with a fixed reason and the
 // error's type, never its text, the user, the device or the address.
 func (n *signInNotice) failed(ctx context.Context, reason string, err error) {
-	logger := n.logger
-	if logger == nil {
-		logger = slog.Default()
-	}
-
-	logger.LogAttrs(ctx, slog.LevelError, "httpsec: a sign-in notice was not sent",
+	n.logger.LogAttrs(ctx, slog.LevelError, "httpsec: a sign-in notice was not sent",
 		diag.Failure(reason, err)...)
 }
 

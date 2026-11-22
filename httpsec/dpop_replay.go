@@ -12,6 +12,7 @@ import (
 
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 //go:generate mockgen -destination=replaystore_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/httpsec ReplayStore
@@ -72,6 +73,11 @@ func (v *dpopVerifier) record(ctx context.Context, p dpopProof) error {
 
 	fresh, err := v.cfg.Replay.Record(ctx, replayKey(p.jti, p.jkt), p.iat.Add(replayRetention*v.cfg.ProofMaxAge))
 	if err != nil {
+		// An error whose chain cannot be walked is the store failing: the
+		// fault stands for it, recorded once on the chain's logger, so the
+		// error the request fails with never carries the consumer's.
+		err = porterr.SanitizeTo(ctx, v.log, err, porterr.ErrUnwalkable)
+
 		if hangup.ByCaller(ctx, err) {
 			v.log.LogAttrs(ctx, slog.LevelDebug, msgDPoPReplayEnded)
 

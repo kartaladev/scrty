@@ -2,7 +2,6 @@ package httpsec
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -11,8 +10,10 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/errwalk"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -191,15 +192,49 @@ var refusalEvents = []struct {
 // It reports once per exchange: a chain whose Assemble runs inside another
 // chain's answers the same exchange with the same error as it leaves each of
 // them, and the refusal was decided once.
+//
+// err is the consumer's as often as the library's, so every check of it, the
+// hang-up check included, reads it under the bounded walk. A check whose walk
+// gives up reports no event, since its match is not guessed from a partial
+// walk, and the abort is reported once for the exchange (abortReported), by
+// the quiet sites' rule: the hang-up check runs before the lookup, so it
+// reports through reportQuietly; the event's own check runs after a lookup
+// that answered below 500, so the dispatch will not meet its abort, and it
+// reports whoever answers. Either way the refusal is marked reported, so a
+// chain this run is nested in does not walk it again.
 func emitRefusal(ex *Exchange, err error) {
 	ctx := ex.Context()
-	if ex.refusalReported || !eventsink.Enabled(ctx) || hangup.ByCaller(ctx, err) ||
-		StatusForError(err) >= http.StatusInternalServerError {
+	if ex.refusalReported || !eventsink.Enabled(ctx) {
 		return
 	}
 
+	hungUp, abort := hangup.ByCallerWalk(ctx, err)
+	if abort != nil {
+		ex.reportQuietlyOnce(ctx, err, abort)
+		ex.refusalReported = true
+
+		return
+	}
+
+	if hungUp || ex.answeringChain().statusQuietly(ctx, err) >= http.StatusInternalServerError {
+		return
+	}
+
+	walk := walkRefusal(err)
+
 	for _, r := range refusalEvents {
-		if !errors.Is(err, r.err) {
+		if !walk.is(r.err) {
+			if walk.abort != nil {
+				if !ex.abortReported {
+					ex.abortReported = true
+					ex.answeringChain().reportAbort(ctx, walk.abort)
+				}
+
+				ex.refusalReported = true
+
+				return
+			}
+
 			continue
 		}
 
@@ -216,14 +251,202 @@ func emitRefusal(ex *Exchange, err error) {
 // dependency failure or a request whose own context ended: an error the
 // default status mapping answers below 500 that is neither the user store's
 // outage (authenticate.ErrUnavailable) nor ctx's own ending.
-func refused(ctx context.Context, err error) bool {
-	if err == nil || hangup.ByCaller(ctx, err) {
+//
+// err is walked under the library's bounded, recovering walk, the hang-up
+// check included. An err the walk gives up on is not a refusal, so no event
+// reports it. The checks here run before or beside the dispatch's lookup, and
+// a link whose Is method panics only for a sentinel asked here (the outage,
+// the context's error) is one that lookup never meets, so an abort is
+// reported through c, the exchange's answering chain, by the quiet sites'
+// rule (reportQuietly). The status lookup reports its own abort as
+// statusQuietly does: only under a consumer's error handler, where the
+// dispatch classifies nothing. A nil c reports to the logger the context carries, else to
+// slog.Default() when the record is written.
+func refused(ctx context.Context, c *Chain, err error) bool {
+	if err == nil {
 		return false
 	}
 
-	if errors.Is(err, authenticate.ErrUnavailable) {
+	hungUp, abort := hangup.ByCallerWalk(ctx, err)
+	if abort != nil {
+		c.reportQuietly(ctx, err, abort)
+
 		return false
 	}
 
-	return StatusForError(err) < 500
+	if hungUp {
+		return false
+	}
+
+	walk := walkRefusal(err)
+	outage := walk.is(authenticate.ErrUnavailable)
+
+	if walk.abort != nil {
+		c.reportQuietly(ctx, err, walk.abort)
+
+		return false
+	}
+
+	if outage {
+		return false
+	}
+
+	return c.statusQuietly(ctx, err) < http.StatusInternalServerError
+}
+
+// refusalWalk is a refused error flattened once, for an inspection of it on the
+// refusal path other than the status lookup: refused, the refusal event, the
+// authorization stage, the signal stream's checks and DPoP's challenge. Each
+// reads this one list under the walk's bound and recovery, so a cyclic or
+// panicking error cannot hang or crash the request before the lookup's bound
+// applies. Once abort is set, by the flattening or by a link's Is or As method
+// panicking, the walk matches nothing more, and the site takes its fail-closed
+// path: no outage claim, no throttle mark, no event and no challenge.
+type refusalWalk struct {
+	chain errwalk.Chain
+	abort error
+}
+
+// walkRefusal flattens err.
+func walkRefusal(err error) refusalWalk {
+	chain, abort := errwalk.Flatten(err)
+
+	return refusalWalk{chain: chain, abort: abort}
+}
+
+// is reports whether a link of the walk matches any of targets, asking them in
+// order, as errors.Is(err, t0) || errors.Is(err, t1) would. It reports false
+// once the walk has aborted.
+func (w *refusalWalk) is(targets ...error) bool {
+	if w.abort != nil {
+		return false
+	}
+
+	for _, target := range targets {
+		found, abort := errwalk.Is(w.chain, target)
+		if abort != nil {
+			w.chain, w.abort = nil, abort
+
+			return false
+		}
+
+		if found {
+			return true
+		}
+	}
+
+	return false
+}
+
+// refusalAs is errors.As over w: the first link that is a T. It reports false
+// once the walk has aborted.
+func refusalAs[T error](w *refusalWalk) (T, bool) {
+	var zero T
+
+	if w.abort != nil {
+		return zero, false
+	}
+
+	found, ok, abort := errwalk.As[T](w.chain)
+	if abort != nil {
+		w.chain, w.abort = nil, abort
+
+		return zero, false
+	}
+
+	return found, ok
+}
+
+// reportQuietly reports abort, the abort that stopped a refusal-path
+// inspection of err running before or beside the status lookup, so that each
+// request whose classification aborted writes one record:
+//
+//   - Under a consumer's error handler (WithErrorHandler) the chain's dispatch
+//     classifies nothing, so the site always reports, as statusQuietly does.
+//   - Otherwise the dispatch looks err up and reports an abort it meets. The
+//     site reports only when that lookup does not abort: a link whose Is or As
+//     method panics only for the sentinel this site asked about is one the
+//     dispatch never meets. When both abort, the site stays quiet.
+//
+// The lookup runs here, on the abort path alone, so a request whose
+// inspections do not abort pays nothing for the rule. A record goes through
+// c's logger and sampler, or, when no chain is running, to the logger the
+// context carries, else to slog.Default() when the record is written.
+func (c *Chain) reportQuietly(ctx context.Context, err, abort error) {
+	if c != nil && c.errorHandler != nil {
+		c.logClassificationAborted(ctx, abort)
+
+		return
+	}
+
+	if lookupAbort(err) == nil {
+		c.reportAbort(ctx, abort)
+	}
+}
+
+// reportAbort reports abort, met by an inspection that runs after the lookup
+// answered: the dispatch will not meet it, so it is reported whatever handler
+// answers, through c's logger and sampler, or, when no chain is running,
+// through porterr.ReportAbort's routing: the logger ctx carries, else
+// slog.Default() at record time.
+func (c *Chain) reportAbort(ctx context.Context, abort error) {
+	if c == nil {
+		porterr.ReportAbort(ctx, nil, abort)
+
+		return
+	}
+
+	c.logClassificationAborted(ctx, abort)
+}
+
+// reportAbortSampled writes abort's record through porterr.ReportAbort, at
+// most once per reason per window of s (classificationAbortedKey), with the
+// count of the records it stands in for as "suppressed" when there are any. A
+// nil s, or one built with an interval of zero or less, writes every record. A
+// nil log resolves as porterr.ReportAbort resolves it.
+func reportAbortSampled(ctx context.Context, s *refusalSampler, log *slog.Logger, now time.Time, abort error) {
+	key := classificationAbortedKey(abort)
+
+	write, suppressed := s.Allow(key, now)
+	if !write {
+		return
+	}
+
+	s.note(ctx, log, key)
+
+	if suppressed > 0 {
+		// Attached only when it says something, as logSampled does.
+		porterr.ReportAbort(ctx, log, abort, slog.Int("suppressed", suppressed))
+
+		return
+	}
+
+	porterr.ReportAbort(ctx, log, abort)
+}
+
+// reportQuietlyOnce reports abort by the quiet sites' rule (reportQuietly)
+// through ex's answering chain, unless a refusal-path check on ex has already
+// reported one (abortReported). It is for a check that every chain on the
+// exchange runs on the same refused error, the DPoP challenge and the refusal
+// event's, so that with one chain assembled inside another and sampling off,
+// the outer run meeting the abort the inner run reported writes no second
+// record. The mark is set even when the rule leaves the report to the
+// dispatch: the outer run would leave it there too.
+func (ex *Exchange) reportQuietlyOnce(ctx context.Context, err, abort error) {
+	if ex.abortReported {
+		return
+	}
+
+	ex.abortReported = true
+	ex.answeringChain().reportQuietly(ctx, err, abort)
+}
+
+// lookupAbort is the status lookup a guard behind a chain asks about its
+// refusal (guardauth.LookupAborts): the abort that stopped lookup of err, nil
+// when none did. It writes no record. A guard reports an abort its own walk
+// met only when this lookup, which the guard's answer runs, does not abort.
+func lookupAbort(err error) error {
+	_, _, abort := lookup(err)
+
+	return abort
 }

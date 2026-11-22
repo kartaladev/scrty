@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -177,6 +178,7 @@ func (s *encryptedStore) sealed(ctx context.Context, sess *Session, csrf bool) (
 	out := sess.clone()
 	if sess.ExternalIDToken != "" {
 		envelope, err := s.cipher.Seal(ctx, []byte(sess.ExternalIDToken), additionalData(sess.ID))
+		err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 		if err != nil {
 			return nil, diag.Wrap(err, "session: the provider ID token of the session could not be sealed")
 		}
@@ -186,6 +188,7 @@ func (s *encryptedStore) sealed(ctx context.Context, sess *Session, csrf bool) (
 	out.CSRFToken = ""
 	if csrf && sess.CSRFToken != "" {
 		envelope, err := s.cipher.Seal(ctx, []byte(sess.CSRFToken), csrfAdditionalData(sess.ID))
+		err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 		if err != nil {
 			return nil, diag.Wrap(err, "session: the CSRF token of the session could not be sealed")
 		}
@@ -201,7 +204,9 @@ func (s *encryptedStore) Create(ctx context.Context, sess *Session) error {
 		return err
 	}
 
-	return storeFailed(s.inner.Create(ctx, out), "session: the inner store could not create the session")
+	err = porterr.SanitizeTo(ctx, nil, s.inner.Create(ctx, out), porterr.ErrUnwalkable)
+
+	return storeFailed(err, "session: the inner store could not create the session")
 }
 
 func (s *encryptedStore) Save(ctx context.Context, sess *Session) error {
@@ -210,7 +215,9 @@ func (s *encryptedStore) Save(ctx context.Context, sess *Session) error {
 		return err
 	}
 
-	return storeFailed(s.inner.Save(ctx, out), "session: the inner store could not save the session")
+	err = porterr.SanitizeTo(ctx, nil, s.inner.Save(ctx, out), porterr.ErrUnwalkable)
+
+	return storeFailed(err, "session: the inner store could not save the session")
 }
 
 // Load opens the stored ID token and CSRF token and returns the session with
@@ -231,6 +238,7 @@ func (s *encryptedStore) Save(ctx context.Context, sess *Session) error {
 // revoked comes back.
 func (s *encryptedStore) Load(ctx context.Context, id string) (*Session, error) {
 	sess, err := s.inner.Load(ctx, id)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, storeFailed(err, "session: the inner store could not load the session")
 	}
@@ -269,6 +277,7 @@ func (s *encryptedStore) open(ctx context.Context, stored string, aad []byte, un
 	}
 
 	plaintext, err := s.cipher.Open(ctx, envelope, aad)
+	err = porterr.SanitizeTo(ctx, nil, err, ErrCipherUnavailable)
 	if err != nil {
 		return "", openFailed(err, unreadable, outage)
 	}
@@ -297,21 +306,27 @@ func openFailed(err error, unreadable, outage string) error {
 }
 
 func (s *encryptedStore) Delete(ctx context.Context, id string) error {
-	return storeFailed(s.inner.Delete(ctx, id), "session: the inner store could not delete the session")
+	err := porterr.SanitizeTo(ctx, nil, s.inner.Delete(ctx, id), porterr.ErrUnwalkable)
+
+	return storeFailed(err, "session: the inner store could not delete the session")
 }
 
 func (s *encryptedStore) DeleteByUser(ctx context.Context, user identity.UserID) error {
-	return storeFailed(s.inner.DeleteByUser(ctx, user), "session: the inner store could not delete the user's sessions")
+	err := porterr.SanitizeTo(ctx, nil, s.inner.DeleteByUser(ctx, user), porterr.ErrUnwalkable)
+
+	return storeFailed(err, "session: the inner store could not delete the user's sessions")
 }
 
 func (s *encryptedStore) DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error) {
 	n, err := s.inner.DeleteByUserExcept(ctx, user, keep)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 
 	return n, storeFailed(err, "session: the inner store could not delete the user's other sessions")
 }
 
 func (s *encryptedStore) CountActiveByUser(ctx context.Context, user identity.UserID) (int, error) {
 	n, err := s.inner.CountActiveByUser(ctx, user)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 
 	return n, storeFailed(err, "session: the inner store could not count the user's active sessions")
 }
@@ -322,6 +337,7 @@ func (s *encryptedStore) CountActiveByUser(ctx context.Context, user identity.Us
 // needing a token loads the session.
 func (s *encryptedStore) ListByUser(ctx context.Context, user identity.UserID, now time.Time) ([]*Session, error) {
 	listed, err := s.inner.ListByUser(ctx, user, now)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, storeFailed(err, "session: the inner store could not list the user's sessions")
 	}
@@ -342,6 +358,7 @@ func (s *encryptedStore) ListByFamily(ctx context.Context, user identity.UserID,
 
 	if reader, ok := s.inner.(FamilyReader); ok {
 		listed, err := reader.ListByFamily(ctx, user, family, now)
+		err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 		if err != nil {
 			return nil, storeFailed(err, text)
 		}
@@ -350,6 +367,7 @@ func (s *encryptedStore) ListByFamily(ctx context.Context, user identity.UserID,
 	}
 
 	listed, err := s.inner.ListByUser(ctx, user, now)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, storeFailed(err, text)
 	}
@@ -373,25 +391,29 @@ func withoutSealed(listed []*Session) []*Session {
 
 func (s *encryptedStore) DeleteExpired(ctx context.Context) (int, error) {
 	n, err := s.inner.DeleteExpired(ctx)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 
 	return n, storeFailed(err, "session: the inner store could not delete expired sessions")
 }
 
 func (s *encryptedStore) DeleteByExternalSession(ctx context.Context, issuer, sessionID string) (int, error) {
 	n, err := s.inner.DeleteByExternalSession(ctx, issuer, sessionID)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 
 	return n, storeFailed(err, "session: the inner store could not delete the provider session's sessions")
 }
 
 func (s *encryptedStore) DeleteByUserAndExternalIssuer(ctx context.Context, user identity.UserID, issuer string) (int, error) {
 	n, err := s.inner.DeleteByUserAndExternalIssuer(ctx, user, issuer)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 
 	return n, storeFailed(err, "session: the inner store could not delete the user's sessions from the issuer")
 }
 
 func (s *encryptedStore) RecordActivity(ctx context.Context, id string, lastAccessed, idleExpires, olderThan time.Time) error {
-	return storeFailed(s.inner.RecordActivity(ctx, id, lastAccessed, idleExpires, olderThan),
-		"session: the inner store could not record the session's activity")
+	err := porterr.SanitizeTo(ctx, nil, s.inner.RecordActivity(ctx, id, lastAccessed, idleExpires, olderThan), porterr.ErrUnwalkable)
+
+	return storeFailed(err, "session: the inner store could not record the session's activity")
 }
 
 // Supersede seals the successor's ID token and CSRF token, bound to the
@@ -407,11 +429,14 @@ func (s *encryptedStore) Supersede(ctx context.Context, op Supersession) error {
 	}
 	op.Successor = successor
 
-	return storeFailed(s.inner.Supersede(ctx, op), "session: the inner store could not supersede the session")
+	err = porterr.SanitizeTo(ctx, nil, s.inner.Supersede(ctx, op), porterr.ErrUnwalkable)
+
+	return storeFailed(err, "session: the inner store could not supersede the session")
 }
 
 func (s *encryptedStore) DeleteFamily(ctx context.Context, family id.ID) (int, error) {
 	n, err := s.inner.DeleteFamily(ctx, family)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 
 	return n, storeFailed(err, "session: the inner store could not delete the session family")
 }
@@ -419,8 +444,9 @@ func (s *encryptedStore) DeleteFamily(ctx context.Context, family id.ID) (int, e
 // MarkPresented passes the mark on. The inner store's ErrNotFound and
 // ErrSuperseded come back bare, as Supersede's refusals do.
 func (s *encryptedStore) MarkPresented(ctx context.Context, id string, at time.Time) error {
-	return storeFailed(s.inner.MarkPresented(ctx, id, at),
-		"session: the inner store could not record the session's first presentation")
+	err := porterr.SanitizeTo(ctx, nil, s.inner.MarkPresented(ctx, id, at), porterr.ErrUnwalkable)
+
+	return storeFailed(err, "session: the inner store could not record the session's first presentation")
 }
 
 // SuccessorPresented passes the read on: it reads only presentation and
@@ -428,6 +454,7 @@ func (s *encryptedStore) MarkPresented(ctx context.Context, id string, at time.T
 // ErrNotFound comes back bare.
 func (s *encryptedStore) SuccessorPresented(ctx context.Context, id string) (bool, error) {
 	used, err := s.inner.SuccessorPresented(ctx, id)
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 
 	return used, storeFailed(err, "session: the inner store could not read whether the session's successor was used")
 }

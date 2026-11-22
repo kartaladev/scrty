@@ -14,8 +14,10 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/lifecycle"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/outbound"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token"
@@ -143,7 +145,8 @@ func (p *Provider) deliverLogout(ctx context.Context, c ClientToNotify, posting 
 		return failureOf(c, failureSign, err)
 	}
 	posting.Store(true)
-	if err := p.logoutDelivery.Deliver(ctx, rc.BackChannelLogoutURI, raw); err != nil {
+	err = p.logoutDelivery.Deliver(ctx, rc.BackChannelLogoutURI, raw)
+	if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 		return failureOf(c, deliveryReason(err), err)
 	}
 
@@ -220,13 +223,28 @@ func (p *Provider) logLostLogoutReports(lost lostReports) {
 // outboundLogoutDelivery is the default: one form POST through a confined client.
 type outboundLogoutDelivery struct {
 	out *outbound.Client
+	// logger takes the record of a transport error whose chain cannot be walked.
+	logger *slog.Logger
 }
 
 // Deliver implements LogoutDelivery. 200 and 204 are success (Back-Channel Logout §2.8), whatever body
 // comes with them, none of which is read.
 func (d outboundLogoutDelivery) Deliver(ctx context.Context, uri, logoutToken string) error {
-	status, err := d.out.PostFormStatus(ctx, uri, url.Values{logoutTokenParam: {logoutToken}}, nil)
+	// The component's logger takes the outbound client's abort record for a hostile transport error.
+	status, err := d.out.PostFormStatus(ctxlog.With(ctx, d.logger), uri, url.Values{logoutTokenParam: {logoutToken}}, nil)
 	if err != nil {
+		// Defence in depth: the outbound client already sanitizes the transport's error, so this walk
+		// does not abort today; it keeps the site safe should that change. The failure is classified
+		// as a post by diag.Wrap's kind below, whatever the cause.
+		err = porterr.SanitizeTo(ctx, d.logger, err, errLogoutPost)
+		// The outbound client has already replaced a hostile transport error with the
+		// sanitizer's fault, wrapped under its own context. The fault stands alone as
+		// the cause, as it does when this site is the one that makes it.
+		var fault *porterr.Fault
+		if errors.As(err, &fault) {
+			err = fault
+		}
+
 		return diag.Wrap(err, logoutPostText, errLogoutPost)
 	}
 	if status != http.StatusOK && status != http.StatusNoContent {
@@ -258,7 +276,7 @@ func (c *config) buildLogoutDelivery() (LogoutDelivery, error) {
 	case c.logoutDeliverySet:
 		return c.logoutDelivery, nil
 	case c.outboundSet && !c.logoutOutboundSet:
-		return outboundLogoutDelivery{out: c.outbound.WithoutRedirects()}, nil
+		return outboundLogoutDelivery{out: c.outbound.WithoutRedirects(), logger: c.logger}, nil
 	}
 
 	// Later options win, so the cap goes last, and what a consumer gives cannot bring redirects back. The
@@ -273,7 +291,7 @@ func (c *config) buildLogoutDelivery() (LogoutDelivery, error) {
 		return nil, fmt.Errorf("%w: WithLogoutOutbound: %w", ErrConfig, err)
 	}
 
-	return outboundLogoutDelivery{out: out}, nil
+	return outboundLogoutDelivery{out: out, logger: c.logger}, nil
 }
 
 // newLogoutTransport keeps no connection: a logout token is rare, and a kept connection is goroutines

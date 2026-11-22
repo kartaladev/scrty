@@ -1,7 +1,6 @@
 package httpsec
 
 import (
-	"errors"
 	"fmt"
 	"log/slog"
 
@@ -178,7 +177,24 @@ func (a *authorization) Intercept(ex *Exchange, next Next) error {
 	}
 
 	if err := a.rules.Evaluate(ex.Context(), ex.Request); err != nil {
-		if errors.Is(err, authorize.ErrAuthenticationRequired) {
+		// The rule's error is the consumer's, so it is read through one bounded
+		// walk. One the walk gives up on is returned as it came, neither turned
+		// into a demand to authenticate nor reported as a denial, and the
+		// dispatch answers it as its own lookup does: 500 when that lookup
+		// aborts too, else the status it finds, since a link may panic only for
+		// the sentinel asked here. reportQuietly reports the abort when the
+		// dispatch will not.
+		walk := walkRefusal(err)
+		mustAuthenticate := walk.is(authorize.ErrAuthenticationRequired)
+		denied := !mustAuthenticate && walk.is(authorize.ErrAccessDenied)
+
+		if walk.abort != nil {
+			ex.answeringChain().reportQuietly(ex.Context(), err, walk.abort)
+
+			return err
+		}
+
+		if mustAuthenticate {
 			return authenticationRequired(err)
 		}
 
@@ -186,7 +202,7 @@ func (a *authorization) Intercept(ex *Exchange, next Next) error {
 		// a demand to authenticate, or with the outage it hit, and rewriting any
 		// of those here would turn a store that was unreachable into a decision
 		// about the caller. Only the denial is reported.
-		if errors.Is(err, authorize.ErrAccessDenied) && refused(ex.Context(), err) {
+		if denied && refused(ex.Context(), ex.answeringChain(), err) {
 			emitEvent(ex.Context(), callerEvent(event.AuthzFail, event.OutcomeFailure, ex))
 		}
 

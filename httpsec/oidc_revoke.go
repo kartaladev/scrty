@@ -211,7 +211,7 @@ func (g *oidcRevokeGroup) read(ex *Exchange, e *oidcClientEndpoint) (oidcprovide
 		return creds, src, false, writeOIDCRefusal(ex, oidcprovider.CodeInvalidClient)
 	}
 
-	creds, err := readOIDCClientRequest(ex.Request, e.bodyLimit)
+	creds, err := readOIDCClientRequest(ex.Context(), ex.Request, e.bodyLimit)
 	if err != nil {
 		return creds, src, false, e.throttle.answer(ex, src, err)
 	}

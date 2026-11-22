@@ -2,6 +2,7 @@ package httpsec
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -383,7 +384,7 @@ func (m *sessionManagement) Intercept(ex *Exchange, next Next) error {
 		return m.respEnd(ex)
 	}
 
-	revokeAccess, err := m.revokeAccessChosen(ex.Request)
+	revokeAccess, err := m.revokeAccessChosen(ex.Context(), ex.Request)
 	if err != nil {
 		return err
 	}
@@ -411,12 +412,12 @@ func (m *sessionManagement) Intercept(ex *Exchange, next Next) error {
 // revokeAccessChosen reads the user's choice to revoke application access out of
 // the body of a request to end their other sign-ins. A chain without a provider
 // offers no such choice, and does not read the body.
-func (m *sessionManagement) revokeAccessChosen(r Request) (bool, error) {
+func (m *sessionManagement) revokeAccessChosen(ctx context.Context, r Request) (bool, error) {
 	if m.grants == nil {
 		return false, nil
 	}
 
-	body, err := r.Body(sessionManagementBodyLimit)
+	body, err := readBody(ctx, r, sessionManagementBodyLimit)
 
 	switch {
 	case errors.Is(err, ErrRequestTooLarge):

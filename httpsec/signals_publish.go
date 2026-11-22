@@ -52,8 +52,9 @@ const (
 // when a consumer's bus could not take the signal, or, on either bus, after CloseSessionSignals, since
 // nil would say it was sent. Without it in the set, the default, a close changes nothing: nothing is
 // raised, and nil is returned. A user with no open stream is not an error. The signal is raised on a
-// detached context, since a bus outlives the request, and ctx is not used.
-func (c *Chain) ReportCredentialChange(_ context.Context, user identity.UserID, kind CredentialKind) error {
+// detached envelope, since a bus outlives the request: ctx
+// is read for the logger of the chain handling the request, never for its deadline or cancellation.
+func (c *Chain) ReportCredentialChange(ctx context.Context, user identity.UserID, kind CredentialKind) error {
 	e := c.signalsEndpoint()
 	if e == nil {
 		return ErrSessionSignalsDisabled
@@ -65,7 +66,7 @@ func (c *Chain) ReportCredentialChange(_ context.Context, user identity.UserID, 
 		return fmt.Errorf("%w: unknown credential kind", ErrInvalidSignal)
 	}
 
-	return e.raiseCredentialChange(user, kind) //nolint:contextcheck // detached on purpose: a bus outlives the request, and ctx is documented as unused
+	return e.raiseCredentialChange(ctx, user, kind)
 }
 
 // raiseCredentialChange hands a credential_changed of a known kind to the hub, which never blocks. A
@@ -73,7 +74,7 @@ func (c *Chain) ReportCredentialChange(_ context.Context, user identity.UserID, 
 // is not to carry what it cannot, or to report busy for it. Every raise passes here, so that holds of
 // the chain's endpoints and of ReportCredentialChange alike. Every replica is expected to run the same
 // set, or a signal from a replica holding it reaches no stream of one that does not.
-func (e *sessionSignals) raiseCredentialChange(user identity.UserID, kind CredentialKind) error {
+func (e *sessionSignals) raiseCredentialChange(ctx context.Context, user identity.UserID, kind CredentialKind) error {
 	if !e.set[SignalCredentialChanged] {
 		return nil
 	}
@@ -81,7 +82,7 @@ func (e *sessionSignals) raiseCredentialChange(user identity.UserID, kind Creden
 	// The kind is one of the three constants, so it needs no escaping.
 	data := json.RawMessage(`{"kind":"` + string(kind) + `"}`)
 
-	return e.hub.raise(SignalEnvelope{User: user, Name: string(SignalCredentialChanged), Data: data}) //nolint:contextcheck // detached on purpose: a bus outlives the request
+	return e.hub.raise(ctx, SignalEnvelope{User: user, Name: string(SignalCredentialChanged), Data: data})
 }
 
 // credentialChanged tells the open streams of user that a credential of the given kind changed,
@@ -95,7 +96,7 @@ func (ex *Exchange) credentialChanged(user identity.UserID, kind CredentialKind)
 		return
 	}
 
-	_ = ph.signals.raiseCredentialChange(user, kind)
+	_ = ph.signals.raiseCredentialChange(ex.Context(), user, kind)
 }
 
 // credentialsRemoved tells the open streams of user which kinds of credential a completed
@@ -155,13 +156,14 @@ func (ex *Exchange) credentialsRemoved(user identity.UserID, removed []recovery.
 //
 // Like ReportCredentialChange, a signal cannot be recalled once raised, and a dropped one is
 // gone: the default bus reaches only this replica's streams, so a consumer must not rely on one
-// alone. ctx is not used, as a bus outlives the request.
+// alone. ctx is read for the logger of the chain handling the request, never for its deadline or
+// cancellation, as a bus outlives the request.
 //
 // It returns ErrSessionSignalsDisabled on a chain without EnableSessionSignals, ErrInvalidSignal
 // for a name or data outside the limits above, and ErrSignalsBusy when a consumer's bus could not
 // take the signal, or, on either bus, after CloseSessionSignals, since nil would say it was sent. A
 // user with no open stream is not an error.
-func (c *Chain) PublishSignal(_ context.Context, user identity.UserID, name string, data json.RawMessage) error {
+func (c *Chain) PublishSignal(ctx context.Context, user identity.UserID, name string, data json.RawMessage) error {
 	e := c.signalsEndpoint()
 	if e == nil {
 		return ErrSessionSignalsDisabled
@@ -175,5 +177,5 @@ func (c *Chain) PublishSignal(_ context.Context, user identity.UserID, name stri
 		return fmt.Errorf("%w: data is not up to 8 KiB of one-line valid JSON and UTF-8", ErrInvalidSignal)
 	}
 
-	return e.hub.raise(SignalEnvelope{User: user, Name: name, Data: data}) //nolint:contextcheck // detached on purpose: a bus outlives the request
+	return e.hub.raise(ctx, SignalEnvelope{User: user, Name: name, Data: data})
 }

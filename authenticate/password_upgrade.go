@@ -8,6 +8,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // upgradeKey is the context key a password upgrade request travels under.
@@ -123,6 +124,10 @@ func (u *PasswordUpgrade) settle() {
 	u.pending, u.presented, u.ctx = false, "", nil
 
 	upgraded, err := u.enc.Encode(presented)
+	// The encoder is the consumer's, and so is its error. One whose chain
+	// cannot be walked becomes a fixed fault, with one abort record on the
+	// provider's logger, and is then answered as any failed encoding is.
+	err = porterr.SanitizeTo(ctx, u.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		u.logger.LogAttrs(ctx, slog.LevelError, "password hash could not be upgraded",
 			diag.Failure("password-upgrade", err)...)

@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 )
@@ -272,7 +273,7 @@ func (g *passwordChangeGate) resolve(ex *Exchange) error {
 		// The consumer's error is the refusal, unchanged: they know why they
 		// refused, and restating it here would lose that. Only a refusal is
 		// reported: a store the function could not reach decided nothing.
-		if refused(ctx, err) {
+		if refused(ctx, ex.answeringChain(), err) {
 			emitEvent(ctx, sessionEvent(event.AuthnPasswordChangeFail, event.OutcomeFailure, s))
 		}
 
@@ -330,7 +331,10 @@ func (g *passwordChangeGate) clearFailures(reqCtx context.Context, username stri
 	}
 
 	for _, store := range g.attempts {
-		if err := resetBounded(reqCtx, store, username); err != nil {
+		err := resetBounded(reqCtx, store, username)
+		// Only logged, but sanitized so an error that cannot be walked is
+		// recorded as an abort too.
+		if err = porterr.SanitizeTo(reqCtx, g.log, err, porterr.ErrUnwalkable); err != nil {
 			g.log.LogAttrs(reqCtx, slog.LevelError, msgFailuresNotCleared,
 				diag.Failure("attempt-store", err)...)
 		}

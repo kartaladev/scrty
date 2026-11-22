@@ -8,9 +8,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/lifecycle"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // QueuedSender hands each message to a pool of workers and returns as soon as
@@ -31,6 +33,11 @@ type QueuedSender struct {
 	size    int
 	timeout time.Duration
 	logger  *slog.Logger
+
+	// workerLog is logger as the worker goroutines write to it: its handler is
+	// consumer code, and a handler that panics loses only the record (see
+	// guardedHandler). Send writes to logger itself, on the caller's goroutine.
+	workerLog *slog.Logger
 
 	// drained is closed once every worker has returned, which happens only
 	// after Shutdown closes the queue and the workers have emptied it. Every
@@ -66,9 +73,13 @@ type queued struct {
 //
 // Defaults: 2 workers (WithQueueWorkers), a queue of 256 messages
 // (WithQueueMaxMessages), a 30-second bound on each delivery (WithQueueSendTimeout)
-// and slog's default logger (WithQueueLogger). Construction fails, wrapping
-// ErrConfig, on an absent inner sender — a nil interface or one holding a nil
-// pointer — or a worker count, queue size or send timeout of zero or less.
+// and, for the logger (WithQueueLogger), the logger of the chain handling the
+// request that queued the message, else slog.Default() when the record is
+// written.
+//
+// Construction fails, wrapping ErrConfig, on an absent inner sender — a nil
+// interface or one holding a nil pointer — or a worker count, queue size or
+// send timeout of zero or less.
 //
 // The workers start here, and there is no Start. They run detached from any
 // caller's context until Shutdown, which the consumer calls when the process
@@ -78,7 +89,7 @@ func NewQueuedSender(inner Sender, opts ...QueuedOption) (*QueuedSender, error) 
 		workers: defaultQueueWorkers,
 		size:    defaultQueueSize,
 		timeout: defaultQueueSendTimeout,
-		logger:  slog.Default(),
+		logger:  ctxlog.Routing(),
 	}
 
 	for _, opt := range opts {
@@ -92,6 +103,11 @@ func NewQueuedSender(inner Sender, opts ...QueuedOption) (*QueuedSender, error) 
 	// delivery panics inside a worker rather than here.
 	if nilcheck.IsNil(inner) {
 		return nil, fmt.Errorf("%w: queued sender requires a sender to wrap", ErrConfig)
+	}
+
+	if cfg.loggerGiven && cfg.logger == nil {
+		return nil, fmt.Errorf("%w: WithQueueLogger was given a nil logger, so delivery failures would be lost; "+
+			"pass slog.New(slog.DiscardHandler) to silence them", ErrConfig)
 	}
 
 	if cfg.workers <= 0 {
@@ -115,6 +131,7 @@ func NewQueuedSender(inner Sender, opts ...QueuedOption) (*QueuedSender, error) 
 		logger:  cfg.logger,
 		drained: make(chan struct{}),
 	}
+	s.workerLog = slog.New(guardedHandler{log: cfg.logger})
 
 	for range cfg.workers {
 		s.wg.Go(s.work)
@@ -155,6 +172,9 @@ type queuedConfig struct {
 	size    int
 	timeout time.Duration
 	logger  *slog.Logger
+
+	// loggerGiven is set by WithQueueLogger, so a nil logger is told from none.
+	loggerGiven bool
 }
 
 // QueuedOption configures a QueuedSender. Every option names the default it
@@ -187,9 +207,12 @@ func WithQueueSendTimeout(timeout time.Duration) QueuedOption {
 	return func(c *queuedConfig) { c.timeout = timeout }
 }
 
-// WithQueueLogger replaces where the sender writes its logs. The default is
-// slog.Default, captured when the sender is built, so a consumer who
-// configures nothing still hears about mail that was never delivered.
+// WithQueueLogger replaces where the sender writes its logs. The default is the
+// logger of the chain handling the request that queued the message, else
+// slog.Default() when the record is written, so a consumer who configures
+// nothing still hears about mail that was never delivered. A record written by
+// a worker with no request, such as one about a worker that ended, goes to
+// slog.Default(). A nil logger fails NewQueuedSender with ErrConfig.
 //
 // Records report a dropped message, a failed delivery, a panic in the wrapped
 // sender and a wrapped sender that ended its goroutine. None of them carries
@@ -207,9 +230,8 @@ func WithQueueSendTimeout(timeout time.Duration) QueuedOption {
 // read instead of leaving it to a default.
 func WithQueueLogger(logger *slog.Logger) QueuedOption {
 	return func(c *queuedConfig) {
-		if logger != nil {
-			c.logger = logger
-		}
+		c.logger = logger
+		c.loggerGiven = true
 	}
 }
 
@@ -304,7 +326,7 @@ func (s *QueuedSender) work() {
 
 		s.wg.Go(s.work)
 
-		s.logger.LogAttrs(current.ctx, slog.LevelError,
+		s.workerLog.LogAttrs(current.ctx, slog.LevelError,
 			"notify: sender ended its goroutine while delivering",
 			slog.String("reason", "goexit"))
 	}()
@@ -332,6 +354,9 @@ func (s *QueuedSender) work() {
 // through [diag.Failure] (reason "send"), and a recovered panic is logged as
 // reason "panic" with the recovered value's Go type, never the value itself —
 // a custom sender's panic value can quote exactly what its error text can.
+// A failure whose error chain cannot be walked (a cycle, a fan-out, a
+// panicking Unwrap) also writes one abort record to the sender's logger, and
+// is then logged as a plain failure.
 //
 // The timeout bounds an inner sender that honours context cancellation
 // mid-transfer. SMTPSender does. A custom sender that ignores its context can
@@ -340,7 +365,7 @@ func (s *QueuedSender) work() {
 func (s *QueuedSender) deliver(q queued) {
 	defer func() {
 		if r := recover(); r != nil {
-			s.logger.LogAttrs(q.ctx, slog.LevelError,
+			s.workerLog.LogAttrs(q.ctx, slog.LevelError,
 				"notify: sender panicked while delivering",
 				slog.String("reason", "panic"),
 				slog.String("value_type", fmt.Sprintf("%T", r)))
@@ -350,8 +375,16 @@ func (s *QueuedSender) deliver(q queued) {
 	ctx, cancel := context.WithTimeout(q.ctx, s.timeout)
 	defer cancel()
 
-	if err := s.inner.Send(ctx, q.msg); err != nil {
-		s.logger.LogAttrs(ctx, slog.LevelError,
+	err := s.inner.Send(ctx, q.msg)
+
+	// The consumer's error is read by a goroutine the library owns, so it
+	// enters through the bounded walk even though it is only logged: a hostile
+	// chain is reported once, to this sender's logger, and the delivery is
+	// recorded as a plain outage.
+	err = porterr.SanitizeTo(ctx, s.workerLog, err, porterr.ErrUnwalkable)
+
+	if err != nil {
+		s.workerLog.LogAttrs(ctx, slog.LevelError,
 			"notify: delivery failed", diag.Failure("send", err)...)
 	}
 }
@@ -393,4 +426,41 @@ func (s *QueuedSender) Shutdown(ctx context.Context) error {
 
 	// A drain that has already finished wins over a ctx that is already done.
 	return lifecycle.Await(ctx, s.drained)
+}
+
+// guardedHandler is the handler of the logger the workers write to. It resolves
+// the sender's logger as that logger does (a routing logger reads the record's
+// context) and recovers a panic from the consumer's handler, so the record is
+// lost and nothing else: not the delivery, not the worker, not the process. A
+// panic here would otherwise escape deliver's own recover and end the process,
+// and be mistaken on the way out for a goroutine that ended. Nothing is written
+// about the panic, since it would go to the handler that just panicked.
+type guardedHandler struct{ log *slog.Logger }
+
+func (h guardedHandler) Enabled(ctx context.Context, level slog.Level) (on bool) {
+	defer func() {
+		if recover() != nil {
+			on = false
+		}
+	}()
+
+	return h.log.Enabled(ctx, level)
+}
+
+func (h guardedHandler) Handle(ctx context.Context, r slog.Record) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = nil
+		}
+	}()
+
+	return h.log.Handler().Handle(ctx, r)
+}
+
+func (h guardedHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return guardedHandler{log: slog.New(h.log.Handler().WithAttrs(attrs))}
+}
+
+func (h guardedHandler) WithGroup(name string) slog.Handler {
+	return guardedHandler{log: slog.New(h.log.Handler().WithGroup(name))}
 }

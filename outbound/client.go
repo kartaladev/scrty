@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/internal/ascii"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/origin"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // ErrRefused is wrapped by every refusal this package makes about where a
@@ -47,6 +49,13 @@ type Response struct {
 //
 // A Client is safe for concurrent use, and is meant to be built once and shared
 // by the components that fetch from the same provider.
+//
+// The consumer's http.Client is a port. An error from its Transport whose chain
+// cannot be walked is replaced by a walkable fault (porterr.ErrUnwalkable) before
+// the error is wrapped, and one record says the classification was aborted. That
+// record goes to the logger the request context carries, which a component of
+// this library attaches before it calls, and to slog.Default() when the context
+// carries none.
 type Client struct {
 	hc           *http.Client
 	schemes      []string
@@ -485,6 +494,8 @@ func (c *Client) do(
 		// One byte more than the bound is read, so that a document exactly at it is
 		// accepted and the first byte over it is seen without reading the rest.
 		read, err := io.ReadAll(io.LimitReader(res.Body, c.maxBytes+1))
+		// The body is the consumer's Transport's too: sanitized where it enters.
+		err = porterr.SanitizeTo(ctx, ctxlog.From(ctx), err, porterr.ErrUnwalkable)
 		if err != nil {
 			return fmt.Errorf("outbound: reading the response from %s: %w", rawURL, err)
 		}
@@ -531,6 +542,10 @@ func (c *Client) exchange(
 	}
 
 	res, err := c.hc.Do(req)
+	// The consumer's http.Client is a port: its Transport's error is read by
+	// callers behind this one (errors.Is on a flight goroutine), so a chain that
+	// cannot be walked is replaced here, before it is wrapped or inspected.
+	err = porterr.SanitizeTo(ctx, ctxlog.From(ctx), err, porterr.ErrUnwalkable)
 	if err != nil {
 		return fmt.Errorf("outbound: %s %s: %w", method, rawURL, err)
 	}

@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // consentNeeded decides whether a pending request must go through the consent stage.
@@ -43,11 +44,14 @@ func consentNeeded(c *RegisteredClient, req *PendingRequest, remembered *Consent
 // rememberedConsent reads what user gave the client, and nil for nothing.
 func (p *Provider) rememberedConsent(ctx context.Context, user identity.UserID, clientID string) (*Consent, error) {
 	remembered, err := p.stores.consents.Load(ctx, user, clientID)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return nil, nil //nolint:nilnil // nothing remembered is an answer, and no failure
 	case err != nil:
 		return nil, dependencyFailure(ctx, err, "oidcprovider: load the remembered consent")
+	case remembered == nil:
+		return nil, dependencyFailure(ctx, errNoRecord, "oidcprovider: load the remembered consent")
 	}
 
 	return remembered, nil

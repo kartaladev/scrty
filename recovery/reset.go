@@ -14,6 +14,7 @@ import (
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // AuthenticatorRef names one authenticator a user holds: the kind that manages
@@ -172,7 +173,9 @@ const (
 )
 
 // planner decides a recovery's authenticator reset before anything is spent,
-// and carries it out when the recovery completes.
+// and carries it out when the recovery completes. It holds no logger, so the
+// abort records of its port calls go to the logger of the chain handling the
+// request, else slog.Default() when the record is written, not to WithLogger.
 type planner struct {
 	kinds  []AuthenticatorKind
 	mode   resetMode
@@ -246,6 +249,7 @@ func (p planner) planOver(
 
 	for _, k := range p.kinds {
 		refs, err := k.Held(ctx, user)
+		err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 		if err != nil {
 			return nil, diag.Wrap(err, errTextResetListing, errListingFailed)
 		}
@@ -288,6 +292,7 @@ func (p planner) planOver(
 			Reported: slices.Clone(reported),
 			Proven:   slices.Clone(proven),
 		})
+		err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 		if err != nil {
 			return nil, diag.Wrap(err, errTextResetPolicy)
 		}
@@ -334,6 +339,7 @@ func (p planner) execute(ctx context.Context, user identity.UserID, plan []Authe
 		// Each kind's removal is its own write, and execute runs only from a
 		// completion detached from the caller's cancellation.
 		err := bounded(ctx, detach.WriteTimeout, func(c context.Context) error { return k.Remove(c, user, refs) })
+		err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 		if err != nil {
 			return diag.Wrap(err, errTextResetRemoval)
 		}

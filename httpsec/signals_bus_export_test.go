@@ -1,6 +1,7 @@
 package httpsec
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"time"
@@ -25,6 +26,11 @@ type SignalHubProbe struct{ h *signalHub }
 // NewSignalHubProbe builds a hub with an empty registry that caps nothing a test reaches, as
 // settle and wire build one.
 func NewSignalHubProbe(setup SignalHubSetup) *SignalHubProbe {
+	var sampler *refusalSampler
+	if setup.Sampler != nil {
+		sampler = &refusalSampler{inner: setup.Sampler}
+	}
+
 	return &SignalHubProbe{h: &signalHub{
 		registry: newSignalRegistry(signalLimits{perSignIn: 64, perUser: 64, total: 64}),
 		bus:      setup.Bus,
@@ -32,7 +38,7 @@ func NewSignalHubProbe(setup SignalHubSetup) *SignalHubProbe {
 		timeout:  setup.Timeout,
 		clock:    setup.Clock,
 		log:      setup.Log,
-		sampler:  setup.Sampler,
+		sampler:  sampler,
 	}}
 }
 
@@ -52,13 +58,18 @@ func (p *SignalHubProbe) Settings() (queue int, timeout time.Duration) {
 }
 
 // Raise is signalHub.raise.
-func (p *SignalHubProbe) Raise(e SignalEnvelope) error { return p.h.raise(e) }
+func (p *SignalHubProbe) Raise(e SignalEnvelope) error { return p.h.raise(context.Background(), e) }
+
+// RaiseContext is signalHub.raise on a request's context.
+func (p *SignalHubProbe) RaiseContext(ctx context.Context, e SignalEnvelope) error {
+	return p.h.raise(ctx, e)
+}
 
 // Start is signalHub.start.
 func (p *SignalHubProbe) Start() { p.h.start() }
 
 // Deliver is signalHub.deliver.
-func (p *SignalHubProbe) Deliver(e SignalEnvelope) { p.h.deliver(e) }
+func (p *SignalHubProbe) Deliver(e SignalEnvelope) { p.h.deliver(context.Background(), e) }
 
 // Close is signalHub.close.
 func (p *SignalHubProbe) Close() { p.h.close() }

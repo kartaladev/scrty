@@ -2,9 +2,11 @@ package session
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -54,10 +56,14 @@ type FamilyReader interface {
 // readFamily answers one family's sessions from store: through its family read
 // when it has one, and otherwise through its listing, the rest of which the
 // caller filters out as it filters whatever a store answers.
-func readFamily(ctx context.Context, store Store, user identity.UserID, family id.ID, now time.Time) ([]*Session, error) {
+func readFamily(ctx context.Context, logger *slog.Logger, store Store, user identity.UserID, family id.ID, now time.Time) ([]*Session, error) {
 	if reader, ok := store.(FamilyReader); ok {
-		return reader.ListByFamily(ctx, user, family, now)
+		sessions, err := reader.ListByFamily(ctx, user, family, now)
+
+		return sessions, porterr.SanitizeTo(ctx, logger, err, ErrListUnavailable)
 	}
 
-	return store.ListByUser(ctx, user, now)
+	sessions, err := store.ListByUser(ctx, user, now)
+
+	return sessions, porterr.SanitizeTo(ctx, logger, err, ErrListUnavailable)
 }

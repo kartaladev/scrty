@@ -13,6 +13,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -287,13 +288,13 @@ func (s *IdentityStore) Provision(
 
 	// Every identifier is minted before the first write, so a generator
 	// failure writes nothing.
-	userID, err := s.c.ids.NewID()
+	userID, err := idgen.New(s.c.ids)
 	if err != nil {
 		return nil, failed(op, err)
 	}
 	grantIDs := make([]id.ID, len(u.Roles))
 	for i := range grantIDs {
-		if grantIDs[i], err = s.c.ids.NewID(); err != nil {
+		if grantIDs[i], err = idgen.New(s.c.ids); err != nil {
 			return nil, failed(op, err)
 		}
 	}
@@ -478,7 +479,7 @@ func (s *IdentityStore) planGrants(
 			continue
 		}
 
-		fresh, err := s.c.ids.NewID()
+		fresh, err := idgen.New(s.c.ids)
 		if err != nil {
 			return nil, failed(op, err)
 		}

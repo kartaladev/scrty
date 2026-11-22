@@ -13,10 +13,12 @@ import (
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -318,14 +320,17 @@ func WithSecurityEvents(sink event.Sink) Option {
 	return func(c *config) { c.events.Set(sink) }
 }
 
-// WithLogger replaces the logger. The default is slog.Default(). A nil logger
-// is ignored. No record carries a username, an address, a code or a token.
+// WithLogger replaces the logger of the Recoverer's own records. The default is
+// the logger of the chain handling the request, else slog.Default() when the
+// record is written. A nil logger, typed nil included, fails NewRecoverer with
+// ErrConfig.
+//
+// The reset planner, the MFAEnrolments kind and WayBackCheck hold no logger:
+// their abort records follow the chain's logger, else slog.Default().
+//
+// No record carries a username, an address, a code or a token.
 func WithLogger(logger *slog.Logger) Option {
-	return func(c *config) {
-		if logger != nil {
-			c.logger = logger
-		}
-	}
+	return func(c *config) { c.logger = logger }
 }
 
 // WithPasswordCheck supplies the password proof's check. There is no default:
@@ -487,13 +492,17 @@ func NewRecoverer(deps Deps, opts ...Option) (*Recoverer, error) {
 
 		messages: DefaultMessages(),
 		clock:    clock.System(),
-		logger:   slog.Default(),
+		logger:   ctxlog.Routing(),
 	}
 
 	for _, opt := range opts {
 		if opt != nil {
 			opt(c)
 		}
+	}
+
+	if nilcheck.IsNil(c.logger) {
+		return nil, fmt.Errorf("%w: WithLogger was given no logger", ErrConfig)
 	}
 
 	r := &Recoverer{
@@ -645,7 +654,7 @@ func (r *Recoverer) validateIssued(c *config) error {
 
 	topts := []onetime.Option{onetime.WithTokenTTL(c.issuedTTL), onetime.WithClock(c.clock), onetime.WithLogger(c.logger)}
 	if c.issuedStoreSet {
-		topts = append(topts, onetime.WithStore(depfault.Store(c.issuedStore)))
+		topts = append(topts, onetime.WithStore(depfault.Store(c.issuedStore, c.logger)))
 	}
 
 	m, err := onetime.New(IssuedCodePurpose, topts...)
@@ -712,6 +721,9 @@ func (r *Recoverer) validateFlow(c *config) error {
 		}
 
 		l, err := factory.NewLimiter(namespaceUser, defaultUserLimit, defaultUserWindow)
+		// The factory's error is the consumer's, and fmt.Errorf below reads it
+		// eagerly: it is sanitized first, to the logger the options set.
+		err = porterr.SanitizeTo(context.Background(), c.logger, err, porterr.ErrUnwalkable)
 		if err != nil {
 			return fmt.Errorf("%w: limiter for namespace %q: %w", ErrConfig, namespaceUser, err)
 		}
@@ -820,6 +832,7 @@ func (r *Recoverer) Regenerate(ctx context.Context, user identity.UserID) ([]str
 	now := r.clock.Now()
 
 	details, err := r.users.LoadByUserID(ctx, user)
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 
 	switch {
 	case err != nil:

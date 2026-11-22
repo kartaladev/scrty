@@ -1,6 +1,7 @@
 package httpsec
 
 import (
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/kartaladev/scrty/internal/ascii"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/recovery"
 )
 
@@ -119,8 +121,9 @@ func EnableRecoveryCooldown(records recovery.RecordStore, cooldown time.Duration
 			marked[normalizeRoute(r.Method, r.Path)] = struct{}{}
 		}
 
-		c.register(&recoveryCooldown{records: records, window: cooldown, routes: marked, given: given, now: c.now},
-			After(OrderBearerToken))
+		g := &recoveryCooldown{records: records, window: cooldown, routes: marked, given: given, now: c.now}
+		c.register(g, After(OrderBearerToken))
+		c.wire(func(ch *Chain) { g.log = ch.logger })
 
 		return nil
 	}
@@ -137,6 +140,11 @@ type recoveryCooldown struct {
 	// route check names in its refusal.
 	given []Route
 	now   func() time.Time
+
+	// log is the chain's logger, where a hostile store error's one abort
+	// record goes (porterr.SanitizeTo). It is set once the options are applied
+	// (wire), so a logger wired after the cool-down is still the one used.
+	log *slog.Logger
 }
 
 // Intercept refuses a marked request from a session whose user completed a
@@ -152,6 +160,10 @@ func (g *recoveryCooldown) Intercept(ex *Exchange, next Next) error {
 	}
 
 	completed, ok, err := g.records.LatestCompletion(ex.Context(), s.UserID)
+	// The store is the consumer's: an error whose chain cannot be walked
+	// becomes the library's fixed error here, answered as any store outage
+	// (never as no completion recorded, which would skip the cool-down).
+	err = porterr.SanitizeTo(ex.Context(), g.log, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return diag.Wrap(err, textCooldownLookupFailed)
 	}

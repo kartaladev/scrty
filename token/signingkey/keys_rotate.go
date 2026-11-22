@@ -12,6 +12,8 @@ import (
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
+	"github.com/kartaladev/scrty/internal/porterr"
+	"github.com/kartaladev/scrty/internal/recovered"
 )
 
 // rotateAll mints and stores a new key for every configured algorithm. Each
@@ -23,14 +25,23 @@ import (
 // rotation interval later. One algorithm failing does not stop the others.
 func (km *Keys) rotateAll(ctx context.Context) {
 	for _, alg := range km.algs {
-		if _, f := km.mintAndStore(ctx, alg); f != nil {
+		if _, f := km.mintAndStore(ctx, alg, true); f != nil {
 			km.report(ctx, "rotate", alg, f)
 
 			continue
 		}
 
+		// The key is stored and current. A clock that fails now costs the event
+		// its time, so the event is skipped and the failure reported.
+		at, err := km.now(ctx, true)
+		if err != nil {
+			km.report(ctx, "rotate", alg, clockFailure(err, "signingkey: read the clock for a rotation event"))
+
+			continue
+		}
+
 		eventsink.Deliver(ctx, km.events.Sink(), event.Event{
-			Name: event.SigningKeyRotated, At: km.clock.Now(), Outcome: event.OutcomeSuccess,
+			Name: event.SigningKeyRotated, At: at, Outcome: event.OutcomeSuccess,
 		}, km.logger)
 	}
 }
@@ -53,6 +64,12 @@ func (km *Keys) rotateAll(ctx context.Context) {
 // for the work to end — documented in WithErrorHook and Shutdown, because
 // nothing here can enforce it.
 //
+// A hook that panics is recovered where it is called: recovered.Call writes
+// the one record that says so, the hook is not called again for that panic, and
+// the failure goes on to the logger below as it would have. A clock that panics
+// while the failure is being sampled writes the record unsampled: a failure is
+// over-reported rather than lost.
+//
 // It reports nothing once ctx has ended. Every caller passes the work's context,
 // which only Shutdown ends, since Start detaches it from the cancellation of the
 // context it was given, so a store call cut off by Shutdown raises no alarm. What
@@ -66,15 +83,31 @@ func (km *Keys) report(ctx context.Context, op string, alg Alg, f *failure) {
 	}
 
 	if km.errorHook != nil {
-		km.errorHook(f.err)
+		// The error is discarded on purpose: Call has already written the one
+		// record for a panic, and there is no second hook to tell.
+		_ = recovered.Call(ctx, km.logger, whatErrorHook, func() error {
+			km.errorHook(f.err)
+
+			return nil
+		})
 	}
 
-	write, suppressed := km.sampler.Allow(sampleKey(op, alg), km.clock.Now())
-	if !write {
-		return
+	suppressed := 0
+	sampled := false
+	if now, err := km.now(ctx, true); err == nil {
+		var write bool
+		sampled = true
+
+		write, suppressed = km.sampler.Allow(sampleKey(op, alg), now)
+		if !write {
+			return
+		}
 	}
-	km.logger.LogAttrs(ctx, slog.LevelError, "signingkey: "+op+" failed",
-		slices.Concat(failureAttrs(op, alg, suppressed), f.attrs, diag.Failure(f.reason, f.cause))...)
+	km.logGuarded(ctx, km.logger, "signingkey: "+op+" failed",
+		slices.Concat(failureAttrs(op, alg, suppressed), f.attrs, diag.Failure(f.reason, f.cause)))
+	if sampled {
+		km.summaries.Note(ctx, km.logger, sampleKey(op, alg))
+	}
 }
 
 // opHousekeep is the operation a housekeeping failure is sampled and recorded by.
@@ -89,7 +122,93 @@ const (
 	// reasonGenerate is this package's own key generation failing, never a
 	// consumer dependency.
 	reasonGenerate = "key-generate"
+	// reasonClock is the consumer's clock panicking when read or waited on.
+	reasonClock = "signing-key-clock"
 )
+
+// The fixed words a recovered consumer panic is recorded by, one per call the
+// loops make into consumer code.
+const (
+	whatStoreWrite  = "key store write"
+	whatStoreLoad   = "key store load"
+	whatStoreDelete = "key store delete"
+	whatErrorHook   = "error hook"
+	whatLogger      = "logger"
+	whatClockNow    = "clock now"
+	whatClockAfter  = "clock after"
+)
+
+// consumer runs f, a call into consumer code. On a goroutine the manager
+// started (guarded) a panic in f is recovered where it is called, with one
+// record, and comes back as recovered.ErrPanicked, so the loop that made the
+// call survives and keeps its schedule. Unguarded, f runs as it is: the
+// caller's goroutine is the caller's own.
+func (km *Keys) consumer(ctx context.Context, guarded bool, what string, f func() error) error {
+	if !guarded {
+		return f()
+	}
+
+	return recovered.Call(ctx, km.logger, what, f)
+}
+
+// storeCall runs f, a call into the consumer's KeyStore, under consumer, and
+// sanitizes the error f returns where it enters the manager: a chain that
+// cannot be walked (a cycle, a fan-out past the budget, an Unwrap that panics)
+// becomes a fixed porterr.Fault, with one record on the manager's logger,
+// before anything wraps, logs, reports or returns it. A chain that can be
+// walked passes through as the same error, so a consumer's own errors stay
+// reachable through errors.Is and errors.As, and a recovered.ErrPanicked stays
+// the plain sentinel it is.
+//
+// The sanitizer runs inside the recovered call, not after it: it writes its
+// record through the consumer's logger, whose handler is consumer code, and on
+// a loop's goroutine a handler that panics must cost the record and not the
+// process. The failure is then reported as the consumer's code panicking, the
+// same outcome as any other panic from the store.
+//
+// The fault unwraps to porterr.ErrUnwalkable, which no branch here tests for,
+// so a hostile error takes the catch-all branch a plain store failure takes.
+// A cancelled ctx does not stop the record.
+func (km *Keys) storeCall(ctx context.Context, guarded bool, what string, f func() error) error {
+	return km.consumer(ctx, guarded, what, func() error {
+		return porterr.SanitizeTo(ctx, km.logger, f(), porterr.ErrUnwalkable)
+	})
+}
+
+// now reads the consumer's clock under consumer. A panic gives the zero time
+// and recovered.ErrPanicked.
+func (km *Keys) now(ctx context.Context, guarded bool) (at time.Time, err error) {
+	err = km.consumer(ctx, guarded, whatClockNow, func() error {
+		at = km.clock.Now()
+
+		return nil
+	})
+
+	return at, err
+}
+
+// loadAll lists the store under consumer. A panic gives no records and
+// recovered.ErrPanicked. Only the loops call it.
+func (km *Keys) loadAll(ctx context.Context) (recs []Record, err error) {
+	err = km.storeCall(ctx, true, whatStoreLoad, func() error {
+		var loadErr error
+
+		recs, loadErr = km.store.LoadAll(ctx)
+
+		return loadErr
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return recs, nil
+}
+
+// clockFailure is the failure of a clock that panicked: the error says so in
+// fixed text, and the record names recovered.ErrPanicked's type.
+func clockFailure(err error, text string) *failure {
+	return &failure{err: diag.Wrap(err, text), reason: reasonClock, cause: err}
+}
 
 // failure is one rotation, reload or housekeeping failure, as report needs it.
 type failure struct {
@@ -113,10 +232,25 @@ type failure struct {
 // The sampler's reporter contract carries no context, so there is none to
 // propagate here.
 func (km *Keys) reportSuppressed(key string, suppressed int) {
+	// A summary has no request context: it goes where the key's last record
+	// went. The key is the sampler's composite one, which is what Note saw.
 	op, alg, _ := strings.Cut(key, sampleKeySeparator)
-	km.logger.LogAttrs(context.Background(), slog.LevelError,
-		"signingkey: repeated failures suppressed",
-		failureAttrs(op, alg, suppressed)...)
+	km.logGuarded(context.Background(), km.summaries.For(km.logger, key), "signingkey: repeated failures suppressed",
+		failureAttrs(op, alg, suppressed))
+}
+
+// logGuarded writes one Error record on logger, the manager's or the one a
+// summary follows, from a loop goroutine, where the logger's handler is
+// consumer code. A handler that panics is recovered: the record is lost, and
+// the loop goes on. Call's own record of the panic goes to the same logger,
+// and Call swallows a panic from that write too, so nothing here recurses or
+// re-panics.
+func (km *Keys) logGuarded(ctx context.Context, logger *slog.Logger, msg string, attrs []slog.Attr) {
+	_ = recovered.Call(ctx, logger, whatLogger, func() error {
+		logger.LogAttrs(ctx, slog.LevelError, msg, attrs...)
+
+		return nil
+	})
 }
 
 // sampleKeySeparator joins the two halves of a sampler key. The key is a string
@@ -159,7 +293,7 @@ func failureAttrs(op string, alg Alg, suppressed int) []slog.Attr {
 // are still good and the next reload will try again — construction is the
 // stricter case, where skipping a record would mint a replacement for it.
 func (km *Keys) reload(ctx context.Context) {
-	recs, err := km.store.LoadAll(ctx)
+	recs, err := km.loadAll(ctx)
 	if err != nil {
 		km.report(ctx, "reload", "", &failure{
 			err:    diag.Wrap(err, "signingkey: reload keys"),
@@ -169,7 +303,11 @@ func (km *Keys) reload(ctx context.Context) {
 		return
 	}
 
-	now := km.clock.Now()
+	now, err := km.now(ctx, true)
+	if err != nil {
+		km.report(ctx, "reload", "", clockFailure(err, "signingkey: read the clock for a reload"))
+		return
+	}
 
 	km.mu.RLock()
 	held := make(map[string]struct{}, len(km.keys))
@@ -336,7 +474,11 @@ func (km *Keys) knownKeysLocked(listing []storedKey) []storedKey {
 // before the store is called: signing and verifying must not queue behind store
 // I/O, and a failure's report reaches consumer code that may read the manager.
 func (km *Keys) housekeep(ctx context.Context) {
-	now := km.clock.Now()
+	now, err := km.now(ctx, true)
+	if err != nil {
+		km.report(ctx, opHousekeep, "", clockFailure(err, "signingkey: read the clock for housekeeping"))
+		return
+	}
 
 	km.mu.Lock()
 	km.dropLocked(now, func(string) bool { return true })
@@ -380,7 +522,7 @@ func (km *Keys) housekeep(ctx context.Context) {
 // which is the successor of the listing's newest, and that one is never in the
 // delete. Every other key keeps the successor it was judged by.
 func (km *Keys) deleteRetired(ctx context.Context, now time.Time) {
-	recs, err := km.store.LoadAll(ctx)
+	recs, err := km.loadAll(ctx)
 	if err != nil {
 		km.report(ctx, opHousekeep, "", &failure{
 			err:    diag.Wrap(err, "signingkey: list retired keys"),
@@ -408,7 +550,9 @@ func (km *Keys) deleteRetired(ctx context.Context, now time.Time) {
 		return
 	}
 
-	if err := km.store.Delete(ctx, retired...); err != nil {
+	if err := km.storeCall(ctx, true, whatStoreDelete, func() error {
+		return km.store.Delete(ctx, retired...)
+	}); err != nil {
 		km.report(ctx, opHousekeep, "", &failure{
 			err:    diag.Wrap(err, "signingkey: delete retired keys"),
 			reason: reasonStore,

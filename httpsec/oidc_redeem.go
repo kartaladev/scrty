@@ -7,6 +7,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/internal/assurance"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 )
@@ -43,7 +44,7 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 	// replay store or nonce cipher are not.
 	binding, err := issuingBinding(ctx, ex.dpop(), ex.certBinding(), ex.Request, ex.bearerCredential)
 	if err != nil {
-		if chargesProofRefusal(err) {
+		if chargesProofRefusal(ex, err) {
 			recordSourceFailure(ctx, i.guard, src)
 		}
 
@@ -53,7 +54,7 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 	// The check mints the assurance evidence from the candidate the redeemer
 	// hands it, which carries the record the callback wrote from the verified
 	// ID token. Nothing in this request reaches it.
-	check, out := oidcRedemptionCheck(i.engine, i.enforced, i.challengeMethods, i.now)
+	check, out := oidcRedemptionCheck(i.engine, i.enforced, i.challengeMethods, i.now, i.log)
 
 	// Built and issued inside the check, after the refusal check has passed
 	// and before the redeemer consumes the code, so a credential that cannot
@@ -96,6 +97,9 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 	}
 
 	res, err := i.redeemer.Redeem(ctx, code, checkThenIssue)
+	// The redeemer is a consumer port and its error is walked below: a chain
+	// that cannot be walked is answered as a plain outage, recorded once.
+	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
 	if err != nil {
 		if countsAgainstSource(i.countRefusals, err, out) {
 			recordSourceFailure(ctx, i.guard, src)

@@ -3,12 +3,14 @@ package httpsec
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/policy"
 )
 
@@ -101,14 +103,18 @@ func (out *policyOutcome) challengeMethods(lookup challengeMethodsFunc) challeng
 // The check carries no federated assurance. A federated redemption builds its
 // check with oidcRedemptionCheck instead, which shares this one's decision and
 // record.
+//
+// log receives the one record of a deny reason whose chain cannot be walked
+// (see redemptionDecision).
 func redemptionPolicyCheck(
 	engine *policy.Engine,
 	enforced map[policy.ChallengeKind]bool,
 	methods challengeMethodsFunc,
 	first factor.Kind,
 	now func() time.Time,
+	log *slog.Logger,
 ) (redemptionCheck, *policyOutcome) {
-	decide, out := redemptionDecision(engine, enforced, methods)
+	decide, out := redemptionDecision(engine, enforced, methods, log)
 
 	check := func(ctx context.Context, p identity.Principal, passwordChangedAt time.Time) error {
 		return decide(ctx, postAuthenticationInput(&p, first, "", passwordChangedAt, now()))
@@ -130,8 +136,9 @@ func oidcRedemptionCheck(
 	enforced map[policy.ChallengeKind]bool,
 	methods challengeMethodsFunc,
 	now func() time.Time,
+	log *slog.Logger,
 ) (oidc.RedeemCheck, *policyOutcome) {
-	decide, out := redemptionDecision(engine, enforced, methods)
+	decide, out := redemptionDecision(engine, enforced, methods, log)
 
 	check := func(ctx context.Context, c oidc.RedeemCandidate) error {
 		in := postAuthenticationInput(&c.Principal, factor.OIDC, "", c.PasswordChangedAt, now())
@@ -147,10 +154,16 @@ func oidcRedemptionCheck(
 // evaluates the post-authentication phase on the input the check built,
 // records what it decided and on what, and refuses a deny, an unenforced
 // challenge and a failed methods lookup (see redemptionPolicyCheck).
+//
+// A deny reason is the consumer's policy's error, so it is sanitized before it
+// is recorded (porterr.SanitizeTo, its one abort record to log): the record and
+// the refusal the redeemer hands back are then the same value, walkable or the
+// library's fixed error, and countsAgainstSource recognises either by identity.
 func redemptionDecision(
 	engine *policy.Engine,
 	enforced map[policy.ChallengeKind]bool,
 	methods challengeMethodsFunc,
+	log *slog.Logger,
 ) (func(ctx context.Context, in *policy.Input) error, *policyOutcome) {
 	out := &policyOutcome{}
 
@@ -174,6 +187,8 @@ func redemptionDecision(
 			if reason == nil {
 				reason = policy.ErrDenied
 			}
+
+			reason = porterr.SanitizeTo(ctx, log, reason, porterr.ErrUnwalkable)
 
 			out.denyErr = reason
 
@@ -214,8 +229,16 @@ func redemptionDecision(
 // consumer's check refused" and "the redeemer failed for a reason of its own"
 // would be indistinguishable, and exempting the second from the source count is
 // exactly what an attacker would want.
+//
+// A check is the consumer's port, so its error is sanitized before it is
+// recorded or returned (porterr.SanitizeTo, its one abort record to log): an
+// error whose chain can be walked is recorded and returned unchanged, and one
+// whose chain cannot is replaced by the library's fixed error in both places.
+// The redeemer passes a sanitized error through as the same value, so the
+// record is matched by identity either way, and a fault another dependency
+// raised in the same redemption is a different value and never taken for it.
 func wrapChecks[C ~func(context.Context, identity.Principal, time.Time) error](
-	checks []C, out *policyOutcome,
+	checks []C, out *policyOutcome, log *slog.Logger,
 ) []C {
 	if len(checks) == 0 {
 		return nil
@@ -227,6 +250,8 @@ func wrapChecks[C ~func(context.Context, identity.Principal, time.Time) error](
 		wrapped = append(wrapped,
 			func(ctx context.Context, p identity.Principal, changed time.Time) error {
 				err := check(ctx, p, changed)
+
+				err = porterr.SanitizeTo(ctx, log, err, porterr.ErrUnwalkable)
 				if err != nil {
 					out.checkErr = err
 				}
@@ -394,7 +419,8 @@ func newRedemptionLogin(deps loginTailDeps, out *policyOutcome) *redemptionLogin
 //
 // A failure to build or issue is recorded on the outcome (policyOutcome.
 // issueErr), until a later issue for the redemption succeeds and clears it,
-// and returned as it is, a dependency failure behind fixed text; the
+// and returned as it is (or as the library's fixed error, when the issuer's
+// error cannot be walked), a dependency failure behind fixed text; the
 // redeemer hands it back unchanged, so the endpoint answers it as an outage,
 // never as an invalid credential, and does not count it against the source.
 func (r *redemptionLogin) issue(ctx context.Context, in *policy.Input) error {
@@ -418,6 +444,15 @@ func (r *redemptionLogin) issue(ctx context.Context, in *policy.Input) error {
 
 	login, err := prepareLogin(ctx, r.deps, in)
 	if err != nil {
+		// A generator's error arrives sanitized and marked (signedTokens),
+		// and passes here unchanged. Building the session can still fail
+		// with an error of the session manager's own consumer ports (its
+		// random source, its family identifier generator), which the session
+		// package returns unsanitized: sanitized before it is recorded, so
+		// the record is the very value the redeemer hands back even when its
+		// chain cannot be walked, and countsAgainstSource recognises it by
+		// identity.
+		err = porterr.SanitizeTo(ctx, r.deps.log, err, porterr.ErrUnwalkable)
 		r.out.issueErr = err
 
 		return err

@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/kartaladev/scrty/internal/idgen"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -64,10 +66,10 @@ func digestEncoded(encoded string) ([]byte, bool) {
 }
 
 // mintSecret returns a new secret, encoded, and its digest.
-func (p *Provider) mintSecret() (string, []byte, error) {
+func (p *Provider) mintSecret(ctx context.Context) (string, []byte, error) {
 	raw := make([]byte, flowSecretBytes)
 	if _, err := io.ReadFull(p.cfg.random, raw); err != nil {
-		return "", nil, err
+		return "", nil, porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	}
 
 	return secretEncoding.EncodeToString(raw), digestSecret(raw), nil
@@ -77,12 +79,12 @@ func (p *Provider) mintSecret() (string, []byte, error) {
 // can each be resumed, and mints one for a browser holding none. What it keeps, it judges
 // by shape alone: the cookie's __Host- prefix is what stops anyone else planting a value,
 // and the store cannot be asked who holds a digest.
-func (p *Provider) flowFor(given string) (string, []byte, error) {
+func (p *Provider) flowFor(ctx context.Context, given string) (string, []byte, error) {
 	if digest, ok := digestEncoded(given); ok {
 		return given, digest, nil
 	}
 
-	return p.mintSecret()
+	return p.mintSecret(ctx)
 }
 
 // park stores a validated request under a new handle, and answers with the login page.
@@ -103,15 +105,16 @@ func (p *Provider) parkRequest(ctx context.Context, req *PendingRequest, flowSec
 
 // parkAt is parkRequest for a request waiting at stage.
 func (p *Provider) parkAt(ctx context.Context, req *PendingRequest, flowSecret string, stage Stage) (string, string, error) {
-	secret, handleDigest, err := p.mintSecret()
+	secret, handleDigest, err := p.mintSecret(ctx)
 	if err != nil {
 		return "", "", dependencyFailure(ctx, err, "oidcprovider: mint a handle")
 	}
-	flow, flowDigest, err := p.flowFor(flowSecret)
+	flow, flowDigest, err := p.flowFor(ctx, flowSecret)
 	if err != nil {
 		return "", "", dependencyFailure(ctx, err, "oidcprovider: mint a flow secret")
 	}
-	recordID, err := p.cfg.ids.NewID()
+	recordID, err := idgen.New(p.cfg.ids)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return "", "", dependencyFailure(ctx, err, "oidcprovider: mint a pending request identifier")
 	}
@@ -123,7 +126,8 @@ func (p *Provider) parkAt(ctx context.Context, req *PendingRequest, flowSecret s
 	req.ParkedAt = now
 	req.ExpiresAt = now.Add(p.cfg.pendingLifetime)
 	req.Stage = stage
-	if err := p.stores.pendingRequests.Create(ctx, req); err != nil {
+	err = p.stores.pendingRequests.Create(ctx, req)
+	if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 		return "", "", dependencyFailure(ctx, err, "oidcprovider: park the request")
 	}
 
@@ -147,8 +151,9 @@ func splitHandle(handle string) (id.ID, []byte, bool) {
 
 // loadPending returns the unexpired request the handle names, when the flow secret is
 // the one it was parked with. Every way of failing that is the requester's answers
-// ErrUnknownHandle, so a guess learns nothing from which it was. The stage is the
-// caller's to judge.
+// ErrUnknownHandle, so a guess learns nothing from which it was. A store answering
+// neither a request nor an error breaks its contract, and is a dependency failure, never
+// an unknown handle. The stage is the caller's to judge.
 func (p *Provider) loadPending(ctx context.Context, handle, flowSecret string) (*PendingRequest, error) {
 	recordID, handleDigest, ok := splitHandle(handle)
 	if !ok {
@@ -160,11 +165,14 @@ func (p *Provider) loadPending(ctx context.Context, handle, flowSecret string) (
 	}
 
 	r, err := p.stores.pendingRequests.Load(ctx, handleDigest)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return nil, ErrUnknownHandle
 	case err != nil:
 		return nil, dependencyFailure(ctx, err, "oidcprovider: load the pending request")
+	case r == nil:
+		return nil, dependencyFailure(ctx, errNoRecord, "oidcprovider: load the pending request")
 	}
 
 	bound := subtle.ConstantTimeCompare(r.FlowDigest, flowDigest) == 1

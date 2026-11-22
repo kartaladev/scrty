@@ -7,7 +7,9 @@ import (
 	"slices"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
 
@@ -317,6 +319,12 @@ var _ logsample.Flusher = (*Engine)(nil)
 // replaces how a phase-sensitive policy learns the phase through that policy's
 // own option — see WithMFARequirementPhaseSource.
 //
+// A deny or challenge reason whose chain cannot be walked (a cycle, a fan-out
+// past budget, a panicking Unwrap) is replaced by the library's fault, and the
+// outcome stands. One record of it is written: inside an httpsec chain, to the
+// chain's logger, and otherwise to slog.Default(). The engine holds no logger
+// of its own.
+//
 // A nil input denies, with ErrDenied as the reason, before any policy is
 // asked: a policy handed nil either dereferences it or has nothing to object
 // to, and neither a panic nor an allow is an answer to a caller's wiring
@@ -352,10 +360,15 @@ func (e *Engine) EvaluatePhase(ctx context.Context, phase Phase, in *Input) Deci
 			// meant to refuse is served. Substituting here closes that for
 			// every policy at once, rather than asking each policy that will
 			// ever be written to remember. A reason the policy did give is left
-			// exactly as it was.
+			// exactly as it was, unless its chain cannot be walked: the
+			// policy is the consumer's code, and a reason every caller
+			// matches with errors.Is must not be able to hang or panic it.
+			// Such a reason becomes the library's fault, and still denies.
 			if d.Reason == nil {
 				d.Reason = ErrDenied
 			}
+
+			d.Reason = porterr.SanitizeTo(ctx, ctxlog.From(ctx), d.Reason, porterr.ErrUnwalkable)
 
 			return d
 		case Challenge:
@@ -364,6 +377,7 @@ func (e *Engine) EvaluatePhase(ctx context.Context, phase Phase, in *Input) Deci
 			// ask a caller to satisfy a challenge for access it was never
 			// going to be given.
 			if held.Outcome != Challenge {
+				d.Reason = porterr.SanitizeTo(ctx, ctxlog.From(ctx), d.Reason, porterr.ErrUnwalkable)
 				held = d
 			}
 		case Allow:

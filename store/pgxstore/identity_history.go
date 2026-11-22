@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -98,7 +99,7 @@ func (s *IdentityStore) RetirePassword(ctx context.Context, ref identity.UserID,
 
 	// The identifier is minted before the first statement, so a generator
 	// failure writes nothing.
-	entryID, err := s.c.ids.NewID()
+	entryID, err := idgen.New(s.c.ids)
 	if err != nil {
 		return failed(op, err)
 	}

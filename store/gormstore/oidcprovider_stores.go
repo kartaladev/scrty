@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/oidcprovider"
@@ -385,7 +386,7 @@ func (s *ConsentStore) Give(
 ) error {
 	const op = "give consent"
 
-	rowID, err := s.c.ids.NewID()
+	rowID, err := idgen.New(s.c.ids)
 	if err != nil {
 		return failed(op, err)
 	}
@@ -525,7 +526,7 @@ func NewAssertionIDStore(db *gorm.DB, opts ...Option) (*AssertionIDStore, error)
 func (s *AssertionIDStore) Record(ctx context.Context, clientID, jti string, until time.Time) (bool, error) {
 	const op = "record assertion identifier"
 
-	rowID, err := s.c.ids.NewID()
+	rowID, err := idgen.New(s.c.ids)
 	if err != nil {
 		return false, failed(op, err)
 	}
@@ -568,7 +569,7 @@ func (s *BrowserSessionStore) Put(ctx context.Context, rec *oidcprovider.Browser
 	if err := pgschema.CheckBrowserSession(rec); err != nil {
 		return failed(op, err)
 	}
-	rowID, err := s.c.ids.NewID()
+	rowID, err := idgen.New(s.c.ids)
 	if err != nil {
 		return failed(op, err)
 	}
@@ -696,7 +697,7 @@ func (s *ClientStore) PutRegistered(ctx context.Context, client oidcprovider.Reg
 }
 
 func (s *ClientStore) upsert(ctx context.Context, op string, rc *oidcprovider.RegisteredClient, keepHeld bool) error {
-	rowID, err := s.c.ids.NewID()
+	rowID, err := idgen.New(s.c.ids)
 	if err != nil {
 		return failed(op, err)
 	}

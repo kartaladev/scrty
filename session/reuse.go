@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -366,7 +367,7 @@ func (m *Sessions) RotateWithGraceIssuing(
 		return nil, 0, "", ErrExpired
 	}
 
-	id, err := m.newIdentifier()
+	id, err := m.newIdentifier(ctx)
 	if err != nil {
 		return nil, 0, "", err
 	}
@@ -417,6 +418,7 @@ func (m *Sessions) RotateWithGraceIssuing(
 		Now:                         now,
 		RequireUnpresentedSuccessor: kind == RenewalRecovery,
 	})
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if errors.Is(err, ErrSuccessorAdvanced) {
 		return nil, 0, "", m.reuse(ctx, old, now)
 	}
@@ -513,6 +515,7 @@ func (m *Sessions) ended(ctx context.Context, s *Session, now time.Time) error {
 	dctx, cancel := detach.Bounded(ctx, detach.WriteTimeout)
 	used, err := m.store.SuccessorPresented(dctx, s.ID)
 	cancel()
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return storeFailed(err, "session: whether the session's successor was used could not be read")
 	}
@@ -539,6 +542,7 @@ func (m *Sessions) reuse(ctx context.Context, s *Session, now time.Time) error {
 	dctx, cancel := detach.Bounded(ctx, detach.RevocationTimeout)
 	_, err := m.store.DeleteFamily(dctx, s.FamilyID)
 	cancel()
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		m.logger.LogAttrs(ctx, slog.LevelError,
 			"session: a superseded session was presented after its window; its family could not be revoked",

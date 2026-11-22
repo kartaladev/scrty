@@ -14,10 +14,13 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jwk"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/assurance"
 	"github.com/kartaladev/scrty/pkg/clock"
+	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -121,7 +124,9 @@ var WithSession = withSession
 
 // ReadResponse exposes the reader the verify endpoint hands a method's
 // response through, so its rules can be pinned without a chain.
-var ReadResponse = readResponse
+func ReadResponse(r Request, f mfa.ResponseFormat) ([]byte, error) {
+	return readResponse(context.Background(), r, f)
+}
 
 // EnableRecoveryGateForTest registers the recovery gate exactly as
 // EnableAccountRecovery does, without the recovery endpoints, so a test can
@@ -148,7 +153,21 @@ var ClassifyAddressForTest = classifyAddress
 
 // SourceThrottledForTest exposes the throttle seam's check, so a test can pin
 // what each refusal returns before any interceptor is built on it.
-var SourceThrottledForTest = sourceThrottled
+func SourceThrottledForTest(
+	ctx context.Context,
+	g sourceGuard,
+	clientAddr, flow string,
+	s *logsample.Sampler,
+	log *slog.Logger,
+	now time.Time,
+) (ratelimit.Source, error) {
+	var sampler *refusalSampler
+	if s != nil {
+		sampler = &refusalSampler{inner: s}
+	}
+
+	return sourceThrottled(ctx, g, clientAddr, flow, sampler, log, now)
+}
 
 // RecordSourceFailureForTest exposes the throttle seam's recording, so a test
 // can observe the context it hands the guard.

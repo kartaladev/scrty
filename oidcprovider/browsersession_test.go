@@ -298,7 +298,7 @@ func TestProvider_BrowserSession(t *testing.T) {
 		return &identity.Details{ID: "u-2", Active: true}, nil
 	})
 	nobody := userIs(func(identity.UserID) (*identity.Details, error) {
-		return nil, nil //nolint:nilnil // a loader that breaks its contract must still not answer for a session
+		return nil, nil //nolint:nilnil // a loader that breaks its contract is a dependency failure, no verdict on the session
 	})
 	userOutage := userIs(func(identity.UserID) (*identity.Details, error) { return nil, errOutage })
 	outage := func(t *testing.T, row *sessionRow, res oidcprovider.AuthorizeResult, err error) {
@@ -797,7 +797,7 @@ func TestProvider_BrowserSession(t *testing.T) {
 		{name: "a disabled user counts as no session", prepare: disabled, assert: atLoginPage},
 		{name: "a disabled user, prompt=none, answers login_required", params: silent, prepare: disabled, assert: loginRequired},
 		{name: "a record for someone else counts as no session", prepare: someoneElse, assert: atLoginPage},
-		{name: "a loader answering nothing counts as no session", prepare: nobody, assert: atLoginPage},
+		{name: "a loader answering nothing is a dependency failure, and no session verdict", prepare: nobody, assert: outage},
 		{name: "a failing user store is no verdict on the session", prepare: userOutage, assert: outage},
 		{name: "a failing user store gives no page under prompt=none", params: silent, prepare: userOutage, assert: outage},
 		{

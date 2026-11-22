@@ -10,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/internal/ascii"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // PrivilegeAuthorizer judges PrivilegeAttributes against the privileges the
@@ -141,6 +142,9 @@ func (a *PrivilegeAuthorizer) Authorize(ctx context.Context, attrs Attributes) e
 	}
 
 	granted, err := a.roles.LoadPrivileges(ctx, role.Name)
+	// An unwalkable loader error becomes a fault that is no not-found, so it
+	// stays an outage rather than reading as "the role grants nothing".
+	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	if err != nil {
 		if errors.Is(err, identity.ErrPrivilegesNotFound) {
 			return fmt.Errorf("%w: role %q grants no privileges", ErrAccessDenied, role.Name)
@@ -152,7 +156,8 @@ func (a *PrivilegeAuthorizer) Authorize(ctx context.Context, attrs Attributes) e
 		// caller trying something they may not do. The loader's own error is
 		// never rendered into the text — it can quote whatever the loader's
 		// backing store holds — but stays reachable through errors.Is and
-		// errors.As, so a consumer can still match it deliberately.
+		// errors.As, so a consumer can still match it deliberately. An error
+		// whose chain cannot be walked is the fixed fault instead.
 		return diag.Wrap(err, "authorize: the role's privileges could not be loaded")
 	}
 

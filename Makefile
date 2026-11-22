@@ -298,7 +298,7 @@ RELEASE_GOENV = GOWORK=off GOENV=off GOTOOLCHAIN=local GONOSUMDB=github.com/kart
 #     every refusal, so a refused run leaves it empty too: one that kept an earlier run's
 #     SBOMs let them pass for this run's (reproduced 2026-11-09). The SBOMs are written
 #     inside the run's temporary directory and moved into SBOM_DIR only after every step
-#     has passed, so nine SBOMs naming the version there can only come from a passing
+#     has passed, so ten SBOMs naming the version there can only come from a passing
 #     run. `make sbom` on its own still writes straight into SBOM_DIR.
 #   - A version other than v0.1.0 or one of its prereleases is refused when no earlier v
 #     tag is found: a full clone fetched without tags would otherwise report against

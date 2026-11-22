@@ -9,7 +9,6 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -66,7 +65,7 @@ type sessionBearer struct {
 
 	limiter ratelimit.Limiter
 	guard   sourceGuard
-	sampler *logsample.Sampler
+	sampler *refusalSampler
 	log     *slog.Logger
 
 	// dpop is the chain's DPoP verifier, handed over at assembly, and nil

@@ -19,9 +19,11 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -89,7 +91,7 @@ func NewTOTP(store EnrolmentStore, issuer string, opts ...Option) (*TOTP, error)
 		clock:  clock.System(),
 		random: rand.Reader,
 		ids:    id.NewV7Generator(),
-		logger: slog.Default(),
+		logger: ctxlog.Routing(),
 
 		verifyLimit:  DefaultVerifyAttemptLimit,
 		verifyWindow: DefaultVerifyAttemptWindow,
@@ -143,7 +145,7 @@ func NewTOTP(store EnrolmentStore, issuer string, opts ...Option) (*TOTP, error)
 	}
 
 	if t.logger == nil {
-		return nil, fmt.Errorf("%w: totp logger must not be nil", ErrConfig)
+		return nil, fmt.Errorf("%w: totp logger (WithLogger) must not be nil", ErrConfig)
 	}
 
 	if nilcheck.IsNil(t.ids) {
@@ -230,6 +232,7 @@ func (t *TOTP) Verify(ctx context.Context, user identity.UserID, response []byte
 	code := string(response)
 
 	e, ok, err := t.store.Get(ctx, user)
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return enrolmentStoreFailed(err, msgReadFailed)
 	}
@@ -241,6 +244,7 @@ func (t *TOTP) Verify(ctx context.Context, user identity.UserID, response []byte
 	}
 
 	until, charged, err := t.store.ChargeVerifyAttempt(ctx, user, t.clock.Now(), t.verifyLimit, t.verifyWindow)
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return enrolmentStoreFailed(err, "mfa: totp could not charge the verification attempt")
 	}
@@ -262,6 +266,7 @@ func (t *TOTP) Verify(ctx context.Context, user identity.UserID, response []byte
 	// against: a removal and a re-enrolment landing since the read must not
 	// let the old secret's code count for the new one.
 	accepted, err := t.store.AcceptStep(ctx, user, e.Generation, step)
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return enrolmentStoreFailed(err, "mfa: totp could not record the accepted step")
 	}
@@ -282,6 +287,8 @@ func (t *TOTP) Verify(ctx context.Context, user identity.UserID, response []byte
 	_, err = t.store.RefundVerifyAttempt(refundCtx, user, until)
 	cancelRefund()
 
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		t.record(ctx, slog.LevelWarn, msgGiveBackFailed, user, diag.Failure("enrolment-store", err)...)
 	}
@@ -299,6 +306,7 @@ func (t *TOTP) Verify(ctx context.Context, user identity.UserID, response []byte
 // the package's own; the store's error still matches by identity.
 func (t *TOTP) Enrolled(ctx context.Context, user identity.UserID) (bool, error) {
 	e, ok, err := t.store.Get(ctx, user)
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return false, enrolmentStoreFailed(err, msgReadFailed)
 	}
@@ -447,14 +455,20 @@ func (t *TOTP) BeginEnrolmentGeneration(
 			"mfa: totp account label must not contain ':', got %q", accountLabel)
 	}
 
+	// The random source's and the generator's errors are sanitized before
+	// fmt.Errorf wraps them, so an unwalkable one never enters the chain this
+	// returns.
 	secret := make([]byte, secretBytes)
-	if _, err := io.ReadFull(t.random, secret); err != nil {
-		return Provisioning{}, id.Nil, fmt.Errorf("mfa: totp could not read a secret: %w", err)
+	_, err := io.ReadFull(t.random, secret)
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
+		return Provisioning{}, id.Nil, diag.Wrap(err, "mfa: totp could not read a secret")
 	}
 
 	gen, err := t.ids.NewID()
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
-		return Provisioning{}, id.Nil, fmt.Errorf("mfa: totp could not draw an enrolment generation: %w", err)
+		return Provisioning{}, id.Nil, diag.Wrap(err, "mfa: totp could not draw an enrolment generation")
 	}
 
 	// The nil generation matches nothing on the device-proof port, so an
@@ -465,12 +479,16 @@ func (t *TOTP) BeginEnrolmentGeneration(
 
 	encoded := encodeSecret(secret)
 
-	if err := t.store.PutPending(ctx, Enrolment{
+	// A bare ErrAlreadyEnrolled walks to the end and passes as itself; an
+	// unwalkable error, whatever it claims, becomes the outage.
+	err = t.store.PutPending(ctx, Enrolment{
 		User:       user,
 		Secret:     secret,
 		CreatedAt:  t.clock.Now(),
 		Generation: gen,
-	}); err != nil {
+	})
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return Provisioning{}, id.Nil, enrolmentStoreFailed(err, "mfa: totp could not store the pending enrolment")
 	}
 
@@ -536,6 +554,7 @@ func (t *TOTP) provisioningURI(label, secret string) string {
 // band, and must never be reachable from a session the enrolment path confines.
 func (t *TOTP) ConfirmEnrolment(ctx context.Context, user identity.UserID, code string) error {
 	e, ok, err := t.store.Get(ctx, user)
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return enrolmentStoreFailed(err, msgReadFailed)
 	}
@@ -553,6 +572,7 @@ func (t *TOTP) ConfirmEnrolment(ctx context.Context, user identity.UserID, code 
 	// against, and the store's write requires no device proof, so a begin or a
 	// proof landing since the read confirms nothing.
 	confirmed, err := t.store.Confirm(ctx, user, e.Generation, step, t.clock.Now())
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return enrolmentStoreFailed(err, "mfa: totp could not confirm the enrolment")
 	}
@@ -579,7 +599,9 @@ func (t *TOTP) ConfirmEnrolment(ctx context.Context, user identity.UserID, code 
 // failure is returned with the package's own text, the store's error still
 // matching by identity.
 func (t *TOTP) RemoveEnrolment(ctx context.Context, user identity.UserID) error {
-	if err := t.store.Delete(ctx, user); err != nil {
+	err := t.store.Delete(ctx, user)
+	err = porterr.SanitizeTo(ctx, t.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return enrolmentStoreFailed(err, "mfa: totp could not remove the enrolment")
 	}
 
@@ -719,9 +741,10 @@ func WithRandom(src io.Reader) Option {
 	return func(t *TOTP) { t.random = src }
 }
 
-// WithLogger replaces slog.Default as the destination for the records this
-// method writes: a verification refused or accepted, and an enrolment begun,
-// confirmed or removed.
+// WithLogger replaces the default destination for the records this method
+// writes (a verification refused or accepted, and an enrolment begun,
+// confirmed or removed): the logger of the chain handling the request, else
+// slog.Default() when the record is written.
 //
 // No record carries a presented code, an enrolment secret or a provisioning
 // URI, whatever logger is given. Every record names the method and, on purpose,
@@ -729,9 +752,8 @@ func WithRandom(src io.Reader) Option {
 // operator can tell whose second factor was used or changed; the reference is
 // the consumer's own identifier, not an address or a name. A failed store's
 // error text is never written; a consumer who wants it logs it inside their own
-// EnrolmentStore. A nil logger is a configuration error; a
-// consumer who wants silence supplies one with a discarding handler, which says
-// so at the wiring.
+// EnrolmentStore. A nil logger fails construction with ErrConfig; a consumer who
+// wants silence supplies one with a discarding handler, which says so at the wiring.
 func WithLogger(logger *slog.Logger) Option {
 	return func(t *TOTP) { t.logger = logger }
 }

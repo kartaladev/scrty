@@ -101,12 +101,13 @@ func WithSynchronousDelivery() Option {
 	return func(m *Links) { m.acceptSyncDelivery = true }
 }
 
-// WithLogger replaces the logger. The default is slog.Default().
+// WithLogger replaces the logger. The default is the logger of the chain
+// handling the request, else slog.Default() when the record is written.
 //
 // Everything Request refuses and everything Redeem refuses is reported here
 // and nowhere else, so a manager with no usable logger reports nothing at all.
-// A nil logger is ignored rather than refused: "do not configure this" is a
-// reading a nil logger plainly has.
+// A nil logger is refused by New with ErrConfig: the default is the routing one,
+// so "do not configure this" is spelt by leaving the option out.
 //
 // No record written by this package carries the token, the binding value or
 // the submitted address. A dependency failure — the token store's count or
@@ -116,9 +117,8 @@ func WithSynchronousDelivery() Option {
 // implementation of the port.
 func WithLogger(logger *slog.Logger) Option {
 	return func(m *Links) {
-		if logger != nil {
-			m.logger = logger
-		}
+		m.loggerGiven = true
+		m.logger = logger
 	}
 }
 

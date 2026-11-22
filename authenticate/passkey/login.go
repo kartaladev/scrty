@@ -14,6 +14,7 @@ import (
 	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/token/onetime"
@@ -58,7 +59,9 @@ const (
 // WithLoginCheck adds a consumer check that runs on every verified assertion,
 // at a passwordless login and as a second factor, after verification and
 // before anything is written. There is none by default. An error it returns
-// refuses the login or verification and is returned unchanged, and the
+// refuses the login or verification and is returned unchanged, unless its
+// chain cannot be walked (a cycle, a fan-out, an Unwrap that panics), when a
+// fixed error that names no refusal replaces it; either way the
 // credential's counter, flags and last use are left as they were. A consumer
 // can use it to refuse device-bound passkeys for some users only. A nil check
 // is a configuration error.
@@ -119,7 +122,10 @@ func (m *Passkeys) BeginLogin(ctx context.Context, binding string) (json.RawMess
 
 	m.purgeLogin(ctx)
 
-	return m.verifier.RequestOptions(ctx, RequestInput{Challenge: challenge, Timeout: m.ttl, UV: m.uv})
+	raw, err := m.verifier.RequestOptions(ctx, RequestInput{Challenge: challenge, Timeout: m.ttl, UV: m.uv})
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
+	return raw, err
 }
 
 // purgeLogin removes expired login challenges when no begin of this manager
@@ -179,6 +185,7 @@ func (m *Passkeys) Authenticate(ctx context.Context, body []byte, binding string
 	}
 
 	parsed, err := m.verifier.ParseAssertion(body)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil || nilcheck.IsNil(parsed) {
 		_ = m.refused(ctx, "malformed", id.Nil)
 
@@ -195,6 +202,7 @@ func (m *Passkeys) Authenticate(ctx context.Context, body []byte, binding string
 	}
 
 	c, err := m.credentials.FindByCredentialID(ctx, parsed.CredentialID())
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	switch {
 	case errors.Is(err, ErrNotFound):
@@ -295,6 +303,7 @@ func (m *Passkeys) matchHandle(ctx context.Context, c *Credential, handle []byte
 	}
 
 	user, ok, err := m.handles.UserFor(ctx, handle)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return diag.Wrap(err, "passkey: could not look up the user handle")
 	}
@@ -315,7 +324,7 @@ func (m *Passkeys) matchHandle(ctx context.Context, c *Credential, handle []byte
 // A verifier error that is not a context error, a missing user verification under UserVerificationRequired, a
 // backed-up state without backup eligibility and a backup-eligible flag that
 // differs from the stored one are authenticate.ErrAuthenticationFailed. The login check's error is returned
-// unchanged. A verifier error matching context.Canceled or
+// unchanged unless its chain cannot be walked, when a fixed fault replaces it. A verifier error matching context.Canceled or
 // context.DeadlineExceeded is returned wrapped, still matchable with
 // errors.Is, and is not a refusal. Nothing is written on any refusal.
 func (m *Passkeys) verifyAssertion(
@@ -340,6 +349,7 @@ func (m *Passkeys) checkAssertion(
 	ctx context.Context, p ParsedAssertion, c *Credential, exp AssertionExpectation,
 ) (*AssertionResult, error) {
 	res, err := m.verifier.VerifyAssertion(ctx, p, c, exp)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	switch {
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
@@ -365,17 +375,22 @@ func (m *Passkeys) checkAssertion(
 }
 
 // acceptAssertion runs the consumer's login check on a verified res, then
-// records the use. The login check's error is returned unchanged.
+// records the use. The login check's error is returned unchanged, unless its
+// chain cannot be walked: it is then replaced by a fixed fault matching
+// porterr.ErrUnwalkable, and the walk's abort is logged once.
 func (m *Passkeys) acceptAssertion(ctx context.Context, c *Credential, res *AssertionResult) error {
 	if m.loginCheck != nil {
-		if err := m.loginCheck(ctx, LoginFacts{
+		err := m.loginCheck(ctx, LoginFacts{
 			User:           c.User,
 			Credential:     c.ID,
 			AAGUID:         c.AAGUID,
 			BackupEligible: res.BackupEligible,
 			BackupState:    res.BackupState,
 			UserVerified:   res.UserVerified,
-		}); err != nil {
+		})
+		err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
+		if err != nil {
 			return err
 		}
 	}
@@ -387,6 +402,7 @@ func (m *Passkeys) acceptAssertion(ctx context.Context, c *Credential, res *Asse
 // the store refuses is handled by the clone rule (see CloneResponse).
 func (m *Passkeys) recordUse(ctx context.Context, c *Credential, res *AssertionResult) error {
 	recorded, err := m.credentials.RecordAssertion(ctx, c.ID, res.SignCount, res.BackupState, m.clock.Now())
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return diag.Wrap(err, "passkey: could not record the assertion")
 	}

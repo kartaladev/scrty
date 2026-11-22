@@ -8,8 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
@@ -91,6 +93,7 @@ type SourceGuard struct {
 	logInterval time.Duration
 	reporter    func(key string, suppressed int)
 	sampler     *logsample.Sampler
+	summaries   ctxlog.Summaries
 
 	// The IPv6 aggregate (WithSourceGuardIPv6Aggregate). aggregateSet records
 	// that the option was given at all, so that a zero prefix or a nil limiter
@@ -115,7 +118,7 @@ type SourceGuard struct {
 // limits, so it is refused at wiring time rather than discovered under attack.
 //
 // Defaults: a SourceKeyer with its own defaults (WithSourceGuardKeyer),
-// slog.Default (WithSourceGuardLogger), clock.System() (WithSourceGuardClock),
+// the chain's logger, else slog.Default (WithSourceGuardLogger), clock.System() (WithSourceGuardClock),
 // DefaultLogInterval for refusal sampling (WithSourceGuardLogInterval), a
 // summary record through the logger for the counts sampling suppressed
 // (WithSourceGuardLogReporter), and no IPv6 aggregate
@@ -130,7 +133,7 @@ func NewSourceGuard(flow string, limiter Limiter, opts ...GuardOption) (*SourceG
 		flow:        flow,
 		limiter:     limiter,
 		keyer:       keyer,
-		logger:      slog.Default(),
+		logger:      ctxlog.Routing(),
 		clock:       clock.System(),
 		logInterval: DefaultLogInterval,
 	}
@@ -164,7 +167,7 @@ func NewSourceGuard(flow string, limiter Limiter, opts ...GuardOption) (*SourceG
 		return nil, err
 	}
 	if g.logger == nil {
-		return nil, fmt.Errorf("%w: the logger is nil, so refusals would go unreported", ErrConfig)
+		return nil, fmt.Errorf("%w: WithSourceGuardLogger was given no logger, so refusals would go unreported", ErrConfig)
 	}
 	if nilcheck.IsNil(g.clock) {
 		return nil, fmt.Errorf("%w: the clock is nil, so refusal records could not be sampled", ErrConfig)
@@ -191,7 +194,8 @@ func WithSourceGuardKeyer(keyer *SourceKeyer) GuardOption {
 }
 
 // WithSourceGuardLogger sets where the guard writes its refusal records.
-// Default: slog.Default.
+// Default: the logger of the chain handling the request, else slog.Default()
+// when the record is written. A nil logger fails construction with ErrConfig.
 //
 // A record about a throttled source names its address on purpose — the point
 // of the record is to say who was refused. A record about the limiter itself
@@ -349,6 +353,7 @@ func (g *SourceGuard) Check(ctx context.Context, clientAddr string) (Source, err
 	}
 
 	exceeded, err := g.limiter.Exceeded(ctx, src.key)
+	err = porterr.SanitizeTo(ctx, g.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return Source{}, g.refuseUnconsultable(ctx, src, err, false)
 	}
@@ -369,6 +374,7 @@ func (g *SourceGuard) Check(ctx context.Context, clientAddr string) (Source, err
 	}
 
 	exceeded, err = g.aggregate.Exceeded(ctx, src.aggregateKey)
+	err = porterr.SanitizeTo(ctx, g.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return Source{}, g.refuseUnconsultable(ctx, src, err, true)
 	}
@@ -459,7 +465,8 @@ func (g *SourceGuard) RecordFailure(ctx context.Context, source Source) {
 	// uncounted is worth a record whatever the caller's context did.
 	recordCtx := context.WithoutCancel(ctx)
 
-	if err := g.limiter.RecordFailure(recordCtx, source.key); err != nil {
+	err := g.limiter.RecordFailure(recordCtx, source.key)
+	if err = porterr.SanitizeTo(ctx, g.logger, err, porterr.ErrUnwalkable); err != nil {
 		g.reportNotRecorded(ctx, err, source, false)
 	}
 
@@ -470,7 +477,8 @@ func (g *SourceGuard) RecordFailure(ctx context.Context, source Source) {
 	// this guard another guard's: without an aggregate limiter of its own there
 	// is nothing here to count it in.
 	if source.aggregateKey != "" && g.aggregate != nil {
-		if err := g.aggregate.RecordFailure(recordCtx, source.aggregateKey); err != nil {
+		err = g.aggregate.RecordFailure(recordCtx, source.aggregateKey)
+		if err = porterr.SanitizeTo(ctx, g.logger, err, porterr.ErrUnwalkable); err != nil {
 			g.reportNotRecorded(ctx, err, source, true)
 		}
 	}
@@ -522,6 +530,7 @@ func (g *SourceGuard) HasRecentFailures(ctx context.Context, clientAddr string) 
 	src := Source{key: g.flow + keySeparator + addr, addr: addr}
 
 	has, err := r.HasRecentFailures(ctx, src.key)
+	err = porterr.SanitizeTo(ctx, g.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		g.reportUnreported(ctx, src, err)
 
@@ -571,6 +580,7 @@ func (g *SourceGuard) HasRecentAggregateFailures(ctx context.Context, clientAddr
 	}
 
 	has, err := r.HasRecentFailures(ctx, src.aggregateKey)
+	err = porterr.SanitizeTo(ctx, g.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		g.reportUnreported(ctx, src, err)
 
@@ -647,6 +657,7 @@ func (g *SourceGuard) sampled(ctx context.Context, level slog.Level, msg, key st
 
 	g.logger.LogAttrs(ctx, level, msg,
 		append(attrs, slog.String("flow", g.flow), slog.Int("suppressed", suppressed))...)
+	g.summaries.Note(ctx, g.logger, key)
 }
 
 // reportSuppressed is the default summary reporter (WithSourceGuardLogReporter).
@@ -654,7 +665,8 @@ func (g *SourceGuard) sampled(ctx context.Context, level slog.Level, msg, key st
 // burst that stops before its window elapses is still reported in full. It runs
 // on the goroutine that triggered the eviction, so it only writes one record.
 func (g *SourceGuard) reportSuppressed(key string, suppressed int) {
-	g.logger.LogAttrs(context.Background(), slog.LevelWarn, msgSuppressed,
+	// A summary has no request context: it goes where the key's last record went.
+	g.summaries.For(g.logger, key).LogAttrs(context.Background(), slog.LevelWarn, msgSuppressed,
 		slog.String("flow", g.flow),
 		slog.String("key", key),
 		slog.Int("suppressed", suppressed))

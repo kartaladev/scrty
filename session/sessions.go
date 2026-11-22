@@ -13,9 +13,11 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -47,6 +49,7 @@ type Sessions struct {
 	absoluteTimeout time.Duration
 	clock           clock.Clock
 	logger          *slog.Logger
+	loggerSupplied  bool
 	random          io.Reader
 
 	// families generates the family identifier every Create starts. It is the
@@ -183,16 +186,16 @@ const perProcessWarning = "session: the default in-memory store keeps sessions i
 // the instant it is created, so the manager would look like it worked and
 // nobody would stay logged in.
 //
-// Every port and function this takes is refused when nil, with one exception:
-// a nil logger is ignored, because "do not log from this component" is a
-// reading a nil logger plainly has, while a nil clock has no reading other
-// than a mistake.
+// Every port and function this takes is refused when nil, a nil logger
+// included: leaving WithLogger out already means "route to the chain's logger,
+// else slog.Default()", so a nil one is almost always an uninitialised
+// variable.
 func New(opts ...Option) (*Sessions, error) {
 	m := &Sessions{
 		idleTimeout:     defaultIdleTimeout,
 		absoluteTimeout: defaultAbsoluteTimeout,
 		clock:           clock.System(),
-		logger:          slog.Default(),
+		logger:          ctxlog.Routing(),
 		random:          rand.Reader,
 	}
 	for _, opt := range opts {
@@ -227,6 +230,11 @@ func New(opts ...Option) (*Sessions, error) {
 	}
 	if err := m.events.Err("WithSecurityEvents"); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrConfig, err)
+	}
+	if m.loggerSupplied && m.logger == nil {
+		return nil, fmt.Errorf("%w: WithLogger was given a nil logger, which is almost always an "+
+			"uninitialised variable; leave the option out to route to the chain's logger, "+
+			"else slog.Default()", ErrConfig)
 	}
 	if m.reuseObserverSupplied && m.reuseObserver == nil {
 		return nil, fmt.Errorf("%w: reuse observer must not be nil", ErrConfig)
@@ -281,10 +289,14 @@ const identifierBytes = 32
 // source — a counter, the clock, a shorter read — would hand out an identifier
 // that looks exactly like a good one and can be guessed, and nothing later in
 // the request would notice.
-func (m *Sessions) newIdentifier() (string, error) {
+func (m *Sessions) newIdentifier(ctx context.Context) (string, error) {
 	raw := make([]byte, identifierBytes)
-	if _, err := io.ReadFull(m.random, raw); err != nil {
-		return "", fmt.Errorf("session: reading %d random bytes for a session identifier: %w", identifierBytes, err)
+	_, err := io.ReadFull(m.random, raw)
+	// The reader is the consumer's: its error is walked once, bounded, before
+	// anything checks it.
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
+		return "", diag.Wrap(err, "session: reading the random bytes for a session identifier")
 	}
 
 	return base64.RawURLEncoding.EncodeToString(raw), nil
@@ -311,7 +323,7 @@ func (m *Sessions) newIdentifier() (string, error) {
 // storing it; Prepare and Prepared.Commit split the two, and CreateIssuing
 // runs an issuing step between them.
 func (m *Sessions) Create(ctx context.Context, user identity.UserID, opts ...CreateOption) (*Session, error) {
-	p, err := m.Prepare(user, opts...)
+	p, err := m.prepare(ctx, user, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -400,6 +412,7 @@ func (m *Sessions) load(ctx context.Context, id string, p purpose) (*Session, er
 // text.
 func (m *Sessions) loadStored(ctx context.Context, id, text string) (*Session, error) {
 	s, err := m.store.Load(ctx, id)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, storeFailed(err, text)
 	}
@@ -461,6 +474,7 @@ func (m *Sessions) reloadSuperseded(ctx context.Context, id string, p purpose, e
 // the store's text left out.
 func (m *Sessions) markPresented(ctx context.Context, s *Session, now time.Time) error {
 	err := m.store.MarkPresented(ctx, s.ID, now)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case err == nil:
 		s.FirstPresentedAt = now
@@ -513,7 +527,9 @@ func (m *Sessions) Touch(ctx context.Context, sess *Session) error {
 	if idle.After(sess.AbsoluteExpiresAt) {
 		idle = sess.AbsoluteExpiresAt
 	}
-	if err := m.store.RecordActivity(ctx, sess.ID, now, idle, now.Add(-m.touchInterval)); err != nil {
+	err := m.store.RecordActivity(ctx, sess.ID, now, idle, now.Add(-m.touchInterval))
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return storeFailed(err, "session: the session's activity could not be saved")
 	}
 	sess.LastAccessedAt = now
@@ -527,7 +543,10 @@ func (m *Sessions) Touch(ctx context.Context, sess *Session) error {
 // one that was rotated without grace since it was loaded, which is written
 // to no more than a deleted one.
 func (m *Sessions) Save(ctx context.Context, sess *Session) error {
-	return storeFailed(m.store.Save(ctx, sess), "session: the session could not be saved")
+	err := m.store.Save(ctx, sess)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
+	return storeFailed(err, "session: the session could not be saved")
 }
 
 // Delete removes the session with this identifier, and reports EndDeleted to the end observers: one
@@ -555,7 +574,9 @@ func (m *Sessions) Delete(ctx context.Context, id string) error {
 		report.User, report.Family = s.UserID, s.FamilyID
 	}
 
-	if err := m.store.Delete(ctx, id); err != nil {
+	err = m.store.Delete(ctx, id)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return storeFailed(err, "session: the session could not be deleted")
 	}
 	m.reportEnd(ctx, report)
@@ -566,7 +587,9 @@ func (m *Sessions) Delete(ctx context.Context, id string) error {
 // DeleteByUser removes every session of this user, expired ones included: a
 // caller ending a user's sessions wants them gone, not filtered.
 func (m *Sessions) DeleteByUser(ctx context.Context, user identity.UserID) error {
-	if err := m.store.DeleteByUser(ctx, user); err != nil {
+	err := m.store.DeleteByUser(ctx, user)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return storeFailed(err, "session: the user's sessions could not be deleted")
 	}
 	m.reportEnd(ctx, EndReport{Cause: EndUserSessions, User: user})
@@ -606,6 +629,7 @@ func (m *Sessions) DeleteByUserExcept(ctx context.Context, user identity.UserID,
 	}
 
 	n, err := m.store.DeleteByUserExcept(ctx, user, keep)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return n, storeFailed(err, "session: the user's other sessions could not be deleted")
 	}
@@ -619,6 +643,7 @@ func (m *Sessions) DeleteByUserExcept(ctx context.Context, user identity.UserID,
 // counted, so a renewed sign-in counts once however often it is renewed.
 func (m *Sessions) CountActiveByUser(ctx context.Context, user identity.UserID) (int, error) {
 	n, err := m.store.CountActiveByUser(ctx, user)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return n, storeFailed(err, "session: the user's active sessions could not be counted")
 	}
@@ -629,6 +654,7 @@ func (m *Sessions) CountActiveByUser(ctx context.Context, user identity.UserID) 
 // DeleteExpired removes every expired session and reports how many went.
 func (m *Sessions) DeleteExpired(ctx context.Context) (int, error) {
 	n, err := m.store.DeleteExpired(ctx)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return n, storeFailed(err, "session: expired sessions could not be deleted")
 	}
@@ -644,6 +670,7 @@ func (m *Sessions) DeleteExpired(ctx context.Context) (int, error) {
 // error.
 func (m *Sessions) DeleteByExternalSession(ctx context.Context, issuer, sessionID string) (int, error) {
 	n, err := m.store.DeleteByExternalSession(ctx, issuer, sessionID)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return n, storeFailed(err, "session: the provider session's sessions could not be deleted")
 	}
@@ -658,6 +685,7 @@ func (m *Sessions) DeleteByExternalSession(ctx context.Context, issuer, sessionI
 // and reports how many went. An empty issuer ends nothing and is not an error.
 func (m *Sessions) DeleteByUserAndExternalIssuer(ctx context.Context, user identity.UserID, issuer string) (int, error) {
 	n, err := m.store.DeleteByUserAndExternalIssuer(ctx, user, issuer)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return n, storeFailed(err, "session: the user's sessions from the issuer could not be deleted")
 	}
@@ -709,6 +737,7 @@ func (m *Sessions) endFamily(ctx context.Context, family id.ID, report EndReport
 	}
 
 	n, err := m.store.DeleteFamily(ctx, family)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return n, storeFailed(err, "session: the family's sessions could not be deleted")
 	}
@@ -929,7 +958,7 @@ func (m *Sessions) RotateIssuing(
 		return nil, "", ErrExpired
 	}
 
-	id, err := m.newIdentifier()
+	id, err := m.newIdentifier(ctx)
 	if err != nil {
 		return nil, "", err
 	}
@@ -989,6 +1018,7 @@ func (m *Sessions) RotateIssuing(
 		Now:               now,
 		Strict:            true,
 	})
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, "", storeFailed(err, "session: the rotated session could not be created")
 	}

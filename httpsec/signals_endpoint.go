@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
@@ -101,13 +102,21 @@ func (e *sessionSignals) Intercept(ex *Exchange, next Next) error {
 	return nil
 }
 
-// cancelOnly is a context that ends when its parent does and holds no values. It is what a
-// stream's body runs on, because adapters derive the body's context from the one they are
-// handed, and the request's holds the session and its raw identifier.
+// cancelOnly is a context that ends when its parent does and holds no values but the chain's
+// logger. It is what a stream's body runs on, because adapters derive the body's context from
+// the one they are handed, and the request's holds the session and its raw identifier. The
+// logger is kept so that what the adapter records about the stream, such as a writer error it
+// could not inspect, reaches the chain's logger rather than slog.Default().
 type cancelOnly struct{ context.Context }
 
-// Value holds nothing.
-func (cancelOnly) Value(any) any { return nil }
+// Value holds nothing but the logger the parent carries under ctxlog.Key.
+func (c cancelOnly) Value(key any) any {
+	if _, ok := key.(ctxlog.Key); ok {
+		return c.Context.Value(key)
+	}
+
+	return nil
+}
 
 // AfterFunc is what context asks a parent for before it starts a goroutine to watch one whose
 // cancellation it cannot see, as Value hides this one's. So a stream's WithCancel costs no goroutine.

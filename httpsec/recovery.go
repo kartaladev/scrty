@@ -12,7 +12,7 @@ import (
 
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/pkg/logsample"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
@@ -106,7 +106,7 @@ type recoveryInterceptor struct {
 	// and sampler the sampler built from it once the chain's logger is known.
 	logInterval time.Duration
 	log         *slog.Logger
-	sampler     *logsample.Sampler
+	sampler     *refusalSampler
 
 	// automation is the automation-challenge gate when it was selected for the
 	// start, settled at assembly, and nil otherwise.
@@ -352,16 +352,15 @@ func (c *config) cancelHeldAtLogin(cancel heldRecoveryCanceller) {
 // builds the endpoints' own log sampler, whose reporter writes through it.
 func (i *recoveryInterceptor) wire(c *Chain) {
 	i.log = c.logger
-	i.sampler = logsample.New(i.logInterval, logsample.WithReporter(i.reportSuppressed))
+	i.sampler = newRefusalSampler(i.logInterval, i.reportSuppressed)
 }
 
 // reportSuppressed writes what the sampler held back for key and is about to
 // forget. It runs on whichever request or flush evicted the key, and that
 // request's context has nothing to do with the counts, so it is written
 // without one.
-func (i *recoveryInterceptor) reportSuppressed(key string, suppressed int) {
-	i.log.LogAttrs(context.Background(), slog.LevelWarn, msgRecoveryLogsSuppressed,
-		slog.String("key", key), slog.Int("suppressed", suppressed))
+func (i *recoveryInterceptor) reportSuppressed(sum *ctxlog.Summaries, key string, suppressed int) {
+	summariseSuppressed(sum, i.log, msgRecoveryLogsSuppressed, key, suppressed)
 }
 
 // flushRefusalLogs reports what the endpoints' own sampler and both source
@@ -430,7 +429,7 @@ func (i *recoveryInterceptor) complete(ex *Exchange) error {
 		return recovery.ErrRefused
 	}
 
-	req, err := readRecoveryRequest(ex.Request)
+	req, err := readRecoveryRequest(ex.Context(), ex.Request)
 	if err != nil {
 		return err
 	}
@@ -579,8 +578,8 @@ func countsAgainstRecoverySource(countRefusals bool, err error) bool {
 // that carries a single-valued field more than once is recovery.ErrMalformed.
 // A body with no proofs at all reads as an empty recovery, which the core
 // refuses as malformed in turn.
-func readRecoveryRequest(r Request) (recovery.Request, error) {
-	values, err := readRecoveryForm(r)
+func readRecoveryRequest(ctx context.Context, r Request) (recovery.Request, error) {
+	values, err := readRecoveryForm(ctx, r)
 	if err != nil || values == nil {
 		return recovery.Request{}, err
 	}
@@ -611,8 +610,8 @@ func readRecoveryRequest(r Request) (recovery.Request, error) {
 // under recoveryBodyLimit, where a body over it is ErrRequestTooLarge, and one
 // that is not such a form or does not parse is recovery.ErrMalformed. An empty
 // body reads as nil values.
-func readRecoveryForm(r Request) (url.Values, error) {
-	body, err := r.Body(recoveryBodyLimit)
+func readRecoveryForm(ctx context.Context, r Request) (url.Values, error) {
+	body, err := readBody(ctx, r, recoveryBodyLimit)
 	if errors.Is(err, ErrRequestTooLarge) {
 		return nil, ErrRequestTooLarge
 	}
@@ -826,7 +825,7 @@ func readRecoveryStart(r Request) string {
 // someone behind the same address to spend it and lock the user out of their
 // own finish.
 func (i *recoveryInterceptor) finish(ex *Exchange) error {
-	token, err := readHoldToken(ex.Request, RecoveryCompletionTokenParam)
+	token, err := readHoldToken(ex.Context(), ex.Request, RecoveryCompletionTokenParam)
 	if err != nil {
 		return err
 	}
@@ -860,7 +859,7 @@ func (i *recoveryInterceptor) finish(ex *Exchange) error {
 // about which tokens or recoveries exist. For the same reason it has no source
 // guard: a refusal would be an answer of its own.
 func (i *recoveryInterceptor) cancel(ex *Exchange) error {
-	if token, err := readHoldToken(ex.Request, RecoveryCancelTokenParam); err == nil && token != "" {
+	if token, err := readHoldToken(ex.Context(), ex.Request, RecoveryCancelTokenParam); err == nil && token != "" {
 		i.recoverer.Cancel(ex.Context(), token)
 	}
 
@@ -875,8 +874,8 @@ func (i *recoveryInterceptor) cancel(ex *Exchange) error {
 // ErrRequestTooLarge; one that is not such a form, does not parse, or carries
 // the field more than once is recovery.ErrMalformed. An empty body, or one
 // without the field, reads as an empty token.
-func readHoldToken(r Request, name string) (string, error) {
-	values, err := readRecoveryForm(r)
+func readHoldToken(ctx context.Context, r Request, name string) (string, error) {
+	values, err := readRecoveryForm(ctx, r)
 	if err != nil {
 		return "", err
 	}

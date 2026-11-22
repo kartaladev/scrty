@@ -3,10 +3,10 @@
 // shape is not "call the manager once and assert on the result": they issue a
 // thousand tokens, race many callers, call through a mock store the table's
 // runner does not build, or read the package's own source.
-//
-//go:generate mockgen -source=../../pkg/id/generator.go -package=onetime_test -destination=idgenerator_mock_test.go -typed
 
 package onetime_test
+
+//go:generate mockgen -source=../../pkg/id/generator.go -destination=generator_mock_test.go -package=onetime_test -typed
 
 import (
 	"bytes"
@@ -35,6 +35,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/expiry"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token/onetime"
@@ -195,13 +196,10 @@ func TestNewManager(t *testing.T) {
 			assert:  configError,
 		},
 		{
-			name:    "a nil logger is ignored rather than refused",
+			name:    "a nil logger is refused, because the default is the routing logger",
 			purpose: "magic-link",
 			opts:    []onetime.Option{onetime.WithLogger(nil)},
-			assert: func(t *testing.T, m *onetime.Tokens, err error) {
-				require.NoError(t, err)
-				require.NotNil(t, m)
-			},
+			assert:  configError,
 		},
 		{
 			name:    "a consumer logger is accepted",
@@ -433,6 +431,25 @@ func TestIssue(t *testing.T) {
 			assert: func(t *testing.T, store *onetime.MemoryStore, presented string, _ onetime.Token, err error) {
 				require.ErrorIs(t, err, errNoEntropy)
 				assert.Empty(t, presented)
+				assert.Zero(t, store.Len(), "a failed issuance still wrote a record")
+			},
+		},
+		{
+			name:    "an identifier generator answering the nil identifier is a failing generator",
+			subject: "ada@example.com",
+			manager: func(t *testing.T, clk *clockwork.FakeClock) (*onetime.Tokens, *onetime.MemoryStore) {
+				t.Helper()
+
+				gen := NewMockGenerator(gomock.NewController(t))
+				gen.EXPECT().NewID().Return(id.Nil, nil)
+
+				return newManager(t, clk, onetime.WithIDGenerator(gen))
+			},
+			assert: func(t *testing.T, store *onetime.MemoryStore, presented string, tok onetime.Token, err error) {
+				require.ErrorIs(t, err, idgen.ErrNil)
+				assert.Equal(t, idgen.ErrNil.Error(), err.Error(), "the library's own sentinel, bare")
+				assert.Empty(t, presented, "a token under the nil identifier was handed out")
+				assert.Zero(t, tok)
 				assert.Zero(t, store.Len(), "a failed issuance still wrote a record")
 			},
 		},

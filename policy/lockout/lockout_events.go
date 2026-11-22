@@ -7,6 +7,7 @@ import (
 
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/internal/eventsink"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // WithSecurityEvents gives the policy a security-event sink of its own, for
@@ -83,6 +84,7 @@ type lockState struct {
 func (p *Policy) lockedAt(ctx context.Context, username string, at time.Time) lockState {
 	if p.streaks != nil {
 		streak, err := p.streaks.FailureStreak(ctx, username, at.Add(-p.capRetention))
+		err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable)
 		if err != nil {
 			return lockState{err: err}
 		}
@@ -92,6 +94,7 @@ func (p *Policy) lockedAt(ctx context.Context, username string, at time.Time) lo
 	}
 
 	count, err := p.store.FailureCount(ctx, username, at.Add(-p.window))
+	err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return lockState{err: err}
 	}
@@ -104,6 +107,7 @@ func (p *Policy) lockedAt(ctx context.Context, username string, at time.Time) lo
 	}
 
 	recent, err := p.store.FailureCount(ctx, username, at.Add(-p.waitFor(count)))
+	err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return lockState{err: err}
 	}

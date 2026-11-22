@@ -9,6 +9,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -93,6 +94,7 @@ const textListEnded = "session: the sign-in listing ended with its caller"
 func (m *Sessions) ListSignIns(ctx context.Context, user identity.UserID, current *Session) ([]SignIn, error) {
 	now := m.clock.Now()
 	listed, err := m.store.ListByUser(ctx, user, now)
+	err = porterr.SanitizeTo(ctx, m.logger, err, ErrListUnavailable)
 	if err != nil {
 		return nil, listingFailed(ctx, err)
 	}
@@ -175,6 +177,7 @@ func (m *Sessions) EndSignIn(ctx context.Context, user identity.UserID, handle s
 	}
 
 	listed, err := m.store.ListByUser(ctx, user, m.clock.Now())
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		if hangup.ByCaller(ctx, err) {
 			return diag.Wrap(err, textEndEnded, ctx.Err())
@@ -195,7 +198,9 @@ func (m *Sessions) EndSignIn(ctx context.Context, user identity.UserID, handle s
 		return ErrNotFound
 	}
 
-	if _, err := m.store.DeleteFamily(ctx, family); err != nil {
+	_, err = m.store.DeleteFamily(ctx, family)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+	if err != nil {
 		return storeFailed(err, "session: the sign-in could not be ended")
 	}
 	m.reportEnd(ctx, EndReport{Cause: EndByHandle, User: user, Family: family})
@@ -239,6 +244,7 @@ func (m *Sessions) EndOtherSignIns(ctx context.Context, user identity.UserID, cu
 	}
 
 	n, err := m.store.DeleteByUserExcept(ctx, user, current.ID)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		if hangup.ByCaller(ctx, err) {
 			return n, diag.Wrap(err, textEndEnded, ctx.Err())

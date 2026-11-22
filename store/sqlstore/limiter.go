@@ -264,7 +264,8 @@ func WithLimiterUnavailableLogInterval(interval time.Duration) LimiterOption {
 }
 
 // WithLimiterLogger sets where the limiter writes its outage records: the
-// move to and from a degraded mode. Default: slog.Default().
+// move to and from a degraded mode. Default: the logger of the chain handling
+// the request, else slog.Default() when the record is written.
 //
 // A nil logger fails construction with ratelimit.ErrConfig, because the
 // outage records would be lost.

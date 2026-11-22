@@ -985,6 +985,26 @@ func TestRedeemerGuard(t *testing.T) {
 			},
 		},
 		{
+			// The same, with a generator error whose chain cannot be walked:
+			// each failed issue is a different library fault, and the first one
+			// is still recognised as an issuing failure, never charged.
+			name:     "a redeemer whose every issue failed with a hostile error and that returns its first failure is not charged",
+			redeemer: retriesAndReportsFirst,
+			arrange: func(t *testing.T, h *magicLinkHarness) {
+				g := newMockGenerator(gomock.NewController(t))
+				g.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+					Return("", &cycleOne{})
+				h.tokens = g
+				h.linkOpts = append(h.linkOpts, httpsec.WithMagicLinkLimiter(countingLimiter(t, 0)))
+			},
+			engine: func(*testing.T) *policy.Engine { return nil },
+			assert: func(t *testing.T, h *magicLinkHarness, out served) {
+				require.Error(t, out.err)
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+				assert.Zero(t, h.activeSessions(t), "no session is stored")
+			},
+		},
+		{
 			name:     "the built-in redeemer with an allowing policy succeeds",
 			redeemer: func(*magicLinkHarness) httpsec.Redeemer { return nil },
 			engine:   func(*testing.T) *policy.Engine { return nil },

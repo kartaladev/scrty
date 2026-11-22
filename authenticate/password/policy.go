@@ -9,7 +9,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 )
 
@@ -84,7 +86,8 @@ const (
 // The policy never logs a candidate, a hash or a context word, and does not
 // keep the candidate after a call returns. Its one log record is a
 // breach-lookup failure accepted under Accept, written at ERROR with fixed
-// text to the logger WithPolicyLogger sets (default slog.Default()). A Policy
+// text to the logger WithPolicyLogger sets (default: the logger of the chain
+// handling the request, else slog.Default() when the record is written). A Policy
 // is safe for concurrent use.
 type Policy struct {
 	minLength int
@@ -96,6 +99,7 @@ type Policy struct {
 	reuse     *reuseRule          // nil: the reuse rule is off
 	enc       Encoder
 	clock     clock.Clock
+	logger    *slog.Logger // where the boundary sanitizer records an aborted walk
 }
 
 // PolicyOption configures a [Policy].
@@ -140,8 +144,9 @@ type policyConfig struct {
 //   - the Argon2id encoder at its defaults, which encodes a change and is the
 //     first matcher of the reuse rule ([WithEncoder] replaces it); and
 //   - the system clock ([WithClock] replaces it); and
-//   - slog.Default() as the logger of what the policy accepts without a
-//     check ([WithPolicyLogger] replaces it).
+//   - the logger of the chain handling the request, else slog.Default() when
+//     the record is written, for what the policy accepts without a check
+//     ([WithPolicyLogger] replaces it).
 //
 // Every option replaces or adds only what it names. The same encoder's
 // [Upgrader] decides, at a login, whether a stored hash is outdated: see
@@ -154,7 +159,7 @@ func NewPolicy(opts ...PolicyOption) (*Policy, error) {
 		minLength: DefaultMinLength,
 		maxLength: DefaultMaxLength,
 		clock:     clock.System(),
-		logger:    slog.Default(),
+		logger:    ctxlog.Routing(),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -202,6 +207,7 @@ func NewPolicy(opts ...PolicyOption) (*Policy, error) {
 		breach:    cfg.breach,
 		enc:       enc,
 		clock:     cfg.clock,
+		logger:    cfg.logger,
 	}
 
 	if cfg.reuse != nil {
@@ -209,6 +215,8 @@ func NewPolicy(opts ...PolicyOption) (*Policy, error) {
 		if p.reuse, err = cfg.reuse.build(enc); err != nil {
 			return nil, err
 		}
+
+		p.reuse.logger = cfg.logger
 	}
 
 	switch {
@@ -339,8 +347,14 @@ func WithClock(clock clock.Clock) PolicyOption {
 // that failed under [Accept]. The record is at ERROR, carries fixed text and
 // the failure's Go type, and never the candidate, its hash or the error's text.
 //
-// Default: slog.Default(), read when [NewPolicy] runs. A nil logger, typed nil
-// included, fails construction.
+// It also receives the record of an error from the breach source or the
+// password history that the library could not walk: a cyclic, fanned-out or
+// panicking chain. The policy then answers it as that port's outage, and the
+// record carries the abort's reason, never the error's text.
+//
+// Default: the logger of the chain handling the request, else slog.Default()
+// when the record is written. A nil logger, typed nil included, fails
+// construction.
 func WithPolicyLogger(logger *slog.Logger) PolicyOption {
 	return func(c *policyConfig) { c.logger = logger }
 }
@@ -378,6 +392,9 @@ func (p *Policy) Check(ctx context.Context, user *identity.Details, candidate st
 
 	if p.words != nil {
 		words, err := p.words(ctx, user)
+		// The words function is the consumer's, and so is its error: a hostile
+		// chain comes back as the library's fixed error, never inspected raw.
+		err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable)
 		if err != nil {
 			return err
 		}
@@ -445,6 +462,9 @@ func (p *Policy) Change(ctx context.Context, user *identity.Details, candidate s
 	// Encode before retiring: a refusal, an encoder's too-long one included,
 	// must leave the history untouched.
 	hash, err := p.enc.Encode(candidate)
+	// The encoder is the consumer's, and so is its error: a hostile chain
+	// takes the plain failure branch below, never the too-long refusal.
+	err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable)
 	if errors.Is(err, ErrTooLong) {
 		// An encoder that states no limit through InputLimiter reaches here: the
 		// candidate is too long for it, which is the user's to fix, not a failure.
@@ -461,7 +481,9 @@ func (p *Policy) Change(ctx context.Context, user *identity.Details, candidate s
 		}
 	}
 
-	return write(ctx, user, hash, p.clock.Now())
+	// The write function is the consumer's, and so is its error: a hostile
+	// chain comes back as the library's fixed error, a walkable one unchanged.
+	return porterr.SanitizeTo(ctx, p.logger, write(ctx, user, hash, p.clock.Now()), porterr.ErrUnwalkable)
 }
 
 // containsContextWord reports whether candidate equals any of words, or

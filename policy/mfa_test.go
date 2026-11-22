@@ -214,12 +214,12 @@ func TestNewMFAPolicy(t *testing.T) {
 			},
 		},
 		{
-			name:    "a nil logger is ignored rather than refused",
+			name:    "a nil logger is refused",
 			methods: mfaMethods(idleMFAMethod(t, "totp")),
 			opts:    []policy.MFAOption{policy.WithMFALogger(nil)},
 			assert: func(t *testing.T, p policy.Policy, err error) {
-				require.NoError(t, err, "a nil logger made configuring logging mandatory")
-				assert.NotNil(t, p)
+				require.ErrorIs(t, err, policy.ErrConfig)
+				assert.Nil(t, p)
 			},
 		},
 		{

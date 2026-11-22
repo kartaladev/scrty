@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -118,6 +119,7 @@ func (m *Passkeys) onCounterRefused(ctx context.Context, c *Credential, res *Ass
 	// is a write-class call, the suspension a revocation.
 	findCtx, cancelFind := detach.Bounded(ctx, detach.WriteTimeout)
 	now, err := m.credentials.Find(findCtx, c.User, c.ID)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	cancelFind()
 
@@ -157,6 +159,7 @@ func (m *Passkeys) onCounterRefused(ctx context.Context, c *Credential, res *Ass
 	default:
 		suspendCtx, cancelSuspend := detach.Bounded(ctx, detach.RevocationTimeout)
 		suspended, err := m.credentials.Suspend(suspendCtx, c.ID)
+		err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 		cancelSuspend()
 
@@ -189,6 +192,7 @@ func (m *Passkeys) endSessionsOnClone(ctx context.Context, c *Credential) bool {
 
 	callCtx, cancel := detach.Bounded(ctx, detach.RevocationTimeout)
 	err := m.sessions.DeleteByUser(callCtx, c.User)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	cancel()
 
@@ -221,6 +225,7 @@ func (m *Passkeys) revokeGrantsOnClone(ctx context.Context, c *Credential) {
 
 	callCtx, cancel := detach.Bounded(ctx, detach.RevocationTimeout)
 	err := m.grants.RevokeUserGrants(callCtx, c.User, cloneGrantCause)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 
 	cancel()
 
@@ -242,6 +247,7 @@ func (m *Passkeys) revokeGrantsOnClone(ctx context.Context, c *Credential) {
 // refused as it now stands.
 func (m *Passkeys) recordAllowedClone(ctx context.Context, c *Credential, res *AssertionResult) error {
 	recorded, err := m.credentials.RecordUse(ctx, c.ID, res.BackupState, m.clock.Now())
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return diag.Wrap(err, "passkey: could not record the assertion")
 	}

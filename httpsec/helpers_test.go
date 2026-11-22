@@ -522,17 +522,17 @@ func summaries(t *testing.T, recs []slog.Record, msg, attr, value string) []int6
 }
 
 // guardSummaries returns the suppressed count of every summary in recs that a
-// source guard the chain built reported for flow. A chain-built guard reports
-// through the chain's reporter, so its summaries are the chain's summary
-// record, told apart by a key naming the flow between the separators the guard
-// joins its sampler keys with.
+// source guard the chain built reported for flow. Unless the consumer gave a
+// reporter, a chain-built guard writes its own summary record, told apart from
+// the chain's by its message and by a key naming the flow between the
+// separators the guard joins its sampler keys with.
 func guardSummaries(t *testing.T, recs []slog.Record, flow string) []int64 {
 	t.Helper()
 
 	var counts []int64
 
 	for _, r := range recs {
-		if r.Message != summaryChain {
+		if r.Message != summaryGuard {
 			continue
 		}
 
@@ -1713,6 +1713,9 @@ const unknownAPIKey = "sk_0199a0e1-0000-7000-8000-000000000000.Z3Vlc3M"
 // summaryChain is the summary record the chain writes when a flush reports
 // what it held back.
 const summaryChain = "httpsec: refusal logs suppressed"
+
+// summaryGuard is the summary record a source guard writes by default.
+const summaryGuard = "ratelimit: refusal records suppressed"
 
 // testDeviceChannel is the channel the scripted challenge method reports. It
 // is a test-only value, the channel of no first-factor kind, so a challenge

@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
@@ -70,8 +71,9 @@ type Config struct {
 	// by, and what the fall-back limiter stamps with. Default: clock.System().
 	Clock clock.Clock
 
-	// Logger receives the degraded-mode transition records. Default:
-	// slog.Default().
+	// Logger receives the degraded-mode transition records. Default: the
+	// logger of the chain handling the request, else slog.Default() when the
+	// record is written. A nil Logger is refused with ratelimit.ErrConfig.
 	Logger *slog.Logger
 
 	// LogInterval is how long, in UnavailableAllow mode, one written outage
@@ -89,7 +91,7 @@ func DefaultConfig() Config {
 		Timeout:       DefaultTimeout,
 		ProbeInterval: DefaultProbeInterval,
 		Clock:         clock.System(),
-		Logger:        slog.Default(),
+		Logger:        ctxlog.Routing(),
 		LogInterval:   ratelimit.DefaultLogInterval,
 	}
 }
@@ -226,6 +228,9 @@ type limiter struct {
 	// sampler bounds allow mode's outage records to one per window; nil in
 	// the other modes.
 	sampler *logsample.Sampler
+	// summaries remembers where the namespace's last outage record went, so
+	// the suppressed-count summary follows it.
+	summaries ctxlog.Summaries
 }
 
 // errHeld is refuse mode's answer for a key whose failure could not be
@@ -552,6 +557,7 @@ func (l *limiter) logAllowing(ctx context.Context) {
 
 	l.logger.LogAttrs(ctx, slog.LevelError, msgAllow,
 		slog.String("namespace", l.namespace), slog.Int("suppressed", suppressed))
+	l.summaries.Note(ctx, l.logger, l.namespace)
 }
 
 // reportSuppressed is allow mode's sampler reporter: one record carrying the
@@ -559,7 +565,8 @@ func (l *limiter) logAllowing(ctx context.Context) {
 // counts, written when the backend is back or when the count ages out. It runs
 // on the goroutine whose call triggered it, with no request context of its own.
 func (l *limiter) reportSuppressed(namespace string, suppressed int) {
-	l.logger.LogAttrs(context.Background(), slog.LevelWarn, msgAllowSupp,
+	// A summary has no request context: it goes where the key's last record went.
+	l.summaries.For(l.logger, namespace).LogAttrs(context.Background(), slog.LevelWarn, msgAllowSupp,
 		slog.String("namespace", namespace), slog.Int("suppressed", suppressed))
 }
 

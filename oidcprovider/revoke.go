@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // The parameter revocation and introspection read a token from, and what an introspection says a
@@ -97,11 +99,14 @@ func (p *Provider) revokeRefreshToken(ctx context.Context, raw string, rc *Regis
 
 	now := p.cfg.clock.Now()
 	grant, err := p.stores.grants.Load(ctx, family)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return nil
 	case err != nil:
 		return dependencyFailure(ctx, err, "oidcprovider: read the refresh token's grant")
+	case grant == nil:
+		return dependencyFailure(ctx, errNoRecord, "oidcprovider: read the refresh token's grant")
 	case !now.Before(grant.ExpiresAt):
 		return nil
 	case grant.ClientID != rc.ID:
@@ -111,7 +116,7 @@ func (p *Provider) revokeRefreshToken(ctx context.Context, raw string, rc *Regis
 	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	defer cancel()
 	newly, err := p.stores.grants.Revoke(detached, family, CauseRevokedByClient, now)
-	if err != nil {
+	if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke the refresh token's grant")
 	}
 	if newly {
@@ -141,7 +146,8 @@ func (p *Provider) revokeOpaqueToken(ctx context.Context, raw string, rc *Regist
 
 	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	defer cancel()
-	if err := p.stores.accessTokens.Revoke(detached, at.ID); err != nil && !errors.Is(err, ErrNotFound) {
+	err = p.stores.accessTokens.Revoke(detached, at.ID)
+	if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil && !errors.Is(err, ErrNotFound) {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke the access token")
 	}
 

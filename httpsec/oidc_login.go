@@ -2,7 +2,6 @@ package httpsec
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"math"
 	"net/http"
@@ -141,13 +140,25 @@ func (i *oidcInterceptor) callback(ex *Exchange, provider string) error {
 	}
 
 	res, err := i.manager.Callback(ex.Context(), provider, code, state, handle)
-	if !errors.Is(err, oidc.ErrFlowUnspent) {
+
+	// The failure may be the consumer's broker's, so it is read once,
+	// through the bounded walk (readCallbackFailure). One the walk gives up
+	// on ends the flow, logs and reports nothing of its own, and its abort is
+	// reported as the quiet sites report one (reportQuietly).
+	failure := readCallbackFailure(ex.Context(), err)
+	if !failure.flowUnspent {
 		i.clearFlowCookie(ex)
 	}
 
 	if err != nil {
-		i.logCallbackFailure(ex, provider, err)
-		emitCallbackRefused(ex.Context(), err)
+		if failure.abort != nil {
+			ex.answeringChain().reportQuietly(ex.Context(), err, failure.abort)
+
+			return err
+		}
+
+		i.logCallbackFailure(ex, provider, failure)
+		emitCallbackRefused(ex.Context(), failure)
 
 		return err
 	}
@@ -172,16 +183,66 @@ func (i *oidcInterceptor) callback(ex *Exchange, provider string) error {
 // flow store fault, an invalid state, which is a forged or stale callback
 // rather than a login attempt, and a request whose own context ended before
 // the verdict report nothing.
-func emitCallbackRefused(ctx context.Context, err error) {
-	refusal := errors.Is(err, oidc.ErrInvalidIDToken) || errors.Is(err, oidc.ErrNoLinkedAccount) ||
-		errors.Is(err, oidc.ErrProvisioningRefused)
-	outage := errors.Is(err, oidc.ErrExchangeFailed) || errors.Is(err, oidc.ErrDiscoveryFailed)
-
-	if !refusal || outage || hangup.ByCaller(ctx, err) {
+//
+// failure is the callback's error as readCallbackFailure read it.
+func emitCallbackRefused(ctx context.Context, failure callbackFailure) {
+	if !failure.refusal || failure.outage || failure.hungUp {
 		return
 	}
 
 	emitEvent(ctx, userEvent(event.AuthnLoginFail, event.OutcomeFailure, "", factor.OIDC))
+}
+
+// callbackFailure is a callback's error, read once: what the callback's
+// handling asks of it, as errors.Is would answer each question, or the abort
+// that stopped the walk, when every answer is false.
+type callbackFailure struct {
+	// flowUnspent is set when the manager left the flow unspent
+	// (oidc.ErrFlowUnspent), so the flow cookie is kept.
+	flowUnspent bool
+
+	// invalidState and notLinked are the failures the interceptor logs.
+	invalidState, notLinked bool
+
+	// refusal, outage and hungUp decide the refusal event
+	// (emitCallbackRefused).
+	refusal, outage, hungUp bool
+
+	abort error
+}
+
+// readCallbackFailure reads err, a callback's failure, through one bounded
+// walk, the hang-up check included. A nil err reads as no failure. The
+// broker behind the manager is the consumer's, so err may be cyclic, fanned
+// out or carry a panicking method; such an err answers false to everything,
+// and its abort is returned for the caller to report.
+func readCallbackFailure(ctx context.Context, err error) callbackFailure {
+	if err == nil {
+		return callbackFailure{}
+	}
+
+	walk := walkRefusal(err)
+
+	f := callbackFailure{
+		flowUnspent:  walk.is(oidc.ErrFlowUnspent),
+		invalidState: walk.is(oidc.ErrInvalidState),
+		notLinked:    walk.is(oidc.ErrNoLinkedAccount),
+		refusal:      walk.is(oidc.ErrInvalidIDToken, oidc.ErrNoLinkedAccount, oidc.ErrProvisioningRefused),
+		outage:       walk.is(oidc.ErrExchangeFailed, oidc.ErrDiscoveryFailed),
+	}
+
+	if walk.abort != nil {
+		return callbackFailure{abort: walk.abort}
+	}
+
+	hungUp, abort := hangup.ByCallerWalk(ctx, err)
+	if abort != nil {
+		return callbackFailure{abort: abort}
+	}
+
+	f.hungUp = hungUp
+
+	return f
 }
 
 // providerError answers the error branch of the callback.
@@ -300,11 +361,13 @@ func (i *oidcInterceptor) clearFlowCookie(ex *Exchange) {
 // The manager logs an invalid ID token, a flow store fault, a failed exchange
 // or discovery and the broker's own refusals, so those are left alone. A plain
 // invalid state and an unlinked identity are recorded here.
-func (i *oidcInterceptor) logCallbackFailure(ex *Exchange, provider string, err error) {
+//
+// failure is the callback's error as readCallbackFailure read it.
+func (i *oidcInterceptor) logCallbackFailure(ex *Exchange, provider string, failure callbackFailure) {
 	switch {
-	case errors.Is(err, oidc.ErrInvalidState):
+	case failure.invalidState:
 		i.logCallbackRefusal(ex, slog.LevelWarn, callbackReasonInvalidState, provider)
-	case errors.Is(err, oidc.ErrNoLinkedAccount):
+	case failure.notLinked:
 		i.logCallbackRefusal(ex, slog.LevelInfo, callbackReasonNotLinked, provider)
 	}
 }

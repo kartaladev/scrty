@@ -7,12 +7,17 @@
 // it. The defaults are [WriteTimeout] for a write and [RevocationTimeout] for
 // a revocation of a session family, session or credential. A site that
 // already has its own bound keeps it and does not use these.
+//
+// It depends on internal/porterr for the record of an aborted cause walk.
 package detach
 
 import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/kartaladev/scrty/internal/errwalk"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // errBoundReached is the cause a [Bounded] context ends with when its bound
@@ -50,6 +55,61 @@ func Bounded(ctx context.Context, d time.Duration) (context.Context, context.Can
 //
 // A dependency that fails because the library's own bound passed has failed:
 // this is how a caller tells that apart from a client hanging up.
+//
+// The cause is read through [CauseIs], so a cause the walk gives up on is not
+// the library's bound. Each call records an abort once, as [CauseIs] does, so
+// several hang-up checks on one request each record: over-report, never
+// silence.
 func BoundReached(ctx context.Context) bool {
-	return errors.Is(context.Cause(ctx), errBoundReached)
+	matched, _ := CauseIs(ctx, errBoundReached)
+
+	return matched
+}
+
+// CauseIs reports whether the cause ctx ended with (context.Cause) is, or
+// wraps, target. A cause is consumer input: any middleware may cancel a
+// context with one, so it is read under the library's bounded, recovering
+// walk, never stdlib errors.Is, which hangs on a cyclic cause and dies on one
+// whose Unwrap or Is method panics.
+//
+// A live context has no cause, and matches nothing. A cause the walk gives up
+// on, a cycle, a fan-out of joins or a link whose Unwrap or Is method panics,
+// answers matched false, as an unrelated cause does, and aborted true; its
+// match is not guessed from a partial walk. The abort is recorded once, at
+// error level, on the logger ctx carries (the chain's own) or else
+// slog.Default() at record time, with a constant message and the reason, never
+// the error's text. A caller that holds the cause for another purpose, such as joining it
+// into a returned error, leaves it out when aborted.
+//
+// The record is written once per call: several hang-up checks on one request
+// each record, which over-reports and never silences.
+func CauseIs(ctx context.Context, target error) (matched, aborted bool) {
+	matched, abort := CauseWalk(ctx, target)
+	if abort != nil {
+		reportAbort(ctx, abort)
+
+		return false, true
+	}
+
+	return matched, false
+}
+
+// CauseWalk is [CauseIs] that reports nothing: it returns the abort that
+// stopped its walk, one of errwalk's own values, unwrapped, for a caller that
+// already recorded the same cause's abort in the same request and would only
+// repeat it. On an abort matched is false.
+func CauseWalk(ctx context.Context, target error) (matched bool, abort error) {
+	chain, abort := errwalk.Flatten(context.Cause(ctx))
+	if abort != nil {
+		return false, abort
+	}
+
+	return errwalk.Is(chain, target)
+}
+
+// reportAbort writes the one record of an aborted walk through
+// porterr.ReportAbort, which routes it: the logger ctx carries, else
+// slog.Default() when the record is written.
+func reportAbort(ctx context.Context, abort error) {
+	porterr.ReportAbort(ctx, nil, abort)
 }

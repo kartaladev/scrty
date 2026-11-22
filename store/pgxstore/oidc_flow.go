@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kartaladev/scrty/authenticate/oidc"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
 )
@@ -58,7 +59,7 @@ func (s *FlowStore) Begin(ctx context.Context, flow oidc.Flow) (string, error) {
 	); err != nil {
 		return "", failed(op, err)
 	}
-	rowID, err := s.c.ids.NewID()
+	rowID, err := idgen.New(s.c.ids)
 	if err != nil {
 		return "", failed(op, err)
 	}

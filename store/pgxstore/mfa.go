@@ -12,6 +12,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -164,7 +165,7 @@ func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error 
 	if err := storekit.CheckStorable(storekit.Text("user reference", string(e.User))); err != nil {
 		return failed(op, err)
 	}
-	rowID, err := s.c.ids.NewID()
+	rowID, err := idgen.New(s.c.ids)
 	if err != nil {
 		return failed(op, err)
 	}

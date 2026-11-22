@@ -10,7 +10,7 @@ import (
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/pkg/logsample"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -93,7 +93,7 @@ func sweepExpired(
 	clock *sweepClock,
 	now func() time.Time,
 	flow, msg, method string,
-	sampler *logsample.Sampler,
+	sampler *refusalSampler,
 	log *slog.Logger,
 ) {
 	claimed, due := clock.claim(now(), mgr.IssuanceWindow())
@@ -135,7 +135,8 @@ func sweepExpired(
 //     (mfa.ErrVerifyThrottled): neither is a guess.
 //
 // The two endpoints differ in the throttle and the challenges they pass, never
-// in this order.
+// in this order. log is the endpoint's component logger, the one the record of
+// a method error that cannot be walked goes to.
 //
 // A response refused at step 3 or 4 is reported on the session as the event
 // named failed (security events); a refused attempt charge is reported as
@@ -143,6 +144,7 @@ func sweepExpired(
 // request whose own context ended report nothing here.
 func checkResponse(
 	ex *Exchange,
+	log *slog.Logger,
 	throttle *mfa.VerifyThrottle,
 	challenges map[string]*onetime.Tokens,
 	method mfa.Method,
@@ -156,7 +158,7 @@ func checkResponse(
 		return err
 	}
 
-	response, err := readResponse(ex.Request, method.Response())
+	response, err := readResponse(ctx, ex.Request, method.Response())
 	if err != nil {
 		return err
 	}
@@ -164,18 +166,25 @@ func checkResponse(
 	if cm, ok := method.(mfa.ChallengeMethod); ok {
 		if err := spendChallenge(ctx, challenges[cm.Name()], cm, s, response); err != nil {
 			throttle.RecordFailure(ctx, user)
-			emitResponseRefused(ctx, err, failed, s)
+			emitResponseRefused(ctx, ex.answeringChain(), err, failed, s)
 
 			return err
 		}
 	}
 
-	if err := method.Verify(ctx, user, response); err != nil {
+	// The method is the consumer's, so its error is sanitized before the
+	// stdlib reads it below (porterr.SanitizeTo, its one abort record to the
+	// logger of the chain handling the request): one whose chain cannot be
+	// walked is a dependency failure, charged as any other failure is, and
+	// never reads as a refused authenticator or a throttle that charges
+	// nothing.
+	err = porterr.SanitizeTo(ctx, log, method.Verify(ctx, user, response), porterr.ErrUnwalkable)
+	if err != nil {
 		if !errors.Is(err, mfa.ErrAuthenticatorRefused) && !errors.Is(err, mfa.ErrVerifyThrottled) {
 			throttle.RecordFailure(ctx, user)
 		}
 
-		emitResponseRefused(ctx, err, failed, s)
+		emitResponseRefused(ctx, ex.answeringChain(), err, failed, s)
 
 		return err
 	}
@@ -191,14 +200,27 @@ func checkResponse(
 // locked-out user returns before a response is judged, so it never reaches
 // here and is reported once, by the throttle. A dependency failure, such as a
 // challenge store that failed beneath the refusal, and a request whose own
-// context ended, are not reported.
-func emitResponseRefused(ctx context.Context, err error, failed string, s *session.Session) {
-	if !refused(ctx, err) || depfault.Silent(ctx, err) {
+// context ended, are not reported. c is the exchange's answering chain, which
+// refused reports an aborted walk of err through.
+//
+// err is the consumer's method's as often as the library's, so which event it
+// is is read through one bounded walk. One the walk gives up on, such as a
+// link whose Is method panics only for the rate-limit sentinels asked here,
+// reports no event, and the abort is reported as the quiet sites report one
+// (reportQuietly): the status lookup has already answered err below 500 here,
+// so it does not meet that abort.
+func emitResponseRefused(ctx context.Context, c *Chain, err error, failed string, s *session.Session) {
+	if !refused(ctx, c, err) || depfault.Silent(ctx, err) {
 		return
 	}
 
+	walk := walkRefusal(err)
+	rateLimited := walk.is(mfa.ErrVerifyAttemptsExhausted, mfa.ErrVerifyThrottled)
+
 	switch {
-	case errors.Is(err, mfa.ErrVerifyAttemptsExhausted), errors.Is(err, mfa.ErrVerifyThrottled):
+	case walk.abort != nil:
+		c.reportQuietly(ctx, err, walk.abort)
+	case rateLimited:
 		emitEvent(ctx, sessionEvent(event.ExcessRateLimitExceeded, event.OutcomeFailure, s))
 	default:
 		emitEvent(ctx, sessionEvent(failed, event.OutcomeFailure, s))
@@ -229,7 +251,7 @@ type challengeIssue struct {
 	// failed sweep; now, sampler and log are the endpoint's own.
 	sweepFlow, notPurged string
 	now                  func() time.Time
-	sampler              *logsample.Sampler
+	sampler              *refusalSampler
 	log                  *slog.Logger
 }
 
@@ -272,7 +294,12 @@ func issueChallenge(ex *Exchange, s *session.Session, cm mfa.ChallengeMethod, is
 		return diag.Wrap(err, iss.notIssued)
 	}
 
+	// The method is the consumer's, so its error is sanitized before it is
+	// wrapped and travels on (porterr.SanitizeTo, its one abort record to the
+	// logger of the endpoint): one whose chain cannot be walked is a method
+	// that failed, refused behind iss.notIssued as any other failure is.
 	data, err := cm.BeginChallenge(ctx, s.UserID, challenge)
+	err = porterr.SanitizeTo(ctx, iss.log, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return diag.Wrap(err, iss.notIssued)
 	}
@@ -306,7 +333,7 @@ func challengeManagers(
 		// that failed from a challenge that was not good.
 		mgr, err := onetime.New(purpose(m.Name()),
 			onetime.WithTokenTTL(ttl),
-			onetime.WithStore(depfault.Store(store)),
+			onetime.WithStore(depfault.Store(store, c.logger)),
 			onetime.WithClock(c.clock),
 			onetime.WithLogger(c.logger))
 		if err != nil {

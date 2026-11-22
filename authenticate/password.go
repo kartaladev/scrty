@@ -9,9 +9,13 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
@@ -90,19 +94,13 @@ func WithPasswordLogInterval(interval time.Duration) PasswordOption {
 	return func(a *UsernamePasswordAuthenticator) { a.logEvery = interval; a.logEverySet = true }
 }
 
-// WithPasswordLogger replaces the logger. The default is
-// slog.Default().
+// WithPasswordLogger replaces the logger. The default is the logger of the
+// chain handling the request, else slog.Default() when the record is written.
 //
-// A nil logger is ignored rather than refused: unlike a port the provider
-// cannot work without, a nil logger has an obvious safe reading — the caller
-// does not want to choose this component's logger — and refusing it would make
-// configuring logging mandatory.
+// A nil logger, typed nil included, fails construction with [ErrConfig]: the
+// default needs no option, so a nil here is a wiring mistake.
 func WithPasswordLogger(logger *slog.Logger) PasswordOption {
-	return func(a *UsernamePasswordAuthenticator) {
-		if logger != nil {
-			a.logger = logger
-		}
-	}
+	return func(a *UsernamePasswordAuthenticator) { a.logger = logger; a.loggerSet = true }
 }
 
 // WithPasswordUsernameInRefusalLogs writes the submitted username in refusal records,
@@ -155,6 +153,7 @@ type UsernamePasswordAuthenticator struct {
 	idsSet bool
 
 	logger      *slog.Logger
+	loggerSet   bool // WithPasswordLogger was applied
 	logEvery    time.Duration
 	logEverySet bool
 
@@ -165,6 +164,9 @@ type UsernamePasswordAuthenticator struct {
 	// refusals holds back repeated refusal records. Its reporter writes to the
 	// same logger, so nothing it suppresses is lost.
 	refusals *logsample.Sampler
+	// summaries remembers where each reason's last record went, so its
+	// summary goes there and nowhere else.
+	summaries ctxlog.Summaries
 
 	// reference is the hash an unknown username is verified against, so that
 	// path costs the same as a known one. It is produced once, at construction.
@@ -226,8 +228,11 @@ func NewUsernamePasswordAuthenticator(
 		a.ids = id.NewV7Generator()
 	}
 
+	if a.loggerSet && nilcheck.IsNil(a.logger) {
+		return nil, fmt.Errorf("%w: the logger is nil; WithPasswordLogger needs a logger", ErrConfig)
+	}
 	if a.logger == nil {
-		a.logger = slog.Default()
+		a.logger = ctxlog.Routing()
 	}
 	if !a.logEverySet {
 		a.logEvery = defaultRefusalLogInterval
@@ -235,6 +240,10 @@ func NewUsernamePasswordAuthenticator(
 	a.refusals = logsample.New(a.logEvery, logsample.WithReporter(a.reportSuppressed))
 
 	reference, err := a.enc.Encode(referencePassword)
+	// The encoder is the consumer's, and so is its error, which a caller
+	// checks once it comes back wrapped. Construction has no request context;
+	// a.logger is already set.
+	err = porterr.SanitizeTo(context.Background(), a.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		// ErrConfig already matched regardless of cause: every failure of
 		// this probe is a construction error, so it is named as a kind here
@@ -313,6 +322,11 @@ func (a *UsernamePasswordAuthenticator) Authenticate(ctx context.Context, creden
 	presented := string(creds.Password)
 
 	details, err := a.users.LoadByUsername(ctx, creds.Username)
+	// The loader is the consumer's, and so is its error. One whose chain
+	// cannot be walked becomes a fault matching ErrUnavailable, so it takes
+	// the outage branch below and is never read as an unknown user or a
+	// hang-up; the abort is recorded once, on this provider's logger.
+	err = porterr.SanitizeTo(ctx, a.logger, err, ErrUnavailable)
 	if err != nil || details == nil {
 		// Deliberately unused: the verification is the point, not its verdict.
 		_ = a.enc.Match(presented, a.reference)
@@ -388,7 +402,8 @@ func (a *UsernamePasswordAuthenticator) Authenticate(ctx context.Context, creden
 	// Named before the wipe, so a generator that cannot mint an identifier
 	// leaves the caller holding the credentials it presented rather than a
 	// wiped buffer and an error.
-	eventID, err := a.ids.NewID()
+	eventID, err := idgen.New(a.ids)
+	err = porterr.SanitizeTo(ctx, a.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return nil, fmt.Errorf("authenticate: naming the authentication: %w", err)
 	}
@@ -421,13 +436,23 @@ func (a *UsernamePasswordAuthenticator) Authenticate(ctx context.Context, creden
 // ErrAuthenticationFailed joined with ctx's error, and with its cause when
 // that is a different error. It carries nothing of the loader's own error,
 // whose text may quote what the store holds.
+//
+// The cause is consumer input, read under the bounded walk: one the walk gives
+// up on is left out, as it may hang or panic whoever reads the returned error
+// next. The hang-up check that led here read the same cause and recorded its
+// abort, so this read records none.
 func endedByCaller(ctx context.Context) error {
 	ctxErr := ctx.Err()
-	if cause := context.Cause(ctx); cause != nil && !errors.Is(ctxErr, cause) {
-		return errors.Join(ErrAuthenticationFailed, ctxErr, cause)
+	errs := []error{ErrAuthenticationFailed, ctxErr}
+
+	// The walk is only the abort check: the cause is joined unless it is
+	// ctx's own error itself, as it was before the walk was bounded.
+	_, abort := detach.CauseWalk(ctx, ctxErr)
+	if cause := context.Cause(ctx); abort == nil && cause != nil && cause != ctxErr { //nolint:errorlint // identity is the claim
+		errs = append(errs, cause)
 	}
 
-	return errors.Join(ErrAuthenticationFailed, ctxErr)
+	return errors.Join(errs...)
 }
 
 // usableHash reports whether the stored hash is one the encoder would verify,
@@ -479,6 +504,8 @@ func (a *UsernamePasswordAuthenticator) refuse(ctx context.Context, level slog.L
 		return
 	}
 
+	a.summaries.Note(ctx, a.logger, reason)
+
 	attrs := append([]slog.Attr{}, recordAttrs...)
 	if a.logUsername {
 		attrs = append(attrs, slog.String("username", username))
@@ -495,7 +522,7 @@ func (a *UsernamePasswordAuthenticator) refuse(ctx context.Context, level slog.L
 // say one refusal happened where there were fifty. It runs on the goroutine
 // whose Allow or FlushRefusalLogs call triggered it, so it only logs.
 func (a *UsernamePasswordAuthenticator) reportSuppressed(reason string, suppressed int) {
-	a.logger.LogAttrs(context.Background(), slog.LevelInfo, "authentication refusals suppressed",
+	a.summaries.For(a.logger, reason).LogAttrs(context.Background(), slog.LevelInfo, "authentication refusals suppressed",
 		slog.String("reason", reason),
 		slog.Int("suppressed", suppressed))
 }

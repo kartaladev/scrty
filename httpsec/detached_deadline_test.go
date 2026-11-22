@@ -613,7 +613,7 @@ func runBackchannel(kind string) func(context.Context, *testing.T, *deadlineProb
 					return nil, oidc.ErrLinkNotFound
 				})
 
-			broker, err := oidc.NewBroker(links, NewMockUserLoader(ctrl))
+			broker, err := oidc.NewBroker(links, NewMockUserLoader(ctrl)) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 			require.NoError(t, err)
 
 			h.manager = h.managerWith(t, broker, nil, oidc.WithClock(h.clock))
@@ -886,7 +886,7 @@ func runPasswordChange(ctx context.Context, t *testing.T, p *deadlineProbe, fail
 func runRehash(ctx context.Context, t *testing.T, p *deadlineProbe, fail error) detachedOutcome {
 	t.Helper()
 
-	r := newRehashRig(t, rehashOldMemory)
+	r := newRehashRig(t, rehashOldMemory) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
 	r.h.attempts.EXPECT().Reset(gomock.Any(), "ada").Return(nil)
 	r.h.expectSessionOpened("issued-token")
 

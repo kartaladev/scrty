@@ -32,6 +32,9 @@ type config struct {
 	unavailable unavailable.Config
 	// evictionCheck is whether Verify reads the eviction policy.
 	evictionCheck bool
+	// loggerGiven records that WithLogger was given, so a nil logger passed
+	// to it is refused by name.
+	loggerGiven bool
 }
 
 // newConfig returns the configuration opts describe, over the defaults.
@@ -145,12 +148,16 @@ func WithUnavailableLogInterval(interval time.Duration) Option {
 }
 
 // WithLogger sets where the limiter writes its outage records: the move to
-// and from a degraded mode. Default: slog.Default().
+// and from a degraded mode, and Verify's warning. Default: the logger of the
+// chain handling the request, else slog.Default() when the record is written.
 //
 // A nil logger fails construction with ratelimit.ErrConfig, because the
 // outage records would be lost.
 func WithLogger(logger *slog.Logger) Option {
-	return func(c *config) { c.unavailable.Logger = logger }
+	return func(c *config) {
+		c.unavailable.Logger = logger
+		c.loggerGiven = true
+	}
 }
 
 // WithEvictionPolicyCheck sets whether Verify reads the server's

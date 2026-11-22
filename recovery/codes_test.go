@@ -114,11 +114,12 @@ func TestNewCodes_Config(t *testing.T) {
 			},
 		},
 		{
-			name:    "a nil logger is ignored, not refused",
+			name:    "a nil logger is refused",
 			options: []recovery.CodesOption{recovery.WithCodesLogger(nil)},
 			assert: func(t *testing.T, c *recovery.Codes, err error) {
-				require.NoError(t, err)
-				assert.NotNil(t, c)
+				require.ErrorIs(t, err, recovery.ErrConfig)
+				assert.ErrorContains(t, err, "WithCodesLogger")
+				assert.Nil(t, c)
 			},
 		},
 		{

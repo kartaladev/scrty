@@ -39,6 +39,13 @@ func TestNewSMTPSender(t *testing.T) {
 		assert.Nil(t, s)
 	}
 
+	unsafeDefault := func(t *testing.T, s *notify.SMTPSender, err error) {
+		require.Error(t, err)
+		assert.ErrorIs(t, err, notify.ErrUnsafeHeaderValue)
+		assert.Nil(t, s)
+		assert.NotContains(t, err.Error(), "evil", "the error must not quote the value")
+	}
+
 	cases := []testCase{
 		{
 			name: "defaults",
@@ -96,6 +103,30 @@ func TestNewSMTPSender(t *testing.T) {
 				assert.Equal(t, 5*time.Second, s.Timeout())
 			},
 		},
+		{
+			name: "clean default sender",
+			host: "smtp.example.com",
+			opts: []notify.SMTPOption{notify.WithSMTPFrom("noreply@example.com")},
+			assert: func(t *testing.T, s *notify.SMTPSender, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, s)
+			},
+		},
+		{
+			name: "empty default sender",
+			host: "smtp.example.com",
+			opts: []notify.SMTPOption{notify.WithSMTPFrom("")},
+			assert: func(t *testing.T, s *notify.SMTPSender, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, s)
+			},
+		},
+		{name: "default sender with CR", host: "smtp.example.com",
+			opts: []notify.SMTPOption{notify.WithSMTPFrom("a@example.com\rBcc: x@evil.example")}, assert: unsafeDefault},
+		{name: "default sender with LF", host: "smtp.example.com",
+			opts: []notify.SMTPOption{notify.WithSMTPFrom("a@example.com\nBcc: x@evil.example")}, assert: unsafeDefault},
+		{name: "default sender with CRLF", host: "smtp.example.com",
+			opts: []notify.SMTPOption{notify.WithSMTPFrom("a@example.com\r\nBcc: x@evil.example")}, assert: unsafeDefault},
 		{
 			name: "does not declare itself non-blocking",
 			host: "smtp.example.com",

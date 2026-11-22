@@ -14,6 +14,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -194,7 +195,7 @@ func (s *sessionStore) newRow(op string, sess *session.Session) (sessionRow, err
 	if err != nil {
 		return sessionRow{}, err
 	}
-	if row.ID, err = s.c.ids.NewID(); err != nil {
+	if row.ID, err = idgen.New(s.c.ids); err != nil {
 		return sessionRow{}, failed(op, err)
 	}
 	args, err := pgschema.SessionSignInArgs(sess)

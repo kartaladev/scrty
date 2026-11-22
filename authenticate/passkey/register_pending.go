@@ -13,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
@@ -112,7 +113,7 @@ func (m *Passkeys) planPending(
 	}
 
 	if p.reasons&PendingEmailCode != 0 {
-		code, err := m.drawEmailCode()
+		code, err := m.drawEmailCode(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -163,7 +164,10 @@ func (m *Passkeys) removeUnsettled(ctx context.Context, c *Credential) {
 	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unsettledDeleteTimeout)
 	defer cancel()
 
-	if _, err := m.credentials.Delete(dctx, c.User, c.ID); err != nil {
+	_, err := m.credentials.Delete(dctx, c.User, c.ID)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
+	if err != nil {
 		attrs := append([]slog.Attr{credentialAttr(c.ID)}, diag.Failure("delete", err)...)
 		m.sampled(ctx, slog.LevelError, "delete|unsettled", msgUnsettledNotRemoved, attrs...)
 	}
@@ -188,6 +192,8 @@ func (m *Passkeys) deleteAbandoned(
 	}
 
 	held, err := m.credentials.List(ctx, user)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return diag.Wrap(err, "passkey: could not list the user's passkeys")
 	}
@@ -197,7 +203,10 @@ func (m *Passkeys) deleteAbandoned(
 			continue
 		}
 
-		if _, err := m.credentials.Delete(ctx, user, c.ID); err != nil {
+		_, err = m.credentials.Delete(ctx, user, c.ID)
+		err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
+		if err != nil {
 			return diag.Wrap(err, "passkey: could not remove an abandoned registration")
 		}
 	}
@@ -231,9 +240,11 @@ func (m *Passkeys) hasWayBack(ctx context.Context, user identity.UserID) (bool, 
 }
 
 // drawEmailCode draws a uniform 6-digit code from the manager's random source.
-func (m *Passkeys) drawEmailCode() (string, error) {
+func (m *Passkeys) drawEmailCode(ctx context.Context) (string, error) {
 	n, err := rand.Int(m.random, big.NewInt(emailCodeSpace))
 	if err != nil {
+		err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 		return "", diag.Wrap(err, "passkey: could not draw an emailed code")
 	}
 
@@ -253,7 +264,10 @@ func (m *Passkeys) sendEmailCode(
 
 	subject, body := m.messages.EmailCode(code, until)
 
-	if err := m.sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body}); err != nil {
+	err = m.sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body})
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
+	if err != nil {
 		return diag.Wrap(err, "passkey: could not queue the emailed code")
 	}
 
@@ -336,6 +350,8 @@ func (m *Passkeys) ConfirmEmailCode(
 	key := EmailConfirmThrottleKey(sess.UserID)
 
 	exceeded, err := limiter.Exceeded(ctx, key)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: the confirmation limiter could not decide", mfa.ErrEnrolmentThrottled)
 	}
@@ -354,6 +370,8 @@ func (m *Passkeys) ConfirmEmailCode(
 	}
 
 	stored, charged, err := m.credentials.ChargeEmailAttempt(ctx, sess.UserID, c.ID, m.clock.Now())
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not charge an attempt against the emailed code")
 	}
@@ -369,7 +387,10 @@ func (m *Passkeys) ConfirmEmailCode(
 // the caller cannot cancel, and returns the refusal. A limiter that cannot
 // record is logged by a fixed reason and does not change the outcome.
 func (m *Passkeys) refuseEmailCode(ctx context.Context, limiter ratelimit.Limiter, key string) error {
-	if err := limiter.RecordFailure(context.WithoutCancel(ctx), key); err != nil {
+	err := limiter.RecordFailure(context.WithoutCancel(ctx), key)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
+	if err != nil {
 		m.logger.LogAttrs(ctx, slog.LevelError, msgLimiterNotRecorded, diag.Failure("limiter", err)...)
 	}
 
@@ -395,6 +416,8 @@ func isEmailCode(code string) bool {
 // awaiting returns user's pending passkey whose reason r is set, or nil.
 func (m *Passkeys) awaiting(ctx context.Context, user identity.UserID, r PendingReason) (*Credential, error) {
 	held, err := m.credentials.List(ctx, user)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not list the user's passkeys")
 	}
@@ -415,6 +438,8 @@ func (m *Passkeys) clearReason(
 	ctx context.Context, c *Credential, r PendingReason, rc RegistrationContext,
 ) (*Credential, error) {
 	state, cleared, err := m.credentials.ClearReason(ctx, c.User, c.ID, r)
+	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
+
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not clear the pending reason")
 	}

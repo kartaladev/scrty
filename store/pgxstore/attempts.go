@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/policy"
@@ -54,7 +55,7 @@ func (s *AttemptStore) RecordFailure(ctx context.Context, username string, at ti
 	if err := storekit.CheckStorable(storekit.Text("username", username)); err != nil {
 		return failed(op, err)
 	}
-	rowID, err := s.c.ids.NewID()
+	rowID, err := idgen.New(s.c.ids)
 	if err != nil {
 		return failed(op, err)
 	}
@@ -143,7 +144,7 @@ func (s *AttemptStore) AddStreakFailure(
 			return lockout.FailureStreak{}, false, failed(op, err)
 		}
 
-		rowID, err := s.c.ids.NewID()
+		rowID, err := idgen.New(s.c.ids)
 		if err != nil {
 			return lockout.FailureStreak{}, false, failed(op, err)
 		}

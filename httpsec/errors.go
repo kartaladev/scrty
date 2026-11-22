@@ -1,6 +1,7 @@
 package httpsec
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -15,12 +16,17 @@ import (
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/authorize"
+	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/errwalk"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/store/seal"
+	"github.com/kartaladev/scrty/token"
 	"github.com/kartaladev/scrty/token/onetime"
 )
 
@@ -212,7 +218,23 @@ type ChallengeError struct {
 
 	// Token is the access token issued alongside the pending session, and is
 	// empty unless one was issued when the challenge was raised.
+	//
+	// Wherever the library raises a challenge with a Token, it first sets the
+	// response's Cache-Control to no-store, replacing any cache policy an outer
+	// middleware or an earlier interceptor set, so no cache keeps the
+	// credential. The response must stay no-store: an error handler that sets
+	// Cache-Control again after the challenge is raised overrides this, and
+	// the library cannot prevent it. A challenge without a Token leaves the
+	// consumer's cache policy as it is.
 	Token string
+
+	// TokenType is how Token is presented: TokenTypeDPoP for a token bound to
+	// a DPoP key, TokenTypeBearer otherwise, as the login success document
+	// would name it. The library sets it wherever it sets Token, and it is
+	// empty when Token is. A ChallengeError built elsewhere with a Token and
+	// no TokenType keeps it empty: the type is never guessed, since a token
+	// may be bound.
+	TokenType TokenType
 
 	// Methods are the second-factor methods the session's user can answer a
 	// challenge of kind policy.ChallengeMFA with, in the order EnableMFA was
@@ -244,6 +266,17 @@ type MFAMethod struct {
 // token are fields, not text.
 func (e *ChallengeError) Error() string {
 	return fmt.Sprintf("httpsec: challenge required: %s", e.Kind)
+}
+
+// challengeTokenType is the TokenType of a challenge carrying token, issued
+// for s: empty when no token was issued, so a challenge never names the type of
+// a credential it does not carry.
+func challengeTokenType(token string, s *session.Session) TokenType {
+	if token == "" {
+		return ""
+	}
+
+	return tokenTypeOf(s)
 }
 
 // statusRow is one refusal and the status it answers with. The table is
@@ -337,7 +370,7 @@ var statusTable = []statusRow{
 	// value is refused, so a client can show a field-level message. A history
 	// that could not be read or recorded is a dependency failure, not a
 	// refusal of the caller's input, and carries no row here: it falls through
-	// to the unrecognised-error 500 below, like any other unrecognised error.
+	// to the 500 below, where LookupStatus still recognises it as the library's.
 	//
 	// Every other refusal of a password policy ([password.ErrPasswordRejected],
 	// which [password.ErrReused] also matches) answers the same way. A breach
@@ -487,7 +520,7 @@ var statusTable = []statusRow{
 // tell "you still owe a change" from "that password was used recently"). A
 // history that could not be read or recorded ([password.ErrHistoryUnavailable])
 // is a dependency failure, not a refusal of the caller's input, and maps to
-// 500 like any other unrecognised error.
+// 500; LookupStatus recognises it as the library's own.
 //
 // A user store that could not answer a login, a Basic request, a recovery's
 // password proof or an API key's owner check ([authenticate.ErrUnavailable])
@@ -499,45 +532,260 @@ var statusTable = []statusRow{
 // answers 503, revealing lock state; and in a partial outage, where a found
 // user's load reads more than a miss does, known users answer 503 and unknown
 // ones 401, revealing which usernames exist.
+//
+// The walk of the error chain is bounded, and it fails closed: a chain it
+// cannot walk to the end, because it is cyclic, fans out past the budget of
+// 1,000 entries, or has a link whose Unwrap, Is or As method panics, is answered
+// 500 and is not recognised. A nil-pointer link is skipped without calling any
+// of its methods. LookupStatus returns the same status and also reports whether
+// the error was recognised; StatusForError is defined through it, and reports a
+// classification that gave up as LookupStatus does, including the log record
+// described there.
+//
+// The bound protects this function only. A consumer's own code that calls
+// errors.Is or errors.As from the standard library on the same error is not
+// protected: on a cyclic chain it can still loop, and on a panicking link it
+// still panics.
 func StatusForError(err error) int {
-	if err == nil {
-		return http.StatusInternalServerError
+	status, _ := LookupStatus(err)
+
+	return status
+}
+
+// LookupStatus is StatusForError with the comma-ok idiom: it returns the same
+// status for every error, and reports whether the library recognised the
+// error as one of its own. StatusForError is defined through it, so the two
+// never disagree.
+//
+// An error is recognised when it is, wraps or joins:
+//   - a refusal StatusForError answers with its own status;
+//   - a *ChallengeError, of any kind, a consumer's own included;
+//   - a dependency failure the library reported: a credential the chain could
+//     not issue, ErrChallengeUnavailable, oidcprovider.ErrDependency,
+//     recovery.ErrDependency, a failure the library wrapped behind fixed text
+//     (whatever status that gives), or one of the library's named
+//     dependency-unavailable sentinels:
+//     [password.ErrHistoryUnavailable], [password.ErrLookupUnavailable],
+//     [session.ErrListUnavailable], [session.ErrCipherUnavailable],
+//     [seal.ErrUnavailable], [ratelimit.ErrBackendUnavailable],
+//     [oidc.ErrExchangeFailed], [oidc.ErrDiscoveryFailed] and
+//     [token.ErrNoVerificationKeys].
+//
+// Everything else, nil included, is not recognised and is reported as
+// (500, false): the same 500 StatusForError answers, without claiming the error.
+// An error handler that chains several mappers uses ok to tell a failure the
+// library has already decided, which must keep its status, from an
+// application's own error, which a later mapper may still answer: a dependency
+// failure the library flattened to 500 is recognised, so a driver mapper never
+// re-reads the connection error it wraps as another status.
+//
+// A nil *ChallengeError in the chain is treated as no challenge.
+//
+// The chain is walked once, under fixed rules, and every check reads that one
+// walk: a nil-pointer link is skipped without calling any of its methods, and
+// the walk gives up after examining 1,000 entries, repeats and nil entries
+// included, or when a link's Unwrap, Is or As method panics. A walk that gives
+// up, on a cyclic chain, a fan-out of joins or a panicking link, is reported
+// as (500, false), unrecognised, and never as a guess at what the unreached
+// link would have said. The bound covers this function's walk only: errors.Is
+// and errors.As from the standard library, called by consumer code on the same
+// error, are not bounded by it.
+//
+// Each walk that gives up writes one Error record with the message
+// "httpsec: error classification aborted" and a reason attribute, "budget" or
+// "panic"; a panic adds its Go type and where it happened, never its value.
+// LookupStatus (and StatusForError, which calls it) takes no context, so it
+// cannot find the logger of a chain: it writes the record to slog.Default() as
+// that logger is at the moment the record is written. The record never
+// carries the error's text, and no method of the error is called to write it. Called once per request by a consumer's
+// error handler, it writes one record per aborted request, unsampled. The
+// chain's own error dispatch does not call it: it writes the record to the
+// chain's logger, sampled (WithLogger, WithRefusalLogInterval).
+func LookupStatus(err error) (status int, ok bool) {
+	status, ok, abort := lookup(err)
+	if abort != nil {
+		// It takes no context, so the record carries none and goes to
+		// slog.Default() as it is when the record is written.
+		porterr.ReportAbort(context.Background(), nil, abort)
+	}
+
+	return status, ok
+}
+
+// msgClassificationAborted is the record an aborted classification writes, and
+// classificationAbortedKeyPrefix the start of every key the chain samples it
+// under (classificationAbortedKey).
+const (
+	msgClassificationAborted       = "httpsec: error classification aborted"
+	classificationAbortedKeyPrefix = "classification-aborted:"
+)
+
+// classificationAbortedKey is the sampling key of abort's record: one per
+// reason, "classification-aborted:budget" or "classification-aborted:panic", so
+// a budget abort never hides a panic abort in the same window. Several reports
+// of one reason inside a window, from the dispatch and the quiet sites of one
+// request or of many, write one record.
+func classificationAbortedKey(abort error) string {
+	return classificationAbortedKeyPrefix + errwalk.Reason(abort)
+}
+
+// statusQuietly is the status lookup gives err, for code inside a run that
+// classifies a refusal for its own purposes: the refusal event, the Basic
+// challenge, the OIDC sign-in challenge and the session-signals checks. An
+// abort answers 500, as the dispatch does. c is the exchange's answering chain
+// (Exchange.answeringChain), the one whose dispatch answers err, not the chain
+// whose interceptor raised it: with one chain assembled inside another, that is
+// the outer one.
+//
+// It reports an abort only when c has a consumer's error handler
+// (WithErrorHandler): the chain's dispatch then classifies nothing, so without
+// this report an abort the library met would go unseen. The record goes
+// through c's logger and sampler under the dispatch's per-reason key, so the
+// sites of one request, and the requests of one window, write one record. A
+// handler that also calls LookupStatus or StatusForError writes a second
+// record, to slog.Default(): over-reporting, never silence. Without a consumer
+// handler it stays quiet, because the dispatch classifies the same refusal and
+// reports it: one request, one record. A nil c, a site running outside any
+// chain's interceptors, stays quiet too.
+func (c *Chain) statusQuietly(ctx context.Context, err error) int {
+	status, _, abort := lookup(err)
+	if abort != nil && c != nil && c.errorHandler != nil {
+		c.logClassificationAborted(ctx, abort)
+	}
+
+	return status
+}
+
+// lookup is LookupStatus without reporting: it also returns the abort that
+// stopped the classification, nil when none did, and never logs. The status
+// is 500 and ok false whenever abort is non-nil. abort is one of errwalk's own
+// values, so errwalk.Reason names it; it must reach Reason unwrapped.
+//
+// The checks run in a fixed order, and the first that matches decides: an
+// issuing failure, ErrChallengeUnavailable, the OpenID Provider's and a
+// recovery's dependency failures, a challenge, the status table, a library
+// fault, and the named dependency sentinels. Each list of sentinels is matched
+// with one errwalk.Index scan, which answers exactly as one errwalk.Is per
+// sentinel in the list's order would.
+func lookup(err error) (status int, ok bool, abort error) {
+	unrecognised := func(stop error) (int, bool, error) {
+		return http.StatusInternalServerError, false, stop
+	}
+
+	// The chain is walked into this frame's own array, so a chain of up to
+	// walkBuffer nodes takes no heap allocation.
+	var buf [walkBuffer]error
+
+	chain, abort := errwalk.FlattenInto(buf[:], err)
+	if abort != nil {
+		return unrecognised(abort)
+	}
+
+	if len(chain) == 0 {
+		// nil, or a nil pointer: nothing to recognise.
+		return unrecognised(nil)
 	}
 
 	// An issuing failure is a dependency failure whatever its cause wraps,
 	// so it is answered before the challenge and the refusal table are read.
-	var issuing *issueFailure
-	if errors.As(err, &issuing) {
-		return http.StatusInternalServerError
+	if _, found, stop := errwalk.As[*issueFailure](chain); stop != nil {
+		return unrecognised(stop)
+	} else if found {
+		return http.StatusInternalServerError, true, nil
 	}
 
 	// So is a challenge verifier that could not answer, whatever its own
-	// error wraps: an outage never reads to the client as a refusal.
-	if errors.Is(err, ErrChallengeUnavailable) {
-		return http.StatusInternalServerError
+	// error wraps: an outage never reads to the client as a refusal. And a
+	// dependency of the OpenID Provider or of a recovery that failed, whatever
+	// its own error wraps.
+	if i, stop := errwalk.Index(chain, unavailableTargets); stop != nil {
+		return unrecognised(stop)
+	} else if i >= 0 {
+		return http.StatusInternalServerError, true, nil
 	}
 
-	// And a dependency of the OpenID Provider or of a recovery that failed,
-	// whatever its own error wraps.
-	if errors.Is(err, oidcprovider.ErrDependency) || errors.Is(err, recovery.ErrDependency) {
-		return http.StatusInternalServerError
-	}
-
-	var ch *ChallengeError
-	if errors.As(err, &ch) {
+	// A nil *ChallengeError carries no kind to answer: the walk skips it, and
+	// the rest of the chain decides.
+	if ch, found, stop := errwalk.As[*ChallengeError](chain); stop != nil {
+		return unrecognised(stop)
+	} else if found {
 		switch ch.Kind {
 		case policy.ChallengePasswordChange, policy.ChallengeMFAEnrolment, policy.ChallengeAccountRecovery:
-			return http.StatusForbidden
+			return http.StatusForbidden, true, nil
 		default:
-			return http.StatusUnauthorized
+			return http.StatusUnauthorized, true, nil
 		}
 	}
 
-	for _, row := range statusTable {
-		if errors.Is(err, row.err) {
-			return row.status
-		}
+	// The first row, in table order, that any node matches decides.
+	if i, stop := errwalk.Index(chain, statusTargets); stop != nil {
+		return unrecognised(stop)
+	} else if i >= 0 {
+		return statusTable[i].status, true, nil
 	}
 
-	return http.StatusInternalServerError
+	// What remains matched no row, so a library dependency failure is 500
+	// here, exactly as the fallback below answers it, but claimed as the
+	// library's.
+	if _, found, stop := errwalk.As[*diag.Fault](chain); stop != nil {
+		return unrecognised(stop)
+	} else if found {
+		return http.StatusInternalServerError, true, nil
+	}
+
+	if i, stop := errwalk.Index(chain, dependencyTargets); stop != nil {
+		return unrecognised(stop)
+	} else if i >= 0 {
+		return http.StatusInternalServerError, true, nil
+	}
+
+	return unrecognised(nil)
+}
+
+// unavailableSentinels are the dependency failures answered 500 before a
+// challenge or the status table is read, whatever their own errors wrap: a
+// challenge verifier that could not answer, and a failed dependency of the
+// OpenID Provider or of a recovery.
+var unavailableSentinels = []error{ErrChallengeUnavailable, oidcprovider.ErrDependency, recovery.ErrDependency}
+
+// unavailableTargets, statusTargets and dependencyTargets are the sentinel
+// lists lookup matches, prepared once for errwalk.Index in their tables' own
+// order, so a classification scans each list under one recover and allocates
+// nothing for it. Index returns a position in the list it was given, so
+// statusTargets[i] is statusTable[i].err.
+var (
+	unavailableTargets = errwalk.NewTargets(unavailableSentinels...)
+	statusTargets      = errwalk.NewTargets(statusSentinels(statusTable)...)
+	dependencyTargets  = errwalk.NewTargets(dependencySentinels...)
+)
+
+// statusSentinels are the sentinels of rows, in rows' order.
+func statusSentinels(rows []statusRow) []error {
+	out := make([]error, len(rows))
+	for i, row := range rows {
+		out[i] = row.err
+	}
+
+	return out
+}
+
+// walkBuffer is how many chain nodes lookup holds on its own stack. The
+// error shapes a request raises are a handful of nodes; a longer chain still
+// classifies, and only grows onto the heap.
+const walkBuffer = 16
+
+// dependencySentinels are the library's named dependency-unavailable
+// failures that no row above answers: each is 500, and LookupStatus
+// recognises it. A sentinel added to the library with that meaning belongs
+// here, and in TestLookupStatus_DependencySentinelInventory.
+var dependencySentinels = []error{
+	password.ErrHistoryUnavailable,
+	password.ErrLookupUnavailable,
+	session.ErrListUnavailable,
+	session.ErrCipherUnavailable,
+	seal.ErrUnavailable,
+	ratelimit.ErrBackendUnavailable,
+	oidc.ErrExchangeFailed,
+	oidc.ErrDiscoveryFailed,
+	token.ErrNoVerificationKeys,
 }

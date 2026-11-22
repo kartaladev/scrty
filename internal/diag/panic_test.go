@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"log/slog"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -130,6 +131,124 @@ func TestPanicAttrs(t *testing.T) {
 			require.Equal(t, "frames", attrs[1].Key)
 
 			tc.assert(t, attrs[0].Value.String(), strings.Split(attrs[1].Value.String(), "; "), renderPanic(t, attrs))
+		})
+	}
+}
+
+// capturedPCLimit is more than the agreed limit, so a deep capture hands
+// PanicAttrsFrom more frames than it may name.
+const capturedPCLimit = 4 * agreedFrameLimit
+
+// capturePCs is the stack above its caller, as a recovering helper captures it.
+//
+//go:noinline
+func capturePCs() []uintptr {
+	pcs := make([]uintptr, capturedPCLimit)
+
+	return pcs[:runtime.Callers(2, pcs)]
+}
+
+// panicAtCapturing panics with value below depth frames of itself, and returns
+// what PanicAttrs records on recovering it and the stack captured beside it.
+// Both are taken on one line of one function, so their frames are the same.
+func panicAtCapturing(depth int, value any) (attrs []slog.Attr, pcs []uintptr) {
+	defer func() { attrs, pcs = recordPanic(recover()), capturePCs() }()
+
+	descendAndPanic(depth, value)
+
+	return nil, nil
+}
+
+func TestPanicAttrsFrom(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name  string
+		depth int
+		value any
+		// pcs changes the captured stack before it is formatted; nil keeps it.
+		pcs    func(captured []uintptr) []uintptr
+		assert func(t *testing.T, from, viaPanicAttrs []slog.Attr, rendered string)
+	}
+
+	sameAsPanicAttrs := func(t *testing.T, from, viaPanicAttrs []slog.Attr, _ string) {
+		t.Helper()
+		assert.Equal(t, viaPanicAttrs, from, "the same frames give the same record")
+	}
+
+	cases := []testCase{
+		{name: "a shallow panic gives what PanicAttrs gives", depth: 1, value: "shallow", assert: sameAsPanicAttrs},
+		{
+			name:  "a stack deeper than the limit names exactly the agreed frames, as PanicAttrs does",
+			depth: 2 * capturedPCLimit,
+			value: "deep",
+			assert: func(t *testing.T, from, viaPanicAttrs []slog.Attr, rendered string) {
+				t.Helper()
+				sameAsPanicAttrs(t, from, viaPanicAttrs, rendered)
+				assert.Len(t, strings.Split(from[1].Value.String(), "; "), agreedFrameLimit)
+			},
+		},
+		{
+			name:  "a string value is not logged, only its type",
+			depth: 1,
+			value: secretText,
+			assert: func(t *testing.T, from, viaPanicAttrs []slog.Attr, rendered string) {
+				t.Helper()
+				sameAsPanicAttrs(t, from, viaPanicAttrs, rendered)
+				assert.Equal(t, "string", from[0].Value.String())
+				assert.NotContains(t, rendered, secretText)
+			},
+		},
+		{
+			name:  "an error value's text is not logged, only its type",
+			depth: 1,
+			value: errors.New(secretText),
+			assert: func(t *testing.T, from, viaPanicAttrs []slog.Attr, rendered string) {
+				t.Helper()
+				sameAsPanicAttrs(t, from, viaPanicAttrs, rendered)
+				assert.Equal(t, "*errors.errorString", from[0].Value.String())
+				assert.NotContains(t, rendered, secretText)
+			},
+		},
+		{
+			name:  "no captured frames still gives both keys, with no frames",
+			depth: 1,
+			value: "none",
+			pcs:   func([]uintptr) []uintptr { return nil },
+			assert: func(t *testing.T, from, _ []slog.Attr, _ string) {
+				t.Helper()
+				assert.Equal(t, "string", from[0].Value.String())
+				assert.Empty(t, from[1].Value.String())
+			},
+		},
+		{
+			name:  "frames the runtime cannot name are left out",
+			depth: 1,
+			value: "unnamed",
+			pcs:   func([]uintptr) []uintptr { return []uintptr{0, 1} },
+			assert: func(t *testing.T, from, _ []slog.Attr, _ string) {
+				t.Helper()
+				assert.Empty(t, from[1].Value.String())
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			viaPanicAttrs, pcs := panicAtCapturing(tc.depth, tc.value)
+			if tc.pcs != nil {
+				pcs = tc.pcs(pcs)
+			}
+
+			from := diag.PanicAttrsFrom(tc.value, pcs)
+
+			require.Len(t, from, 2, "a panic's record holds its type and its frames")
+			require.Equal(t, "panic_type", from[0].Key)
+			require.Equal(t, "frames", from[1].Key)
+
+			tc.assert(t, from, viaPanicAttrs, renderPanic(t, from))
 		})
 	}
 }

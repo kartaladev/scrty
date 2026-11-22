@@ -8,6 +8,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // RehashFunc stores a password hash upgraded at login.
@@ -65,6 +66,9 @@ func runRehash(ctx context.Context, log *slog.Logger, fn RehashFunc, up *authent
 	defer cancel()
 
 	if err := fn(write, user, replaced, upgraded); err != nil {
+		// The write has no unavailable sentinel and nothing here tests one, so
+		// a hostile error is fixed to ErrUnwalkable, which only the log reads.
+		err = porterr.SanitizeTo(ctx, log, err, porterr.ErrUnwalkable)
 		log.LogAttrs(ctx, slog.LevelError, msgRehashFailed, diag.Failure("rehash-write", err)...)
 	}
 }

@@ -9,9 +9,11 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/expiry"
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/policy"
 )
@@ -211,6 +213,7 @@ type Policy struct {
 	observer    Observer
 	setObserver bool
 	logger      *slog.Logger
+	setLogger   bool
 
 	// events is the sink WithSecurityEvents gave the policy, for the locks it
 	// decides outside a chain.
@@ -240,7 +243,8 @@ type Policy struct {
 // (WithWindowFailureLimit); a bounded in-memory store (WithAttemptStore), which
 // keeps failures only as long as this policy needs them (the window, or the
 // failure-streak retention when longer), and the system clock (WithClock); no lockout observer (WithObserver),
-// no security-event sink of its own (WithSecurityEvents), and slog.Default
+// no security-event sink of its own (WithSecurityEvents), and the logger of the
+// chain handling the request, else slog.Default() when the record is written,
 // for its records (WithLogger). WithSliding replaces
 // the escalating wait with a sliding lock.
 //
@@ -272,7 +276,7 @@ func New(opts ...Option) (*Policy, error) {
 		firstWait:   defaultLockoutFirstWait,
 		longestWait: defaultLockoutLongestWait,
 		ceiling:     defaultLockoutCeiling,
-		logger:      slog.Default(),
+		logger:      ctxlog.Routing(),
 
 		capRetention: defaultLockoutCapRetention,
 	}
@@ -341,6 +345,12 @@ func New(opts ...Option) (*Policy, error) {
 
 	if err := p.events.Err("WithSecurityEvents"); err != nil {
 		return nil, fmt.Errorf("%w: lockout: %w", policy.ErrConfig, err)
+	}
+
+	if p.setLogger && p.logger == nil {
+		return nil, fmt.Errorf("%w: WithLogger was given a nil logger, which is almost always an "+
+			"uninitialised variable; leave the option out to route to the chain's logger, "+
+			"else slog.Default()", policy.ErrConfig)
 	}
 
 	if p.setObserver && p.observer == nil {
@@ -479,7 +489,9 @@ func (p *Policy) FailureStreakRetention() time.Duration { return p.capRetention 
 // whether the identifier is held, still denies. Failing open
 // would let an attacker who can break the store disable lockout altogether, so
 // the one thing this policy will not do is treat "I do not know" as "nothing
-// recorded".
+// recorded". A store error whose chain cannot be inspected (a cycle, a
+// fan-out, an Unwrap that panics) is denied the same way, with a fault of
+// fixed text in its place, reported once to the policy's logger (WithLogger).
 func (p *Policy) Evaluate(ctx context.Context, in *policy.Input) policy.Decision {
 	if in == nil {
 		// Nothing to key on, and allowing would make a wiring mistake look
@@ -499,6 +511,7 @@ func (p *Policy) Evaluate(ctx context.Context, in *policy.Input) policy.Decision
 		// A hold is checked first and decides alone: it outlives every
 		// window, so the windowed count has nothing to add to it.
 		streak, err := p.streaks.FailureStreak(ctx, in.Username, now.Add(-p.capRetention))
+		err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable)
 		if err != nil {
 			return storeDenied(err)
 		}
@@ -508,6 +521,7 @@ func (p *Policy) Evaluate(ctx context.Context, in *policy.Input) policy.Decision
 	}
 
 	count, err := p.store.FailureCount(ctx, in.Username, now.Add(-p.window))
+	err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return storeDenied(err)
 	}
@@ -529,6 +543,7 @@ func (p *Policy) Evaluate(ctx context.Context, in *policy.Input) policy.Decision
 
 	wait := p.waitFor(count)
 	recent, err := p.store.FailureCount(ctx, in.Username, now.Add(-wait))
+	err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return storeDenied(err)
 	}
@@ -658,7 +673,9 @@ func (p *Policy) Reset(ctx context.Context, username string) error {
 // text; it stays reachable through errors.Is and errors.As, but its text
 // never is. ErrRetainSinceRequired — the sentinel a reaper reports for a zero
 // cutoff, which this policy never passes — is the one bare exception: it
-// comes back as itself, since it carries no dependency text of its own.
+// comes back as itself, since it carries no dependency text of its own. A
+// reaper's error whose chain cannot be inspected comes back as a fault of
+// fixed text, never as that sentinel, reported once to the policy's logger.
 func (p *Policy) PurgeExpired(ctx context.Context) (int, error) {
 	reaper, ok := p.store.(AttemptReaper)
 	if !ok {
@@ -668,6 +685,7 @@ func (p *Policy) PurgeExpired(ctx context.Context) (int, error) {
 	now := p.clock.Now()
 
 	removed, err := reaper.DeleteAttemptsBefore(ctx, now.Add(-p.window))
+	err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return 0, purgeFailed(err, "lockout: purge stale failed attempts")
 	}
@@ -677,6 +695,7 @@ func (p *Policy) PurgeExpired(ctx context.Context) (int, error) {
 	}
 
 	streaks, err := p.streaks.DeleteStreaksBefore(ctx, now.Add(-p.capRetention))
+	err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return 0, purgeFailed(err, "lockout: purge inactive consecutive failures")
 	}

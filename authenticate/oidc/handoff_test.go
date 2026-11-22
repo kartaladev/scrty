@@ -25,6 +25,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -217,6 +218,21 @@ func TestHandoffIssue(t *testing.T) {
 			},
 			assert: func(t *testing.T, _ deps, code string, err error) {
 				require.Error(t, err)
+				assert.Contains(t, err.Error(), "oidc: naming a handoff record")
+				assert.Empty(t, code)
+			},
+		},
+		{
+			name: "a generator answering the nil identifier issues nothing",
+			setup: func(_ *testing.T, ctrl *gomock.Controller) (oidc.HandoffStore, []oidc.HandoffOption) {
+				g := NewMockHandoffIDGenerator(ctrl)
+				g.EXPECT().NewID().Return(id.Nil, nil)
+				return NewMockHandoffStore(ctrl), []oidc.HandoffOption{oidc.WithHandoffIDGenerator(g)}
+			},
+			assert: func(t *testing.T, _ deps, code string, err error) {
+				require.ErrorIs(t, err, idgen.ErrNil)
+				assert.Contains(t, err.Error(), "oidc: naming a handoff record",
+					"the same wrapping as a plain generator failure")
 				assert.Empty(t, code)
 			},
 		},

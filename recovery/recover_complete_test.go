@@ -1,5 +1,7 @@
 package recovery_test
 
+//go:generate mockgen -source=../pkg/id/generator.go -destination=generator_mock_test.go -package=recovery_test -typed
+
 import (
 	"context"
 	"errors"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 )
@@ -682,6 +685,76 @@ func TestRecoverer_IDGenerator(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, anaID, rec.User)
 	assert.True(t, rec.CompletedAt.Equal(monday1000))
+}
+
+// TestRecoverer_IDGeneratorNilIdentifier pins that a generator answering the
+// nil identifier with no error is a failing generator, answered exactly as a
+// plain generator error is, and that no record is stored under it.
+func TestRecoverer_IDGeneratorNilIdentifier(t *testing.T) {
+	t.Parallel()
+
+	errGen := errors.New("generator down")
+
+	type testCase struct {
+		name   string
+		answer func(t *testing.T) (id.ID, error)
+		assert func(t *testing.T, e *completeEnv, err error)
+	}
+
+	run := func(t *testing.T, answer func(t *testing.T) (id.ID, error)) (*completeEnv, error) {
+		t.Helper()
+
+		e := newCompleteEnv(t)
+		gen := NewMockGenerator(gomock.NewController(t))
+		gen.EXPECT().NewID().DoAndReturn(func() (id.ID, error) { return answer(t) })
+
+		_, err := e.recoverer(t, recovery.WithIDGenerator(gen)).Recover(t.Context(), savedAndIssuedReq(e))
+
+		return e, err
+	}
+
+	// The outcome a plain generator error gives, to compare the nil answer to.
+	_, plainErr := run(t, func(*testing.T) (id.ID, error) { return id.Nil, errGen })
+	require.Error(t, plainErr)
+
+	cases := []testCase{
+		{
+			name:   "nil id",
+			answer: func(*testing.T) (id.ID, error) { return id.Nil, nil },
+			assert: func(t *testing.T, e *completeEnv, err error) {
+				require.Error(t, err)
+				assert.Equal(t, plainErr.Error(), err.Error(), "the same outcome as a plain generator error")
+
+				_, found, lerr := e.records.LatestCompletion(t.Context(), anaID)
+				require.NoError(t, lerr)
+				assert.False(t, found, "a record was stored under the nil identifier")
+
+				rec, ferr := e.records.Find(t.Context(), id.Nil)
+				assert.Nil(t, rec)
+				assert.Error(t, ferr, "the nil identifier names a record")
+			},
+		},
+		{
+			name:   "good id",
+			answer: func(t *testing.T) (id.ID, error) { return newRecordID(t), nil },
+			assert: func(t *testing.T, e *completeEnv, err error) {
+				require.NoError(t, err)
+
+				_, found, lerr := e.records.LatestCompletion(t.Context(), anaID)
+				require.NoError(t, lerr)
+				assert.True(t, found)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			e, err := run(t, tc.answer)
+			tc.assert(t, e, err)
+		})
+	}
 }
 
 // TestRecoverer_IssueFailureSpendsAndEndsNothing pins that a recovery

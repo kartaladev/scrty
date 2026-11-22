@@ -14,6 +14,7 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/porterr"
 )
 
 // ErrDependency marks a recovery that a dependency stopped once its proofs had
@@ -116,6 +117,7 @@ func (r *Recoverer) revokeGrantsFirst(ctx context.Context, user identity.UserID,
 	call := func(c context.Context) error { return r.grants.RevokeUserGrants(c, user, grantRevocationCause) }
 
 	err := maybeBounded(ctx, bound, call)
+	err = porterr.SanitizeTo(ctx, r.logger, err, porterr.ErrUnwalkable)
 	if err == nil {
 		return nil
 	}

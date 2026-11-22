@@ -1,8 +1,10 @@
 package pglimiter_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/pglimiter"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/unavailable"
@@ -51,7 +54,13 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, want.Timeout, got.Unavailable.Timeout)
 	assert.Equal(t, want.ProbeInterval, got.Unavailable.ProbeInterval)
 	assert.Equal(t, want.LogInterval, got.Unavailable.LogInterval)
-	assert.Same(t, want.Logger, got.Unavailable.Logger)
+	require.NotNil(t, got.Unavailable.Logger)
+	// The default logger is a routing logger: it writes where the chain's
+	// logger in the record's context points, so a record lands on it.
+	var sink bytes.Buffer
+	chain := slog.New(slog.NewTextHandler(&sink, nil))
+	got.Unavailable.Logger.InfoContext(ctxlog.With(t.Context(), chain), "outage record")
+	assert.Contains(t, sink.String(), "outage record", "the default logger routes to the chain's logger in the context")
 	assert.NotNil(t, got.Unavailable.Clock)
 	assert.Equal(t, pglimiter.DefaultPruneBatchSize, got.PruneBatchSize)
 	assert.Equal(t, 1000, pglimiter.DefaultPruneBatchSize)

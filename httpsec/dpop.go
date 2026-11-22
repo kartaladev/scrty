@@ -24,7 +24,6 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jws"
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -362,7 +361,7 @@ type dpopVerifier struct {
 
 	now     func() time.Time
 	log     *slog.Logger
-	sampler *logsample.Sampler
+	sampler *refusalSampler
 
 	// verifySignature checks a proof's signature. It is a field so a test can
 	// count the signatures verified.

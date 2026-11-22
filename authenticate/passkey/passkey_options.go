@@ -146,8 +146,11 @@ func WithSynchronousDelivery() Option {
 
 // WithRegistrationCheck adds a consumer check that runs on every verified
 // registration, after verification and before anything is stored. There is
-// none by default. An error it returns refuses the registration and is
-// returned unchanged, and nothing is stored. A consumer can use it to apply a
+// none by default. An error it returns refuses the registration, and nothing
+// is stored. The error is returned unchanged, unless its chain cannot be
+// walked (a cycle, a fan-out, or an Unwrap that panics): that refusal is
+// answered with a fixed library error instead, and one record is written to
+// the manager's logger. A consumer can use it to apply a
 // stricter policy to some users only, such as refusing backup-eligible
 // passkeys for administrators. A nil check is a configuration error.
 func WithRegistrationCheck(fn func(ctx context.Context, facts RegistrationFacts) error) Option {
@@ -186,9 +189,11 @@ func WithRandom(src io.Reader) Option {
 	}
 }
 
-// WithIDGenerator replaces the generator of credential and challenge
-// identifiers. The default is id.NewV7Generator. A nil generator is a
-// configuration error.
+// WithIDGenerator replaces the generator of credential and challenge identifiers. The default is
+// id.NewV7Generator. A nil generator, including a nil pointer held in the interface, is a
+// configuration error: New returns an error wrapping ErrConfig that names the identifier generator.
+// A generator that answers the nil identifier with no error is treated as a failing generator,
+// never stored under that identifier.
 func WithIDGenerator(ids id.Generator) Option {
 	return func(m *Passkeys) {
 		m.ids = ids
@@ -196,13 +201,15 @@ func WithIDGenerator(ids id.Generator) Option {
 	}
 }
 
-// WithLogger replaces the logger. The default is slog.Default(). A nil logger
-// is ignored.
+// WithLogger replaces the logger. The default is the logger of the chain
+// handling the request, else slog.Default() when the record is written. The
+// manager's one-time challenge managers, its sampler's summary and its default
+// confirm limiter write to the same logger. A nil logger is refused by New
+// with an error wrapping ErrConfig.
 func WithLogger(logger *slog.Logger) Option {
 	return func(m *Passkeys) {
-		if logger != nil {
-			m.logger = logger
-		}
+		m.logger = logger
+		m.loggerSet = true
 	}
 }
 

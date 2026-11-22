@@ -148,7 +148,7 @@ func TestStore_RecordsOnlyFailures(t *testing.T) {
 				ctx = t.Context()
 			}
 
-			tok, err := tc.call(ctx, depfault.Store(tc.inner))
+			tok, err := tc.call(ctx, depfault.Store(tc.inner, nil))
 			tc.assert(t, w, tok, err)
 		})
 	}
@@ -187,7 +187,7 @@ func TestStore_OffersReaperExactlyWhenTheStoreDoes(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) { t.Parallel(); tc.assert(t, depfault.Store(tc.inner)) })
+		t.Run(tc.name, func(t *testing.T) { t.Parallel(); tc.assert(t, depfault.Store(tc.inner, nil)) })
 	}
 }
 
