@@ -59,7 +59,7 @@ On gin, a refused request SHALL:
 
 Setting that status SHALL leave the headers and body open to a later error middleware. When the response was already written, the adapter SHALL only stop the remaining handlers. gin guards SHALL follow the same rules.
 
-One case is committed instead: a refusal mapped to 404 on a request gin matched no route for, such as a path owned by a chain endpoint. gin's own no-route fallback writes its default 404 body whenever a 404 reaches it with no body written, so leaving that status open would give gin a body the other adapters do not send. The adapter SHALL commit the 404 with an empty body in that case, and a consumer's gin error middleware cannot re-render it. Every other refusal, and every 404 on a matched route, keeps the rule above.
+One case is committed instead: a refusal mapped to 404 on a request gin matched no route for, such as a path owned by a chain endpoint. gin's own no-route fallback writes its default 404 body whenever a 404 reaches it with no body written, so leaving that status open would give gin a body the other adapters do not send. The adapter SHALL commit the 404 with an empty body in that case, and a consumer's gin error middleware that writes on gin's own response writer cannot re-render it, unless the consumer declares, through the adapter's rendered-refusals option, that an error middleware renders every refusal. With that declaration, the 404 SHALL be left open like every other refusal. If no error middleware writes it, gin's own default not-found text is sent, which carries no refusal text. Giving the declaration more than once SHALL have the effect of giving it once. Every other refusal, and every 404 on a matched route, keeps the rule above.
 
 #### Scenario: No error middleware
 - **WHEN** a gin request is refused as access denied and no error middleware is registered
@@ -76,6 +76,14 @@ One case is committed instead: a refusal mapped to 404 on a request gin matched 
 #### Scenario: Not-found refusal on an unrouted path
 - **WHEN** a gin request to `/sso/login/nope`, which no gin route matches, is refused because `nope` names no registered provider
 - **THEN** the response is 404 with an empty body, as on the other adapters, and not gin's default not-found text
+
+#### Scenario: Error middleware renders an unrouted not-found refusal
+- **WHEN** the gin adapter is given the rendered-refusals declaration, an error middleware registered before it writes a JSON body for every error, and a request to `/sso/login/nope`, which no gin route matches, is refused because `nope` names no registered provider
+- **THEN** the response is 404 with the error middleware's JSON body and `Content-Type`
+
+#### Scenario: Declaration without an error middleware
+- **WHEN** the gin adapter is given the rendered-refusals declaration, no error middleware is registered, and a request to `/sso/login/nope` is refused
+- **THEN** the response is 404 with gin's default not-found text, which contains no refusal text, and no route handler ran
 
 ### Requirement: gin endpoints answered by the chain stop the gin chain
 When an interceptor answers a gin request itself without an error, the adapter SHALL stop the remaining gin handlers without committing a status of its own. A matched route or a consumer's no-route handler SHALL NOT run, and SHALL NOT overwrite the status or append to the body. Examples are login, logout and the key set endpoint. The adapter documentation SHALL state that gin middleware registered after the chain does not run for such requests.
@@ -344,3 +352,29 @@ On every adapter, a streamed response SHALL learn promptly that its client has d
 #### Scenario: Server shuts down on fiber
 - **WHEN** a fiber server with an open stream shuts down
 - **THEN** the stream stops, and the shutdown is not held open by it
+
+### Requirement: Every adapter refuses a path its router could resolve differently
+The net/http, gin and fiber integrations SHALL refuse a request whose path holds a dot segment, sent as is or percent-encoded, before the chain decides anything about it, with the same 400 on all three. This SHALL hold whatever the framework's routing configuration, including fiber's escaped-path decoding. The shared conformance suite SHALL send such paths over a real connection, so no client or test transport cleans them first.
+
+#### Scenario: fiber parent segment
+- **WHEN** a fiber application's rules permit `/public` and deny `/admin`, and a client sends `GET /public/../admin/users` as written
+- **THEN** the chain answers 400 and the `/admin/users` handler does not run
+
+#### Scenario: fiber with escaped-path decoding
+- **WHEN** fiber decodes escaped paths and a client sends `GET /public%2F..%2Fadmin/users`
+- **THEN** the chain answers 400 and the `/admin/users` handler does not run
+
+#### Scenario: Same answer on every framework
+- **WHEN** the same request for `/x/%2e%2e/y` is sent through net/http, gin and fiber
+- **THEN** all three answer 400 with no body by default
+
+### Requirement: A chain mounted twice on one framework runs once
+Each adapter SHALL hand on the request context the chain ran on, so that when one chain is mounted both at the application and at a route group of the same framework, it runs once per request.
+
+#### Scenario: gin application and group
+- **WHEN** one chain is used by a gin engine and by one of its route groups, and a request with valid Basic credentials reaches a route in that group
+- **THEN** the credentials are verified once
+
+#### Scenario: fiber application and group
+- **WHEN** one chain is used by a fiber application and by one of its groups, and a request with valid Basic credentials reaches a route in that group
+- **THEN** the credentials are verified once

@@ -68,7 +68,7 @@ The policy SHALL refuse a candidate that equals, compared case-insensitively, an
 - **THEN** the context-word rule accepts it
 
 ### Requirement: The breach check is opt-in and its failure mode is the consumer's choice
-When the consumer enables the breach check, the policy SHALL refuse a candidate found in the breach corpus. It SHALL send only the first five hexadecimal characters of the candidate's SHA-1 hash, with response padding requested, through the confined outbound client, and SHALL match the rest locally, ignoring entries whose count is zero, which are padding. Enabling the check SHALL require the consumer to choose whether a failed lookup refuses or accepts the candidate; construction SHALL fail without that choice. A failed lookup SHALL include a timeout, a non-success status, and a body that does not parse. The lookup source SHALL be replaceable, so an offline copy of the corpus can be used. When the request's own context ends during the lookup, the check SHALL fail with an error matching the context's error, whichever failure mode was chosen. A lookup failure the policy accepts SHALL be logged at error level, with fixed text and the failure's type, never the candidate, its hash, its prefix or the failure's text, so a screen that has stopped screening is visible; the logger SHALL default to the process's default logger and be replaceable, and a nil logger SHALL fail construction. A hang-up SHALL log nothing at error level. The local match SHALL compare hash suffixes without regard to case, so a source that lists them in lower case is still matched.
+When the consumer enables the breach check, the policy SHALL refuse a candidate found in the breach corpus. It SHALL send only the first five hexadecimal characters of the candidate's SHA-1 hash, with response padding requested, through the confined outbound client, and SHALL match the rest locally, ignoring entries whose count is zero, which are padding. Enabling the check SHALL require the consumer to choose whether a failed lookup refuses or accepts the candidate; construction SHALL fail without that choice. A failed lookup SHALL include a timeout, a non-success status, and a body that does not parse. The lookup source SHALL be replaceable, so an offline copy of the corpus can be used. When the request's own context ends during the lookup, the check SHALL fail with an error matching the context's error, whichever failure mode was chosen. A lookup failure the policy accepts SHALL be logged at error level, with fixed text and the failure's type, never the candidate, its hash, its prefix or the failure's text, so a screen that has stopped screening is visible; the record SHALL go to the consumer's logger when one is configured, else to the logger of the chain handling the request, else to the process default logger as it stands when the record is written, and a nil logger SHALL fail construction. A hang-up SHALL log nothing at error level. The local match SHALL compare hash suffixes without regard to case, so a source that lists them in lower case is still matched.
 
 #### Scenario: Breached password
 - **WHEN** the breach check is enabled and the corpus lists the candidate's hash with a count of 3
@@ -85,6 +85,10 @@ When the consumer enables the breach check, the policy SHALL refuse a candidate 
 #### Scenario: Lookup outage, accept
 - **WHEN** the breach check is enabled with failures accepting and the lookup answers 429
 - **THEN** the breach rule accepts the candidate, the next rule runs, and one error-level record names the failed breach lookup without the candidate, its hash or its prefix
+
+#### Scenario: Chain logger
+- **WHEN** the breach check accepts on failure, no logger is configured for the policy, and the lookup fails during a request handled by a chain configured with the consumer's logger
+- **THEN** the record goes to the chain's logger and not to the default one
 
 #### Scenario: Consumer logger
 - **WHEN** the breach check accepts on failure, the consumer supplies its own logger, and the lookup fails
@@ -144,11 +148,19 @@ A change SHALL run, stopping at the first failure: every rule's check; encoding 
 - **THEN** no hash is retired and the consumer's write is not called
 
 ### Requirement: The policy fails closed and keeps no credential
-A history read or retire failure SHALL refuse the change with the history-unavailable error and SHALL NOT call the consumer's write. An error from the consumer's write SHALL be returned unchanged. The policy SHALL write no log record that contains the candidate, a hash or a context word, and SHALL NOT keep the candidate after the call returns.
+A history read or retire failure SHALL refuse the change with the history-unavailable error and SHALL NOT call the consumer's write.
+- An error from the consumer's write SHALL be returned unchanged when its chain can be walked.
+- When the chain cannot be walked, the library's fixed error SHALL be returned in its place, as the http-error-propagation capability requires.
+
+The policy SHALL write no log record that contains the candidate, a hash or a context word, and SHALL NOT keep the candidate after the call returns.
 
 #### Scenario: Retire failure
 - **WHEN** the history port reads successfully but fails to retire the current hash
 - **THEN** the change is refused with the history-unavailable error and the consumer's write is not called
+
+#### Scenario: Unwalkable write error
+- **WHEN** the consumer's write returns an error whose chain contains itself
+- **THEN** the change returns the library's fixed error without hanging, and no log record contains the candidate or a hash
 
 ### Requirement: Policy wiring mistakes fail at construction
 Building a policy SHALL fail with a configuration error naming the mistake when given: a reuse rule without a history port (including a typed-nil one), or with a depth below one; a nil encoder (including a typed-nil one); an absent matcher or clock; a breach check without a lookup source or a failure mode; a minimum length below 8; a maximum below 64 or below the minimum; a replaced common-password list that is empty. A check or change given no user record, or a change given no write, SHALL fail with a configuration error and SHALL read and write nothing.
