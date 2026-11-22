@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -624,6 +625,282 @@ func endCreateRace(codes *oidcprovider.MemoryCodeStore) Race[oidcprovider.GrantS
 		Check: func(ctx context.Context, t *testing.T, s oidcprovider.GrantStore, key string) {
 			t.Helper()
 			assertEndedOnce(ctx, t, s, raceN(key))
+		},
+	}
+}
+
+// DeviceRaceRacers is how many callers each race of RunDeviceAuthorizationRaces releases
+// together per record, and so the least DurableHarness.PoolSize it accepts.
+const DeviceRaceRacers = 16
+
+// The names RunDeviceAuthorizationRaces reports its races under.
+const (
+	DeviceClaimRaceName             = "exactly one claim wins per device authorization"
+	DeviceDecideRaceName            = "exactly one approval or denial wins per device authorization"
+	DevicePollRaceName              = "exactly one poll is recorded per count seen"
+	DeviceSpendRaceName             = "exactly one spend wins per device authorization"
+	DeviceCreateRaceName            = "exactly one create wins per user code"
+	DeviceCreateOverExpiredRaceName = "exactly one create wins a user code whose holder expired"
+)
+
+// RunDeviceAuthorizationRaces holds a device authorization store to deciding each of its
+// writes by the write, in six races of DeviceRaceRacers callers per record released
+// together, every one of which must leave exactly one winner and the rest refused:
+//
+//   - claims of one issued record, each from a browser of its own. The winner's flow digest
+//     is the one stored;
+//   - approvals racing denials of one claimed record. The stored state and approval are
+//     the winner's;
+//   - polls of one record that all saw the same count. One is recorded, with its time;
+//   - spends of one approved record;
+//   - creates of records with device codes of their own over one user code no record
+//     holds, the losers answered oidcprovider.ErrUserCodeTaken and nothing of theirs stored;
+//   - the same over a user code whose holder expired at the time given, a spent holder on
+//     even records and an issued one on odd ones, as two issuers drawing one code release
+//     it at once. A store releasing the holder and inserting in two steps lets both in.
+//
+// Every other refusal is oidcprovider.ErrNotFound, and any other error fails the record.
+// Racers alternate between harness.New's store and harness.NewReplica's, so a store
+// serialising under a lock of one instance is caught. Its inputs are checked as
+// RunConsumeRace checks them, so harness.PoolSize must be at least DeviceRaceRacers.
+//
+// DeviceAuthorizationSuite runs these races on the one store its factory returns.
+func RunDeviceAuthorizationRaces(t *testing.T, harness DurableHarness[oidcprovider.DeviceAuthorizationStore]) {
+	t.Helper()
+
+	harness.Require(t)
+
+	for _, race := range []struct {
+		race Race[oidcprovider.DeviceAuthorizationStore]
+		rule raceRule
+	}{
+		{deviceClaimRace(), raceRule{name: DeviceClaimRaceName, noun: "claim"}},
+		{deviceDecideRace(), raceRule{name: DeviceDecideRaceName, noun: "approval or denial"}},
+		{devicePollRace(), raceRule{name: DevicePollRaceName, noun: "poll"}},
+		{deviceSpendRace(), raceRule{name: DeviceSpendRaceName, noun: "spend"}},
+		{deviceCreateRace(false), raceRule{name: DeviceCreateRaceName, noun: "create"}},
+		{deviceCreateRace(true), raceRule{name: DeviceCreateOverExpiredRaceName, noun: "create"}},
+	} {
+		race.rule.racers = DeviceRaceRacers
+		runRace(t, harness, race.race, race.rule)
+	}
+}
+
+// deviceRaceRecord is record n of a race: an issued record of opClient, its device and user
+// codes digests of its key, issued at suiteStart and expiring at deviceExpires.
+func deviceRaceRecord(n int) *oidcprovider.DeviceAuthorization {
+	r := deviceRecord(1)
+	key := strconv.Itoa(n)
+	r.ID, r.DeviceCodeDigest, r.UserCodeDigest = suiteID(n), raceDigest("device-"+key), raceDigest("user-"+key)
+
+	return r
+}
+
+// deviceRaceWinners remembers which racer won each record of a race, for its Check.
+type deviceRaceWinners struct{ racers sync.Map } // key -> racer
+
+// won records racer as key's winner when err is nil, and answers what a race's Attempt
+// does: a win, a loss when err is refused, or err.
+func (w *deviceRaceWinners) won(key string, racer int, err, refused error) (bool, error) {
+	switch {
+	case err == nil:
+		w.racers.Store(key, racer)
+		return true, nil
+	case errors.Is(err, refused):
+		return false, nil
+	default:
+		return false, err
+	}
+}
+
+// winner is the racer that won key.
+func (w *deviceRaceWinners) winner(t *testing.T, key string) int {
+	t.Helper()
+
+	racer, ok := w.racers.Load(key)
+	require.True(t, ok, "record %s has no winner", key)
+
+	return racer.(int) //nolint:forcetypeassert // only won stores, and only ints
+}
+
+// The identifiers each device race numbers its records from, apart so that the races can
+// share one store.
+const (
+	deviceClaimRaceFirst   = 110000
+	deviceDecideRaceFirst  = 120000
+	devicePollRaceFirst    = 130000
+	deviceSpendRaceFirst   = 140000
+	deviceCreateRaceFirst  = 150000
+	deviceExpiredRaceFirst = 170000
+)
+
+// deviceSeed returns a Seed creating record first+i in state, at deviceLive.
+func deviceSeed(first int, state oidcprovider.DeviceState) func(ctx context.Context, t *testing.T, s oidcprovider.DeviceAuthorizationStore, i int) string {
+	return func(ctx context.Context, t *testing.T, s oidcprovider.DeviceAuthorizationStore, i int) string {
+		t.Helper()
+		n := first + i
+		r := deviceRaceRecord(n)
+		r.State = state
+		if state != oidcprovider.DeviceIssued {
+			r.ClaimFlowDigest = raceDigest("flow-" + strconv.Itoa(n))
+		}
+		if state == oidcprovider.DeviceApproved {
+			r.Approval = deviceApproval("u-1", 1)
+		}
+		require.NoError(t, s.Create(ctx, r, deviceLive))
+
+		return strconv.Itoa(n)
+	}
+}
+
+// loadRaceDevice loads the record of a race's key, which must exist.
+func loadRaceDevice(ctx context.Context, t *testing.T, s oidcprovider.DeviceAuthorizationStore, key string) *oidcprovider.DeviceAuthorization {
+	t.Helper()
+
+	got, err := s.LoadByDeviceCode(ctx, raceDigest("device-"+key))
+	require.NoError(t, err, "record %s", key)
+
+	return got
+}
+
+// raceFlow is the flow digest racer claims record key with.
+func raceFlow(key string, racer int) []byte {
+	return raceDigest("claim-" + key + "-" + strconv.Itoa(racer))
+}
+
+func deviceClaimRace() Race[oidcprovider.DeviceAuthorizationStore] {
+	var w deviceRaceWinners
+
+	return Race[oidcprovider.DeviceAuthorizationStore]{
+		Seed: deviceSeed(deviceClaimRaceFirst, oidcprovider.DeviceIssued),
+		Attempt: func(ctx context.Context, s oidcprovider.DeviceAuthorizationStore, key string, racer int) (bool, error) {
+			return w.won(key, racer, s.Claim(ctx, suiteID(raceN(key)), raceFlow(key, racer), deviceLive), oidcprovider.ErrNotFound)
+		},
+		Check: func(ctx context.Context, t *testing.T, s oidcprovider.DeviceAuthorizationStore, key string) {
+			t.Helper()
+			got := loadRaceDevice(ctx, t, s, key)
+			assert.Equal(t, oidcprovider.DeviceClaimed, got.State, "record %s", key)
+			assert.Equal(t, raceFlow(key, w.winner(t, key)), got.ClaimFlowDigest, "record %s: the winner's browser holds the claim", key)
+		},
+	}
+}
+
+// deviceDecideRace has even racers approve and odd ones deny.
+func deviceDecideRace() Race[oidcprovider.DeviceAuthorizationStore] {
+	var w deviceRaceWinners
+
+	return Race[oidcprovider.DeviceAuthorizationStore]{
+		Seed: deviceSeed(deviceDecideRaceFirst, oidcprovider.DeviceClaimed),
+		Attempt: func(ctx context.Context, s oidcprovider.DeviceAuthorizationStore, key string, racer int) (bool, error) {
+			var approval *oidcprovider.DeviceApproval
+			if racer%2 == 0 {
+				approval = deviceApproval("u-1", racer)
+			}
+
+			return w.won(key, racer, s.Decide(ctx, suiteID(raceN(key)), approval, deviceLive), oidcprovider.ErrNotFound)
+		},
+		Check: func(ctx context.Context, t *testing.T, s oidcprovider.DeviceAuthorizationStore, key string) {
+			t.Helper()
+			got, winner := loadRaceDevice(ctx, t, s, key), w.winner(t, key)
+			if winner%2 == 1 {
+				assert.Equal(t, oidcprovider.DeviceDenied, got.State, "record %s: a denial won", key)
+				assert.Nil(t, got.Approval, "record %s: a denied record holds no approval", key)
+
+				return
+			}
+			assert.Equal(t, oidcprovider.DeviceApproved, got.State, "record %s: an approval won", key)
+			require.NotNil(t, got.Approval, "record %s", key)
+			assert.Equal(t, suiteID(200+winner), got.Approval.GrantFamily, "record %s holds the winner's approval", key)
+		},
+	}
+}
+
+// devicePollRace has every racer poll having seen no poll, each at a time of its own.
+func devicePollRace() Race[oidcprovider.DeviceAuthorizationStore] {
+	var w deviceRaceWinners
+	at := func(racer int) time.Time { return deviceLive.Add(time.Duration(racer) * time.Second) }
+
+	return Race[oidcprovider.DeviceAuthorizationStore]{
+		Seed: deviceSeed(devicePollRaceFirst, oidcprovider.DeviceIssued),
+		Attempt: func(ctx context.Context, s oidcprovider.DeviceAuthorizationStore, key string, racer int) (bool, error) {
+			err := s.RecordPoll(ctx, suiteID(raceN(key)), 0, at(racer), 10*time.Second)
+
+			return w.won(key, racer, err, oidcprovider.ErrNotFound)
+		},
+		Check: func(ctx context.Context, t *testing.T, s oidcprovider.DeviceAuthorizationStore, key string) {
+			t.Helper()
+			got := loadRaceDevice(ctx, t, s, key)
+			assert.Equal(t, 1, got.PollCount, "record %s", key)
+			assertTimeMicro(t, at(w.winner(t, key)), got.LastPolledAt, "record "+key+": LastPolledAt")
+		},
+	}
+}
+
+func deviceSpendRace() Race[oidcprovider.DeviceAuthorizationStore] {
+	var w deviceRaceWinners
+
+	return Race[oidcprovider.DeviceAuthorizationStore]{
+		Seed: deviceSeed(deviceSpendRaceFirst, oidcprovider.DeviceApproved),
+		Attempt: func(ctx context.Context, s oidcprovider.DeviceAuthorizationStore, key string, racer int) (bool, error) {
+			return w.won(key, racer, s.Spend(ctx, suiteID(raceN(key)), deviceLive), oidcprovider.ErrNotFound)
+		},
+		Check: func(ctx context.Context, t *testing.T, s oidcprovider.DeviceAuthorizationStore, key string) {
+			t.Helper()
+			assert.Equal(t, oidcprovider.DeviceSpent, loadRaceDevice(ctx, t, s, key).State, "record %s", key)
+		},
+	}
+}
+
+// deviceCreateRace has every racer create a record of its own over one user code. Over an
+// expired holder, the holder expires at the time the racers create at, a spent one on even
+// records and an issued one on odd ones.
+func deviceCreateRace(overExpired bool) Race[oidcprovider.DeviceAuthorizationStore] {
+	var w deviceRaceWinners
+	first, at := deviceCreateRaceFirst, deviceLive
+	if overExpired {
+		first, at = deviceExpiredRaceFirst, deviceExpires
+	}
+	// record is racer's record for key; racers number theirs past the key's own.
+	record := func(key string, racer int) *oidcprovider.DeviceAuthorization {
+		r := deviceRaceRecord(raceN(key))
+		r.ID = suiteID(raceN(key) + 1 + racer)
+		r.DeviceCodeDigest = raceDigest("device-" + key + "-" + strconv.Itoa(racer))
+		r.IssuedAt, r.ExpiresAt = at, at.Add(10*time.Minute)
+
+		return r
+	}
+
+	return Race[oidcprovider.DeviceAuthorizationStore]{
+		Seed: func(ctx context.Context, t *testing.T, s oidcprovider.DeviceAuthorizationStore, i int) string {
+			t.Helper()
+			n := first + i*(DeviceRaceRacers+1)
+			if overExpired {
+				holder := deviceRaceRecord(n)
+				if i%2 == 0 {
+					holder.State, holder.ClaimFlowDigest = oidcprovider.DeviceSpent, raceDigest("flow-"+strconv.Itoa(n))
+					holder.Approval = deviceApproval("u-1", 1)
+				}
+				require.NoError(t, s.Create(ctx, holder, deviceLive))
+			}
+
+			return strconv.Itoa(n)
+		},
+		Attempt: func(ctx context.Context, s oidcprovider.DeviceAuthorizationStore, key string, racer int) (bool, error) {
+			return w.won(key, racer, s.Create(ctx, record(key, racer), at), oidcprovider.ErrUserCodeTaken)
+		},
+		Check: func(ctx context.Context, t *testing.T, s oidcprovider.DeviceAuthorizationStore, key string) {
+			t.Helper()
+			winner := w.winner(t, key)
+			got, err := s.LoadByUserCode(ctx, raceDigest("user-"+key), at)
+			require.NoError(t, err, "record %s", key)
+			assert.Equal(t, suiteID(raceN(key)+1+winner), got.ID, "record %s: the user code finds the winner", key)
+			for racer := range DeviceRaceRacers {
+				if racer == winner {
+					continue
+				}
+				_, err := s.LoadByDeviceCode(ctx, record(key, racer).DeviceCodeDigest)
+				assert.ErrorIs(t, err, oidcprovider.ErrNotFound, "record %s: racer %d lost, so nothing of its record is stored", key, racer)
+			}
 		},
 	}
 }

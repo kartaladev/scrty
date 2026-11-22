@@ -9,6 +9,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/origin"
 )
 
@@ -37,6 +38,26 @@ type deviceConfig struct {
 	// durable store requires.
 	userCodeKey    *digestKey
 	userCodeKeySet bool
+
+	// store is what WithDeviceAuthorizationStore gave, and storeSet says it was given.
+	// Once New has resolved it, store is the store the provider keeps device
+	// authorizations in: the one given, or a MemoryDeviceAuthorizationStore.
+	store    DeviceAuthorizationStore
+	storeSet bool
+}
+
+// WithDeviceAuthorizationStore replaces where device authorizations are kept. The default
+// is a MemoryDeviceAuthorizationStore of the provider's own, which is lost with the
+// process and not shared between instances. A nil store, typed nil included, fails New
+// with an error matching ErrConfig naming this option. Given twice, the last one wins.
+//
+// Any store given here other than a *MemoryDeviceAuthorizationStore is taken to outlive
+// the process and to be shared by replicas, even with one replica today, so it also needs
+// WithUserCodeKey, the same key on every replica: a key drawn at start would differ after a
+// restart and between replicas, and none would find the codes another issued. Without
+// one, New fails with an error matching ErrConfig naming WithUserCodeKey.
+func WithDeviceAuthorizationStore(store DeviceAuthorizationStore) DeviceOption {
+	return func(d *deviceConfig) { d.store, d.storeSet = store, true }
 }
 
 // WithUserCodeFormat replaces the user-code format: the characters a code is drawn
@@ -109,8 +130,8 @@ func WithDeviceAuthorization(entryURL string, opts ...DeviceOption) Option {
 // chain registers the device endpoints only when it is true.
 func (p *Provider) DeviceEnabled() bool { return p.cfg.device != nil }
 
-// validate checks the configuration, resolves the user-code format, and draws the
-// user-code key from random when none was given.
+// validate checks the configuration, resolves the user-code format and the store, and
+// draws the user-code key from random when none was given.
 func (d *deviceConfig) validate(issuer string, random io.Reader) error {
 	if err := d.validateEntryURL(issuer); err != nil {
 		return err
@@ -118,8 +139,30 @@ func (d *deviceConfig) validate(issuer string, random io.Reader) error {
 	if err := d.resolveFormat(); err != nil {
 		return err
 	}
+	if err := d.resolveStore(); err != nil {
+		return err
+	}
 
 	return d.resolveKey(random)
+}
+
+// resolveStore checks the store WithDeviceAuthorizationStore gave, or takes the default.
+// A store other than the in-memory one is durable, and needs a key that outlives the
+// process, so it is refused without WithUserCodeKey before resolveKey would draw one.
+func (d *deviceConfig) resolveStore() error {
+	if !d.storeSet {
+		d.store = NewMemoryDeviceAuthorizationStore()
+
+		return nil
+	}
+	if nilcheck.IsNil(d.store) {
+		return fmt.Errorf("%w: WithDeviceAuthorizationStore: must not be nil", ErrConfig)
+	}
+	if _, inMemory := d.store.(*MemoryDeviceAuthorizationStore); !inMemory && !d.userCodeKeySet {
+		return fmt.Errorf("%w: WithUserCodeKey: a durable device authorization store (WithDeviceAuthorizationStore) outlives a drawn key, as a restart or another replica digests user codes differently: give the same key on every replica", ErrConfig)
+	}
+
+	return nil
 }
 
 // resolveFormat checks the format WithUserCodeFormat gave, or takes the default.

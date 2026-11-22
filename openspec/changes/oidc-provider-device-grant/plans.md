@@ -18,7 +18,7 @@
 - **Additions only.** No existing exported signature changes. New `Grant` and `PendingRequest` fields are zero-valued for existing rows and mean what the old rows meant.
 - **No secret in output.** No error text, log line or event carries a device code, user code, digest, handle or flow secret. New input/result types implement `Format` and `LogValue` with the package's `redacted` form, as `AuthorizeInput` does.
 - **Expiry rule:** a record is expired when `!now.Before(ExpiresAt)` (`now >= ExpiresAt`), judged by the provider's clock, never a store's.
-- **Exact values:** `GrantDeviceCode = "urn:ietf:params:oauth:grant-type:device_code"`; default user-code alphabet `BCDFGHJKLMNPQRSTVWXZ`, length 8, shown `XXXX-XXXX`; minimum code space 2^29; device code 32 random bytes, base64url (no padding); lifetime default 600 s, bounds [60 s, 30 min]; interval default 5 s, bounds [1 s, 60 s] and below the lifetime; `slow_down` adds 5 s; entry throttle 5 failures / 10 min per source; device authorization endpoint throttle 10 failed client authentications / 15 min per source, namespace `oidc-device-authorization`; entry namespace `oidc-device-entry`; user-code key ≥ 32 bytes; collision bound 5 regenerations; replay window expiry + 1 minute; paths `/device-authorization` and `/device` under the provider prefix.
+- **Exact values:** `GrantDeviceCode = "urn:ietf:params:oauth:grant-type:device_code"`; default user-code alphabet `BCDFGHJKLMNPQRSTVWXZ`, length 8, shown `XXXX-XXXX`; minimum code space 2^29; device code 32 random bytes, base64url (no padding); lifetime default 600 s, bounds [60 s, 30 min]; interval default 5 s, bounds [1 s, 60 s] and below the lifetime; `slow_down` adds 5 s; entry throttle 5 failures / 10 min per source; device authorization endpoint throttle 10 failed client authentications / 15 min per source, namespace `oidc-device-authorization`; entry namespace `oidc-device-entry`; user-code key ≥ 32 bytes; collision bound 5 attempts in all (no sixth `Create`); replay window expiry + 1 minute; paths `/device-authorization` and `/device` under the provider prefix.
 - **No legacy citations** (`legacy-reference.md`). The established design has no OpenID Provider side, so there is nothing to consult for this change.
 - **Agents never edit `openspec/`**, never run `git checkout --`, `restore`, `reset --hard`, `stash` or `clean`, and never commit.
 
@@ -351,6 +351,8 @@ Step 4 needs a pending lookup by device ID. Add `PendingRequestStore`-independen
 - [ ] **Step 5:** Run red, implement, and run the `oidcprovider` row.
 
 ### Task A8: Exchange concurrency, replay, DPoP, failures, sign-in end (tasks 7.5–7.9, 8.1–8.4) — Opus: races and revocation reach
+
+**Carried from A3's review:** the device store's `UnspentBySignIn` already leaves out `SurvivesSignInEnd` approvals unless `includeOffline`. The grant store's own sign-in end rule (`store_memory.go`, and later the SQL adapters) must apply the same `SurvivesSignInEnd` exclusion to stored grants, or ending a sign-in revokes a device grant that should outlive it.
 
 **Files:**
 - Modify: `oidcprovider/devicetoken.go`, `oidcprovider/provider.go` (join `UseCodes(unspentUnion{codes: …, devices: …})` when the grant is enabled; the union is a comparable **value** struct), `oidcprovider/store_memory.go` (`EndSignIns` selection becomes `(!g.Offline && !g.SurvivesSignInEnd) || g.EndsWithSignIn`), `oidcprovider/events.go` (the `survives` computation matches that rule), `oidcprovider/store.go` (`GrantStore.EndSignIns` godoc states the new rule)

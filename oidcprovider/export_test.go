@@ -136,3 +136,13 @@ func (p *Provider) UserCodeDigestForTest(raw string) []byte {
 
 // MintDeviceCodeForTest mints a device code from the source given.
 var MintDeviceCodeForTest = mintDeviceCode
+
+// DeviceStoreForTest returns the device authorization store the provider settled on, and
+// nil on a provider without the grant.
+func (p *Provider) DeviceStoreForTest() DeviceAuthorizationStore {
+	if p.cfg.device == nil {
+		return nil
+	}
+
+	return p.cfg.device.store
+}

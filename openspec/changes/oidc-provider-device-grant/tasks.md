@@ -18,16 +18,16 @@ Every task is test-first: write the failing test, run it with `go test -run '<Na
 - [ ] 2.1 Device-code minting: 32 bytes from the provider's random source, stored as a digest. Verify the length and digest-only storage, and that a failing random source fails the request with nothing stored.
 - [x] 2.2 User-code generator with the default base-20, 8-character, dashed format, using rejection sampling. Verify the format regex, and verify uniformity with a deterministic random source covering the rejection branch.
 - [x] 2.3 `WithUserCodeFormat`. Verify that a 9-digit format is accepted and shown in groups of three, and that a 6-digit format, a repeated character and a non-printable character each fail construction naming the option.
-- [ ] 2.4 Keyed user-code digest and `WithUserCodeKey`. Verify a random key by default, a refusal for keys under 32 bytes, a refusal for a durable store without a key (test with a stub durable marker), and that two providers sharing a key compute the same digest.
+- [x] 2.4 Keyed user-code digest and `WithUserCodeKey`. Verify a random key by default, a refusal for keys under 32 bytes, a refusal for a durable store without a key (test with a stub durable marker), and that two providers sharing a key compute the same digest.
 - [x] 2.5 Normalisation. Verify with table tests: lower case, spaces and dashes are accepted; a character outside the alphabet and a wrong length are refused without a lookup; a lower-case alphabet is not upper-cased.
 
 ## 3. Device authorization store (D3)
 
-- [ ] 3.1 Define `DeviceAuthorization`, the `DeviceAuthorizationStore` port and its godoc contract: digests only, no store clock, no digest in errors. Generate its mock per the `use-mockgen` skill. Verify `go vet` and the mock compiling in a test that uses it.
-- [ ] 3.2 Write the exported conformance suite in `test/storetest`: create, lookups (including an expired record with the same user-code digest not blocking a new one), and every transition's compare-and-set refusing from a wrong state. Run it against an empty stub to see it fail.
-- [ ] 3.3 Add the race cases to the suite: one winner for a claim, decide (approve against deny), record-poll and spend. Add a case that fails a store judging expiry by its own clock, naming the case.
-- [ ] 3.4 Implement `MemoryDeviceAuthorizationStore` until 3.2 and 3.3 pass with `-race`, and wire it as the default behind `WithDeviceAuthorizationStore`. Verify a consumer store replaces it.
-- [ ] 3.5 Implement `DeleteExpired`, keeping spent records until one minute past expiry. Verify with the suite's sweep cases.
+- [x] 3.1 Define `DeviceAuthorization`, the `DeviceAuthorizationStore` port and its godoc contract: digests only, no store clock, no digest in errors. Generate its mock per the `use-mockgen` skill. Verify `go vet` and the mock compiling in a test that uses it.
+- [x] 3.2 Write the exported conformance suite in `test/storetest`: create, lookups (including an expired record with the same user-code digest not blocking a new one), and every transition's compare-and-set refusing from a wrong state. Run it against an empty stub to see it fail.
+- [x] 3.3 Add the race cases to the suite: one winner for a claim, decide (approve against deny), record-poll and spend. Add a case that fails a store judging expiry by its own clock, naming the case.
+- [x] 3.4 Implement `MemoryDeviceAuthorizationStore` until 3.2 and 3.3 pass with `-race`, and wire it as the default behind `WithDeviceAuthorizationStore`. Verify a consumer store replaces it.
+- [x] 3.5 Implement `DeleteExpired`, keeping spent records until one minute past expiry. Verify with the suite's sweep cases.
 
 ## 4. Device authorization request (spec: device authorization endpoint)
 

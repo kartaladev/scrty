@@ -75,6 +75,13 @@ func TestMemory(t *testing.T) {
 		})
 	})
 
+	t.Run("DeviceAuthorizations", func(t *testing.T) {
+		t.Parallel()
+		storetest.DeviceAuthorizationSuite(t, func(*testing.T) oidcprovider.DeviceAuthorizationStore {
+			return oidcprovider.NewMemoryDeviceAuthorizationStore()
+		})
+	})
+
 	t.Run("Clients", func(t *testing.T) {
 		t.Parallel()
 		storetest.ClientStoreSuite(t, func(*testing.T) oidcprovider.ClientStore {
@@ -114,6 +121,12 @@ func TestMemory(t *testing.T) {
 			t.Parallel()
 			storetest.RunGrantRaces(t, providerHarness(func() oidcprovider.GrantStore {
 				return must.Must(oidcprovider.NewMemoryGrantStore())
+			}))
+		})
+		t.Run("DeviceAuthorizations", func(t *testing.T) {
+			t.Parallel()
+			storetest.RunDeviceAuthorizationRaces(t, providerHarness(func() oidcprovider.DeviceAuthorizationStore {
+				return oidcprovider.NewMemoryDeviceAuthorizationStore()
 			}))
 		})
 		t.Run("GrantLockOrder", func(t *testing.T) {
