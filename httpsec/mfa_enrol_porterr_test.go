@@ -68,8 +68,22 @@ func limiterPortErrKinds(sentinel error) []loginPortErrKind {
 // marker+row as a whole line: a stack overflow is fatal and only a child can
 // watch for one, and a row name that matched nothing would otherwise pass
 // without running.
+//
+// It marks t parallel before starting the child, so the rows under one parent
+// run their children concurrently, at most -parallel at a time; -parallel 1
+// runs them one at a time. They start only after the parent's function
+// returns, so they never overlap its sequential rows, which may swap
+// slog.Default(). Hence the contract:
+//   - call it at most once per subtest; a second call makes t.Parallel panic;
+//   - call it from a test with no t.Setenv or t.Chdir ancestor: Go does not
+//     refuse one, and the row would run after the parent returns, with the
+//     environment and working directory the ancestor holds then;
+//   - a caller that must act after its rows finish (an assertion, a tear-down
+//     or a restore) wraps them in t.Run("group", …) and acts after that Run
+//     returns, because code after a plain loop of rows runs before the rows do.
 func limiterPortErrInChild(t *testing.T, envName, marker, row string) {
 	t.Helper()
+	t.Parallel()
 
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
