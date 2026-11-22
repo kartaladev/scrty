@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/event"
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -436,7 +437,8 @@ func (p *Provider) resumeDeviceConsent(
 	case err != nil:
 		return ResumeResult{}, dependencyFailure(ctx, err, "oidcprovider: decide the device authorization")
 	}
-	p.deviceDecided(ctx, record, approval)
+
+	p.deviceDecided(ctx, record, approval, s.User)
 
 	if approval == nil {
 		if err := p.spendStage(ctx, r, StageConsent, StageDone, nil); err != nil {
@@ -507,10 +509,18 @@ func (p *Provider) deviceApproval(
 	}, nil
 }
 
-// deviceDecided is where a device authorization's decision is reported: approval is nil for
-// a denial. It is the one place every decision passes, once the record is written and before
-// the stage is spent, and reports nothing yet.
-func (p *Provider) deviceDecided(context.Context, *DeviceAuthorization, *DeviceApproval) {}
+// deviceDecided reports a device authorization's decision by user: approval is nil for a denial.
+// It is the one place every decision passes, right after Decide succeeds and before the stage is
+// spent or the session confirmed, because the device can exchange the decision whatever becomes of
+// the stage. Decide's compare-and-set lets one resume through, and a resume that finds the record
+// decided reaches no decision, so it is reported once. The consent event follows the stage spend.
+func (p *Provider) deviceDecided(ctx context.Context, record *DeviceAuthorization, approval *DeviceApproval, user identity.UserID) {
+	name := event.DeviceAuthorizationApproved
+	if approval == nil {
+		name = event.DeviceAuthorizationDenied
+	}
+	p.reportDevice(ctx, name, user, record.ClientID)
+}
 
 // withdrawDeviceApproval records a revocation for the grant family of an approval whose
 // sign-in could not be confirmed after the decision, so that the exchange, which creates its

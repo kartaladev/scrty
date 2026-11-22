@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/porterr"
@@ -191,7 +192,11 @@ func (p *Provider) EnterUserCode(ctx context.Context, in DeviceEntryInput) (Auth
 	throttle := cfg.entry.current.Load()
 	source, err := throttle.guard.Check(ctx, in.Source)
 	if err != nil {
-		p.entryThrottled(ctx)
+		// Only a source over its limit, or a limiter that could not decide, is reported: a
+		// source no limit was asked about, or a caller who left, is refused without an event.
+		if !errors.Is(err, ratelimit.ErrSourceUnattributable) && ctx.Err() == nil {
+			p.entryThrottled(ctx)
+		}
 
 		return AuthorizeResult{}, &entryRefused{cause: err}
 	}
@@ -256,9 +261,13 @@ func (p *Provider) refundEntry(ctx context.Context, throttle *entryThrottle, rec
 	}
 }
 
-// entryThrottled is where a throttled entry is reported. It is the one place a throttled
-// entry passes, and reports nothing yet.
-func (p *Provider) entryThrottled(context.Context) {}
+// entryThrottled reports a throttled entry, the refusal of a source at its limit or of a limiter that
+// could not decide. It is the one place a throttled entry passes, and every one is reported: a sink
+// is called on the request, the refusal itself is logged sampled by the guard, and the event names no
+// client, user or code, as nothing of the code was read.
+func (p *Provider) entryThrottled(ctx context.Context) {
+	p.reportDevice(ctx, event.UserCodeEntryThrottled, "", "")
+}
 
 // enterCode is EnterUserCode past the throttle. Every refusal of the code it answers is
 // ErrInvalidUserCode itself, whose charge the caller keeps.
@@ -378,6 +387,7 @@ func (p *Provider) claimDevice(ctx context.Context, cfg *deviceConfig, record *D
 	case err != nil:
 		return flow, dependencyFailure(ctx, err, "oidcprovider: claim the device authorization")
 	}
+	p.reportDevice(ctx, event.DeviceAuthorizationClaimed, "", record.ClientID)
 
 	return flow, nil
 }

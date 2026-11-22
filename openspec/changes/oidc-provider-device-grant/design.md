@@ -272,6 +272,11 @@ Each relevant failure, its state, and what the caller sees.
 | Configuration | durable store with no stable user-code key | handled, tested | construction error |
 | Configuration | lifetime, interval or format out of bounds | handled, tested | construction error naming the option |
 | Observability | a code in logs or errors | handled, tested | redaction tests on every new type |
+| Observability | a device decision whose consent-stage spend fails | handled, tested | `DeviceAuthorizationApproved` or `Denied` is reported as soon as the device record is decided (its compare-and-set makes it once), because the device can exchange the decision whatever became of the stage; the consent store's own `ConsentGiven`/`ConsentDenied` follow the stage spend as for codes |
+| Observability | a claim the store applied but reported as failed | accepted | no `DeviceAuthorizationClaimed` is reported, as the claim was not known to stand; the browser's re-entry takes the already-claimed path, which reports nothing. Under-reported, never reported twice. |
+| Observability | a replay whose revocation cannot be stored | accepted | no `DeviceCodeReplayed`, as nothing stands revoked; the caller gets a dependency failure and the next presentation reports it |
+| Observability | user-code entry refused before any limit was asked (an unattributable source, a caller who left) | handled, tested | refused as throttled but not reported as `UserCodeEntryThrottled`, which names only a source over its limit or a limiter that could not decide |
+| Observability | an approval withdrawn because the browser session was gone after the decision | accepted | `DeviceAuthorizationApproved` is reported and the resume answers `ErrReauthenticate`; the revocation recorded for the family reports no `GrantRevoked`, as no grant exists yet. The exchange then refuses the grant, so nothing is issued unseen. |
 | Observability | silent throttling | handled, tested | `UserCodeEntryThrottled` event and the sampled refusal log |
 
 ## Risks / Trade-offs

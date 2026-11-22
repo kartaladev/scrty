@@ -308,3 +308,115 @@ func memoryCodeTokens() onetime.Store {
 
 	return s
 }
+
+const deviceExpiryTask = "oidc-provider.device-authorizations"
+
+// TestExpiryTasks_Device pins the device task: present only with the grant, deleting an
+// expired record and keeping a spent one until a minute past its expiry, and failing, with
+// the other tasks still run, when the store's sweep does.
+func TestExpiryTasks_Device(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		assert func(t *testing.T)
+	}
+
+	// results runs every task once, and returns each by name.
+	results := func(t *testing.T, p *oidcprovider.Provider) map[string]expiry.Result {
+		t.Helper()
+
+		runner, err := expiry.NewRunner(oidcprovider.ExpiryTasks(p))
+		require.NoError(t, err)
+		report, _ := runner.RunOnce(t.Context())
+		out := make(map[string]expiry.Result, len(report.Results))
+		for _, r := range report.Results {
+			out[r.Task] = r
+		}
+
+		return out
+	}
+	// spentAndExpired seeds a spent record and an unspent one, both expiring in ten minutes.
+	spentAndExpired := func(t *testing.T, s *eventScene) (spent, unspent *oidcprovider.DeviceAuthorization) {
+		t.Helper()
+
+		_, spent = s.approvedCode(t)
+		require.NoError(t, s.store.Spend(t.Context(), spent.ID, s.tf.clk.Now()))
+		_, unspent = s.tf.seed(t, tvRefresh, nil)
+
+		return spent, unspent
+	}
+
+	cases := []testCase{
+		{
+			name: "the task is absent without the device grant",
+			assert: func(t *testing.T) {
+				x := newExchangeFixture(t)
+				got := results(t, x.p)
+
+				assert.NotContains(t, got, deviceExpiryTask)
+				assert.Len(t, got, 7)
+			},
+		},
+		{
+			name: "the task is present with the grant",
+			assert: func(t *testing.T) {
+				s := newEventScene(t)
+				got := results(t, s.p)
+
+				require.Contains(t, got, deviceExpiryTask)
+				assert.Len(t, got, 8)
+				assert.NoError(t, got[deviceExpiryTask].Err)
+			},
+		},
+		{
+			name: "an expired record goes, and a spent one stays until a minute past its expiry",
+			assert: func(t *testing.T) {
+				s := newEventScene(t)
+				spent, unspent := spentAndExpired(t, s)
+				s.tf.clk.Advance(10*time.Minute + 30*time.Second)
+
+				got := results(t, s.p)
+
+				require.NoError(t, got[deviceExpiryTask].Err)
+				assert.Equal(t, 1, got[deviceExpiryTask].Removed, "the unspent record")
+				_, err := s.tf.devices.LoadByDeviceCode(t.Context(), unspent.DeviceCodeDigest)
+				assert.ErrorIs(t, err, oidcprovider.ErrNotFound)
+				kept, err := s.tf.devices.LoadByDeviceCode(t.Context(), spent.DeviceCodeDigest)
+				require.NoError(t, err, "a replay is still seen")
+				assert.Equal(t, oidcprovider.DeviceSpent, kept.State)
+
+				s.tf.clk.Advance(30 * time.Second)
+				got = results(t, s.p)
+
+				assert.Equal(t, 1, got[deviceExpiryTask].Removed, "the spent record, a minute past its expiry")
+				_, err = s.tf.devices.LoadByDeviceCode(t.Context(), spent.DeviceCodeDigest)
+				assert.ErrorIs(t, err, oidcprovider.ErrNotFound)
+			},
+		},
+		{
+			name: "a store whose sweep fails fails the task and no other",
+			assert: func(t *testing.T) {
+				s := newEventScene(t)
+				s.store.sweepErr = errSweep
+
+				got := results(t, s.p)
+
+				assert.ErrorIs(t, got[deviceExpiryTask].Err, errSweep)
+				for name, r := range got {
+					if name != deviceExpiryTask {
+						assert.NoError(t, r.Err, name)
+					}
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t)
+		})
+	}
+}

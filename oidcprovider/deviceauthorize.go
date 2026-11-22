@@ -9,6 +9,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/porterr"
 )
@@ -194,6 +195,8 @@ func (p *Provider) issueDevice(ctx context.Context, rc *RegisteredClient, scopes
 		err = cfg.store.Create(ctx, &attempt, now)
 		switch {
 		case err == nil:
+			p.reportDevice(ctx, event.DeviceAuthorizationIssued, "", rc.ID)
+
 			return p.deviceResponse(rc, deviceCode, cfg.format.display(raw), &attempt), nil
 		case errors.Is(err, ErrUserCodeTaken):
 			continue

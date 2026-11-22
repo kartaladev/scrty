@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -166,6 +167,7 @@ func (p *Provider) replayDeviceCode(
 	}
 
 	err = p.revokeReplayedFamily(ctx, detached, a.GrantFamily, now, func(newly bool) {
+		p.reportDevice(ctx, event.DeviceCodeReplayed, a.User, rc.ID)
 		if newly {
 			p.reportGrantRevoked(ctx, rc.ID, a.User, CauseCodeReplay)
 		}
@@ -256,6 +258,7 @@ func (p *Provider) exchangeDevice(
 		}
 	}
 	p.reportGrantCreated(ctx, grant)
+	p.reportDevice(ctx, event.DeviceCodeExchanged, a.User, rc.ID)
 
 	return res, nil
 }

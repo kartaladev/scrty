@@ -13,9 +13,10 @@ import (
 
 // WithSecurityEvents gives the provider a security-event sink of its own, for the outcomes it decides:
 // a grant created; consent given, denied or revoked; a client authentication refused; a code replayed; a
-// refresh token reused; a grant revoked, with its cause; and a back-channel logout that could not be
-// delivered. Each names the client and the user when known, and none carries a code, handle, token,
-// assertion or secret. Their names are in package event.
+// refresh token reused; a grant revoked, with its cause; a back-channel logout that could not be
+// delivered; and, with the device grant, a device authorization issued, claimed, approved or denied, a
+// device code exchanged or replayed, and a user-code entry throttled. Each names the client and the
+// user when known, and none carries a code, handle, token, assertion or secret. Their names are in package event.
 //
 // The default is none: nothing is reported, and every outcome is the same without it, a replayed code
 // still refused and still revoking its grant. On a request a chain built with httpsec.EnableSecurityEvents
@@ -170,6 +171,18 @@ func (p *Provider) reportCodeReplay(ctx context.Context, record *CodeRecord, new
 	if newly {
 		p.reportGrantRevoked(ctx, record.ClientID, record.SignIn.User, CauseCodeReplay)
 	}
+}
+
+// reportDevice reports a device-grant outcome. user is empty until a browser has signed in for the
+// authorization, and clientID is empty where nothing of the code was read. A denial, a replay and a
+// throttled entry are refusals, so failure outcomes.
+func (p *Provider) reportDevice(ctx context.Context, name string, user identity.UserID, clientID string) {
+	outcome := event.OutcomeSuccess
+	switch name {
+	case event.DeviceAuthorizationDenied, event.DeviceCodeReplayed, event.UserCodeEntryThrottled:
+		outcome = event.OutcomeFailure
+	}
+	p.report(ctx, event.Event{Name: name, Outcome: outcome, User: user, Client: clientID})
 }
 
 // dropReasons are the failures that may leave before anything is read of the client, so the report cannot

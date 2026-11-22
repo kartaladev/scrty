@@ -74,8 +74,8 @@ Every task is test-first: write the failing test, run it with `go test -run '<Na
 
 ## 9. Events and expiry tasks (D13)
 
-- [ ] 9.1 Add the device event names to `event`, and emit them from the provider. Verify one event per outcome (issued, claimed, approved, denied, exchanged, replayed, throttled), each naming the client and user when known and carrying no code.
-- [ ] 9.2 Add the `oidc-provider.device-authorizations` task to `ExpiryTasks`. Verify it deletes expired records and keeps spent ones inside the replay window.
+- [x] 9.1 Add the device event names to `event`, and emit them from the provider. Verify one event per outcome (issued, claimed, approved, denied, exchanged, replayed, throttled), each naming the client and user when known and carrying no code.
+- [x] 9.2 Add the `oidc-provider.device-authorizations` task to `ExpiryTasks`. Verify it deletes expired records and keeps spent ones inside the replay window.
 
 ## 10. Durable stores and migration
 
