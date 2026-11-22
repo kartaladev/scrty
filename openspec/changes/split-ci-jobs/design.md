@@ -155,7 +155,9 @@ See `proposal.md` for why. What shapes the approach:
 
 - **More runner time in total, less wall-clock time.** About ten jobs each pay roughly 25 s of setup. The static gates no longer run twice. → The longest path is the test job, about 7.5 minutes against about 11.5 today. Total runner time is measured on the first green run and recorded in the tasks' evidence.
 - **The `codeql` Go job may become the longest path.** → It runs in parallel. Its time is measured on the first run. If it exceeds the test job, that is recorded, and nothing else here changes.
-- **The 10 GB repository cache limit.** Six per-job caches, the race-built test cache the largest, may evict each other. → Least-recently-used entries are evicted, so the worst case is a cold cache, never a wrong result. The total size is checked after the first runs.
+- **The 10 GB repository cache limit.** Six per-job caches, the race-built test cache the largest, may evict each other. → Least-recently-used entries are evicted, so the worst case is a cold cache, never a wrong result. The total size is checked after the first runs. **Accepted** (decided 2026-11-22, after the readings under Measurements): usage runs above the limit between evictions. GitHub scopes a cache to the ref that saved it, so one key is held once each by `main`, a pull request's branch and its merge ref. Nothing is added to delete caches. A job that loses its cache runs cold, and the job's cache step logs the miss.
+- **`lint` and `test` start cold while `SCRTY_SKIP_LONG_CHECKS` is set.** The variable skips both jobs on `main`, so `main` never saves their caches, and a pull request finds nothing to restore, not even by prefix. → **Accepted** (decided 2026-11-22): these jobs then run only on a manual run, which pays the cold build. Unsetting the variable restores warm caches from the next push to `main`.
+- **The `test` matrix legs share one cache key.** The key names no database version, so the first leg to finish saves it and the other leg's save is a no-op. → **Accepted:** the build cache holds compiled packages, which do not differ between legs, so either leg's save serves both.
 - **`GO_VERSION` and the test matrix name the Go release in two places.** → A comment beside each points to the other. `module-layout`'s supported-releases requirement governs the matrix.
 - **Rollback while `ci-ok` is required.** Reverting this change removes `ci-ok`. A required check that never reports blocks every pull request. → Remove `ci-ok` from the ruleset before reverting.
 
@@ -168,6 +170,10 @@ Read on 2026-11-03. These drift with every run.
 - **A failing run (pull request #69, closed):** only `format` and `openspec` failed, `openspec` named the invalid change, and `ci-ok` ran and failed, naming both.
 - **A push just before marking a draft ready** starts two runs on one commit. The earlier one is skipped as a draft, so the commit carries a skipped `ci-ok` beside the real one. GitHub's check list reports both. Whether a required check blocks on the failed one while a skipped one exists is not yet shown, because `ci-ok` was not required on #69. The maintainer step that requires it should check this.
 
+- **Warm caches (task 4.4), read 2026-11-22:**
+  - Run 44990654884 (`main`, `03afb7b5`): `codeql (go)`, `generate`, `pincheck`, `tools-check`, `vet` and `vuln` hit their own keys. `lint` and `test` were skipped by `SCRTY_SKIP_LONG_CHECKS`.
+  - Manual run 45008682003 (`deps/fasthttp-gocron-bumps`): `lint` and both `test` legs missed, restore prefixes included, because `main` holds no cache for either job. Each then saved its own key: `lint` about 605 MB, `test` about 497 MB.
+  - Usage: 10.42 GB in 25 caches in the morning, 12.73 GB in 33 caches by about 10:05 UTC. The morning excess was mostly earlier generations keyed by stale `go.sum` hashes, and eviction had removed them by the second reading. In the second reading, most of the excess is one key held per ref: `go-codeql-go` (about 1.08 GB) three times, on `main`, the pull request's branch and `refs/pull/131/merge`. CodeQL's own overlay databases (about 77 MB each, six on `main`) and `release-check.yml`'s cache (about 1.09 GB) count against the same limit.
 - **Scenarios proven only in part** (whole-branch review, 2026-11-03): no run yet shows a lint finding or a failing test as the failing job, a push to `main`, a skipped or cancelled dependency on GitHub (the expression was run against fixtures), or a broken settled spec or stale mock in CI (the first was run locally). Each job is independent by construction, so the same mechanism covers them. The first push to `main` is the proof of that clause.
 
 ## Migration Plan
@@ -212,6 +218,10 @@ Read on 2026-11-03. These drift with every run.
 - [actions/setup-go README](https://github.com/actions/setup-go/blob/main/README.md): caches modules and build outputs, keyed by default on the root `go.mod`'s hash.
 - [actions/cache README](https://github.com/actions/cache/blob/main/README.md): "If the provided `key` matches an existing cache, a new cache is not created". Also a 10 GB per-repository limit with least-recently-used eviction.
 - The latest releases of `actions/checkout`, `actions/setup-go`, `actions/setup-node`, `actions/cache`, `github/codeql-action` and `rhysd/actionlint` (v1.7.12), read through the GitHub API. Live; they drift.
+
+**Researched (accessed 2026-11-22), for accepting cache eviction:**
+- `GET /repos/kartaladev/scrty/actions/cache/usage` and `GET /repos/kartaladev/scrty/actions/caches`, through the GitHub API: the totals, sizes and per-ref copies under Measurements. Live; they drift.
+- The cache-step logs of runs 44990654884 and 45008682003: hits and misses per job.
 
 **Primary documentation:**
 - [Workflow syntax: `jobs.<job_id>.needs`](https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#jobsjob_idneeds): dependents of a failed job are skipped unless a condition such as `always()` keeps them running.
