@@ -6,7 +6,7 @@ require (
 	github.com/fxamacker/cbor/v2 v2.10.0
 	github.com/go-webauthn/webauthn v0.18.2
 	github.com/google/uuid v1.6.0
-	github.com/kartaladev/scrty v0.2.0
+	github.com/kartaladev/scrty v0.2.1
 	github.com/lestrrat-go/jwx/v4 v4.6.0
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/sync v0.25.0

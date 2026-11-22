@@ -10,14 +10,14 @@ require (
 	github.com/kartaladev/prblm v0.3.0
 	github.com/kartaladev/prblm/adapters/fiberprblm v0.3.0
 	github.com/kartaladev/prblm/adapters/ginprblm v0.3.0
-	github.com/kartaladev/scrty v0.2.0
-	github.com/kartaladev/scrty/authenticate/passkey/webauthn v0.2.0
-	github.com/kartaladev/scrty/httpsec/fibersec v0.2.0
-	github.com/kartaladev/scrty/httpsec/ginsec v0.2.0
-	github.com/kartaladev/scrty/httpsec/prblmsec v0.2.0
-	github.com/kartaladev/scrty/ratelimit/redisstore v0.2.0
-	github.com/kartaladev/scrty/store/gormstore v0.2.0
-	github.com/kartaladev/scrty/store/pgxstore v0.2.0
+	github.com/kartaladev/scrty v0.2.1
+	github.com/kartaladev/scrty/authenticate/passkey/webauthn v0.2.1
+	github.com/kartaladev/scrty/httpsec/fibersec v0.2.1
+	github.com/kartaladev/scrty/httpsec/ginsec v0.2.1
+	github.com/kartaladev/scrty/httpsec/prblmsec v0.2.1
+	github.com/kartaladev/scrty/ratelimit/redisstore v0.2.1
+	github.com/kartaladev/scrty/store/gormstore v0.2.1
+	github.com/kartaladev/scrty/store/pgxstore v0.2.1
 	github.com/klauspost/compress v1.20.4
 	github.com/lestrrat-go/jwx/v4 v4.6.0
 	github.com/pquerna/otp v1.5.0

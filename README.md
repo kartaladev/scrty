@@ -20,9 +20,9 @@ Add the core module, and any nested module you use. Every published module is re
 use one version for all of them:
 
 ```sh
-go get github.com/kartaladev/scrty@v0.2.0
-go get github.com/kartaladev/scrty/store/pgxstore@v0.2.0
-go get github.com/kartaladev/scrty/httpsec/prblmsec@v0.2.0
+go get github.com/kartaladev/scrty@v0.2.1
+go get github.com/kartaladev/scrty/store/pgxstore@v0.2.1
+go get github.com/kartaladev/scrty/httpsec/prblmsec@v0.2.1
 ```
 
 - [CHANGELOG.md](CHANGELOG.md) lists what each release changes, and states every breaking change.
@@ -3174,7 +3174,7 @@ core module does not import prblm.
 Install it at the same version as the other scrty modules:
 
 ```sh
-go get github.com/kartaladev/scrty/httpsec/prblmsec@v0.2.0
+go get github.com/kartaladev/scrty/httpsec/prblmsec@v0.2.1
 ```
 
 ### Wiring
