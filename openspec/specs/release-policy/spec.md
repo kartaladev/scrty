@@ -7,7 +7,7 @@ Defines how scrty versions, gates, tags and announces its releases, and how vuln
 ## Requirements
 
 ### Requirement: Modules are released in lockstep with directory-prefixed tags
-Every release SHALL give all published modules the same semantic version. The root module SHALL be tagged `vX.Y.Z`, and each nested module SHALL be tagged with its directory path as prefix, `<dir>/vX.Y.Z`, at the same commit. The published modules SHALL be the root, `httpsec/fibersec`, `httpsec/ginsec`, `store/gormstore`, `authenticate/passkey/webauthn`, `store/pgxstore`, `ratelimit/redisstore`, `expiry/sweep` and `test`. The `tools` module SHALL never be tagged.
+Every release SHALL give all published modules the same semantic version. The root module SHALL be tagged `vX.Y.Z`, and each nested module SHALL be tagged with its directory path as prefix, `<dir>/vX.Y.Z`, at the same commit. The published modules SHALL be the root, `httpsec/fibersec`, `httpsec/ginsec`, `httpsec/prblmsec`, `store/gormstore`, `authenticate/passkey/webauthn`, `store/pgxstore`, `ratelimit/redisstore`, `expiry/sweep` and `test`. The `tools` module SHALL never be tagged.
 
 #### Scenario: First release
 - **WHEN** version `v0.1.0` is released
@@ -17,6 +17,10 @@ Every release SHALL give all published modules the same semantic version. The ro
 #### Scenario: A module without changes
 - **WHEN** a release changes only the root module
 - **THEN** every published module is still tagged at the new version
+
+#### Scenario: First release that includes the problem-details module
+- **WHEN** the first version after `httpsec/prblmsec` is added, `vX.Y.Z`, is released
+- **THEN** `httpsec/prblmsec/vX.Y.Z` exists and names the same commit as `vX.Y.Z` and every other published module's tag
 
 ### Requirement: A published version is never changed
 A pushed release tag SHALL NOT be moved or deleted. A defective release SHALL be superseded by a new version, and SHALL be retracted in that version's `go.mod` when consumers must not select it.

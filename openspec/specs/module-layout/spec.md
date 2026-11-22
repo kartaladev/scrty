@@ -29,7 +29,7 @@ No production file in any scrty module SHALL declare an exported type whose name
 - **THEN** the dependency check fails and names the file and type
 
 ### Requirement: Framework and driver integrations are separate modules
-Integrations with third-party frameworks, drivers, containers and protocol libraries SHALL be published as modules nested under `github.com/kartaladev/scrty/`, so importing the core module does not add them to a consumer's module graph. The core module SHALL NOT require `github.com/gin-gonic/gin`, `github.com/gofiber/fiber`, `gorm.io/gorm`, `github.com/jackc/pgx`, `github.com/go-co-op/gocron`, `github.com/samber/do`, `github.com/go-webauthn/webauthn`, `github.com/fxamacker/cbor`, `github.com/google/go-tpm`, `github.com/redis/go-redis`, `github.com/pressly/goose`, `github.com/testcontainers/testcontainers-go/modules/postgres` or `github.com/testcontainers/testcontainers-go/modules/redis`, at any major version. WebAuthn verification SHALL live in the nested module `github.com/kartaladev/scrty/authenticate/passkey/webauthn`, which implements the core's passkey verification port. No type of the WebAuthn library SHALL appear in that module's exported API, nor in the core module's.
+Integrations with third-party frameworks, drivers, containers and protocol libraries SHALL be published as modules nested under `github.com/kartaladev/scrty/`, so importing the core module does not add them to a consumer's module graph. The core module SHALL NOT require `github.com/gin-gonic/gin`, `github.com/gofiber/fiber`, `gorm.io/gorm`, `github.com/jackc/pgx`, `github.com/go-co-op/gocron`, `github.com/samber/do`, `github.com/go-webauthn/webauthn`, `github.com/fxamacker/cbor`, `github.com/google/go-tpm`, `github.com/redis/go-redis`, `github.com/pressly/goose`, `github.com/kartaladev/prblm`, `github.com/testcontainers/testcontainers-go/modules/postgres` or `github.com/testcontainers/testcontainers-go/modules/redis`, at any major version. WebAuthn verification SHALL live in the nested module `github.com/kartaladev/scrty/authenticate/passkey/webauthn`, which implements the core's passkey verification port. No type of the WebAuthn library SHALL appear in that module's exported API, nor in the core module's.
 
 #### Scenario: Consumer imports only the core
 - **WHEN** a consumer module requires `github.com/kartaladev/scrty` and builds a program importing its packages
@@ -50,6 +50,10 @@ Integrations with third-party frameworks, drivers, containers and protocol libra
 #### Scenario: WebAuthn types stay inside the adapter
 - **WHEN** the exported API of `github.com/kartaladev/scrty/authenticate/passkey/webauthn` is listed
 - **THEN** no exported function, method, field or type refers to a type of `github.com/go-webauthn/webauthn`
+
+#### Scenario: Problem rendering without prblm in the core
+- **WHEN** a consumer module requires `github.com/kartaladev/scrty` and imports only core packages
+- **THEN** `github.com/kartaladev/prblm` does not appear in the consumer's `go list -m all` output
 
 ### Requirement: Shared test helpers and the tests that use them live in the test module
 Test helpers and conformance suites shared across scrty modules SHALL live in the module `github.com/kartaladev/scrty/test`. No other scrty module SHALL import it from any file, test files included, and no other scrty module's `go.mod` SHALL require it. Integration tests and conformance-suite runs that need those helpers SHALL live in the test module, which imports the modules under test.
@@ -97,11 +101,11 @@ Each nested integration module SHALL have a module path under the directory of t
 
 #### Scenario: Paths of the published integrations
 - **WHEN** the repository's modules are listed, excluding the test and tools modules
-- **THEN** the integrations are `github.com/kartaladev/scrty/authenticate/passkey/webauthn`, `.../store/pgxstore`, `.../store/gormstore`, `.../ratelimit/redisstore`, `.../expiry/sweep`, `.../httpsec/ginsec` and `.../httpsec/fibersec`, each under `github.com/kartaladev/scrty`
+- **THEN** the integrations are `github.com/kartaladev/scrty/authenticate/passkey/webauthn`, `.../store/pgxstore`, `.../store/gormstore`, `.../ratelimit/redisstore`, `.../expiry/sweep`, `.../httpsec/ginsec`, `.../httpsec/fibersec` and `.../httpsec/prblmsec`, each under `github.com/kartaladev/scrty`
 
 #### Scenario: Package name matches the module path
 - **WHEN** the package clause at the root of each integration module is read
-- **THEN** it is `webauthn`, `pgxstore`, `gormstore`, `redisstore`, `sweep`, `ginsec` or `fibersec` respectively, the last element of its module path
+- **THEN** it is `webauthn`, `pgxstore`, `gormstore`, `redisstore`, `sweep`, `ginsec`, `fibersec` or `prblmsec` respectively, the last element of its module path
 
 #### Scenario: A backend does not shadow its driver
 - **WHEN** a consumer source file imports `github.com/kartaladev/scrty/store/pgxstore` with `github.com/jackc/pgx/v5`, `github.com/kartaladev/scrty/store/gormstore` with `gorm.io/gorm`, or `github.com/kartaladev/scrty/ratelimit/redisstore` with `github.com/redis/go-redis/v9`

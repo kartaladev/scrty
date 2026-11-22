@@ -26,7 +26,10 @@ When a library log record reports the failure of a consumer-supplied dependency 
 - **THEN** no written record contains that text
 
 ### Requirement: Returned errors caused by a dependency carry fixed library text
-Where a library interceptor, guard or manager returns an error caused by a consumer-supplied dependency, the returned error's text SHALL be fixed library text. The library error it stands for, and the dependency's original error, SHALL stay reachable by error identity and type, so the status it maps to and any consumer match are unchanged. Errors the consumer's own refusal checks, guards, authorizers and rule sets return SHALL be returned unchanged, as their own capabilities require.
+Where a library interceptor, guard or manager returns an error caused by a consumer-supplied dependency, the returned error's text SHALL be fixed library text.
+- The library error it stands for, and the dependency's original error, SHALL stay reachable by error identity and type, so the status it maps to and any consumer match are unchanged.
+- Errors the consumer's own refusal checks, guards, authorizers and rule sets return SHALL be returned unchanged, as their own capabilities require.
+- Both rules hold for an error whose chain can be walked. A dependency's error whose chain cannot be walked is replaced by the library's fixed error, as the http-error-propagation capability requires. The original error is then neither reachable nor returned, and the status is the one the dependency's failure maps to.
 
 #### Scenario: Session store outage at login
 - **WHEN** a login's session creation fails with an error quoting the user reference `u-123`
@@ -36,6 +39,10 @@ Where a library interceptor, guard or manager returns an error caused by a consu
 #### Scenario: Consumer check unchanged
 - **WHEN** a consumer's magic-link refusal check returns its own `terms-not-accepted` error
 - **THEN** the error returned is that error, text included
+
+#### Scenario: Unwalkable store error at login
+- **WHEN** a login's session creation fails with an error whose chain contains itself and quotes the user reference `u-123`
+- **THEN** the error reaching the consumer's error handler does not contain `u-123`, does not match the store's error, and maps to the status a plain store failure maps to
 
 ### Requirement: Stated exceptions are deliberate and documented
 The following SHALL remain in log records, and each component's documentation SHALL say so and why: the address of a throttled source, in rate-limit records; the opaque user reference, in second-factor and policy records; the email domain, in identity-linking records; and the text of the library's own protocol failures (token verification, provider discovery and key-set retrieval, the provider's token-endpoint response). No other personal data or dependency text SHALL be added to a record without a requirement naming it.

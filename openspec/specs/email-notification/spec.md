@@ -209,17 +209,21 @@ Logs written by the built-in senders SHALL NOT contain the message body, the rec
 - **AND** it contains no body, subject or recipient
 
 ### Requirement: Delivery failures are reported by default
-The built-in senders SHALL write their failure records to the application's own default logger unless the consumer supplies another. A dropped queued message, a failed delivery, a recovered panic and a delivery whose goroutine ended SHALL all be reported this way.
+The built-in senders SHALL write their failure records to the consumer's logger when one is configured. Otherwise they SHALL write them to the logger of the chain that handled the request which queued or sent the message, when that chain was configured with a logger, and otherwise to the application's own default logger as it stands when the record is written. A dropped queued message, a failed delivery, a recovered panic and a delivery whose goroutine ended SHALL all be reported this way.
 
-A dropped message is a sign-in link that never arrives, and the caller has already been told the send succeeded, so a default that discarded these records would make the failure invisible at both ends. A consumer who wants them silenced SHALL be able to supply a discarding logger explicitly.
+A dropped message is a sign-in link that never arrives, and the caller has already been told the send succeeded, so a default that discarded these records would make the failure invisible at both ends. A consumer who wants them silenced SHALL be able to supply a discarding logger explicitly. A nil logger SHALL fail the sender's construction.
 
 #### Scenario: A dropped message is reported without configuration
-- **WHEN** a queued sender with no logger configured drops a message because its queue is full
+- **WHEN** a queued sender with no logger configured drops a message because its queue is full, outside any chain
 - **THEN** a record of the drop is written to the default logger
 
 #### Scenario: An ended goroutine is reported without configuration
-- **WHEN** a queued sender with no logger configured wraps a sender that ends its goroutine while delivering
+- **WHEN** a queued sender with no logger configured wraps a sender that ends its goroutine while delivering, outside any chain
 - **THEN** a record of the lost delivery is written to the default logger
+
+#### Scenario: The queuing request's chain receives the record
+- **WHEN** a queued sender with no logger configured drops a message queued during a request handled by a chain configured with the consumer's logger
+- **THEN** the record of the drop is written to the chain's logger and not to the default logger
 
 #### Scenario: Silence is available but must be asked for
 - **WHEN** a consumer supplies a discarding logger
@@ -236,3 +240,14 @@ The passkey component SHALL send every notice it owes through the library's send
 - **WHEN** the queue is full when a binding notice is sent to `ana@example.com`
 - **THEN** an error record is written that contains neither the notice's body nor `ana@example.com`
 - **AND** the passkey stays active
+
+### Requirement: A send the caller ended reports the caller's context error
+When an SMTP send fails after the caller's context has ended, the send's error SHALL match that context's error (`context.Canceled` or `context.DeadlineExceeded`) and SHALL keep the underlying network error. Such a send SHALL NOT be logged as a failed send at error level. A caller's deadline SHALL count as passed once the clock has reached it, even before the context reports it. A send that fails on the sender's own deadline while the caller's context is live SHALL keep reporting a timeout.
+
+#### Scenario: Cancelled while waiting for the greeting
+- **WHEN** the caller's context is cancelled while the server is waiting to greet
+- **THEN** the send's error matches `context.Canceled`, and no error-level record is written
+
+#### Scenario: Sender's own deadline
+- **WHEN** the sender's deadline passes while the caller's context is live
+- **THEN** the send fails with a timeout that does not match the context errors
