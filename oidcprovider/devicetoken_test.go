@@ -67,6 +67,14 @@ type deviceTokenFixture struct {
 	loadsNothing atomic.Bool
 	// barrier, when set, is waited on after each load, so concurrent polls read one version.
 	barrier *sync.WaitGroup
+	// loaded, when set, runs after each LoadByDeviceCode the memory store answered.
+	loaded func()
+
+	// grantCreateFails, grantLoadFails and grantRevokeFails fail those grant store calls as a
+	// store failing.
+	grantCreateFails, grantLoadFails, grantRevokeFails atomic.Bool
+	// grantCreating, when set, runs before each grant Create reaches the memory store.
+	grantCreating func()
 }
 
 func deviceTokenClients() []oidcprovider.Client {
@@ -128,7 +136,7 @@ func newDeviceTokenFixture(t *testing.T) *deviceTokenFixture {
 		LoggedOutURL: issuer + "/bye",
 	},
 		oidcprovider.WithClock(clk),
-		oidcprovider.WithGrantStore(grants),
+		oidcprovider.WithGrantStore(f.hookGrants(ctrl)),
 		oidcprovider.WithLogger(slog.New(slog.NewTextHandler(f.logs, nil))),
 		oidcprovider.WithDeviceAuthorization(issuer+"/activate",
 			oidcprovider.WithUserCodeKey(deviceKey),
@@ -166,6 +174,9 @@ func (f *deviceTokenFixture) hookDevices(ctrl *gomock.Controller) oidcprovider.D
 				return nil, nil //nolint:nilnil // a store breaking its contract
 			}
 			record, err := memory.LoadByDeviceCode(ctx, digest)
+			if f.loaded != nil {
+				f.loaded()
+			}
 			if f.barrier != nil {
 				f.barrier.Done()
 				f.barrier.Wait()
@@ -192,6 +203,48 @@ func (f *deviceTokenFixture) hookDevices(ctrl *gomock.Controller) oidcprovider.D
 			}
 
 			return memory.Spend(ctx, deviceID, now)
+		}).AnyTimes()
+
+	return store
+}
+
+// hookGrants is the memory grant store behind a generated mock, failing or holding what a
+// row asks.
+func (f *deviceTokenFixture) hookGrants(ctrl *gomock.Controller) oidcprovider.GrantStore {
+	memory := f.grants
+	store := NewMockGrantStore(ctrl)
+	store.EXPECT().UseCodes(gomock.Any()).DoAndReturn(memory.UseCodes).AnyTimes()
+	store.EXPECT().DeleteExpired(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(memory.DeleteExpired).AnyTimes()
+	store.EXPECT().EndSignIns(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(memory.EndSignIns).AnyTimes()
+	store.EXPECT().RevokeByUser(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(memory.RevokeByUser).AnyTimes()
+	store.EXPECT().RevokeByUserAndClient(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(memory.RevokeByUserAndClient).AnyTimes()
+	store.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(ctx context.Context, grant *oidcprovider.Grant) error {
+			if f.grantCreating != nil {
+				f.grantCreating()
+			}
+			if f.grantCreateFails.Load() {
+				return errDeviceStoreDown
+			}
+
+			return memory.Create(ctx, grant)
+		}).AnyTimes()
+	store.EXPECT().Load(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(ctx context.Context, family id.ID) (*oidcprovider.Grant, error) {
+			if f.grantLoadFails.Load() {
+				return nil, errDeviceStoreDown
+			}
+
+			return memory.Load(ctx, family)
+		}).AnyTimes()
+	store.EXPECT().Revoke(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(ctx context.Context, family id.ID, cause oidcprovider.RevocationCause, at time.Time) (bool, error) {
+			if f.grantRevokeFails.Load() {
+				return false, errDeviceStoreDown
+			}
+
+			return memory.Revoke(ctx, family, cause, at)
 		}).AnyTimes()
 
 	return store
@@ -495,6 +548,18 @@ func TestToken_DeviceStates(t *testing.T) {
 		r.State, r.ClaimFlowDigest = oidcprovider.DeviceDenied, []byte("flow-digest")
 	}
 	spent := func(r *oidcprovider.DeviceAuthorization) { r.State = oidcprovider.DeviceSpent }
+	// replayed is a spent code with no grant row, answered invalid_grant, with the record as it
+	// was and its family revoked for the replay, so no row can be created over it.
+	replayed := func(t *testing.T, f *deviceTokenFixture, before *oidcprovider.DeviceAuthorization, _ string, res *oidcprovider.TokenResponse, err error) {
+		assert.Nil(t, res)
+		assertRefused(t, err, oidcprovider.CodeInvalidGrant)
+		assert.Equal(t, before, f.stored(t, before), "the record is as it was")
+		assert.Zero(t, f.polls.Load(), "no poll is recorded")
+		g := f.grantRow(t, before.Approval.GrantFamily)
+		require.NotNil(t, g)
+		assert.True(t, g.Revoked)
+		assert.Equal(t, oidcprovider.CauseCodeReplay, g.RevokeCause)
+	}
 
 	cases := []testCase{
 		{
@@ -567,13 +632,13 @@ func TestToken_DeviceStates(t *testing.T) {
 			assert: answered(oidcprovider.CodeInvalidGrant),
 		},
 		{
-			name: "a spent code answers invalid_grant", client: tvClient, seed: then(approved("openid"), spent),
-			assert: unchanged(oidcprovider.CodeInvalidGrant),
+			name: "a spent code answers invalid_grant, as a replay", client: tvClient, seed: then(approved("openid"), spent),
+			assert: replayed,
 		},
 		{
-			name: "a spent code after expiry answers invalid_grant, not expired_token", client: tvClient,
+			name: "a spent code after expiry answers invalid_grant as a replay, not expired_token", client: tvClient,
 			seed: then(approved("openid"), spent), after: 10 * time.Minute,
-			assert: unchanged(oidcprovider.CodeInvalidGrant),
+			assert: replayed,
 		},
 		{
 			name: "a failing load is a dependency failure, never pending", client: tvClient,
@@ -1097,4 +1162,485 @@ func mustJSON(t *testing.T, v any) string {
 	require.NoError(t, err)
 
 	return string(raw)
+}
+
+// otherJKT is a well-formed thumbprint of a key that is not deviceJKT's.
+var otherJKT = func() string {
+	sum := sha256.Sum256([]byte("another-device-key"))
+
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}()
+
+// publicRefresh is a refresh of raw by the public client clientID, proving jkt when it is set.
+func publicRefresh(clientID, raw, jkt string) oidcprovider.TokenRequest {
+	return oidcprovider.TokenRequest{
+		Form: url.Values{
+			"grant_type":    {string(oidcprovider.GrantRefreshToken)},
+			"refresh_token": {raw},
+			"client_id":     {clientID},
+		},
+		Binding: oidcprovider.Binding{JKT: jkt},
+	}
+}
+
+// replayScene is what a replay row starts from: an exchanged device code and what it issued.
+type replayScene struct {
+	f      *deviceTokenFixture
+	record *oidcprovider.DeviceAuthorization
+	code   string
+	first  *oidcprovider.TokenResponse
+	// jkt is the key the exchange proved, or "".
+	jkt string
+	// x5t is the certificate thumbprint the exchange presented, or "".
+	x5t string
+}
+
+// refresh is the refresh of the exchange's refresh token, as the grant's owner presents it.
+func (s *replayScene) refresh() oidcprovider.TokenRequest {
+	r := publicRefresh(s.record.ClientID, s.first.RefreshToken, s.jkt)
+	r.Binding.X5T = s.x5t
+
+	return r
+}
+
+// family is the grant the exchange created.
+func (s *replayScene) family() id.ID { return s.record.Approval.GrantFamily }
+
+// assertRevokedFor checks that the exchange's grant is revoked for cause, and its refresh
+// token no longer refreshes. checkAccess also checks its opaque access token, which only a row
+// still inside the token's lifetime can tell from an expired one.
+func (s *replayScene) assertRevokedFor(t *testing.T, cause oidcprovider.RevocationCause, checkAccess bool) {
+	t.Helper()
+
+	g := s.f.grantRow(t, s.family())
+	require.NotNil(t, g)
+	assert.True(t, g.Revoked, "the grant is revoked")
+	assert.Equal(t, cause, g.RevokeCause)
+	_, err := s.f.p.Token(t.Context(), s.refresh())
+	assertRefused(t, err, oidcprovider.CodeInvalidGrant)
+	if checkAccess {
+		_, err := s.f.p.VerifyAccessToken(t.Context(), s.first.AccessToken)
+		assertRefused(t, err, oidcprovider.CodeInvalidToken)
+	}
+}
+
+// assertIntact checks that the exchange's grant is not revoked and its refresh token still
+// refreshes. checkAccess also checks its opaque access token still verifies.
+func (s *replayScene) assertIntact(t *testing.T, checkAccess bool) {
+	t.Helper()
+
+	g := s.f.grantRow(t, s.family())
+	require.NotNil(t, g)
+	assert.False(t, g.Revoked, "the grant is not revoked")
+	if checkAccess {
+		_, err := s.f.p.VerifyAccessToken(t.Context(), s.first.AccessToken)
+		require.NoError(t, err)
+	}
+	res, err := s.f.p.Token(t.Context(), s.refresh())
+	require.NoError(t, err)
+	assert.NotEmpty(t, res.RefreshToken)
+}
+
+// Two certificate thumbprints (base64url SHA-256), one a grant is bound to and one it is not.
+var (
+	deviceX5T = thumbprintOf("device-cert")
+	otherX5T  = thumbprintOf("other-cert")
+)
+
+func thumbprintOf(cert string) string {
+	sum := sha256.Sum256([]byte(cert))
+
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+func TestToken_DeviceReplay(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// client is the client the code is issued to and exchanged by.
+		client string
+		// jkt is the key the exchange proves, or "".
+		jkt string
+		// x5t is the certificate thumbprint the exchange presents, or "".
+		x5t string
+		// arrange runs after the exchange, before the replay.
+		arrange func(t *testing.T, s *replayScene)
+		// replay is the replaying request.
+		replay func(s *replayScene) oidcprovider.TokenRequest
+		// leave makes the caller hang up once the device record is loaded.
+		leave  bool
+		assert func(t *testing.T, s *replayScene, res *oidcprovider.TokenResponse, err error)
+	}
+
+	byOwner := func(s *replayScene) oidcprovider.TokenRequest {
+		r := deviceRequest(s.record.ClientID, s.code)
+		r.Binding = oidcprovider.Binding{JKT: s.jkt}
+
+		return r
+	}
+	withKey := func(jkt string) func(s *replayScene) oidcprovider.TokenRequest {
+		return func(s *replayScene) oidcprovider.TokenRequest {
+			r := deviceRequest(s.record.ClientID, s.code)
+			r.Binding = oidcprovider.Binding{JKT: jkt}
+
+			return r
+		}
+	}
+	withCert := func(x5t string) func(s *replayScene) oidcprovider.TokenRequest {
+		return func(s *replayScene) oidcprovider.TokenRequest {
+			r := deviceRequest(s.record.ClientID, s.code)
+			r.Binding = oidcprovider.Binding{X5T: x5t}
+
+			return r
+		}
+	}
+	revokes := func(t *testing.T, s *replayScene, res *oidcprovider.TokenResponse, err error) {
+		assert.Nil(t, res)
+		assertRefused(t, err, oidcprovider.CodeInvalidGrant)
+		s.assertRevokedFor(t, oidcprovider.CauseCodeReplay, true)
+	}
+	revokesNothing := func(code string) func(*testing.T, *replayScene, *oidcprovider.TokenResponse, error) {
+		return func(t *testing.T, s *replayScene, res *oidcprovider.TokenResponse, err error) {
+			assert.Nil(t, res)
+			assertRefused(t, err, code)
+			s.assertIntact(t, true)
+		}
+	}
+	// sweepAt moves the clock to ExpiresAt plus past, and runs the device store's sweep there.
+	sweepAt := func(past time.Duration) func(*testing.T, *replayScene) {
+		return func(t *testing.T, s *replayScene) {
+			s.f.clk.Advance(s.record.ExpiresAt.Add(past).Sub(s.f.clk.Now()))
+			_, err := s.f.devices.DeleteExpired(t.Context(), s.f.clk.Now())
+			require.NoError(t, err)
+		}
+	}
+
+	cases := []testCase{
+		{
+			name: "its own client's replay revokes the grant, its refresh token and its access token", client: tvRefresh,
+			replay: byOwner, assert: revokes,
+		},
+		{
+			name: "a confidential client's replay revokes the grant", client: cliClient,
+			replay: byOwner,
+			assert: func(t *testing.T, s *replayScene, res *oidcprovider.TokenResponse, err error) {
+				assert.Nil(t, res)
+				assertRefused(t, err, oidcprovider.CodeInvalidGrant)
+				g := s.f.grantRow(t, s.family())
+				require.NotNil(t, g)
+				assert.True(t, g.Revoked)
+				assert.Equal(t, oidcprovider.CauseCodeReplay, g.RevokeCause)
+				_, err = s.f.p.VerifyAccessToken(t.Context(), s.first.AccessToken)
+				assertRefused(t, err, oidcprovider.CodeInvalidToken)
+			},
+		},
+		{
+			name: "a replay after expiry, at ExpiresAt+59s past a sweep, still revokes", client: tvRefresh,
+			arrange: sweepAt(59 * time.Second), replay: byOwner,
+			assert: func(t *testing.T, s *replayScene, res *oidcprovider.TokenResponse, err error) {
+				assert.Nil(t, res)
+				assertRefused(t, err, oidcprovider.CodeInvalidGrant)
+				s.assertRevokedFor(t, oidcprovider.CauseCodeReplay, false)
+			},
+		},
+		{
+			name: "a replay at ExpiresAt+61s, after the sweep forgot the code, revokes nothing", client: tvRefresh,
+			arrange: sweepAt(61 * time.Second), replay: byOwner,
+			assert: func(t *testing.T, s *replayScene, res *oidcprovider.TokenResponse, err error) {
+				assert.Nil(t, res)
+				assertRefused(t, err, oidcprovider.CodeInvalidGrant)
+				s.assertIntact(t, false)
+			},
+		},
+		{
+			name: "another public client presenting the code revokes nothing", client: tvRefresh,
+			replay: func(s *replayScene) oidcprovider.TokenRequest { return deviceRequest(tvClient, s.code) },
+			assert: revokesNothing(oidcprovider.CodeInvalidGrant),
+		},
+		{
+			name: "a confidential client presenting another's code revokes nothing", client: tvRefresh,
+			replay: func(s *replayScene) oidcprovider.TokenRequest { return deviceRequest(cliClient, s.code) },
+			assert: revokesNothing(oidcprovider.CodeInvalidGrant),
+		},
+		{
+			name: "a bound grant's replay without a proof revokes nothing", client: tvRefresh, jkt: deviceJKT,
+			replay: withKey(""), assert: revokesNothing(oidcprovider.CodeInvalidGrant),
+		},
+		{
+			name: "a bound grant's replay with another key's proof revokes nothing", client: tvRefresh, jkt: deviceJKT,
+			replay: withKey(otherJKT), assert: revokesNothing(oidcprovider.CodeInvalidGrant),
+		},
+		{
+			name: "a bound grant's replay with its key's proof revokes", client: tvRefresh, jkt: deviceJKT,
+			replay: byOwner, assert: revokes,
+		},
+		{
+			name: "a certificate-bound grant's replay without a certificate revokes nothing", client: tvRefresh, x5t: deviceX5T,
+			replay: withCert(""), assert: revokesNothing(oidcprovider.CodeInvalidGrant),
+		},
+		{
+			name: "a certificate-bound grant's replay with another certificate revokes nothing", client: tvRefresh, x5t: deviceX5T,
+			replay: withCert(otherX5T), assert: revokesNothing(oidcprovider.CodeInvalidGrant),
+		},
+		{
+			name: "a certificate-bound grant's replay with its certificate revokes", client: tvRefresh, x5t: deviceX5T,
+			replay: withCert(deviceX5T), assert: revokes,
+		},
+		{
+			name:   "a replay without a proof by a client required to prove one is refused by the binding, revoking nothing",
+			client: tvDPoP, jkt: deviceJKT,
+			replay: withKey(""), assert: revokesNothing(oidcprovider.CodeInvalidDPoPProof),
+		},
+		{
+			name: "a replay of a grant already revoked keeps the first cause", client: tvRefresh,
+			arrange: func(t *testing.T, s *replayScene) {
+				_, err := s.f.grants.Revoke(t.Context(), s.family(), oidcprovider.CauseSignInEnded, s.f.clk.Now())
+				require.NoError(t, err)
+			},
+			replay: byOwner,
+			assert: func(t *testing.T, s *replayScene, res *oidcprovider.TokenResponse, err error) {
+				assert.Nil(t, res)
+				assertRefused(t, err, oidcprovider.CodeInvalidGrant)
+				s.assertRevokedFor(t, oidcprovider.CauseSignInEnded, true)
+			},
+		},
+		{
+			name: "a replay whose caller leaves after the load still revokes", client: tvRefresh,
+			leave: true, replay: byOwner,
+			assert: func(t *testing.T, s *replayScene, res *oidcprovider.TokenResponse, _ error) {
+				assert.Nil(t, res)
+				s.assertRevokedFor(t, oidcprovider.CauseCodeReplay, true)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newDeviceTokenFixture(t)
+			opaque := clientByID(t, tc.client)
+			opaque.OpaqueAccessTokens = true
+			require.NoError(t, f.registry.Put(t.Context(), opaque))
+			code, record := f.seed(t, tc.client, then(approved("openid", "offline_access"), func(r *oidcprovider.DeviceAuthorization) {
+				if tc.client == cliClient {
+					r.Scopes, r.Resources, r.Approval.GrantedScopes = []string{"openid"}, nil, []string{"openid"}
+				}
+			}))
+			exchange := deviceRequest(tc.client, code)
+			exchange.Binding = oidcprovider.Binding{JKT: tc.jkt, X5T: tc.x5t}
+			first, err := f.p.Token(t.Context(), exchange)
+			require.NoError(t, err)
+			s := &replayScene{f: f, record: record, code: code, first: first, jkt: tc.jkt, x5t: tc.x5t}
+			if tc.arrange != nil {
+				tc.arrange(t, s)
+			}
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if tc.leave {
+				f.loaded = cancel
+			}
+			res, err := f.p.Token(ctx, tc.replay(s))
+			f.loaded = nil
+			tc.assert(t, s, res, err)
+			f.assertNoDeviceSecret(t, code, err)
+		})
+	}
+}
+
+// clientByID is the device token clients' clientID.
+func clientByID(t *testing.T, clientID string) oidcprovider.Client {
+	t.Helper()
+
+	for _, c := range deviceTokenClients() {
+		if c.ID == clientID {
+			return c
+		}
+	}
+	require.FailNow(t, "no such client", clientID)
+
+	return oidcprovider.Client{}
+}
+
+func TestToken_DeviceDPoP(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// client exchanges with a proof of deviceJKT, then refreshes proving refreshJKT.
+		client     string
+		refreshJKT string
+		assert     func(t *testing.T, res *oidcprovider.TokenResponse, err error)
+	}
+
+	refused := func(code string) func(*testing.T, *oidcprovider.TokenResponse, error) {
+		return func(t *testing.T, res *oidcprovider.TokenResponse, err error) {
+			assert.Nil(t, res)
+			assertRefused(t, err, code)
+		}
+	}
+	refreshed := func(t *testing.T, res *oidcprovider.TokenResponse, err error) {
+		require.NoError(t, err)
+		assert.Equal(t, "DPoP", res.TokenType)
+		assert.NotEmpty(t, res.RefreshToken)
+	}
+
+	cases := []testCase{
+		{
+			name: "a client free to bind refreshes without a proof: refused", client: tvRefresh,
+			assert: refused(oidcprovider.CodeInvalidDPoPProof),
+		},
+		{
+			name: "a client free to bind refreshes with another key's proof: refused", client: tvRefresh, refreshJKT: otherJKT,
+			assert: refused(oidcprovider.CodeInvalidDPoPProof),
+		},
+		{
+			name: "a client free to bind refreshes with its key's proof", client: tvRefresh, refreshJKT: deviceJKT,
+			assert: refreshed,
+		},
+		{
+			name: "a client required to bind refreshes without a proof: refused by the binding", client: tvDPoP,
+			assert: refused(oidcprovider.CodeInvalidDPoPProof),
+		},
+		{
+			name: "a client required to bind refreshes with another key's proof: refused", client: tvDPoP, refreshJKT: otherJKT,
+			assert: refused(oidcprovider.CodeInvalidDPoPProof),
+		},
+		{
+			name: "a client required to bind refreshes with its key's proof", client: tvDPoP, refreshJKT: deviceJKT,
+			assert: refreshed,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newDeviceTokenFixture(t)
+			code, record := f.seed(t, tc.client, approved("openid", "offline_access"))
+			exchange := deviceRequest(tc.client, code)
+			exchange.Binding = oidcprovider.Binding{JKT: deviceJKT}
+			first, err := f.p.Token(t.Context(), exchange)
+			require.NoError(t, err)
+			assert.Equal(t, "DPoP", first.TokenType)
+			g := f.grantRow(t, record.Approval.GrantFamily)
+			require.NotNil(t, g)
+			assert.Equal(t, deviceJKT, g.KeyBinding, "the proof binds the grant")
+
+			res, err := f.p.Token(t.Context(), publicRefresh(tc.client, first.RefreshToken, tc.refreshJKT))
+			tc.assert(t, res, err)
+		})
+	}
+}
+
+// TestToken_DeviceStoreDown covers the store failures TestToken_DeviceStates and
+// TestToken_DeviceExchange leave out: the device store's own load, poll and spend failures are
+// rows there; these are the grant store's, at the exchange and at a replay.
+func TestToken_DeviceStoreDown(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// exchanged polls once before arm, so the row's poll is a replay.
+		exchanged bool
+		arm       func(f *deviceTokenFixture)
+		// recover undoes arm, and the next presentation is expected to revoke.
+		recover func(f *deviceTokenFixture)
+		assert  func(t *testing.T, f *deviceTokenFixture, record *oidcprovider.DeviceAuthorization)
+	}
+
+	cases := []testCase{
+		{
+			name: "a grant that cannot be read back fails the exchange, spent, with no token",
+			arm:  func(f *deviceTokenFixture) { f.grantLoadFails.Store(true) },
+			assert: func(t *testing.T, f *deviceTokenFixture, record *oidcprovider.DeviceAuthorization) {
+				assert.Equal(t, oidcprovider.DeviceSpent, f.stored(t, record).State)
+				assert.Equal(t, 0, f.p.LineageHeldForTest(), "no refresh token is stored")
+			},
+		},
+		{
+			name: "a replay whose grant cannot be read revokes nothing", exchanged: true,
+			arm:     func(f *deviceTokenFixture) { f.grantLoadFails.Store(true) },
+			recover: func(f *deviceTokenFixture) { f.grantLoadFails.Store(false) },
+			assert: func(t *testing.T, f *deviceTokenFixture, record *oidcprovider.DeviceAuthorization) {
+				g := f.grantRow(t, record.Approval.GrantFamily)
+				require.NotNil(t, g)
+				assert.False(t, g.Revoked)
+			},
+		},
+		{
+			name: "a replay whose revocation fails is a dependency failure, not invalid_grant", exchanged: true,
+			arm:     func(f *deviceTokenFixture) { f.grantRevokeFails.Store(true) },
+			recover: func(f *deviceTokenFixture) { f.grantRevokeFails.Store(false) },
+			assert: func(t *testing.T, f *deviceTokenFixture, record *oidcprovider.DeviceAuthorization) {
+				g := f.grantRow(t, record.Approval.GrantFamily)
+				require.NotNil(t, g)
+				assert.False(t, g.Revoked)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newDeviceTokenFixture(t)
+			code, record := f.seed(t, tvRefresh, approved("openid", "offline_access"))
+			if tc.exchanged {
+				_, err := f.p.Token(t.Context(), deviceRequest(tvRefresh, code))
+				require.NoError(t, err)
+			}
+			tc.arm(f)
+
+			res, err := f.p.Token(t.Context(), deviceRequest(tvRefresh, code))
+			assert.Nil(t, res)
+			require.ErrorIs(t, err, oidcprovider.ErrDependency)
+			assertNotPolling(t, err)
+			f.assertNoDeviceSecret(t, code, err)
+			tc.assert(t, f, record)
+
+			if tc.recover != nil {
+				tc.recover(f)
+				res, err = f.p.Token(t.Context(), deviceRequest(tvRefresh, code))
+				assert.Nil(t, res)
+				assertRefused(t, err, oidcprovider.CodeInvalidGrant)
+				g := f.grantRow(t, record.Approval.GrantFamily)
+				require.NotNil(t, g)
+				assert.True(t, g.Revoked, "the next presentation, with the store back, revokes")
+			}
+		})
+	}
+}
+
+func TestToken_DeviceGrantCreateFails(t *testing.T) {
+	t.Parallel()
+
+	f := newDeviceTokenFixture(t)
+	code, record := f.seed(t, tvRefresh, approved("openid", "offline_access"))
+	f.grantCreateFails.Store(true)
+
+	res, err := f.p.Token(t.Context(), deviceRequest(tvRefresh, code))
+	assert.Nil(t, res, "no token is issued without its grant")
+	require.ErrorIs(t, err, oidcprovider.ErrDependency)
+	assertNotPolling(t, err)
+	f.assertNoDeviceSecret(t, code, err)
+	assert.Equal(t, oidcprovider.DeviceSpent, f.stored(t, record).State, "the record is burnt")
+	assert.Nil(t, f.grantRow(t, record.Approval.GrantFamily), "no grant row")
+	assert.Equal(t, 0, f.p.LineageHeldForTest(), "no refresh token is stored")
+
+	// The device polls again: the spent code is a replay with no grant to bind it, so it is
+	// answered invalid_grant and its family revoked, which only leaves a revocation behind.
+	f.grantCreateFails.Store(false)
+	res, err = f.p.Token(t.Context(), deviceRequest(tvRefresh, code))
+	assert.Nil(t, res)
+	assertRefused(t, err, oidcprovider.CodeInvalidGrant)
+	g := f.grantRow(t, record.Approval.GrantFamily)
+	require.NotNil(t, g)
+	assert.True(t, g.Revoked)
+	assert.Equal(t, oidcprovider.CauseCodeReplay, g.RevokeCause)
+	assert.Empty(t, g.ClientID, "a revocation alone, with no grant behind it")
+	assert.Equal(t, 0, f.p.LineageHeldForTest())
+	f.assertNoDeviceSecret(t, code, err)
 }

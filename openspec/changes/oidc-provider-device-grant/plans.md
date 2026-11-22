@@ -375,7 +375,7 @@ type unspentUnion struct{ codes, devices UnspentCodes } // both methods concaten
   - the replay at `ExpiresAt+59s` still revokes; after the sweep at `+61s` it gives `invalid_grant` with nothing revoked;
   - another client presenting the code revokes nothing;
   - a DPoP-bound grant replayed without the key's proof revokes nothing, and with the proof revokes.
-- [ ] **Step 3 (7.7):** `TestToken_DeviceDPoP`: a public client's exchange with a proof gives `TokenType == "DPoP"` and a grant `KeyBinding` equal to the JKT; a refresh without a proof is refused.
+- [ ] **Step 3 (7.7):** `TestToken_DeviceDPoP`: a public client's exchange with a proof gives `TokenType == "DPoP"` and a grant `KeyBinding` equal to the JKT; a refresh without a proof is refused with `invalid_dpop_proof`, as on the existing refresh path.
 - [ ] **Step 4 (7.8):** `TestToken_DeviceStoreDown`. The store mock errors on `LoadByDeviceCode`, then on `RecordPoll`. Each gives an error matching the package's dependency matcher, never an `*Error` with pending or slow_down. The captured log does not contain the device code.
 - [ ] **Step 5 (7.9):** `TestToken_DeviceGrantCreateFails`. The grant store mock fails `Create` after `Spend`, giving a dependency error and no token. The record is spent with no grant row.
 - [ ] **Step 6 (8.1–8.3):** `TestDeviceGrant_SignInEnd` (table):

@@ -36,7 +36,8 @@ var errNoApproval = errors.New("oidcprovider: an approved device authorization h
 //  2. the record is read by the code's digest. An unknown code is invalid_grant, and a store
 //     failure a dependency failure, never authorization_pending;
 //  3. another client's code is invalid_grant, with nothing written;
-//  4. a spent code goes to replayDeviceCode;
+//  4. a spent code goes to replayDeviceCode, whatever its expiry, so a replay is seen for as
+//     long as the store keeps the record;
 //  5. a record expired by the provider's clock (now >= ExpiresAt) is expired_token;
 //  6. a denied record is access_denied, and an approved one is exchanged (exchangeDevice);
 //  7. a pending record is paced (paceDevicePoll).
@@ -123,10 +124,56 @@ func (p *Provider) paceDevicePoll(ctx context.Context, record *DeviceAuthorizati
 	return &Error{Code: answer}
 }
 
-// replayDeviceCode answers a spent device code its own client presented again. It is the one
-// place a device-code replay passes, and answers invalid_grant. Revoking what the exchange
-// issued (design D11) is not done here yet.
-func (p *Provider) replayDeviceCode(context.Context, TokenRequest, *RegisteredClient, *DeviceAuthorization, time.Time) error {
+// replayDeviceCode answers a spent device code its own client presented again, and always with
+// invalid_grant unless a store cannot answer (design D11). A valid replay first revokes what the
+// exchange issued: the grant named by the approval's GrantFamily, and its lineage, which ends its
+// refresh tokens and every access token, since those read their grant.
+//
+// A grant bound to a key (a public client's DPoP proof at the exchange) or to a certificate (its
+// thumbprint, when no proof was given) is revoked only by a replay proving that key or presenting
+// that certificate, as a code's binding is required of its replay, so whoever holds only
+// a leaked device code cannot end the user's grant. A confidential client's grant is bound by its
+// authentication, which Token has checked. A grant with no row yet is revoked all the same,
+// because the exchange that spent the code may still be writing it: the revocation is stored
+// first, and the row is created over it, revoked. Which grant that row would have bound is not
+// known then, so such a replay is believed without a proof.
+//
+// A replay is seen for as long as the device store keeps the spent record, until one minute
+// past its expiry (DeviceAuthorizationStore.DeleteExpired), which is why pollDevice judges a
+// spent record before its expiry. From the first grant read to the last write, none of this
+// depends on the caller still listening.
+func (p *Provider) replayDeviceCode(
+	ctx context.Context, r TokenRequest, rc *RegisteredClient, record *DeviceAuthorization, now time.Time,
+) error {
+	a := record.Approval
+	if a == nil || a.GrantFamily == id.Nil {
+		return dependencyFailure(ctx, errNoApproval, "oidcprovider: load the device authorization")
+	}
+	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
+	defer cancel()
+
+	grant, err := p.stores.grants.Load(detached, a.GrantFamily)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		// No row yet: revoke, so the row is created revoked.
+	case err != nil:
+		return dependencyFailure(ctx, err, "oidcprovider: read the replayed device code's grant")
+	case grant == nil:
+		return dependencyFailure(ctx, errNoRecord, "oidcprovider: read the replayed device code's grant")
+	case !replayHoldsBinding(grant, r.Binding):
+		return refuseGrant()
+	}
+
+	err = p.revokeReplayedFamily(ctx, detached, a.GrantFamily, now, func(newly bool) {
+		if newly {
+			p.reportGrantRevoked(ctx, rc.ID, a.User, CauseCodeReplay)
+		}
+	})
+	if err != nil {
+		return dependencyFailure(ctx, err, "oidcprovider: revoke what a replayed device code issued")
+	}
+
 	return refuseGrant()
 }
 

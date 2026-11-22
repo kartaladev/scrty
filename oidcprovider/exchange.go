@@ -398,6 +398,22 @@ func codeBindingsHold(r TokenRequest, record *CodeRecord, rc *RegisteredClient) 
 		(record.DPoPJKT == "" || r.Binding.JKT == record.DPoPJKT)
 }
 
+// replayHoldsBinding says whether a replay carries what binds grant, which is the only thing that
+// lets it end the grant: the key a public client's proof showed, or the certificate it presented
+// when it showed none. It judges as a refresh does (requireGrantBinding), without that function's
+// error codes, because a replay is answered invalid_grant whatever fails. A grant bound to
+// neither is bound by its client's authentication, which the caller has checked.
+func replayHoldsBinding(grant *Grant, b Binding) bool {
+	switch {
+	case grant.KeyBinding != "":
+		return b.JKT == grant.KeyBinding
+	case grant.CertBinding != "":
+		return b.X5T == grant.CertBinding && b.JKT == ""
+	}
+
+	return true
+}
+
 // verifierHolds decides PKCE, which cannot be downgraded here (RFC 9700 §4.8.2): a code with
 // a challenge needs its verifier, in RFC 7636's syntax, and a code without one refuses any
 // verifier. A code without one exists only for a PKCEOrNonce client's nonce, so one with no
@@ -696,6 +712,19 @@ func (p *Provider) refuseSpentCode(ctx context.Context, r TokenRequest, rc *Regi
 	if record.ClientID != rc.ID || !codeBindingsHold(r, record, rc) {
 		return refuseGrant()
 	}
+	// The grant may be bound to what the code's record does not say: a certificate. No row
+	// yet is no binding to judge, as the exchange that spent the code may still be writing it.
+	grant, err := p.stores.grants.Load(detached, record.GrantFamily)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
+	switch {
+	case errors.Is(err, ErrNotFound):
+	case err != nil:
+		return dependencyFailure(ctx, err, "oidcprovider: read the replayed code's grant")
+	case grant == nil:
+		return dependencyFailure(ctx, errNoRecord, "oidcprovider: read the replayed code's grant")
+	case !replayHoldsBinding(grant, r.Binding):
+		return refuseGrant()
+	}
 	if err := p.revokeReplayed(ctx, detached, record, now); err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke what a replayed code issued")
 	}
@@ -734,17 +763,27 @@ func splitCode(code string) (id.ID, string, bool) {
 // failure answers an error, and what caused the revocation can be presented again to try both again.
 // Opaque access tokens need nothing here, because their grant is checked when they are read.
 func (p *Provider) revokeReplayed(ctx, detached context.Context, record *CodeRecord, now time.Time) error {
-	newly, grantErr := p.stores.grants.Revoke(detached, record.GrantFamily, CauseCodeReplay, now)
+	return p.revokeReplayedFamily(ctx, detached, record.GrantFamily, now, func(newly bool) {
+		p.reportCodeReplay(ctx, record, newly)
+	})
+}
+
+// revokeReplayedFamily is revokeReplayed for any one-time credential that names the grant family
+// it issued, a code's or a device code's: it revokes family with CauseCodeReplay, calls reported
+// with whether this call is what revoked it once the revocation is stored, and then revokes the
+// family's lineage.
+func (p *Provider) revokeReplayedFamily(ctx, detached context.Context, family id.ID, now time.Time, reported func(newly bool)) error {
+	newly, grantErr := p.stores.grants.Revoke(detached, family, CauseCodeReplay, now)
 	grantErr = porterr.SanitizeTo(ctx, p.cfg.logger, grantErr, porterr.ErrUnwalkable)
 	if grantErr == nil {
-		p.reportCodeReplay(ctx, record, newly)
+		reported(newly)
 	}
 
 	manager, err := p.lineages(nil)
 	if err != nil {
 		return errors.Join(grantErr, err)
 	}
-	_, lineageErr := manager.RevokeFamily(detached, record.GrantFamily)
+	_, lineageErr := manager.RevokeFamily(detached, family)
 
 	return errors.Join(grantErr, lineageErr)
 }
