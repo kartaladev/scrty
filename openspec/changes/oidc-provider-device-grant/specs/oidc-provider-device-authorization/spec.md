@@ -165,7 +165,7 @@ The provider SHALL throttle failed user-code entries per source, by default 5 fa
 - **THEN** the provider asks that limiter, and not the default, whether a source may enter a code
 
 ### Requirement: A user code is claimed by the first browser that enters it
-A valid user code entered by a browser SHALL be claimed for that browser by one conditional write, and a pending request bound to that browser's flow cookie SHALL be parked for it. Of concurrent entries of one code, exactly one SHALL claim it. A later entry by another browser SHALL be answered as an invalid code. A re-entry by the claiming browser SHALL resume its pending request.
+A valid user code entered by a browser SHALL be claimed for that browser by one conditional write, and a pending request bound to that browser's flow cookie SHALL be parked for it. Of concurrent entries of one code, exactly one SHALL claim it. A later entry by another browser SHALL be answered as an invalid code. A re-entry by the claiming browser, even a concurrent one, SHALL be handed off again, not refused.
 
 #### Scenario: Two browsers enter one code at once
 - **WHEN** two browsers enter the same valid user code concurrently
@@ -173,7 +173,15 @@ A valid user code entered by a browser SHALL be claimed for that browser by one 
 
 #### Scenario: The claiming browser enters it again
 - **WHEN** the browser that claimed a code enters it again before it expires
-- **THEN** it is sent to the stage its pending request has reached
+- **THEN** it is handed off again, to the consent page when its browser session holds a sign-in, otherwise to the login page
+
+#### Scenario: The store applies a claim but reports a failure
+- **WHEN** the device store records a claim and then answers with an error
+- **THEN** the entry fails as a dependency error that still carries the browser's flow secret, and the browser's re-entry reaches its claim
+
+#### Scenario: The claiming browser submits twice at once
+- **WHEN** one browser enters a valid user code twice concurrently, with the same flow cookie
+- **THEN** neither entry is answered as an invalid code, and no failure is charged to the throttle
 
 ### Requirement: Code entry hands off to the consumer's login and consent pages
 After a claim, the browser SHALL be sent with status 303 to the consumer's login page with the pending request's handle, or to the consent page when a valid browser session already holds a sign-in. The login stage SHALL follow the authorization endpoint's rules for resuming with a complete sign-in of a known, enabled user.

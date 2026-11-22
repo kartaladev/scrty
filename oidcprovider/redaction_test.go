@@ -13,7 +13,7 @@ import (
 )
 
 // TokenRequest, AuthorizeInput and ResumeInput print redacted because they hold secrets. These
-// hold the same secrets, and print redacted under every verb and in a log line.
+// hold the same secrets, or a device's codes, and print redacted under every verb and in a log line.
 func TestInputsHoldingSecrets_PrintRedacted(t *testing.T) {
 	t.Parallel()
 
@@ -30,6 +30,15 @@ func TestInputsHoldingSecrets_PrintRedacted(t *testing.T) {
 		{"EndSessionInput browser", oidcprovider.EndSessionInput{BrowserSessionSecret: secret}},
 		{"EndSessionResult flow", oidcprovider.EndSessionResult{FlowSecret: secret}},
 		{"EndSessionResult location", oidcprovider.EndSessionResult{Location: "https://id.example.com/logout?req=" + secret}},
+		{"DeviceEntryInput user code", oidcprovider.DeviceEntryInput{UserCode: secret}},
+		{"DeviceEntryInput flow", oidcprovider.DeviceEntryInput{FlowSecret: secret}},
+		{"DeviceEntryInput browser", oidcprovider.DeviceEntryInput{BrowserSessionSecret: secret}},
+		{"DeviceEntryInput pointer", &oidcprovider.DeviceEntryInput{UserCode: secret, FlowSecret: secret}},
+		{"DeviceAuthorizationRequest form", oidcprovider.DeviceAuthorizationRequest{Form: url.Values{"client_secret": {secret}}}},
+		{"DeviceAuthorizationRequest credentials", oidcprovider.DeviceAuthorizationRequest{Credentials: oidcprovider.ClientCredentials{Authorization: "Basic " + secret}}},
+		{"DeviceAuthorizationResponse device code", oidcprovider.DeviceAuthorizationResponse{DeviceCode: secret}},
+		{"DeviceAuthorizationResponse user code", oidcprovider.DeviceAuthorizationResponse{UserCode: secret}},
+		{"DeviceAuthorizationResponse complete URI", oidcprovider.DeviceAuthorizationResponse{VerificationURIComplete: "https://id.example.com/activate?user_code=" + secret}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -37,6 +46,7 @@ func TestInputsHoldingSecrets_PrintRedacted(t *testing.T) {
 
 			logs := &bytes.Buffer{}
 			slog.New(slog.NewTextHandler(logs, nil)).Info("value", "value", tc.value)
+			slog.New(slog.NewJSONHandler(logs, nil)).Info("value", "value", tc.value)
 			for _, printed := range []string{
 				fmt.Sprintf("%v", tc.value), fmt.Sprintf("%+v", tc.value), fmt.Sprintf("%#v", tc.value),
 				fmt.Sprintf("%s", tc.value), logs.String(),

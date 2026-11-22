@@ -108,6 +108,16 @@ type PendingRequest struct {
 	// family, and nil with no such hint: nothing has answered, and only a provider keeping
 	// no browser sessions acts on it.
 	SignIn *SignIn
+
+	// DeviceAuthorizationID names the device authorization a request parked by
+	// Provider.EnterUserCode answers, and is id.Nil for every other request, so a record
+	// stored before the device grant existed means what it meant.
+	DeviceAuthorizationID id.ID
+	// DeviceUserCode is that device authorization's user code in its displayed form, for
+	// the consumer's pages to show, and empty for every other request. It is no
+	// credential on its own: the device authorization is claimed by the browser holding
+	// the flow secret, and no other browser may enter it.
+	DeviceUserCode string
 }
 
 // PendingRequestStore keeps parked requests. The provider supplies its secrets as

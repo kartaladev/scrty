@@ -222,6 +222,11 @@ Each relevant failure, its state, and what the caller sees.
 | Security | leaked spent device code replayed | handled, tested | `invalid_grant` and the grant revoked (D11) |
 | Security | offline reversal of user-code digests from a DB dump | handled, tested | keyed HMAC (D4) |
 | Security | public client credentials extracted from a CLI | accepted | RFC 8628 §5.6: no new capability beyond starting one's own flow |
+| Concurrency | the claiming browser submits its code twice at once | handled, tested | the entry that loses the claim reloads the record, finds its own flow digest, and parks too; nothing charged |
+| State | the store applies a claim but reports a failure | handled, tested | dependency error carrying the flow secret, so the browser's re-entry reaches its claim |
+| State | the claiming browser re-enters | handled, tested | a new pending request is parked (a pending request cannot be found by device ID without widening `PendingRequestStore`); the older one stays bound to the same flow, and `Decide` is a compare-and-set, so either deciding is safe |
+| Concurrency | a browser with no flow cookie submits its code twice at once | accepted | each entry mints its own flow secret, so they are two browsers to the provider: one claims and the other is refused and charged. The user's page holds the winner's cookie and carries on. |
+| Configuration | `UseUserCodeEntryLimiter` given a limiter whose value cannot be compared | handled, tested | never counted as the same as an earlier limiter, so a second hand-over is refused with `ErrConfig` rather than panicking |
 | Concurrency | two browsers claim one code | handled, tested | one CAS wins (store race suite) |
 | Concurrency | approval races denial | handled, tested | one CAS wins |
 | Concurrency | concurrent polls | handled, tested | at most one `authorization_pending` per interval. A concurrent approved poll spends once. |

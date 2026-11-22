@@ -3,6 +3,7 @@ package oidcprovider
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"net/url"
 	"slices"
 	"strings"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/origin"
+	"github.com/kartaladev/scrty/pkg/clock"
+	"github.com/kartaladev/scrty/ratelimit"
 )
 
 // DeviceOption customises WithDeviceAuthorization.
@@ -51,6 +54,15 @@ type deviceConfig struct {
 	// authorizations in: the one given, or a MemoryDeviceAuthorizationStore.
 	store    DeviceAuthorizationStore
 	storeSet bool
+
+	// entryLimiter is what WithUserCodeEntryLimiter gave, and entryLimiterSet says it was
+	// given.
+	entryLimiter    ratelimit.Limiter
+	entryLimiterSet bool
+	// entry holds the throttle user-code entry is checked against, which New builds and
+	// UseUserCodeEntryLimiter may replace once. It is behind a pointer, so that the
+	// configuration can be copied without copying its lock.
+	entry *entryState
 }
 
 // WithDeviceAuthorizationStore replaces where device authorizations are kept. The default
@@ -179,9 +191,10 @@ func WithDeviceAuthorization(entryURL string, opts ...DeviceOption) Option {
 // chain registers the device endpoints only when it is true.
 func (p *Provider) DeviceEnabled() bool { return p.cfg.device != nil }
 
-// validate checks the configuration, resolves the user-code format and the store, and
-// draws the user-code key from random when none was given.
-func (d *deviceConfig) validate(issuer string, random io.Reader) error {
+// validate checks the configuration, resolves the user-code format, the store and the entry
+// throttle, and draws the user-code key from random when none was given. The throttle logs
+// through logger and reads clk, the provider's own.
+func (d *deviceConfig) validate(issuer string, random io.Reader, clk clock.Clock, logger *slog.Logger) error {
 	if err := d.validateEntryURL(issuer); err != nil {
 		return err
 	}
@@ -192,6 +205,9 @@ func (d *deviceConfig) validate(issuer string, random io.Reader) error {
 		return err
 	}
 	if err := d.resolveStore(); err != nil {
+		return err
+	}
+	if err := d.resolveEntry(clk, logger); err != nil {
 		return err
 	}
 
@@ -299,6 +315,71 @@ func (d *deviceConfig) validateEntryURL(issuer string) error {
 		return fmt.Errorf("%w: WithDeviceAuthorization: the entry URL's query must not carry user_code", ErrConfig)
 	}
 	d.entryURL = u
+
+	return nil
+}
+
+// The default throttle of user-code entry: how many failed entries a source may make, and
+// in what window, before Provider.EnterUserCode refuses it. They are exported so that a
+// consumer building its own limiter, or asking a factory for one, can ask for the same
+// rate.
+const (
+	DefaultUserCodeEntryLimit  = 5
+	DefaultUserCodeEntryWindow = 10 * time.Minute
+)
+
+// WithUserCodeEntryLimiter replaces the limiter that throttles failed user-code entries per
+// source. The default is a ratelimit.MemoryLimiter of the provider's own allowing
+// DefaultUserCodeEntryLimit (5) failures per source in DefaultUserCodeEntryWindow (10
+// minutes), which is per process and not shared by replicas. A limiter carries its own
+// rate, so the consumer sets the rate by building it.
+//
+// A limiter given here is never replaced, not even by UseUserCodeEntryLimiter. A nil
+// limiter, typed nil included, fails New with an error matching ErrConfig naming this
+// option. Given twice, the last one wins.
+func WithUserCodeEntryLimiter(limiter ratelimit.Limiter) DeviceOption {
+	return func(d *deviceConfig) { d.entryLimiter, d.entryLimiterSet = limiter, true }
+}
+
+// UseUserCodeEntryLimiter hands the provider a limiter for user-code entry after New, the
+// way the chain shares its rate-limiter factory with the provider it was built after. It is
+// meant to be called before any traffic.
+//
+// It answers nil and changes nothing when the consumer gave WithUserCodeEntryLimiter,
+// whose limiter is never replaced. Otherwise the first call replaces the default limiter,
+// and a later call with the same limiter answers nil and changes nothing. A later call with
+// a different limiter is refused with an error matching ErrConfig, so that two callers
+// cannot silently split the counts between them. A nil limiter, typed nil included, and a
+// provider without the device grant (WithDeviceAuthorization) are refused with an error
+// matching ErrConfig. It is safe for concurrent use, with itself and with EnterUserCode.
+func (p *Provider) UseUserCodeEntryLimiter(limiter ratelimit.Limiter) error {
+	cfg := p.cfg.device
+	if cfg == nil {
+		return fmt.Errorf("%w: UseUserCodeEntryLimiter: the device grant is off; enable it with WithDeviceAuthorization", ErrConfig)
+	}
+	if nilcheck.IsNil(limiter) {
+		return fmt.Errorf("%w: UseUserCodeEntryLimiter: must not be nil", ErrConfig)
+	}
+
+	cfg.entry.mu.Lock()
+	defer cfg.entry.mu.Unlock()
+
+	current := cfg.entry.current.Load()
+	switch {
+	case current.consumer:
+		return nil
+	case current.handedOver && sameLimiter(current.limiter, limiter):
+		return nil
+	case current.handedOver:
+		return fmt.Errorf("%w: UseUserCodeEntryLimiter: a different limiter was already handed over, and two would split the counts", ErrConfig)
+	}
+
+	throttle, err := newEntryThrottle(limiter, p.cfg.clock, p.cfg.logger)
+	if err != nil {
+		return fmt.Errorf("%w: UseUserCodeEntryLimiter: %w", ErrConfig, err)
+	}
+	throttle.handedOver = true
+	cfg.entry.current.Store(throttle)
 
 	return nil
 }

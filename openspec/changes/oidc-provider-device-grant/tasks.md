@@ -38,12 +38,12 @@ Every task is test-first: write the failing test, run it with `go test -run '<Na
 
 ## 5. User-code entry (D2, D5, D6)
 
-- [ ] 5.1 `Provider.EnterUserCode` with a `ratelimit.SourceGuard`, by default 5 failures per source in 10 minutes. Verify that the sixth entry is refused as throttled before any lookup (assert on a store mock that no call was made), that a limiter error fails closed, and that `WithUserCodeEntryLimiter` replaces the default.
-- [ ] 5.2 The single refusal. Verify with a table test that unknown, expired, claimed by another browser, approved, denied and spent codes all return `ErrInvalidUserCode`, charge the throttle, and leave the record unchanged.
-- [ ] 5.3 Claim and park. Verify that a valid code is claimed by one write and a pending request is parked bound to the flow secret (minted when absent). Verify a 303 to login with the handle, or to consent when a browser session answers. Verify that the claiming browser's re-entry goes to the stage reached.
-- [ ] 5.4 The pending view's `Device` part: user code as entered and normalised, request time, client. Verify that the view holds no device code, handle or flow secret.
-- [ ] 5.5 A redaction test for the new input and result types. Verify that `fmt` and `slog` output holds no code, secret or digest.
-- [ ] 5.6 Claim succeeds but parking fails (pending store mock). Verify the entry fails as a dependency error, the claiming browser's re-entry parks again and reaches login, and another browser is still refused.
+- [x] 5.1 `Provider.EnterUserCode` with a `ratelimit.SourceGuard`, by default 5 failures per source in 10 minutes. Verify that the sixth entry is refused as throttled before any lookup (assert on a store mock that no call was made), that a limiter error fails closed, and that `WithUserCodeEntryLimiter` replaces the default.
+- [x] 5.2 The single refusal. Verify with a table test that unknown, expired, claimed by another browser, approved, denied and spent codes all return `ErrInvalidUserCode`, charge the throttle, and leave the record unchanged.
+- [x] 5.3 Claim and park. Verify that a valid code is claimed by one write and a pending request is parked bound to the flow secret (minted when absent). Verify a 303 to login with the handle, or to consent when a browser session answers. Verify that the claiming browser's re-entry goes to the stage reached.
+- [x] 5.4 The pending view's `Device` part: user code as entered and normalised, request time, client. Verify that the view holds no device code, handle or flow secret.
+- [x] 5.5 A redaction test for the new input and result types. Verify that `fmt` and `slog` output holds no code, secret or digest.
+- [x] 5.6 Claim succeeds but parking fails (pending store mock). Verify the entry fails as a dependency error, the claiming browser's re-entry parks again and reaches login, and another browser is still refused.
 
 ## 6. Consent and resume for device requests (D3, D7)
 

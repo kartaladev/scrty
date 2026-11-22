@@ -288,6 +288,8 @@ Step 4 needs a pending lookup by device ID. Add `PendingRequestStore`-independen
 
 ### Task A6: Consent and resume for device requests (tasks 6.1–6.5) — Opus: two-record ordering with a half-applied case
 
+**Carried from A5:** `rejudge` refuses a device pending request today (it has no redirect URI and the client may hold no `authorization_code` grant), so a device request's login stage cannot yet resume. A6 adds the device branch to `rejudge` and `consentNeeded`, judging the client by `GrantDeviceCode` and the device record (state `DeviceClaimed`, unexpired, the same `ID`) instead of the redirect URI. Re-entry by the claiming browser parks a new pending request, so a resume may meet a device record whose newer pending request is the live one: deciding through either is safe, because `Decide` is a compare-and-set on `DeviceClaimed`. The pending view answers `ErrUnknownHandle` once the record expires.
+
 **Files:**
 - Modify: `oidcprovider/consent.go` (`consentNeeded`: a device request returns true first), `oidcprovider/resume.go` (`resumeConsent` device branch, plus the login-stage expiry check), `oidcprovider/browsersession.go` (only if `answerFromSession`'s skip-consent path needs the same rule)
 - Test: `oidcprovider/device_consent_test.go`
@@ -445,6 +447,8 @@ The task is named `"oidc-provider.device-authorizations"` and runs `devices.Dele
 - [ ] Same as B2 for GORM.
 
 ### Task C1: Chain endpoints and throttles (tasks 11.1–11.5) — Opus: TLS, throttle namespaces, flow-cookie conversion
+
+**Carried from A5:** when parking fails after a successful claim, `EnterUserCode` returns `ErrDependency` together with an `AuthorizeResult` carrying the `FlowSecret` (minted or given) and no `Location`. The chain endpoint sets the flow cookie from it before answering the dependency error, or the claiming browser cannot recover its claim. A throttled entry matches both `ErrUserCodeThrottled` and `ratelimit.ErrThrottled` (429). An unattributable source and a cancelled context are refused as throttled.
 
 **Files:**
 - Create: `httpsec/oidc_device.go` (both handlers and their options), `httpsec/oidc_device_test.go`

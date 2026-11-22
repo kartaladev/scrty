@@ -236,7 +236,7 @@ func (d *Deps) validate(cfg *config) error {
 	}
 
 	if cfg.device != nil {
-		if err := cfg.device.validate(d.Issuer, cfg.random); err != nil {
+		if err := cfg.device.validate(d.Issuer, cfg.random, cfg.clock, cfg.logger); err != nil {
 			return err
 		}
 	}
