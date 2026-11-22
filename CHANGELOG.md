@@ -12,6 +12,23 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-22
+
+A patch release that raises two dependency floors. No scrty API or behaviour changes. Upgrade every
+scrty module to `v0.2.1`.
+
+### Changed
+
+- `github.com/kartaladev/scrty/httpsec/fibersec` and `github.com/kartaladev/scrty/test` require
+  `github.com/valyala/fasthttp` `v1.79.0` (was `v1.78.0`).
+  - The fasthttp release notes list request-parsing, connection-reuse, redirect and compression
+    hardening under "Security fixes and hardening". A fiber application's server runs this code.
+  - Neither fasthttp nor scrty has published an advisory for `v1.78.0`, so this entry records a
+    hardening upgrade, not a fixed vulnerability.
+  - An application that already requires `v1.79.0` or later is unaffected.
+- `github.com/kartaladev/scrty/expiry/sweep` requires `github.com/go-co-op/gocron/v2` `v2.23.2` (was
+  `v2.23.1`).
+
 ## [0.2.0] - 2026-11-22
 
 A minor release with breaking changes, each stated under *Changed*. It adds the `httpsec/prblmsec`
@@ -576,7 +593,8 @@ exported identifiers; the moves and renames change no behaviour.
 - A user-store outage during a password login no longer places a hold on a real account.
 - The limit on saved recovery codes holds when the codes are presented concurrently.
 
-[Unreleased]: https://github.com/kartaladev/scrty/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/kartaladev/scrty/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/kartaladev/scrty/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/kartaladev/scrty/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/kartaladev/scrty/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/kartaladev/scrty/releases/tag/v0.1.0
