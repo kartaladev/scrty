@@ -16,10 +16,10 @@ Every task is test-first: write the failing test, run it with `go test -run '<Na
 ## 2. Codes (D4, D5)
 
 - [ ] 2.1 Device-code minting: 32 bytes from the provider's random source, stored as a digest. Verify the length and digest-only storage, and that a failing random source fails the request with nothing stored.
-- [ ] 2.2 User-code generator with the default base-20, 8-character, dashed format, using rejection sampling. Verify the format regex, and verify uniformity with a deterministic random source covering the rejection branch.
-- [ ] 2.3 `WithUserCodeFormat`. Verify that a 9-digit format is accepted and shown in groups of three, and that a 6-digit format, a repeated character and a non-printable character each fail construction naming the option.
+- [x] 2.2 User-code generator with the default base-20, 8-character, dashed format, using rejection sampling. Verify the format regex, and verify uniformity with a deterministic random source covering the rejection branch.
+- [x] 2.3 `WithUserCodeFormat`. Verify that a 9-digit format is accepted and shown in groups of three, and that a 6-digit format, a repeated character and a non-printable character each fail construction naming the option.
 - [ ] 2.4 Keyed user-code digest and `WithUserCodeKey`. Verify a random key by default, a refusal for keys under 32 bytes, a refusal for a durable store without a key (test with a stub durable marker), and that two providers sharing a key compute the same digest.
-- [ ] 2.5 Normalisation. Verify with table tests: lower case, spaces and dashes are accepted; a character outside the alphabet and a wrong length are refused without a lookup; a lower-case alphabet is not upper-cased.
+- [x] 2.5 Normalisation. Verify with table tests: lower case, spaces and dashes are accepted; a character outside the alphabet and a wrong length are refused without a lookup; a lower-case alphabet is not upper-cased.
 
 ## 3. Device authorization store (D3)
 

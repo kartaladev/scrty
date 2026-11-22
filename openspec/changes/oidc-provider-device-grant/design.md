@@ -234,6 +234,8 @@ Each relevant failure, its state, and what the caller sees.
 | State | consent revoked after exchange | handled, tested | grant revoked through the existing consent revocation |
 | Time | poll exactly at `ExpiresAt` | handled, tested | expiry is `now >= ExpiresAt`, matching the pending-request rule. The answer is `expired_token`. |
 | Time | provider restarted with in-memory store or HMAC key | accepted | flows in progress are lost. The device gets `expired_token` or `invalid_grant` and restarts. Documented. |
+| Dependencies | random source errors, short-reads, or yields only bytes rejection sampling discards | handled, tested | the draw fails with no partial code; a user-code draw stops after 256 bytes (an internal bound only a broken source reaches) and a device-code draw on the first short read |
+| Dependencies | random source fails while the default user-code key is drawn | handled, tested | `New` fails with `ErrConfig` naming `WithUserCodeKey`, without the source's error text |
 | Dependencies | device store errors on a poll | handled, tested | dependency failure (5xx), never `authorization_pending` |
 | Dependencies | limiter errors | handled, tested | fail closed: refused as throttled (`SourceGuard`) |
 | Dependencies | consumer store judges expiry by its own clock | handled, tested | conformance suite fails, naming the case |

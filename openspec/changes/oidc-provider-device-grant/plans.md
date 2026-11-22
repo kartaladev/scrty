@@ -115,7 +115,7 @@ func (c *deviceConfig) userCodeDigest(raw string) []byte                 // HMAC
 ```
 
 - [ ] **Step 1: Write failing tests.**
-  - `TestMintDeviceCode`: decoded length 32. The digest equals `sha256.Sum256([]byte(code))`. A reader returning an error yields that error wrapped, and an empty code and digest.
+  - `TestMintDeviceCode`: decoded length 32. The digest equals the SHA-256 of the 32 decoded bytes, as handles are digested (D4), so reading a code back with the package's handle decoder yields the same digest. A reader returning an error yields that error wrapped, and an empty code and digest.
   - `TestUserCode_DefaultFormat`: 1 000 draws match `^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$`.
   - `TestUserCode_RejectionSampling` (internal): a scripted reader supplies bytes ≥ 240 (the rejection zone for a 20-letter alphabet: `256 - 256%20 = 240`) before each accepted byte. The output uses only the accepted bytes, and each byte `b < 240` maps to `alphabet[b%20]`.
   - `TestWithUserCodeFormat` (table). A 9-digit format is accepted and displays as `123-456-789`. These fail naming `WithUserCodeFormat`: 6 digits (10^6 < 2^29); a repeated character `"AAB…"`; a non-printable `"\x01…"`; a non-ASCII character; an alphabet containing `-`; an alphabet containing a space; a length of 0; a length of 33; an alphabet of 1 character.
@@ -201,6 +201,8 @@ Every transition refuses with `ErrNotFound` and writes nothing when the state, t
 
 ### Task A4: Device authorization request (tasks 4.1–4.4) — Sonnet: reuses client authentication and scope rules the plan names
 
+**Carried from A2's review:** `generate` and `mintDeviceCode` wrap the random source's error unchanged. `AuthorizeDevice` passes it through `porterr.SanitizeTo`, as `mintSecret`'s callers do, before it reaches a caller or a log. `userCodeDigest` is always given the raw code `generate` returns, never the displayed form.
+
 **Files:**
 - Create: `oidcprovider/deviceauthorize.go`, `oidcprovider/deviceauthorize_test.go`
 - Modify: `oidcprovider/device.go` (`WithDeviceLifetime`, `WithDevicePollInterval`)
@@ -238,6 +240,8 @@ Errors are `*Error{Code: …}` as `Token` uses: `invalid_client`, `invalid_reque
 - [ ] **Step 4:** Run red, implement, run the focused tests and the `oidcprovider` row.
 
 ### Task A5: User-code entry (tasks 5.1–5.6) — Opus: throttle-before-lookup and claim/park ordering
+
+**Carried from A2's review:** `normalise` scans its input without a length limit. `EnterUserCode` caps the entered code's size before normalising it, refusing an oversized one as `ErrInvalidUserCode` charged to the throttle. It digests only `normalise`'s raw output, and compares any digest read back with `hmac.Equal`.
 
 **Files:**
 - Create: `oidcprovider/deviceentry.go`, `oidcprovider/deviceentry_test.go`
