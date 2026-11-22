@@ -79,6 +79,11 @@ const (
 	CodeInvalidToken            = "invalid_token"
 	CodeInsufficientScope       = "insufficient_scope"
 	CodeInvalidDPoPProof        = "invalid_dpop_proof"
+
+	// The device authorization grant's answers to a poll (RFC 8628 section 3.5).
+	CodeAuthorizationPending = "authorization_pending"
+	CodeSlowDown             = "slow_down"
+	CodeExpiredToken         = "expired_token"
 )
 
 // Error is a refusal the protocol names: httpsec answers it with the standard's

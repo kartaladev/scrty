@@ -55,10 +55,10 @@ Every task is test-first: write the failing test, run it with `go test -run '<Na
 
 ## 7. Token endpoint: polling and exchange (D10, D11)
 
-- [ ] 7.1 Add the device-code case to `Token`'s dispatch. Verify `unsupported_grant_type` when the provider has not enabled it, and `unauthorized_client` for a client without the grant.
-- [ ] 7.2 Answers by state. Verify `authorization_pending`, `access_denied` and `expired_token` (including at exactly `ExpiresAt`), and `invalid_grant` for an unknown code or another client's code, with the record unchanged.
-- [ ] 7.3 `slow_down`. Verify that a poll inside the interval grows it by 5 s permanently, that a lost compare-and-set is answered `slow_down` (barrier test with two goroutines), and that an approved, denied or expired record is answered without the pace check.
-- [ ] 7.4 The exchange: user check, approving-sign-in check under the default, `RequireBinding` before the spend, one spend, then `newGrant` with `Origin` set to device. Verify tokens, an ID token without `nonce` carrying the sign-in's `auth_time`, a refresh token only for a refresh-registered client, and `invalid_grant` with nothing recorded for a disabled user and for an ended sign-in.
+- [x] 7.1 Add the device-code case to `Token`'s dispatch. Verify `unsupported_grant_type` when the provider has not enabled it, and `unauthorized_client` for a client without the grant.
+- [x] 7.2 Answers by state. Verify `authorization_pending`, `access_denied` and `expired_token` (including at exactly `ExpiresAt`), and `invalid_grant` for an unknown code or another client's code, with the record unchanged.
+- [x] 7.3 `slow_down`. Verify that a poll inside the interval grows it by 5 s permanently, that a lost compare-and-set is answered `slow_down` (barrier test with two goroutines), and that an approved, denied or expired record is answered without the pace check.
+- [x] 7.4 The exchange: user check, approving-sign-in check under the default, `RequireBinding` before the spend, one spend, then `newGrant` with `Origin` set to device. Verify tokens, an ID token without `nonce` carrying the sign-in's `auth_time`, a refresh token only for a refresh-registered client, and `invalid_grant` with nothing recorded for a disabled user and for an ended sign-in.
 - [ ] 7.5 Concurrent exchange. Verify with a barrier test that exactly one of N polls of an approved code gets tokens.
 - [ ] 7.6 Replay. Verify that a spent code from its client revokes the grant (refresh and opaque access tokens stop working) within expiry plus one minute, that another client's presentation revokes nothing, and that a bound grant needs the key proof.
 - [ ] 7.7 DPoP. Verify that a public client's proof binds the grant, and that a refresh without the key is refused.

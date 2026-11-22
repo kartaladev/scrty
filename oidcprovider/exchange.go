@@ -142,6 +142,14 @@ func (TokenResponse) LogValue() slog.Value { return slog.StringValue(redacted) }
 // those tokens' grant revoked. Which is why a resource is no part of what makes a replay valid:
 // it is what a request asks for, and not what the code was issued for.
 //
+// A urn:ietf:params:oauth:grant-type:device_code request is unsupported_grant_type on a provider
+// built without WithDeviceAuthorization. Otherwise it is answered by the authorization's state:
+// authorization_pending or slow_down while the user has not answered, access_denied once they
+// denied, expired_token once it expired, and tokens once they approved, as a code exchange gives
+// them, with an ID token carrying no nonce. Every check but one comes before the one conditional
+// write that spends the code; the revocation check is the read-back after it. See pollDevice
+// and exchangeDevice for the order.
+//
 // A refresh_token request runs in an order of its own, and writes nothing until its step 5:
 //
 //  1. a token of no shape the provider mints is refused with no lookup;
@@ -196,6 +204,10 @@ func (p *Provider) Token(ctx context.Context, request TokenRequest) (*TokenRespo
 	case "":
 		return nil, refuseRequest()
 	case GrantAuthorizationCode, GrantRefreshToken:
+	case GrantDeviceCode:
+		if !p.DeviceEnabled() {
+			return nil, &Error{Code: CodeUnsupportedGrantType}
+		}
 	default:
 		return nil, &Error{Code: CodeUnsupportedGrantType}
 	}
@@ -205,8 +217,11 @@ func (p *Provider) Token(ctx context.Context, request TokenRequest) (*TokenRespo
 	if err := requireBinding(rc, request.Binding); err != nil {
 		return nil, err
 	}
-	if grantType == GrantRefreshToken {
+	switch grantType {
+	case GrantRefreshToken:
 		return p.refresh(ctx, request, rc)
+	case GrantDeviceCode:
+		return p.pollDevice(ctx, request, rc)
 	}
 
 	return p.exchangeCode(ctx, request, rc)
@@ -487,6 +502,47 @@ func newGrant(
 		Offline:           record.Offline,
 		EndsWithSignIn:    record.EndsWithSignIn,
 		HoldsLineage:      holdsLineage,
+		CreatedAt:         now,
+		ExpiresAt:         expiresAt,
+	}
+	if rc.Type == Public {
+		grant.KeyBinding = binding.JKT
+		if binding.JKT == "" {
+			grant.CertBinding = binding.X5T
+		}
+	}
+
+	return grant
+}
+
+// newDeviceGrant builds the row a device authorization's exchange writes, as newGrant does a
+// code's: the approval's grant family, user and granted scopes, the record's resources, and the
+// approving sign-in's authentication facts. CodeID names the device authorization, and Origin
+// says so. A public client's grant is bound to the key its exchange proved, or with no proof to
+// its certificate.
+func newDeviceGrant(
+	record *DeviceAuthorization, rc *RegisteredClient, binding Binding, holdsLineage bool, now, expiresAt time.Time,
+) *Grant {
+	a := record.Approval
+	s := a.SignIn
+	grant := &Grant{
+		Family:            a.GrantFamily,
+		User:              a.User,
+		ClientID:          record.ClientID,
+		Scopes:            slices.Clone(a.GrantedScopes),
+		Resources:         slices.Clone(record.Resources),
+		AuthTime:          s.AuthenticatedAt,
+		AMR:               slices.Clone(s.AMR),
+		ACR:               s.ACR,
+		CodeID:            record.ID,
+		SignInFamily:      s.Family,
+		ExternalIssuer:    s.ExternalIssuer,
+		ExternalSessionID: s.ExternalSessionID,
+		Offline:           a.Offline,
+		EndsWithSignIn:    a.EndsWithSignIn,
+		SurvivesSignInEnd: a.SurvivesSignInEnd,
+		HoldsLineage:      holdsLineage,
+		Origin:            OriginDevice,
 		CreatedAt:         now,
 		ExpiresAt:         expiresAt,
 	}

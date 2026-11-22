@@ -316,7 +316,8 @@ type Grant struct {
 	// public client's exchange sets this or KeyBinding, and never both, because a request with a
 	// proof and a certificate binds to the proof's key alone.
 	CertBinding string
-	// CodeID is the identifier of the code that created the grant.
+	// CodeID is the identifier of what created the grant: the code's token, or for an
+	// OriginDevice grant the device authorization's ID.
 	CodeID id.ID
 
 	// SignInFamily is the session family of the sign-in the grant came from, which
@@ -332,6 +333,15 @@ type Grant struct {
 	// HoldsLineage reports that the grant has a refresh-token lineage. A refresh reads
 	// it, to know whether a lineage is to be looked for at all.
 	HoldsLineage bool
+	// SurvivesSignInEnd keeps the grant past the end of its sign-in even without Offline,
+	// as a device grant of a client registered with DeviceGrantsOutliveSignIn is. It is
+	// false for every grant a code created, so a row stored before it existed keeps its
+	// meaning.
+	SurvivesSignInEnd bool
+	// Origin is what created the grant: OriginCode, the zero value, for a code's exchange,
+	// and OriginDevice for a device authorization's. CodeID names that code or that device
+	// authorization.
+	Origin GrantOrigin
 
 	// CreatedAt and ExpiresAt bound the grant's life.
 	CreatedAt, ExpiresAt time.Time
@@ -346,6 +356,18 @@ type Grant struct {
 	// zero until then.
 	SignInEndedAt time.Time
 }
+
+// GrantOrigin says what created a grant, and so what its CodeID names.
+type GrantOrigin uint8
+
+const (
+	// OriginCode is a grant an authorization code's exchange created. It is the zero
+	// value, so every grant stored before GrantOrigin existed reads as one.
+	OriginCode GrantOrigin = iota
+
+	// OriginDevice is a grant a device authorization's exchange created (RFC 8628).
+	OriginDevice
+)
 
 // SignInSelector names the sign-ins an operation applies to. Exactly five shapes
 // are valid, and Validate refuses every other, above all the empty selector, so a
