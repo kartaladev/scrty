@@ -20,15 +20,9 @@ Add the core module, and any nested module you use. Every published module is re
 use one version for all of them:
 
 ```sh
-go get github.com/kartaladev/scrty@v0.1.1
-go get github.com/kartaladev/scrty/store/pgxstore@v0.1.1
-```
-
-The `httpsec/prblmsec` module is new after v0.1.1 and ships from the next lockstep release; once that is
-tagged, add it at the same version as the rest:
-
-```sh
-go get github.com/kartaladev/scrty/httpsec/prblmsec@<version>
+go get github.com/kartaladev/scrty@v0.2.0
+go get github.com/kartaladev/scrty/store/pgxstore@v0.2.0
+go get github.com/kartaladev/scrty/httpsec/prblmsec@v0.2.0
 ```
 
 - [CHANGELOG.md](CHANGELOG.md) lists what each release changes, and states every breaking change.
@@ -38,7 +32,7 @@ go get github.com/kartaladev/scrty/httpsec/prblmsec@<version>
 - [RELEASING.md](RELEASING.md) is the procedure a maintainer follows to cut a release.
 
 **Supported versions.** Only the latest minor release receives security fixes, which today is the
-`0.1.x` line, as [SECURITY.md](SECURITY.md) states.
+`0.2.x` line, as [SECURITY.md](SECURITY.md) states.
 
 ## Supported Go versions
 
@@ -3177,11 +3171,10 @@ its status always equals `httpsec.StatusForError`, and nothing the core withhold
 revealed. It is opt-in: a deployment that never registers it keeps the responses it has today, and the
 core module does not import prblm.
 
-The module ships from the next lockstep release after v0.1.1; use that release's version in place of
-`<version>`:
+Install it at the same version as the other scrty modules:
 
 ```sh
-go get github.com/kartaladev/scrty/httpsec/prblmsec@<version>
+go get github.com/kartaladev/scrty/httpsec/prblmsec@v0.2.0
 ```
 
 ### Wiring

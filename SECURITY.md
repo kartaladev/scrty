@@ -29,10 +29,10 @@ module is released in lockstep, so the version below names all of them.
 
 | Version | Supported |
 |---|---|
-| 0.1.x | Yes |
-| earlier than 0.1.0 | No |
+| 0.2.x | Yes |
+| earlier than 0.2.0 | No |
 
-This table is updated at each release. When `0.2.0` is released, the `0.2.x` line is the one
+This table is updated at each release. When `0.3.0` is released, the `0.3.x` line is the one
 supported.
 
 scrty requires **Go 1.27** or later and supports Go 1.27 and each later Go release while the Go
