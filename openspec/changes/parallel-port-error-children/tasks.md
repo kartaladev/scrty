@@ -31,8 +31,8 @@ Tasks marked **(main session)** push branches, open pull requests or record meas
   - the red and green figures from 1.1 and 1.2: the package's elapsed time, and the slowest child row's;
   - the machine's CPU count.
 - [x] 2.2 **(main session)** Run `make check`. Verify it passes, and keep the output.
-- [ ] 2.3 **(main session)** Push a branch and open a pull request. On its run, use a manual run if `SCRTY_SKIP_LONG_CHECKS` skips `test`.
-  - Verify both `test` legs pass and report `httpsec` at no more than 300 s.
+- [x] 2.3 **(main session)** Push a branch and open a pull request. On its run, use a manual run if `SCRTY_SKIP_LONG_CHECKS` skips `test`.
+  - Verify both `test` legs pass and report `httpsec` at no more than 400 s, the CI goal the design re-baselined on 2026-11-22.
   - Record both figures and the run ID in the design's Measurements.
 - [x] 2.4 A fresh reviewer that wrote none of the change reviews the diff against decisions 1–3 and every row of the failure-modes table. It enumerates how the change fails before judging whether it works, and reports each row as handled, tested or accepted, or as a finding (`REPRODUCED` with a failing run, or `UNREPRODUCED` with the reason).
 

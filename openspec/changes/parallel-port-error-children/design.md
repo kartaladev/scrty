@@ -33,7 +33,9 @@ The main session spot-checked two of these claims against the tree: there is no 
 **Goals:**
 - The parent runs child-process rows concurrently, within `-parallel`.
 - Each row keeps the same three checks: the child exits 0, the child prints its marker, and the child finishes within its budget.
-- `go test -race -count=1 ./httpsec` finishes in at most 300 s, half the default timeout. It is measured locally and on CI, before and after.
+- `go test -race -count=1 ./httpsec` finishes in at most 300 s, half the default timeout, on the maintainer's machine. On a 4-CPU CI runner the goal is at most 400 s. It is measured locally and on CI, before and after.
+  - The CI goal was re-baselined on 2026-11-22, by decision of the maintainer, after the first CI run measured 335.1 s on one leg (see Measurements). A runner's ~4 CPUs give the child rows about a quarter of the local concurrency. The rest of the package is unchanged by this change.
+  - Speeding up the slow rows that run in the parent process is left to a follow-up change.
 
 **Non-Goals:**
 - Making the rows that run in the parent parallel. They swap the process-wide `slog.Default()`, and sharing it is a separate design.
@@ -80,11 +82,11 @@ The main session spot-checked two of these claims against the tree: there is no 
 | Memory pressure: up to `GOMAXPROCS` race-instrumented children at once, stack-overflow rows allowing 64 MB stacks | Accepted, measured | A child killed by the OS exits non-zero, and its row fails with the child's output. Implementation records the package's wall time; a failure here shows up as row failures, never as a pass. |
 | A regression makes a cyclic error overflow the stack | Handled, unchanged | The child dies, and the parent's row fails with the first lines of its output. Concurrency does not merge rows, so the failing row is still named. |
 | A child matches no row and exits 0 | Handled, unchanged | The parent finds no `marker+row` line and fails "the child printed no line … it did not run its row". |
-| The package still exceeds 300 s after the change | Tested: task 2 measures it | Implementation stops and reports. Neither the target nor the timeout is relaxed. |
+| The package still exceeds its goal after the change | Tested: task 2 measures it | Implementation stops and reports. The goal is not relaxed without the maintainer's decision, and the timeout never is. This happened once: the CI goal was re-baselined to 400 s, as stated under Goals. |
 
 ## Risks / Trade-offs
 
-- **The speed-up depends on cores, and covers only the child rows.** The child rows' ~283 s divides by roughly `-parallel`. Slow rows that run in the parent and the tests that are already parallel do not change. → Task 2 measures the package locally and on CI, against the 300 s goal.
+- **The speed-up depends on cores, and covers only the child rows.** The child rows' ~283 s divides by roughly `-parallel`. Slow rows that run in the parent and the tests that are already parallel do not change. → Task 2 measures the package locally against 300 s and on CI against 400 s.
 - **`-json` per-test `Elapsed` under-reports a test with child rows.** The parent's clock stops when its body returns, before its parallel rows run; `TestPortErrors_EnrolmentPorts` reports 0.1 s while its events span 3.2 s. → Measurements use the package's `Elapsed`, or event timestamps, never a parent test's `Elapsed`.
 - **Interleaved output.** Concurrent subtests write their logs as they finish. → `go test` keeps each subtest's output under its own name, so a failure still names its row.
 - **`-parallel 1` is slow.** It serialises the child rows and the tests that were already parallel, and was killed at the 10-minute default. → This is the override for debugging one row at a time, not a way to run the suite. Use it with `-run` or a longer `-timeout`.
@@ -109,7 +111,10 @@ Read on 2026-11-22 on the maintainer's machine: 14 CPUs, Go 1.27.4 darwin/arm64,
 - **Under heavy outside load the 300 s goal does not hold.** One verification run failed at 300.9 s while another project's tests used about 6 CPUs and a VM about 2, with a load average of 43. The `make check` limit is 600 s, so this costs the goal, not the gate.
 - **`-parallel 1`:** killed by the 10-minute default timeout at 601.1 s, because it also serialises the tests that were already parallel.
 - **`make check` (task 2.2):** passed, with `httpsec` at 262.5 s while the task 2.4 reviewer ran beside it.
-- **CI:** see task 2.3.
+- **CI (task 2.3):** manual run 45031759267 on the pull request's branch passed every job.
+  - The `test` legs reported `httpsec` at 283.9 s (postgres 15, redis 7.4) and 335.1 s (postgres 18, redis 8.10), against 464.4 s and 442.7 s before.
+  - The 335.1 s leg missed the original 300 s goal, which led to the re-baselined CI goal of 400 s (Goals).
+  - Headroom against the 600 s default timeout rose from about 23% to about 44%.
 
 ## Migration Plan
 

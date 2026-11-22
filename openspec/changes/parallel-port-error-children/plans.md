@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** `go test -race -count=1 ./httpsec` finishes in at most 300 s, because child-process port-error rows run concurrently.
+**Goal:** `go test -race -count=1 ./httpsec` finishes in at most 300 s on the maintainer's machine and at most 400 s on a 4-CPU CI runner, because child-process port-error rows run concurrently.
 
 **Architecture:**
 - One test helper, `limiterPortErrInChild` in `httpsec/mfa_enrol_porterr_test.go`, marks its subtest parallel, and every child-process row already goes through it.
@@ -18,7 +18,7 @@
 - Test code only. No library code, `Makefile`, CI workflow, `go.mod` or call-site change.
 - Do not change the child's one-minute budget, its `-test.run`/`-test.count` arguments, or row selection (design non-goals).
 - Do not change `make test`'s `-timeout`, `-p`, `-parallel` or `-race` (proposal, Not in scope).
-- Package target: at most 300 s. Slowest child row: at most 20 s. If either line is crossed, stop and report; do not relax it (decision 3).
+- Package target: at most 300 s locally, at most 400 s on CI (re-baselined 2026-11-22, design Goals). Slowest child row: at most 20 s. If either line is crossed, stop and report; only the maintainer relaxes it (decision 3, design Goals).
 - Never undo an edit with `git checkout --`, `restore`, `reset --hard`, `stash` or `clean`. Edit the file back.
 - Binding rules for the implementer: `golang-tdd.md` (red, green, refactor; a compile error is not a red step), `defensive-coding.md`, `defect-claims.md`, `library-design.md`, and the read-only `legacy-reference.md`. Read `/golang-how-to`, then `golang-testing`, `golang-concurrency` and the project `table-test` skill.
 
@@ -93,7 +93,7 @@ One implementer dispatch. **Model: Opus.** This is ordering under parallel subte
 - [ ] **Step 3:** Commit `httpsec/mfa_enrol_porterr_test.go` with the message `test(httpsec): run port-error child rows in parallel`, staging exact paths.
 - [ ] **Step 4 (2.3):** Push the branch `test/parallel-port-error-children` and open a pull request.
   - If `SCRTY_SKIP_LONG_CHECKS` skips `test`, start `gh workflow run ci.yml --ref test/parallel-port-error-children`.
-  - Expected: both `test` legs pass, with `ok github.com/kartaladev/scrty/httpsec` at no more than 300 s in each leg's log.
+  - Expected: both `test` legs pass, with `ok github.com/kartaladev/scrty/httpsec` at no more than 400 s in each leg's log.
   - Record both figures and the run ID in Measurements.
 
 ### Task 3: Fresh review (task 2.4)

@@ -116,7 +116,7 @@ Restore a deliberately broken file by editing it back, never with a git command 
 
   Cache eviction is accepted (design, Risks), so a total above 10 GB is recorded, not failed.
   Every miss and the total need a recorded cause.
-- [ ] 4.5 Run `make check`, `make spec-check` and `openspec validate split-ci-jobs --strict`. Verify all three pass, and keep their output.
+- [x] 4.5 Run `make check`, `make spec-check` and `openspec validate split-ci-jobs --strict`. Verify all three pass, and keep their output.
 - [x] 4.6 Review the whole branch against every requirement in this change's two spec deltas, with a reviewer that wrote none of it. Verify that the review lists each requirement and scenario as met, or files a finding.
 
 ## Workflow follow-up
