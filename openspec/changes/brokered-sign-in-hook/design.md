@@ -379,6 +379,10 @@ Out of scope here; each is a separate change.
 - **hook-provisioning-port** (`identity-model`, `identity-linking`, security administration): a
   provisioning decision (D13) creates its user through a create-with-this-ID port, with `admin` as
   a thin adapter over it, instead of the consumer calling `admin.Importer` under an actor.
+- **jit-as-hook** (`identity-linking`): one user-intake path. Just-in-time provisioning becomes a
+  sign-in hook the library supplies, so JIT and a consumer's `Provision` decision share one pipeline
+  (link first, then create). It depends on hook-provisioning-port. Until then, both paths exist, and
+  D6 keeps them off the same provider.
 
 ## Risks / Trade-offs
 

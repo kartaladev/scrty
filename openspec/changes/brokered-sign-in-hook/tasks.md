@@ -37,7 +37,7 @@ Each task's verification names the test or command that shows it is done.
 
 ## 2. Listing a user's links (link stores)
 
-- [ ] 2.1 Add the optional `LinkLister` interface and implement it on `NewMemoryLinkStore`. **Verify:** a test lists a user with three links across two providers, and a user with none (empty list, no error).
+- [x] 2.1 Add the optional `LinkLister` interface and implement it on `NewMemoryLinkStore`. **Verify:** a test lists a user with three links across two providers, and a user with none (empty list, no error).
 - [ ] 2.2 Add `ListByUser` cases to the link-store conformance suite in `test/oidc`, skipped for a store without the capability. **Verify:** the suite runs green against the memory store.
 - [ ] 2.3 Implement `ListByUser` in `store/sqlstore`, with the query in `internal/pgschema`. **Verify:** the conformance suite runs green against it in a PostgreSQL container (`use-testcontainers`).
 - [ ] 2.4 Implement `ListByUser` in `store/pgxstore`. **Verify:** the conformance suite is green.
@@ -45,15 +45,15 @@ Each task's verification names the test or command that shows it is done.
 
 ## 3. Sign-in hook on the library broker (`authenticate/oidc`)
 
-- [ ] 3.1 Add `SignInDecision`, `SignInHook`, `WithBrokerSignInHook` and `WithBrokerSignInHookAllowManyLinks`, with the construction errors (D6, D11). **Verify:** a table test over:
+- [x] 3.1 Add `SignInDecision`, `SignInHook`, `WithBrokerSignInHook` and `WithBrokerSignInHookAllowManyLinks`, with the construction errors (D6, D11). **Verify:** a table test over:
   - a nil hook;
   - an empty provider;
   - a hook plus JIT, mirroring or role sync on one provider;
   - a hook and JIT on different providers (accepted);
   - a hook over a store with no lister (refused, then accepted with allow-many);
   - an unregistered hook provider refused by `NewRelyingParty`.
-- [ ] 3.2 Implement `Broker.BrokerUpstream` and `ErrUpstreamRequired`. **Verify:** tests show an unhooked provider takes today's path, and a hooked provider through `Broker()` fails with the hook not called (F15).
-- [ ] 3.3 Classify and scrub decision errors (D10). **Verify:** a table test over:
+- [x] 3.2 Implement `Broker.BrokerUpstream` and `ErrUpstreamRequired`. **Verify:** tests show an unhooked provider takes today's path, and a hooked provider through `Broker()` fails with the hook not called (F15).
+- [x] 3.3 Classify and scrub decision errors (D10). **Verify:** a table test over:
   - refusal sentinels passed through;
   - another error becoming a broker failure;
   - an error wrapping `ErrExchangeFailed` or `ErrFlowUnspent`, not reported as either;
