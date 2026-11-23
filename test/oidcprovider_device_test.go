@@ -22,7 +22,6 @@ import (
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/store/migrate"
-	"github.com/kartaladev/scrty/store/seal"
 	"github.com/kartaladev/scrty/test"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/token/signingkey"
@@ -84,7 +83,7 @@ func newDevE2E(t *testing.T, durable bool) *devE2E {
 	if durable {
 		set := migrate.SecurityState()
 		conn := test.RunTestPostgres(t, test.WithTestPostgresMigrations(set.FS(), set.Dir, set.VersionTable))
-		var cipher seal.Cipher = storefix.TestCipher(t)
+		cipher := storefix.TestCipher(t)
 		st := opAdapters[0].open(t, conn, cipher, clock.System())
 		consents, clients := durAdmins["sqlstore"](t, conn)
 		require.NoError(t, clients.Put(t.Context(), client))

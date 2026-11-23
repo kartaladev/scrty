@@ -460,7 +460,7 @@ func TestGormStore_DeviceReadRefusals(t *testing.T) {
 			r := opDevice(1)
 			r.State = tc.state
 			require.NoError(t, s.Create(ctx, r, opTime))
-			_, err := d.conn.DB.ExecContext(ctx, "UPDATE op_device_authorizations SET "+tc.corrupt)
+			_, err := d.conn.DB.ExecContext(ctx, "UPDATE op_device_authorizations SET "+tc.corrupt) //nolint:gosec // tc.corrupt is a constant of this table
 			require.NoError(t, err)
 
 			tc.assert(t, ctx, s)
