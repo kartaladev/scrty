@@ -121,6 +121,17 @@ By default, the library SHALL refuse, as an unlinked identity and before the app
 - **WHEN** `s-1` and `s-2` at the same issuer both decide `u-7` concurrently, neither linked before
 - **THEN** at most one link to `u-7` from that issuer remains, every login whose link was removed fails as an unlinked identity, and no refused login's apply step runs
 
+### Requirement: A link store can remove one link
+A link store SHALL be able to remove one stored link, identified by its link identifier and its provider, issuer and subject together, as an optional capability beside the link store contract, and report whether it removed one. It SHALL NOT remove any other link. Every link store the library ships SHALL provide it. A hooked provider that refuses several links per user SHALL require it.
+
+#### Scenario: Removing one of a user's links
+- **WHEN** links from `corp` subject `s-1` and `partner` subject `p-1` both name `u-7`, and the `corp` link is removed by its identifier and external identity
+- **THEN** the `partner` link to `u-7` remains, and the removal reports one link removed
+
+#### Scenario: Identifier and identity disagree
+- **WHEN** a removal names the identifier of the `corp` link with the subject `s-2`
+- **THEN** nothing is removed and the removal reports none
+
 ### Requirement: A link store can list a user's links
 A link store SHALL be able to list every link that names a user reference, as an optional capability beside the link store contract. Every link store the library ships SHALL provide it, returning the links with their stored fields byte for byte, and an empty list for a user with none.
 
@@ -156,7 +167,7 @@ A decision error that is the unlinked-identity or refused-provisioning outcome S
 - **THEN** neither the returned error's text nor any log record contains either
 
 ### Requirement: Sign-in hook wiring mistakes fail at construction
-Building the broker SHALL fail with a configuration error when a sign-in hook has no function or no provider name, shares its provider with just-in-time provisioning, claim mirroring or role sync (two writers of one user's data), or sits over a link store that cannot list a user's links while several links per user are not allowed. A hook naming a provider the login manager does not register SHALL fail the manager's construction.
+Building the broker SHALL fail with a configuration error when a sign-in hook has no function or no provider name, shares its provider with just-in-time provisioning, claim mirroring or role sync (two writers of one user's data), or sits over a link store that cannot list a user's links or remove one link while several links per user are not allowed. A hook naming a provider the login manager does not register SHALL fail the manager's construction.
 
 #### Scenario: Hook and provisioning on one provider
 - **WHEN** provider `corp` has a sign-in hook and just-in-time provisioning

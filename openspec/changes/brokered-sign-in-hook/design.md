@@ -263,17 +263,21 @@ an attacker attach a look-alike account (see References).
 
 Under a hook, scrty refuses a decision that would give a user a second link from the same provider
 and issuer. It lists the user's links through a new **optional** interface:
-`LinkLister { ListByUser(ctx, identity.UserID) ([]Link, error) }`.
+`LinkLister { ListByUser(ctx, identity.UserID) ([]Link, error) }`. Undoing a duplicate needs a
+second optional interface, `LinkRemover { DeleteLink(ctx, Link) (bool, error) }`, which removes only
+the stored row whose ID **and** external identity equal the given link's. `LinkStore.DeleteByUser`
+cannot serve: it removes every link of the user, including the race winner's and the user's links to
+other providers.
 
-- **Store support:** the memory, `sqlstore`, `pgxstore` and `gormstore` link stores implement it. The
+- **Store support:** the memory, `sqlstore`, `pgxstore` and `gormstore` link stores implement both. The
   `oidc_links_user` index already exists, so there is no migration. `LinkStore` itself is unchanged,
   so a consumer's store does not break.
-- **Race:** the rule is re-checked after the insert, and a duplicate link is deleted again before the
-  login is refused. Two concurrent new subjects for one user therefore end with at most one link.
+- **Race:** the rule is re-checked after the insert, and this identity's own new link is removed with
+  `DeleteLink` before the login is refused; no other link is touched. Two concurrent new subjects for one user therefore end with at most one link.
   The worst case is both refused, which is safe, and the next sign-in retries.
-- **Default:** refuse. A hook over a store without `ListByUser` fails construction.
-- **Override:** `WithBrokerSignInHookAllowManyLinks(provider)`, which also removes the need for the
-  lister.
+- **Default:** refuse. A hook over a store without `ListByUser` and `DeleteLink` fails construction.
+- **Override:** `WithBrokerSignInHookAllowManyLinks(provider)`, which also removes the need for both
+  interfaces.
 
 ### D12. Accepted limits
 
@@ -342,6 +346,7 @@ Alternatives rejected:
 | F10 | Existing link names another user | Handled, tested | `ErrNoLinkedAccount`; `Apply` not run; link unchanged; WARN |
 | F11 | Two first sign-ins of one identity race | Handled, tested | One link; both resolve, or the loser refuses; `Apply` only after the link is final |
 | F12 | Link store fault on find, insert, list or delete | Handled, tested | Broker failure, redacted; never "no link" |
+| F44 | Undoing a duplicate link would remove more than that link | Handled, tested | `DeleteLink` removes only the row with this link's ID and external identity; the user's other links stay (D11) |
 | F13 | `Apply` fails after the link is inserted | Accepted | Broker failure; the link stays and is correct; the next sign-in re-applies |
 | F14 | Hook plus JIT, mirroring or role sync on one provider | Handled, tested | Construction error |
 | F15 | Hooked provider brokered without upstream access | Handled, tested | `ErrUpstreamRequired`; hook not called |

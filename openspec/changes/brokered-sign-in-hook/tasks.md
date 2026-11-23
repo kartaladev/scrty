@@ -38,10 +38,11 @@ Each task's verification names the test or command that shows it is done.
 ## 2. Listing a user's links (link stores)
 
 - [x] 2.1 Add the optional `LinkLister` interface and implement it on `NewMemoryLinkStore`. **Verify:** a test lists a user with three links across two providers, and a user with none (empty list, no error).
-- [ ] 2.2 Add `ListByUser` cases to the link-store conformance suite in `test/oidc`, skipped for a store without the capability. **Verify:** the suite runs green against the memory store.
-- [ ] 2.3 Implement `ListByUser` in `store/sqlstore`, with the query in `internal/pgschema`. **Verify:** the conformance suite runs green against it in a PostgreSQL container (`use-testcontainers`).
-- [ ] 2.4 Implement `ListByUser` in `store/pgxstore`. **Verify:** the conformance suite is green.
-- [ ] 2.5 Implement `ListByUser` in `store/gormstore`. **Verify:** the conformance suite is green.
+- [ ] 2.6 Add the optional `LinkRemover` interface (`DeleteLink(ctx, Link) (bool, error)`) and implement it on `NewMemoryLinkStore`; require it beside `LinkLister` under a hook without allow-many (D11). **Verify:** a test removes one of a user's two links and keeps the other, a mismatched identity removes nothing, and a hook over a store with a lister but no remover is refused at construction.
+- [ ] 2.2 Add `ListByUser` and `DeleteLink` cases to the link-store conformance suite in `test/oidc`, skipped for a store without the capability. **Verify:** the suite runs green against the memory store.
+- [ ] 2.3 Implement `ListByUser` and `DeleteLink` in `store/sqlstore`, with the query in `internal/pgschema`. **Verify:** the conformance suite runs green against it in a PostgreSQL container (`use-testcontainers`).
+- [ ] 2.4 Implement `ListByUser` and `DeleteLink` in `store/pgxstore`. **Verify:** the conformance suite is green.
+- [ ] 2.5 Implement `ListByUser` and `DeleteLink` in `store/gormstore`. **Verify:** the conformance suite is green.
 
 ## 3. Sign-in hook on the library broker (`authenticate/oidc`)
 

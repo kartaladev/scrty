@@ -267,13 +267,15 @@ func newUpstream(token, subject string, endpoint func(context.Context) (string, 
 
 **Model: Opus.** Ordering under races; a wrong order passes tests and still allows takeover. **Reviewer: Opus.**
 
-**Files** (owned): `authenticate/oidc/broker_hook.go`, `broker_hook_test.go`, `example_test.go` (the hook example only).
+**Files** (owned): `authenticate/oidc/broker_hook.go`, `broker_hook_test.go`, `example_test.go` (the hook example only), and for task 2.6 `ports.go` (`LinkRemover`), `link.go` (memory `DeleteLink`), `link_list_test.go`, `ports_mock_test.go` (regenerated).
 
 **Must not touch:** any other file.
 
+- [ ] **Step 0 (2.6).** Write `TestMemoryLinkStore_DeleteLink`: of two links naming `u-7` (`corp/s-1`, `partner/p-1`), removing the `corp` one by its ID and identity returns true and leaves `partner`; the `corp` ID with subject `s-2` returns false and removes nothing. Add a `TestNewBroker_SignInHookWiring` row: a store with `ListByUser` but no `DeleteLink` is `ErrConfig`, and is built with allow-many. Red, then green. The post-insert undo in Step 3/4 uses `DeleteLink`, never `DeleteByUser`.
+
 **Interfaces:**
 - Consumes: A2's `acceptDecision` stub, plus the existing `resolveLinked`, `principalFor`, `refusal`, `redact` and `idgen.New(b.ids)`.
-- Produces: no new exported symbol.
+- Produces: `LinkRemover { DeleteLink(ctx context.Context, link Link) (bool, error) }` and the memory store's `DeleteLink` (task 2.6).
 
 - [ ] **Step 1 (3.4).** Write `TestBroker_HookChecksBeforeWrite` as a table. `Apply` records each call, and a memory store and fake loader back it:
 
@@ -291,7 +293,7 @@ func newUpstream(token, subject string, endpoint func(context.Context) (string, 
   - `Apply` returns an error: a broker failure, and the link stays (F13);
   - `Apply` disables the user: `ErrNoLinkedAccount`, and the link stays (F19);
   - **Review Focus 1:** the hook is handed `linked=u-7`, finds `u-9` by e-mail, and decides `u-7`. `Apply` writes only `u-7`; the test records the user `Apply` targeted;
-  - store faults: `FindByExternal`, `Insert`, `ListByUser` and `DeleteByUser` each return an error, and each gives a redacted broker failure, never `ErrNoLinkedAccount` (F12).
+  - store faults: `FindByExternal`, `Insert`, `ListByUser` and `DeleteLink` each return an error, and each gives a redacted broker failure, never `ErrNoLinkedAccount` (F12). `DeleteByUser` is never called by the hook path.
 
   Red, implement D5 steps 4–6, green.
 - [ ] **Step 3 (3.5, D11).** Write `TestBroker_HookOneLinkPerUser`:
@@ -359,7 +361,7 @@ func newUpstream(token, subject string, endpoint func(context.Context) (string, 
 
 **Interfaces:**
 - Consumes: `oidc.LinkLister` and `oidc.Link`.
-- Produces: `LinkListByUser = "SELECT … FROM scrty_oidc_links WHERE user_id = $1 ORDER BY created_at, id"`, and `ListByUser` on each store type, with the compile-time assertion `var _ oidc.LinkLister = (*LinkStore)(nil)` in each package.
+- Produces: `LinkListByUser` and `LinkDeleteOne` (`DELETE … WHERE id = $1 AND provider = $2 AND issuer = $3 AND subject = $4`) in `internal/pgschema`, and `ListByUser` and `DeleteLink` on each store type, with the compile-time assertions `var _ oidc.LinkLister = (*LinkStore)(nil)` and `var _ oidc.LinkRemover = (*LinkStore)(nil)` in each package. Until A3 lands `LinkRemover`, assert the method with a local interface of the same shape.
 
 - [ ] **Step 1 (2.2).** Add a `ListByUser` case to the conformance suite, skipped when the store does not implement `oidc.LinkLister`. It covers three links for `u-7` across two providers, one for `u-8`, and none for `u-9`. Fields come back byte for byte, including a user reference with mixed case and non-ASCII bytes. Run it against the memory store: green, since A2 implemented it. Then prove it bites by temporarily making the memory store return links for every user, and watch it fail.
 - [ ] **Step 2 (2.3).** Add the suite run with `ListByUser` for `sqlstore`, plus the compile assertion. It is red because the method is missing: write the method as a stub returning nil, and watch the content assertion fail. Then implement it with `LinkListByUser`, and get it green in the PostgreSQL container.
