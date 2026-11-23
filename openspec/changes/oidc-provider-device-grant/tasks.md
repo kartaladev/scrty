@@ -105,7 +105,7 @@ Every task is test-first: write the failing test, run it with `go test -run '<Na
 ## 13. Integration
 
 - [x] 13.1 An end-to-end test in the `test` module: a `golang.org/x/oauth2` client runs `DeviceAuth` and `DeviceAccessToken` against a chain with the provider, a scripted browser enters the code, signs in and approves, and the client receives tokens and refreshes. Verify it passes on the in-memory and one durable store.
-- [ ] 13.2 Run `make check`, `make spec-check` and `openspec validate oidc-provider-device-grant --strict`. Verify all three pass, and keep their output.
+- [x] 13.2 Run `make check`, `make spec-check` and `openspec validate oidc-provider-device-grant --strict`. Verify all three pass, and keep their output.
 - [ ] 13.3 A whole-branch review against every requirement in this change's specs. Verify every finding is resolved or recorded.
 
 ## Workflow follow-up
