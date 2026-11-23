@@ -45,7 +45,7 @@ func PermitAll() Requirement {
 // them to do work that cannot help them.
 func DenyAll() Requirement {
 	return func(context.Context) error {
-		return fmt.Errorf("%w: this operation is closed to everyone", ErrAccessDenied)
+		return fmt.Errorf("%w: %w: this operation is closed to everyone", ErrAccessDenied, ErrNotGranted)
 	}
 }
 
@@ -73,6 +73,9 @@ func Authenticated() Requirement {
 // scrty does not fold their case anywhere else either; matching loosely here
 // would let a role nobody granted satisfy a guard.
 //
+// A role with a blank name is no role: it denies with ErrNoActiveRole, even
+// when roles names a blank one, so a mis-stored role never satisfies a guard.
+//
 // Naming no roles denies, because a caller cannot hold one of none.
 func HasAnyRole(roles ...string) Requirement {
 	return func(ctx context.Context) error {
@@ -81,11 +84,16 @@ func HasAnyRole(roles ...string) Requirement {
 			return err
 		}
 
-		if subject.ActiveRole != nil && slices.Contains(roles, subject.ActiveRole.Name) {
+		if subject.ActiveRole == nil || isBlank(subject.ActiveRole.Name) {
+			return fmt.Errorf("%w: %w: the caller has no active role to be one of %v",
+				ErrAccessDenied, ErrNoActiveRole, roles)
+		}
+
+		if slices.Contains(roles, subject.ActiveRole.Name) {
 			return nil
 		}
 
-		return fmt.Errorf("%w: the caller's active role is not one of %v", ErrAccessDenied, roles)
+		return fmt.Errorf("%w: %w: the caller's active role is not one of %v", ErrAccessDenied, ErrNotGranted, roles)
 	}
 }
 
@@ -108,7 +116,7 @@ func HasAnyScope(scopes ...string) Requirement {
 			}
 		}
 
-		return fmt.Errorf("%w: the caller holds none of the scopes %v", ErrAccessDenied, scopes)
+		return fmt.Errorf("%w: %w: the caller holds none of the scopes %v", ErrAccessDenied, ErrNotGranted, scopes)
 	}
 }
 
@@ -125,13 +133,13 @@ func HasAllScopes(scopes ...string) Requirement {
 		}
 
 		if len(scopes) == 0 {
-			return fmt.Errorf("%w: a requirement for all of no scopes names nothing to check",
-				ErrAccessDenied)
+			return fmt.Errorf("%w: %w: a requirement for all of no scopes names nothing to check",
+				ErrAccessDenied, ErrNotGranted)
 		}
 
 		for _, scope := range scopes {
 			if !slices.Contains(subject.Scopes, scope) {
-				return fmt.Errorf("%w: the caller does not hold scope %q", ErrAccessDenied, scope)
+				return fmt.Errorf("%w: %w: the caller does not hold scope %q", ErrAccessDenied, ErrNotGranted, scope)
 			}
 		}
 
@@ -150,6 +158,14 @@ func HasAllScopes(scopes ...string) Requirement {
 // where one member would have refused the caller whoever they are, the answer
 // is a denial, and an error matching both sentinels would let a caller be sent
 // to log in for nothing.
+//
+// Its own refusal gives ErrNotGranted, whatever reasons the members gave: no
+// one member's reason is the reason none of them was met. That includes a
+// member's outage: a member that could not be reached counts as one that did
+// not allow, so when no other member allows, an outage reaches the caller as
+// ErrNotGranted and its cause is not kept. Where an outage must stay an outage,
+// use AllOf or a single requirement, which return the failing member's error
+// unchanged.
 //
 // Naming no members denies: none of nothing is satisfiable. An absent member is
 // treated as one that cannot be satisfied rather than skipped, so a set that
@@ -184,8 +200,45 @@ func AnyOf(requirements ...Requirement) Requirement {
 				ErrAuthenticationRequired)
 		}
 
-		return fmt.Errorf("%w: the caller meets none of the %d alternatives",
-			ErrAccessDenied, len(requirements))
+		return fmt.Errorf("%w: %w: the caller meets none of the %d alternatives",
+			ErrAccessDenied, ErrNotGranted, len(requirements))
+	}
+}
+
+// AllOf requires that every one of requirements be met, such as privileges on
+// two resources one operation touches.
+//
+// Members are evaluated in order and the first one that fails decides: its
+// error is returned unchanged, so an anonymous caller is still asked to
+// authenticate, a denial keeps its reason, and an outage stays an outage rather
+// than becoming a decision about the caller. Members after it are not
+// evaluated. This differs from AnyOf, which chooses between refusals, because
+// here the first failing member is the reason the request cannot proceed.
+//
+// Naming no members denies with ErrNotGranted: "every one of nothing" is the
+// reading that would open the operation, so it is refused rather than taken.
+// An absent member, reached in order, denies with ErrNotGranted too, so a set
+// that was meant to hold a check and holds a nil does not quietly become one
+// check shorter.
+func AllOf(requirements ...Requirement) Requirement {
+	return func(ctx context.Context) error {
+		if len(requirements) == 0 {
+			return fmt.Errorf("%w: %w: a requirement for all of no requirements names nothing to check",
+				ErrAccessDenied, ErrNotGranted)
+		}
+
+		for i, required := range requirements {
+			if required == nil {
+				return fmt.Errorf("%w: %w: requirement %d of an all-of set is absent",
+					ErrAccessDenied, ErrNotGranted, i)
+			}
+
+			if err := required(ctx); err != nil {
+				return err
+			}
+		}
+
+		return nil
 	}
 }
 
@@ -198,6 +251,11 @@ func AnyOf(requirements ...Requirement) Requirement {
 // honoured here too. The authorizer's answer is returned unchanged, including
 // an outage inside it, which therefore does not become a denial.
 //
+// Only a grant with identity.ScopeAll counts. An own-only grant is denied
+// with ErrWrongScope, so a route guard whose handler forgot to check ownership
+// does not show an own-only caller every record. A route that serves own
+// records too uses HasPrivilegeAnyScope, or HasPrivilegeFor for one record.
+//
 // Every named privilege must be granted. With one name — the usual case — the
 // two matching modes agree; with several, demanding all of them is the reading
 // that cannot hand out more than the call site asks for. A consumer who wants
@@ -209,17 +267,19 @@ func AnyOf(requirements ...Requirement) Requirement {
 // missing middleware into an open operation — and the missing middleware is
 // exactly what a wiring mistake removes.
 func HasPrivilege(group, resource string, required ...string) Requirement {
+	required = slices.Clone(required)
+
 	return func(ctx context.Context) error {
 		authorizer, ok := AuthorizerFromContext(ctx)
 		if !ok {
-			return fmt.Errorf("%w: the request carries no authorizer to judge %s/%s",
-				ErrAccessDenied, group, resource)
+			return fmt.Errorf("%w: %w: the request carries no authorizer to judge %s/%s",
+				ErrAccessDenied, ErrNotGranted, group, resource)
 		}
 
 		return authorizer.Authorize(ctx, PrivilegeAttributes{
 			Group:    group,
 			Resource: resource,
-			Required: required,
+			Required: slices.Clone(required),
 			Mode:     MatchAllOf,
 		})
 	}

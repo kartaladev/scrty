@@ -12,6 +12,15 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-23
+
+A minor release: security administration (the `admin` package), scoped grants and a resource
+catalogue, a per-request privilege memo, login by verified email, an opt-in active-role switch, the
+OAuth device authorization grant, and the `scrty_` prefix on every table. It carries breaking changes,
+listed under *Changed*, and new migrations in both sets (three security-state, two identity); read
+*Changed* before upgrading.
+Upgrade every scrty module to `v0.3.0`.
+
 ### Added
 
 - **The device authorization grant (RFC 8628).** It is off by default, and a provider turns it on
@@ -61,6 +70,86 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 - The `oidc-provider.device-authorizations` expiry task, which sweeps expired device authorizations.
 - The README's "CLI clients" section.
 
+- **Security administration: the `admin` package.** Services over ports, with scrty's identity stores
+  (`sqlstore`, `pgxstore`, `gormstore`) as the default implementation, and ports a consumer's own store
+  implements. **The services do not authorize:** they record who acted, but any caller reaching them
+  can change any user or role, so guard every route that reaches them (`Guards.Require`). They are:
+  - `admin.Users` (`NewUsers`): `List` with search, filters and an opaque cursor (`WithPageSize`,
+    default 50), `Get`, `Create`, `Update`, `Deactivate`, `Reactivate`, soft `Delete` and
+    `SetPassword` through the password policy and history (`WithPasswordPolicy`,
+    `WithPasswordEncoder`, `WithIDGenerator`). Email is a user field, unique among live users ignoring
+    case, with a verification time; a changed email is unverified unless the change names a time.
+    Profile attributes are stored, returned and searchable by exact match (`WithAttributeLimits`).
+  - `admin.Roles` (`NewRoles`): create, update, list by label, get, and delete, refused with
+    `ErrStillAssigned` while assigned unless forced. The role name is an immutable key; a role carries
+    a display name, a description and labels.
+  - `admin.Grants` (`NewGrants`): read a role's grants and replace them per resource in one
+    transaction, refusing a privilege or scope the catalogue does not list (`ErrUnknownPrivilege`).
+  - `admin.Assignments` (`NewAssignments`): add, remove, list and mark primary, with optional start
+    and end dates.
+  - `admin.Importer` (`NewImporter`): import users with given values (identifier, password hash,
+    active flag, times) by identifier only, idempotently, reporting an `ImportOutcome`.
+  - Writes to one role's grants or one user's roles are serialised, and a stale `version` is refused
+    with `ErrStaleUpdate`. The actor comes from the context (`ActorFrom`, `WithSystemActor`); a write
+    with none is `ErrNoActor`.
+  - One sentinel per reason: `ErrConfig`, `ErrNotFound`, `ErrAlreadyExists` (an `AlreadyExistsError`
+    naming the field), `ErrStillAssigned`, `ErrStaleUpdate`, `ErrUnknownPrivilege`, `ErrInvalidInput`,
+    `ErrNoActor`. Error text never carries a username, email, attribute value or password hash.
+  - Common options `WithEventSink`, `WithAudit` (an `AuditSink` receiving before and after values,
+    never a password hash), `WithClock` and `WithLogger`.
+  - The identity stores implement the ports: `CreateUser`, `UpdateUser`, `SetActive`, `DeleteUser`,
+    `SetPassword`, `CurrentPasswordHash`, `GetUser`, `ListUsers`, `ImportUser`, `CreateRole`,
+    `UpdateRole`, `DeleteRole`, `GetRole`, `ListRoles`, `GetGrants`, `ReplaceGrants`,
+    `AddAssignment`, `RemoveAssignment`, `ListAssignments`, `SetPrimary` and `LoadByEmail`, on
+    `sqlstore`, `pgxstore` and `gormstore`.
+- **Scoped grants and a resource catalogue.** `identity.Privilege.Scope` (`identity.Scope`,
+  `ScopeAll`, `ScopeOwn`, and `EffectiveScope`, which reads a grant stored without one as `all`). A
+  privilege granted only with `own` does not satisfy a plain check: `authorize.HasPrivilegeAnyScope`
+  and `CheckAnyScope` ask for any scope and report it, and `HasPrivilegeFor` checks one record with an
+  ownership check (`PrivilegeAttributes.Accept`). `authorize.NewCatalogue` declares resources and
+  privileges in code (`Catalogue`, `CatalogueResource`, `CataloguePrivilege`).
+- **Authorization at runtime.**
+  - A per-request privilege memo: a role's privileges load at most once per request. The chain
+    installs it by default; `httpsec.WithoutPrivilegeMemo` turns it off, and `authorize.WithRequestMemo`
+    installs it outside the chain.
+  - `authorize.AllOf`, beside `AnyOf`, and `Guards.Require` in `httpsec`, `ginsec` and `fibersec`,
+    which guards a route with any `authorize.Requirement`.
+  - A bulk check, `authorize.HeldPrivileges`, answering which of several privileges the caller holds
+    on one resource and with which scope (`Holdings`, `Holding`), through the optional
+    `PrivilegeInspector` port (`InspectPrivileges` on `PrivilegeAuthorizer` and `FirstOf`;
+    `ErrInspectionUnsupported` otherwise).
+  - One sentinel per denial reason, each still matching `authorize.ErrAccessDenied`:
+    `ErrNotGranted`, `ErrWrongScope`, `ErrNotOwner`, `ErrNoSubject`, `ErrNoActiveRole`.
+- **Login by email**, off by default: `authenticate.WithEmailLogin()` on the password provider, with a
+  user loader that also implements `identity.EmailLoader`. Only a verified email of a live user logs
+  in. The chain's login and Basic endpoints resolve the identifier first
+  (`authenticate.IdentifierResolver`, `ResolvedIdentifier`, `ResolverOf`, `WithResolved`,
+  `ResolveIdentifier` and `EmailLogin` on the provider and on `FirstOf`), so the username and the
+  email share one lockout budget. A failure is also recorded under the email as typed, for the automation
+  challenge, through the new optional port `policy.UnreportedAttemptRecorder`, which the lockout
+  view implements, so a lock, hold or clear is reported and evented once, under the account. `identity.Details` gains `Email`, `EmailVerifiedAt` and
+  `EmailVerified`.
+- **Switching the active role**, off by default: `httpsec.WithSwitchableRoles()` and
+  `Chain.SwitchActiveRole`, refusing with `ErrRoleNotHeld` or `ErrRoleSwitchingDisabled`. The choice
+  is recorded as `session.Session.SelectedRole` through the optional `session.RoleSelector`
+  (`Sessions.SelectRole`, `Sessions.SelectsRoles`, `MemoryStore.SelectRole`; every shipped store
+  implements it) and re-checked on every request.
+- `identity.PrincipalFromDetailsAt` and `AssignedRole.ValidAt`, which apply a grant's start and end
+  dates.
+- Administration events: `event.Event` gains `Actor`, `Target` and `Changed`, and the types
+  `UserCreated`, `UserUpdated`, `UserArchived`, `UserDeleted`, `UserReactivated`, `UserImported`,
+  `PrivilegePermissionsChanged`, `AuthzChange`, `AuthzAdmin`, `IdentifierConflict`
+  (`scrty_identifier_conflict`) and `ActiveRoleSwitched` (`scrty_active_role_switched`).
+- The identity migration `20261125000000_scrty_administration` (email, its verification time and a
+  unique index on live users' lower-cased emails, soft deletion, versions, role display names,
+  descriptions and labels, grant scopes and profile attributes) and the
+  security-state migration `20261125000000_scrty_selected_role` (the session's selected role).
+- In the `test` module: `test/admin` (the administration conformance suites `RunConformanceSuite`,
+  `RunUserSuite`, `RunRoleSuite`, `RunImportSuite`), `identity.RunEmailLoaderSuite` and
+  `storetest.RunSessionRoleUnstorable`.
+- The README's "Administration", "Resources, privileges and scopes", "The per-request privilege
+  memo", "Login by email" and "Switching the active role" sections.
+
 ### Changed
 
 - **BREAKING: every table, index and sequence scrty's migrations create is now named `scrty_<name>`.**
@@ -92,6 +181,43 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
   - To keep scrty's tables apart from your own, use a PostgreSQL schema and a `search_path`.
 - The grant store keeps a revocation 31 minutes, where it kept it 11, so that a revocation outlives the
   longest device authorization.
+- **BREAKING (behaviour): a soft-deleted user is not found.** scrty's identity stores load a user that
+  `admin.Users.Delete` marked deleted as `identity.ErrUserNotFound`, by username and by identifier, so
+  it cannot log in or be resolved by a session.
+- **BREAKING (behaviour): a role assignment's start and end dates are enforced.** The chain builds the
+  principal with `identity.PrincipalFromDetailsAt` at its clock, so an assignment before its start or
+  after its end no longer reaches the principal and no longer authorizes. Before, the dates were
+  carried and never checked.
+- **BREAKING (behaviour): provisioning refuses a username that is another live user's email**,
+  ignoring case, with `identity.ErrUserExists`. A federated first login whose username is a local
+  user's email now fails instead of creating a second user the email would also name. The identity
+  ports still discard an email given to `Provision` or `Update`; only the administration services and
+  import set it.
+- **BREAKING: two migrations.** Apply both before starting the release:
+  - identity set, `20261125000000_scrty_administration`: `scrty_users` gains `email`,
+    `email_verified_at`, `deleted_at` and `version`, with a unique index on `lower(email)` among live
+    users; `scrty_roles` gains `display_name`, `description`, `labels` and `version`;
+    `scrty_resource_privileges` gains `scope` (default `all`); profile attributes get the new table
+    `scrty_user_attributes`. **If you added an `email` column to `scrty_users` yourself, rename or drop it
+    first:** otherwise the migration fails, atomically, and changes nothing.
+  - security-state set, `20261125000000_scrty_selected_role`: `scrty_sessions` and
+    `scrty_op_refresh_tokens` gain `selected_role`.
+  - Rolling back the identity migration drops emails, attributes, scopes, versions, labels and
+    deletion marks.
+- **BREAKING (behaviour): the password provider refuses an account with an empty username.** A user loader that returns
+  one, by username or by email, with email login on or off, is answered as for an unknown user:
+  `authenticate.ErrAuthenticationFailed` after the same decoy password work, with a warning whose
+  reason is `user-without-username`. Before, such an account logged in under a blank username.
+  `identity.UserLoader` now states that a user it returns carries its username. scrty's identity
+  stores always do; **a consumer's own loader that leaves `Details.Username` empty must fill it**, or
+  every login through it fails.
+- `policy.AttemptStore` states that identifiers match exactly: a store must not fold case. A store
+  that does counts a failure twice when a login's typed identifier and its account differ only in
+  case, and so locks sooner than configured.
+- **BREAKING (API): `event.Event` is no longer comparable**, because its new `Changed` field is a
+  slice. Code that compares events with `==` or uses them as map keys must compare fields instead.
+- **BREAKING (API), `test` module: `test/identity.Fixture` gains `SeedEmail` and `SoftDelete`.** A
+  consumer's own fixture for the identity conformance suite implements both.
 
 ### Security
 
@@ -682,7 +808,8 @@ exported identifiers; the moves and renames change no behaviour.
 - A user-store outage during a password login no longer places a hold on a real account.
 - The limit on saved recovery codes holds when the codes are presented concurrently.
 
-[Unreleased]: https://github.com/kartaladev/scrty/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/kartaladev/scrty/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/kartaladev/scrty/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/kartaladev/scrty/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/kartaladev/scrty/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/kartaladev/scrty/compare/v0.1.0...v0.1.1

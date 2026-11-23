@@ -338,7 +338,10 @@ func (h *Handoff) Redeem(ctx context.Context, code string, checks ...RedeemCheck
 		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "user_mismatch")
 	}
 
-	principal := *identity.PrincipalFromDetails(details)
+	// Dated by the clock the expiry was judged by: only the grants in force
+	// then are kept, and an expired or future primary grant leaves the
+	// principal with no active role.
+	principal := *identity.PrincipalFromDetailsAt(details, now)
 	for _, check := range checks {
 		if check == nil {
 			continue

@@ -1,19 +1,47 @@
 package pgschema
 
+import "strings"
+
 // Identity statements: users, their role grants, organizations, groups,
 // role privileges and password history. No identity table joins to another
 // by a foreign key; the loaders below run as separate queries and treat a
 // dangling organization, group or role reference as absent.
 const (
-	// UserByUsername reads the user row with username $1.
+	// UserByUsername reads the live user row with username $1, without the
+	// email columns. A soft-deleted user (deleted_at set) is no row.
 	UserByUsername = `SELECT id, name, username, password, active, role, organization_id,
   password_changed_at, mfa_required, created_at, updated_at
-FROM scrty_users WHERE username = $1`
+FROM scrty_users WHERE username = $1 AND deleted_at IS NULL`
 
-	// UserByID reads the user row with id $1.
+	// UserByID reads the live user row with id $1, without the email columns.
+	// A soft-deleted user is no row.
 	UserByID = `SELECT id, name, username, password, active, role, organization_id,
   password_changed_at, mfa_required, created_at, updated_at
-FROM scrty_users WHERE id = $1`
+FROM scrty_users WHERE id = $1 AND deleted_at IS NULL`
+
+	// UserRecordByUsername reads the live user row with username $1: the
+	// columns of UserByUsername followed by email and email_verified_at. A
+	// soft-deleted user is no row.
+	UserRecordByUsername = `SELECT id, name, username, password, active, role, organization_id,
+  password_changed_at, mfa_required, created_at, updated_at, email, email_verified_at
+FROM scrty_users WHERE username = $1 AND deleted_at IS NULL`
+
+	// UserRecordByID reads the live user row with id $1, with the columns of
+	// UserRecordByUsername. A soft-deleted user is no row.
+	UserRecordByID = `SELECT id, name, username, password, active, role, organization_id,
+  password_changed_at, mfa_required, created_at, updated_at, email, email_verified_at
+FROM scrty_users WHERE id = $1 AND deleted_at IS NULL`
+
+	// UserRecordByVerifiedEmail reads the live user whose verified email is
+	// $1, ignoring case, with the columns of UserRecordByUsername. An
+	// unverified email, a deleted user and no match are all no row. The
+	// predicate repeats the partial unique index scrty_users_email_live, so
+	// the index serves it and at most one row matches.
+	UserRecordByVerifiedEmail = `SELECT id, name, username, password, active, role, organization_id,
+  password_changed_at, mfa_required, created_at, updated_at, email, email_verified_at
+FROM scrty_users
+WHERE lower(email) = lower($1) AND email IS NOT NULL AND deleted_at IS NULL
+  AND email_verified_at IS NOT NULL`
 
 	// GrantsByUser reads every role grant of user $1, the primary grant
 	// first and otherwise in stored position order. Position, not the grant's
@@ -47,7 +75,14 @@ FROM scrty_assigned_roles WHERE user_id = $1 ORDER BY position, id`
 	PrivilegesByRole = `SELECT id, role_name, resource_group, resource, privilege, granted, created_at, updated_at
 FROM scrty_resource_privileges WHERE role_name = $1 ORDER BY resource_group, resource, privilege`
 
-	// InsertUser stores a user: $1 id, $2 name, $3 username, $4 password,
+	// ScopedPrivilegesByRole reads what PrivilegesByRole reads, with each
+	// entry's scope as the last column. The scope is returned as stored: a
+	// row written before the column existed holds its default, 'all'.
+	ScopedPrivilegesByRole = `SELECT id, role_name, resource_group, resource, privilege, granted, created_at, updated_at,
+  scope
+FROM scrty_resource_privileges WHERE role_name = $1 ORDER BY resource_group, resource, privilege`
+
+	// InsertUser stores a user, with no email: $1 id, $2 name, $3 username, $4 password,
 	// $5 active, $6 role (the primary role name), $7 organization_id (NULL
 	// when absent), $8 password_changed_at (NULL when the caller did not
 	// name it), $9 mfa_required, $10 created_at, $11 updated_at. Zero rows
@@ -61,7 +96,57 @@ ON CONFLICT (username) DO NOTHING`
 	// LockUserByUsername reads the id of the user with username $1 and locks
 	// the row, so a concurrent update serializes behind it. No row is
 	// user-not-found.
-	LockUserByUsername = `SELECT id FROM scrty_users WHERE username = $1 FOR UPDATE`
+	// A soft-deleted user is no row, so an update never reaches one.
+	LockUserByUsername = `SELECT id FROM scrty_users WHERE username = $1 AND deleted_at IS NULL FOR UPDATE`
+
+	// BumpUserVersion increases the version of user $1 by one. The identity
+	// port's update runs it after every write it makes to the user, so an
+	// administrator's earlier read of the user becomes stale; the port itself
+	// never compares the version.
+	BumpUserVersion = `UPDATE scrty_users SET version = version + 1 WHERE id = $1`
+
+	// IdentifierLockKeys returns the advisory lock key of every identifier
+	// (username or email) in the text[] $1: hashtextextended(lower(value), 0),
+	// one row per distinct key, in ascending key order. Empty and NULL elements
+	// guard nothing and are left out.
+	//
+	// Every write that sets a username or an email runs it for the values it
+	// sets, then takes LockIdentifierKey for each returned key, in the order
+	// returned, before it checks that a value is not another live user's
+	// username or email: a constraint cannot span the two columns, so the
+	// locks are what serialise a username and an email racing to coincide.
+	// The order is the key's own, computed by the server from the very
+	// expression the lock uses, so two writers locking overlapping values
+	// always take them in the same order and cannot deadlock, whatever order
+	// or letter case they named them in. The locks are taken one statement per
+	// key rather than in this statement, because the order in which a single
+	// SELECT evaluates a volatile function across its rows is planner
+	// behaviour, not a documented guarantee. Two values that share a key only
+	// serialise two unrelated writes.
+	IdentifierLockKeys = `SELECT DISTINCT hashtextextended(lower(v), 0) AS lock_key
+FROM unnest($1::text[]) AS v
+WHERE v IS NOT NULL AND v <> ''
+ORDER BY lock_key`
+
+	// LockIdentifierKey takes the transaction-scoped advisory lock with key
+	// $1, as IdentifierLockKeys returns it. It is held until the transaction
+	// ends, and a session may hold it more than once.
+	LockIdentifierKey = `SELECT pg_advisory_xact_lock($1::bigint)`
+
+	// EmailHeldByLiveUser reports whether a live user other than the one with
+	// id $2 holds $1 as its email, verified or not, ignoring case. A NULL $2
+	// excludes nobody, as provisioning a user who has no id yet needs. Run it
+	// holding the lock IdentifierLockKeys gives $1.
+	EmailHeldByLiveUser = `SELECT EXISTS (SELECT 1 FROM scrty_users
+WHERE lower(email) = lower($1) AND email IS NOT NULL AND deleted_at IS NULL
+  AND id IS DISTINCT FROM $2::uuid)`
+
+	// UsernameHeldByLiveUser reports whether a live user other than the one
+	// with id $2 holds $1 as its username, ignoring case: the check a write
+	// setting $1 as an email makes. A NULL $2 excludes nobody. Run it holding
+	// the lock IdentifierLockKeys gives $1.
+	UsernameHeldByLiveUser = `SELECT EXISTS (SELECT 1 FROM scrty_users
+WHERE lower(username) = lower($1) AND deleted_at IS NULL AND id IS DISTINCT FROM $2::uuid)`
 
 	// DeleteGrantsByUser removes every role grant of user $1, the first half
 	// of a grant rebuild that InsertGrant completes.
@@ -77,7 +162,8 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
 	// MFARequiredByID reads the MFA-required flag of the user with id $1. No
 	// row is user-not-found: the caller never reads a missing user as "not
 	// required".
-	MFARequiredByID = `SELECT mfa_required FROM scrty_users WHERE id = $1`
+	// A soft-deleted user is no row, so it is reported as an unknown one.
+	MFARequiredByID = `SELECT mfa_required FROM scrty_users WHERE id = $1 AND deleted_at IS NULL`
 
 	// NewestHistory reads the newest retired password hash of user $1, if
 	// any. RetirePassword uses it to skip recording the same bytes twice in
@@ -104,3 +190,28 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
 	// ForgetHistory removes every retired password of user $1.
 	ForgetHistory = `DELETE FROM scrty_password_history WHERE user_id = $1`
 )
+
+// TextArray is values as a PostgreSQL text[] literal, for a driver that binds
+// no Go slice as an array (database/sql in general). Every element is
+// double-quoted, with its quotes and backslashes escaped, so no element is
+// read as NULL or split. values must be storable text (no NUL byte); the
+// writes refuse any other before they get here.
+func TextArray(values []string) string {
+	var b strings.Builder
+	b.WriteByte('{')
+	for i, v := range values {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteByte('"')
+		b.WriteString(arrayEscaper.Replace(v))
+		b.WriteByte('"')
+	}
+	b.WriteByte('}')
+
+	return b.String()
+}
+
+// arrayEscaper escapes the two characters a quoted array element cannot hold
+// bare.
+var arrayEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`)

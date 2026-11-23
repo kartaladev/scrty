@@ -41,6 +41,37 @@ type AssignedRole struct {
 type Privilege struct {
 	Name    string
 	Granted bool
+
+	// Scope is how far the grant reaches. Empty reads as ScopeAll; see
+	// EffectiveScope.
+	Scope Scope
+}
+
+// Scope is how far a granted privilege reaches.
+//
+// The identity model carries it unchanged. Which scopes a check accepts is the
+// authorization capability's decision.
+type Scope string
+
+// The defined scopes.
+const (
+	// ScopeAll reaches every record of the resource. It is what an empty scope
+	// reads as, so a loader that records no scope grants as before.
+	ScopeAll Scope = "all"
+
+	// ScopeOwn reaches only the records the caller owns.
+	ScopeOwn Scope = "own"
+)
+
+// EffectiveScope returns the scope the grant carries, reading empty as
+// ScopeAll. Any other value, including one this library does not define, is
+// returned as stored: the model does not interpret it.
+func (p Privilege) EffectiveScope() Scope {
+	if p.Scope == "" {
+		return ScopeAll
+	}
+
+	return p.Scope
 }
 
 // ResourcePrivileges are the privileges a role holds on one resource.
@@ -127,6 +158,19 @@ type Details struct {
 	// It stays on Details and never reaches Principal: it is record-keeping for
 	// the library's own call paths, not part of the outward identity.
 	PasswordChangedAt time.Time
+
+	// Email is the user's email address, empty when the store holds none.
+	Email string
+
+	// EmailVerifiedAt is when the email was verified, zero when unknown or not
+	// verified. The email is never treated as verified unless this is set.
+	EmailVerifiedAt time.Time
+}
+
+// EmailVerified reports whether the email carries a verification time. A nil
+// receiver is not verified.
+func (d *Details) EmailVerified() bool {
+	return d != nil && !d.EmailVerifiedAt.IsZero()
 }
 
 // PrincipalFromDetails maps a store's record to the outward principal.
@@ -175,6 +219,47 @@ func PrincipalFromDetails(details *Details) *Principal {
 	}
 
 	return p
+}
+
+// ValidAt reports whether the grant is in force at the given time: its start
+// date, when set, is not after at, and its valid-until date, when set, is after
+// at. A grant valid until exactly at is no longer valid. A nil grant is not
+// valid.
+func (r *AssignedRole) ValidAt(at time.Time) bool {
+	if r == nil {
+		return false
+	}
+
+	if !r.StartDate.IsZero() && r.StartDate.After(at) {
+		return false
+	}
+
+	return r.ValidUntil.IsZero() || r.ValidUntil.After(at)
+}
+
+// PrincipalFromDetailsAt maps a store's record to the outward principal as of
+// the given time.
+//
+// It keeps only the grants ValidAt reports in force. The active role is the
+// first kept primary grant; when the primary grant is not in force the principal
+// has no active role, and a non-primary grant is never promoted in its place.
+// Everything else follows PrincipalFromDetails, including the copies it makes:
+// the caller's details are not modified. Absent details yield no principal.
+func PrincipalFromDetailsAt(details *Details, at time.Time) *Principal {
+	if details == nil {
+		return nil
+	}
+
+	filtered := *details
+	filtered.Roles = make([]*AssignedRole, 0, len(details.Roles))
+
+	for _, r := range details.Roles {
+		if r.ValidAt(at) {
+			filtered.Roles = append(filtered.Roles, r)
+		}
+	}
+
+	return PrincipalFromDetails(&filtered)
 }
 
 // cloneOrganization copies an organization and the group it points at.

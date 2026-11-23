@@ -197,6 +197,11 @@ func ApplyUserOptions(opts ...UserOption) *UserChange {
 // Input the loader's store cannot represent, such as text the database's
 // encoding cannot hold, is reported as ErrUserNotFound, since no user can
 // match it. A client therefore cannot cause a load failure with its own input.
+//
+// A user it returns must carry its Username, the identifier the library keys lockout, sessions,
+// events and logs on. A record with an empty Username is a contract violation: the password
+// provider refuses it as it would an unknown user, after the same decoy password work, whether
+// login by email is on or not, rather than authenticate an account it cannot name.
 type UserLoader interface {
 	// LoadByUsername loads the user with this username, passed exactly as
 	// presented and never trimmed or case-folded. A miss returns ErrUserNotFound;
@@ -290,4 +295,24 @@ type UserProvisioner interface {
 // supplies one.
 type MFARequirementLookup interface {
 	Required(ctx context.Context, userID UserID) (bool, error)
+}
+
+// EmailLoader loads users by their verified email address.
+//
+// It is optional: a component that looks users up by email needs one and is
+// given none fails at construction, and the library supplies no default. The
+// library's opt-in identity stores implement it.
+//
+// An email is matched ignoring case, and only among users that are not deleted
+// and whose email is verified, so an address nobody has proved they control
+// never resolves to an account. This is the opposite of passing an email to
+// WithUserEmail, which stores it without ever matching on it.
+type EmailLoader interface {
+	// LoadByEmail loads the user whose verified email is email. A miss, an
+	// unverified email and a deleted user all return ErrUserNotFound. Input the
+	// store cannot represent, such as text its encoding cannot hold, is reported
+	// as ErrUserNotFound too, since no user can match it. Any other failure
+	// returns an error that is not ErrUserNotFound, so a caller can tell "no such
+	// user" from "the store is down".
+	LoadByEmail(ctx context.Context, email string) (*Details, error)
 }

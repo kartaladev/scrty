@@ -19,8 +19,8 @@ import (
 
 // IdentityStore keeps users, their role grants, organizations, groups and role
 // privileges in the tables migrate.Identity creates, over gorm. It implements
-// identity.UserLoader, identity.RoleLoader, identity.UserProvisioner and
-// identity.MFARequirementLookup, and is safe for concurrent use. It also
+// identity.UserLoader, identity.RoleLoader, identity.UserProvisioner,
+// identity.MFARequirementLookup and identity.EmailLoader, and is safe for concurrent use. It also
 // implements password.History over the scrty_password_history table, for a
 // password.NoReuse rule; no identity port call reads or writes that table. It
 // keeps the same records as package sqlstore's and the pgx adapter's identity
@@ -72,6 +72,20 @@ import (
 // its transaction is rolled back, or its savepoint rolled back and released.
 // The savepoint names come from a counter of the store's own, never from
 // input.
+//
+// The record carries the user's email and its verification time as stored, each
+// empty when none is, and each privilege carries its scope as stored. A
+// soft-deleted user is unknown to every port. LoadByEmail matches the address
+// ignoring case, only among live users whose email is verified. Case folding
+// is PostgreSQL's lower() (ASCII-only under a C or POSIX ctype), with no
+// Unicode normalisation, for LoadByEmail and Provision's email check alike.
+//
+// Provision refuses, with identity.ErrUserExists and nothing written, a
+// username that is the email of another live user, ignoring case, after taking
+// PostgreSQL's transaction-scoped advisory lock on the lower-cased username, the
+// lock every write setting an email takes. The lock is held until the
+// transaction ends. Update increases the user's version whenever it writes to
+// the user; it never compares it.
 //
 // # Defaults and options
 //
@@ -165,7 +179,7 @@ func (s *IdentityStore) LoadByUsername(ctx context.Context, username string) (*i
 		return nil, failed(op, err)
 	}
 
-	return load(q, op, pgschema.UserByUsername, username, username)
+	return load(q, op, pgschema.UserRecordByUsername, username, username)
 }
 
 // LoadByUserID loads the user with this reference, or returns
@@ -184,7 +198,28 @@ func (s *IdentityStore) LoadByUserID(ctx context.Context, ref identity.UserID) (
 		return nil, failed(op, err)
 	}
 
-	return load(q, op, pgschema.UserByID, uid, "")
+	return load(q, op, pgschema.UserRecordByID, uid, "")
+}
+
+// LoadByEmail loads the live user whose verified email is email, ignoring
+// case, or returns identity.ErrUserNotFound. An unverified email, a deleted
+// user and no match are all not found. An empty address, one PostgreSQL text
+// cannot hold, and one the database's encoding cannot represent are not found
+// too, since no user can hold them; any other failure is not. Case folding is PostgreSQL's lower(), which is ASCII-only
+// under a C or POSIX ctype, and there is no Unicode normalisation.
+func (s *IdentityStore) LoadByEmail(ctx context.Context, email string) (*identity.Details, error) {
+	const op = "load user by email"
+
+	if email == "" || !storekit.Storable(email) {
+		return nil, failed(op, identity.ErrUserNotFound)
+	}
+
+	q, _, err := s.c.conn(ctx)
+	if err != nil {
+		return nil, failed(op, err)
+	}
+
+	return load(q, op, pgschema.UserRecordByVerifiedEmail, email, email)
 }
 
 // LoadPrivileges returns the privileges role grants, grouped by resource
@@ -202,7 +237,7 @@ func (s *IdentityStore) LoadPrivileges(ctx context.Context, role string) ([]*ide
 		return nil, failed(op, err)
 	}
 
-	rows, err := q.Raw(pgschema.PrivilegesByRole, role).Rows()
+	rows, err := q.Raw(pgschema.ScopedPrivilegesByRole, role).Rows()
 	if err != nil {
 		return nil, dbFailed(op, err)
 	}
@@ -214,10 +249,12 @@ func (s *IdentityStore) LoadPrivileges(ctx context.Context, role string) ([]*ide
 			rowID, created, updated any
 			roleName, group, res    string
 			p                       identity.Privilege
+			scope                   string
 		)
-		if err := rows.Scan(&rowID, &roleName, &group, &res, &p.Name, &p.Granted, &created, &updated); err != nil {
+		if err := rows.Scan(&rowID, &roleName, &group, &res, &p.Name, &p.Granted, &created, &updated, &scope); err != nil {
 			return nil, scanFailed(op, err)
 		}
+		p.Scope = identity.Scope(scope)
 
 		if n := len(out); n > 0 && out[n-1].Group == group && out[n-1].Resource == res {
 			out[n-1].Privileges = append(out[n-1].Privileges, p)
@@ -330,6 +367,10 @@ func (s *IdentityStore) Provision(
 
 	var out *identity.Details
 	err = s.atomically(ctx, op, func(q *gorm.DB) error {
+		if err := refuseAnotherUsersEmail(q, op, username); err != nil {
+			return err
+		}
+
 		res := q.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "username"}}, DoNothing: true}).
 			Create(&user)
 		if res.Error != nil {
@@ -346,7 +387,7 @@ func (s *IdentityStore) Provision(
 		}
 
 		var err error
-		out, err = load(q, op, pgschema.UserByID, userID, "")
+		out, err = load(q, op, pgschema.UserRecordByID, userID, "")
 
 		return err
 	})
@@ -400,7 +441,7 @@ func (s *IdentityStore) Update(
 	err = s.atomically(ctx, op, func(q *gorm.DB) error {
 		var locked userRow
 		err := q.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).
-			Select("id").Where("username = ?", username).Take(&locked).Error
+			Select("id").Where("username = ? AND deleted_at IS NULL", username).Take(&locked).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return failed(op, identity.ErrUserNotFound)
 		}
@@ -438,6 +479,9 @@ func (s *IdentityStore) Update(
 			if conditional && res.RowsAffected == 0 {
 				return failed(op, identity.ErrNotUpdated)
 			}
+			if err := q.Exec(pgschema.BumpUserVersion, userID).Error; err != nil {
+				return dbFailed(op, err)
+			}
 		}
 
 		if len(rebuilt) > 0 {
@@ -449,7 +493,7 @@ func (s *IdentityStore) Update(
 			}
 		}
 
-		out, err = load(q, op, pgschema.UserByID, userID, "")
+		out, err = load(q, op, pgschema.UserRecordByID, userID, "")
 
 		return err
 	})
@@ -458,6 +502,65 @@ func (s *IdentityStore) Update(
 	}
 
 	return out, nil
+}
+
+// refuseAnotherUsersEmail takes the advisory lock of username, inside the
+// transaction q is, and refuses it with identity.ErrUserExists when it is the
+// email of a live user, ignoring case. Every write that sets an email takes the
+// same lock before checking the other way, so a username and another user's
+// email cannot be written to coincide by two writers racing. The lock is held
+// until the transaction ends.
+func refuseAnotherUsersEmail(q *gorm.DB, op, username string) error {
+	if err := lockIdentifiers(q, op, username); err != nil {
+		return err
+	}
+
+	var held bool
+	found, err := queryRow(q, op, pgschema.EmailHeldByLiveUser, []any{username, nil}, &held)
+	if err != nil {
+		return err
+	}
+	if found && held {
+		return failed(op, identity.ErrUserExists)
+	}
+
+	return nil
+}
+
+// lockIdentifiers takes, inside the transaction q is, the advisory lock of
+// every one of values (usernames or emails) in the order the server gives
+// their keys (see pgschema.IdentifierLockKeys), so two writers locking
+// overlapping values cannot deadlock. The keys are read in full before the
+// first lock is taken.
+func lockIdentifiers(q *gorm.DB, op string, values ...string) error {
+	rows, err := q.Raw(pgschema.IdentifierLockKeys, pgschema.TextArray(values)).Rows()
+	if err != nil {
+		return dbFailed(op, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var keys []int64
+	for rows.Next() {
+		var k int64
+		if err := rows.Scan(&k); err != nil {
+			return scanFailed(op, err)
+		}
+		keys = append(keys, k)
+	}
+	if err := rows.Err(); err != nil {
+		return dbFailed(op, err)
+	}
+	if err := rows.Close(); err != nil {
+		return dbFailed(op, err)
+	}
+
+	for _, k := range keys {
+		if err := q.Exec(pgschema.LockIdentifierKey, k).Error; err != nil {
+			return dbFailed(op, err)
+		}
+	}
+
+	return nil
 }
 
 // userColumns is the scrty_users columns an update writes for the fields u names,
@@ -613,9 +716,11 @@ func load(q *gorm.DB, op, query string, arg any, typed string) (*identity.Detail
 		changedAt            *time.Time
 		mfa                  bool
 		createdAt, updatedAt time.Time
+		email                *string
+		verifiedAt           *time.Time
 	)
 	found, err := lookupRow(q, op, query, typed, []any{arg}, &userID, &d.Name, &d.Username, &d.Password, &d.Active,
-		&role, &orgID, &changedAt, &mfa, &createdAt, &updatedAt)
+		&role, &orgID, &changedAt, &mfa, &createdAt, &updatedAt, &email, &verifiedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -624,6 +729,10 @@ func load(q *gorm.DB, op, query string, arg any, typed string) (*identity.Detail
 	}
 	d.ID = identity.UserID(userID.String())
 	d.PasswordChangedAt = fromNull(changedAt)
+	if email != nil {
+		d.Email = *email
+	}
+	d.EmailVerifiedAt = fromNull(verifiedAt)
 	if d.Password == nil {
 		d.Password = []byte{}
 	}
@@ -736,5 +845,6 @@ var (
 	_ identity.RoleLoader           = (*IdentityStore)(nil)
 	_ identity.UserProvisioner      = (*IdentityStore)(nil)
 	_ identity.MFARequirementLookup = (*IdentityStore)(nil)
+	_ identity.EmailLoader          = (*IdentityStore)(nil)
 	_ password.History              = (*IdentityStore)(nil)
 )

@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 
 	"gorm.io/gorm"
 
+	"github.com/kartaladev/scrty/admin"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/pgschema"
@@ -18,6 +20,12 @@ var (
 	errUserReference = errors.New("the user reference is not a UUID in canonical lowercase text")
 	errNegativeRead  = errors.New("the number of entries to read is negative")
 	errNegativeKeep  = errors.New("the number of entries to keep is negative")
+
+	// errHistoryOwnerDeleted refuses a retire for a soft-deleted user. It
+	// matches identity.ErrUserNotFound, the identity ports' "no such user",
+	// and admin.ErrNotFound, so the administration service's password
+	// change reports a user deleted under it as not found.
+	errHistoryOwnerDeleted = fmt.Errorf("%w: %w", identity.ErrUserNotFound, admin.ErrNotFound)
 )
 
 // RecentPasswords returns up to limit of the user's retired password hashes,
@@ -77,6 +85,18 @@ func (s *IdentityStore) RecentPasswords(ctx context.Context, ref identity.UserID
 // inside one under a savepoint, so a failure undoes only its own writes and
 // leaves the caller's transaction usable.
 //
+// Before it records an entry it locks the user's row FOR UPDATE
+// (pgschema.LockHistoryOwner), as every versioned user write does, so two
+// password changes inside callers' transactions queue rather than deadlock.
+// It is the user-row step of the store's lock order:
+// after any role lock, before any advisory lock. A soft-deleted user is
+// refused with an error matching identity.ErrUserNotFound and
+// admin.ErrNotFound, and nothing is written: DeleteUser locks the row FOR
+// UPDATE and removes the history in its transaction, so a retire racing a
+// deletion either waits for it and is refused, or commits first and has its
+// entry removed by it. A reference no user row has is recorded as before,
+// since the history table declares no foreign key.
+//
 // A reference that is not canonical lowercase UUID text, and a negative keep,
 // are refused before anything is written. Error text never carries the hash
 // or the reference.
@@ -106,6 +126,10 @@ func (s *IdentityStore) RetirePassword(ctx context.Context, ref identity.UserID,
 	now := storekit.Time(s.c.clock.Now())
 
 	return s.atomically(ctx, op, func(q *gorm.DB) error {
+		if err := lockHistoryOwner(q, op, uid); err != nil {
+			return err
+		}
+
 		var newest []byte
 		found, err := queryRow(q, op, pgschema.NewestHistory, []any{uid}, &newest)
 		if err != nil {
@@ -152,6 +176,21 @@ func (s *IdentityStore) ForgetPasswords(ctx context.Context, ref identity.UserID
 func forgetHistory(q *gorm.DB, op string, uid id.ID) error {
 	if err := q.Exec(pgschema.ForgetHistory, uid).Error; err != nil {
 		return dbFailed(op, err)
+	}
+
+	return nil
+}
+
+// lockHistoryOwner locks the row of user uid FOR UPDATE through q, and
+// refuses a soft-deleted user. No row is no refusal.
+func lockHistoryOwner(q *gorm.DB, op string, uid id.ID) error {
+	var deleted bool
+	found, err := queryRow(q, op, pgschema.LockHistoryOwner, []any{uid}, &deleted)
+	if err != nil {
+		return err
+	}
+	if found && deleted {
+		return failed(op, errHistoryOwnerDeleted)
 	}
 
 	return nil

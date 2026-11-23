@@ -166,14 +166,55 @@ const (
 	// Update decides a password condition by a read released before its write,
 	// so two updates expecting the same hash both pass it.
 	defectPreflightPasswordCondition defect = "preflight-password-condition"
+	// The user loaders return a soft-deleted user.
+	defectReturnsDeleted defect = "returns-deleted"
+	// The MFA lookup answers for a soft-deleted user as for a live one.
+	defectMFADeletedAnswered defect = "mfa-deleted-answered"
+	// LoadPrivileges drops each grant's scope.
+	defectDropsScope defect = "drops-scope"
+	// Provision does not check the username against other users' emails.
+	defectProvisionIgnoresEmails defect = "provision-ignores-emails"
+	// Provision stores the email it is given.
+	defectStoresProvisionEmail defect = "stores-provision-email"
+	// Provision and SeedEmail decide the username-and-email check by a read
+	// released before their write, so the two can race to coincide.
+	defectPreflightEmailCheck defect = "preflight-email-check"
+	// LoadByEmail matches the address case-sensitively.
+	defectEmailCaseSensitive defect = "email-case-sensitive"
+	// LoadByEmail returns a user whose email is not verified.
+	defectUnverifiedEmailLoads defect = "unverified-email-loads"
+	// LoadByEmail reports a backend failure as an unknown address.
+	defectEmailFaultReadsNotFound defect = "email-fault-reads-not-found"
+	// LoadByEmail drops a NUL byte from the address before matching, so an
+	// address no user can hold finds the user whose address it extends.
+	defectEmailUnrepresentableMatches defect = "email-unrepresentable-matches"
+	// A soft-deleted user keeps its email, and LoadByEmail still returns it.
+	defectEmailLoadsDeleted defect = "email-loads-deleted"
+	// A loaded user carries neither its email nor its verification time.
+	defectDropsEmailFields defect = "drops-email-fields"
+	// A grant stored with no scope loads with no scope instead of all.
+	defectLegacyRowUnscoped defect = "legacy-row-unscoped"
 )
 
 // namedCheck is, for a defect whose catch must be attributable, the part of
 // the suite that must report it: a consumer whose store carries it learns
 // which contract it broke from the name of the failing check.
 var namedCheck = map[defect]string{ //nolint:gosec // G101: names of conformance checks, not credentials
-	defectIgnoresPasswordCondition:   "--- FAIL: TestBrokenStoreConformance/Provisioner/ConditionalPassword/",
-	defectPreflightPasswordCondition: "--- FAIL: TestBrokenStoreConformance/Provisioner/ConcurrentConditionalPassword",
+	defectIgnoresPasswordCondition:    "--- FAIL: TestBrokenStoreConformance/Provisioner/ConditionalPassword/",
+	defectPreflightPasswordCondition:  "--- FAIL: TestBrokenStoreConformance/Provisioner/ConcurrentConditionalPassword",
+	defectReturnsDeleted:              "--- FAIL: TestBrokenStoreConformance/UserLoader/DeletedIsNotFound/",
+	defectMFADeletedAnswered:          "--- FAIL: TestBrokenStoreConformance/MFALookup/DeletedAsUnknown",
+	defectDropsScope:                  "--- FAIL: TestBrokenStoreConformance/RoleLoader/Scope",
+	defectProvisionIgnoresEmails:      "--- FAIL: TestBrokenStoreConformance/Provisioner/UsernameIsAnotherEmail/",
+	defectStoresProvisionEmail:        "--- FAIL: TestBrokenStoreConformance/Provisioner/EmailNotStored/",
+	defectPreflightEmailCheck:         "--- FAIL: TestBrokenStoreConformance/Provisioner/RacingUsernameAndEmail",
+	defectEmailCaseSensitive:          "--- FAIL: TestBrokenStoreConformance/EmailLoader/CaseInsensitive",
+	defectUnverifiedEmailLoads:        "--- FAIL: TestBrokenStoreConformance/EmailLoader/UnverifiedNotFound",
+	defectEmailFaultReadsNotFound:     "--- FAIL: TestBrokenStoreConformance/EmailLoader/FailureIsNotNotFound",
+	defectEmailUnrepresentableMatches: "--- FAIL: TestBrokenStoreConformance/EmailLoader/Unrepresentable",
+	defectEmailLoadsDeleted:           "--- FAIL: TestBrokenStoreConformance/EmailLoader/DeletedNotFound",
+	defectDropsEmailFields:            "--- FAIL: TestBrokenStoreConformance/UserLoader/EmailFields",
+	defectLegacyRowUnscoped:           "--- FAIL: TestBrokenStoreConformance/RoleLoader/LegacyRowIsAll",
 }
 
 // variantOtherLocation is not a defect: a store that returns every stored
@@ -243,6 +284,19 @@ var everyDefect = []defect{
 	defectKeepsOrganizationOnNamedNil,
 	defectIgnoresPasswordCondition,
 	defectPreflightPasswordCondition,
+	defectReturnsDeleted,
+	defectMFADeletedAnswered,
+	defectDropsScope,
+	defectProvisionIgnoresEmails,
+	defectStoresProvisionEmail,
+	defectPreflightEmailCheck,
+	defectEmailCaseSensitive,
+	defectUnverifiedEmailLoads,
+	defectEmailFaultReadsNotFound,
+	defectEmailUnrepresentableMatches,
+	defectEmailLoadsDeleted,
+	defectDropsEmailFields,
+	defectLegacyRowUnscoped,
 }
 
 // brokenStore implements every identity port over process memory, carrying
@@ -258,6 +312,15 @@ type brokenStore struct {
 	mfa    map[identity.UserID]bool
 	orgs   map[string]*identity.Organization
 	nextID int
+
+	// deleted holds the references of the soft-deleted users, whose records
+	// stay in byName.
+	deleted map[identity.UserID]bool
+
+	// meetings counts, per lower-cased identifier, the callers that reached
+	// meetOn for it.
+	meetMu   sync.Mutex
+	meetings map[string]*atomic.Int64
 
 	loadErr error
 	mfaErr  error
@@ -282,6 +345,8 @@ func newBrokenStore(d defect) *brokenStore {
 		privs:  make(map[string][]*identity.ResourcePrivileges),
 		mfa:    make(map[identity.UserID]bool),
 		orgs:   make(map[string]*identity.Organization),
+
+		deleted: make(map[identity.UserID]bool),
 	}
 }
 
@@ -294,6 +359,31 @@ func (s *brokenStore) meet(want int64) {
 
 	deadline := time.Now().Add(100 * time.Millisecond)
 	for s.arrived.Load() < want && time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+}
+
+// meetOn is meet for the callers naming one identifier, ignoring case: it
+// blocks until want of them have reached it, or a short deadline passes.
+func (s *brokenStore) meetOn(identifier string, want int64) {
+	s.meetMu.Lock()
+	if s.meetings == nil {
+		s.meetings = make(map[string]*atomic.Int64)
+	}
+	key := strings.ToLower(identifier)
+	n, ok := s.meetings[key]
+	if !ok {
+		n = new(atomic.Int64)
+		s.meetings[key] = n
+	}
+	s.meetMu.Unlock()
+
+	if n.Add(1) >= want {
+		return
+	}
+
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for n.Load() < want && time.Now().Before(deadline) {
 		runtime.Gosched()
 	}
 }
@@ -415,7 +505,7 @@ func (s *brokenStore) LoadByUsername(
 	}
 
 	d, ok := s.byName[s.key(username)]
-	if !ok {
+	if !ok || s.hiddenLocked(d) {
 		return nil, identity.ErrUserNotFound
 	}
 
@@ -447,7 +537,7 @@ func (s *brokenStore) LoadByUserID(
 			matches = strings.EqualFold(string(d.ID), string(id))
 		}
 
-		if !matches {
+		if !matches || s.hiddenLocked(d) {
 			continue
 		}
 
@@ -481,6 +571,20 @@ func (s *brokenStore) LoadPrivileges(
 	for _, e := range p {
 		ec := *e
 		ec.Privileges = append([]identity.Privilege(nil), e.Privileges...)
+
+		if s.d != defectLegacyRowUnscoped {
+			for i := range ec.Privileges {
+				if ec.Privileges[i].Scope == "" {
+					ec.Privileges[i].Scope = identity.ScopeAll
+				}
+			}
+		}
+
+		if s.d == defectDropsScope {
+			for i := range ec.Privileges {
+				ec.Privileges[i].Scope = ""
+			}
+		}
 
 		if s.d == defectFiltersRefusedPrivileges {
 			kept := make([]identity.Privilege, 0, len(ec.Privileges))
@@ -540,7 +644,7 @@ func (s *brokenStore) Required(_ context.Context, id identity.UserID) (bool, err
 	}
 
 	for _, d := range s.byName {
-		if d.ID == id {
+		if d.ID == id && (!s.deleted[id] || s.d == defectMFADeletedAnswered) {
 			return s.mfa[id], nil
 		}
 	}
@@ -580,8 +684,24 @@ func (s *brokenStore) Provision(
 		s.meet(2)
 	}
 
+	if s.d == defectPreflightEmailCheck {
+		s.mu.Lock()
+		held := s.emailHeldLocked(username, "")
+		s.mu.Unlock()
+
+		if held {
+			return nil, identity.ErrUserExists
+		}
+
+		s.meetOn(username, 2)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.d != defectPreflightEmailCheck && s.d != defectProvisionIgnoresEmails && s.emailHeldLocked(username, "") {
+		return nil, identity.ErrUserExists
+	}
 
 	if s.d != defectPreflightCollision && s.d != defectOverwritesOnCollision {
 		if _, taken := s.byName[s.key(username)]; taken {
@@ -616,6 +736,10 @@ func (s *brokenStore) insertLocked(username string, u *identity.UserChange) *ide
 	}
 
 	s.adopt(d, u)
+
+	if s.d == defectStoresProvisionEmail {
+		d.Email = u.Email
+	}
 
 	switch {
 	case u.IsSet(identity.FieldPasswordChangedAt):
@@ -685,6 +809,15 @@ func (s *brokenStore) Update(
 	}
 
 	u := identity.ApplyUserOptions(opts...)
+
+	s.mu.Lock()
+	existing, found := s.byName[s.key(username)]
+	gone := found && s.deleted[existing.ID]
+	s.mu.Unlock()
+
+	if gone {
+		return nil, identity.ErrUserNotFound
+	}
 
 	if s.d == defectUnserializedUpdate {
 		return s.unserializedUpdate(username, u)
@@ -1049,6 +1182,11 @@ func (s *brokenStore) recordLocked(d *identity.Details) *identity.Details {
 
 	primaryFirst(out.Roles)
 
+	if s.d == defectDropsEmailFields {
+		out.Email = ""
+		out.EmailVerifiedAt = time.Time{}
+	}
+
 	if s.d == variantOtherLocation {
 		inOtherLocation(out)
 	}
@@ -1245,6 +1383,8 @@ func TestConformanceSuiteRequiresEveryHook(t *testing.T) {
 		"SeedMFARequired",
 		"SeedRoleGrants",
 		"SeedOrganization",
+		"SeedEmail",
+		"SoftDelete",
 		"FailUserLoads",
 		"FailMFALookups",
 	}
@@ -1287,3 +1427,134 @@ func runSuiteInProcess(t *testing.T, d defect, flags ...string) (string, error) 
 
 	return string(out), err
 }
+
+func (s *brokenStore) SeedEmail(_ context.Context, username, email string, verifiedAt time.Time) error {
+	if s.d == missingHook("SeedEmail") {
+		return identitytest.ErrHookUnsupported
+	}
+
+	if s.d == defectPreflightEmailCheck {
+		s.mu.Lock()
+		held := s.emailHeldLocked(email, username) || s.usernameHeldLocked(email, username)
+		s.mu.Unlock()
+
+		if held {
+			return identity.ErrUserExists
+		}
+
+		s.meetOn(email, 2)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	d, ok := s.byName[s.key(username)]
+	if !ok || s.deleted[d.ID] {
+		return identity.ErrUserNotFound
+	}
+
+	if s.d != defectPreflightEmailCheck &&
+		(s.emailHeldLocked(email, username) || s.usernameHeldLocked(email, username)) {
+		return identity.ErrUserExists
+	}
+
+	d.Email = email
+	d.EmailVerifiedAt = verifiedAt
+
+	return nil
+}
+
+func (s *brokenStore) SoftDelete(_ context.Context, username string) error {
+	if s.d == missingHook("SoftDelete") {
+		return identitytest.ErrHookUnsupported
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	d, ok := s.byName[s.key(username)]
+	if !ok || s.deleted[d.ID] {
+		return identity.ErrUserNotFound
+	}
+
+	d.Active = false
+	if s.d != defectEmailLoadsDeleted {
+		d.Email = ""
+		d.EmailVerifiedAt = time.Time{}
+	}
+	s.deleted[d.ID] = true
+
+	return nil
+}
+
+func (s *brokenStore) LoadByEmail(_ context.Context, email string) (*identity.Details, error) {
+	if email == "" {
+		return nil, identity.ErrUserNotFound
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.loadErr != nil {
+		if s.d == defectEmailFaultReadsNotFound {
+			return nil, identity.ErrUserNotFound
+		}
+
+		return nil, s.loadErr
+	}
+
+	if s.d == defectEmailUnrepresentableMatches {
+		email = strings.ReplaceAll(email, "\x00", "")
+	}
+
+	for _, d := range s.byName {
+		if (s.deleted[d.ID] && s.d != defectEmailLoadsDeleted) || d.Email == "" {
+			continue
+		}
+		if d.EmailVerifiedAt.IsZero() && s.d != defectUnverifiedEmailLoads {
+			continue
+		}
+
+		matches := strings.EqualFold(d.Email, email)
+		if s.d == defectEmailCaseSensitive {
+			matches = d.Email == email
+		}
+		if matches {
+			return s.recordLocked(d), nil
+		}
+	}
+
+	return nil, identity.ErrUserNotFound
+}
+
+// hiddenLocked reports whether a loader must treat d as unknown: it is deleted
+// and the store's defect is not to return deleted users. The caller holds s.mu.
+func (s *brokenStore) hiddenLocked(d *identity.Details) bool {
+	return s.deleted[d.ID] && s.d != defectReturnsDeleted
+}
+
+// emailHeldLocked reports whether a live user other than except holds value as
+// its email, ignoring case. The caller holds s.mu.
+func (s *brokenStore) emailHeldLocked(value, except string) bool {
+	for name, d := range s.byName {
+		if name != s.key(except) && !s.deleted[d.ID] && d.Email != "" && strings.EqualFold(d.Email, value) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// usernameHeldLocked reports whether a live user other than except holds value
+// as its username, ignoring case. The caller holds s.mu.
+func (s *brokenStore) usernameHeldLocked(value, except string) bool {
+	for name, d := range s.byName {
+		if name != s.key(except) && !s.deleted[d.ID] && strings.EqualFold(d.Username, value) {
+			return true
+		}
+	}
+
+	return false
+}
+
+var _ identity.EmailLoader = (*brokenStore)(nil)

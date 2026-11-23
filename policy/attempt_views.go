@@ -22,7 +22,14 @@ import (
 // An implementation is called on the request path, once per login attempt, so
 // it must be safe for concurrent use.
 //
-//go:generate mockgen -source=attempt_views.go -package=policy_test -destination=attempt_views_mock_test.go -typed -exclude_interfaces=AttemptViewRequirer
+// Identifiers match exactly. A store compares the identifier it is given byte for byte, and must
+// not fold case or normalise it: whatever folding a deployment needs is the caller's. A component
+// that records one failure under two identifiers, such as an HTTP security chain's login by email,
+// which records it under the account and under the identifier as typed, relies on this. A store
+// that folds case is outside this contract, and counts such a failure twice whenever the two
+// identifiers differ only in case, so it locks sooner than configured.
+//
+//go:generate mockgen -source=attempt_views.go -package=policy_test -destination=attempt_views_mock_test.go -typed -exclude_interfaces=AttemptViewRequirer,UnreportedAttemptRecorder
 type AttemptStore interface {
 	// RecordFailure records one failed attempt for username at the instant at,
 	// which is the caller's clock rather than the store's: the same instant the
@@ -44,6 +51,47 @@ type AttemptStore interface {
 	// than the one the deployment configured, and would keep an account locked
 	// for that instant after its lockout expired.
 	FailureCount(ctx context.Context, username string, since time.Time) (int, error)
+}
+
+// UnreportedAttemptRecorder is an optional interface of an attempt store that
+// can record a failure, and clear failures, for an identifier without
+// reporting it: nothing it writes is told to a lockout observer, reported as a
+// security event, or advances a consecutive-failure streak.
+//
+// It exists for a second record of one attempt. A login by an identifier that
+// resolves to another key, such as a verified email resolving to its account's
+// username, records the failure under the key, which the lockout judges and
+// reports, and again under the identifier as typed, which the automation
+// challenge reads (FailureCount) so that a registered identifier accrues
+// failures exactly as an unknown one does. Reporting that second record too
+// would report one account's lock, hold or clearing twice, once under each
+// name. The HTTP security chain therefore writes the typed identifier's record
+// through this interface when the store it was given implements it, and
+// through RecordFailure and Reset otherwise: a store that reports nothing has
+// nothing to report twice.
+//
+// A consumer's wrapper around a lockout policy's view (Policy.Attempts) must
+// forward this interface as well as AttemptStore. One that hides it receives
+// plain writes, which the view reports, so the identifier as typed is
+// reported a second time, as before this interface existed.
+//
+// The failures it writes land in the same store as any other, so FailureCount
+// counts them, and a lockout judging that identifier as a key would count them
+// too. What it skips is the reporting and the streak, not the record. The
+// lockout policy's view (lockout.Policy.Attempts) implements it; with no
+// observer, streak limit or sink, the result is the same as RecordFailure and
+// Reset.
+type UnreportedAttemptRecorder interface {
+	// RecordFailureUnreported records one failed attempt for identifier at the
+	// instant at, as AttemptStore.RecordFailure does, and reports nothing.
+	RecordFailureUnreported(ctx context.Context, identifier string, at time.Time) error
+
+	// ResetUnreported clears identifier's recorded failures, as
+	// AttemptStore.Reset does, and reports nothing. It clears the identifier's
+	// window and any hold or streak the store keeps under it without a
+	// report, so a hold that identifier earned while it named no account
+	// (reported then as ReportHeld) is lifted with no ReportReleased.
+	ResetUnreported(ctx context.Context, identifier string) error
 }
 
 // AttemptViewRequirer is implemented by a policy whose decisions depend on

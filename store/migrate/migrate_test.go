@@ -29,7 +29,7 @@ func TestIdentitySet(t *testing.T) {
 
 	entries, err := fs.ReadDir(sub, ".")
 	require.NoError(t, err)
-	require.Len(t, entries, 2, "the identity set holds its schema migration and the scrty_ rename")
+	require.Len(t, entries, 3, "the identity set holds its schema migration, the scrty_ rename and the administration columns")
 
 	var content string
 	for _, entry := range entries {

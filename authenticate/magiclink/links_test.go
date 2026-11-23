@@ -752,6 +752,21 @@ func TestRedeem(t *testing.T) {
 			},
 		},
 		{
+			name: "the principal keeps only the grants in force: an expired primary leaves no active role",
+			loader: stubLoader{byID: map[identity.UserID]*identity.Details{
+				"u-1": {ID: "u-1", Active: true, Roles: []*identity.AssignedRole{
+					{ID: "r-sales", Name: "sales", Primary: true, ValidUntil: time.Now().Add(-time.Hour)},
+					{ID: "r-audit", Name: "audit"},
+				}},
+			}},
+			assert: func(t *testing.T, r magiclink.Redemption, err error, _ int) {
+				require.NoError(t, err)
+				assert.Nil(t, r.Principal.ActiveRole, "no other grant is promoted in place of the expired primary")
+				require.Len(t, r.Principal.Roles, 1)
+				assert.Equal(t, "audit", r.Principal.Roles[0].Name)
+			},
+		},
+		{
 			name:    "malformed token",
 			prepare: func(*testing.T, *onetime.Tokens, string) (string, string) { return "nonsense", "" },
 			assert:  uniform,

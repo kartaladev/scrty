@@ -68,6 +68,25 @@ func TestBrokerLinkedResolution(t *testing.T) {
 			},
 		},
 		{
+			name: "the principal keeps only the grants in force: an expired primary leaves no active role",
+			ext:  brokerCorpIdentity(),
+			expect: func(users *MockUserLoader) {
+				d := details("u-1", true)
+				d.Roles = []*identity.AssignedRole{
+					{ID: "r-1", Name: "editor", Primary: true, ValidUntil: time.Now().Add(-time.Hour)},
+					{ID: "r-2", Name: "audit"},
+				}
+				users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(d, nil)
+			},
+			assert: func(t *testing.T, p *identity.Principal, err error, _ string) {
+				require.NoError(t, err)
+				require.NotNil(t, p)
+				assert.Nil(t, p.ActiveRole, "no other grant is promoted in place of the expired primary")
+				require.Len(t, p.Roles, 1)
+				assert.Equal(t, "audit", p.Roles[0].Name)
+			},
+		},
+		{
 			name: "a dangling link is an authentication failure",
 			ext:  brokerCorpIdentity(),
 			expect: func(users *MockUserLoader) {

@@ -24,6 +24,11 @@ const (
 	versionIdentityBeforeName int64 = 20260928000000
 )
 
+// securityStateCountAtPrefix is how many security-state migrations are applied
+// once the rename is: the count the rename's own tests expect, whatever
+// migrations follow it.
+const securityStateCountAtPrefix = 7
+
 // scrtyPrefix is the fixed prefix of every relation scrty's migrations
 // create.
 const scrtyPrefix = "scrty_"
@@ -341,11 +346,12 @@ func TestRelationInventory(t *testing.T) {
 	})
 }
 
-// TestSecurityStatePrefix_Catalog pins the catalog after the whole
-// security-state set is applied: exactly the scrty_ names, none above the
-// identifier limit, and the rename recorded in the version table. It runs on
-// both PostgreSQL images, because index and constraint names must not depend
-// on the server version.
+// TestSecurityStatePrefix_Catalog pins the catalog the rename migration
+// leaves: exactly the scrty_ names, none above the identifier limit, and the
+// rename recorded in the version table. It stops at the rename's own version,
+// so a later migration cannot change what it pins; a last step applies the rest
+// of the set and pins the final inventory. It runs on both PostgreSQL images,
+// because index and constraint names must not depend on the server version.
 func TestSecurityStatePrefix_Catalog(t *testing.T) {
 	t.Parallel()
 
@@ -368,7 +374,7 @@ func TestSecurityStatePrefix_Catalog(t *testing.T) {
 			p := provider(t, db, set.FS(), set.Dir, set.VersionTable)
 			rollBackAtCleanup(t, db, p, set.VersionTable)
 
-			_, err := p.Up(t.Context())
+			_, err := p.UpTo(t.Context(), versionScrtyPrefix)
 			require.NoError(t, err)
 
 			got := catalogRelations(t, db)
@@ -380,6 +386,12 @@ func TestSecurityStatePrefix_Catalog(t *testing.T) {
 
 			assert.Equal(t, 1, queryCount(t, db, `SELECT count(*) FROM `+set.VersionTable+
 				` WHERE is_applied AND version_id = 20261124000000`), "the rename is recorded as applied")
+			assert.Equal(t, securityStateCountAtPrefix, appliedVersionCount(t, db, set.VersionTable))
+
+			_, err = p.Up(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, prefixed(securityStateInventory), catalogRelations(t, db),
+				"the migrations after the rename add no relation")
 			assert.Equal(t, securityStateMigrationCount, appliedVersionCount(t, db, set.VersionTable))
 		})
 	}
@@ -430,7 +442,7 @@ func TestSecurityStatePrefix_Failures(t *testing.T) {
 
 		assert.Equal(t, 0, queryCount(t, db, `SELECT count(*) FROM `+set.VersionTable+
 			` WHERE is_applied AND version_id = $1`, versionScrtyPrefix), "no version is recorded")
-		assert.Equal(t, securityStateMigrationCount-1, appliedVersionCount(t, db, set.VersionTable))
+		assert.Equal(t, securityStateCountAtPrefix-1, appliedVersionCount(t, db, set.VersionTable))
 	}
 
 	type testCase struct {
@@ -463,7 +475,7 @@ func TestSecurityStatePrefix_Failures(t *testing.T) {
 				upCtx, cancel := context.WithTimeout(ctx, deadline)
 				defer cancel()
 				started := time.Now()
-				_, err = p.Up(upCtx)
+				_, err = p.UpTo(upCtx, versionScrtyPrefix)
 				elapsed := time.Since(started)
 
 				var pgErr *pgconn.PgError
@@ -475,7 +487,7 @@ func TestSecurityStatePrefix_Failures(t *testing.T) {
 				noVersion(t, db)
 
 				release()
-				_, err = p.Up(ctx)
+				_, err = p.UpTo(ctx, versionScrtyPrefix)
 				require.NoError(t, err, "the same upgrade succeeds once the lock is gone")
 				assert.True(t, regclassExists(t, db, "scrty_sessions"))
 			},
@@ -493,7 +505,7 @@ func TestSecurityStatePrefix_Failures(t *testing.T) {
 					_, _ = db.ExecContext(dctx, `DROP TABLE IF EXISTS scrty_sessions`)
 				})
 
-				_, err = p.Up(ctx)
+				_, err = p.UpTo(ctx, versionScrtyPrefix)
 				require.Error(t, err)
 				var pgErr *pgconn.PgError
 				require.ErrorAs(t, err, &pgErr)
@@ -520,7 +532,7 @@ func TestSecurityStatePrefix_Failures(t *testing.T) {
 					_, _ = db.ExecContext(dctx, `DROP TABLE IF EXISTS scrty_sessions_user`)
 				})
 
-				_, err = p.Up(ctx)
+				_, err = p.UpTo(ctx, versionScrtyPrefix)
 				var pgErr *pgconn.PgError
 				require.ErrorAs(t, err, &pgErr)
 				assert.Equal(t, "42P07", pgErr.Code)
@@ -571,7 +583,7 @@ func TestSecurityStatePrefix_Rollback(t *testing.T) {
 				before := catalogSnapshot(t, db)
 				require.NotEmpty(t, before)
 
-				_, err := p.Up(ctx)
+				_, err := p.UpTo(ctx, versionScrtyPrefix)
 				require.NoError(t, err)
 				require.NotEqual(t, before, catalogSnapshot(t, db), "the rename changed the catalog")
 
@@ -580,7 +592,7 @@ func TestSecurityStatePrefix_Rollback(t *testing.T) {
 
 				assert.Equal(t, securityStateInventory, catalogRelations(t, db), "no relation keeps its prefixed name")
 				assert.Equal(t, before, catalogSnapshot(t, db), "everything else is as it was")
-				assert.Equal(t, securityStateMigrationCount-1, appliedVersionCount(t, db, set.VersionTable))
+				assert.Equal(t, securityStateCountAtPrefix-1, appliedVersionCount(t, db, set.VersionTable))
 			},
 		},
 		{
@@ -588,7 +600,7 @@ func TestSecurityStatePrefix_Rollback(t *testing.T) {
 			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
 				ctx := t.Context()
 
-				_, err := p.Up(ctx)
+				_, err := p.UpTo(ctx, versionScrtyPrefix)
 				require.NoError(t, err)
 				_, err = db.ExecContext(ctx, `DROP TABLE scrty_sessions`)
 				require.NoError(t, err)
@@ -605,11 +617,11 @@ func TestSecurityStatePrefix_Rollback(t *testing.T) {
 			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
 				ctx := t.Context()
 
-				_, err := p.Up(ctx)
+				_, err := p.UpTo(ctx, versionScrtyPrefix)
 				require.NoError(t, err)
 				_, err = p.Down(ctx)
 				require.NoError(t, err)
-				_, err = p.Up(ctx)
+				_, err = p.UpTo(ctx, versionScrtyPrefix)
 				require.NoError(t, err)
 
 				assert.Equal(t, prefixed(securityStateInventory), catalogRelations(t, db))

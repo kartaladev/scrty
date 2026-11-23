@@ -71,10 +71,26 @@ func mergeInventories(a, b relationInventory) relationInventory {
 	}
 }
 
-// TestIdentityPrefix_Catalog pins the catalog after the whole identity set is
-// applied: exactly the scrty_ names, the sequence behind password_history.seq
-// renamed and still linked to its column, none above the identifier limit, and
-// the rename recorded in the version table. It runs on both PostgreSQL images,
+// identityAdministrationInventory is what the administration migration adds on
+// top of the renamed identity relations. A table's primary-key index is in
+// Indexes, as in the other inventories.
+var identityAdministrationInventory = relationInventory{
+	Tables: []string{"scrty_user_attributes"},
+	Indexes: []string{
+		"scrty_assigned_roles_role_name",
+		"scrty_user_attributes_name_value",
+		"scrty_user_attributes_pkey",
+		"scrty_users_email_live",
+		"scrty_users_username_lower",
+	},
+}
+
+// TestIdentityPrefix_Catalog pins the catalog the rename migration leaves:
+// exactly the scrty_ names, the sequence behind password_history.seq renamed
+// and still linked to its column, none above the identifier limit, and the
+// rename recorded in the version table. It stops at the rename's own version,
+// so a later migration cannot change what it pins; a last step applies the rest
+// of the set and pins the final inventory. It runs on both PostgreSQL images,
 // because index, constraint and sequence names must not depend on the server
 // version.
 func TestIdentityPrefix_Catalog(t *testing.T) {
@@ -99,7 +115,7 @@ func TestIdentityPrefix_Catalog(t *testing.T) {
 			p := provider(t, db, set.FS(), set.Dir, set.VersionTable)
 			rollBackAtCleanup(t, db, p, set.VersionTable)
 
-			_, err := p.Up(t.Context())
+			_, err := p.UpTo(t.Context(), versionScrtyPrefix)
 			require.NoError(t, err)
 
 			got := catalogRelations(t, db)
@@ -117,6 +133,11 @@ func TestIdentityPrefix_Catalog(t *testing.T) {
 			assert.Equal(t, 1, queryCount(t, db, `SELECT count(*) FROM `+set.VersionTable+
 				` WHERE is_applied AND version_id = 20261124000000`), "the rename is recorded as applied")
 			assert.Equal(t, 2, appliedVersionCount(t, db, set.VersionTable))
+
+			_, err = p.Up(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, mergeInventories(prefixed(identityInventory), identityAdministrationInventory),
+				catalogRelations(t, db), "the whole set adds the administration relations to the prefixed inventory")
 		})
 	}
 }
@@ -133,13 +154,18 @@ const (
 // after it orders after the three, and the identity store reads the same data
 // back.
 //
-// The store-backed case reads through statements that still name the old
-// tables, so it stays red until they move to the scrty_ names.
+// The raw-row case stops at the rename. The store-backed case then migrates
+// to the latest identity version, as a deployment does before running the
+// current store, which reads columns later migrations add; the rows seeded
+// before the rename must survive those migrations too.
 func TestIdentityPrefix_Populated(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name   string
+		name string
+		// latest migrates past the rename to the newest identity version
+		// before the assertion.
+		latest bool
 		assert func(t *testing.T, db *sql.DB)
 	}
 
@@ -171,7 +197,8 @@ func TestIdentityPrefix_Populated(t *testing.T) {
 			},
 		},
 		{
-			name: "the identity store reads the seeded rows and orders a new entry newest",
+			name:   "the identity store reads the seeded rows and orders a new entry newest",
+			latest: true,
 			assert: func(t *testing.T, db *sql.DB) {
 				ctx := t.Context()
 
@@ -205,8 +232,13 @@ func TestIdentityPrefix_Populated(t *testing.T) {
 			require.NoError(t, err)
 			seedIdentityBeforeRename(t, db)
 
-			_, err = p.Up(ctx)
+			_, err = p.UpTo(ctx, versionScrtyPrefix)
 			require.NoError(t, err)
+
+			if tc.latest {
+				_, err = p.Up(ctx)
+				require.NoError(t, err)
+			}
 
 			tc.assert(t, db)
 		})
@@ -258,7 +290,7 @@ func TestIdentityPrefix_Failures(t *testing.T) {
 				_, err := db.ExecContext(ctx, `DROP TABLE roles CASCADE`)
 				require.NoError(t, err)
 
-				_, err = p.Up(ctx)
+				_, err = p.UpTo(ctx, versionScrtyPrefix)
 				var pgErr *pgconn.PgError
 				require.ErrorAs(t, err, &pgErr, "the upgrade fails with the server's error: %v", err)
 				assert.Equal(t, "42P01", pgErr.Code, "undefined_table")
@@ -293,7 +325,7 @@ func TestIdentityPrefix_Failures(t *testing.T) {
 				upCtx, cancel := context.WithTimeout(ctx, deadline)
 				defer cancel()
 				started := time.Now()
-				_, err = p.Up(upCtx)
+				_, err = p.UpTo(upCtx, versionScrtyPrefix)
 				elapsed := time.Since(started)
 
 				var pgErr *pgconn.PgError
@@ -305,7 +337,7 @@ func TestIdentityPrefix_Failures(t *testing.T) {
 				noVersion(t, db, before)
 
 				release()
-				_, err = p.Up(ctx)
+				_, err = p.UpTo(ctx, versionScrtyPrefix)
 				require.NoError(t, err, "the same upgrade succeeds once the lock is gone")
 				assert.True(t, regclassExists(t, db, "scrty_users"))
 			},
@@ -315,7 +347,7 @@ func TestIdentityPrefix_Failures(t *testing.T) {
 			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
 				ctx := t.Context()
 
-				_, err := p.Up(ctx)
+				_, err := p.UpTo(ctx, versionScrtyPrefix)
 				require.NoError(t, err)
 				_, err = db.ExecContext(ctx, `DROP TABLE scrty_roles CASCADE`)
 				require.NoError(t, err)
@@ -334,7 +366,7 @@ func TestIdentityPrefix_Failures(t *testing.T) {
 			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
 				ctx := t.Context()
 
-				_, err := p.Up(ctx)
+				_, err := p.UpTo(ctx, versionScrtyPrefix)
 				require.NoError(t, err)
 				const consumerTable = "users"
 				_, err = db.ExecContext(ctx, `CREATE TABLE `+consumerTable+` (id int PRIMARY KEY)`)
@@ -423,7 +455,7 @@ func TestPrefix_SetsIndependent(t *testing.T) {
 			assert: func(t *testing.T, db *sql.DB, ssP, idP *goose.Provider) {
 				ctx := t.Context()
 
-				_, err := ssP.Up(ctx)
+				_, err := ssP.UpTo(ctx, versionScrtyPrefix)
 				require.NoError(t, err)
 				_, err = idP.UpTo(ctx, versionIdentityBeforeName)
 				require.NoError(t, err)
@@ -438,7 +470,7 @@ func TestPrefix_SetsIndependent(t *testing.T) {
 				ssVersions := versionRows(t, db, ss.VersionTable)
 				idVersions := versionRows(t, db, id.VersionTable)
 
-				_, err = idP.Up(ctx)
+				_, err = idP.UpTo(ctx, versionScrtyPrefix)
 				require.NoError(t, err)
 
 				got = catalogRelations(t, db)
@@ -455,9 +487,9 @@ func TestPrefix_SetsIndependent(t *testing.T) {
 			assert: func(t *testing.T, db *sql.DB, ssP, idP *goose.Provider) {
 				ctx := t.Context()
 
-				_, err := ssP.Up(ctx)
+				_, err := ssP.UpTo(ctx, versionScrtyPrefix)
 				require.NoError(t, err)
-				_, err = idP.Up(ctx)
+				_, err = idP.UpTo(ctx, versionScrtyPrefix)
 				require.NoError(t, err)
 
 				ssVersions := versionRows(t, db, ss.VersionTable)

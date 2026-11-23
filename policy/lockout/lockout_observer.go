@@ -107,8 +107,8 @@ type Report struct {
 //
 // It sees only what goes through the policy's view, Policy.Attempts,
 // and the policy's own RecordFailure and Reset. A failure recorded straight
-// into the store, bypassing the view, locks just the same but is never
-// reported.
+// into the store, bypassing the view, or through the view's
+// RecordFailureUnreported, counts just the same but is never reported.
 //
 // It is told of every recorded failure that leaves its identifier locked, not
 // only the first, so a concurrent burst of failures loses no report even
@@ -247,6 +247,13 @@ func WithLogger(logger *slog.Logger) Option {
 // (WithFailureStreakLimit) the view's RecordFailure writes the identifier's
 // consecutive-failure streak and then the failure log, and always attempts the
 // log even when the streak write failed; it returns both errors joined.
+//
+// The view also implements policy.UnreportedAttemptRecorder. Its
+// RecordFailureUnreported and ResetUnreported write the store as
+// RecordFailure and Reset do, but advance no streak, tell the observer nothing
+// and report no event. The httpsec chain uses them for the identifier as typed
+// when it resolved to another account key, such as a verified email, so that
+// one account's lock or clearing is reported once, under its key.
 func (p *Policy) Attempts() policy.AttemptStore { return p.attempts }
 
 // observedAttempts is the view Attempts hands out: it forwards every call to
@@ -490,4 +497,34 @@ func (o *observedAttempts) FailureCount(ctx context.Context, username string, si
 	count, err := o.p.store.FailureCount(ctx, username, since)
 
 	return count, porterr.SanitizeTo(ctx, o.p.logger, err, porterr.ErrUnwalkable)
+}
+
+// The view records a second, unreported record for the HTTP security chain:
+// the identifier as typed when it resolved to another account key.
+var _ policy.UnreportedAttemptRecorder = (*observedAttempts)(nil)
+
+// RecordFailureUnreported records one failure for username straight into the
+// policy's store, at the policy's clock when at is zero, as RecordFailure
+// records the window's: it advances no failure streak, tells the observer
+// nothing and reports no lock, and takes no identifier lock, since it decides
+// no transition. The failure counts in username's window like any other.
+func (o *observedAttempts) RecordFailureUnreported(ctx context.Context, username string, at time.Time) error {
+	p := o.p
+
+	// A zero instant would fall outside every window and never count, as in
+	// RecordFailure.
+	if at.IsZero() {
+		at = p.clock.Now()
+	}
+
+	return porterr.SanitizeTo(ctx, p.logger, p.store.RecordFailure(ctx, username, at), porterr.ErrUnwalkable)
+}
+
+// ResetUnreported clears username's failures straight in the policy's store,
+// as Reset does, and reports neither a clearing nor a release. It clears the
+// identifier's window and any hold or streak the store keeps under it without
+// a report, so a hold that identifier earned while it named no account
+// (reported then as ReportHeld) is lifted with no ReportReleased.
+func (o *observedAttempts) ResetUnreported(ctx context.Context, username string) error {
+	return porterr.SanitizeTo(ctx, o.p.logger, o.p.store.Reset(ctx, username), porterr.ErrUnwalkable)
 }

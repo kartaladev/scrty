@@ -789,8 +789,9 @@ func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // challenge state (including MFAAtFirstFactor), the family (FamilyID and
 // FamilyCreatedAt), the federated assurance and the consumer's own data. The
 // family and the sign-in state fixed when the sign-in was built (KeyBinding,
-// CSRFToken, ClientIP and UserAgent) are taken from the stored record, never
-// from current, so a copy with them cleared or changed cannot move them; they are
+// CSRFToken, ClientIP and UserAgent) and the selected role (SelectedRole) are
+// taken from the stored record, never from current, so a copy with them
+// cleared or changed cannot move them; they are
 // already set on the successor handed to RotateIssuing's issuing step.
 //
 // Rotate takes one RotateOption, WithReauthenticationBinding, which may bind
@@ -890,7 +891,10 @@ func (m *Sessions) Rotate(ctx context.Context, current *Session, opts ...RotateO
 // already visible in the stored record, never calls issue.
 //
 // issue is handed the successor as it will be stored, which is also the
-// session returned, and must not modify it. It runs while this manager holds
+// session returned, and must not modify it. Its SelectedRole alone may still
+// change: the store gives the successor the selected role stored on the old
+// session when it supersedes it (see Store.Supersede), so a selection recorded
+// while issue runs is the one returned and stored. It runs while this manager holds
 // the rotation's per-session lock, so a concurrent rotation of the same handle
 // through this manager waits for it. A nil issue runs no step and returns an
 // empty credential, which is Rotate.
@@ -971,6 +975,11 @@ func (m *Sessions) RotateIssuing(
 	// So is what the sign-in fixed when it was built, apart from the binding
 	// a re-authentication may give an unbound session.
 	keepSignInState(rotated, stored)
+	// So is the selected role, which only RoleSelector.SelectRole writes: a
+	// copy loaded before a selection must neither drop it nor claim another.
+	// The store's supersession settles it finally, from the record it
+	// supersedes, so a selection recorded after this load is kept too.
+	rotated.SelectedRole = stored.SelectedRole
 	if err := checkReauthenticationBinding(r, stored, rotated); err != nil {
 		return nil, "", err
 	}

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
@@ -52,7 +53,24 @@ var reportedElsewhere = map[string]string{
 	event.DeviceCodeExchanged:         providerEventsPinned,
 	event.DeviceCodeReplayed:          providerEventsPinned,
 	event.UserCodeEntryThrottled:      providerEventsPinned,
+
+	// The administration services report these, below any chain: an administrator's change
+	// is made through a service call, not through a request the chain authenticates, so the
+	// chain has no flow that decides them.
+	event.UserCreated:                 administrationEventsPinned,
+	event.UserUpdated:                 administrationEventsPinned,
+	event.UserArchived:                administrationEventsPinned,
+	event.UserDeleted:                 administrationEventsPinned,
+	event.UserReactivated:             administrationEventsPinned,
+	event.UserImported:                administrationEventsPinned,
+	event.IdentifierConflict:          administrationEventsPinned,
+	event.PrivilegePermissionsChanged: administrationEventsPinned,
+	event.AuthzChange:                 administrationEventsPinned,
+	event.AuthzAdmin:                  administrationEventsPinned,
 }
+
+// administrationEventsPinned is where the administration services' events are pinned.
+const administrationEventsPinned = "the administration services' own event tests, not the chain's"
 
 // providerEventsPinned is where the OpenID provider's events are pinned.
 const providerEventsPinned = "oidcprovider TestProvider_Events, and TestProvider_Events_ThroughChain through a chain"
@@ -559,6 +577,44 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 				return emittedRun{events: rec.all(), clientIP: "192.0.2.1", secrets: []string{"wrong"}}
 			},
 			assert: emitted(event.ChallengeRefused, event.OutcomeFailure),
+		},
+		{
+			name: event.ActiveRoleSwitched,
+			run: func(t *testing.T) emittedRun {
+				w := newEventsWorld(t, httpsec.WithSwitchableRoles())
+				tok := w.signedIn(t)
+
+				var switched error
+				w.handler = func(ex *httpsec.Exchange) error {
+					// The world's user holds no grant, so clearing the selection is
+					// the switch she can make.
+					switched = w.chain.SwitchActiveRole(ex.Context(), "")
+
+					return nil
+				}
+
+				before := len(w.rec.all())
+				out := w.send(t, http.MethodGet, "/orders", tok, nil, nil)
+				require.NoError(t, out.err)
+				require.NoError(t, switched)
+
+				run := worldRun(w, e2eUser, factor.Password, tok, tok)
+				run.events = run.events[before:]
+
+				return run
+			},
+			assert: func(t *testing.T, run emittedRun) {
+				t.Helper()
+
+				emitted(event.ActiveRoleSwitched, event.OutcomeSuccess)(t, run)
+
+				for _, e := range run.events {
+					if e.Name == event.ActiveRoleSwitched {
+						assert.Equal(t, string(e2eUser), e.Actor, "the user switched her own role")
+						assert.Equal(t, []string{"active_role"}, e.Changed, "the field, never a value")
+					}
+				}
+			},
 		},
 		{
 			name: event.ExcessRateLimitExceeded,

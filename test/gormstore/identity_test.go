@@ -12,6 +12,7 @@ import (
 	gormdb "gorm.io/gorm"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/store/gormstore"
@@ -36,7 +37,7 @@ func TestIdentityStore(t *testing.T) {
 		t.Parallel()
 
 		identitytest.RunConformanceSuite(t, func(*testing.T) identitytest.Fixture {
-			return newIdentityFixture(store, d.db)
+			return conformanceFixture{newIdentityFixture(store, d.db)}
 		})
 	})
 
@@ -154,6 +155,76 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 	}
 
 	cases := []testCase{
+		{
+			name: "a conditional update of a soft-deleted user is an unknown user, never a stale password",
+			assert: func(t *testing.T, ctx context.Context, d database) {
+				s := newIdentityStore(t, d.db)
+				f := newIdentityFixture(s, d.db)
+				_, err := s.Provision(ctx, "gone-user", identity.WithUserPassword([]byte("H1")))
+				require.NoError(t, err)
+				require.NoError(t, f.SoftDelete(ctx, "gone-user"))
+
+				got, err := s.Update(ctx, "gone-user",
+					identity.WithUserPasswordIf([]byte("wrong")), identity.WithUserPassword([]byte("H2")))
+				require.ErrorIs(t, err, identity.ErrUserNotFound)
+				assert.NotErrorIs(t, err, identity.ErrNotUpdated)
+				assert.Nil(t, got)
+
+				// The refused update left no row lock on the deleted row.
+				var locked bool
+				require.NoError(t, d.conn.DB.QueryRowContext(ctx,
+					`SELECT EXISTS (SELECT 1 FROM scrty_users WHERE username = 'gone-user' FOR UPDATE SKIP LOCKED)`).
+					Scan(&locked))
+				assert.True(t, locked, "the deleted row is not locked after the refusal")
+			},
+		},
+		{
+			name: "an empty email is not found before any query runs",
+			assert: func(t *testing.T, ctx context.Context, d database) {
+				s := newIdentityStore(t, d.db)
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				// A cancelled context fails any query, so a not-found
+				// result proves the store never reached the database.
+				got, err := s.LoadByEmail(cctx, "")
+				require.ErrorIs(t, err, identity.ErrUserNotFound)
+				assert.Nil(t, got)
+			},
+		},
+		{
+			name: "UpdateBumpsVersion: every update that writes moves the version, and nothing else does",
+			assert: func(t *testing.T, ctx context.Context, d database) {
+				s := newIdentityStore(t, d.db)
+				u, err := s.Provision(ctx, "versioned-user", identity.WithUserPassword([]byte("H1")))
+				require.NoError(t, err)
+
+				version := func() int64 {
+					var v int64
+					require.NoError(t, d.conn.DB.QueryRowContext(ctx,
+						`SELECT version FROM scrty_users WHERE id = $1`, string(u.ID)).Scan(&v))
+					return v
+				}
+				require.Equal(t, int64(1), version(), "a new user starts at the column's default")
+
+				_, err = s.Update(ctx, "versioned-user", identity.WithUserName("Ada"))
+				require.NoError(t, err)
+				assert.Equal(t, int64(2), version(), "an update that writes moves the version")
+
+				_, err = s.Update(ctx, "versioned-user", identity.WithUserRoles("viewer"))
+				require.NoError(t, err)
+				assert.Equal(t, int64(3), version(), "a grant rebuild is a write to the user")
+
+				_, err = s.Update(ctx, "versioned-user")
+				require.NoError(t, err)
+				assert.Equal(t, int64(3), version(), "an update naming nothing writes nothing")
+
+				_, err = s.Update(ctx, "versioned-user",
+					identity.WithUserPasswordIf([]byte("not-the-hash")), identity.WithUserPassword([]byte("H2")))
+				require.ErrorIs(t, err, identity.ErrNotUpdated)
+				assert.Equal(t, int64(3), version(), "a refused conditional update writes nothing")
+			},
+		},
 		{
 			name: "a reference that is not a UUID is an unknown user to the lookup and the loader",
 			assert: func(t *testing.T, ctx context.Context, d database) {
@@ -565,3 +636,116 @@ func TestIdentityStore_StoredRowTheConnectionCannotEncode(t *testing.T) {
 		})
 	}
 }
+
+// conformanceFixture is the identity fixture the conformance suite runs on. It
+// differs from identityFixture only in SeedRole, which also records each
+// privilege's scope: a privilege seeded with none keeps the column's default,
+// as a row written before scopes existed does.
+type conformanceFixture struct{ *identityFixture }
+
+func (f conformanceFixture) SeedRole(ctx context.Context, role string, p []*identity.ResourcePrivileges) error {
+	if err := f.identityFixture.SeedRole(ctx, role, p); err != nil {
+		return err
+	}
+
+	for _, rp := range p {
+		if rp == nil {
+			continue
+		}
+		for _, priv := range rp.Privileges {
+			if priv.Scope == "" {
+				continue
+			}
+			if err := f.q(ctx).Exec(`UPDATE scrty_resource_privileges SET scope = ?
+WHERE role_name = ? AND resource_group = ? AND resource = ? AND privilege = ?`,
+				string(priv.Scope), role, rp.Group, rp.Resource, priv.Name).Error; err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// SeedEmail sets the user's email as the administration does: under the
+// advisory lock of the address, the lock Provision takes, it refuses an address
+// another live user holds as its email or username.
+func (f *identityFixture) SeedEmail(ctx context.Context, username, email string, verifiedAt time.Time) error {
+	return f.seedAtomically(ctx, func(q *gormdb.DB) error {
+		var keys []int64
+		if err := q.Raw(pgschema.IdentifierLockKeys, pgschema.TextArray([]string{email})).Scan(&keys).Error; err != nil {
+			return err
+		}
+		for _, k := range keys {
+			if err := q.Exec(pgschema.LockIdentifierKey, k).Error; err != nil {
+				return err
+			}
+		}
+
+		var userID string
+		res := q.Raw(`SELECT id::text FROM scrty_users WHERE username = ? AND deleted_at IS NULL FOR UPDATE`, username).
+			Scan(&userID)
+		if res.Error != nil {
+			return res.Error
+		}
+		if userID == "" {
+			return identity.ErrUserNotFound
+		}
+
+		for _, check := range []string{pgschema.EmailHeldByLiveUser, pgschema.UsernameHeldByLiveUser} {
+			var held bool
+			if err := q.Raw(check, email, userID).Scan(&held).Error; err != nil {
+				return err
+			}
+			if held {
+				return identity.ErrUserExists
+			}
+		}
+
+		err := q.Exec(`UPDATE scrty_users SET email = ?, email_verified_at = ? WHERE id = ?`,
+			email, nullTime(verifiedAt), userID).Error
+		if isUniqueViolation(err) {
+			return identity.ErrUserExists
+		}
+
+		return err
+	})
+}
+
+// SoftDelete deletes the user as the administration does: the row and its
+// username stay, the email is cleared and the user is inactive.
+func (f *identityFixture) SoftDelete(ctx context.Context, username string) error {
+	res := f.q(ctx).Exec(`UPDATE scrty_users
+SET deleted_at = now(), active = false, email = NULL, email_verified_at = NULL
+WHERE username = ? AND deleted_at IS NULL`, username)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return identity.ErrUserNotFound
+	}
+
+	return nil
+}
+
+// seedAtomically runs fn in the test's transaction when ctx carries one,
+// otherwise in a transaction of its own on the database.
+func (f *identityFixture) seedAtomically(ctx context.Context, fn func(q *gormdb.DB) error) error {
+	if tx, ok := ctx.Value(seedTxKey{}).(*gormdb.DB); ok {
+		return fn(tx.WithContext(ctx))
+	}
+
+	return f.db.WithContext(ctx).Transaction(fn)
+}
+
+// isUniqueViolation reports whether err is PostgreSQL's unique_violation.
+func isUniqueViolation(err error) bool {
+	var st interface{ SQLState() string }
+
+	return errors.As(err, &st) && st.SQLState() == "23505"
+}
+
+var (
+	_ identitytest.Fixture = conformanceFixture{}
+	_ identity.EmailLoader = (*identityFixture)(nil)
+)

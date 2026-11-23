@@ -163,7 +163,7 @@ func TestRulesEvaluate(t *testing.T) {
 				authorize.Rule[consumerRequest]{Match: underPath("/api/"), Require: authorize.PermitAll()},
 			),
 			request: consumerRequest{path: "/health"},
-			assert:  denied,
+			assert:  deniedFor(authorize.ErrNotGranted),
 		},
 		{
 			name:    "an empty set makes no central decision",

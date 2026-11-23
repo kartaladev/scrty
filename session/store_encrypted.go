@@ -119,6 +119,9 @@ type encryptedStore struct {
 // nothing it must implement, and keeps the limit that listing brings (see
 // Sessions.SignInState).
 //
+// The returned store offers RoleSelector exactly when inner does, and passes
+// the selection to inner unchanged: the selected role is not sealed.
+//
 // A failure of inner or of the cipher is returned behind fixed text of this
 // package — never naming the session identifier, which is the bearer
 // credential — and still matches the original error through errors.Is and
@@ -148,8 +151,36 @@ func NewEncryptedStore(inner Store, cipher Cipher) (Store, error) {
 		return nil, fmt.Errorf("%w: the cipher must not be nil", ErrConfig)
 	}
 
-	return &encryptedStore{inner: inner, cipher: cipher}, nil
+	sealing := &encryptedStore{inner: inner, cipher: cipher}
+	if selector, ok := inner.(RoleSelector); ok {
+		return &roleSelectingEncryptedStore{encryptedStore: sealing, selector: selector}, nil
+	}
+
+	return sealing, nil
 }
+
+// roleSelectingEncryptedStore is the sealing store over an inner store that
+// offers RoleSelector. It is a type of its own, rather than a method every
+// sealing store has, so the store NewEncryptedStore returns offers the
+// selection exactly when inner does, and a feature that needs it can refuse a
+// store without it at construction instead of failing at the first switch.
+type roleSelectingEncryptedStore struct {
+	*encryptedStore
+
+	selector RoleSelector
+}
+
+// SelectRole passes the selection to inner unchanged: the selected role is
+// not sealed. A failure of inner comes back behind fixed text of this
+// package, never naming the session identifier, and a sentinel inner returns
+// bare comes back as itself.
+func (s *roleSelectingEncryptedStore) SelectRole(ctx context.Context, id string, role string) error {
+	err := porterr.SanitizeTo(ctx, nil, s.selector.SelectRole(ctx, id, role), porterr.ErrUnwalkable)
+
+	return storeFailed(err, "session: the inner store could not record the selected role")
+}
+
+var _ RoleSelector = (*roleSelectingEncryptedStore)(nil)
 
 // additionalData is what a session's ID token is sealed against.
 func additionalData(id string) []byte {
@@ -418,11 +449,13 @@ func (s *encryptedStore) RecordActivity(ctx context.Context, id string, lastAcce
 
 // Supersede seals the successor's ID token and CSRF token, bound to the
 // successor's own identifier, as Create does, and passes the supersession on.
-// The caller's successor keeps its plaintext.
+// The caller's successor keeps its plaintext, and takes the selected role the
+// inner store reports it stored (see Store.Supersede).
 func (s *encryptedStore) Supersede(ctx context.Context, op Supersession) error {
 	if op.Successor == nil {
 		return errors.New("session: a supersession needs a successor")
 	}
+	callers := op.Successor
 	successor, err := s.sealed(ctx, op.Successor, true)
 	if err != nil {
 		return err
@@ -430,6 +463,9 @@ func (s *encryptedStore) Supersede(ctx context.Context, op Supersession) error {
 	op.Successor = successor
 
 	err = porterr.SanitizeTo(ctx, nil, s.inner.Supersede(ctx, op), porterr.ErrUnwalkable)
+	if err == nil {
+		callers.SelectedRole = successor.SelectedRole
+	}
 
 	return storeFailed(err, "session: the inner store could not supersede the session")
 }

@@ -2,13 +2,24 @@ package test_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/gofiber/fiber/v3"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/httpsec/fibersec"
+	"github.com/kartaladev/scrty/httpsec/ginsec"
+	"github.com/kartaladev/scrty/identity"
 	httpsecconformance "github.com/kartaladev/scrty/test/httpsecconformance"
 )
 
@@ -226,4 +237,200 @@ func TestCertificateBindingNetHTTP(t *testing.T) {
 	t.Parallel()
 
 	httpsecconformance.RunCertificateBinding(t, nethttpAdapter{})
+}
+
+// requireParityJudge grants read on crm/lead and denies every other resource,
+// or fails with outage when it is set.
+type requireParityJudge struct{ outage error }
+
+func (j requireParityJudge) Authorize(_ context.Context, a authorize.Attributes) error {
+	if j.outage != nil {
+		return j.outage
+	}
+
+	if p, ok := a.(authorize.PrivilegeAttributes); ok && p.Resource == "lead" {
+		return nil
+	}
+
+	return authorize.ErrAccessDenied
+}
+
+// requireParityChain builds a chain that resolves the request as ada, or as
+// nobody when anonymous, and publishes judge as the chain's authorizer.
+func requireParityChain(t *testing.T, anonymous bool, judge authorize.Authorizer) *httpsec.Chain {
+	t.Helper()
+
+	principal := &identity.Principal{ID: "u-1", Username: "ada", Name: "Ada"}
+
+	chain, err := httpsec.New(
+		httpsec.RegisterInterceptor(httpsec.InterceptorFunc(
+			func(ex *httpsec.Exchange, next httpsec.Next) error {
+				if !anonymous {
+					ex.Authentication = &authenticate.Authentication{Principal: principal}
+					ex.SetContext(identity.WithPrincipal(ex.Context(), principal))
+				}
+
+				return next(ex)
+			}), httpsec.OrderBearerToken),
+		httpsec.EnableAuthorization(judge))
+	require.NoError(t, err)
+
+	return chain
+}
+
+// TestGuards_RequireParity runs one composed requirement, all of read on
+// crm/lead and crm/deal, through the net/http, gin and fiber guards and
+// compares what each answers: the status, and the sentinels the refusal
+// matches.
+func TestGuards_RequireParity(t *testing.T) {
+	t.Parallel()
+
+	errOutage := errors.New("parity: the role loader is unreachable")
+
+	requirement := authorize.AllOf(
+		authorize.HasPrivilege("crm", "lead", "read"),
+		authorize.HasPrivilege("crm", "deal", "read"))
+
+	type answer struct {
+		status   int
+		routeRan bool
+		refusal  error
+	}
+
+	type testCase struct {
+		name      string
+		anonymous bool
+		judge     authorize.Authorizer
+		assert    func(t *testing.T, framework string, a answer)
+	}
+
+	cases := []testCase{
+		{
+			name:  "all-of with one resource not granted is access denied",
+			judge: requireParityJudge{},
+			assert: func(t *testing.T, fw string, a answer) {
+				assert.Equal(t, http.StatusForbidden, a.status, fw)
+				assert.False(t, a.routeRan, fw)
+				assert.ErrorIs(t, a.refusal, authorize.ErrAccessDenied, fw)
+			},
+		},
+		{
+			name:      "anonymous is authentication required",
+			anonymous: true,
+			judge:     requireParityJudge{},
+			assert: func(t *testing.T, fw string, a answer) {
+				assert.Equal(t, http.StatusUnauthorized, a.status, fw)
+				assert.False(t, a.routeRan, fw)
+				assert.ErrorIs(t, a.refusal, httpsec.ErrAuthenticationRequired, fw)
+			},
+		},
+		{
+			name:  "an outage is a dependency failure, not a denial",
+			judge: requireParityJudge{outage: errOutage},
+			assert: func(t *testing.T, fw string, a answer) {
+				assert.NotEqual(t, http.StatusForbidden, a.status, fw)
+				assert.False(t, a.routeRan, fw)
+				assert.ErrorIs(t, a.refusal, errOutage, fw)
+				assert.NotErrorIs(t, a.refusal, authorize.ErrAccessDenied, fw)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			answers := map[string]answer{}
+
+			// net/http
+			{
+				var a answer
+
+				g, err := httpsec.NewGuards(nil, httpsec.WithChainAuthorizer(),
+					httpsec.WithGuardErrorHandler(func(w http.ResponseWriter, _ *http.Request, err error) {
+						a.refusal = err
+						w.WriteHeader(httpsec.StatusForError(err))
+					}))
+				require.NoError(t, err)
+
+				guard, err := g.Require(requirement)
+				require.NoError(t, err)
+
+				route := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { a.routeRan = true })
+				handler := requireParityChain(t, tc.anonymous, tc.judge).Middleware()(guard(route))
+
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/leads", nil))
+				a.status = rec.Code
+				answers["net/http"] = a
+			}
+
+			// gin
+			{
+				var a answer
+
+				g, err := ginsec.NewGuards(nil, ginsec.WithChainAuthorizer())
+				require.NoError(t, err)
+
+				guard, err := g.Require(requirement)
+				require.NoError(t, err)
+
+				eng := gin.New()
+				eng.Use(func(gc *gin.Context) {
+					gc.Next()
+
+					if len(gc.Errors) > 0 {
+						a.refusal = gc.Errors[0].Err
+					}
+				})
+				eng.Use(ginsec.Middleware(requireParityChain(t, tc.anonymous, tc.judge)))
+				eng.GET("/leads", guard, func(*gin.Context) { a.routeRan = true })
+
+				rec := httptest.NewRecorder()
+				eng.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/leads", nil))
+				a.status = rec.Code
+				answers["gin"] = a
+			}
+
+			// fiber
+			{
+				var a answer
+
+				g, err := fibersec.NewGuards(nil, fibersec.WithChainAuthorizer())
+				require.NoError(t, err)
+
+				guard, err := g.Require(requirement)
+				require.NoError(t, err)
+
+				app := fiber.New(fiber.Config{ErrorHandler: func(fc fiber.Ctx, err error) error {
+					a.refusal = err
+
+					return fibersec.ErrorHandler(fc, err)
+				}})
+				app.Use(fibersec.Middleware(requireParityChain(t, tc.anonymous, tc.judge)))
+				app.Get("/leads", guard, func(fc fiber.Ctx) error {
+					a.routeRan = true
+
+					return fc.SendStatus(http.StatusNoContent)
+				})
+
+				res, err := app.Test(
+					httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/leads", nil),
+					fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+				require.NoError(t, err)
+				require.NoError(t, res.Body.Close())
+
+				a.status = res.StatusCode
+				answers["fiber"] = a
+			}
+
+			for fw, a := range answers {
+				tc.assert(t, fw, a)
+			}
+
+			// One status across the three.
+			assert.Equal(t, answers["net/http"].status, answers["gin"].status)
+			assert.Equal(t, answers["net/http"].status, answers["fiber"].status)
+		})
+	}
 }

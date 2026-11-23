@@ -149,3 +149,83 @@ func TestParseSessionBinding(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionSelectedRoleArg(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		role   string
+		assert func(t *testing.T, arg any, err error)
+	}
+
+	unstorable := func(canary string) func(t *testing.T, arg any, err error) {
+		return func(t *testing.T, arg any, err error) {
+			t.Helper()
+
+			require.ErrorIs(t, err, pgschema.ErrSessionRoleUnstorable)
+			assert.Nil(t, arg)
+			assert.NotContains(t, err.Error(), canary, "the refusal must not echo the role")
+		}
+	}
+
+	cases := []testCase{
+		{
+			name: "a role is its own value",
+			role: "audit",
+			assert: func(t *testing.T, arg any, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, "audit", arg)
+			},
+		},
+		{
+			name: "no role is NULL, never the empty string",
+			role: "",
+			assert: func(t *testing.T, arg any, err error) {
+				require.NoError(t, err)
+				assert.Nil(t, arg)
+			},
+		},
+		{name: "a NUL byte is refused", role: "canary-nul\x00", assert: unstorable("canary-nul")},
+		{name: "invalid UTF-8 is refused", role: "canary-utf\xff", assert: unstorable("canary-utf")},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			arg, err := pgschema.SessionSelectedRoleArg(tc.role)
+			tc.assert(t, arg, err)
+		})
+	}
+}
+
+func TestSelectRoleRefusal(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name              string
+		exists, supersede bool
+		assert            func(t *testing.T, err error)
+	}
+
+	cases := []testCase{
+		{name: "a session not stored is not found", assert: func(t *testing.T, err error) {
+			require.ErrorIs(t, err, session.ErrNotFound)
+		}},
+		{name: "a superseded session is superseded", exists: true, supersede: true, assert: func(t *testing.T, err error) {
+			require.ErrorIs(t, err, session.ErrSuperseded)
+		}},
+		{name: "a stored session neither superseded is expired", exists: true, assert: func(t *testing.T, err error) {
+			require.ErrorIs(t, err, session.ErrExpired)
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, pgschema.SelectRoleRefusal(tc.exists, tc.supersede))
+		})
+	}
+}

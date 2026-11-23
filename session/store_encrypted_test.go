@@ -798,3 +798,101 @@ func TestErrCipherUnavailable_IsDistinct(t *testing.T) {
 	assert.NotErrorIs(t, session.ErrUnreadable, session.ErrCipherUnavailable)
 	assert.NotErrorIs(t, session.ErrNotFound, session.ErrCipherUnavailable)
 }
+
+// selectingStore is an inner store that also offers RoleSelector.
+type selectingStore struct {
+	*MockStore
+	*MockRoleSelector
+}
+
+// The sealing store offers RoleSelector exactly when its inner store does, and
+// passes a selection through unsealed, its sentinels bare and its other
+// failures behind fixed text that names no session identifier.
+func TestEncryptedStoreSelectRole(t *testing.T) {
+	t.Parallel()
+
+	const sessionID = "sr-session-identifier"
+	errInner := errors.New("inner store: no row for " + sessionID)
+
+	type testCase struct {
+		name   string
+		inner  func(ctrl *gomock.Controller) session.Store
+		assert func(t *testing.T, sealing session.Store)
+	}
+
+	selecting := func(result error) func(ctrl *gomock.Controller) session.Store {
+		return func(ctrl *gomock.Controller) session.Store {
+			selector := NewMockRoleSelector(ctrl)
+			selector.EXPECT().SelectRole(gomock.Any(), sessionID, "audit").Return(result)
+
+			return selectingStore{MockStore: NewMockStore(ctrl), MockRoleSelector: selector}
+		}
+	}
+	selectWith := func(t *testing.T, sealing session.Store) error {
+		t.Helper()
+
+		selector, ok := sealing.(session.RoleSelector)
+		require.True(t, ok, "the sealing store over a selecting store must select")
+
+		return selector.SelectRole(t.Context(), sessionID, "audit")
+	}
+
+	cases := []testCase{
+		{
+			name:  "a selection reaches the inner store as given",
+			inner: selecting(nil),
+			assert: func(t *testing.T, sealing session.Store) {
+				require.NoError(t, selectWith(t, sealing))
+			},
+		},
+		{
+			name:  "not found comes back bare",
+			inner: selecting(session.ErrNotFound),
+			assert: func(t *testing.T, sealing session.Store) {
+				isBare(session.ErrNotFound)(t, selectWith(t, sealing))
+			},
+		},
+		{
+			name:  "superseded comes back bare",
+			inner: selecting(session.ErrSuperseded),
+			assert: func(t *testing.T, sealing session.Store) {
+				isBare(session.ErrSuperseded)(t, selectWith(t, sealing))
+			},
+		},
+		{
+			name:  "expired comes back bare",
+			inner: selecting(session.ErrExpired),
+			assert: func(t *testing.T, sealing session.Store) {
+				isBare(session.ErrExpired)(t, selectWith(t, sealing))
+			},
+		},
+		{
+			name:  "another failure matches its cause behind text naming no session",
+			inner: selecting(errInner),
+			assert: func(t *testing.T, sealing session.Store) {
+				err := selectWith(t, sealing)
+				require.ErrorIs(t, err, errInner)
+				assert.NotContains(t, err.Error(), sessionID)
+			},
+		},
+		{
+			name:  "over a store with no selection, it offers none",
+			inner: func(ctrl *gomock.Controller) session.Store { return NewMockStore(ctrl) },
+			assert: func(t *testing.T, sealing session.Store) {
+				_, ok := sealing.(session.RoleSelector)
+				assert.False(t, ok, "a selection the inner store cannot record must not be offered")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sealing, err := session.NewEncryptedStore(tc.inner(gomock.NewController(t)), fakeCipher{key: 0x2a})
+			require.NoError(t, err)
+
+			tc.assert(t, sealing)
+		})
+	}
+}

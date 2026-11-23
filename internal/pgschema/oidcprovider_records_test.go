@@ -306,7 +306,8 @@ func TestLineageStatement(t *testing.T) {
 		pgschema.SessionDeleteFamily, pgschema.SessionDelete, pgschema.SessionDeleteByUser,
 		pgschema.SessionDeleteByUserExcept, pgschema.SessionCountActive, pgschema.SessionDeleteExpired,
 		pgschema.SessionDeleteByExternal, pgschema.SessionDeleteByUserIssuer, pgschema.SessionListByUser,
-		pgschema.SessionSuccessorPresented, pgschema.SessionSupersedeRefusal,
+		pgschema.SessionSuccessorPresented, pgschema.SessionSupersedeRefusal, pgschema.SessionSelectRole,
+		pgschema.SessionSupersededRole,
 	} {
 		bound := pgschema.LineageStatement(statement)
 		assert.Contains(t, bound, pgschema.RefreshTokenTable)

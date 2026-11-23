@@ -133,6 +133,7 @@ const (
 	colTimestamptz = "timestamp with time zone" // microsecond precision: no modifier
 
 	colTimestamptzArray = "timestamp with time zone[]"
+	colTextArray        = "text[]"
 )
 
 // Default expressions as pg_get_expr reports them.
@@ -140,6 +141,8 @@ const (
 	defEmptyText   = "''::text"
 	defEmptyObject = "'{}'::jsonb"
 	defEmptyArray  = "'[]'::jsonb"
+
+	defEmptyTextArray = "'{}'::text[]"
 )
 
 // required is a NOT NULL column with no default.
@@ -191,6 +194,7 @@ var sessionTableColumns = []column{
 	optional("binding_kind", colText),
 	optional("binding_thumbprint", colText),
 	optional("csrf_token", colText),
+	optional("selected_role", colText),
 }
 
 // securityStateColumns pins each table's exact columns, with their types,
@@ -947,7 +951,7 @@ func TestSecurityStateMigrations_Schema(t *testing.T) {
 
 // securityStateMigrationCount is how many migration files the security-state
 // set holds.
-const securityStateMigrationCount = 7
+const securityStateMigrationCount = 8
 
 // Versions of the security-state migrations the family tests address.
 const (
@@ -2463,7 +2467,7 @@ func TestMigrations(t *testing.T) {
 						"0192f000-0000-7000-8000-0000000000e1", []byte{1}, "u-1", time.Now(), time.Now(), time.Now(), time.Now(),
 						"", 0, nil, false, "", "", "", "", "{}", nil, nil, nil, "[]", "", false,
 						"0192f000-0000-7000-8000-0000000000e2", time.Now(), nil, nil, nil, nil, time.Now(), nil,
-						nil, nil, nil, nil, nil)
+						nil, nil, nil, nil, nil, nil)
 					require.NoError(t, err)
 					n, err := result.RowsAffected()
 					require.NoError(t, err)
@@ -2814,4 +2818,65 @@ func idOf(t *testing.T, s string) id.ID {
 	require.NoError(t, err)
 
 	return v
+}
+
+// versionSelectedRole addresses the migration that adds the selected-role
+// column to sessions; versionSecurityStatePrefix the rename before it.
+const (
+	versionSecurityStatePrefix int64 = 20261124000000
+	versionSelectedRole        int64 = 20261125000000
+)
+
+// TestSecurityStateMigration_SelectedRole pins the selected-role migration: it
+// adds one nullable column with no default to sessions and to the refresh-token
+// lineage table, which keeps the sessions table's columns; a row written before
+// it is unchanged with no selected role in both; and rolling it back drops
+// exactly those columns.
+func TestSecurityStateMigration_SelectedRole(t *testing.T) {
+	t.Parallel()
+
+	set := migrate.SecurityState()
+	db := RunTestPostgres(t).DB
+	p := provider(t, db, set.FS(), set.Dir, set.VersionTable)
+	rollBackAtCleanup(t, db, p, set.VersionTable)
+	ctx := t.Context()
+	tables := []string{"scrty_sessions", "scrty_op_refresh_tokens"}
+
+	_, err := p.UpTo(ctx, versionSecurityStatePrefix)
+	require.NoError(t, err)
+	insertProbeSession(t, db)
+	_, err = db.ExecContext(ctx, `INSERT INTO scrty_op_refresh_tokens
+		(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at, family_id, family_created_at)
+		VALUES ('0192f000-0000-7000-8000-0000000000cc', '\x01', 'u', now(), now(), now(), now(),
+		        '0192f000-0000-7000-8000-0000000000cc', now())`)
+	require.NoError(t, err)
+
+	rowsBefore := map[string][]string{}
+	for _, table := range tables {
+		rowsBefore[table] = queryStrings(t, db, `SELECT to_jsonb(s) - 'selected_role' FROM `+table+` s`)
+		require.Len(t, rowsBefore[table], 1, table)
+		assert.Empty(t, tableColumns(t, db, table, []string{"selected_role"}), table)
+	}
+
+	_, err = p.UpTo(ctx, versionSelectedRole)
+	require.NoError(t, err)
+
+	for _, table := range tables {
+		assert.Equal(t, []string{"selected_role text NULL DEFAULT "},
+			tableColumns(t, db, table, []string{"selected_role"}), table)
+		assert.Equal(t, rowsBefore[table], queryStrings(t, db, `SELECT to_jsonb(s) - 'selected_role' FROM `+table+` s`),
+			"an existing row of %s is unchanged", table)
+		assert.Equal(t, []string{"true"}, queryStrings(t, db, `SELECT (selected_role IS NULL)::text FROM `+table),
+			"an existing row of %s has no selected role", table)
+	}
+
+	res, err := p.Down(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, versionSelectedRole, res.Source.Version)
+
+	for _, table := range tables {
+		assert.Empty(t, tableColumns(t, db, table, []string{"selected_role"}), table)
+		assert.Equal(t, rowsBefore[table], queryStrings(t, db, `SELECT to_jsonb(s) FROM `+table+` s`),
+			"the row of %s survives the rollback unchanged", table)
+	}
 }

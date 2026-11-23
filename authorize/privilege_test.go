@@ -306,6 +306,10 @@ func TestPrivilegeAuthorizerMatching(t *testing.T) {
 			required: []string{"write"}, mode: authorize.MatchAnyOf, assert: allowed,
 		},
 		{
+			name: "any-of allows when only one of two alternatives is granted", granted: map[string]bool{"read": true},
+			required: []string{"read", "write"}, mode: authorize.MatchAnyOf, assert: allowed,
+		},
+		{
 			name: "any-of with none granted denies", granted: map[string]bool{"read": true},
 			required: []string{"write"}, mode: authorize.MatchAnyOf, assert: denied,
 		},
@@ -578,4 +582,283 @@ var authorizeSentinelsNotMatched = []error{
 	authorize.ErrInvalidAttributes,
 	authorize.ErrAccessDenied,
 	authorize.ErrAuthenticationRequired,
+	authorize.ErrNoSubject,
+	authorize.ErrNoActiveRole,
+	authorize.ErrNotGranted,
+	authorize.ErrWrongScope,
+	authorize.ErrNotOwner,
+}
+
+// denialReasons are the reasons a denial carries, exactly one at a time.
+var denialReasons = []error{
+	authorize.ErrNoSubject,
+	authorize.ErrNoActiveRole,
+	authorize.ErrNotGranted,
+	authorize.ErrWrongScope,
+	authorize.ErrNotOwner,
+}
+
+// deniedFor asserts that err is a denial giving reason and no other.
+func deniedFor(reason error) func(t *testing.T, err error) {
+	return func(t *testing.T, err error) {
+		t.Helper()
+
+		require.ErrorIs(t, err, authorize.ErrAccessDenied)
+		require.ErrorIs(t, err, reason, "the denial does not give its reason")
+
+		for _, other := range denialReasons {
+			if errors.Is(other, reason) {
+				continue
+			}
+
+			assert.NotErrorIs(t, err, other, "the denial gives a second reason")
+		}
+	}
+}
+
+// scoped builds the one entry a role loader returns for group/resource, with
+// each privilege granted with the scope given.
+func scoped(group, resource string, privileges ...identity.Privilege) []*identity.ResourcePrivileges {
+	return []*identity.ResourcePrivileges{{Group: group, Resource: resource, Privileges: privileges}}
+}
+
+func TestPrivilege_DenialReasons(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		ctx    func(ctx context.Context) context.Context
+		load   func(roles *MockRoleLoader) // nil means the loader is not asked
+		assert func(t *testing.T, err error)
+	}
+
+	cases := []testCase{
+		{
+			name:   "no subject",
+			ctx:    func(ctx context.Context) context.Context { return ctx },
+			assert: deniedFor(authorize.ErrNoSubject),
+		},
+		{
+			name: "no active role",
+			ctx: func(ctx context.Context) context.Context {
+				return identity.WithPrincipal(ctx, &identity.Principal{ID: "u-1"})
+			},
+			assert: deniedFor(authorize.ErrNoActiveRole),
+		},
+		{
+			name:   "an active role with a blank name is no active role",
+			ctx:    func(ctx context.Context) context.Context { return withRole(ctx, " ") },
+			assert: deniedFor(authorize.ErrNoActiveRole),
+		},
+		{
+			// A blank name is not a role, whatever flag it carries: the super
+			// role bypass must not turn it into one that holds everything.
+			name: "a super role with a blank name is no active role",
+			ctx: func(ctx context.Context) context.Context {
+				super := &identity.AssignedRole{ID: "r-0", Name: " ", SuperRole: true}
+
+				return identity.WithPrincipal(ctx, &identity.Principal{
+					ID:         "u-0",
+					Roles:      []*identity.AssignedRole{super},
+					ActiveRole: super,
+				})
+			},
+			assert: deniedFor(authorize.ErrNoActiveRole),
+		},
+		{
+			name: "a role without the privilege",
+			ctx:  func(ctx context.Context) context.Context { return withRole(ctx, "clerk") },
+			load: func(roles *MockRoleLoader) {
+				roles.EXPECT().LoadPrivileges(gomock.Any(), "clerk").
+					Return(scoped("crm", "lead", identity.Privilege{Name: "view", Granted: true}), nil)
+			},
+			assert: deniedFor(authorize.ErrNotGranted),
+		},
+		{
+			name: "a privilege present but refused",
+			ctx:  func(ctx context.Context) context.Context { return withRole(ctx, "clerk") },
+			load: func(roles *MockRoleLoader) {
+				roles.EXPECT().LoadPrivileges(gomock.Any(), "clerk").
+					Return(scoped("crm", "lead", identity.Privilege{Name: "update"}), nil)
+			},
+			assert: deniedFor(authorize.ErrNotGranted),
+		},
+		{
+			name: "a role the loader does not know",
+			ctx:  func(ctx context.Context) context.Context { return withRole(ctx, "clerk") },
+			load: func(roles *MockRoleLoader) {
+				roles.EXPECT().LoadPrivileges(gomock.Any(), "clerk").
+					Return(nil, identity.ErrPrivilegesNotFound)
+			},
+			assert: deniedFor(authorize.ErrNotGranted),
+		},
+		{
+			name: "a role with nothing on the resource",
+			ctx:  func(ctx context.Context) context.Context { return withRole(ctx, "clerk") },
+			load: func(roles *MockRoleLoader) {
+				roles.EXPECT().LoadPrivileges(gomock.Any(), "clerk").
+					Return(scoped("crm", "deal", identity.Privilege{Name: "update", Granted: true}), nil)
+			},
+			assert: deniedFor(authorize.ErrNotGranted),
+		},
+		{
+			name: "an own-only grant under a plain check",
+			ctx:  func(ctx context.Context) context.Context { return withRole(ctx, "clerk") },
+			load: func(roles *MockRoleLoader) {
+				roles.EXPECT().LoadPrivileges(gomock.Any(), "clerk").
+					Return(scoped("crm", "lead",
+						identity.Privilege{Name: "update", Granted: true, Scope: identity.ScopeOwn}), nil)
+			},
+			assert: deniedFor(authorize.ErrWrongScope),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+
+			roles := NewMockRoleLoader(ctrl)
+			if tc.load != nil {
+				tc.load(roles)
+			}
+
+			authorizer, err := authorize.NewPrivilegeAuthorizer(roles)
+			require.NoError(t, err)
+
+			tc.assert(t, authorizer.Authorize(tc.ctx(t.Context()), authorize.PrivilegeAttributes{
+				Group:    "crm",
+				Resource: "lead",
+				Required: []string{"update"},
+			}))
+		})
+	}
+}
+
+// TestPrivilege_Scopes covers how the privilege authorizer reads the scope a
+// grant carries: the own-only grant behind a plain check, the grant stored
+// without a scope, and the scope nobody defined.
+func TestPrivilege_Scopes(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name    string
+		granted []identity.Privilege
+		accept  []identity.Scope
+		assert  func(t *testing.T, err error)
+	}
+
+	allowed := func(t *testing.T, err error) { require.NoError(t, err) }
+
+	cases := []testCase{
+		{
+			// TestPrivilege_OwnOnlyFailsPlainCheck
+			name:    "an own-only grant fails a plain check",
+			granted: []identity.Privilege{{Name: "update", Granted: true, Scope: identity.ScopeOwn}},
+			assert:  deniedFor(authorize.ErrWrongScope),
+		},
+		{
+			// TestPrivilege_EmptyScopeReadsAsAll: a loader that knows nothing of
+			// scopes keeps authorizing exactly as before.
+			name:    "a grant stored without a scope reads as all",
+			granted: []identity.Privilege{{Name: "update", Granted: true}},
+			assert:  allowed,
+		},
+		{
+			name:    "an all grant meets a plain check",
+			granted: []identity.Privilege{{Name: "update", Granted: true, Scope: identity.ScopeAll}},
+			assert:  allowed,
+		},
+		{
+			// TestPrivilege_UndefinedScopeCoversNothing
+			name:    "an undefined scope covers nothing, even when every defined scope is accepted",
+			granted: []identity.Privilege{{Name: "update", Granted: true, Scope: "team"}},
+			accept:  []identity.Scope{identity.ScopeAll, identity.ScopeOwn},
+			assert:  deniedFor(authorize.ErrWrongScope),
+		},
+		{
+			name:    "a scope is compared exactly, so ALL is undefined",
+			granted: []identity.Privilege{{Name: "update", Granted: true, Scope: "ALL"}},
+			assert:  deniedFor(authorize.ErrWrongScope),
+		},
+		{
+			name:    "an own-only grant meets a check that accepts own",
+			granted: []identity.Privilege{{Name: "update", Granted: true, Scope: identity.ScopeOwn}},
+			accept:  []identity.Scope{identity.ScopeAll, identity.ScopeOwn},
+			assert:  allowed,
+		},
+		{
+			name: "the same privilege granted twice holds the scope a check accepts",
+			granted: []identity.Privilege{
+				{Name: "update", Granted: true, Scope: identity.ScopeOwn},
+				{Name: "update", Granted: true, Scope: identity.ScopeAll},
+			},
+			assert: allowed,
+		},
+		{
+			name:    "an own grant that is refused is not granted",
+			granted: []identity.Privilege{{Name: "update", Scope: identity.ScopeOwn}},
+			accept:  []identity.Scope{identity.ScopeAll, identity.ScopeOwn},
+			assert:  deniedFor(authorize.ErrNotGranted),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+
+			roles := NewMockRoleLoader(ctrl)
+			roles.EXPECT().LoadPrivileges(gomock.Any(), "clerk").Return(scoped("crm", "lead", tc.granted...), nil)
+
+			authorizer, err := authorize.NewPrivilegeAuthorizer(roles)
+			require.NoError(t, err)
+
+			tc.assert(t, authorizer.Authorize(withRole(t.Context(), "clerk"), authorize.PrivilegeAttributes{
+				Group:    "crm",
+				Resource: "lead",
+				Required: []string{"update"},
+				Accept:   tc.accept,
+			}))
+		})
+	}
+}
+
+func TestPrivilege_AcceptIsValidated(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		accept []identity.Scope
+		assert func(t *testing.T, err error)
+	}
+
+	invalid := func(t *testing.T, err error) {
+		require.ErrorIs(t, err, authorize.ErrInvalidAttributes)
+		assert.NotErrorIs(t, err, authorize.ErrAccessDenied)
+	}
+
+	cases := []testCase{
+		{name: "an undefined scope", accept: []identity.Scope{"team"}, assert: invalid},
+		{name: "a blank scope", accept: []identity.Scope{identity.ScopeAll, ""}, assert: invalid},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+
+			// No EXPECT: attributes that cannot be used are refused before
+			// anything is loaded.
+			authorizer, err := authorize.NewPrivilegeAuthorizer(NewMockRoleLoader(ctrl))
+			require.NoError(t, err)
+
+			tc.assert(t, authorizer.Authorize(withRole(t.Context(), "clerk"), authorize.PrivilegeAttributes{
+				Group: "crm", Resource: "lead", Required: []string{"update"}, Accept: tc.accept,
+			}))
+		})
+	}
 }

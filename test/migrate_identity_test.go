@@ -1,11 +1,14 @@
 package test
 
 import (
+	"cmp"
 	"database/sql"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -13,10 +16,11 @@ import (
 	"github.com/kartaladev/scrty/store/migrate"
 )
 
-// identityTables lists the seven tables the identity set holds once it is
+// identityTables lists the eight tables the identity set holds once it is
 // fully applied: every one under its scrty_ name.
 var identityTables = prefixNames([]string{
 	"groups", "organizations", "roles", "users", "assigned_roles", "resource_privileges", "password_history",
+	"user_attributes",
 })
 
 // migratedIdentity returns a database the identity set alone has been applied
@@ -39,7 +43,7 @@ func migratedIdentity(t *testing.T) *sql.DB {
 func TestIdentityMigrations_Independent(t *testing.T) {
 	t.Parallel()
 
-	t.Run("identity set alone creates exactly the seven tables", func(t *testing.T) {
+	t.Run("identity set alone creates exactly the eight tables", func(t *testing.T) {
 		t.Parallel()
 
 		db := migratedIdentity(t)
@@ -100,7 +104,7 @@ func TestIdentityMigrations_Independent(t *testing.T) {
 			WithTestPostgresMigrations(set.FS(), set.Dir, "app_identity_versions"),
 		).DB
 
-		assert.Equal(t, 2, appliedVersionCount(t, db, "app_identity_versions"))
+		assert.Equal(t, 3, appliedVersionCount(t, db, "app_identity_versions"))
 		assert.False(t, regclassExists(t, db, migrate.IdentityVersionTable))
 	})
 }
@@ -127,6 +131,15 @@ var identityStatements = []struct {
 	{"PruneHistory", pgschema.PruneHistory},
 	{"RecentHistory", pgschema.RecentHistory},
 	{"ForgetHistory", pgschema.ForgetHistory},
+	{"UserRecordByUsername", pgschema.UserRecordByUsername},
+	{"UserRecordByID", pgschema.UserRecordByID},
+	{"UserRecordByVerifiedEmail", pgschema.UserRecordByVerifiedEmail},
+	{"ScopedPrivilegesByRole", pgschema.ScopedPrivilegesByRole},
+	{"BumpUserVersion", pgschema.BumpUserVersion},
+	{"IdentifierLockKeys", pgschema.IdentifierLockKeys},
+	{"LockIdentifierKey", pgschema.LockIdentifierKey},
+	{"EmailHeldByLiveUser", pgschema.EmailHeldByLiveUser},
+	{"UsernameHeldByLiveUser", pgschema.UsernameHeldByLiveUser},
 }
 
 // TestIdentityQueriesMatchSchema PREPAREs every pgschema identity statement
@@ -176,6 +189,10 @@ var identityColumns = map[string][]column{
 		defaulted("super_role", colBoolean, "false"),
 		required("created_at", colTimestamptz),
 		required("updated_at", colTimestamptz),
+		defaulted("display_name", colText, defEmptyText),
+		defaulted("description", colText, defEmptyText),
+		defaulted("labels", colTextArray, defEmptyTextArray),
+		defaulted("version", colBigint, "1"),
 	},
 	"scrty_users": {
 		required("id", colUUID),
@@ -189,6 +206,10 @@ var identityColumns = map[string][]column{
 		defaulted("mfa_required", colBoolean, "false"),
 		required("created_at", colTimestamptz),
 		required("updated_at", colTimestamptz),
+		optional("email", colText),
+		optional("email_verified_at", colTimestamptz),
+		optional("deleted_at", colTimestamptz),
+		defaulted("version", colBigint, "1"),
 	},
 	"scrty_assigned_roles": {
 		required("id", colUUID),
@@ -211,6 +232,12 @@ var identityColumns = map[string][]column{
 		defaulted("granted", colBoolean, "false"),
 		required("created_at", colTimestamptz),
 		required("updated_at", colTimestamptz),
+		defaulted("scope", colText, "'all'::text"),
+	},
+	"scrty_user_attributes": {
+		required("user_id", colUUID),
+		required("name", colText),
+		required("value", colText),
 	},
 	"scrty_password_history": {
 		required("id", colUUID),
@@ -246,10 +273,17 @@ var identityIndexes = map[string][]string{
 	"scrty_users": {
 		"CREATE UNIQUE INDEX scrty_users_pkey ON scrty_users USING btree (id)",
 		"CREATE UNIQUE INDEX scrty_users_username_key ON scrty_users USING btree (username)",
+		"CREATE UNIQUE INDEX scrty_users_email_live ON scrty_users USING btree (lower(email)) WHERE ((deleted_at IS NULL) AND (email IS NOT NULL))",
+		"CREATE INDEX scrty_users_username_lower ON scrty_users USING btree (lower(username), id)",
+	},
+	"scrty_user_attributes": {
+		"CREATE UNIQUE INDEX scrty_user_attributes_pkey ON scrty_user_attributes USING btree (user_id, name)",
+		"CREATE INDEX scrty_user_attributes_name_value ON scrty_user_attributes USING btree (name, value)",
 	},
 	"scrty_assigned_roles": {
 		"CREATE UNIQUE INDEX scrty_assigned_roles_pkey ON scrty_assigned_roles USING btree (id)",
 		"CREATE INDEX scrty_assigned_roles_user_id ON scrty_assigned_roles USING btree (user_id)",
+		"CREATE INDEX scrty_assigned_roles_role_name ON scrty_assigned_roles USING btree (role_name)",
 	},
 	"scrty_resource_privileges": {
 		"CREATE UNIQUE INDEX scrty_resource_privileges_pkey ON scrty_resource_privileges USING btree (id)",
@@ -335,4 +369,447 @@ func TestIdentityMigrations_Schema(t *testing.T) {
 	t.Parallel()
 
 	runSchemaChecks(t, migratedIdentity(t), identitySchemaChecks())
+}
+
+// versionIdentityPrefix and versionIdentityAdministration address the two
+// latest identity migrations: the scrty_ rename, and the administration
+// columns that follow it.
+const (
+	versionIdentityPrefix         int64 = 20261124000000
+	versionIdentityAdministration int64 = 20261125000000
+)
+
+// identityAt returns an empty database with a goose provider over the identity
+// set, rolled back at cleanup so the leftover-table check proves the set's
+// rollback drops everything it created, including a failed upgrade's remains.
+func identityAt(t *testing.T) (*sql.DB, *goose.Provider) {
+	t.Helper()
+
+	set := migrate.Identity()
+	db := RunTestPostgres(t).DB
+	p := provider(t, db, set.FS(), set.Dir, set.VersionTable)
+	rollBackAtCleanup(t, db, p, set.VersionTable)
+
+	return db, p
+}
+
+// administrationColumns are the columns the administration migration adds,
+// keyed by table, as the catalogue renders them.
+var administrationColumns = map[string][]column{
+	"scrty_users": {
+		optional("email", colText),
+		optional("email_verified_at", colTimestamptz),
+		optional("deleted_at", colTimestamptz),
+		defaulted("version", colBigint, "1"),
+	},
+	"scrty_roles": {
+		defaulted("display_name", colText, defEmptyText),
+		defaulted("description", colText, defEmptyText),
+		defaulted("labels", colTextArray, defEmptyTextArray),
+		defaulted("version", colBigint, "1"),
+	},
+	"scrty_resource_privileges": {
+		defaulted("scope", colText, "'all'::text"),
+	},
+	"scrty_user_attributes": {
+		required("user_id", colUUID),
+		required("name", colText),
+		required("value", colText),
+	},
+}
+
+// administrationIndexes are the indexes the administration migration adds, as
+// pg_indexes defines them with the schema qualifier removed.
+var administrationIndexes = []string{
+	"CREATE UNIQUE INDEX scrty_users_email_live ON scrty_users USING btree (lower(email)) WHERE ((deleted_at IS NULL) AND (email IS NOT NULL))",
+	"CREATE INDEX scrty_users_username_lower ON scrty_users USING btree (lower(username), id)",
+	"CREATE INDEX scrty_assigned_roles_role_name ON scrty_assigned_roles USING btree (role_name)",
+	"CREATE UNIQUE INDEX scrty_user_attributes_pkey ON scrty_user_attributes USING btree (user_id, name)",
+	"CREATE INDEX scrty_user_attributes_name_value ON scrty_user_attributes USING btree (name, value)",
+}
+
+// administrationIndexNames are the names of administrationIndexes.
+var administrationIndexNames = []string{
+	"scrty_users_email_live", "scrty_users_username_lower", "scrty_assigned_roles_role_name",
+	"scrty_user_attributes_pkey", "scrty_user_attributes_name_value",
+}
+
+// tableColumns renders the named columns of table the way column.String does,
+// in the order given, skipping any the table does not have.
+func tableColumns(t *testing.T, db *sql.DB, table string, names []string) []string {
+	t.Helper()
+
+	got := queryStrings(t, db, `SELECT a.attname || ' ' || format_type(a.atttypid, a.atttypmod)
+	               || CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE ' NULL' END
+	               || ' DEFAULT ' || coalesce(pg_get_expr(d.adbin, d.adrelid), '')
+	          FROM pg_attribute a
+	          JOIN pg_class c ON c.oid = a.attrelid
+	          JOIN pg_namespace n ON n.oid = c.relnamespace
+	          LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+	         WHERE n.nspname = current_schema() AND c.relname = $1
+	           AND a.attnum > 0 AND NOT a.attisdropped
+	           AND a.attname = ANY(string_to_array($2, ','))
+	         ORDER BY array_position(string_to_array($2, ','), a.attname::text)`,
+		table, strings.Join(names, ","))
+
+	return got
+}
+
+// columnNames returns the names of cols, in order.
+func columnNames(cols []column) []string {
+	out := make([]string, len(cols))
+	for i, c := range cols {
+		out[i] = c.name
+	}
+	return out
+}
+
+// columnStrings renders cols the way tableColumns does.
+func columnStrings(cols []column) []string {
+	out := make([]string, len(cols))
+	for i, c := range cols {
+		out[i] = c.String()
+	}
+	return out
+}
+
+// indexDefs returns the definitions of the named indexes of the current
+// schema, schema qualifier removed, in name order.
+func indexDefs(t *testing.T, db *sql.DB, names []string) []string {
+	t.Helper()
+
+	return queryStrings(t, db, `SELECT replace(indexdef, ' ON ' || quote_ident(schemaname) || '.', ' ON ')
+	          FROM pg_indexes
+	         WHERE schemaname = current_schema() AND indexname = ANY(string_to_array($1, ','))
+	         ORDER BY indexname`, strings.Join(names, ","))
+}
+
+// identityCatalog snapshots every column and index of every table in the
+// current schema except the version table, sorted, so a rollback can be
+// compared with the catalog it started from.
+func identityCatalog(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+
+	cols := queryStrings(t, db, `SELECT 'column|' || c.relname || '|' || a.attname || ' ' || format_type(a.atttypid, a.atttypmod)
+	               || CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE ' NULL' END
+	               || ' DEFAULT ' || coalesce(pg_get_expr(d.adbin, d.adrelid), '')
+	          FROM pg_attribute a
+	          JOIN pg_class c ON c.oid = a.attrelid
+	          JOIN pg_namespace n ON n.oid = c.relnamespace
+	          LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+	         WHERE n.nspname = current_schema() AND c.relkind = 'r' AND c.relname <> $1
+	           AND a.attnum > 0 AND NOT a.attisdropped`, migrate.IdentityVersionTable)
+	idx := queryStrings(t, db, `SELECT 'index|' || indexdef FROM pg_indexes
+	         WHERE schemaname = current_schema() AND tablename <> $1`, migrate.IdentityVersionTable)
+
+	out := append(cols, idx...)
+	slices.Sort(out)
+
+	return out
+}
+
+// TestIdentityMigration_Administration pins the catalogue the administration
+// migration leaves: every added column with its type, nullability and
+// default, the attribute table, every index, and the scrty_ prefix on each
+// relation it created.
+func TestIdentityMigration_Administration(t *testing.T) {
+	t.Parallel()
+
+	db, p := identityAt(t)
+	_, err := p.Up(t.Context())
+	require.NoError(t, err)
+
+	for table, cols := range administrationColumns {
+		assert.Equal(t, columnStrings(cols), tableColumns(t, db, table, columnNames(cols)), "table %s", table)
+	}
+
+	assert.Equal(t, []string{
+		"scrty_assigned_roles_role_name", "scrty_user_attributes_name_value", "scrty_user_attributes_pkey",
+		"scrty_users_email_live", "scrty_users_username_lower",
+	}, indexNamesOf(t, db, administrationIndexNames))
+
+	want := slices.Clone(administrationIndexes)
+	slices.Sort(want)
+	got := indexDefs(t, db, administrationIndexNames)
+	slices.Sort(got)
+	assert.Equal(t, want, got)
+
+	assert.Equal(t, 1, queryCount(t, db, `SELECT count(*) FROM `+migrate.IdentityVersionTable+
+		` WHERE is_applied AND version_id = $1`, versionIdentityAdministration))
+
+	unprefixed := queryStrings(t, db, `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+	         WHERE n.nspname = current_schema() AND c.relkind IN ('r','i','S')
+	           AND c.relname NOT LIKE 'scrty\_%' AND c.relname NOT LIKE $1`, migrate.IdentityVersionTable+"%")
+	assert.Empty(t, unprefixed, "every relation carries the scrty_ prefix")
+}
+
+// indexNamesOf returns which of names exist as indexes in the current schema.
+func indexNamesOf(t *testing.T, db *sql.DB, names []string) []string {
+	t.Helper()
+
+	got := queryStrings(t, db, `SELECT indexname FROM pg_indexes
+	         WHERE schemaname = current_schema() AND indexname = ANY(string_to_array($1, ','))
+	         ORDER BY indexname`, strings.Join(names, ","))
+
+	return got
+}
+
+// TestIdentityMigration_AdministrationDown pins that rolling the
+// administration migration back drops exactly what it added, leaving the
+// catalogue as it was at the prefix migration and each user's other columns
+// unchanged, including a user that held an email and attributes.
+func TestIdentityMigration_AdministrationDown(t *testing.T) {
+	t.Parallel()
+
+	db, p := identityAt(t)
+	ctx := t.Context()
+
+	_, err := p.UpTo(ctx, versionIdentityPrefix)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `INSERT INTO scrty_users (id, name, username, password, role, created_at, updated_at)
+	     VALUES ('00000000-0000-0000-0000-0000000000a1', 'Ada', 'ada', '\x01', 'admin', now(), now())`)
+	require.NoError(t, err)
+	before := identityCatalog(t, db)
+	rowBefore := queryStrings(t, db, userRowQuery)
+
+	_, err = p.UpTo(ctx, versionIdentityAdministration)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `UPDATE scrty_users SET email = 'ada@example.com', version = 4`)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `INSERT INTO scrty_user_attributes (user_id, name, value)
+	     VALUES ('00000000-0000-0000-0000-0000000000a1', 'team', 'core')`)
+	require.NoError(t, err)
+	require.NotEqual(t, before, identityCatalog(t, db), "the migration changed the catalogue")
+
+	res, err := p.Down(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, versionIdentityAdministration, res.Source.Version)
+
+	assert.Equal(t, before, identityCatalog(t, db), "the catalogue is as it was at the prefix migration")
+	assert.False(t, regclassExists(t, db, "scrty_user_attributes"))
+	assert.Empty(t, indexNamesOf(t, db, administrationIndexNames))
+	assert.Equal(t, rowBefore, queryStrings(t, db, userRowQuery))
+}
+
+// userRowQuery renders every column of scrty_users that exists before the
+// administration migration, one text row per user.
+const userRowQuery = `SELECT concat_ws('|', id::text, name, username, encode(password, 'hex'), active::text, role,
+	mfa_required::text) FROM scrty_users ORDER BY id`
+
+// TestIdentityMigration_FailsAtomically pins that the administration
+// migration applies in one transaction: on a database where a consumer already
+// added an email column to the users table it fails, and nothing it would add
+// exists afterwards.
+func TestIdentityMigration_FailsAtomically(t *testing.T) {
+	t.Parallel()
+
+	db, p := identityAt(t)
+	ctx := t.Context()
+
+	_, err := p.UpTo(ctx, versionIdentityPrefix)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `ALTER TABLE scrty_users ADD COLUMN email text`)
+	require.NoError(t, err)
+	before := identityCatalog(t, db)
+
+	_, err = p.UpTo(ctx, versionIdentityAdministration)
+	var pgErr *pgconn.PgError
+	require.ErrorAs(t, err, &pgErr, "the upgrade fails with the server's error: %v", err)
+	assert.Equal(t, "42701", pgErr.Code, "duplicate_column")
+
+	assert.Equal(t, before, identityCatalog(t, db), "a failed migration leaves the catalogue as the consumer had it")
+	assert.False(t, regclassExists(t, db, "scrty_user_attributes"))
+	assert.Empty(t, indexNamesOf(t, db, administrationIndexNames))
+	for _, tc := range []struct {
+		table string
+		names []string
+	}{
+		{"scrty_users", []string{"email_verified_at", "deleted_at", "version"}},
+		{"scrty_roles", []string{"display_name", "description", "labels", "version"}},
+		{"scrty_resource_privileges", []string{"scope"}},
+	} {
+		assert.Empty(t, tableColumns(t, db, tc.table, tc.names), "table %s", tc.table)
+	}
+	assert.Equal(t, 0, queryCount(t, db, `SELECT count(*) FROM `+migrate.IdentityVersionTable+
+		` WHERE is_applied AND version_id = $1`, versionIdentityAdministration), "the failed migration is not recorded")
+}
+
+// TestIdentityMigration_AdministrationPopulated pins that rows written before
+// the migration read back with no email, not deleted, version 1, an empty role
+// display name, description and labels, and scope all.
+func TestIdentityMigration_AdministrationPopulated(t *testing.T) {
+	t.Parallel()
+
+	db, p := identityAt(t)
+	ctx := t.Context()
+
+	_, err := p.UpTo(ctx, versionIdentityPrefix)
+	require.NoError(t, err)
+	for _, stmt := range []string{
+		`INSERT INTO scrty_users (id, username, password, created_at, updated_at)
+		   VALUES ('00000000-0000-0000-0000-0000000000a1', 'ada', '\x01', now(), now())`,
+		`INSERT INTO scrty_roles (id, name, created_at, updated_at)
+		   VALUES ('00000000-0000-0000-0000-0000000000b1', 'admin', now(), now())`,
+		`INSERT INTO scrty_resource_privileges (id, role_name, resource_group, resource, privilege, granted, created_at, updated_at)
+		   VALUES ('00000000-0000-0000-0000-0000000000c1', 'admin', 'docs', 'doc', 'read', true, now(), now())`,
+	} {
+		_, err = db.ExecContext(ctx, stmt)
+		require.NoError(t, err)
+	}
+
+	_, err = p.UpTo(ctx, versionIdentityAdministration)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"true|true|true|1"}, queryStrings(t, db, `SELECT concat_ws('|', (email IS NULL)::text, (email_verified_at IS NULL)::text,
+	     (deleted_at IS NULL)::text, version) FROM scrty_users`))
+	assert.Equal(t, []string{"true|true|true|1"}, queryStrings(t, db, `SELECT concat_ws('|', (display_name = '')::text,
+	     (description = '')::text, (labels = '{}')::text, version) FROM scrty_roles`))
+	assert.Equal(t, []string{"all"}, queryStrings(t, db, `SELECT scope FROM scrty_resource_privileges`))
+}
+
+// TestIdentifierLockKeys pins how a write that sets usernames or emails takes
+// their advisory locks: the keys are computed by the server from the values
+// themselves, as hashtextextended(lower(value), 0), one per distinct key, in
+// ascending key order, so every writer takes overlapping locks in the same
+// order whatever order or spelling it named them in.
+func TestIdentifierLockKeys(t *testing.T) {
+	t.Parallel()
+
+	db := migratedIdentity(t)
+
+	// keysOf is what the server computes for values, independently of the
+	// statement under test.
+	keysOf := func(t *testing.T, values ...string) []int64 {
+		t.Helper()
+
+		var out []int64
+		for _, v := range values {
+			var k int64
+			require.NoError(t, db.QueryRowContext(t.Context(),
+				`SELECT hashtextextended(lower($1), 0)`, v).Scan(&k))
+			out = append(out, k)
+		}
+
+		return out
+	}
+
+	type testCase struct {
+		name   string
+		values []string
+		// order, when set, rearranges values before the call.
+		order  func(t *testing.T, values []string) []string
+		assert func(t *testing.T, keys []int64)
+	}
+
+	descending := func(t *testing.T, values []string) []string {
+		t.Helper()
+
+		keys := keysOf(t, values...)
+		out := slices.Clone(values)
+		slices.SortFunc(out, func(a, b string) int {
+			return cmp.Compare(keys[slices.Index(values, b)], keys[slices.Index(values, a)])
+		})
+
+		return out
+	}
+
+	cases := []testCase{
+		{
+			name:   "values named in descending key order come back as keys in ascending order",
+			values: []string{"zeta@example.com", "alpha", "mid-user", "bob@example.com"},
+			order:  descending,
+			assert: func(t *testing.T, keys []int64) {
+				want := keysOf(t, "zeta@example.com", "alpha", "mid-user", "bob@example.com")
+				slices.Sort(want)
+				assert.Equal(t, want, keys)
+			},
+		},
+		{
+			name:   "keys come back in ascending order whatever order the values were named in",
+			values: []string{"zeta@example.com", "alpha", "mid-user", "bob@example.com"},
+			assert: func(t *testing.T, keys []int64) {
+				want := keysOf(t, "zeta@example.com", "alpha", "mid-user", "bob@example.com")
+				slices.Sort(want)
+				assert.Equal(t, want, keys)
+			},
+		},
+		{
+			name:   "spellings of one value and repeats collapse to one key",
+			values: []string{"Ada@Example.com", "ada@example.com", "ADA@EXAMPLE.COM", "ada@example.com"},
+			assert: func(t *testing.T, keys []int64) {
+				assert.Equal(t, keysOf(t, "ada@example.com"), keys)
+			},
+		},
+		{
+			name:   "an empty value guards nothing",
+			values: []string{"", "ada"},
+			assert: func(t *testing.T, keys []int64) {
+				assert.Equal(t, keysOf(t, "ada"), keys)
+			},
+		},
+		{
+			name: "nothing to lock",
+			assert: func(t *testing.T, keys []int64) {
+				assert.Empty(t, keys)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			values := tc.values
+			if tc.order != nil {
+				values = tc.order(t, values)
+			}
+
+			// The array is sent as its text form, as the database/sql store
+			// sends it.
+			rows, err := db.QueryContext(ctx, pgschema.IdentifierLockKeys, pgschema.TextArray(values))
+			require.NoError(t, err)
+			var keys []int64
+			for rows.Next() {
+				var k int64
+				require.NoError(t, rows.Scan(&k))
+				keys = append(keys, k)
+			}
+			require.NoError(t, rows.Err())
+			require.NoError(t, rows.Close())
+
+			tc.assert(t, keys)
+		})
+	}
+
+	t.Run("locking a key holds that advisory lock until the transaction ends", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+		key := keysOf(t, "held@example.com")[0]
+
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+
+		_, err = tx.ExecContext(ctx, pgschema.LockIdentifierKey, key)
+		require.NoError(t, err)
+
+		var free bool
+		require.NoError(t, db.QueryRowContext(ctx,
+			`SELECT pg_try_advisory_xact_lock($1)`, key).Scan(&free))
+		assert.False(t, free, "another session must not be able to take the key while it is held")
+
+		require.NoError(t, tx.Rollback())
+		// A session-level lock is taken and released on one connection, never
+		// on the pool, so the unlock reaches the session that holds it.
+		conn, err := db.Conn(ctx)
+		require.NoError(t, err)
+		defer func() { _ = conn.Close() }()
+		require.NoError(t, conn.QueryRowContext(ctx,
+			`SELECT pg_try_advisory_lock($1)`, key).Scan(&free))
+		assert.True(t, free, "the lock is released with the transaction")
+		_, err = conn.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, key)
+		require.NoError(t, err)
+	})
 }

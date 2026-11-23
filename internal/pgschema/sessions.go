@@ -32,7 +32,8 @@ const (
 	// never presented), $29 authenticated_at, $30 retain_until (NULL for no
 	// retention deadline), and the sign-in columns SessionSignInArgs returns:
 	// $31 client_ip, $32 user_agent, $33 binding_kind, $34 binding_thumbprint
-	// and $35 csrf_token, each NULL for none. Zero rows affected means the
+	// and $35 csrf_token, each NULL for none, and $36 selected_role
+	// (SessionSelectedRoleArg: NULL for none). Zero rows affected means the
 	// digest is already stored.
 	SessionInsert = `INSERT INTO scrty_sessions (id, id_digest, user_id, created_at, last_accessed_at,
   idle_expires_at, absolute_expires_at, first_factor, mfa_state, mfa_satisfied_at,
@@ -40,15 +41,16 @@ const (
   external_id_token, data, enrolment_origin_deadline, enrolment_generation, recovered_at,
   federated_amr, federated_acr, mfa_at_first_factor, family_id, family_created_at,
   superseded_at, accept_until, successor_digest, first_presented_at, authenticated_at, retain_until,
-  client_ip, user_agent, binding_kind, binding_thumbprint, csrf_token)
+  client_ip, user_agent, binding_kind, binding_thumbprint, csrf_token, selected_role)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
-  $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35)
+  $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36)
 ON CONFLICT (id_digest) DO NOTHING`
 
 	// SessionUpdate replaces every field of the session with digest $1, in
 	// SessionInsert's order from $2 user_id to $20 federated_acr. It leaves
 	// mfa_at_first_factor, authenticated_at, the sign-in columns (client_ip,
-	// user_agent, binding_kind, binding_thumbprint, csrf_token) and the
+	// user_agent, binding_kind, binding_thumbprint, csrf_token), selected_role
+	// (written by the insert and SessionSelectRole only) and the
 	// family, supersession (retain_until included) and presentation columns
 	// out: only the insert,
 	// the supersession and the first presentation write them, so no later save
@@ -70,11 +72,13 @@ WHERE id_digest = $1 AND NOT rotated_strictly`
 	// SessionSelect reads the session with digest $1, rotated_strictly (the
 	// strict-rotation mark) after retain_until, then the sign-in columns, each
 	// '' for none: client_ip, user_agent, binding_kind, binding_thumbprint
-	// (ParseSessionBinding reads the two) and csrf_token. Expiry is judged by
+	// (ParseSessionBinding reads the two) and csrf_token, then selected_role,
+	// '' for none. Expiry is judged by
 	// the caller, with its clock, by the condition sessionLoadable states: a
 	// stored row that is not loadable is an expired session, not a missing
 	// one.
-	SessionSelect = `SELECT ` + sessionReadHead + `external_id_token` + sessionReadMid + `COALESCE(csrf_token, '')
+	SessionSelect = `SELECT ` + sessionReadHead + `external_id_token` + sessionReadMid + `COALESCE(csrf_token, '')` +
+		sessionReadTail + `
 FROM scrty_sessions WHERE id_digest = $1`
 
 	// SessionListByUser reads the sessions of user $1, matched exactly, that
@@ -85,7 +89,7 @@ FROM scrty_sessions WHERE id_digest = $1`
 	// needs neither, and opens neither. No row carries the session
 	// identifier, which is never stored. It is answered through the
 	// sessions_user index.
-	SessionListByUser = `SELECT ` + sessionReadHead + `''` + sessionReadMid + `''
+	SessionListByUser = `SELECT ` + sessionReadHead + `''` + sessionReadMid + `''` + sessionReadTail + `
 FROM scrty_sessions
 WHERE user_id = $1 AND superseded_at IS NULL AND idle_expires_at > $2 AND absolute_expires_at > $2`
 
@@ -122,6 +126,14 @@ WHERE o.id_digest = $1 AND ` + sessionLoadableO
 	SessionRecordActivity = `UPDATE scrty_sessions SET last_accessed_at = $2, idle_expires_at = LEAST($3, absolute_expires_at)
 WHERE id_digest = $1 AND last_accessed_at <= $4 AND superseded_at IS NULL`
 
+	// SessionSelectRole writes $2 as the selected_role (NULL for none) of the
+	// session with digest $1, and nothing else, provided it is not superseded
+	// and is before both of its own deadlines at $3, the store's time. It never
+	// inserts. Zero rows affected means it is missing, superseded or expired;
+	// SessionPresentationRefusal, read through SelectRoleRefusal, tells which.
+	SessionSelectRole = `UPDATE scrty_sessions SET selected_role = $2
+WHERE id_digest = $1 AND superseded_at IS NULL AND idle_expires_at > $3 AND absolute_expires_at > $3`
+
 	// SessionLockSupersession locks the rows a supersession writes before it
 	// writes any of them: the old session with digest $1 and, when $2 is not
 	// NULL, the observed previous successor with digest $2, in id order, and
@@ -134,6 +146,16 @@ WHERE id_digest = $1 AND last_accessed_at <= $4 AND superseded_at IS NULL`
 	// deletes by user and the expiry sweep lock their rows in scan order, not
 	// id order, and are not covered by this ordering.
 	SessionLockSupersession = `SELECT id FROM scrty_sessions WHERE id_digest IN ($1, $2) ORDER BY id FOR UPDATE`
+
+	// SessionSupersededRole reads the selected_role of the session with digest
+	// $1, '' for none: the role a supersession's successor takes. It runs
+	// inside the supersession, after SessionLockSupersession locked that row,
+	// so it reads the selection as the row holds it at the supersession, not
+	// as the caller's copy loaded it: a SessionSelectRole committed in between
+	// is neither lost nor undone, and one that comes later waits on the lock
+	// and then finds the row superseded. No row means the session is not
+	// stored, which the supersession has already refused by then.
+	SessionSupersededRole = `SELECT COALESCE(selected_role, '') FROM scrty_sessions WHERE id_digest = $1`
 
 	// SessionSupersedeOld marks the session with digest $1 superseded at $3,
 	// with its window ending at $4 and $5 as its successor's digest, and keeps
@@ -276,7 +298,7 @@ WHERE external_issuer = $1 AND external_session_id = $2 AND $1 <> '' AND $2 <> '
 	SessionDeleteByUserIssuer = `DELETE FROM scrty_sessions WHERE user_id = $1 AND external_issuer = $2 AND $2 <> ''`
 )
 
-// sessionReadHead and sessionReadMid are the columns SessionSelect,
+// sessionReadHead, sessionReadMid and sessionReadTail are the columns SessionSelect,
 // SessionListByUser and SessionListByFamily read around the two sealed ones: the head runs up to the
 // provider ID token, and the mid from it to the CSRF token. The statements
 // put the token column, or an empty string in its place, between them.
@@ -290,6 +312,9 @@ const (
   superseded_at, accept_until, successor_digest, first_presented_at, authenticated_at,
   retain_until, rotated_strictly, COALESCE(client_ip, ''), COALESCE(user_agent, ''),
   COALESCE(binding_kind, ''), COALESCE(binding_thumbprint, ''), `
+	// sessionReadTail is the columns those statements read after the CSRF
+	// token.
+	sessionReadTail = `, COALESCE(selected_role, '')`
 )
 
 // The binding_kind values: a DPoP key thumbprint (the cnf "jkt" member) and a
@@ -338,6 +363,41 @@ func SessionSignInArgs(s *session.Session) ([]any, error) {
 	}
 
 	return args, nil
+}
+
+// ErrSessionRoleUnstorable is wrapped by SessionSelectedRoleArg's refusal of
+// a selected role PostgreSQL text cannot hold unchanged: one holding a NUL
+// byte or invalid UTF-8. Its text never carries the role.
+var ErrSessionRoleUnstorable = errors.New("the session's selected role cannot be stored")
+
+// SessionSelectedRoleArg is role as SessionInsert's $36 and SessionSelectRole's
+// $2 bind it: nil (NULL) for none, so a session with no selection never holds
+// the empty string, and the name itself otherwise. A role text PostgreSQL
+// cannot hold unchanged is refused, wrapping ErrSessionRoleUnstorable.
+func SessionSelectedRoleArg(role string) (any, error) {
+	if role == "" {
+		return nil, nil
+	}
+	if strings.IndexByte(role, 0) >= 0 || !utf8.ValidString(role) {
+		return nil, fmt.Errorf("%w: the selected role is not text PostgreSQL can store", ErrSessionRoleUnstorable)
+	}
+
+	return role, nil
+}
+
+// SelectRoleRefusal is why a SessionSelectRole that changed no row did, from
+// what SessionPresentationRefusal reads: a session not stored is
+// session.ErrNotFound, a superseded one session.ErrSuperseded, and any other,
+// which the statement refused for its deadlines, session.ErrExpired.
+func SelectRoleRefusal(exists, superseded bool) error {
+	switch {
+	case !exists:
+		return session.ErrNotFound
+	case superseded:
+		return session.ErrSuperseded
+	default:
+		return session.ErrExpired
+	}
 }
 
 // ParseSessionBinding reads binding_kind and binding_thumbprint back, as

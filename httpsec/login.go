@@ -364,7 +364,9 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	// password does not outlive the request.
 	defer upgrade.Discard()
 
-	auth, err := l.attemptPassword(verifyCtx, ex.Request.ClientIP(), username, password, now,
+	// key is the account the identifier resolved to, under which the
+	// failures were judged and a success clears them (see judgePassword).
+	auth, key, err := l.attemptPasswordAs(verifyCtx, ex.Request.ClientIP(), username, password, now,
 		func(ctx context.Context) {
 			emitEvent(ctx, userEvent(event.AuthnLoginFail, event.OutcomeFailure, "", factor.Password))
 		},
@@ -384,12 +386,18 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 
 	// Read before the failures are cleared, and only on a request a sink
 	// watches: it decides nothing, and names the success's event.
-	afterFailures := l.hadRecentFailures(ctx, username, now)
+	afterFailures := l.hadRecentFailures(ctx, key, now)
 
 	// Only a login that named a principal supersedes the failures: one the
 	// tail is about to refuse for want of one proved no one.
 	if auth != nil && auth.Principal != nil {
-		l.resetFailures(ctx, username)
+		// The identifier as typed carries failures of its own when it is not
+		// the account's key (see verifyPassword), cleared with the account's
+		// and, like them, reported once: under the account.
+		l.resetFailures(ctx, key)
+		if username != key {
+			l.resetTypedFailures(ctx, username)
+		}
 	}
 
 	// A provider that answers neither an authentication nor an error has
@@ -424,7 +432,7 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 		binding:           binding,
 		afterFailures:     afterFailures,
 	}, postAuthenticationInput(
-		auth.Principal, factor.Password, username, auth.PasswordChangedAt, now), create...)
+		auth.Principal, factor.Password, key, auth.PasswordChangedAt, now), create...)
 
 	// The password verified, so a login that is answered, or is challenged for a
 	// second factor the user can still present, upgrades an outdated hash. Any
@@ -471,14 +479,37 @@ func (l *formLogin) attemptPassword(
 	refused func(ctx context.Context),
 	challenge func(ctx context.Context, src ratelimit.Source) error,
 ) (*authenticate.Authentication, error) {
+	auth, _, err := l.attemptPasswordAs(ctx, clientIP, username, password, now, refused, challenge)
+
+	return auth, err
+}
+
+// attemptPasswordAs is attemptPassword, also returning the key the attempt was
+// judged under (see judgePassword), so a login clears its failures under the
+// same key.
+//
+// The automation challenge, like the source guard, runs before the identifier
+// is resolved, so nothing about the account is read for a request either
+// refuses. It reads failures under the identifier as typed, which is why a
+// refused password is recorded under that identifier too whenever it differs
+// from the account's key (see verifyPassword): otherwise a registered email
+// would never raise the challenge while an unknown one would.
+func (l *formLogin) attemptPasswordAs(
+	ctx context.Context,
+	clientIP, username string,
+	password []byte,
+	now time.Time,
+	refused func(ctx context.Context),
+	challenge func(ctx context.Context, src ratelimit.Source) error,
+) (*authenticate.Authentication, string, error) {
 	src, err := sourceThrottled(ctx, l.guard, clientIP, l.flow, l.sampler, l.log, now)
 	if err != nil {
-		return nil, err
+		return nil, username, err
 	}
 
 	if challenge != nil {
 		if err := challenge(ctx, src); err != nil {
-			return nil, err
+			return nil, username, err
 		}
 	}
 
@@ -514,7 +545,9 @@ func (l *formLogin) authenticatePassword(
 	password []byte,
 	now time.Time,
 ) (*authenticate.Authentication, error) {
-	return l.judgePassword(ctx, username, password, now, func() {}, nil)
+	auth, _, err := l.judgePassword(ctx, username, password, now, func() {}, nil)
+
+	return auth, err
 }
 
 // judgePassword is the pre-authentication phase, a lock refused as a login
@@ -526,6 +559,15 @@ func (l *formLogin) authenticatePassword(
 // a load the request's own hang-up ended: it is where the caller reports the
 // refusal it decided (security events), and a dependency failure or a hang-up
 // decided nothing.
+//
+// The identifier is resolved first (resolveIdentifier), and everything the
+// lockout sees is keyed on the result, which is returned: the
+// pre-authentication phase, and the failure a refused password records. The
+// authenticator is still asked about the identifier as typed, carrying the
+// resolution so it does not load the user again. A resolution that fails is
+// refused (refuseUnresolved) before the pre-authentication phase and without
+// asking the authenticator, charged to the source like an outage, and reported
+// to refused never: it decided nothing.
 func (l *formLogin) judgePassword(
 	ctx context.Context,
 	username string,
@@ -533,20 +575,29 @@ func (l *formLogin) judgePassword(
 	now time.Time,
 	charge func(),
 	refused func(ctx context.Context),
-) (*authenticate.Authentication, error) {
-	if err := l.preAuthenticate(ctx, username, now); err != nil {
+) (*authenticate.Authentication, string, error) {
+	ctx, key, err := resolveIdentifier(ctx, l.authn, username)
+	if err != nil {
+		charge()
+
+		return nil, key, refuseUnresolved(ctx, unresolvedDeps{
+			authn: l.authn, log: l.log, sampler: l.sampler, flow: l.flow, now: now,
+		}, identity.NewUsernamePassword(username, password), err)
+	}
+
+	if err := l.preAuthenticate(ctx, key, now); err != nil {
 		if !errors.Is(err, lockout.ErrAccountLocked) {
-			return nil, err
+			return nil, key, err
 		}
 
 		charge()
 		reportRefused(ctx, refused)
 
-		return nil, refuseLocked(ctx, l.authn, l.discloseLocks,
+		return nil, key, refuseLocked(ctx, l.authn, l.discloseLocks,
 			identity.NewUsernamePassword(username, password), err)
 	}
 
-	auth, err := l.verifyPassword(ctx, username, password, now)
+	auth, err := l.verifyPassword(ctx, username, key, password, now)
 	if err != nil {
 		charge()
 
@@ -554,11 +605,131 @@ func (l *formLogin) judgePassword(
 			reportRefused(ctx, refused)
 		}
 
-		return nil, err
+		return nil, key, err
 	}
 
-	return auth, nil
+	return auth, key, nil
 }
+
+// resolveIdentifier resolves identifier to the key the lockout judges it under,
+// when authn logs in by something other than a username
+// (authenticate.ResolverOf), and returns ctx carrying the resolution for authn
+// to authenticate without loading the user again.
+//
+// With no such resolver, identifier is its own key and ctx is returned as it
+// is: the path, and its cost, are those of a username-only login. A consumer's
+// resolver whose answer carries no key is keyed on the identifier as typed.
+//
+// A resolution that failed returns its error, with identifier as the key and
+// ctx as it was given. The caller refuses it (refuseUnresolved) and never asks
+// authn: the account the identifier names is unknown, so its lock and holds
+// cannot be judged, and authenticating anyway would let a failing resolver
+// bypass them.
+func resolveIdentifier(
+	ctx context.Context,
+	authn authenticate.Authenticator,
+	identifier string,
+) (context.Context, string, error) {
+	r, ok := authenticate.ResolverOf(authn)
+	if !ok {
+		return ctx, identifier, nil
+	}
+
+	resolved, err := r.ResolveIdentifier(ctx, identifier)
+	if err != nil {
+		return ctx, identifier, err
+	}
+
+	key := resolved.Key
+	if key == "" {
+		key = identifier
+	}
+
+	return authenticate.WithResolved(ctx, resolved), key, nil
+}
+
+// unresolvedDeps is what refuseUnresolved needs from the endpoint refusing:
+// its authenticator, for the decoy, and where and how it records the refusal.
+type unresolvedDeps struct {
+	authn   authenticate.Authenticator
+	log     *slog.Logger
+	sampler *refusalSampler
+	flow    string
+	now     time.Time
+}
+
+// refuseUnresolved is the refusal of an identifier whose resolution failed with
+// err, for the credentials presented.
+//
+// The outcome is the one the authenticator would have given for the same load
+// failure, after the same password work, so the response says no more than an
+// unknown username's outage does:
+//
+//   - a resolution the request's own context ended is the uniform failure
+//     joined with that context's error and, when it differs, its cause, as a
+//     user load the caller ended is: no password was compared;
+//   - anything else, scrty's ErrUnavailable or a consumer's own error, is a
+//     bare authenticate.ErrUnavailable: the resolver's text, which may quote
+//     the identifier or a row, stays out of the refusal and of the record.
+//
+// The password work is one decoy verification, when the authenticator offers
+// one (authenticate.DecoyVerifier), which is what scrty's provider spends on a
+// lookup it could not finish. Nothing is recorded against any identifier: no
+// credential was judged. The refusal is logged, sampled per flow, with a fixed
+// reason and the error's type, never the identifier or the error's text.
+func refuseUnresolved(ctx context.Context, d unresolvedDeps, creds identity.Credentials, err error) error {
+	// The resolver may be the consumer's, and so is its error: one whose chain
+	// cannot be walked is recorded once and read as the outage it stands for.
+	err = porterr.SanitizeTo(ctx, d.log, err, authenticate.ErrUnavailable)
+
+	if v, ok := d.authn.(authenticate.DecoyVerifier); ok {
+		// Deliberately unread: the verification is the point, not its verdict.
+		_ = v.VerifyDecoy(ctx, creds)
+	}
+
+	if hangup.ByCaller(ctx, err) {
+		logSampled(ctx, d.sampler, d.log, slog.LevelDebug, d.now,
+			d.flow+sampleKeySeparator+reasonResolveCallerEnded, msgResolveCallerEnded,
+			append([]slog.Attr{slog.String("flow", d.flow)},
+				diag.Failure(reasonResolveCallerEnded, err)...)...)
+
+		return resolveEndedByCaller(ctx)
+	}
+
+	logSampled(ctx, d.sampler, d.log, slog.LevelError, d.now,
+		d.flow+sampleKeySeparator+reasonResolveUnavailable, msgResolveUnavailable,
+		append([]slog.Attr{slog.String("flow", d.flow)},
+			diag.Failure(reasonResolveUnavailable, err)...)...)
+
+	return authenticate.ErrUnavailable
+}
+
+// resolveEndedByCaller is the refusal of a resolution the request's own
+// context ended: the uniform failure joined with the context's error and, when
+// it differs, its cause, the shape loadEndedByCaller recognises.
+func resolveEndedByCaller(ctx context.Context) error {
+	ctxErr := ctx.Err()
+	errs := []error{authenticate.ErrAuthenticationFailed, ctxErr}
+
+	// The cause is read under the bounded walk, and one the walk gives up on
+	// is left out, as it may hang or panic whoever reads the error next.
+	if matched, abort := detach.CauseWalk(ctx, ctxErr); !matched && abort == nil {
+		errs = append(errs, context.Cause(ctx))
+	}
+
+	return errors.Join(errs...)
+}
+
+// The reasons and records of a resolution refused by refuseUnresolved. The
+// messages are constants: the refusal they accompany says nothing about the
+// cause, so the record is where an operator learns of it.
+const (
+	reasonResolveUnavailable = "resolve-unavailable"
+	reasonResolveCallerEnded = "resolve-caller-ended"
+
+	msgResolveUnavailable = "httpsec: the login identifier could not be resolved"
+	msgResolveCallerEnded = "httpsec: the caller left while the login identifier was resolved"
+)
 
 // preAuthenticate is the pre-authentication phase's refusal of username, or
 // nil when the phase lets the password be checked.
@@ -571,8 +742,16 @@ func (l *formLogin) preAuthenticate(ctx context.Context, username string, now ti
 	return refusePreAuthentication(pre, l.enforced)
 }
 
-// verifyPassword checks the password, recording a refused one as a failed
-// attempt against the account.
+// verifyPassword checks the password presented for username, recording a
+// refused one as a failed attempt against the account, under key (see
+// judgePassword), and also under username, the identifier as typed, when it is
+// not key (recordFailure). Lockout judges key alone; the second record is what
+// the automation challenge reads (see attemptPasswordAs), so a registered
+// email accrues failures under itself exactly as an unknown one does. With
+// scrty's provider an identifier that resolved to a different key is no
+// account's username, since a username is always looked up first, so the
+// second record locks no one, and it is written unreported
+// (recordUnreported), so one account's lock is reported once.
 //
 // A user store that could not answer (authenticate.ErrUnavailable) is returned
 // as it is and recorded as nothing against the account: no credential was
@@ -584,7 +763,7 @@ func (l *formLogin) preAuthenticate(ctx context.Context, username string, now ti
 // charge to the source.
 func (l *formLogin) verifyPassword(
 	ctx context.Context,
-	username string,
+	username, key string,
 	password []byte,
 	now time.Time,
 ) (*authenticate.Authentication, error) {
@@ -597,12 +776,37 @@ func (l *formLogin) verifyPassword(
 		return nil, err
 	}
 	if err != nil {
-		l.recordFailure(ctx, username, now)
+		l.recordFailure(ctx, key, username, now)
 
 		return nil, err
 	}
 
 	return auth, nil
+}
+
+// recordUnreported records a failure for typed, the identifier as presented
+// when it resolved to another account key, through store's unreported record
+// when store offers one (policy.UnreportedAttemptRecorder): the account's own
+// record, under its key, is the one the lockout judges and reports, and a
+// second report under typed would report one account twice. A store that
+// offers none records it as any failure; it reports nothing, so it has
+// nothing to report twice.
+func recordUnreported(ctx context.Context, store policy.AttemptStore, typed string, at time.Time) error {
+	if r, ok := store.(policy.UnreportedAttemptRecorder); ok {
+		return r.RecordFailureUnreported(ctx, typed, at)
+	}
+
+	return store.RecordFailure(ctx, typed, at)
+}
+
+// resetUnreported is recordUnreported's counterpart for a success: it clears
+// typed's failures without reporting the clearing.
+func resetUnreported(ctx context.Context, store policy.AttemptStore, typed string) error {
+	if r, ok := store.(policy.UnreportedAttemptRecorder); ok {
+		return r.ResetUnreported(ctx, typed)
+	}
+
+	return store.Reset(ctx, typed)
 }
 
 // credentialRefused reports whether err, an authenticator's failure, is a
@@ -768,7 +972,11 @@ func (l *formLogin) hadRecentFailures(ctx context.Context, username string, now 
 // its text: a consumer whose store wraps a database error may quote a column
 // of the row the library never saw. A consumer who wants that detail logs it
 // inside their own policy.AttemptStore.
-func (l *formLogin) recordFailure(ctx context.Context, username string, now time.Time) {
+//
+// It records under key, the account's, and, when typed differs from key, under
+// typed too, unreported (recordUnreported). Each write is attempted and logged
+// on its own, so a store that fails one still gets the other.
+func (l *formLogin) recordFailure(ctx context.Context, key, typed string, now time.Time) {
 	// The client's cancellation is not passed on: a client that hangs up after
 	// sending its guess must still be charged for it, and an attempt store that
 	// honours cancellation would otherwise drop the failure. The context names
@@ -777,12 +985,10 @@ func (l *formLogin) recordFailure(ctx context.Context, username string, now time
 	defer cancel()
 
 	recordCtx := eventsink.WithFactor(bounded, factor.Password)
-	err := l.attempts.RecordFailure(recordCtx, username, now)
-	// Only logged, but sanitized so an error that cannot be walked is
-	// recorded as an abort too.
-	if err = porterr.SanitizeTo(ctx, l.log, err, porterr.ErrUnwalkable); err != nil {
-		l.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
-			diag.Failure("attempt-store", err)...)
+	logAttemptStoreErr(ctx, l.log, msgAttemptNotRecorded, l.attempts.RecordFailure(recordCtx, key, now))
+
+	if typed != key {
+		logAttemptStoreErr(ctx, l.log, msgAttemptNotRecorded, recordUnreported(recordCtx, l.attempts, typed, now))
 	}
 }
 
@@ -793,12 +999,24 @@ func (l *formLogin) recordFailure(ctx context.Context, username string, now time
 // As with recordFailure, the record names the fixed reason and the store's
 // error type, never its text.
 func (l *formLogin) resetFailures(ctx context.Context, username string) {
-	err := l.attempts.Reset(ctx, username)
-	// Only logged, but sanitized so an error that cannot be walked is
-	// recorded as an abort too.
-	if err = porterr.SanitizeTo(ctx, l.log, err, porterr.ErrUnwalkable); err != nil {
-		l.log.LogAttrs(ctx, slog.LevelError, msgAttemptsNotReset,
-			diag.Failure("attempt-store", err)...)
+	logAttemptStoreErr(ctx, l.log, msgAttemptsNotReset, l.attempts.Reset(ctx, username))
+}
+
+// resetTypedFailures clears the failures recorded under typed, the identifier
+// as presented when it resolved to another account key, without reporting the
+// clearing (resetUnreported): the account's own clearing is reported under its
+// key. A store that could not is logged as resetFailures logs it.
+func (l *formLogin) resetTypedFailures(ctx context.Context, typed string) {
+	logAttemptStoreErr(ctx, l.log, msgAttemptsNotReset, resetUnreported(ctx, l.attempts, typed))
+}
+
+// logAttemptStoreErr logs err, a write the attempt store refused, if any,
+// with msg, the fixed record of that write (msgAttemptNotRecorded,
+// msgAttemptsNotReset). Only logged, but sanitized so an error that cannot be
+// walked is recorded as an abort too.
+func logAttemptStoreErr(ctx context.Context, log *slog.Logger, msg string, err error) {
+	if err = porterr.SanitizeTo(ctx, log, err, porterr.ErrUnwalkable); err != nil {
+		log.LogAttrs(ctx, slog.LevelError, msg, diag.Failure("attempt-store", err)...)
 	}
 }
 

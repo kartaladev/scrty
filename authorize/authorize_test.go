@@ -83,9 +83,7 @@ func TestManagerAuthorize(t *testing.T) {
 
 				return []authorize.Authorizer{first, second}
 			},
-			assert: func(t *testing.T, err error) {
-				require.ErrorIs(t, err, authorize.ErrAccessDenied)
-			},
+			assert: deniedFor(authorize.ErrNotGranted),
 		},
 		{
 			name: "a consumer authorizer's own error is returned unchanged",

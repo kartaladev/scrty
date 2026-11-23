@@ -582,7 +582,10 @@ func (m *Links) Redeem(ctx context.Context, token, bindingNonce string, checks .
 			return err
 		}
 
-		principal := identity.PrincipalFromDetails(details)
+		// Only the grants in force now are kept: an expired or future
+		// primary grant leaves the principal with no active role. The flow
+		// has no clock of its own, so it reads the system's.
+		principal := identity.PrincipalFromDetailsAt(details, time.Now())
 		resolved = Redemption{Principal: *principal, PasswordChangedAt: details.PasswordChangedAt}
 
 		return nil

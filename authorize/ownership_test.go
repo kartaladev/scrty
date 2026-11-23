@@ -50,9 +50,6 @@ func TestOwnershipAuthorizerAuthorize(t *testing.T) {
 		}
 	}
 
-	denied := func(t *testing.T, _ *ownershipCalls, err error) {
-		require.ErrorIs(t, err, authorize.ErrAccessDenied)
-	}
 	invalid := func(t *testing.T, calls *ownershipCalls, err error) {
 		require.ErrorIs(t, err, authorize.ErrInvalidAttributes)
 		assert.Zero(t, calls.resolved, "malformed attributes still ran the consumer's resolver")
@@ -70,9 +67,11 @@ func TestOwnershipAuthorizerAuthorize(t *testing.T) {
 			},
 		},
 		{
-			name:   "someone who is not the owner is denied",
-			attrs:  owns("o-9", false),
-			assert: denied,
+			name:  "someone who is not the owner is denied",
+			attrs: owns("o-9", false),
+			assert: func(t *testing.T, _ *ownershipCalls, err error) {
+				deniedFor(authorize.ErrNotOwner)(t, err)
+			},
 		},
 		{
 			name:  "the identifier reaches the check exactly as the resolver produced it",
@@ -150,7 +149,7 @@ func TestOwnershipAuthorizerAuthorize(t *testing.T) {
 				return ctx
 			},
 			assert: func(t *testing.T, calls *ownershipCalls, err error) {
-				require.ErrorIs(t, err, authorize.ErrAccessDenied)
+				deniedFor(authorize.ErrNoSubject)(t, err)
 				assert.Zero(t, calls.resolved, "a record was identified for a caller who is not there")
 				assert.Zero(t, calls.checked, "ownership was checked for a caller who is not there")
 			},

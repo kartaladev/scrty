@@ -580,3 +580,35 @@ func (g *Guards) recent(window time.Duration) gin.HandlerFunc {
 		return nil
 	})
 }
+
+// Require builds a guard from any authorize.Requirement, including the any-of
+// and all-of compositions across resources (authorize.AnyOf, authorize.AllOf).
+//
+// It is the guard the net/http chain's Guards.Require is, for gin: the same
+// preamble as every guard here (a request with no caller is refused with
+// httpsec.ErrAuthenticationRequired, one with no authorizer with
+// authorize.ErrAccessDenied), then the requirement is asked, and its error is
+// the refusal unchanged: authentication-required, access-denied, or a
+// dependency failure, which stays a dependency failure rather than a denial.
+// The refusal is answered as every guard's is (see Guards).
+//
+// The requirement judges with the request's authorizer: the chain's, else the
+// one NewGuards was given, which this guard puts on the context it hands the
+// requirement.
+//
+// It returns an error wrapping httpsec.ErrConfig when req is nil, or when g is
+// nil, so the mistake surfaces when the route is wired and not as a refusal of
+// every request.
+func (g *Guards) Require(req authorize.Requirement) (gin.HandlerFunc, error) {
+	if g == nil {
+		return nil, fmt.Errorf("%w: ginsec: Require needs non-nil Guards", httpsec.ErrConfig)
+	}
+
+	if req == nil {
+		return nil, fmt.Errorf("%w: ginsec: Require needs a non-nil requirement", httpsec.ErrConfig)
+	}
+
+	return g.guard(func(ctx context.Context, _ httpsec.Request, az authorize.Authorizer) error {
+		return req(authorize.WithAuthorizer(ctx, az))
+	}), nil
+}

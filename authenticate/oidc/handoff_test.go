@@ -643,6 +643,43 @@ func TestHandoffRedeem(t *testing.T) {
 			},
 		},
 		{
+			name: "the principal keeps only the grants in force at the handoff's clock: an expired primary leaves no active role",
+			arrange: func(_ *testing.T, f *handoffRedeemFixture) {
+				f.clock.Advance(handoffT0.Add(30 * time.Second).Sub(f.clock.Now()))
+				u := handoffUser()
+				u.Roles = []*identity.AssignedRole{
+					{ID: "r-1", Name: "editor", Primary: true, ValidUntil: handoffT0.Add(10 * time.Second)},
+					{ID: "r-2", Name: "audit"},
+				}
+				f.users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(u, nil)
+			},
+			assert: func(t *testing.T, _ *handoffRedeemFixture, res oidc.HandoffResult, err error) {
+				require.NoError(t, err)
+				assert.Nil(t, res.Principal.ActiveRole, "no other grant is promoted in place of the expired primary")
+				require.Len(t, res.Principal.Roles, 1)
+				assert.Equal(t, "audit", res.Principal.Roles[0].Name)
+			},
+		},
+		{
+			// In force at the handoff's clock and long expired by the
+			// system's, so only a principal dated by the handoff's clock
+			// keeps it.
+			name: "the principal is dated by the handoff's clock, not the system's",
+			arrange: func(_ *testing.T, f *handoffRedeemFixture) {
+				f.clock.Advance(handoffT0.Add(30 * time.Second).Sub(f.clock.Now()))
+				u := handoffUser()
+				u.Roles = []*identity.AssignedRole{
+					{ID: "r-1", Name: "editor", Primary: true, StartDate: handoffT0, ValidUntil: handoffT0.Add(time.Minute)},
+				}
+				f.users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(u, nil)
+			},
+			assert: func(t *testing.T, _ *handoffRedeemFixture, res oidc.HandoffResult, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, res.Principal.ActiveRole)
+				assert.Equal(t, "editor", res.Principal.ActiveRole.Name)
+			},
+		},
+		{
 			name:  "malformed: no separator",
 			store: untouched,
 			code:  func(*testing.T, *handoffRedeemFixture) string { return strings.Repeat("A", 66) },

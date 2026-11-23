@@ -55,6 +55,29 @@ type Event struct {
 	// fixed word is a cause a consumer named when it revoked a user's grants:
 	// that is the consumer's own, and is carried unchanged.
 	Cause string
+
+	// Actor is who made an administration change: the identifier of the
+	// authenticated principal, or "system:" and the name of the system actor
+	// a job attached. It is empty on the events of every other component,
+	// except ActiveRoleSwitched, whose Actor is the user, who changes their
+	// own session.
+	Actor string
+
+	// Target is what an administration change concerns: a user's identifier,
+	// or a role's name. It is empty on the events of every other component,
+	// except ActiveRoleSwitched, whose Target is the role now active: the
+	// role switched to, or, when the selection is cleared, the primary
+	// grant's role name, empty when no primary grant is left. The user is
+	// that event's User and Actor.
+	Target string
+
+	// Changed names the fields an administration change changed, such as
+	// "email", or the resources a grant replacement replaced, as
+	// group/resource. It never carries a field's value. It is nil on the
+	// events of every other component, except ActiveRoleSwitched, which carries
+	// "active_role", and where the name says it all: a user's creation, an
+	// import and a deletion. The slice is the sink's own.
+	Changed []string
 }
 
 // CauseGrantsNotRevoked is the Cause of a RecoveryCompleted a chain reports for a
@@ -150,7 +173,8 @@ const (
 	// lockout policy's observer is told of the same failure as before.
 	AuthnLoginLock = "authn_login_lock"
 
-	// AuthnPasswordChange is a password changed.
+	// AuthnPasswordChange is a password changed, by its user or by an
+	// administrator's reset through the administration services.
 	AuthnPasswordChange = "authn_password_change"
 
 	// AuthnPasswordChangeFail is a password change refused: the current
@@ -202,6 +226,36 @@ const (
 	// MaliciousCSRF is a request refused as cross-site by the CSRF
 	// protection.
 	MaliciousCSRF = "malicious_csrf"
+
+	// UserCreated is a user created through the administration services. It
+	// names the actor and, as Target and User, the new user.
+	UserCreated = "user_created"
+
+	// UserUpdated is a user's details changed through the administration
+	// services. Changed names the fields, never their values.
+	UserUpdated = "user_updated"
+
+	// UserArchived is a user deactivated through the administration services.
+	// Deactivating a user who is already inactive reports nothing.
+	UserArchived = "user_archived"
+
+	// UserDeleted is a user soft-deleted through the administration services.
+	UserDeleted = "user_deleted"
+
+	// PrivilegePermissionsChanged is a role's grants replaced through the
+	// administration services. Target is the role, and Changed names each
+	// replaced resource as group/resource.
+	PrivilegePermissionsChanged = "privilege_permissions_changed"
+
+	// AuthzChange is a user's role grants changed through the administration
+	// services: a grant added or removed, or another made primary.
+	AuthzChange = "authz_change"
+
+	// AuthzAdmin is a role created, updated or deleted through the
+	// administration services. Target is the role's name. Changed lists
+	// "name" and the fields set for a creation, the fields changed for an
+	// update (never "name", which cannot change), and nothing for a deletion.
+	AuthzAdmin = "authz_admin"
 )
 
 // The names under the scrty_ prefix, for outcomes the OWASP Logging Vocabulary
@@ -407,6 +461,24 @@ const (
 	// the same way but is not reported. It names no client and no user, as nothing of the
 	// code was read.
 	UserCodeEntryThrottled = "scrty_user_code_entry_throttled"
+
+	// UserReactivated is a user reactivated through the administration
+	// services. Reactivating a user who is already active reports nothing.
+	UserReactivated = "scrty_user_reactivated"
+
+	// UserImported is a user created or changed by an administration import.
+	// An import that found every value equal reports nothing.
+	UserImported = "scrty_user_imported"
+
+	// IdentifierConflict is an email login refused because the identifier
+	// names two users. It names no user and never carries the identifier.
+	IdentifierConflict = "scrty_identifier_conflict"
+
+	// ActiveRoleSwitched is a user's active role switched to another role the
+	// user holds, or a selection cleared. The user is its User and Actor, the
+	// role now active its Target (see Event.Target), and Changed names
+	// "active_role".
+	ActiveRoleSwitched = "scrty_active_role_switched"
 )
 
 // Names returns every event name the library reports: the OWASP Logging
@@ -418,6 +490,8 @@ func Names() []string {
 		AuthnLoginLock, AuthnPasswordChange, AuthnPasswordChangeFail, AuthnTokenCreated,
 		AuthnTokenRevoked, AuthnTokenReuse, SessionCreated, SessionRenewed, SessionExpired,
 		SessionUseAfterExpire, SessionLogout, AuthzFail, ExcessRateLimitExceeded, MaliciousCSRF,
+		UserCreated, UserUpdated, UserArchived, UserDeleted, PrivilegePermissionsChanged,
+		AuthzChange, AuthzAdmin,
 
 		MFAVerified, MFAVerifyFail, MFAEnrolled, MFARemoved, PasskeyRegistered, PasskeyRemoved,
 		RecoveryStarted, RecoveryCompleted, RecoveryRefused, Reauthenticated, ReauthenticationFail,
@@ -426,6 +500,6 @@ func Names() []string {
 		ClientAuthRefused, CodeReplayed, RefreshReused, GrantRevoked, LogoutDeliveryFailed,
 		GrantEndFailed, GrantRevokeFailed, DeviceAuthorizationIssued, DeviceAuthorizationClaimed,
 		DeviceAuthorizationApproved, DeviceAuthorizationDenied, DeviceCodeExchanged, DeviceCodeReplayed,
-		UserCodeEntryThrottled,
+		UserCodeEntryThrottled, UserReactivated, UserImported, IdentifierConflict, ActiveRoleSwitched,
 	}
 }

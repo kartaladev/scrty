@@ -181,9 +181,27 @@ func (r *sessionResolver) resolve(ex *Exchange, id string) error {
 		return err
 	}
 
-	principal := identity.PrincipalFromDetails(details)
-
 	now := r.phase.now()
+
+	// Built at the chain's clock, so a grant outside its dates is not honoured
+	// for a request being authenticated now. A user left with no valid grant is
+	// still authenticated, with no active role: the session is neither refused
+	// nor revoked, and a privilege guard refuses for want of a role.
+	principal := identity.PrincipalFromDetailsAt(details, now)
+
+	// The chain running this resolution is the one the authenticator belongs
+	// to. With switching on, the session's selection is applied to the grants
+	// just kept, and the request remembers which resolution it was, so
+	// Chain.SwitchActiveRole reloads and records through the same loader and
+	// manager.
+	switching := ex.publishingChain()
+	if switching == nil || switching.perRequest == nil || !switching.perRequest.roleSwitching {
+		switching = nil
+	}
+
+	if switching != nil {
+		applySelectedRole(principal, s.SelectedRole)
+	}
 
 	if err := ex.publishSession(&authenticate.Authentication{
 		Principal:         principal,
@@ -193,7 +211,39 @@ func (r *sessionResolver) resolve(ex *Exchange, id string) error {
 		return err
 	}
 
+	if switching != nil {
+		ex.SetContext(withRoleSource(ex.Context(), &roleSource{chain: switching, resolver: r, session: s}))
+	}
+
 	return ex.evaluatePerRequest(&r.phase, s, principal, details.PasswordChangedAt, now)
+}
+
+// applySelectedRole makes the grant named selected p's active role, when p
+// holds one. p's grants are the ones in force at the request's time, so a
+// selection naming a grant since removed, ended or not yet started changes
+// nothing, and the primary grant, or none, stays active: a selection never
+// adds a role and never promotes another grant in place of the one it names.
+// The first grant of that name wins, as two grants of one role may coexist.
+// An empty selection changes nothing.
+func applySelectedRole(p *identity.Principal, selected string) {
+	if p == nil || selected == "" {
+		return
+	}
+
+	if g := grantNamed(p, selected); g != nil {
+		p.ActiveRole = g
+	}
+}
+
+// grantNamed returns p's first grant named name, or nil when p holds none.
+func grantNamed(p *identity.Principal, name string) *identity.AssignedRole {
+	for _, g := range p.Roles {
+		if g != nil && g.Name == name {
+			return g
+		}
+	}
+
+	return nil
 }
 
 // classifyLoad answers a session load that failed with err, on the request
@@ -284,6 +334,12 @@ type perRequestPhase struct {
 	enforced map[policy.ChallengeKind]bool
 
 	now func() time.Time
+
+	// roleSwitching records WithSwitchableRoles: the resolution core
+	// applies a session's selected role, and Chain.SwitchActiveRole records
+	// one. It is read from the chain's own phase only, never from a built-in's
+	// copy.
+	roleSwitching bool
 
 	// dpop is the chain's DPoP verifier, which every issuing endpoint
 	// verifies a sign-in's proof with, and nil while DPoP is off.

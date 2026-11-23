@@ -76,7 +76,8 @@ var ErrSuccessorAdvanced = errors.New("session: the session's successor has move
 // ErrSuperseded is what a store reports when Store.MarkPresented is
 // asked to record the first presentation of a session that has been
 // superseded, and nothing was written. A superseded session is never marked
-// presented: its presentation state is its successor's to record.
+// presented: its presentation state is its successor's to record. A
+// RoleSelector reports it too, for a selection on a superseded session.
 //
 // The Sessions never returns it: it re-loads the session and judges it, which
 // is how a recovery committed between a load and its mark is caught.
@@ -224,6 +225,13 @@ type Store interface {
 	// session handed to it says, so a save can neither unbind a session nor
 	// change its token or metadata. A SQL store leaves their columns out of
 	// the UPDATE.
+	//
+	// SelectedRole is written by Create, by a supersession's successor (which
+	// takes the superseded record's, see Supersede), and otherwise only by
+	// RoleSelector.SelectRole: Save keeps the stored
+	// value whatever the session handed to it says, so saving a copy loaded
+	// before a selection cannot undo it. A SQL store leaves its column out of
+	// the UPDATE.
 	Save(ctx context.Context, sess *Session) error
 
 	// Load returns the session with this identifier, ErrNotFound when
@@ -279,7 +287,13 @@ type Store interface {
 	//     op.Now with a window ending at op.Now, and its retention deadline
 	//     as above;
 	//   - it inserts op.Successor, unmarked whatever its RotatedStrictly
-	//     says, as Create would.
+	//     says, as Create would, except for its SelectedRole: the successor
+	//     takes Old's stored selected role as it stands when the supersession
+	//     writes, read inside the same atomic operation, whatever
+	//     op.Successor's copy says, and Supersede writes that value to
+	//     op.Successor.SelectedRole when it succeeds. A selection recorded
+	//     after the caller loaded Old is therefore neither lost nor undone by
+	//     the renewal (a SQL store reads it from the row it locked).
 	//
 	// It writes those records and no other: no earlier superseded session of
 	// the family, and no session of another family, so its cost does not

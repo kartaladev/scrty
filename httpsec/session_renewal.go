@@ -394,7 +394,7 @@ func (r *sessionRenewal) user(
 		return nil, nil, err
 	}
 
-	return details, identity.PrincipalFromDetails(details), nil
+	return details, identity.PrincipalFromDetailsAt(details, r.now()), nil
 }
 
 // judgeLate judges a session a late renewal is about to recover, which no gate

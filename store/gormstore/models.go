@@ -93,6 +93,10 @@ type sessionRow struct {
 	BindingKind       *string `gorm:"column:binding_kind;type:text"`
 	BindingThumbprint *string `gorm:"column:binding_thumbprint;type:text"`
 	CSRFToken         *string `gorm:"column:csrf_token;type:text"`
+	// SelectedRole is the role the session's user chose to act as, NULL for
+	// none. It is written on create only here ("<-:create"): the insert writes
+	// it, a save omits it, and SelectRole's own statement alone updates it.
+	SelectedRole *string `gorm:"column:selected_role;type:text;<-:create"`
 }
 
 // TableName is the scrty_sessions table the migration creates for sessions.
@@ -258,6 +262,15 @@ type userRow struct {
 	MFARequired       bool       `gorm:"column:mfa_required;type:boolean"`
 	CreatedAt         time.Time  `gorm:"column:created_at;type:timestamptz;autoCreateTime:false"`
 	UpdatedAt         time.Time  `gorm:"column:updated_at;type:timestamptz;autoUpdateTime:false"`
+	// The administration columns are read-only here ("->"): no insert or update
+	// of this store writes them, so each keeps what the migration gave it (NULL
+	// for the email, its verification time and the deletion time, 1 for the
+	// version) and a zero value is never written over it. A later change wires
+	// them.
+	Email           *string    `gorm:"column:email;type:text;->"`
+	EmailVerifiedAt *time.Time `gorm:"column:email_verified_at;type:timestamptz;->"`
+	DeletedAt       *time.Time `gorm:"column:deleted_at;type:timestamptz;->"`
+	Version         int64      `gorm:"column:version;type:bigint;->"`
 }
 
 // TableName is the scrty_users table the identity migration creates for users.

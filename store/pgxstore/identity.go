@@ -21,10 +21,11 @@ import (
 
 // IdentityStore keeps users, their role grants, organizations, groups and role
 // privileges in the tables migrate.Identity creates. It implements
-// identity.UserLoader, identity.RoleLoader, identity.UserProvisioner and
-// identity.MFARequirementLookup, and is safe for concurrent use. It also
-// implements password.History over the scrty_password_history table, for a
-// password.NoReuse rule; no identity port call reads or writes that table.
+// identity.UserLoader, identity.RoleLoader, identity.UserProvisioner,
+// identity.MFARequirementLookup and identity.EmailLoader, and is safe for
+// concurrent use. It also implements password.History over the
+// scrty_password_history table, for a password.NoReuse rule; no identity port
+// call reads or writes that table.
 //
 // It stores the same records in the same tables as the core's
 // sqlstore.IdentityStore, with the same guarantees.
@@ -39,6 +40,21 @@ import (
 // validity window; the active flag is returned as stored. An organization
 // reference that names no stored organization loads as none, and a group
 // reference that names no stored group loads as an organization without one.
+// The record carries the user's email and its verification time as stored,
+// each empty when none is, and each privilege carries its scope as stored; a
+// privilege written before scopes existed reads "all".
+//
+// A soft-deleted user (one whose deleted_at is set by the administration
+// services) is unknown to every port: LoadByUsername, LoadByUserID,
+// LoadByEmail and Update report identity.ErrUserNotFound for it, and so does
+// Required. Its row and username stay, so Provision of that username is still
+// identity.ErrUserExists.
+//
+// LoadByEmail matches the address ignoring case (PostgreSQL's lower()), only
+// among live users whose email is verified. An address PostgreSQL text cannot
+// hold, or one the database's encoding cannot represent, is
+// identity.ErrUserNotFound, since no user can hold it; any other failure is
+// not.
 //
 // A user reference is the user's identifier as the canonical lowercase UUID
 // string this store returns. Any other string, including the same UUID in
@@ -55,13 +71,27 @@ import (
 // row before it reads or writes anything else, so concurrent updates of one
 // user apply one after another. Both write only the fields the caller named:
 // the password-changed-at time in particular is written only when named,
-// never because a password was. An email address is accepted and discarded;
-// this store has no column for it and never matches on it. Neither verb reads
-// or writes the MFA flag. Organizations, groups, the role catalogue (roles)
-// and resource privileges have no write path through this store either: the
-// consumer's own user management owns them, and Provision and Update store
-// only an organization's reference and the role names a caller gives, as the
-// user's own grants.
+// never because a password was. An email address passed to either verb is
+// accepted and discarded, as an OIDC broker's just-in-time login passes one:
+// only the administration services set a user's email. Neither verb reads or
+// writes the MFA flag.
+//
+// Provision refuses, with identity.ErrUserExists and nothing written, a
+// username that is the email of another live user, ignoring case. It first
+// takes PostgreSQL's transaction-scoped advisory lock on the lower-cased
+// username, the lock every write setting an email takes on the address, so the
+// two cannot race to coincide. The lock is held until the transaction ends:
+// inside a caller's transaction, until the caller commits or rolls back. Under
+// a caller's REPEATABLE READ or SERIALIZABLE transaction, the check reads the
+// caller's snapshot, so it cannot see an email committed after that snapshot
+// was taken; the stores' own transactions are READ COMMITTED. Update increases
+// the user's version whenever it writes to the user, so an administrator's
+// earlier read of the user becomes stale; it never compares the version.
+//
+// Organizations, groups, the role catalogue (roles) and resource privileges
+// have no write path through this store either: the consumer's own user
+// management owns them, and Provision and Update store only an organization's
+// reference and the role names a caller gives, as the user's own grants.
 //
 // Provision and Update are atomic. Outside a caller's transaction each runs in
 // a transaction of its own, begun on the pool; inside one it runs in a
@@ -164,7 +194,7 @@ func (s *IdentityStore) LoadByUsername(ctx context.Context, username string) (*i
 		return nil, failed(op, err)
 	}
 
-	return s.load(ctx, q, op, pgschema.UserByUsername, username, username)
+	return s.load(ctx, q, op, pgschema.UserRecordByUsername, username, username)
 }
 
 // LoadByUserID loads the user with this reference, or returns
@@ -183,7 +213,30 @@ func (s *IdentityStore) LoadByUserID(ctx context.Context, ref identity.UserID) (
 		return nil, failed(op, err)
 	}
 
-	return s.load(ctx, q, op, pgschema.UserByID, uuidArg(uid), "")
+	return s.load(ctx, q, op, pgschema.UserRecordByID, uuidArg(uid), "")
+}
+
+// LoadByEmail loads the live user whose verified email is email, ignoring
+// case, or returns identity.ErrUserNotFound. An empty email is not found
+// before any query runs.
+//
+// Case folding is PostgreSQL's lower(): ASCII-only under a C or POSIX ctype,
+// and no Unicode normalisation is applied, so canonically equivalent spellings
+// of one address are different addresses. A consumer that wants stricter
+// matching normalises the address before calling.
+func (s *IdentityStore) LoadByEmail(ctx context.Context, email string) (*identity.Details, error) {
+	const op = "load user by email"
+
+	if email == "" || !storekit.Storable(email) {
+		return nil, failed(op, identity.ErrUserNotFound)
+	}
+
+	q, _, err := s.c.conn(ctx)
+	if err != nil {
+		return nil, failed(op, err)
+	}
+
+	return s.load(ctx, q, op, pgschema.UserRecordByVerifiedEmail, email, email)
 }
 
 // LoadPrivileges returns the privileges role grants, grouped by resource
@@ -201,7 +254,7 @@ func (s *IdentityStore) LoadPrivileges(ctx context.Context, role string) ([]*ide
 		return nil, failed(op, err)
 	}
 
-	rows, err := q.Query(ctx, pgschema.PrivilegesByRole, role)
+	rows, err := q.Query(ctx, pgschema.ScopedPrivilegesByRole, role)
 	if err != nil {
 		return nil, dbFailed(op, err)
 	}
@@ -210,13 +263,14 @@ func (s *IdentityStore) LoadPrivileges(ctx context.Context, role string) ([]*ide
 	var out []*identity.ResourcePrivileges
 	for rows.Next() {
 		var (
-			group, res string
-			p          identity.Privilege
+			group, res, scope string
+			p                 identity.Privilege
 		)
 		// The identifier, role name and times are selected but not returned.
-		if err := rows.Scan(nil, nil, &group, &res, &p.Name, &p.Granted, nil, nil); err != nil {
+		if err := rows.Scan(nil, nil, &group, &res, &p.Name, &p.Granted, nil, nil, &scope); err != nil {
 			return nil, scanFailed(op, err)
 		}
+		p.Scope = identity.Scope(scope)
 
 		if n := len(out); n > 0 && out[n-1].Group == group && out[n-1].Resource == res {
 			out[n-1].Privileges = append(out[n-1].Privileges, p)
@@ -265,6 +319,11 @@ func (s *IdentityStore) Required(ctx context.Context, ref identity.UserID) (bool
 
 // Provision creates a user from username and the fields opts name, or returns
 // identity.ErrUserExists when the username is taken.
+//
+// Provision's case-insensitive comparisons between a username and an email
+// use PostgreSQL's lower(): ASCII-only under a C or POSIX ctype, and no
+// Unicode normalisation is applied. A consumer that wants stricter matching
+// normalises the username and email before calling.
 func (s *IdentityStore) Provision(
 	ctx context.Context, username string, opts ...identity.UserOption,
 ) (*identity.Details, error) {
@@ -311,6 +370,10 @@ func (s *IdentityStore) Provision(
 
 	var out *identity.Details
 	err = s.atomically(ctx, op, func(q DBTX) error {
+		if err := refuseAnotherUsersEmail(ctx, q, op, username); err != nil {
+			return err
+		}
+
 		tag, err := q.Exec(ctx, pgschema.InsertUser, uuidArg(userID), u.Name, username,
 			storekit.OrEmpty(u.Password), true, primary, org, changedAt, false, now, now)
 		if err != nil {
@@ -327,7 +390,7 @@ func (s *IdentityStore) Provision(
 			}
 		}
 
-		out, err = s.load(ctx, q, op, pgschema.UserByID, uuidArg(userID), "")
+		out, err = s.load(ctx, q, op, pgschema.UserRecordByID, uuidArg(userID), "")
 
 		return err
 	})
@@ -420,6 +483,9 @@ func (s *IdentityStore) Update(
 			if conditional && tag.RowsAffected() == 0 {
 				return failed(op, identity.ErrNotUpdated)
 			}
+			if _, err := q.Exec(ctx, pgschema.BumpUserVersion, uuidArg(userID)); err != nil {
+				return dbFailed(op, err)
+			}
 		}
 
 		if len(roles) > 0 {
@@ -428,7 +494,7 @@ func (s *IdentityStore) Update(
 			}
 		}
 
-		out, err = s.load(ctx, q, op, pgschema.UserByID, uuidArg(userID), "")
+		out, err = s.load(ctx, q, op, pgschema.UserRecordByID, uuidArg(userID), "")
 
 		return err
 	})
@@ -437,6 +503,52 @@ func (s *IdentityStore) Update(
 	}
 
 	return out, nil
+}
+
+// refuseAnotherUsersEmail takes the advisory lock of username, inside the
+// transaction q is, and refuses it with identity.ErrUserExists when it is the
+// email of a live user, ignoring case. Every write that sets an email takes the
+// same lock before checking the other way, so a username and another user's
+// email cannot be written to coincide by two writers racing. The lock is held
+// until the transaction ends.
+func refuseAnotherUsersEmail(ctx context.Context, q DBTX, op, username string) error {
+	if err := lockIdentifiers(ctx, q, op, username); err != nil {
+		return err
+	}
+
+	var held bool
+	if err := q.QueryRow(ctx, pgschema.EmailHeldByLiveUser, username, nil).Scan(&held); err != nil {
+		return scanFailed(op, err)
+	}
+	if held {
+		return failed(op, identity.ErrUserExists)
+	}
+
+	return nil
+}
+
+// lockIdentifiers takes, inside the transaction q is, the advisory lock of
+// every one of values (usernames or emails) in the order the server gives
+// their keys (see pgschema.IdentifierLockKeys), so two writers locking
+// overlapping values cannot deadlock. The keys are read in full before the
+// first lock is taken: a connection cannot run a statement while rows are open.
+func lockIdentifiers(ctx context.Context, q DBTX, op string, values ...string) error {
+	rows, err := q.Query(ctx, pgschema.IdentifierLockKeys, values)
+	if err != nil {
+		return dbFailed(op, err)
+	}
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		return dbFailed(op, err)
+	}
+
+	for _, k := range keys {
+		if _, err := q.Exec(ctx, pgschema.LockIdentifierKey, k); err != nil {
+			return dbFailed(op, err)
+		}
+	}
+
+	return nil
 }
 
 // passwordCondition narrows the UPDATE query to a stored password equal to
@@ -660,14 +772,15 @@ func (s *IdentityStore) underSavepoint(ctx context.Context, q DBTX, op string, f
 // not there (see storekit.LookupMiss).
 func (s *IdentityStore) load(ctx context.Context, q DBTX, op, query string, arg any, typed string) (*identity.Details, error) {
 	var (
-		d             identity.Details
-		rawID, rawOrg pgtype.UUID
-		changedAt     pgtype.Timestamptz
+		d                     identity.Details
+		rawID, rawOrg         pgtype.UUID
+		changedAt, verifiedAt pgtype.Timestamptz
+		email                 pgtype.Text
 	)
 	// The primary role, the MFA flag and the row's times are selected but
 	// not returned: the grants carry the roles, Required reads the flag.
 	err := q.QueryRow(ctx, query, arg).Scan(&rawID, &d.Name, &d.Username, &d.Password, &d.Active,
-		nil, &rawOrg, &changedAt, nil, nil, nil)
+		nil, &rawOrg, &changedAt, nil, nil, nil, &email, &verifiedAt)
 	// A value the database cannot hold matches no user.
 	if errors.Is(err, pgx.ErrNoRows) || storekit.LookupMiss(typed, err) {
 		return nil, failed(op, identity.ErrUserNotFound)
@@ -683,6 +796,10 @@ func (s *IdentityStore) load(ctx context.Context, q DBTX, op, query string, arg 
 	if d.PasswordChangedAt, err = fromNull(changedAt); err != nil {
 		return nil, failed(op, err)
 	}
+	if d.EmailVerifiedAt, err = fromNull(verifiedAt); err != nil {
+		return nil, failed(op, err)
+	}
+	d.Email = email.String
 	if d.Password == nil {
 		d.Password = []byte{}
 	}
@@ -812,5 +929,6 @@ var (
 	_ identity.RoleLoader           = (*IdentityStore)(nil)
 	_ identity.UserProvisioner      = (*IdentityStore)(nil)
 	_ identity.MFARequirementLookup = (*IdentityStore)(nil)
+	_ identity.EmailLoader          = (*IdentityStore)(nil)
 	_ password.History              = (*IdentityStore)(nil)
 )

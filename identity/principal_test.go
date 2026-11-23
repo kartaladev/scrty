@@ -701,3 +701,137 @@ func TestPrivilegeShapeCanExpressARefusal(t *testing.T) {
 			filtering)
 	}
 }
+
+func TestPrivilege_EffectiveScope(t *testing.T) {
+	tests := []struct {
+		name   string
+		scope  identity.Scope
+		assert func(t *testing.T, got identity.Scope)
+	}{
+		{"empty reads as all", "", func(t *testing.T, got identity.Scope) { assert.Equal(t, identity.ScopeAll, got) }},
+		{"all", identity.ScopeAll, func(t *testing.T, got identity.Scope) { assert.Equal(t, identity.ScopeAll, got) }},
+		{"own", identity.ScopeOwn, func(t *testing.T, got identity.Scope) { assert.Equal(t, identity.ScopeOwn, got) }},
+		{"undefined returned as stored", "team", func(t *testing.T, got identity.Scope) { assert.Equal(t, identity.Scope("team"), got) }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.assert(t, identity.Privilege{Name: "view", Granted: true, Scope: tt.scope}.EffectiveScope())
+		})
+	}
+}
+
+func TestDetails_EmailVerified(t *testing.T) {
+	tests := []struct {
+		name    string
+		details *identity.Details
+		assert  func(t *testing.T, got bool)
+	}{
+		{"nil details", nil, func(t *testing.T, got bool) { assert.False(t, got) }},
+		{"zero time", &identity.Details{Email: "ada@example.com"}, func(t *testing.T, got bool) { assert.False(t, got) }},
+		{"time set", &identity.Details{Email: "ada@example.com", EmailVerifiedAt: roleStart}, func(t *testing.T, got bool) { assert.True(t, got) }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.assert(t, tt.details.EmailVerified())
+		})
+	}
+}
+
+func TestPrincipalFromDetailsAt(t *testing.T) {
+	at := time.Date(2030, 3, 1, 12, 0, 0, 0, time.UTC)
+	day := 24 * time.Hour
+
+	tests := []struct {
+		name    string
+		details *identity.Details
+		assert  func(t *testing.T, details *identity.Details, p *identity.Principal)
+	}{
+		{
+			name: "expired primary with valid audit: no active role",
+			details: &identity.Details{Username: "ada", Roles: []*identity.AssignedRole{
+				{Name: "sales", Primary: true, ValidUntil: at.Add(-day)},
+				{Name: "audit"},
+			}},
+			assert: func(t *testing.T, details *identity.Details, p *identity.Principal) {
+				require.NotNil(t, p)
+				require.Len(t, p.Roles, 1)
+				assert.Equal(t, "audit", p.Roles[0].Name)
+				assert.Nil(t, p.ActiveRole)
+				assert.Len(t, details.Roles, 2, "caller's details are not modified")
+			},
+		},
+		{
+			name:    "future start dropped",
+			details: &identity.Details{Roles: []*identity.AssignedRole{{Name: "sales", Primary: true, StartDate: at.Add(day)}}},
+			assert: func(t *testing.T, _ *identity.Details, p *identity.Principal) {
+				assert.Empty(t, p.Roles)
+				assert.Nil(t, p.ActiveRole)
+			},
+		},
+		{
+			name:    "valid until exactly at is dropped",
+			details: &identity.Details{Roles: []*identity.AssignedRole{{Name: "sales", Primary: true, ValidUntil: at}}},
+			assert: func(t *testing.T, _ *identity.Details, p *identity.Principal) {
+				assert.Empty(t, p.Roles)
+			},
+		},
+		{
+			name:    "start exactly at is kept",
+			details: &identity.Details{Roles: []*identity.AssignedRole{{Name: "sales", Primary: true, StartDate: at}}},
+			assert: func(t *testing.T, _ *identity.Details, p *identity.Principal) {
+				require.Len(t, p.Roles, 1)
+				require.NotNil(t, p.ActiveRole)
+			},
+		},
+		{
+			name:    "undated primary kept and active",
+			details: &identity.Details{Roles: []*identity.AssignedRole{{Name: "sales", Primary: true}}},
+			assert: func(t *testing.T, _ *identity.Details, p *identity.Principal) {
+				require.NotNil(t, p.ActiveRole)
+				assert.Equal(t, "sales", p.ActiveRole.Name)
+			},
+		},
+		{
+			name:    "nil grant skipped",
+			details: &identity.Details{Roles: []*identity.AssignedRole{nil, {Name: "sales", Primary: true}}},
+			assert: func(t *testing.T, _ *identity.Details, p *identity.Principal) {
+				require.Len(t, p.Roles, 1)
+				assert.Equal(t, "sales", p.ActiveRole.Name)
+			},
+		},
+		{
+			name: "first kept primary wins over an expired earlier one",
+			details: &identity.Details{Roles: []*identity.AssignedRole{
+				{Name: "old", Primary: true, ValidUntil: at.Add(-day)},
+				{Name: "new", Primary: true},
+			}},
+			assert: func(t *testing.T, _ *identity.Details, p *identity.Principal) {
+				require.NotNil(t, p.ActiveRole)
+				assert.Equal(t, "new", p.ActiveRole.Name)
+			},
+		},
+		{
+			name:    "nil details",
+			details: nil,
+			assert: func(t *testing.T, _ *identity.Details, p *identity.Principal) {
+				assert.Nil(t, p)
+			},
+		},
+		{
+			name:    "grants are copies",
+			details: &identity.Details{Roles: []*identity.AssignedRole{{Name: "sales", Primary: true}}},
+			assert: func(t *testing.T, details *identity.Details, p *identity.Principal) {
+				p.Roles[0].Name = "changed"
+				assert.Equal(t, "sales", details.Roles[0].Name)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.assert(t, tt.details, identity.PrincipalFromDetailsAt(tt.details, at))
+		})
+	}
+}

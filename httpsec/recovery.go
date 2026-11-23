@@ -525,7 +525,7 @@ func (i *recoveryInterceptor) issueRecovered(ctx context.Context, s *session.Ses
 		return "", issuingFailure(errRecoveredUserMissing, textRecoveryNotIssued, errRecoveryNotIssued)
 	}
 
-	tok, err := i.issueCredential(ctx, s, identity.PrincipalFromDetails(user))
+	tok, err := i.issueCredential(ctx, s, identity.PrincipalFromDetailsAt(user, i.now()))
 	if err != nil {
 		return "", issuingFailure(err, textRecoveryNotIssued, errRecoveryNotIssued)
 	}

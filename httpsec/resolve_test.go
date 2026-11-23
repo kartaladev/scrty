@@ -15,6 +15,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
@@ -701,5 +702,298 @@ func TestResolve_HangUpIsNotARefusal(t *testing.T) {
 				tc.assert(t, h, serveIn(ctx, t, chain, tc.request(ctx)), cause)
 			})
 		}
+	}
+}
+
+// expiredPrimaryRequest puts a request on a live session through a
+// session-bearer chain whose user's only grant, the primary one, ended an hour
+// before the chain's clock, onto a route behind a guard from build. The chain
+// authorizes with a privilege authorizer that would grant "read" on
+// crm/lead to any role it is asked about.
+func expiredPrimaryRequest(
+	t *testing.T,
+	f resolveFixture,
+	build func(g *httpsec.Guards) func(http.Handler) http.Handler,
+) (guardRun, error) {
+	t.Helper()
+
+	return primaryGrantRequest(t, f, identity.AssignedRole{ValidUntil: f.clk.Now().Add(-time.Hour)}, build)
+}
+
+// primaryGrantRequest is expiredPrimaryRequest for a primary grant whose dates
+// the caller sets: the grant's ID, name and primary flag are filled in here.
+func primaryGrantRequest(
+	t *testing.T,
+	f resolveFixture,
+	grant identity.AssignedRole,
+	build func(g *httpsec.Guards) func(http.Handler) http.Handler,
+) (guardRun, error) {
+	t.Helper()
+
+	grant.ID, grant.Name, grant.Primary = "r-sales", "sales", true
+
+	roles := &countingRoles{grant: []*identity.ResourcePrivileges{readOn("crm", "lead")}}
+
+	az, err := authorize.NewPrivilegeAuthorizer(roles)
+	require.NoError(t, err)
+
+	users := NewMockUserLoader(gomock.NewController(t))
+	details := storedUser()
+	details.Roles = []*identity.AssignedRole{&grant}
+	users.EXPECT().LoadByUserID(gomock.Any(), testUserID).Return(details, nil)
+
+	permitAll := authorize.Rule[httpsec.Request]{
+		Match:   func(httpsec.Request) bool { return true },
+		Require: authorize.PermitAll(),
+	}
+
+	chain, err := httpsec.New(
+		httpsec.WithClock(f.clk),
+		httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: f.sessions, Users: users}),
+		httpsec.EnableAuthorization(az, permitAll),
+	)
+	require.NoError(t, err)
+
+	var run guardRun
+
+	guards, err := httpsec.NewGuards(nil, httpsec.WithChainAuthorizer(), capturing(&run))
+	require.NoError(t, err)
+
+	run.rec = httptest.NewRecorder()
+	req := bearerRequest(t.Context(), "Bearer "+f.session.ID)
+	guarded := build(guards)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { run.routeRan = true }))
+
+	err = chain.Assemble(func(ex *httpsec.Exchange) error {
+		guarded.ServeHTTP(run.rec, req.WithContext(ex.Context()))
+
+		return nil
+	})(httpsec.NewExchange(t.Context(), httpsec.NewHTTPRequest(req), httpsec.NewHTTPResponseWriter(run.rec)))
+
+	return run, err
+}
+
+// TestResolve_ExpiredPrimaryNoActiveRole pins that the principal is built from
+// the grants valid at the chain's clock: a user whose only grant ended is
+// authenticated with no active role, and a privilege guard refuses her for it.
+func TestResolve_ExpiredPrimaryNoActiveRole(t *testing.T) {
+	t.Parallel()
+
+	f := newResolveFixture(t)
+
+	run, err := expiredPrimaryRequest(t, f, func(g *httpsec.Guards) func(http.Handler) http.Handler {
+		return g.ResourcePrivileges("crm", "lead").RequireOne("read")
+	})
+
+	require.NoError(t, err, "the request is authenticated")
+	require.ErrorIs(t, run.refusal, authorize.ErrNoActiveRole)
+	require.ErrorIs(t, run.refusal, authorize.ErrAccessDenied)
+	assert.False(t, run.routeRan)
+}
+
+// TestResolve_ExpiredPrimaryKeepsSession pins that a user with no valid grant
+// is still authenticated: the same request passes an authentication-only guard,
+// and its session is neither revoked nor ended.
+func TestResolve_ExpiredPrimaryKeepsSession(t *testing.T) {
+	t.Parallel()
+
+	f := newResolveFixture(t)
+
+	run, err := expiredPrimaryRequest(t, f, func(g *httpsec.Guards) func(http.Handler) http.Handler {
+		return g.RequireAuthenticated()
+	})
+
+	require.NoError(t, err)
+	require.NoError(t, run.refusal)
+	assert.True(t, run.routeRan)
+
+	s, err := f.sessions.Load(t.Context(), f.session.ID)
+	require.NoError(t, err, "the session is still live and not revoked")
+	assert.Equal(t, f.session.ID, s.ID)
+}
+
+// TestResolve_GrantWindowIsReadAtChainClock pins that a grant's dates are read
+// against the chain's clock, not the wall clock. The fixture's clock sits in
+// the past, so a grant that is current only on it, or not yet started on it,
+// reads the other way on the wall clock.
+func TestResolve_GrantWindowIsReadAtChainClock(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		grant  func(now time.Time) identity.AssignedRole
+		assert func(t *testing.T, run guardRun, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "a grant ending an hour after the chain's clock is current",
+			grant: func(now time.Time) identity.AssignedRole {
+				return identity.AssignedRole{ValidUntil: now.Add(time.Hour)}
+			},
+			assert: func(t *testing.T, run guardRun, err error) {
+				require.NoError(t, err)
+				require.NoError(t, run.refusal)
+				assert.True(t, run.routeRan)
+			},
+		},
+		{
+			name:  "a grant starting an hour after the chain's clock is not yet active",
+			grant: func(now time.Time) identity.AssignedRole { return identity.AssignedRole{StartDate: now.Add(time.Hour)} },
+			assert: func(t *testing.T, run guardRun, err error) {
+				require.NoError(t, err, "the request is authenticated")
+				require.ErrorIs(t, run.refusal, authorize.ErrNoActiveRole)
+				require.ErrorIs(t, run.refusal, authorize.ErrAccessDenied)
+				assert.False(t, run.routeRan)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newResolveFixture(t)
+
+			run, err := primaryGrantRequest(t, f, tc.grant(f.clk.Now()), func(g *httpsec.Guards) func(http.Handler) http.Handler {
+				return g.ResourcePrivileges("crm", "lead").RequireOne("read")
+			})
+			tc.assert(t, run, err)
+		})
+	}
+}
+
+// TestResolve_SelectedRole pins how a session's selected role is applied when
+// the chain builds a request's principal: it is the active role only while
+// switching is on and the user holds a grant of that name in force at the
+// chain's clock; otherwise the primary grant is active, as if nothing were
+// selected, and no other grant is ever promoted.
+func TestResolve_SelectedRole(t *testing.T) {
+	t.Parallel()
+
+	// withGrants makes the user loader return ada with roles from grants,
+	// built at the fixture's clock.
+	withGrants := func(grants func(now time.Time) []*identity.AssignedRole) func(t *testing.T, f *switchFixture) {
+		return func(t *testing.T, f *switchFixture) {
+			t.Helper()
+
+			f.user = func() *identity.Details {
+				d := adaWithGrants()
+				d.Roles = grants(f.clk.Now())
+
+				return d
+			}
+		}
+	}
+
+	type testCase struct {
+		name     string
+		setup    switchSetup
+		selected string
+		before   func(t *testing.T, f *switchFixture)
+		assert   func(t *testing.T, active string)
+	}
+
+	cases := []testCase{
+		{
+			name:     "SelectedRoleHeld: a held selection is active",
+			selected: "audit",
+			assert: func(t *testing.T, active string) {
+				assert.Equal(t, "audit", active)
+			},
+		},
+		{
+			name:     "SelectedRoleRevoked: a removed grant leaves the primary active",
+			selected: "audit",
+			before: withGrants(func(time.Time) []*identity.AssignedRole {
+				return []*identity.AssignedRole{{ID: "r-sales", Name: "sales", Primary: true}}
+			}),
+			assert: func(t *testing.T, active string) {
+				assert.Equal(t, "sales", active)
+			},
+		},
+		{
+			name:     "SelectedRoleExpired: a grant that ended leaves the primary active",
+			selected: "audit",
+			before: withGrants(func(now time.Time) []*identity.AssignedRole {
+				return []*identity.AssignedRole{
+					{ID: "r-sales", Name: "sales", Primary: true},
+					{ID: "r-audit", Name: "audit", ValidUntil: now},
+				}
+			}),
+			assert: func(t *testing.T, active string) {
+				assert.Equal(t, "sales", active)
+			},
+		},
+		{
+			name:     "SelectedRoleNotStarted: a grant not yet in force leaves the primary active",
+			selected: "audit",
+			before: withGrants(func(now time.Time) []*identity.AssignedRole {
+				return []*identity.AssignedRole{
+					{ID: "r-sales", Name: "sales", Primary: true},
+					{ID: "r-audit", Name: "audit", StartDate: now.Add(time.Second)},
+				}
+			}),
+			assert: func(t *testing.T, active string) {
+				assert.Equal(t, "sales", active)
+			},
+		},
+		{
+			name:     "SelectionNeverPromotes: a lapsed selection with no valid primary leaves no active role",
+			selected: "audit",
+			before: withGrants(func(now time.Time) []*identity.AssignedRole {
+				return []*identity.AssignedRole{
+					{ID: "r-sales", Name: "sales", Primary: true, ValidUntil: now},
+					{ID: "r-ops", Name: "ops"},
+				}
+			}),
+			assert: func(t *testing.T, active string) {
+				assert.Empty(t, active, "neither the selection nor another grant stands in for the primary")
+			},
+		},
+		{
+			name:     "SelectedRoleDuplicate: the grant of that name in force is the one applied",
+			selected: "audit",
+			before: withGrants(func(now time.Time) []*identity.AssignedRole {
+				return []*identity.AssignedRole{
+					{ID: "r-sales", Name: "sales", Primary: true},
+					{ID: "r-audit-old", Name: "audit", ValidUntil: now},
+					{ID: "r-audit", Name: "audit"},
+				}
+			}),
+			assert: func(t *testing.T, active string) {
+				assert.Equal(t, "audit", active)
+			},
+		},
+		{
+			name:     "SelectionIgnoredWhenOff: a stored selection is ignored with switching off",
+			setup:    switchSetup{off: true},
+			selected: "audit",
+			assert: func(t *testing.T, active string) {
+				assert.Equal(t, "sales", active)
+			},
+		},
+		{
+			name: "NoSelection: the primary grant is active",
+			assert: func(t *testing.T, active string) {
+				assert.Equal(t, "sales", active)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newSwitchFixture(t, tc.setup)
+			if tc.selected != "" {
+				require.NoError(t, f.sessions.SelectRole(t.Context(), f.session.ID, tc.selected))
+			}
+
+			if tc.before != nil {
+				tc.before(t, f)
+			}
+
+			tc.assert(t, f.active(t))
+		})
 	}
 }

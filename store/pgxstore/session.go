@@ -176,17 +176,23 @@ func (s *sessionStore) insertArgs(op string, sess *session.Session) ([]any, erro
 	if err != nil {
 		return nil, failed(op, err)
 	}
+	role, err := pgschema.SessionSelectedRoleArg(sess.SelectedRole)
+	if err != nil {
+		return nil, failed(op, err)
+	}
 
 	args := append([]any{uuidArg(rowID), storekit.SessionDigest(sess.ID)}, cols...)
 	args = append(args, sess.MFAAtFirstFactor, uuidArg(sess.FamilyID), storekit.Time(sess.FamilyCreatedAt),
 		nullTs(sess.SupersededAt), nullTs(sess.AcceptUntil), storekit.OptionalDigestArg(sess.SuccessorDigest),
 		nullTs(sess.FirstPresentedAt), storekit.Time(sess.AuthenticatedAt), nullTs(sess.RetainUntil))
+	args = append(args, signIn...)
 
-	return append(args, signIn...), nil
+	return append(args, role), nil
 }
 
 // Save replaces the stored session whole, except for MFAAtFirstFactor, the
-// sign-in state (ClientIP, UserAgent, KeyBinding and CSRFToken) and the
+// sign-in state (ClientIP, UserAgent, KeyBinding and CSRFToken), SelectedRole
+// and the
 // family, supersession (RetainUntil included) and presentation fields, and
 // never inserts. A superseded session also keeps both of its own deadlines.
 func (s *sessionStore) Save(ctx context.Context, sess *session.Session) error {
@@ -275,6 +281,7 @@ func (r *sessionRow) dest() []any {
 		&r.amr, &r.sess.FederatedACR, &r.family, &r.familyCreated, &r.superseded, &r.acceptUntil,
 		&r.sess.SuccessorDigest, &r.presented, &r.authenticated, &r.retain, &r.sess.RotatedStrictly,
 		&r.sess.ClientIP, &r.sess.UserAgent, &r.bindingKind, &r.thumbprint, &r.sess.CSRFToken,
+		&r.sess.SelectedRole,
 	}
 }
 
@@ -647,7 +654,15 @@ func (s *sessionStore) Supersede(ctx context.Context, op session.Supersession) e
 		return failed(name, err)
 	}
 
-	return storekit.Supersede(ctx, &supersession{s: s, op: name, insert: args}, q, ambient, op)
+	u := &supersession{s: s, op: name, insert: args, old: storekit.SessionDigest(op.Old)}
+	if err := storekit.Supersede(ctx, u, q, ambient, op); err != nil {
+		return err
+	}
+	// The successor stored took the superseded row's selected role, which
+	// the caller's copy is told, as Store.Supersede documents.
+	op.Successor.SelectedRole = u.role
+
+	return nil
 }
 
 // supersession is this store's side of storekit.Supersede, for one call to
@@ -660,8 +675,14 @@ func (s *sessionStore) Supersede(ctx context.Context, op session.Supersession) e
 type supersession struct {
 	s  *sessionStore
 	op string
-	// insert is the successor's SessionInsert arguments.
+	// insert is the successor's SessionInsert arguments; its last, the
+	// selected role, is replaced by the superseded row's.
 	insert []any
+	// old is the digest of the session superseded.
+	old []byte
+	// role is the selected role the successor was inserted with: the one
+	// the superseded row held once locked.
+	role string
 	// tx is the transaction Begin began, when the store owns the unit.
 	tx pgx.Tx
 }
@@ -719,7 +740,22 @@ func (u *supersession) QueryInt(ctx context.Context, q DBTX, stmt string, args .
 	return n, nil
 }
 
+// InsertSuccessor inserts the successor with the selected role the superseded
+// row holds, read on q after storekit.Supersede locked that row, never the
+// one the caller's copy carries: a selection recorded after the caller loaded
+// the session is neither lost nor undone.
 func (u *supersession) InsertSuccessor(ctx context.Context, q DBTX) (bool, error) {
+	var role string
+	if err := q.QueryRow(ctx, pgschema.SessionSupersededRole, u.old).Scan(&role); err != nil {
+		return false, failed(u.op, err)
+	}
+	arg, err := pgschema.SessionSelectedRoleArg(role)
+	if err != nil {
+		return false, failed(u.op, err)
+	}
+	u.insert[len(u.insert)-1] = arg
+	u.role = role
+
 	n, err := u.Exec(ctx, q, pgschema.SessionInsert, u.insert...)
 	if err != nil {
 		return false, err
@@ -798,9 +834,43 @@ func (s *sessionStore) MarkPresented(ctx context.Context, sessionID string, at t
 	return nil
 }
 
+// SelectRole writes role as the session's selected role, NULL for none, and
+// nothing else: one conditional UPDATE of that column, on a session that is
+// not superseded and is before both of its deadlines at the store's clock. It
+// never inserts. Only when it changes no row does one read tell why: a session
+// that is not stored is session.ErrNotFound, a superseded one
+// session.ErrSuperseded, and an expired one session.ErrExpired, each with
+// nothing written. A role PostgreSQL text cannot hold unchanged is refused
+// before any statement, with an error that does not quote it. It runs through
+// the caller's transaction when one is attached.
+func (s *sessionStore) SelectRole(ctx context.Context, sessionID string, role string) error {
+	const op = "select session role"
+
+	arg, err := pgschema.SessionSelectedRoleArg(role)
+	if err != nil {
+		return failed(op, err)
+	}
+	digest := storekit.SessionDigest(sessionID)
+	n, err := s.c.exec(ctx, op, pgschema.SessionSelectRole, digest, arg, storekit.Time(s.c.clock.Now()))
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		var exists, superseded bool
+		if err := s.c.queryRow(ctx, op, pgschema.SessionPresentationRefusal, []any{digest}, &exists, &superseded); err != nil {
+			return err
+		}
+
+		return pgschema.SelectRoleRefusal(exists, superseded)
+	}
+
+	return nil
+}
+
 var (
 	_ session.Store        = (*sessionStore)(nil)
 	_ session.FamilyReader = (*sessionStore)(nil)
+	_ session.RoleSelector = (*sessionStore)(nil)
 )
 
 // SuccessorPresented reports whether the current successor of the session

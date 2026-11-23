@@ -40,7 +40,15 @@ func TestSessionStore(t *testing.T) {
 
 	t.Run("gorm", func(t *testing.T) {
 		storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
-			return newSessionStore(t, emptied(t, d, "scrty_sessions"), c, gormstore.WithClock(clk))
+			s := newSessionStore(t, emptied(t, d, "scrty_sessions"), c, gormstore.WithClock(clk))
+			require.Implements(t, (*session.RoleSelector)(nil), s, "a shipped store must record a selected role")
+
+			return s
+		})
+	})
+	t.Run("gorm unstorable role", func(t *testing.T) {
+		storetest.RunSessionRoleUnstorable(t, storetest.Harness[session.Store]{
+			New: func(t *testing.T) session.Store { return newSessionStore(t, emptied(t, d, "scrty_sessions"), c) },
 		})
 	})
 }
