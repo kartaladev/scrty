@@ -52,15 +52,15 @@ See `proposal.md` for why. The current state that shapes the approach:
 
 ## Decisions
 
-### D1. One release, several pull requests (decided by the user 2026-11-23)
+### D1. One release, one pull request (decided by the user 2026-11-23)
 
-Everything ships in v0.3.0, with the table prefix and the device grant already on `main`. The work
-lands in pull requests in task-group order (Part A, then the catalogue and scopes with
-administration, then email login, then the active-role switch), each leaving `main` green. No tag is
-made until all have merged.
+Everything ships in v0.3.0, with the table prefix and the device grant already on `main`. The whole
+change lands in a single pull request, opened after the final gate, which leaves `main` green. Commits
+inside it follow the task groups. No tag is made until it has merged.
 
-**Alternative:** separate releases after Part A and after Parts B and C, as the brief asked. Rejected
-by the user: one upgrade for consumers, together with the rename.
+**Alternative:** separate releases after each part, as the brief asked. Rejected by the user: one
+upgrade for consumers, together with the rename. **Alternative:** one pull request per task group,
+the first plan. Rejected by the user on 2026-11-23 in favour of one pull request for the change.
 
 ### D2. A new `admin` package of services over ports; scrty's identity stores are the default
 

@@ -108,8 +108,7 @@ consumer's own store)
   `goose_security_state`.
 - **Dependencies:** none added.
 - **Release:** v0.3.0, one CHANGELOG entry together with the table prefix and the device grant.
-  Work lands on `main` in several pull requests, A, then B and C, then email login, then the
-  active-role switch, each leaving `main` green; nothing is tagged until all have merged.
+  All of it lands on `main` in one pull request, which leaves `main` green.
 - **Out of scope:** HTTP endpoints and user interfaces for administration; any application's mapping
   of its own legacy roles; email delivery or verification flows; magic link and recovery by email.
 - **Follow-up map:** this change covers the identity-model and default-identity-store parts of the
