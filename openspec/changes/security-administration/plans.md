@@ -89,6 +89,8 @@ the ones it must not touch, the full red-green order, its scoped commands, and t
 | K4 | 15.9 | `Makefile` | Haiku: the recipe line is given | — |
 | K5 | 15.10 (godoc) | `admin/cursor.go` | Haiku: the sentence is given | J1 (owns `admin/`) |
 | main | 15.1 (verify), 15.10 (prose) | `CHANGELOG.md`, `README.md` | the main session | — |
+| R1 | 13.3 (go.mod part) | the nine nested `go.mod` files listed in RELEASING.md step 2 | Haiku: an edit whose exact commands RELEASING.md gives | 13.2 |
+| main | 13.3 (prose part) | `CHANGELOG.md`, `SECURITY.md`, `README.md` | the main session | 13.2 |
 
 A2 and A3 both own `authorize/` and run in order. So do A4, F1 and G1 for `httpsec/`. Ownership
 follows callers: S1 owns `test/identity/` because the conformance cases and the store code move
@@ -640,7 +642,7 @@ plus `SoftDelete(t, username string)` in `test/identity.Fixture`.
 - [ ] **Step 4: verify** scoped over `session`, the stores, `httpsec` and the `test` session suites.
   **Commit** `feat(httpsec): optional active-role switch`.
 
-### Task 17 (tasks 13.1, 13.2, 14.1, 14.2): documentation and gate
+### Task 17 (tasks 13.1, 13.2, 13.3, 14.1, 14.2): documentation, release preparation and gate
 
 - [ ] **Step 1 (13.1, H1 dispatch):** README sections for administration, catalogue and scopes, the
   memo, email login and role switching, with code taken from the examples added in Tasks 3, 10 and 15.
@@ -649,11 +651,26 @@ plus `SoftDelete(t, username string)` in `test/identity.Fixture`.
   each marked breaking: soft-deleted users not found; dated grants enforced; provisioning refuses a
   username that is another live user's email; and the migrations, with the note that a consumer who
   added an `email` column to `scrty_users` renames or drops it first. Verify `make spec-check`.
+- [ ] **Step 3a (13.3, main session):** RELEASING.md step 1 for v0.3.0. In `CHANGELOG.md`, move
+  everything under `## [Unreleased]` (this change's entry and the device-grant and table-prefix entries
+  already there) into `## [0.3.0] - <the date the PR is made ready>`, leave `Unreleased` empty, and add
+  the foot links: `[Unreleased]` compares `v0.3.0...HEAD`, `[0.3.0]` compares `v0.2.1...v0.3.0`. In
+  `SECURITY.md` and the matching README sentence, the supported line is 0.3.x only. Every README
+  `go get` line names `v0.3.0`; `grep -n '<version>' README.md` finds any first-shipping placeholder.
+  Verify: `git diff -- CHANGELOG.md SECURITY.md README.md` read against RELEASING.md step 1.
+- [ ] **Step 3b (13.3, R1 dispatch, Haiku):** RELEASING.md step 2 with `VERSION=v0.3.0`: the nine
+  `go mod edit -C <dir> -require=github.com/kartaladev/scrty@v0.3.0` lines and the seven sibling
+  requirements in `test/go.mod`, exactly as RELEASING.md lists them; `replace` lines untouched; no
+  `go mod tidy`. Verify: `git diff -- '*/go.mod' go.mod` shows only the requirement versions, and
+  `go build ./...` in each nested module (workspace on) succeeds.
+- [ ] **Step 3c (13.3):** commit `chore(release): prepare v0.3.0` naming steps 1 and 2. RELEASING.md
+  steps 3 to 9 (merge, the release gate on merged `main`, tags, the published release) are the
+  maintainer's; no agent creates or pushes a tag.
 - [ ] **Step 3 (14.1):** a fresh Opus reviewer checks the whole branch against every requirement in
   `specs/`, enumerating failure modes first. Findings go to fresh dispatches of the owning lane.
 - [ ] **Step 4 (14.2, main session):** `make check`, `make spec-check`, and
   `SCRTY_TEST_POSTGRES_IMAGE=postgres:15-alpine make test`. Each must exit 0, with output read by the
-  main session after the last code edit.
+  main session after the last code edit, which is Step 3b's `go.mod` edit or a later fix.
 
 ### Task 18 (tasks 15.1–15.10): review follow-ups
 
@@ -702,4 +719,5 @@ asserted, records that test's name and adds nothing.
   entry says the services do not authorize and the consumer guards their routes; the README's
   Administration section states the cursor sentence.
 - [ ] **Step 11:** after each lane: scoped tests per `test-scope.md`, a fresh reviewer (Opus for J1,
-  Sonnet otherwise), then one commit per lane group, push, and the PR body updated. Then Task 17's 14.2.
+  Sonnet otherwise), then one commit per lane group, push, and the PR body updated. Then Task 17's
+  13.3 (when released by the maintainer) and 14.2.

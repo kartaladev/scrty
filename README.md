@@ -20,9 +20,9 @@ Add the core module, and any nested module you use. Every published module is re
 use one version for all of them:
 
 ```sh
-go get github.com/kartaladev/scrty@v0.2.1
-go get github.com/kartaladev/scrty/store/pgxstore@v0.2.1
-go get github.com/kartaladev/scrty/httpsec/prblmsec@v0.2.1
+go get github.com/kartaladev/scrty@v0.3.0
+go get github.com/kartaladev/scrty/store/pgxstore@v0.3.0
+go get github.com/kartaladev/scrty/httpsec/prblmsec@v0.3.0
 ```
 
 - [CHANGELOG.md](CHANGELOG.md) lists what each release changes, and states every breaking change.
@@ -32,7 +32,7 @@ go get github.com/kartaladev/scrty/httpsec/prblmsec@v0.2.1
 - [RELEASING.md](RELEASING.md) is the procedure a maintainer follows to cut a release.
 
 **Supported versions.** Only the latest minor release receives security fixes, which today is the
-`0.2.x` line, as [SECURITY.md](SECURITY.md) states.
+`0.3.x` line, as [SECURITY.md](SECURITY.md) states.
 
 ## Supported Go versions
 
@@ -3399,7 +3399,7 @@ core module does not import prblm.
 Install it at the same version as the other scrty modules:
 
 ```sh
-go get github.com/kartaladev/scrty/httpsec/prblmsec@v0.2.1
+go get github.com/kartaladev/scrty/httpsec/prblmsec@v0.3.0
 ```
 
 ### Wiring

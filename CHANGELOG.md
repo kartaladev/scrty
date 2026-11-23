@@ -12,6 +12,15 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-23
+
+A minor release: security administration (the `admin` package), scoped grants and a resource
+catalogue, a per-request privilege memo, login by verified email, an opt-in active-role switch, the
+OAuth device authorization grant, and the `scrty_` prefix on every table. It carries breaking changes,
+listed under *Changed*, and new migrations in both sets (three security-state, two identity); read
+*Changed* before upgrading.
+Upgrade every scrty module to `v0.3.0`.
+
 ### Added
 
 - **The device authorization grant (RFC 8628).** It is off by default, and a provider turns it on
@@ -799,7 +808,8 @@ exported identifiers; the moves and renames change no behaviour.
 - A user-store outage during a password login no longer places a hold on a real account.
 - The limit on saved recovery codes holds when the codes are presented concurrently.
 
-[Unreleased]: https://github.com/kartaladev/scrty/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/kartaladev/scrty/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/kartaladev/scrty/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/kartaladev/scrty/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/kartaladev/scrty/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/kartaladev/scrty/compare/v0.1.0...v0.1.1

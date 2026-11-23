@@ -215,13 +215,19 @@ The whole change lands in one pull request, opened after group 14's final gate (
 - [x] 13.2 CHANGELOG under Unreleased: Added entries, the three behaviour changes under Changed marked
   breaking, the two migrations, and the note on a consumer-added `email` column. Verify: `make spec-check` and a read of
   the entry against proposal.md's behaviour changes.
+- [x] 13.3 Prepare v0.3.0 in this pull request, as RELEASING.md steps 1 and 2 state (design D1): the
+  Unreleased entries move to a dated `## [0.3.0]` entry with its compare links, SECURITY.md and README
+  name the 0.3.x line and every `go get` line names v0.3.0, and every nested module requires its scrty
+  modules at v0.3.0 with the `replace` lines unchanged. Verify: `git diff -- CHANGELOG.md SECURITY.md
+  README.md '*/go.mod' go.mod` read against RELEASING.md steps 1 and 2, and the final gate (14.2) runs
+  after it.
 
 ## 14. Final gate
 
 - [x] 14.1 Whole-branch review against every spec requirement this change covers, by a fresh reviewer
   that did not write the code, findings fixed in fresh dispatches. Verify: the review reports no open
   finding.
-- [ ] 14.2 Full suite after the last code edit, so after group 15: `make check` and `make spec-check`, and the test leg on
+- [ ] 14.2 Full suite after the last code edit, so after groups 13 and 15: `make check` and `make spec-check`, and the test leg on
   PostgreSQL 15. Verify: each exits 0, with the output read by the main session.
 
 ## 15. Review follow-ups (code review, `/opsx:verify` and security review, triaged 2026-11-23)
@@ -274,4 +280,6 @@ is recorded with its test name instead of rewritten.
 ## Workflow follow-up
 
 - Archive the change after the final gate and the review.
-- The maintainer tags v0.3.0 once this change's pull request has merged.
+- The maintainer releases v0.3.0 once this change's pull request has merged: RELEASING.md steps 3 to 9
+  (the release gate on the merged commit, the tags, and the published release). No agent creates or
+  pushes a tag.

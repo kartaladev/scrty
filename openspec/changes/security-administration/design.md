@@ -68,6 +68,14 @@ inside it follow the task groups. No tag is made until it has merged.
 upgrade for consumers, together with the rename. **Alternative:** one pull request per task group,
 the first plan. Rejected by the user on 2026-11-23 in favour of one pull request for the change.
 
+**The release preparation is part of this change (decided by the user 2026-11-23, during
+implementation).** RELEASING.md steps 1 and 2 for v0.3.0 (the dated changelog entry, the supported
+versions in SECURITY.md and README, the `go get` lines, and every nested module requiring v0.3.0) land
+in this pull request as task 13.3, before the final gate, so merging it merges the release
+preparation. Steps 3 to 9 (the release gate on the merged commit, the tags, the published release)
+stay the maintainer's, as RELEASING.md requires. **Alternative:** a separate release pull request
+after the merge, as for v0.2.1. Not chosen: one pull request carries the whole release.
+
 ### D2. A new `admin` package of services over ports; scrty's identity stores are the default
 
 Package `github.com/kartaladev/scrty/admin` holds the services `Users`, `Importer`, `Roles`,
