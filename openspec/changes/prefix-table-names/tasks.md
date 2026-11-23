@@ -7,7 +7,7 @@ tests; group 4 restores the full scoped suites.
 
 ## 1. Relation inventory
 
-- [ ] 1.1 Add to the `test` module the inventory of every table, index and sequence each set
+- [x] 1.1 Add to the `test` module the inventory of every table, index and sequence each set
   creates before the rename (32 tables, 104 indexes, `password_history_seq_seq`), as data the
   catalog tests share. Red: a test that applies both sets up to the version before the rename and
   compares the catalog to the inventory, run against an empty inventory, fails listing the missing
@@ -16,24 +16,24 @@ tests; group 4 restores the full scoped suites.
 
 ## 2. Security-state rename migration
 
-- [ ] 2.1 Catalog test: at the latest version, every relation the set created is `scrty_` plus an
+- [x] 2.1 Catalog test: at the latest version, every relation the set created is `scrty_` plus an
   inventory name, no unprefixed one remains, every name is at most 63 bytes, and the versions are
   in `goose_security_state` (spec "Fresh database", "Names fit the identifier limit"; design F7,
   F9). Red: it fails listing `sessions` and the rest. Green: add
   `store/migrate/securitystate/20261124000000_scrty_prefix.sql`, with `SET LOCAL lock_timeout =
   '5s'` and an explicit `ALTER TABLE`/`ALTER INDEX … RENAME` per relation, and a down section in
   reverse order. Verify: the focused test passes.
-- [ ] 2.2 Update the security-state schema checks in `test/migrate_securitystate_test.go` (the
+- [x] 2.2 Update the security-state schema checks in `test/migrate_securitystate_test.go` (the
   `pg_indexes` list, the column and constraint checks) and the snapshot in
   `test/testutils_postgres_test.go` to the new names. Red: they fail against the renamed schema.
   Verify: `go test -run 'TestSecurityState|TestSchemaSnapshot' -count=1 ./test/` passes.
-- [ ] 2.3 Failure tests for the rename migration (spec "A table is held by another transaction",
+- [x] 2.3 Failure tests for the rename migration (spec "A table is held by another transaction",
   "The new name is already taken"; design F4, F5, F6): a held lock fails within the bound and a
   retry succeeds; a pre-existing `scrty_sessions` fails and leaves it untouched; in each case no
   relation is renamed and no version is recorded. Red: invert the migration temporarily (drop the
   `lock_timeout` line) and see the lock test time out at the test's own deadline. Verify: the
   focused tests pass.
-- [ ] 2.4 Rollback test (spec "Rolling back the rename", "Full rollback and re-apply"): a catalog
+- [x] 2.4 Rollback test (spec "Rolling back the rename", "Full rollback and re-apply"): a catalog
   snapshot taken before the migration equals the snapshot after up then down-by-one. Down to zero
   leaves no relation, and re-applying prefixes everything. Red: with one down statement removed,
   the test names the relation left behind. Verify: the focused test passes.

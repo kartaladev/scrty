@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pressly/goose/v3"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/authenticate/apikey"
@@ -252,4 +253,96 @@ func TestPopulatedMigrationAddsNotNullColumn(t *testing.T) {
 			readBackPopulated(t, b, name, seed)
 		})
 	}
+}
+
+// TestPopulatedPrefixRenameKeepsRows proves the scrty_ rename of a database
+// that already holds data: rows written under the original names, in the
+// tables of several kinds (sessions, signing keys, OIDC grants and device
+// authorizations, rate-limit buckets), are all present under the prefixed
+// names after the rename, nothing is left under the old ones, and the sql
+// stores read the rows that have a store-side reader.
+func TestPopulatedPrefixRenameKeepsRows(t *testing.T) {
+	t.Parallel()
+
+	const (
+		sessionID  = "a-session-written-before-the-rename"
+		sessionRow = "0192f000-0000-7000-8000-0000000000e1"
+		grantID    = "0192f000-0000-7000-8000-0000000000e2"
+		deviceID   = "0192f000-0000-7000-8000-0000000000e3"
+		keyID      = "0192f000-0000-7000-8000-0000000000e4"
+		beforeName = int64(20261122000000) // the last migration before the rename
+	)
+
+	ctx := t.Context()
+	set := migrate.SecurityState()
+	conn := test.RunTestPostgres(t)
+	db := conn.DB
+
+	sub, err := fs.Sub(set.FS(), set.Dir)
+	require.NoError(t, err)
+	p, err := goose.NewProvider(goose.DialectPostgres, db, sub, goose.WithTableName(set.VersionTable))
+	require.NoError(t, err)
+
+	_, err = p.UpTo(ctx, beforeName)
+	require.NoError(t, err)
+
+	// Rows under the original names, written with plain SQL since no store of
+	// this release writes to them.
+	digest := sha256.Sum256([]byte(sessionID))
+	created := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	for _, stmt := range []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO sessions (id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
+			VALUES ($1, $2, 'u-1', $3, $3, '2099-01-01', '2099-01-01')`, []any{sessionRow, digest[:], created}},
+		{`INSERT INTO signing_keys (id, kid, alg, private_key, public_jwk, created_at)
+			VALUES ($1, 'kid-1', 'ES256', '\x01', '\x02', $2)`, []any{keyID, created}},
+		{`INSERT INTO op_grants (family, user_ref, client_id, scopes, created_at, expires_at)
+			VALUES ($1, 'u-1', 'billing-web', '["openid"]', $2, '2099-01-01')`, []any{grantID, created}},
+		{`INSERT INTO op_device_authorizations (id, device_code_digest, client_id, issued_at, expires_at, state)
+			VALUES ($1, '\x03', 'billing-web', $2, '2099-01-01', 0)`, []any{deviceID, created}},
+		{`INSERT INTO rate_limit_buckets (namespace, key, stamps, newest_at, longest_window_us)
+			VALUES ('login', 'k-1', ARRAY[$1::timestamptz], $1, 1000000)`, []any{created}},
+	} {
+		_, err := db.ExecContext(ctx, stmt.query, stmt.args...)
+		require.NoError(t, err, stmt.query)
+	}
+
+	_, err = p.Up(ctx)
+	require.NoError(t, err)
+
+	for _, table := range []string{"sessions", "signing_keys", "op_grants", "op_device_authorizations", "rate_limit_buckets"} {
+		var oldName, newName sql.NullString
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT to_regclass($1)::text, to_regclass($2)::text`,
+			table, "scrty_"+table).Scan(&oldName, &newName))
+		assert.False(t, oldName.Valid, "%s is gone under its old name", table)
+		require.True(t, newName.Valid, "%s exists under its prefixed name", table)
+
+		var n int
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM scrty_`+table).Scan(&n))
+		assert.Equal(t, 1, n, "the row written before the rename is in scrty_%s", table)
+	}
+
+	sessions, err := sqlstore.NewSessionStore(db, testCipher(t))
+	require.NoError(t, err)
+	got, err := sessions.Load(ctx, sessionID)
+	require.NoError(t, err, "the session store reads the renamed table")
+	assert.True(t, got.CreatedAt.Equal(created))
+
+	grants, err := sqlstore.NewGrantStore(db)
+	require.NoError(t, err)
+	grant, err := grants.Load(ctx, mustParseID(t, grantID))
+	require.NoError(t, err, "the grant store reads the renamed table")
+	assert.Equal(t, "billing-web", grant.ClientID)
+}
+
+// mustParseID parses a fixed identifier.
+func mustParseID(t *testing.T, s string) id.ID {
+	t.Helper()
+
+	v, err := id.Parse(s)
+	require.NoError(t, err)
+
+	return v
 }
