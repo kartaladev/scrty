@@ -703,81 +703,56 @@ func TestDeviceEntryEndpoint_FailedParkSetsTheCookie(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.enter(t, code).status, "another browser is refused")
 }
 
-// deviceCountingLimiter is a memory limiter that counts the charges asked of it.
-type deviceCountingLimiter struct {
-	*ratelimit.MemoryLimiter
+// memoryBackedLimiter is a mock limiter that answers as the memory limiter mem does, so it
+// throttles for real while the controller checks how it is used. With charged, it must be
+// charged at least once; without it, a charge fails the test.
+func memoryBackedLimiter(ctrl *gomock.Controller, mem *ratelimit.MemoryLimiter, charged bool) *MockLimiter {
+	m := NewMockLimiter(ctrl)
 
-	charges atomic.Int64
+	charge := m.EXPECT().Charge(gomock.Any(), gomock.Any()).DoAndReturn(mem.Charge)
+	if charged {
+		charge.MinTimes(1)
+	} else {
+		charge.Times(0)
+	}
+
+	m.EXPECT().Exceeded(gomock.Any(), gomock.Any()).DoAndReturn(mem.Exceeded).AnyTimes()
+	m.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).DoAndReturn(mem.RecordFailure).AnyTimes()
+	m.EXPECT().Refund(gomock.Any(), gomock.Any()).DoAndReturn(mem.Refund).AnyTimes()
+
+	return m
 }
 
-func (l *deviceCountingLimiter) Charge(ctx context.Context, key string) (ratelimit.Receipt, bool, error) {
-	l.charges.Add(1)
-
-	return l.MemoryLimiter.Charge(ctx, key)
-}
-
-func newDeviceCountingLimiter(t *testing.T, limit int, window time.Duration) *deviceCountingLimiter {
+// entryMemory is a memory limiter of the entry throttle's default budget.
+func entryMemory(t *testing.T) *ratelimit.MemoryLimiter {
 	t.Helper()
 
-	return &deviceCountingLimiter{MemoryLimiter: must.Must(ratelimit.NewMemoryLimiter(limit, window))}
+	return must.Must(ratelimit.NewMemoryLimiter(oidcprovider.DefaultUserCodeEntryLimit, oidcprovider.DefaultUserCodeEntryWindow))
 }
 
-// deviceRecordingFactory builds memory limiters and records what it was asked for.
-type deviceRecordingFactory struct {
-	t *testing.T
-
-	// entry is what it answers the entry namespace with, and entryErr the error it
-	// answers it with instead.
-	entry    *deviceCountingLimiter
-	entryErr error
-
-	asked atomic.Pointer[[]string]
-	limit atomic.Int64
-	win   atomic.Int64
-}
-
-func (f *deviceRecordingFactory) NewLimiter(namespace string, limit int, window time.Duration) (ratelimit.Limiter, error) {
-	prev := f.asked.Load()
-
-	next := []string{namespace}
-	if prev != nil {
-		next = append(append([]string(nil), *prev...), namespace)
-	}
-
-	f.asked.Store(&next)
-
-	if namespace == "oidc-device-entry" {
-		f.limit.Store(int64(limit))
-		f.win.Store(int64(window))
-
-		if f.entryErr != nil {
-			return nil, f.entryErr
-		}
-
-		return f.entry, nil
-	}
-
-	return ratelimit.NewMemoryLimiter(limit, window)
-}
-
-func (f *deviceRecordingFactory) namespaces() []string {
-	if p := f.asked.Load(); p != nil {
-		return *p
-	}
-
-	return nil
+// fallbackToMemory makes f answer every namespace no earlier expectation took with a memory
+// limiter, so a test states only the namespaces it cares about. Call it last.
+func fallbackToMemory(f *MockLimiterFactory) {
+	f.EXPECT().NewLimiter(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ string, limit int, window time.Duration) (ratelimit.Limiter, error) {
+			return ratelimit.NewMemoryLimiter(limit, window)
+		}).AnyTimes()
 }
 
 func TestDeviceEntry_FactoryLimiter(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name   string
-		build  func(t *testing.T, f *deviceRecordingFactory) (*opFlow, error)
-		assert func(t *testing.T, f *deviceRecordingFactory, w *opFlow, err error)
+		name string
+		// expect declares what the factory is asked for in the entry and device
+		// authorization namespaces; every other namespace falls back to memory.
+		expect func(t *testing.T, ctrl *gomock.Controller, f *MockLimiterFactory)
+		// build is newOPFlowErr over deviceSetup with the factory when nil.
+		build  func(t *testing.T, ctrl *gomock.Controller, f *MockLimiterFactory) (*opFlow, error)
+		assert func(t *testing.T, w *opFlow, err error)
 	}
 
-	withFactory := func(setup flowSetup, f *deviceRecordingFactory) flowSetup {
+	withFactory := func(setup flowSetup, f *MockLimiterFactory) flowSetup {
 		setup.chain = func(*testing.T, *opFlow) []httpsec.Option {
 			return []httpsec.Option{httpsec.WithRateLimiterFactory(f)}
 		}
@@ -785,55 +760,60 @@ func TestDeviceEntry_FactoryLimiter(t *testing.T) {
 		return setup
 	}
 
-	build := func(setup flowSetup) func(t *testing.T, f *deviceRecordingFactory) (*opFlow, error) {
-		return func(t *testing.T, f *deviceRecordingFactory) (*opFlow, error) {
-			t.Helper()
-
-			return newOPFlowErr(t, withFactory(setup, f))
-		}
-	}
-
-	consumer := newDeviceCountingLimiter(t, 5, 10*time.Minute)
+	const entry, authorization = "oidc-device-entry", "oidc-device-authorization"
 
 	cases := []testCase{
 		{
-			name:  "the chain asks for oidc-device-entry at (5, 10 min), and that limiter is consulted on entry",
-			build: build(deviceSetup("")),
-			assert: func(t *testing.T, f *deviceRecordingFactory, w *opFlow, err error) {
+			name: "the chain asks for oidc-device-entry at (5, 10 min), and that limiter is consulted on entry",
+			expect: func(t *testing.T, ctrl *gomock.Controller, f *MockLimiterFactory) {
+				t.Helper()
+
+				f.EXPECT().NewLimiter(entry, gomock.Eq(oidcprovider.DefaultUserCodeEntryLimit),
+					gomock.Eq(oidcprovider.DefaultUserCodeEntryWindow)).
+					Return(memoryBackedLimiter(ctrl, entryMemory(t), true), nil).Times(1)
+				f.EXPECT().NewLimiter(authorization, gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ string, limit int, window time.Duration) (ratelimit.Limiter, error) {
+						return ratelimit.NewMemoryLimiter(limit, window)
+					}).Times(1)
+			},
+			assert: func(t *testing.T, w *opFlow, err error) {
 				t.Helper()
 
 				require.NoError(t, err)
-				assert.Contains(t, f.namespaces(), "oidc-device-entry")
-				assert.Contains(t, f.namespaces(), "oidc-device-authorization")
-				assert.Equal(t, int64(oidcprovider.DefaultUserCodeEntryLimit), f.limit.Load())
-				assert.Equal(t, int64(oidcprovider.DefaultUserCodeEntryWindow), f.win.Load())
-
-				assert.Equal(t, http.StatusBadRequest, w.enter(t, deviceUnknownCode).status)
-				assert.Positive(t, f.entry.charges.Load(), "the factory's limiter is the one charged")
+				assert.Equal(t, http.StatusBadRequest, w.enter(t, deviceUnknownCode).status,
+					"the factory's limiter is the one charged (the controller fails a missing charge)")
 			},
 		},
 		{
-			name:  "a consumer's limiter given to the provider is kept",
-			build: build(deviceSetup("", oidcprovider.WithUserCodeEntryLimiter(consumer))),
-			assert: func(t *testing.T, f *deviceRecordingFactory, w *opFlow, err error) {
+			name: "a consumer's limiter given to the provider is kept, and the factory is never asked for the entry",
+			expect: func(t *testing.T, _ *gomock.Controller, f *MockLimiterFactory) {
+				t.Helper()
+
+				f.EXPECT().NewLimiter(entry, gomock.Any(), gomock.Any()).Times(0)
+			},
+			build: func(t *testing.T, ctrl *gomock.Controller, f *MockLimiterFactory) (*opFlow, error) {
+				t.Helper()
+
+				consumer := memoryBackedLimiter(ctrl, entryMemory(t), true)
+
+				return newOPFlowErr(t, withFactory(deviceSetup("", oidcprovider.WithUserCodeEntryLimiter(consumer)), f))
+			},
+			assert: func(t *testing.T, w *opFlow, err error) {
 				t.Helper()
 
 				require.NoError(t, err)
-				assert.Equal(t, http.StatusBadRequest, w.enter(t, deviceUnknownCode).status)
-				assert.Positive(t, consumer.charges.Load(), "the consumer's limiter is charged")
-				assert.Zero(t, f.entry.charges.Load(), "the factory's limiter is never consulted")
+				assert.Equal(t, http.StatusBadRequest, w.enter(t, deviceUnknownCode).status,
+					"the consumer's limiter is charged (the controller fails a missing charge)")
 			},
 		},
 		{
 			name: "a factory error fails New, naming the option and the namespace",
-			build: func(t *testing.T, f *deviceRecordingFactory) (*opFlow, error) {
+			expect: func(t *testing.T, _ *gomock.Controller, f *MockLimiterFactory) {
 				t.Helper()
 
-				f.entryErr = errors.New("redis is out")
-
-				return newOPFlowErr(t, withFactory(deviceSetup(""), f))
+				f.EXPECT().NewLimiter(entry, gomock.Any(), gomock.Any()).Return(nil, errors.New("redis is out")).Times(1)
 			},
-			assert: func(t *testing.T, _ *deviceRecordingFactory, _ *opFlow, err error) {
+			assert: func(t *testing.T, _ *opFlow, err error) {
 				t.Helper()
 
 				require.ErrorIs(t, err, httpsec.ErrConfig)
@@ -842,25 +822,43 @@ func TestDeviceEntry_FactoryLimiter(t *testing.T) {
 			},
 		},
 		{
-			name:  "without the grant, neither device namespace is asked for",
-			build: build(flowSetup{}),
-			assert: func(t *testing.T, f *deviceRecordingFactory, _ *opFlow, err error) {
+			name: "without the grant, neither device namespace is asked for",
+			expect: func(t *testing.T, _ *gomock.Controller, f *MockLimiterFactory) {
+				t.Helper()
+
+				f.EXPECT().NewLimiter(entry, gomock.Any(), gomock.Any()).Times(0)
+				f.EXPECT().NewLimiter(authorization, gomock.Any(), gomock.Any()).Times(0)
+			},
+			build: func(t *testing.T, _ *gomock.Controller, f *MockLimiterFactory) (*opFlow, error) {
+				t.Helper()
+
+				return newOPFlowErr(t, withFactory(flowSetup{}, f))
+			},
+			assert: func(t *testing.T, _ *opFlow, err error) {
 				t.Helper()
 
 				require.NoError(t, err)
-				assert.NotContains(t, f.namespaces(), "oidc-device-entry")
-				assert.NotContains(t, f.namespaces(), "oidc-device-authorization")
 			},
 		},
 		{
 			name: "a second chain handing the same provider another limiter fails New",
-			build: func(t *testing.T, f *deviceRecordingFactory) (*opFlow, error) {
+			expect: func(t *testing.T, ctrl *gomock.Controller, f *MockLimiterFactory) {
+				t.Helper()
+
+				f.EXPECT().NewLimiter(entry, gomock.Any(), gomock.Any()).
+					Return(memoryBackedLimiter(ctrl, entryMemory(t), false), nil).AnyTimes()
+			},
+			build: func(t *testing.T, ctrl *gomock.Controller, f *MockLimiterFactory) (*opFlow, error) {
 				t.Helper()
 
 				w, err := newOPFlowErr(t, withFactory(deviceSetup(""), f))
 				require.NoError(t, err)
 
-				other := &deviceRecordingFactory{t: t, entry: newDeviceCountingLimiter(t, 5, 10*time.Minute)}
+				other := NewMockLimiterFactory(ctrl)
+				other.EXPECT().NewLimiter(entry, gomock.Any(), gomock.Any()).
+					Return(memoryBackedLimiter(ctrl, entryMemory(t), false), nil).AnyTimes()
+				fallbackToMemory(other)
+
 				_, err = httpsec.New(
 					httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: w.sessions, Users: w.users}),
 					httpsec.EnableJWKSEndpoint(tokenKeys()),
@@ -872,7 +870,7 @@ func TestDeviceEntry_FactoryLimiter(t *testing.T) {
 
 				return w, err
 			},
-			assert: func(t *testing.T, _ *deviceRecordingFactory, _ *opFlow, err error) {
+			assert: func(t *testing.T, _ *opFlow, err error) {
 				t.Helper()
 
 				require.ErrorIs(t, err, httpsec.ErrConfig)
@@ -885,9 +883,23 @@ func TestDeviceEntry_FactoryLimiter(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			f := &deviceRecordingFactory{t: t, entry: newDeviceCountingLimiter(t, 5, 10*time.Minute)}
-			w, err := tc.build(t, f)
-			tc.assert(t, f, w, err)
+			ctrl := gomock.NewController(t)
+			f := NewMockLimiterFactory(ctrl)
+
+			tc.expect(t, ctrl, f)
+			fallbackToMemory(f)
+
+			build := tc.build
+			if build == nil {
+				build = func(t *testing.T, _ *gomock.Controller, f *MockLimiterFactory) (*opFlow, error) {
+					t.Helper()
+
+					return newOPFlowErr(t, withFactory(deviceSetup(""), f))
+				}
+			}
+
+			w, err := build(t, ctrl, f)
+			tc.assert(t, w, err)
 		})
 	}
 }
@@ -956,7 +968,7 @@ func TestDeviceEndpoints_WithoutTheGrant(t *testing.T) {
 				p := f.provider(t)
 
 				return httpsec.New(append(f.wired(t, p), httpsec.EnableOIDCProvider(p,
-					httpsec.WithOIDCDeviceAuthorizationLimiter(newDeviceCountingLimiter(t, 1, time.Minute))))...)
+					httpsec.WithOIDCDeviceAuthorizationLimiter(NewMockLimiter(gomock.NewController(t)))))...)
 			},
 			assert: func(t *testing.T, _ *httpsec.Chain, err error) {
 				t.Helper()
@@ -981,16 +993,41 @@ func TestDeviceEndpoint_Options(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name string
-		opt  httpsec.OIDCProviderOption
-		want string
+		name   string
+		opt    httpsec.OIDCProviderOption
+		assert func(t *testing.T, err error)
+	}
+
+	refusedNaming := func(option string) func(t *testing.T, err error) {
+		return func(t *testing.T, err error) {
+			t.Helper()
+
+			require.ErrorIs(t, err, httpsec.ErrConfig)
+			assert.ErrorContains(t, err, option)
+		}
 	}
 
 	cases := []testCase{
-		{name: "a nil device authorization limiter", opt: httpsec.WithOIDCDeviceAuthorizationLimiter(nil), want: "WithOIDCDeviceAuthorizationLimiter"},
-		{name: "a typed nil device authorization limiter", opt: httpsec.WithOIDCDeviceAuthorizationLimiter((*ratelimit.MemoryLimiter)(nil)), want: "WithOIDCDeviceAuthorizationLimiter"},
-		{name: "a zero device authorization body limit", opt: httpsec.WithOIDCDeviceAuthorizationBodyLimit(0), want: "WithOIDCDeviceAuthorizationBodyLimit"},
-		{name: "a negative code-entry body limit", opt: httpsec.WithOIDCDeviceEntryBodyLimit(-1), want: "WithOIDCDeviceEntryBodyLimit"},
+		{
+			name:   "a nil device authorization limiter",
+			opt:    httpsec.WithOIDCDeviceAuthorizationLimiter(nil),
+			assert: refusedNaming("WithOIDCDeviceAuthorizationLimiter"),
+		},
+		{
+			name:   "a typed nil device authorization limiter",
+			opt:    httpsec.WithOIDCDeviceAuthorizationLimiter((*ratelimit.MemoryLimiter)(nil)),
+			assert: refusedNaming("WithOIDCDeviceAuthorizationLimiter"),
+		},
+		{
+			name:   "a zero device authorization body limit",
+			opt:    httpsec.WithOIDCDeviceAuthorizationBodyLimit(0),
+			assert: refusedNaming("WithOIDCDeviceAuthorizationBodyLimit"),
+		},
+		{
+			name:   "a negative code-entry body limit",
+			opt:    httpsec.WithOIDCDeviceEntryBodyLimit(-1),
+			assert: refusedNaming("WithOIDCDeviceEntryBodyLimit"),
+		},
 	}
 
 	for _, tc := range cases {
@@ -1001,8 +1038,7 @@ func TestDeviceEndpoint_Options(t *testing.T) {
 			setup.endpoint = []httpsec.OIDCProviderOption{tc.opt}
 
 			_, err := newOPFlowErr(t, setup)
-			require.ErrorIs(t, err, httpsec.ErrConfig)
-			assert.ErrorContains(t, err, tc.want)
+			tc.assert(t, err)
 		})
 	}
 }

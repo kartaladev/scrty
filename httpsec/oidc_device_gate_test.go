@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/oidcprovider"
@@ -69,15 +70,17 @@ func failAcross48(t *testing.T, w *opFlow) int {
 	return w.enter(t, deviceUnknownCode, flowFrom(entryAddrB48)).status
 }
 
-// durableFactory stands for a shared limiter backend: every NewLimiter answers a new handle
-// over the one store, as a Redis or SQL factory does.
+// durableFactory stands for a shared limiter backend: every NewLimiter answers the one
+// store, as a Redis or SQL factory answers handles over one backend. It is a real memory
+// limiter, not a mock, because the rows that use it count failures across chains and across
+// handles and read the throttle's outcome: a mock would only delegate to the same limiter.
 type durableFactory struct {
 	store *ratelimit.MemoryLimiter
 }
 
 func (f *durableFactory) NewLimiter(namespace string, limit int, window time.Duration) (ratelimit.Limiter, error) {
 	if namespace == "oidc-device-entry" {
-		return &deviceCountingLimiter{MemoryLimiter: f.store}, nil
+		return f.store, nil
 	}
 
 	return ratelimit.NewMemoryLimiter(limit, window)
@@ -86,17 +89,16 @@ func (f *durableFactory) NewLimiter(namespace string, limit int, window time.Dur
 func newDurableFactory(t *testing.T) *durableFactory {
 	t.Helper()
 
-	return &durableFactory{store: newDeviceCountingLimiter(t, 5, 10*time.Minute).MemoryLimiter}
+	return &durableFactory{store: entryMemory(t)}
 }
 
 // handOver is what a HandOver row did: the statuses it saw, the errors a second chain or a
-// follow-up build answered, and what a refused chain's limiter was charged.
+// follow-up build answered.
 type handOver struct {
 	status   int
 	statuses []int
 	err      error
 	again    error
-	charges  int64
 }
 
 // TestDeviceEntry_HandOver pins what the chain hands the provider's entry throttle: its
@@ -210,7 +212,13 @@ func TestDeviceEntry_HandOver(t *testing.T) {
 			act: func(t *testing.T, w *opFlow) handOver {
 				t.Helper()
 
-				other := &deviceRecordingFactory{t: t, entry: newDeviceCountingLimiter(t, 5, 10*time.Minute)}
+				// the refused chain's limiter is never charged: a charge fails the test.
+				ctrl := gomock.NewController(t)
+				other := NewMockLimiterFactory(ctrl)
+				other.EXPECT().NewLimiter("oidc-device-entry", gomock.Any(), gomock.Any()).
+					Return(memoryBackedLimiter(ctrl, entryMemory(t), false), nil).AnyTimes()
+				fallbackToMemory(other)
+
 				_, err := w.secondChain(httpsec.WithRateLimiterFactory(other))
 				got := handOver{err: err}
 
@@ -219,7 +227,6 @@ func TestDeviceEntry_HandOver(t *testing.T) {
 				}
 
 				got.status = w.enter(t, deviceUnknownCode).status
-				got.charges = other.entry.charges.Load()
 
 				_, got.again = w.secondChain(httpsec.WithRateLimiterFactory(durables[1]))
 
@@ -235,7 +242,6 @@ func TestDeviceEntry_HandOver(t *testing.T) {
 				}
 
 				assert.Equal(t, http.StatusTooManyRequests, got.status, "the first factory's limiter still counts")
-				assert.Zero(t, got.charges, "the refused chain's limiter is never charged")
 				require.NoError(t, got.again, "the first hand-over still stands, so the same factory is accepted")
 			},
 		},
@@ -357,7 +363,7 @@ func TestDeviceEntry_GETGate(t *testing.T) {
 			"the gate leaves the referrer to the chain's header policy, so the entry page may see this site's origin")
 		assert.Equal(t, "no-store", a.header.Get("Cache-Control"))
 
-		toLogin(t, w.enter(t, code, fetchSite("none")))
+		toLogin(t, w.enter(t, code, fetchSite("same-origin")))
 	}
 
 	// send issues a code and sends it once, with change.
@@ -470,7 +476,7 @@ func TestDeviceEntry_GETGate(t *testing.T) {
 		notOwn("an empty value is not the browser's own", fetchSite("")),
 		notOwn("two header lines are not the browser's own", fetchSite("same-origin", "cross-site")),
 		notOwn("a list in one line is not the browser's own", fetchSite("same-origin, cross-site")),
-		own("none claims", fetchSite("none")),
+		notOwn("none is gated like cross-site", fetchSite("none")),
 		own("same-origin claims", fetchSite("same-origin")),
 		notOwn("same-site is gated like cross-site", fetchSite("same-site")),
 		own("an absent header claims", nil),
@@ -558,6 +564,80 @@ func TestDeviceEntry_GETGate(t *testing.T) {
 	}
 }
 
+// TestDeviceEntry_POSTGate pins that a POST to code entry is refused with 403, and nothing
+// is read, claimed or charged, unless Sec-Fetch-Site is exactly one line of same-origin or
+// none, or is absent, with CSRF protection on and off.
+func TestDeviceEntry_POSTGate(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		change []flowChange
+		assert func(t *testing.T, w *opFlow, code string, a flowAnswer)
+	}
+
+	const flowSecret = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+	refused := func(t *testing.T, w *opFlow, code string, a flowAnswer) {
+		t.Helper()
+
+		assert.Equal(t, http.StatusForbidden, a.status, a.body)
+		require.ErrorIs(t, a.err, httpsec.ErrCrossSiteRequest)
+		assert.Empty(t, a.header.Get("Location"))
+		assert.Empty(t, a.header.Values("Set-Cookie"))
+
+		// nothing was claimed: another browser's own navigation still takes the code.
+		again := w.enter(t, code)
+		require.Equal(t, http.StatusSeeOther, again.status, again.body)
+		assert.Equal(t, "/login", again.location(t).Path)
+	}
+	reaches := func(t *testing.T, _ *opFlow, _ string, a flowAnswer) {
+		t.Helper()
+
+		require.Equal(t, http.StatusSeeOther, a.status, a.body)
+		assert.Equal(t, "/login", a.location(t).Path)
+	}
+
+	cases := []testCase{
+		{name: "cross-site is refused", change: []flowChange{fetchSite("cross-site")}, assert: refused},
+		{name: "same-site is refused", change: []flowChange{fetchSite("same-site")}, assert: refused},
+		{name: "a value in another case is refused", change: []flowChange{fetchSite("Same-Origin")}, assert: refused},
+		{name: "an empty value is refused", change: []flowChange{fetchSite("")}, assert: refused},
+		{name: "two header lines are refused", change: []flowChange{fetchSite("same-origin", "cross-site")}, assert: refused},
+		{name: "a list in one line is refused", change: []flowChange{fetchSite("same-origin, none")}, assert: refused},
+		{name: "same-origin reaches the provider", change: []flowChange{fetchSite("same-origin")}, assert: reaches},
+		{name: "none reaches the provider", change: []flowChange{fetchSite("none")}, assert: reaches},
+		{name: "an absent header reaches the provider", assert: reaches},
+	}
+
+	for _, csrf := range []bool{true, false} {
+		for _, tc := range cases {
+			name := tc.name + " (CSRF protection on)"
+			if !csrf {
+				name = tc.name + " (CSRF protection off)"
+			}
+
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+
+				setup := deviceSetup("")
+				if !csrf {
+					setup.noCSRF = true
+					setup.provider = append(setup.provider, oidcprovider.WithoutBrowserSessions())
+				}
+
+				w := newOPFlow(t, setup)
+				code := w.issueDevice(t, deviceTV).UserCode
+
+				change := append([]flowChange{flowCookieOf(flowCookie, flowSecret)}, tc.change...)
+				a := w.postForm(t, deviceEntryPath, url.Values{"user_code": {code}}, change...)
+
+				tc.assert(t, w, code, a)
+			})
+		}
+	}
+}
+
 // TestDeviceEntry_GETGateLog pins that a gated redirect leaves a sampled record through the
 // chain's logger, naming the source and the Sec-Fetch-Site it carried, never the user code.
 func TestDeviceEntry_GETGateLog(t *testing.T) {
@@ -594,6 +674,20 @@ func TestDeviceEntry_GETGateLog(t *testing.T) {
 				require.Len(t, got.records, 1)
 				assert.Equal(t, "192.0.2.20", got.records[0]["source"])
 				assert.Equal(t, "cross-site", got.records[0]["sec_fetch_site"])
+			},
+		},
+		{
+			name: "a none GET is gated and writes a record",
+			act: func(t *testing.T, w *opFlow) string {
+				t.Helper()
+				code := w.issueDevice(t, deviceTV).UserCode
+				require.Equal(t, http.StatusSeeOther, w.enter(t, code, fetchSite("none")).status)
+
+				return code
+			},
+			assert: func(t *testing.T, got gatedLog) {
+				require.Len(t, got.records, 1)
+				assert.Equal(t, "none", got.records[0]["sec_fetch_site"])
 			},
 		},
 		{
@@ -675,7 +769,7 @@ func TestDeviceEntry_GETGateLog(t *testing.T) {
 			act: func(t *testing.T, w *opFlow) string {
 				t.Helper()
 				code := w.issueDevice(t, deviceTV).UserCode
-				require.Equal(t, http.StatusSeeOther, w.enter(t, code, fetchSite("none")).status)
+				require.Equal(t, http.StatusSeeOther, w.enter(t, code, fetchSite("same-origin")).status)
 
 				return code
 			},

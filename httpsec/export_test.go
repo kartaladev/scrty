@@ -124,8 +124,8 @@ var WithSession = withSession
 
 // ReadResponse exposes the reader the verify endpoint hands a method's
 // response through, so its rules can be pinned without a chain.
-func ReadResponse(r Request, f mfa.ResponseFormat) ([]byte, error) {
-	return readResponse(context.Background(), r, f)
+func ReadResponse(ctx context.Context, r Request, f mfa.ResponseFormat) ([]byte, error) {
+	return readResponse(ctx, r, f)
 }
 
 // EnableRecoveryGateForTest registers the recovery gate exactly as

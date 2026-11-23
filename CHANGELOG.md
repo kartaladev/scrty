@@ -43,9 +43,10 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
   `WithOIDCDeviceAuthorizationLimiter`, `WithOIDCDeviceAuthorizationBodyLimit` and
   `WithOIDCDeviceEntryBodyLimit`. A throttled code entry answers `ErrOIDCThrottled` (429).
 - A GET gate at code entry: a GET carrying `user_code` claims it only when `Sec-Fetch-Site` is
-  `same-origin` or `none`, or absent. Any other, a link from another site or from a sibling site
-  among them, claims nothing and is sent with 303 to the consumer's entry page with the code
-  prefilled. A code-entry page that would make that redirect loop fails `New`.
+  `same-origin`, or absent. Any other (`none`, `same-site`, `cross-site`) claims nothing and is sent
+  with 303 to the consumer's entry page with the code prefilled. A POST to code entry is refused with
+  403 unless `Sec-Fetch-Site` is `same-origin`, `none` or absent, with CSRF protection on or off. A
+  code-entry page that would make that redirect loop fails `New`.
 - The authorization server metadata lists `device_authorization_endpoint` and the device grant in
   `grant_types_supported` when the grant is on. The device endpoints carry no CORS headers.
 - `Provider.AuthorizeDevice` and `Provider.EnterUserCode`, for an application that serves the

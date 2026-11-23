@@ -169,7 +169,7 @@ func TestReadResponse(t *testing.T) {
 				req.Header.Set("Content-Type", tc.contentType)
 			}
 
-			response, err := httpsec.ReadResponse(httpsec.NewHTTPRequest(req), tc.format)
+			response, err := httpsec.ReadResponse(t.Context(), httpsec.NewHTTPRequest(req), tc.format)
 			tc.assert(t, response, err)
 		})
 	}

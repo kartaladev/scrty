@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/kartaladev/scrty/internal/origin"
@@ -408,19 +409,28 @@ func WithOIDCDeviceEntryBodyLimit(limit int64) OIDCProviderOption {
 //  1. no answer may be cached, whatever follows, the chain's error handling included;
 //  2. a method it does not serve, and a request not made over TLS, are refused with
 //     nothing read from them, the latter as an invalid user code (400);
-//  3. the code is read, from a GET's query or a form POST's body and never both, and a
+//  3. a POST whose Sec-Fetch-Site is anything but exactly one line of same-origin or none
+//     (userInitiatedPost), absent aside, is refused with ErrCrossSiteRequest (403) with
+//     nothing read from it beyond headers, nothing claimed and nothing charged. This holds
+//     whether or not EnableCSRFProtection is given, and has no option: a sibling site's POST
+//     carries the SameSite=Lax flow cookie, so without it a claim could be made from there;
+//  4. the code is read, from a GET's query or a form POST's body and never both, and a
 //     missing, empty, repeated or overlong (oidcUserCodeMaxLen) user_code, or parameters
 //     that do not parse, are refused as an invalid user code before the provider is asked
 //     and before anything echoes it;
-//  4. a GET the browser does not report as its own navigation (ownNavigation) is sent
-//     with 303 to the consumer's code-entry page with the code prefilled, with nothing
-//     set, claimed or charged, so the user confirms the code there and submits it, under
-//     the chain's CSRF check: a link from anywhere cannot claim a code. This holds whether
-//     or not EnableCSRFProtection is given, and has no option;
-//  5. a form POST with no flow cookie is bounced to a GET carrying the code, by
+//  5. a GET that is not same-origin (ownNavigation: exactly one Sec-Fetch-Site line of
+//     same-origin, or the header absent) is sent with 303 to the consumer's code-entry page with
+//     the code prefilled, with nothing set, claimed or charged, so the user confirms the
+//     code there and submits it, under the POST gate and the chain's CSRF check. none
+//     (a typed or bookmarked URL, a link from another application), same-site and
+//     cross-site are all gated: a link a browser reports as coming from anywhere but this
+//     origin cannot claim a code. This holds whether or not EnableCSRFProtection is given,
+//     and has no option. A browser too old to send Sec-Fetch-Site is not gated: that gap
+//     is accepted;
+//  6. a form POST with no flow cookie is bounced to a GET carrying the code, by
 //     bounceOIDCPost, with nothing set, claimed or charged, as at the authorization
 //     endpoint;
-//  6. the provider throttles, claims and parks, from the source the chain resolved
+//  7. the provider throttles, claims and parks, from the source the chain resolved
 //     (trusted proxies included). Its flow secret is set as the cookie whenever it
 //     answers one the browser does not hold, on a failure too: a claim it may have
 //     written is bound to that secret, and only the browser holding it can recover the
@@ -442,6 +452,10 @@ func (g *oidcDeviceEntryGroup) serve(ex *Exchange, _ Next) error {
 
 	if !ex.Request.Secure() && !g.op.plainHTTPAllowed() {
 		return errOIDCUserCodePlainHTTP
+	}
+
+	if method == http.MethodPost && !userInitiatedPost(ex.Request) {
+		return ErrCrossSiteRequest
 	}
 
 	code, err := readOIDCUserCode(ex.Context(), ex.Request, g.bodyLimit)
@@ -482,27 +496,41 @@ func (g *oidcDeviceEntryGroup) serve(ex *Exchange, _ Next) error {
 	return nil
 }
 
-// ownNavigation reports whether the browser reports a request as its own navigation:
-// exactly one Sec-Fetch-Site line, of same-origin or none, or none at all (a client that
-// is no browser, or a browser too old to send it). same-site is not accepted: the entry
-// page is always on the issuer's origin, so the redirected GET of a cookieless POST is
-// same-origin, and a sibling site's link is gated like a cross-site one. The value is
-// compared exactly, as the Fetch standard writes it: another case, an empty value, a list
-// or a second line is no browser's, and is not trusted.
+// ownNavigation reports whether a GET may claim a code: exactly one Sec-Fetch-Site line of
+// same-origin, or no such line at all (a client that is no browser, or a browser too old to send
+// it). none is not accepted, though a browser sends it for a typed or bookmarked URL: it is
+// also what a link opened from a chat or mail application carries, and no legitimate flow
+// needs a GET to this endpoint with it, because verification_uri_complete and QR codes
+// point at the entry page. same-site is not accepted either: the entry page is always on the
+// issuer's origin, so the redirected GET of a cookieless POST is same-origin, and a sibling
+// site's link is gated like a cross-site one. The value is compared exactly, as the Fetch
+// standard writes it: another case, an empty value, a list or a second line is no browser's,
+// and is not trusted.
 func ownNavigation(r Request) bool {
+	return fetchSiteIs(r, fetchSameOrigin)
+}
+
+// userInitiatedPost reports whether a POST may reach the provider: exactly one
+// Sec-Fetch-Site line of same-origin or none (a form submitted from the user's own
+// navigation outside a page), or no such line at all. Anything else, same-site included, is a
+// request another page caused, and is compared exactly as ownNavigation does.
+func userInitiatedPost(r Request) bool {
+	return fetchSiteIs(r, fetchSameOrigin, fetchNone)
+}
+
+// fetchSiteIs reports whether the request carries no Sec-Fetch-Site line, or exactly one
+// whose value is one of allowed.
+func fetchSiteIs(r Request, allowed ...string) bool {
 	values := r.HeaderValues(headerSecFetchSite)
 
 	switch len(values) {
 	case 0:
 		return true
 	case 1:
-		switch values[0] {
-		case fetchSameOrigin, fetchNone:
-			return true
-		}
+		return slices.Contains(allowed, values[0])
+	default:
+		return false
 	}
-
-	return false
 }
 
 // msgDeviceEntryGated is the record of a GET carrying a code that the gate sent to the

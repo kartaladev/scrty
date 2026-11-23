@@ -354,10 +354,13 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 //     consumer's, and the chain's source keying (WithIPv6SourcePrefix), as the
 //     last step that may refuse the chain. New fails when the factory errs, or the
 //     provider already holds another chain's different factory, namespace or
-//     prefix. A GET carrying a user code that the browser does not report as its
-//     own navigation claims nothing, and is sent to the consumer's code-entry page
-//     with the code prefilled (see "Cross-site requests", below); a code-entry
-//     page on which that redirect would loop fails New.
+//     prefix. A GET carrying a user code claims it only when Sec-Fetch-Site is
+//     same-origin or absent; any other (none, same-site, cross-site) claims
+//     nothing, and is sent to the consumer's code-entry page with the code
+//     prefilled, and a POST to code entry is refused with 403 unless it is
+//     same-origin, none or absent, with CSRF protection on or off (see
+//     "Cross-site requests", below); a code-entry page on which that redirect
+//     would loop fails New.
 //   - Request bodies: DefaultLoginBodyLimit (WithOIDCAuthorizeBodyLimit,
 //     WithOIDCResumeBodyLimit, WithOIDCTokenBodyLimit, WithOIDCEndSessionBodyLimit,
 //     WithOIDCLogoutConfirmBodyLimit, WithOIDCRevokeBodyLimit,
@@ -408,17 +411,21 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // of them is refused as ErrCrossSiteRequest (403) before its handler runs.
 //
 // A GET to code entry carrying user_code claims it only when the browser reports the
-// navigation as its own: one Sec-Fetch-Site line of same-origin or none, or no
-// Sec-Fetch-Site at all (a client that is no browser, or an older browser). Any other
-// GET, a link from another site or a sibling site (same-site) among them, claims and charges nothing, sets no cookie,
-// and is answered with a 303 to the consumer's code-entry page
-// (oidcprovider.Provider.DeviceEntryURL) with user_code set, so the user confirms the
-// code there and submits it as a POST, under the check above. This gate holds with or
-// without EnableCSRFProtection, and has no option: a claim is a state change no link may
-// make. A user_code longer than 64 bytes is refused as an invalid code before anything
-// is redirected. A code-entry page whose path is the code-entry endpoint's, under any
-// spelling (case, trailing slash, empty segment, percent-encoding), fails New, because
-// the redirect would come back to the endpoint as cross-site again without end.
+// request as from the deployment's own origin: exactly one Sec-Fetch-Site line of
+// same-origin, or no Sec-Fetch-Site at all (a client that is no browser, or an older
+// browser, an accepted gap). Any other GET, none (a typed or bookmarked URL, a link
+// opened from another application), same-site and cross-site among them, claims and
+// charges nothing, sets no cookie, and is answered with a 303 to the consumer's
+// code-entry page (oidcprovider.Provider.DeviceEntryURL) with user_code set, so the user
+// confirms the code there and submits it as a POST. A POST to code entry is refused with
+// ErrCrossSiteRequest (403), before its body is read and with nothing claimed or
+// charged, when Sec-Fetch-Site is anything but exactly one line of same-origin or none,
+// or absent. Both gates hold with or without EnableCSRFProtection, and have no option:
+// a claim is a state change no link or sibling site may make. A user_code longer than 64
+// bytes is refused as an invalid code before anything is redirected. A code-entry page
+// whose path is the code-entry endpoint's, under any spelling (case, trailing slash,
+// empty segment, percent-encoding), fails New, because the redirect would come back to
+// the endpoint as cross-site again without end.
 //
 // The exemption follows the paths the provider serves (WithOIDCProviderPrefix,
 // WithOIDCProviderPath) and compares each exactly, with the path as the client sent

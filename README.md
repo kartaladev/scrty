@@ -816,13 +816,20 @@ has a fixed contract with the chain:
   not a hop. A GET to the endpoint that carries a code is sent back to the entry page (see the next
   point), so a page that sends the browser on to the endpoint would loop between the two. The chain
   refuses, at construction, an entry page whose path is the endpoint's, under any spelling.
-- **A link from another site claims nothing.** A GET to the code-entry endpoint with `user_code`
-  claims the code only when the browser reports the navigation as the user's own: `Sec-Fetch-Site` is
-  `same-origin` or `none`, or the header is absent (a client that is no browser, or an older one).
-  Any other GET, a link from another site or from a sibling site (`same-site`) among them, claims and
-  charges nothing, sets no cookie, and is answered with a 303 to your entry page with `user_code` in
-  the query. The user then confirms the code on your page and submits it as a POST. This holds with or
-  without CSRF protection, and has no option, because a link must never be able to claim a code.
+- **A link claims nothing unless the browser says it is from your own origin.** A GET to the
+  code-entry endpoint with `user_code` claims the code only when `Sec-Fetch-Site` is exactly one line
+  of `same-origin`, or the header is absent (a client that is no browser, or an older browser).
+  Every other GET, `none` (a typed or bookmarked URL, a link opened from a chat or mail application),
+  `same-site` (a sibling site) and `cross-site` among them, claims and charges nothing, sets no
+  cookie, and is answered with a 303 to your entry page with `user_code` in the query. The user then
+  confirms the code on your page and submits it as a POST. This holds with or without CSRF
+  protection, and has no option. A browser that sends no `Sec-Fetch-Site` is not gated: that gap is
+  accepted, and the POST below and the user's own confirmation are what remain for it.
+- **A POST is refused unless it is the user's own.** A POST to the code-entry endpoint is refused with
+  403 (`ErrCrossSiteRequest`), before its body is read and with nothing claimed or charged, when
+  `Sec-Fetch-Site` is anything but exactly one line of `same-origin` or `none`, or absent. This holds
+  with or without `EnableCSRFProtection`: the flow cookie is `SameSite=Lax`, so a sibling site's POST
+  would carry it.
 - **A user code is in the URL, so it is in logs.** The code appears in the query of the entry page
   and of `verification_uri_complete`, and so in access logs, browser history and the `Referer`
   header of anything your entry page loads or links to. Treat it as short-lived and low-value but not
