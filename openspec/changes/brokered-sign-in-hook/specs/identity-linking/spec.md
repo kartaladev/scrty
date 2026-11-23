@@ -117,6 +117,10 @@ By default, the library SHALL refuse, as an unlinked identity and before the app
 - **WHEN** the consumer allows several links per user for `corp`, `s-1` is linked to `u-7`, and the hook decides `u-7` for `s-2`
 - **THEN** a link for `s-2` to `u-7` is stored and the login resolves to `u-7`
 
+#### Scenario: User already holding two links
+- **WHEN** several links per user are not allowed for `corp`, `s-1` and `s-2` at `https://corp.example` are both linked to `u-7`, and `s-1` logs in
+- **THEN** the login fails as an unlinked identity, the apply step does not run, and both links remain
+
 #### Scenario: Two new subjects race for one user
 - **WHEN** `s-1` and `s-2` at the same issuer both decide `u-7` concurrently, neither linked before
 - **THEN** at most one link to `u-7` from that issuer remains, every login whose link was removed fails as an unlinked identity, and no refused login's apply step runs

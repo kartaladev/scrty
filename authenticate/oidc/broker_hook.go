@@ -33,7 +33,8 @@ var ErrUpstreamRequired = errors.New("oidc: the provider's sign-in hook needs up
 //     from another subject of the same provider and issuer, whether the
 //     identity is linked already or not;
 //  2. the identity is linked to User, unless its link already names User;
-//  3. Apply runs, with the link final;
+//  3. Apply runs, after the link is inserted and confirmed; a concurrent
+//     sign-in may still remove that link, so it is not yet final;
 //  4. User is loaded again, must still be active, and is the login's
 //     principal.
 //
@@ -51,8 +52,8 @@ type SignInDecision struct {
 
 	// Apply holds the consumer's writes for User, such as storing a password
 	// hash fetched through Upstream. It is optional unless Provision is set,
-	// and runs only after the broker accepted the decision and the link is
-	// final, so it writes only for the user the login resolves to; it should
+	// and runs only after the broker accepted the decision and the link was
+	// inserted and confirmed, so it writes only for the user the login resolves to; it should
 	// close over User, not over a user its own lookup found. It runs within
 	// the request, bounded only by ctx.
 	//
@@ -107,7 +108,10 @@ type SignInHook func(ctx context.Context, ext ExternalIdentity, up Upstream, lin
 // the next one succeeds. A sign-in through an existing link applies the rule
 // too, so a user who holds two links of one provider and issuer, by a failed
 // removal or an operator's write, is refused through either until one is
-// removed. WithBrokerSignInHookAllowManyLinks lifts the rule.
+// removed. WithBrokerSignInHookAllowManyLinks lifts the rule. Switching the
+// rule on for a provider whose users already hold several links from one
+// provider and issuer therefore refuses those users until the extra links are
+// removed.
 //
 // A nil hook, an empty provider and a second hook for one provider are
 // refused with ErrConfig. So is a hook on a provider that WithBrokerJIT,
@@ -140,7 +144,9 @@ func WithBrokerSignInHook(provider string, hook SignInHook) BrokerOption {
 // refuses a decision that would give a user a second such link. Allowing many
 // links also removes the hook's need for a link store that implements
 // LinkLister and LinkRemover. Identities of other providers and issuers never
-// count against the rule. An empty provider, or one with no
+// count against the rule. Switching it off again, by omitting this option,
+// refuses every user who already holds several links from one provider and
+// issuer, through any of them, until the extra links are removed. An empty provider, or one with no
 // WithBrokerSignInHook, is refused with ErrConfig.
 func WithBrokerSignInHookAllowManyLinks(provider string) BrokerOption {
 	return func(b *Broker) error {
@@ -303,7 +309,7 @@ func (b *Broker) acceptDecision(ctx context.Context, ext ExternalIdentity, up Up
 		}
 	}
 
-	// Step 5: the consumer's writes, with the link final.
+	// Step 5: the consumer's writes, after the link was inserted and confirmed.
 	if d.Apply != nil {
 		if err := d.Apply(ctx); err != nil {
 			return nil, b.hookError(ctx, ext, hookStageApply, err)
@@ -373,10 +379,15 @@ func (b *Broker) rereadLink(ctx context.Context, ext ExternalIdentity, user iden
 	// store fault.
 	err = porterr.SanitizeTo(ctx, b.log, err, porterr.ErrUnwalkable)
 	switch {
-	case errors.Is(err, ErrLinkNotFound), err == nil && l == nil:
-		// The store reported the identity linked, then not: it contradicts
-		// itself, and nothing can be accepted.
-		return nil, errLinkVanished
+	case errors.Is(err, ErrLinkNotFound):
+		// The insert found the identity linked and a concurrent sign-in's
+		// undo removed the link before this re-read: a lost race, refused.
+		b.refusal(ctx, slog.LevelDebug, "the identity's link was removed by a concurrent sign-in before it was re-read", ext.Provider, ext.Email)
+		return nil, ErrNoLinkedAccount
+	case err == nil && l == nil:
+		// A store that reports neither a link nor an error breaks its
+		// contract, and nothing can be accepted.
+		return nil, errLinkNilFound
 	case err != nil:
 		return nil, fmt.Errorf("oidc: re-reading a link: %w", redact(err, values))
 	case l.UserID != user:
@@ -494,9 +505,10 @@ func (b *Broker) loadDecided(ctx context.Context, ext ExternalIdentity, user ide
 	return det, nil
 }
 
-// errLinkVanished is the broker failure of a link store that refused an
-// insert as already linked, then found no link for the identity.
-var errLinkVanished = errors.New("oidc: the link store reported the identity linked, then found no link")
+// errLinkNilFound is the broker failure of a link store that refused an
+// insert as already linked, then returned neither a link nor an error for the
+// identity.
+var errLinkNilFound = errors.New("oidc: the link store reported the identity linked, then returned no link and no error")
 
 // errNoLinkLister and errNoLinkRemover are the broker failures of a one-link
 // check over a store that cannot list or remove one link, which NewBroker

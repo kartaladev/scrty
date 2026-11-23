@@ -557,12 +557,28 @@ func TestBroker_HookLinksThenApplies(t *testing.T) {
 			assert: storeFault,
 		},
 		{
-			name: "a re-read that finds no link after ErrLinkExists is a broker failure, never a refusal",
+			name: "a re-read that finds no link after ErrLinkExists is a lost race, refused without Apply",
 			links: faultyStore(func(s *MockLinkStore, l *MockLinkLister, _ *MockLinkRemover) {
 				gomock.InOrder(
 					notFound(s),
 					s.EXPECT().Insert(gomock.Any(), gomock.Any()).Return(oidc.ErrLinkExists),
 					s.EXPECT().FindByExternal(gomock.Any(), "corp", brokerCorpIssuer, "s-1").Return(nil, oidc.ErrLinkNotFound),
+				)
+				l.EXPECT().ListByUser(gomock.Any(), identity.UserID("u-7")).Return([]oidc.Link{}, nil)
+			}),
+			assert: func(t *testing.T, e env, p *identity.Principal, err error) {
+				require.ErrorIs(t, err, oidc.ErrNoLinkedAccount)
+				assert.Nil(t, p)
+				assert.Empty(t, e.applies.all())
+			},
+		},
+		{
+			name: "a re-read that returns neither a link nor an error after ErrLinkExists is a broker failure",
+			links: faultyStore(func(s *MockLinkStore, l *MockLinkLister, _ *MockLinkRemover) {
+				gomock.InOrder(
+					notFound(s),
+					s.EXPECT().Insert(gomock.Any(), gomock.Any()).Return(oidc.ErrLinkExists),
+					s.EXPECT().FindByExternal(gomock.Any(), "corp", brokerCorpIssuer, "s-1").Return(nil, nil),
 				)
 				l.EXPECT().ListByUser(gomock.Any(), identity.UserID("u-7")).Return([]oidc.Link{}, nil)
 			}),
@@ -1163,6 +1179,45 @@ func TestBroker_HookUndoInterleavings(t *testing.T) {
 				require.NoError(t, err)
 				require.Len(t, all, 1, "u-7 keeps one link from corp's issuer: %+v", all)
 				assert.Equal(t, "s-2", all[0].Subject, "B keeps its link")
+			},
+		},
+		{
+			// A (s-1) and C (s-1 again) pass their pre-checks; B (s-2) links u-7.
+			// A inserts s-1, its re-check sees s-2 and A starts its undo. C inserts
+			// s-1 and finds it linked, and A's undo removes the link before C
+			// re-reads it.
+			name: "a sign-in whose link was undone between its insert and its re-read is refused as a lost race",
+			run: func(t *testing.T, e env) map[string]outcome {
+				aAtInsert, cAtInsert, goA, goC := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+				aAtUndo, goDelete, aDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+				e.links.beforeInsert["A"] = func() { close(aAtInsert); awaitStage(t, goA, "A to be released") }
+				e.links.beforeInsert["C"] = func() { close(cAtInsert); awaitStage(t, goC, "C to be released") }
+				e.links.beforeDelete["A"] = func(context.Context) { close(aAtUndo); awaitStage(t, goDelete, "A's undo to be released") }
+				e.links.afterInsert["C"] = func() { close(goDelete); awaitStage(t, aDone, "A to finish") }
+
+				out := map[string]outcome{}
+				var wg sync.WaitGroup
+				var a, c outcome
+				wg.Go(func() { a = e.login(t.Context(), "A", "s-1"); close(aDone) })
+				wg.Go(func() { c = e.login(t.Context(), "C", "s-1") })
+				awaitStage(t, aAtInsert, "A to reach its insert")
+				awaitStage(t, cAtInsert, "C to reach its insert")
+				out["B"] = e.login(t.Context(), "B", "s-2")
+				close(goA)
+				awaitStage(t, aAtUndo, "A to reach its undo")
+				close(goC)
+				wg.Wait()
+				out["A"], out["C"] = a, c
+				return out
+			},
+			assert: func(t *testing.T, e env, out map[string]outcome) {
+				require.NoError(t, out["B"].err)
+				for _, name := range []string{"A", "C"} {
+					require.ErrorIs(t, out[name].err, oidc.ErrNoLinkedAccount, "login %s", name)
+					assert.Nil(t, out[name].p, "login %s", name)
+				}
+				assert.Nil(t, findCorp(t, e.links, "s-1"), "A removed the link")
+				assert.Len(t, e.applies.all(), 1, "only B applied")
 			},
 		},
 	}

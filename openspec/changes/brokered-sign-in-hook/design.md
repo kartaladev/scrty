@@ -360,7 +360,9 @@ Alternatives rejected:
 | F11 | Two first sign-ins of one identity race | Handled, tested | One link; both resolve, or the loser refuses; `Apply` only after the link is final |
 | F12 | Link store fault on find, insert, list or delete | Handled, tested | Broker failure, redacted; never "no link" |
 | F45 | A SQL store lists links in the database's locale order, not byte order | Accepted | Each SQL store orders with `COLLATE "C"`, matching the memory store. The test container's default collation may already order by bytes, so the suite cannot prove the clause; it is pinned in code |
-| F47 | A sign-in completes through an existing link in the instant before a concurrent inserter undoes that link | Accepted | One session for the decided user is issued through a link that is then removed; the next sign-in of that identity re-checks and is linked again or refused. The user is the one the hook decided, so no other account is reached |
+| F47 | A sign-in completes through an existing link in the instant before, or while, a concurrent inserter undoes that link (its `Apply` may then run with the link already gone) | Accepted | One session for the decided user is issued through a link that is then removed; the next sign-in of that identity re-checks and is linked again or refused. The user is the one the hook decided, so no other account is reached |
+| F49 | An insert hits `ErrLinkExists`, and a concurrent undo removes that link before the re-read | Handled, tested | A lost race: `ErrNoLinkedAccount`, not a store fault; nothing applied |
+| F50 | A deployment switches `WithBrokerSignInHookAllowManyLinks` off while users hold several links from one provider and issuer | Accepted | Those users are refused through every such link (fail closed) until an operator removes the extra links |
 | F48 | Undoing a duplicate fails (store fault), or the undo's own 5-second timeout passes | Accepted | Broker failure and one ERROR log (provider and email domain). Two links remain, and every sign-in through either is refused by the existing-link check until an operator removes one |
 | F44 | Undoing a duplicate link would remove more than that link | Handled, tested | `DeleteLink` removes only the row with this link's ID and external identity; the user's other links stay (D11) |
 | F13 | `Apply` fails after the link is inserted | Accepted | Broker failure; the link stays and is correct; the next sign-in re-applies |
@@ -375,6 +377,7 @@ Alternatives rejected:
 | F21 | Completion: user missing, disabled or mismatched | Handled, tested | Refused as redemption refuses |
 | F22 | Completion: post-auth policy denies, or owes a step | Handled, tested | The policy's refusal, or the handoff fallback (D8) |
 | F23 | Completion: per-request policy refuses, or raises a challenge | Handled, tested | The session is ended; a refusal is returned, or a challenge falls back to the handoff to the login page (D8); no code |
+| F51 | Completion: the sign-in notice and the sign-in events fire when the session is committed, before a later step ends it | Accepted | Those events record that a sign-in happened; ending the session afterwards emits nothing of its own. A consumer correlating events sees a sign-in whose session ended at once, as after an immediate sign-out |
 | F46 | Completion: the error handler reads the session after it was ended | Handled, tested | The exchange and the request context no longer carry the ended session |
 | F24 | Completion: resume error, resume without a code, or confirmation fails | Handled, tested | The session is ended; a refusal or the client's error response; no code |
 | F25 | Completion: ending a session fails | Accepted | ERROR log; no credential exists, so the session is unusable |

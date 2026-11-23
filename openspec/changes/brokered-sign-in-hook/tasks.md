@@ -73,6 +73,7 @@ Each task's verification names the test or command that shows it is done.
   - a barrier test where a sign-in of the same identity finds the link mid-undo: it is refused by the existing-link check, never signed in through a link that is then removed;
   - a user holding two links from one issuer is refused through either (unless allow-many);
   - a request cancelled after the insert still removes its duplicate (the undo is detached), leaving at most one link;
+  - an insert that hits `ErrLinkExists` whose link a concurrent undo then removes is refused as `ErrNoLinkedAccount`, not a store fault (F49);
   - store faults on find, insert, list and delete are broker failures (F12).
 - [ ] 3.6 Implement `Apply` after the link, then the reload and the active check (D5, steps 5–6). **Verify:** tests show `Apply` runs once on first and later sign-ins; a failing `Apply` keeps the link and is a broker failure (F13); `Apply` deactivating the user is refused, with the link kept (F19).
 - [ ] 3.8 Implement the provisioning decision (D13). **Verify:** tests show:
