@@ -154,7 +154,7 @@ Each task's verification names the test or command that shows it is done.
 
 ## 6. Integration and gate
 
-- [ ] 6.1 Add an end-to-end test in the `test` module covering the consumer's acceptance list. **Verify:** `go test -run '<Name>' -count=1 ./oidc/` in `test/`. The list:
+- [x] 6.1 Add an end-to-end test in the `test` module covering the consumer's acceptance list. **Verify:** `go test -run '<Name>' -count=1 ./oidc/` in `test/`. The list:
   - an imported user matched by e-mail with no link is updated through admin, with one link and no second user;
   - the second sign-in goes through the link and refreshes the user;
   - an inactive account is refused;
