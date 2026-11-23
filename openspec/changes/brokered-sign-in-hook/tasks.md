@@ -76,7 +76,7 @@ Each task's verification names the test or command that shows it is done.
   - an insert that hits `ErrLinkExists` whose link a concurrent undo then removes is refused as `ErrNoLinkedAccount`, not a store fault (F49);
   - store faults on find, insert, list and delete are broker failures (F12).
 - [x] 3.6 Implement `Apply` after the link, then the reload and the active check (D5, steps 5–6). **Verify:** tests show `Apply` runs once on first and later sign-ins; a failing `Apply` keeps the link and is a broker failure (F13); `Apply` deactivating the user is refused, with the link kept (F19).
-- [ ] 3.8 Implement the provisioning decision (D13). **Verify:** tests show:
+- [x] 3.8 Implement the provisioning decision (D13). **Verify:** tests show:
   - a first sign-in that provisions `u-new` stores the link before `Apply` runs, with an empty username, and resolves to `u-new`;
   - provisioning a user that exists and is not linked to the identity is refused, with `Apply` never called and no link (F32);
   - provisioning with no `Apply` is a broker failure, with no link (F33);
