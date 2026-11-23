@@ -11,11 +11,11 @@ Each task's verification names the test or command that shows it is done.
 
 ## 1. Upstream access and UserInfo (`authenticate/oidc`)
 
-- [ ] 1.1 Keep the token response's `access_token` in a callback-local value, and discard the refresh token. **Verify:** a test shows `CallbackResult`, `Flow` and `HandoffRecord` hold neither token.
-- [ ] 1.2 Add `Upstream`: a pointer to unexported state, with redacted `Format`, `String` and `LogValue`, plus `AccessToken()` and `HasAccessToken()`. **Verify:** a table test over `%v`, `%+v`, `%#v`, `%s`, a slog attribute, and an exported and an unexported field of a consumer struct; no output contains the token (F2).
-- [ ] 1.3 Add the optional `UpstreamBroker` interface and the dispatch in `Callback`. **Verify:** tests show a plain broker unchanged, an upstream broker receiving the token, and a response with no `access_token` still logging in (F1).
-- [ ] 1.4 Add discovered `userinfo_endpoint` and an optional pinned `Provider.UserInfoEndpoint` (D4). **Verify:** tests for the discovered endpoint, the pin winning, a refused scheme failing construction, and an absent endpoint not failing discovery.
-- [ ] 1.5 Implement `Upstream.UserInfo(ctx)` and `ErrUserInfoFailed` (D3). **Verify:** a table test against `httptest` with these rows:
+- [x] 1.1 Keep the token response's `access_token` in a callback-local value, and discard the refresh token. **Verify:** a test shows `CallbackResult`, `Flow` and `HandoffRecord` hold neither token.
+- [x] 1.2 Add `Upstream`: a pointer to unexported state, with redacted `Format`, `String` and `LogValue`, plus `AccessToken()` and `HasAccessToken()`. **Verify:** a table test over `%v`, `%+v`, `%#v`, `%s`, a slog attribute, and an exported and an unexported field of a consumer struct; no output contains the token (F2).
+- [x] 1.3 Add the optional `UpstreamBroker` interface and the dispatch in `Callback`. **Verify:** tests show a plain broker unchanged, an upstream broker receiving the token, and a response with no `access_token` still logging in (F1).
+- [x] 1.4 Add discovered `userinfo_endpoint` and an optional pinned `Provider.UserInfoEndpoint` (D4). **Verify:** tests for the discovered endpoint, the pin winning, a refused scheme failing construction, and an absent endpoint not failing discovery.
+- [x] 1.5 Implement `Upstream.UserInfo(ctx)` and `ErrUserInfoFailed` (D3). **Verify:** a table test against `httptest` with these rows:
   - ok;
   - `sub` mismatch;
   - `sub` missing;
@@ -33,7 +33,7 @@ Each task's verification names the test or command that shows it is done.
   - a non-string `access_token` in the token response (a plain broker still logs in, and `HasAccessToken()` is false).
 
   Every row also asserts, by log capture, that neither the token nor the body appears in a log record or an error (F3–F6).
-- [ ] 1.6 Write godoc for every symbol added in 1.1–1.5, each naming its default and override. **Verify:** `go doc`, and an `ExampleUpstream_UserInfo` that runs.
+- [x] 1.6 Write godoc for every symbol added in 1.1–1.5, each naming its default and override. **Verify:** `go doc`, and an `ExampleUpstream_UserInfo` that runs.
 
 ## 2. Listing a user's links (link stores)
 
