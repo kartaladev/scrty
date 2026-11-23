@@ -241,7 +241,7 @@ func (a *PrivilegeAuthorizer) InspectPrivileges(
 
 // InspectPrivileges asks the member that would judge privilege attributes
 // which of names the caller holds, and returns its answer unchanged once it
-// is checked against the PrivilegeInspector contract; an answer that breaks it
+// is checked against the PrivilegeInspector contract, as a copy the caller owns; an answer that breaks it
 // fails with an error matching ErrConfig. Each member is asked with its own
 // copy of names, so a member that edits the slice and declines changes nothing
 // the next is asked.
@@ -277,7 +277,9 @@ func (m *FirstOf) InspectPrivileges(
 				return nil, err
 			}
 
-			return holdings, nil
+			// The caller's holdings are its own, even when the member keeps
+			// the slice it answered with.
+			return slices.Clone(holdings), nil
 		case *OwnershipAuthorizer:
 			continue
 		default:

@@ -41,9 +41,9 @@ type memoEntry struct {
 	err        error
 
 	// loaderEnded records whether the loading check's own context had ended
-	// when the load returned. Only then is a cancellation-shaped error someone
-	// else's to retry; a loader that hit a deadline of its own, such as a
-	// statement timeout, reports an outage every waiter shares.
+	// when the load returned. Only then is a failure someone else's to retry,
+	// whatever its shape; a loader that failed while its context was live,
+	// such as on a statement timeout, reports an outage every waiter shares.
 	loaderEnded bool
 }
 
@@ -119,11 +119,15 @@ func (a *PrivilegeAuthorizer) loadPrivileges(ctx context.Context, role string) (
 // A waiter whose own context ends stops waiting with its context's error, and
 // leaves the entry for everyone else. A waiter whose load failed because the
 // loading check's context ended, while its own is still live, loads again
-// rather than failing with a cancellation that was never its own. Each such
-// round ends a check whose context is over, so the loop ends with the checks.
-// Any other failure, including a deadline the loader hit on its own while the
-// loading check's context was live, is returned to every waiter: it is an
-// outage, and retrying it would make each waiter pay it again in turn.
+// whatever error the loader returned: a driver closing its connection under a
+// cancelled context reports an error that does not wrap the cancellation, and
+// a live caller never inherits another caller's cancellation. A waiter whose
+// own context has ended by the time it wakes returns its own context's error,
+// not the loading check's. Each retry round ends a check whose context is
+// over, so the loop ends with the checks. Any failure while the loading
+// check's context was live, including a deadline the loader hit on its own, is
+// returned to every waiter: it is an outage, and retrying it would make each
+// waiter pay it again in turn.
 func (m *requestMemo) load(
 	ctx context.Context,
 	key memoKey,
@@ -155,7 +159,13 @@ func (m *requestMemo) load(
 			return nil, fmt.Errorf("authorize: waiting for the role's privileges: %w", ctx.Err())
 		}
 
-		if entry.loaderEnded && isContextEnd(entry.err) && ctx.Err() == nil {
+		// The waiter's own context decides first: once it has ended, the
+		// answer is its own error, not the loading check's.
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("authorize: waiting for the role's privileges: %w", err)
+		}
+
+		if entry.loaderEnded && entry.err != nil {
 			continue
 		}
 
@@ -202,8 +212,3 @@ func (m *requestMemo) fill(
 // errLoaderPanicked is what the checks waiting on a load see when the loader
 // panicked in the check that ran it. The panic itself continues in that check.
 var errLoaderPanicked = errors.New("authorize: the role loader panicked")
-
-// isContextEnd reports whether err is a context's cancellation or deadline.
-func isContextEnd(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
-}

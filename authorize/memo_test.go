@@ -463,6 +463,53 @@ func TestMemo_LoaderCancellationDoesNotReachWaiters(t *testing.T) {
 	assert.Equal(t, int32(2), loads.Load())
 }
 
+// TestMemo_LoaderEndedWithAnyErrorWaiterLoadsAgain: when the loading check's
+// context ended, a live waiter loads again whatever error the loader returned,
+// including one that does not wrap the cancellation, such as a driver's
+// "connection closed". A live caller never inherits another's cancellation.
+func TestMemo_LoaderEndedWithAnyErrorWaiterLoadsAgain(t *testing.T) {
+	t.Parallel()
+
+	var loads atomic.Int32
+
+	entered := make(chan struct{})
+
+	ctrl := gomock.NewController(t)
+	roles := NewMockRoleLoader(ctrl)
+	roles.EXPECT().LoadPrivileges(gomock.Any(), "clerk").AnyTimes().
+		DoAndReturn(func(ctx context.Context, _ string) ([]*identity.ResourcePrivileges, error) {
+			if loads.Add(1) == 1 {
+				close(entered)
+				<-ctx.Done()
+
+				return nil, errors.New("conn closed")
+			}
+
+			return leadGrants(), nil
+		})
+
+	authorizer, err := authorize.NewPrivilegeAuthorizer(roles)
+	require.NoError(t, err)
+
+	ctx := authorize.WithRequestMemo(withRole(t.Context(), "clerk"))
+	loaderCtx, cancelLoader := context.WithCancel(ctx)
+
+	loaderDone := make(chan error, 1)
+	go func() { loaderDone <- authorizer.Authorize(loaderCtx, leadCheck("p0")) }()
+
+	<-entered
+
+	waiterDone := make(chan error, 1)
+	go func() { waiterDone <- authorizer.Authorize(ctx, leadCheck("p1")) }()
+
+	time.Sleep(50 * time.Millisecond)
+	cancelLoader()
+
+	require.Error(t, <-loaderDone)
+	require.NoError(t, <-waiterDone, "the waiter inherited the loading check's failure")
+	assert.Equal(t, int32(2), loads.Load())
+}
+
 // TestMemo_PanicNotRemembered: a loader that panics leaves no entry behind.
 // The panic reaches the check that loaded, a check waiting on that load gets
 // an error rather than blocking forever, and the next check loads again.
