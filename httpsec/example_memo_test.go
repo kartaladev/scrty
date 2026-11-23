@@ -54,7 +54,7 @@ func ExampleWithoutPrivilegeMemo() {
 			}
 		})
 
-		chain.Middleware()(app).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+		chain.Middleware()(app).ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 
 		return roles.loads
 	}

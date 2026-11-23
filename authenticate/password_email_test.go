@@ -806,3 +806,95 @@ func TestPassword_EmailTimingParity(t *testing.T) {
 		})
 	}
 }
+
+// TestPassword_ResolveRefusesAccountWithoutUsername pins that a loader answer
+// naming an account with no username is a contract violation, refused as an
+// unknown identifier is: a resolution keyed on the typed text would give every
+// case variant of one email its own lockout budget.
+func TestPassword_ResolveRefusesAccountWithoutUsername(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name       string
+		emailLogin bool
+		// identifier is distinct per row, so the log assertion cannot be
+		// satisfied by another row's text.
+		identifier string
+		expect     func(f *emailFixture, nameless *identity.Details)
+		assert     func(t *testing.T, f *emailFixture, identifier string, result *authenticate.Authentication, err error)
+	}
+
+	// The refusal is the uniform failure after the decoy work, no account is
+	// authenticated, and the contract breach is logged without the identifier.
+	refused := func(t *testing.T, f *emailFixture, identifier string, result *authenticate.Authentication, err error) {
+		t.Helper()
+
+		assert.Nil(t, result)
+		assert.Equal(t, authenticate.ErrAuthenticationFailed, err)
+		f.oneReferenceVerification(t)
+
+		assert.Contains(t, f.logs.String(), "user-without-username")
+		assert.NotContains(t, f.logs.String(), identifier)
+	}
+
+	cases := []testCase{
+		{
+			name:       "email path",
+			emailLogin: true,
+			identifier: "ADA@example.com",
+			expect: func(f *emailFixture, nameless *identity.Details) {
+				f.users.EXPECT().LoadByUsername(gomock.Any(), "ADA@example.com").Return(nil, identity.ErrUserNotFound).Times(1)
+				f.emails.EXPECT().LoadByEmail(gomock.Any(), "ADA@example.com").Return(nameless, nil).Times(1)
+			},
+			assert: refused,
+		},
+		{
+			name:       "username path with email login on",
+			emailLogin: true,
+			identifier: "nameless-user@host.test",
+			expect: func(f *emailFixture, nameless *identity.Details) {
+				f.users.EXPECT().LoadByUsername(gomock.Any(), "nameless-user@host.test").Return(nameless, nil).Times(1)
+				f.emails.EXPECT().LoadByEmail(gomock.Any(), "nameless-user@host.test").Return(nil, identity.ErrUserNotFound).Times(1)
+			},
+			assert: refused,
+		},
+		{
+			name:       "username path with email login off",
+			identifier: "nameless-off",
+			expect: func(f *emailFixture, nameless *identity.Details) {
+				f.users.EXPECT().LoadByUsername(gomock.Any(), "nameless-off").Return(nameless, nil).Times(1)
+			},
+			assert: refused,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+
+			f := newEmailFixture(t)
+			nameless := *f.ada
+			nameless.Username = ""
+			tc.expect(f, &nameless)
+
+			var opts []authenticate.PasswordOption
+			if tc.emailLogin {
+				opts = append(opts, authenticate.WithEmailLogin())
+			}
+			auth, err := f.build(f.loader(), opts...)
+			require.NoError(t, err)
+
+			// Resolution names no account.
+			r, err := auth.ResolveIdentifier(ctx, tc.identifier)
+			require.NoError(t, err)
+			assert.Nil(t, r.Details)
+			assert.Equal(t, tc.identifier, r.Key)
+
+			result, err := auth.Authenticate(authenticate.WithResolved(ctx, r),
+				identity.NewUsernamePassword(tc.identifier, []byte(storedPassword)))
+			tc.assert(t, f, tc.identifier, result, err)
+		})
+	}
+}

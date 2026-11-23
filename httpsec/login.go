@@ -392,9 +392,11 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	// tail is about to refuse for want of one proved no one.
 	if auth != nil && auth.Principal != nil {
 		// The identifier as typed carries failures of its own when it is not
-		// the account's key (see verifyPassword), cleared with the account's.
-		for _, k := range attemptKeys(key, username) {
-			l.resetFailures(ctx, k)
+		// the account's key (see verifyPassword), cleared with the account's
+		// and, like them, reported once: under the account.
+		l.resetFailures(ctx, key)
+		if username != key {
+			l.resetTypedFailures(ctx, username)
 		}
 	}
 
@@ -743,12 +745,13 @@ func (l *formLogin) preAuthenticate(ctx context.Context, username string, now ti
 // verifyPassword checks the password presented for username, recording a
 // refused one as a failed attempt against the account, under key (see
 // judgePassword), and also under username, the identifier as typed, when it is
-// not key (attemptKeys). Lockout judges key alone; the second record is what
+// not key (recordFailure). Lockout judges key alone; the second record is what
 // the automation challenge reads (see attemptPasswordAs), so a registered
 // email accrues failures under itself exactly as an unknown one does. With
 // scrty's provider an identifier that resolved to a different key is no
 // account's username, since a username is always looked up first, so the
-// second record locks no one.
+// second record locks no one, and it is written unreported
+// (recordUnreported), so one account's lock is reported once.
 //
 // A user store that could not answer (authenticate.ErrUnavailable) is returned
 // as it is and recorded as nothing against the account: no credential was
@@ -773,9 +776,7 @@ func (l *formLogin) verifyPassword(
 		return nil, err
 	}
 	if err != nil {
-		for _, k := range attemptKeys(key, username) {
-			l.recordFailure(ctx, k, now)
-		}
+		l.recordFailure(ctx, key, username, now)
 
 		return nil, err
 	}
@@ -783,15 +784,29 @@ func (l *formLogin) verifyPassword(
 	return auth, nil
 }
 
-// attemptKeys is where an attempt's failures are recorded and a success clears
-// them: key, the account's, and typed, the identifier as presented, when it is
-// not key. See verifyPassword.
-func attemptKeys(key, typed string) []string {
-	if typed == key {
-		return []string{key}
+// recordUnreported records a failure for typed, the identifier as presented
+// when it resolved to another account key, through store's unreported record
+// when store offers one (policy.UnreportedAttemptRecorder): the account's own
+// record, under its key, is the one the lockout judges and reports, and a
+// second report under typed would report one account twice. A store that
+// offers none records it as any failure; it reports nothing, so it has
+// nothing to report twice.
+func recordUnreported(ctx context.Context, store policy.AttemptStore, typed string, at time.Time) error {
+	if r, ok := store.(policy.UnreportedAttemptRecorder); ok {
+		return r.RecordFailureUnreported(ctx, typed, at)
 	}
 
-	return []string{key, typed}
+	return store.RecordFailure(ctx, typed, at)
+}
+
+// resetUnreported is recordUnreported's counterpart for a success: it clears
+// typed's failures without reporting the clearing.
+func resetUnreported(ctx context.Context, store policy.AttemptStore, typed string) error {
+	if r, ok := store.(policy.UnreportedAttemptRecorder); ok {
+		return r.ResetUnreported(ctx, typed)
+	}
+
+	return store.Reset(ctx, typed)
 }
 
 // credentialRefused reports whether err, an authenticator's failure, is a
@@ -957,7 +972,11 @@ func (l *formLogin) hadRecentFailures(ctx context.Context, username string, now 
 // its text: a consumer whose store wraps a database error may quote a column
 // of the row the library never saw. A consumer who wants that detail logs it
 // inside their own policy.AttemptStore.
-func (l *formLogin) recordFailure(ctx context.Context, username string, now time.Time) {
+//
+// It records under key, the account's, and, when typed differs from key, under
+// typed too, unreported (recordUnreported). Each write is attempted and logged
+// on its own, so a store that fails one still gets the other.
+func (l *formLogin) recordFailure(ctx context.Context, key, typed string, now time.Time) {
 	// The client's cancellation is not passed on: a client that hangs up after
 	// sending its guess must still be charged for it, and an attempt store that
 	// honours cancellation would otherwise drop the failure. The context names
@@ -966,12 +985,10 @@ func (l *formLogin) recordFailure(ctx context.Context, username string, now time
 	defer cancel()
 
 	recordCtx := eventsink.WithFactor(bounded, factor.Password)
-	err := l.attempts.RecordFailure(recordCtx, username, now)
-	// Only logged, but sanitized so an error that cannot be walked is
-	// recorded as an abort too.
-	if err = porterr.SanitizeTo(ctx, l.log, err, porterr.ErrUnwalkable); err != nil {
-		l.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
-			diag.Failure("attempt-store", err)...)
+	logAttemptStoreErr(ctx, l.log, msgAttemptNotRecorded, l.attempts.RecordFailure(recordCtx, key, now))
+
+	if typed != key {
+		logAttemptStoreErr(ctx, l.log, msgAttemptNotRecorded, recordUnreported(recordCtx, l.attempts, typed, now))
 	}
 }
 
@@ -982,12 +999,24 @@ func (l *formLogin) recordFailure(ctx context.Context, username string, now time
 // As with recordFailure, the record names the fixed reason and the store's
 // error type, never its text.
 func (l *formLogin) resetFailures(ctx context.Context, username string) {
-	err := l.attempts.Reset(ctx, username)
-	// Only logged, but sanitized so an error that cannot be walked is
-	// recorded as an abort too.
-	if err = porterr.SanitizeTo(ctx, l.log, err, porterr.ErrUnwalkable); err != nil {
-		l.log.LogAttrs(ctx, slog.LevelError, msgAttemptsNotReset,
-			diag.Failure("attempt-store", err)...)
+	logAttemptStoreErr(ctx, l.log, msgAttemptsNotReset, l.attempts.Reset(ctx, username))
+}
+
+// resetTypedFailures clears the failures recorded under typed, the identifier
+// as presented when it resolved to another account key, without reporting the
+// clearing (resetUnreported): the account's own clearing is reported under its
+// key. A store that could not is logged as resetFailures logs it.
+func (l *formLogin) resetTypedFailures(ctx context.Context, typed string) {
+	logAttemptStoreErr(ctx, l.log, msgAttemptsNotReset, resetUnreported(ctx, l.attempts, typed))
+}
+
+// logAttemptStoreErr logs err, a write the attempt store refused, if any,
+// with msg, the fixed record of that write (msgAttemptNotRecorded,
+// msgAttemptsNotReset). Only logged, but sanitized so an error that cannot be
+// walked is recorded as an abort too.
+func logAttemptStoreErr(ctx context.Context, log *slog.Logger, msg string, err error) {
+	if err = porterr.SanitizeTo(ctx, log, err, porterr.ErrUnwalkable); err != nil {
+		log.LogAttrs(ctx, slog.LevelError, msg, diag.Failure("attempt-store", err)...)
 	}
 }
 

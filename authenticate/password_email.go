@@ -32,6 +32,9 @@ const (
 	// reasonResolvedMismatch names a resolved identifier put on the context
 	// for credentials it was not resolved for: a wiring fault in the caller.
 	reasonResolvedMismatch = "resolved-mismatch"
+	// reasonNoUsername names a loader that returned an account with no
+	// username: a store breaking the loader contract.
+	reasonNoUsername = "user-without-username"
 )
 
 // WithEmailLogin lets a user log in with their verified email in place of their
@@ -100,8 +103,10 @@ const (
 // Resolve again for every attempt.
 type ResolvedIdentifier struct {
 	// Key is the resolved user's username, or the identifier as presented when
-	// it resolved to no single user: unknown, conflicting, or not looked up
-	// because the store was unavailable.
+	// it resolved to no single user: unknown, conflicting, without a username
+	// (a loader breaking its contract), or not looked up because the store was
+	// unavailable. A found account is always keyed on its username, never on
+	// the identifier as typed.
 	Key string
 
 	// Details is the resolved user, or nil when the identifier resolved to no
@@ -152,7 +157,9 @@ func (a *UsernamePasswordAuthenticator) resolvedFrom(ctx context.Context) (Resol
 // The identifier is loaded as a username; with WithEmailLogin, as WithEmailLogin
 // describes, as a verified email too. An identifier that names no user, or two,
 // returns a nil error and a ResolvedIdentifier whose Details is nil and whose Key
-// is the identifier as presented. A conflict is recorded and reported here,
+// is the identifier as presented. So does one the loader answers with an account
+// that has no username, a breach of its contract that is recorded as a warning:
+// no account is named, so none is authenticated. A conflict is recorded and reported here,
 // once.
 //
 // A lookup the store could not answer returns ErrUnavailable, and one the
@@ -193,7 +200,7 @@ func (a *UsernamePasswordAuthenticator) resolve(ctx context.Context, identifier 
 			}
 		}
 
-		return a.found(none, details)
+		return a.found(ctx, none, details)
 	}
 
 	if !mayBeEmail {
@@ -226,7 +233,7 @@ func (a *UsernamePasswordAuthenticator) resolve(ctx context.Context, identifier 
 		return none
 	}
 
-	return a.found(none, details)
+	return a.found(ctx, none, details)
 }
 
 // checkConflict loads identifier, already found as byUsername's username, as an
@@ -276,14 +283,24 @@ func (a *UsernamePasswordAuthenticator) checkConflict(
 	return none, true
 }
 
-// found is the resolution naming details.
-func (a *UsernamePasswordAuthenticator) found(none ResolvedIdentifier, details *identity.Details) ResolvedIdentifier {
+// found is the resolution naming details. An account with no username breaks
+// the loader's contract and is refused as an unknown identifier: the account's
+// lockout is keyed on its username, and keying it on the identifier as typed
+// would give every case variant of one email a failure budget of its own.
+func (a *UsernamePasswordAuthenticator) found(ctx context.Context, none ResolvedIdentifier, details *identity.Details) ResolvedIdentifier {
+	if details.Username == "" {
+		// The identifier stays out of the record's text; refuse adds it only
+		// when the consumer opted into logging usernames.
+		a.refuse(ctx, slog.LevelWarn, reasonNoUsername, none.presented,
+			slog.String("reason", reasonNoUsername))
+
+		return none
+	}
+
 	r := none
 	r.outcome = resolvedUser
 	r.details = details
-	if details.Username != "" {
-		r.Key = details.Username
-	}
+	r.Key = details.Username
 
 	// The copy handed outward carries no hash, and changing it changes
 	// nothing the provider authenticates against.

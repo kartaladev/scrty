@@ -15,7 +15,6 @@ import (
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/detach"
-	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/logsample"
@@ -251,18 +250,14 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 			bounded, cancel := detach.Bounded(ctx, detach.WriteTimeout)
 			defer cancel()
 
-			// Under the account's key, which lockout judges, and also under
-			// the identifier as typed when it differs, which the automation
-			// challenge reads: see the login form's verifyPassword.
+			// Under the account's key, which lockout judges and reports, and
+			// also under the identifier as typed when it differs, which the
+			// automation challenge reads, unreported so one account's lock is
+			// reported once: see the login form's verifyPassword.
 			recordCtx := eventsink.WithFactor(bounded, factor.Basic)
-			for _, k := range attemptKeys(key, username) {
-				recErr := b.attempts.RecordFailure(recordCtx, k, now)
-				// Only logged, but sanitized so an error that cannot be walked
-				// is recorded as an abort too.
-				if recErr = porterr.SanitizeTo(ctx, b.log, recErr, porterr.ErrUnwalkable); recErr != nil {
-					b.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
-						diag.Failure("attempt-store", recErr)...)
-				}
+			logAttemptStoreErr(ctx, b.log, msgAttemptNotRecorded, b.attempts.RecordFailure(recordCtx, key, now))
+			if username != key {
+				logAttemptStoreErr(ctx, b.log, msgAttemptNotRecorded, recordUnreported(recordCtx, b.attempts, username, now))
 			}
 		}
 
@@ -287,15 +282,10 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 	// form: a Basic client's typos must not add up to a lock its owner keeps
 	// hitting with the right password.
 	// The identifier as typed is cleared too, when it carries failures of its
-	// own.
-	for _, k := range attemptKeys(key, username) {
-		resetErr := b.attempts.Reset(ctx, k)
-		// Only logged, but sanitized so an error that cannot be walked is
-		// recorded as an abort too.
-		if resetErr = porterr.SanitizeTo(ctx, b.log, resetErr, porterr.ErrUnwalkable); resetErr != nil {
-			b.log.LogAttrs(ctx, slog.LevelError, msgAttemptsNotReset,
-				diag.Failure("attempt-store", resetErr)...)
-		}
+	// own, unreported: the clearing is reported once, under the account.
+	logAttemptStoreErr(ctx, b.log, msgAttemptsNotReset, b.attempts.Reset(ctx, key))
+	if username != key {
+		logAttemptStoreErr(ctx, b.log, msgAttemptsNotReset, resetUnreported(ctx, b.attempts, username))
 	}
 
 	// Stateless: there is no later request in which this caller could answer a
