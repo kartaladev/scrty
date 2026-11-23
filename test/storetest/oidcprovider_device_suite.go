@@ -454,6 +454,33 @@ func deviceCases() []suiteCase[oidcprovider.DeviceAuthorizationStore] {
 			},
 		},
 		{
+			// PollCASSurvivesRoundTrip. A durable store keeps a time to the microsecond, so a
+			// poll's compare-and-set on a time read back would never match the one written;
+			// it compares the poll count instead, which a reload returns exactly.
+			name: "PollCASSurvivesRoundTrip: polls with times carrying nanoseconds compare-and-set across reloads",
+			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
+				r := deviceRecord(1)
+				r.IssuedAt, r.ExpiresAt = preciseStart, preciseStart.Add(10*time.Minute)
+				require.NoError(t, s.Create(ctx, r, preciseStart))
+
+				first := preciseStart.Add(5*time.Second + 987*time.Nanosecond)
+				require.NoError(t, s.RecordPoll(ctx, suiteID(1), 0, first, 5*time.Second))
+
+				reloaded := loadDevice(ctx, t, s, 1)
+				require.Equal(t, 1, reloaded.PollCount)
+				second := first.Add(10*time.Second + 321*time.Nanosecond)
+				require.NoError(t, s.RecordPoll(ctx, suiteID(1), reloaded.PollCount, second, 10*time.Second),
+					"a poll seeing the record as a reload returned it is recorded")
+
+				got := loadDevice(ctx, t, s, 1)
+				assert.Equal(t, 2, got.PollCount)
+				assert.Equal(t, 10*time.Second, got.Interval)
+				assertTimeMicro(t, second, got.LastPolledAt, "LastPolledAt")
+				err := s.RecordPoll(ctx, suiteID(1), reloaded.PollCount, second.Add(time.Second), 10*time.Second)
+				require.ErrorIs(t, err, oidcprovider.ErrNotFound, "the count the first reload saw is spent")
+			},
+		},
+		{
 			name: "a stored record is a copy of the caller's",
 			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
 				r := deviceIn(1, oidcprovider.DeviceApproved)
@@ -783,6 +810,25 @@ func deviceUnspentCases() []suiteCase[oidcprovider.DeviceAuthorizationStore] {
 					require.NoError(t, err, name)
 					assert.Empty(t, got, name)
 				}
+			},
+		},
+		{
+			name: "an approved or spent record holding no approval is absent from both lists, and no error",
+			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
+				for n, state := range []oidcprovider.DeviceState{oidcprovider.DeviceApproved, oidcprovider.DeviceSpent} {
+					r := deviceIn(byte(n+1), state)
+					r.Approval = nil
+					create(ctx, t, s, r)
+				}
+				create(ctx, t, s, approved(3, opSignIn("u-1", 3)))
+
+				got, err := s.UnspentBySignIn(ctx, oidcprovider.SignInSelector{User: "u-1"}, true)
+				require.NoError(t, err, "by sign-in")
+				assert.ElementsMatch(t, []id.ID{suiteID(203)}, got, "by sign-in")
+
+				got, err = s.UnspentByClient(ctx, "u-1", opClient)
+				require.NoError(t, err, "by client")
+				assert.ElementsMatch(t, []id.ID{suiteID(203)}, got, "by client")
 			},
 		},
 		{

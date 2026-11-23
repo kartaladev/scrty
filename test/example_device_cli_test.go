@@ -54,7 +54,11 @@ func Example_deviceCLI() {
 
 	// The refresh token (offline_access) keeps the CLI signed in. TokenSource refreshes it.
 	client := conf.Client(ctx, token)
-	res, err := client.Get(issuer + "/oauth2/userinfo")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, issuer+"/oauth2/userinfo", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	res, err := client.Do(req)
 	if err != nil {
 		log.Fatal(err)
 	}

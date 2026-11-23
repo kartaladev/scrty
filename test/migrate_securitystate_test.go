@@ -20,8 +20,10 @@ import (
 	"gorm.io/driver/postgres"
 	gormdb "gorm.io/gorm"
 
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/oidcprovider"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/store/gormstore"
 	"github.com/kartaladev/scrty/store/migrate"
@@ -80,13 +82,14 @@ func queryStrings(t *testing.T, db *sql.DB, query string, args ...any) []string 
 	return out
 }
 
-// providerTables lists the nine tables the provider's migration adds to the set.
+// providerTables lists the ten tables the provider's migrations add to the set: nine with
+// the provider, and the device authorizations with the device grant.
 var providerTables = []string{
 	"op_clients", "op_pending_requests", "op_browser_sessions", "op_authorization_codes", "op_consents",
-	"op_grants", "op_refresh_tokens", "op_access_tokens", "op_client_assertions",
+	"op_grants", "op_refresh_tokens", "op_access_tokens", "op_client_assertions", "op_device_authorizations",
 }
 
-// securityStateTables lists the twenty-four tables the security-state set creates.
+// securityStateTables lists the twenty-five tables the security-state set creates.
 var securityStateTables = append([]string{
 	"sessions", "signing_keys", "login_attempts", "login_failure_streaks", "mfa_enrolments",
 	"api_keys", "one_time_tokens", "oidc_links", "oidc_flows", "oidc_handoffs",
@@ -236,6 +239,8 @@ var securityStateColumns = map[string][]column{
 		defaulted("keep_public_web_grants_past_sign_in", colBoolean, "false"),
 		defaulted("metadata", colJSONB, defEmptyObject),
 		defaulted("secrets", colJSONB, defEmptyArray),
+		defaulted("device_complete_uri", colBoolean, "false"),
+		defaulted("device_grants_outlive_sign_in", colBoolean, "false"),
 	},
 	"op_pending_requests": {
 		required("id", colUUID),
@@ -260,6 +265,8 @@ var securityStateColumns = map[string][]column{
 		required("expires_at", colTimestamptz),
 		required("stage", colSmallint),
 		optional("sign_in", colJSONB),
+		optional("device_authorization_id", colUUID),
+		defaulted("device_user_code", colText, defEmptyText),
 	},
 	"op_browser_sessions": {
 		required("id", colUUID),
@@ -329,6 +336,33 @@ var securityStateColumns = map[string][]column{
 		optional("revoked_at", colTimestamptz),
 		defaulted("revoke_cause", colText, defEmptyText),
 		optional("sign_in_ended_at", colTimestamptz),
+		defaulted("origin", colSmallint, "0"),
+		defaulted("survives_sign_in_end", colBoolean, "false"),
+	},
+	"op_device_authorizations": {
+		required("id", colUUID),
+		required("device_code_digest", colBytea),
+		optional("user_code_digest", colBytea),
+		optional("claim_flow_digest", colBytea),
+		required("client_id", colText),
+		defaulted("scopes", colJSONB, defEmptyArray),
+		defaulted("resources", colJSONB, defEmptyArray),
+		required("issued_at", colTimestamptz),
+		required("expires_at", colTimestamptz),
+		optional("last_polled_at", colTimestamptz),
+		defaulted("interval_ns", colBigint, "0"),
+		defaulted("poll_count", colInteger, "0"),
+		required("state", colSmallint),
+		defaulted("user_ref", colText, defEmptyText),
+		defaulted("granted_scopes", colJSONB, defEmptyArray),
+		optional("sign_in", colJSONB),
+		optional("sign_in_family", colUUID),
+		defaulted("external_issuer", colText, defEmptyText),
+		defaulted("external_session_id", colText, defEmptyText),
+		optional("grant_family", colUUID),
+		defaulted("offline", colBoolean, "false"),
+		defaulted("ends_with_sign_in", colBoolean, "false"),
+		defaulted("survives_sign_in_end", colBoolean, "false"),
 	},
 	"op_access_tokens": {
 		required("id", colUUID),
@@ -564,6 +598,16 @@ var securityStateIndexes = map[string][]string{
 		"CREATE UNIQUE INDEX op_client_assertions_client_id_jti_key ON op_client_assertions USING btree (client_id, jti)",
 		"CREATE INDEX op_client_assertions_expiry ON op_client_assertions USING btree (held_until)",
 	},
+	"op_device_authorizations": {
+		"CREATE UNIQUE INDEX op_device_authorizations_pkey ON op_device_authorizations USING btree (id)",
+		"CREATE UNIQUE INDEX op_device_authorizations_device_code_digest_key ON op_device_authorizations USING btree (device_code_digest)",
+		"CREATE UNIQUE INDEX op_device_authorizations_user_code_digest_key ON op_device_authorizations USING btree (user_code_digest)",
+		"CREATE INDEX op_device_authorizations_expiry ON op_device_authorizations USING btree (expires_at)",
+		"CREATE INDEX op_device_authorizations_user_client ON op_device_authorizations USING btree (user_ref, client_id)",
+		"CREATE INDEX op_device_authorizations_user_issuer ON op_device_authorizations USING btree (user_ref, external_issuer)",
+		"CREATE INDEX op_device_authorizations_sign_in ON op_device_authorizations USING btree (sign_in_family)",
+		"CREATE INDEX op_device_authorizations_external_session ON op_device_authorizations USING btree (external_issuer, external_session_id)",
+	},
 	"sessions": {
 		"CREATE UNIQUE INDEX sessions_pkey ON sessions USING btree (id)",
 		"CREATE UNIQUE INDEX sessions_id_digest_key ON sessions USING btree (id_digest)",
@@ -690,7 +734,7 @@ type schemaCheck struct {
 func securityStateSchemaChecks(versionTable string) []schemaCheck {
 	return []schemaCheck{
 		{
-			name:  "fresh database has the twenty-four tables and the version table",
+			name:  "fresh database has the twenty-five tables and the version table",
 			query: `SELECT tablename FROM pg_tables WHERE schemaname = current_schema() ORDER BY 1`,
 			assert: func(t *testing.T, rows []string) {
 				want := append(slices.Clone(securityStateTables), versionTable)
@@ -735,8 +779,8 @@ func securityStateSchemaChecks(versionTable string) []schemaCheck {
 				// oidc_handoffs, recovery_codes, account_recoveries,
 				// passkey_credentials, passkey_user_handles, op_refresh_tokens.
 				// user_ref: op_browser_sessions, op_authorization_codes, op_consents,
-				// op_grants, op_access_tokens.
-				require.Len(t, rows, 15)
+				// op_grants, op_access_tokens, op_device_authorizations.
+				require.Len(t, rows, 16)
 				for _, r := range rows {
 					assert.True(t, strings.HasSuffix(r, ":text"), r)
 				}
@@ -902,7 +946,7 @@ func TestSecurityStateMigrations_Schema(t *testing.T) {
 
 // securityStateMigrationCount is how many migration files the security-state
 // set holds.
-const securityStateMigrationCount = 5
+const securityStateMigrationCount = 6
 
 // Versions of the security-state migrations the family tests address.
 const (
@@ -910,6 +954,7 @@ const (
 	versionSessionFamilies int64 = 20261021000000
 	versionStrictRotation  int64 = 20261101000000
 	versionSessionSignIns  int64 = 20261102000000
+	versionOIDCProvider    int64 = 20261103000000
 )
 
 // sessionColumnsAndIndexes describes the sessions table as sorted column and
@@ -2002,6 +2047,7 @@ var providerRecordColumns = []recordColumns{
 			"GrantIdleTimeout": "grant_idle_timeout_ns", "GrantAbsoluteLifetime": "grant_absolute_lifetime_ns",
 			"DisableRotation": "disable_rotation", "EndGrantsWithSignIn": "end_grants_with_sign_in",
 			"KeepPublicWebGrantsPastSignIn": "keep_public_web_grants_past_sign_in", "Metadata": "metadata",
+			"DeviceCompleteURI": "device_complete_uri", "DeviceGrantsOutliveSignIn": "device_grants_outlive_sign_in",
 		},
 	},
 	{
@@ -2020,6 +2066,7 @@ var providerRecordColumns = []recordColumns{
 			"IDTokenHintSubject": "id_token_hint_subject", "DPoPJKT": "dpop_jkt", "LoginHint": "login_hint",
 			"UILocales": "ui_locales", "ClaimsLocales": "claims_locales", "ACRValues": "acr_values",
 			"ParkedAt": "parked_at", "ExpiresAt": "expires_at", "Stage": "stage", "SignIn": "sign_in",
+			"DeviceAuthorizationID": "device_authorization_id", "DeviceUserCode": "device_user_code",
 		},
 	},
 	{
@@ -2063,6 +2110,7 @@ var providerRecordColumns = []recordColumns{
 			"Offline": "offline", "EndsWithSignIn": "ends_with_sign_in", "HoldsLineage": "holds_lineage",
 			"CreatedAt": "created_at", "ExpiresAt": "expires_at", "Revoked": "revoked",
 			"RevokedAt": "revoked_at", "RevokeCause": "revoke_cause", "SignInEndedAt": "sign_in_ended_at",
+			"Origin": "origin", "SurvivesSignInEnd": "survives_sign_in_end",
 		},
 	},
 	{
@@ -2074,24 +2122,49 @@ var providerRecordColumns = []recordColumns{
 			"IssuedAt": "issued_at", "ExpiresAt": "expires_at", "Revoked": "revoked",
 		},
 	},
+	{
+		// Approval is flattened, in the entry after this one.
+		record: oidcprovider.DeviceAuthorization{},
+		table:  "op_device_authorizations",
+		columns: map[string]string{ //nolint:gosec // field-to-column names, no credential
+			"ID": "id", "DeviceCodeDigest": "device_code_digest", "UserCodeDigest": "user_code_digest",
+			"ClaimFlowDigest": "claim_flow_digest", "ClientID": "client_id", "Scopes": "scopes",
+			"Resources": "resources", "IssuedAt": "issued_at", "ExpiresAt": "expires_at",
+			"LastPolledAt": "last_polled_at", "Interval": "interval_ns", "PollCount": "poll_count",
+			"State": "state", "Approval": "",
+		},
+	},
+	{
+		// SignIn is held whole in sign_in, and the fields a selector reads are copied beside it.
+		record: oidcprovider.DeviceApproval{},
+		table:  "op_device_authorizations",
+		columns: map[string]string{
+			"User": "user_ref", "GrantedScopes": "granted_scopes", "SignIn": "sign_in", "GrantFamily": "grant_family",
+			"Offline": "offline", "EndsWithSignIn": "ends_with_sign_in", "SurvivesSignInEnd": "survives_sign_in_end",
+		},
+	},
 }
 
 // credentialNamedColumns is every provider column whose name could suggest a credential,
 // with why it holds none. A new one must be added here, by someone who has checked.
 var credentialNamedColumns = []string{
-	"op_authorization_codes.token_id",           // the code token's identifier, not its secret
-	"op_clients.access_token_lifetime_ns",       // a duration
-	"op_clients.id_token_alg",                   // an algorithm's name
-	"op_clients.id_token_lifetime_ns",           // a duration
-	"op_clients.opaque_access_tokens",           // a setting
-	"op_clients.secrets",                        // digests and deadlines only
-	"op_grants.code_id",                         // the code's identifier, not its secret
-	"op_pending_requests.flow_digest",           // a digest
-	"op_pending_requests.handle_digest",         // a digest
-	"op_pending_requests.id_token_hint_subject", // a subject
-	"op_refresh_tokens.password_change_pending", // a flag
-	"op_refresh_tokens.csrf_token",              // sealed, as on sessions
-	"op_refresh_tokens.external_id_token",       // sealed, as on sessions
+	"op_authorization_codes.token_id",             // the code token's identifier, not its secret
+	"op_clients.access_token_lifetime_ns",         // a duration
+	"op_clients.id_token_alg",                     // an algorithm's name
+	"op_clients.id_token_lifetime_ns",             // a duration
+	"op_clients.opaque_access_tokens",             // a setting
+	"op_clients.secrets",                          // digests and deadlines only
+	"op_device_authorizations.claim_flow_digest",  // a digest
+	"op_device_authorizations.device_code_digest", // a digest
+	"op_device_authorizations.user_code_digest",   // a keyed digest
+	"op_grants.code_id",                           // the code's identifier, not its secret
+	"op_pending_requests.flow_digest",             // a digest
+	"op_pending_requests.handle_digest",           // a digest
+	"op_pending_requests.id_token_hint_subject",   // a subject
+	"op_pending_requests.device_user_code",        // a claimed code, bound to one browser and yielding no token
+	"op_refresh_tokens.password_change_pending",   // a flag
+	"op_refresh_tokens.csrf_token",                // sealed, as on sessions
+	"op_refresh_tokens.external_id_token",         // sealed, as on sessions
 }
 
 // opLookup is one lookup a provider store makes, and the index that must serve it.
@@ -2180,6 +2253,16 @@ func providerLookups() []opLookup {
 			where: `digest = $1`, args: digest, columns: []string{"digest"},
 		},
 		{
+			name: "device authorization by device code", table: "op_device_authorizations",
+			index: "op_device_authorizations_device_code_digest_key",
+			where: `device_code_digest = $1`, args: digest, columns: []string{"device_code_digest"},
+		},
+		{
+			name: "device authorization by user code", table: "op_device_authorizations",
+			index: "op_device_authorizations_user_code_digest_key",
+			where: `user_code_digest = $1`, args: digest, columns: []string{"user_code_digest"},
+		},
+		{
 			name: "consents of a user", table: "op_consents", index: "op_consents_user_ref_client_id_key",
 			where: `user_ref = $1`, args: user, columns: []string{"user_ref"},
 		},
@@ -2190,6 +2273,9 @@ func providerLookups() []opLookup {
 		userAndClient("held codes of a user and client", "op_authorization_codes", "op_authorization_codes_user_client"),
 		userAndClient("consent of a user and client", "op_consents", "op_consents_user_ref_client_id_key"),
 		userAndClient("grants of a user and client", "op_grants", "op_grants_user_client"),
+		userAndClient("approved device authorizations of a user and client", "op_device_authorizations",
+			"op_device_authorizations_user_client"),
+		expired("expired device authorizations", "op_device_authorizations", "op_device_authorizations_expiry", "expires_at"),
 		expired("expired pending requests", "op_pending_requests", "op_pending_requests_expiry", "expires_at"),
 		expired("browser sessions past idle", "op_browser_sessions", "op_browser_sessions_idle_expiry", "idle_expires_at"),
 		expired("browser sessions past absolute", "op_browser_sessions", "op_browser_sessions_absolute_expiry", "absolute_expires_at"),
@@ -2202,6 +2288,7 @@ func providerLookups() []opLookup {
 	lookups = append(lookups, signInLookups("op_grants", "op_grants_user")...)
 	lookups = append(lookups, signInLookups("op_authorization_codes", "op_authorization_codes_user_client")...)
 	lookups = append(lookups, signInLookups("op_browser_sessions", "op_browser_sessions_user_issuer")...)
+	lookups = append(lookups, signInLookups("op_device_authorizations", "op_device_authorizations_user_client")...)
 
 	return lookups
 }
@@ -2300,7 +2387,7 @@ func TestMigrations(t *testing.T) {
 
 		cases := []testCase{
 			{
-				name: "the tables pgschema names are the provider's nine",
+				name: "the tables pgschema names are the provider's ten",
 				run: func(t *testing.T, _ *sql.DB, _ *goose.Provider) {
 					assert.ElementsMatch(t, providerTables, pgschema.OIDCProviderTables())
 					assert.Contains(t, providerTables, pgschema.RefreshTokenTable)
@@ -2326,7 +2413,7 @@ func TestMigrations(t *testing.T) {
 				},
 			},
 			{
-				name: "rolled back, exactly the nine are gone",
+				name: "rolled back, exactly the ten are gone",
 				run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
 					_, err := p.UpTo(t.Context(), versionSessionSignIns)
 					require.NoError(t, err)
@@ -2450,6 +2537,8 @@ func TestMigrations(t *testing.T) {
 					assert.ElementsMatch(t, []string{
 						"op_pending_requests.handle_digest", "op_pending_requests.flow_digest",
 						"op_browser_sessions.digest", "op_access_tokens.digest",
+						"op_device_authorizations.device_code_digest", "op_device_authorizations.user_code_digest",
+						"op_device_authorizations.claim_flow_digest",
 					}, bytes, "the only binary values the records hold are digests")
 				},
 			},
@@ -2510,4 +2599,179 @@ func TestMigrations(t *testing.T) {
 			}
 		})
 	})
+}
+
+// Rows the device grant's migration finds, written by the migrations before it.
+const (
+	deviceMigGrant        = "0192f000-0000-7000-8000-0000000000a1"
+	deviceMigOfflineGrant = "0192f000-0000-7000-8000-0000000000a2"
+	deviceMigTombstone    = "0192f000-0000-7000-8000-0000000000a3"
+	deviceMigSignIn       = "0192f000-0000-7000-8000-0000000000a4"
+)
+
+// holdProviderRows stores, through the provider's tables as the previous migrations left
+// them, a client, a grant that ends with its sign-in, an offline grant tied to it, a
+// revocation recorded first, and two pending requests, one signed in.
+func holdProviderRows(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	_, err := db.ExecContext(t.Context(), `INSERT INTO op_clients (id, client_id, client_type, auth_method, grant_types)
+		VALUES ('0192f000-0000-7000-8000-0000000000c9', 'billing-web', 0, 'client_secret_basic', '["authorization_code"]')`)
+	require.NoError(t, err)
+	_, err = db.ExecContext(t.Context(), `INSERT INTO op_grants
+		(family, user_ref, client_id, scopes, code_id, sign_in_family, offline, ends_with_sign_in, holds_lineage,
+		 created_at, expires_at)
+		VALUES ($1, 'u-1', 'billing-web', '["openid"]', $3, $4, false, false, true, now(), now() + interval '1 hour'),
+		       ($2, 'u-1', 'billing-web', '["openid","offline_access"]', $3, $4, true, true, true, now(), now() + interval '1 hour')`,
+		deviceMigGrant, deviceMigOfflineGrant, "0192f000-0000-7000-8000-0000000000a5", deviceMigSignIn)
+	require.NoError(t, err)
+	_, err = db.ExecContext(t.Context(), `INSERT INTO op_grants (family, revoked, revoked_at, revoke_cause, sign_in_ended_at)
+		VALUES ($1, true, now(), 'sign_in_ended', now())`, deviceMigTombstone)
+	require.NoError(t, err)
+	_, err = db.ExecContext(t.Context(), `INSERT INTO op_pending_requests
+		(id, handle_digest, flow_digest, client_id, scopes, parked_at, expires_at, stage, sign_in)
+		VALUES ('0192f000-0000-7000-8000-0000000000b1', '\x01', '\x02', 'billing-web', '["openid"]', now(), now(), 0, NULL),
+		       ('0192f000-0000-7000-8000-0000000000b2', '\x03', '\x04', 'billing-web', '["openid"]', now(), now(), 1,
+		        '{"user":"u-1","family":"`+deviceMigSignIn+`","authenticated_at":"2026-11-01T00:00:00Z","amr":["pwd"],"acr":"","absolute_expires_at":"2026-11-02T00:00:00Z","external_issuer":"","external_session_id":""}')`)
+	require.NoError(t, err)
+}
+
+// providerRows returns every client, grant and pending request, each as every column's
+// value but those named in drop.
+func providerRows(t *testing.T, db *sql.DB, drop ...string) []string {
+	t.Helper()
+
+	strip := ""
+	for _, column := range drop {
+		strip += " - '" + column + "'"
+	}
+
+	return slices.Concat(
+		queryStrings(t, db, `SELECT (to_jsonb(c)`+strip+`)::text FROM op_clients c ORDER BY id`),
+		queryStrings(t, db, `SELECT (to_jsonb(g)`+strip+`)::text FROM op_grants g ORDER BY family`),
+		queryStrings(t, db, `SELECT (to_jsonb(r)`+strip+`)::text FROM op_pending_requests r ORDER BY id`),
+	)
+}
+
+// schemaLines describes every column and index of the current schema, sorted: what a
+// rollback must restore exactly.
+func schemaLines(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+
+	lines := queryStrings(t, db, `SELECT table_name || ' col ' || column_name || ' ' || data_type || ' ' || is_nullable
+	        || ' ' || coalesce(column_default, '')
+	   FROM information_schema.columns WHERE table_schema = current_schema()
+	  UNION ALL
+	  SELECT tablename || ' idx ' || indexdef FROM pg_indexes WHERE schemaname = current_schema()`)
+	slices.Sort(lines)
+
+	return lines
+}
+
+// TestMigrateSecurityState_DeviceGrant pins the device grant's migration over a database the
+// provider's earlier migration populated: the device authorization table is added, every
+// existing grant reads back as a code grant ending with its sign-in as it did, every pending
+// request names no device authorization, and a rollback leaves the schema and the rows
+// exactly as they were.
+func TestMigrateSecurityState_DeviceGrant(t *testing.T) {
+	t.Parallel()
+
+	set := migrate.SecurityState()
+	added := []string{
+		"origin", "survives_sign_in_end", "device_authorization_id", "device_user_code",
+		"device_complete_uri", "device_grants_outlive_sign_in",
+	}
+
+	type testCase struct {
+		name string
+		run  func(t *testing.T, db *sql.DB, p *goose.Provider)
+	}
+
+	cases := []testCase{
+		{
+			name: "applied to a populated database, existing clients, grants and pending requests keep their meaning",
+			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+				ctx := t.Context()
+				_, err := p.UpTo(ctx, versionOIDCProvider)
+				require.NoError(t, err)
+				holdProviderRows(t, db)
+				before := providerRows(t, db)
+
+				_, err = p.Up(ctx)
+				require.NoError(t, err)
+
+				assert.True(t, regclassExists(t, db, "op_device_authorizations"), "the device authorization table exists")
+				assert.Equal(t, before, providerRows(t, db, added...), "every column an existing row had is unchanged")
+				assert.Equal(t, []string{"0|false", "0|false", "0|false"},
+					queryStrings(t, db, `SELECT origin || '|' || survives_sign_in_end FROM op_grants ORDER BY family`))
+				assert.Equal(t, []string{"false|false"},
+					queryStrings(t, db, `SELECT device_complete_uri || '|' || device_grants_outlive_sign_in FROM op_clients`),
+					"an existing client has neither device setting")
+				assert.Equal(t, []string{"true|", "true|"},
+					queryStrings(t, db, `SELECT (device_authorization_id IS NULL) || '|' || device_user_code
+						FROM op_pending_requests ORDER BY id`))
+
+				grants := must.Must(sqlstore.NewGrantStore(db))
+				for _, family := range []string{deviceMigGrant, deviceMigOfflineGrant, deviceMigTombstone} {
+					g, err := grants.Load(ctx, idOf(t, family))
+					require.NoError(t, err, family)
+					assert.Equal(t, oidcprovider.OriginCode, g.Origin, family)
+					assert.False(t, g.SurvivesSignInEnd, family)
+				}
+				g, err := grants.Load(ctx, idOf(t, deviceMigOfflineGrant))
+				require.NoError(t, err)
+				assert.True(t, g.Offline && g.EndsWithSignIn, "an existing grant's sign-in-end flags read back as stored")
+
+				pending := must.Must(sqlstore.NewPendingRequestStore(db))
+				for _, handle := range [][]byte{{0x01}, {0x03}} {
+					r, err := pending.Load(ctx, handle)
+					require.NoError(t, err)
+					assert.True(t, r.DeviceAuthorizationID.IsZero())
+					assert.Empty(t, r.DeviceUserCode)
+				}
+			},
+		},
+		{
+			name: "rolled back, the table and the six columns are gone and everything else is as it was",
+			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+				ctx := t.Context()
+				_, err := p.UpTo(ctx, versionOIDCProvider)
+				require.NoError(t, err)
+				holdProviderRows(t, db)
+				schema, rows := schemaLines(t, db), providerRows(t, db)
+
+				_, err = p.Up(ctx)
+				require.NoError(t, err)
+				require.True(t, regclassExists(t, db, "op_device_authorizations"), "the table exists before the rollback")
+
+				_, err = p.DownTo(ctx, versionOIDCProvider)
+				require.NoError(t, err)
+
+				assert.False(t, regclassExists(t, db, "op_device_authorizations"), "the table is gone")
+				assert.Empty(t, queryStrings(t, db, `SELECT table_name || '.' || column_name FROM information_schema.columns
+					WHERE table_schema = current_schema() AND column_name = ANY($1)`, "{"+strings.Join(added, ",")+"}"))
+				assert.Equal(t, schema, schemaLines(t, db), "every other column and index is unchanged")
+				assert.Equal(t, rows, providerRows(t, db), "every row is unchanged")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			db, p := freshSecurityState(t, set)
+			tc.run(t, db, p)
+		})
+	}
+}
+
+// idOf parses a fixed identifier.
+func idOf(t *testing.T, s string) id.ID {
+	t.Helper()
+
+	v, err := id.Parse(s)
+	require.NoError(t, err)
+
+	return v
 }

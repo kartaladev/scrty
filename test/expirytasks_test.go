@@ -817,7 +817,7 @@ func TestExpiryTasks_OIDCProvider(t *testing.T) {
 			},
 		},
 		{
-			name: "a revoked grant is kept until the longest code lifetime and a minute have passed",
+			name: "a revoked grant is kept until the longest code or device lifetime and a minute have passed",
 			assert: func(t *testing.T, e *opEnv) {
 				ctx := t.Context()
 				now := e.clk.Now()
@@ -832,9 +832,15 @@ func TestExpiryTasks_OIDCProvider(t *testing.T) {
 				assert.Equal(t, 1, grantRows(t, e, revoked), "kept: a code of the longest lifetime could still name it")
 				assert.Zero(t, grantRows(t, e, expired), "an expired grant goes")
 
-				e.clk.Advance(7 * minute)
+				// Past the longest code lifetime and a minute, inside the longest device lifetime.
+				e.clk.Advance(25 * minute)
 				e.run(t)
-				assert.Zero(t, grantRows(t, e, revoked), "gone once no code could name it")
+				assert.Equal(t, 1, grantRows(t, e, revoked),
+					"kept: a device approval of the longest lifetime, not yet exchanged, could still name it")
+
+				e.clk.Advance(2 * minute)
+				e.run(t)
+				assert.Zero(t, grantRows(t, e, revoked), "gone once no code or device approval could name it")
 			},
 		},
 		{
