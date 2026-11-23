@@ -73,6 +73,25 @@ type IdentityBroker interface {
 	Broker(ctx context.Context, ext ExternalIdentity) (*identity.Principal, error)
 }
 
+// UpstreamBroker is implemented by an IdentityBroker that also asks for the
+// provider's upstream access: the access token the token endpoint issued
+// beside the ID token, and the UserInfo fetch it allows.
+//
+// It is optional. RelyingParty.Callback calls BrokerUpstream in place of
+// Broker when the broker it was given implements this interface, and Broker
+// otherwise, so every existing broker is called exactly as before. The
+// principal and error follow Broker's contract: ErrNoLinkedAccount or
+// ErrProvisioningRefused for a refusal, anything else for a failure.
+//
+// The verified identity is what the login is decided on: up carries no
+// assurance, and UserInfo members are the provider's statements, not verified
+// claims.
+type UpstreamBroker interface {
+	// BrokerUpstream returns the principal ext resolves to. up holds the
+	// access token of the callback's token response; see Upstream.
+	BrokerUpstream(ctx context.Context, ext ExternalIdentity, up Upstream) (*identity.Principal, error)
+}
+
 // Link binds one provider's subject to one of the application's users.
 //
 // The key is Provider, Issuer and Subject together. Username and Email are a

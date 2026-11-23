@@ -209,6 +209,7 @@ func TestLookupStatus_DependencySentinelInventory(t *testing.T) {
 		{"ratelimit.ErrBackendUnavailable", ratelimit.ErrBackendUnavailable},
 		{"oidc.ErrExchangeFailed", oidc.ErrExchangeFailed},
 		{"oidc.ErrDiscoveryFailed", oidc.ErrDiscoveryFailed},
+		{"oidc.ErrUserInfoFailed", oidc.ErrUserInfoFailed},
 		{"token.ErrNoVerificationKeys", token.ErrNoVerificationKeys},
 	}
 

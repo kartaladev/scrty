@@ -223,6 +223,69 @@ func (c *MockIdentityBrokerBrokerCall) DoAndReturn(f func(context.Context, oidc.
 	return c
 }
 
+// MockUpstreamBroker is a mock of UpstreamBroker interface.
+type MockUpstreamBroker struct {
+	ctrl     *gomock.Controller
+	recorder *MockUpstreamBrokerMockRecorder
+	isgomock struct{}
+}
+
+// MockUpstreamBrokerMockRecorder is the mock recorder for MockUpstreamBroker.
+type MockUpstreamBrokerMockRecorder struct {
+	mock *MockUpstreamBroker
+}
+
+// NewMockUpstreamBroker creates a new mock instance.
+func NewMockUpstreamBroker(ctrl *gomock.Controller) *MockUpstreamBroker {
+	mock := &MockUpstreamBroker{ctrl: ctrl}
+	mock.recorder = &MockUpstreamBrokerMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockUpstreamBroker) EXPECT() *MockUpstreamBrokerMockRecorder {
+	return m.recorder
+}
+
+// BrokerUpstream mocks base method.
+func (m *MockUpstreamBroker) BrokerUpstream(ctx context.Context, ext oidc.ExternalIdentity, up oidc.Upstream) (*identity.Principal, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "BrokerUpstream", ctx, ext, up)
+	ret0, _ := ret[0].(*identity.Principal)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// BrokerUpstream indicates an expected call of BrokerUpstream.
+func (mr *MockUpstreamBrokerMockRecorder) BrokerUpstream(ctx, ext, up any) *MockUpstreamBrokerBrokerUpstreamCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BrokerUpstream", reflect.TypeOf((*MockUpstreamBroker)(nil).BrokerUpstream), ctx, ext, up)
+	return &MockUpstreamBrokerBrokerUpstreamCall{Call: call}
+}
+
+// MockUpstreamBrokerBrokerUpstreamCall wrap *gomock.Call
+type MockUpstreamBrokerBrokerUpstreamCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockUpstreamBrokerBrokerUpstreamCall) Return(arg0 *identity.Principal, arg1 error) *MockUpstreamBrokerBrokerUpstreamCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockUpstreamBrokerBrokerUpstreamCall) Do(f func(context.Context, oidc.ExternalIdentity, oidc.Upstream) (*identity.Principal, error)) *MockUpstreamBrokerBrokerUpstreamCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockUpstreamBrokerBrokerUpstreamCall) DoAndReturn(f func(context.Context, oidc.ExternalIdentity, oidc.Upstream) (*identity.Principal, error)) *MockUpstreamBrokerBrokerUpstreamCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // MockLinkStore is a mock of LinkStore interface.
 type MockLinkStore struct {
 	ctrl     *gomock.Controller

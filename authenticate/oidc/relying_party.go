@@ -92,7 +92,7 @@ type roleSyncing interface{ RoleSyncProviders() []string }
 //
 // Every error it returns wraps ErrConfig: an option given nil, a default
 // outbound client that cannot be built, a provider URL (issuer, redirect URL,
-// end-session or pinned endpoint) or post-logout redirect whose scheme the
+// end-session, UserInfo or pinned endpoint) or post-logout redirect whose scheme the
 // outbound client does not allow, a broker whose own configuration names a
 // provider the registry does not hold, or an assurance configuration that
 // names an unregistered provider, holds an empty value, holds a RequestACR
@@ -197,6 +197,7 @@ func (m *RelyingParty) checkSchemes() error {
 			{"token endpoint", p.TokenEndpoint},
 			{"key-set URI", p.JWKSURI},
 			{"end-session endpoint", p.EndSessionEndpoint},
+			{"userinfo endpoint", p.UserInfoEndpoint},
 		}
 		for _, f := range urls {
 			if f.value == "" {

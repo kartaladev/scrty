@@ -106,6 +106,22 @@ type Provider struct {
 	// by default). It is trusted configuration: see Provider.
 	EndSessionEndpoint string
 
+	// UserInfoEndpoint pins the provider's UserInfo endpoint, which
+	// Upstream.UserInfo fetches. It is optional and outside the
+	// all-three-or-none rule. Empty means it comes from the discovery
+	// document's userinfo_endpoint, or that none is known, when UserInfo fails
+	// and nothing else does. A pin wins over a discovered endpoint, and is
+	// used even while discovery fails; with the three endpoints above pinned
+	// and this one not, discovery never runs and no endpoint is known. When
+	// set, it must be an absolute URL whose scheme the manager's outbound
+	// client allows (https by default). It is trusted configuration: see
+	// Provider.
+	//
+	// A discovered endpoint that is off the issuer's origin, or on a refused
+	// scheme, is dropped with a WARN and counts as unknown: a provider whose
+	// UserInfo lives elsewhere needs this pin.
+	UserInfoEndpoint string
+
 	// SigningAlgs are the signature algorithms accepted on the provider's
 	// tokens. Nil means RS256 only; an empty non-nil list is refused. "none"
 	// is always refused. A symmetric algorithm (HS256, HS384, HS512) is
@@ -128,7 +144,7 @@ type Registry struct {
 // when no provider is given, when two share a name, or when any provider is
 // invalid: an empty name or one not usable as a single URL path segment; a
 // missing issuer, client id or redirect URL; an issuer, redirect URL,
-// end-session or pinned endpoint that is not an absolute URL with a scheme, a
+// end-session, UserInfo or pinned endpoint that is not an absolute URL with a scheme, a
 // host name and no credentials; an issuer with a query or a fragment, or a
 // redirect URL with a fragment; only some of the three endpoints pinned;
 // configured scopes without "openid"; an empty or unknown algorithm list, one
@@ -217,6 +233,7 @@ func validateProvider(p Provider) error {
 		{"token endpoint", p.TokenEndpoint},
 		{"key-set URI", p.JWKSURI},
 		{"end-session endpoint", p.EndSessionEndpoint},
+		{"userinfo endpoint", p.UserInfoEndpoint},
 	}
 	for _, f := range urls {
 		if f.value == "" {

@@ -65,7 +65,8 @@ func ExchangeForTest(ctx context.Context, m *RelyingParty, provider, code, verif
 	if err != nil {
 		return "", err
 	}
-	return m.exchange(ctx, p, md, code, verifier)
+	idToken, _, err := m.exchange(ctx, p, md, code, verifier)
+	return idToken, err
 }
 
 // IDClaimsView is what ID token verification returns.
@@ -92,3 +93,14 @@ var MatchAssuranceForTest = matchAssurance
 // ReadAssuranceForTest exposes the reader of the amr and acr claims of a
 // parsed ID token.
 var ReadAssuranceForTest = readAssurance
+
+// NewUpstreamForTest builds upstream access as a callback would, from the
+// access token, the ID token's subject, an endpoint resolver and a client.
+var NewUpstreamForTest = newUpstream
+
+// UpstreamForTest builds the upstream access a callback at the named provider
+// hands an UpstreamBroker, for the given access token and ID token subject.
+func UpstreamForTest(m *RelyingParty, provider, token, subject string) Upstream {
+	p, _ := m.registry.Lookup(provider)
+	return m.upstreamFor(p, token, subject)
+}

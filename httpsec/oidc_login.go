@@ -179,7 +179,8 @@ func (i *oidcInterceptor) callback(ex *Exchange, provider string) error {
 // asserted: an ID token that failed verification (oidc.ErrInvalidIDToken), an
 // identity linked to no account (oidc.ErrNoLinkedAccount), or one whose
 // provisioning was refused (oidc.ErrProvisioningRefused). A provider that
-// could not be reached (oidc.ErrExchangeFailed, oidc.ErrDiscoveryFailed), a
+// could not be reached (oidc.ErrExchangeFailed, oidc.ErrDiscoveryFailed,
+// oidc.ErrUserInfoFailed), a
 // flow store fault, an invalid state, which is a forged or stale callback
 // rather than a login attempt, and a request whose own context ended before
 // the verdict report nothing.
@@ -228,7 +229,7 @@ func readCallbackFailure(ctx context.Context, err error) callbackFailure {
 		invalidState: walk.is(oidc.ErrInvalidState),
 		notLinked:    walk.is(oidc.ErrNoLinkedAccount),
 		refusal:      walk.is(oidc.ErrInvalidIDToken, oidc.ErrNoLinkedAccount, oidc.ErrProvisioningRefused),
-		outage:       walk.is(oidc.ErrExchangeFailed, oidc.ErrDiscoveryFailed),
+		outage:       walk.is(oidc.ErrExchangeFailed, oidc.ErrDiscoveryFailed, oidc.ErrUserInfoFailed),
 	}
 
 	if walk.abort != nil {

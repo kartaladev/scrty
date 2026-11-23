@@ -129,3 +129,47 @@ func ExampleWithAssuranceEvaluator() {
 	// true
 	// false true
 }
+
+// departmentBroker resolves users by the department their provider's UserInfo
+// states. It implements oidc.UpstreamBroker, so the callback hands it the
+// upstream access; Broker is only called for a broker that does not.
+type departmentBroker struct{}
+
+func (departmentBroker) Broker(context.Context, oidc.ExternalIdentity) (*identity.Principal, error) {
+	return nil, oidc.ErrNoLinkedAccount
+}
+
+func (departmentBroker) BrokerUpstream(ctx context.Context, ext oidc.ExternalIdentity, up oidc.Upstream) (*identity.Principal, error) {
+	members, err := up.UserInfo(ctx)
+	if err != nil {
+		// ErrUserInfoFailed: no access token, no endpoint, or an unusable
+		// answer. Its text holds neither the token nor the answer.
+		return nil, fmt.Errorf("department lookup: %w", err)
+	}
+	dept, _ := members["department"].(string)
+	return &identity.Principal{ID: identity.UserID(ext.Subject), Username: dept + "/" + ext.Subject}, nil
+}
+
+// ExampleUpstream_UserInfo shows a broker that asks for upstream access and
+// fetches UserInfo. The upstream access prints as "[redacted]" under every
+// verb, so it is safe in a log line; a token response without an access token
+// still logs the user in, and only UserInfo fails.
+func ExampleUpstream_UserInfo() {
+	var broker oidc.IdentityBroker = departmentBroker{}
+	upstream, ok := broker.(oidc.UpstreamBroker)
+	fmt.Println("asks for upstream access:", ok)
+
+	// What a callback hands the broker when the token response carried no
+	// access token.
+	var up oidc.Upstream
+	fmt.Println("has access token:", up.HasAccessToken())
+	fmt.Printf("printed: %v %+v %#v\n", up, up, up)
+
+	_, err := upstream.BrokerUpstream(context.Background(), oidc.ExternalIdentity{Provider: "corp", Subject: "s-1"}, up)
+	fmt.Println("userinfo failed:", errors.Is(err, oidc.ErrUserInfoFailed))
+	// Output:
+	// asks for upstream access: true
+	// has access token: false
+	// printed: [redacted] [redacted] [redacted]
+	// userinfo failed: true
+}

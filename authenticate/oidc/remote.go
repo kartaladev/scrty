@@ -599,6 +599,13 @@ func (m *RelyingParty) Prefetch(ctx context.Context) error {
 	return nil
 }
 
+// confined reports whether a discovered endpoint is on the provider issuer's
+// origin, with a scheme the outbound client allows.
+func (m *RelyingParty) confined(p Provider, raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && m.out.AllowsScheme(u.Scheme) && origin.Same(p.Issuer, raw)
+}
+
 // wellKnownPath is where an issuer publishes its discovery document.
 const wellKnownPath = "/.well-known/openid-configuration"
 
@@ -609,6 +616,7 @@ type metadata struct {
 	TokenEndpoint         string `json:"token_endpoint"`
 	JWKSURI               string `json:"jwks_uri"`
 	EndSessionEndpoint    string `json:"end_session_endpoint"`
+	UserInfoEndpoint      string `json:"userinfo_endpoint"`
 }
 
 // pinnedMetadata returns the provider's pinned endpoints, and true when all
@@ -623,6 +631,7 @@ func pinnedMetadata(p Provider) (metadata, bool) {
 		TokenEndpoint:         p.TokenEndpoint,
 		JWKSURI:               p.JWKSURI,
 		EndSessionEndpoint:    p.EndSessionEndpoint,
+		UserInfoEndpoint:      p.UserInfoEndpoint,
 	}, true
 }
 
@@ -632,8 +641,10 @@ func pinnedMetadata(p Provider) (metadata, bool) {
 //
 // The document must name the configured issuer exactly, the authorization,
 // token and key-set endpoints, and put every endpoint it names on the issuer's
-// origin with a scheme the outbound client allows. A pinned end-session
-// endpoint wins over a discovered one. Every failure wraps ErrDiscoveryFailed
+// origin with a scheme the outbound client allows. A pinned end-session or
+// UserInfo endpoint wins over a discovered one. A discovered UserInfo endpoint
+// off the issuer's origin, or with a refused scheme, is dropped with a WARN
+// record rather than failing discovery, since only UserInfo needs it. Every failure wraps ErrDiscoveryFailed
 // and carries no part of the provider's answer.
 func (m *RelyingParty) fetchMetadata(ctx context.Context, p Provider) (metadata, error) {
 	if md, ok := pinnedMetadata(p); ok {
@@ -666,13 +677,24 @@ func (m *RelyingParty) fetchMetadata(ctx context.Context, p Provider) (metadata,
 		if raw == "" {
 			continue // only the end-session endpoint may be absent, checked above
 		}
-		u, err := url.Parse(raw)
-		if err != nil || !m.out.AllowsScheme(u.Scheme) || !origin.Same(p.Issuer, raw) {
+		if !m.confined(p, raw) {
 			return fail("an endpoint is not on the issuer's origin")
 		}
 	}
 	if p.EndSessionEndpoint != "" {
 		md.EndSessionEndpoint = p.EndSessionEndpoint // a pin wins over discovery
+	}
+	switch {
+	case p.UserInfoEndpoint != "":
+		md.UserInfoEndpoint = p.UserInfoEndpoint // a pin wins over discovery
+	case md.UserInfoEndpoint != "" && !m.confined(p, md.UserInfoEndpoint):
+		// Only UserInfo needs it, so it is dropped rather than failing every
+		// login: UserInfo then fails with no endpoint known, and is never
+		// sent where the issuer's origin does not reach.
+		md.UserInfoEndpoint = ""
+		m.log.LogAttrs(ctx, slog.LevelWarn, "oidc discovered userinfo endpoint ignored",
+			slog.String("provider", p.Name),
+			slog.String("reason", "not on the issuer's origin, or a scheme the outbound client refuses"))
 	}
 
 	return md, nil
