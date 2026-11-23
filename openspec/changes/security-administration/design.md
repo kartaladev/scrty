@@ -348,6 +348,13 @@ the selected grant active when it is still held and valid, and the primary grant
 - **Why the session and not a token claim:** every request already rebuilds the principal from the
   session's user. A claim would need re-issuing tokens and would outlive a revoked grant.
 - **Default:** off. A selection stored while switching was on is ignored once it is off.
+- **The lineage table gains the column too (decided 2026-11-23, during implementation):** the
+  refresh-token lineage table runs every session statement with only the table name rewritten, and
+  its columns are pinned identical to the sessions table's. Adding `selected_role` to
+  `scrty_sessions` alone would break those statements as soon as they read or carry the column. The
+  migration therefore adds it to both tables; it stays NULL on the lineage table. **Alternative:**
+  a second set of session statements for the lineage table. Rejected: it duplicates every statement
+  to save one nullable column.
 
 ## Failure modes
 
@@ -386,6 +393,7 @@ the selected grant active when it is still held and valid, and the primary grant
 | F31 | Federated first login whose username is a local email | Handled, tested | Provision refused; login fails as a provisioning refusal |
 | F32 | Bulk check against an authorizer without the inspector | Handled, tested | `ErrInspectionUnsupported` |
 | F33 | Context cancelled during an administration write | Handled, tested | Transaction rolled back; the context's error returned |
+| F34 | Identity migration rolled back on a database in use | Accepted (Migration Plan, step 4) | Emails, attributes, scopes, versions, labels and deletion marks are dropped; the Down section's comment says so |
 
 ## Risks / Trade-offs
 

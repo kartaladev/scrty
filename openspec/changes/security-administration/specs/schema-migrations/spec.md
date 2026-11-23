@@ -28,8 +28,12 @@ Rolling the identity administration migration back SHALL drop exactly the column
 - **THEN** the added columns, the attribute table and its indexes no longer exist, and each user's other columns are unchanged
 
 ### Requirement: The security-state set adds the selected-role column
-The security-state migration set SHALL add one migration, after the prefix migration, that adds to sessions a nullable selected-role column, empty for existing rows. Rolling it back SHALL drop exactly that column.
+The security-state migration set SHALL add one migration, after the prefix migration, that adds a nullable selected-role column to sessions and to the refresh-token lineage table, which keeps the sessions table's columns, empty for existing rows. Rolling it back SHALL drop exactly those columns.
 
 #### Scenario: Existing sessions
 - **WHEN** the migration is applied to a database holding sessions
 - **THEN** every existing session has no selected role and is otherwise unchanged
+
+#### Scenario: The lineage table keeps the sessions table's columns
+- **WHEN** the migration is applied
+- **THEN** the refresh-token lineage table has the same columns as the sessions table, including the selected-role column
