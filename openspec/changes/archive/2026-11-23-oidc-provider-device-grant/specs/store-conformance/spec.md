@@ -10,3 +10,7 @@ The conformance suites SHALL cover the device authorization store, and every scr
 #### Scenario: A consumer store judging expiry by its own clock
 - **WHEN** a consumer's device authorization store answers a user-code lookup by comparing with its own clock, and the suite runs against it
 - **THEN** the suite fails, naming the case
+
+#### Scenario: A store accepting a record no durable store could hold
+- **WHEN** a store's create accepts a record with an unknown state, an approval naming no grant family, or no client, and the suite runs against it
+- **THEN** the suite fails, naming the case

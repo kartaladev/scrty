@@ -68,6 +68,10 @@ type oidcEndpoints struct {
 	// an issuer that does not cover it, or the provider's paths, is not refused.
 	issuerBasePathWaived bool
 
+	// deviceSettings names the options given that only a provider with the device
+	// grant serves, so check refuses them on one without.
+	deviceSettings []string
+
 	// groups is the endpoint groups, one per file, in the order they are asked.
 	groups []oidcEndpointGroup
 	// sessions is the manager the chain's bearer resolves sessions through,
@@ -91,6 +95,9 @@ type oidcEndpoints struct {
 	endSession    oidcEndSessionGroup
 	logoutConfirm oidcLogoutConfirmGroup
 	consents      oidcConsentsGroup
+
+	deviceAuthorization oidcDeviceAuthorizationGroup
+	deviceEntry         oidcDeviceEntryGroup
 }
 
 // newOIDCEndpoints returns the provider's state with its groups bound, and the
@@ -106,6 +113,7 @@ func newOIDCEndpoints(p *oidcprovider.Provider, now func() time.Time) *oidcEndpo
 	op.groups = []oidcEndpointGroup{
 		&op.authorize, &op.resume, &op.token, &op.revoke, &op.userinfo,
 		&op.metadata, &op.endSession, &op.logoutConfirm, &op.consents,
+		&op.deviceAuthorization, &op.deviceEntry,
 	}
 
 	for _, g := range op.groups {
@@ -333,12 +341,34 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 //   - Revocation and introspection throttles: 10 failed client authentications per
 //     source in 15 minutes, each endpoint counted on its own (WithOIDCRevokeLimiter,
 //     WithOIDCIntrospectLimiter, or the chain's WithRateLimiterFactory).
+//   - Device endpoints: served only when the provider enabled the device grant
+//     (oidcprovider.WithDeviceAuthorization), at OIDCDeviceAuthorization and
+//     OIDCDeviceEntry. A device option or path given for a provider without the
+//     grant fails New. The device authorization endpoint's throttle is the token
+//     endpoint's rule with a budget of its own, under namespace
+//     "oidc-device-authorization" (WithOIDCDeviceAuthorizationLimiter, or the
+//     chain's WithRateLimiterFactory). Code entry is throttled by the provider
+//     itself (oidcprovider.WithUserCodeEntryLimiter, WithUserCodeEntryKeyer); New
+//     hands the provider the chain's WithRateLimiterFactory, which the provider
+//     asks for namespace "oidc-device-entry" unless it holds a limiter of the
+//     consumer's, and the chain's source keying (WithIPv6SourcePrefix), as the
+//     last step that may refuse the chain. New fails when the factory errs, or the
+//     provider already holds another chain's different factory, namespace or
+//     prefix. A GET carrying a user code claims it only when Sec-Fetch-Site is
+//     same-origin or absent; any other (none, same-site, cross-site) claims
+//     nothing, and is sent to the consumer's code-entry page with the code
+//     prefilled, and a POST to code entry is refused with 403 unless it is
+//     same-origin, none or absent, with CSRF protection on or off (see
+//     "Cross-site requests", below); a code-entry page on which that redirect
+//     would loop fails New.
 //   - Request bodies: DefaultLoginBodyLimit (WithOIDCAuthorizeBodyLimit,
 //     WithOIDCResumeBodyLimit, WithOIDCTokenBodyLimit, WithOIDCEndSessionBodyLimit,
 //     WithOIDCLogoutConfirmBodyLimit, WithOIDCRevokeBodyLimit,
-//     WithOIDCIntrospectBodyLimit, WithOIDCUserInfoBodyLimit).
+//     WithOIDCIntrospectBodyLimit, WithOIDCUserInfoBodyLimit,
+//     WithOIDCDeviceAuthorizationBodyLimit, WithOIDCDeviceEntryBodyLimit).
 //   - Cross-site requests: POST to the authorization, token, revocation,
-//     introspection and end-session endpoints skips CSRF protection, at the
+//     introspection, end-session and (when served) device authorization endpoints
+//     skips CSRF protection, at the
 //     paths the provider serves them (see "Cross-site requests", below). No
 //     option removes it; WithCSRFExemption adds a route, UserInfo's among them.
 //
@@ -372,10 +402,30 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // (ReadBufferSize, 8 KiB) is below the size this reads. A form POST holding the flow
 // cookie is answered directly, and avoids both.
 //
-// The resume, the logout confirmation and /consents are not exempt. The consent
-// stage and the logout confirmation may rest on the provider's browser session, a
-// cookie, so a cross-site POST to any of them is refused as ErrCrossSiteRequest
-// (403) before its handler runs.
+// The device authorization endpoint, while the provider serves it, is exempt as the
+// token endpoint is: a device posts it with a client credential and no cookie.
+//
+// The resume, the logout confirmation, /consents and code entry are not exempt. The
+// consent stage and the logout confirmation may rest on the provider's browser session,
+// a cookie, and a code entry claims a code for the browser, so a cross-site POST to any
+// of them is refused as ErrCrossSiteRequest (403) before its handler runs.
+//
+// A GET to code entry carrying user_code claims it only when the browser reports the
+// request as from the deployment's own origin: exactly one Sec-Fetch-Site line of
+// same-origin, or no Sec-Fetch-Site at all (a client that is no browser, or an older
+// browser, an accepted gap). Any other GET, none (a typed or bookmarked URL, a link
+// opened from another application), same-site and cross-site among them, claims and
+// charges nothing, sets no cookie, and is answered with a 303 to the consumer's
+// code-entry page (oidcprovider.Provider.DeviceEntryURL) with user_code set, so the user
+// confirms the code there and submits it as a POST. A POST to code entry is refused with
+// ErrCrossSiteRequest (403), before its body is read and with nothing claimed or
+// charged, when Sec-Fetch-Site is anything but exactly one line of same-origin or none,
+// or absent. Both gates hold with or without EnableCSRFProtection, and have no option:
+// a claim is a state change no link or sibling site may make. A user_code longer than 64
+// bytes is refused as an invalid code before anything is redirected. A code-entry page
+// whose path is the code-entry endpoint's, under any spelling (case, trailing slash,
+// empty segment, percent-encoding), fails New, because the redirect would come back to
+// the endpoint as cross-site again without end.
 //
 // The exemption follows the paths the provider serves (WithOIDCProviderPrefix,
 // WithOIDCProviderPath) and compares each exactly, with the path as the client sent
@@ -812,7 +862,12 @@ func (op *oidcEndpoints) checkIssuerPath(c *config) error {
 	// configuration, so it is the path a refusal is most useful naming.
 	served := make([]string, 0, len(op.paths)+2)
 	served = append(served, op.paths[OIDCToken])
-	served = append(served, op.paths[:]...)
+
+	for e := range oidcEndpointCount {
+		if op.served(e) {
+			served = append(served, op.paths[e])
+		}
+	}
 
 	if j, ok := findInterceptor[*jwksEndpoint](c); ok {
 		served = append(served, j.path.at())
@@ -843,6 +898,7 @@ func issuerWithPath(issuer, path string) string {
 // resolved under the base path.
 func (op *oidcEndpoints) check(c *config) error {
 	for _, check := range []func(*config) error{
+		op.checkDeviceSettings,
 		op.checkIssuerPath,
 		op.checkBearer,
 		op.checkJWKS,
@@ -1220,9 +1276,19 @@ func (op *oidcEndpoints) endpoints() (outer, inner []Endpoint) {
 		at(OIDCIntrospect, OperationOAuth2Introspect, RequiresClientAuthentication, http.MethodPost),
 		at(OIDCEndSession, OperationOAuth2EndSession, RequiresNothing, http.MethodGet, http.MethodPost),
 		at(OIDCLogoutConfirm, OperationOAuth2EndSessionConfirm, RequiresNothing, http.MethodPost),
+	}
+
+	if op.deviceServed() {
+		outer = append(outer,
+			at(OIDCDeviceAuthorization, OperationOAuth2DeviceAuthorization, RequiresClientAuthentication, http.MethodPost),
+			at(OIDCDeviceEntry, OperationOAuth2DeviceEntry, RequiresNothing, http.MethodGet, http.MethodPost),
+		)
+	}
+
+	outer = append(outer,
 		document(OperationOAuth2OpenIDConfiguration, openid),
 		document(OperationOAuth2AuthorizationServerMetadata, oauth),
-	}
+	)
 
 	inner = []Endpoint{
 		at(OIDCResume, OperationOAuth2AuthorizeResume, RequiresSession, http.MethodPost),

@@ -139,6 +139,18 @@
 //     path, so a sink that blocks never holds it.
 //   - scrty_grant_revoke_failed: a suspected passkey clone whose user's
 //     application grants could not be revoked, which nothing asks again.
+//   - scrty_device_authorization_issued: a device authorization stored and
+//     answered to a device client.
+//   - scrty_device_authorization_claimed: a user code entered for the first
+//     time, by the browser that now holds it.
+//   - scrty_device_authorization_approved: a user's approval of a device
+//     authorization.
+//   - scrty_device_authorization_denied: a user's denial of a device
+//     authorization.
+//   - scrty_device_code_exchanged: a device code exchanged for tokens.
+//   - scrty_device_code_replayed: a device code presented after it was spent.
+//   - scrty_user_code_entry_throttled: a user-code entry refused by the entry
+//     limit.
 //
 // # What an event carries
 //

@@ -16,6 +16,10 @@ var ErrClientNotFound = errors.New("oidcprovider: client not found")
 // repeated, and is answered as a server error, charged to no throttle.
 var ErrDependency = errors.New("oidcprovider: dependency failure")
 
+// userCodeThrottledText is ErrUserCodeThrottled's text, which every throttled entry's
+// refusal carries alone.
+const userCodeThrottledText = "oidcprovider: user code entry throttled"
+
 // The refusals of the authorization and consent flows, which httpsec maps to
 // statuses.
 var (
@@ -42,6 +46,18 @@ var (
 	// published, a hint whose audience is not client_id, or parameters that cannot be
 	// read.
 	ErrInvalidEndSession = errors.New("oidcprovider: invalid end-session request")
+
+	// ErrInvalidUserCode reports an entered user code that cannot be answered: malformed,
+	// too long, unknown, expired, claimed by another browser, already answered or already
+	// exchanged. It is one answer for all of them, with one text, so it says nothing of
+	// which codes exist. httpsec answers it with 400 and no body.
+	ErrInvalidUserCode = errors.New("oidcprovider: invalid user code")
+
+	// ErrUserCodeThrottled reports a user-code entry refused before any lookup, because its
+	// source has failed too often, its source names no single address, or the limiter
+	// could not say. Every error that matches it also matches ratelimit.ErrThrottled, which
+	// httpsec answers with 429.
+	ErrUserCodeThrottled = errors.New(userCodeThrottledText)
 )
 
 // The protocol error codes an Error carries, as the standards spell them.
@@ -63,6 +79,11 @@ const (
 	CodeInvalidToken            = "invalid_token"
 	CodeInsufficientScope       = "insufficient_scope"
 	CodeInvalidDPoPProof        = "invalid_dpop_proof"
+
+	// The device authorization grant's answers to a poll (RFC 8628 section 3.5).
+	CodeAuthorizationPending = "authorization_pending"
+	CodeSlowDown             = "slow_down"
+	CodeExpiredToken         = "expired_token"
 )
 
 // Error is a refusal the protocol names: httpsec answers it with the standard's

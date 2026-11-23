@@ -63,6 +63,12 @@ func newGrantStore(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) oi
 	return must.Must(pgxstore.NewGrantStore(pool, opts...))
 }
 
+func newDeviceStore(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) oidcprovider.DeviceAuthorizationStore {
+	t.Helper()
+
+	return must.Must(pgxstore.NewDeviceAuthorizationStore(pool, opts...))
+}
+
 func newAccessTokenStore(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) oidcprovider.AccessTokenStore {
 	t.Helper()
 
@@ -150,6 +156,11 @@ func TestPgxStore(t *testing.T) {
 				return newBrowserStore(t, emptied(t, conn, pgschema.BrowserSessionTable))
 			})
 		},
+		"DeviceAuthorizations": func(t *testing.T, conn database) {
+			storetest.DeviceAuthorizationSuite(t, func(t *testing.T) oidcprovider.DeviceAuthorizationStore {
+				return newDeviceStore(t, emptied(t, conn, pgschema.DeviceAuthorizationTable))
+			})
+		},
 		"Lineages": func(t *testing.T, conn database) {
 			c := storefix.TestCipher(t)
 			withoutSessionsTable(t, conn)
@@ -173,6 +184,10 @@ func TestPgxStore(t *testing.T) {
 		},
 		"Races/GrantLockOrder": func(t *testing.T, conn database) {
 			storetest.RunGrantOrderRaces(t, durableHarness(conn, newGrantStore))
+		},
+		"Races/DeviceAuthorizations": func(t *testing.T, conn database) {
+			// Two pools of poolSize, at least storetest.DeviceRaceRacers each.
+			storetest.RunDeviceAuthorizationRaces(t, durableHarness(conn, newDeviceStore))
 		},
 		"Races/BrowserSessions": func(t *testing.T, conn database) {
 			storetest.RunTouchRace(t, durableHarness(conn, newBrowserStore))
@@ -438,6 +453,7 @@ func TestPgxStore_NoCredentialInAnyColumn(t *testing.T) {
 	const (
 		handle, flow, browser = "rh-handle-secret-value", "flow-secret-value", "browser-secret-value"
 		access, refresh       = "at-access-secret-value", "rt-refresh-secret-value"
+		deviceCode, userCode  = "device-code-secret-value", "USERCODE"
 	)
 
 	signIn := oidcprovider.SignIn{
@@ -462,13 +478,18 @@ func TestPgxStore_NoCredentialInAnyColumn(t *testing.T) {
 		CreatedAt: opTime, ExpiresAt: opTime.Add(time.Hour),
 	}))
 	require.NoError(t, lineageSessions(t, pool, storefix.TestCipher(t)).Create(ctx, opSession(refresh, opID(4))))
+	require.NoError(t, newDeviceStore(t, pool).Create(ctx, &oidcprovider.DeviceAuthorization{
+		ID: opID(6), DeviceCodeDigest: digest(deviceCode), UserCodeDigest: digest(userCode), ClaimFlowDigest: digest(flow),
+		ClientID: "c-1", IssuedAt: opTime, ExpiresAt: opTime.Add(time.Minute), State: oidcprovider.DeviceApproved,
+		Approval: &oidcprovider.DeviceApproval{User: "u-1", SignIn: signIn, GrantFamily: opID(4)},
+	}, opTime))
 
 	clients := newClientStore(t, pool)
 	require.NoError(t, clients.Put(ctx, confidentialClient("c-1")))
 	clientSecret, err := clients.GenerateSecret(ctx, "c-1")
 	require.NoError(t, err)
 
-	secrets := []string{handle, flow, browser, access, refresh, clientSecret}
+	secrets := []string{handle, flow, browser, access, refresh, clientSecret, deviceCode, userCode}
 
 	var seen int
 	for _, table := range pgschema.OIDCProviderTables() {
@@ -487,7 +508,7 @@ func TestPgxStore_NoCredentialInAnyColumn(t *testing.T) {
 		require.NoError(t, rows.Err())
 		require.NoError(t, rows.Close())
 	}
-	assert.Equal(t, 7, seen, "every record stored above was read back")
+	assert.Equal(t, 8, seen, "every record stored above was read back")
 }
 
 // TestPgxStore_Unstorable holds every write and lookup to its answer for text PostgreSQL
@@ -651,6 +672,23 @@ func TestPgxStore_ErrorsCarryNoDigest(t *testing.T) {
 		}},
 		{"access token create", pgschema.AccessTokenTable, func(t *testing.T, ctx context.Context, pool *pgxpool.Pool) error {
 			return newAccessTokenStore(t, pool).Create(ctx, &oidcprovider.AccessTokenRecord{ID: opID(1), Digest: digest[:]})
+		}},
+		{"device create", pgschema.DeviceAuthorizationTable, func(t *testing.T, ctx context.Context, pool *pgxpool.Pool) error {
+			return newDeviceStore(t, pool).Create(ctx, &oidcprovider.DeviceAuthorization{
+				ID: opID(1), DeviceCodeDigest: digest[:], UserCodeDigest: digest[:], ClientID: "c-1",
+				IssuedAt: opTime, ExpiresAt: opTime.Add(time.Minute),
+			}, opTime)
+		}},
+		{"device load by device code", pgschema.DeviceAuthorizationTable, func(t *testing.T, ctx context.Context, pool *pgxpool.Pool) error {
+			_, err := newDeviceStore(t, pool).LoadByDeviceCode(ctx, digest[:])
+			return err
+		}},
+		{"device load by user code", pgschema.DeviceAuthorizationTable, func(t *testing.T, ctx context.Context, pool *pgxpool.Pool) error {
+			_, err := newDeviceStore(t, pool).LoadByUserCode(ctx, digest[:], opTime)
+			return err
+		}},
+		{"device claim", pgschema.DeviceAuthorizationTable, func(t *testing.T, ctx context.Context, pool *pgxpool.Pool) error {
+			return newDeviceStore(t, pool).Claim(ctx, opID(1), digest[:], opTime)
 		}},
 		{"client put", pgschema.ClientTable, func(t *testing.T, ctx context.Context, pool *pgxpool.Pool) error {
 			c := confidentialClient("c-1")
@@ -1395,6 +1433,10 @@ func TestPgxStore_NewOIDCProviderStores(t *testing.T) {
 		})},
 		"grants": {build: wrap(func(pool *pgxpool.Pool, o ...pgxstore.Option) error {
 			_, err := pgxstore.NewGrantStore(pool, o...)
+			return err
+		})},
+		"device authorizations": {build: wrap(func(pool *pgxpool.Pool, o ...pgxstore.Option) error {
+			_, err := pgxstore.NewDeviceAuthorizationStore(pool, o...)
 			return err
 		})},
 		"access tokens": {build: wrap(func(pool *pgxpool.Pool, o ...pgxstore.Option) error {

@@ -221,7 +221,9 @@ func signInWhere(sel oidcprovider.SignInSelector, first int) (string, []any) {
 
 // CodeUnspentBySignIn is the statement listing the grant family of each code record sel
 // selects, and its arguments. Records holding offline_access are left out unless
-// includeOffline is true, or the record ends with its sign-in. sel must be valid.
+// includeOffline is true, or the record ends with its sign-in. sel must be valid. A code
+// never survives its sign-in's end, so this is the one rule endsWithSignIn states, with
+// survives_sign_in_end false.
 func CodeUnspentBySignIn(sel oidcprovider.SignInSelector, includeOffline bool) (string, []any) {
 	where, args := signInWhere(sel, 2)
 
@@ -360,8 +362,8 @@ func GrantRevokeByUserAndClient(
 }
 
 // GrantEndSignIns is the unit ending what sel selects, sel being valid. Each stored grant
-// it selects and no end has marked is marked, and revoked if it has no offline_access or
-// is tied to its sign-in, and is reported. Each of families is revoked if it is not yet,
+// it selects and no end has marked is marked, and revoked if it ends with its sign-in (tied
+// to it, or holding neither offline_access nor SurvivesSignInEnd), and is reported. Each of families is revoked if it is not yet,
 // and a record this creates for one carries the mark; a stored grant is only marked if
 // sel selects it, and a revocation already recorded was not this end's. Of any number of
 // concurrent ends exactly one reports a grant: a second waits on the row's lock in Hold,
@@ -391,10 +393,10 @@ func GrantEndSignIns(sel oidcprovider.SignInSelector, families []id.ID, at time.
 written AS (
   UPDATE op_grants SET
     sign_in_ended_at = CASE WHEN newly_ended THEN $2::timestamptz ELSE sign_in_ended_at END,
-    revoked = revoked OR outstanding OR (newly_ended AND (NOT offline OR ends_with_sign_in)),
-    revoked_at = CASE WHEN NOT revoked AND (outstanding OR (newly_ended AND (NOT offline OR ends_with_sign_in)))
+    revoked = revoked OR outstanding OR (newly_ended AND ` + endsWithSignIn + `),
+    revoked_at = CASE WHEN NOT revoked AND (outstanding OR (newly_ended AND ` + endsWithSignIn + `))
       THEN $2::timestamptz ELSE revoked_at END,
-    revoke_cause = CASE WHEN NOT revoked AND (outstanding OR (newly_ended AND (NOT offline OR ends_with_sign_in)))
+    revoke_cause = CASE WHEN NOT revoked AND (outstanding OR (newly_ended AND ` + endsWithSignIn + `))
       THEN $3::text ELSE revoke_cause END
   FROM chosen WHERE family = chosen_family AND (newly_ended OR (outstanding AND NOT revoked))
   RETURNING ` + grantColumns + `, newly_ended)
@@ -434,8 +436,8 @@ func (s *CodeSource) Join(codes oidcprovider.UnspentCodes) error {
 	defer s.mu.Unlock()
 
 	if s.codes != nil && !sameCodes(s.codes, codes) {
-		return fmt.Errorf("%w: GrantStore: UseCodes: this store already reads another code store, "+
-			"so two providers sharing a grant store must share their code store too", oidcprovider.ErrConfig)
+		return fmt.Errorf("%w: GrantStore: UseCodes: this store already reads outstanding codes through a different code or "+
+			"device store, or with the device grant enabled differently", oidcprovider.ErrConfig)
 	}
 	s.codes = codes
 
@@ -600,6 +602,7 @@ func PendingRequestArgs(r *oidcprovider.PendingRequest) ([]any, error) {
 		opField{"client identifier", r.ClientID}, opField{"redirect URI", r.RedirectURI},
 		opField{"state", r.State}, opField{"nonce", r.Nonce}, opField{"code challenge", r.Challenge},
 		opField{"hint's subject", r.IDTokenHintSubject}, opField{"dpop_jkt", r.DPoPJKT}, opField{"login hint", r.LoginHint},
+		opField{"device user code", r.DeviceUserCode},
 	); err != nil {
 		return nil, err
 	}
@@ -630,6 +633,7 @@ func PendingRequestArgs(r *oidcprovider.PendingRequest) ([]any, error) {
 		r.ID.String(), bytesOrEmpty(r.HandleDigest), bytesOrEmpty(r.FlowDigest), r.ClientID, r.RedirectURI,
 		lists[0], lists[1], r.State, r.Nonce, r.Challenge, lists[2], maxAge, r.IDTokenHintSubject, r.DPoPJKT,
 		r.LoginHint, lists[3], lists[4], lists[5], opTime(r.ParkedAt), opTime(r.ExpiresAt), int16(r.Stage), signIn,
+		opNullID(r.DeviceAuthorizationID), r.DeviceUserCode,
 	}, nil
 }
 
@@ -641,6 +645,7 @@ type PendingRequestRow struct {
 	parked, expires                            time.Time
 	stage                                      int16
 	signIn                                     []byte
+	device                                     sql.Null[id.ID]
 }
 
 // Dest is what a row scans into.
@@ -648,7 +653,8 @@ func (r *PendingRequestRow) Dest() []any {
 	return []any{
 		&r.rec.ID, &r.rec.HandleDigest, &r.rec.FlowDigest, &r.rec.ClientID, &r.rec.RedirectURI, &r.scopes, &r.resources,
 		&r.rec.State, &r.rec.Nonce, &r.rec.Challenge, &r.prompt, &r.maxAge, &r.rec.IDTokenHintSubject, &r.rec.DPoPJKT,
-		&r.rec.LoginHint, &r.ui, &r.claims, &r.acr, &r.parked, &r.expires, &r.stage, &r.signIn,
+		&r.rec.LoginHint, &r.ui, &r.claims, &r.acr, &r.parked, &r.expires, &r.stage, &r.signIn, &r.device,
+		&r.rec.DeviceUserCode,
 	}
 }
 
@@ -677,6 +683,7 @@ func (r *PendingRequestRow) Record() (*oidcprovider.PendingRequest, error) {
 	}
 	out.ParkedAt, out.ExpiresAt = r.parked.UTC(), r.expires.UTC()
 	out.Stage = oidcprovider.Stage(r.stage) //nolint:gosec // written from a Stage, a uint8
+	out.DeviceAuthorizationID = r.device.V
 
 	return &out, nil
 }
@@ -842,6 +849,9 @@ func (r *ConsentRow) Record() (*oidcprovider.Consent, error) {
 // as given, because the column's default says nothing about this grant. A revocation
 // already on g is kept when no tombstone is there, as the in-memory store has it.
 func GrantArgs(g *oidcprovider.Grant) ([]any, error) {
+	if g.Origin > oidcprovider.OriginDevice {
+		return nil, errGrantOrigin
+	}
 	if err := checkFields(
 		opField{"user reference", string(g.User)}, opField{"client identifier", g.ClientID}, opField{"acr", g.ACR},
 		opField{"key binding", g.KeyBinding}, opField{"certificate binding", g.CertBinding},
@@ -867,9 +877,16 @@ func GrantArgs(g *oidcprovider.Grant) ([]any, error) {
 		g.Family.String(), string(g.User), g.ClientID, scopes, resources, opNullTime(g.AuthTime), amr, g.ACR, g.KeyBinding,
 		g.CertBinding, opNullID(g.CodeID), opNullID(g.SignInFamily), g.ExternalIssuer, g.ExternalSessionID, g.Offline, g.EndsWithSignIn,
 		g.HoldsLineage, opTime(g.CreatedAt), opTime(g.ExpiresAt), g.Revoked, opNullTime(g.RevokedAt), string(g.RevokeCause),
-		opNullTime(g.SignInEndedAt),
+		opNullTime(g.SignInEndedAt), int16(g.Origin), g.SurvivesSignInEnd,
 	}, nil
 }
+
+// The refusals of a grant whose origin GrantOrigin does not name, written or stored. Their
+// text is fixed, and carries no value.
+var (
+	errGrantOrigin    = errors.New("the grant's origin is not one GrantOrigin names")
+	errGrantRowOrigin = errors.New("a stored grant holds an origin GrantOrigin does not name")
+)
 
 // GrantRow holds a scanned op_grants row.
 type GrantRow struct {
@@ -878,6 +895,7 @@ type GrantRow struct {
 	scopes, resources, amr                     []byte
 	code, signIn                               sql.Null[id.ID]
 	authTime, created, expires, revoked, ended sql.NullTime
+	origin                                     int16
 }
 
 // Dest is what a row scans into.
@@ -885,12 +903,17 @@ func (r *GrantRow) Dest() []any {
 	return []any{
 		&r.rec.Family, &r.user, &r.rec.ClientID, &r.scopes, &r.resources, &r.authTime, &r.amr, &r.rec.ACR, &r.rec.KeyBinding,
 		&r.rec.CertBinding, &r.code, &r.signIn, &r.rec.ExternalIssuer, &r.rec.ExternalSessionID, &r.rec.Offline, &r.rec.EndsWithSignIn,
-		&r.rec.HoldsLineage, &r.created, &r.expires, &r.rec.Revoked, &r.revoked, &r.cause, &r.ended,
+		&r.rec.HoldsLineage, &r.created, &r.expires, &r.rec.Revoked, &r.revoked, &r.cause, &r.ended, &r.origin,
+		&r.rec.SurvivesSignInEnd,
 	}
 }
 
 // Record is the row as the port returns it.
 func (r *GrantRow) Record() (*oidcprovider.Grant, error) {
+	if r.origin < 0 || r.origin > int16(oidcprovider.OriginDevice) {
+		return nil, errGrantRowOrigin
+	}
+
 	out := r.rec
 	var err error
 	if out.Scopes, err = decodeList[string]("scopes", r.scopes); err != nil {
@@ -906,6 +929,7 @@ func (r *GrantRow) Record() (*oidcprovider.Grant, error) {
 	out.CodeID, out.SignInFamily = r.code.V, r.signIn.V
 	out.AuthTime, out.CreatedAt, out.ExpiresAt = fromNullTime(r.authTime), fromNullTime(r.created), fromNullTime(r.expires)
 	out.RevokedAt, out.SignInEndedAt = fromNullTime(r.revoked), fromNullTime(r.ended)
+	out.Origin = oidcprovider.GrantOrigin(r.origin) //nolint:gosec // written from a GrantOrigin, a uint8
 
 	return &out, nil
 }
@@ -1092,7 +1116,7 @@ func ClientArgs(rowID id.ID, rc *oidcprovider.RegisteredClient, keepHeld bool) (
 		grantTypes, rc.FirstParty, int16(rc.OfflineAccess), rc.IDTokenAlg, int64(rc.IDTokenLifetime),
 		int64(rc.AccessTokenLifetime), rc.OpaqueAccessTokens, int16(rc.RequireBinding), int64(rc.RefreshGrace),
 		int64(rc.GrantIdleTimeout), int64(rc.GrantAbsoluteLifetime), rc.DisableRotation, rc.EndGrantsWithSignIn,
-		rc.KeepPublicWebGrantsPastSignIn, metadata, secrets, keepHeld,
+		rc.KeepPublicWebGrantsPastSignIn, metadata, secrets, rc.DeviceCompleteURI, rc.DeviceGrantsOutliveSignIn, keepHeld,
 	}, nil
 }
 
@@ -1113,7 +1137,7 @@ func (r *ClientRow) Dest() []any {
 		&r.logouts, &r.rec.BackChannelLogoutURI, &r.scopes, &r.resources, &r.audience, &r.rec.ResourceIdentifier,
 		&r.grantTypes, &r.rec.FirstParty, &r.offline, &r.rec.IDTokenAlg, &r.idToken, &r.access, &r.rec.OpaqueAccessTokens,
 		&r.bind, &r.grace, &r.idle, &r.absolute, &r.rec.DisableRotation, &r.rec.EndGrantsWithSignIn,
-		&r.rec.KeepPublicWebGrantsPastSignIn, &r.metadata, &r.secrets,
+		&r.rec.KeepPublicWebGrantsPastSignIn, &r.metadata, &r.secrets, &r.rec.DeviceCompleteURI, &r.rec.DeviceGrantsOutliveSignIn,
 	}
 }
 

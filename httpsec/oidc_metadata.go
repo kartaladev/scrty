@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kartaladev/scrty/oidcprovider"
 )
 
 // Where the two documents live, and what they are cached for.
@@ -49,6 +51,7 @@ var oidcMetadataMembers = map[string]struct{}{
 	"authorization_response_iss_parameter_supported": {},
 	"backchannel_logout_supported":                   {}, "backchannel_logout_session_supported": {},
 	"dpop_signing_alg_values_supported":          {},
+	"device_authorization_endpoint":              {},
 	"tls_client_certificate_bound_access_tokens": {},
 }
 
@@ -214,7 +217,7 @@ func (g *oidcMetadataGroup) settle(c *config) error {
 		"claims_supported":                           caps.Claims,
 		"response_types_supported":                   []string{"code"},
 		"response_modes_supported":                   []string{"query"},
-		"grant_types_supported":                      []string{"authorization_code", "refresh_token"},
+		"grant_types_supported":                      op.grantTypes(),
 		"subject_types_supported":                    []string{"public"},
 		"id_token_signing_alg_values_supported":      caps.IDTokenAlgs,
 		"code_challenge_methods_supported":           []string{"S256"},
@@ -238,6 +241,12 @@ func (g *oidcMetadataGroup) settle(c *config) error {
 
 	if j, ok := findInterceptor[*jwksEndpoint](c); ok {
 		doc["jwks_uri"] = op.publicURL(j.path.at())
+	}
+
+	// The code-entry endpoint is not published: it is reached through the device
+	// authorization response's verification_uri, the consumer's own page.
+	if op.deviceServed() {
+		doc["device_authorization_endpoint"] = op.publicURL(op.paths[OIDCDeviceAuthorization])
 	}
 
 	if c.dpopEnabled && c.dpop != nil {
@@ -275,6 +284,18 @@ func (g *oidcMetadataGroup) settle(c *config) error {
 	g.document = built
 
 	return nil
+}
+
+// grantTypes is grant_types_supported: the code and refresh grants the provider always
+// serves, and the device grant when it enabled it, so the document never names a grant the
+// token endpoint refuses.
+func (op *oidcEndpoints) grantTypes() []string {
+	grants := []string{string(oidcprovider.GrantAuthorizationCode), string(oidcprovider.GrantRefreshToken)}
+	if op.deviceServed() {
+		grants = append(grants, string(oidcprovider.GrantDeviceCode))
+	}
+
+	return grants
 }
 
 // WithOIDCMetadataMember adds a member to both metadata documents, such as

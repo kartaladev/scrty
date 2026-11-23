@@ -85,6 +85,9 @@ const (
 	GrantAuthorizationCode GrantType = "authorization_code"
 	// GrantRefreshToken is refreshing.
 	GrantRefreshToken GrantType = "refresh_token"
+	// GrantDeviceCode is the device authorization grant. A client may list it only on
+	// a provider that enabled the grant with WithDeviceAuthorization.
+	GrantDeviceCode GrantType = "urn:ietf:params:oauth:grant-type:device_code"
 )
 
 // PKCERequirement says what an authorization request must carry. The default is
@@ -224,6 +227,15 @@ type Client struct {
 	// KeepPublicWebGrantsPastSignIn overrides a public web client's default, and is
 	// only for one. It contradicts EndGrantsWithSignIn.
 	KeepPublicWebGrantsPastSignIn bool
+	// DeviceCompleteURI lets the device authorization response carry
+	// verification_uri_complete, which holds the user code. The default is false: the
+	// code is then typed, never carried in a link. It needs GrantDeviceCode.
+	DeviceCompleteURI bool
+	// DeviceGrantsOutliveSignIn keeps the grants a device approval creates after the
+	// sign-in that approved them ends. The default is false: they end with it. It needs
+	// GrantDeviceCode, and contradicts EndGrantsWithSignIn, including a public web
+	// client's default of it (see KeepPublicWebGrantsPastSignIn).
+	DeviceGrantsOutliveSignIn bool
 
 	// Metadata belongs to the consumer, and is returned unchanged.
 	Metadata map[string]string
@@ -260,7 +272,10 @@ type keyLimits struct {
 	// issuer is the provider's, which no client may take as its resource identifier. It is set by
 	// New, since the key source cannot report it.
 	issuer string
-	algs   []signingkey.Alg
+	// deviceEnabled says the provider was built with WithDeviceAuthorization, which a
+	// client needs to list GrantDeviceCode.
+	deviceEnabled bool
+	algs          []signingkey.Alg
 	// window is the longest token lifetime the keys allow, meaningful when capped.
 	window time.Duration
 	// capped says the source reports its lifetimes. One that does not gets no
@@ -287,6 +302,9 @@ func limitsOf(keys signingkey.KeySource) keyLimits {
 
 // checkKeys takes a client whose defaults are resolved.
 func (c *Client) checkKeys(limits keyLimits) error {
+	if !limits.deviceEnabled && slices.Contains(c.GrantTypes, GrantDeviceCode) {
+		return c.refuse("GrantTypes", "GrantDeviceCode needs a provider built with WithDeviceAuthorization")
+	}
 	if limits.issuer != "" && c.ResourceIdentifier == limits.issuer {
 		return c.refuse("ResourceIdentifier", "must not be the issuer")
 	}
@@ -317,6 +335,7 @@ func validateClient(c Client) (Client, error) {
 		(*Client).validateURIs,
 		(*Client).validateAudiences,
 		(*Client).validatePolicies,
+		(*Client).validateDevice,
 		(*Client).validateLifetimes,
 		(*Client).validateGrantLifetimes,
 	} {
@@ -451,7 +470,7 @@ func (c *Client) validateGrantTypes() error {
 		c.GrantTypes = []GrantType{GrantAuthorizationCode}
 	}
 	for _, g := range c.GrantTypes {
-		if g != GrantAuthorizationCode && g != GrantRefreshToken {
+		if g != GrantAuthorizationCode && g != GrantRefreshToken && g != GrantDeviceCode {
 			return c.refuse("GrantTypes", fmt.Sprintf("unknown grant type %q", g))
 		}
 	}
@@ -626,6 +645,32 @@ func (c *Client) validatePolicies() error {
 	}
 	if publicWeb && !c.KeepPublicWebGrantsPastSignIn {
 		c.EndGrantsWithSignIn = true
+	}
+
+	return nil
+}
+
+// validateDevice refuses the device settings that mean nothing without the grant, and
+// the ones that contradict the sign-in settings. It runs after validatePolicies, so a
+// public web client's default of ending grants with the sign-in is already resolved.
+func (c *Client) validateDevice() error {
+	if slices.Contains(c.GrantTypes, GrantDeviceCode) {
+		if c.DeviceGrantsOutliveSignIn && c.EndGrantsWithSignIn {
+			reason := "contradicts EndGrantsWithSignIn"
+			if c.Type == Public && c.ApplicationType == Web && !c.KeepPublicWebGrantsPastSignIn {
+				reason += ", which a public web client has by default (see KeepPublicWebGrantsPastSignIn)"
+			}
+
+			return c.refuse("DeviceGrantsOutliveSignIn", reason)
+		}
+
+		return nil
+	}
+	if c.DeviceCompleteURI {
+		return c.refuse("DeviceCompleteURI", "needs GrantTypes to list GrantDeviceCode")
+	}
+	if c.DeviceGrantsOutliveSignIn {
+		return c.refuse("DeviceGrantsOutliveSignIn", "needs GrantTypes to list GrantDeviceCode")
 	}
 
 	return nil

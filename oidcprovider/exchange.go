@@ -142,6 +142,14 @@ func (TokenResponse) LogValue() slog.Value { return slog.StringValue(redacted) }
 // those tokens' grant revoked. Which is why a resource is no part of what makes a replay valid:
 // it is what a request asks for, and not what the code was issued for.
 //
+// A urn:ietf:params:oauth:grant-type:device_code request is unsupported_grant_type on a provider
+// built without WithDeviceAuthorization. Otherwise it is answered by the authorization's state:
+// authorization_pending or slow_down while the user has not answered, access_denied once they
+// denied, expired_token once it expired, and tokens once they approved, as a code exchange gives
+// them, with an ID token carrying no nonce. Every check but one comes before the one conditional
+// write that spends the code; the revocation check is the read-back after it. See pollDevice
+// and exchangeDevice for the order.
+//
 // A refresh_token request runs in an order of its own, and writes nothing until its step 5:
 //
 //  1. a token of no shape the provider mints is refused with no lookup;
@@ -196,6 +204,10 @@ func (p *Provider) Token(ctx context.Context, request TokenRequest) (*TokenRespo
 	case "":
 		return nil, refuseRequest()
 	case GrantAuthorizationCode, GrantRefreshToken:
+	case GrantDeviceCode:
+		if !p.DeviceEnabled() {
+			return nil, &Error{Code: CodeUnsupportedGrantType}
+		}
 	default:
 		return nil, &Error{Code: CodeUnsupportedGrantType}
 	}
@@ -205,8 +217,11 @@ func (p *Provider) Token(ctx context.Context, request TokenRequest) (*TokenRespo
 	if err := requireBinding(rc, request.Binding); err != nil {
 		return nil, err
 	}
-	if grantType == GrantRefreshToken {
+	switch grantType {
+	case GrantRefreshToken:
 		return p.refresh(ctx, request, rc)
+	case GrantDeviceCode:
+		return p.pollDevice(ctx, request, rc)
 	}
 
 	return p.exchangeCode(ctx, request, rc)
@@ -383,6 +398,22 @@ func codeBindingsHold(r TokenRequest, record *CodeRecord, rc *RegisteredClient) 
 		(record.DPoPJKT == "" || r.Binding.JKT == record.DPoPJKT)
 }
 
+// replayHoldsBinding says whether a replay carries what binds grant, which is the only thing that
+// lets it end the grant: the key a public client's proof showed, or the certificate it presented
+// when it showed none. It judges as a refresh does (requireGrantBinding), without that function's
+// error codes, because a replay is answered invalid_grant whatever fails. A grant bound to
+// neither is bound by its client's authentication, which the caller has checked.
+func replayHoldsBinding(grant *Grant, b Binding) bool {
+	switch {
+	case grant.KeyBinding != "":
+		return b.JKT == grant.KeyBinding
+	case grant.CertBinding != "":
+		return b.X5T == grant.CertBinding && b.JKT == ""
+	}
+
+	return true
+}
+
 // verifierHolds decides PKCE, which cannot be downgraded here (RFC 9700 §4.8.2): a code with
 // a challenge needs its verifier, in RFC 7636's syntax, and a code without one refuses any
 // verifier. A code without one exists only for a PKCEOrNonce client's nonce, so one with no
@@ -411,8 +442,8 @@ func verifierHolds(verifier string, record *CodeRecord, rc *RegisteredClient) bo
 func grantLife(record *CodeRecord, rc *RegisteredClient, now time.Time) (time.Time, bool, bool) {
 	deadline := record.SignIn.AbsoluteExpiresAt
 	holdsLineage := slices.Contains(rc.GrantTypes, GrantRefreshToken)
-	endsWithSignIn := !record.Offline || record.EndsWithSignIn || !holdsLineage
-	if endsWithSignIn && !now.Before(deadline) {
+	ends := endsWithSignIn(record.Offline, record.EndsWithSignIn, false) || !holdsLineage
+	if ends && !now.Before(deadline) {
 		return time.Time{}, false, false
 	}
 	if !holdsLineage {
@@ -420,7 +451,7 @@ func grantLife(record *CodeRecord, rc *RegisteredClient, now time.Time) (time.Ti
 	}
 
 	expiresAt := now.Add(rc.GrantAbsoluteLifetime)
-	if endsWithSignIn && deadline.Before(expiresAt) {
+	if ends && deadline.Before(expiresAt) {
 		expiresAt = deadline
 	}
 
@@ -487,6 +518,47 @@ func newGrant(
 		Offline:           record.Offline,
 		EndsWithSignIn:    record.EndsWithSignIn,
 		HoldsLineage:      holdsLineage,
+		CreatedAt:         now,
+		ExpiresAt:         expiresAt,
+	}
+	if rc.Type == Public {
+		grant.KeyBinding = binding.JKT
+		if binding.JKT == "" {
+			grant.CertBinding = binding.X5T
+		}
+	}
+
+	return grant
+}
+
+// newDeviceGrant builds the row a device authorization's exchange writes, as newGrant does a
+// code's: the approval's grant family, user and granted scopes, the record's resources, and the
+// approving sign-in's authentication facts. CodeID names the device authorization, and Origin
+// says so. A public client's grant is bound to the key its exchange proved, or with no proof to
+// its certificate.
+func newDeviceGrant(
+	record *DeviceAuthorization, rc *RegisteredClient, binding Binding, holdsLineage bool, now, expiresAt time.Time,
+) *Grant {
+	a := record.Approval
+	s := a.SignIn
+	grant := &Grant{
+		Family:            a.GrantFamily,
+		User:              a.User,
+		ClientID:          record.ClientID,
+		Scopes:            slices.Clone(a.GrantedScopes),
+		Resources:         slices.Clone(record.Resources),
+		AuthTime:          s.AuthenticatedAt,
+		AMR:               slices.Clone(s.AMR),
+		ACR:               s.ACR,
+		CodeID:            record.ID,
+		SignInFamily:      s.Family,
+		ExternalIssuer:    s.ExternalIssuer,
+		ExternalSessionID: s.ExternalSessionID,
+		Offline:           a.Offline,
+		EndsWithSignIn:    a.EndsWithSignIn,
+		SurvivesSignInEnd: a.SurvivesSignInEnd,
+		HoldsLineage:      holdsLineage,
+		Origin:            OriginDevice,
 		CreatedAt:         now,
 		ExpiresAt:         expiresAt,
 	}
@@ -640,6 +712,19 @@ func (p *Provider) refuseSpentCode(ctx context.Context, r TokenRequest, rc *Regi
 	if record.ClientID != rc.ID || !codeBindingsHold(r, record, rc) {
 		return refuseGrant()
 	}
+	// The grant may be bound to what the code's record does not say: a certificate. No row
+	// yet is no binding to judge, as the exchange that spent the code may still be writing it.
+	grant, err := p.stores.grants.Load(detached, record.GrantFamily)
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
+	switch {
+	case errors.Is(err, ErrNotFound):
+	case err != nil:
+		return dependencyFailure(ctx, err, "oidcprovider: read the replayed code's grant")
+	case grant == nil:
+		return dependencyFailure(ctx, errNoRecord, "oidcprovider: read the replayed code's grant")
+	case !replayHoldsBinding(grant, r.Binding):
+		return refuseGrant()
+	}
 	if err := p.revokeReplayed(ctx, detached, record, now); err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke what a replayed code issued")
 	}
@@ -678,17 +763,27 @@ func splitCode(code string) (id.ID, string, bool) {
 // failure answers an error, and what caused the revocation can be presented again to try both again.
 // Opaque access tokens need nothing here, because their grant is checked when they are read.
 func (p *Provider) revokeReplayed(ctx, detached context.Context, record *CodeRecord, now time.Time) error {
-	newly, grantErr := p.stores.grants.Revoke(detached, record.GrantFamily, CauseCodeReplay, now)
+	return p.revokeReplayedFamily(ctx, detached, record.GrantFamily, now, func(newly bool) {
+		p.reportCodeReplay(ctx, record, newly)
+	})
+}
+
+// revokeReplayedFamily is revokeReplayed for any one-time credential that names the grant family
+// it issued, a code's or a device code's: it revokes family with CauseCodeReplay, calls reported
+// with whether this call is what revoked it once the revocation is stored, and then revokes the
+// family's lineage.
+func (p *Provider) revokeReplayedFamily(ctx, detached context.Context, family id.ID, now time.Time, reported func(newly bool)) error {
+	newly, grantErr := p.stores.grants.Revoke(detached, family, CauseCodeReplay, now)
 	grantErr = porterr.SanitizeTo(ctx, p.cfg.logger, grantErr, porterr.ErrUnwalkable)
 	if grantErr == nil {
-		p.reportCodeReplay(ctx, record, newly)
+		reported(newly)
 	}
 
 	manager, err := p.lineages(nil)
 	if err != nil {
 		return errors.Join(grantErr, err)
 	}
-	_, lineageErr := manager.RevokeFamily(detached, record.GrantFamily)
+	_, lineageErr := manager.RevokeFamily(detached, family)
 
 	return errors.Join(grantErr, lineageErr)
 }

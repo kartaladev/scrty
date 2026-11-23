@@ -12,7 +12,8 @@ const (
 	// PendingRequestArgs returns. No row affected means its identifier or handle
 	// digest is already held, and the stored record is left as it was.
 	PendingRequestInsert = `INSERT INTO op_pending_requests (` + pendingRequestColumns + `)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
+  $24)
 ON CONFLICT DO NOTHING`
 
 	// PendingRequestSelect reads the record of handle digest $1.
@@ -69,7 +70,8 @@ ON CONFLICT (user_ref, client_id) DO UPDATE SET
 	// record, keeping the revocation and any sign-in-ended mark. Over a stored grant it
 	// affects no row, and that is the refusal.
 	GrantInsert = `INSERT INTO op_grants (` + grantColumns + `)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
+  $24, $25)
 ON CONFLICT (family) DO UPDATE SET
   user_ref = EXCLUDED.user_ref, client_id = EXCLUDED.client_id, scopes = EXCLUDED.scopes,
   resources = EXCLUDED.resources, auth_time = EXCLUDED.auth_time, amr = EXCLUDED.amr, acr = EXCLUDED.acr,
@@ -77,7 +79,8 @@ ON CONFLICT (family) DO UPDATE SET
   sign_in_family = EXCLUDED.sign_in_family,
   external_issuer = EXCLUDED.external_issuer, external_session_id = EXCLUDED.external_session_id,
   offline = EXCLUDED.offline, ends_with_sign_in = EXCLUDED.ends_with_sign_in,
-  holds_lineage = EXCLUDED.holds_lineage, created_at = EXCLUDED.created_at, expires_at = EXCLUDED.expires_at
+  holds_lineage = EXCLUDED.holds_lineage, created_at = EXCLUDED.created_at, expires_at = EXCLUDED.expires_at,
+  origin = EXCLUDED.origin, survives_sign_in_end = EXCLUDED.survives_sign_in_end
 WHERE op_grants.created_at IS NULL`
 
 	// GrantSelect reads the record of family $1.
@@ -153,12 +156,12 @@ WHERE digest = $1`
 	BrowserSessionDeleteExpired = `DELETE FROM op_browser_sessions WHERE idle_expires_at < $1 OR absolute_expires_at < $1`
 
 	// ClientUpsert adds or replaces a client, with the arguments ClientArgs returns. It
-	// keeps the secrets held when $33 is true, in the one statement, so a settings change
+	// keeps the secrets held when $35 is true, in the one statement, so a settings change
 	// cannot overwrite a secret generated beside it. $1, the row's uuid, stays as it was
 	// on a replacement.
 	ClientUpsert = `INSERT INTO op_clients (id, ` + clientColumns + `)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
-  $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32)
+  $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)
 ON CONFLICT (client_id) DO UPDATE SET
   name = EXCLUDED.name, client_type = EXCLUDED.client_type, application_type = EXCLUDED.application_type,
   auth_method = EXCLUDED.auth_method, pkce = EXCLUDED.pkce, jwks = EXCLUDED.jwks, jwks_uri = EXCLUDED.jwks_uri,
@@ -174,8 +177,9 @@ ON CONFLICT (client_id) DO UPDATE SET
   grant_absolute_lifetime_ns = EXCLUDED.grant_absolute_lifetime_ns,
   disable_rotation = EXCLUDED.disable_rotation, end_grants_with_sign_in = EXCLUDED.end_grants_with_sign_in,
   keep_public_web_grants_past_sign_in = EXCLUDED.keep_public_web_grants_past_sign_in,
-  metadata = EXCLUDED.metadata,
-  secrets = CASE WHEN $33::boolean THEN op_clients.secrets ELSE EXCLUDED.secrets END`
+  metadata = EXCLUDED.metadata, device_complete_uri = EXCLUDED.device_complete_uri,
+  device_grants_outlive_sign_in = EXCLUDED.device_grants_outlive_sign_in,
+  secrets = CASE WHEN $35::boolean THEN op_clients.secrets ELSE EXCLUDED.secrets END`
 
 	// ClientSelect reads client $1.
 	ClientSelect = `SELECT ` + clientColumns + ` FROM op_clients WHERE client_id = $1`
@@ -193,7 +197,7 @@ ON CONFLICT (client_id) DO UPDATE SET
 const (
 	pendingRequestColumns = `id, handle_digest, flow_digest, client_id, redirect_uri, scopes, resources, state, nonce,
   challenge, prompt, max_age, id_token_hint_subject, dpop_jkt, login_hint, ui_locales, claims_locales, acr_values,
-  parked_at, expires_at, stage, sign_in`
+  parked_at, expires_at, stage, sign_in, device_authorization_id, device_user_code`
 
 	codeColumns = `token_id, client_id, redirect_uri, challenge, nonce, dpop_jkt, scopes, resources, user_ref,
   sign_in_family, authenticated_at, amr, acr, sign_in_absolute_expires_at, external_issuer, external_session_id,
@@ -203,7 +207,7 @@ const (
 
 	grantColumns = `family, user_ref, client_id, scopes, resources, auth_time, amr, acr, key_binding, cert_binding, code_id,
   sign_in_family, external_issuer, external_session_id, offline, ends_with_sign_in, holds_lineage, created_at,
-  expires_at, revoked, revoked_at, revoke_cause, sign_in_ended_at`
+  expires_at, revoked, revoked_at, revoke_cause, sign_in_ended_at, origin, survives_sign_in_end`
 
 	//nolint:gosec // a column list, and no credential
 	accessTokenColumns = `id, digest, grant_family, client_id, user_ref, scopes, audience, confirmation, issued_at,
@@ -216,8 +220,15 @@ const (
   post_logout_redirect_uris, back_channel_logout_uri, scopes, resources, default_audience, resource_identifier,
   grant_types, first_party, offline_access, id_token_alg, id_token_lifetime_ns, access_token_lifetime_ns,
   opaque_access_tokens, require_binding, refresh_grace_ns, grant_idle_timeout_ns, grant_absolute_lifetime_ns,
-  disable_rotation, end_grants_with_sign_in, keep_public_web_grants_past_sign_in, metadata, secrets`
+  disable_rotation, end_grants_with_sign_in, keep_public_web_grants_past_sign_in, metadata, secrets, device_complete_uri,
+  device_grants_outlive_sign_in`
 )
+
+// endsWithSignIn is the one rule, over a row's columns, that decides whether a grant or a
+// device approval ends with its sign-in: tied to it, which wins over everything, or
+// holding neither offline_access nor the device grant's survival of its sign-in. A code's
+// grant never survives, so for it this is NOT offline OR ends_with_sign_in, as it was.
+const endsWithSignIn = `(ends_with_sign_in OR (NOT offline AND NOT survives_sign_in_end))`
 
 // heldFamilies is the set $1 of a statement writing the grants a hold returned.
 const heldFamilies = `SELECT held.family::uuid FROM jsonb_array_elements_text($1::jsonb) AS held(family)`

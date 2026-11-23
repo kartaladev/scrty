@@ -65,6 +65,12 @@ func newGrantStore(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) oidcpr
 	return must.Must(gormstore.NewGrantStore(db, opts...))
 }
 
+func newDeviceStore(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) oidcprovider.DeviceAuthorizationStore {
+	t.Helper()
+
+	return must.Must(gormstore.NewDeviceAuthorizationStore(db, opts...))
+}
+
 func newAccessTokenStore(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) oidcprovider.AccessTokenStore {
 	t.Helper()
 
@@ -125,6 +131,11 @@ func TestGormStore(t *testing.T) {
 				return newGrantStore(t, emptied(t, d, pgschema.GrantTable))
 			})
 		},
+		"DeviceAuthorizations": func(t *testing.T, d database) {
+			storetest.DeviceAuthorizationSuite(t, func(t *testing.T) oidcprovider.DeviceAuthorizationStore {
+				return newDeviceStore(t, emptied(t, d, pgschema.DeviceAuthorizationTable))
+			})
+		},
 		"AccessTokens": func(t *testing.T, d database) {
 			storetest.AccessTokenSuite(t, func(t *testing.T) oidcprovider.AccessTokenStore {
 				return newAccessTokenStore(t, emptied(t, d, pgschema.AccessTokenTable))
@@ -162,6 +173,10 @@ func TestGormStore(t *testing.T) {
 		},
 		"Races/GrantLockOrder": func(t *testing.T, d database) {
 			storetest.RunGrantOrderRaces(t, durableHarness(d, newGrantStore))
+		},
+		"Races/DeviceAuthorizations": func(t *testing.T, d database) {
+			// Pools of poolSize (32), at least storetest.DeviceRaceRacers (16) each.
+			storetest.RunDeviceAuthorizationRaces(t, durableHarness(d, newDeviceStore))
 		},
 		"Races/BrowserSessions": func(t *testing.T, d database) {
 			storetest.RunTouchRace(t, durableHarness(d, newBrowserStore))
@@ -331,6 +346,7 @@ func TestGormStore_NoCredentialInAnyColumn(t *testing.T) {
 	const (
 		handle, flow, browser = "rh-handle-secret-value", "flow-secret-value", "browser-secret-value"
 		access, refresh       = "at-access-secret-value", "rt-refresh-secret-value"
+		deviceCode, userCode  = "device-code-secret-value", "USERCODE"
 	)
 
 	signIn := oidcprovider.SignIn{
@@ -355,13 +371,18 @@ func TestGormStore_NoCredentialInAnyColumn(t *testing.T) {
 		CreatedAt: opTime, ExpiresAt: opTime.Add(time.Hour),
 	}))
 	require.NoError(t, lineageSessions(t, g, storefix.TestCipher(t)).Create(ctx, opSession(refresh, opID(4))))
+	require.NoError(t, newDeviceStore(t, g).Create(ctx, &oidcprovider.DeviceAuthorization{
+		ID: opID(6), DeviceCodeDigest: digest(deviceCode), UserCodeDigest: digest(userCode), ClaimFlowDigest: digest(flow),
+		ClientID: "c-1", IssuedAt: opTime, ExpiresAt: opTime.Add(time.Minute), State: oidcprovider.DeviceApproved,
+		Approval: &oidcprovider.DeviceApproval{User: "u-1", SignIn: signIn, GrantFamily: opID(4)},
+	}, opTime))
 
 	clients := newClientStore(t, g)
 	require.NoError(t, clients.Put(ctx, confidentialClient("c-1")))
 	clientSecret, err := clients.GenerateSecret(ctx, "c-1")
 	require.NoError(t, err)
 
-	secrets := []string{handle, flow, browser, access, refresh, clientSecret}
+	secrets := []string{handle, flow, browser, access, refresh, clientSecret, deviceCode, userCode}
 
 	var seen int
 	for _, table := range pgschema.OIDCProviderTables() {
@@ -380,7 +401,7 @@ func TestGormStore_NoCredentialInAnyColumn(t *testing.T) {
 		require.NoError(t, rows.Err())
 		require.NoError(t, rows.Close())
 	}
-	assert.Equal(t, 7, seen, "every record stored above was read back")
+	assert.Equal(t, 8, seen, "every record stored above was read back")
 }
 
 // TestGormStore_Unstorable holds every write and lookup to its answer for text PostgreSQL
@@ -536,6 +557,23 @@ func TestGormStore_ErrorsCarryNoDigest(t *testing.T) {
 		{"access token create", pgschema.AccessTokenTable, func(t *testing.T, ctx context.Context, d database) error {
 			g := d.db
 			return newAccessTokenStore(t, g).Create(ctx, &oidcprovider.AccessTokenRecord{ID: opID(1), Digest: digest[:]})
+		}},
+		{"device create", pgschema.DeviceAuthorizationTable, func(t *testing.T, ctx context.Context, d database) error {
+			return newDeviceStore(t, d.db).Create(ctx, &oidcprovider.DeviceAuthorization{
+				ID: opID(1), DeviceCodeDigest: digest[:], UserCodeDigest: digest[:], ClientID: "c-1",
+				IssuedAt: opTime, ExpiresAt: opTime.Add(time.Minute),
+			}, opTime)
+		}},
+		{"device load by device code", pgschema.DeviceAuthorizationTable, func(t *testing.T, ctx context.Context, d database) error {
+			_, err := newDeviceStore(t, d.db).LoadByDeviceCode(ctx, digest[:])
+			return err
+		}},
+		{"device load by user code", pgschema.DeviceAuthorizationTable, func(t *testing.T, ctx context.Context, d database) error {
+			_, err := newDeviceStore(t, d.db).LoadByUserCode(ctx, digest[:], opTime)
+			return err
+		}},
+		{"device claim", pgschema.DeviceAuthorizationTable, func(t *testing.T, ctx context.Context, d database) error {
+			return newDeviceStore(t, d.db).Claim(ctx, opID(1), digest[:], opTime)
 		}},
 		{"client put", pgschema.ClientTable, func(t *testing.T, ctx context.Context, d database) error {
 			g := d.db
@@ -1294,6 +1332,10 @@ func TestGormStore_NewOIDCProviderStores(t *testing.T) {
 			_, err := gormstore.NewGrantStore(db, o...)
 			return err
 		})},
+		"device authorizations": {build: wrap(func(db *gormdb.DB, o ...gormstore.Option) error {
+			_, err := gormstore.NewDeviceAuthorizationStore(db, o...)
+			return err
+		})},
 		"access tokens": {build: wrap(func(db *gormdb.DB, o ...gormstore.Option) error {
 			_, err := gormstore.NewAccessTokenStore(db, o...)
 			return err
@@ -1521,6 +1563,23 @@ func TestGormStore_LogsCarryNoValue(t *testing.T) {
 		}},
 		{"access token create", pgschema.AccessTokenTable, func(t *testing.T, ctx context.Context, d database) error {
 			return newAccessTokenStore(t, d.db).Create(ctx, &oidcprovider.AccessTokenRecord{ID: opID(1), Digest: digest[:]})
+		}},
+		{"device create", pgschema.DeviceAuthorizationTable, func(t *testing.T, ctx context.Context, d database) error {
+			return newDeviceStore(t, d.db).Create(ctx, &oidcprovider.DeviceAuthorization{
+				ID: opID(1), DeviceCodeDigest: digest[:], UserCodeDigest: digest[:], ClientID: "c-1",
+				IssuedAt: opTime, ExpiresAt: opTime.Add(time.Minute),
+			}, opTime)
+		}},
+		{"device load by device code", pgschema.DeviceAuthorizationTable, func(t *testing.T, ctx context.Context, d database) error {
+			_, err := newDeviceStore(t, d.db).LoadByDeviceCode(ctx, digest[:])
+			return err
+		}},
+		{"device load by user code", pgschema.DeviceAuthorizationTable, func(t *testing.T, ctx context.Context, d database) error {
+			_, err := newDeviceStore(t, d.db).LoadByUserCode(ctx, digest[:], opTime)
+			return err
+		}},
+		{"device claim", pgschema.DeviceAuthorizationTable, func(t *testing.T, ctx context.Context, d database) error {
+			return newDeviceStore(t, d.db).Claim(ctx, opID(1), digest[:], opTime)
 		}},
 		{"lineage create", pgschema.RefreshTokenTable, func(t *testing.T, ctx context.Context, d database) error {
 			return lineageSessions(t, d.db, storefix.TestCipher(t)).Create(ctx, opSession("a-refresh-token-value", opID(4)))

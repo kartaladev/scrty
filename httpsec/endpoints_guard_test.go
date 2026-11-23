@@ -247,6 +247,9 @@ func TestChainEndpoints_EveryEntryIsAnswered(t *testing.T) {
 		chainRow{"provider", func(t *testing.T) (*httpsec.Chain, error) {
 			return bpChain(t, newOPFixture(t), true)
 		}},
+		chainRow{"provider with the device grant", func(t *testing.T) (*httpsec.Chain, error) {
+			return bpDeviceChain(t, newOPFixture(t), true)
+		}},
 		chainRow{"every built-in enabled", func(t *testing.T) (*httpsec.Chain, error) {
 			// The fixture's issuer does not carry the base path, which the
 			// issuer check would refuse; this row judges the inventory, not it.

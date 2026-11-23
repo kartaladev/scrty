@@ -43,6 +43,15 @@ var reportedElsewhere = map[string]string{
 	event.GrantRevoked:         providerEventsPinned,
 	event.LogoutDeliveryFailed: providerEventsPinned,
 	event.GrantEndFailed:       providerEventsPinned,
+
+	// The device grant's events, pinned by oidcprovider's TestDeviceEvents.
+	event.DeviceAuthorizationIssued:   providerEventsPinned,
+	event.DeviceAuthorizationClaimed:  providerEventsPinned,
+	event.DeviceAuthorizationApproved: providerEventsPinned,
+	event.DeviceAuthorizationDenied:   providerEventsPinned,
+	event.DeviceCodeExchanged:         providerEventsPinned,
+	event.DeviceCodeReplayed:          providerEventsPinned,
+	event.UserCodeEntryThrottled:      providerEventsPinned,
 }
 
 // providerEventsPinned is where the OpenID provider's events are pinned.

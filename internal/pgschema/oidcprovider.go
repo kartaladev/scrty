@@ -38,12 +38,16 @@ const (
 
 	// AssertionIDTable holds the client-assertion identifiers already accepted.
 	AssertionIDTable = "op_client_assertions"
+
+	// DeviceAuthorizationTable holds the device authorizations (RFC 8628), which the
+	// device grant's migration adds.
+	DeviceAuthorizationTable = "op_device_authorizations"
 )
 
-// OIDCProviderTables returns the tables the provider's migration creates.
+// OIDCProviderTables returns the tables the provider's migrations create.
 func OIDCProviderTables() []string {
 	return []string{
 		ClientTable, PendingRequestTable, BrowserSessionTable, CodeTable, ConsentTable,
-		GrantTable, RefreshTokenTable, AccessTokenTable, AssertionIDTable,
+		GrantTable, RefreshTokenTable, AccessTokenTable, AssertionIDTable, DeviceAuthorizationTable,
 	}
 }

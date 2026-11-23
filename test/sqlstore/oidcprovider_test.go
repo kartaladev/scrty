@@ -137,6 +137,11 @@ func TestSQLStore(t *testing.T) {
 				return newBrowserStore(t, emptied(t, conn.DB, pgschema.BrowserSessionTable))
 			})
 		},
+		"DeviceAuthorizations": func(t *testing.T, conn test.PostgresConn) {
+			storetest.DeviceAuthorizationSuite(t, func(t *testing.T) oidcprovider.DeviceAuthorizationStore {
+				return newDeviceStore(t, emptied(t, conn.DB, pgschema.DeviceAuthorizationTable))
+			})
+		},
 		"Lineages": func(t *testing.T, conn test.PostgresConn) {
 			c := storefix.TestCipher(t)
 			storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
@@ -159,6 +164,10 @@ func TestSQLStore(t *testing.T) {
 		},
 		"Races/GrantLockOrder": func(t *testing.T, conn test.PostgresConn) {
 			storetest.RunGrantOrderRaces(t, durableHarness(conn, newGrantStore))
+		},
+		"Races/DeviceAuthorizations": func(t *testing.T, conn test.PostgresConn) {
+			// Two pools of poolSize, at least storetest.DeviceRaceRacers each.
+			storetest.RunDeviceAuthorizationRaces(t, durableHarness(conn, newDeviceStore))
 		},
 		"Races/BrowserSessions": func(t *testing.T, conn test.PostgresConn) {
 			storetest.RunTouchRace(t, durableHarness(conn, newBrowserStore))
@@ -396,6 +405,7 @@ func TestSQLStore_NoCredentialInAnyColumn(t *testing.T) {
 	const (
 		handle, flow, browser = "rh-handle-secret-value", "flow-secret-value", "browser-secret-value"
 		access, refresh       = "at-access-secret-value", "rt-refresh-secret-value"
+		deviceCode, userCode  = "device-code-secret-value", "USERCODE"
 	)
 
 	signIn := oidcprovider.SignIn{
@@ -420,13 +430,18 @@ func TestSQLStore_NoCredentialInAnyColumn(t *testing.T) {
 		CreatedAt: opTime, ExpiresAt: opTime.Add(time.Hour),
 	}))
 	require.NoError(t, lineageSessions(t, db, storefix.TestCipher(t)).Create(ctx, opSession(refresh, opID(4))))
+	require.NoError(t, newDeviceStore(t, db).Create(ctx, &oidcprovider.DeviceAuthorization{
+		ID: opID(6), DeviceCodeDigest: digest(deviceCode), UserCodeDigest: digest(userCode), ClaimFlowDigest: digest(flow),
+		ClientID: "c-1", IssuedAt: opTime, ExpiresAt: opTime.Add(time.Minute), State: oidcprovider.DeviceApproved,
+		Approval: &oidcprovider.DeviceApproval{User: "u-1", SignIn: signIn, GrantFamily: opID(4)},
+	}, opTime))
 
 	clients := newClientStore(t, db)
 	require.NoError(t, clients.Put(ctx, confidentialClient("c-1")))
 	clientSecret, err := clients.GenerateSecret(ctx, "c-1")
 	require.NoError(t, err)
 
-	secrets := []string{handle, flow, browser, access, refresh, clientSecret}
+	secrets := []string{handle, flow, browser, access, refresh, clientSecret, deviceCode, userCode}
 
 	var seen int
 	for _, table := range pgschema.OIDCProviderTables() {
@@ -445,7 +460,7 @@ func TestSQLStore_NoCredentialInAnyColumn(t *testing.T) {
 		require.NoError(t, rows.Err())
 		require.NoError(t, rows.Close())
 	}
-	assert.Equal(t, 7, seen, "every record stored above was read back")
+	assert.Equal(t, 8, seen, "every record stored above was read back")
 }
 
 // TestSQLStore_Unstorable holds every write and lookup to its answer for text PostgreSQL
@@ -595,6 +610,23 @@ func TestSQLStore_ErrorsCarryNoDigest(t *testing.T) {
 		}},
 		{"access token create", pgschema.AccessTokenTable, func(t *testing.T, ctx context.Context, db *sql.DB) error {
 			return newAccessTokenStore(t, db).Create(ctx, &oidcprovider.AccessTokenRecord{ID: opID(1), Digest: digest[:]})
+		}},
+		{"device create", pgschema.DeviceAuthorizationTable, func(t *testing.T, ctx context.Context, db *sql.DB) error {
+			return newDeviceStore(t, db).Create(ctx, &oidcprovider.DeviceAuthorization{
+				ID: opID(1), DeviceCodeDigest: digest[:], UserCodeDigest: digest[:], ClientID: "c-1",
+				IssuedAt: opTime, ExpiresAt: opTime.Add(time.Minute),
+			}, opTime)
+		}},
+		{"device load by device code", pgschema.DeviceAuthorizationTable, func(t *testing.T, ctx context.Context, db *sql.DB) error {
+			_, err := newDeviceStore(t, db).LoadByDeviceCode(ctx, digest[:])
+			return err
+		}},
+		{"device load by user code", pgschema.DeviceAuthorizationTable, func(t *testing.T, ctx context.Context, db *sql.DB) error {
+			_, err := newDeviceStore(t, db).LoadByUserCode(ctx, digest[:], opTime)
+			return err
+		}},
+		{"device claim", pgschema.DeviceAuthorizationTable, func(t *testing.T, ctx context.Context, db *sql.DB) error {
+			return newDeviceStore(t, db).Claim(ctx, opID(1), digest[:], opTime)
 		}},
 		{"client put", pgschema.ClientTable, func(t *testing.T, ctx context.Context, db *sql.DB) error {
 			c := confidentialClient("c-1")
@@ -1334,6 +1366,10 @@ func TestNewOIDCProviderStores(t *testing.T) {
 		})},
 		"grants": {build: wrap(func(db *sql.DB, o ...sqlstore.Option) error {
 			_, err := sqlstore.NewGrantStore(db, o...)
+			return err
+		})},
+		"device authorizations": {build: wrap(func(db *sql.DB, o ...sqlstore.Option) error {
+			_, err := sqlstore.NewDeviceAuthorizationStore(db, o...)
 			return err
 		})},
 		"access tokens": {build: wrap(func(db *sql.DB, o ...sqlstore.Option) error {

@@ -124,8 +124,8 @@ var WithSession = withSession
 
 // ReadResponse exposes the reader the verify endpoint hands a method's
 // response through, so its rules can be pinned without a chain.
-func ReadResponse(r Request, f mfa.ResponseFormat) ([]byte, error) {
-	return readResponse(context.Background(), r, f)
+func ReadResponse(ctx context.Context, r Request, f mfa.ResponseFormat) ([]byte, error) {
+	return readResponse(ctx, r, f)
 }
 
 // EnableRecoveryGateForTest registers the recovery gate exactly as
@@ -505,4 +505,14 @@ func CheckSubjectGeneratorForTest(bearer Option, g token.Generator) error {
 	}
 
 	return checkSubjectGenerator(c, "option", "field", g)
+}
+
+// WithLateRefusal refuses the chain with err in a check registered after every other the
+// wiring registers, so a test can show that a chain refused there hands nothing over.
+func WithLateRefusal(err error) Option {
+	return func(c *config) error {
+		c.wire(func(*Chain) { c.checkAfterWiring(func() error { return err }) })
+
+		return nil
+	}
 }

@@ -2061,6 +2061,30 @@ func TestProvider_CodeReplay(t *testing.T) {
 		invalidReplay("no proof of a bound code's key", dpop, bound("")),
 		invalidReplay("another key than a bound code's", dpop, bound("another-key")),
 		{
+			name: "a certificate-bound public grant's replay without the certificate revokes nothing",
+			run: func(t *testing.T, x *exchangeFixture, _ *barrierGrants) {
+				t.Helper()
+				sum := sha256.Sum256([]byte("code-cert"))
+				x5t := base64.RawURLEncoding.EncodeToString(sum[:])
+				c := issueNative(t, x)
+				first := nativeExchange(c, nil)
+				first.Binding = oidcprovider.Binding{X5T: x5t}
+				_, err := x.p.Token(t.Context(), first)
+				require.NoError(t, err)
+				require.Equal(t, x5t, grantOf(t, x, c).CertBinding, "the certificate binds the grant")
+
+				_, err = x.p.Token(t.Context(), nativeExchange(c, nil))
+				assertRefused(t, err, oidcprovider.CodeInvalidGrant)
+				assert.False(t, grantOf(t, x, c).Revoked, "a replay without the grant's certificate ended it")
+
+				own := nativeExchange(c, nil)
+				own.Binding = oidcprovider.Binding{X5T: x5t}
+				_, err = x.p.Token(t.Context(), own)
+				assertRefused(t, err, oidcprovider.CodeInvalidGrant)
+				assert.True(t, grantOf(t, x, c).Revoked, "a replay with the grant's certificate revokes")
+			},
+		},
+		{
 			name: "a public client's valid replay revokes",
 			run: func(t *testing.T, x *exchangeFixture, _ *barrierGrants) {
 				t.Helper()

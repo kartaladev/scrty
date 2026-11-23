@@ -711,7 +711,7 @@ func TestProvider_PendingRequest(t *testing.T) {
 				}
 				assert.ElementsMatch(t, []string{
 					"ClientID", "ClientName", "Scopes", "GrantedScopes", "Prompt", "MaxAge",
-					"LoginHint", "UILocales", "ClaimsLocales", "ACRValues", "Stage",
+					"LoginHint", "UILocales", "ClaimsLocales", "ACRValues", "Stage", "Device",
 				}, names)
 			},
 		},

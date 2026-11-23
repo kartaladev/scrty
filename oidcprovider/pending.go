@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/porterr"
@@ -205,6 +206,19 @@ type PendingView struct {
 	UILocales, ClaimsLocales, ACRValues []string
 	// Stage says which page should be answering: StageLogin or StageConsent.
 	Stage Stage
+	// Device is what the page shows of a device authorization the request answers, and
+	// nil for a request that answers none. Its client and scopes are those above.
+	Device *DeviceView
+}
+
+// DeviceView is what the consumer's pages may know of the device authorization a pending
+// request answers. It holds no device code, handle or flow secret.
+type DeviceView struct {
+	// UserCode is the user code in its displayed form, as it was issued, for the user to
+	// compare with the one the device shows.
+	UserCode string
+	// RequestedAt is when the device asked.
+	RequestedAt time.Time
 }
 
 // PendingRequest returns the view of a pending request, for the consumer's pages. It
@@ -235,6 +249,13 @@ func (p *Provider) PendingRequest(ctx context.Context, handle, flowSecret string
 		return nil, err
 	}
 
+	var device *DeviceView
+	if r.DeviceAuthorizationID != id.Nil {
+		if device, err = p.deviceView(ctx, r); err != nil {
+			return nil, err
+		}
+	}
+
 	return &PendingView{
 		ClientID:      r.ClientID,
 		ClientName:    rc.Name,
@@ -247,6 +268,7 @@ func (p *Provider) PendingRequest(ctx context.Context, handle, flowSecret string
 		ClaimsLocales: slices.Clone(r.ClaimsLocales),
 		ACRValues:     slices.Clone(r.ACRValues),
 		Stage:         r.Stage,
+		Device:        device,
 	}, nil
 }
 

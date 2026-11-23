@@ -701,6 +701,231 @@ limiter that cannot answer, and a source that cannot be attributed, are refused 
 limit, 429 at the authorization, resume, end-session and logout confirmation endpoints and
 `invalid_client` at the token endpoints.
 
+## CLI clients
+
+A command-line program has no web server to receive a redirect and no secret to keep. Register it as
+a public native client, and choose between two flows.
+
+### Loopback redirect with PKCE: the preferred flow
+
+The program listens on a loopback address, opens the user's browser at the authorization endpoint
+and receives the code on `http://127.0.0.1:<port>/callback` (RFC 8252). A native client's loopback port
+may vary, so the registered URI names none. It needs a browser on the
+same machine, and it never asks the user to type a code, so there is nothing to phish.
+
+```go
+oidcprovider.Client{
+    ID:              "acme-cli",
+    Type:            oidcprovider.Public,
+    ApplicationType: oidcprovider.Native, // allows http to a loopback IP literal
+    RedirectURIs:    []string{"http://127.0.0.1/callback"},
+    GrantTypes:      []oidcprovider.GrantType{oidcprovider.GrantAuthorizationCode, oidcprovider.GrantRefreshToken},
+    Scopes:          []string{"openid", "offline_access"},
+}
+```
+
+PKCE is required of every client by default. Use this flow whenever the program runs where a browser
+does.
+
+### The device grant: when there is no browser
+
+A program on a server over SSH, a container or a television cannot open a browser. The device grant
+(RFC 8628) lets it show a short code, and the user enters that code on another device. It is off
+until you turn it on twice: the provider, then each client.
+
+```go
+provider, err := oidcprovider.New(deps,
+    // The consumer's code-entry page, on the issuer's origin.
+    oidcprovider.WithDeviceAuthorization("https://id.example.com/activate"),
+)
+
+oidcprovider.Client{
+    ID:              "acme-cli",
+    Type:            oidcprovider.Public,
+    ApplicationType: oidcprovider.Native,
+    GrantTypes:      []oidcprovider.GrantType{oidcprovider.GrantDeviceCode, oidcprovider.GrantRefreshToken},
+    Scopes:          []string{"openid", "offline_access"},
+}
+```
+
+A client that lists `GrantDeviceCode` on a provider without the option is refused, and the metadata
+advertises `device_authorization_endpoint` only when the grant is on. The chain serves the device
+authorization and code-entry endpoints when the grant is enabled. The client side needs no scrty
+code: `golang.org/x/oauth2` has it.
+
+```go
+conf := &oauth2.Config{
+    ClientID: "acme-cli", // a public client: no secret
+    Scopes:   []string{"openid", "offline_access"},
+    Endpoint: oauth2.Endpoint{
+        DeviceAuthURL: issuer + "/oauth2/device-authorization",
+        TokenURL:      issuer + "/oauth2/token",
+    },
+}
+
+// A deadline of its own: polling stops when the authorization expires, and no later
+// than this.
+ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+defer cancel()
+
+da, err := conf.DeviceAuth(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Show the page and the code, and ask the user to check that the code matches. Do not
+// open VerificationURIComplete (it is empty unless the client was registered with
+// DeviceCompleteURI) or fill the code in for the user.
+fmt.Printf("Open %s and enter the code %s\n", da.VerificationURI, da.UserCode)
+
+// DeviceAccessToken polls at da.Interval and obeys slow_down. It returns when the user
+// approves, or with an error when the user denies or the code expires.
+token, err := conf.DeviceAccessToken(ctx, da)
+if err != nil {
+    log.Fatal(err)
+}
+
+// The refresh token (offline_access) keeps the CLI signed in. TokenSource refreshes it.
+client := conf.Client(ctx, token)
+req, err := http.NewRequestWithContext(ctx, http.MethodGet, issuer+"/oauth2/userinfo", nil)
+if err != nil {
+    log.Fatal(err)
+}
+res, err := client.Do(req)
+if err != nil {
+    log.Fatal(err)
+}
+defer func() { _ = res.Body.Close() }()
+fmt.Println(res.StatusCode == http.StatusOK)
+```
+
+This is `Example_deviceCLI` in the `test` module, which the build compiles, so it cannot drift from
+`golang.org/x/oauth2`'s API.
+
+### The code-entry page
+
+The provider renders nothing. The page at the URL you gave `WithDeviceAuthorization` is yours, and it
+has a fixed contract with the chain:
+
+- **It posts the code.** A form with a `user_code` field, posted to the code-entry endpoint,
+  `/oauth2/device` by default (`OIDCDeviceEntry`, moved by `WithOIDCProviderPrefix` and
+  `WithOIDCProviderPath`). The endpoint is not exempt from the cross-site check, so the form belongs
+  to your page's own origin. It reads the code however the user typed it: case, spaces and dashes do
+  not matter.
+- **It renders the form, and never redirects to the code-entry endpoint.** The entry page is a page,
+  not a hop. A GET to the endpoint that carries a code is sent back to the entry page (see the next
+  point), so a page that sends the browser on to the endpoint would loop between the two. The chain
+  refuses, at construction, an entry page whose path is the endpoint's, under any spelling.
+- **A link claims nothing unless the browser says it is from your own origin.** A GET to the
+  code-entry endpoint with `user_code` claims the code only when `Sec-Fetch-Site` is exactly one line
+  of `same-origin`, or the header is absent (a client that is no browser, or an older browser).
+  Every other GET, `none` (a typed or bookmarked URL, a link opened from a chat or mail application),
+  `same-site` (a sibling site) and `cross-site` among them, claims and charges nothing, sets no
+  cookie, and is answered with a 303 to your entry page with `user_code` in the query. The user then
+  confirms the code on your page and submits it as a POST. This holds with or without CSRF
+  protection, and has no option. A browser that sends no `Sec-Fetch-Site` is not gated: that gap is
+  accepted, and the POST below and the user's own confirmation are what remain for it.
+- **A POST is refused unless it is the user's own.** A POST to the code-entry endpoint is refused with
+  403 (`ErrCrossSiteRequest`), before its body is read and with nothing claimed or charged, when
+  `Sec-Fetch-Site` is anything but exactly one line of `same-origin` or `none`, or absent. This holds
+  with or without `EnableCSRFProtection`: the flow cookie is `SameSite=Lax`, so a sibling site's POST
+  would carry it.
+- **A user code is in the URL, so it is in logs.** The code appears in the query of the entry page
+  and of `verification_uri_complete`, and so in access logs, browser history and the `Referer`
+  header of anything your entry page loads or links to. Treat it as short-lived and low-value but not
+  secret: keep it out of your logs and analytics where you can, set `Referrer-Policy: no-referrer`
+  on the entry page, and load no third-party resources there.
+- **It sends the browser to sign in.** The endpoint answers 303: to your login page, or to your
+  consent page when the browser already has a session, with the handle as `req` as for any
+  authorization request. Your pages resume it as they do for the code flow.
+- **It is the landing page.** After the user answers, the browser lands on the entry URL with
+  `result=approved`, `denied` or `expired` (`oidcprovider.DeviceResultParam`,
+  `DeviceResultApproved`, `DeviceResultDenied`, `DeviceResultExpired`). Show "you can return to your
+  device", or the refusal. An entry URL that already carries a `result` or `user_code` query is
+  refused at construction.
+- **A wrong code is one answer.** An unknown, expired, already-claimed or used-up code is a 400 with
+  no body, and a source that has failed too often is a 429. Render "that code didn't work" for both.
+  The reason is never told, so a guesser learns nothing.
+- **Never auto-submit a prefilled code.** When a client is registered with `DeviceCompleteURI`, the
+  device shows a link with the code in it, and your page may fill the code in. It must still show the
+  code and wait for the user to submit it. Typing the code is how the user confirms that it is the one
+  their own device shows (RFC 8628 section 3.3.1): a page that submits on load makes a link in a phishing
+  message enough.
+- **Consent is always asked.** A device request is never consented to silently, whatever the client's
+  `FirstParty` or `OfflinePreAuthorized` settings say. `provider.PendingRequest` carries a
+  `Device` view with the code and the time of the request, so your consent page can ask "did you start
+  this on a device showing `BCDF-GHJK`?" with Deny as prominent as Approve.
+
+A page that wants its own URL or its own HTTP handling calls `provider.EnterUserCode` itself. The
+throttle and the binding to the browser are inside that call, so they hold on any path to it.
+
+### Phishing
+
+The device grant is the one flow where a user approves a request that began somewhere else, and
+attackers use that: they start a flow, send the victim the code, and wait for the victim to approve
+(RFC 10027; the Storm-2372 campaign of 2025). No protocol removes this, so the defaults make the
+request as visible as they can and leave the rest to you:
+
+- Enable the grant only for the clients that need it. Prefer the loopback flow for every client that
+  can open a browser.
+- Leave `Client.DeviceCompleteURI` off. Turn it on only for a television or a QR code, whose users
+  cannot type, and then keep the code-entry page from submitting on load.
+- Keep the consent page honest: name the client, show the code, and show when the device asked.
+  Consent cannot be skipped, but a page that hides what it asks is a page that helps the attacker.
+- Tell users to approve only a code they asked for, on a device they hold.
+
+### Keys, replicas and stores
+
+- **`WithUserCodeKey`.** A user code has about 34.6 bits, so the store holds it only as an HMAC under a
+  key you supply, and a copy of the store cannot be reversed by trying every code. A provider over
+  the default in-memory store draws a key at start. With a durable store
+  (`WithDeviceAuthorizationStore`, for example the one in `sqlstore`, `pgxstore` or `gormstore`),
+  `New` fails without the key, and **every replica must be given the same one**, or none finds a
+  code another issued. It is 32 bytes or more, from your configuration, and serves this purpose
+  alone. Rotating it ends the codes in flight and nothing else.
+- **The chain's throttle settings reach code entry.** The provider throttles code entry itself, and
+  `httpsec.EnableOIDCProvider` hands it the chain's `WithRateLimiterFactory` (under namespace
+  `oidc-device-entry`) and `WithIPv6SourcePrefix`, so entry is counted where the chain's other
+  throttles are and IPv6 sources are keyed the same way. Two chains over one provider may share one
+  factory, and their entries count together. A second chain with a different factory, namespace or
+  prefix fails `New` rather than split the counts. A limiter you give with
+  `WithUserCodeEntryLimiter`, or a keyer with `WithUserCodeEntryKeyer`, is kept as you gave it.
+- **Durable stores.** `sqlstore.NewDeviceAuthorizationStore`, `pgxstore.NewDeviceAuthorizationStore` and
+  `gormstore.NewDeviceAuthorizationStore` keep device authorizations in PostgreSQL. Pass one to
+  `WithDeviceAuthorizationStore`, with `WithUserCodeKey`.
+- **The migration.** A durable store needs the security-state migration
+  `20261122000000_oidc_provider_device`, which adds the `op_device_authorizations` table and the new
+  grant columns. Apply it before starting a provider over a durable store.
+- **Sweeping.** Records are swept by the `oidc-provider.device-authorizations` expiry task. Records
+  in flight are lost with an in-memory store, and the device starts again.
+
+### Stated limits
+
+- **Distributed guessing is bounded, not prevented.** One source may fail 5 times in 10 minutes
+  (`DefaultUserCodeEntryLimit`, `DefaultUserCodeEntryWindow`), charged before the code is looked up, so
+  a burst gets no extra tries. A code lives 10 minutes, and the code space is about 34.6 bits. An
+  attacker with many sources can therefore try more codes than one has, and a given code is hard to
+  hit, not impossible. There is no ceiling across all sources, because it would let one attacker lock
+  every user out. If you want one, build a `ratelimit.Limiter` with a global key, and give it with
+  `WithUserCodeEntryLimiter`: a deliberate trade that you own.
+- **The per-source limit is per process** unless the limiter is shared between replicas.
+- **A restart loses the flows in flight** over the in-memory store or the drawn key.
+- **Open authorizations are not capped per client.** Each lives 10 minutes by default (at most 30) and is swept.
+- **A client's credentials are not secret.** A public client's ID is in its binary, as RFC 8628 section
+  5.6 accepts: all it lets anyone do is start their own flow.
+
+### Device grants and sign-out
+
+A device grant follows the rule code grants follow, from OpenID Connect Back-Channel Logout section 2.7:
+the user's sign-in that approved it is its sign-in, and a grant without `offline_access` ends when
+that sign-in ends. One with `offline_access` survives. A program that wants to stay signed in asks for
+`offline_access`, and the consent page, always shown, makes that request visible.
+
+`Client.DeviceGrantsOutliveSignIn` keeps a device client's grants past the end of the approving
+sign-in, `offline_access` or not. It contradicts `EndGrantsWithSignIn` (including a public web client's
+default of it, unless `KeepPublicWebGrantsPastSignIn` turns that off), and setting both fails
+construction. Replaying a spent device code ends its grant, as replaying a spent authorization code does.
+
 ## Letting required users enrol
 
 By default, a user who must use a second factor and has none is refused outright: enrolment is a

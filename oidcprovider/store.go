@@ -108,6 +108,16 @@ type PendingRequest struct {
 	// family, and nil with no such hint: nothing has answered, and only a provider keeping
 	// no browser sessions acts on it.
 	SignIn *SignIn
+
+	// DeviceAuthorizationID names the device authorization a request parked by
+	// Provider.EnterUserCode answers, and is id.Nil for every other request, so a record
+	// stored before the device grant existed means what it meant.
+	DeviceAuthorizationID id.ID
+	// DeviceUserCode is that device authorization's user code in its displayed form, for
+	// the consumer's pages to show, and empty for every other request. It is no
+	// credential on its own: the device authorization is claimed by the browser holding
+	// the flow secret, and no other browser may enter it.
+	DeviceUserCode string
 }
 
 // PendingRequestStore keeps parked requests. The provider supplies its secrets as
@@ -306,7 +316,8 @@ type Grant struct {
 	// public client's exchange sets this or KeyBinding, and never both, because a request with a
 	// proof and a certificate binds to the proof's key alone.
 	CertBinding string
-	// CodeID is the identifier of the code that created the grant.
+	// CodeID is the identifier of what created the grant: the code's token, or for an
+	// OriginDevice grant the device authorization's ID.
 	CodeID id.ID
 
 	// SignInFamily is the session family of the sign-in the grant came from, which
@@ -322,6 +333,15 @@ type Grant struct {
 	// HoldsLineage reports that the grant has a refresh-token lineage. A refresh reads
 	// it, to know whether a lineage is to be looked for at all.
 	HoldsLineage bool
+	// SurvivesSignInEnd keeps the grant past the end of its sign-in even without Offline,
+	// as a device grant of a client registered with DeviceGrantsOutliveSignIn is. It is
+	// false for every grant a code created, so a row stored before it existed keeps its
+	// meaning. EndsWithSignIn wins over it.
+	SurvivesSignInEnd bool
+	// Origin is what created the grant: OriginCode, the zero value, for a code's exchange,
+	// and OriginDevice for a device authorization's. CodeID names that code or that device
+	// authorization.
+	Origin GrantOrigin
 
 	// CreatedAt and ExpiresAt bound the grant's life.
 	CreatedAt, ExpiresAt time.Time
@@ -336,6 +356,18 @@ type Grant struct {
 	// zero until then.
 	SignInEndedAt time.Time
 }
+
+// GrantOrigin says what created a grant, and so what its CodeID names.
+type GrantOrigin uint8
+
+const (
+	// OriginCode is a grant an authorization code's exchange created. It is the zero
+	// value, so every grant stored before GrantOrigin existed reads as one.
+	OriginCode GrantOrigin = iota
+
+	// OriginDevice is a grant a device authorization's exchange created (RFC 8628).
+	OriginDevice
+)
 
 // SignInSelector names the sign-ins an operation applies to. Exactly five shapes
 // are valid, and Validate refuses every other, above all the empty selector, so a
@@ -399,12 +431,14 @@ func (s SignInSelector) matches(user identity.UserID, family id.ID, issuer, sess
 // provider decides. A time a method judges by, or records, is always the caller's.
 type GrantStore interface {
 	// UseCodes names where the outstanding codes are read from. New calls it, before
-	// any traffic, with the provider's CodeStore, and returns its error. A store that was
+	// any traffic, and returns its error. What it passes is an UnspentCodes: the provider's
+	// CodeStore, or, with the device grant on, a union of that and the provider's device
+	// store. An implementation must not type-assert it to CodeStore. A store that was
 	// never given one refuses EndSignIns, RevokeByUser and RevokeByUserAndClient with an
 	// error matching ErrConfig, rather than leave a code able to outlive them.
 	//
-	// Calling it again with the same value, as a second provider sharing both stores
-	// does, changes nothing. Any other value is refused with an error matching ErrConfig,
+	// Calling it again with the same value, as a second provider sharing the same code
+	// store and device store, and enabling the device grant alike, does, changes nothing. Any other value is refused with an error matching ErrConfig,
 	// and the first stays, because replacing it would silently stop revocations reaching
 	// the first provider's codes. Values that cannot be compared count as different, and
 	// must not panic.
@@ -440,8 +474,11 @@ type GrantStore interface {
 	RevokeByUserAndClient(ctx context.Context, user identity.UserID, clientID string, cause RevocationCause, at time.Time) ([]Grant, error)
 
 	// EndSignIns records that the sign-ins sel selects have ended. Every selected grant
-	// not yet marked gets SignInEndedAt, and those without Offline, or with EndsWithSignIn,
-	// are also revoked with CauseSignInEnded. An Offline grant keeps working. It returns
+	// not yet marked gets SignInEndedAt, and those that end with their sign-in are also
+	// revoked with CauseSignInEnded: a grant with EndsWithSignIn, and one with neither
+	// Offline nor SurvivesSignInEnd. Any other grant keeps working, and EndsWithSignIn wins
+	// over both. For a code's grant, whose SurvivesSignInEnd is always false, that is one
+	// without Offline or with EndsWithSignIn. It returns
 	// copies of the grants this call newly marked, so the same end reported twice returns
 	// nothing the second time.
 	//
@@ -467,8 +504,9 @@ type GrantStore interface {
 	// strictly before now, whatever its ExpiresAt. It returns how many it removed. It
 	// judges only by now, never by a clock of its own.
 	//
-	// keepRevoked must cover every code that could still name the grant, and one of
-	// zero or less is refused with an error matching ErrConfig.
+	// keepRevoked must cover every code, and every device approval not yet exchanged,
+	// that could still name the grant, and one of zero or less is refused with an error
+	// matching ErrConfig.
 	DeleteExpired(ctx context.Context, now time.Time, keepRevoked time.Duration) (int, error)
 }
 

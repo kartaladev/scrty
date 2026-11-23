@@ -94,7 +94,15 @@ func (c *config) buildStores() (providerStores, error) {
 			return providerStores{}, err
 		}
 	}
-	if err := stores.grants.UseCodes(stores.codes); err != nil {
+	// With the device grant on, the grants read the device store's approvals too, so that an
+	// end or a revocation reaches an approval not yet exchanged. Without it the join is the code
+	// store alone, as before. The union is a value, so a second provider over the same stores
+	// joins an equal one.
+	var codes UnspentCodes = stores.codes
+	if c.device != nil {
+		codes = unspentUnion{codes: stores.codes, devices: c.device.store}
+	}
+	if err := stores.grants.UseCodes(codes); err != nil {
 		return providerStores{}, err
 	}
 
@@ -381,7 +389,7 @@ func (m *MemoryCodeStore) UnspentBySignIn(_ context.Context, sel SignInSelector,
 	}
 
 	return m.families(func(r *CodeRecord) bool {
-		return (includeOffline || !r.Offline || r.EndsWithSignIn) &&
+		return (includeOffline || endsWithSignIn(r.Offline, r.EndsWithSignIn, false)) &&
 			sel.matches(r.SignIn.User, r.SignIn.Family, r.SignIn.ExternalIssuer, r.SignIn.ExternalSessionID)
 	}), nil
 }
@@ -507,13 +515,15 @@ func (m *MemoryConsentStore) ListByUser(_ context.Context, user identity.UserID)
 	return out, nil
 }
 
-// memoryKeepRevoked is how long a MemoryGrantStore's own sweep keeps a revocation. It
-// covers the longest code lifetime WithCodeLifetime allows, whatever the provider
-// chose, with a minute more for an exchange that spent its code just before it expired.
-// It has no option, because a shorter value would let a code outlive its revocation
-// and a longer one buys nothing: DeleteExpired takes any value, and WithGrantStore
-// replaces the store.
-const memoryKeepRevoked = maxCodeLifetime + time.Minute
+// memoryKeepRevoked is how long a revocation is kept: by a MemoryGrantStore's own sweep,
+// and by the grants expiry task for any store. It covers the longest lifetime of anything
+// that can still create a grant over a revocation recorded first — a code, under the longest
+// WithCodeLifetime allows, and a device approval, under the longest WithDeviceLifetime allows
+// — whatever the provider chose, with a minute more for an exchange made just before its
+// code or authorization expired. It has no option, because a shorter value would let a code
+// or an approval outlive its revocation and a longer one buys nothing: DeleteExpired takes any
+// value, and WithGrantStore replaces the store.
+const memoryKeepRevoked = max(maxCodeLifetime, maxDeviceLifetime) + time.Minute
 
 // memoryGrant is a stored grant, and whether an exchange has stored it, or only a
 // revocation recorded first.
@@ -551,8 +561,8 @@ var (
 	errNoCodes = fmt.Errorf("%w: GrantStore: UseCodes was never called, so a code could outlive this operation", ErrConfig)
 
 	// errCodesJoined reports a store already reading another provider's codes.
-	errCodesJoined = fmt.Errorf("%w: GrantStore: UseCodes: this store already reads another code store, "+
-		"so two providers sharing a grant store must share their code store too", ErrConfig)
+	errCodesJoined = fmt.Errorf("%w: GrantStore: UseCodes: this store already reads outstanding codes through a different code or "+
+		"device store, or with the device grant enabled differently", ErrConfig)
 )
 
 // MemoryGrantStore is the default GrantStore, safe for concurrent use. It holds its
@@ -562,7 +572,8 @@ var (
 // every refresh token issued before it, and a deployment of more than one instance
 // needs a shared store. What it holds stays bounded: a write that adds a record
 // forgets each grant expired by the store's clock, and each revocation older than the
-// longest code lifetime plus a minute, at most once per minute. DeleteExpired does
+// longest code or device-authorization lifetime the provider allows (30 minutes) plus a
+// minute, at most once per minute. DeleteExpired does
 // the same at the caller's time and with the caller's retention.
 type MemoryGrantStore struct {
 	mu     sync.Mutex
@@ -793,7 +804,7 @@ func (m *MemoryGrantStore) EndSignIns(ctx context.Context, sel SignInSelector, a
 			continue
 		}
 		g.SignInEndedAt = at
-		if !g.Offline || g.EndsWithSignIn {
+		if endsWithSignIn(g.Offline, g.EndsWithSignIn, g.SurvivesSignInEnd) {
 			revokeGrant(g, CauseSignInEnded, at)
 		}
 		ended = append(ended, cloneGrant(g))

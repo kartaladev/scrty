@@ -30,10 +30,16 @@ import (
 //     eleven minutes, which costs nothing. A code-token store that cannot purge makes the
 //     task fail with an error matching expiry.ErrPurgeUnsupported;
 //   - "oidc-provider.grants": the grants past their deadline, and the revoked ones once
-//     no code could still name them, which is the longest code lifetime plus a minute
-//     after the revocation, whatever WithCodeLifetime chose. A grant whose refresh-token
+//     no code or device approval could still name them, which is the longest lifetime
+//     either may have (a device authorization's 30 minutes) plus a minute after the
+//     revocation, whatever WithCodeLifetime and WithDeviceLifetime chose. A grant whose refresh-token
 //     lineage has gone idle or been swept stays until its own deadline or a revocation,
 //     so a sign-in's end still reaches its client;
+//   - "oidc-provider.device-authorizations": the device authorizations past their expiry,
+//     present only when the device grant is enabled (WithDeviceAuthorization). A spent
+//     one is kept until a minute past its expiry, so a valid replay of its code still
+//     revokes what it issued. A store whose sweep fails makes the task fail with that
+//     error, and no other task is held back;
 //   - "oidc-provider.refresh-tokens": the refresh-token lineages past their deadlines;
 //   - "oidc-provider.access-tokens" and "oidc-provider.assertion-ids": the records past
 //     their expiry.
@@ -44,7 +50,7 @@ import (
 // scheduled job), changing a Name renames it, and replacing its Run swaps the sweep for
 // the consumer's. Dropping the codes task also drops the sweep of the code records.
 func ExpiryTasks(provider *Provider) []expiry.Task {
-	return []expiry.Task{
+	tasks := []expiry.Task{
 		{Name: "oidc-provider.pending-requests", Run: provider.sweepPendingRequests},
 		{Name: "oidc-provider.browser-sessions", Run: provider.sweepBrowserSessions},
 		{Name: "oidc-provider.codes", Run: provider.sweepCodes},
@@ -53,6 +59,17 @@ func ExpiryTasks(provider *Provider) []expiry.Task {
 		{Name: "oidc-provider.access-tokens", Run: provider.sweepAccessTokens},
 		{Name: "oidc-provider.assertion-ids", Run: provider.sweepAssertionIDs},
 	}
+	if provider.DeviceEnabled() {
+		tasks = append(tasks, expiry.Task{Name: "oidc-provider.device-authorizations", Run: provider.sweepDeviceAuthorizations})
+	}
+
+	return tasks
+}
+
+// sweepDeviceAuthorizations deletes the expired device authorizations, by the provider's clock.
+// The store keeps a spent one a minute past its expiry itself.
+func (p *Provider) sweepDeviceAuthorizations(ctx context.Context) (int, error) {
+	return p.cfg.device.store.DeleteExpired(ctx, p.cfg.clock.Now())
 }
 
 func (p *Provider) sweepPendingRequests(ctx context.Context) (int, error) {
@@ -95,7 +112,8 @@ func (p *Provider) sweepCodes(ctx context.Context) (int, error) {
 	return tokens + records, errors.Join(tokenErr, recordErr)
 }
 
-// sweepGrants deletes the expired grants, keeping a revoked one until no code can name it.
+// sweepGrants deletes the expired grants, keeping a revoked one until no code or device
+// approval can name it.
 func (p *Provider) sweepGrants(ctx context.Context) (int, error) {
 	return p.stores.grants.DeleteExpired(ctx, p.cfg.clock.Now(), memoryKeepRevoked)
 }

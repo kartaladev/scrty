@@ -97,7 +97,10 @@ When a sink is configured, the provider SHALL emit an event for each of these ou
 - a replayed authorization code;
 - a refresh token reused after its grace window;
 - a grant revoked, with its cause;
-- a failed back-channel logout delivery.
+- a failed back-channel logout delivery;
+- a device authorization issued, claimed, approved, denied or exchanged;
+- a replayed device code;
+- a user-code entry refused by the throttle.
 
 Each event SHALL name the client and the user when known. It SHALL NOT carry a code, handle, token, assertion or secret.
 
@@ -112,3 +115,7 @@ Each event SHALL name the client and the user when known. It SHALL NOT carry a c
 #### Scenario: No sink
 - **WHEN** no sink is configured and a code is replayed
 - **THEN** no event is emitted, and the replay is still refused and still revokes the grant
+
+#### Scenario: A replayed device code
+- **WHEN** a client presents a device code it already exchanged
+- **THEN** one event reports the device-code replay with the client and user, and one reports the grant revoked, and neither carries the device code or user code

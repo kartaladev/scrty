@@ -426,13 +426,14 @@ func TestMemoryAssertionIDStore_HeldUntilDeleteExpiredRemovesIt(t *testing.T) {
 	}
 }
 
-// A revocation has no deadline of its own. It must outlive every code that could
-// name it, and it must still go, or a store of the default kind grows without bound.
+// A revocation has no deadline of its own. It must outlive every code, and every device
+// approval, that could name it — the longest is a device authorization's 30 minutes, with a
+// minute more — and it must still go, or a store of the default kind grows without bound.
 func TestMemoryGrantStore_ForgetsRevocations(t *testing.T) {
 	t.Parallel()
 
 	start := time.Date(2030, 1, 1, 10, 0, 0, 0, time.UTC)
-	const longestCode = 10 * time.Minute
+	const kept = 30*time.Minute + time.Minute
 
 	// writes, each adding a record, so the sweep runs.
 	writes := []struct {
@@ -465,10 +466,10 @@ func TestMemoryGrantStore_ForgetsRevocations(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, revokeErr(s.Revoke(ctx, memoryID(1), oidcprovider.CauseCodeReplay, start)))
 
-			clk.Advance(longestCode)
+			clk.Advance(kept)
 			w.write(t, s, 2)
 			got, err := s.Load(ctx, memoryID(1))
-			require.NoError(t, err, "kept while any code that could name it may live")
+			require.NoError(t, err, "kept while any code or device approval that could name it may live")
 			assert.True(t, got.Revoked)
 
 			clk.Advance(2 * time.Minute)

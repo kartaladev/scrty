@@ -76,8 +76,8 @@ func TestSecurityEvents_Names(t *testing.T) {
 						scrty++
 					}
 				}
-				assert.Equal(t, 28, scrty, "the outcomes the vocabulary does not name")
-				assert.Len(t, names, 18+28)
+				assert.Equal(t, 35, scrty, "the outcomes the vocabulary does not name")
+				assert.Len(t, names, 18+35)
 			},
 		},
 		{

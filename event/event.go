@@ -364,6 +364,49 @@ const (
 	// chain's when a chain runs it. A recovery's first revocation is not reported:
 	// it spends nothing but an MFA code, if one was a proof, so the user can retry it.
 	GrantRevokeFailed = "scrty_grant_revoke_failed"
+
+	// DeviceAuthorizationIssued is a device authorization the OpenID provider
+	// stored and answered a device client with. It names the client, and no
+	// user, as none is known yet. It never carries the device code or the user
+	// code.
+	DeviceAuthorizationIssued = "scrty_device_authorization_issued"
+
+	// DeviceAuthorizationClaimed is a user code entered for the first time, by
+	// the browser that now holds the authorization. A re-entry by the same
+	// browser is not another claim. It names the client, and no user.
+	DeviceAuthorizationClaimed = "scrty_device_authorization_claimed"
+
+	// DeviceAuthorizationApproved is a user's approval of a device
+	// authorization, reported right after the device record's decision is
+	// stored, so a failure to store the consent stage afterwards does not
+	// withdraw it. It names the client and the user.
+	DeviceAuthorizationApproved = "scrty_device_authorization_approved"
+
+	// DeviceAuthorizationDenied is a user's denial of a device authorization, a
+	// failure outcome as a refusal is, reported right after the device record's
+	// decision is stored. It names the client and the user.
+	DeviceAuthorizationDenied = "scrty_device_authorization_denied"
+
+	// DeviceCodeExchanged is a device code exchanged for tokens, reported once
+	// the tokens are issued and only then: not for an exchange that lost the
+	// spend, nor one whose grant stood revoked. It names the client and the
+	// user.
+	DeviceCodeExchanged = "scrty_device_code_exchanged"
+
+	// DeviceCodeReplayed is a device code presented after it was spent, by the
+	// client it was issued to and proving the binding its grant holds, reported
+	// once the grant stands revoked. Each such presentation is one, and the one
+	// that revoked the grant is reported beside GrantRevoked with the cause
+	// code_replay. It names the client and the user.
+	DeviceCodeReplayed = "scrty_device_code_replayed"
+
+	// UserCodeEntryThrottled is a user-code entry refused because its source
+	// reached the entry limit, or because the limiter could not decide. Each
+	// such refused entry is one. An entry refused before any limit was asked,
+	// for a source that cannot be attributed or a caller who left, is refused
+	// the same way but is not reported. It names no client and no user, as nothing of the
+	// code was read.
+	UserCodeEntryThrottled = "scrty_user_code_entry_throttled"
 )
 
 // Names returns every event name the library reports: the OWASP Logging
@@ -381,6 +424,8 @@ func Names() []string {
 		SignInEnded, HostRefused, DPoPRefused, CertificateBindingRefused, ChallengeRefused,
 		SigningKeyRotated, GrantCreated, ConsentGiven, ConsentDenied, ConsentRevoked,
 		ClientAuthRefused, CodeReplayed, RefreshReused, GrantRevoked, LogoutDeliveryFailed,
-		GrantEndFailed, GrantRevokeFailed,
+		GrantEndFailed, GrantRevokeFailed, DeviceAuthorizationIssued, DeviceAuthorizationClaimed,
+		DeviceAuthorizationApproved, DeviceAuthorizationDenied, DeviceCodeExchanged, DeviceCodeReplayed,
+		UserCodeEntryThrottled,
 	}
 }

@@ -49,6 +49,7 @@ const (
 // flowSetup is what a row asks of its provider and chain.
 type flowSetup struct {
 	issuer       string
+	clients      []oidcprovider.Client
 	provider     []oidcprovider.Option
 	sessions     []session.Option
 	endpoint     []httpsec.OIDCProviderOption
@@ -56,6 +57,9 @@ type flowSetup struct {
 	chain        func(t *testing.T, w *opFlow) []httpsec.Option
 	errorHandler func(w http.ResponseWriter, r *http.Request, err error)
 	noHandler    bool
+	// noCSRF builds the chain without CSRF protection, which needs a provider without
+	// browser sessions (oidcprovider.WithoutBrowserSessions).
+	noCSRF bool
 }
 
 // flowPendingStore counts what reaches the pending-request store.
@@ -127,6 +131,17 @@ func flowClients() []oidcprovider.Client {
 func newOPFlow(t *testing.T, setup flowSetup) *opFlow {
 	t.Helper()
 
+	w, err := newOPFlowErr(t, setup)
+	require.NoError(t, err)
+
+	return w
+}
+
+// newOPFlowErr is newOPFlow answering the chain's construction error, with the flow
+// as far as it was built, rather than failing on it.
+func newOPFlowErr(t *testing.T, setup flowSetup) (*opFlow, error) {
+	t.Helper()
+
 	w := &opFlow{issuer: setup.issuer, clk: clockwork.NewFakeClockAt(time.Now())}
 	if w.issuer == "" {
 		w.issuer = opIssuer
@@ -134,7 +149,8 @@ func newOPFlow(t *testing.T, setup flowSetup) *opFlow {
 
 	w.pending = &flowPendingStore{MemoryPendingRequestStore: must.Must(oidcprovider.NewMemoryPendingRequestStore(
 		oidcprovider.WithMemoryStoreClock(w.clk)))}
-	w.registry = &flowRegistry{MemoryRegistry: must.Must(oidcprovider.NewMemoryRegistry(flowClients()))}
+	w.registry = &flowRegistry{MemoryRegistry: must.Must(oidcprovider.NewMemoryRegistry(
+		append(flowClients(), setup.clients...)))}
 	w.consents = must.Must(oidcprovider.NewMemoryConsentStore())
 	w.grants = must.Must(oidcprovider.NewMemoryGrantStore(oidcprovider.WithMemoryStoreClock(w.clk)))
 
@@ -185,8 +201,10 @@ func newOPFlow(t *testing.T, setup flowSetup) *opFlow {
 		bearer,
 		httpsec.EnableJWKSEndpoint(tokenKeys()),
 		httpsec.EnableSecurityHeaders(),
-		httpsec.EnableCSRFProtection(),
 		httpsec.EnableOIDCProvider(w.p, setup.endpoint...),
+	}
+	if !setup.noCSRF {
+		opts = append(opts, httpsec.EnableCSRFProtection())
 	}
 
 	switch {
@@ -204,9 +222,8 @@ func newOPFlow(t *testing.T, setup flowSetup) *opFlow {
 	}
 
 	w.chain, err = httpsec.New(opts...)
-	require.NoError(t, err)
 
-	return w
+	return w, err
 }
 
 // flowAnswer is the endpoint's whole response, and the error the chain's handling

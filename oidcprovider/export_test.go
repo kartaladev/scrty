@@ -2,6 +2,7 @@ package oidcprovider
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 )
@@ -88,4 +89,65 @@ func JudgeLogoutAttemptForTest(ctx context.Context, posting bool, answer *Logout
 // AttemptLogoutForTest runs a job as a worker that has just taken it does.
 func (p *Provider) AttemptLogoutForTest(ctx context.Context, c ClientToNotify) {
 	p.logouts.attempt(logoutJob{client: c, ctx: ctx}) //nolint:contextcheck // the job carries it, as a worker's does
+}
+
+// The device grant's codes, as the provider makes and reads them. Each is false or
+// empty on a provider without the grant.
+
+// GenerateUserCodeForTest draws a user code from the provider's random source, as shown.
+func (p *Provider) GenerateUserCodeForTest() (string, error) {
+	if p.cfg.device == nil {
+		return "", errors.New("device authorization is not enabled")
+	}
+	raw, err := p.cfg.device.format.generate(p.cfg.random)
+	if err != nil {
+		return "", err
+	}
+
+	return p.cfg.device.format.display(raw), nil
+}
+
+// DisplayUserCodeForTest shows a raw user code in the provider's format.
+func (p *Provider) DisplayUserCodeForTest(raw string) string {
+	if p.cfg.device == nil {
+		return ""
+	}
+
+	return p.cfg.device.format.display(raw)
+}
+
+// NormaliseUserCodeForTest reads an entered user code as code entry does.
+func (p *Provider) NormaliseUserCodeForTest(entered string) (string, bool) {
+	if p.cfg.device == nil {
+		return "", false
+	}
+
+	return p.cfg.device.format.normalise(entered)
+}
+
+// UserCodeDigestForTest digests a raw user code under the provider's key.
+func (p *Provider) UserCodeDigestForTest(raw string) []byte {
+	if p.cfg.device == nil {
+		return nil
+	}
+
+	return p.cfg.device.userCodeDigest(raw)
+}
+
+// MintDeviceCodeForTest mints a device code from the source given.
+var MintDeviceCodeForTest = mintDeviceCode
+
+// DeviceStoreForTest returns the device authorization store the provider settled on, and
+// nil on a provider without the grant.
+func (p *Provider) DeviceStoreForTest() DeviceAuthorizationStore {
+	if p.cfg.device == nil {
+		return nil
+	}
+
+	return p.cfg.device.store
+}
+
+// UnspentUnionForTest is the union New joins a grant store to when the device grant is on.
+func UnspentUnionForTest(codes, devices UnspentCodes) UnspentCodes {
+	return unspentUnion{codes: codes, devices: devices}
 }

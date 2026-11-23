@@ -100,6 +100,23 @@ func pendingCases() []suiteCase[oidcprovider.PendingRequestStore] {
 			},
 		},
 		{
+			name: "a device authorization and its user code round-trip, and a request with none reads back with none",
+			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
+				entered := pendingRecord(1)
+				entered.DeviceAuthorizationID, entered.DeviceUserCode = suiteID(77), "BCDF-GHJK"
+				require.NoError(t, s.Create(ctx, entered))
+				require.NoError(t, s.Create(ctx, pendingRecord(2)))
+
+				got := loadPending(ctx, t, s, 1)
+				assert.Equal(t, suiteID(77), got.DeviceAuthorizationID)
+				assert.Equal(t, "BCDF-GHJK", got.DeviceUserCode)
+
+				got = loadPending(ctx, t, s, 2)
+				assert.True(t, got.DeviceAuthorizationID.IsZero(), "a request of no device authorization names none")
+				assert.Empty(t, got.DeviceUserCode)
+			},
+		},
+		{
 			name: "a load by another digest is not found, the flow digest included",
 			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
 				r := pendingRecord(1)

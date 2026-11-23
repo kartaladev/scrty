@@ -1,11 +1,13 @@
+# oidc-provider-device-authorization Specification
+
 ## Purpose
 
 Lets a client on a device without a usable browser, such as a command-line application on a headless machine, obtain a user's authorization through the OAuth 2.0 Device Authorization Grant (RFC 8628). The user enters a short code in a browser elsewhere, signs in and consents there, and the device collects its tokens at the token endpoint.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: The device grant is enabled for the provider by the consumer
-The device grant SHALL be off by default. A consumer SHALL enable it for the provider with an option naming the consumer's code-entry page. That page SHALL be an absolute URI on the issuer's origin. Another origin, or a URI with a fragment, SHALL fail construction.
+The device grant SHALL be off by default. A consumer SHALL enable it for the provider with an option naming the consumer's code-entry page. That page SHALL be an absolute URI on the issuer's origin. Another origin, or a URI with a fragment or user information, SHALL fail construction. So SHALL a URI that holds whitespace, a control character, invalid UTF-8 or a malformed query, or whose query already carries `user_code` or `result`. The error SHALL NOT repeat the URI.
 
 #### Scenario: A provider built without the option serves no device grant
 - **WHEN** the provider is built without enabling the device grant
@@ -15,6 +17,10 @@ The device grant SHALL be off by default. A consumer SHALL enable it for the pro
 #### Scenario: A code-entry page on another origin fails construction
 - **WHEN** the consumer enables the device grant with a code-entry page on another origin than the issuer
 - **THEN** building the provider fails with a configuration error naming the option
+
+#### Scenario: A code-entry page whose query carries the user code fails construction
+- **WHEN** the consumer enables the device grant with a code-entry page whose query already has a `user_code` parameter
+- **THEN** building the provider fails with a configuration error naming the option and `user_code`
 
 ### Requirement: The device authorization endpoint accepts a form POST over TLS
 The device authorization endpoint SHALL accept only POST requests with a form-encoded body, over TLS as the chain reports the connection, unless the provider was built with the loopback issuer. A repeated parameter SHALL make the request invalid, a parameter without a value SHALL be treated as omitted, and an unknown parameter SHALL be ignored.
@@ -117,7 +123,7 @@ A new user code SHALL differ from every unexpired device authorization's user co
 - **THEN** the request fails as a server error, and nothing is stored
 
 ### Requirement: The device authorization lifetime and polling interval are bounded
-A device authorization SHALL expire 600 seconds after issue by default, and the polling interval SHALL be 5 seconds by default. A consumer MAY set the lifetime between 60 seconds and 30 minutes, and the interval between 1 and 60 seconds and below the lifetime. Any other value SHALL fail construction.
+A device authorization SHALL expire 600 seconds after issue by default, and the polling interval SHALL be 5 seconds by default. A consumer MAY set the lifetime between 60 seconds and 30 minutes, and the interval between 1 and 60 seconds and below the lifetime. Any other value SHALL fail construction. An interval that is no whole number of seconds SHALL be answered rounded up to whole seconds, while polls are paced by the interval as set.
 
 #### Scenario: A consumer's lifetime
 - **WHEN** the consumer sets the lifetime to 15 minutes
@@ -126,6 +132,10 @@ A device authorization SHALL expire 600 seconds after issue by default, and the 
 #### Scenario: A lifetime past the bound
 - **WHEN** the consumer sets the lifetime to 1 hour
 - **THEN** building the provider fails with a configuration error naming the option
+
+#### Scenario: An interval that is no whole number of seconds
+- **WHEN** the consumer sets the interval to 1.5 seconds, and a device polls every `interval` seconds as answered
+- **THEN** responses carry `interval` 2, and the device is never answered `slow_down`
 
 ### Requirement: An entered user code is normalised before it is compared
 An entered user code SHALL be compared after removing whitespace and dashes and converting to upper case, when the format's alphabet has no lower-case letters. A code with any other character outside the alphabet, or of the wrong length after normalisation, SHALL be answered as an invalid code.
@@ -152,6 +162,10 @@ The provider SHALL throttle failed user-code entries per source, by default 5 fa
 - **WHEN** one source has entered 5 invalid user codes within 10 minutes and enters a sixth code, valid or not
 - **THEN** it is refused as throttled, and the code is not looked up
 
+#### Scenario: A concurrent burst does not exceed the limit
+- **WHEN** one source sends more concurrent entries of wrong codes than its limit allows
+- **THEN** no more of them are looked up than the limit allows, and the rest are refused as throttled
+
 #### Scenario: The consumer's own entry handler is throttled too
 - **WHEN** the consumer's handler passes the same source to the provider's entry call after 5 failures
 - **THEN** the call is refused as throttled
@@ -161,7 +175,7 @@ The provider SHALL throttle failed user-code entries per source, by default 5 fa
 - **THEN** the provider asks that limiter, and not the default, whether a source may enter a code
 
 ### Requirement: A user code is claimed by the first browser that enters it
-A valid user code entered by a browser SHALL be claimed for that browser by one conditional write, and a pending request bound to that browser's flow cookie SHALL be parked for it. Of concurrent entries of one code, exactly one SHALL claim it. A later entry by another browser SHALL be answered as an invalid code. A re-entry by the claiming browser SHALL resume its pending request.
+A valid user code entered by a browser SHALL be claimed for that browser by one conditional write, and a pending request bound to that browser's flow cookie SHALL be parked for it. Of concurrent entries of one code, exactly one SHALL claim it. A later entry by another browser SHALL be answered as an invalid code. A re-entry by the claiming browser, even a concurrent one, SHALL be handed off again, not refused.
 
 #### Scenario: Two browsers enter one code at once
 - **WHEN** two browsers enter the same valid user code concurrently
@@ -169,7 +183,15 @@ A valid user code entered by a browser SHALL be claimed for that browser by one 
 
 #### Scenario: The claiming browser enters it again
 - **WHEN** the browser that claimed a code enters it again before it expires
-- **THEN** it is sent to the stage its pending request has reached
+- **THEN** it is handed off again, to the consent page when its browser session holds a sign-in, otherwise to the login page
+
+#### Scenario: The store applies a claim but reports a failure
+- **WHEN** the device store records a claim and then answers with an error
+- **THEN** the entry fails as a dependency error that still carries the browser's flow secret, and the browser's re-entry reaches its claim
+
+#### Scenario: The claiming browser submits twice at once
+- **WHEN** one browser enters a valid user code twice concurrently, with the same flow cookie
+- **THEN** neither entry is answered as an invalid code, and no failure is charged to the throttle
 
 ### Requirement: Code entry hands off to the consumer's login and consent pages
 After a claim, the browser SHALL be sent with status 303 to the consumer's login page with the pending request's handle, or to the consent page when a valid browser session already holds a sign-in. The login stage SHALL follow the authorization endpoint's rules for resuming with a complete sign-in of a known, enabled user.

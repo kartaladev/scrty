@@ -34,6 +34,22 @@ const (
 func bpChain(t *testing.T, f *opFixture, baseFirst bool, opts ...httpsec.OIDCProviderOption) (*httpsec.Chain, error) {
 	t.Helper()
 
+	return bpChainWith(t, f, baseFirst, nil, opts...)
+}
+
+// bpDeviceChain is bpChain with the provider's device grant enabled.
+func bpDeviceChain(t *testing.T, f *opFixture, baseFirst bool, opts ...httpsec.OIDCProviderOption) (*httpsec.Chain, error) {
+	t.Helper()
+
+	return bpChainWith(t, f, baseFirst, []oidcprovider.Option{
+		oidcprovider.WithDeviceAuthorization(bpIssuer+"/enter-code", oidcprovider.WithUserCodeKey(deviceKey)),
+	}, opts...)
+}
+
+// bpChainWith is bpChain over a provider built with popts.
+func bpChainWith(t *testing.T, f *opFixture, baseFirst bool, popts []oidcprovider.Option, opts ...httpsec.OIDCProviderOption) (*httpsec.Chain, error) {
+	t.Helper()
+
 	p, err := oidcprovider.New(oidcprovider.Deps{
 		Issuer: bpIssuer,
 		Clients: []oidcprovider.Client{{
@@ -49,7 +65,7 @@ func bpChain(t *testing.T, f *opFixture, baseFirst bool, opts ...httpsec.OIDCPro
 		ConsentURL:   "https://id.example.com/consent",
 		LogoutURL:    "https://id.example.com/logout-page",
 		LoggedOutURL: "https://id.example.com/bye",
-	})
+	}, popts...)
 	require.NoError(t, err)
 
 	chainOpts := append(f.wired(t, p), httpsec.EnableOIDCProvider(p, opts...))
