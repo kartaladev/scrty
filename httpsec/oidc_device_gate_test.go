@@ -472,7 +472,7 @@ func TestDeviceEntry_GETGate(t *testing.T) {
 		notOwn("a list in one line is not the browser's own", fetchSite("same-origin, cross-site")),
 		own("none claims", fetchSite("none")),
 		own("same-origin claims", fetchSite("same-origin")),
-		own("same-site claims", fetchSite("same-site")),
+		notOwn("same-site is gated like cross-site", fetchSite("same-site")),
 		own("an absent header claims", nil),
 		{
 			name: "a cookieless POST from the entry page, followed through its 303, claims",
@@ -594,6 +594,20 @@ func TestDeviceEntry_GETGateLog(t *testing.T) {
 				require.Len(t, got.records, 1)
 				assert.Equal(t, "192.0.2.20", got.records[0]["source"])
 				assert.Equal(t, "cross-site", got.records[0]["sec_fetch_site"])
+			},
+		},
+		{
+			name: "a same-site GET is gated and writes a record",
+			act: func(t *testing.T, w *opFlow) string {
+				t.Helper()
+				code := w.issueDevice(t, deviceTV).UserCode
+				require.Equal(t, http.StatusSeeOther, w.enter(t, code, fetchSite("same-site")).status)
+
+				return code
+			},
+			assert: func(t *testing.T, got gatedLog) {
+				require.Len(t, got.records, 1)
+				assert.Equal(t, "same-site", got.records[0]["sec_fetch_site"])
 			},
 		},
 		{

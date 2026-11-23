@@ -47,10 +47,6 @@ var (
 // claimed or charged.
 const oidcUserCodeMaxLen = 64
 
-// The Sec-Fetch-Site value a navigation within one site carries. same-origin and none are
-// csrf.go's.
-const fetchSameSite = "same-site"
-
 // deviceGrantOption records that setting, an option that only means something for a
 // provider with the device grant, was given, so check can refuse it on one without.
 func (op *oidcEndpoints) deviceGrantOption(setting string) {
@@ -487,10 +483,12 @@ func (g *oidcDeviceEntryGroup) serve(ex *Exchange, _ Next) error {
 }
 
 // ownNavigation reports whether the browser reports a request as its own navigation:
-// exactly one Sec-Fetch-Site line, of same-origin, same-site or none, or none at all (a
-// client that is no browser, or a browser too old to send it). The value is compared
-// exactly, as the Fetch standard writes it: another case, an empty value, a list or a
-// second line is no browser's, and is not trusted.
+// exactly one Sec-Fetch-Site line, of same-origin or none, or none at all (a client that
+// is no browser, or a browser too old to send it). same-site is not accepted: the entry
+// page is always on the issuer's origin, so the redirected GET of a cookieless POST is
+// same-origin, and a sibling site's link is gated like a cross-site one. The value is
+// compared exactly, as the Fetch standard writes it: another case, an empty value, a list
+// or a second line is no browser's, and is not trusted.
 func ownNavigation(r Request) bool {
 	values := r.HeaderValues(headerSecFetchSite)
 
@@ -499,7 +497,7 @@ func ownNavigation(r Request) bool {
 		return true
 	case 1:
 		switch values[0] {
-		case fetchSameOrigin, fetchSameSite, fetchNone:
+		case fetchSameOrigin, fetchNone:
 			return true
 		}
 	}

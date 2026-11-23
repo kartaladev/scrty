@@ -25,12 +25,16 @@ The code-entry endpoint's form POST SHALL stay subject to CSRF protection, becau
 - **THEN** CSRF protection refuses it, and no code is claimed
 
 ### Requirement: A GET at code entry claims only on the browser's own navigation
-A GET carrying a user code SHALL claim it only when the browser reports the navigation as its own: `Sec-Fetch-Site` of `same-origin`, `same-site` or `none`, or no `Sec-Fetch-Site` at all. Any other GET carrying a user code SHALL claim nothing, and SHALL be redirected with 303 to the consumer's code-entry page with the code prefilled, so the user submits it there. A configuration in which that redirect could loop SHALL fail construction.
+A GET carrying a user code SHALL claim it only when the browser reports the navigation as its own: `Sec-Fetch-Site` of `same-origin` or `none`, or no `Sec-Fetch-Site` at all. Any other GET carrying a user code SHALL claim nothing, and SHALL be redirected with 303 to the consumer's code-entry page with the code prefilled, so the user submits it there. A configuration in which that redirect could loop SHALL fail construction.
 
 #### Scenario: A link from another site carries a user code
 - **WHEN** a signed-in user follows a link from another site to the code-entry endpoint with a valid user code (`Sec-Fetch-Site: cross-site`)
 - **THEN** nothing is claimed, and the browser is redirected with 303 to the consumer's code-entry page with the code prefilled
 
 #### Scenario: The user's own navigation carries a user code
-- **WHEN** a GET with a valid user code arrives with `Sec-Fetch-Site` of `none`, `same-origin` or `same-site`
+- **WHEN** a GET with a valid user code arrives with `Sec-Fetch-Site` of `none` or `same-origin`
 - **THEN** the code is claimed as usual
+
+#### Scenario: A link from a sibling site carries a user code
+- **WHEN** a GET with a valid user code arrives with `Sec-Fetch-Site: same-site`
+- **THEN** nothing is claimed, and the browser is redirected with 303 to the consumer's code-entry page with the code prefilled
