@@ -181,9 +181,13 @@ func (r *sessionResolver) resolve(ex *Exchange, id string) error {
 		return err
 	}
 
-	principal := identity.PrincipalFromDetails(details)
-
 	now := r.phase.now()
+
+	// Built at the chain's clock, so a grant outside its dates is not honoured
+	// for a request being authenticated now. A user left with no valid grant is
+	// still authenticated, with no active role: the session is neither refused
+	// nor revoked, and a privilege guard refuses for want of a role.
+	principal := identity.PrincipalFromDetailsAt(details, now)
 
 	if err := ex.publishSession(&authenticate.Authentication{
 		Principal:         principal,

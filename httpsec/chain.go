@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/eventsink"
@@ -71,6 +72,10 @@ type Chain struct {
 	// csrfOptOut is whether the chain was built with WithoutCSRFProtection,
 	// handed to every exchange it runs (CheckCSRFToken).
 	csrfOptOut bool
+
+	// privilegeMemo is whether every request run through the chain carries a
+	// new privilege memo, which WithoutPrivilegeMemo turns off.
+	privilegeMemo bool
 
 	// mfa is the MFA interceptor EnableMFA registered, and nil without one.
 	// Every second-factor challenge the chain returns carries the methods it
@@ -330,6 +335,14 @@ func (c *Chain) Assemble(terminal Next) Next {
 		// it (emitEvent) and a request no sink watches carries nothing.
 		if c.events != nil {
 			ex.SetContext(eventsink.With(ex.Context(), c.events.emit))
+		}
+
+		// Every request carries a memo of its own, made here and so shared by
+		// no other request, before any interceptor, guard or handler can make
+		// a privilege check. It is made on each run, so a chain nested inside
+		// another, or a request forwarded in-process, starts from a clean one.
+		if c.privilegeMemo {
+			ex.SetContext(authorize.WithRequestMemo(ex.Context()))
 		}
 
 		// Client resolution is not an interceptor: it runs once, here, before

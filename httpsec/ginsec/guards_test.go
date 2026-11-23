@@ -955,3 +955,133 @@ func TestGin_GuardsDPoPChallenge(t *testing.T) {
 		})
 	}
 }
+
+// TestGuards_Require pins that Guards.Require refuses any requirement as the
+// other gin guards do: through gin's error channel, with the requirement's own
+// error, and with an outage kept apart from a denial.
+func TestGuards_Require(t *testing.T) {
+	t.Parallel()
+
+	errOutage := errors.New("guards_test: the role loader is unreachable")
+
+	// onlyLead grants read on crm/lead and denies every other resource, or
+	// fails with outage when it is set.
+	judge := func(t *testing.T, outage error) *MockAuthorizer {
+		t.Helper()
+
+		az := NewMockAuthorizer(gomock.NewController(t))
+		az.EXPECT().Authorize(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, a authorize.Attributes) error {
+				if outage != nil {
+					return outage
+				}
+
+				if p, ok := a.(authorize.PrivilegeAttributes); ok && p.Resource == "lead" {
+					return nil
+				}
+
+				return authorize.ErrAccessDenied
+			}).AnyTimes()
+
+		return az
+	}
+
+	allOf := authorize.AllOf(
+		authorize.HasPrivilege("crm", "lead", "read"),
+		authorize.HasPrivilege("crm", "deal", "read"))
+
+	type testCase struct {
+		name      string
+		principal *identity.Principal
+		az        func(t *testing.T) authorize.Authorizer
+		req       authorize.Requirement
+		assert    func(t *testing.T, g gin.HandlerFunc, err error, out *served)
+	}
+
+	cases := []testCase{
+		{
+			name:      "all-of across resources refuses when one is not granted",
+			principal: testPrincipal(),
+			az:        func(t *testing.T) authorize.Authorizer { return judge(t, nil) },
+			req:       allOf,
+			assert: func(t *testing.T, _ gin.HandlerFunc, err error, out *served) {
+				require.NoError(t, err)
+				assert.Equal(t, http.StatusForbidden, out.rec.Code)
+				assert.False(t, out.routeRan)
+				require.Len(t, out.ginErrors, 1)
+				assert.ErrorIs(t, out.ginErrors[0], authorize.ErrAccessDenied)
+			},
+		},
+		{
+			name:      "all-of passes when every resource is granted",
+			principal: testPrincipal(),
+			az:        func(t *testing.T) authorize.Authorizer { return deciding(t, nil) },
+			req:       allOf,
+			assert: func(t *testing.T, _ gin.HandlerFunc, err error, out *served) {
+				require.NoError(t, err)
+				assert.True(t, out.routeRan)
+				assert.Empty(t, out.ginErrors)
+			},
+		},
+		{
+			name: "anonymous caller is told to authenticate",
+			az:   func(t *testing.T) authorize.Authorizer { return deciding(t, nil) },
+			req:  allOf,
+			assert: func(t *testing.T, _ gin.HandlerFunc, err error, out *served) {
+				require.NoError(t, err)
+				assert.Equal(t, http.StatusUnauthorized, out.rec.Code)
+				assert.False(t, out.routeRan)
+				require.Len(t, out.ginErrors, 1)
+				assert.ErrorIs(t, out.ginErrors[0], httpsec.ErrAuthenticationRequired)
+				assert.ErrorIs(t, out.ginErrors[0], authorize.ErrAuthenticationRequired)
+			},
+		},
+		{
+			name:      "an outage is a dependency failure, not a denial",
+			principal: testPrincipal(),
+			az:        func(t *testing.T) authorize.Authorizer { return judge(t, errOutage) },
+			req:       allOf,
+			assert: func(t *testing.T, _ gin.HandlerFunc, err error, out *served) {
+				require.NoError(t, err)
+				assert.False(t, out.routeRan)
+				require.Len(t, out.ginErrors, 1)
+				assert.ErrorIs(t, out.ginErrors[0], errOutage)
+				assert.NotErrorIs(t, out.ginErrors[0], authorize.ErrAccessDenied)
+				assert.NotEqual(t, http.StatusForbidden, out.rec.Code)
+			},
+		},
+		{
+			name: "nil requirement is a build error",
+			az:   func(t *testing.T) authorize.Authorizer { return deciding(t, nil) },
+			req:  nil,
+			assert: func(t *testing.T, g gin.HandlerFunc, err error, _ *served) {
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.Nil(t, g)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var out served
+
+			g := mustGuards(t, tc.az(t))
+
+			guard, err := g.Require(tc.req)
+			if guard != nil {
+				eng := gin.New()
+				eng.Use(out.collecting())
+				eng.Use(ginsec.Middleware(newChain(t,
+					httpsec.RegisterInterceptor(publishing(tc.principal), httpsec.OrderBearerToken))))
+				eng.GET("/leads", guard, out.route())
+
+				out.rec = serve(eng, httptest.NewRequestWithContext(
+					t.Context(), http.MethodGet, "/leads", nil))
+			}
+
+			tc.assert(t, guard, err, &out)
+		})
+	}
+}

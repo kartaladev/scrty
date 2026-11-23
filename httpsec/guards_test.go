@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1496,6 +1497,142 @@ func TestGuards_DPoPChallenge(t *testing.T) {
 			h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com/api/orders", nil))
 
 			tc.assert(t, rec, seen)
+		})
+	}
+}
+
+// countingRoles is a role loader that grants privileges by role and counts its
+// calls, so a test can say how many times a request went to the store.
+type countingRoles struct {
+	calls atomic.Int64
+	grant []*identity.ResourcePrivileges
+	err   error
+}
+
+func (c *countingRoles) LoadPrivileges(context.Context, string) ([]*identity.ResourcePrivileges, error) {
+	c.calls.Add(1)
+
+	return c.grant, c.err
+}
+
+// readOn grants "read" on group/resource.
+func readOn(group, resource string) *identity.ResourcePrivileges {
+	return &identity.ResourcePrivileges{
+		Group: group, Resource: resource,
+		Privileges: []identity.Privilege{{Name: "read", Granted: true, Scope: identity.ScopeAll}},
+	}
+}
+
+// TestGuards_Require pins the guard for any requirement: it refuses with the
+// requirement's own error, tells an outage from a denial, and an absent
+// requirement fails when the guard is built.
+func TestGuards_Require(t *testing.T) {
+	t.Parallel()
+
+	errRoleStore := errors.New("guards_test: the role store is unreachable")
+
+	allOfLeadAndDeal := func() authorize.Requirement {
+		return authorize.AllOf(
+			authorize.HasPrivilege("crm", "lead", "read"),
+			authorize.HasPrivilege("crm", "deal", "read"),
+		)
+	}
+
+	type testCase struct {
+		name      string
+		req       authorize.Requirement
+		roles     *countingRoles
+		principal *identity.Principal
+		assert    func(t *testing.T, build error, run guardRun)
+	}
+
+	withRole := func() *identity.Principal {
+		p := testPrincipal()
+		p.ActiveRole = &identity.AssignedRole{Name: "sales", Primary: true}
+
+		return p
+	}
+
+	cases := []testCase{
+		{
+			name:      "all of: both resources granted",
+			req:       allOfLeadAndDeal(),
+			roles:     &countingRoles{grant: []*identity.ResourcePrivileges{readOn("crm", "lead"), readOn("crm", "deal")}},
+			principal: withRole(),
+			assert: func(t *testing.T, build error, run guardRun) {
+				require.NoError(t, build)
+				require.NoError(t, run.refusal)
+				assert.True(t, run.routeRan)
+			},
+		},
+		{
+			name:      "all of: one resource missing is a denial and the route does not run",
+			req:       allOfLeadAndDeal(),
+			roles:     &countingRoles{grant: []*identity.ResourcePrivileges{readOn("crm", "lead")}},
+			principal: withRole(),
+			assert: func(t *testing.T, build error, run guardRun) {
+				require.NoError(t, build)
+				require.ErrorIs(t, run.refusal, authorize.ErrAccessDenied)
+				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(run.refusal))
+				assert.False(t, run.routeRan)
+			},
+		},
+		{
+			name:      "anonymous caller is told to authenticate",
+			req:       allOfLeadAndDeal(),
+			roles:     &countingRoles{},
+			principal: nil,
+			assert: func(t *testing.T, build error, run guardRun) {
+				require.NoError(t, build)
+				require.ErrorIs(t, run.refusal, httpsec.ErrAuthenticationRequired)
+				assert.False(t, run.routeRan)
+			},
+		},
+		{
+			name:      "an outage is a dependency failure and not a denial",
+			req:       allOfLeadAndDeal(),
+			roles:     &countingRoles{err: errRoleStore},
+			principal: withRole(),
+			assert: func(t *testing.T, build error, run guardRun) {
+				require.NoError(t, build)
+				require.ErrorIs(t, run.refusal, errRoleStore)
+				assert.NotErrorIs(t, run.refusal, authorize.ErrAccessDenied)
+				assert.False(t, run.routeRan)
+			},
+		},
+		{
+			name:  "an absent requirement fails when the guard is built",
+			req:   nil,
+			roles: &countingRoles{},
+			assert: func(t *testing.T, build error, _ guardRun) {
+				require.ErrorIs(t, build, httpsec.ErrConfig)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var run guardRun
+
+			az, err := authorize.NewPrivilegeAuthorizer(tc.roles)
+			require.NoError(t, err)
+
+			g := mustGuards(t, az, capturing(&run))
+
+			mw, build := g.Require(tc.req)
+			if build != nil {
+				assert.Nil(t, mw)
+				tc.assert(t, build, run)
+
+				return
+			}
+
+			out := runGuard(t, mw, guardRequest(t, tc.principal, nil))
+			run.rec, run.routeRan = out.rec, out.routeRan
+
+			tc.assert(t, build, run)
 		})
 	}
 }

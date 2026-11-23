@@ -59,18 +59,18 @@ The whole change lands in one pull request, opened after group 14's final gate (
 
 ## 3. Chain and adapters
 
-- [ ] 3.1 `httpsec.Guards.Require(authorize.Requirement)`, refusing an absent requirement when built
+- [x] 3.1 `httpsec.Guards.Require(authorize.Requirement)`, refusing an absent requirement when built
   (spec http-security-chain "The net/http guard accepts any requirement"; design D6). Red: an all-of
   guarded route runs its handler for a principal missing one member. Verify: scoped `httpsec` run
   from `plans.md`.
-- [ ] 3.2 The same guard in `ginsec` and `fibersec`, with a test that runs one composed requirement
+- [x] 3.2 The same guard in `ginsec` and `fibersec`, with a test that runs one composed requirement
   through net/http, gin and fiber and compares status and error (spec framework-adapters "Adapter guards
   accept any requirement"). Red: the fiber case is missing. Verify: `go test -race -count=1
   ./httpsec/ginsec/... ./httpsec/fibersec/...` from their module directories.
-- [ ] 3.3 The chain attaches a fresh memo per authenticated request, with `WithoutPrivilegeMemo`
+- [x] 3.3 The chain attaches a fresh memo per authenticated request, with `WithoutPrivilegeMemo`
   (spec "Every request carries its own privilege memo by default"; design F16). Red: a counting role
   loader sees ten loads for one request. Verify: scoped `httpsec` run.
-- [ ] 3.4 The chain builds the principal with `identity.PrincipalFromDetailsAt` at its clock (spec "The
+- [x] 3.4 The chain builds the principal with `identity.PrincipalFromDetailsAt` at its clock (spec "The
   principal holds only the role grants valid…"; design D17, F18). Red: a request with an expired
   primary grant passes a privilege guard. Verify: scoped `httpsec` run, then the `test` module's
   adapter integration suites.

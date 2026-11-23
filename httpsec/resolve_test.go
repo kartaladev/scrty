@@ -15,6 +15,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
@@ -702,4 +703,97 @@ func TestResolve_HangUpIsNotARefusal(t *testing.T) {
 			})
 		}
 	}
+}
+
+// expiredPrimaryRequest puts a request on a live session through a
+// session-bearer chain whose user's only grant, the primary one, ended an hour
+// before the chain's clock, onto a route behind a guard from build. The chain
+// authorizes with a privilege authorizer that would grant "read" on
+// crm/lead to any role it is asked about.
+func expiredPrimaryRequest(
+	t *testing.T,
+	f resolveFixture,
+	build func(g *httpsec.Guards) func(http.Handler) http.Handler,
+) (guardRun, error) {
+	t.Helper()
+
+	roles := &countingRoles{grant: []*identity.ResourcePrivileges{readOn("crm", "lead")}}
+
+	az, err := authorize.NewPrivilegeAuthorizer(roles)
+	require.NoError(t, err)
+
+	users := NewMockUserLoader(gomock.NewController(t))
+	details := storedUser()
+	details.Roles = []*identity.AssignedRole{
+		{ID: "r-sales", Name: "sales", Primary: true, ValidUntil: f.clk.Now().Add(-time.Hour)},
+	}
+	users.EXPECT().LoadByUserID(gomock.Any(), testUserID).Return(details, nil)
+
+	permitAll := authorize.Rule[httpsec.Request]{
+		Match:   func(httpsec.Request) bool { return true },
+		Require: authorize.PermitAll(),
+	}
+
+	chain, err := httpsec.New(
+		httpsec.WithClock(f.clk),
+		httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: f.sessions, Users: users}),
+		httpsec.EnableAuthorization(az, permitAll),
+	)
+	require.NoError(t, err)
+
+	var run guardRun
+
+	guards, err := httpsec.NewGuards(nil, httpsec.WithChainAuthorizer(), capturing(&run))
+	require.NoError(t, err)
+
+	run.rec = httptest.NewRecorder()
+	req := bearerRequest(t.Context(), "Bearer "+f.session.ID)
+	guarded := build(guards)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { run.routeRan = true }))
+
+	err = chain.Assemble(func(ex *httpsec.Exchange) error {
+		guarded.ServeHTTP(run.rec, req.WithContext(ex.Context()))
+
+		return nil
+	})(httpsec.NewExchange(t.Context(), httpsec.NewHTTPRequest(req), httpsec.NewHTTPResponseWriter(run.rec)))
+
+	return run, err
+}
+
+// TestResolve_ExpiredPrimaryNoActiveRole pins that the principal is built from
+// the grants valid at the chain's clock: a user whose only grant ended is
+// authenticated with no active role, and a privilege guard refuses her for it.
+func TestResolve_ExpiredPrimaryNoActiveRole(t *testing.T) {
+	t.Parallel()
+
+	f := newResolveFixture(t)
+
+	run, err := expiredPrimaryRequest(t, f, func(g *httpsec.Guards) func(http.Handler) http.Handler {
+		return g.ResourcePrivileges("crm", "lead").RequireOne("read")
+	})
+
+	require.NoError(t, err, "the request is authenticated")
+	require.ErrorIs(t, run.refusal, authorize.ErrNoActiveRole)
+	require.ErrorIs(t, run.refusal, authorize.ErrAccessDenied)
+	assert.False(t, run.routeRan)
+}
+
+// TestResolve_ExpiredPrimaryKeepsSession pins that a user with no valid grant
+// is still authenticated: the same request passes an authentication-only guard,
+// and its session is neither revoked nor ended.
+func TestResolve_ExpiredPrimaryKeepsSession(t *testing.T) {
+	t.Parallel()
+
+	f := newResolveFixture(t)
+
+	run, err := expiredPrimaryRequest(t, f, func(g *httpsec.Guards) func(http.Handler) http.Handler {
+		return g.RequireAuthenticated()
+	})
+
+	require.NoError(t, err)
+	require.NoError(t, run.refusal)
+	assert.True(t, run.routeRan)
+
+	s, err := f.sessions.Load(t.Context(), f.session.ID)
+	require.NoError(t, err, "the session is still live and not revoked")
+	assert.Equal(t, f.session.ID, s.ID)
 }

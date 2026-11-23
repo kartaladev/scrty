@@ -281,6 +281,38 @@ func (g *Guards) RequireAuthenticated() func(http.Handler) http.Handler {
 	return g.guard(func(context.Context, Request, authorize.Authorizer) error { return nil })
 }
 
+// Require guards a route that needs any requirement, such as an all-of or
+// any-of composition across resources (authorize.AllOf, authorize.AnyOf).
+//
+// Like every guard, it first refuses a request with no caller
+// (ErrAuthenticationRequired, 401) and one with no authorizer
+// (authorize.ErrAccessDenied). The requirement then judges the request, and its
+// error is the refusal, unchanged: a denial keeps its reason and answers 403,
+// and a failure that is not a decision, such as an unreachable role store, stays
+// that failure and is never turned into a denial.
+//
+// The requirement finds its authorizer on the request context, which is the
+// chain's (EnableAuthorization); when the chain published none, the authorizer
+// these Guards were built with is put there for the requirement to use, so one
+// requirement works behind a chain and outside it.
+//
+// It fails with an error wrapping ErrConfig when req is nil, so a route whose
+// requirement was left unset is refused when it is wired and not on the first
+// request. It panics at wiring when g is nil, as the other builders do.
+func (g *Guards) Require(req authorize.Requirement) (func(http.Handler) http.Handler, error) {
+	if g == nil {
+		panic("httpsec: Require needs non-nil Guards")
+	}
+
+	if req == nil {
+		return nil, newConfigError("Require needs a requirement; none was given")
+	}
+
+	return g.guard(func(ctx context.Context, _ Request, az authorize.Authorizer) error {
+		return req(authorize.WithAuthorizer(ctx, az))
+	}), nil
+}
+
 // PrivilegeGuard names the resource a privilege guard is about. It is built by
 // ResourcePrivileges and finished by one of its Require methods.
 type PrivilegeGuard struct {

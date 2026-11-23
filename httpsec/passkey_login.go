@@ -597,8 +597,8 @@ func (i *passwordlessInterceptor) finish(ex *Exchange) error {
 		return err
 	}
 
-	principal := identity.PrincipalFromDetails(details)
 	now := i.now()
+	principal := identity.PrincipalFromDetailsAt(details, now)
 
 	// No authentication record is published, as for a magic link and OIDC:
 	// only form login, whose authenticator issues an event, has one.

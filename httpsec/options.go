@@ -281,6 +281,9 @@ type config struct {
 	// csrfOptOut is set by WithoutCSRFProtection.
 	csrfOptOut bool
 
+	// noPrivilegeMemo is set by WithoutPrivilegeMemo.
+	noPrivilegeMemo bool
+
 	// challenge is the automation-challenge gate EnableAutomationChallenge
 	// configured, and nil without it.
 	challenge *challengeGate
@@ -761,6 +764,7 @@ func (c *config) build() (*Chain, error) {
 		reportRefusals:    c.refusalLogReporter(),
 		clients:           newClientResolver(c),
 		csrfOptOut:        c.csrfOptOut,
+		privilegeMemo:     !c.noPrivilegeMemo,
 		events:            newEventEmitter(c),
 		endpoints:         endpoints,
 	}

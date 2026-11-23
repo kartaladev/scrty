@@ -1021,3 +1021,144 @@ func TestFiber_GuardsDPoPChallenge(t *testing.T) {
 		})
 	}
 }
+
+// TestGuards_Require pins that Guards.Require refuses any requirement as the
+// other fiber guards do: through fiber's error handler, with the requirement's
+// own error reachable by errors.Is, and with an outage kept apart from a
+// denial.
+func TestGuards_Require(t *testing.T) {
+	t.Parallel()
+
+	errOutage := errors.New("guards_test: the role loader is unreachable")
+
+	// judge grants read on crm/lead and denies every other resource, or fails
+	// with outage when it is set.
+	judge := func(t *testing.T, outage error) *MockAuthorizer {
+		t.Helper()
+
+		az := NewMockAuthorizer(gomock.NewController(t))
+		az.EXPECT().Authorize(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, a authorize.Attributes) error {
+				if outage != nil {
+					return outage
+				}
+
+				if p, ok := a.(authorize.PrivilegeAttributes); ok && p.Resource == "lead" {
+					return nil
+				}
+
+				return authorize.ErrAccessDenied
+			}).AnyTimes()
+
+		return az
+	}
+
+	allOf := authorize.AllOf(
+		authorize.HasPrivilege("crm", "lead", "read"),
+		authorize.HasPrivilege("crm", "deal", "read"))
+
+	type outcome struct {
+		res      response
+		routeRan bool
+		refusal  error
+	}
+
+	type testCase struct {
+		name      string
+		principal *identity.Principal
+		az        func(t *testing.T) authorize.Authorizer
+		req       authorize.Requirement
+		assert    func(t *testing.T, h fiber.Handler, err error, out outcome)
+	}
+
+	cases := []testCase{
+		{
+			name:      "all-of across resources refuses when one is not granted",
+			principal: testPrincipal(),
+			az:        func(t *testing.T) authorize.Authorizer { return judge(t, nil) },
+			req:       allOf,
+			assert: func(t *testing.T, _ fiber.Handler, err error, out outcome) {
+				require.NoError(t, err)
+				assert.Equal(t, http.StatusForbidden, out.res.status)
+				assert.False(t, out.routeRan)
+				assert.ErrorIs(t, out.refusal, authorize.ErrAccessDenied)
+			},
+		},
+		{
+			name:      "all-of passes when every resource is granted",
+			principal: testPrincipal(),
+			az:        func(t *testing.T) authorize.Authorizer { return permittingAuthorizer(t) },
+			req:       allOf,
+			assert: func(t *testing.T, _ fiber.Handler, err error, out outcome) {
+				require.NoError(t, err)
+				assert.True(t, out.routeRan)
+				assert.NoError(t, out.refusal)
+			},
+		},
+		{
+			name: "anonymous caller is told to authenticate",
+			az:   func(t *testing.T) authorize.Authorizer { return permittingAuthorizer(t) },
+			req:  allOf,
+			assert: func(t *testing.T, _ fiber.Handler, err error, out outcome) {
+				require.NoError(t, err)
+				assert.Equal(t, http.StatusUnauthorized, out.res.status)
+				assert.False(t, out.routeRan)
+				assert.ErrorIs(t, out.refusal, httpsec.ErrAuthenticationRequired)
+				assert.ErrorIs(t, out.refusal, authorize.ErrAuthenticationRequired)
+			},
+		},
+		{
+			name:      "an outage is a dependency failure, not a denial",
+			principal: testPrincipal(),
+			az:        func(t *testing.T) authorize.Authorizer { return judge(t, errOutage) },
+			req:       allOf,
+			assert: func(t *testing.T, _ fiber.Handler, err error, out outcome) {
+				require.NoError(t, err)
+				assert.False(t, out.routeRan)
+				assert.ErrorIs(t, out.refusal, errOutage)
+				assert.NotErrorIs(t, out.refusal, authorize.ErrAccessDenied)
+				assert.NotEqual(t, http.StatusForbidden, out.res.status)
+			},
+		},
+		{
+			name: "nil requirement is a build error",
+			az:   func(t *testing.T) authorize.Authorizer { return permittingAuthorizer(t) },
+			req:  nil,
+			assert: func(t *testing.T, h fiber.Handler, err error, _ outcome) {
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.Nil(t, h)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var out outcome
+
+			g := mustGuards(t, tc.az(t))
+
+			guard, err := g.Require(tc.req)
+			if guard != nil {
+				app := fiber.New(fiber.Config{ErrorHandler: func(fc fiber.Ctx, err error) error {
+					out.refusal = err
+
+					return fibersec.ErrorHandler(fc, err)
+				}})
+				app.Use(fibersec.Middleware(newChain(t,
+					httpsec.RegisterInterceptor(publishing(tc.principal), httpsec.OrderBearerToken))))
+				app.Get("/leads", guard, func(fc fiber.Ctx) error {
+					out.routeRan = true
+
+					return fc.SendStatus(http.StatusNoContent)
+				})
+
+				out.res = serve(t, app,
+					httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/leads", nil))
+			}
+
+			tc.assert(t, guard, err, out)
+		})
+	}
+}
