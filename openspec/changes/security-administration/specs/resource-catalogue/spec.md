@@ -20,14 +20,14 @@ A catalogue SHALL be built once from a list of resources, each with a group, a n
 - **THEN** the catalogue still returns what it was built with
 
 ### Requirement: A contradictory catalogue fails at construction
-Building a catalogue SHALL fail with a configuration error when a group, resource or privilege name is blank, a resource or a privilege within one resource is declared twice under the default name comparison, or a privilege allows no scope or an undefined scope.
+Building a catalogue SHALL fail with a configuration error when a group, resource or privilege name is blank, a resource or a privilege within one resource is declared twice under the default name comparison, or a privilege allows an undefined scope.
 
 #### Scenario: Duplicate privilege
 - **WHEN** resource `crm/lead` declares `view` and `VIEW`
 - **THEN** construction fails with a configuration error
 
-#### Scenario: No scope
-- **WHEN** privilege `view` on `crm/lead` allows no scope
+#### Scenario: Undefined scope
+- **WHEN** privilege `view` on `crm/lead` allows the scope `team`
 - **THEN** construction fails with a configuration error
 
 ### Requirement: A privilege allows both scopes unless it says otherwise

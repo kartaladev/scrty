@@ -171,11 +171,28 @@ inspector.
 denial wraps both `ErrAccessDenied` and exactly one reason, so existing `errors.Is(err,
 ErrAccessDenied)` callers are unaffected and an application can render a problem type per reason.
 
+- `ErrNotGranted` is the general reason: a role or privilege not held, an empty or absent `AllOf`
+  member, `DenyAll`, a `FirstOf` whose members all decline, and a rule set with no match.
+- `ErrWrongScope` covers a grant held only with a scope the check does not accept, including a scope
+  the authorizer does not define.
+- `ErrNoActiveRole` also covers an active role with a blank name.
+- The reasons are bare sentinels and leave `authorize` only wrapped with `ErrAccessDenied`, so the
+  chain's status mapping answers them 403 through it and does not map them itself.
+
+**The scope a check allowed travels with its attributes (decided 2026-11-23, during
+implementation).** `CheckAnyScope` and `HasPrivilegeFor` need the scope the authorizer allowed. The
+privilege authorizer writes it into an unexported field of the `PrivilegeAttributes` value it was
+given, not into the context, so a nested check sharing the context cannot overwrite it. An
+authorizer that allows without reporting a scope, such as a consumer's own, makes those two calls
+fail with an error matching `ErrConfig` rather than guess a scope; `HasPrivilegeAnyScope`, which needs
+only a yes or no, accepts its allow. With several privileges in one check, all-of reports the weakest
+scope among them and any-of the strongest held.
+
 ### D9. A resource catalogue declared in code; `Grants` requires it
 
 `authorize.NewCatalogue(resources ...CatalogueResource) (*Catalogue, error)` copies its input and
-refuses blank names, duplicates under the default name comparison, and privileges with no scope or an
-undefined one. A privilege declared without scopes allows `all` and `own`. The catalogue answers
+refuses blank names, duplicates under the default name comparison, and privileges with an undefined
+scope. A privilege declared without scopes allows `all` and `own`. The catalogue answers
 `Allows(group, resource, privilege, scope)` and lists its resources for a grant matrix.
 
 `admin.NewGrants` requires a catalogue and checks every grant against it before writing.
@@ -394,6 +411,9 @@ the selected grant active when it is still held and valid, and the primary grant
 | F32 | Bulk check against an authorizer without the inspector | Handled, tested | `ErrInspectionUnsupported` |
 | F33 | Context cancelled during an administration write | Handled, tested | Transaction rolled back; the context's error returned |
 | F34 | Identity migration rolled back on a database in use | Accepted (Migration Plan, step 4) | Emails, attributes, scopes, versions, labels and deletion marks are dropped; the Down section's comment says so |
+| F35 | A consumer authorizer allows a scoped check without reporting the scope | Handled, tested | `CheckAnyScope` and `HasPrivilegeFor` fail with `ErrConfig`; no scope is guessed |
+| F36 | A nested check overwrites the scope an outer check reported | Handled by construction | The scope travels with the check's own attributes, not the context |
+| F37 | A member of `AnyOf` fails with an outage while no member allows | Accepted (spec authorization, `AnyOf` otherwise denies) | Denied with `ErrNotGranted`; the outage is not surfaced. Use `AllOf` or a single requirement where an outage must stay an outage |
 
 ## Risks / Trade-offs
 
