@@ -149,8 +149,8 @@ Each task's verification names the test or command that shows it is done.
 
 ## 5. Documentation (`README.md`)
 
-- [ ] 5.1 In the "OIDC" section, document the sign-in hook (decide, then apply), the upstream access with a `UserInfo` example, the one-link default, the e-mail responsibility, and that assurance stays ID-token-only. **Verify:** read it against the `identity-linking` and `oidc-login` deltas, and check the example matches `ExampleWithBrokerSignInHook`.
-- [ ] 5.2 In the "OpenID Provider" section, document the standards-only frontend shape, server-side completion with its fallback, and the one-SSO-login-per-browser limit, without stating that a frontend never talks to the upstream provider. **Verify:** read it against the completion requirements.
+- [x] 5.1 In the "OIDC" section, document the sign-in hook (decide, then apply), the upstream access with a `UserInfo` example, the one-link default, the e-mail responsibility, and that assurance stays ID-token-only. **Verify:** read it against the `identity-linking` and `oidc-login` deltas, and check the example matches `ExampleWithBrokerSignInHook`.
+- [x] 5.2 In the "OpenID Provider" section, document the standards-only frontend shape, server-side completion with its fallback, and the one-SSO-login-per-browser limit, without stating that a frontend never talks to the upstream provider. **Verify:** read it against the completion requirements.
 
 ## 6. Integration and gate
 
