@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"slices"
 	"sync"
 	"time"
@@ -23,6 +24,9 @@ var (
 	errDeviceIncomplete = errors.New("oidcprovider: a device authorization needs an identifier, a device-code digest and a user-code digest")
 	errDeviceHeld       = errors.New("oidcprovider: a device authorization with this identifier or device code is already stored")
 	errDeviceNoFlow     = errors.New("oidcprovider: a claim needs the flow digest of the claiming browser")
+	errDevicePollCount  = errors.New("oidcprovider: a device authorization's poll count must be between 0 and 2147483647")
+	errDeviceNoFamily   = errors.New("oidcprovider: a device approval needs the grant family it creates")
+	errDeviceInterval   = errors.New("oidcprovider: a device authorization's interval must not be negative")
 )
 
 // cloneDeviceApproval returns an approval sharing nothing with a.
@@ -122,6 +126,12 @@ func (m *MemoryDeviceAuthorizationStore) Create(_ context.Context, record *Devic
 	if record.ID.IsZero() || len(record.DeviceCodeDigest) == 0 || len(record.UserCodeDigest) == 0 {
 		return errDeviceIncomplete
 	}
+	if record.PollCount < 0 || record.PollCount > math.MaxInt32 {
+		return errDevicePollCount
+	}
+	if record.Interval < 0 {
+		return errDeviceInterval
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -215,6 +225,10 @@ func (m *MemoryDeviceAuthorizationStore) Claim(_ context.Context, deviceID id.ID
 
 // Decide implements DeviceAuthorizationStore.
 func (m *MemoryDeviceAuthorizationStore) Decide(_ context.Context, deviceID id.ID, approval *DeviceApproval, now time.Time) error {
+	if approval != nil && approval.GrantFamily.IsZero() {
+		return errDeviceNoFamily
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -236,11 +250,17 @@ func (m *MemoryDeviceAuthorizationStore) Decide(_ context.Context, deviceID id.I
 func (m *MemoryDeviceAuthorizationStore) RecordPoll(
 	_ context.Context, deviceID id.ID, seenPolls int, at time.Time, interval time.Duration,
 ) error {
+	if interval < 0 {
+		return errDeviceInterval
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	r, ok := m.records[deviceID]
-	if !ok || (r.State != DeviceIssued && r.State != DeviceClaimed) || r.PollCount != seenPolls {
+	// A count at the largest one could not be recorded as seen, as no stored count may
+	// pass it, so such a poll is a lost compare.
+	if !ok || (r.State != DeviceIssued && r.State != DeviceClaimed) || r.PollCount != seenPolls || seenPolls >= math.MaxInt32 {
 		return ErrNotFound
 	}
 	r.PollCount++

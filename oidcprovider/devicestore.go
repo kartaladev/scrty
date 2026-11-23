@@ -114,7 +114,8 @@ var ErrUserCodeTaken = errors.New("oidcprovider: user code taken")
 // is one conditional write: it changes the record only when the record's State, its
 // expiry against the time given and, for RecordPoll, its PollCount still hold. A
 // transition whose condition does not hold, including one of an unknown ID, answers
-// ErrNotFound and writes nothing. So of any number of concurrent attempts at one
+// ErrNotFound and writes nothing. An input no record could hold is refused instead, with an
+// error that is neither ErrNotFound nor ErrUserCodeTaken, before any condition is judged. So of any number of concurrent attempts at one
 // transition of one record, at most one succeeds, and exactly one when the condition held.
 //
 // Retention is the store's to keep. A replay of a spent device code is detected, and
@@ -134,8 +135,9 @@ type DeviceAuthorizationStore interface {
 	// Create stores record. It first releases the user-code digest of any record already
 	// holding it that has expired at now, then stores record. A record that holds the digest
 	// and has not expired at now makes it answer ErrUserCodeTaken. A record whose ID or
-	// DeviceCodeDigest is already held is refused with an error, as is a nil record or one
-	// with a zero ID or an empty digest, and every refusal leaves what is stored unchanged.
+	// DeviceCodeDigest is already held is refused with an error, as is a nil record, one
+	// with a zero ID or an empty digest, and one whose PollCount is negative or past
+	// math.MaxInt32, and one whose Interval is negative, and every refusal leaves what is stored unchanged.
 	// A released record keeps everything else, its device-code digest included, so a
 	// replay of it is still detected.
 	Create(ctx context.Context, record *DeviceAuthorization, now time.Time) error
@@ -156,13 +158,15 @@ type DeviceAuthorizationStore interface {
 
 	// Decide moves the record from DeviceClaimed, when it has not expired at now: to
 	// DeviceApproved, storing a copy of approval, when approval is not nil, and to
-	// DeviceDenied when it is nil.
+	// DeviceDenied when it is nil. An approval whose GrantFamily is zero is refused with an
+	// error, whatever the record's state, and writes nothing.
 	Decide(ctx context.Context, deviceID id.ID, approval *DeviceApproval, now time.Time) error
 
 	// RecordPoll records a poll of a record in DeviceIssued or DeviceClaimed whose
 	// PollCount is still seenPolls: PollCount becomes seenPolls+1, LastPolledAt at and
-	// Interval interval. It does not judge expiry, as the provider records a poll only of
-	// a record it has found unexpired.
+	// Interval interval. A negative interval is refused with an error, and writes nothing.
+	// It does not judge expiry, as the provider records a poll only of a record it has
+	// found unexpired.
 	RecordPoll(ctx context.Context, deviceID id.ID, seenPolls int, at time.Time, interval time.Duration) error
 
 	// Spend moves the record from DeviceApproved to DeviceSpent, when it has not expired

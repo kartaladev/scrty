@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"testing"
 	"time"
@@ -23,6 +24,10 @@ var (
 	deviceExpires = suiteStart.Add(10 * time.Minute)
 	deviceLive    = suiteStart.Add(time.Minute)
 )
+
+// DeviceTiedSurvivorCaseName is the name of the case holding UnspentBySignIn to the one
+// sign-in-end rule: a record tied to its sign-in ends with it, even when it survives it.
+const DeviceTiedSurvivorCaseName = "a record tied to its sign-in ends with it, whether or not it is offline or survives"
 
 // deviceKeptPastExpiry is how long past its expiry a spent device authorization is kept,
 // so that a replay of its code is still detected.
@@ -524,7 +529,78 @@ func deviceCases() []suiteCase[oidcprovider.DeviceAuthorizationStore] {
 				assert.Equal(t, want.Approval, normalDevice(got).Approval)
 			},
 		},
+		{
+			name: "a decision naming no grant family is refused, and the record stays claimed",
+			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
+				require.NoError(t, s.Create(ctx, deviceIn(1, oidcprovider.DeviceClaimed), deviceLive))
+				before := normalDevice(loadDevice(ctx, t, s, 1))
+				approval := deviceApproval("u-1", 1)
+				approval.GrantFamily = id.ID{}
+
+				err := s.Decide(ctx, suiteID(1), approval, deviceLive)
+				requireRefused(t, err)
+				assert.Equal(t, before, normalDevice(loadDevice(ctx, t, s, 1)), "a refused decision changed the record")
+				assert.NoError(t, s.Decide(ctx, suiteID(1), deviceApproval("u-1", 1), deviceLive),
+					"the record must still take a valid decision")
+			},
+		},
+		{
+			name: "a poll recording a negative interval is refused, and the record is unchanged",
+			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
+				require.NoError(t, s.Create(ctx, deviceRecord(1), deviceLive))
+				before := normalDevice(loadDevice(ctx, t, s, 1))
+
+				err := s.RecordPoll(ctx, suiteID(1), 0, deviceLive, -time.Second)
+				requireRefused(t, err)
+				assert.Equal(t, before, normalDevice(loadDevice(ctx, t, s, 1)), "a refused poll changed the record")
+			},
+		},
+		{
+			name: "a record whose poll count no row could hold is refused, and nothing is stored",
+			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
+				beyond := int(int64(math.MaxInt32) + int64(deviceCountStep()))
+				for name, count := range map[string]int{"past the largest count": beyond, "negative": -1} {
+					r := deviceRecord(1)
+					r.PollCount = count
+					requireRefused(t, s.Create(ctx, r, deviceLive))
+					requireDeviceAbsent(ctx, t, s, 1)
+					_, err := s.LoadByUserCode(ctx, opDigest(101), deviceLive)
+					assert.ErrorIs(t, err, oidcprovider.ErrNotFound, "%s: the user code was left held", name)
+				}
+
+				r := deviceRecord(1)
+				r.PollCount = math.MaxInt32
+				require.NoError(t, s.Create(ctx, r, deviceLive), "the largest count is held")
+				assert.Equal(t, math.MaxInt32, loadDevice(ctx, t, s, 1).PollCount)
+			},
+		},
+		{
+			name: "a record with a negative interval is refused, and nothing is stored",
+			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
+				r := deviceRecord(1)
+				r.Interval = -time.Second
+
+				requireRefused(t, s.Create(ctx, r, deviceLive))
+				requireDeviceAbsent(ctx, t, s, 1)
+				_, err := s.LoadByUserCode(ctx, opDigest(101), deviceLive)
+				assert.ErrorIs(t, err, oidcprovider.ErrNotFound, "the user code was left held")
+			},
+		},
 	}
+}
+
+// deviceCountStep is 1, behind a call so that a poll count one past math.MaxInt32 is
+// computed at run time rather than as a constant a 32-bit int could not hold.
+func deviceCountStep() int { return 1 }
+
+// requireRefused requires err to be a refusal of the input itself: an error that is neither
+// ErrNotFound, which means a lost condition, nor ErrUserCodeTaken.
+func requireRefused(t *testing.T, err error) {
+	t.Helper()
+
+	require.Error(t, err, "the input must be refused")
+	assert.NotErrorIs(t, err, oidcprovider.ErrNotFound, "a refused input is no lost condition")
+	assert.NotErrorIs(t, err, oidcprovider.ErrUserCodeTaken)
 }
 
 // deviceTransition is one of the store's transitions, as the table drives it.
@@ -829,6 +905,26 @@ func deviceUnspentCases() []suiteCase[oidcprovider.DeviceAuthorizationStore] {
 				got, err = s.UnspentByClient(ctx, "u-1", opClient)
 				require.NoError(t, err, "by client")
 				assert.ElementsMatch(t, []id.ID{suiteID(203)}, got, "by client")
+			},
+		},
+		{
+			name: DeviceTiedSurvivorCaseName,
+			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
+				tiedSurvivor := approved(1, opSignIn("u-1", 1))
+				tiedSurvivor.Approval.EndsWithSignIn, tiedSurvivor.Approval.SurvivesSignInEnd = true, true
+				tiedOfflineSurvivor := approved(2, opSignIn("u-1", 1))
+				tiedOfflineSurvivor.Approval.Offline, tiedOfflineSurvivor.Approval.EndsWithSignIn = true, true
+				tiedOfflineSurvivor.Approval.SurvivesSignInEnd = true
+				create(ctx, t, s, tiedSurvivor, tiedOfflineSurvivor)
+				want := []id.ID{suiteID(201), suiteID(202)}
+
+				for _, includeOffline := range []bool{false, true} {
+					got, err := s.UnspentBySignIn(ctx, oidcprovider.SignInSelector{User: "u-1"}, includeOffline)
+					require.NoError(t, err)
+					if !assert.ElementsMatch(t, want, got, "includeOffline=%v", includeOffline) {
+						t.Errorf("a record tied to its sign-in was left out: tying wins over surviving the sign-in's end (includeOffline=%v)", includeOffline)
+					}
+				}
 			},
 		},
 		{

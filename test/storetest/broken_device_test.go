@@ -151,6 +151,17 @@ var deviceVariants = []storefix.BrokenVariant{
 		FailsWith: "a refused create released the holder's user code",
 	},
 	{
+		// It lets a record's survival of the sign-in's end beat its tie to the sign-in.
+		Name: "device-survival-beats-tie",
+		Run: inBackend(func(t *testing.T) {
+			storetest.DeviceAuthorizationSuite(t, func(*testing.T) oidcprovider.DeviceAuthorizationStore {
+				return &survivalWinsDevices{MemoryDeviceAuthorizationStore: oidcprovider.NewMemoryDeviceAuthorizationStore()}
+			})
+		}),
+		FailsCase: storetest.DeviceTiedSurvivorCaseName,
+		FailsWith: "a record tied to its sign-in was left out",
+	},
+	{
 		// Serialised under a lock of each instance, it passes on one instance and must be
 		// caught once its racers are split between two.
 		Name: "device-races-instance-lock",
@@ -524,4 +535,51 @@ func TestDeviceConformingStoresPass(t *testing.T) {
 			tc.run(t)
 		})
 	}
+}
+
+// survivalWinsDevices is the memory store listing by a wrong sign-in-end rule: a record
+// surviving the sign-in's end is left out of UnspentBySignIn unless offline records are
+// asked for, though it is tied to its sign-in. It remembers each approval's flags by grant
+// family, as it cannot read them back from the memory store.
+type survivalWinsDevices struct {
+	*oidcprovider.MemoryDeviceAuthorizationStore
+
+	mu    sync.Mutex
+	flags map[id.ID]oidcprovider.DeviceApproval
+}
+
+func (s *survivalWinsDevices) Create(ctx context.Context, record *oidcprovider.DeviceAuthorization, now time.Time) error {
+	if err := s.MemoryDeviceAuthorizationStore.Create(ctx, record, now); err != nil {
+		return err
+	}
+	if record.Approval != nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.flags == nil {
+			s.flags = make(map[id.ID]oidcprovider.DeviceApproval)
+		}
+		s.flags[record.Approval.GrantFamily] = *record.Approval
+	}
+
+	return nil
+}
+
+func (s *survivalWinsDevices) UnspentBySignIn(ctx context.Context, sel oidcprovider.SignInSelector, includeOffline bool) ([]id.ID, error) {
+	all, err := s.MemoryDeviceAuthorizationStore.UnspentBySignIn(ctx, sel, true)
+	if err != nil || includeOffline {
+		return all, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var out []id.ID
+	for _, family := range all {
+		a := s.flags[family]
+		if !a.SurvivesSignInEnd && (a.EndsWithSignIn || !a.Offline) {
+			out = append(out, family)
+		}
+	}
+
+	return out, nil
 }
