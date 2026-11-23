@@ -131,6 +131,24 @@ type LinkStore interface {
 	DeleteByUser(ctx context.Context, user identity.UserID) (int, error)
 }
 
+// LinkLister is implemented by a LinkStore that can also list every link
+// naming one user. It is optional beside LinkStore, so a consumer's existing
+// store keeps compiling: a store without it still serves every broker feature
+// except the one-link rule of a sign-in hook (see WithBrokerSignInHook), whose
+// absence NewBroker refuses unless WithBrokerSignInHookAllowManyLinks lifts the
+// rule. Every link store the library ships implements it.
+//
+// It is discovered by type assertion on the store given to NewBroker, so a
+// wrapper must itself have the method: a struct that embeds only the
+// LinkStore interface hides it, and is treated as a store that cannot list.
+type LinkLister interface {
+	// ListByUser returns every link whose user reference equals user byte for
+	// byte, with their stored fields unchanged, in a slice the caller owns. A
+	// user with no link yields an empty list and a nil error, never
+	// ErrLinkNotFound.
+	ListByUser(ctx context.Context, user identity.UserID) ([]Link, error)
+}
+
 // HandoffRecord is one issued handoff code, as its store holds it.
 //
 // The code itself is never stored: TokenID finds the record and SecretHash

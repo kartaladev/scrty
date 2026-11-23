@@ -1,7 +1,9 @@
 package oidc
 
 import (
+	"cmp"
 	"context"
+	"slices"
 	"strings"
 	"sync"
 
@@ -41,7 +43,10 @@ type MemoryLinkStore struct {
 	links map[linkKey]Link
 }
 
-var _ LinkStore = (*MemoryLinkStore)(nil)
+var (
+	_ LinkStore  = (*MemoryLinkStore)(nil)
+	_ LinkLister = (*MemoryLinkStore)(nil)
+)
 
 // NewMemoryLinkStore returns an empty in-memory link store.
 func NewMemoryLinkStore() *MemoryLinkStore {
@@ -90,4 +95,26 @@ func (s *MemoryLinkStore) DeleteByUser(_ context.Context, user identity.UserID) 
 		}
 	}
 	return n, nil
+}
+
+// ListByUser returns a copy of every link to user, matched byte for byte,
+// sorted by provider, issuer and subject. A user with no link yields an
+// empty, non-nil slice and a nil error. The slice is the caller's own.
+func (s *MemoryLinkStore) ListByUser(_ context.Context, user identity.UserID) ([]Link, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	links := []Link{}
+	for _, l := range s.links {
+		if l.UserID == user {
+			links = append(links, l)
+		}
+	}
+	slices.SortFunc(links, func(a, b Link) int {
+		return cmp.Or(
+			strings.Compare(a.Provider, b.Provider),
+			strings.Compare(a.Issuer, b.Issuer),
+			strings.Compare(a.Subject, b.Subject))
+	})
+	return links, nil
 }

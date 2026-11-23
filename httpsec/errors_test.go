@@ -503,6 +503,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"oidc.ErrProvisioningRefused": oidc.ErrProvisioningRefused,
 		"oidc.ErrRetainSinceRequired": oidc.ErrRetainSinceRequired,
 		"oidc.ErrUnknownProvider":     oidc.ErrUnknownProvider,
+		"oidc.ErrUpstreamRequired":    oidc.ErrUpstreamRequired,
 	},
 	"github.com/kartaladev/scrty/authenticate/passkey": {
 		"passkey.ErrAttestationRefused":       passkey.ErrAttestationRefused,
@@ -705,6 +706,7 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"oidc.ErrHandoffNotFound":               "a store outcome the library converts before it leaves oidc",
 		"oidc.ErrRetainSinceRequired":           "a purge misuse, never a request outcome",
 		"oidc.ErrFlowStoreFull":                 "capacity exhaustion, deliberately 500",
+		"oidc.ErrUpstreamRequired":              "a broker failure (a hooked provider brokered without upstream access), deliberately 500",
 		"oidc.ErrFlowUnspent":                   "a marker joined onto another refusal, never returned alone",
 		"password.ErrConfig":                    "a wiring fault, refused at construction",
 		"password.ErrInvalidParameters":         "a wiring fault, refused at construction",

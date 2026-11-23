@@ -426,6 +426,69 @@ func (c *MockLinkStoreInsertCall) DoAndReturn(f func(context.Context, oidc.Link)
 	return c
 }
 
+// MockLinkLister is a mock of LinkLister interface.
+type MockLinkLister struct {
+	ctrl     *gomock.Controller
+	recorder *MockLinkListerMockRecorder
+	isgomock struct{}
+}
+
+// MockLinkListerMockRecorder is the mock recorder for MockLinkLister.
+type MockLinkListerMockRecorder struct {
+	mock *MockLinkLister
+}
+
+// NewMockLinkLister creates a new mock instance.
+func NewMockLinkLister(ctrl *gomock.Controller) *MockLinkLister {
+	mock := &MockLinkLister{ctrl: ctrl}
+	mock.recorder = &MockLinkListerMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockLinkLister) EXPECT() *MockLinkListerMockRecorder {
+	return m.recorder
+}
+
+// ListByUser mocks base method.
+func (m *MockLinkLister) ListByUser(ctx context.Context, user identity.UserID) ([]oidc.Link, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListByUser", ctx, user)
+	ret0, _ := ret[0].([]oidc.Link)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListByUser indicates an expected call of ListByUser.
+func (mr *MockLinkListerMockRecorder) ListByUser(ctx, user any) *MockLinkListerListByUserCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListByUser", reflect.TypeOf((*MockLinkLister)(nil).ListByUser), ctx, user)
+	return &MockLinkListerListByUserCall{Call: call}
+}
+
+// MockLinkListerListByUserCall wrap *gomock.Call
+type MockLinkListerListByUserCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockLinkListerListByUserCall) Return(arg0 []oidc.Link, arg1 error) *MockLinkListerListByUserCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockLinkListerListByUserCall) Do(f func(context.Context, identity.UserID) ([]oidc.Link, error)) *MockLinkListerListByUserCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockLinkListerListByUserCall) DoAndReturn(f func(context.Context, identity.UserID) ([]oidc.Link, error)) *MockLinkListerListByUserCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // MockHandoffStore is a mock of HandoffStore interface.
 type MockHandoffStore struct {
 	ctrl     *gomock.Controller
