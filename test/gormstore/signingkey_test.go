@@ -36,7 +36,7 @@ func TestSigningKeyStore(t *testing.T) {
 
 	t.Run("gorm", func(t *testing.T) {
 		storetest.RunSigningKeyStoreSuite(t, func(t *testing.T) signingkey.KeyStore {
-			return newSigningKeyStore(t, emptied(t, d, "signing_keys"), c)
+			return newSigningKeyStore(t, emptied(t, d, "scrty_signing_keys"), c)
 		})
 	})
 }
@@ -148,7 +148,7 @@ func TestSigningKeyStore_Sealed(t *testing.T) {
 					require.NoError(t, s.Store(ctx, storefix.SigningKey(kid, []byte("PKCS8-"+kid))))
 				}
 				// Flip the last byte of one key's tag.
-				_, err := d.conn.DB.ExecContext(ctx, `UPDATE signing_keys
+				_, err := d.conn.DB.ExecContext(ctx, `UPDATE scrty_signing_keys
 SET private_key = overlay(private_key placing
   decode(lpad(to_hex(get_byte(private_key, length(private_key) - 1) # 1), 2, '0'), 'hex')
   from length(private_key))
@@ -222,7 +222,7 @@ WHERE kid = 'kid-b'`)
 				require.NoError(t, s.Store(ctx, storefix.SigningKey("kid-replaced", []byte("PKCS8-OLD"))))
 				var before string
 				require.NoError(t, d.conn.DB.QueryRowContext(ctx,
-					`SELECT id::text FROM signing_keys WHERE kid = 'kid-replaced'`).Scan(&before))
+					`SELECT id::text FROM scrty_signing_keys WHERE kid = 'kid-replaced'`).Scan(&before))
 
 				replaced := storefix.SigningKey("kid-replaced", []byte("PKCS8-NEW"))
 				replaced.Alg = "EdDSA"
@@ -235,7 +235,7 @@ WHERE kid = 'kid-b'`)
 				assert.Equal(t, signingkey.Alg("EdDSA"), recs[0].Alg)
 				var after string
 				require.NoError(t, d.conn.DB.QueryRowContext(ctx,
-					`SELECT id::text FROM signing_keys WHERE kid = 'kid-replaced'`).Scan(&after))
+					`SELECT id::text FROM scrty_signing_keys WHERE kid = 'kid-replaced'`).Scan(&after))
 				assert.Equal(t, before, after, "the replacement minted a new row")
 			},
 		},
@@ -246,7 +246,7 @@ WHERE kid = 'kid-b'`)
 					Store(ctx, storefix.SigningKey("kid\x00canary-5e1f", []byte("PKCS8")))
 				require.Error(t, err)
 				assert.NotContains(t, err.Error(), "canary-5e1f")
-				assert.False(t, storefix.ExistsCtx(ctx, t, d.conn.DB, `SELECT EXISTS (SELECT 1 FROM signing_keys)`), "nothing is written")
+				assert.False(t, storefix.ExistsCtx(ctx, t, d.conn.DB, `SELECT EXISTS (SELECT 1 FROM scrty_signing_keys)`), "nothing is written")
 			},
 		},
 		{
@@ -274,7 +274,7 @@ WHERE kid = 'kid-b'`)
 				require.NoError(t, got.err)
 				require.Len(t, got.recs, 1, "the gated read loaded the key before its delete")
 
-				assert.False(t, storefix.ExistsCtx(ctx, t, d.conn.DB, `SELECT EXISTS (SELECT 1 FROM signing_keys)`),
+				assert.False(t, storefix.ExistsCtx(ctx, t, d.conn.DB, `SELECT EXISTS (SELECT 1 FROM scrty_signing_keys)`),
 					"the re-seal stored the deleted key again")
 			},
 		},

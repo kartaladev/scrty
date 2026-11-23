@@ -1027,7 +1027,7 @@ func RunSessionSupersessionLockOrder[S session.Store](t *testing.T, harness Dura
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = holder.Rollback() })
 		_, err = holder.ExecContext(t.Context(),
-			`SELECT id FROM sessions WHERE id_digest IN ($1, $2) ORDER BY id LIMIT 1 FOR UPDATE`,
+			`SELECT id FROM scrty_sessions WHERE id_digest IN ($1, $2) ORDER BY id LIMIT 1 FOR UPDATE`,
 			sessionDigest(old.ID), sessionDigest(first.ID))
 		require.NoError(t, err)
 
@@ -1108,7 +1108,7 @@ func RunSessionSupersedeRefusesNilFamily[S session.Store](t *testing.T, harness 
 		old := familySession(name, identity.UserID(name+"-user"), suiteID(2401))
 		require.NoError(t, s.Create(t.Context(), old))
 		_, err := harness.Raw.ExecContext(t.Context(),
-			`UPDATE sessions SET family_id = '00000000-0000-0000-0000-000000000000' WHERE id_digest = $1`,
+			`UPDATE scrty_sessions SET family_id = '00000000-0000-0000-0000-000000000000' WHERE id_digest = $1`,
 			sessionDigest(old.ID))
 		require.NoError(t, err)
 		before, err := s.Load(t.Context(), old.ID)

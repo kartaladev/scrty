@@ -191,7 +191,7 @@ func runPGDatabaseClock(t *testing.T, b pgFaultBackend) {
 					require.NoError(t, l.RecordFailure(t.Context(), "k"))
 					var equal bool
 					require.NoError(t, conn.DB.QueryRowContext(t.Context(),
-						`SELECT newest_at = stamps[array_upper(stamps, 1)] FROM rate_limit_buckets WHERE namespace = $1 AND key = $2`,
+						`SELECT newest_at = stamps[array_upper(stamps, 1)] FROM scrty_rate_limit_buckets WHERE namespace = $1 AND key = $2`,
 						ns, "k").Scan(&equal))
 					assert.True(t, equal, "record %d: newest_at differs from the newest stamp", i)
 				}
@@ -330,7 +330,7 @@ func runPGBehindClock(t *testing.T, b pgFaultBackend) {
 
 			var stamps []time.Time
 			rows, err := conn.DB.QueryContext(t.Context(),
-				`SELECT unnest(stamps) FROM rate_limit_buckets WHERE namespace = $1 AND key = $2`, ns, "k")
+				`SELECT unnest(stamps) FROM scrty_rate_limit_buckets WHERE namespace = $1 AND key = $2`, ns, "k")
 			require.NoError(t, err)
 			defer func() { _ = rows.Close() }()
 			for rows.Next() {

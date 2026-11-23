@@ -42,7 +42,7 @@ func TestOneTimeStore(t *testing.T) {
 
 	t.Run("sqlstore", func(t *testing.T) {
 		storetest.RunOneTimeStoreSuite(t, func(t *testing.T, clk clock.Clock) onetime.Store {
-			return newOneTimeStore(t, emptied(t, db, "one_time_tokens"), sqlstore.WithClock(clk))
+			return newOneTimeStore(t, emptied(t, db, "scrty_one_time_tokens"), sqlstore.WithClock(clk))
 		}, storetest.RequireReaper())
 	})
 }

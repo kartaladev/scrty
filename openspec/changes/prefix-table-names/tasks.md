@@ -37,7 +37,7 @@ tests; group 4 restores the full scoped suites.
   snapshot taken before the migration equals the snapshot after up then down-by-one. Down to zero
   leaves no relation, and re-applying prefixes everything. Red: with one down statement removed,
   the test names the relation left behind. Verify: the focused test passes.
-- [ ] 2.5 Populated rename (spec "Populated database"): seed sessions, signing keys, provider grants,
+- [x] 2.5 Populated rename (spec "Populated database"): seed sessions, signing keys, provider grants,
   device authorizations and rate-limit buckets at the version before the rename, apply it, and read
   every row back through the stores. Update the fixture `test/testdata/migrations/populated` to the
   new names. Verify: `go test -count=1 ./test/crossbackend/` passes.
@@ -50,7 +50,7 @@ tests; group 4 restores the full scoped suites.
   renames and down section. Update the identity `pg_indexes` and column checks in
   `test/migrate_identity_test.go`. Verify: `go test -run 'TestIdentityMigrations' -count=1 ./test/`
   passes.
-- [ ] 3.2 Populated identity rename (spec "Populated identity database"; design F10): users, grants
+- [x] 3.2 Populated identity rename (spec "Populated identity database"; design F10): users, grants
   and history read back, `pg_get_serial_sequence` names `scrty_password_history_seq_seq`, and the
   next history entry orders after the existing ones. Red: with the sequence rename removed from the
   migration, the catalog assertion fails. Verify: the focused test passes.
@@ -60,26 +60,26 @@ tests; group 4 restores the full scoped suites.
 
 ## 4. Code and tests on the new names
 
-- [ ] 4.1 Guard test in `internal/pgschema`: no exported statement constant names an unprefixed
+- [x] 4.1 Guard test in `internal/pgschema`: no exported statement constant names an unprefixed
   inventory table after `FROM`, `INTO`, `UPDATE`, `JOIN`, `TABLE` or `to_regclass(` (design D6,
   F8). Red: it fails listing every current statement. Green: move every statement and
   `LimiterTable` to the new names. Verify: `go test -count=1 ./internal/pgschema/` passes.
-- [ ] 4.2 `store/gormstore/models.go`: every `TableName()` returns the prefixed name, and the godoc
+- [x] 4.2 `store/gormstore/models.go`: every `TableName()` returns the prefixed name, and the godoc
   says so. Red: the gorm conformance suite fails against the renamed schema. Verify: the gormstore
   suites in `./test/gormstore/` pass.
-- [ ] 4.3 Consumer-schema test (spec "Consumer schema", "Consumer tables of the old names in the same
+- [x] 4.3 Consumer-schema test (spec "Consumer schema", "Consumer tables of the old names in the same
   schema"): apply both sets in schema `auth` with `search_path=auth`, then run one store of each
   adapter and the limiter's `Verify`, which pass. Creating consumer `sessions` and `users` tables
   afterwards succeeds, and the stores touch only the prefixed ones. Verify: the focused test passes.
-- [ ] 4.4 Limiter `Verify` on a database without the rename (design F2): it refuses with
+- [x] 4.4 Limiter `Verify` on a database without the rename (design F2): it refuses with
   `ratelimit.ErrConfig`, naming `scrty_rate_limit_buckets` and the migration set. Update the limiter
   godoc in `store/sqlstore` and `store/pgxstore`. Red: before the error text and godoc change, the
   assertion on the named table fails. Verify: the focused test passes for both adapters.
-- [ ] 4.5 Move every SQL string in the `test` module to the new names: the rate-limiter suites,
+- [x] 4.5 Move every SQL string in the `test` module to the new names: the rate-limiter suites,
   `storetest` suites, broken-store tests, durable OIDC tests, and `test/gormstore/broken_test.go`
   `TableName`s. Verify: the scoped run from `plans.md` (`./internal/pgschema/ ./store/... ./test/...`
   and the adapter modules) passes, `go vet` and `gofmt -l` are clean.
-- [ ] 4.6 Docs: the README migration sections name the new tables, say that the prefix is fixed, that
+- [x] 4.6 Docs: the README migration sections name the new tables, say that the prefix is fixed, that
   a schema is the way to isolate it, and give the upgrade and rollback order. The CHANGELOG
   *Unreleased → Changed* gets a **BREAKING** entry with the old → new list, the upgrade order and
   the version tables unchanged (design D7). Verify: `rg` in README and CHANGELOG finds no unprefixed

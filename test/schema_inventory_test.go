@@ -325,6 +325,9 @@ func TestRelationInventory(t *testing.T) {
 	t.Run("inventories together hold 104 indexes", func(t *testing.T) {
 		t.Parallel()
 
+		// The counts below are a deliberate tripwire: they are hard-coded so that a
+		// migration adding a table, index or sequence fails here until the inventory
+		// and these numbers are updated together.
 		assert.Len(t, securityStateInventory.Indexes, 92)
 		assert.Len(t, identityInventory.Indexes, 12)
 		assert.Len(t, securityStateInventory.Tables, 25)

@@ -2456,6 +2456,9 @@ func TestMigrations(t *testing.T) {
 
 					// A row written by the session store's own insert, over the fixed name.
 					insert := strings.ReplaceAll(pgschema.SessionInsert, scrtyPrefix+"sessions", pgschema.RefreshTokenTable)
+					// The replacement must change the statement; if SessionInsert stops naming
+					// scrty_sessions it becomes a no-op and the test would stop proving anything.
+					require.NotEqual(t, pgschema.SessionInsert, insert)
 					result, err := db.ExecContext(t.Context(), insert,
 						"0192f000-0000-7000-8000-0000000000e1", []byte{1}, "u-1", time.Now(), time.Now(), time.Now(), time.Now(),
 						"", 0, nil, false, "", "", "", "", "{}", nil, nil, nil, "[]", "", false,

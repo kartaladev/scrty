@@ -62,12 +62,12 @@ func TestGormStore_LineageInACallersTransaction(t *testing.T) {
 				return n
 			}
 			assert.Equal(t, 1, inTx(pgschema.RefreshTokenTable), "the write is in the lineage table")
-			assert.Zero(t, inTx("sessions"), "and not in the sessions table")
+			assert.Zero(t, inTx("scrty_sessions"), "and not in the sessions table")
 			assert.Zero(t, heldIn(ctx, t, d, pgschema.RefreshTokenTable, family), "invisible before the caller commits")
 
 			require.NoError(t, tx.Rollback().Error)
 			assert.Zero(t, heldIn(ctx, t, d, pgschema.RefreshTokenTable, family), "gone with the rollback")
-			assert.Zero(t, heldIn(ctx, t, d, "sessions", family))
+			assert.Zero(t, heldIn(ctx, t, d, "scrty_sessions", family))
 		})
 	}
 }

@@ -188,7 +188,7 @@ func TestExpiryTasks(t *testing.T) {
 		}
 
 		// Sessions: the expired one is gone, the live one is present and loads.
-		assert.Equal(t, 1, countRows(t, db, "sessions", ""), "live session present, expired one gone")
+		assert.Equal(t, 1, countRows(t, db, "scrty_sessions", ""), "live session present, expired one gone")
 		_, err := st.sessions.Load(t.Context(), "live-session")
 		assert.NoError(t, err, "the live session still loads")
 		_, err = st.sessions.Load(t.Context(), "expired-session")
@@ -197,7 +197,7 @@ func TestExpiryTasks(t *testing.T) {
 		// One-time tokens: the one past its expiry and its window is gone; the
 		// one expired but inside the window and the live one remain, and so does
 		// every issuance the window still counts.
-		assert.Equal(t, 2, countRows(t, db, "one_time_tokens", "purpose = '"+tokenPurpose+"'"),
+		assert.Equal(t, 2, countRows(t, db, "scrty_one_time_tokens", "purpose = '"+tokenPurpose+"'"),
 			"the in-window and live tokens remain")
 		issuedAfter, err := mgr.IssuedCount(t.Context(), tokenSubject)
 		require.NoError(t, err)
@@ -206,14 +206,14 @@ func TestExpiryTasks(t *testing.T) {
 
 		// Login failures: the three outside the window are gone and the two
 		// inside it are still counted.
-		assert.Equal(t, 2, countRows(t, db, "login_attempts", "username = '"+failedAccount+"'"),
+		assert.Equal(t, 2, countRows(t, db, "scrty_login_attempts", "username = '"+failedAccount+"'"),
 			"the in-window failures remain")
 
 		// State a sweep never owns is untouched, expired or not.
-		assert.Equal(t, 1, countRows(t, db, "api_keys", "expires_at IS NOT NULL"), "the expired API key remains")
-		assert.Equal(t, 1, countRows(t, db, "oidc_links", ""), "the OIDC link remains")
-		assert.Equal(t, 1, countRows(t, db, "mfa_enrolments", ""), "the MFA enrolment remains")
-		assert.Equal(t, 1, countRows(t, db, "signing_keys", ""), "the signing key remains")
+		assert.Equal(t, 1, countRows(t, db, "scrty_api_keys", "expires_at IS NOT NULL"), "the expired API key remains")
+		assert.Equal(t, 1, countRows(t, db, "scrty_oidc_links", ""), "the OIDC link remains")
+		assert.Equal(t, 1, countRows(t, db, "scrty_mfa_enrolments", ""), "the MFA enrolment remains")
+		assert.Equal(t, 1, countRows(t, db, "scrty_signing_keys", ""), "the signing key remains")
 	}
 
 	cases := make([]testCase, 0, len(expiryAdapters))
@@ -288,8 +288,8 @@ func TestExpiryTasks(t *testing.T) {
 			issuedBefore, err := mgr.IssuedCount(ctx, tokenSubject)
 			require.NoError(t, err)
 			require.Equal(t, 2, issuedBefore, "precondition: the old token is already outside the window")
-			require.Equal(t, 3, countRows(t, conn.DB, "one_time_tokens", ""), "precondition: all three tokens are stored")
-			require.Equal(t, 5, countRows(t, conn.DB, "login_attempts", ""), "precondition: all five failures are stored")
+			require.Equal(t, 3, countRows(t, conn.DB, "scrty_one_time_tokens", ""), "precondition: all three tokens are stored")
+			require.Equal(t, 5, countRows(t, conn.DB, "scrty_login_attempts", ""), "precondition: all five failures are stored")
 
 			runner, err := expiry.NewRunner([]expiry.Task{
 				session.ExpiryTask(st.sessions),
@@ -351,7 +351,7 @@ func TestExpiryLockoutStreaks(t *testing.T) {
 				d := e.lockout.Evaluate(t.Context(), &policy.Input{Username: holdName, Now: e.clk.Now()})
 				assert.Equal(t, policy.Deny, d.Outcome)
 				assert.ErrorIs(t, d.Reason, lockout.ErrAccountHeld)
-				assert.Equal(t, 1, countRows(t, e.db, "login_failure_streaks", "held_at IS NOT NULL"))
+				assert.Equal(t, 1, countRows(t, e.db, "scrty_login_failure_streaks", "held_at IS NOT NULL"))
 			},
 		},
 		{
@@ -370,7 +370,7 @@ func TestExpiryLockoutStreaks(t *testing.T) {
 			failures:  10,
 			newestAge: 31 * day,
 			assert: func(t *testing.T, e env) {
-				assert.Equal(t, 0, countRows(t, e.db, "login_failure_streaks", ""), "the streak row is gone")
+				assert.Equal(t, 0, countRows(t, e.db, "scrty_login_failure_streaks", ""), "the streak row is gone")
 
 				require.NoError(t, e.lockout.Attempts().RecordFailure(t.Context(), holdName, e.clk.Now()))
 				s, err := e.streaks.FailureStreak(t.Context(), holdName, e.clk.Now().Add(-retention))
@@ -696,7 +696,7 @@ func (e *opEnv) grant(holdsLineage bool, created, expires time.Time) *oidcprovid
 func grantRows(t *testing.T, e *opEnv, g *oidcprovider.Grant) int {
 	t.Helper()
 
-	return countRows(t, e.db, "op_grants", "family = '"+g.Family.String()+"'")
+	return countRows(t, e.db, "scrty_op_grants", "family = '"+g.Family.String()+"'")
 }
 
 // TestExpiryTasks_OIDCProvider runs a provider's expiry tasks through a runner over each
@@ -760,7 +760,7 @@ func TestExpiryTasks_OIDCProvider(t *testing.T) {
 				res := e.run(t)
 
 				assert.Equal(t, 1, res["oidc-provider.codes"].Removed, "the record: a spent token stays up to the longest code lifetime and a minute")
-				assert.Zero(t, countRows(t, e.db, "op_authorization_codes", ""))
+				assert.Zero(t, countRows(t, e.db, "scrty_op_authorization_codes", ""))
 				e.replay(t, code)
 				_, err := e.st.grants.Load(t.Context(), family)
 				assert.ErrorIs(t, err, oidcprovider.ErrNotFound, "no grant was revoked")
@@ -806,10 +806,10 @@ func TestExpiryTasks_OIDCProvider(t *testing.T) {
 				res := e.run(t)
 
 				for task, table := range map[string]string{
-					"oidc-provider.pending-requests": "op_pending_requests",
-					"oidc-provider.browser-sessions": "op_browser_sessions",
-					"oidc-provider.access-tokens":    "op_access_tokens",
-					"oidc-provider.assertion-ids":    "op_client_assertions",
+					"oidc-provider.pending-requests": "scrty_op_pending_requests",
+					"oidc-provider.browser-sessions": "scrty_op_browser_sessions",
+					"oidc-provider.access-tokens":    "scrty_op_access_tokens",
+					"oidc-provider.assertion-ids":    "scrty_op_client_assertions",
 				} {
 					assert.Equal(t, 1, res[task].Removed, task)
 					assert.Equal(t, 1, countRows(t, e.db, table, ""), table)
@@ -854,14 +854,14 @@ func TestExpiryTasks_OIDCProvider(t *testing.T) {
 				head.UserID, head.FamilyID = g.User, g.Family
 				head.IdleExpiresAt, head.AbsoluteExpiresAt = now.Add(time.Hour), now.Add(24*time.Hour)
 				require.NoError(t, oplineage.Sessions(e.st.lineage).Create(ctx, head))
-				require.Equal(t, 1, countRows(t, e.db, "op_refresh_tokens", ""), "the lineage is written")
+				require.Equal(t, 1, countRows(t, e.db, "scrty_op_refresh_tokens", ""), "the lineage is written")
 				// Past the lineage's idle timeout, well inside the grant's own deadline.
 				e.clk.Advance(2 * time.Hour)
 
 				res := e.run(t)
 
 				assert.Equal(t, 1, res["oidc-provider.refresh-tokens"].Removed, "the idle lineage goes")
-				assert.Zero(t, countRows(t, e.db, "op_refresh_tokens", ""))
+				assert.Zero(t, countRows(t, e.db, "scrty_op_refresh_tokens", ""))
 				assert.Equal(t, 1, grantRows(t, e, g), "the grant stays: only its own deadline or a revocation removes it")
 				ended, err := e.st.grants.EndSignIns(ctx, oidcprovider.SignInSelector{Family: g.SignInFamily}, e.clk.Now())
 				require.NoError(t, err)

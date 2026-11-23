@@ -103,7 +103,7 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 
 				var got time.Time
 				require.NoError(t, d.conn.DB.QueryRowContext(ctx,
-					`SELECT retired_at FROM password_history WHERE user_id = $1`, string(user)).Scan(&got))
+					`SELECT retired_at FROM scrty_password_history WHERE user_id = $1`, string(user)).Scan(&got))
 				assert.True(t, at.Truncate(time.Microsecond).Equal(got), "want %v, got %v", at, got)
 			},
 		},
@@ -172,7 +172,7 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 
 				var n int
 				require.NoError(t, d.conn.DB.QueryRowContext(ctx,
-					`SELECT count(*) FROM password_history WHERE password = $1`, refused).Scan(&n))
+					`SELECT count(*) FROM scrty_password_history WHERE password = $1`, refused).Scan(&n))
 				assert.Zero(t, n, "a refused retire writes nothing")
 			},
 		},
@@ -216,26 +216,26 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 				user := newHistoryUser(t)
 				hash := []byte("$argon2id$v=19$history-secret-hash")
 
-				withGoneTable(ctx, t, d, "password_history", func(txCtx context.Context) {
+				withGoneTable(ctx, t, d, "scrty_password_history", func(txCtx context.Context) {
 					got, err := s.RecentPasswords(txCtx, user, 10)
 					assertHistoryCut(t, err, user, hash)
 					assert.Contains(t, err.Error(), "42P01", "the text keeps the driver's SQLSTATE")
 					assert.Nil(t, got, "a failed read is never an empty history")
 				})
 
-				withGoneTable(ctx, t, d, "password_history", func(txCtx context.Context) {
+				withGoneTable(ctx, t, d, "scrty_password_history", func(txCtx context.Context) {
 					err := s.RetirePassword(txCtx, user, hash, 3)
 					assertHistoryCut(t, err, user, hash)
 					assert.Contains(t, err.Error(), "42P01", "the text keeps the driver's SQLSTATE")
 				})
 
-				withGoneTable(ctx, t, d, "password_history", func(txCtx context.Context) {
+				withGoneTable(ctx, t, d, "scrty_password_history", func(txCtx context.Context) {
 					err := s.RetirePassword(txCtx, user, hash, 0)
 					assertHistoryCut(t, err, user, hash)
 					assert.Contains(t, err.Error(), "42P01", "the text keeps the driver's SQLSTATE")
 				})
 
-				withGoneTable(ctx, t, d, "password_history", func(txCtx context.Context) {
+				withGoneTable(ctx, t, d, "scrty_password_history", func(txCtx context.Context) {
 					err := s.ForgetPasswords(txCtx, user)
 					assertHistoryCut(t, err, user, hash)
 					assert.Contains(t, err.Error(), "42P01", "the text keeps the driver's SQLSTATE")
@@ -341,8 +341,8 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 				// The consumer's user deletion: the user, the grants and the
 				// history, in one transaction.
 				tx := beginGorm(ctx, t, d.db)
-				require.NoError(t, tx.Exec(`DELETE FROM assigned_roles WHERE user_id = ?`, string(gone.ID)).Error)
-				require.NoError(t, tx.Exec(`DELETE FROM users WHERE id = ?`, string(gone.ID)).Error)
+				require.NoError(t, tx.Exec(`DELETE FROM scrty_assigned_roles WHERE user_id = ?`, string(gone.ID)).Error)
+				require.NoError(t, tx.Exec(`DELETE FROM scrty_users WHERE id = ?`, string(gone.ID)).Error)
 				require.NoError(t, s.ForgetPasswords(gormstore.WithTx(ctx, tx), gone.ID))
 				require.NoError(t, tx.Commit().Error)
 
@@ -386,7 +386,7 @@ func historyRows(ctx context.Context, t *testing.T, db *sql.DB, user identity.Us
 
 	var n int
 	require.NoError(t, db.QueryRowContext(ctx,
-		`SELECT count(*) FROM password_history WHERE user_id = $1`, string(user)).Scan(&n))
+		`SELECT count(*) FROM scrty_password_history WHERE user_id = $1`, string(user)).Scan(&n))
 
 	return n
 }
@@ -403,7 +403,7 @@ func refuseHistoryDelete(ctx context.Context, t *testing.T, db *sql.DB, user ide
 	_, err := db.ExecContext(ctx, `CREATE FUNCTION `+name+`() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN RAISE EXCEPTION 'history delete refused' USING ERRCODE = 'P0001'; END $$`)
 	require.NoError(t, err)
-	_, err = db.ExecContext(ctx, `CREATE TRIGGER `+name+` BEFORE DELETE ON password_history FOR EACH ROW
+	_, err = db.ExecContext(ctx, `CREATE TRIGGER `+name+` BEFORE DELETE ON scrty_password_history FOR EACH ROW
 WHEN (OLD.user_id = '`+string(user)+`') EXECUTE FUNCTION `+name+`()`)
 	require.NoError(t, err)
 
@@ -411,7 +411,7 @@ WHEN (OLD.user_id = '`+string(user)+`') EXECUTE FUNCTION `+name+`()`)
 		// ctx is done by now; its values are kept, its cancellation is not.
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		_, err := db.ExecContext(cleanupCtx, `DROP TRIGGER `+name+` ON password_history`)
+		_, err := db.ExecContext(cleanupCtx, `DROP TRIGGER `+name+` ON scrty_password_history`)
 		assert.NoError(t, err)
 		_, err = db.ExecContext(cleanupCtx, `DROP FUNCTION `+name+`()`)
 		assert.NoError(t, err)

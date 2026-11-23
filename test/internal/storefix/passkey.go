@@ -258,7 +258,7 @@ func PasskeyCredentialAmbient[S passkey.CredentialStore]() storetest.Ambient[S] 
 			return s.Insert(ctx, passkeyAmbientCredential(i))
 		},
 		Present: func(t *testing.T, raw *sql.DB, i int) bool {
-			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM passkey_credentials WHERE id = $1)`,
+			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM scrty_passkey_credentials WHERE id = $1)`,
 				passkeyAmbientID(i))
 		},
 		Refuse: func(ctx context.Context, s S) error {
@@ -306,7 +306,7 @@ func PasskeyHandleAmbient[S passkey.HandleStore]() storetest.Ambient[S] {
 			return err
 		},
 		Present: func(t *testing.T, raw *sql.DB, i int) bool {
-			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM passkey_user_handles WHERE user_id = $1)`,
+			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM scrty_passkey_user_handles WHERE user_id = $1)`,
 				string(passkeyAmbientUser(i)))
 		},
 		Refuse: func(ctx context.Context, s S) error {
@@ -396,8 +396,8 @@ func SealedPasskeyCodes[H any](
 			return []byte(passkeyCodeColumn(t, raw, "sealed-"+owner).String)
 		},
 		CopySealed: func(t *testing.T, raw *sql.DB, from, to string) {
-			_, err := raw.ExecContext(t.Context(), `UPDATE passkey_credentials
-SET email_code = (SELECT email_code FROM passkey_credentials WHERE credential_id = $1) WHERE credential_id = $2`,
+			_, err := raw.ExecContext(t.Context(), `UPDATE scrty_passkey_credentials
+SET email_code = (SELECT email_code FROM scrty_passkey_credentials WHERE credential_id = $1) WHERE credential_id = $2`,
 				[]byte("sealed-"+from), []byte("sealed-"+to))
 			require.NoError(t, err)
 		},
@@ -467,7 +467,7 @@ func passkeyCodeColumn(t *testing.T, raw *sql.DB, credID string) sql.NullString 
 
 	var col sql.NullString
 	require.NoError(t, raw.QueryRowContext(t.Context(),
-		`SELECT email_code FROM passkey_credentials WHERE credential_id = $1`, []byte(credID)).Scan(&col))
+		`SELECT email_code FROM scrty_passkey_credentials WHERE credential_id = $1`, []byte(credID)).Scan(&col))
 
 	return col
 }
@@ -520,8 +520,8 @@ func RunPasskeyCodeBinding(t *testing.T, raw *sql.DB, s passkey.CredentialStore)
 			require.NoError(t, s.Insert(ctx, from))
 			require.NoError(t, s.Insert(ctx, to))
 
-			_, err := raw.ExecContext(ctx, `UPDATE passkey_credentials
-SET email_code = (SELECT email_code FROM passkey_credentials WHERE credential_id = $1) WHERE credential_id = $2`,
+			_, err := raw.ExecContext(ctx, `UPDATE scrty_passkey_credentials
+SET email_code = (SELECT email_code FROM scrty_passkey_credentials WHERE credential_id = $1) WHERE credential_id = $2`,
 				from.CredentialID, to.CredentialID)
 			require.NoError(t, err)
 
@@ -536,7 +536,7 @@ SET email_code = (SELECT email_code FROM passkey_credentials WHERE credential_id
 			require.NoError(t, s.Insert(ctx, c))
 
 			_, err := raw.ExecContext(ctx,
-				`UPDATE passkey_credentials SET user_id = $2 WHERE credential_id = $1`, c.CredentialID, "binding-other")
+				`UPDATE scrty_passkey_credentials SET user_id = $2 WHERE credential_id = $1`, c.CredentialID, "binding-other")
 			require.NoError(t, err)
 
 			got, err := s.FindByCredentialID(ctx, c.CredentialID)
@@ -561,7 +561,7 @@ func RunPasskeyClearedCodeRow(t *testing.T, raw *sql.DB, s passkey.CredentialSto
 		var code, until bool
 		row := func() {
 			require.NoError(t, raw.QueryRowContext(ctx,
-				`SELECT email_code IS NOT NULL, email_code_expires_at IS NOT NULL FROM passkey_credentials WHERE id = $1`,
+				`SELECT email_code IS NOT NULL, email_code_expires_at IS NOT NULL FROM scrty_passkey_credentials WHERE id = $1`,
 				c.ID).Scan(&code, &until))
 		}
 		row()

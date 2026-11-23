@@ -709,7 +709,7 @@ func runPGHeldRow(t *testing.T, b pgFaultBackend) {
 			t.Cleanup(func() { _ = holder.Rollback() })
 			var stamp time.Time
 			require.NoError(t, holder.QueryRowContext(t.Context(),
-				`SELECT stamps[1] FROM rate_limit_buckets WHERE namespace = $1 AND key = $2 FOR UPDATE`, ns, "k").Scan(&stamp))
+				`SELECT stamps[1] FROM scrty_rate_limit_buckets WHERE namespace = $1 AND key = $2 FOR UPDATE`, ns, "k").Scan(&stamp))
 			var holderPID int
 			require.NoError(t, holder.QueryRowContext(t.Context(), `SELECT pg_backend_pid()`).Scan(&holderPID))
 

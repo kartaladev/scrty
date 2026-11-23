@@ -235,7 +235,7 @@ func (h *pgHarness) newLimiter(t *testing.T, namespace string, limit int, window
 	t.Helper()
 
 	ns := pgScopedNamespace(t, namespace)
-	_, err := h.db.ExecContext(t.Context(), `DELETE FROM rate_limit_buckets WHERE namespace = $1`, ns)
+	_, err := h.db.ExecContext(t.Context(), `DELETE FROM scrty_rate_limit_buckets WHERE namespace = $1`, ns)
 	require.NoError(t, err)
 	return h.first(t, h.db, h.dsn, ns, limit, window, h.clock)
 }
@@ -450,7 +450,7 @@ func runPGClockBehindNewest(t *testing.T, b pgBackend) {
 	)
 	require.NoError(t, conn.DB.QueryRowContext(t.Context(), `SELECT newest_at, stamps[1], stamps[2], cardinality(stamps),
   stamps = ARRAY(SELECT s FROM unnest(stamps) AS u(s) ORDER BY s)
-FROM rate_limit_buckets WHERE namespace = $1 AND key = $2`, ns, "k").Scan(&newest, &first, &second, &n, &ascending))
+FROM scrty_rate_limit_buckets WHERE namespace = $1 AND key = $2`, ns, "k").Scan(&newest, &first, &second, &n, &ascending))
 
 	assert.True(t, newest.Equal(at), "newest_at moved back to %s", newest)
 	assert.Equal(t, 2, n)
@@ -509,7 +509,7 @@ func (l *brokenRecordLimiter) RecordFailure(ctx context.Context, key string) err
 // its own window: a shorter-window replica would delete failures that a
 // longer-window replica still counts.
 const pgRecordTrimmingByTime = `WITH t AS (SELECT coalesce($5::timestamptz, clock_timestamp()) AS now)
-INSERT INTO rate_limit_buckets AS b (namespace, key, stamps, newest_at, longest_window_us)
+INSERT INTO scrty_rate_limit_buckets AS b (namespace, key, stamps, newest_at, longest_window_us)
 SELECT $1, $2, ARRAY[t.now], t.now, $4::bigint
 FROM t CROSS JOIN (SELECT set_config('lock_timeout', $6::text, true)) AS lt
 ON CONFLICT (namespace, key) DO UPDATE SET
@@ -663,7 +663,7 @@ func runPGFactoryPrune(t *testing.T, b pgBackend) {
 
 	var keys []string
 	rows, err := conn.DB.QueryContext(t.Context(),
-		`SELECT namespace || '/' || key FROM rate_limit_buckets WHERE namespace IN ($1, $2) ORDER BY 1`, nsA, nsB)
+		`SELECT namespace || '/' || key FROM scrty_rate_limit_buckets WHERE namespace IN ($1, $2) ORDER BY 1`, nsA, nsB)
 	require.NoError(t, err)
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
@@ -731,7 +731,7 @@ func pgTempTableTarget(t *testing.T, conn PostgresConn) pgVerifyTarget {
 	t.Helper()
 
 	shadow := func(ctx context.Context, c *pgx.Conn) error {
-		_, err := c.Exec(ctx, `CREATE TEMP TABLE rate_limit_buckets (LIKE public.rate_limit_buckets INCLUDING ALL)`)
+		_, err := c.Exec(ctx, `CREATE TEMP TABLE scrty_rate_limit_buckets (LIKE public.scrty_rate_limit_buckets INCLUDING ALL)`)
 		return err
 	}
 	cfg, err := pgx.ParseConfig(conn.DSN)
@@ -752,7 +752,7 @@ func pgRoleTarget(t *testing.T, conn PostgresConn, privileges string) pgVerifyTa
 	ctx := t.Context()
 	_, err := conn.DB.ExecContext(ctx, `CREATE ROLE `+role+` LOGIN PASSWORD 'readonly'`)
 	require.NoError(t, err)
-	_, err = conn.DB.ExecContext(ctx, `GRANT `+privileges+` ON rate_limit_buckets TO `+role)
+	_, err = conn.DB.ExecContext(ctx, `GRANT `+privileges+` ON scrty_rate_limit_buckets TO `+role)
 	require.NoError(t, err)
 
 	u, err := url.Parse(conn.DSN)
@@ -765,7 +765,7 @@ func pgRoleTarget(t *testing.T, conn PostgresConn, privileges string) pgVerifyTa
 		_ = db.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_, err := conn.DB.ExecContext(ctx, `REVOKE ALL ON rate_limit_buckets FROM `+role) //nolint:gosec // G202: role is a fixed identifier the test created, not input
+		_, err := conn.DB.ExecContext(ctx, `REVOKE ALL ON scrty_rate_limit_buckets FROM `+role) //nolint:gosec // G202: role is a fixed identifier the test created, not input
 		assert.NoError(t, err)
 		_, err = conn.DB.ExecContext(ctx, `DROP ROLE `+role)
 		assert.NoError(t, err)
@@ -875,7 +875,7 @@ CREATE TABLE other.rate_limit_buckets (
 			name: "unlogged table",
 			target: func(t *testing.T) pgVerifyTarget {
 				conn := migratedLimiterDB(t)
-				_, err := conn.DB.ExecContext(t.Context(), `ALTER TABLE rate_limit_buckets SET UNLOGGED`)
+				_, err := conn.DB.ExecContext(t.Context(), `ALTER TABLE scrty_rate_limit_buckets SET UNLOGGED`)
 				require.NoError(t, err)
 				return plain(conn)
 			},
@@ -928,7 +928,7 @@ CREATE TABLE other.rate_limit_buckets (
 				require.NoError(t, err)
 				var n int
 				require.NoError(t, target.admin.QueryRowContext(t.Context(),
-					`SELECT count(*) FROM rate_limit_buckets WHERE namespace = ''`).Scan(&n))
+					`SELECT count(*) FROM scrty_rate_limit_buckets WHERE namespace = ''`).Scan(&n))
 				assert.Zero(t, n, "Verify left its probe row behind")
 			},
 		},
@@ -1104,23 +1104,23 @@ func TestPGLimiter_WidestRow(t *testing.T) {
 
 			var stamps int
 			require.NoError(t, conn.DB.QueryRowContext(t.Context(),
-				`SELECT cardinality(stamps) FROM rate_limit_buckets WHERE namespace = $1`, ns).Scan(&stamps))
+				`SELECT cardinality(stamps) FROM scrty_rate_limit_buckets WHERE namespace = $1`, ns).Scan(&stamps))
 			assert.Equal(t, 400, stamps)
 			// The stored datum is neither TOASTed nor compressed: its size is at
 			// least the raw 8 bytes of each of the 400 stamps.
 			var size int
 			require.NoError(t, conn.DB.QueryRowContext(t.Context(),
-				`SELECT pg_column_size(stamps) FROM rate_limit_buckets WHERE namespace = $1`, ns).Scan(&size))
+				`SELECT pg_column_size(stamps) FROM scrty_rate_limit_buckets WHERE namespace = $1`, ns).Scan(&size))
 			assert.GreaterOrEqual(t, size, 400*8, "stamp array was compressed or moved out of line")
 			var opts string
 			require.NoError(t, conn.DB.QueryRowContext(t.Context(),
-				`SELECT array_to_string(coalesce(reloptions, '{}'), ',') FROM pg_class WHERE oid = 'rate_limit_buckets'::regclass`).Scan(&opts))
+				`SELECT array_to_string(coalesce(reloptions, '{}'), ',') FROM pg_class WHERE oid = 'scrty_rate_limit_buckets'::regclass`).Scan(&opts))
 			assert.Contains(t, opts, "toast_tuple_target=8160")
 			// The table's TOAST relation holds no row: nothing was moved out of
 			// line, whatever the datum's size.
 			var toastRel string
 			require.NoError(t, conn.DB.QueryRowContext(t.Context(),
-				`SELECT format('%s', reltoastrelid::regclass) FROM pg_class WHERE oid = 'rate_limit_buckets'::regclass`).Scan(&toastRel))
+				`SELECT format('%s', reltoastrelid::regclass) FROM pg_class WHERE oid = 'scrty_rate_limit_buckets'::regclass`).Scan(&toastRel))
 			var toastRows int
 			require.NoError(t, conn.DB.QueryRowContext(t.Context(), `SELECT count(*) FROM `+toastRel).Scan(&toastRows))
 			assert.Zero(t, toastRows, "the stamp array was moved to the TOAST table")

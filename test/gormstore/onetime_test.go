@@ -41,7 +41,7 @@ func TestOneTimeStore(t *testing.T) {
 
 	t.Run("gorm", func(t *testing.T) {
 		storetest.RunOneTimeStoreSuite(t, func(t *testing.T, clk clock.Clock) onetime.Store {
-			return newOneTimeStore(t, emptied(t, d, "one_time_tokens"), gormstore.WithClock(clk))
+			return newOneTimeStore(t, emptied(t, d, "scrty_one_time_tokens"), gormstore.WithClock(clk))
 		}, storetest.RequireReaper())
 	})
 }
@@ -127,7 +127,7 @@ func TestOneTimeStore_Failures(t *testing.T) {
 				isNull := func(tok onetime.Token) bool {
 					var null bool
 					require.NoError(t, d.conn.DB.QueryRowContext(ctx,
-						`SELECT binding_hash IS NULL FROM one_time_tokens WHERE id = $1`, tok.ID).Scan(&null))
+						`SELECT binding_hash IS NULL FROM scrty_one_time_tokens WHERE id = $1`, tok.ID).Scan(&null))
 					return null
 				}
 				assert.True(t, isNull(unbound), "an unbound token's binding is not NULL")

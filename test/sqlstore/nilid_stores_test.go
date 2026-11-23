@@ -55,35 +55,35 @@ func TestSQLStore_NilIdentifierFromGenerator(t *testing.T) {
 			func(t *testing.T, ctx context.Context, db *sql.DB, g id.Generator) error {
 				return newClientStore(t, db, sqlstore.WithIDGenerator(g)).Put(ctx, confidentialClient("c-1"))
 			}},
-		{"login flows", "oidc_flows", "begin login flow",
+		{"login flows", "scrty_oidc_flows", "begin login flow",
 			func(t *testing.T, ctx context.Context, db *sql.DB, g id.Generator) error {
 				_, err := newFlowStore(t, db, sqlstore.WithIDGenerator(g)).Begin(ctx, oidc.Flow{
 					Provider: "p", State: "s", Nonce: "n", Verifier: "v", ExpiresAt: opTime,
 				})
 				return err
 			}},
-		{"MFA enrolments", "mfa_enrolments", "seal: the inner store could not store the pending MFA enrolment",
+		{"MFA enrolments", "scrty_mfa_enrolments", "seal: the inner store could not store the pending MFA enrolment",
 			func(t *testing.T, ctx context.Context, db *sql.DB, g id.Generator) error {
 				return newEnrolmentStore(t, db, storefix.TestCipher(t), sqlstore.WithIDGenerator(g)).
 					PutPending(ctx, storefix.Pending("nil-id-user", "TOTP"))
 			}},
-		{"passkey user handles", "passkey_user_handles", "assign passkey user handle",
+		{"passkey user handles", "scrty_passkey_user_handles", "assign passkey user handle",
 			func(t *testing.T, ctx context.Context, db *sql.DB, g id.Generator) error {
 				_, err := newPasskeyHandleStore(t, db, sqlstore.WithIDGenerator(g)).
 					Assign(ctx, "nil-id-user", storefix.PasskeyOffer("nil-id-user", 0))
 				return err
 			}},
-		{"recovery codes", "recovery_codes", "replace recovery codes",
+		{"recovery codes", "scrty_recovery_codes", "replace recovery codes",
 			func(t *testing.T, ctx context.Context, db *sql.DB, g id.Generator) error {
 				return newRecoveryCodeStore(t, db, sqlstore.WithIDGenerator(g)).
 					ReplaceSet(ctx, "nil-id-user", recoveryHashes("nil-id", 1), recoveryAt)
 			}},
-		{"sessions", "sessions", "session: the inner store could not create the session",
+		{"sessions", "scrty_sessions", "session: the inner store could not create the session",
 			func(t *testing.T, ctx context.Context, db *sql.DB, g id.Generator) error {
 				return newSessionStore(t, db, storefix.TestCipher(t), sqlstore.WithIDGenerator(g)).
 					Create(ctx, storefix.DurableSession("nil-id", opTime))
 			}},
-		{"signing keys", "signing_keys", "seal: the inner store could not store the signing key",
+		{"signing keys", "scrty_signing_keys", "seal: the inner store could not store the signing key",
 			func(t *testing.T, ctx context.Context, db *sql.DB, g id.Generator) error {
 				return newSigningKeyStore(t, db, storefix.TestCipher(t), sqlstore.WithIDGenerator(g)).
 					Store(ctx, storefix.SigningKey("nil-id-kid", []byte("private")))

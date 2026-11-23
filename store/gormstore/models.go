@@ -26,7 +26,7 @@ import (
 // *id.ID, NULL for nil: id.ID itself writes the nil identifier as the all-zero
 // UUID, not NULL, and cannot scan NULL.
 
-// sessionRow is a row of the sessions table. The session identifier is never
+// sessionRow is a row of the scrty_sessions table. The session identifier is never
 // stored: IDDigest is its SHA-256, and ID a primary key the store mints.
 type sessionRow struct {
 	ID                    id.ID      `gorm:"column:id;type:uuid;primaryKey"`
@@ -96,9 +96,9 @@ type sessionRow struct {
 }
 
 // TableName is the table the migration creates for sessions.
-func (sessionRow) TableName() string { return "sessions" }
+func (sessionRow) TableName() string { return "scrty_sessions" }
 
-// oneTimeTokenRow is a row of the one_time_tokens table, keyed by the token's
+// oneTimeTokenRow is a row of the scrty_one_time_tokens table, keyed by the token's
 // own identifier. A nil BindingHash is NULL, an unbound token; a nil
 // ConsumedAt is an unspent one.
 type oneTimeTokenRow struct {
@@ -113,9 +113,9 @@ type oneTimeTokenRow struct {
 }
 
 // TableName is the table the migration creates for one-time tokens.
-func (oneTimeTokenRow) TableName() string { return "one_time_tokens" }
+func (oneTimeTokenRow) TableName() string { return "scrty_one_time_tokens" }
 
-// loginAttemptRow is a row of the login_attempts table: one failure, keyed by
+// loginAttemptRow is a row of the scrty_login_attempts table: one failure, keyed by
 // an identifier the store mints.
 type loginAttemptRow struct {
 	ID          id.ID     `gorm:"column:id;type:uuid;primaryKey"`
@@ -124,9 +124,9 @@ type loginAttemptRow struct {
 }
 
 // TableName is the table the migration creates for login attempts.
-func (loginAttemptRow) TableName() string { return "login_attempts" }
+func (loginAttemptRow) TableName() string { return "scrty_login_attempts" }
 
-// signingKeyRow is a row of the signing_keys table, keyed by a primary key the
+// signingKeyRow is a row of the scrty_signing_keys table, keyed by a primary key the
 // store mints and found by its kid. PrivateKey holds the sealed private
 // material; PublicJWK is published and stored as given.
 type signingKeyRow struct {
@@ -139,9 +139,9 @@ type signingKeyRow struct {
 }
 
 // TableName is the table the migration creates for signing keys.
-func (signingKeyRow) TableName() string { return "signing_keys" }
+func (signingKeyRow) TableName() string { return "scrty_signing_keys" }
 
-// enrolmentRow is a row of the mfa_enrolments table, one per user, keyed by a
+// enrolmentRow is a row of the scrty_mfa_enrolments table, one per user, keyed by a
 // primary key the store mints. Secret is the sealed secret, base64url-encoded;
 // a nil ConfirmedAt is a pending enrolment. The enrolment path's fields are
 // nullable: a nil Generation is an enrolment with no generation, which no
@@ -164,9 +164,9 @@ type enrolmentRow struct {
 }
 
 // TableName is the table the migration creates for MFA enrolments.
-func (enrolmentRow) TableName() string { return "mfa_enrolments" }
+func (enrolmentRow) TableName() string { return "scrty_mfa_enrolments" }
 
-// apiKeyRow is a row of the api_keys table, keyed by the key's own
+// apiKeyRow is a row of the scrty_api_keys table, keyed by the key's own
 // identifier. Scopes is a JSON array of strings; a nil time is NULL, absent.
 type apiKeyRow struct {
 	ID           id.ID      `gorm:"column:id;type:uuid;primaryKey"`
@@ -181,9 +181,9 @@ type apiKeyRow struct {
 }
 
 // TableName is the table the migration creates for API keys.
-func (apiKeyRow) TableName() string { return "api_keys" }
+func (apiKeyRow) TableName() string { return "scrty_api_keys" }
 
-// linkRow is a row of the oidc_links table, keyed by the link's own
+// linkRow is a row of the scrty_oidc_links table, keyed by the link's own
 // identifier and unique by provider, issuer and subject.
 type linkRow struct {
 	ID        id.ID     `gorm:"column:id;type:uuid;primaryKey"`
@@ -197,9 +197,9 @@ type linkRow struct {
 }
 
 // TableName is the table the migration creates for OIDC links.
-func (linkRow) TableName() string { return "oidc_links" }
+func (linkRow) TableName() string { return "scrty_oidc_links" }
 
-// flowRow is a row of the oidc_flows table, keyed by a primary key the store
+// flowRow is a row of the scrty_oidc_flows table, keyed by a primary key the store
 // mints and found by its handle. A nil CompletedAt is an uncompleted flow.
 type flowRow struct {
 	ID          id.ID      `gorm:"column:id;type:uuid;primaryKey"`
@@ -214,9 +214,9 @@ type flowRow struct {
 }
 
 // TableName is the table the migration creates for OIDC flows.
-func (flowRow) TableName() string { return "oidc_flows" }
+func (flowRow) TableName() string { return "scrty_oidc_flows" }
 
-// handoffRow is a row of the oidc_handoffs table, keyed by the record's own
+// handoffRow is a row of the scrty_oidc_handoffs table, keyed by the record's own
 // identifier and found by its token id. A nil ConsumedAt is an unconsumed
 // record.
 type handoffRow struct {
@@ -239,9 +239,9 @@ type handoffRow struct {
 }
 
 // TableName is the table the migration creates for OIDC handoffs.
-func (handoffRow) TableName() string { return "oidc_handoffs" }
+func (handoffRow) TableName() string { return "scrty_oidc_handoffs" }
 
-// userRow is a row of the users table of the identity migration set, keyed by
+// userRow is a row of the scrty_users table of the identity migration set, keyed by
 // an identifier the identity store mints. Password is never NULL: a user with
 // no credential stores an empty hash. A nil OrganizationID is no organization,
 // and a nil PasswordChangedAt no recorded change. CreatedAt and UpdatedAt are
@@ -261,9 +261,9 @@ type userRow struct {
 }
 
 // TableName is the table the identity migration creates for users.
-func (userRow) TableName() string { return "users" }
+func (userRow) TableName() string { return "scrty_users" }
 
-// assignedRoleRow is a row of the assigned_roles table of the identity
+// assignedRoleRow is a row of the scrty_assigned_roles table of the identity
 // migration set: one role grant, keyed by its own identifier and ordered by
 // Position, never by that identifier. A nil StartDate or ValidUntil is an
 // open end of the grant's validity window.
@@ -281,9 +281,9 @@ type assignedRoleRow struct {
 }
 
 // TableName is the table the identity migration creates for role grants.
-func (assignedRoleRow) TableName() string { return "assigned_roles" }
+func (assignedRoleRow) TableName() string { return "scrty_assigned_roles" }
 
-// recoveryCodeRow is a row of the recovery_codes table: one saved recovery
+// recoveryCodeRow is a row of the scrty_recovery_codes table: one saved recovery
 // code's hash, keyed by an identifier the store mints and found by its user
 // and hash. A nil SpentAt is an unspent code. CreatedAt is the caller's,
 // never gorm's.
@@ -296,9 +296,9 @@ type recoveryCodeRow struct {
 }
 
 // TableName is the table the migration creates for saved recovery codes.
-func (recoveryCodeRow) TableName() string { return "recovery_codes" }
+func (recoveryCodeRow) TableName() string { return "scrty_recovery_codes" }
 
-// accountRecoveryRow is a row of the account_recoveries table, keyed by the
+// accountRecoveryRow is a row of the scrty_account_recoveries table, keyed by the
 // record's own identifier. A nil CompletedAt or CancelledAt is a record not
 // yet completed or cancelled. Proven and Reported hold the authenticator
 // references as internal/pgschema writes them. SavedSpent carries no gorm
@@ -316,9 +316,9 @@ type accountRecoveryRow struct {
 }
 
 // TableName is the table the migration creates for account recoveries.
-func (accountRecoveryRow) TableName() string { return "account_recoveries" }
+func (accountRecoveryRow) TableName() string { return "scrty_account_recoveries" }
 
-// passkeyCredentialRow is a row of the passkey_credentials table. The
+// passkeyCredentialRow is a row of the scrty_passkey_credentials table. The
 // transports are one per line, the state and pending reasons are
 // passkey.State and passkey.PendingReason as numbers, and EmailCode is the
 // sealed code, base64url-encoded, NULL while none is outstanding.
@@ -345,9 +345,9 @@ type passkeyCredentialRow struct {
 }
 
 // TableName is the table the migration creates for passkey credentials.
-func (passkeyCredentialRow) TableName() string { return "passkey_credentials" }
+func (passkeyCredentialRow) TableName() string { return "scrty_passkey_credentials" }
 
-// passkeyHandleRow is a row of the passkey_user_handles table.
+// passkeyHandleRow is a row of the scrty_passkey_user_handles table.
 type passkeyHandleRow struct {
 	ID     id.ID  `gorm:"column:id;type:uuid;primaryKey"`
 	UserID string `gorm:"column:user_id;type:text"`
@@ -355,4 +355,4 @@ type passkeyHandleRow struct {
 }
 
 // TableName is the table the migration creates for passkey user handles.
-func (passkeyHandleRow) TableName() string { return "passkey_user_handles" }
+func (passkeyHandleRow) TableName() string { return "scrty_passkey_user_handles" }

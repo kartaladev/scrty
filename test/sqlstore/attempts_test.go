@@ -47,7 +47,7 @@ func TestAttemptStore(t *testing.T) {
 
 	t.Run("sqlstore", func(t *testing.T) {
 		storetest.RunAttemptStoreSuite(t, func(t *testing.T) policy.AttemptStore {
-			return newAttemptStore(t, emptied(t, db, "login_attempts"))
+			return newAttemptStore(t, emptied(t, db, "scrty_login_attempts"))
 		}, storetest.RequireReaper())
 	})
 }
@@ -62,7 +62,7 @@ func TestFailureStreakStore(t *testing.T) {
 
 	db := migratedDB(t).DB
 	newStore := func(t *testing.T) storetest.StreakStore {
-		return newAttemptStore(t, emptied(t, emptied(t, db, "login_attempts"), "login_failure_streaks"))
+		return newAttemptStore(t, emptied(t, emptied(t, db, "scrty_login_attempts"), "scrty_login_failure_streaks"))
 	}
 
 	t.Run("sqlstore", func(t *testing.T) {
@@ -194,7 +194,7 @@ func TestAttemptStore_StreakIDs(t *testing.T) {
 
 		var n int
 		require.NoError(t, db.QueryRowContext(t.Context(),
-			`SELECT count(*) FROM login_failure_streaks WHERE username = $1`, username).Scan(&n))
+			`SELECT count(*) FROM scrty_login_failure_streaks WHERE username = $1`, username).Scan(&n))
 
 		return n
 	}

@@ -43,7 +43,7 @@ func TestAttemptStore(t *testing.T) {
 
 	t.Run("gorm", func(t *testing.T) {
 		storetest.RunAttemptStoreSuite(t, func(t *testing.T) policy.AttemptStore {
-			return newAttemptStore(t, emptied(t, d, "login_attempts"))
+			return newAttemptStore(t, emptied(t, d, "scrty_login_attempts"))
 		}, storetest.RequireReaper())
 	})
 }
@@ -58,8 +58,8 @@ func TestFailureStreakStore(t *testing.T) {
 
 	d := migratedDB(t)
 	newStore := func(t *testing.T) storetest.StreakStore {
-		emptied(t, d, "login_attempts")
-		return newAttemptStore(t, emptied(t, d, "login_failure_streaks"))
+		emptied(t, d, "scrty_login_attempts")
+		return newAttemptStore(t, emptied(t, d, "scrty_login_failure_streaks"))
 	}
 
 	t.Run("gorm", func(t *testing.T) {

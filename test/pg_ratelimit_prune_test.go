@@ -65,7 +65,7 @@ func (e pgPruneEnv) rows(t *testing.T, ns string) int {
 
 	var n int
 	require.NoError(t, e.conn.DB.QueryRowContext(t.Context(),
-		`SELECT count(*) FROM rate_limit_buckets WHERE namespace = $1`, ns).Scan(&n))
+		`SELECT count(*) FROM scrty_rate_limit_buckets WHERE namespace = $1`, ns).Scan(&n))
 	return n
 }
 
@@ -147,7 +147,7 @@ func runPGPrune(t *testing.T, b pgFaultBackend) {
 				t.Cleanup(func() { _ = holder.Rollback() })
 				var one int
 				require.NoError(t, holder.QueryRowContext(t.Context(),
-					`SELECT 1 FROM rate_limit_buckets WHERE namespace = $1 AND key = $2 FOR UPDATE`, ns, "k").Scan(&one))
+					`SELECT 1 FROM scrty_rate_limit_buckets WHERE namespace = $1 AND key = $2 FOR UPDATE`, ns, "k").Scan(&one))
 
 				// A prune that waits for the row waits until ctx ends, so
 				// the bound sits at a fifth of ctx's deadline: far enough
@@ -922,7 +922,7 @@ func runPGPruneUnderRecords(t *testing.T, b pgBackend) {
 	conn := migratedLimiterDB(t)
 	ns := pgScopedNamespace(t, "victims")
 	_, err := conn.DB.ExecContext(t.Context(), `
-INSERT INTO rate_limit_buckets (namespace, key, stamps, newest_at, longest_window_us)
+INSERT INTO scrty_rate_limit_buckets (namespace, key, stamps, newest_at, longest_window_us)
 SELECT $1, 'k' || g, ARRAY[now() - interval '1 hour'], now() - interval '1 hour', 60000000
 FROM generate_series(1, 1000000) AS g`, ns)
 	require.NoError(t, err)
@@ -1041,7 +1041,7 @@ func pgMissingKeys(t *testing.T, conn PostgresConn, ns string, keys []string) []
 
 	rows, err := conn.DB.QueryContext(t.Context(), `
 SELECT k FROM unnest($2::text[]) AS k
-EXCEPT SELECT key FROM rate_limit_buckets WHERE namespace = $1`, ns, keys)
+EXCEPT SELECT key FROM scrty_rate_limit_buckets WHERE namespace = $1`, ns, keys)
 	require.NoError(t, err)
 	defer func() { _ = rows.Close() }()
 	var missing []string
@@ -1087,7 +1087,7 @@ BEGIN
   IF nextval('prune_deletes') > 2 THEN RAISE EXCEPTION '`+marker+`'; END IF;
   RETURN OLD;
 END $$;
-CREATE TRIGGER fail_third_delete BEFORE DELETE ON rate_limit_buckets
+CREATE TRIGGER fail_third_delete BEFORE DELETE ON scrty_rate_limit_buckets
   FOR EACH ROW EXECUTE FUNCTION fail_third_delete();`)
 	require.NoError(t, err)
 	return marker
@@ -1162,7 +1162,7 @@ func runPGFactoryPruneBatches(t *testing.T, b pgBackend) {
 			removed, err := f.Prune(t.Context())
 			var left int
 			require.NoError(t, conn.DB.QueryRowContext(t.Context(),
-				`SELECT count(*) FROM rate_limit_buckets WHERE namespace = $1`, ns).Scan(&left))
+				`SELECT count(*) FROM scrty_rate_limit_buckets WHERE namespace = $1`, ns).Scan(&left))
 			tc.assert(t, removed, left, err, before)
 		})
 	}

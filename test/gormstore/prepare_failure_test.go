@@ -110,7 +110,7 @@ func TestGormStore_StatementThatCannotPrepareIsAnError(t *testing.T) {
 			call: func(ctx context.Context, t *testing.T, d database) error {
 				c, cancel := context.WithCancel(ctx)
 				defer cancel()
-				cancelAfter(d.db, cancel, "UPDATE sessions")
+				cancelAfter(d.db, cancel, "UPDATE scrty_sessions")
 
 				return newSessionStore(t, d.db, storefix.TestCipher(t)).MarkPresented(c, "absent", at)
 			},
@@ -146,7 +146,7 @@ func TestGormStore_StatementThatCannotPrepareIsAnError(t *testing.T) {
 		{
 			name: "login streak add on the pool, table gone",
 			call: func(ctx context.Context, t *testing.T, d database) error {
-				_, err := d.conn.DB.ExecContext(ctx, "DROP TABLE login_failure_streaks")
+				_, err := d.conn.DB.ExecContext(ctx, "DROP TABLE scrty_login_failure_streaks")
 				require.NoError(t, err)
 				_, _, err = newAttemptStore(t, d.db).AddStreakFailure(ctx, "alice", at, at.Add(-time.Hour), 3)
 

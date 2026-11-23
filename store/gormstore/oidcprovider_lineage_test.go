@@ -50,7 +50,7 @@ func (p *recordingPool) QueryRowContext(_ context.Context, query string, _ ...an
 func TestLineagePool_NamesTheLineageTable(t *testing.T) {
 	t.Parallel()
 
-	const statement = "SELECT 1 FROM sessions WHERE id_digest = $1"
+	const statement = "SELECT 1 FROM scrty_sessions WHERE id_digest = $1"
 
 	type testCase struct {
 		name   string
@@ -62,7 +62,7 @@ func TestLineagePool_NamesTheLineageTable(t *testing.T) {
 		t.Helper()
 		require.NoError(t, err)
 		assert.Contains(t, got, pgschema.RefreshTokenTable)
-		assert.NotContains(t, got, "sessions")
+		assert.NotContains(t, got, "scrty_sessions")
 		assert.Equal(t, pgschema.LineageStatement(statement), got)
 	}
 

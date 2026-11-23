@@ -18,20 +18,20 @@ const (
 	// device proof, the emailed code with its expiry and attempts, and the
 	// TOTP verification attempts with their window. Zero rows affected means
 	// the user's enrolment is confirmed.
-	EnrolmentPutPending = `INSERT INTO mfa_enrolments (id, user_id, secret, confirmed_at, last_step, created_at, generation)
+	EnrolmentPutPending = `INSERT INTO scrty_mfa_enrolments (id, user_id, secret, confirmed_at, last_step, created_at, generation)
 VALUES ($1, $2, $3, NULL, 0, $4, $5)
 ON CONFLICT (user_id) DO UPDATE
    SET secret = EXCLUDED.secret, last_step = 0, created_at = EXCLUDED.created_at,
        generation = EXCLUDED.generation, device_proven_at = NULL,
        email_code = NULL, email_code_until = NULL, email_code_attempts = 0,
        verify_attempts = 0, verify_window_until = NULL
- WHERE mfa_enrolments.confirmed_at IS NULL`
+ WHERE scrty_mfa_enrolments.confirmed_at IS NULL`
 
 	// EnrolmentGet reads user $1's enrolment. verify_attempts and
 	// verify_window_until are its last two columns, in that order.
 	EnrolmentGet = `SELECT secret, confirmed_at, last_step, created_at, generation, device_proven_at,
   email_code, email_code_until, email_code_attempts, verify_attempts, verify_window_until
-FROM mfa_enrolments WHERE user_id = $1`
+FROM scrty_mfa_enrolments WHERE user_id = $1`
 
 	// EnrolmentConfirm confirms user $1's enrolment at $4 and records step $3,
 	// never moving the recorded step backwards, only while it is pending on
@@ -39,7 +39,7 @@ FROM mfa_enrolments WHERE user_id = $1`
 	// became of its emailed code, and nothing is written. A NULL $2 matches no
 	// row. The forward-only GREATEST is a safety net against replaying a proving
 	// code, not a guarantee of the port.
-	EnrolmentConfirm = `UPDATE mfa_enrolments SET confirmed_at = $4, last_step = GREATEST(last_step, $3)
+	EnrolmentConfirm = `UPDATE scrty_mfa_enrolments SET confirmed_at = $4, last_step = GREATEST(last_step, $3)
 WHERE user_id = $1 AND generation = $2 AND confirmed_at IS NULL AND device_proven_at IS NULL`
 
 	// EnrolmentProveDevice records the device proof of user $1's enrolment
@@ -47,7 +47,7 @@ WHERE user_id = $1 AND generation = $2 AND confirmed_at IS NULL AND device_prove
 	// (NULL for none) good until $5, proven at $6, with no attempt charged.
 	// It writes only where the enrolment is pending on $2, not yet proven,
 	// and $3 is later than its recorded step. A NULL $2 matches no row.
-	EnrolmentProveDevice = `UPDATE mfa_enrolments
+	EnrolmentProveDevice = `UPDATE scrty_mfa_enrolments
    SET last_step = $3, device_proven_at = $6, email_code = $4, email_code_until = $5, email_code_attempts = 0
  WHERE user_id = $1 AND generation = $2 AND confirmed_at IS NULL
    AND device_proven_at IS NULL AND last_step < $3`
@@ -55,7 +55,7 @@ WHERE user_id = $1 AND generation = $2 AND confirmed_at IS NULL AND device_prove
 	// EnrolmentComplete confirms user $1's enrolment at $3 and clears its
 	// emailed code, keeping the code's expiry, only where it is on
 	// generation $2, proven and not yet confirmed. A NULL $2 matches no row.
-	EnrolmentComplete = `UPDATE mfa_enrolments SET confirmed_at = $3, email_code = NULL
+	EnrolmentComplete = `UPDATE scrty_mfa_enrolments SET confirmed_at = $3, email_code = NULL
  WHERE user_id = $1 AND generation = $2 AND device_proven_at IS NOT NULL AND confirmed_at IS NULL`
 
 	// EnrolmentChargeEmailCode charges one attempt against the emailed code
@@ -63,7 +63,7 @@ WHERE user_id = $1 AND generation = $2 AND confirmed_at IS NULL AND device_prove
 	// after the write. It charges only where the enrolment is pending on $2,
 	// proven, holds a code not expired at $3, and has fewer than $4 attempts
 	// charged. No row returned means no charge. A NULL $2 matches no row.
-	EnrolmentChargeEmailCode = `UPDATE mfa_enrolments SET email_code_attempts = email_code_attempts + 1
+	EnrolmentChargeEmailCode = `UPDATE scrty_mfa_enrolments SET email_code_attempts = email_code_attempts + 1
  WHERE user_id = $1 AND generation = $2 AND confirmed_at IS NULL
    AND device_proven_at IS NOT NULL AND email_code IS NOT NULL
    AND email_code_until > $3 AND email_code_attempts < $4
@@ -72,7 +72,7 @@ RETURNING email_code_attempts`
 	// EnrolmentAcceptStep records step $3 for user $1 only where the
 	// enrolment is confirmed on generation $2 and its recorded step is
 	// strictly lower. A NULL $2 matches no row.
-	EnrolmentAcceptStep = `UPDATE mfa_enrolments SET last_step = $3
+	EnrolmentAcceptStep = `UPDATE scrty_mfa_enrolments SET last_step = $3
 WHERE user_id = $1 AND generation = $2 AND confirmed_at IS NOT NULL AND last_step < $3`
 
 	// EnrolmentChargeVerifyAttempt charges one TOTP verification attempt
@@ -85,7 +85,7 @@ WHERE user_id = $1 AND generation = $2 AND confirmed_at IS NOT NULL AND last_ste
 	// concurrent charges of one row serialise on its row lock and re-check
 	// the WHERE clause against the committed row, so at most $4 succeed per
 	// window.
-	EnrolmentChargeVerifyAttempt = `UPDATE mfa_enrolments SET
+	EnrolmentChargeVerifyAttempt = `UPDATE scrty_mfa_enrolments SET
   verify_attempts     = CASE WHEN verify_window_until IS NULL OR verify_window_until <= $2
                              THEN 1 ELSE verify_attempts + 1 END,
   verify_window_until = CASE WHEN verify_window_until IS NULL OR verify_window_until <= $2
@@ -97,13 +97,13 @@ RETURNING verify_window_until`
 	// EnrolmentRefundVerifyAttempt gives back one attempt charged against
 	// user $1's enrolment in the window ending at $2. Zero rows affected
 	// means the window was replaced or nothing is charged.
-	EnrolmentRefundVerifyAttempt = `UPDATE mfa_enrolments SET verify_attempts = verify_attempts - 1
+	EnrolmentRefundVerifyAttempt = `UPDATE scrty_mfa_enrolments SET verify_attempts = verify_attempts - 1
  WHERE user_id = $1 AND verify_window_until = $2 AND verify_attempts > 0`
 
 	// EnrolmentDelete removes user $1's enrolment.
-	EnrolmentDelete = `DELETE FROM mfa_enrolments WHERE user_id = $1`
+	EnrolmentDelete = `DELETE FROM scrty_mfa_enrolments WHERE user_id = $1`
 
 	// EnrolmentReseal replaces user $1's secret with $3 only while it still
 	// equals $2.
-	EnrolmentReseal = `UPDATE mfa_enrolments SET secret = $3 WHERE user_id = $1 AND secret = $2`
+	EnrolmentReseal = `UPDATE scrty_mfa_enrolments SET secret = $3 WHERE user_id = $1 AND secret = $2`
 )

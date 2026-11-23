@@ -63,6 +63,29 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 
 ### Changed
 
+- **BREAKING: every table, index and sequence scrty's migrations create is now named `scrty_<name>`.**
+  The prefix is fixed. Migration `20261124000000_scrty_prefix`, in each set, renames the relations in
+  place, so rows, indexes and constraints are kept. The stores, the rate limiter and the gorm models use
+  the new names. The version tables `goose_security_state` and `goose_identity` are unchanged.
+  - Security-state set: `account_recoveries`, `api_keys`, `login_attempts`, `login_failure_streaks`,
+    `mfa_enrolments`, `oidc_flows`, `oidc_handoffs`, `oidc_links`, `one_time_tokens`,
+    `op_access_tokens`, `op_authorization_codes`, `op_browser_sessions`, `op_client_assertions`,
+    `op_clients`, `op_consents`, `op_device_authorizations`, `op_grants`, `op_pending_requests`,
+    `op_refresh_tokens`, `passkey_credentials`, `passkey_user_handles`, `rate_limit_buckets`,
+    `recovery_codes`, `sessions` and `signing_keys` become `scrty_` plus the same name.
+  - Identity set: `assigned_roles`, `groups`, `organizations`, `password_history`,
+    `resource_privileges`, `roles` and `users` become `scrty_` plus the same name, and the sequence
+    `password_history_seq_seq` becomes `scrty_password_history_seq_seq`.
+  - To upgrade, stop every replica running v0.2.x or earlier, apply the security-state set, apply the
+    identity set if you use it, then start the new release. To roll back, stop the new release, roll back
+    the two rename migrations (one version down per set: security state, and identity if you use it),
+    then start the previous release.
+  - The rename migration waits at most 5 seconds for its table locks. If it cannot get them it fails
+    with nothing renamed, and you can retry it.
+  - A new binary against a database that was not renamed is refused when the limiter factory's `Verify`
+    runs: the error wraps `ratelimit.ErrConfig` and names `scrty_rate_limit_buckets`.
+  - Raw SQL, views, grants and monitoring of your own that name the old tables must follow.
+  - To keep scrty's tables apart from your own, use a PostgreSQL schema and a `search_path`.
 - The grant store keeps a revocation 31 minutes, where it kept it 11, so that a revocation outlives the
   longest device authorization.
 

@@ -140,7 +140,7 @@ var seedIDs = id.NewV7Generator()
 
 func (f *identityFixture) SeedRole(ctx context.Context, role string, p []*identity.ResourcePrivileges) error {
 	q := f.q(ctx)
-	if err := q.Exec(`DELETE FROM resource_privileges WHERE role_name = ?`, role).Error; err != nil {
+	if err := q.Exec(`DELETE FROM scrty_resource_privileges WHERE role_name = ?`, role).Error; err != nil {
 		return err
 	}
 
@@ -153,7 +153,7 @@ func (f *identityFixture) SeedRole(ctx context.Context, role string, p []*identi
 			if err != nil {
 				return err
 			}
-			if err := q.Exec(`INSERT INTO resource_privileges
+			if err := q.Exec(`INSERT INTO scrty_resource_privileges
   (id, role_name, resource_group, resource, privilege, granted, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 				rowID, role, rp.Group, rp.Resource, priv.Name, priv.Granted, seedNow, seedNow).Error; err != nil {
@@ -166,7 +166,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 }
 
 func (f *identityFixture) SeedMFARequired(ctx context.Context, ref identity.UserID, required bool) error {
-	res := f.q(ctx).Exec(`UPDATE users SET mfa_required = ? WHERE id = ?`, required, string(ref))
+	res := f.q(ctx).Exec(`UPDATE scrty_users SET mfa_required = ? WHERE id = ?`, required, string(ref))
 	if res.Error != nil {
 		return res.Error
 	}
@@ -181,7 +181,7 @@ func (f *identityFixture) SeedRoleGrants(ctx context.Context, username string, g
 	q := f.q(ctx)
 
 	var userIDs []string
-	if err := q.Raw(`SELECT id::text FROM users WHERE username = ?`, username).Scan(&userIDs).Error; err != nil {
+	if err := q.Raw(`SELECT id::text FROM scrty_users WHERE username = ?`, username).Scan(&userIDs).Error; err != nil {
 		return err
 	}
 	if len(userIDs) == 0 {
@@ -189,7 +189,7 @@ func (f *identityFixture) SeedRoleGrants(ctx context.Context, username string, g
 	}
 	userID := userIDs[0]
 
-	if err := q.Exec(`DELETE FROM assigned_roles WHERE user_id = ?`, userID).Error; err != nil {
+	if err := q.Exec(`DELETE FROM scrty_assigned_roles WHERE user_id = ?`, userID).Error; err != nil {
 		return err
 	}
 
@@ -212,7 +212,7 @@ func (f *identityFixture) SeedRoleGrants(ctx context.Context, username string, g
 			primary = g.Name
 		}
 
-		if err := q.Exec(`INSERT INTO assigned_roles
+		if err := q.Exec(`INSERT INTO scrty_assigned_roles
   (id, user_id, role_name, position, is_primary, super_role, start_date, valid_until, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			grantID, userID, g.Name, position, g.Primary, g.SuperRole,
@@ -222,7 +222,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		position++
 	}
 
-	return q.Exec(`UPDATE users SET role = ? WHERE id = ?`, primary, userID).Error
+	return q.Exec(`UPDATE scrty_users SET role = ? WHERE id = ?`, primary, userID).Error
 }
 
 func (f *identityFixture) SeedOrganization(ctx context.Context, org *identity.Organization) error {
@@ -234,7 +234,7 @@ func (f *identityFixture) SeedOrganization(ctx context.Context, org *identity.Or
 	var groupID sql.NullString
 	if g := org.Group; g != nil {
 		groupID = sql.NullString{String: g.ID, Valid: true}
-		if err := q.Exec(`INSERT INTO groups (id, name, internal, created_at, updated_at)
+		if err := q.Exec(`INSERT INTO scrty_groups (id, name, internal, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, internal = EXCLUDED.internal`,
 			g.ID, g.Name, g.Internal, seedNow, seedNow).Error; err != nil {
@@ -242,7 +242,7 @@ ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, internal = EXCLUDED.interna
 		}
 	}
 
-	return q.Exec(`INSERT INTO organizations (id, name, group_id, created_at, updated_at)
+	return q.Exec(`INSERT INTO scrty_organizations (id, name, group_id, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, group_id = EXCLUDED.group_id`,
 		org.ID, org.Name, groupID, seedNow, seedNow).Error
@@ -320,7 +320,7 @@ func userRowCount(ctx context.Context, t *testing.T, db *sql.DB, username string
 	t.Helper()
 
 	var n int
-	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM users WHERE username = $1`, username).Scan(&n))
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM scrty_users WHERE username = $1`, username).Scan(&n))
 
 	return n
 }

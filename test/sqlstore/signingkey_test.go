@@ -36,7 +36,7 @@ func TestSigningKeyStore(t *testing.T) {
 
 	t.Run("sqlstore", func(t *testing.T) {
 		storetest.RunSigningKeyStoreSuite(t, func(t *testing.T) signingkey.KeyStore {
-			return newSigningKeyStore(t, emptied(t, db, "signing_keys"), c)
+			return newSigningKeyStore(t, emptied(t, db, "scrty_signing_keys"), c)
 		})
 	})
 }
@@ -144,7 +144,7 @@ func TestSigningKeyStore_Sealed(t *testing.T) {
 					require.NoError(t, s.Store(ctx, storefix.SigningKey(kid, []byte("PKCS8-"+kid))))
 				}
 				// Flip the last byte of one key's tag.
-				_, err := conn.DB.ExecContext(ctx, `UPDATE signing_keys
+				_, err := conn.DB.ExecContext(ctx, `UPDATE scrty_signing_keys
 SET private_key = overlay(private_key placing
   decode(lpad(to_hex(get_byte(private_key, length(private_key) - 1) # 1), 2, '0'), 'hex')
   from length(private_key))
@@ -237,7 +237,7 @@ WHERE kid = 'kid-b'`)
 				require.NoError(t, got.err)
 				require.Len(t, got.recs, 1, "the gated read loaded the key before its delete")
 
-				assert.False(t, storefix.ExistsCtx(ctx, t, conn.DB, `SELECT EXISTS (SELECT 1 FROM signing_keys)`),
+				assert.False(t, storefix.ExistsCtx(ctx, t, conn.DB, `SELECT EXISTS (SELECT 1 FROM scrty_signing_keys)`),
 					"the re-seal stored the deleted key again")
 			},
 		},

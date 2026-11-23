@@ -46,6 +46,13 @@ func migratedColumns(t *testing.T, set migrate.Set) map[string]map[string]string
 				require.GreaterOrEqual(t, len(f), 7, "cannot read column line %q", line)
 				require.Contains(t, tables, f[2], "column added to table %s, which no migration creates", f[2])
 				tables[f[2]][f[5]] = strings.TrimSuffix(f[6], ";")
+			case strings.HasPrefix(line, "ALTER TABLE ") && strings.Contains(line, " RENAME TO "):
+				// ALTER TABLE <old> RENAME TO <new>;
+				f := strings.Fields(line)
+				require.Len(t, f, 6, "cannot read rename line %q", line)
+				require.Contains(t, tables, f[2], "rename of table %s, which no migration creates", f[2])
+				tables[strings.TrimSuffix(f[5], ";")] = tables[f[2]]
+				delete(tables, f[2])
 			case strings.HasPrefix(line, "CREATE TABLE "):
 				table = strings.Fields(line)[2]
 				tables[table] = map[string]string{}
@@ -98,21 +105,21 @@ func TestModels(t *testing.T) {
 	}
 
 	cases := []testCase{
-		{name: "sessions", model: &sessionRow{}, table: "sessions", migrated: securityState},
-		{name: "one-time tokens", model: &oneTimeTokenRow{}, table: "one_time_tokens", migrated: securityState},
-		{name: "login attempts", model: &loginAttemptRow{}, table: "login_attempts", migrated: securityState},
-		{name: "signing keys", model: &signingKeyRow{}, table: "signing_keys", migrated: securityState},
-		{name: "MFA enrolments", model: &enrolmentRow{}, table: "mfa_enrolments", migrated: securityState},
-		{name: "API keys", model: &apiKeyRow{}, table: "api_keys", migrated: securityState},
-		{name: "OIDC links", model: &linkRow{}, table: "oidc_links", migrated: securityState},
-		{name: "OIDC flows", model: &flowRow{}, table: "oidc_flows", migrated: securityState},
-		{name: "OIDC handoffs", model: &handoffRow{}, table: "oidc_handoffs", migrated: securityState},
-		{name: "recovery codes", model: &recoveryCodeRow{}, table: "recovery_codes", migrated: securityState},
-		{name: "account recoveries", model: &accountRecoveryRow{}, table: "account_recoveries", migrated: securityState},
-		{name: "passkey credentials", model: &passkeyCredentialRow{}, table: "passkey_credentials", migrated: securityState},
-		{name: "passkey user handles", model: &passkeyHandleRow{}, table: "passkey_user_handles", migrated: securityState},
-		{name: "users", model: &userRow{}, table: "users", migrated: identity},
-		{name: "role grants", model: &assignedRoleRow{}, table: "assigned_roles", migrated: identity},
+		{name: "sessions", model: &sessionRow{}, table: "scrty_sessions", migrated: securityState},
+		{name: "one-time tokens", model: &oneTimeTokenRow{}, table: "scrty_one_time_tokens", migrated: securityState},
+		{name: "login attempts", model: &loginAttemptRow{}, table: "scrty_login_attempts", migrated: securityState},
+		{name: "signing keys", model: &signingKeyRow{}, table: "scrty_signing_keys", migrated: securityState},
+		{name: "MFA enrolments", model: &enrolmentRow{}, table: "scrty_mfa_enrolments", migrated: securityState},
+		{name: "API keys", model: &apiKeyRow{}, table: "scrty_api_keys", migrated: securityState},
+		{name: "OIDC links", model: &linkRow{}, table: "scrty_oidc_links", migrated: securityState},
+		{name: "OIDC flows", model: &flowRow{}, table: "scrty_oidc_flows", migrated: securityState},
+		{name: "OIDC handoffs", model: &handoffRow{}, table: "scrty_oidc_handoffs", migrated: securityState},
+		{name: "recovery codes", model: &recoveryCodeRow{}, table: "scrty_recovery_codes", migrated: securityState},
+		{name: "account recoveries", model: &accountRecoveryRow{}, table: "scrty_account_recoveries", migrated: securityState},
+		{name: "passkey credentials", model: &passkeyCredentialRow{}, table: "scrty_passkey_credentials", migrated: securityState},
+		{name: "passkey user handles", model: &passkeyHandleRow{}, table: "scrty_passkey_user_handles", migrated: securityState},
+		{name: "users", model: &userRow{}, table: "scrty_users", migrated: identity},
+		{name: "role grants", model: &assignedRoleRow{}, table: "scrty_assigned_roles", migrated: identity},
 	}
 
 	for _, tc := range cases {

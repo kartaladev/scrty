@@ -43,7 +43,7 @@ var brokenVariants = []storefix.BrokenVariant{
 			c := storefix.TestCipher(t)
 			t.Run("gorm", func(t *testing.T) {
 				storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
-					return storefix.FamilyReadAnswersNothingStore{Store: newSessionStore(t, emptied(t, d, "sessions"), c, gormstore.WithClock(clk))}
+					return storefix.FamilyReadAnswersNothingStore{Store: newSessionStore(t, emptied(t, d, "scrty_sessions"), c, gormstore.WithClock(clk))}
 				})
 			})
 		},
@@ -67,7 +67,7 @@ var brokenVariants = []storefix.BrokenVariant{
 			c := storefix.TestCipher(t)
 			t.Run("gorm", func(t *testing.T) {
 				storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
-					db := emptied(t, d, "sessions")
+					db := emptied(t, d, "scrty_sessions")
 					return gormSaveStore{Store: newSessionStore(t, db, c, gormstore.WithClock(clk)), db: db}
 				})
 			})
@@ -327,7 +327,7 @@ func (s readThenSupersede) Supersede(ctx context.Context, op session.Supersessio
 	if op.RequireUnpresentedSuccessor && len(op.ObservedSuccessor) > 0 {
 		var presented bool
 		if err := s.db.WithContext(ctx).Raw(
-			`SELECT first_presented_at IS NOT NULL FROM sessions WHERE id_digest = ?`, op.ObservedSuccessor,
+			`SELECT first_presented_at IS NOT NULL FROM scrty_sessions WHERE id_digest = ?`, op.ObservedSuccessor,
 		).Scan(&presented).Error; err != nil {
 			return err
 		}
@@ -354,7 +354,7 @@ func (s singlePassFamilyDelete) DeleteFamily(ctx context.Context, family id.ID) 
 	if tx, ok := ctx.Value(attachedTxKey{}).(*gormdb.DB); ok {
 		q = tx
 	}
-	res := q.WithContext(ctx).Exec(`DELETE FROM sessions WHERE family_id = ?`, family.String())
+	res := q.WithContext(ctx).Exec(`DELETE FROM scrty_sessions WHERE family_id = ?`, family.String())
 	return int(res.RowsAffected), res.Error
 }
 
@@ -370,7 +370,7 @@ type savedSession struct {
 	AbsoluteExpiresAt time.Time `gorm:"column:absolute_expires_at;type:timestamptz"`
 }
 
-func (savedSession) TableName() string { return "sessions" }
+func (savedSession) TableName() string { return "scrty_sessions" }
 
 // gormSaveStore saves a session its Save does not find with gorm's own Save,
 // which falls back to an insert when its update matches no row: a save racing
@@ -417,7 +417,7 @@ func (s readThenWriteConsume) Consume(ctx context.Context, tokenID id.ID, at tim
 	if !tok.ConsumedAt.IsZero() {
 		return onetime.ErrTokenNotFound
 	}
-	return s.db.WithContext(ctx).Table("one_time_tokens").Where("id = ?", tokenID).Update("consumed_at", at).Error
+	return s.db.WithContext(ctx).Table("scrty_one_time_tokens").Where("id = ?", tokenID).Update("consumed_at", at).Error
 }
 
 // readThenWriteAcceptStep accepts a step by reading the enrolment, checking
@@ -435,7 +435,7 @@ func (s readThenWriteAcceptStep) AcceptStep(
 	if err != nil || !ok || e.ConfirmedAt.IsZero() || gen.IsZero() || e.Generation != gen || e.LastStep >= step {
 		return false, err
 	}
-	err = s.db.WithContext(ctx).Table("mfa_enrolments").Where("user_id = ?", string(user)).Update("last_step", step).Error
+	err = s.db.WithContext(ctx).Table("scrty_mfa_enrolments").Where("user_id = ?", string(user)).Update("last_step", step).Error
 	return err == nil, err
 }
 
@@ -457,7 +457,7 @@ type upsertedLink struct {
 	CreatedAt time.Time `gorm:"column:created_at;type:timestamptz;autoCreateTime:false"`
 }
 
-func (upsertedLink) TableName() string { return "oidc_links" }
+func (upsertedLink) TableName() string { return "scrty_oidc_links" }
 
 func (s upsertLinkInsert) Insert(ctx context.Context, l oidc.Link) error {
 	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
@@ -545,7 +545,7 @@ func (s lockOutOfOrder) Supersede(ctx context.Context, op session.Supersession) 
 	}
 	defer tx.Rollback()
 	for _, digest := range s.rows(op) {
-		if err := tx.Exec(`SELECT 1 FROM sessions WHERE id_digest = ? FOR UPDATE`, digest).Error; err != nil {
+		if err := tx.Exec(`SELECT 1 FROM scrty_sessions WHERE id_digest = ? FOR UPDATE`, digest).Error; err != nil {
 			return err
 		}
 	}
@@ -567,7 +567,7 @@ type readThenMark struct {
 func (s readThenMark) MarkPresented(ctx context.Context, sessionID string, at time.Time) error {
 	digest := sha256.Sum256([]byte(sessionID))
 	var superseded bool
-	if err := s.db.WithContext(ctx).Raw(`SELECT superseded_at IS NOT NULL FROM sessions WHERE id_digest = ?`,
+	if err := s.db.WithContext(ctx).Raw(`SELECT superseded_at IS NOT NULL FROM scrty_sessions WHERE id_digest = ?`,
 		digest[:]).Scan(&superseded).Error; err != nil {
 		return err
 	}
@@ -575,7 +575,7 @@ func (s readThenMark) MarkPresented(ctx context.Context, sessionID string, at ti
 		return session.ErrSuperseded
 	}
 	return s.db.WithContext(ctx).Exec(
-		`UPDATE sessions SET first_presented_at = ? WHERE id_digest = ? AND first_presented_at IS NULL`,
+		`UPDATE scrty_sessions SET first_presented_at = ? WHERE id_digest = ? AND first_presented_at IS NULL`,
 		at, digest[:]).Error
 }
 

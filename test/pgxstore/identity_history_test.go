@@ -103,7 +103,7 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 
 				var got time.Time
 				require.NoError(t, pool.QueryRow(ctx,
-					`SELECT retired_at FROM password_history WHERE user_id = $1`, string(user)).Scan(&got))
+					`SELECT retired_at FROM scrty_password_history WHERE user_id = $1`, string(user)).Scan(&got))
 				assert.True(t, at.Truncate(time.Microsecond).Equal(got), "want %v, got %v", at, got)
 			},
 		},
@@ -172,7 +172,7 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 
 				var n int
 				require.NoError(t, pool.QueryRow(ctx,
-					`SELECT count(*) FROM password_history WHERE password = $1`, refused).Scan(&n))
+					`SELECT count(*) FROM scrty_password_history WHERE password = $1`, refused).Scan(&n))
 				assert.Zero(t, n, "a refused retire writes nothing")
 			},
 		},
@@ -225,7 +225,7 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 
 					tx := beginTx(ctx, t, pool)
 					defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-					_, err := tx.Exec(ctx, `ALTER TABLE password_history RENAME TO password_history_gone`)
+					_, err := tx.Exec(ctx, `ALTER TABLE scrty_password_history RENAME TO password_history_gone`)
 					require.NoError(t, err)
 
 					fn(pgxstore.WithTx(ctx, tx))
@@ -359,9 +359,9 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 				// The consumer's user deletion: the user, the grants and the
 				// history, in one transaction.
 				tx := beginTx(ctx, t, pool)
-				_, err = tx.Exec(ctx, `DELETE FROM assigned_roles WHERE user_id = $1`, string(gone.ID))
+				_, err = tx.Exec(ctx, `DELETE FROM scrty_assigned_roles WHERE user_id = $1`, string(gone.ID))
 				require.NoError(t, err)
-				_, err = tx.Exec(ctx, `DELETE FROM users WHERE id = $1`, string(gone.ID))
+				_, err = tx.Exec(ctx, `DELETE FROM scrty_users WHERE id = $1`, string(gone.ID))
 				require.NoError(t, err)
 				require.NoError(t, s.ForgetPasswords(pgxstore.WithTx(ctx, tx), gone.ID))
 				require.NoError(t, tx.Commit(ctx))
@@ -420,7 +420,7 @@ BEGIN
   RETURN OLD;
 END $$`)
 	require.NoError(t, err)
-	_, err = pool.Exec(ctx, `CREATE TRIGGER `+name+` BEFORE DELETE ON password_history
+	_, err = pool.Exec(ctx, `CREATE TRIGGER `+name+` BEFORE DELETE ON scrty_password_history
 FOR EACH ROW EXECUTE FUNCTION `+name+`()`)
 	require.NoError(t, err)
 
@@ -430,7 +430,7 @@ FOR EACH ROW EXECUTE FUNCTION `+name+`()`)
 		// instead of hanging the package.
 		end, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		_, err := pool.Exec(end, `DROP TRIGGER `+name+` ON password_history`)
+		_, err := pool.Exec(end, `DROP TRIGGER `+name+` ON scrty_password_history`)
 		assert.NoError(t, err)
 		_, err = pool.Exec(end, `DROP FUNCTION `+name+`()`)
 		assert.NoError(t, err)
@@ -443,7 +443,7 @@ func historyRows(ctx context.Context, t *testing.T, pool *pgxpool.Pool, user ide
 
 	var n int
 	require.NoError(t, pool.QueryRow(ctx,
-		`SELECT count(*) FROM password_history WHERE user_id = $1`, string(user)).Scan(&n))
+		`SELECT count(*) FROM scrty_password_history WHERE user_id = $1`, string(user)).Scan(&n))
 
 	return n
 }

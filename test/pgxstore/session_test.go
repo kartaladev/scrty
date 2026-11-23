@@ -39,7 +39,7 @@ func TestSessionStore(t *testing.T) {
 
 	t.Run("pgx", func(t *testing.T) {
 		storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
-			return newSessionStore(t, emptied(t, db, "sessions"), c, pgxstore.WithClock(clk))
+			return newSessionStore(t, emptied(t, db, "scrty_sessions"), c, pgxstore.WithClock(clk))
 		})
 	})
 }
@@ -164,7 +164,7 @@ func TestSessionStore_Durable(t *testing.T) {
 			gen      sql.NullString
 		)
 		require.NoError(t, db.QueryRowContext(ctx,
-			`SELECT enrolment_origin_deadline, enrolment_generation::text FROM sessions WHERE id_digest = $1`,
+			`SELECT enrolment_origin_deadline, enrolment_generation::text FROM scrty_sessions WHERE id_digest = $1`,
 			storefix.Digest(sid)).Scan(&deadline, &gen))
 		return deadline, gen
 	}
@@ -187,7 +187,7 @@ func TestSessionStore_Durable(t *testing.T) {
 
 				var table string
 				require.NoError(t, db.QueryRowContext(ctx,
-					`SELECT string_agg(row_to_json(s)::text, ',') FROM sessions s`).Scan(&table))
+					`SELECT string_agg(row_to_json(s)::text, ',') FROM scrty_sessions s`).Scan(&table))
 				assert.NotContains(t, table, sid, "a column holds the session identifier")
 
 				got, err := store.Load(ctx, sid)
@@ -205,7 +205,7 @@ func TestSessionStore_Durable(t *testing.T) {
 				garbage := make([]byte, 64)
 				_, err := rand.Read(garbage)
 				require.NoError(t, err)
-				_, err = db.ExecContext(ctx, `UPDATE sessions SET external_id_token = $2 WHERE id_digest = $1`,
+				_, err = db.ExecContext(ctx, `UPDATE scrty_sessions SET external_id_token = $2 WHERE id_digest = $1`,
 					storefix.Digest(sid), base64.RawURLEncoding.EncodeToString(garbage))
 				require.NoError(t, err)
 
@@ -277,7 +277,7 @@ func TestSessionStore_Durable(t *testing.T) {
 				const sid = "sess-infinite-mfa"
 				require.NoError(t, store.Create(ctx, storefix.DurableSession(sid, now)))
 				_, err := db.ExecContext(ctx,
-					`UPDATE sessions SET mfa_satisfied_at = 'infinity' WHERE id_digest = $1`, storefix.Digest(sid))
+					`UPDATE scrty_sessions SET mfa_satisfied_at = 'infinity' WHERE id_digest = $1`, storefix.Digest(sid))
 				require.NoError(t, err)
 
 				got, err := store.Load(ctx, sid)
@@ -320,7 +320,7 @@ func TestSessionStore_Durable(t *testing.T) {
 				const sid = "sess-infinite-marker"
 				require.NoError(t, store.Create(ctx, enrolmentMarked(sid)))
 				_, err := db.ExecContext(ctx,
-					`UPDATE sessions SET enrolment_origin_deadline = 'infinity' WHERE id_digest = $1`, storefix.Digest(sid))
+					`UPDATE scrty_sessions SET enrolment_origin_deadline = 'infinity' WHERE id_digest = $1`, storefix.Digest(sid))
 				require.NoError(t, err)
 
 				got, err := store.Load(ctx, sid)

@@ -27,39 +27,39 @@ import (
 const (
 	// DeviceRelease clears user-code digest $1 from every record holding it that has
 	// expired at $2, the time the provider passes.
-	DeviceRelease = `UPDATE op_device_authorizations SET user_code_digest = NULL
+	DeviceRelease = `UPDATE scrty_op_device_authorizations SET user_code_digest = NULL
 WHERE user_code_digest = $1 AND expires_at <= $2`
 
 	// DeviceInsert stores a record, with the arguments DeviceArgs returns. No row affected
 	// means a unique key of it is held: its ID, its device-code digest or its user-code
 	// digest, which DeviceHeld tells apart.
-	DeviceInsert = `INSERT INTO op_device_authorizations (` + deviceColumns + `)
+	DeviceInsert = `INSERT INTO scrty_op_device_authorizations (` + deviceColumns + `)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
 ON CONFLICT DO NOTHING`
 
 	// DeviceHeld reports, for a refused DeviceInsert, whether ID $1 or device-code digest
 	// $2 is held, and whether user-code digest $3 is.
 	DeviceHeld = `SELECT
-  EXISTS (SELECT 1 FROM op_device_authorizations WHERE id = $1 OR device_code_digest = $2),
-  EXISTS (SELECT 1 FROM op_device_authorizations WHERE user_code_digest = $3)`
+  EXISTS (SELECT 1 FROM scrty_op_device_authorizations WHERE id = $1 OR device_code_digest = $2),
+  EXISTS (SELECT 1 FROM scrty_op_device_authorizations WHERE user_code_digest = $3)`
 
 	// DeviceSelectByDeviceCode reads the record of device-code digest $1, whatever its
 	// state and expiry.
-	DeviceSelectByDeviceCode = `SELECT ` + deviceColumns + ` FROM op_device_authorizations WHERE device_code_digest = $1`
+	DeviceSelectByDeviceCode = `SELECT ` + deviceColumns + ` FROM scrty_op_device_authorizations WHERE device_code_digest = $1`
 
 	// DeviceSelectByUserCode reads the record holding user-code digest $1 while $2 is
 	// before its expiry.
-	DeviceSelectByUserCode = `SELECT ` + deviceColumns + ` FROM op_device_authorizations
+	DeviceSelectByUserCode = `SELECT ` + deviceColumns + ` FROM scrty_op_device_authorizations
 WHERE user_code_digest = $1 AND $2 < expires_at`
 
 	// DeviceClaim moves record $1 from issued to claimed, storing flow digest $2, while $3
 	// is before its expiry.
-	DeviceClaim = `UPDATE op_device_authorizations SET state = 1, claim_flow_digest = $2
+	DeviceClaim = `UPDATE scrty_op_device_authorizations SET state = 1, claim_flow_digest = $2
 WHERE id = $1 AND state = 0 AND $3 < expires_at`
 
 	// DeviceDecide moves record $1 from claimed to state $2, writing the approval's
 	// columns $3 to $12, while $13 is before its expiry. DeviceDecideArgs binds it.
-	DeviceDecide = `UPDATE op_device_authorizations SET state = $2, user_ref = $3, granted_scopes = $4, sign_in = $5,
+	DeviceDecide = `UPDATE scrty_op_device_authorizations SET state = $2, user_ref = $3, granted_scopes = $4, sign_in = $5,
   sign_in_family = $6, external_issuer = $7, external_session_id = $8, grant_family = $9, offline = $10,
   ends_with_sign_in = $11, survives_sign_in_end = $12
 WHERE id = $1 AND state = 1 AND $13 < expires_at`
@@ -68,22 +68,22 @@ WHERE id = $1 AND state = 1 AND $13 < expires_at`
 	// still $2: the count goes up by one, the last poll is $3 and the interval $4
 	// nanoseconds. It judges no expiry, as the provider records a poll only of a record it
 	// found unexpired.
-	DeviceRecordPoll = `UPDATE op_device_authorizations SET poll_count = poll_count + 1, last_polled_at = $3,
+	DeviceRecordPoll = `UPDATE scrty_op_device_authorizations SET poll_count = poll_count + 1, last_polled_at = $3,
   interval_ns = $4
 WHERE id = $1 AND state IN (0, 1) AND poll_count = $2`
 
 	// DeviceSpend moves record $1 from approved to spent while $2 is before its expiry.
-	DeviceSpend = `UPDATE op_device_authorizations SET state = 4 WHERE id = $1 AND state = 2 AND $2 < expires_at`
+	DeviceSpend = `UPDATE scrty_op_device_authorizations SET state = 4 WHERE id = $1 AND state = 2 AND $2 < expires_at`
 
 	// DeviceDeleteExpired removes every record expired at $1, but a spent one only once it
 	// expired at $2 too, which DeviceDeleteExpiredArgs sets a minute before $1: the window
 	// in which a replay of its device code is still detected.
-	DeviceDeleteExpired = `DELETE FROM op_device_authorizations WHERE expires_at <= $1 AND (state <> 4 OR expires_at <= $2)`
+	DeviceDeleteExpired = `DELETE FROM scrty_op_device_authorizations WHERE expires_at <= $1 AND (state <> 4 OR expires_at <= $2)`
 
 	// DeviceUnspentByClient lists the grant family of each approved or spent record of
 	// user $1 and client $2, whatever its expiry. A record holding no approving sign-in
 	// has no approval, as DeviceRow.Record decides, so it names no grant family to list.
-	DeviceUnspentByClient = `SELECT grant_family FROM op_device_authorizations
+	DeviceUnspentByClient = `SELECT grant_family FROM scrty_op_device_authorizations
 WHERE user_ref = $1 AND client_id = $2 AND state IN (2, 4) AND sign_in IS NOT NULL`
 )
 
@@ -242,7 +242,7 @@ func DeviceDeleteExpiredArgs(now time.Time) []any {
 func DeviceUnspentBySignIn(sel oidcprovider.SignInSelector, includeOffline bool) (string, []any) {
 	where, args := signInWhere(sel, 2)
 
-	return "SELECT grant_family FROM op_device_authorizations WHERE " + where +
+	return "SELECT grant_family FROM scrty_op_device_authorizations WHERE " + where +
 		" AND state IN (2, 4) AND sign_in IS NOT NULL AND ($1::boolean OR " + endsWithSignIn + ")", append([]any{includeOffline}, args...)
 }
 

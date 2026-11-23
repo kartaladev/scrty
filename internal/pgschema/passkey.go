@@ -27,23 +27,23 @@ const (
 	// REPEATABLE READ or SERIALIZABLE transaction, a conflicting row committed
 	// after the caller's snapshot is a serialization failure (SQLSTATE 40001)
 	// that aborts it, and the caller retries.
-	PasskeyCredentialInsert = `INSERT INTO passkey_credentials (` + passkeyCredentialColumns + `)
+	PasskeyCredentialInsert = `INSERT INTO scrty_passkey_credentials (` + passkeyCredentialColumns + `)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 ON CONFLICT DO NOTHING`
 
 	// PasskeyCredentialByCredentialID reads the credential whose WebAuthn
 	// credential ID is $1.
 	PasskeyCredentialByCredentialID = `SELECT ` + passkeyCredentialColumns + `
-FROM passkey_credentials WHERE credential_id = $1`
+FROM scrty_passkey_credentials WHERE credential_id = $1`
 
 	// PasskeyCredentialFind reads credential $1 of user $2.
 	PasskeyCredentialFind = `SELECT ` + passkeyCredentialColumns + `
-FROM passkey_credentials WHERE id = $1 AND user_id = $2`
+FROM scrty_passkey_credentials WHERE id = $1 AND user_id = $2`
 
 	// PasskeyCredentialList reads every credential of user $1, oldest first,
 	// ties in library identifier order.
 	PasskeyCredentialList = `SELECT ` + passkeyCredentialColumns + `
-FROM passkey_credentials WHERE user_id = $1 ORDER BY created_at, id`
+FROM scrty_passkey_credentials WHERE user_id = $1 ORDER BY created_at, id`
 
 	// PasskeyCredentialLockUser takes the transaction-scoped advisory lock of
 	// user $1's passkey credentials, and is a bounded insert's first
@@ -59,27 +59,27 @@ FROM passkey_credentials WHERE user_id = $1 ORDER BY created_at, id`
 	PasskeyCredentialLockUser = `SELECT pg_advisory_xact_lock(hashtextextended('passkey:' || $1::text, 0))` //nolint:gosec // G101: SQL text, not a credential
 
 	// PasskeyCredentialCount counts user $1's credentials in every state.
-	PasskeyCredentialCount = `SELECT count(*) FROM passkey_credentials WHERE user_id = $1` //nolint:gosec // G101: SQL text, not a credential
+	PasskeyCredentialCount = `SELECT count(*) FROM scrty_passkey_credentials WHERE user_id = $1` //nolint:gosec // G101: SQL text, not a credential
 
 	// PasskeyRecordAssertion sets credential $1's counter to $2, its backup
 	// state to $3 and its last use to $4, only while it is active (state 1)
 	// and its stored counter is lower than $2, or both are zero.
-	PasskeyRecordAssertion = `UPDATE passkey_credentials SET sign_count = $2, backup_state = $3, last_used_at = $4
+	PasskeyRecordAssertion = `UPDATE scrty_passkey_credentials SET sign_count = $2, backup_state = $3, last_used_at = $4
 WHERE id = $1 AND state = 1 AND (sign_count < $2 OR (sign_count = 0 AND $2 = 0))`
 
 	// PasskeyRecordUse sets credential $1's backup state to $2 and its last
 	// use to $3, leaving its counter, only while it is active (state 1).
-	PasskeyRecordUse = `UPDATE passkey_credentials SET backup_state = $2, last_used_at = $3 WHERE id = $1 AND state = 1`
+	PasskeyRecordUse = `UPDATE scrty_passkey_credentials SET backup_state = $2, last_used_at = $3 WHERE id = $1 AND state = 1`
 
 	// PasskeySuspend moves credential $1 from active (1) to suspended (3).
-	PasskeySuspend = `UPDATE passkey_credentials SET state = 3 WHERE id = $1 AND state = 1`
+	PasskeySuspend = `UPDATE scrty_passkey_credentials SET state = 3 WHERE id = $1 AND state = 1`
 
 	// PasskeyClearReason clears reason $3 of user $2's credential $1, only
 	// while it is pending (state 2) with $3 set, and returns the state that
 	// results: active (1) when no reason remains. Clearing the emailed-code
 	// reason (2) drops the code and its expiry. $3 must be exactly one reason,
 	// 1 or 2; the adapters refuse any other value before running it.
-	PasskeyClearReason = `UPDATE passkey_credentials
+	PasskeyClearReason = `UPDATE scrty_passkey_credentials
    SET pending = pending & ~$3::smallint,
        state = CASE WHEN pending & ~$3::smallint = 0 THEN 1 ELSE state END,
        email_code = CASE WHEN $3::smallint = 2 THEN NULL ELSE email_code END,
@@ -93,19 +93,19 @@ RETURNING state`
 	// pending (state 2) on its emailed code (reason 2), the code is
 	// outstanding and not expired at $3, and fewer than $4 attempts are
 	// charged. No row returned is the refusal.
-	PasskeyChargeEmailAttempt = `UPDATE passkey_credentials SET email_code_attempts = email_code_attempts + 1
+	PasskeyChargeEmailAttempt = `UPDATE scrty_passkey_credentials SET email_code_attempts = email_code_attempts + 1
  WHERE id = $1 AND user_id = $2 AND state = 2 AND pending & 2 <> 0
    AND email_code IS NOT NULL AND email_code_expires_at > $3 AND email_code_attempts < $4
 RETURNING email_code, email_code_expires_at, email_code_attempts`
 
 	// PasskeyRename sets the name of user $2's credential $1 to $3.
-	PasskeyRename = `UPDATE passkey_credentials SET name = $3 WHERE id = $1 AND user_id = $2`
+	PasskeyRename = `UPDATE scrty_passkey_credentials SET name = $3 WHERE id = $1 AND user_id = $2`
 
 	// PasskeyDelete removes user $2's credential $1.
-	PasskeyDelete = `DELETE FROM passkey_credentials WHERE id = $1 AND user_id = $2`
+	PasskeyDelete = `DELETE FROM scrty_passkey_credentials WHERE id = $1 AND user_id = $2`
 
 	// PasskeyDeleteUser removes every credential of user $1.
-	PasskeyDeleteUser = `DELETE FROM passkey_credentials WHERE user_id = $1`
+	PasskeyDeleteUser = `DELETE FROM scrty_passkey_credentials WHERE user_id = $1`
 )
 
 // Passkey user-handle statements. An assignment is PasskeyHandleInsert, then
@@ -119,14 +119,14 @@ RETURNING email_code, email_code_expires_at, email_code_attempts`
 const (
 	// PasskeyHandleInsert stores handle $3 for user $2 under row id $1,
 	// unless the user or the handle is already held.
-	PasskeyHandleInsert = `INSERT INTO passkey_user_handles (id, user_id, handle) VALUES ($1, $2, $3)
+	PasskeyHandleInsert = `INSERT INTO scrty_passkey_user_handles (id, user_id, handle) VALUES ($1, $2, $3)
 ON CONFLICT DO NOTHING`
 
 	// PasskeyHandleOfUser reads the handle user $1 holds.
-	PasskeyHandleOfUser = `SELECT handle FROM passkey_user_handles WHERE user_id = $1`
+	PasskeyHandleOfUser = `SELECT handle FROM scrty_passkey_user_handles WHERE user_id = $1`
 
 	// PasskeyHandleUser reads the user holding handle $1.
-	PasskeyHandleUser = `SELECT user_id FROM passkey_user_handles WHERE handle = $1` //nolint:gosec // G101: SQL text, not a credential
+	PasskeyHandleUser = `SELECT user_id FROM scrty_passkey_user_handles WHERE handle = $1` //nolint:gosec // G101: SQL text, not a credential
 )
 
 // The transports column holds a credential's transports one per line, in

@@ -368,7 +368,7 @@ func (b backends) rawEmailCode(t *testing.T, user identity.UserID) string {
 
 	var raw sql.NullString
 	err := b.conn.DB.QueryRowContext(t.Context(),
-		"SELECT email_code FROM mfa_enrolments WHERE user_id = $1", string(user)).Scan(&raw)
+		"SELECT email_code FROM scrty_mfa_enrolments WHERE user_id = $1", string(user)).Scan(&raw)
 	require.NoError(t, err)
 	require.True(t, raw.Valid, "email_code must be set once the device is proven with email confirmation on")
 

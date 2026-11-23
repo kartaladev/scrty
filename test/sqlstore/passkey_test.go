@@ -50,7 +50,7 @@ func TestPasskeyCredentialStore(t *testing.T) {
 
 	t.Run("sqlstore", func(t *testing.T) {
 		storetest.RunPasskeyCredentialStoreSuite(t, func(t *testing.T) passkey.CredentialStore {
-			return newPasskeyCredentialStore(t, emptied(t, db, "passkey_credentials"), c)
+			return newPasskeyCredentialStore(t, emptied(t, db, "scrty_passkey_credentials"), c)
 		})
 	})
 }
@@ -62,7 +62,7 @@ func TestPasskeyHandleStore(t *testing.T) {
 
 	t.Run("sqlstore", func(t *testing.T) {
 		storetest.RunPasskeyHandleStoreSuite(t, func(t *testing.T) passkey.HandleStore {
-			return newPasskeyHandleStore(t, emptied(t, db, "passkey_user_handles"))
+			return newPasskeyHandleStore(t, emptied(t, db, "scrty_passkey_user_handles"))
 		})
 	})
 }
@@ -134,7 +134,7 @@ func TestPasskeyCredentialStore_Rows(t *testing.T) {
 				require.NoError(t, tx.Rollback())
 
 				assert.False(t, storefix.Exists(t, db, //nolint:contextcheck // storefix.Exists reads with the test's own context
-					`SELECT EXISTS (SELECT 1 FROM passkey_credentials WHERE id = $1)`, cred.ID),
+					`SELECT EXISTS (SELECT 1 FROM scrty_passkey_credentials WHERE id = $1)`, cred.ID),
 					"the credential survived its caller's rollback")
 			},
 		},
@@ -150,7 +150,7 @@ func TestPasskeyCredentialStore_Rows(t *testing.T) {
 					count      int64
 				)
 				require.NoError(t, db.QueryRowContext(ctx,
-					`SELECT transports, sign_count FROM passkey_credentials WHERE id = $1`, cred.ID).
+					`SELECT transports, sign_count FROM scrty_passkey_credentials WHERE id = $1`, cred.ID).
 					Scan(&transports, &count))
 				assert.Equal(t, "internal\nhybrid", transports)
 				assert.Equal(t, int64(1<<32-1), count)
@@ -208,7 +208,7 @@ func TestPasskeyCredentialStore_Rows(t *testing.T) {
 					storefix.PasskeyCredential(storefix.NewID(t), "rows-corrupt", "rows-corrupt"), "123456")
 				require.NoError(t, s.Insert(ctx, cred))
 				_, err := db.ExecContext(ctx,
-					`UPDATE passkey_credentials SET email_code = '***' WHERE id = $1`, cred.ID)
+					`UPDATE scrty_passkey_credentials SET email_code = '***' WHERE id = $1`, cred.ID)
 				require.NoError(t, err)
 
 				got, err := s.FindByCredentialID(ctx, cred.CredentialID)
@@ -349,7 +349,7 @@ func TestPasskeyHandleStore_Rows(t *testing.T) {
 
 		var got id.ID
 		require.NoError(t, db.QueryRowContext(t.Context(),
-			`SELECT id FROM passkey_user_handles WHERE user_id = $1`, "rows-handle-ids").Scan(&got))
+			`SELECT id FROM scrty_passkey_user_handles WHERE user_id = $1`, "rows-handle-ids").Scan(&got))
 		assert.Equal(t, want, got)
 	})
 

@@ -216,7 +216,7 @@ func TestIdentityStore_Refusals(t *testing.T) {
 		stored := func(t *testing.T, username string) (name string, org pgtype.Text, ok bool) {
 			t.Helper()
 			err := db.Pool.QueryRow(t.Context(),
-				`SELECT name, organization_id::text FROM users WHERE username = $1`, username).Scan(&name, &org)
+				`SELECT name, organization_id::text FROM scrty_users WHERE username = $1`, username).Scan(&name, &org)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return "", org, false
 			}

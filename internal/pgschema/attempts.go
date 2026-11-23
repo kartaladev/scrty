@@ -27,9 +27,9 @@ const (
 	// nothing on a conflict with a row inserted since the snapshot, and the
 	// statement then returns no row.
 	StreakAdd = `WITH prev AS (
-    SELECT id, held_at FROM login_failure_streaks WHERE username = $2::text FOR UPDATE
+    SELECT id, held_at FROM scrty_login_failure_streaks WHERE username = $2::text FOR UPDATE
 ), advanced AS (
-    UPDATE login_failure_streaks AS s SET
+    UPDATE scrty_login_failure_streaks AS s SET
         failures = CASE WHEN s.held_at IS NULL AND s.newest_failure_at <= $4::timestamptz
                         THEN 1 ELSE s.failures + 1 END,
         newest_failure_at = CASE WHEN s.held_at IS NULL AND s.newest_failure_at <= $4::timestamptz
@@ -45,7 +45,7 @@ const (
     RETURNING s.failures, s.newest_failure_at, s.held_at,
               prev.held_at IS NULL AND s.held_at IS NOT NULL AS set_hold
 ), created AS (
-    INSERT INTO login_failure_streaks (id, username, failures, newest_failure_at, held_at)
+    INSERT INTO scrty_login_failure_streaks (id, username, failures, newest_failure_at, held_at)
     SELECT $1::uuid, $2::text, 1, $3::timestamptz,
            CASE WHEN 1 >= $5::integer THEN $3::timestamptz END
     WHERE NOT EXISTS (SELECT 1 FROM prev)
@@ -58,18 +58,18 @@ SELECT failures, newest_failure_at, held_at, set_hold FROM created`
 
 	// StreakRead reads username $1's streak as of cutoff $2: a streak not
 	// held whose newest failure is at or before $2 is no row, as is no streak.
-	StreakRead = `SELECT failures, newest_failure_at, held_at FROM login_failure_streaks
+	StreakRead = `SELECT failures, newest_failure_at, held_at FROM scrty_login_failure_streaks
 WHERE username = $1 AND (held_at IS NOT NULL OR newest_failure_at > $2)`
 
 	// AttemptAndStreakDeleteByUsername clears username $1's failures and its
 	// streak, hold included, in one statement, so no reader sees one cleared
 	// without the other.
-	AttemptAndStreakDeleteByUsername = `WITH attempts AS (DELETE FROM login_attempts WHERE username = $1)
-DELETE FROM login_failure_streaks WHERE username = $1`
+	AttemptAndStreakDeleteByUsername = `WITH attempts AS (DELETE FROM scrty_login_attempts WHERE username = $1)
+DELETE FROM scrty_login_failure_streaks WHERE username = $1`
 
 	// StreakDeleteBefore removes every streak not held whose newest failure is
 	// strictly before $1.
-	StreakDeleteBefore = `DELETE FROM login_failure_streaks WHERE held_at IS NULL AND newest_failure_at < $1`
+	StreakDeleteBefore = `DELETE FROM scrty_login_failure_streaks WHERE held_at IS NULL AND newest_failure_at < $1`
 
 	// StreakAddMaxRuns is the safety bound on how many times a store runs
 	// StreakAdd for one failure. A run that returns no row means another writer
@@ -83,11 +83,11 @@ DELETE FROM login_failure_streaks WHERE username = $1`
 // Login-attempt statements: one row per failure, keyed by a generated id.
 const (
 	// AttemptInsert records one failure: $1 id, $2 username, $3 attempted_at.
-	AttemptInsert = `INSERT INTO login_attempts (id, username, attempted_at) VALUES ($1, $2, $3)`
+	AttemptInsert = `INSERT INTO scrty_login_attempts (id, username, attempted_at) VALUES ($1, $2, $3)`
 
 	// AttemptCountSince counts username $1's failures strictly after $2.
-	AttemptCountSince = `SELECT count(*) FROM login_attempts WHERE username = $1 AND attempted_at > $2`
+	AttemptCountSince = `SELECT count(*) FROM scrty_login_attempts WHERE username = $1 AND attempted_at > $2`
 
 	// AttemptDeleteBefore removes every failure recorded strictly before $1.
-	AttemptDeleteBefore = `DELETE FROM login_attempts WHERE attempted_at < $1`
+	AttemptDeleteBefore = `DELETE FROM scrty_login_attempts WHERE attempted_at < $1`
 )

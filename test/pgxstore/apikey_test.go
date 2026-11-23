@@ -35,7 +35,7 @@ func TestAPIKeyStore(t *testing.T) {
 
 	t.Run("pgx", func(t *testing.T) {
 		storetest.RunAPIKeyStoreSuite(t, func(t *testing.T) apikey.Store {
-			return newAPIKeyStore(t, emptied(t, db, "api_keys"))
+			return newAPIKeyStore(t, emptied(t, db, "scrty_api_keys"))
 		})
 	})
 }
@@ -137,7 +137,7 @@ func TestAPIKeyStore_Durable(t *testing.T) {
 				s := newAPIKeyStore(t, db.Pool)
 				key := storefix.APIKey(3, "svc-infinite")
 				require.NoError(t, s.Put(ctx, key))
-				_, err := db.DB.ExecContext(ctx, `UPDATE api_keys SET revoked_at = 'infinity' WHERE id = $1`,
+				_, err := db.DB.ExecContext(ctx, `UPDATE scrty_api_keys SET revoked_at = 'infinity' WHERE id = $1`,
 					key.ID.String())
 				require.NoError(t, err)
 
@@ -168,7 +168,7 @@ func TestAPIKeyStore_Durable(t *testing.T) {
 
 				var scopes string
 				require.NoError(t, db.DB.QueryRowContext(ctx,
-					`SELECT scopes::text FROM api_keys WHERE id = $1`, key.ID.String()).Scan(&scopes))
+					`SELECT scopes::text FROM scrty_api_keys WHERE id = $1`, key.ID.String()).Scan(&scopes))
 				assert.Equal(t, "[]", scopes, "nil scopes are not stored as an empty array")
 			},
 		},

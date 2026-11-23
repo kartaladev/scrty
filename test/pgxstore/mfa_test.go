@@ -41,12 +41,12 @@ func TestEnrolmentStore(t *testing.T) {
 
 	t.Run("pgx", func(t *testing.T) {
 		storetest.RunEnrolmentStoreSuite(t, func(t *testing.T) mfa.EnrolmentStore {
-			return newEnrolmentStore(t, emptied(t, db, "mfa_enrolments"), c)
+			return newEnrolmentStore(t, emptied(t, db, "scrty_mfa_enrolments"), c)
 		})
 	})
 	t.Run("pgx device proofs", func(t *testing.T) {
 		storetest.RunDeviceProofSuite(t, func(t *testing.T) storetest.DeviceProofEnrolmentStore {
-			return storetest.RequireDeviceProof(t, newEnrolmentStore(t, emptied(t, db, "mfa_enrolments"), c))
+			return storetest.RequireDeviceProof(t, newEnrolmentStore(t, emptied(t, db, "scrty_mfa_enrolments"), c))
 		})
 	})
 }
@@ -244,7 +244,7 @@ func TestEnrolmentStore_Durable(t *testing.T) {
 				s := newEnrolmentStore(t, db.Pool, keys.Rotated(t))
 				require.NoError(t, s.PutPending(ctx, storefix.Pending("attacker-moved", "TOTP-ATTACKER")))
 				_, err := db.DB.ExecContext(ctx,
-					`UPDATE mfa_enrolments SET user_id = 'victim-moved' WHERE user_id = 'attacker-moved'`)
+					`UPDATE scrty_mfa_enrolments SET user_id = 'victim-moved' WHERE user_id = 'attacker-moved'`)
 				require.NoError(t, err)
 
 				e, ok, err := s.Get(ctx, "victim-moved")
@@ -259,7 +259,7 @@ func TestEnrolmentStore_Durable(t *testing.T) {
 				require.NoError(t, sessions.Create(ctx, storefix.DurableSession("sid-moved", time.Now())))
 				var token string
 				require.NoError(t, db.DB.QueryRowContext(ctx,
-					`SELECT external_id_token FROM sessions WHERE id_digest = $1`, storefix.Digest("sid-moved")).Scan(&token))
+					`SELECT external_id_token FROM scrty_sessions WHERE id_digest = $1`, storefix.Digest("sid-moved")).Scan(&token))
 
 				s := newEnrolmentStore(t, db.Pool, c)
 				require.NoError(t, s.PutPending(ctx, storefix.Pending("table-moved", "TOTP-SECRET")))
@@ -302,7 +302,7 @@ func TestEnrolmentStore_Durable(t *testing.T) {
 				s := newEnrolmentStore(t, db.Pool, keys.Rotated(t))
 				require.NoError(t, s.PutPending(ctx, storefix.Pending("infinite", "TOTP-SECRET")))
 				_, err := db.DB.ExecContext(ctx,
-					`UPDATE mfa_enrolments SET confirmed_at = 'infinity' WHERE user_id = 'infinite'`)
+					`UPDATE scrty_mfa_enrolments SET confirmed_at = 'infinity' WHERE user_id = 'infinite'`)
 				require.NoError(t, err)
 
 				e, ok, err := s.Get(ctx, "infinite")
@@ -445,7 +445,7 @@ func TestEnrolmentStore_Durable(t *testing.T) {
 				s := newEnrolmentStore(t, db.Pool, keys.Rotated(t))
 				require.NoError(t, s.PutPending(ctx, storefix.Pending("step-kept", "TOTP-SECRET")))
 				_, err := db.DB.ExecContext(ctx,
-					`UPDATE mfa_enrolments SET last_step = 2000 WHERE user_id = 'step-kept'`)
+					`UPDATE scrty_mfa_enrolments SET last_step = 2000 WHERE user_id = 'step-kept'`)
 				require.NoError(t, err)
 
 				ok, err := s.Confirm(ctx, "step-kept", storefix.EnrolmentGen, 1000, storefix.EnrolmentBegun.Add(time.Minute))
@@ -464,7 +464,7 @@ func TestEnrolmentStore_Durable(t *testing.T) {
 				s := newEnrolmentStore(t, db.Pool, keys.Rotated(t))
 				require.NoError(t, s.PutPending(ctx, storefix.Pending("step-cleared", "TOTP-OLD")))
 				_, err := db.DB.ExecContext(ctx,
-					`UPDATE mfa_enrolments SET last_step = 2000 WHERE user_id = 'step-cleared'`)
+					`UPDATE scrty_mfa_enrolments SET last_step = 2000 WHERE user_id = 'step-cleared'`)
 				require.NoError(t, err)
 
 				require.NoError(t, s.PutPending(ctx, storefix.Pending("step-cleared", "TOTP-NEW")))
@@ -543,7 +543,7 @@ func TestEnrolmentStore_Durable(t *testing.T) {
 				s := newEnrolmentStore(t, db.Pool, keys.Rotated(t))
 				require.NoError(t, s.PutPending(ctx, storefix.Pending("nil-gen-zero", "TOTP-SECRET")))
 				_, err := db.DB.ExecContext(ctx,
-					`UPDATE mfa_enrolments SET generation = '00000000-0000-0000-0000-000000000000' WHERE user_id = $1`,
+					`UPDATE scrty_mfa_enrolments SET generation = '00000000-0000-0000-0000-000000000000' WHERE user_id = $1`,
 					"nil-gen-zero")
 				require.NoError(t, err)
 				assertNilGenerationRefused(ctx, t, db.DB, s, "nil-gen-zero")
@@ -557,7 +557,7 @@ func TestEnrolmentStore_Durable(t *testing.T) {
 			name: "a charge against an outstanding, unexpired code with no device proof is refused",
 			assert: func(t *testing.T, ctx context.Context, db database, keys storefix.Keys) {
 				assertOutOfBandChargeRefused(ctx, t, db, keys, "charge-unproven",
-					`UPDATE mfa_enrolments SET device_proven_at = NULL WHERE user_id = $1`,
+					`UPDATE scrty_mfa_enrolments SET device_proven_at = NULL WHERE user_id = $1`,
 					"a charge against an unproven enrolment must be refused")
 			},
 		},
@@ -569,7 +569,7 @@ func TestEnrolmentStore_Durable(t *testing.T) {
 			name: "a charge against a confirmed enrolment's outstanding, unexpired code is refused",
 			assert: func(t *testing.T, ctx context.Context, db database, keys storefix.Keys) {
 				assertOutOfBandChargeRefused(ctx, t, db, keys, "charge-confirmed",
-					`UPDATE mfa_enrolments SET confirmed_at = email_code_until + interval '1 hour' WHERE user_id = $1`,
+					`UPDATE scrty_mfa_enrolments SET confirmed_at = email_code_until + interval '1 hour' WHERE user_id = $1`,
 					"a charge against a confirmed enrolment must be refused")
 			},
 		},
@@ -579,7 +579,7 @@ func TestEnrolmentStore_Durable(t *testing.T) {
 				s := newEnrolmentStore(t, db.Pool, keys.Rotated(t))
 				require.NoError(t, s.PutPending(ctx, storefix.Pending("infinite-proof", "TOTP-SECRET")))
 				_, err := db.DB.ExecContext(ctx,
-					`UPDATE mfa_enrolments SET device_proven_at = 'infinity' WHERE user_id = 'infinite-proof'`)
+					`UPDATE scrty_mfa_enrolments SET device_proven_at = 'infinity' WHERE user_id = 'infinite-proof'`)
 				require.NoError(t, err)
 
 				e, ok, err := s.Get(ctx, "infinite-proof")
@@ -598,7 +598,7 @@ func TestEnrolmentStore_Durable(t *testing.T) {
 
 				var n int
 				require.NoError(t, db.DB.QueryRowContext(ctx,
-					`SELECT count(*) FROM mfa_enrolments WHERE user_id LIKE 'nul%'`).Scan(&n))
+					`SELECT count(*) FROM scrty_mfa_enrolments WHERE user_id LIKE 'nul%'`).Scan(&n))
 				assert.Zero(t, n, "nothing is written")
 			},
 		},
@@ -634,7 +634,7 @@ func assertNilGenerationRefused(
 	require.NoError(t, err)
 	assert.False(t, proven, "a proof naming the nil generation matched an enrolment without one")
 
-	_, err = raw.ExecContext(ctx, `UPDATE mfa_enrolments
+	_, err = raw.ExecContext(ctx, `UPDATE scrty_mfa_enrolments
 SET device_proven_at = $2, email_code = 'b3V0LW9mLWJhbmQ', email_code_until = $3 WHERE user_id = $1`,
 		string(user), at, at.Add(10*time.Minute))
 	require.NoError(t, err)
@@ -693,7 +693,7 @@ func enrolmentRow(ctx context.Context, t *testing.T, raw *sql.DB, user identity.
 
 	var row string
 	require.NoError(t, raw.QueryRowContext(ctx,
-		`SELECT row_to_json(e)::text FROM mfa_enrolments e WHERE user_id = $1`, string(user)).Scan(&row))
+		`SELECT row_to_json(e)::text FROM scrty_mfa_enrolments e WHERE user_id = $1`, string(user)).Scan(&row))
 
 	return row
 }

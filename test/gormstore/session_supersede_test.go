@@ -41,7 +41,7 @@ func successorIsNull(ctx context.Context, t *testing.T, db *sql.DB, sid string) 
 	t.Helper()
 
 	err := db.QueryRowContext(ctx,
-		`SELECT successor_digest IS NULL FROM sessions WHERE id_digest = $1`, storefix.Digest(sid)).Scan(&isNull)
+		`SELECT successor_digest IS NULL FROM scrty_sessions WHERE id_digest = $1`, storefix.Digest(sid)).Scan(&isNull)
 	if err == sql.ErrNoRows {
 		return false, false
 	}
@@ -114,7 +114,7 @@ func TestSessionStore_SupersedeObservingNoSuccessor(t *testing.T) {
 }
 
 // slowSuccessorInserts installs, until the test ends, a trigger that sleeps
-// for a minute before every insert into sessions for user, and for no other
+// for a minute before every insert into scrty_sessions for user, and for no other
 // user. The trigger and function names are constants, never built from input.
 func slowSuccessorInserts(ctx context.Context, t *testing.T, db *sql.DB, user string) {
 	t.Helper()
@@ -128,14 +128,14 @@ BEGIN
   RETURN NEW;
 END $$`)
 	require.NoError(t, err)
-	_, err = db.ExecContext(ctx, `CREATE TRIGGER `+name+` BEFORE INSERT ON sessions
+	_, err = db.ExecContext(ctx, `CREATE TRIGGER `+name+` BEFORE INSERT ON scrty_sessions
 FOR EACH ROW EXECUTE FUNCTION `+name+`()`)
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
 		cctx := context.WithoutCancel(ctx)
 		// Both drops run, so a failed trigger drop does not leave the function.
-		_, errTrigger := db.ExecContext(cctx, `DROP TRIGGER IF EXISTS `+name+` ON sessions`)
+		_, errTrigger := db.ExecContext(cctx, `DROP TRIGGER IF EXISTS `+name+` ON scrty_sessions`)
 		assert.NoError(t, errTrigger, "drop trigger %s", name)
 		_, errFunc := db.ExecContext(cctx, `DROP FUNCTION IF EXISTS `+name+`()`)
 		assert.NoError(t, errFunc, "drop function %s", name)
@@ -181,7 +181,7 @@ func TestSessionStore_SupersedeCancelledMidTransaction(t *testing.T) {
 	// Nothing was written: the old record is as it was, with no successor.
 	var live bool
 	require.NoError(t, db.QueryRowContext(ctx,
-		`SELECT superseded_at IS NULL AND successor_digest IS NULL AND accept_until IS NULL FROM sessions WHERE id_digest = $1`,
+		`SELECT superseded_at IS NULL AND successor_digest IS NULL AND accept_until IS NULL FROM scrty_sessions WHERE id_digest = $1`,
 		storefix.Digest(sid)).Scan(&live))
 	assert.True(t, live, "the old record was changed")
 	_, found := successorIsNull(ctx, t, db, sid+"-next")
@@ -200,7 +200,7 @@ WHERE datname = current_database() AND state LIKE 'idle in transaction%'`).Scan(
 	defer stop()
 	_, err := store.Load(opCtx, sid)
 	require.NoError(t, err)
-	_, err = db.ExecContext(opCtx, `DROP TRIGGER slow_session_insert ON sessions`)
+	_, err = db.ExecContext(opCtx, `DROP TRIGGER slow_session_insert ON scrty_sessions`)
 	require.NoError(t, err)
 	require.NoError(t, store.Supersede(opCtx, supersessionOf(old, sid+"-next", nil)))
 }

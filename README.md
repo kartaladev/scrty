@@ -894,7 +894,7 @@ request as visible as they can and leave the rest to you:
   `gormstore.NewDeviceAuthorizationStore` keep device authorizations in PostgreSQL. Pass one to
   `WithDeviceAuthorizationStore`, with `WithUserCodeKey`.
 - **The migration.** A durable store needs the security-state migration
-  `20261122000000_oidc_provider_device`, which adds the `op_device_authorizations` table and the new
+  `20261122000000_oidc_provider_device`, which adds the `scrty_op_device_authorizations` table and the new
   grant columns. Apply it before starting a provider over a durable store.
 - **Sweeping.** Records are swept by the `oidc-provider.device-authorizations` expiry task. Records
   in flight are lost with an in-memory store, and the device starts again.
@@ -3561,6 +3561,38 @@ h := prblm.NewHandler(prblm.WithNamespace("/probs"), prblm.WithMappers(lockPage)
   mapper runs, and the mapper walks through the bounded `httpsec.LookupStatus`. Not protected: your own
   calls to the standard library's `errors.Is` or `errors.As` on the error, and gin's `Context.Error`,
   which walks the chain before any renderer runs.
+
+## Database tables and migrations
+
+A durable deployment applies two embedded migration sets, `migrate.SecurityState()` and, when it
+uses the identity store, `migrate.Identity()`. Every table, index and sequence they create is named
+`scrty_<name>`, so scrty's tables never collide with a table of your own called `sessions` or
+`users`. The prefix is fixed: no option changes it, and the stores and limiters always use it. To
+keep scrty's tables apart from yours, put them in a PostgreSQL schema and give each connection a
+`search_path` that reaches it (`options=-csearch_path=auth`, or `SET search_path` on connect). Your
+own tables of the old names can then sit beside scrty's, in the same schema or another.
+
+| Set | Tables (each prefixed `scrty_`) | Version table |
+|---|---|---|
+| `migrate.SecurityState()` | `account_recoveries`, `api_keys`, `login_attempts`, `login_failure_streaks`, `mfa_enrolments`, `oidc_flows`, `oidc_handoffs`, `oidc_links`, `one_time_tokens`, `op_access_tokens`, `op_authorization_codes`, `op_browser_sessions`, `op_client_assertions`, `op_clients`, `op_consents`, `op_device_authorizations`, `op_grants`, `op_pending_requests`, `op_refresh_tokens`, `passkey_credentials`, `passkey_user_handles`, `rate_limit_buckets`, `recovery_codes`, `sessions`, `signing_keys` | `goose_security_state` |
+| `migrate.Identity()` | `assigned_roles`, `groups`, `organizations`, `password_history`, `resource_privileges`, `roles`, `users` | `goose_identity` |
+
+The version tables keep their names. The rename ships as migration `20261124000000_scrty_prefix`
+in each set. It renames in place, so rows, indexes and constraints are kept, and it holds its locks
+only for the renames. It gives up after 5 seconds if a table is busy, and changes nothing then.
+
+**Upgrading from v0.2.x or earlier:**
+
+1. Stop every replica that runs v0.2.x or earlier. A replica still on the old names fails against
+   the renamed tables.
+2. Apply the security-state set.
+3. Apply the identity set, if you use it.
+4. Start the new release. A new binary against a database that was not renamed is refused when the
+   rate-limiter factory is verified (`Verify` returns an error wrapping `ratelimit.ErrConfig`
+   that names `scrty_rate_limit_buckets`), instead of failing at its first request.
+
+**Rolling back** is the reverse: stop the new release, take each set down one version
+(the identity set first, if you use it, then the security-state set), then start the old release.
 
 ## Known limitations
 

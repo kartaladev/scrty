@@ -46,7 +46,7 @@ func TestAttemptStore(t *testing.T) {
 
 	t.Run("pgx", func(t *testing.T) {
 		storetest.RunAttemptStoreSuite(t, func(t *testing.T) policy.AttemptStore {
-			return newAttemptStore(t, emptied(t, db, "login_attempts"))
+			return newAttemptStore(t, emptied(t, db, "scrty_login_attempts"))
 		}, storetest.RequireReaper())
 	})
 }
@@ -61,8 +61,8 @@ func TestFailureStreakStore(t *testing.T) {
 
 	db := migrated(t)
 	newStore := func(t *testing.T) storetest.StreakStore {
-		emptied(t, db, "login_attempts")
-		return newAttemptStore(t, emptied(t, db, "login_failure_streaks"))
+		emptied(t, db, "scrty_login_attempts")
+		return newAttemptStore(t, emptied(t, db, "scrty_login_failure_streaks"))
 	}
 
 	t.Run("pgx", func(t *testing.T) {
@@ -215,7 +215,7 @@ func TestAttemptStore_StreakNilID(t *testing.T) {
 
 			var rows int
 			require.NoError(t, conn.Pool.QueryRow(t.Context(),
-				`SELECT count(*) FROM login_failure_streaks WHERE username = $1`, tc.username).Scan(&rows))
+				`SELECT count(*) FROM scrty_login_failure_streaks WHERE username = $1`, tc.username).Scan(&rows))
 			tc.assert(t, err, rows)
 		})
 	}

@@ -32,7 +32,7 @@ func SessionAmbient() storetest.Ambient[session.Store] {
 			return s.Create(ctx, DurableSession(AmbientSID(i), time.Now()))
 		},
 		Present: func(t *testing.T, raw *sql.DB, i int) bool {
-			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM sessions WHERE id_digest = $1)`, Digest(AmbientSID(i)))
+			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM scrty_sessions WHERE id_digest = $1)`, Digest(AmbientSID(i)))
 		},
 		Refuse: func(ctx context.Context, s session.Store) error {
 			return s.Save(ctx, DurableSession("ambient-sid-never-created", time.Now()))
@@ -58,7 +58,7 @@ func OneTimeAmbient[S onetime.Store]() storetest.Ambient[S] {
 			return s.Insert(ctx, AmbientToken(i))
 		},
 		Present: func(t *testing.T, raw *sql.DB, i int) bool {
-			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM one_time_tokens WHERE id = $1)`, AmbientToken(i).ID)
+			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM scrty_one_time_tokens WHERE id = $1)`, AmbientToken(i).ID)
 		},
 		Refuse: func(ctx context.Context, s S) error {
 			return s.Consume(ctx, AmbientToken(999).ID, time.Now())
@@ -81,7 +81,7 @@ func AttemptAmbient[S interface {
 			return s.RecordFailure(ctx, user(i), time.Now())
 		},
 		Present: func(t *testing.T, raw *sql.DB, i int) bool {
-			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM login_attempts WHERE username = $1)`, user(i))
+			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM scrty_login_attempts WHERE username = $1)`, user(i))
 		},
 		Refuse: func(ctx context.Context, s S) error {
 			// Refused before any statement runs, so this case cannot fail for this store;
@@ -107,7 +107,7 @@ func FailureStreakAmbient[S lockout.FailureStreakStore]() storetest.Ambient[S] {
 			return err
 		},
 		Present: func(t *testing.T, raw *sql.DB, i int) bool {
-			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM login_failure_streaks WHERE username = $1)`, user(i))
+			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM scrty_login_failure_streaks WHERE username = $1)`, user(i))
 		},
 		Refuse: func(ctx context.Context, s S) error {
 			// Refused before any statement runs, as the attempt purge is.
@@ -133,7 +133,7 @@ func SigningKeyAmbient(foreign func() (signingkey.KeyStore, error)) storetest.Am
 			return s.Store(ctx, SigningKey(kid(i), []byte("PKCS8-"+kid(i))))
 		},
 		Present: func(t *testing.T, raw *sql.DB, i int) bool {
-			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM signing_keys WHERE kid = $1)`, kid(i))
+			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM scrty_signing_keys WHERE kid = $1)`, kid(i))
 		},
 		Refuse: func(ctx context.Context, s signingkey.KeyStore) error {
 			other, err := foreign()
@@ -163,7 +163,7 @@ func EnrolmentAmbient() storetest.Ambient[mfa.EnrolmentStore] {
 			return s.PutPending(ctx, Pending(user(i), "TOTP-SECRET"))
 		},
 		Present: func(t *testing.T, raw *sql.DB, i int) bool {
-			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM mfa_enrolments WHERE user_id = $1)`, string(user(i)))
+			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM scrty_mfa_enrolments WHERE user_id = $1)`, string(user(i)))
 		},
 		Refuse: func(ctx context.Context, s mfa.EnrolmentStore) error {
 			if err := s.PutPending(ctx, Pending("ambient-confirmed", "TOTP-SECRET")); err != nil {
@@ -213,7 +213,7 @@ func LinkAmbient[S oidc.LinkStore]() storetest.Ambient[S] {
 	return storetest.Ambient[S]{
 		Write: func(ctx context.Context, s S, i int) error { return insert(ctx, s, subject(i)) },
 		Present: func(t *testing.T, raw *sql.DB, i int) bool {
-			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM oidc_links WHERE subject = $1)`, subject(i))
+			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM scrty_oidc_links WHERE subject = $1)`, subject(i))
 		},
 		Refuse: func(ctx context.Context, s S) error {
 			if err := insert(ctx, s, "ambient-subject-twice"); err != nil {
@@ -236,7 +236,7 @@ func FlowAmbient[S oidc.FlowStore]() storetest.Ambient[S] {
 			return err
 		},
 		Present: func(t *testing.T, raw *sql.DB, i int) bool {
-			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM oidc_flows WHERE state = $1)`, state(i))
+			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM scrty_oidc_flows WHERE state = $1)`, state(i))
 		},
 		Refuse: func(ctx context.Context, s S) error {
 			_, err := s.Complete(ctx, "no-such-handle", "ambient", state(1))
@@ -265,7 +265,7 @@ func HandoffAmbient[S oidc.HandoffStore]() storetest.Ambient[S] {
 			})
 		},
 		Present: func(t *testing.T, raw *sql.DB, i int) bool {
-			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM oidc_handoffs WHERE token_id = $1)`, token(i))
+			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM scrty_oidc_handoffs WHERE token_id = $1)`, token(i))
 		},
 		Refuse: func(ctx context.Context, s S) error {
 			return s.Consume(ctx, "ambient-token-never-issued", time.Now())

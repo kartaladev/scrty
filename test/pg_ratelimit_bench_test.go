@@ -166,12 +166,12 @@ var benchBackends = []benchBackend{
 			login: func(ctx context.Context, user string) error {
 				var n int
 				if err := db.QueryRowContext(ctx,
-					`SELECT count(*) FROM login_attempts WHERE username = $1 AND attempted_at > now() - interval '15 minutes'`,
+					`SELECT count(*) FROM scrty_login_attempts WHERE username = $1 AND attempted_at > now() - interval '15 minutes'`,
 					user).Scan(&n); err != nil {
 					return err
 				}
 				_, err := db.ExecContext(ctx,
-					`INSERT INTO login_attempts (id, username, attempted_at) VALUES (gen_random_uuid(), $1, now())`, user)
+					`INSERT INTO scrty_login_attempts (id, username, attempted_at) VALUES (gen_random_uuid(), $1, now())`, user)
 				return err
 			},
 			warm: func(ctx context.Context) error {
@@ -211,12 +211,12 @@ var benchBackends = []benchBackend{
 			login: func(ctx context.Context, user string) error {
 				var n int
 				if err := pool.QueryRow(ctx,
-					`SELECT count(*) FROM login_attempts WHERE username = $1 AND attempted_at > now() - interval '15 minutes'`,
+					`SELECT count(*) FROM scrty_login_attempts WHERE username = $1 AND attempted_at > now() - interval '15 minutes'`,
 					user).Scan(&n); err != nil {
 					return err
 				}
 				_, err := pool.Exec(ctx,
-					`INSERT INTO login_attempts (id, username, attempted_at) VALUES (gen_random_uuid(), $1, now())`, user)
+					`INSERT INTO scrty_login_attempts (id, username, attempted_at) VALUES (gen_random_uuid(), $1, now())`, user)
 				return err
 			},
 			warm: func(ctx context.Context) error {
@@ -299,15 +299,15 @@ func benchConfigure(b *testing.B, db *sql.DB, c benchCase) {
 		_, err := db.ExecContext(ctx, q)
 		require.NoError(b, err, q)
 	}
-	exec(fmt.Sprintf(`ALTER TABLE rate_limit_buckets SET (fillfactor = %d)`, c.ff))
+	exec(fmt.Sprintf(`ALTER TABLE scrty_rate_limit_buckets SET (fillfactor = %d)`, c.ff))
 	if c.av == "low" {
-		exec(`ALTER TABLE rate_limit_buckets SET (autovacuum_vacuum_scale_factor = 0.01, autovacuum_vacuum_insert_scale_factor = 0.01)`)
+		exec(`ALTER TABLE scrty_rate_limit_buckets SET (autovacuum_vacuum_scale_factor = 0.01, autovacuum_vacuum_insert_scale_factor = 0.01)`)
 	} else {
-		exec(`ALTER TABLE rate_limit_buckets RESET (autovacuum_vacuum_scale_factor, autovacuum_vacuum_insert_scale_factor)`)
+		exec(`ALTER TABLE scrty_rate_limit_buckets RESET (autovacuum_vacuum_scale_factor, autovacuum_vacuum_insert_scale_factor)`)
 	}
-	exec(`TRUNCATE rate_limit_buckets, login_attempts`)
-	exec(`VACUUM FULL rate_limit_buckets`)
-	exec(`VACUUM FULL login_attempts`)
+	exec(`TRUNCATE scrty_rate_limit_buckets, scrty_login_attempts`)
+	exec(`VACUUM FULL scrty_rate_limit_buckets`)
+	exec(`VACUUM FULL scrty_login_attempts`)
 }
 
 // tupleCounters reads the table's cumulative update counters after letting
@@ -327,7 +327,7 @@ func tupleCounters(b *testing.B, db *sql.DB) (upd, hot int64) {
 	_, err = conn.ExecContext(b.Context(), `SELECT pg_stat_force_next_flush()`)
 	require.NoError(b, err)
 	require.NoError(b, conn.QueryRowContext(b.Context(),
-		`SELECT coalesce(max(n_tup_upd), 0), coalesce(max(n_tup_hot_upd), 0) FROM pg_stat_user_tables WHERE relname = 'rate_limit_buckets'`,
+		`SELECT coalesce(max(n_tup_upd), 0), coalesce(max(n_tup_hot_upd), 0) FROM pg_stat_user_tables WHERE relname = 'scrty_rate_limit_buckets'`,
 	).Scan(&upd, &hot))
 	return upd, hot
 }
@@ -533,7 +533,7 @@ func runBenchCase(b *testing.B, conn PostgresConn, c benchCase) {
 	}
 	var size int64
 	require.NoError(b, conn.DB.QueryRowContext(b.Context(),
-		`SELECT pg_total_relation_size('rate_limit_buckets')`).Scan(&size))
+		`SELECT pg_total_relation_size('scrty_rate_limit_buckets')`).Scan(&size))
 	b.ReportMetric(float64(size), "table-bytes")
 }
 
@@ -618,13 +618,13 @@ func BenchmarkPostgresLimiterPrune(b *testing.B) {
 				var total time.Duration
 				var errCount, wrong int64
 				for range benchPruneReps {
-					for _, q := range []string{`TRUNCATE rate_limit_buckets`, fmt.Sprintf(
-						`INSERT INTO rate_limit_buckets (namespace, key, stamps, newest_at, longest_window_us)
+					for _, q := range []string{`TRUNCATE scrty_rate_limit_buckets`, fmt.Sprintf(
+						`INSERT INTO scrty_rate_limit_buckets (namespace, key, stamps, newest_at, longest_window_us)
 						 SELECT 'bench', 'k' || g, ARRAY[now() - interval '1 hour']::timestamptz[], now() - interval '1 hour', 1000000
 						 FROM generate_series(1, %d) g`, idle), fmt.Sprintf(
-						`INSERT INTO rate_limit_buckets (namespace, key, stamps, newest_at, longest_window_us)
+						`INSERT INTO scrty_rate_limit_buckets (namespace, key, stamps, newest_at, longest_window_us)
 						 SELECT 'bench', 'live' || g, ARRAY[now()]::timestamptz[], now(), 900000000
-						 FROM generate_series(1, %d) g`, live), `VACUUM ANALYZE rate_limit_buckets`} {
+						 FROM generate_series(1, %d) g`, live), `VACUUM ANALYZE scrty_rate_limit_buckets`} {
 						_, err := conn.DB.ExecContext(b.Context(), q)
 						require.NoError(b, err, q)
 					}
@@ -637,7 +637,7 @@ func BenchmarkPostgresLimiterPrune(b *testing.B) {
 					} else {
 						var left int
 						require.NoError(b, conn.DB.QueryRowContext(b.Context(),
-							`SELECT count(*) FROM rate_limit_buckets WHERE key LIKE 'live%'`).Scan(&left))
+							`SELECT count(*) FROM scrty_rate_limit_buckets WHERE key LIKE 'live%'`).Scan(&left))
 						if removed != idle || left != live {
 							wrong++
 						}

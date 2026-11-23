@@ -8,14 +8,14 @@ import (
 )
 
 // The shared rate limiter's table, bounds and statements, over
-// rate_limit_buckets: one row per namespace and key holding the failure
+// scrty_rate_limit_buckets: one row per namespace and key holding the failure
 // stamps still inside the longest window recorded for it. Every statement
 // reads the time once. Where a statement takes a now parameter, NULL means
 // the database clock (clock_timestamp()); otherwise it is the caller's
 // application-clock time.
 const (
 	// LimiterTable is the bucket table's name.
-	LimiterTable = "rate_limit_buckets"
+	LimiterTable = "scrty_rate_limit_buckets"
 
 	// LimiterMaxLimit is the largest limit a limiter may be built with. A
 	// bucket keeps at most that many stamps, which bounds the row's size: at
@@ -45,7 +45,7 @@ const (
 	// namespace, $2 key, $3 window in microseconds (int64), $4 now or NULL.
 	// It returns one count, zero for a key with no row.
 	LimiterCheck = `WITH t AS (SELECT coalesce($4::timestamptz, clock_timestamp()) AS now)
-SELECT count(*) FROM rate_limit_buckets b CROSS JOIN t
+SELECT count(*) FROM scrty_rate_limit_buckets b CROSS JOIN t
 CROSS JOIN LATERAL unnest(b.stamps) AS u(stamp)
 WHERE b.namespace = $1 AND b.key = $2
   AND u.stamp > t.now - $3::bigint * interval '1 microsecond'`
@@ -66,7 +66,7 @@ WHERE b.namespace = $1 AND b.key = $2
 	// waits on a row another transaction holds, so the setting is already in
 	// force when the wait begins, with no separate round trip.
 	LimiterRecord = `WITH t AS (SELECT coalesce($5::timestamptz, clock_timestamp()) AS now)
-INSERT INTO rate_limit_buckets AS b (namespace, key, stamps, newest_at, longest_window_us)
+INSERT INTO scrty_rate_limit_buckets AS b (namespace, key, stamps, newest_at, longest_window_us)
 SELECT $1, $2, ARRAY[t.now], t.now, $4::bigint
 FROM t CROSS JOIN (SELECT set_config('lock_timeout', $6::text, true)) AS lt
 ON CONFLICT (namespace, key) DO UPDATE SET
@@ -100,7 +100,7 @@ ON CONFLICT (namespace, key) DO UPDATE SET
 	// LimiterRecord, before ON CONFLICT waits on a held row.
 	LimiterCharge = `WITH t AS (SELECT coalesce($5::timestamptz, clock_timestamp()) AS now),
 c AS (
-INSERT INTO rate_limit_buckets AS b (namespace, key, stamps, newest_at, longest_window_us)
+INSERT INTO scrty_rate_limit_buckets AS b (namespace, key, stamps, newest_at, longest_window_us)
 SELECT $1, $2, ARRAY[t.now], t.now, $4::bigint
 FROM t CROSS JOIN (SELECT set_config('lock_timeout', $6::text, true)) AS lt
 ON CONFLICT (namespace, key) DO UPDATE SET
@@ -131,7 +131,7 @@ SELECT EXISTS (SELECT 1 FROM c), t.now FROM t`
 	// and finds the stamp again in its latest version.
 	LimiterRefund = `WITH t AS (SELECT coalesce($5::timestamptz, clock_timestamp()) AS now),
 lt AS (SELECT set_config('lock_timeout', $6::text, true) AS v)
-UPDATE rate_limit_buckets AS b
+UPDATE scrty_rate_limit_buckets AS b
 SET stamps = b.stamps[:array_position(b.stamps, $3::timestamptz) - 1]
           || b.stamps[array_position(b.stamps, $3::timestamptz) + 1:]
 FROM t, lt
@@ -148,18 +148,18 @@ WHERE b.namespace = $1 AND b.key = $2
 	// removed. Run it in a loop until a batch removes fewer than $2, each batch
 	// its own transaction, so no record waits on more than one batch.
 	LimiterPrune = `WITH v AS (
-  SELECT b.namespace, b.key FROM rate_limit_buckets b
+  SELECT b.namespace, b.key FROM scrty_rate_limit_buckets b
   WHERE b.newest_at + b.longest_window_us * interval '1 microsecond' <= $1::timestamptz
   LIMIT $2::bigint
   FOR UPDATE OF b SKIP LOCKED)
-DELETE FROM rate_limit_buckets d USING v
+DELETE FROM scrty_rate_limit_buckets d USING v
 WHERE d.namespace = v.namespace AND d.key = v.key`
 
 	// LimiterClock reads the database clock once, for a prune's whole run.
 	LimiterClock = `SELECT clock_timestamp()`
 
 	// LimiterDeleteKey forgets one key: $1 namespace, $2 key.
-	LimiterDeleteKey = `DELETE FROM rate_limit_buckets WHERE namespace = $1 AND key = $2`
+	LimiterDeleteKey = `DELETE FROM scrty_rate_limit_buckets WHERE namespace = $1 AND key = $2`
 
 	// LimiterServerFacts reports, in one row, whether the server is a standby
 	// (in_recovery), its server_version_num, its server_encoding, and the
@@ -169,7 +169,7 @@ WHERE d.namespace = v.namespace AND d.key = v.key`
   current_setting('server_version_num')::int,
   current_setting('server_encoding'),
   coalesce((SELECT c.relpersistence::text FROM pg_class c
-            WHERE c.oid = to_regclass('rate_limit_buckets')), '')`
+            WHERE c.oid = to_regclass('scrty_rate_limit_buckets')), '')`
 )
 
 // LimiterKey maps a caller's key to its stored form: as given, unless it is

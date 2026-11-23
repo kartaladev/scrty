@@ -58,7 +58,7 @@ func TestLinkStore(t *testing.T) {
 
 	t.Run("sqlstore", func(t *testing.T) {
 		oidctest.RunLinkStoreSuite(t, func(t *testing.T) oidc.LinkStore {
-			return newLinkStore(t, emptied(t, db, "oidc_links"))
+			return newLinkStore(t, emptied(t, db, "scrty_oidc_links"))
 		})
 	})
 }
@@ -70,7 +70,7 @@ func TestFlowStore(t *testing.T) {
 
 	t.Run("sqlstore", func(t *testing.T) {
 		oidctest.RunFlowStoreSuite(t, func(t *testing.T, clk clock.Clock) oidc.FlowStore {
-			return newFlowStore(t, emptied(t, db, "oidc_flows"), sqlstore.WithClock(clk))
+			return newFlowStore(t, emptied(t, db, "scrty_oidc_flows"), sqlstore.WithClock(clk))
 		})
 	})
 }
@@ -82,7 +82,7 @@ func TestHandoffStore(t *testing.T) {
 
 	t.Run("sqlstore", func(t *testing.T) {
 		oidctest.RunHandoffStoreSuite(t, func(t *testing.T, _ clock.Clock) oidc.HandoffStore {
-			return newHandoffStore(t, emptied(t, db, "oidc_handoffs"))
+			return newHandoffStore(t, emptied(t, db, "scrty_oidc_handoffs"))
 		})
 	})
 }
@@ -197,7 +197,7 @@ func TestOIDCStores_Durable(t *testing.T) {
 	countLinks := func(ctx context.Context, t *testing.T, db *sql.DB, issuer string) int {
 		t.Helper()
 		var n int
-		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM oidc_links WHERE issuer = $1`, issuer).Scan(&n))
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM scrty_oidc_links WHERE issuer = $1`, issuer).Scan(&n))
 		return n
 	}
 	// countHandoffs counts the handoffs of tokenID, out of band.
@@ -205,7 +205,7 @@ func TestOIDCStores_Durable(t *testing.T) {
 		t.Helper()
 		var n int
 		require.NoError(t, db.QueryRowContext(ctx,
-			`SELECT count(*) FROM oidc_handoffs WHERE token_id = $1`, tokenID).Scan(&n))
+			`SELECT count(*) FROM scrty_oidc_handoffs WHERE token_id = $1`, tokenID).Scan(&n))
 		return n
 	}
 
@@ -328,7 +328,7 @@ func TestOIDCStores_Durable(t *testing.T) {
 
 				var completed sql.NullTime
 				require.NoError(t, conn.DB.QueryRowContext(ctx,
-					`SELECT completed_at FROM oidc_flows WHERE handle = $1`, h).Scan(&completed))
+					`SELECT completed_at FROM scrty_oidc_flows WHERE handle = $1`, h).Scan(&completed))
 				assert.False(t, completed.Valid, "the refused completion wrote the flow")
 			},
 		},
@@ -384,7 +384,7 @@ func TestOIDCStores_Durable(t *testing.T) {
 
 				var stored string
 				require.NoError(t, conn.DB.QueryRowContext(ctx,
-					`SELECT id::text FROM oidc_flows WHERE handle = $1`, h).Scan(&stored))
+					`SELECT id::text FROM scrty_oidc_flows WHERE handle = $1`, h).Scan(&stored))
 				assert.Equal(t, fixed.String(), stored)
 			},
 		},
@@ -443,7 +443,7 @@ func TestOIDCStores_Durable(t *testing.T) {
 
 				var consumed sql.NullTime
 				require.NoError(t, conn.DB.QueryRowContext(ctx,
-					`SELECT consumed_at FROM oidc_handoffs WHERE token_id = ''`).Scan(&consumed))
+					`SELECT consumed_at FROM scrty_oidc_handoffs WHERE token_id = ''`).Scan(&consumed))
 				assert.False(t, consumed.Valid, "the empty token id consumed a record")
 			},
 		},

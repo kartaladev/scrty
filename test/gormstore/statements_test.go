@@ -32,7 +32,7 @@ import (
 // session's current successor was used, judging the session and its
 // successor by the load condition.
 const sessionSuccessorPresentedStmt = `SELECT s.first_presented_at IS NOT NULL OR s.superseded_at IS NOT NULL ` +
-	`FROM sessions o LEFT JOIN sessions s ON s.id_digest = o.successor_digest AND ` +
+	`FROM scrty_sessions o LEFT JOIN scrty_sessions s ON s.id_digest = o.successor_digest AND ` +
 	`CASE WHEN s.superseded_at IS NOT NULL AND s.retain_until IS NOT NULL THEN s.retain_until > $2 ` +
 	`ELSE s.idle_expires_at > $2 AND s.absolute_expires_at > $2 END ` +
 	`WHERE o.id_digest = $1 AND ` +
@@ -240,7 +240,7 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		}
 	}
 	// apiKeyRevokeStmt is the shared conditional revocation, run raw.
-	apiKeyRevokeStmt := `WITH revoked AS ( UPDATE api_keys SET revoked_at = $2 WHERE id = $1 AND revoked_at IS NULL RETURNING id ) SELECT EXISTS (SELECT 1 FROM revoked) AS revoked, EXISTS (SELECT 1 FROM api_keys WHERE id = $1) AS present`
+	apiKeyRevokeStmt := `WITH revoked AS ( UPDATE scrty_api_keys SET revoked_at = $2 WHERE id = $1 AND revoked_at IS NULL RETURNING id ) SELECT EXISTS (SELECT 1 FROM revoked) AS revoked, EXISTS (SELECT 1 FROM scrty_api_keys WHERE id = $1) AS present`
 	// ignoring drops a result an operation returns beside its error.
 	ignoring := func(_ any, err error) error { return err }
 	// ignoring2 drops the two results an operation returns beside its error.
@@ -256,39 +256,39 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 	cases := []testCase{
 		{name: "session create", run: with(func(ctx context.Context, s storeSet) error {
 			return s.sessions.Create(ctx, storefix.DurableSession("stmt-sid-create", now))
-		}), assert: one(`INSERT INTO "sessions" ("id","id_digest","user_id","created_at","last_accessed_at","idle_expires_at","absolute_expires_at","first_factor","mfa_state","mfa_satisfied_at","password_change_pending","external_provider","external_issuer","external_session_id","external_id_token","data","enrolment_origin_deadline","enrolment_generation","recovered_at","mfa_at_first_factor","federated_amr","federated_acr","family_id","family_created_at","superseded_at","accept_until","successor_digest","first_presented_at","retain_until","authenticated_at","client_ip","user_agent","binding_kind","binding_thumbprint","csrf_token") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35) ON CONFLICT ("id_digest") DO NOTHING`)},
+		}), assert: one(`INSERT INTO "scrty_sessions" ("id","id_digest","user_id","created_at","last_accessed_at","idle_expires_at","absolute_expires_at","first_factor","mfa_state","mfa_satisfied_at","password_change_pending","external_provider","external_issuer","external_session_id","external_id_token","data","enrolment_origin_deadline","enrolment_generation","recovered_at","mfa_at_first_factor","federated_amr","federated_acr","family_id","family_created_at","superseded_at","accept_until","successor_digest","first_presented_at","retain_until","authenticated_at","client_ip","user_agent","binding_kind","binding_thumbprint","csrf_token") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35) ON CONFLICT ("id_digest") DO NOTHING`)},
 		{name: "session create of a stored identifier", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.sessions.Create(ctx, storefix.DurableSession("stmt-sid-dup", now)))
 			started()
 			err := counted.sessions.Create(ctx, storefix.DurableSession("stmt-sid-dup", now))
 			require.Error(t, err)
 			return nil
-		}, assert: one(`INSERT INTO "sessions" ("id","id_digest","user_id","created_at","last_accessed_at","idle_expires_at","absolute_expires_at","first_factor","mfa_state","mfa_satisfied_at","password_change_pending","external_provider","external_issuer","external_session_id","external_id_token","data","enrolment_origin_deadline","enrolment_generation","recovered_at","mfa_at_first_factor","federated_amr","federated_acr","family_id","family_created_at","superseded_at","accept_until","successor_digest","first_presented_at","retain_until","authenticated_at","client_ip","user_agent","binding_kind","binding_thumbprint","csrf_token") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35) ON CONFLICT ("id_digest") DO NOTHING`)},
+		}, assert: one(`INSERT INTO "scrty_sessions" ("id","id_digest","user_id","created_at","last_accessed_at","idle_expires_at","absolute_expires_at","first_factor","mfa_state","mfa_satisfied_at","password_change_pending","external_provider","external_issuer","external_session_id","external_id_token","data","enrolment_origin_deadline","enrolment_generation","recovered_at","mfa_at_first_factor","federated_amr","federated_acr","family_id","family_created_at","superseded_at","accept_until","successor_digest","first_presented_at","retain_until","authenticated_at","client_ip","user_agent","binding_kind","binding_thumbprint","csrf_token") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35) ON CONFLICT ("id_digest") DO NOTHING`)},
 		{name: "session save", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.sessions.Create(ctx, storefix.DurableSession("stmt-sid-save", now)))
 			started()
 			return counted.sessions.Save(ctx, storefix.DurableSession("stmt-sid-save", now))
-		}, assert: one(`UPDATE "sessions" SET "absolute_expires_at"=CASE WHEN superseded_at IS NULL THEN $1 ELSE absolute_expires_at END,"created_at"=$2,"data"=$3,"enrolment_generation"=$4,"enrolment_origin_deadline"=$5,"external_id_token"=$6,"external_issuer"=$7,"external_provider"=$8,"external_session_id"=$9,"federated_acr"=$10,"federated_amr"=$11,"first_factor"=$12,"idle_expires_at"=CASE WHEN superseded_at IS NULL THEN $13 ELSE idle_expires_at END,"last_accessed_at"=$14,"mfa_satisfied_at"=$15,"mfa_state"=$16,"password_change_pending"=$17,"recovered_at"=$18,"user_id"=$19 WHERE id_digest = $20 AND NOT rotated_strictly`)},
+		}, assert: one(`UPDATE "scrty_sessions" SET "absolute_expires_at"=CASE WHEN superseded_at IS NULL THEN $1 ELSE absolute_expires_at END,"created_at"=$2,"data"=$3,"enrolment_generation"=$4,"enrolment_origin_deadline"=$5,"external_id_token"=$6,"external_issuer"=$7,"external_provider"=$8,"external_session_id"=$9,"federated_acr"=$10,"federated_amr"=$11,"first_factor"=$12,"idle_expires_at"=CASE WHEN superseded_at IS NULL THEN $13 ELSE idle_expires_at END,"last_accessed_at"=$14,"mfa_satisfied_at"=$15,"mfa_state"=$16,"password_change_pending"=$17,"recovered_at"=$18,"user_id"=$19 WHERE id_digest = $20 AND NOT rotated_strictly`)},
 		{name: "session save of a session that is gone", run: with(func(ctx context.Context, s storeSet) error {
 			return s.sessions.Save(ctx, storefix.DurableSession("stmt-sid-gone", now))
-		}), assert: refused(session.ErrNotFound, `UPDATE "sessions" SET "absolute_expires_at"=CASE WHEN superseded_at IS NULL THEN $1 ELSE absolute_expires_at END,"created_at"=$2,"data"=$3,"enrolment_generation"=$4,"enrolment_origin_deadline"=$5,"external_id_token"=$6,"external_issuer"=$7,"external_provider"=$8,"external_session_id"=$9,"federated_acr"=$10,"federated_amr"=$11,"first_factor"=$12,"idle_expires_at"=CASE WHEN superseded_at IS NULL THEN $13 ELSE idle_expires_at END,"last_accessed_at"=$14,"mfa_satisfied_at"=$15,"mfa_state"=$16,"password_change_pending"=$17,"recovered_at"=$18,"user_id"=$19 WHERE id_digest = $20 AND NOT rotated_strictly`)},
+		}), assert: refused(session.ErrNotFound, `UPDATE "scrty_sessions" SET "absolute_expires_at"=CASE WHEN superseded_at IS NULL THEN $1 ELSE absolute_expires_at END,"created_at"=$2,"data"=$3,"enrolment_generation"=$4,"enrolment_origin_deadline"=$5,"external_id_token"=$6,"external_issuer"=$7,"external_provider"=$8,"external_session_id"=$9,"federated_acr"=$10,"federated_amr"=$11,"first_factor"=$12,"idle_expires_at"=CASE WHEN superseded_at IS NULL THEN $13 ELSE idle_expires_at END,"last_accessed_at"=$14,"mfa_satisfied_at"=$15,"mfa_state"=$16,"password_change_pending"=$17,"recovered_at"=$18,"user_id"=$19 WHERE id_digest = $20 AND NOT rotated_strictly`)},
 		{name: "session load", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.sessions.Create(ctx, storefix.DurableSession("stmt-sid-load", now)))
 			started()
 			return ignoring(counted.sessions.Load(ctx, "stmt-sid-load"))
-		}, assert: one(`SELECT * FROM "sessions" WHERE id_digest = $1 LIMIT $2`)},
+		}, assert: one(`SELECT * FROM "scrty_sessions" WHERE id_digest = $1 LIMIT $2`)},
 		{name: "session delete", run: with(func(ctx context.Context, s storeSet) error {
 			return s.sessions.Delete(ctx, "stmt-sid-delete")
-		}), assert: one(`DELETE FROM "sessions" WHERE id_digest = $1`)},
+		}), assert: one(`DELETE FROM "scrty_sessions" WHERE id_digest = $1`)},
 		{name: "session delete by user", run: with(func(ctx context.Context, s storeSet) error {
 			return s.sessions.DeleteByUser(ctx, "stmt-user")
-		}), assert: one(`DELETE FROM "sessions" WHERE user_id = $1`)},
+		}), assert: one(`DELETE FROM "scrty_sessions" WHERE user_id = $1`)},
 		{name: "session count", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.sessions.CountActiveByUser(ctx, "stmt-user"))
-		}), assert: one(`SELECT count(*) FROM "sessions" WHERE user_id = $1 AND idle_expires_at > $2 AND absolute_expires_at > $3 AND superseded_at IS NULL`)},
+		}), assert: one(`SELECT count(*) FROM "scrty_sessions" WHERE user_id = $1 AND idle_expires_at > $2 AND absolute_expires_at > $3 AND superseded_at IS NULL`)},
 		{name: "session purge", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.sessions.DeleteExpired(ctx))
-		}), assert: one(`DELETE FROM sessions WHERE CASE WHEN superseded_at IS NOT NULL AND retain_until IS NOT NULL THEN retain_until <= $1 ELSE idle_expires_at <= $1 OR absolute_expires_at <= $1 END`)},
+		}), assert: one(`DELETE FROM scrty_sessions WHERE CASE WHEN superseded_at IS NOT NULL AND retain_until IS NOT NULL THEN retain_until <= $1 ELSE idle_expires_at <= $1 OR absolute_expires_at <= $1 END`)},
 		{name: "session successor presented", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.sessions.Create(ctx, storefix.DurableSession("stmt-sid-successor", now)))
 			started()
@@ -299,47 +299,47 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		}), assert: refused(session.ErrNotFound, sessionSuccessorPresentedStmt)},
 		{name: "session delete by provider session", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.sessions.DeleteByExternalSession(ctx, "https://idp.example", "stmt-ext"))
-		}), assert: one(`DELETE FROM "sessions" WHERE external_issuer = $1 AND external_session_id = $2 AND external_issuer <> '' AND external_session_id <> ''`)},
+		}), assert: one(`DELETE FROM "scrty_sessions" WHERE external_issuer = $1 AND external_session_id = $2 AND external_issuer <> '' AND external_session_id <> ''`)},
 		{name: "session delete by user and issuer", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.sessions.DeleteByUserAndExternalIssuer(ctx, "stmt-user", "https://idp.example"))
-		}), assert: one(`DELETE FROM "sessions" WHERE user_id = $1 AND external_issuer = $2 AND external_issuer <> ''`)},
+		}), assert: one(`DELETE FROM "scrty_sessions" WHERE user_id = $1 AND external_issuer = $2 AND external_issuer <> ''`)},
 
 		{name: "one-time insert", run: with(func(ctx context.Context, s storeSet) error {
 			return s.tokens.Insert(ctx, storefix.RaceToken(0x50000))
-		}), assert: one(`INSERT INTO "one_time_tokens" ("id","purpose","subject","secret_hash","binding_hash","issued_at","expires_at","consumed_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT ("id") DO NOTHING`)},
+		}), assert: one(`INSERT INTO "scrty_one_time_tokens" ("id","purpose","subject","secret_hash","binding_hash","issued_at","expires_at","consumed_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT ("id") DO NOTHING`)},
 		{name: "one-time find", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.tokens.FindByID(ctx, storefix.RaceToken(0x5000f).ID))
-		}), assert: refused(onetime.ErrTokenNotFound, `SELECT * FROM "one_time_tokens" WHERE id = $1 LIMIT $2`)},
+		}), assert: refused(onetime.ErrTokenNotFound, `SELECT * FROM "scrty_one_time_tokens" WHERE id = $1 LIMIT $2`)},
 		{name: "one-time consume", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.tokens.Insert(ctx, storefix.RaceToken(0x50001)))
 			started()
 			return counted.tokens.Consume(ctx, storefix.RaceToken(0x50001).ID, now)
-		}, assert: one(`UPDATE "one_time_tokens" SET "consumed_at"=$1 WHERE id = $2 AND consumed_at IS NULL`)},
+		}, assert: one(`UPDATE "scrty_one_time_tokens" SET "consumed_at"=$1 WHERE id = $2 AND consumed_at IS NULL`)},
 		{name: "one-time consume of a spent token", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.tokens.Insert(ctx, storefix.RaceToken(0x50002)))
 			require.NoError(t, seed.tokens.Consume(ctx, storefix.RaceToken(0x50002).ID, now))
 			started()
 			return counted.tokens.Consume(ctx, storefix.RaceToken(0x50002).ID, now)
-		}, assert: refused(onetime.ErrTokenNotFound, `UPDATE "one_time_tokens" SET "consumed_at"=$1 WHERE id = $2 AND consumed_at IS NULL`)},
+		}, assert: refused(onetime.ErrTokenNotFound, `UPDATE "scrty_one_time_tokens" SET "consumed_at"=$1 WHERE id = $2 AND consumed_at IS NULL`)},
 		{name: "one-time count", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.tokens.CountRecentBySubject(ctx, "p", "stmt-subject", now))
-		}), assert: one(`SELECT count(*) FROM "one_time_tokens" WHERE purpose = $1 AND subject = $2 AND issued_at >= $3`)},
+		}), assert: one(`SELECT count(*) FROM "scrty_one_time_tokens" WHERE purpose = $1 AND subject = $2 AND issued_at >= $3`)},
 		{name: "one-time purge", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.tokens.DeleteExpiredBefore(ctx, "p", now))
-		}), assert: one(`DELETE FROM "one_time_tokens" WHERE purpose = $1 AND expires_at <= $2 AND issued_at < $3`)},
+		}), assert: one(`DELETE FROM "scrty_one_time_tokens" WHERE purpose = $1 AND expires_at <= $2 AND issued_at < $3`)},
 
 		{name: "attempt record", run: with(func(ctx context.Context, s storeSet) error {
 			return s.attempts.RecordFailure(ctx, "stmt-user", now)
-		}), assert: one(`INSERT INTO "login_attempts" ("id","username","attempted_at") VALUES ($1,$2,$3)`)},
+		}), assert: one(`INSERT INTO "scrty_login_attempts" ("id","username","attempted_at") VALUES ($1,$2,$3)`)},
 		{name: "attempt count", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.attempts.FailureCount(ctx, "stmt-user", now.Add(-time.Hour)))
-		}), assert: one(`SELECT count(*) FROM "login_attempts" WHERE username = $1 AND attempted_at > $2`)},
+		}), assert: one(`SELECT count(*) FROM "scrty_login_attempts" WHERE username = $1 AND attempted_at > $2`)},
 		{name: "attempt reset", run: with(func(ctx context.Context, s storeSet) error {
 			return s.attempts.Reset(ctx, "stmt-user")
-		}), assert: one(`WITH attempts AS (DELETE FROM login_attempts WHERE username = $1) DELETE FROM login_failure_streaks WHERE username = $1`)},
+		}), assert: one(`WITH attempts AS (DELETE FROM scrty_login_attempts WHERE username = $1) DELETE FROM scrty_login_failure_streaks WHERE username = $1`)},
 		{name: "attempt purge", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.attempts.DeleteAttemptsBefore(ctx, now.Add(-time.Hour)))
-		}), assert: one(`DELETE FROM "login_attempts" WHERE attempted_at < $1`)},
+		}), assert: one(`DELETE FROM "scrty_login_attempts" WHERE attempted_at < $1`)},
 		{name: "streak add of a new streak", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring2(s.attempts.AddStreakFailure(ctx, "stmt-streak-new", now, now.Add(-time.Hour), 5))
 		}), assert: statements(nil, beginReadCommittedStmt, streakAddStmt, "COMMIT")},
@@ -350,22 +350,22 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		}, assert: statements(nil, beginReadCommittedStmt, streakAddStmt, "COMMIT")},
 		{name: "streak read", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.attempts.FailureStreak(ctx, "stmt-streak-read", now.Add(-time.Hour)))
-		}), assert: one(`SELECT failures, newest_failure_at, held_at FROM login_failure_streaks WHERE username = $1 AND (held_at IS NOT NULL OR newest_failure_at > $2)`)},
+		}), assert: one(`SELECT failures, newest_failure_at, held_at FROM scrty_login_failure_streaks WHERE username = $1 AND (held_at IS NOT NULL OR newest_failure_at > $2)`)},
 		{name: "streak purge", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.attempts.DeleteStreaksBefore(ctx, now.Add(-time.Hour)))
-		}), assert: one(`DELETE FROM login_failure_streaks WHERE held_at IS NULL AND newest_failure_at < $1`)},
+		}), assert: one(`DELETE FROM scrty_login_failure_streaks WHERE held_at IS NULL AND newest_failure_at < $1`)},
 
 		{name: "signing key store", run: with(func(ctx context.Context, s storeSet) error {
 			return s.keys.Store(ctx, storefix.SigningKey("stmt-kid", []byte("PKCS8")))
-		}), assert: one(`INSERT INTO "signing_keys" ("id","kid","alg","private_key","public_jwk","created_at") VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT ("kid") DO UPDATE SET "alg"="excluded"."alg","private_key"="excluded"."private_key","public_jwk"="excluded"."public_jwk","created_at"="excluded"."created_at"`)},
+		}), assert: one(`INSERT INTO "scrty_signing_keys" ("id","kid","alg","private_key","public_jwk","created_at") VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT ("kid") DO UPDATE SET "alg"="excluded"."alg","private_key"="excluded"."private_key","public_jwk"="excluded"."public_jwk","created_at"="excluded"."created_at"`)},
 		{name: "signing key store replacing a kid", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.keys.Store(ctx, storefix.SigningKey("stmt-kid-replaced", []byte("PKCS8-OLD"))))
 			started()
 			return counted.keys.Store(ctx, storefix.SigningKey("stmt-kid-replaced", []byte("PKCS8-NEW")))
-		}, assert: one(`INSERT INTO "signing_keys" ("id","kid","alg","private_key","public_jwk","created_at") VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT ("kid") DO UPDATE SET "alg"="excluded"."alg","private_key"="excluded"."private_key","public_jwk"="excluded"."public_jwk","created_at"="excluded"."created_at"`)},
+		}, assert: one(`INSERT INTO "scrty_signing_keys" ("id","kid","alg","private_key","public_jwk","created_at") VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT ("kid") DO UPDATE SET "alg"="excluded"."alg","private_key"="excluded"."private_key","public_jwk"="excluded"."public_jwk","created_at"="excluded"."created_at"`)},
 		{name: "signing key load", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.keys.LoadAll(ctx))
-		}), assert: one(`SELECT * FROM "signing_keys" ORDER BY created_at, kid`)},
+		}), assert: one(`SELECT * FROM "scrty_signing_keys" ORDER BY created_at, kid`)},
 
 		{name: "signing key load re-sealing two keys sealed under a retired key: the read, then one conditional update per key", run: func(ctx context.Context, t *testing.T, _, counted storeSet, started func()) error {
 			retired := newSigningKeyStore(t, d.db, keys.UnderK1(t))
@@ -374,12 +374,12 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 			started()
 			return ignoring(counted.keys.LoadAll(ctx))
 		}, assert: statements(nil,
-			`SELECT * FROM "signing_keys" ORDER BY created_at, kid`,
-			`UPDATE "signing_keys" SET "private_key"=$1 WHERE kid = $2 AND private_key = $3`,
-			`UPDATE "signing_keys" SET "private_key"=$1 WHERE kid = $2 AND private_key = $3`)},
+			`SELECT * FROM "scrty_signing_keys" ORDER BY created_at, kid`,
+			`UPDATE "scrty_signing_keys" SET "private_key"=$1 WHERE kid = $2 AND private_key = $3`,
+			`UPDATE "scrty_signing_keys" SET "private_key"=$1 WHERE kid = $2 AND private_key = $3`)},
 		{name: "signing key delete", run: with(func(ctx context.Context, s storeSet) error {
 			return s.keys.Delete(ctx, "stmt-kid-delete-1", "stmt-kid-delete-2")
-		}), assert: one(`DELETE FROM signing_keys WHERE kid IN (SELECT jsonb_array_elements_text($1::jsonb))`)},
+		}), assert: one(`DELETE FROM scrty_signing_keys WHERE kid IN (SELECT jsonb_array_elements_text($1::jsonb))`)},
 		{name: "signing key delete of no keys", run: with(func(ctx context.Context, s storeSet) error {
 			return s.keys.Delete(ctx)
 		}), assert: func(t *testing.T, err error, stmts []string) {
@@ -390,41 +390,41 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 
 		{name: "MFA begin", run: with(func(ctx context.Context, s storeSet) error {
 			return s.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-begin", "TOTP"))
-		}), assert: one(`INSERT INTO "mfa_enrolments" ("id","user_id","secret","confirmed_at","last_step","created_at","generation","device_proven_at","email_code","email_code_until","email_code_attempts","verify_attempts","verify_window_until") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT ("user_id") DO UPDATE SET "secret"="excluded"."secret","created_at"="excluded"."created_at","generation"="excluded"."generation","last_step"=$14,"device_proven_at"=$15,"email_code"=$16,"email_code_until"=$17,"email_code_attempts"=$18,"verify_attempts"=$19,"verify_window_until"=$20 WHERE mfa_enrolments.confirmed_at IS NULL`)},
+		}), assert: one(`INSERT INTO "scrty_mfa_enrolments" ("id","user_id","secret","confirmed_at","last_step","created_at","generation","device_proven_at","email_code","email_code_until","email_code_attempts","verify_attempts","verify_window_until") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT ("user_id") DO UPDATE SET "secret"="excluded"."secret","created_at"="excluded"."created_at","generation"="excluded"."generation","last_step"=$14,"device_proven_at"=$15,"email_code"=$16,"email_code_until"=$17,"email_code_attempts"=$18,"verify_attempts"=$19,"verify_window_until"=$20 WHERE scrty_mfa_enrolments.confirmed_at IS NULL`)},
 		{name: "MFA begin over a confirmed enrolment", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-confirmed", "TOTP")))
 			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-confirmed", storefix.EnrolmentGen, 1000, now)))
 			started()
 			return counted.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-confirmed", "TOTP-OTHER"))
-		}, assert: refused(mfa.ErrAlreadyEnrolled, `INSERT INTO "mfa_enrolments" ("id","user_id","secret","confirmed_at","last_step","created_at","generation","device_proven_at","email_code","email_code_until","email_code_attempts","verify_attempts","verify_window_until") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT ("user_id") DO UPDATE SET "secret"="excluded"."secret","created_at"="excluded"."created_at","generation"="excluded"."generation","last_step"=$14,"device_proven_at"=$15,"email_code"=$16,"email_code_until"=$17,"email_code_attempts"=$18,"verify_attempts"=$19,"verify_window_until"=$20 WHERE mfa_enrolments.confirmed_at IS NULL`)},
+		}, assert: refused(mfa.ErrAlreadyEnrolled, `INSERT INTO "scrty_mfa_enrolments" ("id","user_id","secret","confirmed_at","last_step","created_at","generation","device_proven_at","email_code","email_code_until","email_code_attempts","verify_attempts","verify_window_until") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT ("user_id") DO UPDATE SET "secret"="excluded"."secret","created_at"="excluded"."created_at","generation"="excluded"."generation","last_step"=$14,"device_proven_at"=$15,"email_code"=$16,"email_code_until"=$17,"email_code_attempts"=$18,"verify_attempts"=$19,"verify_window_until"=$20 WHERE scrty_mfa_enrolments.confirmed_at IS NULL`)},
 		{name: "MFA get", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-get", "TOTP")))
 			started()
 			return flag(ignoringTwo(counted.enrolments.Get(ctx, "stmt-mfa-get")))
-		}, assert: one(`SELECT * FROM "mfa_enrolments" WHERE user_id = $1 LIMIT $2`)},
+		}, assert: one(`SELECT * FROM "scrty_mfa_enrolments" WHERE user_id = $1 LIMIT $2`)},
 		{name: "MFA confirm", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-confirm", "TOTP")))
 			started()
 			return flag(counted.enrolments.Confirm(ctx, "stmt-mfa-confirm", storefix.EnrolmentGen, 1000, now))
-		}, assert: one(`UPDATE "mfa_enrolments" SET "confirmed_at"=$1,"last_step"=GREATEST(last_step, $2) WHERE user_id = $3 AND generation = $4 AND confirmed_at IS NULL AND device_proven_at IS NULL`)},
+		}, assert: one(`UPDATE "scrty_mfa_enrolments" SET "confirmed_at"=$1,"last_step"=GREATEST(last_step, $2) WHERE user_id = $3 AND generation = $4 AND confirmed_at IS NULL AND device_proven_at IS NULL`)},
 		{name: "MFA confirm of a proven enrolment", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			gen := begunOn(ctx, t, seed, "stmt-mfa-confirm-proven")
 			require.NoError(t, flag(proofs(t, seed).ProveDevice(ctx, "stmt-mfa-confirm-proven", gen, 1000, []byte("314159"), now.Add(10*time.Minute), now)))
 			started()
 			return flag(counted.enrolments.Confirm(ctx, "stmt-mfa-confirm-proven", gen, 999, now))
-		}, assert: refused(errNotStored, `UPDATE "mfa_enrolments" SET "confirmed_at"=$1,"last_step"=GREATEST(last_step, $2) WHERE user_id = $3 AND generation = $4 AND confirmed_at IS NULL AND device_proven_at IS NULL`)},
+		}, assert: refused(errNotStored, `UPDATE "scrty_mfa_enrolments" SET "confirmed_at"=$1,"last_step"=GREATEST(last_step, $2) WHERE user_id = $3 AND generation = $4 AND confirmed_at IS NULL AND device_proven_at IS NULL`)},
 		{name: "MFA accept step", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-step", "TOTP")))
 			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-step", storefix.EnrolmentGen, 1000, now)))
 			started()
 			return flag(counted.enrolments.AcceptStep(ctx, "stmt-mfa-step", storefix.EnrolmentGen, 1001))
-		}, assert: one(`UPDATE "mfa_enrolments" SET "last_step"=$1 WHERE user_id = $2 AND generation = $3 AND confirmed_at IS NOT NULL AND last_step < $4`)},
+		}, assert: one(`UPDATE "scrty_mfa_enrolments" SET "last_step"=$1 WHERE user_id = $2 AND generation = $3 AND confirmed_at IS NOT NULL AND last_step < $4`)},
 		{name: "MFA accept of a step already accepted", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-stale", "TOTP")))
 			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-stale", storefix.EnrolmentGen, 1000, now)))
 			started()
 			return flag(counted.enrolments.AcceptStep(ctx, "stmt-mfa-stale", storefix.EnrolmentGen, 1000))
-		}, assert: refused(errNotStored, `UPDATE "mfa_enrolments" SET "last_step"=$1 WHERE user_id = $2 AND generation = $3 AND confirmed_at IS NOT NULL AND last_step < $4`)},
+		}, assert: refused(errNotStored, `UPDATE "scrty_mfa_enrolments" SET "last_step"=$1 WHERE user_id = $2 AND generation = $3 AND confirmed_at IS NOT NULL AND last_step < $4`)},
 		{name: "MFA device proof", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			gen := begunOn(ctx, t, seed, "stmt-mfa-prove")
 			started()
@@ -439,7 +439,7 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 			gen := provenOn(ctx, t, seed, "stmt-mfa-complete", now)
 			started()
 			return flag(proofs(t, counted).Complete(ctx, "stmt-mfa-complete", gen, now))
-		}, assert: one(`UPDATE "mfa_enrolments" SET "confirmed_at"=$1,"email_code"=$2 WHERE user_id = $3 AND generation = $4 AND device_proven_at IS NOT NULL AND confirmed_at IS NULL`)},
+		}, assert: one(`UPDATE "scrty_mfa_enrolments" SET "confirmed_at"=$1,"email_code"=$2 WHERE user_id = $3 AND generation = $4 AND device_proven_at IS NOT NULL AND confirmed_at IS NULL`)},
 		{name: "MFA charge", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			gen := provenOn(ctx, t, seed, "stmt-mfa-charge", now)
 			started()
@@ -475,19 +475,19 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		}, assert: one(verifyRefundStmt)},
 		{name: "MFA delete", run: with(func(ctx context.Context, s storeSet) error {
 			return s.enrolments.Delete(ctx, "stmt-mfa-delete")
-		}), assert: one(`DELETE FROM "mfa_enrolments" WHERE user_id = $1`)},
+		}), assert: one(`DELETE FROM "scrty_mfa_enrolments" WHERE user_id = $1`)},
 		{name: "MFA get re-sealing a secret sealed under a retired key: the read, then one conditional update", run: func(ctx context.Context, t *testing.T, _, counted storeSet, started func()) error {
 			require.NoError(t, newEnrolmentStore(t, d.db, keys.UnderK1(t)).PutPending(ctx, storefix.Pending("stmt-mfa-reseal", "TOTP")))
 			started()
 			return flag(ignoringTwo(counted.enrolments.Get(ctx, "stmt-mfa-reseal")))
-		}, assert: statements(nil, `SELECT * FROM "mfa_enrolments" WHERE user_id = $1 LIMIT $2`, `UPDATE "mfa_enrolments" SET "secret"=$1 WHERE user_id = $2 AND secret = $3`)},
+		}, assert: statements(nil, `SELECT * FROM "scrty_mfa_enrolments" WHERE user_id = $1 LIMIT $2`, `UPDATE "scrty_mfa_enrolments" SET "secret"=$1 WHERE user_id = $2 AND secret = $3`)},
 
 		{name: "API key put", run: with(func(ctx context.Context, s storeSet) error {
 			return s.apiKeys.Put(ctx, storefix.APIKey(0x500, "stmt-svc"))
-		}), assert: one(`INSERT INTO "api_keys" ("id","user_id","name","scopes","secret_digest","expires_at","revoked_at","last_used_at","created_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`)},
+		}), assert: one(`INSERT INTO "scrty_api_keys" ("id","user_id","name","scopes","secret_digest","expires_at","revoked_at","last_used_at","created_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`)},
 		{name: "API key get", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.apiKeys.Get(ctx, storefix.APIKey(0x501, "").ID))
-		}), assert: refused(apikey.ErrKeyNotFound, `SELECT * FROM "api_keys" WHERE id = $1 LIMIT $2`)},
+		}), assert: refused(apikey.ErrKeyNotFound, `SELECT * FROM "scrty_api_keys" WHERE id = $1 LIMIT $2`)},
 		{name: "API key revoke", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.apiKeys.Put(ctx, storefix.APIKey(0x502, "stmt-svc")))
 			started()
@@ -510,63 +510,63 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		}), assert: refused(apikey.ErrKeyNotFound, apiKeyRevokeStmt)},
 		{name: "API key touch", run: with(func(ctx context.Context, s storeSet) error {
 			return s.apiKeys.TouchLastUsed(ctx, storefix.APIKey(0x504, "").ID, now)
-		}), assert: refused(apikey.ErrKeyNotFound, `UPDATE "api_keys" SET "last_used_at"=$1 WHERE id = $2`)},
+		}), assert: refused(apikey.ErrKeyNotFound, `UPDATE "scrty_api_keys" SET "last_used_at"=$1 WHERE id = $2`)},
 		{name: "API key list", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.apiKeys.List(ctx, "stmt-svc"))
-		}), assert: one(`SELECT * FROM "api_keys" WHERE user_id = $1 ORDER BY created_at, id`)},
+		}), assert: one(`SELECT * FROM "scrty_api_keys" WHERE user_id = $1 ORDER BY created_at, id`)},
 
 		{name: "link insert", run: func(ctx context.Context, t *testing.T, _, counted storeSet, started func()) error {
 			l := storefix.Link(t, "corp", "https://stmt.example", "s-insert", "stmt-user")
 			started()
 			return counted.links.Insert(ctx, l)
-		}, assert: one(`INSERT INTO "oidc_links" ("id","provider","issuer","subject","user_id","username","email","created_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT ("provider","issuer","subject") DO NOTHING`)},
+		}, assert: one(`INSERT INTO "scrty_oidc_links" ("id","provider","issuer","subject","user_id","username","email","created_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT ("provider","issuer","subject") DO NOTHING`)},
 		{name: "link insert of a linked identity", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.links.Insert(ctx, storefix.Link(t, "corp", "https://stmt.example", "s-dup", "u1")))
 			started()
 			return counted.links.Insert(ctx, storefix.Link(t, "corp", "https://stmt.example", "s-dup", "u2"))
-		}, assert: refused(oidc.ErrLinkExists, `INSERT INTO "oidc_links" ("id","provider","issuer","subject","user_id","username","email","created_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT ("provider","issuer","subject") DO NOTHING`)},
+		}, assert: refused(oidc.ErrLinkExists, `INSERT INTO "scrty_oidc_links" ("id","provider","issuer","subject","user_id","username","email","created_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT ("provider","issuer","subject") DO NOTHING`)},
 		{name: "link find", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.links.FindByExternal(ctx, "corp", "https://stmt.example", "s-missing"))
-		}), assert: refused(oidc.ErrLinkNotFound, `SELECT * FROM "oidc_links" WHERE provider = $1 AND issuer = $2 AND subject = $3 LIMIT $4`)},
+		}), assert: refused(oidc.ErrLinkNotFound, `SELECT * FROM "scrty_oidc_links" WHERE provider = $1 AND issuer = $2 AND subject = $3 LIMIT $4`)},
 		{name: "link delete by user", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.links.DeleteByUser(ctx, "stmt-user"))
-		}), assert: one(`DELETE FROM "oidc_links" WHERE user_id = $1 AND user_id <> ''`)},
+		}), assert: one(`DELETE FROM "scrty_oidc_links" WHERE user_id = $1 AND user_id <> ''`)},
 
 		{name: "flow begin", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.flows.Begin(ctx, storefix.Flow("p1", "stmt-state-begin")))
-		}), assert: one(`INSERT INTO "oidc_flows" ("id","handle","provider","state","nonce","verifier","next","expires_at","completed_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`)},
+		}), assert: one(`INSERT INTO "scrty_oidc_flows" ("id","handle","provider","state","nonce","verifier","next","expires_at","completed_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`)},
 		{name: "flow complete", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			h, err := seed.flows.Begin(ctx, storefix.Flow("p1", "stmt-state-complete"))
 			require.NoError(t, err)
 			started()
 			return ignoring(counted.flows.Complete(ctx, h, "p1", "stmt-state-complete"))
-		}, assert: one(`UPDATE oidc_flows SET completed_at = $4 WHERE handle = $1 AND provider = $2 AND state = $3 AND $3 <> '' AND completed_at IS NULL AND expires_at > $4 RETURNING provider, state, nonce, verifier, next, expires_at`)},
+		}, assert: one(`UPDATE scrty_oidc_flows SET completed_at = $4 WHERE handle = $1 AND provider = $2 AND state = $3 AND $3 <> '' AND completed_at IS NULL AND expires_at > $4 RETURNING provider, state, nonce, verifier, next, expires_at`)},
 		{name: "flow complete refused", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.flows.Complete(ctx, "stmt-no-such-handle", "p1", "s"))
-		}), assert: refused(oidc.ErrInvalidState, `UPDATE oidc_flows SET completed_at = $4 WHERE handle = $1 AND provider = $2 AND state = $3 AND $3 <> '' AND completed_at IS NULL AND expires_at > $4 RETURNING provider, state, nonce, verifier, next, expires_at`)},
+		}), assert: refused(oidc.ErrInvalidState, `UPDATE scrty_oidc_flows SET completed_at = $4 WHERE handle = $1 AND provider = $2 AND state = $3 AND $3 <> '' AND completed_at IS NULL AND expires_at > $4 RETURNING provider, state, nonce, verifier, next, expires_at`)},
 		{name: "flow purge", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.flows.DeleteExpired(ctx, storefix.OIDCStart))
-		}), assert: one(`DELETE FROM "oidc_flows" WHERE expires_at < $1`)},
+		}), assert: one(`DELETE FROM "scrty_oidc_flows" WHERE expires_at < $1`)},
 
 		{name: "handoff insert", run: func(ctx context.Context, t *testing.T, _, counted storeSet, started func()) error {
 			rec := storefix.Handoff(t, "stmt-token-insert")
 			started()
 			return counted.handoffs.Insert(ctx, rec)
-		}, assert: one(`INSERT INTO "oidc_handoffs" ("id","token_id","secret_hash","user_id","provider","issuer","session_id","id_token","next","expires_at","created_at","consumed_at","amr","acr") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`)},
+		}, assert: one(`INSERT INTO "scrty_oidc_handoffs" ("id","token_id","secret_hash","user_id","provider","issuer","session_id","id_token","next","expires_at","created_at","consumed_at","amr","acr") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`)},
 		{name: "handoff find", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.handoffs.FindByTokenID(ctx, "stmt-token-missing"))
-		}), assert: refused(oidc.ErrHandoffNotFound, `SELECT * FROM "oidc_handoffs" WHERE token_id = $1 AND token_id <> '' LIMIT $2`)},
+		}), assert: refused(oidc.ErrHandoffNotFound, `SELECT * FROM "scrty_oidc_handoffs" WHERE token_id = $1 AND token_id <> '' LIMIT $2`)},
 		{name: "handoff consume", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.handoffs.Insert(ctx, storefix.Handoff(t, "stmt-token-consume")))
 			started()
 			return counted.handoffs.Consume(ctx, "stmt-token-consume", now)
-		}, assert: one(`UPDATE "oidc_handoffs" SET "consumed_at"=$1 WHERE token_id = $2 AND token_id <> '' AND consumed_at IS NULL`)},
+		}, assert: one(`UPDATE "scrty_oidc_handoffs" SET "consumed_at"=$1 WHERE token_id = $2 AND token_id <> '' AND consumed_at IS NULL`)},
 		{name: "handoff consume refused", run: with(func(ctx context.Context, s storeSet) error {
 			return s.handoffs.Consume(ctx, "stmt-token-missing", now)
-		}), assert: refused(oidc.ErrHandoffNotFound, `UPDATE "oidc_handoffs" SET "consumed_at"=$1 WHERE token_id = $2 AND token_id <> '' AND consumed_at IS NULL`)},
+		}), assert: refused(oidc.ErrHandoffNotFound, `UPDATE "scrty_oidc_handoffs" SET "consumed_at"=$1 WHERE token_id = $2 AND token_id <> '' AND consumed_at IS NULL`)},
 		{name: "handoff purge", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.handoffs.DeleteExpired(ctx, storefix.OIDCStart))
-		}), assert: one(`DELETE FROM "oidc_handoffs" WHERE expires_at < $1`)},
+		}), assert: one(`DELETE FROM "scrty_oidc_handoffs" WHERE expires_at < $1`)},
 	}
 
 	// The cases share one recording pool, so they run one after another.
@@ -593,18 +593,18 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 
 // The enrolment path's conditional writes, as the device-proof rows pin them.
 const (
-	proveStmt  = `UPDATE "mfa_enrolments" SET "device_proven_at"=$1,"email_code"=$2,"email_code_attempts"=$3,"email_code_until"=$4,"last_step"=$5 WHERE user_id = $6 AND generation = $7 AND confirmed_at IS NULL AND device_proven_at IS NULL AND last_step < $8`
-	chargeStmt = `UPDATE "mfa_enrolments" SET "email_code_attempts"=email_code_attempts + 1 WHERE user_id = $1 AND generation = $2 AND confirmed_at IS NULL AND device_proven_at IS NOT NULL AND email_code IS NOT NULL AND email_code_until > $3 AND email_code_attempts < $4 RETURNING "email_code_attempts"`
+	proveStmt  = `UPDATE "scrty_mfa_enrolments" SET "device_proven_at"=$1,"email_code"=$2,"email_code_attempts"=$3,"email_code_until"=$4,"last_step"=$5 WHERE user_id = $6 AND generation = $7 AND confirmed_at IS NULL AND device_proven_at IS NULL AND last_step < $8`
+	chargeStmt = `UPDATE "scrty_mfa_enrolments" SET "email_code_attempts"=email_code_attempts + 1 WHERE user_id = $1 AND generation = $2 AND confirmed_at IS NULL AND device_proven_at IS NOT NULL AND email_code IS NOT NULL AND email_code_until > $3 AND email_code_attempts < $4 RETURNING "email_code_attempts"`
 
 	// The TOTP verification statements run verbatim from the shared schema
 	// statements, so they are pinned as written there.
-	verifyChargeStmt = `UPDATE mfa_enrolments SET verify_attempts = CASE WHEN verify_window_until IS NULL OR verify_window_until <= $2 THEN 1 ELSE verify_attempts + 1 END, verify_window_until = CASE WHEN verify_window_until IS NULL OR verify_window_until <= $2 THEN $3 ELSE verify_window_until END WHERE user_id = $1 AND confirmed_at IS NOT NULL AND (verify_window_until IS NULL OR verify_window_until <= $2 OR verify_attempts < $4) RETURNING verify_window_until`
+	verifyChargeStmt = `UPDATE scrty_mfa_enrolments SET verify_attempts = CASE WHEN verify_window_until IS NULL OR verify_window_until <= $2 THEN 1 ELSE verify_attempts + 1 END, verify_window_until = CASE WHEN verify_window_until IS NULL OR verify_window_until <= $2 THEN $3 ELSE verify_window_until END WHERE user_id = $1 AND confirmed_at IS NOT NULL AND (verify_window_until IS NULL OR verify_window_until <= $2 OR verify_attempts < $4) RETURNING verify_window_until`
 	// streakAddStmt is the streak upsert, whitespace collapsed: one statement
 	// whether it creates the streak or advances a stored one. It runs in a
 	// transaction of the store's own, begun at READ COMMITTED.
-	streakAddStmt          = `WITH prev AS ( SELECT id, held_at FROM login_failure_streaks WHERE username = $2::text FOR UPDATE ), advanced AS ( UPDATE login_failure_streaks AS s SET failures = CASE WHEN s.held_at IS NULL AND s.newest_failure_at <= $4::timestamptz THEN 1 ELSE s.failures + 1 END, newest_failure_at = CASE WHEN s.held_at IS NULL AND s.newest_failure_at <= $4::timestamptz THEN $3::timestamptz ELSE GREATEST(s.newest_failure_at, $3::timestamptz) END, held_at = CASE WHEN s.held_at IS NOT NULL THEN s.held_at WHEN (CASE WHEN s.newest_failure_at <= $4::timestamptz THEN 1 ELSE s.failures + 1 END) >= $5::integer THEN $3::timestamptz END FROM prev WHERE s.id = prev.id RETURNING s.failures, s.newest_failure_at, s.held_at, prev.held_at IS NULL AND s.held_at IS NOT NULL AS set_hold ), created AS ( INSERT INTO login_failure_streaks (id, username, failures, newest_failure_at, held_at) SELECT $1::uuid, $2::text, 1, $3::timestamptz, CASE WHEN 1 >= $5::integer THEN $3::timestamptz END WHERE NOT EXISTS (SELECT 1 FROM prev) ON CONFLICT (username) DO NOTHING RETURNING failures, newest_failure_at, held_at, held_at IS NOT NULL AS set_hold ) SELECT failures, newest_failure_at, held_at, set_hold FROM advanced UNION ALL SELECT failures, newest_failure_at, held_at, set_hold FROM created`
+	streakAddStmt          = `WITH prev AS ( SELECT id, held_at FROM scrty_login_failure_streaks WHERE username = $2::text FOR UPDATE ), advanced AS ( UPDATE scrty_login_failure_streaks AS s SET failures = CASE WHEN s.held_at IS NULL AND s.newest_failure_at <= $4::timestamptz THEN 1 ELSE s.failures + 1 END, newest_failure_at = CASE WHEN s.held_at IS NULL AND s.newest_failure_at <= $4::timestamptz THEN $3::timestamptz ELSE GREATEST(s.newest_failure_at, $3::timestamptz) END, held_at = CASE WHEN s.held_at IS NOT NULL THEN s.held_at WHEN (CASE WHEN s.newest_failure_at <= $4::timestamptz THEN 1 ELSE s.failures + 1 END) >= $5::integer THEN $3::timestamptz END FROM prev WHERE s.id = prev.id RETURNING s.failures, s.newest_failure_at, s.held_at, prev.held_at IS NULL AND s.held_at IS NOT NULL AS set_hold ), created AS ( INSERT INTO scrty_login_failure_streaks (id, username, failures, newest_failure_at, held_at) SELECT $1::uuid, $2::text, 1, $3::timestamptz, CASE WHEN 1 >= $5::integer THEN $3::timestamptz END WHERE NOT EXISTS (SELECT 1 FROM prev) ON CONFLICT (username) DO NOTHING RETURNING failures, newest_failure_at, held_at, held_at IS NOT NULL AS set_hold ) SELECT failures, newest_failure_at, held_at, set_hold FROM advanced UNION ALL SELECT failures, newest_failure_at, held_at, set_hold FROM created`
 	beginReadCommittedStmt = `BEGIN ISOLATION LEVEL READ COMMITTED`
-	verifyRefundStmt       = `UPDATE mfa_enrolments SET verify_attempts = verify_attempts - 1 WHERE user_id = $1 AND verify_window_until = $2 AND verify_attempts > 0`
+	verifyRefundStmt       = `UPDATE scrty_mfa_enrolments SET verify_attempts = verify_attempts - 1 WHERE user_id = $1 AND verify_window_until = $2 AND verify_attempts > 0`
 )
 
 // proofs is s's enrolment store as the enrolment path's port.

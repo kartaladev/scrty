@@ -2710,7 +2710,7 @@ func RunSessionDeleteExceptNilFamily[S session.Store](t *testing.T, harness Dura
 		require.NoError(t, s.Create(t.Context(), other))
 		for _, sess := range []*session.Session{keep, other} {
 			_, err := harness.Raw.ExecContext(t.Context(),
-				`UPDATE sessions SET family_id = '00000000-0000-0000-0000-000000000000' WHERE id_digest = $1`,
+				`UPDATE scrty_sessions SET family_id = '00000000-0000-0000-0000-000000000000' WHERE id_digest = $1`,
 				sessionDigest(sess.ID))
 			require.NoError(t, err)
 		}

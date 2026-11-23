@@ -283,7 +283,7 @@ func revokeRacesReassert(t *testing.T, d database, bind binding, username string
 	require.Len(t, seeded.Roles, 1)
 	revoked := seeded.Roles[0].ID
 	// A super role is written by the consumer's tooling, never by the store.
-	_, err = d.conn.DB.ExecContext(t.Context(), `UPDATE assigned_roles SET super_role = true WHERE id = $1`, revoked)
+	_, err = d.conn.DB.ExecContext(t.Context(), `UPDATE scrty_assigned_roles SET super_role = true WHERE id = $1`, revoked)
 	require.NoError(t, err)
 
 	got, waitErr := holdThenRelease(t, d, bind,
