@@ -138,7 +138,7 @@ Deleting a user SHALL mark the user deleted and inactive, keep the record and it
 - **THEN** the call fails with the not-found error
 
 ### Requirement: Passwords are set through the configured policy and history
-Setting a user's password SHALL take a plain password, check it against the configured password policy and the reuse guard, encode it with the configured encoder, record the replaced hash in the password history and record the change time, in one transaction. A refused password SHALL change nothing.
+Setting a user's password SHALL take a plain password, check it against the configured password policy, including its reuse rule against the current hash and the history, encode it with the policy's encoder, retire the replaced hash through the policy's history when the policy has a reuse rule, and store the new hash with the change time. A refused password SHALL change nothing.
 
 #### Scenario: Reused password
 - **WHEN** an administrator resets `ada`'s password to the one she had before
@@ -146,7 +146,7 @@ Setting a user's password SHALL take a plain password, check it against the conf
 
 #### Scenario: Reset records the change
 - **WHEN** an administrator resets `ada`'s password to an acceptable one
-- **THEN** her password-changed time is the service clock's time and her old hash is in the history
+- **THEN** her password-changed time is the service clock's time, and, with a reuse rule configured, her old hash is in the history
 
 ### Requirement: Import writes given values by identifier and is idempotent
 Importing a user SHALL take an identifier, username, display name, email, email verification time, password hash, active flag, creation and update times, roles and attributes. It SHALL create the user when the identifier is unknown and update it when known, and SHALL report created, updated or unchanged. Equal values SHALL write nothing and emit no event.
@@ -222,7 +222,7 @@ Reading a role's grants SHALL return every privilege with its group, resource, g
 - **THEN** the role's grants are exactly as they were before the call
 
 ### Requirement: Grants are checked against the catalogue
-Replacing grants SHALL be refused with the unknown-privilege error, writing nothing, when it names a resource the catalogue does not list, a privilege the catalogue does not list for that resource, or a scope that privilege may not be granted with.
+Replacing grants SHALL be refused with the unknown-privilege error, writing nothing, when it grants on a resource the catalogue does not list, grants a privilege the catalogue does not list for that resource, or grants a scope that privilege may not be granted with. Replacing a resource's grants with none SHALL be allowed whether or not the catalogue lists the resource, so grants on a resource the catalogue dropped can be cleared.
 
 #### Scenario: Unlisted privilege
 - **WHEN** a grant names privilege `purge` on `crm/lead`, which the catalogue does not list
@@ -277,7 +277,7 @@ Each change a service makes SHALL emit one event naming the actor, the target an
 - **THEN** one user-updated event names the administrator, `ada`'s identifier and the field `email`, and not the address
 
 ### Requirement: Before and after values go only to an optional audit port
-A consumer MAY give the services an audit port. When given, each change SHALL also be delivered to it with the record before and after the change, with every password hash removed. Without one, no before or after values SHALL leave the service. An audit port failure SHALL be logged and SHALL NOT undo the change.
+A consumer MAY give the services an audit port. When given, each change SHALL also be delivered to it with the record before and after the change, with every password hash removed; an import is delivered with the imported values as the after record and no before record. Without one, no before or after values SHALL leave the service. An audit port failure SHALL be logged and SHALL NOT undo the change.
 
 #### Scenario: Audit port
 - **WHEN** an audit port is configured and `ada`'s password is reset

@@ -119,33 +119,33 @@ The whole change lands in one pull request, opened after group 14's final gate (
 
 ## 7. Administration services
 
-- [ ] 7.1 Package `admin`: ports, record types, errors (`ErrNotFound`, `ErrAlreadyExists` with the
+- [x] 7.1 Package `admin`: ports, record types, errors (`ErrNotFound`, `ErrAlreadyExists` with the
   field, `ErrStillAssigned`, `ErrStaleUpdate`, `ErrUnknownPrivilege`, `ErrInvalidInput`,
   `ErrNoActor`), `WithSystemActor`, and mocks for every port (spec "Administration errors carry one
   reason each", "Every administrative call names its actor"; design D2, D3, F25, F29). Red: a table test that
   `ErrAlreadyExists` for the email does not contain the address. Verify: `go test -race -count=1 ./admin/`.
-- [ ] 7.2 `admin.NewUsers`: list bounds and cursor, get, create, update, deactivate, reactivate,
+- [x] 7.2 `admin.NewUsers`: list bounds and cursor, get, create, update, deactivate, reactivate,
   delete, against the store mock (spec user requirements; design D15, D16, F23, F24). Red: an
   oversized page reaches the store. Verify: `go test -race -count=1 ./admin/`.
-- [ ] 7.3 Password set and reset through the policy, the reuse guard, the encoder, the history and the
+- [x] 7.3 Password set and reset through the policy, the reuse guard, the encoder, the history and the
   clock, in one store call (spec "Passwords are set through…"). Red: a reused password reaches the
   store. Verify: `go test -race -count=1 ./admin/`.
-- [ ] 7.4 `admin.NewImporter`: canonical identifier, recognised hash, outcome reporting, no event for
+- [x] 7.4 `admin.NewImporter`: canonical identifier, recognised hash, outcome reporting, no event for
   `Unchanged` (spec "Import writes given values…", "Import never takes over…"; design D14, F8, F9).
   Red: an unrecognised hash reaches the store. Verify: `go test -race -count=1 ./admin/`.
-- [ ] 7.5 `admin.NewRoles`, `admin.NewGrants` (catalogue required, every grant checked) and
+- [x] 7.5 `admin.NewRoles`, `admin.NewGrants` (catalogue required, every grant checked) and
   `admin.NewAssignments` (end after start) (spec role, grant and assignment requirements; design D9,
   D10, F11, F30). Red: a grant naming `purge` reaches the store. Verify: `go test -race -count=1 ./admin/`.
-- [ ] 7.6 Events: `event.Event` gains `Actor`, `Target`, `Changed`; each service emits the OWASP name
+- [x] 7.6 Events: `event.Event` gains `Actor`, `Target`, `Changed`; each service emits the OWASP name
   after a successful store call, and none for a refusal, failure or no-op; new names are listed by
   `event.Names` (spec security-events "Administration changes are reported…", "An administration event
   names…"; design D19). Red: a deactivation of an inactive user emits `user_archived`. Verify:
   `go test -race -count=1 ./admin/ ./event/`.
-- [ ] 7.7 The audit port: before and after records without a hash field; a failing or panicking sink
+- [x] 7.7 The audit port: before and after records without a hash field; a failing or panicking sink
   is logged without values and the call still succeeds (spec "Before and after values go only to an
   optional audit port"; design F26). Red: a panicking sink fails the call. Verify:
   `go test -race -count=1 ./admin/`.
-- [ ] 7.8 Godoc for the package, each service and option (default and override), and one `Example`
+- [x] 7.8 Godoc for the package, each service and option (default and override), and one `Example`
   per service. Verify: `go test -run Example -count=1 ./admin/`.
 
 ## 8. SQL stores: administration ports
@@ -199,7 +199,7 @@ The whole change lands in one pull request, opened after group 14's final gate (
 - [ ] 12.1 `session.Session.SelectedRole`, a store method that writes only that field, kept by every
   rotation, in the memory store and the three durable stores (spec sessions, both requirements). Red:
   the session conformance suite's new cases fail. Verify: the session conformance suites.
-- [ ] 12.2 `httpsec.WithActiveRoleSwitching` and `Chain.SwitchActiveRole`, with `ErrNoRole` for a role
+- [ ] 12.2 `httpsec.WithActiveRoleSwitching` and `Chain.SwitchActiveRole`, with `ErrRoleNotHeld` for a role
   not held and a not-enabled error when off; the `scrty_active_role_switched` event (spec "Switching
   the active role is opt-in"; design D20). Red: switching to `audit` leaves `sales` active. Verify:
   scoped `httpsec` run.

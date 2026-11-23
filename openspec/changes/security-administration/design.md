@@ -134,7 +134,10 @@ Any other error is not, so a later check in the same request tries again. The me
 roles; past that it loads without remembering, which bounds memory against a request that checks
 many role names.
 
-The chain attaches a fresh memo to every request it authenticates. `httpsec.WithoutPrivilegeMemo()`
+The chain attaches a fresh memo to every request it runs, at chain entry, before any interceptor, so
+every authentication path is covered; an anonymous request pays one small allocation. A context
+detached from the request with `context.WithoutCancel` keeps the memo; work that outlives the request
+must not make privilege checks on it, or must attach a memo of its own. `httpsec.WithoutPrivilegeMemo()`
 turns that off. A consumer outside the chain calls `authorize.WithRequestMemo` itself.
 
 - **Why the context and not the authorizer:** the authorizer is shared by every request. A memo on
@@ -146,6 +149,9 @@ turns that off. A consumer outside the chain calls `authorize.WithRequestMemo` i
 
 The memo assumes a role's privileges depend only on the role name: a consumer loader that also reads
 the context, such as a tenant, must not share one memo across contexts that differ in it (F46).
+Nothing a check returns after its own context ended is remembered, not even a success or a
+not-found, since a loader interrupted mid-way may return partial data; live checks waiting on it
+load again; after eight such rounds a check loads for itself, without the memo.
 The memo is keyed by the authorizer and the exact role name, so two authorizers sharing one memo,
 such as two members of a `FirstOf` over different loaders, never see each other's results. In-flight
 loads count toward the bound.
@@ -217,6 +223,8 @@ scope. A privilege declared without scopes allows `all` and `own`. The catalogue
 - **Why the store does not hold it:** the catalogue is code, versioned with the application, and the
   runtime authorizer does not need it. A privilege the catalogue no longer lists still loads, and the
   next grant edit for its resource removes it.
+- An empty replacement for a resource the catalogue no longer lists is allowed, so its stored
+  grants can be cleared.
 - **Override:** the consumer's own catalogue is the only input. A consumer that wants no restriction
   declares every resource it uses, which is the point.
 
@@ -281,6 +289,8 @@ filters `deleted_at IS NULL`. The username stays held by the unchanged unique co
 - **Override:** none. Reuse of a deleted username was considered and refused by the user.
 
 **Store rules fixed while writing the administration conformance suite (decided 2026-11-23).**
+- A user's first assignment is primary whatever the request says, so a user with grants always has
+  a primary role. Each new assignment takes the next position.
 - A forced role delete increases the version of every user whose assignment it removes (D11). A
   role assigned only to deleted users may be deleted without force; its rows go with it.
 - Importing the identifier of a soft-deleted user is refused with `AlreadyExistsError` naming the
@@ -296,6 +306,8 @@ filters `deleted_at IS NULL`. The username stays held by the unchanged unique co
 row by identifier, or creates it, compares every given field with the stored one, and writes only
 when one differs. The outcome is `Created`, `Updated` or `Unchanged`.
 
+- `UpdatedAt` before `CreatedAt` is refused as invalid input; a zero `CreatedAt` takes the service
+  clock.
 - The identifier must be a canonical UUID (the users table's type). The password hash is stored
   as given and must be recognised by the configured encoder's recogniser, so a hash scrty could
   never verify is refused rather than locking a user out silently.
@@ -335,6 +347,31 @@ compares a new password with the user's current hash as well as their history, a
 password change does. `UserStore` therefore has `CurrentPasswordHash(ctx, id)`, which returns the
 stored hash or none. The service hands it to the policy only; it never reaches a `User` record, an
 event or the audit port.
+
+**Password history follows the policy (decided 2026-11-23, during implementation).** The service sets
+a password through `password.Policy.Change`, whose reuse rule retires the old hash through the
+consumer's history port and prunes it to the rule's depth. The store's `SetPassword` writes only the
+new hash and the change time. With no reuse rule, nothing is recorded, as everywhere else in scrty.
+Retire and write are two calls; a failed write leaves a retired copy of the still-current hash, which
+the next retry does not count twice (the policy's documented behaviour).
+
+**A changed email is unverified until said otherwise (decided 2026-11-23, during implementation).** An
+update that sets or clears the email without naming a verification time clears the stored one, so a
+new address never inherits the old one's verification and so never becomes usable for login by email
+unverified. The service enforces it, so every store inherits it.
+
+**Grant names reach the store as the catalogue declares them (decided 2026-11-23, during
+implementation).** The grant service compares names with the catalogue's folding, then rewrites
+each listed name to the catalogue's declared spelling before the store call, so replacing `CRM/Lead`
+replaces the stored `crm/lead`. When a store replaces a resource's grants, it matches the existing
+rows by group and resource as the authorizer reads them, surrounding space trimmed and ASCII case
+ignored, so clearing a resource the catalogue no longer lists removes every row the authorizer would
+still load; the rows it inserts carry the names as given. Key names (usernames, role names,
+labels) with leading or trailing whitespace are refused, and role names are exact.
+
+**On import, every field is a value, except the two times.** A zero `EmailVerifiedAt` clears the stored
+verification, so an imported email change never stays verified; only `CreatedAt` and `UpdatedAt`
+read zero as not given.
 
 **List order is folded in the store only.** The cursor carries the last username as stored and its
 identifier; the store compares `(lower(username), id)` with `(lower($after), $id)` in SQL, so the
@@ -380,9 +417,14 @@ loading again.
   authenticated.
 - **Resolution is reachable through composition (decided 2026-11-23, during implementation).**
   `authenticate.IdentifierResolver` is the exported port for the resolution step. `FirstOf`
-  forwards it to its single resolving member; more than one is `ErrConfig`. The chain refuses at
-  construction an authenticator with email login on that exposes no resolver, since lockout would
-  otherwise key on the identifier as typed (F20).
+  forwards it, through nesting, to its single member with email login on; more than one is
+  `ErrConfig` when the `FirstOf` is built. The chain finds the resolver with
+  `authenticate.ResolverOf` and resolves before pre-authentication whenever one reports email login
+  on. A consumer's own wrapper around the provider must forward `ResolveIdentifier` and
+  `EmailLogin`; one that hides them cannot be detected, and lockout then keys on the identifier as
+  typed (F51).
+- **A refused email match is recorded twice, on purpose:** the email mismatch is a warning about the
+  consumer's loader, and the unknown-user refusal that follows is the attempt's own record.
 - **The email loader is checked, not trusted:** a user it returns unverified, or whose email does
   not match the input ignoring case, counts as not found.
 - **Default:** off. Username-only login is unchanged.
@@ -417,6 +459,12 @@ the selected grant active when it is still held and valid, and the primary grant
 - **Why the session and not a token claim:** every request already rebuilds the principal from the
   session's user. A claim would need re-issuing tokens and would outlive a revoked grant.
 - **Default:** off. A selection stored while switching was on is ignored once it is off.
+- **Recording the selection (decided 2026-11-23, during implementation):** `session.RoleSelector` is an
+  optional store interface, implemented by every shipped store. It writes only to a live head: a
+  missing session is `ErrNotFound`, a superseded one `ErrSuperseded`, one past either deadline
+  `ErrExpired`. `Save` and a strict rotation keep the stored selection, so a stale copy cannot undo
+  it. The empty role clears it, and durable stores store NULL. A role the database cannot hold is
+  refused without echoing it.
 - **The lineage table gains the column too (decided 2026-11-23, during implementation):** the
   refresh-token lineage table runs every session statement with only the table name rewritten, and
   its columns are pinned identical to the sessions table's. Adding `selected_role` to
@@ -456,7 +504,7 @@ the selected grant active when it is still held and valid, and the primary grant
 | F25 | Write with no actor | Handled, tested | `ErrNoActor`, nothing written |
 | F26 | Audit sink fails or panics | Handled, tested | Change stays committed; failure logged without values |
 | F27 | Crash between commit and event or audit delivery | Accepted (D19) | Record lost; consumer may add an outbox |
-| F28 | Forced role delete, or removing a primary assignment, leaves a user without a primary grant | Handled, tested | The remaining grant with the lowest position becomes primary; none left means no role. Each affected user's version increases |
+| F28 | Forced role delete, or removing a primary assignment, leaves a user without a primary grant | Handled, tested | The remaining grant with the lowest position, the one assigned first since an assignment always takes the next position, becomes primary; none left means no role. Each affected user's version increases |
 | F29 | Error text leaks a username, email or hash | Handled, tested | Text carries none; reason is a sentinel |
 | F30 | Grant service built without a catalogue, or a contradictory catalogue | Handled, tested | Configuration error at construction |
 | F31 | Federated first login whose username is a local email | Handled, tested | Provision refused; login fails as a provisioning refusal |
@@ -469,14 +517,23 @@ the selected grant active when it is still held and valid, and the primary grant
 | F38 | `Provision` or an identifier write runs inside a consumer's long transaction | Accepted (godoc) | The identifier locks are held until that transaction ends; a savepoint rollback does not release them. Other writes of the same identifiers wait |
 | F39 | `Provision` runs inside a consumer's REPEATABLE READ or SERIALIZABLE transaction | Accepted (godoc) | The username-is-an-email check reads the caller's snapshot and can miss an email committed after it; the default READ COMMITTED path sees it |
 | F40 | The plaintext password lingers in memory | Accepted | The policy and encoder take a string, so one immutable copy lives until garbage collection; the caller's bytes are neither kept nor changed |
-| F41 | Identifiers differ only by case outside ASCII, or by Unicode normalisation | Accepted (store godoc) | Case is folded by the database's `lower()`; on a C or POSIX ctype it folds ASCII only, and composed and decomposed forms count as different identifiers. The lock, the check and the unique index fold alike, so no race opens; a consumer wanting stricter matching normalises identifiers before calling scrty |
+| F41 | Identifiers differ only by case outside ASCII, or by Unicode normalisation | Accepted (store godoc) | Case is folded by the database's `lower()`; on a C or POSIX ctype it folds ASCII only, and composed and decomposed forms count as different identifiers, and an invisible format character such as a zero-width space at the edge of a name is kept. The lock, the check and the unique index fold alike, so no race opens; a consumer wanting stricter matching normalises identifiers before calling scrty |
 | F42 | The role loader panics under the memo | Handled, tested | The entry is removed, waiters wake with an error and the panic continues in the loading check; a later check loads again |
-| F43 | The check that is loading is cancelled while others wait | Handled, tested | A waiter whose own context is live loads again; one whose context ended returns its context's error |
+| F43 | The check that is loading is cancelled while others wait | Handled, tested | Its result, whatever it is, is not remembered; a waiter whose own context is live loads again; one whose context ended returns its context's error; a loader panic takes precedence and reaches waiters as an error (F42) |
 | F44 | A username containing `@` logs in with email login on | Accepted | One extra lookup for the conflict check; usernames without `@` cost the same as before |
 | F45 | A caller mutates the role or organization data of a resolved identifier | Accepted (godoc: read-only) | The data is shared with the loaded record; the password hash is removed from the copy |
 | F46 | A consumer role loader answers differently by something in the context other than the role name | Accepted (godoc of `WithRequestMemo`) | Within one memo, the first answer for a role is reused; such a loader installs a memo per tenant or none |
 | F47 | A consumer privilege inspector returns an answer that breaks its contract | Handled, tested | `HeldPrivileges` refuses it with `ErrConfig` and no holdings |
 | F48 | A resolution is kept and presented after its attempt | Accepted (godoc: one attempt) | It authenticates against the details loaded when it was made; only the caller's own code can hold one |
+| F49 | A user changes between reading the row and reading its grants in `List` or `Get` | Accepted | The record may combine two moments; any write through it is checked against the version, so nothing stale is written |
+| F50 | An import changes a user's roles | Accepted | The grants are rebuilt from the payload in its order, the first primary, overriding a primary chosen through the assignment service; import is a full sync from the source system |
+| F51 | A consumer's wrapper hides the password provider's resolver | Accepted (godoc of `ResolverOf`) | Email login still works, but lockout keys on the identifier as typed, so an account's username and email have separate budgets |
+| F52 | A password handler that does not resolve sits ahead of the email-login member in a `FirstOf` | Handled for scrty's providers, accepted for a consumer's own | `NewFirstOf` refuses one of scrty's password providers placed before the email-login member with `ErrConfig`; a consumer authenticator in that position can authenticate its own account while lockout was keyed on the resolved one (godoc) |
+| F53 | Many cancelled checks keep taking over one role's load while a live check waits | Handled, tested | After eight rounds the live check loads for itself without the memo, so it never takes another check's cancelled result |
+| F54 | An old session is renewed again after its successor recorded a selection | Accepted | The new successor is built from the old session, which never had the selection, so the primary role applies until the user switches again |
+| F55 | An import changes a user while an audit port is set | Accepted (spec) | The audit record carries the imported values as After and no Before; the import port does not return the previous record |
+| F56 | A write that changes nothing but the version, such as setting an already-primary grant primary or an update with equal values | Accepted | It is versioned and reported like any change; only `SetActive` and import detect a no-op |
+| F57 | An administration write waits on a row lock held by a slow writer | Accepted | The wait is bounded by the caller's context deadline, as for every store call; the consumer sets it |
 
 ## Risks / Trade-offs
 
