@@ -7,8 +7,10 @@ import (
 	"errors"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/kartaladev/scrty/identity"
 )
@@ -43,6 +45,12 @@ var (
 // seeded through SeedOrganization, or to none. Grants are returned primary
 // first, then in stored order.
 //
+// It also keeps what the consumer's administration would: an email with its
+// verification time (SeedEmail) and soft deletion (SoftDelete), and implements
+// identity.EmailLoader over them. Provision refuses a username another live
+// user holds as its email, ignoring case, under the lock it inserts under, and
+// never stores an email it is given.
+//
 // The records live apart from the injected faults: Share hands out another store
 // over the same records, whose faults are its own.
 type InMemoryStore struct {
@@ -62,6 +70,11 @@ type inMemoryRecords struct {
 	mfa    map[identity.UserID]bool
 	orgs   map[string]*identity.Organization
 
+	// deleted holds the usernames of the soft-deleted users. Their records stay
+	// in byName, so the username stays taken, and every port that names a user
+	// treats them as unknown.
+	deleted map[string]bool
+
 	// seq numbers the users and grants the store creates. Like a database
 	// sequence it is shared by every view of the records, including a copy
 	// taken to model a transaction, so no two of them mint one identifier.
@@ -71,11 +84,12 @@ type inMemoryRecords struct {
 // NewInMemoryStore returns an empty store.
 func NewInMemoryStore() *InMemoryStore {
 	return &InMemoryStore{inMemoryRecords: &inMemoryRecords{
-		byName: make(map[string]*identity.Details),
-		privs:  make(map[string][]*identity.ResourcePrivileges),
-		mfa:    make(map[identity.UserID]bool),
-		orgs:   make(map[string]*identity.Organization),
-		seq:    new(atomic.Int64),
+		byName:  make(map[string]*identity.Details),
+		privs:   make(map[string][]*identity.ResourcePrivileges),
+		mfa:     make(map[identity.UserID]bool),
+		orgs:    make(map[string]*identity.Organization),
+		deleted: make(map[string]bool),
+		seq:     new(atomic.Int64),
 	}}
 }
 
@@ -211,7 +225,7 @@ func (s *InMemoryStore) LoadByUsername(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	d, ok := s.byName[username]
+	d, ok := s.liveLocked(username)
 	if !ok {
 		return nil, identity.ErrUserNotFound
 	}
@@ -235,8 +249,8 @@ func (s *InMemoryStore) LoadByUserID(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for _, d := range s.byName {
-		if d.ID == id {
+	for name, d := range s.byName {
+		if d.ID == id && !s.deleted[name] {
 			return s.recordLocked(d), nil
 		}
 	}
@@ -259,6 +273,14 @@ func (s *InMemoryStore) LoadPrivileges(
 	// Groups are ordered by resource group and then resource; the entries
 	// inside a group keep the order they were seeded in, since none is promised.
 	out := clonePrivileges(p)
+	for _, e := range out {
+		// A grant seeded with no scope predates scopes and loads as all.
+		for i := range e.Privileges {
+			if e.Privileges[i].Scope == "" {
+				e.Privileges[i].Scope = identity.ScopeAll
+			}
+		}
+	}
 	slices.SortStableFunc(out, func(a, b *identity.ResourcePrivileges) int {
 		return cmp.Or(cmp.Compare(a.Group, b.Group), cmp.Compare(a.Resource, b.Resource))
 	})
@@ -281,8 +303,8 @@ func (s *InMemoryStore) Required(_ context.Context, id identity.UserID) (bool, e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for _, d := range s.byName {
-		if d.ID == id {
+	for name, d := range s.byName {
+		if d.ID == id && !s.deleted[name] {
 			return s.mfa[id], nil
 		}
 	}
@@ -312,6 +334,12 @@ func (s *InMemoryStore) Provision(
 	if _, taken := s.byName[username]; taken {
 		// The message never quotes the username: on just-in-time provisioning it
 		// is the caller's email address.
+		return nil, identity.ErrUserExists
+	}
+
+	// Under the same lock, so a username and another user's email cannot be
+	// written to coincide by two callers racing.
+	if s.emailHeldLocked(username, "") {
 		return nil, identity.ErrUserExists
 	}
 
@@ -366,7 +394,7 @@ func (s *InMemoryStore) Update(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	d, ok := s.byName[username]
+	d, ok := s.liveLocked(username)
 	if !ok {
 		return nil, identity.ErrUserNotFound
 	}
@@ -564,4 +592,114 @@ var (
 	_ identity.RoleLoader           = (*InMemoryStore)(nil)
 	_ identity.UserProvisioner      = (*InMemoryStore)(nil)
 	_ identity.MFARequirementLookup = (*InMemoryStore)(nil)
+	_ identity.EmailLoader          = (*InMemoryStore)(nil)
 )
+
+// SeedEmail sets the email of the live user with username, verified at
+// verifiedAt, or unverified for the zero time. An email another live user
+// holds as its email or its username, ignoring case, is refused with
+// identity.ErrUserExists, decided under the lock Provision decides its own
+// refusal under. An unknown or deleted username is identity.ErrUserNotFound.
+func (s *InMemoryStore) SeedEmail(_ context.Context, username, email string, verifiedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	d, ok := s.liveLocked(username)
+	if !ok {
+		return identity.ErrUserNotFound
+	}
+
+	if s.emailHeldLocked(email, username) || s.usernameHeldLocked(email, username) {
+		return identity.ErrUserExists
+	}
+
+	d.Email = email
+	d.EmailVerifiedAt = verifiedAt
+
+	return nil
+}
+
+// SoftDelete deletes the live user with username: its record and username
+// stay, its email is cleared, and every port treats it as unknown from then
+// on. An unknown or already deleted username is identity.ErrUserNotFound.
+func (s *InMemoryStore) SoftDelete(_ context.Context, username string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	d, ok := s.liveLocked(username)
+	if !ok {
+		return identity.ErrUserNotFound
+	}
+
+	d.Active = false
+	d.Email = ""
+	d.EmailVerifiedAt = time.Time{}
+	s.deleted[username] = true
+
+	return nil
+}
+
+// LoadByEmail implements identity.EmailLoader: it returns the live user whose
+// verified email is email, ignoring case. A miss, an unverified email and a
+// deleted user are identity.ErrUserNotFound, and so is an empty address, which
+// is answered before FailUserLoads is consulted. FailUserLoads reaches the rest.
+func (s *InMemoryStore) LoadByEmail(_ context.Context, email string) (*identity.Details, error) {
+	if email == "" {
+		return nil, identity.ErrUserNotFound
+	}
+	if err := s.fault(&s.loadErr); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for name, d := range s.byName {
+		if !s.deleted[name] && d.EmailVerified() && sameIdentifier(d.Email, email) {
+			return s.recordLocked(d), nil
+		}
+	}
+
+	return nil, identity.ErrUserNotFound
+}
+
+// liveLocked returns the record of the live user with username. The caller
+// holds s.mu.
+func (s *InMemoryStore) liveLocked(username string) (*identity.Details, bool) {
+	d, ok := s.byName[username]
+	if !ok || s.deleted[username] {
+		return nil, false
+	}
+
+	return d, true
+}
+
+// emailHeldLocked reports whether a live user other than the one named except
+// holds value as its email, ignoring case. The caller holds s.mu.
+func (s *InMemoryStore) emailHeldLocked(value, except string) bool {
+	for name, d := range s.byName {
+		if name != except && !s.deleted[name] && d.Email != "" && sameIdentifier(d.Email, value) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// usernameHeldLocked reports whether a live user other than the one named
+// except holds value as its username, ignoring case. Usernames themselves are
+// matched exactly; this is only for an email that must not equal one. The
+// caller holds s.mu.
+func (s *InMemoryStore) usernameHeldLocked(value, except string) bool {
+	for name := range s.byName {
+		if name != except && !s.deleted[name] && sameIdentifier(name, value) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// sameIdentifier reports whether two usernames or emails are the same,
+// ignoring case.
+func sameIdentifier(a, b string) bool { return strings.EqualFold(a, b) }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -268,6 +269,18 @@ func (h *memAmbientHarness) SeedOrganization(ctx context.Context, org *identity.
 	return h.store(ctx).SeedOrganization(ctx, org)
 }
 
+func (h *memAmbientHarness) SeedEmail(ctx context.Context, username, email string, verifiedAt time.Time) error {
+	return h.store(ctx).SeedEmail(ctx, username, email, verifiedAt)
+}
+
+func (h *memAmbientHarness) SoftDelete(ctx context.Context, username string) error {
+	return h.store(ctx).SoftDelete(ctx, username)
+}
+
+func (h *memAmbientHarness) LoadByEmail(ctx context.Context, email string) (*identity.Details, error) {
+	return h.store(ctx).LoadByEmail(ctx, email)
+}
+
 func (h *memAmbientHarness) FailUserLoads(err error) { h.base.FailUserLoads(err) }
 
 func (h *memAmbientHarness) FailMFALookups(err error) { h.base.FailMFALookups(err) }
@@ -296,6 +309,10 @@ func (s *InMemoryStore) copyRecords() *InMemoryStore {
 
 	for k, o := range s.orgs {
 		c.orgs[k] = cloneOrg(o)
+	}
+
+	for k, v := range s.deleted {
+		c.deleted[k] = v
 	}
 
 	return c
@@ -338,6 +355,12 @@ func (s *InMemoryStore) applyWrites(from, begun *InMemoryStore) {
 	for k, o := range from.orgs {
 		if prev, ok := begun.orgs[k]; !ok || !reflect.DeepEqual(prev, o) {
 			s.orgs[k] = cloneOrg(o)
+		}
+	}
+
+	for k, v := range from.deleted {
+		if v && !begun.deleted[k] {
+			s.deleted[k] = true
 		}
 	}
 }

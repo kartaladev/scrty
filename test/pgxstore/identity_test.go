@@ -3,6 +3,7 @@ package pgxstore_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/idgen"
+	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/store/pgxstore"
@@ -40,7 +42,7 @@ func TestIdentityStore(t *testing.T) {
 		t.Parallel()
 
 		identitytest.RunConformanceSuite(t, func(*testing.T) identitytest.Fixture {
-			return newIdentityFixture(store, db.Pool)
+			return conformanceFixture{newIdentityFixture(store, db.Pool)}
 		})
 	})
 
@@ -158,6 +160,21 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 
 				_, err = s.LoadByUserID(ctx, "not-a-uuid")
 				require.ErrorIs(t, err, identity.ErrUserNotFound)
+			},
+		},
+		{
+			name: "an empty email is not found before any query runs",
+			assert: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+				s := newIdentityStore(t, pool)
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				// A cancelled context fails any query, so a not-found
+				// result proves the store never reached the database.
+				got, err := s.LoadByEmail(cctx, "")
+				require.ErrorIs(t, err, identity.ErrUserNotFound)
+				assert.NotErrorIs(t, err, context.Canceled)
+				assert.Nil(t, got)
 			},
 		},
 		{
@@ -435,6 +452,116 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "UpdateBumpsVersion: every update that writes moves the version, and nothing else does",
+			assert: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+				s := newIdentityStore(t, pool)
+				d, err := s.Provision(ctx, "versioned-user", identity.WithUserPassword([]byte("H1")))
+				require.NoError(t, err)
+
+				version := func() int64 {
+					var v int64
+					require.NoError(t, pool.QueryRow(ctx,
+						`SELECT version FROM scrty_users WHERE id = $1`, string(d.ID)).Scan(&v))
+					return v
+				}
+				require.Equal(t, int64(1), version(), "a new user starts at the column's default")
+
+				_, err = s.Update(ctx, "versioned-user", identity.WithUserName("Ada"))
+				require.NoError(t, err)
+				assert.Equal(t, int64(2), version(),
+					"a login-time update moves the version, so an administrator's earlier read is stale")
+
+				_, err = s.Update(ctx, "versioned-user", identity.WithUserRoles("viewer"))
+				require.NoError(t, err)
+				assert.Equal(t, int64(3), version(), "a grant rebuild is a write to the user")
+
+				_, err = s.Update(ctx, "versioned-user")
+				require.NoError(t, err)
+				assert.Equal(t, int64(3), version(), "an update naming nothing writes nothing")
+
+				_, err = s.Update(ctx, "versioned-user",
+					identity.WithUserPasswordIf([]byte("not-the-hash")), identity.WithUserPassword([]byte("H2")))
+				require.ErrorIs(t, err, identity.ErrNotUpdated)
+				assert.Equal(t, int64(3), version(), "a refused conditional update writes nothing")
+			},
+		},
+		{
+			name: "the refusal of a username that is another user's email carries neither",
+			assert: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+				s := newIdentityStore(t, pool)
+				f := newIdentityFixture(s, pool)
+				_, err := s.Provision(ctx, "bob")
+				require.NoError(t, err)
+				require.NoError(t, f.SeedEmail(ctx, "bob", "carol@example.com", time.Time{}))
+
+				_, err = s.Provision(ctx, "Carol@Example.com")
+				require.ErrorIs(t, err, identity.ErrUserExists)
+				for _, text := range storefix.ErrorTexts(err) {
+					assert.NotContains(t, strings.ToLower(text), "carol@example.com")
+					assert.NotContains(t, text, "bob")
+				}
+			},
+		},
+		{
+			name: "a missing users table fails the email load, never as an unknown address",
+			assert: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+				s := newIdentityStore(t, pool)
+
+				tx, err := pool.Begin(ctx)
+				require.NoError(t, err)
+				defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+				_, err = tx.Exec(ctx, `ALTER TABLE scrty_users RENAME TO users_gone`)
+				require.NoError(t, err)
+
+				got, err := s.LoadByEmail(pgxstore.WithTx(ctx, tx), "ada@example.com")
+				require.Error(t, err)
+				assert.NotErrorIs(t, err, identity.ErrUserNotFound)
+				assert.Nil(t, got)
+			},
+		},
+		{
+			name: "a cancelled context fails the email load and the provision, never as a refusal or a miss",
+			assert: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+				s := newIdentityStore(t, pool)
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				got, err := s.LoadByEmail(cctx, "ada@example.com")
+				require.ErrorIs(t, err, context.Canceled)
+				assert.NotErrorIs(t, err, identity.ErrUserNotFound)
+				assert.Nil(t, got)
+
+				_, err = s.Provision(cctx, "ada@example.com")
+				require.ErrorIs(t, err, context.Canceled)
+				assert.NotErrorIs(t, err, identity.ErrUserExists)
+
+				_, err = s.LoadByUsername(ctx, "ada@example.com")
+				require.ErrorIs(t, err, identity.ErrUserNotFound, "nothing was written")
+			},
+		},
+		{
+			name: "a soft-deleted user that keeps its verified email is unknown to the email load and frees the address as a username",
+			assert: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+				s := newIdentityStore(t, pool)
+
+				_, err := s.Provision(ctx, "kept-email-user")
+				require.NoError(t, err)
+				// Unlike the administration's delete, which clears the email, only
+				// deleted_at is set here, so each predicate on it is what decides.
+				_, err = pool.Exec(ctx, `UPDATE scrty_users
+SET email = 'kept@example.com', email_verified_at = now(), deleted_at = now()
+WHERE username = 'kept-email-user'`)
+				require.NoError(t, err)
+
+				got, err := s.LoadByEmail(ctx, "kept@example.com")
+				require.ErrorIs(t, err, identity.ErrUserNotFound)
+				assert.Nil(t, got)
+
+				_, err = s.Provision(ctx, "kept@example.com")
+				require.NoError(t, err, "a deleted user's email does not hold the address")
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -463,11 +590,35 @@ func TestIdentityStore_InputTheDatabaseCannotEncode(t *testing.T) {
 	type testCase struct {
 		name     string
 		username string
+		byEmail  bool                                      // load by email rather than by username
 		ctx      func(ctx context.Context) context.Context // nil means identity
 		assert   func(t *testing.T, d *identity.Details, err error)
 	}
 
 	cases := []testCase{
+		{
+			name:     "an email the database cannot encode is not found",
+			username: "ada\u20ac@example.com",
+			byEmail:  true,
+			assert: func(t *testing.T, _ *identity.Details, err error) {
+				require.ErrorIs(t, err, identity.ErrUserNotFound)
+			},
+		},
+		{
+			name:     "a failure of an email load that is not the input stays a failure",
+			username: "ada\u20ac@example.com",
+			byEmail:  true,
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cctx
+			},
+			assert: func(t *testing.T, _ *identity.Details, err error) {
+				require.ErrorIs(t, err, context.Canceled)
+				assert.NotErrorIs(t, err, identity.ErrUserNotFound)
+			},
+		},
 		{
 			name:     "a username the database cannot encode is not found",
 			username: "ada\u20ac",
@@ -508,7 +659,12 @@ func TestIdentityStore_InputTheDatabaseCannotEncode(t *testing.T) {
 				ctx = tc.ctx(ctx)
 			}
 
-			d, err := store.LoadByUsername(ctx, tc.username)
+			load := store.LoadByUsername
+			if tc.byEmail {
+				load = store.LoadByEmail
+			}
+
+			d, err := load(ctx, tc.username)
 			tc.assert(t, d, err)
 		})
 	}
@@ -595,3 +751,144 @@ func nilOnCall(t *testing.T, n int) *idgenmock.MockGenerator {
 
 	return g
 }
+
+// conformanceFixture is the identity fixture the conformance suite runs on. It
+// differs from identityFixture only in SeedRole, which also records each
+// privilege's scope: a privilege seeded with none keeps the column's default,
+// as a row written before scopes existed does.
+type conformanceFixture struct{ *identityFixture }
+
+func (f conformanceFixture) SeedRole(ctx context.Context, role string, p []*identity.ResourcePrivileges) error {
+	if err := f.identityFixture.SeedRole(ctx, role, p); err != nil {
+		return err
+	}
+
+	for _, rp := range p {
+		if rp == nil {
+			continue
+		}
+		for _, priv := range rp.Privileges {
+			if priv.Scope == "" {
+				continue
+			}
+			if _, err := f.q(ctx).Exec(ctx, `UPDATE scrty_resource_privileges SET scope = $5
+WHERE role_name = $1 AND resource_group = $2 AND resource = $3 AND privilege = $4`,
+				role, rp.Group, rp.Resource, priv.Name, string(priv.Scope)); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// LoadByEmail is the store's, failing as FailUserLoads asks.
+func (f *identityFixture) LoadByEmail(ctx context.Context, email string) (*identity.Details, error) {
+	// An empty address is answered by the store before any query, so an
+	// injected backend fault has nothing to reach.
+	if email == "" {
+		return f.IdentityStore.LoadByEmail(ctx, email)
+	}
+	if err := f.fault(&f.loadErr); err != nil {
+		return nil, err
+	}
+
+	return f.IdentityStore.LoadByEmail(ctx, email)
+}
+
+// SeedEmail sets the user's email as the administration does: under the
+// advisory lock of the address, the lock Provision takes, it refuses an address
+// another live user holds as its email or username.
+func (f *identityFixture) SeedEmail(ctx context.Context, username, email string, verifiedAt time.Time) error {
+	return f.seedAtomically(ctx, func(q pgxstore.DBTX) error {
+		rows, err := q.Query(ctx, pgschema.IdentifierLockKeys, []string{email})
+		if err != nil {
+			return err
+		}
+		keys, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+		if err != nil {
+			return err
+		}
+		for _, k := range keys {
+			if _, err := q.Exec(ctx, pgschema.LockIdentifierKey, k); err != nil {
+				return err
+			}
+		}
+
+		var userID string
+		err = q.QueryRow(ctx,
+			`SELECT id::text FROM scrty_users WHERE username = $1 AND deleted_at IS NULL FOR UPDATE`, username).Scan(&userID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return identity.ErrUserNotFound
+		}
+		if err != nil {
+			return err
+		}
+
+		for _, check := range []string{pgschema.EmailHeldByLiveUser, pgschema.UsernameHeldByLiveUser} {
+			var held bool
+			if err := q.QueryRow(ctx, check, email, userID).Scan(&held); err != nil {
+				return err
+			}
+			if held {
+				return identity.ErrUserExists
+			}
+		}
+
+		_, err = q.Exec(ctx, `UPDATE scrty_users SET email = $2, email_verified_at = $3 WHERE id = $1`,
+			userID, email, nullTime(verifiedAt))
+		if isUniqueViolation(err) {
+			return identity.ErrUserExists
+		}
+
+		return err
+	})
+}
+
+// SoftDelete deletes the user as the administration does: the row and its
+// username stay, the email is cleared and the user is inactive.
+func (f *identityFixture) SoftDelete(ctx context.Context, username string) error {
+	tag, err := f.q(ctx).Exec(ctx, `UPDATE scrty_users
+SET deleted_at = now(), active = false, email = NULL, email_verified_at = NULL
+WHERE username = $1 AND deleted_at IS NULL`, username)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return identity.ErrUserNotFound
+	}
+
+	return nil
+}
+
+// seedAtomically runs fn in the test's transaction when ctx carries one,
+// otherwise in a READ COMMITTED transaction of its own on the pool.
+func (f *identityFixture) seedAtomically(ctx context.Context, fn func(q pgxstore.DBTX) error) error {
+	if tx, ok := ctx.Value(seedTxKey{}).(pgx.Tx); ok {
+		return fn(tx)
+	}
+
+	tx, err := f.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	if err := fn(tx); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+// isUniqueViolation reports whether err is PostgreSQL's unique_violation.
+func isUniqueViolation(err error) bool {
+	var st interface{ SQLState() string }
+
+	return errors.As(err, &st) && st.SQLState() == "23505"
+}
+
+var (
+	_ identitytest.Fixture = conformanceFixture{}
+	_ identity.EmailLoader = (*identityFixture)(nil)
+)

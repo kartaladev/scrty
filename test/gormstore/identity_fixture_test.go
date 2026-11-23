@@ -122,6 +122,17 @@ func (f *identityFixture) LoadByUserID(ctx context.Context, ref identity.UserID)
 	return f.IdentityStore.LoadByUserID(ctx, ref)
 }
 
+// LoadByEmail is the store's, failing as FailUserLoads asks, except for an
+// empty address: the store answers that one before it asks the backend, so an
+// injected outage is not reported for it.
+func (f *identityFixture) LoadByEmail(ctx context.Context, email string) (*identity.Details, error) {
+	if err := f.fault(&f.loadErr); err != nil && email != "" {
+		return nil, err
+	}
+
+	return f.IdentityStore.LoadByEmail(ctx, email)
+}
+
 func (f *identityFixture) Required(ctx context.Context, ref identity.UserID) (bool, error) {
 	if err := f.fault(&f.mfaErr); err != nil {
 		return false, err

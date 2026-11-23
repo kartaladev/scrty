@@ -98,13 +98,35 @@ type Fixture interface {
 	// It is required.
 	SeedOrganization(ctx context.Context, org *identity.Organization) error
 
+	// SeedEmail sets the email of the live user with username, and the time it
+	// was verified; the zero time stores it unverified. No identity port sets an
+	// email: the consumer's own administration does, and the suite seeds it as
+	// that administration would.
+	//
+	// It must refuse, with an error matching identity.ErrUserExists and writing
+	// nothing, an email that another live user holds as its email or as its
+	// username, ignoring case. It must decide that under the same serialisation
+	// as Provision's refusal of a username that is another live user's email,
+	// so the two cannot race to coincide: the suite runs them against each
+	// other. A username naming no live user is identity.ErrUserNotFound. It is
+	// required.
+	SeedEmail(ctx context.Context, username, email string, verifiedAt time.Time) error
+
+	// SoftDelete deletes the live user with username as the consumer's
+	// administration does: the record and its username stay, so the username
+	// is never reused, the email is cleared, and every loader and the MFA
+	// lookup treat the user as unknown from then on. A username naming no live
+	// user is identity.ErrUserNotFound. It is required.
+	SoftDelete(ctx context.Context, username string) error
+
 	// FailUserLoads makes every later user load on this fixture fail with an
 	// error matching err under errors.Is, so the suite can check that a backend
 	// failure is distinguishable from "no such user". It is required.
 	//
 	// A fault hook needs no support from the backend: a fixture wraps its store
-	// and, once the fault is set, returns err from LoadByUsername and
-	// LoadByUserID instead of calling the store.
+	// and, once the fault is set, returns err from LoadByUsername, LoadByUserID
+	// and, when the fixture implements identity.EmailLoader, LoadByEmail
+	// instead of calling the store.
 	FailUserLoads(err error)
 
 	// FailMFALookups makes every later MFA requirement lookup on this fixture
@@ -144,6 +166,7 @@ func RunConformanceSuite(t *testing.T, newFixture Factory) {
 	t.Run("RoleLoader", func(t *testing.T) { runRoleLoaderSuite(t, newFixture) })
 	t.Run("Provisioner", func(t *testing.T) { runProvisionerSuite(t, newFixture) })
 	t.Run("MFALookup", func(t *testing.T) { runMFALookupSuite(t, newFixture) })
+	t.Run("EmailLoader", func(t *testing.T) { runEmailLoaderSuite(t, newFixture) })
 }
 
 // requireUsableFixture fails the whole run, before any case, when the factory
@@ -203,6 +226,18 @@ func requireEveryHook(t *testing.T, f Fixture) {
 			})
 		}},
 		{"SeedMFARequired", func() error { return f.SeedMFARequired(ctx, probe.ID, true) }},
+		{"SeedEmail", func() error {
+			return f.SeedEmail(ctx, user, probeName(t, "probe-mail", salt)+"@example.com", time.Time{})
+		}},
+		// A user of its own: the fault probes below load the first one.
+		{"SoftDelete", func() error {
+			doomed := probeName(t, "probe-gone", salt)
+			if _, err := f.Provision(ctx, doomed); err != nil {
+				return err
+			}
+
+			return f.SoftDelete(ctx, doomed)
+		}},
 		// A fault hook is present when the port no longer gives its unfaulted
 		// answer. Whether the port reports the fault correctly — as an error,
 		// and not as a miss or as "not required" — is a contract of its own,
@@ -268,6 +303,8 @@ func runUserLoaderSuite(t *testing.T, newFixture Factory) {
 	t.Run("Record", func(t *testing.T) { runLoadRecordCases(t, newFixture) })
 	t.Run("Ownership", func(t *testing.T) { runLoadOwnershipCase(t, newFixture) })
 	t.Run("LoadByUserID", func(t *testing.T) { runLoadByUserIDCases(t, newFixture) })
+	t.Run("DeletedIsNotFound", func(t *testing.T) { runDeletedUserCases(t, newFixture) })
+	t.Run("EmailFields", func(t *testing.T) { runEmailFieldsCases(t, newFixture) })
 }
 
 // runLoadOwnershipCase checks that a loaded record belongs to the caller.
@@ -693,6 +730,8 @@ func runRoleLoaderSuite(t *testing.T, newFixture Factory) {
 
 	t.Run("Privileges", func(t *testing.T) { runRoleLoaderCases(t, newFixture) })
 	t.Run("Ownership", func(t *testing.T) { runPrivilegesOwnershipCase(t, newFixture) })
+	t.Run("Scope", func(t *testing.T) { runStoredScopeCase(t, newFixture) })
+	t.Run("LegacyRowIsAll", func(t *testing.T) { runLegacyScopeCase(t, newFixture) })
 }
 
 // runPrivilegesOwnershipCase checks that loaded privileges belong to the caller.
@@ -743,9 +782,9 @@ func runPrivilegesOwnershipCase(t *testing.T, newFixture Factory) {
 	assert.Equal(t, "invoice", again[0].Resource,
 		"a reader rewrote which resource the stored row is about")
 	assert.ElementsMatch(t, []identity.Privilege{
-		{Name: "read", Granted: true},
-		{Name: "delete", Granted: false},
-	}, again[0].Privileges,
+		{Name: "read", Granted: true, Scope: identity.ScopeAll},
+		{Name: "delete", Granted: false, Scope: identity.ScopeAll},
+	}, effectiveScopes(again[0].Privileges),
 		"a reader renamed a privilege on the stored row, or granted itself one the role is refused")
 }
 
@@ -778,9 +817,9 @@ func runRoleLoaderCases(t *testing.T, newFixture Factory) {
 				assert.Equal(t, "invoice", p[0].Resource)
 				// No order is promised inside a group.
 				assert.ElementsMatch(t, []identity.Privilege{
-					{Name: "read", Granted: true},
-					{Name: "delete", Granted: false},
-				}, p[0].Privileges,
+					{Name: "read", Granted: true, Scope: identity.ScopeAll},
+					{Name: "delete", Granted: false, Scope: identity.ScopeAll},
+				}, effectiveScopes(p[0].Privileges),
 					"a privilege that is not granted is carried as refused rather than filtered "+
 						"away, so a caller can tell 'refused' apart from 'not mentioned'; a loader "+
 						"that drops it makes the two indistinguishable")
@@ -870,6 +909,9 @@ func runProvisionerSuite(t *testing.T, newFixture Factory) {
 	t.Run("PasswordChangedAt", func(t *testing.T) { runPasswordChangedAtCases(t, newFixture) })
 	t.Run("ConditionalPassword", func(t *testing.T) { runConditionalPasswordCases(t, newFixture) })
 	t.Run("ConcurrentConditionalPassword", func(t *testing.T) { runConditionalPasswordRaceCase(t, newFixture) })
+	t.Run("UsernameIsAnotherEmail", func(t *testing.T) { runUsernameIsAnotherEmailCases(t, newFixture) })
+	t.Run("EmailNotStored", func(t *testing.T) { runEmailNotStoredCases(t, newFixture) })
+	t.Run("RacingUsernameAndEmail", func(t *testing.T) { runUsernameEmailRaceCase(t, newFixture) })
 }
 
 // runPasswordChangedAtCases checks that the password-changed time is written
@@ -1031,6 +1073,7 @@ func atUTC(d *identity.Details) *identity.Details {
 
 	out := *d
 	out.PasswordChangedAt = d.PasswordChangedAt.UTC()
+	out.EmailVerifiedAt = d.EmailVerifiedAt.UTC()
 	out.Roles = make([]*identity.AssignedRole, 0, len(d.Roles))
 
 	for _, r := range d.Roles {
@@ -2276,6 +2319,23 @@ func runMFALookupSuite(t *testing.T, newFixture Factory) {
 				assert.True(t, required,
 					"a requirement held inside the user record would be rebuilt away by an "+
 						"update, silently dropping a user's second factor")
+			},
+		},
+		{
+			name: "DeletedAsUnknown",
+			setup: func(t *testing.T, ctx context.Context, f Fixture, user string) identity.UserID {
+				t.Helper()
+
+				id := provisionRequired(t, ctx, f, user)
+				require.NoError(t, f.SoftDelete(ctx, user))
+
+				return id
+			},
+			assert: func(t *testing.T, required bool, err error) {
+				require.ErrorIs(t, err, identity.ErrUserNotFound,
+					"a deleted user's principal may still be in a live session: answered from the "+
+						"kept record, the lookup treats a deleted user as a current one")
+				assert.False(t, required)
 			},
 		},
 		{

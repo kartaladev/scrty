@@ -96,24 +96,24 @@ The whole change lands in one pull request, opened after group 14's final gate (
 
 ## 5. SQL identity stores: runtime reads
 
-- [ ] 5.1 `internal/pgschema` statements and `sqlstore`/`pgxstore`: load privileges with scope;
+- [x] 5.1 `internal/pgschema` statements and `sqlstore`/`pgxstore`: load privileges with scope;
   load email and verification; filter deleted users from every loader and from the MFA lookup (spec
   default-identity-store MODIFIED "Loading a user…", "The store never returns a deleted user…",
   "Privilege scopes are stored…"), and the identity port's `Update` increases `version` (design
   D11). Red: new cases in the identity conformance suite (`test/identity`)
   fail on scope and on a deleted user. Verify: the identity conformance suite for `sqlstore` and
   `pgxstore`.
-- [ ] 5.2 `LoadByEmail` in both SQL stores: lower-cased match, live and verified only, unrepresentable
+- [x] 5.2 `LoadByEmail` in both SQL stores: lower-cased match, live and verified only, unrepresentable
   input as not found (spec "The store loads a user by verified email", identity-model "Email loader
   contract"). Red: new conformance cases. Verify: as 5.1.
-- [ ] 5.3 Provisioning and username-naming updates take the advisory lock and refuse a username equal
+- [x] 5.3 Provisioning and username-naming updates take the advisory lock and refuse a username equal
   to another live user's email; the email given to `Provision` is still not stored (spec "Provisioning
   refuses a username that is another user's email"; design D12, F5, F31). Red: the conformance case
   provisions `carol@example.com` successfully; add a barrier test for the racing pair. Verify: as 5.1.
 
 ## 6. Gorm identity store: runtime reads
 
-- [ ] 6.1 The same as 5.1 to 5.3 in `gormstore`, with the models gaining the new columns and the
+- [x] 6.1 The same as 5.1 to 5.3 in `gormstore`, with the models gaining the new columns and the
   attribute model. Red: the same conformance cases fail for gorm. Verify: the identity conformance
   suite for `gormstore`.
 

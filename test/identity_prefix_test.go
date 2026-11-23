@@ -154,13 +154,18 @@ const (
 // after it orders after the three, and the identity store reads the same data
 // back.
 //
-// The store-backed case reads through statements that still name the old
-// tables, so it stays red until they move to the scrty_ names.
+// The raw-row case stops at the rename. The store-backed case then migrates
+// to the latest identity version, as a deployment does before running the
+// current store, which reads columns later migrations add; the rows seeded
+// before the rename must survive those migrations too.
 func TestIdentityPrefix_Populated(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name   string
+		name string
+		// latest migrates past the rename to the newest identity version
+		// before the assertion.
+		latest bool
 		assert func(t *testing.T, db *sql.DB)
 	}
 
@@ -192,7 +197,8 @@ func TestIdentityPrefix_Populated(t *testing.T) {
 			},
 		},
 		{
-			name: "the identity store reads the seeded rows and orders a new entry newest",
+			name:   "the identity store reads the seeded rows and orders a new entry newest",
+			latest: true,
 			assert: func(t *testing.T, db *sql.DB) {
 				ctx := t.Context()
 
@@ -228,6 +234,11 @@ func TestIdentityPrefix_Populated(t *testing.T) {
 
 			_, err = p.UpTo(ctx, versionScrtyPrefix)
 			require.NoError(t, err)
+
+			if tc.latest {
+				_, err = p.Up(ctx)
+				require.NoError(t, err)
+			}
 
 			tc.assert(t, db)
 		})

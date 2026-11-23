@@ -1,6 +1,7 @@
 package test
 
 import (
+	"cmp"
 	"database/sql"
 	"slices"
 	"strings"
@@ -130,6 +131,15 @@ var identityStatements = []struct {
 	{"PruneHistory", pgschema.PruneHistory},
 	{"RecentHistory", pgschema.RecentHistory},
 	{"ForgetHistory", pgschema.ForgetHistory},
+	{"UserRecordByUsername", pgschema.UserRecordByUsername},
+	{"UserRecordByID", pgschema.UserRecordByID},
+	{"UserRecordByVerifiedEmail", pgschema.UserRecordByVerifiedEmail},
+	{"ScopedPrivilegesByRole", pgschema.ScopedPrivilegesByRole},
+	{"BumpUserVersion", pgschema.BumpUserVersion},
+	{"IdentifierLockKeys", pgschema.IdentifierLockKeys},
+	{"LockIdentifierKey", pgschema.LockIdentifierKey},
+	{"EmailHeldByLiveUser", pgschema.EmailHeldByLiveUser},
+	{"UsernameHeldByLiveUser", pgschema.UsernameHeldByLiveUser},
 }
 
 // TestIdentityQueriesMatchSchema PREPAREs every pgschema identity statement
@@ -655,4 +665,151 @@ func TestIdentityMigration_AdministrationPopulated(t *testing.T) {
 	assert.Equal(t, []string{"true|true|true|1"}, queryStrings(t, db, `SELECT concat_ws('|', (display_name = '')::text,
 	     (description = '')::text, (labels = '{}')::text, version) FROM scrty_roles`))
 	assert.Equal(t, []string{"all"}, queryStrings(t, db, `SELECT scope FROM scrty_resource_privileges`))
+}
+
+// TestIdentifierLockKeys pins how a write that sets usernames or emails takes
+// their advisory locks: the keys are computed by the server from the values
+// themselves, as hashtextextended(lower(value), 0), one per distinct key, in
+// ascending key order, so every writer takes overlapping locks in the same
+// order whatever order or spelling it named them in.
+func TestIdentifierLockKeys(t *testing.T) {
+	t.Parallel()
+
+	db := migratedIdentity(t)
+
+	// keysOf is what the server computes for values, independently of the
+	// statement under test.
+	keysOf := func(t *testing.T, values ...string) []int64 {
+		t.Helper()
+
+		var out []int64
+		for _, v := range values {
+			var k int64
+			require.NoError(t, db.QueryRowContext(t.Context(),
+				`SELECT hashtextextended(lower($1), 0)`, v).Scan(&k))
+			out = append(out, k)
+		}
+
+		return out
+	}
+
+	type testCase struct {
+		name   string
+		values []string
+		// order, when set, rearranges values before the call.
+		order  func(t *testing.T, values []string) []string
+		assert func(t *testing.T, keys []int64)
+	}
+
+	descending := func(t *testing.T, values []string) []string {
+		t.Helper()
+
+		keys := keysOf(t, values...)
+		out := slices.Clone(values)
+		slices.SortFunc(out, func(a, b string) int {
+			return cmp.Compare(keys[slices.Index(values, b)], keys[slices.Index(values, a)])
+		})
+
+		return out
+	}
+
+	cases := []testCase{
+		{
+			name:   "values named in descending key order come back as keys in ascending order",
+			values: []string{"zeta@example.com", "alpha", "mid-user", "bob@example.com"},
+			order:  descending,
+			assert: func(t *testing.T, keys []int64) {
+				want := keysOf(t, "zeta@example.com", "alpha", "mid-user", "bob@example.com")
+				slices.Sort(want)
+				assert.Equal(t, want, keys)
+			},
+		},
+		{
+			name:   "keys come back in ascending order whatever order the values were named in",
+			values: []string{"zeta@example.com", "alpha", "mid-user", "bob@example.com"},
+			assert: func(t *testing.T, keys []int64) {
+				want := keysOf(t, "zeta@example.com", "alpha", "mid-user", "bob@example.com")
+				slices.Sort(want)
+				assert.Equal(t, want, keys)
+			},
+		},
+		{
+			name:   "spellings of one value and repeats collapse to one key",
+			values: []string{"Ada@Example.com", "ada@example.com", "ADA@EXAMPLE.COM", "ada@example.com"},
+			assert: func(t *testing.T, keys []int64) {
+				assert.Equal(t, keysOf(t, "ada@example.com"), keys)
+			},
+		},
+		{
+			name:   "an empty value guards nothing",
+			values: []string{"", "ada"},
+			assert: func(t *testing.T, keys []int64) {
+				assert.Equal(t, keysOf(t, "ada"), keys)
+			},
+		},
+		{
+			name: "nothing to lock",
+			assert: func(t *testing.T, keys []int64) {
+				assert.Empty(t, keys)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			values := tc.values
+			if tc.order != nil {
+				values = tc.order(t, values)
+			}
+
+			// The array is sent as its text form, as the database/sql store
+			// sends it.
+			rows, err := db.QueryContext(ctx, pgschema.IdentifierLockKeys, pgschema.TextArray(values))
+			require.NoError(t, err)
+			var keys []int64
+			for rows.Next() {
+				var k int64
+				require.NoError(t, rows.Scan(&k))
+				keys = append(keys, k)
+			}
+			require.NoError(t, rows.Err())
+			require.NoError(t, rows.Close())
+
+			tc.assert(t, keys)
+		})
+	}
+
+	t.Run("locking a key holds that advisory lock until the transaction ends", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+		key := keysOf(t, "held@example.com")[0]
+
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+
+		_, err = tx.ExecContext(ctx, pgschema.LockIdentifierKey, key)
+		require.NoError(t, err)
+
+		var free bool
+		require.NoError(t, db.QueryRowContext(ctx,
+			`SELECT pg_try_advisory_xact_lock($1)`, key).Scan(&free))
+		assert.False(t, free, "another session must not be able to take the key while it is held")
+
+		require.NoError(t, tx.Rollback())
+		// A session-level lock is taken and released on one connection, never
+		// on the pool, so the unlock reaches the session that holds it.
+		conn, err := db.Conn(ctx)
+		require.NoError(t, err)
+		defer func() { _ = conn.Close() }()
+		require.NoError(t, conn.QueryRowContext(ctx,
+			`SELECT pg_try_advisory_lock($1)`, key).Scan(&free))
+		assert.True(t, free, "the lock is released with the transaction")
+		_, err = conn.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, key)
+		require.NoError(t, err)
+	})
 }
