@@ -470,6 +470,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"authorize.ErrNotGranted":             authorize.ErrNotGranted,
 		"authorize.ErrWrongScope":             authorize.ErrWrongScope,
 		"authorize.ErrNotOwner":               authorize.ErrNotOwner,
+		"authorize.ErrInspectionUnsupported":  authorize.ErrInspectionUnsupported,
 	},
 	"github.com/kartaladev/scrty/authenticate/mfa": {
 		"mfa.ErrAlreadyEnrolled":         mfa.ErrAlreadyEnrolled,
@@ -645,6 +646,7 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"httpsec.ErrTooManyStreams":               "internal to the stream, whose answer over a cap is 200 with only a longer retry, because a browser gives up on any other",
 		"authorize.ErrUnsupportedAttributes":      "a misbuilt guard, deliberately 500 per design Decision 7",
 		"authorize.ErrInvalidAttributes":          "a misbuilt guard, deliberately 500 per design Decision 7",
+		"authorize.ErrInspectionUnsupported":      "a wiring fault: the authorizer cannot report held privileges, deliberately 500",
 		"authorize.ErrNoSubject":                  "a denial reason, only ever returned wrapped with ErrAccessDenied, which answers it 403",
 		"authorize.ErrNoActiveRole":               "a denial reason, only ever returned wrapped with ErrAccessDenied, which answers it 403",
 		"authorize.ErrNotGranted":                 "a denial reason, only ever returned wrapped with ErrAccessDenied, which answers it 403",

@@ -41,19 +41,19 @@ The whole change lands in one pull request, opened after group 14's final gate (
   `HasPrivilegeFor` with `OwnershipAttributes`, which calls the ownership check only for `own` (spec
   "A check can accept any scope…", "A check for one record…"; design D4). Red: the all-scope record
   check calls the ownership mock, which `gomock` rejects. Verify: `go test -race -count=1 ./authorize/`.
-- [ ] 2.5 The request memo: `authorize.WithRequestMemo`, one load per role, `ErrPrivilegesNotFound`
+- [x] 2.5 The request memo: `authorize.WithRequestMemo`, one load per role, `ErrPrivilegesNotFound`
   remembered, other errors not, a bound of 32 roles (spec "…loaded at most once per request", "A
   consumer can install a memo outside the chain"; design D5, F14, F15, F17). Red: ten checks call the
   loader mock ten times. Add a barrier test of eight concurrent checks expecting one load. Verify:
   `go test -race -count=1 ./authorize/`.
-- [ ] 2.6 The bulk check `HeldPrivileges` and `PrivilegeInspector`, through `FirstOf`, with
+- [x] 2.6 The bulk check `HeldPrivileges` and `PrivilegeInspector`, through `FirstOf`, with
   `ErrInspectionUnsupported` for an authorizer without it (spec "One call reports…"; design D7, F32).
   Red: the allowed-actions scenario reports `update` as not held. Verify:
   `go test -race -count=1 ./authorize/`.
 - [x] 2.7 `authorize.Catalogue`: construction refusals, default scopes, `Allows`, and a defensive copy
   (spec resource-catalogue, all requirements; design D9, F30). Red: a duplicate `view`/`VIEW` is
   accepted. Verify: `go test -race -count=1 ./authorize/`.
-- [ ] 2.8 Godoc for every new exported name, naming its default and override, and an `Example` for the
+- [x] 2.8 Godoc for every new exported name, naming its default and override, and an `Example` for the
   any-scope list filter and the bulk check. Verify: `go test -run Example -count=1 ./authorize/` and
   `go doc -all ./authorize | grep -c HeldPrivileges`.
 

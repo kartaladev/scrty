@@ -647,6 +647,21 @@ func TestPrivilege_DenialReasons(t *testing.T) {
 			assert: deniedFor(authorize.ErrNoActiveRole),
 		},
 		{
+			// A blank name is not a role, whatever flag it carries: the super
+			// role bypass must not turn it into one that holds everything.
+			name: "a super role with a blank name is no active role",
+			ctx: func(ctx context.Context) context.Context {
+				super := &identity.AssignedRole{ID: "r-0", Name: " ", SuperRole: true}
+
+				return identity.WithPrincipal(ctx, &identity.Principal{
+					ID:         "u-0",
+					Roles:      []*identity.AssignedRole{super},
+					ActiveRole: super,
+				})
+			},
+			assert: deniedFor(authorize.ErrNoActiveRole),
+		},
+		{
 			name: "a role without the privilege",
 			ctx:  func(ctx context.Context) context.Context { return withRole(ctx, "clerk") },
 			load: func(roles *MockRoleLoader) {

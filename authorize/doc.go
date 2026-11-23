@@ -15,6 +15,11 @@
 // ErrNotOwner — while an outage matches neither. A Catalogue declares, at
 // start-up, the privileges and scopes an application may grant.
 //
+// A context carrying a memo from WithRequestMemo loads each role's privileges
+// at most once for that request, however many checks it makes. HeldPrivileges
+// answers several privilege names in one call, with the scope of each, for the
+// actions a response lists as allowed.
+//
 // Declining to judge and refusing are kept apart, because the manager skips one
 // and stops on the other. An authorizer handed a shape of attributes it does
 // not handle says so and is passed over; one that recognises the shape but

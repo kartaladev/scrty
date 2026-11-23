@@ -25,6 +25,10 @@ import (
 // It declines every other kind of attributes, so it can sit in a FirstOf beside
 // authorizers that judge them.
 //
+// It loads through the memo a context carries (WithRequestMemo), and loads on
+// every check when there is none. It implements PrivilegeInspector, so
+// HeldPrivileges can ask it about several privileges at once.
+//
 //go:generate mockgen -destination=roleloader_mock_test.go -package=authorize_test -typed github.com/kartaladev/scrty/identity RoleLoader
 type PrivilegeAuthorizer struct {
 	roles identity.RoleLoader
@@ -126,6 +130,15 @@ func (a *PrivilegeAuthorizer) Authorize(ctx context.Context, attrs Attributes) e
 		return fmt.Errorf("%w: %w: the subject has no active role", ErrAccessDenied, ErrNoActiveRole)
 	}
 
+	// A blank role name is not a role, whatever flags it carries. It is judged
+	// before the super role bypass, so a blank super role holds nothing, as
+	// HasAnyRole already treats it. Asking the loader for it would either
+	// fail for a reason that has nothing to do with this caller or, in a store
+	// that treats the empty name as a row, hand back privileges nobody granted.
+	if strings.TrimSpace(role.Name) == "" {
+		return fmt.Errorf("%w: %w: the subject's active role has no name", ErrAccessDenied, ErrNoActiveRole)
+	}
+
 	// A super role is the consumer's own statement that this role is not
 	// subject to privilege checks, so the loader is never asked: a role that
 	// bypasses matching must not be able to be denied by an outage in the store
@@ -137,17 +150,7 @@ func (a *PrivilegeAuthorizer) Authorize(ctx context.Context, attrs Attributes) e
 		return nil
 	}
 
-	// A blank role name is not a role. Asking the loader for it would either
-	// fail for a reason that has nothing to do with this caller or, in a store
-	// that treats the empty name as a row, hand back privileges nobody granted.
-	if strings.TrimSpace(role.Name) == "" {
-		return fmt.Errorf("%w: %w: the subject's active role has no name", ErrAccessDenied, ErrNoActiveRole)
-	}
-
-	granted, err := a.roles.LoadPrivileges(ctx, role.Name)
-	// An unwalkable loader error becomes a fault that is no not-found, so it
-	// stays an outage rather than reading as "the role grants nothing".
-	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
+	granted, err := a.loadPrivileges(ctx, role.Name)
 	if err != nil {
 		if errors.Is(err, identity.ErrPrivilegesNotFound) {
 			return fmt.Errorf("%w: %w: role %q grants no privileges", ErrAccessDenied, ErrNotGranted, role.Name)
@@ -332,4 +335,11 @@ func denialReason(wrongScope bool) error {
 	}
 
 	return ErrNotGranted
+}
+
+// sanitizeLoadError turns an unwalkable loader error into a fault that is no
+// not-found, so it stays an outage rather than reading as "the role grants
+// nothing", and so the memo can ask errors.Is of it safely.
+func sanitizeLoadError(ctx context.Context, err error) error {
+	return porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 }
