@@ -56,10 +56,23 @@ type UserStore interface {
 	// represent is ErrInvalidInput.
 	CreateUser(ctx context.Context, user NewUser) (User, error)
 
-	// UpdateUser applies the named fields and increases the version. A
-	// non-nil change.EmailVerifiedAt holding the zero time clears the stored
-	// verification time; the service sends it whenever the email changes
-	// without a verification time, and a store must apply it. An email
+	// UpdateUser applies the named fields and increases the version.
+	//
+	// The verification time follows these rules, each decided under the row
+	// lock the version comparison takes, never from an earlier read:
+	//   - change.EmailVerifiedAt non-nil is stored as given; the zero time
+	//     clears the stored verification time.
+	//   - change.Email named and change.EmailVerifiedAt nil: the store keeps
+	//     the stored verification time when the named email equals the stored
+	//     one ignoring case (the comparison of the email uniqueness rule,
+	//     PostgreSQL's lower() in scrty's stores), and clears it otherwise, so
+	//     a new or cleared address never inherits the old one's verification.
+	//     The email is stored as named, so a change of case only is written.
+	//   - A non-zero change.EmailVerifiedAt with no email left to verify (the
+	//     stored email is empty and the change names none) is ErrInvalidInput
+	//     and changes nothing.
+	//
+	// An email
 	// that another live user has, or that equals another live user's
 	// username, ignoring case, is an AlreadyExistsError with FieldEmail,
 	// decided by the write. An Organization.ID the store cannot represent is ErrInvalidInput.

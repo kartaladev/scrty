@@ -52,3 +52,10 @@ With login by email on, an identifier without `@` SHALL never be looked up as an
 #### Scenario: Username containing `@`
 - **WHEN** login by email is on and `carol@example.com` names a user by username
 - **THEN** the email lookup is also made, to detect a conflict
+
+### Requirement: An account without a username is refused
+The username-and-password provider SHALL refuse a user its loader returns with an empty username, by username or by email, whether login by email is on or off, with the uniform authentication failure after the same password work as for an unknown user.
+
+#### Scenario: Loader omits the username
+- **WHEN** the loader answers `ada` with a record whose username is empty, and the correct password is presented
+- **THEN** the uniform authentication failure is returned and no principal is built

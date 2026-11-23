@@ -197,6 +197,11 @@ func ApplyUserOptions(opts ...UserOption) *UserChange {
 // Input the loader's store cannot represent, such as text the database's
 // encoding cannot hold, is reported as ErrUserNotFound, since no user can
 // match it. A client therefore cannot cause a load failure with its own input.
+//
+// A user it returns must carry its Username, the identifier the library keys lockout, sessions,
+// events and logs on. A record with an empty Username is a contract violation: the password
+// provider refuses it as it would an unknown user, after the same decoy password work, whether
+// login by email is on or not, rather than authenticate an account it cannot name.
 type UserLoader interface {
 	// LoadByUsername loads the user with this username, passed exactly as
 	// presented and never trimmed or case-folded. A miss returns ErrUserNotFound;

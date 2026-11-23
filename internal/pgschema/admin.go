@@ -157,17 +157,21 @@ FROM scrty_users WHERE id = $1 FOR UPDATE`
 	// already written). Run it holding LockImportUser.
 	SetImportedUsername = `UPDATE scrty_users SET username = $2 WHERE id = $1`
 
-	// ShareHistoryOwner reads whether the user with id $1 is soft-deleted and
-	// locks the row FOR SHARE until the transaction ends. A password-history
+	// LockHistoryOwner reads whether the user with id $1 is soft-deleted and
+	// locks the row FOR UPDATE until the transaction ends. A password-history
 	// write takes it before it records an entry: a deletion locks the row FOR
 	// UPDATE and removes the history in its transaction, so the two serialise
-	// and no entry recorded for the user outlives a deletion (D13). FOR SHARE
-	// rather than FOR KEY SHARE, so it also waits for a write to the row that
-	// takes no explicit lock first. It is a user-row lock, taken where D11's
-	// order puts user rows: after any role lock, before any advisory lock.
-	// No row is a reference to no user of this table: the history tables
-	// declare no foreign key, so the write goes ahead.
-	ShareHistoryOwner = `SELECT deleted_at IS NOT NULL FROM scrty_users WHERE id = $1 FOR SHARE`
+	// and no entry recorded for the user outlives a deletion (D13). It takes
+	// the strength LockAdminUser takes, not a weaker shared lock: a password
+	// change retires the replaced hash and then writes the new one, and a
+	// caller's transaction keeps both locks, so two changes holding a shared
+	// lock would each wait on the other's to upgrade it and deadlock. With
+	// one strength the second change waits for the first to end. It is a
+	// user-row lock, taken where D11's order puts user rows: after any role
+	// lock, before any advisory lock. No row is a reference to no user of
+	// this table: the history tables declare no foreign key, so the write
+	// goes ahead.
+	LockHistoryOwner = `SELECT deleted_at IS NOT NULL FROM scrty_users WHERE id = $1 FOR UPDATE`
 
 	// UpdateImportedUser writes an import's values to user $1: $2 username,
 	// $3 name, $4 email (NULL for none), $5 email_verified_at (NULL for
@@ -202,6 +206,17 @@ const (
 	ColumnEmail           = "email"
 	ColumnEmailVerifiedAt = "email_verified_at"
 	ColumnOrganization    = "organization_id"
+
+	// ColumnEmailVerifiedAtIfSameEmail writes email_verified_at from the
+	// email its value names (text, NULL for none): it keeps the stored
+	// verification time when that email equals the stored one under lower(),
+	// the email uniqueness rule's comparison, and sets NULL otherwise, so a
+	// new or cleared address never inherits the old one's verification. The
+	// comparison reads the row being updated, so under the row lock it sees
+	// the stored email, not an earlier read; an UPDATE's SET expressions read
+	// the row as it was before the statement, whatever order the columns are
+	// written in.
+	ColumnEmailVerifiedAtIfSameEmail = "email_verified_at:if-same-email"
 )
 
 // UpdateAdminUserQuery is the UPDATE of user userArg that writes set, a list of
@@ -213,15 +228,17 @@ func UpdateAdminUserQuery(columns []string, values []any, now, userArg any) (str
 	b.WriteString("UPDATE scrty_users SET ")
 	args := make([]any, 0, len(columns)+2)
 	for i, c := range columns {
+		args = append(args, values[i])
+		n := strconv.Itoa(len(args))
 		switch c {
 		case ColumnName, ColumnEmail, ColumnEmailVerifiedAt, ColumnOrganization:
+			b.WriteString(c + " = $" + n)
+		case ColumnEmailVerifiedAtIfSameEmail:
+			b.WriteString("email_verified_at = CASE WHEN lower(email) = lower($" + n +
+				"::text) THEN email_verified_at END")
 		default:
 			panic("pgschema: unknown administration column")
 		}
-		args = append(args, values[i])
-		b.WriteString(c)
-		b.WriteString(" = $")
-		b.WriteString(strconv.Itoa(len(args)))
 		b.WriteString(", ")
 	}
 	args = append(args, now)

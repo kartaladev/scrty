@@ -3,6 +3,7 @@ package authenticate_test
 import (
 	"bytes"
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -151,6 +152,24 @@ func assertNoIdentifierInError(t *testing.T, err error) {
 	}
 }
 
+// assertEventHoldsNone asserts no string field of e contains any of secrets,
+// in any letter case: an event reports the refusal, never who was refused.
+func assertEventHoldsNone(t *testing.T, e event.Event, secrets ...string) {
+	t.Helper()
+
+	fields := append([]string{
+		e.Name, e.Outcome, string(e.User), e.ClientIP, string(e.Factor), e.Session,
+		e.Client, e.Cause, e.Actor, e.Target,
+	}, e.Changed...)
+
+	for _, field := range fields {
+		for _, secret := range secrets {
+			assert.NotContains(t, strings.ToLower(field), strings.ToLower(secret),
+				"event %q carries %q", e.Name, secret)
+		}
+	}
+}
+
 func TestPassword_EmailLogin(t *testing.T) {
 	t.Parallel()
 
@@ -276,6 +295,7 @@ func TestPassword_EmailLogin(t *testing.T) {
 				for _, e := range f.reported() {
 					assert.Equal(t, event.OutcomeFailure, e.Outcome)
 					assert.Empty(t, e.User, "a refused login names no user")
+					assertEventHoldsNone(t, e, "x@example.com", "u-x", "u-owner", "owner")
 				}
 			},
 		},

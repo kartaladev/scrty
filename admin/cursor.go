@@ -14,6 +14,10 @@ import (
 // username as stored and the identifier of the last user of the page, each
 // with a two-byte big-endian length. It is not signed (design D16): a changed
 // cursor only moves the start of a list the caller may already read in full.
+//
+// A cursor is opaque, not signed. A caller that edits one only moves where a list starts, in a
+// list it may already read in full, so it grants nothing and needs no protection; it is not an
+// access token.
 const (
 	cursorVersion    = 1
 	cursorFieldMax   = 1024

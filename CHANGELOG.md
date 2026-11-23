@@ -63,7 +63,8 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 
 - **Security administration: the `admin` package.** Services over ports, with scrty's identity stores
   (`sqlstore`, `pgxstore`, `gormstore`) as the default implementation, and ports a consumer's own store
-  implements:
+  implements. **The services do not authorize:** they record who acted, but any caller reaching them
+  can change any user or role, so guard every route that reaches them (`Guards.Require`). They are:
   - `admin.Users` (`NewUsers`): `List` with search, filters and an opaque cursor (`WithPageSize`,
     default 50), `Get`, `Create`, `Update`, `Deactivate`, `Reactivate`, soft `Delete` and
     `SetPassword` through the password policy and history (`WithPasswordPolicy`,
@@ -194,11 +195,13 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
     `scrty_op_refresh_tokens` gain `selected_role`.
   - Rolling back the identity migration drops emails, attributes, scopes, versions, labels and
     deletion marks.
-- **The password provider refuses an account with an empty username.** A user loader that returns
+- **BREAKING (behaviour): the password provider refuses an account with an empty username.** A user loader that returns
   one, by username or by email, with email login on or off, is answered as for an unknown user:
   `authenticate.ErrAuthenticationFailed` after the same decoy password work, with a warning whose
-  reason is `user-without-username`. scrty's identity stores require a username, so only a consumer's
-  own loader can return one.
+  reason is `user-without-username`. Before, such an account logged in under a blank username.
+  `identity.UserLoader` now states that a user it returns carries its username. scrty's identity
+  stores always do; **a consumer's own loader that leaves `Details.Username` empty must fill it**, or
+  every login through it fails.
 - `policy.AttemptStore` states that identifiers match exactly: a store must not fold case. A store
   that does counts a failure twice when a login's typed identifier and its account differ only in
   case, and so locks sooner than configured.

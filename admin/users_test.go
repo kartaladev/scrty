@@ -901,10 +901,13 @@ func TestUsers_InputIsCopied(t *testing.T) {
 	}
 }
 
-// TestUsers_UpdateEmailClearsVerification pins that a new or cleared email
-// never inherits the old address's verification: a change that names the
-// email but no verification time reaches the store with the time cleared.
-func TestUsers_UpdateEmailClearsVerification(t *testing.T) {
+// TestUsers_UpdateEmailVerification pins that the service leaves the
+// verification of a named email to the store, which compares the address with
+// the stored one inside its row lock: a change that names the email but no
+// verification time reaches the store with none, so re-sending the stored
+// address does not unverify it. A verification time the caller names is
+// passed on.
+func TestUsers_UpdateEmailVerification(t *testing.T) {
 	t.Parallel()
 
 	email := "new@example.com"
@@ -918,14 +921,13 @@ func TestUsers_UpdateEmailClearsVerification(t *testing.T) {
 		assert func(t *testing.T, got admin.UserChange)
 	}
 
-	cleared := func(t *testing.T, got admin.UserChange) {
-		require.NotNil(t, got.EmailVerifiedAt)
-		assert.True(t, got.EmailVerifiedAt.IsZero())
+	leftToStore := func(t *testing.T, got admin.UserChange) {
+		assert.Nil(t, got.EmailVerifiedAt, "the service must not decide the verification of a named email")
 	}
 
 	cases := []testCase{
-		{name: "email set without a verification time", change: admin.UserChange{Email: &email}, assert: cleared},
-		{name: "email cleared", change: admin.UserChange{Email: &noEmail}, assert: cleared},
+		{name: "email set without a verification time", change: admin.UserChange{Email: &email}, assert: leftToStore},
+		{name: "email cleared", change: admin.UserChange{Email: &noEmail}, assert: leftToStore},
 		{
 			name:   "email set with a verification time keeps it",
 			change: admin.UserChange{Email: &email, EmailVerifiedAt: &verified},

@@ -24,7 +24,9 @@ func runUserSuite(t *testing.T, newFixture Factory) {
 	t.Run("StaleAfterLoginUpdate", func(t *testing.T) { runStaleAfterLoginUpdateCase(t, newFixture) })
 	t.Run("UnknownUser", func(t *testing.T) { runUnknownUserCases(t, newFixture) })
 	t.Run("UpdateKeepsUnnamedFields", func(t *testing.T) { runUpdateKeepsUnnamedFieldsCase(t, newFixture) })
+	t.Run("UpdateEmailVerification", func(t *testing.T) { runUpdateEmailVerificationCases(t, newFixture) })
 	t.Run("SetActive", func(t *testing.T) { runSetActiveCase(t, newFixture) })
+	t.Run("InactiveUserLoads", func(t *testing.T) { runInactiveUserLoadsCase(t, newFixture) })
 	t.Run("CreateRace", func(t *testing.T) { runCreateRaceCases(t, newFixture) })
 	t.Run("UsernameEmailCollision", func(t *testing.T) { runUsernameEmailCollisionCases(t, newFixture) })
 	t.Run("UsernameEmailRace", func(t *testing.T) { runUsernameEmailRaceCase(t, newFixture) })
@@ -294,6 +296,143 @@ func runUpdateKeepsUnnamedFieldsCase(t *testing.T, newFixture Factory) {
 	assert.True(t, cleared.EmailVerifiedAt.IsZero(), "a pointer to the zero time clears the verification")
 	assert.Equal(t, before.User.Email, cleared.Email, "clearing the verification kept the email")
 	assert.Equal(t, name, cleared.Name)
+}
+
+// runUpdateEmailVerificationCases checks how an update that names the email
+// treats the stored verification time: an address equal to the stored one,
+// ignoring case, keeps it, since it is the address that was verified; a
+// different or cleared address never inherits it. It also checks that a
+// verification time is refused, changing nothing, when the user has no email
+// to verify.
+func runUpdateEmailVerificationCases(t *testing.T, newFixture Factory) {
+	t.Helper()
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// stored is the email the user is created with, verified at
+		// verifiedAt when not empty.
+		stored func(t *testing.T) string
+		// change builds the update from the stored email.
+		change func(t *testing.T, stored string) admin.UserChange
+		assert func(t *testing.T, before userState, after admin.User, err error)
+	}
+
+	given := func(t *testing.T) string { t.Helper(); return email(t, 0) }
+	none := func(*testing.T) string { return "" }
+
+	kept := func(want func(stored string) string) func(t *testing.T, before userState, after admin.User, err error) {
+		return func(t *testing.T, before userState, after admin.User, err error) {
+			t.Helper()
+			require.NoError(t, err)
+			assert.Equal(t, want(before.User.Email), after.Email)
+			assert.True(t, after.EmailVerifiedAt.Equal(verifiedAt),
+				"the address that was verified is unchanged, ignoring case, so its verification stays; got %v",
+				after.EmailVerifiedAt)
+			assert.Greater(t, after.Version, before.User.Version)
+		}
+	}
+
+	cases := []testCase{
+		{
+			name:   "the stored email re-sent keeps the verification",
+			stored: given,
+			change: func(_ *testing.T, stored string) admin.UserChange { return admin.UserChange{Email: &stored} },
+			assert: kept(func(stored string) string { return stored }),
+		},
+		{
+			name:   "the stored email in another case keeps the verification and stores the new spelling",
+			stored: given,
+			change: func(_ *testing.T, stored string) admin.UserChange {
+				upper := strings.ToUpper(stored)
+				return admin.UserChange{Email: &upper}
+			},
+			assert: kept(strings.ToUpper),
+		},
+		{
+			name:   "a different email clears the verification",
+			stored: given,
+			change: func(t *testing.T, _ string) admin.UserChange {
+				t.Helper()
+				other := email(t, 1)
+				return admin.UserChange{Email: &other}
+			},
+			assert: func(t *testing.T, _ userState, after admin.User, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Equal(t, email(t, 1), after.Email)
+				assert.True(t, after.EmailVerifiedAt.IsZero(),
+					"a new address never inherits the old one's verification; got %v", after.EmailVerifiedAt)
+			},
+		},
+		{
+			name:   "a cleared email clears the verification",
+			stored: given,
+			change: func(*testing.T, string) admin.UserChange {
+				empty := ""
+				return admin.UserChange{Email: &empty}
+			},
+			assert: func(t *testing.T, _ userState, after admin.User, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Empty(t, after.Email)
+				assert.True(t, after.EmailVerifiedAt.IsZero(), "no email keeps no verification; got %v",
+					after.EmailVerifiedAt)
+			},
+		},
+		{
+			name:   "a verification time for a user with no email is refused",
+			stored: none,
+			change: func(*testing.T, string) admin.UserChange {
+				at := verifiedAt
+				return admin.UserChange{EmailVerifiedAt: &at}
+			},
+			assert: func(t *testing.T, before userState, after admin.User, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, admin.ErrInvalidInput,
+					"a verification time with no email to verify is invalid input; got %s", reasonOf(err))
+				assert.True(t, after.EmailVerifiedAt.IsZero(), "the refused update stored a verification time")
+				assert.Equal(t, before.User.Version, after.Version, "the refused update changed the version")
+			},
+		},
+		{
+			name:   "a verification time with the email named empty is refused",
+			stored: given,
+			change: func(*testing.T, string) admin.UserChange {
+				empty, at := "", verifiedAt.Add(time.Hour)
+				return admin.UserChange{Email: &empty, EmailVerifiedAt: &at}
+			},
+			assert: func(t *testing.T, before userState, after admin.User, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, admin.ErrInvalidInput,
+					"a verification time while the email is cleared is invalid input; got %s", reasonOf(err))
+				assert.Equal(t, before.User.Version, after.Version, "the refused update changed the version")
+				assert.Equal(t, before.User.Email, after.Email, "the refused update changed the email")
+				assert.True(t, after.EmailVerifiedAt.Equal(verifiedAt),
+					"the refused update changed the verification time; got %v", after.EmailVerifiedAt)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			f := newFixture(t)
+
+			nu := admin.NewUser{Username: username(t, 0), Name: "Ada", Email: tc.stored(t)}
+			if nu.Email != "" {
+				nu.EmailVerifiedAt = verifiedAt
+			}
+			u := mustCreateUser(ctx, t, f, nu)
+			before := readUserState(ctx, t, f, u.ID)
+
+			_, err := f.Users().UpdateUser(ctx, u.ID, before.User.Version, tc.change(t, before.User.Email))
+
+			tc.assert(t, before, mustGetUser(ctx, t, f, u.ID), err)
+		})
+	}
 }
 
 // runSetActiveCase checks that SetActive changes only the active flag, and
@@ -1287,4 +1426,33 @@ func runSetPasswordRecordsChangeCase(t *testing.T, newFixture Factory) {
 	require.NoError(t, err)
 	assert.Empty(t, residue.PasswordHistory,
 		"SetPassword must record no password history; the password policy's reuse rule does")
+}
+
+// runInactiveUserLoadsCase checks that a deactivated user is returned by the
+// identity loaders, by username and by identifier, with the active flag false
+// and no error: the loader reports the flag and the authenticator decides.
+func runInactiveUserLoadsCase(t *testing.T, newFixture Factory) {
+	t.Helper()
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newFixture(t)
+	u := mustCreateUser(ctx, t, f, admin.NewUser{Username: username(t, 0), Name: "Ada"})
+
+	d, err := f.Loader().LoadByUsername(ctx, u.Username)
+	require.NoError(t, err)
+	require.True(t, d.Active, "the loader marks a live user active before it is deactivated")
+
+	_, _, err = f.Users().SetActive(ctx, u.ID, u.Version, false)
+	require.NoError(t, err)
+
+	byName, err := f.Loader().LoadByUsername(ctx, u.Username)
+	require.NoError(t, err, "an inactive user is returned, not hidden (reason matched: %s)", reasonOf(err))
+	assert.Equal(t, u.ID, byName.ID)
+	assert.False(t, byName.Active, "loaded by username")
+
+	byID, err := f.Loader().LoadByUserID(ctx, u.ID)
+	require.NoError(t, err, "an inactive user is returned, not hidden (reason matched: %s)", reasonOf(err))
+	assert.Equal(t, u.ID, byID.ID)
+	assert.False(t, byID.Active, "loaded by identifier")
 }

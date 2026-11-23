@@ -390,7 +390,11 @@ the next retry does not count twice (the policy's documented behaviour).
 **A changed email is unverified until said otherwise (decided 2026-11-23, during implementation).** An
 update that sets or clears the email without naming a verification time clears the stored one, so a
 new address never inherits the old one's verification and so never becomes usable for login by email
-unverified. The service enforces it, so every store inherits it.
+unverified. **Amended after the code review (2026-11-23):** an email equal to the stored one ignoring
+case, the uniqueness rule's comparison, is not a new address, so re-sending it keeps the verification
+(F79). The store makes that comparison under the row lock it already takes for the version check,
+so a concurrent email change cannot slip between the read and the write; the user store port states
+the contract. A verification time for a user with no email is refused (F80).
 
 **Grant names reach the store as the catalogue declares them (decided 2026-11-23, during
 implementation).** The grant service compares names with the catalogue's folding, then rewrites
@@ -464,9 +468,15 @@ loading again.
   as typed through it, so one account gives one report. **Default:** used whenever the chain's store
   implements it. **Override:** a consumer store implements the port, or does not and receives plain
   writes.
-- **An account with no username is refused (decided 2026-11-23, during implementation; F72).** A
-  loader that returns one, by username or by email, is answered as for an unknown user, with email
-  login on or off, because no lockout key can name it.
+- **An account with no username is refused (decided 2026-11-23, during implementation; F72; scope
+  confirmed by the user the same day, choosing by security practice).** A loader that returns one, by
+  username or by email, is answered as for an unknown user, with email login on or off: an account
+  the library cannot name would yield a principal, session, events and audit records with a blank
+  identity, and a lockout keyed on whatever was typed. It fails closed, and has no override, because
+  allowing it would weaken that guarantee. `identity.UserLoader` states the requirement. **Departure
+  from main:** such an account logged in before; it is a breaking behaviour change, listed in the
+  CHANGELOG. **Alternative:** refuse it only on the email path, keeping main's behaviour with email
+  login off. Rejected: it keeps the blank-identity principal for every username-only deployment.
 - **The email loader is checked, not trusted:** a user it returns unverified, or whose email does
   not match the input ignoring case, counts as not found.
 - **Default:** off. Username-only login is unchanged.
@@ -519,8 +529,8 @@ the selected grant active when it is still held and valid, and the primary grant
   a second set of session statements for the lineage table. Rejected: it duplicates every statement
   to save one nullable column.
 - **The switch event carries the administration fields (decided 2026-11-23, during implementation):**
-  `scrty_active_role_switched` names the user as both `Actor` and `Target` and `active_role` in
-  `Changed`, though the chain is not an administration component, because a user changing their own
+  `scrty_active_role_switched` names the user as `Actor`, the role now active as `Target` (empty when a
+  cleared selection leaves no primary grant), and `active_role` in `Changed`, though the chain is not an administration component, because a user changing their own
   session is the actor of that change. The security-events spec states it as the one exception.
 
 ## Failure modes
@@ -602,9 +612,12 @@ the selected grant active when it is still held and valid, and the primary grant
 | F73 | A failed login by a registered email, timed against one by an unknown email | Accepted | The registered email makes one more attempt-store write on the response path (the account's record and the typed one, where an unknown email makes one). The decoy password hash, run either way, dominates the response time; the typed write does none of the lockout view's reads (F70). Moving it off the response path would detach a write the request no longer waits for, and was not chosen |
 | F74 | A consumer's wrapper around the lockout view hides `policy.UnreportedAttemptRecorder` | Accepted (godoc of `UnreportedAttemptRecorder`) | The typed record arrives as a plain write, which the view reports, so the identifier as typed is reported a second time, as before F70. A capped policy refuses such a wrapper at construction already; an uncapped one accepts it. Mirrors F51 |
 | F75 | An email held while it named no account is later verified for one, and its owner logs in by email | Accepted (godoc of the lockout view's `ResetUnreported`) | The success clears that hold through the unreported reset, so the earlier `ReportHeld` is never followed by `ReportReleased`. Nothing is locked or held silently |
-| F76 | A password change races a soft delete of the same user | Handled, tested (`Users/RetireAfterDeletion` in the shared suite; `RetireRacesDelete`, both interleavings, per store) | `RetirePassword` takes the user row `FOR SHARE` before writing history, and `DeleteUser` takes it `FOR UPDATE` before removing it, so the two serialise: a retire after the delete is refused with not-found (matching `identity.ErrUserNotFound` and `admin.ErrNotFound`) and writes nothing, and a delete after the retire removes what it wrote. A reference with no user row still records history, as before: the tables declare no foreign key, and the password-history port serves such references (accepted) |
+| F76 | A password change races a soft delete of the same user | Handled, tested (`Users/RetireAfterDeletion` in the shared suite; `RetireRacesDelete`, both interleavings, per store) | `RetirePassword` takes the user row `FOR UPDATE` (F78) before writing history, and `DeleteUser` takes it `FOR UPDATE` before removing it, so the two serialise: a retire after the delete is refused with not-found (matching `identity.ErrUserNotFound` and `admin.ErrNotFound`) and writes nothing, and a delete after the retire removes what it wrote. A reference with no user row still records history, as before: the tables declare no foreign key, and the password-history port serves such references (accepted) |
 | F77 | With an audit sink, the record read for the before value is at another version than the caller named | Handled, tested (`TestAudit_BeforeIsTheVersionTheWriteReplaced`, nine writes) | `ErrStaleUpdate` before anything is written or reported (D11) |
-| F78 | A consumer runs two password changes for one user inside transactions of their own, concurrently | Accepted | The retire's share lock followed by the hash update can deadlock; PostgreSQL aborts one with an error and nothing is half-applied. The administration services make these calls outside a transaction of the consumer's, unless the consumer attaches one to the context (`WithTx`), which then carries the same risk |
+| F78 | Two password changes for one user run concurrently inside callers' transactions | Handled, tested (`RetireThenSetPassword`, per store; task 15.3; was Accepted before the code review) | `RetirePassword` locks the user row FOR UPDATE, not FOR SHARE, so the second change waits for the first instead of deadlocking on a lock upgrade |
+| F79 | An administrator re-sends a user's current email, as an edit form does | Handled, tested (`Users/UpdateEmailVerification`, with toy-store guard defects; task 15.2) | The verification is kept when the email equals the stored one ignoring case, compared under the row lock; only a different address is unverified |
+| F80 | An update names a verification time for a user with no email | Handled (task 15.4) | `ErrInvalidInput`, nothing written |
+| F81 | An update names an email, and the event's changed fields are computed | Accepted (task 15.2's review) | The stores do not report which fields a write changed, so the service lists `email` whenever it is named, as for every other field, and `email_verified_at` whenever a named email may have left the user unverified, including one already unverified. A re-sent equal email with a kept verification lists `email` only. The list may name a field whose value did not change; it never omits one that did |
 
 ## Risks / Trade-offs
 

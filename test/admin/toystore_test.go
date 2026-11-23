@@ -55,6 +55,14 @@ const (
 	defectImportFoldsIdentifier defect = "import-folds-identifier"
 	// An update applies whatever version the caller names.
 	defectIgnoresVersionOnUpdate defect = "ignores-version-on-update"
+	// An update naming the email keeps the stored verification whatever the
+	// address, so a new address inherits the old one's verification.
+	defectKeepsVerificationOnNewEmail defect = "keeps-verification-on-new-email"
+	// An update naming the email clears the stored verification even when the
+	// address is the stored one.
+	defectClearsVerificationOnSameEmail defect = "clears-verification-on-same-email"
+	// An update stores a verification time for a user with no email.
+	defectVerifiesNoEmail defect = "verifies-no-email"
 
 	// Removing a primary grant, or force-deleting its role, hands the mark
 	// to the last remaining grant rather than the first.
@@ -575,11 +583,27 @@ func (s *toyStore) UpdateUser(_ context.Context, id identity.UserID, version int
 		return admin.User{}, admin.AlreadyExistsError{Field: admin.FieldEmail}
 	}
 
+	emailLeft := u.email
+	if c.Email != nil {
+		emailLeft = *c.Email
+	}
+
+	if c.EmailVerifiedAt != nil && !c.EmailVerifiedAt.IsZero() && emailLeft == "" && s.d != defectVerifiesNoEmail {
+		return admin.User{}, admin.ErrInvalidInput
+	}
+
 	if c.Name != nil {
 		u.name = *c.Name
 	}
 
 	if c.Email != nil {
+		sameAddress := strings.EqualFold(*c.Email, u.email) && u.email != ""
+		switch {
+		case c.EmailVerifiedAt != nil, s.d == defectKeepsVerificationOnNewEmail:
+		case s.d == defectClearsVerificationOnSameEmail, !sameAddress:
+			u.verifiedAt = time.Time{}
+		}
+
 		u.email = *c.Email
 	}
 

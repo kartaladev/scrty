@@ -84,8 +84,10 @@ func (s *IdentityStore) RecentPasswords(ctx context.Context, ref identity.UserID
 // inside one under a savepoint, so a failure undoes only its own writes and
 // leaves the caller's transaction usable.
 //
-// Before it records an entry it locks the user's row FOR SHARE
-// (pgschema.ShareHistoryOwner), the user-row step of the store's lock order:
+// Before it records an entry it locks the user's row FOR UPDATE
+// (pgschema.LockHistoryOwner), as every versioned user write does, so two
+// password changes inside callers' transactions queue rather than deadlock.
+// It is the user-row step of the store's lock order:
 // after any role lock, before any advisory lock. A soft-deleted user is
 // refused with an error matching identity.ErrUserNotFound and
 // admin.ErrNotFound, and nothing is written: DeleteUser locks the row FOR
@@ -123,7 +125,7 @@ func (s *IdentityStore) RetirePassword(ctx context.Context, ref identity.UserID,
 	now := storekit.Time(s.c.clock.Now())
 
 	return s.atomically(ctx, op, func(q DBTX) error {
-		if err := shareHistoryOwner(ctx, q, op, uid); err != nil {
+		if err := lockHistoryOwner(ctx, q, op, uid); err != nil {
 			return err
 		}
 
@@ -180,11 +182,11 @@ func forgetHistory(ctx context.Context, q DBTX, op string, uid id.ID) error {
 	return nil
 }
 
-// shareHistoryOwner locks the row of user uid FOR SHARE through q, and
+// lockHistoryOwner locks the row of user uid FOR UPDATE through q, and
 // refuses a soft-deleted user. No row is no refusal.
-func shareHistoryOwner(ctx context.Context, q DBTX, op string, uid id.ID) error {
+func lockHistoryOwner(ctx context.Context, q DBTX, op string, uid id.ID) error {
 	var deleted bool
-	err := q.QueryRowContext(ctx, pgschema.ShareHistoryOwner, uid).Scan(&deleted)
+	err := q.QueryRowContext(ctx, pgschema.LockHistoryOwner, uid).Scan(&deleted)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil

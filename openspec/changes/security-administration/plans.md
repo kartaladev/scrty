@@ -82,6 +82,13 @@ the ones it must not touch, the full red-green order, its scoped commands, and t
 | G1 | 12.1–12.3 | `session/`, `store/*/session*.go`, `internal/pgschema/sessions.go`, `httpsec/resolve.go`, `httpsec/role_switch.go`, `test/storetest/session_suite.go` | Opus: several packages | F1, M1 |
 | H1 | 13.1 | `*_example_test.go` named in 13.1 | Sonnet | G1 |
 | main | 13.2, 14.x | `CHANGELOG.md`, `README.md` prose | the main session | H1 |
+| J1 | 15.2–15.5 | `admin/`, `event/event.go` (godoc), `store/{sqlstore,pgxstore,gormstore}/{admin_users.go,identity_history.go}`, `internal/pgschema/admin.go`, `test/admin/`, `test/internal/adminfix/`, `test/{sqlstore,pgxstore,gormstore}/admin*_test.go` | Opus: a port contract under a row lock and a lock-mode change | 14.1 fixes |
+| K1 | 15.6 | `authenticate/password_email_test.go`, `httpsec/login_email_test.go` | Sonnet: test additions | — |
+| K2 | 15.7 (authorizer rows) | `authorize/requirements_test.go`, `authorize/scope_test.go` | Sonnet: test additions | — |
+| K3 | 15.7 (end-to-end row), 15.8 | `test/admin_e2e_test.go`, `test/identity/conformance_records.go`, `test/admin/conformance_users.go`, `test/admin/conformance_roles.go`, `test/admin/conformance_store_rules.go` | Sonnet: test additions | J1 (shares `test/admin/`) |
+| K4 | 15.9 | `Makefile` | Haiku: the recipe line is given | — |
+| K5 | 15.10 (godoc) | `admin/cursor.go` | Haiku: the sentence is given | J1 (owns `admin/`) |
+| main | 15.1 (verify), 15.10 (prose) | `CHANGELOG.md`, `README.md` | the main session | — |
 
 A2 and A3 both own `authorize/` and run in order. So do A4, F1 and G1 for `httpsec/`. Ownership
 follows callers: S1 owns `test/identity/` because the conformance cases and the store code move
@@ -647,3 +654,52 @@ plus `SoftDelete(t, username string)` in `test/identity.Fixture`.
 - [ ] **Step 4 (14.2, main session):** `make check`, `make spec-check`, and
   `SCRTY_TEST_POSTGRES_IMAGE=postgres:15-alpine make test`. Each must exit 0, with output read by the
   main session after the last code edit.
+
+### Task 18 (tasks 15.1–15.10): review follow-ups
+
+Global constraints and lane rules above apply. Every defect step is red first for the stated reason;
+every coverage step first confirms the gap against the current tests and, if the scenario is already
+asserted, records that test's name and adds nothing.
+
+- [ ] **Step 1 (15.1, main session):** confirm `TestPassword_ResolveRefusesAccountWithoutUsername` has
+  the row `username path with email login off` and `go doc ./identity UserLoader` shows the
+  username requirement. No code change.
+- [ ] **Step 2 (15.2, J1):** red conformance case in `test/admin` named `Users/EmailVerificationKept`
+  with rows: same email re-sent keeps `EmailVerifiedAt`; `Ada@Example.com` → `ada@example.com` keeps it
+  and stores the new text; another address clears it. Then the user store port's update contract
+  (godoc on `admin.UserStore` and `admin.UserChange`): Email named and EmailVerifiedAt nil clears the
+  verification only when the email differs ignoring case, compared under the row lock. Service no
+  longer forces the zero time; the three stores implement the comparison inside the locked update.
+- [ ] **Step 3 (15.3, J1):** red race test in `test/internal/adminfix` named
+  `RetireThenSetConcurrently`: two transactions each run `RetirePassword` then `SetPassword` for one
+  user; today one fails with SQLSTATE 40P01. Then `pgschema.ShareHistoryOwner` locks FOR UPDATE (rename
+  the statement if its name says share). `RetireRacesDelete` still passes.
+- [ ] **Step 4 (15.4, J1):** red conformance case `Users/VerificationWithoutEmailRefused`: update naming
+  a non-zero `EmailVerifiedAt` on a user with no email → `admin.ErrInvalidInput`, nothing written; the
+  stores check inside the row lock, the service refuses it when Email is named empty.
+- [ ] **Step 5 (15.5, J1):** `event.Event.Target` godoc: for `ActiveRoleSwitched`, the role now active,
+  empty when a cleared selection leaves no primary grant. Stores replace the private `fieldID` with
+  `admin.FieldID`.
+- [ ] **Step 6 (15.6, K1):** in the conflict case of `authenticate/password_email_test.go`, assert the
+  `scrty_identifier_conflict` event's `User` is empty and no field contains the identifier; in
+  `httpsec/login_email_test.go`, an unknown email fails five times under `lockout.WithSliding(5,
+  time.Hour)` and the sixth attempt is refused by lockout.
+- [ ] **Step 7 (15.7, K2):** rows in `authorize/requirements_test.go`: `AnyOf(read crm/lead, edit
+  crm/lead)` with only read held → allowed; `AllOf()` with a service principal → denied. **(K3):** in
+  `test/admin_e2e_test.go`, a request is allowed, `admin.Grants.Replace` removes the privilege, and the
+  next request is denied.
+- [ ] **Step 8 (15.8, K3, after J1):** the shared identity suite loads an inactive user by username and
+  by identifier with `Active == false`; end to end, `Users.Delete` then a password login fails
+  uniformly; `Roles/Rename` reads the new display name through `ListRoles` and the role's grants and
+  assignments still authorize; the role and attribute filter cases include a deleted user that is not
+  returned; the service pages 120 users at page size 50 into 50, 50, 20 with no duplicate or gap; an
+  assignment with no dates that is primary authorizes.
+- [ ] **Step 9 (15.9, K4):** `Makefile` `test` target also runs, in `test/`:
+  `go test -race -count=1 -tags admin_stub -run '^(TestAdminSuiteIsLoadBearing|TestBrokenAdminStore)$$' ./admin/`.
+  Verify by `make test` output listing both tests.
+- [ ] **Step 10 (15.10):** **K5:** `admin/cursor.go` godoc: a cursor is opaque but not signed; a caller
+  that edits one only moves where a list it may already read starts. **Main:** the CHANGELOG's admin
+  entry says the services do not authorize and the consumer guards their routes; the README's
+  Administration section states the cursor sentence.
+- [ ] **Step 11:** after each lane: scoped tests per `test-scope.md`, a fresh reviewer (Opus for J1,
+  Sonnet otherwise), then one commit per lane group, push, and the PR body updated. Then Task 17's 14.2.

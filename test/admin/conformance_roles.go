@@ -35,6 +35,8 @@ func runRoleSuite(t *testing.T, newFixture Factory) {
 	t.Run("DeletedUserAssignments", func(t *testing.T) { runDeletedUserAssignmentCases(t, newFixture) })
 	t.Run("UserWritesKeepGrants", func(t *testing.T) { runUserWritesKeepGrantsCase(t, newFixture) })
 	t.Run("ListByRole", func(t *testing.T) { runListByRoleCases(t, newFixture) })
+	t.Run("ListFiltersExcludeDeleted", func(t *testing.T) { runListFiltersExcludeDeletedCase(t, newFixture) })
+	t.Run("RenameKeepsGrantsAndAssignments", func(t *testing.T) { runRenameKeepsGrantsCase(t, newFixture) })
 	t.Run("ImportRoles", func(t *testing.T) { runImportChangeCases(t, newFixture, importRoleChanges, true) })
 	t.Run("ImportUnknownRole", func(t *testing.T) { runImportUnknownRoleCase(t, newFixture) })
 }
@@ -1058,4 +1060,91 @@ func runListByRoleCases(t *testing.T, newFixture Factory) {
 		{"attribute, role and active", admin.UserQuery{Role: role, Active: &yes, Attribute: &admin.AttributeMatch{Name: attr, Value: "Manager"}}, []int{0}},
 		{"inactive with the role", admin.UserQuery{Role: role, Active: &no}, []int{4}},
 	})
+}
+
+// runListFiltersExcludeDeletedCase checks that the role filter and the
+// attribute filter, alone and together, leave out a soft-deleted user who
+// held the role and the attribute before it was deleted.
+func runListFiltersExcludeDeletedCase(t *testing.T, newFixture Factory) {
+	t.Helper()
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newFixture(t)
+	attr := "job_title-" + tag(t)
+	role := roleName(t, "sales")
+	mustCreateRole(ctx, t, f, role)
+
+	ids := seedListUsers(ctx, t, f, role, []listSeed{
+		{attrs: map[string]string{attr: "Manager"}, role: true, active: true}, // 0: live, matches both
+		{attrs: map[string]string{attr: "Manager"}, role: true, active: true}, // 1: deleted below, matched both
+	})
+
+	gone, err := f.Users().GetUser(ctx, ids[1])
+	require.NoError(t, err)
+	require.NoError(t, f.Users().DeleteUser(ctx, gone.ID, gone.Version))
+
+	yes := true
+
+	runListCases(ctx, t, f, ids, []listCase{
+		{"role", admin.UserQuery{Role: role}, []int{0}},
+		{"role and attribute", admin.UserQuery{Role: role, Attribute: &admin.AttributeMatch{Name: attr, Value: "Manager"}}, []int{0}},
+		{"attribute", admin.UserQuery{Attribute: &admin.AttributeMatch{Name: attr, Value: "Manager"}}, []int{0}},
+		{"role and active", admin.UserQuery{Role: role, Active: &yes}, []int{0}},
+	})
+}
+
+// runRenameKeepsGrantsCase checks that changing a role's display name leaves
+// its name, its grants and the assignments that hold it as they were, and that
+// the listing shows the new display name.
+func runRenameKeepsGrantsCase(t *testing.T, newFixture Factory) {
+	t.Helper()
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newFixture(t)
+	role := roleName(t, "sales")
+	seeded, v := seedGrants(ctx, t, f, role)
+
+	ada := mustCreateUser(ctx, t, f, admin.NewUser{Username: username(t, 0)})
+	mustAssign(ctx, t, f, ada.ID, ada.Version, admin.Assignment{Role: role, Primary: true})
+
+	before := readGrantState(ctx, t, f, ada.ID)
+	require.Equal(t, role, grantOf(t, roleRefs(before.Roles), role).Name)
+
+	display := "Sales (Partner)"
+	upd, err := f.Roles().UpdateRole(ctx, role, v, admin.RoleChange{DisplayName: &display})
+	require.NoError(t, err)
+	assert.Equal(t, role, upd.Name, "the name never changes")
+
+	got, _, err := f.Grants().GetGrants(ctx, role)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, normalGrants(seeded), normalGrants(got), "a rename keeps every grant of the role")
+
+	after := readGrantState(ctx, t, f, ada.ID)
+	assert.Equal(t, grantOf(t, roleRefs(before.Roles), role).ID, grantOf(t, roleRefs(after.Roles), role).ID,
+		"a rename keeps the holder's assignment")
+	assert.Equal(t, []string{role}, primaries(roleRefs(after.Roles)), "a rename keeps the primary grant")
+
+	d, err := f.Loader().LoadByUserID(ctx, ada.ID)
+	require.NoError(t, err)
+	assert.Equal(t, role, grantOf(t, d.Roles, role).Name, "the loader still returns the grant under the role's name")
+
+	listed, err := f.Roles().ListRoles(ctx, "")
+	require.NoError(t, err)
+
+	var found bool
+
+	for _, r := range listed {
+		if r.Name != role {
+			continue
+		}
+
+		found = true
+
+		assert.Equal(t, display, r.DisplayName, "the listing shows the new display name")
+		assert.Equal(t, 1, r.Assigned, "the listing still counts the holder")
+	}
+
+	assert.True(t, found, "the renamed role is listed")
 }

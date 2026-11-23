@@ -450,6 +450,57 @@ func TestLogin_ResolvesOnce(t *testing.T) {
 	}
 }
 
+// TestLogin_UnknownEmailLocksAfterFiveFailures pins that an email no account
+// holds is locked like any identifier: five failures spend its budget, and the
+// sixth attempt is refused as locked, before the handler runs, with the lock
+// recorded under the identifier as presented.
+func TestLogin_UnknownEmailLocksAfterFiveFailures(t *testing.T) {
+	t.Parallel()
+
+	const unknownEmail = "nobody@example.com"
+
+	type testCase struct {
+		name     string
+		endpoint emailLoginEndpoint
+		assert   func(t *testing.T, f *emailLoginFixture, sixth served)
+	}
+
+	locked := func(t *testing.T, f *emailLoginFixture, sixth served) {
+		t.Helper()
+
+		require.ErrorIs(t, sixth.err, lockout.ErrAccountLocked, "the sixth attempt is not refused by the lockout")
+		assert.False(t, sixth.handlerRan)
+
+		n, err := f.attempts.FailureCount(t.Context(), unknownEmail, time.Now().Add(-time.Hour))
+		require.NoError(t, err)
+		assert.Equal(t, 5, n, "only the five judged failures count under the presented identifier")
+	}
+
+	var cases []testCase
+	for _, ep := range emailLoginEndpoints {
+		cases = append(cases, testCase{name: ep.name, endpoint: ep, assert: locked})
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newEmailLoginFixture(t, lockout.WithSliding(5, time.Hour))
+			f.users.EXPECT().LoadByUsername(gomock.Any(), unknownEmail).Return(nil, identity.ErrUserNotFound).AnyTimes()
+			f.emails.EXPECT().LoadByEmail(gomock.Any(), unknownEmail).Return(nil, identity.ErrUserNotFound).AnyTimes()
+			c := f.chain(t, true)
+
+			for i := range 5 {
+				out := tc.endpoint.present(t, c, unknownEmail, emailLoginWrong)
+				require.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed, "failure %d", i+1)
+				require.NotErrorIs(t, out.err, lockout.ErrAccountLocked, "failure %d is within the budget", i+1)
+			}
+
+			tc.assert(t, f, tc.endpoint.present(t, c, unknownEmail, emailLoginWrong))
+		})
+	}
+}
+
 // TestLogin_EmailSuccessClearsAccount pins that a success by email, at either
 // endpoint, clears the failures recorded under the account's username: the
 // success is keyed on the account, as the failures were. It clears those the

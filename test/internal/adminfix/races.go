@@ -155,3 +155,67 @@ func runImportCollisionField(t *testing.T, h Harness, newImported func(t *testin
 	assert.Equal(t, in.Username, got.Username, "the refused import changed nothing")
 	assert.Equal(t, in.Email, got.Email, "the refused import changed nothing")
 }
+
+// runRetireThenSetPassword checks that two password changes of one user, each
+// inside its caller's transaction, queue rather than deadlock. A password
+// change retires the replaced hash (RetirePassword) and then writes the new
+// one (SetPassword), and the caller's transaction holds every row lock either
+// takes until it ends. Were the retire's user-row lock weaker than the
+// write's, both callers could hold it and each then wait on the other's to
+// take the write's lock: a deadlock, which PostgreSQL breaks by aborting one
+// of them (SQLSTATE 40P01). With one lock strength the second change waits for
+// the first to commit, then fails on its version alone.
+func runRetireThenSetPassword(t *testing.T, h Harness) {
+	t.Helper()
+	t.Parallel()
+
+	hist, ok := h.Users.(password.History)
+	require.True(t, ok, "the identity store implements password.History")
+
+	ctx := t.Context()
+	u := create(t, h, admin.NewUser{Username: uniq("retire-set")})
+
+	change := func(ctx context.Context, hash string) error {
+		if err := hist.RetirePassword(ctx, u.ID, []byte("$old-hash"), 5); err != nil {
+			return err
+		}
+		_, err := h.Users.SetPassword(ctx, u.ID, u.Version, []byte(hash), time.Now())
+
+		return err
+	}
+
+	ctxA, pidA, commitA, _ := h.Ambient(ctx, t)
+	ctxB, _, commitB, rollbackB := h.Ambient(ctx, t)
+
+	require.NoError(t, hist.RetirePassword(ctxA, u.ID, []byte("$old-hash"), 5),
+		"caller A retires the replaced hash")
+
+	done := make(chan callResult, 1)
+	go func() {
+		err := change(ctxB, "$hash-b")
+		if err == nil {
+			err = commitB()
+		} else {
+			rollbackB()
+		}
+		done <- callResult{err}
+	}()
+
+	waitBlockedBy(t, h.DB, pidA, done)
+
+	_, errA := h.Users.SetPassword(ctxA, u.ID, u.Version, []byte("$hash-a"), time.Now())
+	require.NoError(t, errA, "caller A's password write must not be aborted by caller B's change")
+	require.NoError(t, commitA())
+
+	select {
+	case r := <-done:
+		require.ErrorIs(t, r.err, admin.ErrStaleUpdate,
+			"caller B waits for A and then fails on its version alone, never on a deadlock: %v", r.err)
+	case <-time.After(importQueueBound):
+		require.Fail(t, "caller B's password change never finished")
+	}
+
+	hash, err := h.Users.CurrentPasswordHash(ctx, u.ID)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("$hash-a"), hash, "caller A's password is the one stored")
+}

@@ -112,6 +112,18 @@ func TestEvents_OneAfterCommit(t *testing.T) {
 			}),
 		},
 		{
+			name: "stored email re-sent keeps its verification", event: event.UserUpdated, target: string(eventUser),
+			user: eventUser, changed: []string{"email"},
+			call: usersCall(func(s *MockUserStore) {
+				verified := stored
+				verified.EmailVerifiedAt = testNow
+				s.EXPECT().UpdateUser(gomock.Any(), eventUser, int64(4), gomock.Any()).Return(verified, nil)
+			}, func(ctx context.Context, u *admin.Users) error {
+				_, err := u.Update(ctx, eventUser, 4, admin.UserChange{Email: &mail})
+				return err
+			}),
+		},
+		{
 			name: "name and attributes changed", event: event.UserUpdated, target: string(eventUser), user: eventUser,
 			changed: []string{"name", "attributes"},
 			call: usersCall(func(s *MockUserStore) {

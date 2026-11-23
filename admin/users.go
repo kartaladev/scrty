@@ -270,11 +270,16 @@ func (u *Users) validateNew(nu NewUser) error {
 }
 
 // Update changes the fields the change names, conditional on version. A change
-// that names the email but no verification time clears the stored
-// verification time, so a new address is unverified until the caller says
-// otherwise; the event then lists email_verified_at too. An empty
-// change, or a version below one, is ErrInvalidInput; a version that differs
-// from the stored one is ErrStaleUpdate and changes nothing.
+// that names the email but no verification time keeps the stored verification
+// time when the email equals the stored one ignoring case, so re-sending the
+// current address does not unverify it, and clears it otherwise, so a new or
+// cleared address is unverified until the caller says otherwise. The store
+// makes that comparison under its row lock (see UserStore.UpdateUser). The
+// event lists the fields the change names, and email_verified_at also when a
+// named email leaves the user with no verification time. A verification time
+// named for a user with no email, and an empty change, or a version below one,
+// are ErrInvalidInput; a version that differs from the stored one is
+// ErrStaleUpdate and changes nothing.
 func (u *Users) Update(ctx context.Context, userID identity.UserID, version int64, c UserChange) (User, error) {
 	actor, err := ActorFrom(ctx)
 	if err != nil {
@@ -286,13 +291,6 @@ func (u *Users) Update(ctx context.Context, userID identity.UserID, version int6
 	}
 
 	c.Attributes = maps.Clone(c.Attributes)
-
-	// A new or cleared email never inherits the old address's verification:
-	// unless the change names a verification time, it clears the stored one.
-	if c.Email != nil && c.EmailVerifiedAt == nil {
-		var unverified time.Time
-		c.EmailVerifiedAt = &unverified
-	}
 
 	if err := u.validateChange(c); err != nil {
 		return User{}, err
@@ -309,7 +307,8 @@ func (u *Users) Update(ctx context.Context, userID identity.UserID, version int6
 	}
 
 	report := changeReport{
-		actor: actor, name: event.UserUpdated, user: userID, target: string(userID), changed: changedUserFields(c),
+		actor: actor, name: event.UserUpdated, user: userID, target: string(userID),
+		changed: changedUserFields(c, updated),
 	}
 	if before != nil {
 		report.before, report.after = *before, cloneUser(updated)
@@ -577,7 +576,7 @@ const (
 )
 
 // changedUserFields names the fields a change sets, never their values.
-func changedUserFields(c UserChange) []string {
+func changedUserFields(c UserChange, updated User) []string {
 	var changed []string
 
 	if c.Name != nil {
@@ -588,7 +587,11 @@ func changedUserFields(c UserChange) []string {
 		changed = append(changed, userFieldEmail)
 	}
 
-	if c.EmailVerifiedAt != nil {
+	// A named email with no verification time leaves the verification to the
+	// store, which clears it only for a different address. Without the stored
+	// value the service cannot tell a cleared verification from one that was
+	// already absent, so it reports the field whenever none is left.
+	if c.EmailVerifiedAt != nil || (c.Email != nil && updated.EmailVerifiedAt.IsZero()) {
 		changed = append(changed, userFieldEmailVerifiedAt)
 	}
 

@@ -65,7 +65,10 @@ type Event struct {
 
 	// Target is what an administration change concerns: a user's identifier,
 	// or a role's name. It is empty on the events of every other component,
-	// except ActiveRoleSwitched, whose Target is the user.
+	// except ActiveRoleSwitched, whose Target is the role now active: the
+	// role switched to, or, when the selection is cleared, the primary
+	// grant's role name, empty when no primary grant is left. The user is
+	// that event's User and Actor.
 	Target string
 
 	// Changed names the fields an administration change changed, such as
@@ -472,7 +475,9 @@ const (
 	IdentifierConflict = "scrty_identifier_conflict"
 
 	// ActiveRoleSwitched is a user's active role switched to another role the
-	// user holds. It names the user and the role switched to.
+	// user holds, or a selection cleared. The user is its User and Actor, the
+	// role now active its Target (see Event.Target), and Changed names
+	// "active_role".
 	ActiveRoleSwitched = "scrty_active_role_switched"
 )
 

@@ -224,12 +224,6 @@ func reasonOf(err error) string {
 	return "none"
 }
 
-// fieldID is the field an AlreadyExistsError names when an import names the
-// identifier of a soft-deleted user (design, "Store rules fixed while writing
-// the administration conformance suite"). The admin package declares no
-// constant for it.
-const fieldID = "id"
-
 // requireAlreadyExists requires err to be an AlreadyExistsError naming field.
 func requireAlreadyExists(t *testing.T, err error, field, msg string) {
 	t.Helper()

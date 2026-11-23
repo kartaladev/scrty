@@ -68,6 +68,18 @@ func TestUpdateAdminUserQuery(t *testing.T) {
 			},
 		},
 		{
+			name:    "the verification kept for the same email compares the stored email ignoring case",
+			columns: []string{pgschema.ColumnEmail, pgschema.ColumnEmailVerifiedAtIfSameEmail},
+			values:  []any{"E", "E"},
+			assert: func(t *testing.T, query string, args []any, panicked bool) {
+				require.False(t, panicked)
+				assert.Equal(t, "UPDATE scrty_users SET email = $1, "+
+					"email_verified_at = CASE WHEN lower(email) = lower($2::text) THEN email_verified_at END, "+
+					"updated_at = $3, version = version + 1 WHERE id = $4", query)
+				assert.Equal(t, []any{"E", "E", "now", "uid"}, args)
+			},
+		},
+		{
 			name:    "an unknown column panics",
 			columns: []string{"password"},
 			values:  []any{"x"},

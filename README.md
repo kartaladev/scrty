@@ -3614,6 +3614,9 @@ ada, err = users.Update(ctx, ada.ID, ada.Version, admin.UserChange{Name: &name})
 - **Importing is idempotent.** A second run with equal values reports `unchanged` and emits nothing.
   A hash the recogniser does not recognise is refused before the store is called.
 - **Soft-deleted users are not found**, and a username may not equal another live user's email.
+- **A list cursor is opaque, not signed.** `UserPage` hands back a cursor to pass to the next
+  `List`. A caller who edits one only moves where a list starts, in a list it may already read in
+  full, so a cursor needs no protection; it is not an access token and grants nothing.
 
 ### Events and audit
 

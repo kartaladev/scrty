@@ -45,10 +45,6 @@ var (
 	_ admin.ImportStore = (*IdentityStore)(nil)
 )
 
-// fieldID is the AlreadyExistsError field of an imported identifier held by
-// a deleted user. package admin names no constant for it yet.
-const fieldID = "id"
-
 // errImportConflict is an insert that collided with a row the store could
 // not find afterwards: a concurrent writer removed it in between.
 var errImportConflict = errors.New("the user collided with a row that is gone; retry")
@@ -295,6 +291,12 @@ func (s *IdentityStore) UpdateUser(
 			return admin.User{}, invalidInput(op, "the email holds text that cannot be stored")
 		}
 		columns, values = append(columns, pgschema.ColumnEmail), append(values, emptyNull(*change.Email))
+		if change.EmailVerifiedAt == nil {
+			// The statement keeps the verification only for the stored
+			// address, compared under the row lock it runs in.
+			columns = append(columns, pgschema.ColumnEmailVerifiedAtIfSameEmail)
+			values = append(values, emptyNull(*change.Email))
+		}
 	}
 	if change.EmailVerifiedAt != nil {
 		columns, values = append(columns, pgschema.ColumnEmailVerifiedAt), append(values, nullTs(*change.EmailVerifiedAt))
@@ -317,6 +319,9 @@ func (s *IdentityStore) UpdateUser(
 		cur, err := lockAdminUser(ctx, q, op, uid, version)
 		if err != nil {
 			return err
+		}
+		if verifiesNoEmail(change, cur) {
+			return invalidInput(op, "an email verification time is set with no email to verify")
 		}
 		if err := checkOrganization(ctx, q, op, newOrg); err != nil {
 			return err
@@ -616,7 +621,7 @@ func (s *IdentityStore) ImportUser(ctx context.Context, in admin.ImportedUser) (
 		if cur.deleted {
 			// The identifier belongs to a deleted user, whom an import never
 			// undeletes.
-			return alreadyExists(op, fieldID)
+			return alreadyExists(op, admin.FieldID)
 		}
 
 		stored, err := grantNames(ctx, q, op, uid)
@@ -901,6 +906,20 @@ type lockedUser struct {
 	email    pgtype.Text
 	password []byte
 	active   bool
+}
+
+// verifiesNoEmail reports whether change sets a verification time while the
+// user is left with no email to verify: the change names an empty email, or
+// names none and u, the locked row, holds none.
+func verifiesNoEmail(change admin.UserChange, u lockedUser) bool {
+	if change.EmailVerifiedAt == nil || change.EmailVerifiedAt.IsZero() {
+		return false
+	}
+	if change.Email != nil {
+		return *change.Email == ""
+	}
+
+	return !u.email.Valid || u.email.String == ""
 }
 
 // lockAdminUser locks the live user uid and checks that its version is

@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -373,6 +374,18 @@ func TestAdministration_EndToEnd(t *testing.T) {
 	assert.Equal(t, beforeVersion, afterVersion, "a refused replace does not bump the version")
 	assert.Equal(t, 1, stack.events.count(event.PrivilegePermissionsChanged), "a refused replace reports nothing")
 
+	// replacing the role's grants through the service is seen by the next
+	// request of the same session: view is removed, so the guard that passed
+	// before now refuses, and the per-request memo carried nothing over.
+	_, err = grants.Replace(ctx, role.Name, grantsVersion, admin.ResourceGrants{
+		Group: "crm", Resource: "lead",
+		Grants: []admin.Grant{{Privilege: "update", Granted: true, Scope: identity.ScopeOwn}},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, http.StatusForbidden, stack.serve(t, mux, ref, "/leads"), "the next request uses the replaced grants")
+	assert.ErrorIs(t, stack.lastRefusal(), authorize.ErrAccessDenied)
+
 	// deactivating the user ends their session at the next request.
 	_, err = users.Deactivate(ctx, user.ID, user.Version)
 	require.NoError(t, err)
@@ -428,4 +441,91 @@ func TestAdministration_ImportBcrypt(t *testing.T) {
 	// the re-import did not clobber the hash.
 	assert.NotEmpty(t, stack.login(t, "legacy", adminE2EPassword))
 	assert.Equal(t, http.StatusUnauthorized, stack.loginStatus(t, "legacy", "not-the-password"))
+}
+
+// TestAdministration_DeletedUserCannotLogin covers a user who logs in, is then
+// deleted through the service, and presents the correct username and password
+// again: the refusal is the uniform authentication failure, the same status
+// and error as for a username that never existed.
+func TestAdministration_DeletedUserCannotLogin(t *testing.T) {
+	t.Parallel()
+
+	stack := newAdminE2EStack(t, nil)
+	ctx := admin.WithSystemActor(t.Context(), "e2e-delete")
+
+	users, err := admin.NewUsers(stack.store, admin.WithEventSink(stack.events.sink))
+	require.NoError(t, err)
+
+	user, err := users.Create(ctx, admin.NewUser{Username: "ada", Name: "Ada"})
+	require.NoError(t, err)
+
+	user, err = users.SetPassword(ctx, user.ID, user.Version, []byte(adminE2EPassword))
+	require.NoError(t, err)
+
+	require.NotEmpty(t, stack.login(t, "ada", adminE2EPassword), "the live user logs in")
+
+	require.NoError(t, users.Delete(ctx, user.ID, user.Version))
+
+	stack.reset()
+	assert.Equal(t, http.StatusUnauthorized, stack.loginStatus(t, "ada", adminE2EPassword))
+	deleted := stack.lastRefusal()
+	require.ErrorIs(t, deleted, authenticate.ErrAuthenticationFailed)
+
+	stack.reset()
+	assert.Equal(t, http.StatusUnauthorized, stack.loginStatus(t, "never-existed", adminE2EPassword))
+	unknown := stack.lastRefusal()
+	require.ErrorIs(t, unknown, authenticate.ErrAuthenticationFailed)
+
+	assert.Equal(t, unknown.Error(), deleted.Error(), "a deleted user fails exactly as an unknown one does")
+}
+
+// TestAdministration_ListPagesAllUsers covers 120 users listed through the
+// service at page size 50 against PostgreSQL: pages of 50, 50 and 20, every
+// user once, and no cursor after the last page.
+func TestAdministration_ListPagesAllUsers(t *testing.T) {
+	t.Parallel()
+
+	stack := newAdminE2EStack(t, nil)
+	ctx := admin.WithSystemActor(t.Context(), "e2e-paging")
+
+	users, err := admin.NewUsers(stack.store)
+	require.NoError(t, err)
+
+	const total = 120
+
+	created := make(map[identity.UserID]bool, total)
+
+	for i := range total {
+		u, err := users.Create(ctx, admin.NewUser{Username: fmt.Sprintf("paged-%03d", i)})
+		require.NoError(t, err)
+
+		created[u.ID] = true
+	}
+
+	var (
+		sizes  []int
+		seen   = map[identity.UserID]bool{}
+		cursor string
+	)
+
+	for range 5 {
+		page, err := users.List(ctx, admin.UserFilter{Search: "paged-", PageSize: 50, Cursor: cursor})
+		require.NoError(t, err)
+
+		sizes = append(sizes, len(page.Users))
+
+		for _, u := range page.Users {
+			assert.False(t, seen[u.ID], "user %s listed twice", u.Username)
+			seen[u.ID] = true
+		}
+
+		if page.Next == "" {
+			break
+		}
+
+		cursor = page.Next
+	}
+
+	assert.Equal(t, []int{50, 50, 20}, sizes)
+	assert.Equal(t, created, seen, "no user is skipped or invented")
 }

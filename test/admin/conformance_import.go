@@ -464,7 +464,7 @@ func runImportDeletedUserRefusedCase(t *testing.T, newFixture Factory) {
 	again.ID = in.ID
 
 	_, err = f.Importer().ImportUser(ctx, again)
-	requireAlreadyExists(t, err, fieldID,
+	requireAlreadyExists(t, err, admin.FieldID,
 		fmt.Sprintf("an import naming a deleted user's identifier (reason matched: %s)", reasonOf(err)))
 
 	_, err = f.Users().GetUser(ctx, in.ID)

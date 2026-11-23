@@ -71,6 +71,8 @@ type UserFilter struct {
 type UserPage struct {
 	Users []User
 	// Next continues the list. It is empty when the page was not full.
+	// It is opaque, not signed: a caller that edits one only moves where a list starts, in a list
+	// it may already read in full, so it grants nothing and is not an access token.
 	Next string
 }
 
@@ -79,9 +81,11 @@ type UserChange struct {
 	Name  *string
 	Email *string
 	// EmailVerifiedAt is set when non-nil; a pointer to the zero time clears it.
-	// Users.Update sets it to the zero time when Email is named and it is
-	// not, so a new or cleared email is never verified by the old address's
-	// verification. A store applies an explicit zero time as cleared.
+	// When Email is named and EmailVerifiedAt is nil, the store keeps the
+	// stored verification time if Email equals the stored email ignoring case,
+	// and clears it otherwise, so a new or cleared email is never verified by
+	// the old address's verification (see UserStore.UpdateUser). A non-zero
+	// time with no email to verify is ErrInvalidInput.
 	EmailVerifiedAt *time.Time
 	// Attributes replaces the whole set when non-nil; an empty non-nil map
 	// removes every attribute.

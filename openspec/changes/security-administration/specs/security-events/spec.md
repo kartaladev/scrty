@@ -14,18 +14,18 @@ Administration services SHALL report each committed change to the event sink, us
 - **THEN** the sink receives no event
 
 ### Requirement: An administration event names its actor, target and changed fields
-An administration event SHALL carry the actor's reference, or the system actor's name, the target user's reference or the role name, and the names of the changed fields. It SHALL NOT carry a field's value. Events of other components SHALL leave these empty, except `scrty_active_role_switched`, which SHALL carry the user as both actor and target and `active_role` as the changed field, because the user changes their own session.
+An administration event SHALL carry the actor's reference, or the system actor's name, the target user's reference or the role name, and the names of the changed fields. It SHALL NOT carry a field's value. Events of other components SHALL leave these empty, except the role-switch event.
 
 #### Scenario: Grant change
 - **WHEN** an administrator replaces role `sales`'s grants on `crm/lead`
 - **THEN** the `privilege_permissions_changed` event names the administrator as actor, `sales` as target, and `crm/lead` as the changed field
 
 ### Requirement: Role switches and identifier conflicts are reported
-A successful active-role switch SHALL be reported under a `scrty_`-prefixed name with the user and the role switched to. An email login refused because the identifier names two users SHALL be reported under a `scrty_`-prefixed name with no user and no identifier.
+A successful active-role switch SHALL be reported under a `scrty_`-prefixed name with the user and the role switched to, and SHALL carry the user as actor, the role now active as target, and `active_role` as the changed field. An email login refused because the identifier names two users SHALL be reported under a `scrty_`-prefixed name with no user and no identifier.
 
 #### Scenario: Switch
 - **WHEN** `ada` switches her active role to `audit`
-- **THEN** the sink receives one role-switch event naming `ada` and `audit`
+- **THEN** the sink receives one role-switch event naming `ada` as user and actor, `audit` as target, and `active_role` as the changed field
 
 #### Scenario: Conflict
 - **WHEN** an email login is refused because the identifier names two users

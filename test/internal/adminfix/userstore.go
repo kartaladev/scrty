@@ -125,6 +125,7 @@ func Run(t *testing.T, h Harness) {
 	}
 	if h.Ambient != nil {
 		t.Run("RetireRacesDelete", func(t *testing.T) { runRetireRacesDelete(t, h) })
+		t.Run("RetireThenSetPassword", func(t *testing.T) { runRetireThenSetPassword(t, h) })
 	}
 }
 

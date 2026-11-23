@@ -115,6 +115,25 @@ Every update of a user or a role SHALL name the version the caller read. When th
 - **WHEN** an update names only the display name
 - **THEN** the email, attributes, roles and password are unchanged
 
+### Requirement: An email keeps its verification only while it is unchanged
+An update that names the email without a verification time SHALL keep the stored verification time when the email equals the stored one ignoring case, and SHALL clear it otherwise. The comparison SHALL be made under the user's row lock. A verification time SHALL be refused with an invalid-input error for a user who has no email.
+
+#### Scenario: The current email is re-sent
+- **WHEN** an administrator updates `ada`'s display name and re-sends her verified email unchanged
+- **THEN** her email stays verified
+
+#### Scenario: Only the case changes
+- **WHEN** `ada`'s verified email `Ada@Example.com` is updated to `ada@example.com`
+- **THEN** her email stays verified and is stored as `ada@example.com`
+
+#### Scenario: A different email
+- **WHEN** `ada`'s verified email is updated to another address without a verification time
+- **THEN** the new email is unverified
+
+#### Scenario: A verification time without an email
+- **WHEN** an update names a verification time for a user who has no email
+- **THEN** it fails with an invalid-input error and nothing is written
+
 ### Requirement: Deactivation and reactivation change only the active flag
 Deactivating a user SHALL clear the active flag, and reactivating SHALL set it, each conditional on the version. Deactivating an inactive user, or reactivating an active one, SHALL succeed without a write or an event.
 

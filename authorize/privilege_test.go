@@ -306,6 +306,10 @@ func TestPrivilegeAuthorizerMatching(t *testing.T) {
 			required: []string{"write"}, mode: authorize.MatchAnyOf, assert: allowed,
 		},
 		{
+			name: "any-of allows when only one of two alternatives is granted", granted: map[string]bool{"read": true},
+			required: []string{"read", "write"}, mode: authorize.MatchAnyOf, assert: allowed,
+		},
+		{
 			name: "any-of with none granted denies", granted: map[string]bool{"read": true},
 			required: []string{"write"}, mode: authorize.MatchAnyOf, assert: denied,
 		},

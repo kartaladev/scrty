@@ -221,8 +221,55 @@ The whole change lands in one pull request, opened after group 14's final gate (
 - [x] 14.1 Whole-branch review against every spec requirement this change covers, by a fresh reviewer
   that did not write the code, findings fixed in fresh dispatches. Verify: the review reports no open
   finding.
-- [ ] 14.2 Full suite after the last code edit: `make check` and `make spec-check`, and the test leg on
+- [ ] 14.2 Full suite after the last code edit, so after group 15: `make check` and `make spec-check`, and the test leg on
   PostgreSQL 15. Verify: each exits 0, with the output read by the main session.
+
+## 15. Review follow-ups (code review, `/opsx:verify` and security review, triaged 2026-11-23)
+
+Each defect task is test-first: its red test fails on the code before the fix for the stated reason.
+Each coverage task first confirms the gap against the current tests; a scenario found already covered
+is recorded with its test name instead of rewritten.
+
+- [x] 15.1 An account its loader returns with an empty username is refused on every path, email login
+  on or off (spec "An account without a username is refused"; design D18, F72). `identity.UserLoader`
+  states that a user carries its username; the CHANGELOG marks it breaking. Verify:
+  `TestPassword_ResolveRefusesAccountWithoutUsername` includes the email-off row; `go doc ./identity
+  UserLoader` shows the requirement.
+- [x] 15.2 Re-sending a user's current email, equal ignoring case, keeps its verification; a different
+  email clears it. The store compares under its row lock, and the user store port states the contract
+  (spec "An email keeps its verification only while it is unchanged"; design D16b, F79). Red: the
+  conformance case re-sending the same email loses the verification. Verify: test/admin suite on the
+  three stores, admin unit tests.
+- [x] 15.3 `RetirePassword` locks the user row FOR UPDATE, so two password changes for one user in
+  callers' transactions serialise instead of deadlocking (design F76, F78). Red: two concurrent
+  retire-then-set transactions abort one with a deadlock. Verify: the per-store race tests, both
+  `RetireRacesDelete` interleavings still pass.
+- [x] 15.4 A verification time on a user with no email is refused with `ErrInvalidInput` (spec "An email
+  keeps its verification only while it is unchanged"; design F80). Red: the conformance case stores it.
+  Verify: test/admin suite.
+- [x] 15.5 `event.Event.Target` documents the role switch's target as the role now active (spec
+  "Role switches and identifier conflicts are reported"); the stores use `admin.FieldID` instead of a
+  private copy. Verify: `go doc ./event Event`; the store packages build and their suites pass.
+- [x] 15.6 Coverage: the identifier-conflict event names no user and does not contain the identifier
+  (authentication "Conflicting data"); an unknown identifier reaches the lockout threshold after five
+  failures (security-policy "Unknown identifier"). Verify: scoped `authenticate` and `httpsec` runs.
+- [x] 15.7 Coverage: any-of with only one privilege held at the authorizer (authorization "Any-of");
+  empty all-of scopes with a service principal ("Empty all-of scopes"); the next request sees a grant
+  replaced through `admin.Grants.Replace` ("Next request sees a change"). Verify: scoped `authorize`
+  run and the end-to-end test.
+- [x] 15.8 Coverage: an inactive user is returned by the shared administration suite that scrty's three
+  stores run (default-identity-store "Inactive user is returned, not hidden"; the identity suite's fixture
+  cannot deactivate a user, and the scenario concerns scrty's own store); a deleted user cannot log in, end to end; a rename keeps
+  grants and assignments and lists under the new display name; role and attribute filters exclude a
+  deleted user; 120 users page through the service; an undated primary grant authorizes
+  (security-administration scenarios). Verify: test/identity, test/admin and end-to-end runs.
+- [x] 15.9 `make check` runs the administration suite's guard tests (`TestAdminSuiteIsLoadBearing`,
+  `TestBrokenAdminStore`) under the `admin_stub` tag, and not `TestStubConformance`, which is meant to
+  fail. Verify: `make check` runs them, and a deliberately broken guard row fails it.
+- [x] 15.10 Documentation: the CHANGELOG states that the administration services do not authorize and
+  their routes must be guarded; the cursor's godoc and the README state that a cursor is unsigned and
+  that editing it only moves where a list the caller can already read starts. Verify: `go doc ./admin`
+  and a read of the README section.
 
 ## Workflow follow-up
 

@@ -295,6 +295,12 @@ func (s *IdentityStore) UpdateUser(
 			return admin.User{}, invalidInput(op, "the email holds text that cannot be stored")
 		}
 		columns, values = append(columns, pgschema.ColumnEmail), append(values, emptyNull(*change.Email))
+		if change.EmailVerifiedAt == nil {
+			// The statement keeps the verification only for the stored
+			// address, compared under the row lock it runs in.
+			columns = append(columns, pgschema.ColumnEmailVerifiedAtIfSameEmail)
+			values = append(values, emptyNull(*change.Email))
+		}
 	}
 	if change.EmailVerifiedAt != nil {
 		columns, values = append(columns, pgschema.ColumnEmailVerifiedAt), append(values, nullTs(*change.EmailVerifiedAt))
@@ -316,6 +322,9 @@ func (s *IdentityStore) UpdateUser(
 		cur, err := lockAdminUser(q, op, uid, version)
 		if err != nil {
 			return err
+		}
+		if verifiesNoEmail(change, cur) {
+			return invalidInput(op, "an email verification time is set with no email to verify")
 		}
 		if err := checkOrganization(q, op, newOrg); err != nil {
 			return err
@@ -912,6 +921,20 @@ type lockedUser struct {
 	email    *string
 	password []byte
 	active   bool
+}
+
+// verifiesNoEmail reports whether change sets a verification time while the
+// user is left with no email to verify: the change names an empty email, or
+// names none and u, the locked row, holds none.
+func verifiesNoEmail(change admin.UserChange, u lockedUser) bool {
+	if change.EmailVerifiedAt == nil || change.EmailVerifiedAt.IsZero() {
+		return false
+	}
+	if change.Email != nil {
+		return *change.Email == ""
+	}
+
+	return u.email == nil || *u.email == ""
 }
 
 // lockAdminUser locks the live user uid and checks that its version is

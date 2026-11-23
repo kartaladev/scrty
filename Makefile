@@ -137,6 +137,9 @@ lint: $(BIN)/golangci-lint
 
 test:
 	@set -eu -o pipefail; for m in $(MODULES); do (cd "$$m" && go test -race -count=1 ./...); done
+	@# The administration suite's guard tests sit behind the admin_stub tag (TestStubConformance, its
+	@# deliberate red step, shares the tag and is left out).
+	@cd test && go test -race -count=1 -tags admin_stub -run '^(TestAdminSuiteIsLoadBearing|TestBrokenAdminStore)$$' ./admin/
 
 # TestPGLimiter_PruneUnderRecords measures lock waits caused by the prune and asserts
 # no gap between its samples reaches the operation timeout. Inside `go test ./...`
