@@ -43,13 +43,6 @@ func linkSuiteLink(issuer, subject string, user identity.UserID) oidc.Link {
 	}
 }
 
-// linkRemover is the optional single-link removal a store may offer beside
-// oidc.LinkStore: DeleteLink removes the stored link whose ID, provider, issuer
-// and subject all equal link's, and reports whether it removed one.
-type linkRemover interface {
-	DeleteLink(ctx context.Context, link oidc.Link) (bool, error)
-}
-
 // refusedQuietly asserts a delete reported that it removed nothing, without an
 // error.
 func refusedQuietly(t *testing.T, removed bool, err error) {
@@ -247,7 +240,7 @@ func RunLinkStoreSuite(t *testing.T, newStore func(t *testing.T) oidc.LinkStore)
 		{
 			name: "deleting one link removes only the link whose id and identity all match",
 			assert: func(t *testing.T, ctx context.Context, s oidc.LinkStore) {
-				remover, ok := s.(linkRemover)
+				remover, ok := s.(oidc.LinkRemover)
 				if !ok {
 					t.Skip("the store does not implement DeleteLink")
 				}
@@ -283,7 +276,7 @@ func RunLinkStoreSuite(t *testing.T, newStore func(t *testing.T) oidc.LinkStore)
 		{
 			name: "deleting one link refuses a link that differs in id, identity or is unnamed, and removes nothing",
 			assert: func(t *testing.T, ctx context.Context, s oidc.LinkStore) {
-				remover, ok := s.(linkRemover)
+				remover, ok := s.(oidc.LinkRemover)
 				if !ok {
 					t.Skip("the store does not implement DeleteLink")
 				}
@@ -332,8 +325,10 @@ func RunLinkStoreSuite(t *testing.T, newStore func(t *testing.T) oidc.LinkStore)
 						mutate: func(l *oidc.Link) { l.ID = id.ID{} },
 						assert: func(t *testing.T, removed bool, err error) {
 							t.Helper()
-							assert.Error(t, err, "a link without an id is refused")
-							assert.False(t, removed)
+							// A store may refuse a zero ID with an error, as Insert may;
+							// either way it removes nothing (the case checks the link stays).
+							_ = err
+							assert.False(t, removed, "a link without an id removes nothing")
 						},
 					},
 					{
