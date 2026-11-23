@@ -154,8 +154,8 @@ const (
 // New fails with an error matching ErrConfig, naming this option, for a lifetime under a
 // minute or over 30 minutes, zero included: zero is no way to ask for the default. Given
 // twice, the last one wins.
-func WithDeviceLifetime(d time.Duration) DeviceOption {
-	return func(c *deviceConfig) { c.lifetime, c.lifetimeSet = d, true }
+func WithDeviceLifetime(lifetime time.Duration) DeviceOption {
+	return func(c *deviceConfig) { c.lifetime, c.lifetimeSet = lifetime, true }
 }
 
 // WithDevicePollInterval replaces how long a device must wait between polls of the token
@@ -165,8 +165,8 @@ func WithDeviceLifetime(d time.Duration) DeviceOption {
 // New fails with an error matching ErrConfig, naming this option, for an interval under a
 // second or over a minute, zero included, and for one that is not strictly below the
 // lifetime. Given twice, the last one wins.
-func WithDevicePollInterval(d time.Duration) DeviceOption {
-	return func(c *deviceConfig) { c.interval, c.intervalSet = d, true }
+func WithDevicePollInterval(interval time.Duration) DeviceOption {
+	return func(c *deviceConfig) { c.interval, c.intervalSet = interval, true }
 }
 
 // WithDeviceAuthorization enables the device authorization grant (RFC 8628). The
