@@ -50,6 +50,14 @@ type linkRemover interface {
 	DeleteLink(ctx context.Context, link oidc.Link) (bool, error)
 }
 
+// refusedQuietly asserts a delete reported that it removed nothing, without an
+// error.
+func refusedQuietly(t *testing.T, removed bool, err error) {
+	t.Helper()
+	require.NoError(t, err, "a link that is not stored is not an error")
+	assert.False(t, removed)
+}
+
 // RunLinkStoreSuite checks a LinkStore against the contract the library's
 // broker relies on: a link is found only by provider, issuer and subject
 // together; an insert of a key that is already linked is refused with
@@ -224,8 +232,9 @@ func RunLinkStoreSuite(t *testing.T, newStore func(t *testing.T) oidc.LinkStore)
 				require.NoError(t, err)
 				assert.Empty(t, got, "an empty reference lists nothing")
 
-				_, err = lister.ListByUser(ctx, "u-7\x00")
-				assert.NoError(t, err, "a reference that cannot be stored matches nothing")
+				got, err = lister.ListByUser(ctx, "u-7\x00")
+				require.NoError(t, err, "a reference that cannot be stored matches nothing")
+				assert.Empty(t, got, "a reference that cannot be stored lists nothing")
 
 				cancelled, cancel := context.WithCancel(ctx)
 				cancel()
@@ -269,6 +278,79 @@ func RunLinkStoreSuite(t *testing.T, newStore func(t *testing.T) oidc.LinkStore)
 				removed, err = remover.DeleteLink(ctx, corp)
 				require.NoError(t, err, "an absent link is not an error")
 				assert.False(t, removed)
+			},
+		},
+		{
+			name: "deleting one link refuses a link that differs in id, identity or is unnamed, and removes nothing",
+			assert: func(t *testing.T, ctx context.Context, s oidc.LinkStore) {
+				remover, ok := s.(linkRemover)
+				if !ok {
+					t.Skip("the store does not implement DeleteLink")
+				}
+
+				corp := linkSuiteLink(linkSuiteIssuer, "s-1", "u-7")
+				require.NoError(t, s.Insert(ctx, corp))
+
+				// intact asserts the stored link is still there, unchanged.
+				intact := func(t *testing.T) {
+					t.Helper()
+					kept, err := s.FindByExternal(ctx, "corp", linkSuiteIssuer, "s-1")
+					require.NoError(t, err, "nothing was removed")
+					assert.Equal(t, corp, *kept, "the stored link is unchanged")
+					if lister, ok := s.(oidc.LinkLister); ok {
+						got, err := lister.ListByUser(ctx, "u-7")
+						require.NoError(t, err)
+						assert.Equal(t, []oidc.Link{corp}, got, "the user's links are unchanged")
+					}
+				}
+
+				otherID := linkSuiteLink(linkSuiteIssuer, "s-1", "u-7").ID
+				require.NotEqual(t, corp.ID, otherID)
+
+				tests := []struct {
+					name   string
+					mutate func(l *oidc.Link)
+					assert func(t *testing.T, removed bool, err error)
+				}{
+					{
+						name:   "different non-zero id, same provider issuer and subject",
+						mutate: func(l *oidc.Link) { l.ID = otherID },
+						assert: refusedQuietly,
+					},
+					{
+						name:   "different provider",
+						mutate: func(l *oidc.Link) { l.Provider = "partner" },
+						assert: refusedQuietly,
+					},
+					{
+						name:   "different issuer",
+						mutate: func(l *oidc.Link) { l.Issuer = "https://other.example" },
+						assert: refusedQuietly,
+					},
+					{
+						name:   "zero id",
+						mutate: func(l *oidc.Link) { l.ID = id.ID{} },
+						assert: func(t *testing.T, removed bool, err error) {
+							t.Helper()
+							assert.Error(t, err, "a link without an id is refused")
+							assert.False(t, removed)
+						},
+					},
+					{
+						name:   "subject that cannot be stored",
+						mutate: func(l *oidc.Link) { l.Subject = "s-1\x00" },
+						assert: refusedQuietly,
+					},
+				}
+				for _, tt := range tests {
+					t.Run(tt.name, func(t *testing.T) {
+						probe := corp
+						tt.mutate(&probe)
+						removed, err := remover.DeleteLink(ctx, probe)
+						tt.assert(t, removed, err)
+						intact(t)
+					})
+				}
 			},
 		},
 		{
