@@ -787,7 +787,16 @@ if err != nil {
 
 // The refresh token (offline_access) keeps the CLI signed in. TokenSource refreshes it.
 client := conf.Client(ctx, token)
-res, err := client.Get(issuer + "/oauth2/userinfo")
+req, err := http.NewRequestWithContext(ctx, http.MethodGet, issuer+"/oauth2/userinfo", nil)
+if err != nil {
+    log.Fatal(err)
+}
+res, err := client.Do(req)
+if err != nil {
+    log.Fatal(err)
+}
+defer func() { _ = res.Body.Close() }()
+fmt.Println(res.StatusCode == http.StatusOK)
 ```
 
 This is `Example_deviceCLI` in the `test` module, which the build compiles, so it cannot drift from
@@ -803,6 +812,22 @@ has a fixed contract with the chain:
   `WithOIDCProviderPath`). The endpoint is not exempt from the cross-site check, so the form belongs
   to your page's own origin. It reads the code however the user typed it: case, spaces and dashes do
   not matter.
+- **It renders the form, and never redirects to the code-entry endpoint.** The entry page is a page,
+  not a hop. A GET to the endpoint that carries a code is sent back to the entry page (see the next
+  point), so a page that sends the browser on to the endpoint would loop between the two. The chain
+  refuses, at construction, an entry page whose path is the endpoint's, under any spelling.
+- **A link from another site claims nothing.** A GET to the code-entry endpoint with `user_code`
+  claims the code only when the browser reports the navigation as the user's own: `Sec-Fetch-Site` is
+  `same-origin` or `none`, or the header is absent (a client that is no browser, or an older one).
+  Any other GET, a link from another site or from a sibling site (`same-site`) among them, claims and
+  charges nothing, sets no cookie, and is answered with a 303 to your entry page with `user_code` in
+  the query. The user then confirms the code on your page and submits it as a POST. This holds with or
+  without CSRF protection, and has no option, because a link must never be able to claim a code.
+- **A user code is in the URL, so it is in logs.** The code appears in the query of the entry page
+  and of `verification_uri_complete`, and so in access logs, browser history and the `Referer`
+  header of anything your entry page loads or links to. Treat it as short-lived and low-value but not
+  secret: keep it out of your logs and analytics where you can, set `Referrer-Policy: no-referrer`
+  on the entry page, and load no third-party resources there.
 - **It sends the browser to sign in.** The endpoint answers 303: to your login page, or to your
   consent page when the browser already has a session, with the handle as `req` as for any
   authorization request. Your pages resume it as they do for the code flow.
@@ -851,8 +876,19 @@ request as visible as they can and leave the rest to you:
   `New` fails without the key, and **every replica must be given the same one**, or none finds a
   code another issued. It is 32 bytes or more, from your configuration, and serves this purpose
   alone. Rotating it ends the codes in flight and nothing else.
-- **The migration.** A durable store needs the security-state migration, which adds the device
-  authorization table and the new grant columns.
+- **The chain's throttle settings reach code entry.** The provider throttles code entry itself, and
+  `httpsec.EnableOIDCProvider` hands it the chain's `WithRateLimiterFactory` (under namespace
+  `oidc-device-entry`) and `WithIPv6SourcePrefix`, so entry is counted where the chain's other
+  throttles are and IPv6 sources are keyed the same way. Two chains over one provider may share one
+  factory, and their entries count together. A second chain with a different factory, namespace or
+  prefix fails `New` rather than split the counts. A limiter you give with
+  `WithUserCodeEntryLimiter`, or a keyer with `WithUserCodeEntryKeyer`, is kept as you gave it.
+- **Durable stores.** `sqlstore.NewDeviceAuthorizationStore`, `pgxstore.NewDeviceAuthorizationStore` and
+  `gormstore.NewDeviceAuthorizationStore` keep device authorizations in PostgreSQL. Pass one to
+  `WithDeviceAuthorizationStore`, with `WithUserCodeKey`.
+- **The migration.** A durable store needs the security-state migration
+  `20261122000000_oidc_provider_device`, which adds the `op_device_authorizations` table and the new
+  grant columns. Apply it before starting a provider over a durable store.
 - **Sweeping.** Records are swept by the `oidc-provider.device-authorizations` expiry task. Records
   in flight are lost with an in-memory store, and the device starts again.
 

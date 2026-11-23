@@ -408,9 +408,9 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // of them is refused as ErrCrossSiteRequest (403) before its handler runs.
 //
 // A GET to code entry carrying user_code claims it only when the browser reports the
-// navigation as its own: one Sec-Fetch-Site line of same-origin, same-site or none, or
-// no Sec-Fetch-Site at all (a client that is no browser, or an older browser). Any other
-// GET, a link from another site among them, claims and charges nothing, sets no cookie,
+// navigation as its own: one Sec-Fetch-Site line of same-origin or none, or no
+// Sec-Fetch-Site at all (a client that is no browser, or an older browser). Any other
+// GET, a link from another site or a sibling site (same-site) among them, claims and charges nothing, sets no cookie,
 // and is answered with a 303 to the consumer's code-entry page
 // (oidcprovider.Provider.DeviceEntryURL) with user_code set, so the user confirms the
 // code there and submits it as a POST, under the check above. This gate holds with or

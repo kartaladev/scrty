@@ -61,7 +61,14 @@ type DeviceAuthorizationStore struct {
 
 // NewDeviceAuthorizationStore returns a durable store on pool. It honours WithTxResolver and
 // refuses any other option: a record arrives with its own identifier, and every time it
-// judges by is a caller's.
+// judges by is a caller's. Without WithTxResolver it uses the transaction attached to the
+// operation's context with WithTx, and pool otherwise.
+//
+// The provider's default is an in-memory store (oidcprovider.MemoryDeviceAuthorizationStore),
+// lost with the process; pass this one to oidcprovider.WithDeviceAuthorizationStore to replace
+// it. The provider then also needs oidcprovider.WithUserCodeKey, the same on every replica,
+// or New fails. The table comes from the security-state migration
+// 20261122000000_oidc_provider_device.
 func NewDeviceAuthorizationStore(pool *pgxpool.Pool, opts ...Option) (*DeviceAuthorizationStore, error) {
 	c, err := newConfig(pool, opts)
 	if err != nil {

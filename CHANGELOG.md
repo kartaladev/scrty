@@ -19,7 +19,8 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
   application's own code-entry page. A client then lists `oidcprovider.GrantDeviceCode`.
   - The chain serves the device authorization and code-entry endpoints when the grant is enabled.
   - The device options are `WithDeviceLifetime` (default 10 minutes), `WithDevicePollInterval`
-    (default 5 seconds), `WithUserCodeFormat`, `WithUserCodeKey`, `WithUserCodeEntryLimiter` and
+    (default 5 seconds), `WithUserCodeFormat`, `WithUserCodeKey`, `WithUserCodeEntryLimiter`,
+    `WithUserCodeEntryKeyer` (how code-entry sources are keyed, IPv6 by /64 by default) and
     `WithDeviceAuthorizationStore`. `WithUserCodeKey` is required with a durable store, and must be
     the same on every replica.
   - `Client.DeviceCompleteURI` (default off) lets a client receive `verification_uri_complete`.
@@ -28,11 +29,29 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
     `offline_access` ends with its sign-in.
   - Consent is always asked for a device request, and the consent page reads a `Device` view of it.
 - `oidcprovider.DeviceAuthorizationStore`, the port that keeps device authorizations, and
-  `MemoryDeviceAuthorizationStore`, the default.
+  `MemoryDeviceAuthorizationStore`, the default. `sqlstore.NewDeviceAuthorizationStore`,
+  `pgxstore.NewDeviceAuthorizationStore` and `gormstore.NewDeviceAuthorizationStore` keep them in
+  PostgreSQL, across replicas.
+- `Provider.UseUserCodeEntryLimiter`, which hands the provider the chain's rate-limiter factory and
+  source keying, and `Provider.DeviceEntryURL`, the consumer's code-entry page. The chain calls the first
+  as it is built, so its `WithRateLimiterFactory` and `WithIPv6SourcePrefix` reach code entry, and two
+  chains over one provider with the same factory count entries together. A different factory,
+  namespace or prefix fails `New` with `ErrConfig`.
+- The chain's device endpoints, served only when the grant is on: `OIDCDeviceAuthorization`
+  (`/oauth2/device-authorization`) and `OIDCDeviceEntry` (`/oauth2/device`), with the operations
+  `OperationOAuth2DeviceAuthorization` and `OperationOAuth2DeviceEntry`, and the options
+  `WithOIDCDeviceAuthorizationLimiter`, `WithOIDCDeviceAuthorizationBodyLimit` and
+  `WithOIDCDeviceEntryBodyLimit`. A throttled code entry answers `ErrOIDCThrottled` (429).
+- A GET gate at code entry: a GET carrying `user_code` claims it only when `Sec-Fetch-Site` is
+  `same-origin` or `none`, or absent. Any other, a link from another site or from a sibling site
+  among them, claims nothing and is sent with 303 to the consumer's entry page with the code
+  prefilled. A code-entry page that would make that redirect loop fails `New`.
+- The authorization server metadata lists `device_authorization_endpoint` and the device grant in
+  `grant_types_supported` when the grant is on. The device endpoints carry no CORS headers.
 - `Provider.AuthorizeDevice` and `Provider.EnterUserCode`, for an application that serves the
   endpoints itself. The throttle on code entry lives inside `EnterUserCode`.
-- A security-state migration for the device authorization table and the new grant columns. Apply it
-  before using a durable store.
+- The security-state migration `20261122000000_oidc_provider_device`, for the device authorization
+  table and the new grant columns. Apply it before using a durable store.
 - Seven events: `DeviceAuthorizationIssued`, `DeviceAuthorizationClaimed`,
   `DeviceAuthorizationApproved`, `DeviceAuthorizationDenied`, `DeviceCodeExchanged`,
   `DeviceCodeReplayed` and `UserCodeEntryThrottled`. None carries a code.
