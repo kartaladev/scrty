@@ -164,7 +164,8 @@ type LinkRemover interface {
 	// subject all equal link's, and reports whether it removed one. No other
 	// link is touched. The other fields of link are not compared. A link
 	// that is not stored, or is stored under another ID, is no error: it
-	// returns false and a nil error.
+	// returns false and a nil error. A store may refuse a zero ID with an
+	// error, as Insert may; it never removes a link for one.
 	DeleteLink(ctx context.Context, link Link) (bool, error)
 }
 
