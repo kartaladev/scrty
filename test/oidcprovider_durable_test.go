@@ -333,13 +333,13 @@ func familyOf(t *testing.T, refreshToken string) id.ID {
 func (e *durEnv) heads(t *testing.T, family id.ID) int {
 	t.Helper()
 
-	return countRows(t, e.conn.DB, "op_refresh_tokens", "family_id = '"+family.String()+"' AND superseded_at IS NULL")
+	return countRows(t, e.conn.DB, "scrty_op_refresh_tokens", "family_id = '"+family.String()+"' AND superseded_at IS NULL")
 }
 
 func (e *durEnv) lineageRows(t *testing.T, family id.ID) int {
 	t.Helper()
 
-	return countRows(t, e.conn.DB, "op_refresh_tokens", "family_id = '"+family.String()+"'")
+	return countRows(t, e.conn.DB, "scrty_op_refresh_tokens", "family_id = '"+family.String()+"'")
 }
 
 // dumpDatabase is every row of every table as text, bytea columns in hex, by table name.
@@ -628,7 +628,7 @@ func TestOIDCProvider_Durable(t *testing.T) {
 				for _, issued := range []durIssued{web, opaque} {
 					family := familyOf(t, issued.tokens.RefreshToken)
 					assert.Zero(t, e.lineageRows(t, family), "the family is deleted")
-					assert.Equal(t, 1, countRows(t, e.conn.DB, "op_grants", "family = '"+family.String()+"' AND revoked"),
+					assert.Equal(t, 1, countRows(t, e.conn.DB, "scrty_op_grants", "family = '"+family.String()+"' AND revoked"),
 						"the grant row is marked revoked")
 				}
 			},
@@ -773,7 +773,7 @@ func TestOIDCProvider_Durable(t *testing.T) {
 				requireRefusal(t, err, oidcprovider.CodeInvalidToken)
 				e.requireRefreshRefused(t, second, durWeb, refreshed.RefreshToken)
 				assert.Zero(t, e.lineageRows(t, family), "the family is deleted")
-				assert.Equal(t, 1, countRows(t, e.conn.DB, "op_grants", "family = '"+family.String()+"' AND revoked"),
+				assert.Equal(t, 1, countRows(t, e.conn.DB, "scrty_op_grants", "family = '"+family.String()+"' AND revoked"),
 					"the grant row is marked revoked")
 			},
 		},
@@ -847,11 +847,11 @@ func TestOIDCProvider_Durable(t *testing.T) {
 				// The consents and clients are in rows the scan reads: it finds their keys, which
 				// are no secrets, in their tables.
 				dump := dumpDatabase(t, e.conn.DB)
-				assert.Positive(t, countRows(t, e.conn.DB, "op_consents", ""), "op_consents holds rows")
-				assert.Positive(t, countRows(t, e.conn.DB, "op_clients", ""), "op_clients holds rows")
-				assert.Contains(t, dump["op_consents"], string(durUser), "the scan reads the consents")
+				assert.Positive(t, countRows(t, e.conn.DB, "scrty_op_consents", ""), "op_consents holds rows")
+				assert.Positive(t, countRows(t, e.conn.DB, "scrty_op_clients", ""), "op_clients holds rows")
+				assert.Contains(t, dump["scrty_op_consents"], string(durUser), "the scan reads the consents")
 				for _, c := range []durClient{durWeb, durOpaque} {
-					assert.Contains(t, dump["op_clients"], c.id, "the scan reads the clients")
+					assert.Contains(t, dump["scrty_op_clients"], c.id, "the scan reads the clients")
 					// A client's secret is kept as a digest, so the secret itself is a credential too.
 					credentials[c.id+" client secret"] = c.secret
 				}
@@ -859,18 +859,18 @@ func TestOIDCProvider_Durable(t *testing.T) {
 				// Every table that holds a credential is read, too: each is found to hold a row, by a
 				// key that is no secret. The opaque client's access token is the only one stored.
 				for table, key := range map[string]string{
-					"op_refresh_tokens":      families[durWeb.id],
-					"op_access_tokens":       families[durOpaque.id],
-					"op_authorization_codes": families[durWeb.id],
-					"op_grants":              families[durOpaque.id],
-					"op_pending_requests":    string(durUser),
-					"op_browser_sessions":    string(durUser),
+					"scrty_op_refresh_tokens":      families[durWeb.id],
+					"scrty_op_access_tokens":       families[durOpaque.id],
+					"scrty_op_authorization_codes": families[durWeb.id],
+					"scrty_op_grants":              families[durOpaque.id],
+					"scrty_op_pending_requests":    string(durUser),
+					"scrty_op_browser_sessions":    string(durUser),
 				} {
 					assert.Contains(t, dump[table], key, "the scan reads %s", table)
 				}
 				// No client here authenticates by assertion, so this table is empty at scan time.
 				// The scan still names it, which a scan that skipped it would not.
-				assert.Contains(t, dump, "op_client_assertions", "the scan reads the assertion identifiers")
+				assert.Contains(t, dump, "scrty_op_client_assertions", "the scan reads the assertion identifiers")
 
 				for _, hit := range findCredentials(dump, credentials) {
 					assert.Failf(t, "a credential is kept in clear", "table %s holds the %s", hit.table, hit.label)

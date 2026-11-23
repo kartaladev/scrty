@@ -30,7 +30,7 @@ func ExistsCtx(ctx context.Context, t *testing.T, raw *sql.DB, query string, arg
 }
 
 // KeyRowExists selects whether the API key $1 is committed.
-const KeyRowExists = `SELECT EXISTS (SELECT 1 FROM api_keys WHERE id = $1)`
+const KeyRowExists = `SELECT EXISTS (SELECT 1 FROM scrty_api_keys WHERE id = $1)`
 
 // APIKeyPresent reports whether API key n (see APIKey) is committed, read out
 // of band.
@@ -44,7 +44,7 @@ func APIKeyPresent(t *testing.T, raw *sql.DB, n int) bool {
 func AttemptIDs(ctx context.Context, t *testing.T, db *sql.DB, username string) []string {
 	t.Helper()
 
-	rows, err := db.QueryContext(ctx, `SELECT id::text FROM login_attempts WHERE username = $1`, username)
+	rows, err := db.QueryContext(ctx, `SELECT id::text FROM scrty_login_attempts WHERE username = $1`, username)
 	require.NoError(t, err)
 	defer func() { _ = rows.Close() }()
 
@@ -66,7 +66,7 @@ func SessionRow(ctx context.Context, t *testing.T, db *sql.DB, sid string) strin
 
 	var row sql.NullString
 	err := db.QueryRowContext(ctx,
-		`SELECT row_to_json(s)::text FROM sessions s WHERE id_digest = $1`, Digest(sid)).Scan(&row)
+		`SELECT row_to_json(s)::text FROM scrty_sessions s WHERE id_digest = $1`, Digest(sid)).Scan(&row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ""
 	}
@@ -81,7 +81,7 @@ func SecretColumn(ctx context.Context, t *testing.T, db *sql.DB, user identity.U
 
 	var s string
 	require.NoError(t, db.QueryRowContext(ctx,
-		`SELECT secret FROM mfa_enrolments WHERE user_id = $1`, string(user)).Scan(&s))
+		`SELECT secret FROM scrty_mfa_enrolments WHERE user_id = $1`, string(user)).Scan(&s))
 
 	return s
 }
@@ -90,7 +90,7 @@ func SecretColumn(ctx context.Context, t *testing.T, db *sql.DB, user identity.U
 func SetSecretColumn(ctx context.Context, t *testing.T, db *sql.DB, user identity.UserID, secret string) {
 	t.Helper()
 
-	_, err := db.ExecContext(ctx, `UPDATE mfa_enrolments SET secret = $2 WHERE user_id = $1`, string(user), secret)
+	_, err := db.ExecContext(ctx, `UPDATE scrty_mfa_enrolments SET secret = $2 WHERE user_id = $1`, string(user), secret)
 	require.NoError(t, err)
 }
 
@@ -100,7 +100,7 @@ func PrivateColumn(ctx context.Context, t *testing.T, db *sql.DB, kid string) []
 
 	var b []byte
 	require.NoError(t, db.QueryRowContext(ctx,
-		`SELECT private_key FROM signing_keys WHERE kid = $1`, kid).Scan(&b))
+		`SELECT private_key FROM scrty_signing_keys WHERE kid = $1`, kid).Scan(&b))
 
 	return b
 }

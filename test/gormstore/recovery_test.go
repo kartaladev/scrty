@@ -68,7 +68,7 @@ func TestRecoveryCodeStore(t *testing.T) {
 
 	t.Run("gorm", func(t *testing.T) {
 		storetest.RunRecoveryCodeStoreSuite(t, func(t *testing.T, _ clock.Clock) recovery.CodeStore {
-			return newRecoveryCodeStore(t, emptied(t, db, "recovery_codes"))
+			return newRecoveryCodeStore(t, emptied(t, db, "scrty_recovery_codes"))
 		})
 	})
 }
@@ -80,7 +80,7 @@ func TestRecoveryRecordStore(t *testing.T) {
 
 	t.Run("gorm", func(t *testing.T) {
 		storetest.RunRecoveryRecordStoreSuite(t, func(t *testing.T, _ clock.Clock) recovery.RecordStore {
-			return newRecoveryRecordStore(t, emptied(t, db, "account_recoveries"))
+			return newRecoveryRecordStore(t, emptied(t, db, "scrty_account_recoveries"))
 		})
 	})
 }
@@ -120,7 +120,7 @@ func spentAt(ctx context.Context, t *testing.T, db *sql.DB, user identity.UserID
 
 	var at sql.NullTime
 	require.NoError(t, db.QueryRowContext(ctx,
-		`SELECT spent_at FROM recovery_codes WHERE user_id = $1 AND code_hash = $2`, string(user), hash).Scan(&at))
+		`SELECT spent_at FROM scrty_recovery_codes WHERE user_id = $1 AND code_hash = $2`, string(user), hash).Scan(&at))
 
 	return at
 }
@@ -193,7 +193,7 @@ func TestRecoveryCodeStore_Rows(t *testing.T) {
 					created time.Time
 				)
 				require.NoError(t, db.conn.DB.QueryRowContext(ctx,
-					`SELECT id, created_at FROM recovery_codes WHERE user_id = $1`, string(user)).Scan(&got, &created))
+					`SELECT id, created_at FROM scrty_recovery_codes WHERE user_id = $1`, string(user)).Scan(&got, &created))
 				assert.Equal(t, want, got)
 				assert.True(t, recoveryAt.Equal(created), "created_at is %v, want %v", created, recoveryAt)
 			},
@@ -313,7 +313,7 @@ func recoveryRow(ctx context.Context, t *testing.T, db *sql.DB, rid id.ID) (prov
 	t.Helper()
 
 	require.NoError(t, db.QueryRowContext(ctx,
-		`SELECT proven, reported FROM account_recoveries WHERE id = $1`, rid).Scan(&proven, &reported))
+		`SELECT proven, reported FROM scrty_account_recoveries WHERE id = $1`, rid).Scan(&proven, &reported))
 
 	return proven, reported
 }
@@ -426,7 +426,7 @@ func TestRecoveryRecordStore_Rows(t *testing.T) {
 			},
 			assert: func(t *testing.T, ctx context.Context, s *gormstore.RecoveryRecordStore, r recovery.Record, err error) {
 				require.NoError(t, err)
-				_, err = db.conn.DB.ExecContext(ctx, `UPDATE account_recoveries SET proven = 'no-colon' WHERE id = $1`, r.ID)
+				_, err = db.conn.DB.ExecContext(ctx, `UPDATE scrty_account_recoveries SET proven = 'no-colon' WHERE id = $1`, r.ID)
 				require.NoError(t, err)
 
 				got, err := s.Find(ctx, r.ID)
@@ -574,8 +574,8 @@ func TestRecoveryStores_Statements(t *testing.T) {
 	require.NoError(t, seedRecords.Insert(t.Context(), pending))
 
 	const (
-		spend    = `UPDATE "recovery_codes" SET "spent_at"=$1 WHERE user_id = $2 AND code_hash = $3 AND spent_at IS NULL`
-		complete = `UPDATE "account_recoveries" SET "completed_at"=$1 WHERE id = $2 AND completed_at IS NULL AND cancelled_at IS NULL AND not_before <= $3`
+		spend    = `UPDATE "scrty_recovery_codes" SET "spent_at"=$1 WHERE user_id = $2 AND code_hash = $3 AND spent_at IS NULL`
+		complete = `UPDATE "scrty_account_recoveries" SET "completed_at"=$1 WHERE id = $2 AND completed_at IS NULL AND cancelled_at IS NULL AND not_before <= $3`
 	)
 
 	type testCase struct {
@@ -614,9 +614,9 @@ func TestRecoveryStores_Statements(t *testing.T) {
 			expect: []string{
 				beginReadCommittedStmt,
 				"SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-				`DELETE FROM "recovery_codes" WHERE user_id = $1`,
-				`INSERT INTO "recovery_codes" ("id","user_id","code_hash","created_at","spent_at") VALUES ($1,$2,$3,$4,$5) ON CONFLICT ("user_id","code_hash") DO NOTHING`,
-				`INSERT INTO "recovery_codes" ("id","user_id","code_hash","created_at","spent_at") VALUES ($1,$2,$3,$4,$5) ON CONFLICT ("user_id","code_hash") DO NOTHING`,
+				`DELETE FROM "scrty_recovery_codes" WHERE user_id = $1`,
+				`INSERT INTO "scrty_recovery_codes" ("id","user_id","code_hash","created_at","spent_at") VALUES ($1,$2,$3,$4,$5) ON CONFLICT ("user_id","code_hash") DO NOTHING`,
+				`INSERT INTO "scrty_recovery_codes" ("id","user_id","code_hash","created_at","spent_at") VALUES ($1,$2,$3,$4,$5) ON CONFLICT ("user_id","code_hash") DO NOTHING`,
 				"COMMIT",
 			},
 		},

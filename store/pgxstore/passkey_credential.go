@@ -17,7 +17,7 @@ import (
 	"github.com/kartaladev/scrty/store/seal"
 )
 
-// PasskeyCredentialStore keeps passkey credentials in the passkey_credentials
+// PasskeyCredentialStore keeps passkey credentials in the scrty_passkey_credentials
 // table the migrate package creates. It implements passkey.CredentialStore,
 // and is safe for concurrent use.
 //

@@ -108,7 +108,7 @@ func (c *config) queryIDs(ctx context.Context, op, query string, args ...any) ([
 	return out, nil
 }
 
-// PendingRequestStore keeps parked requests in the op_pending_requests table. It
+// PendingRequestStore keeps parked requests in the scrty_op_pending_requests table. It
 // implements oidcprovider.PendingRequestStore, and is safe for concurrent use. A stage
 // is spent by one conditional update, so of callers racing on a record, on this process
 // or on another replica, exactly one moves it.
@@ -169,7 +169,7 @@ func (s *PendingRequestStore) DeleteExpired(ctx context.Context, before time.Tim
 }
 
 // CodeStore keeps the request data of authorization codes in the
-// op_authorization_codes table. It implements oidcprovider.CodeStore, and is safe for
+// scrty_op_authorization_codes table. It implements oidcprovider.CodeStore, and is safe for
 // concurrent use. A code's secret and single spend live in the one-time token store, so
 // this table holds no credential, and every row is a held code.
 type CodeStore struct{ c *config }
@@ -232,7 +232,7 @@ func (s *CodeStore) UnspentByClient(ctx context.Context, user identity.UserID, c
 	return s.c.queryIDs(ctx, op, pgschema.CodeUnspentByClient, string(user), clientID)
 }
 
-// ConsentStore keeps consents in the op_consents table, one per user and client. It
+// ConsentStore keeps consents in the scrty_op_consents table, one per user and client. It
 // implements oidcprovider.ConsentStore, and is safe for concurrent use. Give is one
 // statement, so scopes given at once all accumulate.
 type ConsentStore struct{ c *config }
@@ -326,7 +326,7 @@ func (s *ConsentStore) ListByUser(ctx context.Context, user identity.UserID) ([]
 	return out, nil
 }
 
-// AccessTokenStore keeps opaque access tokens in the op_access_tokens table, each
+// AccessTokenStore keeps opaque access tokens in the scrty_op_access_tokens table, each
 // secret only as its digest. It implements oidcprovider.AccessTokenStore, and is safe
 // for concurrent use.
 type AccessTokenStore struct{ c *config }
@@ -372,7 +372,7 @@ func (s *AccessTokenStore) DeleteExpired(ctx context.Context, before time.Time) 
 }
 
 // AssertionIDStore keeps the client-assertion identifiers already accepted, in the
-// op_client_assertions table. It implements oidcprovider.AssertionIDStore, and is safe
+// scrty_op_client_assertions table. It implements oidcprovider.AssertionIDStore, and is safe
 // for concurrent use. Record is one insert the pair's uniqueness decides, so of callers
 // racing, on this process or on another replica, exactly one is told the pair is new.
 type AssertionIDStore struct{ c *config }
@@ -411,7 +411,7 @@ func (s *AssertionIDStore) DeleteExpired(ctx context.Context, before time.Time) 
 	return s.c.deleteBefore(ctx, "delete expired assertion identifiers", pgschema.AssertionIDDeleteExpired, before)
 }
 
-// BrowserSessionStore keeps browser sessions in the op_browser_sessions table, each
+// BrowserSessionStore keeps browser sessions in the scrty_op_browser_sessions table, each
 // cookie's secret only as its digest. It implements oidcprovider.BrowserSessionStore,
 // and is safe for concurrent use. Touch is one conditional update that only extends, so
 // a slower request cannot undo a later one.
@@ -494,7 +494,7 @@ func (s *BrowserSessionStore) DeleteExpired(ctx context.Context, before time.Tim
 	return s.c.deleteBefore(ctx, "delete expired browser sessions", pgschema.BrowserSessionDeleteExpired, before)
 }
 
-// ClientStore keeps registered clients in the op_clients table, each secret only as
+// ClientStore keeps registered clients in the scrty_op_clients table, each secret only as
 // its digest. It implements oidcprovider.ClientStore, and behaves as MemoryRegistry
 // does: every write is validated as that registry validates it, through the registry
 // itself, so the two cannot disagree. It is safe for concurrent use.

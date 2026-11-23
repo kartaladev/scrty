@@ -21,7 +21,7 @@ import (
 // privileges in the tables migrate.Identity creates, over gorm. It implements
 // identity.UserLoader, identity.RoleLoader, identity.UserProvisioner and
 // identity.MFARequirementLookup, and is safe for concurrent use. It also
-// implements password.History over the password_history table, for a
+// implements password.History over the scrty_password_history table, for a
 // password.NoReuse rule; no identity port call reads or writes that table. It
 // keeps the same records as package sqlstore's and the pgx adapter's identity
 // stores, so the three are interchangeable over one database.
@@ -117,7 +117,7 @@ import (
 // other, an upper-case spelling included, is refused by a write with text that
 // does not carry it. Stored times are UTC, truncated to the microsecond.
 // Because the identity tables declare no foreign keys, a consumer deleting a
-// user is responsible for deleting that user's grants (assigned_roles) and
+// user is responsible for deleting that user's grants (scrty_assigned_roles) and
 // calling ForgetPasswords for that user's password history in the same
 // transaction; nothing cascades.
 type IdentityStore struct {
@@ -460,7 +460,7 @@ func (s *IdentityStore) Update(
 	return out, nil
 }
 
-// userColumns is the users columns an update writes for the fields u names,
+// userColumns is the scrty_users columns an update writes for the fields u names,
 // keyed by column. Column names come only from this allow-list, never from
 // input. A field is written when it was named, whatever its value (a map, not
 // a struct, so gorm never drops a zero value), and left alone otherwise. The

@@ -28,6 +28,11 @@ const SecurityStateVersionTable = "goose_security_state"
 // Dir inside FS(), named with a UTC timestamp version
 // (YYYYMMDDHHMMSS_name.sql). Every migration in a set runs in its own
 // transaction and rolls back completely.
+//
+// Every table, index and sequence a set creates is named with the fixed
+// scrty_ prefix, and no option changes it. To keep them apart from a
+// consumer's own tables, put them in a PostgreSQL schema of their own and give
+// the connection a search_path that reaches it.
 type Set struct {
 	fsys fs.FS
 
@@ -49,6 +54,10 @@ func (s Set) FS() fs.FS { return s.fsys }
 // OIDC links, flows and handoffs tables. It creates no identity tables and no
 // foreign key to one (see the schema-migrations spec).
 //
+// Its relations are named with the fixed scrty_ prefix (scrty_sessions,
+// scrty_signing_keys and so on); a PostgreSQL schema plus a search_path is how
+// a consumer isolates them.
+//
 // Its default version table is SecurityStateVersionTable.
 func SecurityState() Set {
 	return Set{fsys: securityStateFS, Dir: "securitystate", VersionTable: SecurityStateVersionTable}
@@ -65,7 +74,12 @@ const IdentityVersionTable = "goose_identity"
 // schema-migrations spec): the identity set can be applied, or rolled back,
 // without touching security state.
 //
-// The catalogue tables (groups, organizations, roles, resource_privileges)
+// Its relations are named with the fixed scrty_ prefix (scrty_users,
+// scrty_roles and so on); a PostgreSQL schema plus a search_path is how a
+// consumer isolates them.
+//
+// The catalogue tables (scrty_groups, scrty_organizations, scrty_roles,
+// scrty_resource_privileges)
 // are written only by the consumer's own tooling, which must supply
 // created_at and updated_at: those columns have no database default.
 //

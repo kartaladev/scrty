@@ -41,7 +41,7 @@ func successorIsNull(ctx context.Context, t *testing.T, db *sql.DB, sid string) 
 	t.Helper()
 
 	err := db.QueryRowContext(ctx,
-		`SELECT successor_digest IS NULL FROM sessions WHERE id_digest = $1`, storefix.Digest(sid)).Scan(&isNull)
+		`SELECT successor_digest IS NULL FROM scrty_sessions WHERE id_digest = $1`, storefix.Digest(sid)).Scan(&isNull)
 	if err == sql.ErrNoRows {
 		return false, false
 	}

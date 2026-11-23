@@ -42,7 +42,7 @@ func TestOneTimeStore(t *testing.T) {
 
 	t.Run("pgx", func(t *testing.T) {
 		storetest.RunOneTimeStoreSuite(t, func(t *testing.T, clk clock.Clock) onetime.Store {
-			return newOneTimeStore(t, emptied(t, db, "one_time_tokens"), pgxstore.WithClock(clk))
+			return newOneTimeStore(t, emptied(t, db, "scrty_one_time_tokens"), pgxstore.WithClock(clk))
 		}, storetest.RequireReaper())
 	})
 }
@@ -141,7 +141,7 @@ func TestOneTimeStore_Failures(t *testing.T) {
 				tok := storefix.RaceToken(5)
 				require.NoError(t, s.Insert(ctx, tok))
 				_, err := db.DB.ExecContext(ctx,
-					`UPDATE one_time_tokens SET consumed_at = 'infinity' WHERE id = $1`, tok.ID.String())
+					`UPDATE scrty_one_time_tokens SET consumed_at = 'infinity' WHERE id = $1`, tok.ID.String())
 				require.NoError(t, err)
 
 				got, err := s.FindByID(ctx, tok.ID)

@@ -60,12 +60,12 @@ func SealedSessions[H any](
 		RawColumn: func(t *testing.T, raw *sql.DB, owner string) []byte {
 			var col sql.NullString
 			require.NoError(t, raw.QueryRowContext(t.Context(),
-				`SELECT external_id_token FROM sessions WHERE id_digest = $1`, Digest(owner)).Scan(&col))
+				`SELECT external_id_token FROM scrty_sessions WHERE id_digest = $1`, Digest(owner)).Scan(&col))
 			return []byte(col.String)
 		},
 		CopySealed: func(t *testing.T, raw *sql.DB, from, to string) {
-			_, err := raw.ExecContext(t.Context(), `UPDATE sessions
-SET external_id_token = (SELECT external_id_token FROM sessions WHERE id_digest = $1) WHERE id_digest = $2`,
+			_, err := raw.ExecContext(t.Context(), `UPDATE scrty_sessions
+SET external_id_token = (SELECT external_id_token FROM scrty_sessions WHERE id_digest = $1) WHERE id_digest = $2`,
 				Digest(from), Digest(to))
 			require.NoError(t, err)
 		},
@@ -122,7 +122,7 @@ func csrfTokenColumn(t *testing.T, raw *sql.DB, sid string) sql.NullString {
 
 	var col sql.NullString
 	require.NoError(t, raw.QueryRowContext(t.Context(),
-		`SELECT csrf_token FROM sessions WHERE id_digest = $1`, Digest(sid)).Scan(&col))
+		`SELECT csrf_token FROM scrty_sessions WHERE id_digest = $1`, Digest(sid)).Scan(&col))
 
 	return col
 }
@@ -132,8 +132,8 @@ func csrfTokenColumn(t *testing.T, raw *sql.DB, sid string) sql.NullString {
 func copyCSRFToken(t *testing.T, raw *sql.DB, from, to string) {
 	t.Helper()
 
-	_, err := raw.ExecContext(t.Context(), `UPDATE sessions
-SET csrf_token = (SELECT csrf_token FROM sessions WHERE id_digest = $1) WHERE id_digest = $2`,
+	_, err := raw.ExecContext(t.Context(), `UPDATE scrty_sessions
+SET csrf_token = (SELECT csrf_token FROM scrty_sessions WHERE id_digest = $1) WHERE id_digest = $2`,
 		Digest(from), Digest(to))
 	require.NoError(t, err)
 }
@@ -232,8 +232,8 @@ func RunSessionCSRFSuccessor(t *testing.T, raw *sql.DB, newStore func(t *testing
 
 			// The column names are this table's, not input: they are fixed
 			// above.
-			_, err := raw.ExecContext(t.Context(), //nolint:gosec // G202: fixed column names
-				`UPDATE sessions SET `+tc.to+` = `+tc.from+` WHERE id_digest = $1`, Digest(tc.sid))
+			_, err := raw.ExecContext(t.Context(),
+				`UPDATE scrty_sessions SET `+tc.to+` = `+tc.from+` WHERE id_digest = $1`, Digest(tc.sid)) //nolint:gosec // G202: fixed column names
 			require.NoError(t, err)
 
 			got, err := s.Load(t.Context(), tc.sid)
@@ -264,8 +264,8 @@ func SealedEnrolments[H any](
 			return []byte(SecretColumn(t.Context(), t, raw, identity.UserID(owner)))
 		},
 		CopySealed: func(t *testing.T, raw *sql.DB, from, to string) {
-			_, err := raw.ExecContext(t.Context(), `UPDATE mfa_enrolments
-SET secret = (SELECT secret FROM mfa_enrolments WHERE user_id = $1) WHERE user_id = $2`, from, to)
+			_, err := raw.ExecContext(t.Context(), `UPDATE scrty_mfa_enrolments
+SET secret = (SELECT secret FROM scrty_mfa_enrolments WHERE user_id = $1) WHERE user_id = $2`, from, to)
 			require.NoError(t, err)
 		},
 	}
@@ -299,8 +299,8 @@ func SealedEmailCodes[H any](
 			return []byte(emailCodeColumn(t, raw, owner).String)
 		},
 		CopySealed: func(t *testing.T, raw *sql.DB, from, to string) {
-			_, err := raw.ExecContext(t.Context(), `UPDATE mfa_enrolments
-SET email_code = (SELECT email_code FROM mfa_enrolments WHERE user_id = $1) WHERE user_id = $2`, from, to)
+			_, err := raw.ExecContext(t.Context(), `UPDATE scrty_mfa_enrolments
+SET email_code = (SELECT email_code FROM scrty_mfa_enrolments WHERE user_id = $1) WHERE user_id = $2`, from, to)
 			require.NoError(t, err)
 		},
 	}
@@ -337,7 +337,7 @@ func emailCodeColumn(t *testing.T, raw *sql.DB, owner string) sql.NullString {
 
 	var col sql.NullString
 	require.NoError(t, raw.QueryRowContext(t.Context(),
-		`SELECT email_code FROM mfa_enrolments WHERE user_id = $1`, owner).Scan(&col))
+		`SELECT email_code FROM scrty_mfa_enrolments WHERE user_id = $1`, owner).Scan(&col))
 
 	return col
 }
@@ -381,7 +381,7 @@ func RunEnrolmentBindings(t *testing.T, raw *sql.DB, codes storetest.Sealed[mfa.
 		require.NoError(t, codes.Put(t.Context(), s, "code-into-secret", []byte("SENTINEL-CODE")))
 
 		_, err := raw.ExecContext(t.Context(),
-			`UPDATE mfa_enrolments SET secret = email_code WHERE user_id = $1`, "code-into-secret")
+			`UPDATE scrty_mfa_enrolments SET secret = email_code WHERE user_id = $1`, "code-into-secret")
 		require.NoError(t, err)
 
 		refused(t, s, "code-into-secret", "the emailed code opened as the secret")
@@ -397,7 +397,7 @@ func RunEnrolmentBindings(t *testing.T, raw *sql.DB, codes storetest.Sealed[mfa.
 		require.NoError(t, s.PutPending(t.Context(), mfa.Enrolment{
 			User: "code-carried", Secret: []byte("TOTP-code-carried"), CreatedAt: EnrolmentBegun, Generation: next,
 		}))
-		_, err := raw.ExecContext(t.Context(), `UPDATE mfa_enrolments
+		_, err := raw.ExecContext(t.Context(), `UPDATE scrty_mfa_enrolments
 SET email_code = $2, device_proven_at = $3, email_code_until = $4 WHERE user_id = $1`,
 			"code-carried", issued.String, EnrolmentBegun.Add(time.Minute), EnrolmentBegun.Add(11*time.Minute))
 		require.NoError(t, err)
@@ -420,7 +420,7 @@ SET email_code = $2, device_proven_at = $3, email_code_until = $4 WHERE user_id 
 			Generation: id.MustParse("01926a4e-0000-7000-8000-00000000c1a2"),
 		}))
 		_, err := raw.ExecContext(t.Context(),
-			`UPDATE mfa_enrolments SET secret = $2 WHERE user_id = $1`, string(user), removed)
+			`UPDATE scrty_mfa_enrolments SET secret = $2 WHERE user_id = $1`, string(user), removed)
 		require.NoError(t, err)
 
 		refused(t, s, string(user), "the secret of a removed generation opened on the re-enrolment")
@@ -454,8 +454,8 @@ func SealedSigningKeys[H any](
 			return PrivateColumn(t.Context(), t, raw, owner)
 		},
 		CopySealed: func(t *testing.T, raw *sql.DB, from, to string) {
-			_, err := raw.ExecContext(t.Context(), `UPDATE signing_keys
-SET private_key = (SELECT private_key FROM signing_keys WHERE kid = $1) WHERE kid = $2`, from, to)
+			_, err := raw.ExecContext(t.Context(), `UPDATE scrty_signing_keys
+SET private_key = (SELECT private_key FROM scrty_signing_keys WHERE kid = $1) WHERE kid = $2`, from, to)
 			require.NoError(t, err)
 		},
 	}

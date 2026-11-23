@@ -341,7 +341,7 @@ func RunSessionFamilyRead[S session.Store](t *testing.T, harness DurableHarness[
 		holding := familySession("family-read-holding", user, suiteID(2802))
 		require.NoError(t, s.Create(t.Context(), healthy))
 		require.NoError(t, s.Create(t.Context(), holding))
-		_, err := harness.Raw.ExecContext(t.Context(), `UPDATE sessions SET data = '[1]' WHERE id_digest = $1`,
+		_, err := harness.Raw.ExecContext(t.Context(), `UPDATE scrty_sessions SET data = '[1]' WHERE id_digest = $1`,
 			sessionDigest(holding.ID))
 		require.NoError(t, err)
 
@@ -374,7 +374,7 @@ func RunSessionFamilyRead[S session.Store](t *testing.T, harness DurableHarness[
 		want.FamilyID = suiteID(2811)
 		require.NoError(t, s.Create(t.Context(), want))
 		_, err := harness.Raw.ExecContext(t.Context(),
-			`UPDATE sessions SET external_id_token = 'not-an-envelope', csrf_token = 'not-an-envelope' WHERE id_digest = $1`,
+			`UPDATE scrty_sessions SET external_id_token = 'not-an-envelope', csrf_token = 'not-an-envelope' WHERE id_digest = $1`,
 			sessionDigest(want.ID))
 		require.NoError(t, err)
 
@@ -393,7 +393,7 @@ func RunSessionFamilyRead[S session.Store](t *testing.T, harness DurableHarness[
 		inNone := familySession("family-read-nil", user, suiteID(2821))
 		require.NoError(t, s.Create(t.Context(), inNone))
 		_, err := harness.Raw.ExecContext(t.Context(),
-			`UPDATE sessions SET family_id = '00000000-0000-0000-0000-000000000000' WHERE id_digest = $1`,
+			`UPDATE scrty_sessions SET family_id = '00000000-0000-0000-0000-000000000000' WHERE id_digest = $1`,
 			sessionDigest(inNone.ID))
 		require.NoError(t, err)
 

@@ -44,7 +44,7 @@ var brokenVariants = []storefix.BrokenVariant{
 			c := storefix.TestCipher(t)
 			t.Run("pgx", func(t *testing.T) {
 				storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
-					return storefix.FamilyReadAnswersNothingStore{Store: newSessionStore(t, emptied(t, db, "sessions"), c, pgxstore.WithClock(clk))}
+					return storefix.FamilyReadAnswersNothingStore{Store: newSessionStore(t, emptied(t, db, "scrty_sessions"), c, pgxstore.WithClock(clk))}
 				})
 			})
 		},
@@ -68,7 +68,7 @@ var brokenVariants = []storefix.BrokenVariant{
 			c := storefix.TestCipher(t)
 			t.Run("pgx", func(t *testing.T) {
 				storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
-					return storefix.SaveUpsertsStore{Store: newSessionStore(t, emptied(t, db, "sessions"), c, pgxstore.WithClock(clk))}
+					return storefix.SaveUpsertsStore{Store: newSessionStore(t, emptied(t, db, "scrty_sessions"), c, pgxstore.WithClock(clk))}
 				})
 			})
 		},
@@ -329,7 +329,7 @@ type readThenSupersede struct {
 func (s readThenSupersede) Supersede(ctx context.Context, op session.Supersession) error {
 	if op.RequireUnpresentedSuccessor && len(op.ObservedSuccessor) > 0 {
 		var presented bool
-		err := s.pool.QueryRow(ctx, `SELECT first_presented_at IS NOT NULL FROM sessions WHERE id_digest = $1`,
+		err := s.pool.QueryRow(ctx, `SELECT first_presented_at IS NOT NULL FROM scrty_sessions WHERE id_digest = $1`,
 			op.ObservedSuccessor).Scan(&presented)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
@@ -353,7 +353,7 @@ type singlePassFamilyDelete struct {
 }
 
 func (s singlePassFamilyDelete) DeleteFamily(ctx context.Context, family id.ID) (int, error) {
-	const del = `DELETE FROM sessions WHERE family_id = $1`
+	const del = `DELETE FROM scrty_sessions WHERE family_id = $1`
 	if tx, ok := ctx.Value(attachedTxKey{}).(pgx.Tx); ok {
 		tag, err := tx.Exec(ctx, del, family.String())
 		return int(tag.RowsAffected()), err
@@ -371,7 +371,7 @@ type upsertLinkInsert struct {
 }
 
 func (s upsertLinkInsert) Insert(ctx context.Context, l oidc.Link) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO oidc_links (id, provider, issuer, subject, user_id, username, email,
+	_, err := s.pool.Exec(ctx, `INSERT INTO scrty_oidc_links (id, provider, issuer, subject, user_id, username, email,
   created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 ON CONFLICT (provider, issuer, subject) DO UPDATE SET user_id = EXCLUDED.user_id`,
 		l.ID.String(), l.Provider, l.Issuer, l.Subject, string(l.UserID), l.Username, l.Email, l.CreatedAt)
@@ -397,7 +397,7 @@ func (s readThenWriteAcceptStep) AcceptStep(
 	if err != nil || !ok || e.ConfirmedAt.IsZero() || gen.IsZero() || e.Generation != gen || e.LastStep >= step {
 		return false, err
 	}
-	_, err = s.pool.Exec(ctx, `UPDATE mfa_enrolments SET last_step = $2 WHERE user_id = $1`, string(user), step)
+	_, err = s.pool.Exec(ctx, `UPDATE scrty_mfa_enrolments SET last_step = $2 WHERE user_id = $1`, string(user), step)
 	return err == nil, err
 }
 
@@ -417,7 +417,7 @@ func (s readThenWriteConsume) Consume(ctx context.Context, tokenID id.ID, at tim
 	if !tok.ConsumedAt.IsZero() {
 		return onetime.ErrTokenNotFound
 	}
-	_, err = s.pool.Exec(ctx, `UPDATE one_time_tokens SET consumed_at = $2 WHERE id = $1`, tokenID.String(), at)
+	_, err = s.pool.Exec(ctx, `UPDATE scrty_one_time_tokens SET consumed_at = $2 WHERE id = $1`, tokenID.String(), at)
 	return err
 }
 
@@ -497,7 +497,7 @@ func (s lockOutOfOrder) Supersede(ctx context.Context, op session.Supersession) 
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	for _, digest := range s.rows(op) {
-		if _, err := tx.Exec(ctx, `SELECT 1 FROM sessions WHERE id_digest = $1 FOR UPDATE`, digest); err != nil {
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM scrty_sessions WHERE id_digest = $1 FOR UPDATE`, digest); err != nil {
 			return err
 		}
 	}
@@ -519,7 +519,7 @@ type readThenMark struct {
 func (s readThenMark) MarkPresented(ctx context.Context, sessionID string, at time.Time) error {
 	digest := sha256.Sum256([]byte(sessionID))
 	var superseded bool
-	if err := s.pool.QueryRow(ctx, `SELECT superseded_at IS NOT NULL FROM sessions WHERE id_digest = $1`,
+	if err := s.pool.QueryRow(ctx, `SELECT superseded_at IS NOT NULL FROM scrty_sessions WHERE id_digest = $1`,
 		digest[:]).Scan(&superseded); err != nil {
 		return err
 	}
@@ -527,7 +527,7 @@ func (s readThenMark) MarkPresented(ctx context.Context, sessionID string, at ti
 		return session.ErrSuperseded
 	}
 	_, err := s.pool.Exec(ctx,
-		`UPDATE sessions SET first_presented_at = $2 WHERE id_digest = $1 AND first_presented_at IS NULL`,
+		`UPDATE scrty_sessions SET first_presented_at = $2 WHERE id_digest = $1 AND first_presented_at IS NULL`,
 		digest[:], at)
 	return err
 }

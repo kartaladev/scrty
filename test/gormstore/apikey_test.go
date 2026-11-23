@@ -33,7 +33,7 @@ func TestAPIKeyStore(t *testing.T) {
 
 	t.Run("gorm", func(t *testing.T) {
 		storetest.RunAPIKeyStoreSuite(t, func(t *testing.T) apikey.Store {
-			return newAPIKeyStore(t, emptied(t, d, "api_keys"))
+			return newAPIKeyStore(t, emptied(t, d, "scrty_api_keys"))
 		})
 	})
 }
@@ -99,7 +99,7 @@ func TestAPIKeyStore_NilScopes(t *testing.T) {
 
 	var scopes string
 	require.NoError(t, d.conn.DB.QueryRowContext(ctx,
-		`SELECT scopes::text FROM api_keys WHERE id = $1`, key.ID.String()).Scan(&scopes))
+		`SELECT scopes::text FROM scrty_api_keys WHERE id = $1`, key.ID.String()).Scan(&scopes))
 	assert.Equal(t, "[]", scopes, "nil scopes are not stored as an empty array")
 }
 

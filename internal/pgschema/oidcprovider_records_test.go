@@ -310,11 +310,11 @@ func TestLineageStatement(t *testing.T) {
 	} {
 		bound := pgschema.LineageStatement(statement)
 		assert.Contains(t, bound, pgschema.RefreshTokenTable)
-		assert.NotRegexp(t, `\bsessions\b`, bound)
+		assert.NotRegexp(t, `\bscrty_sessions\b`, bound)
 	}
 
-	assert.Equal(t, "SELECT sessions_x, op_refresh_tokens.a FROM op_refresh_tokens",
-		pgschema.LineageStatement("SELECT sessions_x, sessions.a FROM sessions"))
+	assert.Equal(t, "SELECT scrty_sessions_x, scrty_op_refresh_tokens.a FROM scrty_op_refresh_tokens",
+		pgschema.LineageStatement("SELECT scrty_sessions_x, scrty_sessions.a FROM scrty_sessions"))
 }
 
 // TestGrantArgs_Bindings pins that both of a grant's bindings are written, and that one PostgreSQL text

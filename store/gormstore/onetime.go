@@ -14,7 +14,7 @@ import (
 	"github.com/kartaladev/scrty/token/onetime"
 )
 
-// OneTimeStore keeps one-time tokens in the one_time_tokens table the migrate
+// OneTimeStore keeps one-time tokens in the scrty_one_time_tokens table the migrate
 // package creates. It implements onetime.Store and onetime.Reaper, and is safe
 // for concurrent use.
 //

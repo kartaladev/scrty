@@ -183,7 +183,7 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 
 				d, err := s.Provision(ctx, "inactive-user")
 				require.NoError(t, err)
-				_, err = pool.Exec(ctx, `UPDATE users SET active = false WHERE id = $1`, string(d.ID))
+				_, err = pool.Exec(ctx, `UPDATE scrty_users SET active = false WHERE id = $1`, string(d.ID))
 				require.NoError(t, err)
 
 				got, err := s.LoadByUsername(ctx, "inactive-user")
@@ -200,7 +200,7 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 
 				for _, probe := range []string{"load", "lookup"} {
 					tx := beginTx(ctx, t, pool)
-					_, err = tx.Exec(ctx, `ALTER TABLE users RENAME TO users_gone`)
+					_, err = tx.Exec(ctx, `ALTER TABLE scrty_users RENAME TO users_gone`)
 					require.NoError(t, err)
 					txCtx := pgxstore.WithTx(ctx, tx)
 
@@ -237,7 +237,7 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 					identity.WithUserRoles("admin"), identity.WithUserOrganization(&identity.Organization{ID: org.ID}))
 				require.NoError(t, err)
 
-				for _, table := range []string{"assigned_roles", "organizations", "groups"} {
+				for _, table := range []string{"scrty_assigned_roles", "scrty_organizations", "scrty_groups"} {
 					tx := beginTx(ctx, t, pool)
 					// table is one of the three literals above, never input.
 					_, err = tx.Exec(ctx, `ALTER TABLE `+table+` RENAME TO `+table+`_gone`)
@@ -264,12 +264,12 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 
 				userTimes := func() (created, updated time.Time) {
 					require.NoError(t, pool.QueryRow(ctx,
-						`SELECT created_at, updated_at FROM users WHERE id = $1`, string(d.ID)).Scan(&created, &updated))
+						`SELECT created_at, updated_at FROM scrty_users WHERE id = $1`, string(d.ID)).Scan(&created, &updated))
 					return created, updated
 				}
 				grantTimes := func(role string) (created, updated time.Time) {
 					require.NoError(t, pool.QueryRow(ctx,
-						`SELECT created_at, updated_at FROM assigned_roles WHERE user_id = $1 AND role_name = $2`,
+						`SELECT created_at, updated_at FROM scrty_assigned_roles WHERE user_id = $1 AND role_name = $2`,
 						string(d.ID), role).Scan(&created, &updated))
 					return created, updated
 				}
@@ -324,7 +324,7 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 
 				// The consumer's administration makes the first admin grant a
 				// super role; the second, whose identifier sorts first, is not.
-				_, err = pool.Exec(ctx, `UPDATE assigned_roles SET super_role = true WHERE id = $1`, first)
+				_, err = pool.Exec(ctx, `UPDATE scrty_assigned_roles SET super_role = true WHERE id = $1`, first)
 				require.NoError(t, err)
 
 				d, err := s.Update(ctx, "descending-dup", identity.WithUserRoles("admin"))
@@ -371,7 +371,7 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 
 				var n int
 				require.NoError(t, pool.QueryRow(ctx,
-					`SELECT count(*) FROM assigned_roles WHERE id = $1`, id.Nil.String()).Scan(&n))
+					`SELECT count(*) FROM scrty_assigned_roles WHERE id = $1`, id.Nil.String()).Scan(&n))
 				assert.Zero(t, n, "a grant was stored under the nil id")
 			},
 		},

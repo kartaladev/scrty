@@ -59,31 +59,31 @@ func TestStores_GeneratorAnswers(t *testing.T) {
 			func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, opt pgxstore.Option) error {
 				return newClientStore(t, pool, opt).Put(ctx, confidentialClient("c-1"))
 			}},
-		{"login flow begin", "pgxstore: begin login flow:", "oidc_flows",
+		{"login flow begin", "pgxstore: begin login flow:", "scrty_oidc_flows",
 			func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, opt pgxstore.Option) error {
 				_, err := newFlowStore(t, pool, opt).Begin(ctx, oidc.Flow{
 					Provider: "p", State: "s", Nonce: "n", Verifier: "v", Next: "/", ExpiresAt: time.Now().Add(time.Hour)})
 				return err
 			}},
-		{"enrolment put pending", "seal: the inner store could not store the pending MFA enrolment", "mfa_enrolments",
+		{"enrolment put pending", "seal: the inner store could not store the pending MFA enrolment", "scrty_mfa_enrolments",
 			func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, opt pgxstore.Option) error {
 				return newEnrolmentStore(t, pool, cipher, opt).PutPending(ctx, mfa.Enrolment{
 					User: "u-1", Secret: []byte("secret"), CreatedAt: opTime})
 			}},
-		{"passkey user handle assign", "pgxstore: assign passkey user handle:", "passkey_user_handles",
+		{"passkey user handle assign", "pgxstore: assign passkey user handle:", "scrty_passkey_user_handles",
 			func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, opt pgxstore.Option) error {
 				_, err := newPasskeyHandleStore(t, pool, opt).Assign(ctx, "nil-id-user", storefix.PasskeyOffer("nil-id-user", 0))
 				return err
 			}},
-		{"recovery codes replace", "pgxstore: replace recovery codes:", "recovery_codes",
+		{"recovery codes replace", "pgxstore: replace recovery codes:", "scrty_recovery_codes",
 			func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, opt pgxstore.Option) error {
 				return newRecoveryCodeStore(t, pool, opt).ReplaceSet(ctx, "nil-id-user", recoveryHashes("nil-id", 1), recoveryAt)
 			}},
-		{"session create", "session: the inner store could not create the session", "sessions",
+		{"session create", "session: the inner store could not create the session", "scrty_sessions",
 			func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, opt pgxstore.Option) error {
 				return newSessionStore(t, pool, cipher, opt).Create(ctx, storefix.DurableSession("nil-id", opTime))
 			}},
-		{"signing key store", "seal: the inner store could not store the signing key", "signing_keys",
+		{"signing key store", "seal: the inner store could not store the signing key", "scrty_signing_keys",
 			func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, opt pgxstore.Option) error {
 				return newSigningKeyStore(t, pool, cipher, opt).Store(ctx, storefix.SigningKey("nil-id-kid", []byte("private")))
 			}},

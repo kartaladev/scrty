@@ -143,7 +143,7 @@ var seedIDs = id.NewV7Generator()
 
 func (f *identityFixture) SeedRole(ctx context.Context, role string, p []*identity.ResourcePrivileges) error {
 	q := f.q(ctx)
-	if _, err := q.ExecContext(ctx, `DELETE FROM resource_privileges WHERE role_name = $1`, role); err != nil {
+	if _, err := q.ExecContext(ctx, `DELETE FROM scrty_resource_privileges WHERE role_name = $1`, role); err != nil {
 		return err
 	}
 
@@ -156,7 +156,7 @@ func (f *identityFixture) SeedRole(ctx context.Context, role string, p []*identi
 			if err != nil {
 				return err
 			}
-			if _, err := q.ExecContext(ctx, `INSERT INTO resource_privileges
+			if _, err := q.ExecContext(ctx, `INSERT INTO scrty_resource_privileges
   (id, role_name, resource_group, resource, privilege, granted, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
 				rowID, role, rp.Group, rp.Resource, priv.Name, priv.Granted, seedNow); err != nil {
@@ -169,7 +169,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
 }
 
 func (f *identityFixture) SeedMFARequired(ctx context.Context, ref identity.UserID, required bool) error {
-	res, err := f.q(ctx).ExecContext(ctx, `UPDATE users SET mfa_required = $2 WHERE id = $1`, string(ref), required)
+	res, err := f.q(ctx).ExecContext(ctx, `UPDATE scrty_users SET mfa_required = $2 WHERE id = $1`, string(ref), required)
 	if err != nil {
 		return err
 	}
@@ -184,14 +184,14 @@ func (f *identityFixture) SeedRoleGrants(ctx context.Context, username string, g
 	q := f.q(ctx)
 
 	var userID string
-	if err := q.QueryRowContext(ctx, `SELECT id FROM users WHERE username = $1`, username).Scan(&userID); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT id FROM scrty_users WHERE username = $1`, username).Scan(&userID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return identity.ErrUserNotFound
 		}
 		return err
 	}
 
-	if _, err := q.ExecContext(ctx, `DELETE FROM assigned_roles WHERE user_id = $1`, userID); err != nil {
+	if _, err := q.ExecContext(ctx, `DELETE FROM scrty_assigned_roles WHERE user_id = $1`, userID); err != nil {
 		return err
 	}
 
@@ -214,7 +214,7 @@ func (f *identityFixture) SeedRoleGrants(ctx context.Context, username string, g
 			primary = g.Name
 		}
 
-		if _, err := q.ExecContext(ctx, `INSERT INTO assigned_roles
+		if _, err := q.ExecContext(ctx, `INSERT INTO scrty_assigned_roles
   (id, user_id, role_name, position, is_primary, super_role, start_date, valid_until, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)`,
 			grantID, userID, g.Name, position, g.Primary, g.SuperRole,
@@ -224,7 +224,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)`,
 		position++
 	}
 
-	_, err := q.ExecContext(ctx, `UPDATE users SET role = $2 WHERE id = $1`, userID, primary)
+	_, err := q.ExecContext(ctx, `UPDATE scrty_users SET role = $2 WHERE id = $1`, userID, primary)
 
 	return err
 }
@@ -238,7 +238,7 @@ func (f *identityFixture) SeedOrganization(ctx context.Context, org *identity.Or
 	var groupID any
 	if g := org.Group; g != nil {
 		groupID = g.ID
-		if _, err := q.ExecContext(ctx, `INSERT INTO groups (id, name, internal, created_at, updated_at)
+		if _, err := q.ExecContext(ctx, `INSERT INTO scrty_groups (id, name, internal, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $4)
 ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, internal = EXCLUDED.internal`,
 			g.ID, g.Name, g.Internal, seedNow); err != nil {
@@ -246,7 +246,7 @@ ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, internal = EXCLUDED.interna
 		}
 	}
 
-	_, err := q.ExecContext(ctx, `INSERT INTO organizations (id, name, group_id, created_at, updated_at)
+	_, err := q.ExecContext(ctx, `INSERT INTO scrty_organizations (id, name, group_id, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $4)
 ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, group_id = EXCLUDED.group_id`,
 		org.ID, org.Name, groupID, seedNow)

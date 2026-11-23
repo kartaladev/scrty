@@ -23,7 +23,7 @@ import (
 )
 
 // NewSessionStore returns a durable session store on pool, keeping sessions in
-// the sessions table the migrate package creates.
+// the scrty_sessions table the migrate package creates.
 //
 // The provider ID token a federated session carries is sealed with cipher before
 // it is written and opened when it is read, through session.NewEncryptedStore
@@ -241,7 +241,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 	return sess, nil
 }
 
-// sessionRow is a sessions row as SessionSelect and SessionListByUser read
+// sessionRow is a scrty_sessions row as SessionSelect and SessionListByUser read
 // it.
 type sessionRow struct {
 	sess          session.Session

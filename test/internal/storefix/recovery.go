@@ -140,7 +140,7 @@ func RecoveryCodeAmbient[S recovery.CodeStore]() storetest.Ambient[S] {
 			return s.ReplaceSet(ctx, user, [][]byte{recoveryCodeHash(string(user), 0)}, time.Now())
 		},
 		Present: func(t *testing.T, raw *sql.DB, i int) bool {
-			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM recovery_codes WHERE user_id = $1)`,
+			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM scrty_recovery_codes WHERE user_id = $1)`,
 				string(recoveryAmbientUser(i)))
 		},
 		Refuse: func(ctx context.Context, s S) error {
@@ -178,7 +178,7 @@ func RecoveryRecordAmbient[S recovery.RecordStore]() storetest.Ambient[S] {
 			return s.Insert(ctx, recoveryRaceRecord(recoveryAmbientID(i), recoveryAmbientUser(i)))
 		},
 		Present: func(t *testing.T, raw *sql.DB, i int) bool {
-			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM account_recoveries WHERE id = $1)`,
+			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM scrty_account_recoveries WHERE id = $1)`,
 				recoveryAmbientID(i))
 		},
 		Refuse: func(ctx context.Context, s S) error {

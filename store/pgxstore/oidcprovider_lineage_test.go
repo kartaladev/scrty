@@ -38,7 +38,7 @@ func TestLineageSeam(t *testing.T) {
 	t.Parallel()
 
 	pool := &pgxpool.Pool{}
-	const statement = "SELECT 1 FROM sessions WHERE id_digest = $1"
+	const statement = "SELECT 1 FROM scrty_sessions WHERE id_digest = $1"
 
 	t.Run("no option binds a store to the lineage table", func(t *testing.T) {
 		t.Parallel()
@@ -62,7 +62,7 @@ func TestLineageSeam(t *testing.T) {
 		t.Parallel()
 
 		c := &config{base: pool, lineage: true}
-		const want = "SELECT 1 FROM op_refresh_tokens WHERE id_digest = $1"
+		const want = "SELECT 1 FROM scrty_op_refresh_tokens WHERE id_digest = $1"
 		var seen string
 		q := c.boundTo(recordingTx{&seen})
 

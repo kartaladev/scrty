@@ -116,7 +116,7 @@ func runPGIgnoresAmbientTx(t *testing.T, b pgFaultBackend) {
 			require.NoError(t, a.limiter.RecordFailure(a.ctx, "k"))
 			require.NoError(t, a.rollback())
 
-			kept := storefix.Exists(t, conn.DB, `SELECT EXISTS (SELECT 1 FROM sessions WHERE id_digest = $1)`, storefix.Digest(sid))
+			kept := storefix.Exists(t, conn.DB, `SELECT EXISTS (SELECT 1 FROM scrty_sessions WHERE id_digest = $1)`, storefix.Digest(sid))
 			exceeded, err := a.limiter.Exceeded(t.Context(), "k")
 			tc.assert(t, kept, exceeded, err)
 		})

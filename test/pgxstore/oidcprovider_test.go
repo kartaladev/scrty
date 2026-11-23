@@ -108,7 +108,7 @@ func lineageSessions(t *testing.T, pool *pgxpool.Pool, c seal.Cipher, opts ...pg
 func withoutSessionsTable(t *testing.T, conn database) {
 	t.Helper()
 
-	_, err := conn.DB.ExecContext(t.Context(), "ALTER TABLE sessions RENAME TO sessions_renamed_away")
+	_, err := conn.DB.ExecContext(t.Context(), "ALTER TABLE scrty_sessions RENAME TO sessions_renamed_away")
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		_, _ = conn.DB.ExecContext(context.WithoutCancel(t.Context()), "ALTER TABLE sessions_renamed_away RENAME TO sessions")
@@ -288,7 +288,7 @@ func TestPgxStore_ClientSecretsStoredForm(t *testing.T) {
 			secret := tc.store(ctx, t, newClientStore(t, conn.Pool))
 
 			var stored string
-			require.NoError(t, conn.DB.QueryRowContext(ctx, `SELECT secrets::text FROM op_clients WHERE client_id = 'c-1'`).Scan(&stored))
+			require.NoError(t, conn.DB.QueryRowContext(ctx, `SELECT secrets::text FROM scrty_op_clients WHERE client_id = 'c-1'`).Scan(&stored))
 
 			assert.NotContains(t, stored, "REDACTED", "the digest must be stored, not its redacted form")
 			assert.NotContains(t, stored, secret, "the secret itself must not be stored")
@@ -316,7 +316,7 @@ func TestPgxStore_LineageIsNotASession(t *testing.T) {
 		table         string
 	}{
 		{name: "lineage_not_a_session", written: lineages, read: sessions, table: pgschema.RefreshTokenTable},
-		{name: "a session is not a lineage", written: sessions, read: lineages, table: "sessions"},
+		{name: "a session is not a lineage", written: sessions, read: lineages, table: "scrty_sessions"},
 	}
 
 	for i, tc := range cases {
@@ -397,8 +397,8 @@ func TestPgxStore_LineageInCallerTransaction(t *testing.T) {
 			}
 
 			assert.Equal(t, 1, count(pgschema.RefreshTokenTable, lineageRec.FamilyID), "the lineage is in the lineage table")
-			assert.Zero(t, count("sessions", lineageRec.FamilyID), "and not in sessions")
-			assert.Equal(t, 1, count("sessions", sessionRec.FamilyID), "the session is in sessions")
+			assert.Zero(t, count("scrty_sessions", lineageRec.FamilyID), "and not in sessions")
+			assert.Equal(t, 1, count("scrty_sessions", sessionRec.FamilyID), "the session is in sessions")
 			assert.Zero(t, count(pgschema.RefreshTokenTable, sessionRec.FamilyID), "and not in the lineage table")
 
 			got, err := lineages.Load(runCtx, lineageRec.ID)
@@ -412,7 +412,7 @@ func TestPgxStore_LineageInCallerTransaction(t *testing.T) {
 			require.NoError(t, tx.Rollback(ctx))
 
 			var left int
-			require.NoError(t, conn.DB.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+pgschema.RefreshTokenTable+")+(SELECT count(*) FROM sessions)").Scan(&left))
+			require.NoError(t, conn.DB.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+pgschema.RefreshTokenTable+")+(SELECT count(*) FROM scrty_sessions)").Scan(&left))
 			assert.Zero(t, left, "the caller's rollback removes both rows")
 		})
 	}
@@ -748,7 +748,7 @@ func TestPgxStore_GrantRows(t *testing.T) {
 				require.NoError(t, s.Create(ctx, &oidcprovider.Grant{Family: opID(1), User: "u-1", CreatedAt: opTime}))
 
 				var isNull bool
-				require.NoError(t, conn.DB.QueryRowContext(ctx, `SELECT sign_in_family IS NULL FROM op_grants`).Scan(&isNull))
+				require.NoError(t, conn.DB.QueryRowContext(ctx, `SELECT sign_in_family IS NULL FROM scrty_op_grants`).Scan(&isNull))
 				require.True(t, isNull, "no family is held as NULL, as the schema has it")
 
 				got, err := s.EndSignIns(ctx, oidcprovider.SignInSelector{User: "u-1", ExceptFamily: opID(9)}, at)
@@ -764,7 +764,7 @@ func TestPgxStore_GrantRows(t *testing.T) {
 				require.NoError(t, s.Create(ctx, &oidcprovider.Grant{Family: opID(1), User: "u-1"}))
 
 				var isNull bool
-				require.NoError(t, conn.DB.QueryRowContext(ctx, `SELECT created_at IS NULL FROM op_grants`).Scan(&isNull))
+				require.NoError(t, conn.DB.QueryRowContext(ctx, `SELECT created_at IS NULL FROM scrty_op_grants`).Scan(&isNull))
 				assert.False(t, isNull)
 				require.Error(t, s.Create(ctx, &oidcprovider.Grant{Family: opID(1), User: "u-2"}))
 
@@ -797,7 +797,7 @@ func TestPgxStore_GrantRows(t *testing.T) {
 				var created, signIn, code sql.NullString
 				var holds bool
 				require.NoError(t, conn.DB.QueryRowContext(ctx,
-					`SELECT created_at::text, sign_in_family::text, code_id::text, holds_lineage FROM op_grants`).
+					`SELECT created_at::text, sign_in_family::text, code_id::text, holds_lineage FROM scrty_op_grants`).
 					Scan(&created, &signIn, &code, &holds))
 				assert.False(t, created.Valid)
 				assert.False(t, signIn.Valid)
@@ -881,7 +881,7 @@ func TestPgxStore_GrantRows(t *testing.T) {
 				blocker, err := conn.Pool.Begin(ctx)
 				require.NoError(t, err)
 				defer func() { _ = blocker.Rollback(context.WithoutCancel(ctx)) }()
-				_, err = blocker.Exec(ctx, `SELECT 1 FROM op_grants WHERE family = $1 FOR UPDATE`, opID(1).String())
+				_, err = blocker.Exec(ctx, `SELECT 1 FROM scrty_op_grants WHERE family = $1 FOR UPDATE`, opID(1).String())
 				require.NoError(t, err)
 
 				var ended []oidcprovider.Grant
@@ -940,7 +940,7 @@ func assertFailedUnit(ctx context.Context, t *testing.T, conn database, call fun
 
 	_, err := conn.DB.ExecContext(ctx, `CREATE FUNCTION test_refuse_grant_write() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN RAISE EXCEPTION 'refused by the test'; END $$;
-CREATE TRIGGER test_refuse_grant_write BEFORE UPDATE ON op_grants
+CREATE TRIGGER test_refuse_grant_write BEFORE UPDATE ON scrty_op_grants
 FOR EACH ROW EXECUTE FUNCTION test_refuse_grant_write()`)
 	require.NoError(t, err)
 
@@ -1184,7 +1184,7 @@ func TestPgxStore_GrantLockOrderOverDifferentSets(t *testing.T) {
 			for r := range rounds {
 				// Two clients' grants alternate in family order and are stored in a
 				// random one, so the client's set is a strict, interleaved subset.
-				_, err := db.ExecContext(ctx, `INSERT INTO op_grants (family, user_ref, client_id, created_at, expires_at)
+				_, err := db.ExecContext(ctx, `INSERT INTO scrty_op_grants (family, user_ref, client_id, created_at, expires_at)
 SELECT format('01926a4e-%s-7000-8000-%s', lpad(to_hex($1::int), 4, '0'), lpad(to_hex(i), 12, '0'))::uuid,
   $2, CASE WHEN i % 2 = 0 THEN 'c-1' ELSE 'c-2' END, $3::timestamptz, $4::timestamptz
 FROM generate_series(1, $5::int) AS i ORDER BY random()`,
@@ -1309,7 +1309,7 @@ WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> pg_ba
 			blocker, err := db.BeginTx(ctx, nil)
 			require.NoError(t, err)
 			defer func() { _ = blocker.Rollback() }()
-			_, err = blocker.ExecContext(ctx, `SELECT 1 FROM op_grants WHERE family = $1 FOR UPDATE`, held.String())
+			_, err = blocker.ExecContext(ctx, `SELECT 1 FROM scrty_op_grants WHERE family = $1 FOR UPDATE`, held.String())
 			require.NoError(t, err)
 
 			var errs [2]error

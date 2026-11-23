@@ -17,7 +17,7 @@ import (
 )
 
 // Limiter is a ratelimit.Limiter whose counts live in PostgreSQL, in the
-// rate_limit_buckets table of the security-state migration set
+// scrty_rate_limit_buckets table of the security-state migration set
 // (migrate.SecurityState), so one limit holds across every replica that
 // shares the database. The core's database/sql limiter (sqlstore.Limiter)
 // keeps the same rows in the same table, so the two count together.

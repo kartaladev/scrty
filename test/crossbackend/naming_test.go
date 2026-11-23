@@ -64,7 +64,7 @@ func TestNamingBrokenHandoffStore(t *testing.T) {
 			require.NoError(t, err)
 			// Every case runs against an empty table: the suite's cases run
 			// one after another and each inserts its own records.
-			_, execErr := conn.DB.ExecContext(t.Context(), "TRUNCATE oidc_handoffs")
+			_, execErr := conn.DB.ExecContext(t.Context(), "TRUNCATE scrty_oidc_handoffs")
 			require.NoError(t, execErr)
 
 			return zeroConsumptionHandoffStore{s}

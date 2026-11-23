@@ -65,7 +65,7 @@
 // # Rate limiting
 //
 // NewLimiterFactory and NewLimiter build a ratelimit.Limiter whose counts
-// live in the rate_limit_buckets table of the security-state migration set, so
+// live in the scrty_rate_limit_buckets table of the security-state migration set, so
 // one limit holds across every replica. They keep the same rows as the core's
 // sqlstore limiter, so the two count together. Unlike the stores above, the
 // limiter always runs on its pool and ignores any transaction attached with

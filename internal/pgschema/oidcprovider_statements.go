@@ -11,65 +11,65 @@ const (
 	// PendingRequestInsert stores a parked request, with the arguments
 	// PendingRequestArgs returns. No row affected means its identifier or handle
 	// digest is already held, and the stored record is left as it was.
-	PendingRequestInsert = `INSERT INTO op_pending_requests (` + pendingRequestColumns + `)
+	PendingRequestInsert = `INSERT INTO scrty_op_pending_requests (` + pendingRequestColumns + `)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
   $24)
 ON CONFLICT DO NOTHING`
 
 	// PendingRequestSelect reads the record of handle digest $1.
-	PendingRequestSelect = `SELECT ` + pendingRequestColumns + ` FROM op_pending_requests WHERE handle_digest = $1`
+	PendingRequestSelect = `SELECT ` + pendingRequestColumns + ` FROM scrty_op_pending_requests WHERE handle_digest = $1`
 
 	// PendingRequestAdvance moves the record of handle digest $1 from stage $2 to
 	// stage $3, storing sign-in $4 when it is not NULL. No row affected means no such
 	// record at that stage. StageMoveAllowed judges the move before this runs.
-	PendingRequestAdvance = `UPDATE op_pending_requests SET stage = $3, sign_in = COALESCE($4::jsonb, sign_in)
+	PendingRequestAdvance = `UPDATE scrty_op_pending_requests SET stage = $3, sign_in = COALESCE($4::jsonb, sign_in)
 WHERE handle_digest = $1 AND stage = $2`
 
 	// PendingRequestDeleteExpired removes the records that expired strictly before $1.
-	PendingRequestDeleteExpired = `DELETE FROM op_pending_requests WHERE expires_at < $1`
+	PendingRequestDeleteExpired = `DELETE FROM scrty_op_pending_requests WHERE expires_at < $1`
 
 	// CodeInsert stores a code record, with the arguments CodeArgs returns. No row
 	// affected means its token identifier is already held.
-	CodeInsert = `INSERT INTO op_authorization_codes (` + codeColumns + `)
+	CodeInsert = `INSERT INTO scrty_op_authorization_codes (` + codeColumns + `)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 ON CONFLICT DO NOTHING`
 
 	// CodeSelect reads the record of token identifier $1.
-	CodeSelect = `SELECT ` + codeColumns + ` FROM op_authorization_codes WHERE token_id = $1`
+	CodeSelect = `SELECT ` + codeColumns + ` FROM scrty_op_authorization_codes WHERE token_id = $1`
 
 	// CodeDeleteExpired removes the records that expired strictly before $1.
-	CodeDeleteExpired = `DELETE FROM op_authorization_codes WHERE expires_at < $1`
+	CodeDeleteExpired = `DELETE FROM scrty_op_authorization_codes WHERE expires_at < $1`
 
 	// CodeUnspentByClient lists the grant family of each record of user $1 and client $2.
-	CodeUnspentByClient = `SELECT grant_family FROM op_authorization_codes WHERE user_ref = $1 AND client_id = $2`
+	CodeUnspentByClient = `SELECT grant_family FROM scrty_op_authorization_codes WHERE user_ref = $1 AND client_id = $2`
 
 	// ConsentGive adds scopes $4, which must hold no duplicate, to what user $2 has
 	// allowed client $3, keeping their order. It is one statement, so concurrent gifts
 	// accumulate. offline $5 can only turn on. $1 is the uuid of a row this creates.
-	ConsentGive = `INSERT INTO op_consents (id, user_ref, client_id, scopes, offline, last_given_at)
+	ConsentGive = `INSERT INTO scrty_op_consents (id, user_ref, client_id, scopes, offline, last_given_at)
 VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (user_ref, client_id) DO UPDATE SET
-  scopes = op_consents.scopes || COALESCE((
+  scopes = scrty_op_consents.scopes || COALESCE((
     SELECT jsonb_agg(given.scope ORDER BY given.position)
     FROM jsonb_array_elements(EXCLUDED.scopes) WITH ORDINALITY AS given(scope, position)
-    WHERE NOT op_consents.scopes @> jsonb_build_array(given.scope)), '[]'::jsonb),
-  offline = op_consents.offline OR EXCLUDED.offline,
+    WHERE NOT scrty_op_consents.scopes @> jsonb_build_array(given.scope)), '[]'::jsonb),
+  offline = scrty_op_consents.offline OR EXCLUDED.offline,
   last_given_at = EXCLUDED.last_given_at`
 
 	// ConsentSelect reads the consent of user $1 and client $2.
-	ConsentSelect = `SELECT ` + consentColumns + ` FROM op_consents WHERE user_ref = $1 AND client_id = $2`
+	ConsentSelect = `SELECT ` + consentColumns + ` FROM scrty_op_consents WHERE user_ref = $1 AND client_id = $2`
 
 	// ConsentListByUser lists user $1's consents, by client.
-	ConsentListByUser = `SELECT ` + consentColumns + ` FROM op_consents WHERE user_ref = $1 ORDER BY client_id`
+	ConsentListByUser = `SELECT ` + consentColumns + ` FROM scrty_op_consents WHERE user_ref = $1 ORDER BY client_id`
 
 	// ConsentDelete forgets the consent of user $1 and client $2.
-	ConsentDelete = `DELETE FROM op_consents WHERE user_ref = $1 AND client_id = $2`
+	ConsentDelete = `DELETE FROM scrty_op_consents WHERE user_ref = $1 AND client_id = $2`
 
 	// GrantInsert stores a grant, with the arguments GrantArgs returns. Over a
 	// revocation recorded first, which alone has a NULL created_at, it fills in the
 	// record, keeping the revocation and any sign-in-ended mark. Over a stored grant it
 	// affects no row, and that is the refusal.
-	GrantInsert = `INSERT INTO op_grants (` + grantColumns + `)
+	GrantInsert = `INSERT INTO scrty_op_grants (` + grantColumns + `)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
   $24, $25)
 ON CONFLICT (family) DO UPDATE SET
@@ -81,18 +81,18 @@ ON CONFLICT (family) DO UPDATE SET
   offline = EXCLUDED.offline, ends_with_sign_in = EXCLUDED.ends_with_sign_in,
   holds_lineage = EXCLUDED.holds_lineage, created_at = EXCLUDED.created_at, expires_at = EXCLUDED.expires_at,
   origin = EXCLUDED.origin, survives_sign_in_end = EXCLUDED.survives_sign_in_end
-WHERE op_grants.created_at IS NULL`
+WHERE scrty_op_grants.created_at IS NULL`
 
 	// GrantSelect reads the record of family $1.
-	GrantSelect = `SELECT ` + grantColumns + ` FROM op_grants WHERE family = $1`
+	GrantSelect = `SELECT ` + grantColumns + ` FROM scrty_op_grants WHERE family = $1`
 
 	// GrantRevoke revokes family $1 at $2 with cause $3, recording the revocation first
 	// when no record exists. A second revocation affects no row, and changes nothing, so
 	// a row affected is what says this statement is the one that revoked the grant.
-	GrantRevoke = `INSERT INTO op_grants (family, revoked, revoked_at, revoke_cause) VALUES ($1, true, $2, $3)
+	GrantRevoke = `INSERT INTO scrty_op_grants (family, revoked, revoked_at, revoke_cause) VALUES ($1, true, $2, $3)
 ON CONFLICT (family) DO UPDATE SET
   revoked = true, revoked_at = EXCLUDED.revoked_at, revoke_cause = EXCLUDED.revoke_cause
-WHERE NOT op_grants.revoked`
+WHERE NOT scrty_op_grants.revoked`
 
 	// GrantDeleteExpired removes each unrevoked grant whose deadline is strictly before
 	// $1, and each revoked one, recorded first or not, revoked strictly before $2. The
@@ -101,65 +101,66 @@ WHERE NOT op_grants.revoked`
 	// rows in family order, the one order GrantBulkWrite states, and a plain DELETE would
 	// take them in the order it scans them.
 	GrantDeleteExpired = `WITH chosen AS (
-  SELECT family AS chosen_family FROM op_grants
+  SELECT family AS chosen_family FROM scrty_op_grants
   WHERE (NOT revoked AND expires_at < $1) OR (revoked AND (revoked_at IS NULL OR revoked_at < $2))
   ORDER BY family FOR UPDATE)
-DELETE FROM op_grants USING chosen WHERE family = chosen_family`
+DELETE FROM scrty_op_grants USING chosen WHERE family = chosen_family`
 
 	// AccessTokenInsert stores a token, with the arguments AccessTokenArgs returns. No
 	// row affected means its identifier is already held.
-	AccessTokenInsert = `INSERT INTO op_access_tokens (` + accessTokenColumns + `)
+	AccessTokenInsert = `INSERT INTO scrty_op_access_tokens (` + accessTokenColumns + `)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 ON CONFLICT DO NOTHING`
 
 	// AccessTokenSelect reads token $1.
-	AccessTokenSelect = `SELECT ` + accessTokenColumns + ` FROM op_access_tokens WHERE id = $1`
+	AccessTokenSelect = `SELECT ` + accessTokenColumns + ` FROM scrty_op_access_tokens WHERE id = $1`
 
 	// AccessTokenRevoke marks token $1 revoked. No row affected means it is not held.
-	AccessTokenRevoke = `UPDATE op_access_tokens SET revoked = true WHERE id = $1`
+	//nolint:gosec // G101: SQL text, not a credential
+	AccessTokenRevoke = `UPDATE scrty_op_access_tokens SET revoked = true WHERE id = $1`
 
 	// AccessTokenDeleteExpired removes the tokens that expired strictly before $1.
-	AccessTokenDeleteExpired = `DELETE FROM op_access_tokens WHERE expires_at < $1` //nolint:gosec // a statement, and no credential
+	AccessTokenDeleteExpired = `DELETE FROM scrty_op_access_tokens WHERE expires_at < $1` //nolint:gosec // a statement, and no credential
 
 	// AssertionIDRecord notes identifier $3 of client $2 until $4, with $1 the row's
 	// uuid. One row affected means the pair is new, and none that it was held, whose
 	// first until is left as it was.
-	AssertionIDRecord = `INSERT INTO op_client_assertions (id, client_id, jti, held_until) VALUES ($1, $2, $3, $4)
+	AssertionIDRecord = `INSERT INTO scrty_op_client_assertions (id, client_id, jti, held_until) VALUES ($1, $2, $3, $4)
 ON CONFLICT (client_id, jti) DO NOTHING`
 
 	// AssertionIDDeleteExpired removes the pairs held strictly before $1.
-	AssertionIDDeleteExpired = `DELETE FROM op_client_assertions WHERE held_until < $1`
+	AssertionIDDeleteExpired = `DELETE FROM scrty_op_client_assertions WHERE held_until < $1`
 
 	// BrowserSessionInsert stores a session, with the arguments BrowserSessionArgs
 	// returns. No row affected means its digest is already held.
-	BrowserSessionInsert = `INSERT INTO op_browser_sessions (id, ` + browserSessionColumns + `)
+	BrowserSessionInsert = `INSERT INTO scrty_op_browser_sessions (id, ` + browserSessionColumns + `)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT (digest) DO NOTHING`
 
 	// BrowserSessionSelect reads the session of digest $1 while $2 is before both of
 	// its deadlines.
-	BrowserSessionSelect = `SELECT ` + browserSessionColumns + ` FROM op_browser_sessions
+	BrowserSessionSelect = `SELECT ` + browserSessionColumns + ` FROM scrty_op_browser_sessions
 WHERE digest = $1 AND $2 < idle_expires_at AND $2 < absolute_expires_at`
 
 	// BrowserSessionTouch moves the idle deadline of digest $1 to $2, or to the absolute
 	// deadline if that is sooner, and only ever later: one statement, so a slower touch
 	// cannot shorten what a later one wrote. No row affected means it is not held.
-	BrowserSessionTouch = `UPDATE op_browser_sessions
+	BrowserSessionTouch = `UPDATE scrty_op_browser_sessions
 SET idle_expires_at = GREATEST(idle_expires_at, LEAST($2, absolute_expires_at))
 WHERE digest = $1`
 
 	// BrowserSessionDelete removes the session of digest $1.
-	BrowserSessionDelete = `DELETE FROM op_browser_sessions WHERE digest = $1`
+	BrowserSessionDelete = `DELETE FROM scrty_op_browser_sessions WHERE digest = $1`
 
 	// BrowserSessionDeleteExpired removes the sessions with either deadline strictly
 	// before $1.
-	BrowserSessionDeleteExpired = `DELETE FROM op_browser_sessions WHERE idle_expires_at < $1 OR absolute_expires_at < $1`
+	BrowserSessionDeleteExpired = `DELETE FROM scrty_op_browser_sessions WHERE idle_expires_at < $1 OR absolute_expires_at < $1`
 
 	// ClientUpsert adds or replaces a client, with the arguments ClientArgs returns. It
 	// keeps the secrets held when $35 is true, in the one statement, so a settings change
 	// cannot overwrite a secret generated beside it. $1, the row's uuid, stays as it was
 	// on a replacement.
-	ClientUpsert = `INSERT INTO op_clients (id, ` + clientColumns + `)
+	ClientUpsert = `INSERT INTO scrty_op_clients (id, ` + clientColumns + `)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
   $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)
 ON CONFLICT (client_id) DO UPDATE SET
@@ -179,18 +180,19 @@ ON CONFLICT (client_id) DO UPDATE SET
   keep_public_web_grants_past_sign_in = EXCLUDED.keep_public_web_grants_past_sign_in,
   metadata = EXCLUDED.metadata, device_complete_uri = EXCLUDED.device_complete_uri,
   device_grants_outlive_sign_in = EXCLUDED.device_grants_outlive_sign_in,
-  secrets = CASE WHEN $35::boolean THEN op_clients.secrets ELSE EXCLUDED.secrets END`
+  secrets = CASE WHEN $35::boolean THEN scrty_op_clients.secrets ELSE EXCLUDED.secrets END`
 
 	// ClientSelect reads client $1.
-	ClientSelect = `SELECT ` + clientColumns + ` FROM op_clients WHERE client_id = $1`
+	ClientSelect = `SELECT ` + clientColumns + ` FROM scrty_op_clients WHERE client_id = $1`
 
 	// ClientDelete removes client $1. No row affected means it is not held.
-	ClientDelete = `DELETE FROM op_clients WHERE client_id = $1`
+	ClientDelete = `DELETE FROM scrty_op_clients WHERE client_id = $1`
 
 	// ClientSetSecrets replaces client $1's secrets with $3, only while it still has the
 	// authentication method $2 they were generated for. No row affected means the client
 	// is gone, or has moved to another method.
-	ClientSetSecrets = `UPDATE op_clients SET secrets = $3 WHERE client_id = $1 AND auth_method = $2`
+	//nolint:gosec // G101: SQL text, not a credential
+	ClientSetSecrets = `UPDATE scrty_op_clients SET secrets = $3 WHERE client_id = $1 AND auth_method = $2`
 )
 
 // The columns of each table, in the order its Args function binds and its Row scans.
@@ -233,12 +235,12 @@ const endsWithSignIn = `(ends_with_sign_in OR (NOT offline AND NOT survives_sign
 // heldFamilies is the set $1 of a statement writing the grants a hold returned.
 const heldFamilies = `SELECT held.family::uuid FROM jsonb_array_elements_text($1::jsonb) AS held(family)`
 
-// sessionsTable finds the sessions table's name in a session statement. No column of
+// sessionsTable finds the scrty_sessions table name in a session statement. No column of
 // that table, and no alias in its statements, holds the word.
-var sessionsTable = regexp.MustCompile(`\bsessions\b`)
+var sessionsTable = regexp.MustCompile(`\bscrty_sessions\b`)
 
 // LineageStatement is a session statement run over the refresh-token lineage table,
-// which has the sessions table's columns and indexes. It is how an adapter binds a
+// which has the scrty_sessions table's columns and indexes. It is how an adapter binds a
 // session store to that table, and the table is fixed here, so a consumer can choose
 // none other (T7).
 func LineageStatement(sessionStatement string) string {

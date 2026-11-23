@@ -456,7 +456,7 @@ func UpdateUserQuery(set []Column, now time.Time, userID any) (string, []any) {
 	var b strings.Builder
 	args := make([]any, 0, len(set)+2)
 
-	b.WriteString("UPDATE users SET ")
+	b.WriteString("UPDATE scrty_users SET ")
 	for _, c := range set {
 		args = append(args, c.value)
 		b.WriteString(c.name + " = $" + strconv.Itoa(len(args)) + ", ")

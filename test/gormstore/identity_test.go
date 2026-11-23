@@ -190,7 +190,7 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 
 				created, err := s.Provision(ctx, "inactive-user")
 				require.NoError(t, err)
-				_, err = d.conn.DB.ExecContext(ctx, `UPDATE users SET active = false WHERE id = $1`, string(created.ID))
+				_, err = d.conn.DB.ExecContext(ctx, `UPDATE scrty_users SET active = false WHERE id = $1`, string(created.ID))
 				require.NoError(t, err)
 
 				got, err := s.LoadByUsername(ctx, "inactive-user")
@@ -205,7 +205,7 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 				created, err := s.Provision(ctx, "missing-table-user")
 				require.NoError(t, err)
 
-				withGoneTable(ctx, t, d, "users", func(txCtx context.Context) {
+				withGoneTable(ctx, t, d, "scrty_users", func(txCtx context.Context) {
 					got, err := s.LoadByUsername(txCtx, "missing-table-user")
 					require.Error(t, err)
 					assert.NotErrorIs(t, err, identity.ErrUserNotFound)
@@ -213,7 +213,7 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 					assert.Nil(t, got)
 				})
 
-				withGoneTable(ctx, t, d, "users", func(txCtx context.Context) {
+				withGoneTable(ctx, t, d, "scrty_users", func(txCtx context.Context) {
 					required, err := s.Required(txCtx, created.ID)
 					require.Error(t, err)
 					assert.NotErrorIs(t, err, identity.ErrUserNotFound)
@@ -238,7 +238,7 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 					identity.WithUserRoles("admin"), identity.WithUserOrganization(&identity.Organization{ID: org.ID}))
 				require.NoError(t, err)
 
-				for _, table := range []string{"assigned_roles", "organizations", "groups"} {
+				for _, table := range []string{"scrty_assigned_roles", "scrty_organizations", "scrty_groups"} {
 					withGoneTable(ctx, t, d, table, func(txCtx context.Context) {
 						got, err := s.LoadByUsername(txCtx, "partial-user")
 						require.Error(t, err, table)
@@ -261,12 +261,12 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 
 				userTimes := func() (c, u time.Time) {
 					require.NoError(t, d.conn.DB.QueryRowContext(ctx,
-						`SELECT created_at, updated_at FROM users WHERE id = $1`, string(created.ID)).Scan(&c, &u))
+						`SELECT created_at, updated_at FROM scrty_users WHERE id = $1`, string(created.ID)).Scan(&c, &u))
 					return c, u
 				}
 				grantTimes := func(role string) (c, u time.Time) {
 					require.NoError(t, d.conn.DB.QueryRowContext(ctx,
-						`SELECT created_at, updated_at FROM assigned_roles WHERE user_id = $1 AND role_name = $2`,
+						`SELECT created_at, updated_at FROM scrty_assigned_roles WHERE user_id = $1 AND role_name = $2`,
 						string(created.ID), role).Scan(&c, &u))
 					return c, u
 				}
@@ -312,7 +312,7 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 					changed *time.Time
 				)
 				require.NoError(t, d.conn.DB.QueryRowContext(ctx,
-					`SELECT name, password_changed_at FROM users WHERE username = $1`, "zero-values-user").
+					`SELECT name, password_changed_at FROM scrty_users WHERE username = $1`, "zero-values-user").
 					Scan(&name, &changed))
 				assert.Empty(t, name, "a named empty name is written")
 				assert.Nil(t, changed, "a named zero time is written as NULL")
@@ -347,7 +347,7 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 				// The consumer's administration makes the first admin grant a
 				// super role; the second, whose identifier sorts first, is not.
 				_, err = d.conn.DB.ExecContext(ctx,
-					`UPDATE assigned_roles SET super_role = true WHERE id = $1`, first)
+					`UPDATE scrty_assigned_roles SET super_role = true WHERE id = $1`, first)
 				require.NoError(t, err)
 
 				got, err := s.Update(ctx, "descending-dup", identity.WithUserRoles("admin"))

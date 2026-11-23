@@ -1049,7 +1049,7 @@ func TestUpdateUserQuery(t *testing.T) {
 		{
 			name: "no column writes updated_at alone",
 			assert: func(t *testing.T, query string, args []any) {
-				assert.Equal(t, "UPDATE users SET updated_at = $1 WHERE id = $2", query)
+				assert.Equal(t, "UPDATE scrty_users SET updated_at = $1 WHERE id = $2", query)
 				assert.Equal(t, []any{now, userID}, args)
 			},
 		},
@@ -1057,7 +1057,7 @@ func TestUpdateUserQuery(t *testing.T) {
 			name: "one column precedes updated_at",
 			set:  columns(identity.WithUserName("Ada")),
 			assert: func(t *testing.T, query string, args []any) {
-				assert.Equal(t, "UPDATE users SET name = $1, updated_at = $2 WHERE id = $3", query)
+				assert.Equal(t, "UPDATE scrty_users SET name = $1, updated_at = $2 WHERE id = $3", query)
 				assert.Equal(t, []any{"Ada", now, userID}, args)
 			},
 		},
@@ -1071,7 +1071,7 @@ func TestUpdateUserQuery(t *testing.T) {
 			),
 			assert: func(t *testing.T, query string, args []any) {
 				assert.Equal(t,
-					"UPDATE users SET name = $1, password = $2, organization_id = $3, "+
+					"UPDATE scrty_users SET name = $1, password = $2, organization_id = $3, "+
 						"password_changed_at = $4, updated_at = $5 WHERE id = $6", query)
 				assert.Equal(t, []any{"Ada", []byte("hash"), "org-1", changedAt, now, userID}, args)
 			},
@@ -1081,7 +1081,7 @@ func TestUpdateUserQuery(t *testing.T) {
 			set:    []storekit.Column{storekit.RoleColumn("admin")},
 			userID: 7,
 			assert: func(t *testing.T, query string, args []any) {
-				assert.Equal(t, "UPDATE users SET role = $1, updated_at = $2 WHERE id = $3", query)
+				assert.Equal(t, "UPDATE scrty_users SET role = $1, updated_at = $2 WHERE id = $3", query)
 				assert.Equal(t, []any{"admin", now, 7}, args)
 			},
 		},
@@ -1125,7 +1125,7 @@ func TestUserColumns(t *testing.T) {
 		{
 			name: "nothing named writes no column",
 			assert: func(t *testing.T, query string, args []any) {
-				assert.Equal(t, "UPDATE users SET updated_at = $1 WHERE id = $2", query)
+				assert.Equal(t, "UPDATE scrty_users SET updated_at = $1 WHERE id = $2", query)
 				assert.Equal(t, []any{now, "u"}, args)
 			},
 		},
@@ -1133,7 +1133,7 @@ func TestUserColumns(t *testing.T) {
 			name: "the name alone",
 			opts: []identity.UserOption{identity.WithUserName("Ada")},
 			assert: func(t *testing.T, query string, args []any) {
-				assert.Equal(t, "UPDATE users SET name = $1, updated_at = $2 WHERE id = $3", query)
+				assert.Equal(t, "UPDATE scrty_users SET name = $1, updated_at = $2 WHERE id = $3", query)
 				assert.Equal(t, []any{"Ada", now, "u"}, args)
 			},
 		},
@@ -1141,7 +1141,7 @@ func TestUserColumns(t *testing.T) {
 			name: "the password alone, nil written as empty",
 			opts: []identity.UserOption{identity.WithUserPassword(nil)},
 			assert: func(t *testing.T, query string, args []any) {
-				assert.Equal(t, "UPDATE users SET password = $1, updated_at = $2 WHERE id = $3", query)
+				assert.Equal(t, "UPDATE scrty_users SET password = $1, updated_at = $2 WHERE id = $3", query)
 				assert.Equal(t, []any{[]byte{}, now, "u"}, args)
 			},
 		},
@@ -1149,7 +1149,7 @@ func TestUserColumns(t *testing.T) {
 			name: "the organization alone binds org",
 			opts: []identity.UserOption{identity.WithUserOrganization(nil)},
 			assert: func(t *testing.T, query string, args []any) {
-				assert.Equal(t, "UPDATE users SET organization_id = $1, updated_at = $2 WHERE id = $3", query)
+				assert.Equal(t, "UPDATE scrty_users SET organization_id = $1, updated_at = $2 WHERE id = $3", query)
 				assert.Equal(t, []any{org, now, "u"}, args)
 			},
 		},
@@ -1157,7 +1157,7 @@ func TestUserColumns(t *testing.T) {
 			name: "the password-changed-at time alone goes through ts",
 			opts: []identity.UserOption{identity.WithUserPasswordChangedAt(changedAt)},
 			assert: func(t *testing.T, query string, args []any) {
-				assert.Equal(t, "UPDATE users SET password_changed_at = $1, updated_at = $2 WHERE id = $3", query)
+				assert.Equal(t, "UPDATE scrty_users SET password_changed_at = $1, updated_at = $2 WHERE id = $3", query)
 				assert.Equal(t, []any{marker, now, "u"}, args)
 			},
 		},
@@ -1173,7 +1173,7 @@ func TestUserColumns(t *testing.T) {
 			},
 			assert: func(t *testing.T, query string, args []any) {
 				assert.Equal(t,
-					"UPDATE users SET name = $1, password = $2, organization_id = $3, "+
+					"UPDATE scrty_users SET name = $1, password = $2, organization_id = $3, "+
 						"password_changed_at = $4, updated_at = $5 WHERE id = $6", query)
 				assert.Equal(t, []any{"Ada", []byte("hash"), org, marker, now, "u"}, args)
 			},
@@ -1182,7 +1182,7 @@ func TestUserColumns(t *testing.T) {
 			name: "the email has no column",
 			opts: []identity.UserOption{identity.WithUserEmail("ada@example.com")},
 			assert: func(t *testing.T, query string, args []any) {
-				assert.Equal(t, "UPDATE users SET updated_at = $1 WHERE id = $2", query)
+				assert.Equal(t, "UPDATE scrty_users SET updated_at = $1 WHERE id = $2", query)
 				assert.Equal(t, []any{now, "u"}, args)
 			},
 		},

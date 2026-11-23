@@ -13,10 +13,11 @@ import (
 	"github.com/kartaladev/scrty/store/migrate"
 )
 
-// identityTables lists the seven tables the identity set creates.
-var identityTables = []string{
+// identityTables lists the seven tables the identity set holds once it is
+// fully applied: every one under its scrty_ name.
+var identityTables = prefixNames([]string{
 	"groups", "organizations", "roles", "users", "assigned_roles", "resource_privileges", "password_history",
-}
+})
 
 // migratedIdentity returns a database the identity set alone has been applied
 // to, with the leftover-table check turned on so this set's own test proves
@@ -46,7 +47,7 @@ func TestIdentityMigrations_Independent(t *testing.T) {
 		rows := queryStrings(t, db, `SELECT tablename FROM pg_tables WHERE schemaname = current_schema()`)
 		want := append(slices.Clone(identityTables), migrate.IdentityVersionTable)
 		assert.ElementsMatch(t, want, rows)
-		assert.NotContains(t, rows, "sessions")
+		assert.NotContains(t, rows, "scrty_sessions")
 	})
 
 	t.Run("security-state set alone creates no identity table", func(t *testing.T) {
@@ -99,7 +100,7 @@ func TestIdentityMigrations_Independent(t *testing.T) {
 			WithTestPostgresMigrations(set.FS(), set.Dir, "app_identity_versions"),
 		).DB
 
-		assert.Equal(t, 1, appliedVersionCount(t, db, "app_identity_versions"))
+		assert.Equal(t, 2, appliedVersionCount(t, db, "app_identity_versions"))
 		assert.False(t, regclassExists(t, db, migrate.IdentityVersionTable))
 	})
 }
@@ -152,31 +153,31 @@ func TestIdentityQueriesMatchSchema(t *testing.T) {
 // nullability and defaults. created_at, updated_at and the password hashes
 // carry no default: every writer supplies them. password_changed_at is
 // nullable, NULL meaning never recorded. mfa_required is NOT NULL DEFAULT
-// false, so a NULL can never scan as "not required". password_history.seq is
-// an identity column the table assigns (see identitySeqAlways).
+// false, so a NULL can never scan as "not required". scrty_password_history.seq
+// is an identity column the table assigns (see identitySeqAlways).
 var identityColumns = map[string][]column{
-	"groups": {
+	"scrty_groups": {
 		required("id", colUUID),
 		required("name", colText),
 		defaulted("internal", colBoolean, "false"),
 		required("created_at", colTimestamptz),
 		required("updated_at", colTimestamptz),
 	},
-	"organizations": {
+	"scrty_organizations": {
 		required("id", colUUID),
 		required("name", colText),
 		optional("group_id", colUUID),
 		required("created_at", colTimestamptz),
 		required("updated_at", colTimestamptz),
 	},
-	"roles": {
+	"scrty_roles": {
 		required("id", colUUID),
 		required("name", colText),
 		defaulted("super_role", colBoolean, "false"),
 		required("created_at", colTimestamptz),
 		required("updated_at", colTimestamptz),
 	},
-	"users": {
+	"scrty_users": {
 		required("id", colUUID),
 		defaulted("name", colText, defEmptyText),
 		required("username", colText),
@@ -189,7 +190,7 @@ var identityColumns = map[string][]column{
 		required("created_at", colTimestamptz),
 		required("updated_at", colTimestamptz),
 	},
-	"assigned_roles": {
+	"scrty_assigned_roles": {
 		required("id", colUUID),
 		required("user_id", colUUID),
 		required("role_name", colText),
@@ -201,7 +202,7 @@ var identityColumns = map[string][]column{
 		required("created_at", colTimestamptz),
 		required("updated_at", colTimestamptz),
 	},
-	"resource_privileges": {
+	"scrty_resource_privileges": {
 		required("id", colUUID),
 		required("role_name", colText),
 		required("resource_group", colText),
@@ -211,7 +212,7 @@ var identityColumns = map[string][]column{
 		required("created_at", colTimestamptz),
 		required("updated_at", colTimestamptz),
 	},
-	"password_history": {
+	"scrty_password_history": {
 		required("id", colUUID),
 		required("user_id", colUUID),
 		required("password", colBytea),
@@ -232,31 +233,31 @@ const identitySeqAlways = "GENERATED ALWAYS AS IDENTITY"
 // and the three lookup indexes, password_history_user_seq with its exact
 // (user_id, seq DESC) order.
 var identityIndexes = map[string][]string{
-	"groups": {
-		"CREATE UNIQUE INDEX groups_pkey ON groups USING btree (id)",
+	"scrty_groups": {
+		"CREATE UNIQUE INDEX scrty_groups_pkey ON scrty_groups USING btree (id)",
 	},
-	"organizations": {
-		"CREATE UNIQUE INDEX organizations_pkey ON organizations USING btree (id)",
+	"scrty_organizations": {
+		"CREATE UNIQUE INDEX scrty_organizations_pkey ON scrty_organizations USING btree (id)",
 	},
-	"roles": {
-		"CREATE UNIQUE INDEX roles_pkey ON roles USING btree (id)",
-		"CREATE UNIQUE INDEX roles_name_key ON roles USING btree (name)",
+	"scrty_roles": {
+		"CREATE UNIQUE INDEX scrty_roles_pkey ON scrty_roles USING btree (id)",
+		"CREATE UNIQUE INDEX scrty_roles_name_key ON scrty_roles USING btree (name)",
 	},
-	"users": {
-		"CREATE UNIQUE INDEX users_pkey ON users USING btree (id)",
-		"CREATE UNIQUE INDEX users_username_key ON users USING btree (username)",
+	"scrty_users": {
+		"CREATE UNIQUE INDEX scrty_users_pkey ON scrty_users USING btree (id)",
+		"CREATE UNIQUE INDEX scrty_users_username_key ON scrty_users USING btree (username)",
 	},
-	"assigned_roles": {
-		"CREATE UNIQUE INDEX assigned_roles_pkey ON assigned_roles USING btree (id)",
-		"CREATE INDEX assigned_roles_user_id ON assigned_roles USING btree (user_id)",
+	"scrty_assigned_roles": {
+		"CREATE UNIQUE INDEX scrty_assigned_roles_pkey ON scrty_assigned_roles USING btree (id)",
+		"CREATE INDEX scrty_assigned_roles_user_id ON scrty_assigned_roles USING btree (user_id)",
 	},
-	"resource_privileges": {
-		"CREATE UNIQUE INDEX resource_privileges_pkey ON resource_privileges USING btree (id)",
-		"CREATE INDEX resource_privileges_role_name ON resource_privileges USING btree (role_name)",
+	"scrty_resource_privileges": {
+		"CREATE UNIQUE INDEX scrty_resource_privileges_pkey ON scrty_resource_privileges USING btree (id)",
+		"CREATE INDEX scrty_resource_privileges_role_name ON scrty_resource_privileges USING btree (role_name)",
 	},
-	"password_history": {
-		"CREATE UNIQUE INDEX password_history_pkey ON password_history USING btree (id)",
-		"CREATE INDEX password_history_user_seq ON password_history USING btree (user_id, seq DESC)",
+	"scrty_password_history": {
+		"CREATE UNIQUE INDEX scrty_password_history_pkey ON scrty_password_history USING btree (id)",
+		"CREATE INDEX scrty_password_history_user_seq ON scrty_password_history USING btree (user_id, seq DESC)",
 	},
 }
 
@@ -309,7 +310,7 @@ func identitySchemaChecks() []schemaCheck {
 			           AND conrelid::regclass::text = ANY(string_to_array($1, ','))`,
 			args: []any{tables},
 			assert: func(t *testing.T, rows []string) {
-				assert.ElementsMatch(t, []string{"users|UNIQUE (username)", "roles|UNIQUE (name)"}, rows)
+				assert.ElementsMatch(t, []string{"scrty_users|UNIQUE (username)", "scrty_roles|UNIQUE (name)"}, rows)
 			},
 		},
 		{

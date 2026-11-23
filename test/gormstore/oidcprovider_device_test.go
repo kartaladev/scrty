@@ -31,7 +31,7 @@ func deviceRows(ctx context.Context, t *testing.T, db *sql.DB) int {
 	t.Helper()
 
 	var n int
-	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM op_device_authorizations`).Scan(&n))
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM scrty_op_device_authorizations`).Scan(&n))
 
 	return n
 }
@@ -460,7 +460,7 @@ func TestGormStore_DeviceReadRefusals(t *testing.T) {
 			r := opDevice(1)
 			r.State = tc.state
 			require.NoError(t, s.Create(ctx, r, opTime))
-			_, err := d.conn.DB.ExecContext(ctx, "UPDATE op_device_authorizations SET "+tc.corrupt) //nolint:gosec // tc.corrupt is a constant of this table
+			_, err := d.conn.DB.ExecContext(ctx, "UPDATE scrty_op_device_authorizations SET "+tc.corrupt) //nolint:gosec // tc.corrupt is a constant of this table
 			require.NoError(t, err)
 
 			tc.assert(t, ctx, s)
@@ -483,7 +483,7 @@ func TestGormStore_GrantOriginRefusals(t *testing.T) {
 		t.Helper()
 
 		var n int
-		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM op_grants`).Scan(&n))
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM scrty_op_grants`).Scan(&n))
 
 		return n
 	}
@@ -506,7 +506,7 @@ func TestGormStore_GrantOriginRefusals(t *testing.T) {
 			assert: func(t *testing.T, ctx context.Context, d database) {
 				grants := newGrantStore(t, d.db)
 				require.NoError(t, grants.Create(ctx, grant(oidcprovider.OriginCode)))
-				_, err := d.conn.DB.ExecContext(ctx, `UPDATE op_grants SET origin = 7`)
+				_, err := d.conn.DB.ExecContext(ctx, `UPDATE scrty_op_grants SET origin = 7`)
 				require.NoError(t, err)
 
 				got, err := grants.Load(ctx, opID(1))
@@ -531,7 +531,7 @@ func TestGormStore_GrantOriginRefusals(t *testing.T) {
 type vanishingInsertPool struct{ gormdb.ConnPool }
 
 func (v vanishingInsertPool) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	if strings.Contains(query, "INSERT INTO op_device_authorizations") {
+	if strings.Contains(query, "INSERT INTO scrty_op_device_authorizations") {
 		return noRows{}, nil
 	}
 

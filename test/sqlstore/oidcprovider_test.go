@@ -243,7 +243,7 @@ func TestSQLStore_ClientSecretsStoredForm(t *testing.T) {
 	require.NoError(t, s.Put(t.Context(), c))
 
 	var stored string
-	require.NoError(t, db.QueryRowContext(t.Context(), `SELECT secrets::text FROM op_clients WHERE client_id = 'c-1'`).Scan(&stored))
+	require.NoError(t, db.QueryRowContext(t.Context(), `SELECT secrets::text FROM scrty_op_clients WHERE client_id = 'c-1'`).Scan(&stored))
 
 	assert.NotContains(t, stored, "REDACTED", "the digest must be stored, not its redacted form")
 	assert.NotContains(t, stored, string(clientSecretBytes), "the secret itself must not be stored")
@@ -268,7 +268,7 @@ func TestSQLStore_LineageIsNotASession(t *testing.T) {
 		table         string
 	}{
 		{name: "lineage_not_a_session", written: lineages, read: sessions, table: pgschema.RefreshTokenTable},
-		{name: "a session is not a lineage", written: sessions, read: lineages, table: "sessions"},
+		{name: "a session is not a lineage", written: sessions, read: lineages, table: "scrty_sessions"},
 	}
 
 	for i, tc := range cases {
@@ -350,8 +350,8 @@ func TestSQLStore_LineageInCallersTransaction(t *testing.T) {
 			}
 
 			assert.Equal(t, 1, held(pgschema.RefreshTokenTable, inLineage.FamilyID), "the lineage store wrote to the lineage table")
-			assert.Zero(t, held("sessions", inLineage.FamilyID), "and not to the sessions table")
-			assert.Equal(t, 1, held("sessions", inSessions.FamilyID), "the session store wrote to the sessions table")
+			assert.Zero(t, held("scrty_sessions", inLineage.FamilyID), "and not to the sessions table")
+			assert.Equal(t, 1, held("scrty_sessions", inSessions.FamilyID), "the session store wrote to the sessions table")
 			assert.Zero(t, held(pgschema.RefreshTokenTable, inSessions.FamilyID), "and not to the lineage table")
 
 			_, err = lineages.Load(ctx, inLineage.ID)
@@ -361,7 +361,7 @@ func TestSQLStore_LineageInCallersTransaction(t *testing.T) {
 
 			require.NoError(t, tx.Rollback())
 
-			for _, table := range []string{pgschema.RefreshTokenTable, "sessions"} {
+			for _, table := range []string{pgschema.RefreshTokenTable, "scrty_sessions"} {
 				var n int
 				// table is one of this test's constants.
 				require.NoError(t, db.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table).Scan(&n))
@@ -683,7 +683,7 @@ func TestSQLStore_GrantRows(t *testing.T) {
 				require.NoError(t, s.Create(ctx, &oidcprovider.Grant{Family: opID(1), User: "u-1", CreatedAt: opTime}))
 
 				var isNull bool
-				require.NoError(t, db.QueryRowContext(ctx, `SELECT sign_in_family IS NULL FROM op_grants`).Scan(&isNull))
+				require.NoError(t, db.QueryRowContext(ctx, `SELECT sign_in_family IS NULL FROM scrty_op_grants`).Scan(&isNull))
 				require.True(t, isNull, "no family is held as NULL, as the schema has it")
 
 				got, err := s.EndSignIns(ctx, oidcprovider.SignInSelector{User: "u-1", ExceptFamily: opID(9)}, at)
@@ -699,7 +699,7 @@ func TestSQLStore_GrantRows(t *testing.T) {
 				require.NoError(t, s.Create(ctx, &oidcprovider.Grant{Family: opID(1), User: "u-1"}))
 
 				var isNull bool
-				require.NoError(t, db.QueryRowContext(ctx, `SELECT created_at IS NULL FROM op_grants`).Scan(&isNull))
+				require.NoError(t, db.QueryRowContext(ctx, `SELECT created_at IS NULL FROM scrty_op_grants`).Scan(&isNull))
 				assert.False(t, isNull)
 				require.Error(t, s.Create(ctx, &oidcprovider.Grant{Family: opID(1), User: "u-2"}))
 
@@ -732,7 +732,7 @@ func TestSQLStore_GrantRows(t *testing.T) {
 				var created, signIn, code sql.NullString
 				var holds bool
 				require.NoError(t, db.QueryRowContext(ctx,
-					`SELECT created_at::text, sign_in_family::text, code_id::text, holds_lineage FROM op_grants`).
+					`SELECT created_at::text, sign_in_family::text, code_id::text, holds_lineage FROM scrty_op_grants`).
 					Scan(&created, &signIn, &code, &holds))
 				assert.False(t, created.Valid)
 				assert.False(t, signIn.Valid)
@@ -816,7 +816,7 @@ func TestSQLStore_GrantRows(t *testing.T) {
 				blocker, err := db.BeginTx(ctx, nil)
 				require.NoError(t, err)
 				defer func() { _ = blocker.Rollback() }()
-				_, err = blocker.ExecContext(ctx, `SELECT 1 FROM op_grants WHERE family = $1 FOR UPDATE`, opID(1).String())
+				_, err = blocker.ExecContext(ctx, `SELECT 1 FROM scrty_op_grants WHERE family = $1 FOR UPDATE`, opID(1).String())
 				require.NoError(t, err)
 
 				var ended []oidcprovider.Grant
@@ -875,7 +875,7 @@ func assertFailedUnit(ctx context.Context, t *testing.T, db *sql.DB, call func(c
 
 	_, err := db.ExecContext(ctx, `CREATE FUNCTION test_refuse_grant_write() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN RAISE EXCEPTION 'refused by the test'; END $$;
-CREATE TRIGGER test_refuse_grant_write BEFORE UPDATE ON op_grants
+CREATE TRIGGER test_refuse_grant_write BEFORE UPDATE ON scrty_op_grants
 FOR EACH ROW EXECUTE FUNCTION test_refuse_grant_write()`)
 	require.NoError(t, err)
 
@@ -1117,7 +1117,7 @@ func TestSQLStore_GrantLockOrderOverDifferentSets(t *testing.T) {
 			for r := range rounds {
 				// Two clients' grants alternate in family order and are stored in a
 				// random one, so the client's set is a strict, interleaved subset.
-				_, err := db.ExecContext(ctx, `INSERT INTO op_grants (family, user_ref, client_id, created_at, expires_at)
+				_, err := db.ExecContext(ctx, `INSERT INTO scrty_op_grants (family, user_ref, client_id, created_at, expires_at)
 SELECT format('01926a4e-%s-7000-8000-%s', lpad(to_hex($1::int), 4, '0'), lpad(to_hex(i), 12, '0'))::uuid,
   $2, CASE WHEN i % 2 = 0 THEN 'c-1' ELSE 'c-2' END, $3::timestamptz, $4::timestamptz
 FROM generate_series(1, $5::int) AS i ORDER BY random()`,
@@ -1241,7 +1241,7 @@ WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> pg_ba
 			blocker, err := db.BeginTx(ctx, nil)
 			require.NoError(t, err)
 			defer func() { _ = blocker.Rollback() }()
-			_, err = blocker.ExecContext(ctx, `SELECT 1 FROM op_grants WHERE family = $1 FOR UPDATE`, held.String())
+			_, err = blocker.ExecContext(ctx, `SELECT 1 FROM scrty_op_grants WHERE family = $1 FOR UPDATE`, held.String())
 			require.NoError(t, err)
 
 			var errs [2]error

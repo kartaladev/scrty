@@ -67,7 +67,7 @@ func TestRecoveryCodeStore(t *testing.T) {
 
 	t.Run("pgx", func(t *testing.T) {
 		storetest.RunRecoveryCodeStoreSuite(t, func(t *testing.T, _ clock.Clock) recovery.CodeStore {
-			return newRecoveryCodeStore(t, emptied(t, db, "recovery_codes"))
+			return newRecoveryCodeStore(t, emptied(t, db, "scrty_recovery_codes"))
 		})
 	})
 }
@@ -79,7 +79,7 @@ func TestRecoveryRecordStore(t *testing.T) {
 
 	t.Run("pgx", func(t *testing.T) {
 		storetest.RunRecoveryRecordStoreSuite(t, func(t *testing.T, _ clock.Clock) recovery.RecordStore {
-			return newRecoveryRecordStore(t, emptied(t, db, "account_recoveries"))
+			return newRecoveryRecordStore(t, emptied(t, db, "scrty_account_recoveries"))
 		})
 	})
 }
@@ -119,7 +119,7 @@ func spentAt(ctx context.Context, t *testing.T, db *sql.DB, user identity.UserID
 
 	var at sql.NullTime
 	require.NoError(t, db.QueryRowContext(ctx,
-		`SELECT spent_at FROM recovery_codes WHERE user_id = $1 AND code_hash = $2`, string(user), hash).Scan(&at))
+		`SELECT spent_at FROM scrty_recovery_codes WHERE user_id = $1 AND code_hash = $2`, string(user), hash).Scan(&at))
 
 	return at
 }
@@ -192,7 +192,7 @@ func TestRecoveryCodeStore_Rows(t *testing.T) {
 					created time.Time
 				)
 				require.NoError(t, db.DB.QueryRowContext(ctx,
-					`SELECT id, created_at FROM recovery_codes WHERE user_id = $1`, string(user)).Scan(&got, &created))
+					`SELECT id, created_at FROM scrty_recovery_codes WHERE user_id = $1`, string(user)).Scan(&got, &created))
 				assert.Equal(t, want, got)
 				assert.True(t, recoveryAt.Equal(created), "created_at is %v, want %v", created, recoveryAt)
 			},
@@ -312,7 +312,7 @@ func recoveryRow(ctx context.Context, t *testing.T, db *sql.DB, rid id.ID) (prov
 	t.Helper()
 
 	require.NoError(t, db.QueryRowContext(ctx,
-		`SELECT proven, reported FROM account_recoveries WHERE id = $1`, rid).Scan(&proven, &reported))
+		`SELECT proven, reported FROM scrty_account_recoveries WHERE id = $1`, rid).Scan(&proven, &reported))
 
 	return proven, reported
 }
@@ -425,7 +425,7 @@ func TestRecoveryRecordStore_Rows(t *testing.T) {
 			},
 			assert: func(t *testing.T, ctx context.Context, s *pgxstore.RecoveryRecordStore, r recovery.Record, err error) {
 				require.NoError(t, err)
-				_, err = db.DB.ExecContext(ctx, `UPDATE account_recoveries SET proven = 'no-colon' WHERE id = $1`, r.ID)
+				_, err = db.DB.ExecContext(ctx, `UPDATE scrty_account_recoveries SET proven = 'no-colon' WHERE id = $1`, r.ID)
 				require.NoError(t, err)
 
 				got, err := s.Find(ctx, r.ID)
@@ -440,7 +440,7 @@ func TestRecoveryRecordStore_Rows(t *testing.T) {
 			record: func(t *testing.T) recovery.Record { return recoveryRecord(t, "rows-infinite") },
 			assert: func(t *testing.T, ctx context.Context, s *pgxstore.RecoveryRecordStore, r recovery.Record, err error) {
 				require.NoError(t, err)
-				_, err = db.DB.ExecContext(ctx, `UPDATE account_recoveries SET completed_at = 'infinity' WHERE id = $1`, r.ID)
+				_, err = db.DB.ExecContext(ctx, `UPDATE scrty_account_recoveries SET completed_at = 'infinity' WHERE id = $1`, r.ID)
 				require.NoError(t, err)
 
 				got, err := s.Find(ctx, r.ID)

@@ -227,7 +227,7 @@ func signInWhere(sel oidcprovider.SignInSelector, first int) (string, []any) {
 func CodeUnspentBySignIn(sel oidcprovider.SignInSelector, includeOffline bool) (string, []any) {
 	where, args := signInWhere(sel, 2)
 
-	return "SELECT grant_family FROM op_authorization_codes WHERE " + where +
+	return "SELECT grant_family FROM scrty_op_authorization_codes WHERE " + where +
 		" AND ($1::boolean OR NOT offline OR ends_with_sign_in)", append([]any{includeOffline}, args...)
 }
 
@@ -236,7 +236,7 @@ func CodeUnspentBySignIn(sel oidcprovider.SignInSelector, includeOffline bool) (
 func BrowserSessionDeleteBySignIn(sel oidcprovider.SignInSelector) (string, []any) {
 	where, args := signInWhere(sel, 1)
 
-	return "DELETE FROM op_browser_sessions WHERE " + where, args
+	return "DELETE FROM scrty_op_browser_sessions WHERE " + where, args
 }
 
 // GrantBulkWrite is the two steps of an operation writing many grants, which an adapter
@@ -245,7 +245,7 @@ func BrowserSessionDeleteBySignIn(sel oidcprovider.SignInSelector) (string, []an
 //
 // # One lock order
 //
-// Every statement taking more than one op_grants row takes them in ascending family
+// Every statement taking more than one scrty_op_grants row takes them in ascending family
 // order, whichever of them are stored grants and whichever are only named by an
 // outstanding code, and whichever write they will get. Two such statements then wait for
 // each other and cannot deadlock. A row's lock and a new key's insert are one order, not
@@ -309,11 +309,11 @@ func grantHold(families []id.ID, cause oidcprovider.RevocationCause, at time.Tim
 	return `WITH wanted AS (
   SELECT named.family::uuid AS family FROM jsonb_array_elements_text($1::jsonb) AS named(family)
   UNION
-  SELECT family FROM op_grants WHERE ` + where + `),
+  SELECT family FROM scrty_op_grants WHERE ` + where + `),
 inserted AS (
-  INSERT INTO op_grants (family, revoked, revoked_at, revoke_cause, sign_in_ended_at)
+  INSERT INTO scrty_op_grants (family, revoked, revoked_at, revoke_cause, sign_in_ended_at)
   SELECT family, true, $2::timestamptz, $3::text, $4::timestamptz FROM wanted ORDER BY family
-  ON CONFLICT (family) DO UPDATE SET revoked = op_grants.revoked WHERE false)
+  ON CONFLICT (family) DO UPDATE SET revoked = scrty_op_grants.revoked WHERE false)
 SELECT COALESCE(jsonb_agg(family), '[]'::jsonb)::text FROM wanted`,
 		append([]any{set, opTime(at), string(cause), mark}, args...)
 }
@@ -323,7 +323,7 @@ SELECT COALESCE(jsonb_agg(family), '[]'::jsonb)::text FROM wanted`,
 // $4. Revoking changes nothing it selects by, and the stored grants a hold takes either
 // match report or are named by a code, so it decides nothing else.
 const grantRevokeWrite = `WITH written AS (
-  UPDATE op_grants SET revoked = true, revoked_at = $2::timestamptz, revoke_cause = $3::text
+  UPDATE scrty_op_grants SET revoked = true, revoked_at = $2::timestamptz, revoke_cause = $3::text
   WHERE NOT revoked AND family IN (` + heldFamilies + `)
   RETURNING ` + grantColumns + `)
 SELECT ` + grantColumns + ` FROM written WHERE created_at IS NOT NULL AND `
@@ -389,9 +389,9 @@ func GrantEndSignIns(sel oidcprovider.SignInSelector, families []id.ID, at time.
   SELECT family AS chosen_family,
     created_at IS NOT NULL AND sign_in_ended_at IS NULL AND ` + writeWhere + ` AS newly_ended,
     family IN (SELECT named.family::uuid FROM jsonb_array_elements_text($4::jsonb) AS named(family)) AS outstanding
-  FROM op_grants WHERE family IN (` + heldFamilies + `)),
+  FROM scrty_op_grants WHERE family IN (` + heldFamilies + `)),
 written AS (
-  UPDATE op_grants SET
+  UPDATE scrty_op_grants SET
     sign_in_ended_at = CASE WHEN newly_ended THEN $2::timestamptz ELSE sign_in_ended_at END,
     revoked = revoked OR outstanding OR (newly_ended AND ` + endsWithSignIn + `),
     revoked_at = CASE WHEN NOT revoked AND (outstanding OR (newly_ended AND ` + endsWithSignIn + `))
@@ -637,7 +637,7 @@ func PendingRequestArgs(r *oidcprovider.PendingRequest) ([]any, error) {
 	}, nil
 }
 
-// PendingRequestRow holds a scanned op_pending_requests row.
+// PendingRequestRow holds a scanned scrty_op_pending_requests row.
 type PendingRequestRow struct {
 	rec                                        oidcprovider.PendingRequest
 	scopes, resources, prompt, ui, claims, acr []byte
@@ -741,7 +741,7 @@ func (r *signInRow) record() (oidcprovider.SignIn, error) {
 	}, nil
 }
 
-// CodeRow holds a scanned op_authorization_codes row.
+// CodeRow holds a scanned scrty_op_authorization_codes row.
 type CodeRow struct {
 	rec               oidcprovider.CodeRecord
 	scopes, resources []byte
@@ -819,7 +819,7 @@ func Storable(values ...string) bool {
 	return true
 }
 
-// ConsentRow holds a scanned op_consents row.
+// ConsentRow holds a scanned scrty_op_consents row.
 type ConsentRow struct {
 	rec    oidcprovider.Consent
 	user   string
@@ -888,7 +888,7 @@ var (
 	errGrantRowOrigin = errors.New("a stored grant holds an origin GrantOrigin does not name")
 )
 
-// GrantRow holds a scanned op_grants row.
+// GrantRow holds a scanned scrty_op_grants row.
 type GrantRow struct {
 	rec                                        oidcprovider.Grant
 	user, cause                                string
@@ -958,7 +958,7 @@ func AccessTokenArgs(r *oidcprovider.AccessTokenRecord) ([]any, error) {
 	}, nil
 }
 
-// AccessTokenRow holds a scanned op_access_tokens row.
+// AccessTokenRow holds a scanned scrty_op_access_tokens row.
 type AccessTokenRow struct {
 	rec                            oidcprovider.AccessTokenRecord
 	user                           string
@@ -1037,7 +1037,7 @@ func BrowserSessionArgs(rowID id.ID, s *oidcprovider.BrowserSession) ([]any, err
 	}, nil
 }
 
-// BrowserSessionRow holds a scanned op_browser_sessions row.
+// BrowserSessionRow holds a scanned scrty_op_browser_sessions row.
 type BrowserSessionRow struct {
 	rec           oidcprovider.BrowserSession
 	signIn        signInRow
@@ -1120,7 +1120,7 @@ func ClientArgs(rowID id.ID, rc *oidcprovider.RegisteredClient, keepHeld bool) (
 	}, nil
 }
 
-// ClientRow holds a scanned op_clients row.
+// ClientRow holds a scanned scrty_op_clients row.
 type ClientRow struct {
 	rec                                      oidcprovider.RegisteredClient
 	clientType, appType, pkce, offline, bind int16

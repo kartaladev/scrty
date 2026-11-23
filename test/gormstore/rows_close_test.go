@@ -29,7 +29,7 @@ func refuseUpdatesAtCommit(t *testing.T, d database) {
 	ctx := t.Context()
 	_, err := d.conn.DB.ExecContext(ctx, refuseAtCommit)
 	require.NoError(t, err)
-	_, err = d.conn.DB.ExecContext(ctx, `CREATE CONSTRAINT TRIGGER refuse_at_commit AFTER UPDATE ON mfa_enrolments
+	_, err = d.conn.DB.ExecContext(ctx, `CREATE CONSTRAINT TRIGGER refuse_at_commit AFTER UPDATE ON scrty_mfa_enrolments
  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION refuse_at_commit()`)
 	require.NoError(t, err)
 }
@@ -63,7 +63,7 @@ func TestGormStore_ChargeReportsACommitThatFailedAfterItsRow(t *testing.T) {
 
 			var attempts int
 			require.NoError(t, d.conn.DB.QueryRowContext(ctx,
-				`SELECT verify_attempts FROM mfa_enrolments WHERE user_id = 'u-charge'`).Scan(&attempts))
+				`SELECT verify_attempts FROM scrty_mfa_enrolments WHERE user_id = 'u-charge'`).Scan(&attempts))
 			require.Zero(t, attempts, "the failed commit rolled the charge back")
 			require.Error(t, err, "charged=%v while the row holds %d attempts", charged, attempts)
 			assert.False(t, charged)
@@ -109,7 +109,7 @@ func TestGormStore_DryRunHandleRunsNoProviderStatement(t *testing.T) {
 			},
 			assert: func(t *testing.T, d database, err error) {
 				refused("give consent")(t, d, err)
-				assert.Zero(t, count(t, d, `SELECT count(*) FROM op_consents`), "a row was written")
+				assert.Zero(t, count(t, d, `SELECT count(*) FROM scrty_op_consents`), "a row was written")
 			},
 		},
 		{
@@ -152,7 +152,7 @@ func TestGormStore_DryRunHandleRunsNoProviderStatement(t *testing.T) {
 			},
 			assert: func(t *testing.T, d database, err error) {
 				refused("end sign-ins")(t, d, err)
-				assert.Zero(t, count(t, d, `SELECT count(*) FROM op_grants WHERE revoked`), "a grant was revoked")
+				assert.Zero(t, count(t, d, `SELECT count(*) FROM scrty_op_grants WHERE revoked`), "a grant was revoked")
 			},
 		},
 	}

@@ -89,13 +89,14 @@ var providerTables = []string{
 	"op_grants", "op_refresh_tokens", "op_access_tokens", "op_client_assertions", "op_device_authorizations",
 }
 
-// securityStateTables lists the twenty-five tables the security-state set creates.
-var securityStateTables = append([]string{
+// securityStateTables lists the twenty-five tables the security-state set holds once it is
+// fully applied: every one under its scrty_ name.
+var securityStateTables = prefixNames(append([]string{
 	"sessions", "signing_keys", "login_attempts", "login_failure_streaks", "mfa_enrolments",
 	"api_keys", "one_time_tokens", "oidc_links", "oidc_flows", "oidc_handoffs",
 	"recovery_codes", "account_recoveries", "passkey_credentials", "passkey_user_handles",
 	"rate_limit_buckets",
-}, providerTables...)
+}, providerTables...))
 
 // column is one column of the security-state set as the catalogue reports
 // it: the type from format_type (which carries any precision modifier, so the
@@ -206,7 +207,7 @@ var sessionTableColumns = []column{
 // verification charge: mfa_enrolments.verify_attempts and
 // verify_window_until.
 var securityStateColumns = map[string][]column{
-	"op_clients": {
+	"scrty_op_clients": {
 		required("id", colUUID),
 		required("client_id", colText),
 		defaulted("name", colText, defEmptyText),
@@ -242,7 +243,7 @@ var securityStateColumns = map[string][]column{
 		defaulted("device_complete_uri", colBoolean, "false"),
 		defaulted("device_grants_outlive_sign_in", colBoolean, "false"),
 	},
-	"op_pending_requests": {
+	"scrty_op_pending_requests": {
 		required("id", colUUID),
 		required("handle_digest", colBytea),
 		required("flow_digest", colBytea),
@@ -268,7 +269,7 @@ var securityStateColumns = map[string][]column{
 		optional("device_authorization_id", colUUID),
 		defaulted("device_user_code", colText, defEmptyText),
 	},
-	"op_browser_sessions": {
+	"scrty_op_browser_sessions": {
 		required("id", colUUID),
 		required("digest", colBytea),
 		required("user_ref", colText),
@@ -282,7 +283,7 @@ var securityStateColumns = map[string][]column{
 		required("idle_expires_at", colTimestamptz),
 		required("absolute_expires_at", colTimestamptz),
 	},
-	"op_authorization_codes": {
+	"scrty_op_authorization_codes": {
 		required("token_id", colUUID),
 		required("client_id", colText),
 		defaulted("redirect_uri", colText, defEmptyText),
@@ -304,7 +305,7 @@ var securityStateColumns = map[string][]column{
 		defaulted("ends_with_sign_in", colBoolean, "false"),
 		required("expires_at", colTimestamptz),
 	},
-	"op_consents": {
+	"scrty_op_consents": {
 		required("id", colUUID),
 		required("user_ref", colText),
 		required("client_id", colText),
@@ -312,7 +313,7 @@ var securityStateColumns = map[string][]column{
 		defaulted("offline", colBoolean, "false"),
 		required("last_given_at", colTimestamptz),
 	},
-	"op_grants": {
+	"scrty_op_grants": {
 		required("family", colUUID),
 		defaulted("user_ref", colText, defEmptyText),
 		defaulted("client_id", colText, defEmptyText),
@@ -339,7 +340,7 @@ var securityStateColumns = map[string][]column{
 		defaulted("origin", colSmallint, "0"),
 		defaulted("survives_sign_in_end", colBoolean, "false"),
 	},
-	"op_device_authorizations": {
+	"scrty_op_device_authorizations": {
 		required("id", colUUID),
 		required("device_code_digest", colBytea),
 		optional("user_code_digest", colBytea),
@@ -364,7 +365,7 @@ var securityStateColumns = map[string][]column{
 		defaulted("ends_with_sign_in", colBoolean, "false"),
 		defaulted("survives_sign_in_end", colBoolean, "false"),
 	},
-	"op_access_tokens": {
+	"scrty_op_access_tokens": {
 		required("id", colUUID),
 		required("digest", colBytea),
 		required("grant_family", colUUID),
@@ -377,15 +378,15 @@ var securityStateColumns = map[string][]column{
 		required("expires_at", colTimestamptz),
 		defaulted("revoked", colBoolean, "false"),
 	},
-	"op_client_assertions": {
+	"scrty_op_client_assertions": {
 		required("id", colUUID),
 		required("client_id", colText),
 		required("jti", colText),
 		required("held_until", colTimestamptz),
 	},
-	"sessions":          sessionTableColumns,
-	"op_refresh_tokens": sessionTableColumns,
-	"signing_keys": {
+	"scrty_sessions":          sessionTableColumns,
+	"scrty_op_refresh_tokens": sessionTableColumns,
+	"scrty_signing_keys": {
 		required("id", colUUID),
 		required("kid", colText),
 		required("alg", colText),
@@ -393,19 +394,19 @@ var securityStateColumns = map[string][]column{
 		required("public_jwk", colBytea),
 		required("created_at", colTimestamptz),
 	},
-	"login_attempts": {
+	"scrty_login_attempts": {
 		required("id", colUUID),
 		required("username", colText),
 		required("attempted_at", colTimestamptz),
 	},
-	"login_failure_streaks": {
+	"scrty_login_failure_streaks": {
 		required("id", colUUID),
 		required("username", colText),
 		required("failures", colInteger),
 		required("newest_failure_at", colTimestamptz),
 		optional("held_at", colTimestamptz),
 	},
-	"mfa_enrolments": {
+	"scrty_mfa_enrolments": {
 		required("id", colUUID),
 		required("user_id", colText),
 		required("secret", colText),
@@ -420,7 +421,7 @@ var securityStateColumns = map[string][]column{
 		defaulted("verify_attempts", colInteger, "0"),
 		optional("verify_window_until", colTimestamptz),
 	},
-	"api_keys": {
+	"scrty_api_keys": {
 		required("id", colUUID),
 		required("user_id", colText),
 		required("name", colText),
@@ -431,7 +432,7 @@ var securityStateColumns = map[string][]column{
 		optional("last_used_at", colTimestamptz),
 		required("created_at", colTimestamptz),
 	},
-	"one_time_tokens": {
+	"scrty_one_time_tokens": {
 		required("id", colUUID),
 		required("purpose", colText),
 		required("subject", colText),
@@ -441,7 +442,7 @@ var securityStateColumns = map[string][]column{
 		required("expires_at", colTimestamptz),
 		optional("consumed_at", colTimestamptz),
 	},
-	"oidc_links": {
+	"scrty_oidc_links": {
 		required("id", colUUID),
 		required("provider", colText),
 		required("issuer", colText),
@@ -451,7 +452,7 @@ var securityStateColumns = map[string][]column{
 		defaulted("email", colText, defEmptyText),
 		required("created_at", colTimestamptz),
 	},
-	"oidc_flows": {
+	"scrty_oidc_flows": {
 		required("id", colUUID),
 		required("handle", colText),
 		required("provider", colText),
@@ -462,7 +463,7 @@ var securityStateColumns = map[string][]column{
 		required("expires_at", colTimestamptz),
 		optional("completed_at", colTimestamptz),
 	},
-	"oidc_handoffs": {
+	"scrty_oidc_handoffs": {
 		required("id", colUUID),
 		required("token_id", colText),
 		required("secret_hash", colBytea),
@@ -478,14 +479,14 @@ var securityStateColumns = map[string][]column{
 		required("created_at", colTimestamptz),
 		optional("consumed_at", colTimestamptz),
 	},
-	"recovery_codes": {
+	"scrty_recovery_codes": {
 		required("id", colUUID),
 		required("user_id", colText),
 		required("code_hash", colBytea),
 		required("created_at", colTimestamptz),
 		optional("spent_at", colTimestamptz),
 	},
-	"account_recoveries": {
+	"scrty_account_recoveries": {
 		required("id", colUUID),
 		required("user_id", colText),
 		required("started_at", colTimestamptz),
@@ -496,7 +497,7 @@ var securityStateColumns = map[string][]column{
 		required("reported", colText),
 		defaulted("saved_spent", colBoolean, "false"),
 	},
-	"passkey_credentials": {
+	"scrty_passkey_credentials": {
 		required("id", colUUID),
 		required("user_id", colText),
 		required("credential_id", colBytea),
@@ -517,12 +518,12 @@ var securityStateColumns = map[string][]column{
 		optional("email_code_expires_at", colTimestamptz),
 		defaulted("email_code_attempts", colSmallint, "0"),
 	},
-	"passkey_user_handles": {
+	"scrty_passkey_user_handles": {
 		required("id", colUUID),
 		required("user_id", colText),
 		required("handle", colBytea),
 	},
-	"rate_limit_buckets": {
+	"scrty_rate_limit_buckets": {
 		required("namespace", colText),
 		required("key", colText),
 		required("stamps", colTimestamptzArray),
@@ -539,147 +540,147 @@ var securityStateColumns = map[string][]column{
 // seek on. An index that is added, dropped, moved to another table, made
 // unique or not, or whose columns are reordered fails the comparison.
 var securityStateIndexes = map[string][]string{
-	"op_clients": {
-		"CREATE UNIQUE INDEX op_clients_pkey ON op_clients USING btree (id)",
-		"CREATE UNIQUE INDEX op_clients_client_id_key ON op_clients USING btree (client_id)",
+	"scrty_op_clients": {
+		"CREATE UNIQUE INDEX scrty_op_clients_pkey ON scrty_op_clients USING btree (id)",
+		"CREATE UNIQUE INDEX scrty_op_clients_client_id_key ON scrty_op_clients USING btree (client_id)",
 	},
-	"op_pending_requests": {
-		"CREATE UNIQUE INDEX op_pending_requests_pkey ON op_pending_requests USING btree (id)",
-		"CREATE UNIQUE INDEX op_pending_requests_handle_digest_key ON op_pending_requests USING btree (handle_digest)",
-		"CREATE INDEX op_pending_requests_expiry ON op_pending_requests USING btree (expires_at)",
+	"scrty_op_pending_requests": {
+		"CREATE UNIQUE INDEX scrty_op_pending_requests_pkey ON scrty_op_pending_requests USING btree (id)",
+		"CREATE UNIQUE INDEX scrty_op_pending_requests_handle_digest_key ON scrty_op_pending_requests USING btree (handle_digest)",
+		"CREATE INDEX scrty_op_pending_requests_expiry ON scrty_op_pending_requests USING btree (expires_at)",
 	},
-	"op_browser_sessions": {
-		"CREATE UNIQUE INDEX op_browser_sessions_pkey ON op_browser_sessions USING btree (id)",
-		"CREATE UNIQUE INDEX op_browser_sessions_digest_key ON op_browser_sessions USING btree (digest)",
-		"CREATE INDEX op_browser_sessions_user_issuer ON op_browser_sessions USING btree (user_ref, external_issuer)",
-		"CREATE INDEX op_browser_sessions_sign_in ON op_browser_sessions USING btree (sign_in_family)",
-		"CREATE INDEX op_browser_sessions_external_session ON op_browser_sessions USING btree (external_issuer, external_session_id)",
-		"CREATE INDEX op_browser_sessions_idle_expiry ON op_browser_sessions USING btree (idle_expires_at)",
-		"CREATE INDEX op_browser_sessions_absolute_expiry ON op_browser_sessions USING btree (absolute_expires_at)",
+	"scrty_op_browser_sessions": {
+		"CREATE UNIQUE INDEX scrty_op_browser_sessions_pkey ON scrty_op_browser_sessions USING btree (id)",
+		"CREATE UNIQUE INDEX scrty_op_browser_sessions_digest_key ON scrty_op_browser_sessions USING btree (digest)",
+		"CREATE INDEX scrty_op_browser_sessions_user_issuer ON scrty_op_browser_sessions USING btree (user_ref, external_issuer)",
+		"CREATE INDEX scrty_op_browser_sessions_sign_in ON scrty_op_browser_sessions USING btree (sign_in_family)",
+		"CREATE INDEX scrty_op_browser_sessions_external_session ON scrty_op_browser_sessions USING btree (external_issuer, external_session_id)",
+		"CREATE INDEX scrty_op_browser_sessions_idle_expiry ON scrty_op_browser_sessions USING btree (idle_expires_at)",
+		"CREATE INDEX scrty_op_browser_sessions_absolute_expiry ON scrty_op_browser_sessions USING btree (absolute_expires_at)",
 	},
-	"op_authorization_codes": {
-		"CREATE UNIQUE INDEX op_authorization_codes_pkey ON op_authorization_codes USING btree (token_id)",
-		"CREATE INDEX op_authorization_codes_user_client ON op_authorization_codes USING btree (user_ref, client_id)",
-		"CREATE INDEX op_authorization_codes_user_issuer ON op_authorization_codes USING btree (user_ref, external_issuer)",
-		"CREATE INDEX op_authorization_codes_sign_in ON op_authorization_codes USING btree (sign_in_family)",
-		"CREATE INDEX op_authorization_codes_external_session ON op_authorization_codes USING btree (external_issuer, external_session_id)",
-		"CREATE INDEX op_authorization_codes_expiry ON op_authorization_codes USING btree (expires_at)",
+	"scrty_op_authorization_codes": {
+		"CREATE UNIQUE INDEX scrty_op_authorization_codes_pkey ON scrty_op_authorization_codes USING btree (token_id)",
+		"CREATE INDEX scrty_op_authorization_codes_user_client ON scrty_op_authorization_codes USING btree (user_ref, client_id)",
+		"CREATE INDEX scrty_op_authorization_codes_user_issuer ON scrty_op_authorization_codes USING btree (user_ref, external_issuer)",
+		"CREATE INDEX scrty_op_authorization_codes_sign_in ON scrty_op_authorization_codes USING btree (sign_in_family)",
+		"CREATE INDEX scrty_op_authorization_codes_external_session ON scrty_op_authorization_codes USING btree (external_issuer, external_session_id)",
+		"CREATE INDEX scrty_op_authorization_codes_expiry ON scrty_op_authorization_codes USING btree (expires_at)",
 	},
-	"op_consents": {
-		"CREATE UNIQUE INDEX op_consents_pkey ON op_consents USING btree (id)",
-		"CREATE UNIQUE INDEX op_consents_user_ref_client_id_key ON op_consents USING btree (user_ref, client_id)",
+	"scrty_op_consents": {
+		"CREATE UNIQUE INDEX scrty_op_consents_pkey ON scrty_op_consents USING btree (id)",
+		"CREATE UNIQUE INDEX scrty_op_consents_user_ref_client_id_key ON scrty_op_consents USING btree (user_ref, client_id)",
 	},
-	"op_grants": {
-		"CREATE UNIQUE INDEX op_grants_pkey ON op_grants USING btree (family)",
-		"CREATE INDEX op_grants_user ON op_grants USING btree (user_ref)",
-		"CREATE INDEX op_grants_user_client ON op_grants USING btree (user_ref, client_id)",
-		"CREATE INDEX op_grants_user_issuer ON op_grants USING btree (user_ref, external_issuer)",
-		"CREATE INDEX op_grants_sign_in ON op_grants USING btree (sign_in_family)",
-		"CREATE INDEX op_grants_external_session ON op_grants USING btree (external_issuer, external_session_id)",
-		"CREATE INDEX op_grants_expiry ON op_grants USING btree (expires_at)",
-		"CREATE INDEX op_grants_revoked ON op_grants USING btree (revoked_at)",
+	"scrty_op_grants": {
+		"CREATE UNIQUE INDEX scrty_op_grants_pkey ON scrty_op_grants USING btree (family)",
+		"CREATE INDEX scrty_op_grants_user ON scrty_op_grants USING btree (user_ref)",
+		"CREATE INDEX scrty_op_grants_user_client ON scrty_op_grants USING btree (user_ref, client_id)",
+		"CREATE INDEX scrty_op_grants_user_issuer ON scrty_op_grants USING btree (user_ref, external_issuer)",
+		"CREATE INDEX scrty_op_grants_sign_in ON scrty_op_grants USING btree (sign_in_family)",
+		"CREATE INDEX scrty_op_grants_external_session ON scrty_op_grants USING btree (external_issuer, external_session_id)",
+		"CREATE INDEX scrty_op_grants_expiry ON scrty_op_grants USING btree (expires_at)",
+		"CREATE INDEX scrty_op_grants_revoked ON scrty_op_grants USING btree (revoked_at)",
 	},
-	"op_refresh_tokens": {
-		"CREATE UNIQUE INDEX op_refresh_tokens_pkey ON op_refresh_tokens USING btree (id)",
-		"CREATE UNIQUE INDEX op_refresh_tokens_id_digest_key ON op_refresh_tokens USING btree (id_digest)",
-		"CREATE INDEX op_refresh_tokens_external_session ON op_refresh_tokens USING btree (external_issuer, external_session_id) WHERE (external_session_id <> ''::text)",
-		"CREATE INDEX op_refresh_tokens_user_issuer ON op_refresh_tokens USING btree (user_id, external_issuer) WHERE (external_issuer <> ''::text)",
-		"CREATE INDEX op_refresh_tokens_user ON op_refresh_tokens USING btree (user_id)",
-		"CREATE INDEX op_refresh_tokens_idle_expiry ON op_refresh_tokens USING btree (idle_expires_at)",
-		"CREATE INDEX op_refresh_tokens_absolute_expiry ON op_refresh_tokens USING btree (absolute_expires_at)",
-		"CREATE INDEX op_refresh_tokens_family ON op_refresh_tokens USING btree (family_id)",
+	"scrty_op_refresh_tokens": {
+		"CREATE UNIQUE INDEX scrty_op_refresh_tokens_pkey ON scrty_op_refresh_tokens USING btree (id)",
+		"CREATE UNIQUE INDEX scrty_op_refresh_tokens_id_digest_key ON scrty_op_refresh_tokens USING btree (id_digest)",
+		"CREATE INDEX scrty_op_refresh_tokens_external_session ON scrty_op_refresh_tokens USING btree (external_issuer, external_session_id) WHERE (external_session_id <> ''::text)",
+		"CREATE INDEX scrty_op_refresh_tokens_user_issuer ON scrty_op_refresh_tokens USING btree (user_id, external_issuer) WHERE (external_issuer <> ''::text)",
+		"CREATE INDEX scrty_op_refresh_tokens_user ON scrty_op_refresh_tokens USING btree (user_id)",
+		"CREATE INDEX scrty_op_refresh_tokens_idle_expiry ON scrty_op_refresh_tokens USING btree (idle_expires_at)",
+		"CREATE INDEX scrty_op_refresh_tokens_absolute_expiry ON scrty_op_refresh_tokens USING btree (absolute_expires_at)",
+		"CREATE INDEX scrty_op_refresh_tokens_family ON scrty_op_refresh_tokens USING btree (family_id)",
 	},
-	"op_access_tokens": {
-		"CREATE UNIQUE INDEX op_access_tokens_pkey ON op_access_tokens USING btree (id)",
-		"CREATE INDEX op_access_tokens_expiry ON op_access_tokens USING btree (expires_at)",
+	"scrty_op_access_tokens": {
+		"CREATE UNIQUE INDEX scrty_op_access_tokens_pkey ON scrty_op_access_tokens USING btree (id)",
+		"CREATE INDEX scrty_op_access_tokens_expiry ON scrty_op_access_tokens USING btree (expires_at)",
 	},
-	"op_client_assertions": {
-		"CREATE UNIQUE INDEX op_client_assertions_pkey ON op_client_assertions USING btree (id)",
-		"CREATE UNIQUE INDEX op_client_assertions_client_id_jti_key ON op_client_assertions USING btree (client_id, jti)",
-		"CREATE INDEX op_client_assertions_expiry ON op_client_assertions USING btree (held_until)",
+	"scrty_op_client_assertions": {
+		"CREATE UNIQUE INDEX scrty_op_client_assertions_pkey ON scrty_op_client_assertions USING btree (id)",
+		"CREATE UNIQUE INDEX scrty_op_client_assertions_client_id_jti_key ON scrty_op_client_assertions USING btree (client_id, jti)",
+		"CREATE INDEX scrty_op_client_assertions_expiry ON scrty_op_client_assertions USING btree (held_until)",
 	},
-	"op_device_authorizations": {
-		"CREATE UNIQUE INDEX op_device_authorizations_pkey ON op_device_authorizations USING btree (id)",
-		"CREATE UNIQUE INDEX op_device_authorizations_device_code_digest_key ON op_device_authorizations USING btree (device_code_digest)",
-		"CREATE UNIQUE INDEX op_device_authorizations_user_code_digest_key ON op_device_authorizations USING btree (user_code_digest)",
-		"CREATE INDEX op_device_authorizations_expiry ON op_device_authorizations USING btree (expires_at)",
-		"CREATE INDEX op_device_authorizations_user_client ON op_device_authorizations USING btree (user_ref, client_id)",
-		"CREATE INDEX op_device_authorizations_user_issuer ON op_device_authorizations USING btree (user_ref, external_issuer)",
-		"CREATE INDEX op_device_authorizations_sign_in ON op_device_authorizations USING btree (sign_in_family)",
-		"CREATE INDEX op_device_authorizations_external_session ON op_device_authorizations USING btree (external_issuer, external_session_id)",
+	"scrty_op_device_authorizations": {
+		"CREATE UNIQUE INDEX scrty_op_device_authorizations_pkey ON scrty_op_device_authorizations USING btree (id)",
+		"CREATE UNIQUE INDEX scrty_op_device_authorizations_device_code_digest_key ON scrty_op_device_authorizations USING btree (device_code_digest)",
+		"CREATE UNIQUE INDEX scrty_op_device_authorizations_user_code_digest_key ON scrty_op_device_authorizations USING btree (user_code_digest)",
+		"CREATE INDEX scrty_op_device_authorizations_expiry ON scrty_op_device_authorizations USING btree (expires_at)",
+		"CREATE INDEX scrty_op_device_authorizations_user_client ON scrty_op_device_authorizations USING btree (user_ref, client_id)",
+		"CREATE INDEX scrty_op_device_authorizations_user_issuer ON scrty_op_device_authorizations USING btree (user_ref, external_issuer)",
+		"CREATE INDEX scrty_op_device_authorizations_sign_in ON scrty_op_device_authorizations USING btree (sign_in_family)",
+		"CREATE INDEX scrty_op_device_authorizations_external_session ON scrty_op_device_authorizations USING btree (external_issuer, external_session_id)",
 	},
-	"sessions": {
-		"CREATE UNIQUE INDEX sessions_pkey ON sessions USING btree (id)",
-		"CREATE UNIQUE INDEX sessions_id_digest_key ON sessions USING btree (id_digest)",
-		"CREATE INDEX sessions_external_session ON sessions USING btree (external_issuer, external_session_id) WHERE (external_session_id <> ''::text)",
-		"CREATE INDEX sessions_user_issuer ON sessions USING btree (user_id, external_issuer) WHERE (external_issuer <> ''::text)",
-		"CREATE INDEX sessions_user ON sessions USING btree (user_id)",
-		"CREATE INDEX sessions_idle_expiry ON sessions USING btree (idle_expires_at)",
-		"CREATE INDEX sessions_absolute_expiry ON sessions USING btree (absolute_expires_at)",
-		"CREATE INDEX sessions_family ON sessions USING btree (family_id)",
+	"scrty_sessions": {
+		"CREATE UNIQUE INDEX scrty_sessions_pkey ON scrty_sessions USING btree (id)",
+		"CREATE UNIQUE INDEX scrty_sessions_id_digest_key ON scrty_sessions USING btree (id_digest)",
+		"CREATE INDEX scrty_sessions_external_session ON scrty_sessions USING btree (external_issuer, external_session_id) WHERE (external_session_id <> ''::text)",
+		"CREATE INDEX scrty_sessions_user_issuer ON scrty_sessions USING btree (user_id, external_issuer) WHERE (external_issuer <> ''::text)",
+		"CREATE INDEX scrty_sessions_user ON scrty_sessions USING btree (user_id)",
+		"CREATE INDEX scrty_sessions_idle_expiry ON scrty_sessions USING btree (idle_expires_at)",
+		"CREATE INDEX scrty_sessions_absolute_expiry ON scrty_sessions USING btree (absolute_expires_at)",
+		"CREATE INDEX scrty_sessions_family ON scrty_sessions USING btree (family_id)",
 	},
-	"signing_keys": {
-		"CREATE UNIQUE INDEX signing_keys_pkey ON signing_keys USING btree (id)",
-		"CREATE UNIQUE INDEX signing_keys_kid_key ON signing_keys USING btree (kid)",
+	"scrty_signing_keys": {
+		"CREATE UNIQUE INDEX scrty_signing_keys_pkey ON scrty_signing_keys USING btree (id)",
+		"CREATE UNIQUE INDEX scrty_signing_keys_kid_key ON scrty_signing_keys USING btree (kid)",
 	},
-	"login_attempts": {
-		"CREATE UNIQUE INDEX login_attempts_pkey ON login_attempts USING btree (id)",
-		"CREATE INDEX login_attempts_username ON login_attempts USING btree (username, attempted_at)",
-		"CREATE INDEX login_attempts_time ON login_attempts USING btree (attempted_at)",
+	"scrty_login_attempts": {
+		"CREATE UNIQUE INDEX scrty_login_attempts_pkey ON scrty_login_attempts USING btree (id)",
+		"CREATE INDEX scrty_login_attempts_username ON scrty_login_attempts USING btree (username, attempted_at)",
+		"CREATE INDEX scrty_login_attempts_time ON scrty_login_attempts USING btree (attempted_at)",
 	},
-	"login_failure_streaks": {
-		"CREATE UNIQUE INDEX login_failure_streaks_pkey ON login_failure_streaks USING btree (id)",
-		"CREATE UNIQUE INDEX login_failure_streaks_username_key ON login_failure_streaks USING btree (username)",
-		"CREATE INDEX login_failure_streaks_inactive ON login_failure_streaks USING btree (newest_failure_at) WHERE (held_at IS NULL)",
+	"scrty_login_failure_streaks": {
+		"CREATE UNIQUE INDEX scrty_login_failure_streaks_pkey ON scrty_login_failure_streaks USING btree (id)",
+		"CREATE UNIQUE INDEX scrty_login_failure_streaks_username_key ON scrty_login_failure_streaks USING btree (username)",
+		"CREATE INDEX scrty_login_failure_streaks_inactive ON scrty_login_failure_streaks USING btree (newest_failure_at) WHERE (held_at IS NULL)",
 	},
-	"mfa_enrolments": {
-		"CREATE UNIQUE INDEX mfa_enrolments_pkey ON mfa_enrolments USING btree (id)",
-		"CREATE UNIQUE INDEX mfa_enrolments_user_id_key ON mfa_enrolments USING btree (user_id)",
+	"scrty_mfa_enrolments": {
+		"CREATE UNIQUE INDEX scrty_mfa_enrolments_pkey ON scrty_mfa_enrolments USING btree (id)",
+		"CREATE UNIQUE INDEX scrty_mfa_enrolments_user_id_key ON scrty_mfa_enrolments USING btree (user_id)",
 	},
-	"api_keys": {
-		"CREATE UNIQUE INDEX api_keys_pkey ON api_keys USING btree (id)",
-		"CREATE INDEX api_keys_user ON api_keys USING btree (user_id)",
+	"scrty_api_keys": {
+		"CREATE UNIQUE INDEX scrty_api_keys_pkey ON scrty_api_keys USING btree (id)",
+		"CREATE INDEX scrty_api_keys_user ON scrty_api_keys USING btree (user_id)",
 	},
-	"one_time_tokens": {
-		"CREATE UNIQUE INDEX one_time_tokens_pkey ON one_time_tokens USING btree (id)",
-		"CREATE INDEX one_time_tokens_subject ON one_time_tokens USING btree (purpose, subject)",
-		"CREATE INDEX one_time_tokens_expiry ON one_time_tokens USING btree (purpose, expires_at)",
+	"scrty_one_time_tokens": {
+		"CREATE UNIQUE INDEX scrty_one_time_tokens_pkey ON scrty_one_time_tokens USING btree (id)",
+		"CREATE INDEX scrty_one_time_tokens_subject ON scrty_one_time_tokens USING btree (purpose, subject)",
+		"CREATE INDEX scrty_one_time_tokens_expiry ON scrty_one_time_tokens USING btree (purpose, expires_at)",
 	},
-	"oidc_links": {
-		"CREATE UNIQUE INDEX oidc_links_pkey ON oidc_links USING btree (id)",
-		"CREATE UNIQUE INDEX oidc_links_provider_issuer_subject_key ON oidc_links USING btree (provider, issuer, subject)",
-		"CREATE INDEX oidc_links_user ON oidc_links USING btree (user_id)",
+	"scrty_oidc_links": {
+		"CREATE UNIQUE INDEX scrty_oidc_links_pkey ON scrty_oidc_links USING btree (id)",
+		"CREATE UNIQUE INDEX scrty_oidc_links_provider_issuer_subject_key ON scrty_oidc_links USING btree (provider, issuer, subject)",
+		"CREATE INDEX scrty_oidc_links_user ON scrty_oidc_links USING btree (user_id)",
 	},
-	"oidc_flows": {
-		"CREATE UNIQUE INDEX oidc_flows_pkey ON oidc_flows USING btree (id)",
-		"CREATE UNIQUE INDEX oidc_flows_handle_key ON oidc_flows USING btree (handle)",
-		"CREATE INDEX oidc_flows_expiry ON oidc_flows USING btree (expires_at)",
+	"scrty_oidc_flows": {
+		"CREATE UNIQUE INDEX scrty_oidc_flows_pkey ON scrty_oidc_flows USING btree (id)",
+		"CREATE UNIQUE INDEX scrty_oidc_flows_handle_key ON scrty_oidc_flows USING btree (handle)",
+		"CREATE INDEX scrty_oidc_flows_expiry ON scrty_oidc_flows USING btree (expires_at)",
 	},
-	"oidc_handoffs": {
-		"CREATE UNIQUE INDEX oidc_handoffs_pkey ON oidc_handoffs USING btree (id)",
-		"CREATE UNIQUE INDEX oidc_handoffs_token_id_key ON oidc_handoffs USING btree (token_id)",
-		"CREATE INDEX oidc_handoffs_expiry ON oidc_handoffs USING btree (expires_at)",
+	"scrty_oidc_handoffs": {
+		"CREATE UNIQUE INDEX scrty_oidc_handoffs_pkey ON scrty_oidc_handoffs USING btree (id)",
+		"CREATE UNIQUE INDEX scrty_oidc_handoffs_token_id_key ON scrty_oidc_handoffs USING btree (token_id)",
+		"CREATE INDEX scrty_oidc_handoffs_expiry ON scrty_oidc_handoffs USING btree (expires_at)",
 	},
-	"recovery_codes": {
-		"CREATE UNIQUE INDEX recovery_codes_pkey ON recovery_codes USING btree (id)",
-		"CREATE UNIQUE INDEX recovery_codes_user_id_code_hash_key ON recovery_codes USING btree (user_id, code_hash)",
+	"scrty_recovery_codes": {
+		"CREATE UNIQUE INDEX scrty_recovery_codes_pkey ON scrty_recovery_codes USING btree (id)",
+		"CREATE UNIQUE INDEX scrty_recovery_codes_user_id_code_hash_key ON scrty_recovery_codes USING btree (user_id, code_hash)",
 	},
-	"account_recoveries": {
-		"CREATE UNIQUE INDEX account_recoveries_pkey ON account_recoveries USING btree (id)",
-		"CREATE INDEX account_recoveries_user ON account_recoveries USING btree (user_id)",
+	"scrty_account_recoveries": {
+		"CREATE UNIQUE INDEX scrty_account_recoveries_pkey ON scrty_account_recoveries USING btree (id)",
+		"CREATE INDEX scrty_account_recoveries_user ON scrty_account_recoveries USING btree (user_id)",
 	},
-	"passkey_credentials": {
-		"CREATE UNIQUE INDEX passkey_credentials_pkey ON passkey_credentials USING btree (id)",
-		"CREATE UNIQUE INDEX passkey_credentials_credential_id_key ON passkey_credentials USING btree (credential_id)",
-		"CREATE INDEX passkey_credentials_user_id_idx ON passkey_credentials USING btree (user_id)",
+	"scrty_passkey_credentials": {
+		"CREATE UNIQUE INDEX scrty_passkey_credentials_pkey ON scrty_passkey_credentials USING btree (id)",
+		"CREATE UNIQUE INDEX scrty_passkey_credentials_credential_id_key ON scrty_passkey_credentials USING btree (credential_id)",
+		"CREATE INDEX scrty_passkey_credentials_user_id_idx ON scrty_passkey_credentials USING btree (user_id)",
 	},
-	"passkey_user_handles": {
-		"CREATE UNIQUE INDEX passkey_user_handles_pkey ON passkey_user_handles USING btree (id)",
-		"CREATE UNIQUE INDEX passkey_user_handles_user_id_key ON passkey_user_handles USING btree (user_id)",
-		"CREATE UNIQUE INDEX passkey_user_handles_handle_key ON passkey_user_handles USING btree (handle)",
+	"scrty_passkey_user_handles": {
+		"CREATE UNIQUE INDEX scrty_passkey_user_handles_pkey ON scrty_passkey_user_handles USING btree (id)",
+		"CREATE UNIQUE INDEX scrty_passkey_user_handles_user_id_key ON scrty_passkey_user_handles USING btree (user_id)",
+		"CREATE UNIQUE INDEX scrty_passkey_user_handles_handle_key ON scrty_passkey_user_handles USING btree (handle)",
 	},
-	"rate_limit_buckets": {
-		"CREATE UNIQUE INDEX rate_limit_buckets_pkey ON rate_limit_buckets USING btree (namespace, key)",
+	"scrty_rate_limit_buckets": {
+		"CREATE UNIQUE INDEX scrty_rate_limit_buckets_pkey ON scrty_rate_limit_buckets USING btree (namespace, key)",
 	},
 }
 
@@ -760,7 +761,7 @@ func securityStateSchemaChecks(versionTable string) []schemaCheck {
 			          WHERE tc.constraint_type = 'PRIMARY KEY'
 			            AND tc.table_schema = current_schema()
 			            AND c.table_name <> $1
-			            AND c.table_name <> 'rate_limit_buckets'`,
+			            AND c.table_name <> 'scrty_rate_limit_buckets'`,
 			args: []any{versionTable},
 			assert: func(t *testing.T, rows []string) {
 				// rate_limit_buckets is keyed by (namespace, key), not a uuid.
@@ -802,15 +803,15 @@ func securityStateSchemaChecks(versionTable string) []schemaCheck {
 			                                'spent_at','cancelled_at')`,
 			assert: func(t *testing.T, rows []string) {
 				assert.ElementsMatch(t, []string{
-					"one_time_tokens.consumed_at:YES:",
-					"oidc_handoffs.consumed_at:YES:",
-					"oidc_flows.completed_at:YES:",
-					"mfa_enrolments.confirmed_at:YES:",
-					"api_keys.revoked_at:YES:",
-					"recovery_codes.spent_at:YES:",
-					"account_recoveries.completed_at:YES:",
-					"account_recoveries.cancelled_at:YES:",
-					"op_grants.revoked_at:YES:",
+					"scrty_one_time_tokens.consumed_at:YES:",
+					"scrty_oidc_handoffs.consumed_at:YES:",
+					"scrty_oidc_flows.completed_at:YES:",
+					"scrty_mfa_enrolments.confirmed_at:YES:",
+					"scrty_api_keys.revoked_at:YES:",
+					"scrty_recovery_codes.spent_at:YES:",
+					"scrty_account_recoveries.completed_at:YES:",
+					"scrty_account_recoveries.cancelled_at:YES:",
+					"scrty_op_grants.revoked_at:YES:",
 				}, rows)
 			},
 		},
@@ -822,16 +823,16 @@ func securityStateSchemaChecks(versionTable string) []schemaCheck {
 			query: `SELECT 'unique:' || i.indexname
 			          FROM pg_indexes i
 			         WHERE i.schemaname = current_schema()
-			           AND i.tablename = 'login_failure_streaks'
+			           AND i.tablename = 'scrty_login_failure_streaks'
 			           AND i.indexdef LIKE 'CREATE UNIQUE INDEX % USING btree (username)'
 			        UNION ALL
 			        SELECT 'held_at:' || is_nullable || ':' || coalesce(column_default, '')
 			          FROM information_schema.columns
 			         WHERE table_schema = current_schema()
-			           AND table_name = 'login_failure_streaks' AND column_name = 'held_at'`,
+			           AND table_name = 'scrty_login_failure_streaks' AND column_name = 'held_at'`,
 			assert: func(t *testing.T, rows []string) {
 				assert.ElementsMatch(t, []string{
-					"unique:login_failure_streaks_username_key",
+					"unique:scrty_login_failure_streaks_username_key",
 					"held_at:YES:",
 				}, rows)
 			},
@@ -871,7 +872,7 @@ func securityStateSchemaChecks(versionTable string) []schemaCheck {
 			name: "rate_limit_buckets is a logged table",
 			query: `SELECT c.relpersistence::text FROM pg_class c
 			          JOIN pg_namespace n ON n.oid = c.relnamespace
-			         WHERE n.nspname = current_schema() AND c.relname = 'rate_limit_buckets'`,
+			         WHERE n.nspname = current_schema() AND c.relname = 'scrty_rate_limit_buckets'`,
 			assert: func(t *testing.T, rows []string) {
 				assert.Equal(t, []string{"p"}, rows, "unlogged would lose every limit on a crash or failover")
 			},
@@ -882,9 +883,9 @@ func securityStateSchemaChecks(versionTable string) []schemaCheck {
 			          FROM pg_index i
 			          JOIN pg_class c ON c.oid = i.indrelid
 			          JOIN pg_namespace n ON n.oid = c.relnamespace
-			         WHERE n.nspname = current_schema() AND c.relname = 'rate_limit_buckets'`,
+			         WHERE n.nspname = current_schema() AND c.relname = 'scrty_rate_limit_buckets'`,
 			assert: func(t *testing.T, rows []string) {
-				assert.Equal(t, []string{"rate_limit_buckets_pkey|true"}, rows,
+				assert.Equal(t, []string{"scrty_rate_limit_buckets_pkey|true"}, rows,
 					"an index on a column that changes would stop updates being HOT")
 			},
 		},
@@ -897,7 +898,7 @@ func securityStateSchemaChecks(versionTable string) []schemaCheck {
 			name: "rate_limit_buckets declares its own fill factor, TOAST threshold and autovacuum storage parameters",
 			query: `SELECT unnest(c.reloptions) FROM pg_class c
 			          JOIN pg_namespace n ON n.oid = c.relnamespace
-			         WHERE n.nspname = current_schema() AND c.relname = 'rate_limit_buckets'`,
+			         WHERE n.nspname = current_schema() AND c.relname = 'scrty_rate_limit_buckets'`,
 			assert: func(t *testing.T, rows []string) {
 				assert.ElementsMatch(t, []string{
 					"fillfactor=70",
@@ -912,7 +913,7 @@ func securityStateSchemaChecks(versionTable string) []schemaCheck {
 			// empty one, so NULL must be storable and must stay distinct
 			// from an empty bytea.
 			name: "one-time token binding stores NULL as unbound, apart from empty",
-			query: `INSERT INTO one_time_tokens (id, purpose, subject, secret_hash, binding_hash, issued_at, expires_at)
+			query: `INSERT INTO scrty_one_time_tokens (id, purpose, subject, secret_hash, binding_hash, issued_at, expires_at)
 			        VALUES (gen_random_uuid(), 'probe', 'unbound', '\x01', NULL, now(), now()),
 			               (gen_random_uuid(), 'probe', 'empty', '\x01', '\x'::bytea, now(), now())
 			        RETURNING subject || ':' || coalesce(encode(binding_hash, 'hex'), 'NULL')`,
@@ -946,7 +947,7 @@ func TestSecurityStateMigrations_Schema(t *testing.T) {
 
 // securityStateMigrationCount is how many migration files the security-state
 // set holds.
-const securityStateMigrationCount = 6
+const securityStateMigrationCount = 7
 
 // Versions of the security-state migrations the family tests address.
 const (
@@ -1192,7 +1193,7 @@ func TestSecurityStateMigrations_SessionStrictRotation(t *testing.T) {
 		{
 			name: "adds the mark as a not-null boolean defaulting to false",
 			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				_, err := p.Up(t.Context())
+				_, err := p.UpTo(t.Context(), versionStrictRotation)
 				require.NoError(t, err)
 
 				assert.Contains(t, sessionColumnsAndIndexes(t, db), "col rotated_strictly boolean NOT NULL DEFAULT false")
@@ -1211,7 +1212,7 @@ func TestSecurityStateMigrations_SessionStrictRotation(t *testing.T) {
 					        now(), now(), now())`)
 				require.NoError(t, err)
 
-				_, err = p.Up(t.Context())
+				_, err = p.UpTo(t.Context(), versionStrictRotation)
 				require.NoError(t, err)
 
 				var marked bool
@@ -1223,7 +1224,7 @@ func TestSecurityStateMigrations_SessionStrictRotation(t *testing.T) {
 		{
 			name: "an older writer's insert succeeds and is unmarked",
 			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				_, err := p.Up(t.Context())
+				_, err := p.UpTo(t.Context(), versionStrictRotation)
 				require.NoError(t, err)
 
 				_, err = db.ExecContext(t.Context(), oldInsert, "0192f000-0000-7000-8000-0000000000b2", []byte{0x02})
@@ -1474,7 +1475,7 @@ func TestSecurityStateMigrations_Lifecycle(t *testing.T) {
 				beforeCount := appliedVersionCount(t, db, migrate.SecurityStateVersionTable)
 				var relfilenodeBefore string
 				require.NoError(t, db.QueryRowContext(t.Context(),
-					`SELECT pg_relation_filenode('sessions')::text`).Scan(&relfilenodeBefore))
+					`SELECT pg_relation_filenode('scrty_sessions')::text`).Scan(&relfilenodeBefore))
 
 				results, err := p.Up(t.Context())
 				require.NoError(t, err)
@@ -1483,8 +1484,8 @@ func TestSecurityStateMigrations_Lifecycle(t *testing.T) {
 
 				var relfilenodeAfter string
 				require.NoError(t, db.QueryRowContext(t.Context(),
-					`SELECT pg_relation_filenode('sessions')::text`).Scan(&relfilenodeAfter))
-				assert.Equal(t, relfilenodeBefore, relfilenodeAfter, "sessions was not rewritten")
+					`SELECT pg_relation_filenode('scrty_sessions')::text`).Scan(&relfilenodeAfter))
+				assert.Equal(t, relfilenodeBefore, relfilenodeAfter, "scrty_sessions was not rewritten")
 			},
 		},
 		{
@@ -1527,7 +1528,7 @@ func TestSecurityStateMigrations_Lifecycle(t *testing.T) {
 				_, err := p.Up(t.Context())
 				require.NoError(t, err)
 
-				_, err = db.ExecContext(t.Context(), `DROP TABLE oidc_links`)
+				_, err = db.ExecContext(t.Context(), `DROP TABLE scrty_oidc_links`)
 				require.NoError(t, err)
 
 				_, err = p.DownTo(t.Context(), 0)
@@ -1811,7 +1812,7 @@ func TestSecurityStateMigrations_SessionSignIns(t *testing.T) {
 				require.NoError(t, err)
 				before := sessionColumnsAndIndexes(t, db)
 
-				_, err = p.Up(t.Context())
+				_, err = p.UpTo(t.Context(), versionSessionSignIns)
 				require.NoError(t, err)
 				after := sessionColumnsAndIndexes(t, db)
 
@@ -1840,7 +1841,7 @@ func TestSecurityStateMigrations_SessionSignIns(t *testing.T) {
 					        'sealed', '{"k":"v"}')`)
 				require.NoError(t, err)
 
-				_, err = p.Up(t.Context())
+				_, err = p.UpTo(t.Context(), versionSessionSignIns)
 				require.NoError(t, err)
 
 				var nulls int
@@ -1854,7 +1855,7 @@ func TestSecurityStateMigrations_SessionSignIns(t *testing.T) {
 		{
 			name: "an older writer's insert still succeeds",
 			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				_, err := p.Up(t.Context())
+				_, err := p.UpTo(t.Context(), versionSessionSignIns)
 				require.NoError(t, err)
 
 				_, err = db.ExecContext(t.Context(), `INSERT INTO sessions
@@ -1962,10 +1963,10 @@ func providerOutsideSchema(t *testing.T, db *sql.DB) []string {
 }
 
 // sessionRows returns the stored sessions, each as every column's value.
-func sessionRows(t *testing.T, db *sql.DB) []string {
+func sessionRows(t *testing.T, db *sql.DB, table string) []string {
 	t.Helper()
 
-	return queryStrings(t, db, `SELECT to_jsonb(s)::text FROM sessions s ORDER BY id`)
+	return queryStrings(t, db, `SELECT to_jsonb(s)::text FROM `+table+` s ORDER BY id`)
 }
 
 // holdSessions stores one plain and one superseded session.
@@ -2389,8 +2390,8 @@ func TestMigrations(t *testing.T) {
 			{
 				name: "the tables pgschema names are the provider's ten",
 				run: func(t *testing.T, _ *sql.DB, _ *goose.Provider) {
-					assert.ElementsMatch(t, providerTables, pgschema.OIDCProviderTables())
-					assert.Contains(t, providerTables, pgschema.RefreshTokenTable)
+					assert.ElementsMatch(t, prefixNames(providerTables), pgschema.OIDCProviderTables())
+					assert.Contains(t, prefixNames(providerTables), pgschema.RefreshTokenTable)
 				},
 			},
 			{
@@ -2399,16 +2400,16 @@ func TestMigrations(t *testing.T) {
 					_, err := p.UpTo(t.Context(), versionSessionSignIns)
 					require.NoError(t, err)
 					holdSessions(t, db)
-					rows, schema := sessionRows(t, db), providerOutsideSchema(t, db)
+					rows, schema := sessionRows(t, db, "sessions"), providerOutsideSchema(t, db)
 					require.Len(t, rows, 2)
 
-					_, err = p.Up(t.Context())
+					_, err = p.UpTo(t.Context(), versionSecurityStateLast)
 					require.NoError(t, err)
 
 					for _, tbl := range providerTables {
 						assert.True(t, regclassExists(t, db, tbl), "table %s should exist", tbl)
 					}
-					assert.Equal(t, rows, sessionRows(t, db))
+					assert.Equal(t, rows, sessionRows(t, db, "sessions"))
 					assert.Equal(t, schema, providerOutsideSchema(t, db))
 				},
 			},
@@ -2418,9 +2419,9 @@ func TestMigrations(t *testing.T) {
 					_, err := p.UpTo(t.Context(), versionSessionSignIns)
 					require.NoError(t, err)
 					holdSessions(t, db)
-					rows, schema := sessionRows(t, db), providerOutsideSchema(t, db)
+					rows, schema := sessionRows(t, db, "sessions"), providerOutsideSchema(t, db)
 
-					_, err = p.Up(t.Context())
+					_, err = p.UpTo(t.Context(), versionSecurityStateLast)
 					require.NoError(t, err)
 					for _, tbl := range providerTables {
 						require.True(t, regclassExists(t, db, tbl), "table %s should exist before the rollback", tbl)
@@ -2432,7 +2433,7 @@ func TestMigrations(t *testing.T) {
 					for _, tbl := range providerTables {
 						assert.False(t, regclassExists(t, db, tbl), "table %s should be gone", tbl)
 					}
-					assert.Equal(t, rows, sessionRows(t, db))
+					assert.Equal(t, rows, sessionRows(t, db, "sessions"))
 					assert.Equal(t, schema, providerOutsideSchema(t, db))
 				},
 			},
@@ -2442,7 +2443,7 @@ func TestMigrations(t *testing.T) {
 					_, err := p.Up(t.Context())
 					require.NoError(t, err)
 
-					sessions := orderedShape(t, db, "sessions")
+					sessions := orderedShape(t, db, scrtyPrefix+"sessions")
 					require.NotEmpty(t, sessions)
 					assert.Equal(t, sessions, orderedShape(t, db, pgschema.RefreshTokenTable))
 				},
@@ -2454,7 +2455,10 @@ func TestMigrations(t *testing.T) {
 					require.NoError(t, err)
 
 					// A row written by the session store's own insert, over the fixed name.
-					insert := strings.ReplaceAll(pgschema.SessionInsert, "sessions", pgschema.RefreshTokenTable)
+					insert := strings.ReplaceAll(pgschema.SessionInsert, scrtyPrefix+"sessions", pgschema.RefreshTokenTable)
+					// The replacement must change the statement; if SessionInsert stops naming
+					// scrty_sessions it becomes a no-op and the test would stop proving anything.
+					require.NotEqual(t, pgschema.SessionInsert, insert)
 					result, err := db.ExecContext(t.Context(), insert,
 						"0192f000-0000-7000-8000-0000000000e1", []byte{1}, "u-1", time.Now(), time.Now(), time.Now(), time.Now(),
 						"", 0, nil, false, "", "", "", "", "{}", nil, nil, nil, "[]", "", false,
@@ -2465,13 +2469,13 @@ func TestMigrations(t *testing.T) {
 					require.NoError(t, err)
 					assert.Equal(t, int64(1), n)
 
-					assert.Empty(t, sessionRows(t, db), "the lineage row is not a session")
+					assert.Empty(t, sessionRows(t, db, scrtyPrefix+"sessions"), "the lineage row is not a session")
 				},
 			},
 			{
 				name: "a grant can be a revocation recorded first, with everything else unset",
 				run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-					_, err := p.Up(t.Context())
+					_, err := p.UpTo(t.Context(), versionSecurityStateLast)
 					require.NoError(t, err)
 
 					_, err = db.ExecContext(t.Context(), `INSERT INTO op_grants (family, revoked, revoked_at, revoke_cause, sign_in_ended_at)
@@ -2490,7 +2494,7 @@ func TestMigrations(t *testing.T) {
 			{
 				name: "a handle digest is one request's, and an assertion identifier one client's",
 				run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-					_, err := p.Up(t.Context())
+					_, err := p.UpTo(t.Context(), versionSecurityStateLast)
 					require.NoError(t, err)
 
 					affected := func(query string) int64 {
@@ -2523,7 +2527,7 @@ func TestMigrations(t *testing.T) {
 			{
 				name: "no column is named for a credential it would hold in clear",
 				run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-					_, err := p.Up(t.Context())
+					_, err := p.UpTo(t.Context(), versionSecurityStateLast)
 					require.NoError(t, err)
 
 					got := queryStrings(t, db, `SELECT table_name || '.' || column_name FROM information_schema.columns
@@ -2533,7 +2537,7 @@ func TestMigrations(t *testing.T) {
 
 					bytes := queryStrings(t, db, `SELECT table_name || '.' || column_name FROM information_schema.columns
 						WHERE table_schema = current_schema() AND table_name LIKE 'op\_%' AND table_name <> 'op_clients'
-						  AND table_name <> $1 AND data_type = 'bytea'`, pgschema.RefreshTokenTable)
+						  AND table_name <> 'op_refresh_tokens' AND data_type = 'bytea'`)
 					assert.ElementsMatch(t, []string{
 						"op_pending_requests.handle_digest", "op_pending_requests.flow_digest",
 						"op_browser_sessions.digest", "op_access_tokens.digest",
@@ -2545,7 +2549,7 @@ func TestMigrations(t *testing.T) {
 			{
 				name: "every field of every provider record has its column",
 				run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-					_, err := p.Up(t.Context())
+					_, err := p.UpTo(t.Context(), versionSecurityStateLast)
 					require.NoError(t, err)
 
 					for _, rc := range providerRecordColumns {
@@ -2577,7 +2581,7 @@ func TestMigrations(t *testing.T) {
 			t.Parallel()
 
 			db, p := freshSecurityState(t, set)
-			_, err := p.Up(t.Context())
+			_, err := p.UpTo(t.Context(), versionSecurityStateLast)
 			require.NoError(t, err)
 
 			for _, lookup := range providerLookups() {
@@ -2637,8 +2641,9 @@ func holdProviderRows(t *testing.T, db *sql.DB) {
 }
 
 // providerRows returns every client, grant and pending request, each as every column's
-// value but those named in drop.
-func providerRows(t *testing.T, db *sql.DB, drop ...string) []string {
+// value but those named in drop. prefix is "" while the tables carry their original names
+// and scrtyPrefix once the prefix migration has renamed them.
+func providerRows(t *testing.T, db *sql.DB, prefix string, drop ...string) []string {
 	t.Helper()
 
 	strip := ""
@@ -2647,9 +2652,9 @@ func providerRows(t *testing.T, db *sql.DB, drop ...string) []string {
 	}
 
 	return slices.Concat(
-		queryStrings(t, db, `SELECT (to_jsonb(c)`+strip+`)::text FROM op_clients c ORDER BY id`),
-		queryStrings(t, db, `SELECT (to_jsonb(g)`+strip+`)::text FROM op_grants g ORDER BY family`),
-		queryStrings(t, db, `SELECT (to_jsonb(r)`+strip+`)::text FROM op_pending_requests r ORDER BY id`),
+		queryStrings(t, db, `SELECT (to_jsonb(c)`+strip+`)::text FROM `+prefix+`op_clients c ORDER BY id`),
+		queryStrings(t, db, `SELECT (to_jsonb(g)`+strip+`)::text FROM `+prefix+`op_grants g ORDER BY family`),
+		queryStrings(t, db, `SELECT (to_jsonb(r)`+strip+`)::text FROM `+prefix+`op_pending_requests r ORDER BY id`),
 	)
 }
 
@@ -2695,21 +2700,21 @@ func TestMigrateSecurityState_DeviceGrant(t *testing.T) {
 				_, err := p.UpTo(ctx, versionOIDCProvider)
 				require.NoError(t, err)
 				holdProviderRows(t, db)
-				before := providerRows(t, db)
+				before := providerRows(t, db, "")
 
 				_, err = p.Up(ctx)
 				require.NoError(t, err)
 
-				assert.True(t, regclassExists(t, db, "op_device_authorizations"), "the device authorization table exists")
-				assert.Equal(t, before, providerRows(t, db, added...), "every column an existing row had is unchanged")
+				assert.True(t, regclassExists(t, db, "scrty_op_device_authorizations"), "the device authorization table exists")
+				assert.Equal(t, before, providerRows(t, db, scrtyPrefix, added...), "every column an existing row had is unchanged")
 				assert.Equal(t, []string{"0|false", "0|false", "0|false"},
-					queryStrings(t, db, `SELECT origin || '|' || survives_sign_in_end FROM op_grants ORDER BY family`))
+					queryStrings(t, db, `SELECT origin || '|' || survives_sign_in_end FROM scrty_op_grants ORDER BY family`))
 				assert.Equal(t, []string{"false|false"},
-					queryStrings(t, db, `SELECT device_complete_uri || '|' || device_grants_outlive_sign_in FROM op_clients`),
+					queryStrings(t, db, `SELECT device_complete_uri || '|' || device_grants_outlive_sign_in FROM scrty_op_clients`),
 					"an existing client has neither device setting")
 				assert.Equal(t, []string{"true|", "true|"},
 					queryStrings(t, db, `SELECT (device_authorization_id IS NULL) || '|' || device_user_code
-						FROM op_pending_requests ORDER BY id`))
+						FROM scrty_op_pending_requests ORDER BY id`))
 
 				grants := must.Must(sqlstore.NewGrantStore(db))
 				for _, family := range []string{deviceMigGrant, deviceMigOfflineGrant, deviceMigTombstone} {
@@ -2734,7 +2739,7 @@ func TestMigrateSecurityState_DeviceGrant(t *testing.T) {
 		{
 			name: "applied, the device authorization table has an index for every lookup the stores make",
 			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				_, err := p.Up(t.Context())
+				_, err := p.UpTo(t.Context(), versionSecurityStateLast)
 				require.NoError(t, err)
 
 				// index name -> the definition, as pg_indexes reports it.
@@ -2772,20 +2777,21 @@ func TestMigrateSecurityState_DeviceGrant(t *testing.T) {
 				_, err := p.UpTo(ctx, versionOIDCProvider)
 				require.NoError(t, err)
 				holdProviderRows(t, db)
-				schema, rows := schemaLines(t, db), providerRows(t, db)
+				schema, rows := schemaLines(t, db), providerRows(t, db, "")
 
 				_, err = p.Up(ctx)
 				require.NoError(t, err)
-				require.True(t, regclassExists(t, db, "op_device_authorizations"), "the table exists before the rollback")
+				require.True(t, regclassExists(t, db, "scrty_op_device_authorizations"), "the table exists before the rollback")
 
 				_, err = p.DownTo(ctx, versionOIDCProvider)
 				require.NoError(t, err)
 
 				assert.False(t, regclassExists(t, db, "op_device_authorizations"), "the table is gone")
+				assert.False(t, regclassExists(t, db, "scrty_op_device_authorizations"), "and so is its prefixed name")
 				assert.Empty(t, queryStrings(t, db, `SELECT table_name || '.' || column_name FROM information_schema.columns
 					WHERE table_schema = current_schema() AND column_name = ANY($1)`, "{"+strings.Join(added, ",")+"}"))
 				assert.Equal(t, schema, schemaLines(t, db), "every other column and index is unchanged")
-				assert.Equal(t, rows, providerRows(t, db), "every row is unchanged")
+				assert.Equal(t, rows, providerRows(t, db, ""), "every row is unchanged")
 			},
 		},
 	}

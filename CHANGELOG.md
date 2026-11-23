@@ -63,6 +63,33 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 
 ### Changed
 
+- **BREAKING: every table, index and sequence scrty's migrations create is now named `scrty_<name>`.**
+  The prefix is fixed. Migration `20261124000000_scrty_prefix`, in each set, renames the relations in
+  place, so rows, indexes and constraints are kept. The stores, the rate limiter and the gorm models use
+  the new names. The version tables `goose_security_state` and `goose_identity` are unchanged.
+  - Security-state set: `account_recoveries`, `api_keys`, `login_attempts`, `login_failure_streaks`,
+    `mfa_enrolments`, `oidc_flows`, `oidc_handoffs`, `oidc_links`, `one_time_tokens`,
+    `op_access_tokens`, `op_authorization_codes`, `op_browser_sessions`, `op_client_assertions`,
+    `op_clients`, `op_consents`, `op_device_authorizations`, `op_grants`, `op_pending_requests`,
+    `op_refresh_tokens`, `passkey_credentials`, `passkey_user_handles`, `rate_limit_buckets`,
+    `recovery_codes`, `sessions` and `signing_keys` become `scrty_` plus the same name.
+  - Identity set: `assigned_roles`, `groups`, `organizations`, `password_history`,
+    `resource_privileges`, `roles` and `users` become `scrty_` plus the same name, and the sequence
+    `password_history_seq_seq` becomes `scrty_password_history_seq_seq`.
+  - To upgrade, stop every replica running v0.2.x or earlier, apply the security-state set, apply the
+    identity set if you use it, then start the new release. To roll back, stop the new release, roll back
+    the identity rename (if you use the identity set), roll back the security-state rename (one version
+    down per set), then start the previous release.
+  - The rename migration waits for each table lock at most 5 seconds (`lock_timeout` bounds each wait,
+    not the whole migration). With old replicas still running it could wait that long once per table,
+    which is why they must be stopped first. A run that hits the bound fails with nothing renamed, and
+    you can retry it.
+  - A new binary against a database that was not renamed is refused when the limiter factory's `Verify`
+    runs: the error wraps `ratelimit.ErrConfig` and names `scrty_rate_limit_buckets`.
+  - Consumer SQL, reporting queries, function bodies and `pg_dump -t` / `--table` filters that name
+    scrty's tables must be updated. Grants, row-level security policies and views reference tables by
+    OID, so they follow the rename and need nothing.
+  - To keep scrty's tables apart from your own, use a PostgreSQL schema and a `search_path`.
 - The grant store keeps a revocation 31 minutes, where it kept it 11, so that a revocation outlives the
   longest device authorization.
 

@@ -12,7 +12,7 @@ import (
 	"github.com/kartaladev/scrty/internal/storekit"
 )
 
-// HandoffStore keeps issued OIDC handoff codes in the oidc_handoffs table the
+// HandoffStore keeps issued OIDC handoff codes in the scrty_oidc_handoffs table the
 // migrate package creates. It implements oidc.HandoffStore, and is safe for
 // concurrent use.
 //

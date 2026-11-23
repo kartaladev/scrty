@@ -105,7 +105,7 @@ func TestGormStore_HandleTimeoutBoundsProviderStores(t *testing.T) {
 			assert: bounded,
 		},
 		{
-			name: "a raw single-row read gorm runs", table: "sessions", mode: "ACCESS EXCLUSIVE",
+			name: "a raw single-row read gorm runs", table: "scrty_sessions", mode: "ACCESS EXCLUSIVE",
 			call: func(ctx context.Context, t *testing.T, g, _ *gormdb.DB) error {
 				_, err := newSessionStore(t, g, storefix.TestCipher(t)).SuccessorPresented(ctx, "x")
 

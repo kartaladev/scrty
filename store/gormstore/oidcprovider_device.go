@@ -32,7 +32,7 @@ func deviceConflict(op string, keyHeld bool) error {
 }
 
 // DeviceAuthorizationStore keeps device authorizations (RFC 8628) in the
-// op_device_authorizations table. It implements oidcprovider.DeviceAuthorizationStore, and
+// scrty_op_device_authorizations table. It implements oidcprovider.DeviceAuthorizationStore, and
 // is safe for concurrent use, across replicas too: every transition is one conditional
 // UPDATE, so of callers racing on a record exactly one moves it, and the others answer
 // oidcprovider.ErrNotFound.

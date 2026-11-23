@@ -34,7 +34,7 @@ const (
 	// $31 client_ip, $32 user_agent, $33 binding_kind, $34 binding_thumbprint
 	// and $35 csrf_token, each NULL for none. Zero rows affected means the
 	// digest is already stored.
-	SessionInsert = `INSERT INTO sessions (id, id_digest, user_id, created_at, last_accessed_at,
+	SessionInsert = `INSERT INTO scrty_sessions (id, id_digest, user_id, created_at, last_accessed_at,
   idle_expires_at, absolute_expires_at, first_factor, mfa_state, mfa_satisfied_at,
   password_change_pending, external_provider, external_issuer, external_session_id,
   external_id_token, data, enrolment_origin_deadline, enrolment_generation, recovered_at,
@@ -57,7 +57,7 @@ ON CONFLICT (id_digest) DO NOTHING`
 	// copy loaded before the supersession can change neither. A row marked
 	// rotated_strictly is not updated at all: Load reports it gone. Zero rows
 	// affected means there is no longer a session to update.
-	SessionUpdate = `UPDATE sessions SET user_id = $2, created_at = $3, last_accessed_at = $4,
+	SessionUpdate = `UPDATE scrty_sessions SET user_id = $2, created_at = $3, last_accessed_at = $4,
   idle_expires_at = CASE WHEN superseded_at IS NULL THEN $5 ELSE idle_expires_at END,
   absolute_expires_at = CASE WHEN superseded_at IS NULL THEN $6 ELSE absolute_expires_at END,
   first_factor = $7, mfa_state = $8,
@@ -75,7 +75,7 @@ WHERE id_digest = $1 AND NOT rotated_strictly`
 	// stored row that is not loadable is an expired session, not a missing
 	// one.
 	SessionSelect = `SELECT ` + sessionReadHead + `external_id_token` + sessionReadMid + `COALESCE(csrf_token, '')
-FROM sessions WHERE id_digest = $1`
+FROM scrty_sessions WHERE id_digest = $1`
 
 	// SessionListByUser reads the sessions of user $1, matched exactly, that
 	// are not superseded and are before both of their own deadlines at $2,
@@ -86,7 +86,7 @@ FROM sessions WHERE id_digest = $1`
 	// identifier, which is never stored. It is answered through the
 	// sessions_user index.
 	SessionListByUser = `SELECT ` + sessionReadHead + `''` + sessionReadMid + `''
-FROM sessions
+FROM scrty_sessions
 WHERE user_id = $1 AND superseded_at IS NULL AND idle_expires_at > $2 AND absolute_expires_at > $2`
 
 	// SessionListByFamily is SessionListByUser narrowed to family $3, and built
@@ -105,21 +105,21 @@ WHERE user_id = $1 AND superseded_at IS NULL AND idle_expires_at > $2 AND absolu
 	// sessionLoadable. No row means the session itself is not loadable at $2,
 	// which reads as a missing session. It writes nothing.
 	SessionSuccessorPresented = `SELECT s.first_presented_at IS NOT NULL OR s.superseded_at IS NOT NULL
-FROM sessions o
-LEFT JOIN sessions s ON s.id_digest = o.successor_digest AND ` + sessionLoadableS + `
+FROM scrty_sessions o
+LEFT JOIN scrty_sessions s ON s.id_digest = o.successor_digest AND ` + sessionLoadableS + `
 WHERE o.id_digest = $1 AND ` + sessionLoadableO
 
 	// SessionExists reports whether a session with digest $1 is stored,
 	// expired or not. A conditional write that changed no row runs it to tell
 	// a missing session from one whose condition did not hold.
-	SessionExists = `SELECT EXISTS (SELECT 1 FROM sessions WHERE id_digest = $1)`
+	SessionExists = `SELECT EXISTS (SELECT 1 FROM scrty_sessions WHERE id_digest = $1)`
 
 	// SessionRecordActivity writes $2 last_accessed_at and $3 idle_expires_at,
 	// the latter capped at the stored absolute deadline, and nothing else, to
 	// the session with digest $1, provided its stored last access is before $4
 	// and it is not superseded. Zero rows affected means it is fresher,
 	// superseded or missing; SessionExists tells which.
-	SessionRecordActivity = `UPDATE sessions SET last_accessed_at = $2, idle_expires_at = LEAST($3, absolute_expires_at)
+	SessionRecordActivity = `UPDATE scrty_sessions SET last_accessed_at = $2, idle_expires_at = LEAST($3, absolute_expires_at)
 WHERE id_digest = $1 AND last_accessed_at <= $4 AND superseded_at IS NULL`
 
 	// SessionLockSupersession locks the rows a supersession writes before it
@@ -133,7 +133,7 @@ WHERE id_digest = $1 AND last_accessed_at <= $4 AND superseded_at IS NULL`
 	// successor it then inserts is a new row no other writer can hold. The
 	// deletes by user and the expiry sweep lock their rows in scan order, not
 	// id order, and are not covered by this ordering.
-	SessionLockSupersession = `SELECT id FROM sessions WHERE id_digest IN ($1, $2) ORDER BY id FOR UPDATE`
+	SessionLockSupersession = `SELECT id FROM scrty_sessions WHERE id_digest IN ($1, $2) ORDER BY id FOR UPDATE`
 
 	// SessionSupersedeOld marks the session with digest $1 superseded at $3,
 	// with its window ending at $4 and $5 as its successor's digest, and keeps
@@ -151,7 +151,7 @@ WHERE id_digest = $1 AND last_accessed_at <= $4 AND superseded_at IS NULL`
 	// tells which. This conditional update is what decides concurrent
 	// supersessions: a second one waits on the row locks the first took, in
 	// SessionLockSupersession, and then finds the successor changed.
-	SessionSupersedeOld = `UPDATE sessions SET superseded_at = $3, accept_until = $4, successor_digest = $5,
+	SessionSupersedeOld = `UPDATE scrty_sessions SET superseded_at = $3, accept_until = $4, successor_digest = $5,
   retain_until = GREATEST(COALESCE(retain_until, $6), $6), rotated_strictly = $7
 WHERE id_digest = $1 AND successor_digest IS NOT DISTINCT FROM $2
   AND ($2::bytea IS NOT NULL OR superseded_at IS NULL)
@@ -162,7 +162,7 @@ WHERE id_digest = $1 AND successor_digest IS NOT DISTINCT FROM $2
 	// when it is stored in no family (the all-zero family), and 1 otherwise,
 	// when its successor or its supersession is the cause.
 	SessionSupersedeRefusal = `SELECT COALESCE(MAX(CASE WHEN family_id = '00000000-0000-0000-0000-000000000000'
-  THEN 2 ELSE 1 END), 0) FROM sessions WHERE id_digest = $1`
+  THEN 2 ELSE 1 END), 0) FROM scrty_sessions WHERE id_digest = $1`
 
 	// SessionSupersedePrevious marks the session with digest $1, the previous
 	// successor of a session superseded again, superseded at $2 with a window
@@ -180,7 +180,7 @@ WHERE id_digest = $1 AND successor_digest IS NOT DISTINCT FROM $2
 	// was released, so a presentation, a rotation or a removal of the
 	// successor that held the lock first refuses the supersession, and one
 	// that came after it waits for it.
-	SessionSupersedePrevious = `UPDATE sessions SET superseded_at = $2, accept_until = $2,
+	SessionSupersedePrevious = `UPDATE scrty_sessions SET superseded_at = $2, accept_until = $2,
   retain_until = GREATEST(COALESCE(retain_until, $4), $4)
 WHERE id_digest = $1 AND superseded_at IS NULL AND (NOT $3::boolean OR first_presented_at IS NULL)`
 
@@ -189,7 +189,7 @@ WHERE id_digest = $1 AND superseded_at IS NULL AND (NOT $3::boolean OR first_pre
 	// not superseded. Zero rows affected means the session is missing,
 	// superseded, or presented already; SessionPresentationRefusal tells
 	// which.
-	SessionMarkPresented = `UPDATE sessions SET first_presented_at = $2
+	SessionMarkPresented = `UPDATE scrty_sessions SET first_presented_at = $2
 WHERE id_digest = $1 AND first_presented_at IS NULL AND superseded_at IS NULL`
 
 	// SessionPresentationRefusal reports, in one row, whether a session with
@@ -197,8 +197,8 @@ WHERE id_digest = $1 AND first_presented_at IS NULL AND superseded_at IS NULL`
 	// that changed no row runs it: not stored is a missing session, superseded
 	// is a refused mark, and otherwise the first presentation is recorded
 	// already.
-	SessionPresentationRefusal = `SELECT EXISTS (SELECT 1 FROM sessions WHERE id_digest = $1),
-  EXISTS (SELECT 1 FROM sessions WHERE id_digest = $1 AND superseded_at IS NOT NULL)`
+	SessionPresentationRefusal = `SELECT EXISTS (SELECT 1 FROM scrty_sessions WHERE id_digest = $1),
+  EXISTS (SELECT 1 FROM scrty_sessions WHERE id_digest = $1 AND superseded_at IS NOT NULL)`
 
 	// SessionDeleteFamily removes every session of family $1, superseded or
 	// not, expired or not, after locking them in id order, the order
@@ -209,19 +209,19 @@ WHERE id_digest = $1 AND first_presented_at IS NULL AND superseded_at IS NULL`
 	// successor the supersession inserted, which only the next statement's
 	// snapshot holds.
 	SessionDeleteFamily = `WITH doomed AS MATERIALIZED (
-  SELECT id FROM sessions WHERE family_id = $1 ORDER BY id FOR UPDATE
+  SELECT id FROM scrty_sessions WHERE family_id = $1 ORDER BY id FOR UPDATE
 )
-DELETE FROM sessions WHERE id IN (SELECT id FROM doomed)`
+DELETE FROM scrty_sessions WHERE id IN (SELECT id FROM doomed)`
 
 	// SessionDelete removes the session with digest $1.
-	SessionDelete = `DELETE FROM sessions WHERE id_digest = $1`
+	SessionDelete = `DELETE FROM scrty_sessions WHERE id_digest = $1`
 
 	// SessionDeleteByUser removes every session of user $1, expired or not.
 	// The caller repeats it until it affects no row, as it does
 	// SessionDeleteFamily and for the same reason: a delete that waited on a
 	// row an uncommitted supersession holds does not see the successor that
 	// supersession inserted.
-	SessionDeleteByUser = `DELETE FROM sessions WHERE user_id = $1`
+	SessionDeleteByUser = `DELETE FROM scrty_sessions WHERE user_id = $1`
 
 	// SessionDeleteByUserExcept removes every session of user $1, expired or
 	// not, except the one with digest $2 and, when user $1 holds it, its
@@ -240,17 +240,17 @@ DELETE FROM sessions WHERE id IN (SELECT id FROM doomed)`
 	// delete runs on. A successor a supersession commits after that snapshot
 	// was taken is not visible to it, so the caller repeats it until it
 	// affects no row, as it does SessionDeleteFamily.
-	SessionDeleteByUserExcept = `DELETE FROM sessions
+	SessionDeleteByUserExcept = `DELETE FROM scrty_sessions
 WHERE user_id = $1
   AND id_digest <> $2
   AND (superseded_at IS NOT NULL
-       OR family_id IS DISTINCT FROM (SELECT family_id FROM sessions
+       OR family_id IS DISTINCT FROM (SELECT family_id FROM scrty_sessions
          WHERE id_digest = $2 AND user_id = $1
            AND family_id <> '00000000-0000-0000-0000-000000000000'))`
 
 	// SessionCountActive counts user $1's sessions unexpired at $2: both
 	// deadlines strictly after it, and not superseded.
-	SessionCountActive = `SELECT count(*) FROM sessions
+	SessionCountActive = `SELECT count(*) FROM scrty_sessions
 WHERE user_id = $1 AND idle_expires_at > $2 AND absolute_expires_at > $2
   AND superseded_at IS NULL`
 
@@ -258,7 +258,7 @@ WHERE user_id = $1 AND idle_expires_at > $2 AND absolute_expires_at > $2
 	// complement of sessionLoadable: a superseded session with a retention
 	// deadline once that deadline is not after $1, whatever its own deadlines
 	// say, and any other session once either of its own deadlines is not.
-	SessionDeleteExpired = `DELETE FROM sessions
+	SessionDeleteExpired = `DELETE FROM scrty_sessions
 WHERE CASE WHEN superseded_at IS NOT NULL AND retain_until IS NOT NULL
            THEN retain_until <= $1
            ELSE idle_expires_at <= $1 OR absolute_expires_at <= $1 END`
@@ -267,13 +267,13 @@ WHERE CASE WHEN superseded_at IS NOT NULL AND retain_until IS NOT NULL
 	// session $2. The issuer always leads, and an empty argument matches
 	// nothing. The caller repeats it until it affects no row, as it does
 	// SessionDeleteFamily.
-	SessionDeleteByExternal = `DELETE FROM sessions
+	SessionDeleteByExternal = `DELETE FROM scrty_sessions
 WHERE external_issuer = $1 AND external_session_id = $2 AND $1 <> '' AND $2 <> ''`
 
 	// SessionDeleteByUserIssuer removes user $1's sessions from issuer $2. An
 	// empty issuer matches nothing. The caller repeats it until it affects no
 	// row, as it does SessionDeleteFamily.
-	SessionDeleteByUserIssuer = `DELETE FROM sessions WHERE user_id = $1 AND external_issuer = $2 AND $2 <> ''`
+	SessionDeleteByUserIssuer = `DELETE FROM scrty_sessions WHERE user_id = $1 AND external_issuer = $2 AND $2 <> ''`
 )
 
 // sessionReadHead and sessionReadMid are the columns SessionSelect,
@@ -368,7 +368,7 @@ const (
 	SupersedeRefusalNoFamily = 2
 )
 
-// sessionLoadable is the condition, on a sessions row and the time $2, under
+// sessionLoadable is the condition, on a scrty_sessions row and the time $2, under
 // which a store returns that row: a superseded row with a retention deadline
 // while that deadline is after $2, whatever its own deadlines say, and any
 // other row, a superseded one with no retention deadline included, while both

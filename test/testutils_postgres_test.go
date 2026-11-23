@@ -967,18 +967,18 @@ func TestRunTestPostgresIsolation(t *testing.T) {
 				truncater := RunTestPostgres(t, security)
 
 				now := time.Now().UTC()
-				_, err := inserter.DB.ExecContext(t.Context(), `INSERT INTO sessions
+				_, err := inserter.DB.ExecContext(t.Context(), `INSERT INTO scrty_sessions
 					(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at, family_id, family_created_at)
 					VALUES ($1, $2, 'u', $3, $3, $4, $4, $1, $3)`,
 					sessionID, []byte("digest"), now, now.Add(time.Hour))
 				require.NoError(t, err)
 
-				_, err = truncater.DB.ExecContext(t.Context(), `TRUNCATE sessions`)
+				_, err = truncater.DB.ExecContext(t.Context(), `TRUNCATE scrty_sessions`)
 				require.NoError(t, err)
 
 				var n int
 				require.NoError(t, inserter.DB.QueryRowContext(t.Context(),
-					`SELECT count(*) FROM sessions WHERE id = $1`, sessionID).Scan(&n))
+					`SELECT count(*) FROM scrty_sessions WHERE id = $1`, sessionID).Scan(&n))
 				assert.Equal(t, 1, n, "another call's TRUNCATE removed this call's session")
 			},
 		},
@@ -1306,7 +1306,7 @@ func TestPostgresTemplate(t *testing.T) {
 				require.NoError(t, err)
 
 				db := openFor(t, srv, name)
-				assert.True(t, regclassExists(t, db, "sessions"), "the clone of a rebuilt template has no sessions table")
+				assert.True(t, regclassExists(t, db, "scrty_sessions"), "the clone of a rebuilt template has no sessions table")
 				assert.EqualValues(t, 1, srv.applies.Load())
 			},
 		},
@@ -1333,13 +1333,13 @@ func TestPostgresTemplate(t *testing.T) {
 						t.Parallel()
 						conn := RunTestPostgres(t, security)
 						if i == 0 {
-							_, err := conn.DB.ExecContext(t.Context(), `TRUNCATE sessions`)
+							_, err := conn.DB.ExecContext(t.Context(), `TRUNCATE scrty_sessions`)
 							require.NoError(t, err)
 							return
 						}
 						insertProbeSession(t, conn.DB)
 						var n int
-						require.NoError(t, conn.DB.QueryRowContext(t.Context(), `SELECT count(*) FROM sessions`).Scan(&n))
+						require.NoError(t, conn.DB.QueryRowContext(t.Context(), `SELECT count(*) FROM scrty_sessions`).Scan(&n))
 						assert.Equal(t, 1, n)
 					})
 				}
@@ -1358,7 +1358,7 @@ func TestPostgresTemplate(t *testing.T) {
 							conn := RunTestPostgres(t, security)
 							var name string
 							require.NoError(t, conn.DB.QueryRowContext(t.Context(), `SELECT current_database()`).Scan(&name))
-							assert.True(t, regclassExists(t, conn.DB, "sessions"))
+							assert.True(t, regclassExists(t, conn.DB, "scrty_sessions"))
 							mu.Lock()
 							defer mu.Unlock()
 							assert.False(t, seen[name], "database %s handed out twice", name)
@@ -1426,7 +1426,7 @@ func insertProbeSession(t *testing.T, db *sql.DB) {
 	t.Helper()
 
 	now := time.Now().UTC()
-	_, err := db.ExecContext(t.Context(), `INSERT INTO sessions
+	_, err := db.ExecContext(t.Context(), `INSERT INTO scrty_sessions
 		(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at, family_id, family_created_at)
 		VALUES ($1, $2, 'u', $3, $3, $4, $4, $1, $3)`,
 		id.MustParse("0192f000-0000-7000-8000-0000000000bb"), []byte("digest"), now, now.Add(time.Hour))

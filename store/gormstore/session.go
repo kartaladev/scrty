@@ -23,7 +23,7 @@ import (
 )
 
 // NewSessionStore returns a durable session store on db, keeping sessions in
-// the sessions table the migrate package creates.
+// the scrty_sessions table the migrate package creates.
 //
 // The provider ID token a federated session carries is sealed with cipher before
 // it is written and opened when it is read, through session.NewEncryptedStore

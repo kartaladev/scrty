@@ -16,7 +16,7 @@ import (
 )
 
 // NewSigningKeyStore returns a durable signing-key store on pool, keeping
-// keys in the signing_keys table the migrate package creates.
+// keys in the scrty_signing_keys table the migrate package creates.
 //
 // Each key's private material is sealed with cipher before it is written and
 // opened when it is read, through seal.NewSigningKeyStore, bound to the key's

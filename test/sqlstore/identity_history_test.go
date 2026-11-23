@@ -102,7 +102,7 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 
 				var n int
 				require.NoError(t, conn.DB.QueryRowContext(ctx,
-					`SELECT count(*) FROM password_history WHERE user_id = $1`, string(user)).Scan(&n))
+					`SELECT count(*) FROM scrty_password_history WHERE user_id = $1`, string(user)).Scan(&n))
 				assert.Zero(t, n, "a history entry was stored under the nil identifier")
 			},
 		},
@@ -117,7 +117,7 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 
 				var got time.Time
 				require.NoError(t, conn.DB.QueryRowContext(ctx,
-					`SELECT retired_at FROM password_history WHERE user_id = $1`, string(user)).Scan(&got))
+					`SELECT retired_at FROM scrty_password_history WHERE user_id = $1`, string(user)).Scan(&got))
 				assert.True(t, at.Truncate(time.Microsecond).Equal(got), "want %v, got %v", at, got)
 			},
 		},
@@ -186,7 +186,7 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 
 				var n int
 				require.NoError(t, conn.DB.QueryRowContext(ctx,
-					`SELECT count(*) FROM password_history WHERE password = $1`, refused).Scan(&n))
+					`SELECT count(*) FROM scrty_password_history WHERE password = $1`, refused).Scan(&n))
 				assert.Zero(t, n, "a refused retire writes nothing")
 			},
 		},
@@ -240,7 +240,7 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 					tx, err := conn.DB.BeginTx(ctx, nil)
 					require.NoError(t, err)
 					defer func() { _ = tx.Rollback() }()
-					_, err = tx.ExecContext(ctx, `ALTER TABLE password_history RENAME TO password_history_gone`)
+					_, err = tx.ExecContext(ctx, `ALTER TABLE scrty_password_history RENAME TO password_history_gone`)
 					require.NoError(t, err)
 
 					fn(sqlstore.WithTx(ctx, tx))
@@ -372,9 +372,9 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 				tx, err := conn.DB.BeginTx(ctx, nil)
 				require.NoError(t, err)
 				defer func() { _ = tx.Rollback() }()
-				_, err = tx.ExecContext(ctx, `DELETE FROM assigned_roles WHERE user_id = $1`, string(gone.ID))
+				_, err = tx.ExecContext(ctx, `DELETE FROM scrty_assigned_roles WHERE user_id = $1`, string(gone.ID))
 				require.NoError(t, err)
-				_, err = tx.ExecContext(ctx, `DELETE FROM users WHERE id = $1`, string(gone.ID))
+				_, err = tx.ExecContext(ctx, `DELETE FROM scrty_users WHERE id = $1`, string(gone.ID))
 				require.NoError(t, err)
 				require.NoError(t, s.ForgetPasswords(sqlstore.WithTx(ctx, tx), gone.ID))
 				require.NoError(t, tx.Commit())
@@ -434,7 +434,7 @@ BEGIN
   RETURN OLD;
 END $$`)
 	require.NoError(t, err)
-	_, err = db.ExecContext(ctx, `CREATE TRIGGER `+name+` BEFORE DELETE ON password_history
+	_, err = db.ExecContext(ctx, `CREATE TRIGGER `+name+` BEFORE DELETE ON scrty_password_history
 FOR EACH ROW EXECUTE FUNCTION `+name+`()`)
 	require.NoError(t, err)
 
@@ -443,7 +443,7 @@ FOR EACH ROW EXECUTE FUNCTION `+name+`()`)
 		// instead of hanging the package.
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		_, err := db.ExecContext(cctx, `DROP TRIGGER `+name+` ON password_history`)
+		_, err := db.ExecContext(cctx, `DROP TRIGGER `+name+` ON scrty_password_history`)
 		assert.NoError(t, err)
 		_, err = db.ExecContext(cctx, `DROP FUNCTION `+name+`()`)
 		assert.NoError(t, err)
@@ -456,7 +456,7 @@ func historyRows(ctx context.Context, t *testing.T, db *sql.DB, user identity.Us
 
 	var n int
 	require.NoError(t, db.QueryRowContext(ctx,
-		`SELECT count(*) FROM password_history WHERE user_id = $1`, string(user)).Scan(&n))
+		`SELECT count(*) FROM scrty_password_history WHERE user_id = $1`, string(user)).Scan(&n))
 
 	return n
 }

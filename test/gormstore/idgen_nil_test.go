@@ -124,7 +124,7 @@ func TestStores_NilGeneratedID(t *testing.T) {
 				s := newAttemptStore(t, d.db, gormstore.WithIDGenerator(sequenceIDs(t, id.Nil)))
 				_, _, err := s.AddStreakFailure(ctx, "nil-streak", at, at.Add(-time.Hour), 5)
 				refused(t, err, "add to login failure streak")
-				assert.Zero(t, rowCount(ctx, t, d, `SELECT count(*) FROM login_failure_streaks WHERE username = $1`, "nil-streak"))
+				assert.Zero(t, rowCount(ctx, t, d, `SELECT count(*) FROM scrty_login_failure_streaks WHERE username = $1`, "nil-streak"))
 			},
 		},
 		{
@@ -133,7 +133,7 @@ func TestStores_NilGeneratedID(t *testing.T) {
 				s := newAttemptStore(t, d.db, gormstore.WithIDGenerator(sequenceIDs(t, good)))
 				_, _, err := s.AddStreakFailure(ctx, "good-streak", at, at.Add(-time.Hour), 5)
 				require.NoError(t, err)
-				assert.Equal(t, 1, rowCount(ctx, t, d, `SELECT count(*) FROM login_failure_streaks WHERE username = $1`, "good-streak"))
+				assert.Equal(t, 1, rowCount(ctx, t, d, `SELECT count(*) FROM scrty_login_failure_streaks WHERE username = $1`, "good-streak"))
 			},
 		},
 		{
@@ -295,7 +295,7 @@ func TestStores_NilGeneratedID(t *testing.T) {
 				handle, err := s.Begin(ctx, storefix.Flow("p-nil", "s-nil"))
 				refused(t, err, "begin login flow")
 				assert.Empty(t, handle)
-				assert.Zero(t, nilRows(ctx, t, d, "oidc_flows"))
+				assert.Zero(t, nilRows(ctx, t, d, "scrty_oidc_flows"))
 			},
 		},
 		{
@@ -305,7 +305,7 @@ func TestStores_NilGeneratedID(t *testing.T) {
 				handle, err := s.Begin(ctx, storefix.Flow("p-good", "s-good"))
 				require.NoError(t, err)
 				assert.NotEmpty(t, handle)
-				assert.Equal(t, 1, rowsOf(ctx, t, d, "oidc_flows", good7))
+				assert.Equal(t, 1, rowsOf(ctx, t, d, "scrty_oidc_flows", good7))
 			},
 		},
 		{
@@ -314,7 +314,7 @@ func TestStores_NilGeneratedID(t *testing.T) {
 				s := newEnrolmentStore(t, d.db, storefix.TestCipher(t), gormstore.WithIDGenerator(sequenceIDs(t, id.Nil)))
 				refusedText(t, s.PutPending(ctx, storefix.Pending("mfa-nil-user", "TOTP-NIL")),
 					"seal: the inner store could not store the pending MFA enrolment")
-				assert.Zero(t, nilRows(ctx, t, d, "mfa_enrolments"))
+				assert.Zero(t, nilRows(ctx, t, d, "scrty_mfa_enrolments"))
 			},
 		},
 		{
@@ -322,7 +322,7 @@ func TestStores_NilGeneratedID(t *testing.T) {
 			assert: func(t *testing.T, ctx context.Context, d database) {
 				s := newEnrolmentStore(t, d.db, storefix.TestCipher(t), gormstore.WithIDGenerator(sequenceIDs(t, good8)))
 				require.NoError(t, s.PutPending(ctx, storefix.Pending("mfa-good-user", "TOTP-GOOD")))
-				assert.Equal(t, 1, rowsOf(ctx, t, d, "mfa_enrolments", good8))
+				assert.Equal(t, 1, rowsOf(ctx, t, d, "scrty_mfa_enrolments", good8))
 			},
 		},
 		{
@@ -331,7 +331,7 @@ func TestStores_NilGeneratedID(t *testing.T) {
 				s := newPasskeyHandleStore(t, d.db, gormstore.WithIDGenerator(sequenceIDs(t, id.Nil)))
 				_, err := s.Assign(ctx, "nil-id-user", storefix.PasskeyOffer("nil-id-user", 0))
 				refused(t, err, "assign passkey user handle")
-				assert.Zero(t, nilRows(ctx, t, d, "passkey_user_handles"))
+				assert.Zero(t, nilRows(ctx, t, d, "scrty_passkey_user_handles"))
 			},
 		},
 		{
@@ -340,7 +340,7 @@ func TestStores_NilGeneratedID(t *testing.T) {
 				s := newPasskeyHandleStore(t, d.db, gormstore.WithIDGenerator(sequenceIDs(t, good9)))
 				_, err := s.Assign(ctx, "good-id-user", storefix.PasskeyOffer("good-id-user", 0))
 				require.NoError(t, err)
-				assert.Equal(t, 1, rowsOf(ctx, t, d, "passkey_user_handles", good9))
+				assert.Equal(t, 1, rowsOf(ctx, t, d, "scrty_passkey_user_handles", good9))
 			},
 		},
 		{
@@ -348,7 +348,7 @@ func TestStores_NilGeneratedID(t *testing.T) {
 			assert: func(t *testing.T, ctx context.Context, d database) {
 				s := newRecoveryCodeStore(t, d.db, gormstore.WithIDGenerator(sequenceIDs(t, id.Nil)))
 				refused(t, s.ReplaceSet(ctx, "nil-id-user", recoveryHashes("nil-id", 1), recoveryAt), "replace recovery codes")
-				assert.Zero(t, nilRows(ctx, t, d, "recovery_codes"))
+				assert.Zero(t, nilRows(ctx, t, d, "scrty_recovery_codes"))
 			},
 		},
 		{
@@ -356,7 +356,7 @@ func TestStores_NilGeneratedID(t *testing.T) {
 			assert: func(t *testing.T, ctx context.Context, d database) {
 				s := newRecoveryCodeStore(t, d.db, gormstore.WithIDGenerator(sequenceIDs(t, good10)))
 				require.NoError(t, s.ReplaceSet(ctx, "good-id-user", recoveryHashes("good-id", 1), recoveryAt))
-				assert.Equal(t, 1, rowsOf(ctx, t, d, "recovery_codes", good10))
+				assert.Equal(t, 1, rowsOf(ctx, t, d, "scrty_recovery_codes", good10))
 			},
 		},
 		{
@@ -379,7 +379,7 @@ func TestStores_NilGeneratedID(t *testing.T) {
 				s := newSessionStore(t, d.db, cipher, gormstore.WithIDGenerator(sequenceIDs(t, id.Nil)))
 				refusedText(t, s.Create(ctx, storefix.DurableSession("nil-id", opTime)),
 					"session: the inner store could not create the session")
-				assert.Zero(t, nilRows(ctx, t, d, "sessions"))
+				assert.Zero(t, nilRows(ctx, t, d, "scrty_sessions"))
 			},
 		},
 		{
@@ -387,7 +387,7 @@ func TestStores_NilGeneratedID(t *testing.T) {
 			assert: func(t *testing.T, ctx context.Context, d database) {
 				s := newSessionStore(t, d.db, cipher, gormstore.WithIDGenerator(sequenceIDs(t, good11)))
 				require.NoError(t, s.Create(ctx, storefix.DurableSession("good-id", opTime)))
-				assert.Equal(t, 1, rowsOf(ctx, t, d, "sessions", good11))
+				assert.Equal(t, 1, rowsOf(ctx, t, d, "scrty_sessions", good11))
 			},
 		},
 		{
@@ -396,7 +396,7 @@ func TestStores_NilGeneratedID(t *testing.T) {
 				s := newSigningKeyStore(t, d.db, cipher, gormstore.WithIDGenerator(sequenceIDs(t, id.Nil)))
 				refusedText(t, s.Store(ctx, storefix.SigningKey("nil-id-kid", []byte("private"))),
 					"seal: the inner store could not store the signing key")
-				assert.Zero(t, nilRows(ctx, t, d, "signing_keys"))
+				assert.Zero(t, nilRows(ctx, t, d, "scrty_signing_keys"))
 			},
 		},
 		{
@@ -404,7 +404,7 @@ func TestStores_NilGeneratedID(t *testing.T) {
 			assert: func(t *testing.T, ctx context.Context, d database) {
 				s := newSigningKeyStore(t, d.db, cipher, gormstore.WithIDGenerator(sequenceIDs(t, good12)))
 				require.NoError(t, s.Store(ctx, storefix.SigningKey("good-id-kid", []byte("private"))))
-				assert.Equal(t, 1, rowsOf(ctx, t, d, "signing_keys", good12))
+				assert.Equal(t, 1, rowsOf(ctx, t, d, "scrty_signing_keys", good12))
 			},
 		},
 		{

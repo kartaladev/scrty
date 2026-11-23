@@ -100,7 +100,7 @@ func (c *cleanupPanickingPool) ExecContext(ctx context.Context, query string, ar
 }
 
 // userInsertPrefix begins the INSERT gorm builds for a provisioned user.
-const userInsertPrefix = `INSERT INTO "users" `
+const userInsertPrefix = `INSERT INTO "scrty_users" `
 
 // isUserInsert matches the INSERT of a provisioned user.
 func isUserInsert(query string) bool { return strings.HasPrefix(query, userInsertPrefix) }
@@ -382,7 +382,7 @@ func TestIdentityStore_ConstraintFailure(t *testing.T) {
 			defer tx.Rollback()
 			if tc.check {
 				require.NoError(t, tx.Exec(
-					`ALTER TABLE users ADD CONSTRAINT consumer_name_check CHECK (name <> 'Forbidden')`).Error)
+					`ALTER TABLE scrty_users ADD CONSTRAINT consumer_name_check CHECK (name <> 'Forbidden')`).Error)
 			}
 
 			tc.assert(t, tc.write(ctx, d.db, tx))
@@ -463,7 +463,7 @@ func TestIdentityStore_ScanErrorRedactsValue(t *testing.T) {
 			name: "a plainly named column",
 			grants: `SELECT id, role_name, 'not-a-position' AS position, is_primary, super_role,
   start_date, valid_until, created_at, updated_at
-FROM assigned_roles WHERE user_id = $1`,
+FROM scrty_assigned_roles WHERE user_id = $1`,
 			assert: func(t *testing.T, err error) {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), `scan error on column index 2, name "position"`,
@@ -475,7 +475,7 @@ FROM assigned_roles WHERE user_id = $1`,
 			name: "a column whose name carries a quote",
 			grants: `SELECT id, role_name, 'secret-value' AS "posi""tion", is_primary, super_role,
   start_date, valid_until, created_at, updated_at
-FROM assigned_roles WHERE user_id = $1`,
+FROM scrty_assigned_roles WHERE user_id = $1`,
 			assert: func(t *testing.T, err error) {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), `scan error on column index 2, name "posi\"tion"`,

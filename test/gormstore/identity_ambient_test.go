@@ -32,7 +32,7 @@ func prepareAmbient(t *testing.T, db *sql.DB) id.ID {
 	require.NoError(t, err)
 	owner, err := seedIDs.NewID()
 	require.NoError(t, err)
-	_, err = db.ExecContext(ctx, `INSERT INTO assigned_roles
+	_, err = db.ExecContext(ctx, `INSERT INTO scrty_assigned_roles
   (id, user_id, role_name, position, is_primary, super_role, created_at, updated_at)
 VALUES ($1, $2, 'sentinel', 0, true, false, $3, $3)`, sentinel, owner, seedNow)
 	require.NoError(t, err)
