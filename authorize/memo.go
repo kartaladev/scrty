@@ -14,6 +14,13 @@ import (
 // from growing the memo without limit.
 const memoBound = 32
 
+// memoWaitRounds bounds how many times one waiter goes back to the memo after
+// a load it waited on ended with the loading check's context. Each round
+// needs another check whose context ended, so the loop ends with the checks
+// anyway; the bound is a backstop that keeps a waiter from looping without
+// limit should that ever stop being true.
+const memoWaitRounds = 8
+
 // memoContextKey is unexported, so nothing outside this package can read the
 // memo or plant one with results of its own choosing.
 type memoContextKey struct{}
@@ -62,7 +69,11 @@ type requestMemo struct {
 // load each role's privileges at most once for it, including when checks run
 // concurrently: the first check loads and the others wait for its result. A
 // successful load and identity.ErrPrivilegesNotFound are remembered; any other
-// error is not, so a later check in the same request tries again. A memo
+// error is not, so a later check in the same request tries again. Nothing a
+// check loaded after its own context ended is remembered, not even a success,
+// which may be partial; a check still waiting on it loads again. A check that
+// keeps finding such cancelled loads goes back at most eight times, then
+// loads for itself without the memo. A memo
 // remembers at most 32 roles, and loads past that are not remembered.
 //
 // The default, a context without a memo, loads on every check. The httpsec
@@ -117,23 +128,29 @@ func (a *PrivilegeAuthorizer) loadPrivileges(ctx context.Context, role string) (
 // loads it with fn.
 //
 // A waiter whose own context ends stops waiting with its context's error, and
-// leaves the entry for everyone else. A waiter whose load failed because the
-// loading check's context ended, while its own is still live, loads again
-// whatever error the loader returned: a driver closing its connection under a
-// cancelled context reports an error that does not wrap the cancellation, and
-// a live caller never inherits another caller's cancellation. A waiter whose
-// own context has ended by the time it wakes returns its own context's error,
-// not the loading check's. Each retry round ends a check whose context is
-// over, so the loop ends with the checks. Any failure while the loading
-// check's context was live, including a deadline the loader hit on its own, is
-// returned to every waiter: it is an outage, and retrying it would make each
-// waiter pay it again in turn.
+// leaves the entry for everyone else. A waiter whose load ended after the
+// loading check's context ended, while its own is still live, goes back to the
+// memo and loads again whatever the loader returned — an error, a not-found or
+// a success: a driver closing its connection under a cancelled context reports
+// an error that does not wrap the cancellation, a loader cut short may return
+// partial data, and a live caller never inherits another caller's
+// cancellation. fill has removed such an entry before waking the waiter, so
+// the waiter never finds the same finished entry again. A waiter whose own
+// context has ended by the time it wakes returns its own context's error, not
+// the loading check's. Each retry round needs another check whose context is
+// over, so the loop ends with the checks; as a backstop, a waiter that has gone
+// back memoWaitRounds times loads for itself with fn, without the memo, as a
+// check past the memo's bound does: a live caller never takes another check's
+// cancelled result. Any failure while
+// the loading check's context was live, including a deadline the loader hit
+// on its own, is returned to every waiter: it is an outage, and retrying it
+// would make each waiter pay it again in turn.
 func (m *requestMemo) load(
 	ctx context.Context,
 	key memoKey,
 	fn func(context.Context) ([]*identity.ResourcePrivileges, error),
 ) ([]*identity.ResourcePrivileges, error) {
-	for {
+	for round := 1; ; round++ {
 		m.mu.Lock()
 
 		entry, inFlight := m.entries[key]
@@ -165,19 +182,28 @@ func (m *requestMemo) load(
 			return nil, fmt.Errorf("authorize: waiting for the role's privileges: %w", err)
 		}
 
-		if entry.loaderEnded && entry.err != nil {
-			continue
+		if !entry.loaderEnded {
+			return entry.privileges, entry.err
 		}
 
-		return entry.privileges, entry.err
+		// The rounds are spent: load for this check alone, outside the memo,
+		// rather than hand a live caller another check's cancelled result.
+		if round >= memoWaitRounds {
+			return fn(ctx)
+		}
 	}
 }
 
 // fill runs fn for entry and publishes the result.
 //
-// A result that is not remembered — an error other than not-found, or a panic
-// in the loader — has its entry removed before done closes, so a check that
-// arrives afterwards loads again instead of reading the failure. A panic is
+// A result that is not remembered has its entry removed before done closes, so
+// a check that arrives afterwards, or a waiter that goes back to the memo,
+// loads again instead of reading it. Not remembered are an error other than
+// not-found, a panic in the loader, and any result — success, not-found or
+// error — returned after this check's own context ended: a loader cut short
+// may answer with partial data or a not-found it did not establish, and that
+// answer is this check's alone. It is still returned to this check, whose
+// caller has gone. A panic is
 // published to the waiters as an error and then continues in this check, so no
 // waiter is left blocked on an entry nobody will finish.
 func (m *requestMemo) fill(
@@ -193,9 +219,14 @@ func (m *requestMemo) fill(
 			entry.err = errLoaderPanicked
 		}
 
-		if entry.err != nil && !errors.Is(entry.err, identity.ErrPrivilegesNotFound) {
+		remembered := entry.err == nil || errors.Is(entry.err, identity.ErrPrivilegesNotFound)
+		if !remembered || entry.loaderEnded {
+			// Remove only this load's entry: never one another check has
+			// put in its place.
 			m.mu.Lock()
-			delete(m.entries, key)
+			if m.entries[key] == entry {
+				delete(m.entries, key)
+			}
 			m.mu.Unlock()
 		}
 
