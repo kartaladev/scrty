@@ -105,6 +105,17 @@ See `proposal.md` for why. The provider today:
   - a pending request is keyed by a browser handle, while a device authorization exists before any browser has seen it;
   - widening the existing port would change a contract other stores implement.
 
+### D3a. The SQL device store (lane B1, 2026-11-23)
+
+Departures from the plan, judged sound by the B1 review, and shared by the three durable stores through `internal/pgschema`:
+- **A plain unique index on `user_code_digest`,** not a partial one. Create releases an expired holder's digest in the same unit, so only an unexpired holder blocks, as the port says, and a plain index serves a generic prepared plan.
+- **`interval_ns`,** not `interval_ms`, matching the `*_ns` duration columns on `op_clients` with no precision lost.
+- **The pending request's device authorization link is `uuid NULL`,** not `text DEFAULT ''`, following the existing `code_id` convention.
+- **The approving sign-in is stored as `jsonb`, with its selector columns copied beside it** by the same statement, as pending requests store a sign-in and as authorization codes are indexed.
+- **`op_clients` gains `device_complete_uri` and `device_grants_outlive_sign_in`,** without which a durable client registry would lose both client settings.
+- **Create inserts with `ON CONFLICT DO NOTHING` and then checks whether the key is held,** rather than mapping a unique-violation error: that error would abort the caller's transaction without a savepoint, and the driver's detail would carry the digest.
+- **The store refuses on write and on read** a zero grant family, an unknown state or grant origin, and negative counts or intervals.
+
 ### D4. Codes
 
 - **Device code.** 32 bytes from the provider's random source, base64url-encoded, and stored as its SHA-256 digest, as handles are. That is more than the 128-bit floor.
@@ -129,6 +140,7 @@ See `proposal.md` for why. The provider today:
   - It fails closed when the limiter errors, as `SourceGuard` does.
 - **Override:** `WithUserCodeEntryLimiter(limiter ratelimit.Limiter)`. A `ratelimit.Limiter` carries its own rate, so the consumer sets the rate by building the limiter. The defaults are exported as `DefaultUserCodeEntryLimit` (5) and `DefaultUserCodeEntryWindow` (10 minutes), for a factory to be asked with.
   - **How the chain passes its limiter (decided while planning, 2026-11-22).** The provider is built before the chain, so the chain hands the limiter over with `(*Provider).UseUserCodeEntryLimiter(limiter) error`, the way `GrantStore.UseCodes` joins its code store. `EnableOIDCProvider` calls it in the chain's `New`, before any traffic, when a `WithRateLimiterFactory` is configured. A limiter the consumer gave with `WithUserCodeEntryLimiter` is never replaced: the call answers nil and changes nothing. A second call with the same limiter changes nothing. A different one is refused with `ErrConfig`, so the chain's `New` fails instead of silently splitting the counts. A nil limiter is refused, and the call is safe for concurrent use. The chain passes a limiter from its `WithRateLimiterFactory` under the namespace `oidc-device-entry` when the consumer configured one, so shared (Redis or Postgres) limits cover the device flow too.
+  - **The hand-over carries the factory and the source keying (decided by the user 2026-11-23, after the C1 review).** Two defects were reproduced against the limiter-only hand-over. First, the chain's `WithIPv6SourcePrefix` never reached the entry guard, which keyed IPv6 by its default /64, so a deployment keying by /48 gave one /48 65,536 entry budgets. Second, a durable factory (Redis, SQL, pgx) returns a new limiter handle on every `NewLimiter`, so a second chain over the same provider was always refused by the identity comparison. The chain now hands over its `ratelimit.LimiterFactory`, the namespace `oidc-device-entry` and its `*ratelimit.SourceKeyer`. The provider asks the factory for its limiter once, at the default rate, and builds its guard with that keyer. A later hand-over with the same factory (compared as a value, so the same factory pointer), the same namespace and the same IPv6 prefix changes nothing. A different one is refused with `ErrConfig`, as before. A consumer who gave `WithUserCodeEntryLimiter` keeps its limiter, and may set the keying with `WithUserCodeEntryKeyer`; without that option the chain's keyer still applies to the consumer's limiter, so the keying stays the chain's wherever a chain exists. Two factory values that reach the same backend but are not equal are refused; such a deployment gives the provider its limiter with `WithUserCodeEntryLimiter`.
 - **Why in the provider, against the project's pattern of throttles in the chain:** D2's consumer path has no chain endpoint in front of it, and a throttle the consumer can forget is not a default.
 - **The device authorization endpoint** is throttled in the chain like the token endpoint: failed client authentications only, 10 per 15 minutes, under its own namespace `oidc-device-authorization`.
 - **Accepted:** the number of open authorizations is not capped per client. See Failure modes.
@@ -161,7 +173,9 @@ See `proposal.md` for why. The provider today:
 
 - **Default:** off.
 - **Override:** `Client.DeviceCompleteURI`. When it is on, the URI is the consumer's code-entry page with `user_code=<code>`. Opening that link claims nothing: the page pre-fills the code and shows it, and the user submits it to the chain's endpoint.
-  - The chain's endpoint does claim on a GET carrying `user_code`, because its 303 conversion of a cookieless POST needs that. Only the consumer's page links to it.
+  - The chain's endpoint claims on a GET carrying `user_code` only when the browser reports the navigation as its own (decided by the user 2026-11-23, after the C1 review): `Sec-Fetch-Site` of `same-origin`, `same-site` or `none`, or no header at all (a non-browser client, or a browser too old to send it). The 303 conversion of a cookieless POST needs the GET, and its redirected GET is `same-origin` or `same-site` when the entry page is the deployment's own. Any other GET carrying a code claims nothing and is redirected with 303 to the consumer's code-entry page with the code prefilled, capped in length, so the user confirms and submits it there (a POST, under the chain's CSRF check). The gate is always on, whether or not `EnableCSRFProtection` is given, because a claim is a state change a link must not make.
+    - **Why:** the C1 review reproduced a cross-site link to `/oauth2/device?user_code=X` claiming the code and landing a signed-in victim on consent in one click, which is the Storm-2372 pattern this decision exists to stop.
+    - **The redirect cannot loop.** An entry page on another site than the chain would bounce a cookieless POST to a `cross-site` GET, which would send the browser back to the page. Such a configuration, and an entry page that is the chain's own code-entry endpoint, fail construction with `ErrConfig`, unless a narrower rule that keeps the guarantee is found during C2 and recorded here.
   - The README tells consumers not to auto-submit, because the user's confirmation that the code matches the device is the RFC 8628 §3.3.1 defence.
 - **Why off:** a prefilled link is what makes device-code phishing one click (Storm-2372 sent links). A TV or QR client turns it on knowingly.
 
@@ -195,7 +209,7 @@ See `proposal.md` for why. The provider today:
 ### D12. Endpoints, CSRF, CORS and metadata
 
 - **Paths:** `OIDCDeviceAuthorization` at `/device-authorization` and `OIDCDeviceEntry` at `/device`, both under the provider prefix and movable by `WithOIDCProviderPath`. They are registered only when the provider has the grant enabled, so `Chain.Endpoints()` and the collision check see them only then.
-- **CSRF:** the device authorization endpoint joins `providerEndpointsExempt`, because it is client-authenticated and uses no cookie. The code-entry endpoint is not exempt.
+- **CSRF:** the device authorization endpoint joins `providerEndpointsExempt`, because it is client-authenticated and uses no cookie. The code-entry endpoint is not exempt. Its GET is gated by fetch metadata (D9).
 - **CORS:** neither device endpoint gets CORS headers. No browser client has a reason to call them cross-origin.
 - **Metadata:** `grant_types_supported` is derived from the provider's capabilities instead of hard-coded. `device_authorization_endpoint` is added when the grant is enabled.
 - **TLS:** both endpoints refuse plain HTTP unless the provider has the loopback issuer.
@@ -273,10 +287,22 @@ Each relevant failure, its state, and what the caller sees.
 | Configuration | lifetime, interval or format out of bounds | handled, tested | construction error naming the option |
 | Observability | a code in logs or errors | handled, tested | redaction tests on every new type |
 | Observability | a device decision whose consent-stage spend fails | handled, tested | `DeviceAuthorizationApproved` or `Denied` is reported as soon as the device record is decided (its compare-and-set makes it once), because the device can exchange the decision whatever became of the stage; the consent store's own `ConsentGiven`/`ConsentDenied` follow the stage spend as for codes |
+| Time | an `ExpiresAt` carrying nanoseconds, stored by PostgreSQL to the microsecond | accepted | a durable store treats the record as expired up to 1 µs early, never late, as every scrty SQL store truncates; the provider judges from the truncated value it reads back |
+| Concurrency | a caller's own transaction at REPEATABLE READ or stronger around a device store call | accepted | a concurrent conflicting write surfaces as SQLSTATE 40001, which the provider answers as a dependency failure (5xx) without retrying; the caller retries the transaction. The stores document READ COMMITTED as the supported level. |
+| State | a rollback of the device migration | accepted | it deletes every device authorization in flight, and each device grant's `origin` and `survives_sign_in_end`. A device grant without `offline_access` that outlived its sign-in then ends with it, the safe direction. |
+| Input | a durable row holding a state, poll count, interval or grant origin this version does not know (a newer version wrote it, then the deployment rolled back) | handled, tested | the store refuses the row with fixed text rather than read a value it cannot mean |
+| Concurrency | the sweep deleting an expired holder of a user code between a refused insert and the store's held-key check | handled | answered as `ErrUserCodeTaken`, so the provider draws another code |
 | Observability | a claim the store applied but reported as failed | accepted | no `DeviceAuthorizationClaimed` is reported, as the claim was not known to stand; the browser's re-entry takes the already-claimed path, which reports nothing. Under-reported, never reported twice. |
 | Observability | a replay whose revocation cannot be stored | accepted | no `DeviceCodeReplayed`, as nothing stands revoked; the caller gets a dependency failure and the next presentation reports it |
 | Observability | user-code entry refused before any limit was asked (an unattributable source, a caller who left) | handled, tested | refused as throttled but not reported as `UserCodeEntryThrottled`, which names only a source over its limit or a limiter that could not decide |
 | Observability | an approval withdrawn because the browser session was gone after the decision | accepted | `DeviceAuthorizationApproved` is reported and the resume answers `ErrReauthenticate`; the revocation recorded for the family reports no `GrantRevoked`, as no grant exists yet. The exchange then refuses the grant, so nothing is issued unseen. |
+| Security | a link from another site to code entry with a user code, followed by a signed-in user | handled, tested | nothing claimed; 303 to the consumer's entry page with the code prefilled (D9) |
+| Security | a GET from a browser that sends no `Sec-Fetch-Site` (older than 2023) | accepted | claimed as a non-browser request would be; consent still asks and shows the client and the code. Refusing absent headers would break every non-browser client and older browsers. |
+| Security | an attacker controlling a sibling site of the deployment's registrable domain | accepted | its link passes as `same-site`; the threat is narrower than any site, and the POST check still applies |
+| Configuration | the chain keys IPv6 by a prefix other than /64 | handled, tested | the entry guard keys by the chain's prefix (D6) |
+| Configuration | two chains over one provider with the same durable factory | handled, tested | both build, and their entries count together (D6) |
+| Configuration | two chains over one provider with different factories, namespaces or prefixes | handled, tested | the second `New` fails with `ErrConfig` (D6) |
+| Configuration | an entry page on which the GET gate's redirect would loop | handled, tested | construction fails with `ErrConfig` (D9) |
 | Observability | silent throttling | handled, tested | `UserCodeEntryThrottled` event and the sampled refusal log |
 
 ## Risks / Trade-offs
@@ -290,7 +316,7 @@ Each relevant failure, its state, and what the caller sees.
 ## Migration Plan
 
 - **Implementation order.** It starts after `harden-chain-boundary` and `split-ci-jobs` are archived (proposal).
-- **The migration.** One additive security-state migration creates the device authorization table and adds the grant columns with defaults. Rollback drops them.
+- **The migration.** One additive security-state migration creates the device authorization table and adds the grant columns with defaults. Rollback drops them, with the data loss stated in Failure modes.
 - **Rollout.** Turning the feature on is the consumer's own deploy: enable the option and register a client. Turning it off removes the endpoints. Records left in flight expire and are swept.
 - **Release.** A minor version, with additions only. The CHANGELOG lists the new option, fields, store port and migration.
 
@@ -347,3 +373,12 @@ No external source. They follow `oidc-provider-authorization`, `oidc-provider-to
 ### D6, charging before the lookup (2026-11-23): reasoned from scrty's own code
 
 No external source. It follows the contract of `ratelimit.Charger` (charge first, refund on success, one indivisible step) and `SourceGuard`'s stated burst bound, and matches how recovery codes already throttle a short guessable secret.
+
+### D6 hand-over and D9 GET gate (2026-11-23)
+
+**Primary documentation:**
+- [W3C Fetch Metadata Request Headers](https://www.w3.org/TR/fetch-metadata/): `Sec-Fetch-Site` values `same-origin`, `same-site`, `cross-site` and `none`, and how a redirect chain is judged (D9).
+- [RFC 8628 §3.3.1 and §5.4](https://www.rfc-editor.org/rfc/rfc8628): `verification_uri_complete` and remote phishing, which make a code-carrying link something an attacker can always produce (D9).
+- [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html): a GET must not change state, and fetch metadata as a defence (D9).
+
+The hand-over change (D6) is reasoned from scrty's own code: `ratelimit.LimiterFactory`, `SourceKeyer` and `WithSourceGuardKeyer`, and the chain's login throttles in `httpsec/throttle.go`.

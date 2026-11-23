@@ -40,3 +40,22 @@ The code-entry endpoint SHALL hand the provider the request's source as the chai
 #### Scenario: Behind a trusted proxy
 - **WHEN** code entries arrive through a trusted proxy carrying different client addresses
 - **THEN** each address is throttled on its own
+
+#### Scenario: The chain's IPv6 source prefix applies to code entry
+- **WHEN** the chain is configured to key IPv6 sources by a /48 prefix, and failed entries arrive from two addresses in one /48
+- **THEN** the provider's entry throttle counts them as one source
+
+### Requirement: The chain shares its limiter factory with the provider's entry throttle
+When the consumer configured a rate-limiter factory on the chain and gave the provider no entry limiter of its own, the chain SHALL hand the provider that factory under the namespace `oidc-device-entry`, together with the way the chain keys sources. The provider SHALL accept a later hand-over of the same factory, namespace and source keying, and SHALL refuse a different one as a configuration error, so the counts are never split.
+
+#### Scenario: Two chains over one provider share a durable factory
+- **WHEN** two chains over one provider are built with the same durable rate-limiter factory
+- **THEN** both are built, and entries through either are counted together
+
+#### Scenario: Two chains with different factories
+- **WHEN** a second chain over the same provider is built with a different rate-limiter factory
+- **THEN** building it fails with a configuration error
+
+#### Scenario: The consumer's own entry limiter
+- **WHEN** the consumer gave the provider its own entry limiter
+- **THEN** the chain's factory is never asked for one

@@ -79,8 +79,8 @@ Every task is test-first: write the failing test, run it with `go test -run '<Na
 
 ## 10. Durable stores and migration
 
-- [ ] 10.1 Write a migration test first: apply to a database populated with grants and pending requests (per `use-testcontainers`), and check the new table, the grant and pending-request columns' defaults and a full rollback. See it fail. Then add the security-state migration after `20261103000000_oidc_provider.sql`.
-- [ ] 10.2 `sqlstore` device authorization store and grant columns. Verify that the exported suite (3.2, 3.3) and the existing grant suites pass under `-race` on PostgreSQL 15 and 18.
+- [x] 10.1 Write a migration test first: apply to a database populated with grants and pending requests (per `use-testcontainers`), and check the new table, the grant and pending-request columns' defaults and a full rollback. See it fail. Then add the security-state migration after `20261103000000_oidc_provider.sql`.
+- [x] 10.2 `sqlstore` device authorization store and grant columns. Verify that the exported suite (3.2, 3.3) and the existing grant suites pass under `-race` on PostgreSQL 15 and 18.
 - [ ] 10.3 `pgxstore`, verified the same way.
 - [ ] 10.4 `gormstore`, verified the same way.
 
@@ -90,8 +90,8 @@ Every task is test-first: write the failing test, run it with `go test -run '<Na
 - [x] 11.2 The device authorization endpoint handler: POST form only, TLS rule, and the token endpoint's error body with `no-store`. Verify a GET is refused, plain HTTP is refused, and a 200 has the JSON shape.
 - [x] 11.3 The client-authentication throttle under `oidc-device-authorization` (10 per 15 minutes). Verify that the eleventh request is refused as `invalid_client`, and that the token endpoint's budget is separate.
 - [ ] 11.4 The code-entry endpoint: GET with `user_code`, POST, a 303 conversion of a cookieless POST, the flow cookie, and the trusted-proxy source handed to `EnterUserCode`. Verify each, including two proxied addresses throttled separately.
-- [ ] 11.5 Pass the chain's limiter factory to the provider under `oidc-device-entry` when configured. Verify the factory's limiter is the one asked.
-- [ ] 11.6 CSRF. Verify that the device authorization endpoint is exempt (a POST with no `Origin` passes), and that a cross-site POST to code entry is refused with nothing claimed.
+- [ ] 11.5 Hand the provider the chain's limiter factory under `oidc-device-entry` and the chain's source keyer, when configured (D6, 2026-11-23). Verify: the factory is asked once and its limiter is consulted; a /48 chain prefix counts two addresses in one /48 as one source; a second chain with the same durable-style factory (a new handle per `NewLimiter`) builds and shares the counts; a different factory, namespace or prefix fails `New` with `ErrConfig`, leaving the provider as it was; a consumer's `WithUserCodeEntryLimiter` is kept and the factory never asked; `WithUserCodeEntryKeyer` overrides the keying.
+- [ ] 11.6 CSRF. Verify that the device authorization endpoint is exempt (a POST with no `Origin` passes), and that a cross-site POST to code entry is refused with nothing claimed. Verify the GET gate (D9), on whether or not CSRF protection is enabled: a GET with a valid code and `Sec-Fetch-Site` `cross-site` claims nothing and gets 303 to the consumer's entry page with the code prefilled and length-capped; `none`, `same-origin`, `same-site` and an absent header claim; a cookieless POST bounced from a same-origin entry page claims on its redirected GET; an entry-page configuration whose redirect could loop fails construction.
 - [ ] 11.7 CORS. Verify that neither device endpoint carries CORS headers for an allowed origin.
 - [ ] 11.8 Metadata. Derive `grant_types_supported`, and add `device_authorization_endpoint` when enabled. Verify both documents, enabled and not, and with a moved path.
 - [ ] 11.9 Map `ErrInvalidUserCode` to 400 and throttling to 429 in the error-propagation helper. Verify the status-only answers with nothing rendered.
