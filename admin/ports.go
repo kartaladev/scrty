@@ -45,11 +45,13 @@ type UserStore interface {
 
 	// CreateUser stores the user under the identifier the service set.
 	//
-	// It refuses, ignoring case and as an AlreadyExistsError naming the field:
-	// a username any user has, deleted or not (FieldUsername); an email a live
-	// user has (FieldEmail); a username equal to another live user's email
-	// (FieldUsername); and an email equal to another user's username
-	// (FieldEmail). The refusal is decided by the write, so concurrent
+	// It refuses, as an AlreadyExistsError naming the field: a username any
+	// user has, deleted or not, compared exactly, byte for byte
+	// (FieldUsername); an email a live user has, ignoring case (FieldEmail);
+	// a username equal to a live user's email, ignoring case (FieldUsername);
+	// and an email equal to a live user's username, ignoring case
+	// (FieldEmail). A deleted user's username stays taken, but no longer
+	// blocks an email. The refusal is decided by the write, so concurrent
 	// creations produce one user. An Organization.ID the store cannot
 	// represent is ErrInvalidInput.
 	CreateUser(ctx context.Context, user NewUser) (User, error)
@@ -58,9 +60,9 @@ type UserStore interface {
 	// non-nil change.EmailVerifiedAt holding the zero time clears the stored
 	// verification time; the service sends it whenever the email changes
 	// without a verification time, and a store must apply it. An email
-	// that another live user has, or that equals another user's username,
-	// ignoring case, is an AlreadyExistsError with FieldEmail, decided by the
-	// write. An Organization.ID the store cannot represent is ErrInvalidInput.
+	// that another live user has, or that equals another live user's
+	// username, ignoring case, is an AlreadyExistsError with FieldEmail,
+	// decided by the write. An Organization.ID the store cannot represent is ErrInvalidInput.
 	UpdateUser(ctx context.Context, id identity.UserID, version int64, change UserChange) (User, error)
 
 	// SetActive sets the active flag and increases the version. The bool
@@ -115,7 +117,8 @@ type ImportStore interface {
 	// that writes increases the version.
 	//
 	// It matches by identifier only: a username, or an email, that belongs to
-	// a different identifier fails with an error matching ErrAlreadyExists
+	// a different identifier, compared as UserStore.CreateUser compares them,
+	// fails with an error matching ErrAlreadyExists
 	// (see AlreadyExistsError) and writes nothing, so an import never takes
 	// over another account. An identifier that belongs to a soft-deleted
 	// user fails the same way with AlreadyExistsError.Field FieldID, since a

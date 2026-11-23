@@ -303,6 +303,16 @@ filters `deleted_at IS NULL`. The username stays held by the unchanged unique co
   schema has no foreign key, so the store checks the organization under a key-share lock in the
   write's transaction.
 
+**A role's super-role flag reaches its holders (decided 2026-11-23, during implementation).** The flag
+is copied onto each grant when the role is assigned, and the authorizer reads it from the grant. A role
+update that changes the flag therefore copies it onto every holder's grants in the same transaction,
+locking the role and then the holders in identifier order, and bumps each holder's version. Turning
+the flag off takes the bypass away from every holder on their next request.
+
+**Imports of one identifier queue first.** Every import first takes a transaction-scoped advisory lock
+on the user identifier, before any role or identifier lock, so two imports of one new user never wait
+on each other in opposite orders.
+
 ### D14. Import matches by identifier only and writes nothing when nothing changed
 
 `admin.Importer.Import(ctx, ImportedUser) (ImportOutcome, error)`. In one transaction it locks the
@@ -547,6 +557,11 @@ the selected grant active when it is still held and valid, and the primary grant
 | F61 | A consumer's identifier resolver fails | Handled, tested | The login is refused with the sanitized failure, an outage staying an outage, after the same decoy work; it is logged. Lockout never judges one key while another account is authenticated |
 | F62 | Lock disclosure is turned on with email login | Accepted (godoc of `WithLockDisclosure`) | Locking an account through its username, then presenting a candidate email, shows whether the email belongs to it; disclosure is the consumer's opt-in |
 | F63 | A role selection commits while a rotation of the same session is in flight | Handled, tested (`RotationTakesSelectionMadeDuringStep`, `SupersedeTakesSelectedRoleFromLockedRow`) | The successor takes the selection from the locked old row, so the switch is kept, up or down. A consumer store that skips this read-back fails the session conformance suite; if run anyway, the selection is lost and the primary role applies |
+| F64 | The identity ports provision or update a grant while a forced role delete or a super-role flag change runs | Accepted | Those ports write grants without the role's lock, as before this change, so such a grant can survive the delete, or carry the old flag, until the next administrative write to that role or user; the administration ports are serialised against it |
+| F65 | An import runs inside a caller's long transaction | Accepted (godoc) | The import's identifier lock is held until that transaction ends, as in F38; other imports of that identifier wait. Two identifiers whose lock hashes collide only queue behind each other |
+| F66 | `SwitchActiveRole` is called on a session a consumer's own interceptor published | Handled, tested | Refused with an error matching `ErrConfig`: only a session this chain resolved can be switched, through the loader and manager that resolved it |
+| F67 | A switch is made during a request | Accepted (godoc) | That request keeps the role it was authenticated with; the switch applies from the next request. A role name over 256 bytes, or one no store could hold, is refused as not held |
+| F68 | A session is renewed through the renewal endpoint after a switch | Accepted | That one renewal response carries the primary role; the next request applies the selection again |
 
 ## Risks / Trade-offs
 

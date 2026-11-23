@@ -79,7 +79,7 @@ Getting a user by identifier SHALL return the user's details, email, email verif
 - **THEN** the call fails with the not-found error
 
 ### Requirement: Creating a user generates its identifier and refuses a taken name or email
-Creating a user SHALL generate the identifier, and SHALL fail with the already-exists error, naming the field, when the username is taken by any user, deleted or not, or the email is taken by a live user, ignoring case. The collision SHALL be decided by the write, so concurrent creations produce one user.
+Creating a user SHALL generate the identifier, and SHALL fail with the already-exists error, naming the field, when the username is taken by any user, deleted or not, compared exactly, or the email is taken by a live user, ignoring case. The collision SHALL be decided by the write, so concurrent creations produce one user.
 
 #### Scenario: Deleted user's username
 - **WHEN** user `ada` was soft-deleted and a new user `ada` is created
@@ -94,7 +94,7 @@ Creating a user SHALL generate the identifier, and SHALL fail with the already-e
 - **THEN** exactly one succeeds and every other call fails with the already-exists error
 
 ### Requirement: A username and another user's email never coincide
-A write SHALL be refused with the already-exists error when it sets a username equal to the email of another live user, or an email equal to another user's username, ignoring case. Concurrent writes that would create such a pair SHALL NOT both succeed.
+A write SHALL be refused with the already-exists error when it sets a username equal to the email of another live user, or an email equal to another live user's username, ignoring case. Concurrent writes that would create such a pair SHALL NOT both succeed.
 
 #### Scenario: Username equal to another email
 - **WHEN** user `bob` has email `carol@example.com` and a user `carol@example.com` is created

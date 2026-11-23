@@ -150,31 +150,31 @@ The whole change lands in one pull request, opened after group 14's final gate (
 
 ## 8. SQL stores: administration ports
 
-- [ ] 8.1 The administration conformance suite in `test/admin` covering versions, row-lock
+- [x] 8.1 The administration conformance suite in `test/admin` covering versions, row-lock
   serialisation with barrier tests, uniqueness of username and email, soft deletion, attributes,
   paging, import idempotence, forced role delete and the primary-grant hand-over (spec
   default-identity-store "The administration conformance suite tests any implementation"; design F1
   to F4, F10, F28, F33). Red: run against a stub that returns `ErrNotFound`; every case fails. Verify:
   the suite compiles and its cases fail against the stub.
-- [ ] 8.2 `sqlstore` and `pgxstore` user and import ports through shared `pgschema` statements
+- [x] 8.2 `sqlstore` and `pgxstore` user and import ports through shared `pgschema` statements
   (design D11 to D16). Red: the user and import cases of 8.1. Verify: the administration suite's user
   and import cases for both stores.
-- [ ] 8.3 `sqlstore` and `pgxstore` role, grant and assignment ports, grant replacement in one
+- [x] 8.3 `sqlstore` and `pgxstore` role, grant and assignment ports, grant replacement in one
   transaction (design D10, D11, F2, F3). Red: the role, grant and assignment cases of 8.1, including a
   failure injected between delete and insert. Verify: the full administration suite for both stores.
 
 ## 9. Gorm store: administration ports
 
-- [ ] 9.1 `gormstore` implements every administration port. Red: the administration suite for gorm.
+- [x] 9.1 `gormstore` implements every administration port. Red: the administration suite for gorm.
   Verify: the full administration suite for `gormstore` on PostgreSQL 15 and 18.
 
 ## 10. Administration end to end
 
-- [ ] 10.1 A `test` module scenario over the real chain and store: create a role with a catalogue,
+- [x] 10.1 A `test` module scenario over the real chain and store: create a role with a catalogue,
   grant `view` all and `update` own, assign it, log in, check allowed actions with the bulk check,
   update an own record, refuse another's record with `ErrNotOwner`, deactivate the user and see the
   next request refused (design F10, F13). Verify: the focused test in `test/`.
-- [ ] 10.2 Import scenario: import a user with a bcrypt hash, log in with the password, re-import
+- [x] 10.2 Import scenario: import a user with a bcrypt hash, log in with the password, re-import
   with equal values and see `Unchanged` and no event. Verify: the focused test in `test/`.
 
 ## 11. Login by email
