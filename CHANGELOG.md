@@ -12,6 +12,42 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 
 ## [Unreleased]
 
+Every addition below is opt-in: a provider with no sign-in hook, a chain without server-side
+completion and a link store that implements neither new interface behave as before. Nothing breaks,
+and no migration is needed.
+
+### Added
+
+- **Upstream access for a sign-in.** `oidc.Upstream` carries the access token of the token response
+  that carried the verified ID token, bound to its subject, and prints redacted. `Upstream.UserInfo`
+  makes one GET to the provider's UserInfo endpoint, checks that `sub` matches, and returns the members
+  unchanged. A broker that wants it implements `oidc.UpstreamBroker`.
+  - `oidc.Provider.UserInfoEndpoint` pins the endpoint, replacing the one in the discovery document
+    (default: discovered, and dropped with a warning if off the issuer's origin).
+  - Every UserInfo failure wraps `oidc.ErrUserInfoFailed`, except a cancelled or expired context, which
+    returns the context's own error. The text never holds the token or the answer.
+- **The sign-in hook.** `oidc.WithBrokerSignInHook(provider, hook)` lets a consumer decide, per login
+  through one provider, which user an identity belongs to. The hook returns an `oidc.SignInDecision`:
+  keep the linked user, adopt an existing one, or `Provision` a new one. Its writes go in the
+  decision's `Apply`, which runs only after the broker accepts the decision.
+  - A provisioning `Apply` on a first sign-in must create only, with fresh random references.
+  - The broker keeps one link per user for each provider and issuer, on new and existing links.
+    `oidc.WithBrokerSignInHookAllowManyLinks(provider)` lifts the rule.
+  - A hooked provider brokered without upstream access fails with `oidc.ErrUpstreamRequired`.
+    A hook on a provider that also sets `WithBrokerJIT`, `WithBrokerClaimMirror` or
+    `WithBrokerRoleSync` is a configuration error from `oidc.NewBroker`.
+- `oidc.LinkLister` (`ListByUser`) and `oidc.LinkRemover` (`DeleteLink`, one link), optional beside
+  `oidc.LinkStore`. The memory store and `sqlstore`, `pgxstore` and `gormstore` implement both, with
+  no migration. A hook over a store without them needs `WithBrokerSignInHookAllowManyLinks`.
+- **Server-side completion of a federated sign-in.** `httpsec.WithOIDCProviderCompletion()` completes
+  a parked provider sign-in on the server, so a login page needs no script and the browser holds no
+  credential. It needs the new `httpsec.OIDCDeps.Users` loader, and falls back to the handoff when a
+  step is owed. It is off by default.
+  - `oidcprovider.Provider.LoginURL()` reads the login page's address.
+  - `oidcprovider.ResumeResult.Outcome`, a `oidcprovider.ResumeOutcome`, names what `RedirectTo`
+    carries (such as consent, code or client error). Completion decides from it, so a client's redirect URI may
+    carry any query parameter.
+
 ## [0.3.0] - 2026-11-23
 
 A minor release: security administration (the `admin` package), scoped grants and a resource

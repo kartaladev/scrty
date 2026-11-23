@@ -374,6 +374,250 @@ no assurance, so a required user is challenged or refused on every request.
   the check may count a login the challenge policy then challenges; wire an `Admits` that answers
   false for such users.
 
+### Sign-in hook and upstream access
+
+By default the library's broker resolves an identity through its link alone. A **link** is one stored
+record: the provider's name, the verified issuer and the verified subject, pointing at a user
+reference. The library never matches an identity to a user by e-mail. "Linked" means that a record
+exists for this exact provider, issuer and subject, and it is what the hook's `linked` argument
+reports: the user the identity is linked to, or empty when it has no link.
+
+A consumer who needs more (adopt an account imported earlier, create a user on the first sign-in,
+read the provider's UserInfo) sets a **sign-in hook** for one provider with
+`oidc.WithBrokerSignInHook`. The hook runs on every login through that provider. It receives the
+verified `oidc.ExternalIdentity`, an `oidc.Upstream` (the provider's upstream access for this
+callback) and `linked`, and returns an `oidc.SignInDecision`. Nothing changes for a provider with no
+hook, or for a broker that does not implement `oidc.UpstreamBroker`.
+
+#### Decide, then apply
+
+The hook decides, and does not write. Its writes go in the decision's `Apply`, which the broker runs
+only once it has accepted the decision. The broker works in this order:
+
+1. It looks up the link. A store fault is a failure, never "no link".
+2. It calls the hook.
+3. It runs every check, with nothing written: the decision names a user, an existing link names that
+   same user, the user loads and is active, and the one-link rule below holds.
+4. It inserts the link, if the identity has none. If a racing sign-in inserted it first, the broker
+   re-reads it and refuses a link that names another user.
+5. It runs `Apply`, with the link inserted and confirmed (a concurrent sign-in may still remove it).
+6. It reloads the user and builds the principal. A user that `Apply` left inactive is refused, and the
+   link stays.
+
+A decision the broker refuses therefore runs no `Apply` and leaves nothing behind, whether the cause is
+a conflict, a lost race, a second link or a missing user (a link inserted during a race is removed
+again). A hook that wrote before returning would not have that guarantee,
+which is why writes belong in `Apply`. `Apply` runs on every sign-in that carries one, so it must be
+safe to repeat, and it should write for the user the decision named, not for one it looked up itself.
+
+A decision takes one of three shapes:
+
+- **Keep `linked`.** Return `SignInDecision{User: linked}`. A hook should prefer `linked` whenever it
+  is set: a decision that names a different user than an existing link is refused, because only an
+  operator re-points a link.
+- **Adopt an existing user.** Return `SignInDecision{User: existing}` for an identity with no link.
+  The broker links the identity to that user, after its checks.
+- **Provision a new user.** Return `SignInDecision{User: fresh, Provision: true, Apply: create}`,
+  where `fresh` is a reference the hook chose (a new UUID, say) and `create` creates the user under
+  it. `Apply` is required. The reference must not load; one that does is refused, since provisioning
+  never adopts, and neither does one already named by another identity's link, from any provider:
+  both are refused as `oidc.ErrNoLinkedAccount`, so the reference must be fresh. Without a lister
+  (allow-many over a consumer's own store) the second check is skipped, so unguessable references
+  matter more. The link is written first, with an empty username, and `Apply` creates the user
+  after. Two racing first sign-ins of one identity pick two references, only one link insert wins,
+  and the loser is refused before its `Apply`, so no orphan user is created. If `Apply` fails, the
+  link stays and the login fails; on the next sign-in the hook receives that reference as `linked`
+  and can provision it again.
+
+#### Refusing
+
+Return `oidc.ErrNoLinkedAccount` or `oidc.ErrProvisioningRefused` to refuse the login as an
+authentication failure (401). Any other error from the hook or from `Apply` fails the login as a
+broker failure, with fixed text: the error's own text reaches neither the caller nor a log, because
+it may quote the subject, an e-mail or the access token. A hook that wants its text logs it itself.
+The error stays reachable through `errors.As` for concrete types you declare.
+
+A verified-domain policy is a refusal like any other:
+
+```go
+// hasDomain reports whether email's domain, the text after the last '@', is domain.
+func hasDomain(email, domain string) bool {
+	i := strings.LastIndex(email, "@")
+	return i >= 0 && strings.EqualFold(email[i+1:], domain)
+}
+
+hook := func(ctx context.Context, ext oidc.ExternalIdentity, up oidc.Upstream, linked identity.UserID) (oidc.SignInDecision, error) {
+	if linked != "" {
+		return oidc.SignInDecision{User: linked}, nil
+	}
+	if !ext.EmailVerified || !hasDomain(ext.Email, "corp.example") {
+		return oidc.SignInDecision{}, oidc.ErrProvisioningRefused
+	}
+	// ... adopt or provision ...
+}
+```
+
+Compare after the last `@`, never the first: a quoted local part may hold an `@`. Require
+`ext.EmailVerified`, as above.
+
+#### One link per user
+
+By default the broker keeps one link per user for each provider and issuer. A decision that would
+give a user a second link from the same provider and issuer is refused as
+`oidc.ErrNoLinkedAccount` before `Apply` runs. A link inserted while a racing sign-in linked the same
+user is removed again, alone, before the login is refused. Two racing sign-ins may both be refused,
+and the next one succeeds. A sign-in through an existing link applies the rule too, so a user who
+somehow holds two links from one provider and issuer is refused through either until one is removed.
+Links to other providers and issuers never count.
+
+The rule needs a link store that implements `oidc.LinkLister` (`ListByUser`) and `oidc.LinkRemover`
+(`DeleteLink`, which removes the one stored link and no other). Every link store scrty ships
+implements both. Both are optional beside `oidc.LinkStore`, so a consumer's own store keeps
+compiling, but `oidc.NewBroker` refuses a hook over a store that lacks either, and a wrapper that
+embeds only the `oidc.LinkStore` interface hides them. A hook over such a store needs
+`oidc.WithBrokerSignInHookAllowManyLinks(provider)`, which lifts the rule for a provider, and with it
+the need for both interfaces: a user may then be linked to several identities of one provider and
+issuer. Turning it off later refuses, through every such
+link, each user that already holds several, until an operator removes the extra links.
+
+#### E-mail matching is your rule
+
+Matching on e-mail is the most common way to adopt an account, and it is a rule the hook owns. Match
+only an e-mail whose `email_verified` claim is true, and only at a provider that controls the domain
+of that address. If the provider lets anyone register an address it does not control, anyone who
+registers the address of an existing user takes over that user's account. The one-link default limits
+what a mistaken match can reach; it does not make the match safe.
+
+#### Upstream and UserInfo
+
+`oidc.Upstream` holds the access token of the token response that carried the verified ID token,
+bound to that token's subject. It prints as `[redacted]` under every `fmt` verb and as a `slog`
+value, also as a field of your own struct, so a stray `%+v` does not leak the token. The library
+keeps no reference to it once the callback returns, and it never reaches a record, an event, an error
+or a response. A provider that issues no access token still logs the user in; only `UserInfo` and
+`AccessToken` have nothing to offer (`HasAccessToken` says so).
+
+`up.UserInfo(ctx)` makes one GET to the provider's UserInfo endpoint with the token, through the
+relying party's outbound client, so its scheme, origin, timeout and size limits apply. The endpoint
+is `Provider.UserInfoEndpoint` when pinned, else the discovery document's `userinfo_endpoint`. A
+discovered endpoint off the issuer's origin is dropped with a warning, and only `UserInfo` then
+fails; a provider whose UserInfo lives on another host needs the pin. The answer must be a 200 with a
+JSON object whose `sub` equals the ID token's subject. The members come back unchanged, with every
+number a `json.Number` so that a large numeric identifier keeps every digit. A repeated member name,
+a signed (`application/jwt`) answer or a body that is not one object fails the call. Every failure
+wraps `oidc.ErrUserInfoFailed`, except a cancelled or expired context, which returns the context's own
+error. The text never holds the token or any part of the answer. Nothing is cached.
+
+`up.AccessToken()` returns the plain token, for provider APIs other than UserInfo. Keeping it out of
+logs, errors and storage is the caller's duty from there on; prefer `UserInfo` when it is enough.
+
+UserInfo members are the provider's statements, not verified claims. Assurance (`amr`, `acr`) is
+still read from the ID token alone, as described in "Second factor and provider assurance".
+
+#### An example
+
+This hook adopts an account imported earlier by the verified e-mail, and keeps the linked user on
+every later sign-in. It matches `ExampleWithBrokerSignInHook` in the package's examples:
+
+```go
+accounts := importedAccounts{"alice@corp.example": "u-7"} // your user store, by e-mail
+
+hook := func(ctx context.Context, ext oidc.ExternalIdentity, up oidc.Upstream, linked identity.UserID) (oidc.SignInDecision, error) {
+	user := linked // the identity's link decides, once it has one
+	if user == "" {
+		// Match by e-mail only when the provider verified it.
+		if !ext.EmailVerified {
+			return oidc.SignInDecision{}, oidc.ErrNoLinkedAccount
+		}
+		var ok bool
+		if user, ok = accounts[ext.Email]; !ok {
+			return oidc.SignInDecision{}, oidc.ErrNoLinkedAccount
+		}
+	}
+	info, err := up.UserInfo(ctx)
+	if err != nil {
+		return oidc.SignInDecision{}, err // a broker failure; the login fails
+	}
+	return oidc.SignInDecision{
+		User: user,
+		// Writes for the decided user only, and safe to repeat.
+		Apply: func(ctx context.Context) error {
+			return accounts.refreshProfile(ctx, user, info)
+		},
+	}, nil
+}
+
+broker, err := oidc.NewBroker(oidc.NewMemoryLinkStore(), accounts,
+	oidc.WithBrokerSignInHook("corp", hook))
+```
+
+To create the user on a first sign-in instead, return a provisioning decision. `admin.Importer`
+writes a user under an identifier you choose, and requires an actor in the context; the actor is
+attached with `admin.WithSystemActor`:
+
+```go
+fresh := identity.UserID(newUUID()) // a canonical lower-case UUID, chosen by the hook
+return oidc.SignInDecision{
+	User:      fresh,
+	Provision: true,
+	Apply: func(ctx context.Context) error {
+		outcome, err := importer.Import(admin.WithSystemActor(ctx, "sso-signin"), admin.ImportedUser{
+			ID:       fresh,
+			Username: ext.Email,
+			Email:    ext.Email,
+			Active:   true,
+		})
+		if err != nil {
+			return err
+		}
+		// Importer creates or updates. On a first sign-in anything but a creation means
+		// another writer holds the reference, so fail rather than write over that user.
+		if outcome != admin.ImportCreated {
+			return errors.New("provisioning reference already in use")
+		}
+		return nil
+	},
+}, nil
+```
+
+**Provisioning is create-only on a first sign-in.** The broker cannot tell a user that another
+writer creates under `fresh`, between its checks and `Apply`, from a resume. So:
+
+- References must be fresh random values that no other writer produces, such as a new UUID. Never
+  derive one from the subject, an e-mail or a counter.
+- `Apply` on a first sign-in (`linked` is empty) must create only, and fail when the user exists.
+  `admin.Importer` is not create-only by itself, which is why the snippet fails on any outcome but
+  `admin.ImportCreated`. That check narrows the window and does not close it: the existing user has
+  been updated by the time the outcome is known, so the references must be unguessable. A sign-in
+  that fails this way is a broker failure and leaves its link for an operator.
+- Only a resume, a sign-in through the identity's own link, may meet a user that already exists. If
+  an earlier `Apply` failed after the link was written, the next sign-in receives that reference as
+  `linked`, and the hook may provision it again.
+
+The hook runs inside the login request, bounded only by its context: a slow hook, UserInfo fetch or
+`Apply` holds the login for as long, so bound your own calls.
+
+#### Options that conflict with the hook
+
+A hook on a provider that `WithBrokerJIT`, `WithBrokerClaimMirror` or `WithBrokerRoleSync` also
+turns on is a configuration error from `oidc.NewBroker`, because two writers of one user would
+contradict each other. There is no override. A hooked provider that the relying party's registry does
+not hold fails `oidc.NewRelyingParty`. A hooked provider that is brokered without upstream access,
+through `Broker` rather than `BrokerUpstream`, fails with `oidc.ErrUpstreamRequired`, and the hook is
+not called.
+
+#### Just-in-time provisioning or a hook
+
+The two are separate ways to take a user in, and one provider uses one of them:
+
+| | Just-in-time (`WithBrokerJIT`) | Sign-in hook |
+|---|---|---|
+| Decides | the library, by its own rules | your code, per login |
+| Creates users | creates, then links | links, then your `Apply` creates (`Provision`) |
+| Adopts an existing user | no | yes, by whatever rule the hook states |
+| Upstream access and UserInfo | no | yes |
+| Role sync, claim mirroring | available | not on the same provider |
+
 ### Security limits
 
 - Provider configuration is trusted operator input: whoever writes it directs the client secret,
@@ -528,6 +772,86 @@ the user in there, but cannot finish the request. The user starts again from the
 is deliberate: the binding is what stops someone else's browser completing a request.
 
 One browser's tabs share one flow cookie, so requests parked in several tabs can each be resumed.
+
+### Federated sign-in without a page script
+
+A login page does not have to run a script to offer a federated sign-in. The application's frontend
+is a plain OpenID Connect client of the application's own provider, so the frontend's own flow is the
+standard authorization code flow. The brokering to the upstream provider happens inside the application,
+between the provider's login stage and the resume.
+
+The login page's "Sign in with Corp" control is a link to the relying party's login endpoint, with
+the login page's own address as the destination:
+
+```go
+// loginURL is Deps.LoginURL; handle is the req query parameter the page received.
+next := loginURL + "?" + url.Values{"req": {handle}}.Encode()
+ssoLink := "/sso/login/corp?" + url.Values{"next": {next}}.Encode()
+```
+
+The SSO path `/sso/login/{provider}` and the `next` parameter are the defaults
+(`httpsec.DefaultOIDCAuthorizePath`, `httpsec.DefaultOIDCNextParam`), and both can be overridden.
+
+The destination is trusted without an allowlist entry only on an exact match: `next` must equal
+`LoginURL()` in scheme, host, port and path, and its query must be exactly one non-empty `req`. Any
+other destination, such as a different port or path, a second parameter or a repeated `req`, is an
+ordinary destination, checked against `httpsec.WithOIDCAllowedRedirects` and
+`httpsec.WithOIDCAllowedOrigins` and conveyed by the handoff code as before.
+
+Server-side completion is off by default. Turn it on with `httpsec.WithOIDCProviderCompletion()` and
+give `OIDCDeps` a `Users` loader, which completion requires:
+
+```go
+httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: relyingParty, Handoff: handoffs, Users: users},
+	httpsec.WithOIDCTokens(tokens),
+	httpsec.WithOIDCSessions(sessions),
+	httpsec.WithOIDCProviderCompletion(),
+),
+```
+
+When the callback succeeds and the destination is the login page of a parked request, the server
+completes the sign-in itself, and the browser never holds a credential:
+
+1. It checks that the handle is a live request of this browser. An unknown, expired or foreign handle
+   is refused as `ErrOIDCUnknownHandle` and charged to the source, as the resume endpoint charges it.
+2. It loads the user, and applies the same post-authentication policy and federated-assurance check
+   the handoff redemption applies.
+3. It stores the session, and judges it under the chain's per-request policy.
+4. It resumes the request, the same call the resume endpoint makes, and confirms the sign-in.
+5. It sets the provider's browser session cookie and answers **303** to the client, with the
+   authorization code, or to the consent page when consent is needed. When the client's own error
+   response answers the request instead (`login_required`, say), the session is ended and the browser
+   is redirected to that error response.
+
+Completion decides from the provider's resume outcome (`oidcprovider.ResumeResult.Outcome`), never
+from the redirect's query, so a client's registered redirect URI may carry any query parameter,
+`error` included.
+
+A failure after the session is stored ends that session, and a refusal sends no redirect. The one
+redirect after the session ends is the client's error response. A resume outcome completion does not
+know ends the session and is refused with `httpsec.ErrOIDCReauthenticate`.
+
+**When a step is owed.** If the post-authentication policy owes a step (a second factor, an
+enrolment, a password change), or the per-request policy raises a challenge, the server does not
+resume. It falls back to the handoff: it conveys a handoff code to `<LoginURL>?req=<handle>`, and
+your login page redeems it and finishes the step, exactly as the script path does. That destination
+is trusted under the same exact-match rule when the code is redeemed, so the page's destination is
+never rewritten to `/`. A deployment whose users are never owed a step never meets the fallback, but
+the login page must still handle it.
+
+**Wiring refusals.** `httpsec.New` refuses `WithOIDCProviderCompletion` in these cases: the chain has
+no OpenID Provider, `OIDCDeps.Users` is missing (or holds a nil pointer), `OIDCDeps.Handoff` is
+missing, a callback success handler (`WithOIDCCallbackSuccess`) or a custom redeemer
+(`WithOIDCHandoffRedeemer`) is also set, the login's session manager is not the one the chain's
+built-in session bearer (`EnableSessionBearer`) reads, a provider's callback URL is off the issuer's
+origin, or the login URL carries a query. It also refuses a user loader (`OIDCDeps.Users`) given
+without completion, since nothing would call it.
+
+**One SSO login at a time per browser.** The relying party's flow cookie has a single name, so a
+second SSO login started in the same browser before the first returns invalidates the first. The
+first callback is answered as an invalid state, and the user starts again. Held account recoveries
+are cancelled before the resume, as in a redemption; if the resume then fails, the user is signed in
+at the upstream provider but the recoveries are gone.
 
 ### The browser session
 
