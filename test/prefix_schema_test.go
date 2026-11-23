@@ -137,7 +137,7 @@ func TestPrefix_ConsumerSchema(t *testing.T) {
 				}
 
 				// The consumer's own tables take the unprefixed names.
-				for _, ddl := range []string{`CREATE TABLE auth.sessions (id int)`, `CREATE TABLE auth.users (id int)`} {
+				for _, ddl := range []string{`CREATE TABLE auth.sessions (id int PRIMARY KEY)`, `CREATE TABLE auth.users (id int PRIMARY KEY)`} {
 					_, err := h.admin.ExecContext(t.Context(), ddl)
 					require.NoError(t, err, ddl)
 				}

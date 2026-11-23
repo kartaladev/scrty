@@ -15,7 +15,7 @@ import (
 )
 
 // FlowStore keeps OIDC login flows, between Authorize and Callback, in the
-// oidc_flows table the migrate package creates. It implements oidc.FlowStore,
+// scrty_oidc_flows table the migrate package creates. It implements oidc.FlowStore,
 // and is safe for concurrent use.
 //
 // Begin mints the flow's handle from crypto/rand: 32 bytes, base64url

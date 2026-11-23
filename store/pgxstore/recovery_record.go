@@ -18,7 +18,7 @@ import (
 )
 
 // RecoveryRecordStore keeps account recovery records in the
-// account_recoveries table the migrate package creates. It implements
+// scrty_account_recoveries table the migrate package creates. It implements
 // recovery.RecordStore, and is safe for concurrent use.
 //
 // Complete, Cancel and CancelPending are each one conditional update on

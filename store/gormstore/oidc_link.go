@@ -12,7 +12,7 @@ import (
 )
 
 // LinkStore keeps the links between external identities and users in the
-// oidc_links table the migrate package creates. It implements
+// scrty_oidc_links table the migrate package creates. It implements
 // oidc.LinkStore, and is safe for concurrent use.
 //
 // Insert is one statement that inserts only when the provider, issuer and

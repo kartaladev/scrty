@@ -3570,7 +3570,14 @@ uses the identity store, `migrate.Identity()`. Every table, index and sequence t
 `users`. The prefix is fixed: no option changes it, and the stores and limiters always use it. To
 keep scrty's tables apart from yours, put them in a PostgreSQL schema and give each connection a
 `search_path` that reaches it (`options=-csearch_path=auth`, or `SET search_path` on connect). Your
-own tables of the old names can then sit beside scrty's, in the same schema or another.
+own tables of the old names can then sit beside scrty's, in the same schema or another, with two
+limits when it is the same schema:
+
+- A fresh install fails if a table such as `sessions` or `users` already exists in that schema,
+  because the released migrations create the old names before renaming them. Install scrty into a
+  schema of its own in that case.
+- Rolling back the rename fails, atomically, once you have created a table under an old name. Move
+  or rename your table before rolling back.
 
 | Set | Tables (each prefixed `scrty_`) | Version table |
 |---|---|---|
@@ -3579,7 +3586,10 @@ own tables of the old names can then sit beside scrty's, in the same schema or a
 
 The version tables keep their names. The rename ships as migration `20261124000000_scrty_prefix`
 in each set. It renames in place, so rows, indexes and constraints are kept, and it holds its locks
-only for the renames. It gives up after 5 seconds if a table is busy, and changes nothing then.
+only for the renames. Each table lock is waited for at most 5 seconds (`lock_timeout` bounds each
+wait, not the whole migration). With old replicas still running, the migration could wait that long
+once per table, which is why old replicas must be stopped first. A run that hits the bound fails with
+nothing renamed, and can be retried.
 
 **Upgrading from v0.2.x or earlier:**
 
@@ -3591,8 +3601,8 @@ only for the renames. It gives up after 5 seconds if a table is busy, and change
    rate-limiter factory is verified (`Verify` returns an error wrapping `ratelimit.ErrConfig`
    that names `scrty_rate_limit_buckets`), instead of failing at its first request.
 
-**Rolling back** is the reverse: stop the new release, take each set down one version
-(the identity set first, if you use it, then the security-state set), then start the old release.
+**Rolling back:** stop the new release, roll back the identity rename (if you use the identity set),
+roll back the security-state rename, then start the previous release.
 
 ## Known limitations
 

@@ -20,7 +20,7 @@ import (
 )
 
 // NewEnrolmentStore returns a durable MFA enrolment store on db, keeping
-// enrolments in the mfa_enrolments table the migrate package creates.
+// enrolments in the scrty_mfa_enrolments table the migrate package creates.
 //
 // Each secret is sealed with cipher before it is written and opened when it is
 // read, through seal.NewEnrolmentStore, bound to the enrolment generation and
@@ -147,7 +147,7 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 // PutPending stores e as the user's pending enrolment on e's generation,
 // refusing with mfa.ErrAlreadyEnrolled when a confirmed one exists: one
 // INSERT … ON CONFLICT (user_id) DO UPDATE … WHERE
-// mfa_enrolments.confirmed_at IS NULL, which keeps the row's id, clears its
+// scrty_mfa_enrolments.confirmed_at IS NULL, which keeps the row's id, clears its
 // accepted step, device proof and emailed code with its expiry and attempts,
 // and whose zero rows affected is the refusal. Every cleared column is an
 // explicit assignment, so no zero value is left out of the write.

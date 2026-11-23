@@ -329,6 +329,32 @@ func TestIdentityPrefix_Failures(t *testing.T) {
 					` WHERE is_applied AND version_id = $1`, versionScrtyPrefix), "the rename is no longer recorded")
 			},
 		},
+		{
+			name: "rolling the rename back fails atomically while the consumer owns an old name",
+			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+				ctx := t.Context()
+
+				_, err := p.Up(ctx)
+				require.NoError(t, err)
+				const consumerTable = "users"
+				_, err = db.ExecContext(ctx, `CREATE TABLE `+consumerTable+` (id int PRIMARY KEY)`)
+				require.NoError(t, err)
+				// The fixture's own cleanup rolls the set back, which needs the name free.
+				t.Cleanup(func() { _, _ = db.ExecContext(context.WithoutCancel(ctx), `DROP TABLE IF EXISTS `+consumerTable) })
+				_, err = db.ExecContext(ctx, `INSERT INTO `+consumerTable+` (id) VALUES (7)`)
+				require.NoError(t, err)
+
+				_, err = p.Down(ctx)
+				require.Error(t, err, "the rollback refuses to take over the consumer's name")
+
+				for _, table := range identityInventory.Tables {
+					assert.True(t, regclassExists(t, db, scrtyPrefix+table), "table %s%s keeps its prefixed name", scrtyPrefix, table)
+				}
+				assert.Equal(t, 1, queryCount(t, db, `SELECT count(*) FROM users WHERE id = 7`), "the consumer's table is unchanged")
+				assert.Equal(t, 1, queryCount(t, db, `SELECT count(*) FROM `+set.VersionTable+
+					` WHERE is_applied AND version_id = $1`, versionScrtyPrefix), "the rename is still recorded")
+			},
+		},
 	}
 
 	for _, tc := range cases {

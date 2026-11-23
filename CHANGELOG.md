@@ -78,13 +78,17 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
     `password_history_seq_seq` becomes `scrty_password_history_seq_seq`.
   - To upgrade, stop every replica running v0.2.x or earlier, apply the security-state set, apply the
     identity set if you use it, then start the new release. To roll back, stop the new release, roll back
-    the two rename migrations (one version down per set: security state, and identity if you use it),
-    then start the previous release.
-  - The rename migration waits at most 5 seconds for its table locks. If it cannot get them it fails
-    with nothing renamed, and you can retry it.
+    the identity rename (if you use the identity set), roll back the security-state rename (one version
+    down per set), then start the previous release.
+  - The rename migration waits for each table lock at most 5 seconds (`lock_timeout` bounds each wait,
+    not the whole migration). With old replicas still running it could wait that long once per table,
+    which is why they must be stopped first. A run that hits the bound fails with nothing renamed, and
+    you can retry it.
   - A new binary against a database that was not renamed is refused when the limiter factory's `Verify`
     runs: the error wraps `ratelimit.ErrConfig` and names `scrty_rate_limit_buckets`.
-  - Raw SQL, views, grants and monitoring of your own that name the old tables must follow.
+  - Consumer SQL, reporting queries, function bodies and `pg_dump -t` / `--table` filters that name
+    scrty's tables must be updated. Grants, row-level security policies and views reference tables by
+    OID, so they follow the rename and need nothing.
   - To keep scrty's tables apart from your own, use a PostgreSQL schema and a `search_path`.
 - The grant store keeps a revocation 31 minutes, where it kept it 11, so that a revocation outlives the
   longest device authorization.

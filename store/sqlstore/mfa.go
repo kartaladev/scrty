@@ -17,7 +17,7 @@ import (
 )
 
 // NewEnrolmentStore returns a durable MFA enrolment store on db, keeping
-// enrolments in the mfa_enrolments table the migrate package creates.
+// enrolments in the scrty_mfa_enrolments table the migrate package creates.
 //
 // Each secret is sealed with cipher before it is written and opened when it is
 // read, through seal.NewEnrolmentStore, bound to the enrolment generation and

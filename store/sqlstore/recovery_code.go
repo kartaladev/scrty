@@ -16,7 +16,7 @@ import (
 )
 
 // RecoveryCodeStore keeps the hashes of saved recovery codes in the
-// recovery_codes table the migrate package creates. It implements
+// scrty_recovery_codes table the migrate package creates. It implements
 // recovery.CodeStore, and is safe for concurrent use.
 //
 // Spend is one conditional update on "not yet spent", so of several callers
@@ -60,7 +60,7 @@ type RecoveryCodeStore struct {
 // NewRecoveryCodeStore returns a durable saved-code store on db.
 //
 // It honours WithTxResolver and WithIDGenerator (default id.NewV7Generator;
-// the identifier of each recovery_codes row, which no caller sees), and
+// the identifier of each scrty_recovery_codes row, which no caller sees), and
 // refuses any other option. Every time it stores comes from the caller, so
 // WithClock does not apply to it.
 //

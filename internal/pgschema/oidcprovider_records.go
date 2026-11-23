@@ -245,7 +245,7 @@ func BrowserSessionDeleteBySignIn(sel oidcprovider.SignInSelector) (string, []an
 //
 // # One lock order
 //
-// Every statement taking more than one op_grants row takes them in ascending family
+// Every statement taking more than one scrty_op_grants row takes them in ascending family
 // order, whichever of them are stored grants and whichever are only named by an
 // outstanding code, and whichever write they will get. Two such statements then wait for
 // each other and cannot deadlock. A row's lock and a new key's insert are one order, not
@@ -637,7 +637,7 @@ func PendingRequestArgs(r *oidcprovider.PendingRequest) ([]any, error) {
 	}, nil
 }
 
-// PendingRequestRow holds a scanned op_pending_requests row.
+// PendingRequestRow holds a scanned scrty_op_pending_requests row.
 type PendingRequestRow struct {
 	rec                                        oidcprovider.PendingRequest
 	scopes, resources, prompt, ui, claims, acr []byte
@@ -741,7 +741,7 @@ func (r *signInRow) record() (oidcprovider.SignIn, error) {
 	}, nil
 }
 
-// CodeRow holds a scanned op_authorization_codes row.
+// CodeRow holds a scanned scrty_op_authorization_codes row.
 type CodeRow struct {
 	rec               oidcprovider.CodeRecord
 	scopes, resources []byte
@@ -819,7 +819,7 @@ func Storable(values ...string) bool {
 	return true
 }
 
-// ConsentRow holds a scanned op_consents row.
+// ConsentRow holds a scanned scrty_op_consents row.
 type ConsentRow struct {
 	rec    oidcprovider.Consent
 	user   string
@@ -888,7 +888,7 @@ var (
 	errGrantRowOrigin = errors.New("a stored grant holds an origin GrantOrigin does not name")
 )
 
-// GrantRow holds a scanned op_grants row.
+// GrantRow holds a scanned scrty_op_grants row.
 type GrantRow struct {
 	rec                                        oidcprovider.Grant
 	user, cause                                string
@@ -958,7 +958,7 @@ func AccessTokenArgs(r *oidcprovider.AccessTokenRecord) ([]any, error) {
 	}, nil
 }
 
-// AccessTokenRow holds a scanned op_access_tokens row.
+// AccessTokenRow holds a scanned scrty_op_access_tokens row.
 type AccessTokenRow struct {
 	rec                            oidcprovider.AccessTokenRecord
 	user                           string
@@ -1037,7 +1037,7 @@ func BrowserSessionArgs(rowID id.ID, s *oidcprovider.BrowserSession) ([]any, err
 	}, nil
 }
 
-// BrowserSessionRow holds a scanned op_browser_sessions row.
+// BrowserSessionRow holds a scanned scrty_op_browser_sessions row.
 type BrowserSessionRow struct {
 	rec           oidcprovider.BrowserSession
 	signIn        signInRow
@@ -1120,7 +1120,7 @@ func ClientArgs(rowID id.ID, rc *oidcprovider.RegisteredClient, keepHeld bool) (
 	}, nil
 }
 
-// ClientRow holds a scanned op_clients row.
+// ClientRow holds a scanned scrty_op_clients row.
 type ClientRow struct {
 	rec                                      oidcprovider.RegisteredClient
 	clientType, appType, pkce, offline, bind int16

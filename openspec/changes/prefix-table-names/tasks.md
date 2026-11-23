@@ -87,9 +87,9 @@ tests; group 4 restores the full scoped suites.
 
 ## 5. Integration
 
-- [ ] 5.1 Final gate: `make check` and `make spec-check` pass, read by the main session after the
+- [x] 5.1 Final gate: `make check` and `make spec-check` pass, read by the main session after the
   last code edit, on PostgreSQL 15 and 18.
-- [ ] 5.2 Whole-branch review against every requirement in this change's specs, with failure modes
+- [x] 5.2 Whole-branch review against every requirement in this change's specs, with failure modes
   enumerated first. Findings are fixed and 5.1 re-run.
 
 ## Workflow follow-up

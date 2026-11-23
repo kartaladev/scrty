@@ -16,10 +16,10 @@ import (
 	"github.com/kartaladev/scrty/policy/lockout"
 )
 
-// AttemptStore keeps failed login attempts in the login_attempts table the
+// AttemptStore keeps failed login attempts in the scrty_login_attempts table the
 // migrate package creates, one row per failure, so every replica counts the
 // same failures. It also keeps each identifier's consecutive-failure streak in
-// the login_failure_streaks table, one row per identifier. It implements
+// the scrty_login_failure_streaks table, one row per identifier. It implements
 // policy.AttemptStore, lockout.AttemptReaper and lockout.FailureStreakStore, and
 // is safe for concurrent use.
 //

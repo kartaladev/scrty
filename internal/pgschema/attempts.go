@@ -1,7 +1,7 @@
 package pgschema
 
 // Consecutive-failure streak statements: one row per identifier in
-// login_failure_streaks.
+// scrty_login_failure_streaks.
 const (
 	// StreakAdd adds one failure to username $2's streak: $1 id for a new
 	// row, $2 username, $3 at, $4 since (the inactivity cutoff, inclusive),

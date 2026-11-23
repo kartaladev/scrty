@@ -89,7 +89,7 @@ WHERE user_id = $1 AND completed_at IS NULL AND cancelled_at IS NULL`
 	RecoveryRecordLatestCompletion = `SELECT max(completed_at) FROM scrty_account_recoveries WHERE user_id = $1`
 )
 
-// The proven and reported columns of account_recoveries hold a record's
+// The proven and reported columns of scrty_account_recoveries hold a record's
 // authenticator references as text: each reference in its "kind:id" form
 // (recovery.AuthenticatorRef.String), one per line, in order, and the empty
 // text for none. Every adapter writes and reads them through the two

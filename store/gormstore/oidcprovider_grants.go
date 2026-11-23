@@ -17,7 +17,7 @@ import (
 )
 
 // GrantStore keeps grants, and the revocations recorded before their grant was stored,
-// in the op_grants table. It implements oidcprovider.GrantStore, and is safe for
+// in the scrty_op_grants table. It implements oidcprovider.GrantStore, and is safe for
 // concurrent use.
 //
 // Create and Revoke are one statement each, so a revocation racing the create of its

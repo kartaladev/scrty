@@ -15,7 +15,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
-// APIKeyStore keeps API keys in the api_keys table the migrate package
+// APIKeyStore keeps API keys in the scrty_api_keys table the migrate package
 // creates. It implements apikey.Store, and is safe for concurrent use.
 //
 // A key is stored under its own identifier; only the secret's digest is

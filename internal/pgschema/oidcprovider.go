@@ -28,7 +28,7 @@ const (
 	GrantTable = "scrty_op_grants"
 
 	// RefreshTokenTable is the fixed table of refresh-token lineages. It has the
-	// sessions table's columns and indexes, so a session store's statements run over it
+	// scrty_sessions table's columns and indexes, so a session store's statements run over it
 	// unchanged but for the table's name, and it is never the table a sign-in is read
 	// from.
 	//nolint:gosec // G101: a table name, not a credential

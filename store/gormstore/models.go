@@ -95,7 +95,7 @@ type sessionRow struct {
 	CSRFToken         *string `gorm:"column:csrf_token;type:text"`
 }
 
-// TableName is the table the migration creates for sessions.
+// TableName is the scrty_sessions table the migration creates for sessions.
 func (sessionRow) TableName() string { return "scrty_sessions" }
 
 // oneTimeTokenRow is a row of the scrty_one_time_tokens table, keyed by the token's
@@ -260,7 +260,7 @@ type userRow struct {
 	UpdatedAt         time.Time  `gorm:"column:updated_at;type:timestamptz;autoUpdateTime:false"`
 }
 
-// TableName is the table the identity migration creates for users.
+// TableName is the scrty_users table the identity migration creates for users.
 func (userRow) TableName() string { return "scrty_users" }
 
 // assignedRoleRow is a row of the scrty_assigned_roles table of the identity

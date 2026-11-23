@@ -20,7 +20,7 @@ import (
 // privileges in the tables migrate.Identity creates. It implements
 // identity.UserLoader, identity.RoleLoader, identity.UserProvisioner and
 // identity.MFARequirementLookup, and is safe for concurrent use. It also
-// implements password.History over the password_history table, for a
+// implements password.History over the scrty_password_history table, for a
 // password.NoReuse rule; no identity port call reads or writes that table.
 //
 // # Loading
@@ -107,7 +107,7 @@ import (
 // does not carry it. Stored times are UTC, truncated to
 // the microsecond. Because the identity tables declare no foreign keys, a
 // consumer deleting a user is responsible for deleting that user's grants
-// (assigned_roles) and calling ForgetPasswords for that user's password
+// (scrty_assigned_roles) and calling ForgetPasswords for that user's password
 // history in the same transaction; nothing cascades.
 type IdentityStore struct {
 	c *config
@@ -442,7 +442,7 @@ func passwordCondition(query string, args []any, expected []byte) (string, []any
 	return query + " AND password = $" + strconv.Itoa(len(args)), args
 }
 
-// storedGrant is one row of assigned_roles as a rebuild reads it.
+// storedGrant is one row of scrty_assigned_roles as a rebuild reads it.
 type storedGrant struct {
 	id                    id.ID
 	name                  string

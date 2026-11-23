@@ -91,7 +91,7 @@ WHERE user_ref = $1 AND client_id = $2 AND state IN (2, 4) AND sign_in IS NOT NU
 // as the in-memory store keeps one: the window in which a replay of its code is detected.
 const deviceKeptPastExpiry = time.Minute
 
-// deviceColumns are op_device_authorizations' columns, in the order DeviceArgs binds and
+// deviceColumns are scrty_op_device_authorizations' columns, in the order DeviceArgs binds and
 // DeviceRow scans.
 const deviceColumns = `id, device_code_digest, user_code_digest, claim_flow_digest, client_id, scopes, resources,
   issued_at, expires_at, last_polled_at, interval_ns, poll_count, state, user_ref, granted_scopes, sign_in,
@@ -251,7 +251,7 @@ func DeviceUnspentByClientArgs(user identity.UserID, clientID string) []any {
 	return []any{string(user), clientID}
 }
 
-// DeviceRow holds a scanned op_device_authorizations row.
+// DeviceRow holds a scanned scrty_op_device_authorizations row.
 type DeviceRow struct {
 	rec                       oidcprovider.DeviceAuthorization
 	user                      string

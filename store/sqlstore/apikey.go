@@ -14,7 +14,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
-// APIKeyStore keeps API keys in the api_keys table the migrate package
+// APIKeyStore keeps API keys in the scrty_api_keys table the migrate package
 // creates. It implements apikey.Store, and is safe for concurrent use.
 //
 // A key is stored under its own identifier; only the secret's digest is
@@ -148,7 +148,7 @@ func (s *APIKeyStore) List(ctx context.Context, principal identity.UserID) ([]ap
 	return keys, nil
 }
 
-// apiKeyRow is one api_keys row as APIKeySelect and APIKeyList read it.
+// apiKeyRow is one scrty_api_keys row as APIKeySelect and APIKeyList read it.
 type apiKeyRow struct {
 	k                      apikey.Key
 	principal, scopes      string

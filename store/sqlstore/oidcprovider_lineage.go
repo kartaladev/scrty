@@ -15,7 +15,7 @@ import (
 
 // NewRefreshTokenStore returns the durable store of a provider's refresh-token lineages:
 // the session store NewSessionStore builds, with everything that says about it, over the
-// op_refresh_tokens table instead of the sessions table. No sign-in lookup reads that
+// scrty_op_refresh_tokens table instead of the scrty_sessions table. No sign-in lookup reads that
 // table, so a refresh token cannot be accepted as a sign-in.
 //
 // The table is fixed: no option names it, and the result is a type only scrty's own

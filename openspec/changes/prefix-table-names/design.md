@@ -20,8 +20,11 @@ See `proposal.md` for why. The current state that shapes the approach:
   - no named CHECK constraints;
   - a longest relation name of 47 bytes, so prefixed names are at most 53, under PostgreSQL's
     63-byte limit.
-- Every SQL statement the sql and pgx adapters run is a constant in `internal/pgschema`. The gorm
-  adapter names its tables through `TableName()` methods in `store/gormstore/models.go`. The rate
+- Almost every SQL statement the sql and pgx adapters run is a constant in `internal/pgschema`.
+  Implementation found two exceptions the inventory had missed: `internal/storekit` builds the
+  identity store's `UPDATE users` statement, and gormstore's `mfa.go` holds a raw
+  `mfa_enrolments.confirmed_at` expression. Both move with the rest (D6). The gorm adapter names its
+  tables through `TableName()` methods in `store/gormstore/models.go`. The rate
   limiter's construction-time check (`Verify`) resolves `rate_limit_buckets` through `to_regclass`,
   and so through the connection's `search_path`. No code depends on a constraint name: there is no
   `ConstraintName` check and no `ON CONFLICT ON CONSTRAINT`. Core packages hold no table names.
@@ -185,11 +188,27 @@ existing databases into it. That is a separate change, if it is ever wanted.
   literal edits. A shared name constant concatenated into each statement was considered. It would
   make the statements harder to read and to grep, for no runtime benefit, since the names are fixed
   (D1). It was rejected.
-- **Guard test** in `internal/pgschema`, which reflects over the package's exported string
-  constants. No statement may name an unprefixed table from the inventory as a whole word after
-  `FROM`, `INTO`, `UPDATE`, `JOIN`, `TABLE` or `to_regclass(`. It is cheap, runs without Docker, and
-  fails at the line that was missed. The store conformance suites, run against the renamed schema,
-  are the second net.
+- **Guard test** in `internal/pgschema`. As built, it parses every string literal in the non-test
+  files of `internal/pgschema`, `internal/storekit`, `store/sqlstore`, `store/pgxstore` and
+  `store/gormstore`, which is wider than first planned. That widening came from review, after the
+  two strays above were found by hand. A literal fails when it names an unprefixed inventory table:
+  - as a whole word after `FROM`, `INTO`, `UPDATE`, `JOIN`, `TABLE`, `ON`, `REFERENCES`,
+    `LOCK TABLE` or `to_regclass('`;
+  - as a qualified column such as `sessions.user_id`, but not a dotted name such as
+    `scrty.sessions.load`.
+
+  It is cheap, runs without Docker, and fails at the line that was missed. Accepted limit: a bare
+  table name with no SQL context, such as a gorm `TableName()` returning `"sessions"`, is not
+  flagged, because the same word is a JSON key or a task name elsewhere. The store conformance
+  suites, run against the renamed schema, catch that case (F8).
+- **Tests of single historical migrations are pinned.** Tests that exercise one released migration
+  on its own, with raw SQL in the names that migration created, are pinned to the version before
+  the rename with `UpTo`, and keep the old names. Tests that go through `internal/pgschema` or the
+  stores run the full set against the new names.
+- **Lint directives.** gosec's G101 flagged 13 renamed constants whose identifiers contain token,
+  secret or pass, plus one test map of table names. Each takes the repository's existing
+  `//nolint:gosec // G101` directive with its reason. A G202 directive moved to the line gosec
+  reports.
 - `store/gormstore/models.go`: each `TableName()` returns the prefixed name. Its godoc keeps the
   existing promise that a consumer's gorm naming strategy never renames them.
 - Limiter godoc and the `Verify` error text name `scrty_rate_limit_buckets`.
@@ -223,7 +242,7 @@ shared schema. It is not a defect fix, so no reproduction is involved.
 | F1 | An old (≤ v0.2.x) replica is still running when the rename commits | Accepted (D2, D7) | Its store calls fail with "relation does not exist". scrty's stores already map storage errors to refusals, so sign-in and token checks fail closed; nothing is granted. The documented upgrade order prevents it. |
 | F2 | The new release starts before the security-state rename is applied | Handled, tested (task 4.4) | The limiter's `Verify` refuses at construction with `ratelimit.ErrConfig`, naming the missing `scrty_rate_limit_buckets` and the migration set. Stores without a construction check fail closed on first use, as with any missing table today. |
 | F3 | The security-state set is renamed but the identity set is not | Accepted, documented | Security-state stores work. Identity store calls fail with a database error, and its MFA-required lookup denies, as the identity set's godoc already states for a missing table. |
-| F4 | A long transaction holds a lock on a table the migration renames | Handled, tested (task 2.3) | After about 5 s, applying fails with a lock timeout error. Nothing is renamed and no version is recorded. Retrying succeeds once the lock is gone. |
+| F4 | A long transaction holds a lock on a table the migration renames | Handled, tested (task 2.3) | After about 5 s, applying fails with a lock timeout error. Nothing is renamed and no version is recorded. Retrying succeeds once the lock is gone. The 5 s bounds each lock wait, not the whole migration, because `lock_timeout` applies per wait. With traffic still running, a run could wait up to 5 s per table, 25 tables in the security-state set, while holding the tables it has already renamed. Bounding the whole transaction needs `transaction_timeout`, which exists only from PostgreSQL 17, and the documented upgrade stops the old replicas first. So the per-wait bound is accepted, and the docs state it as per lock. |
 | F5 | A relation named `scrty_<x>` already exists in the schema | Handled, tested (task 2.3) | Applying fails ("relation already exists"). The transaction rolls back every rename, and the consumer's relation is untouched. |
 | F6 | The migration fails partway through its statements | Handled, tested (task 2.3) | The whole migration is one transaction: no partial rename, no version recorded. |
 | F7 | The rename list misses a relation, or a later migration adds one without the prefix | Handled, tested (tasks 2.1, 3.1) | The catalog test lists every table, index and sequence the set created and fails on any name without `scrty_`. |
@@ -234,6 +253,7 @@ shared schema. It is not a defect fix, so no reproduction is involved.
 | F12 | A fresh install into a schema that already holds a consumer `sessions` or `users` table | Accepted (D5) | The first migration fails atomically ("relation already exists"), as today. The remedy is a schema of its own. |
 | F13 | A consumer applies the files with a tool that does not wrap each migration in a transaction | Accepted | It is outside the format's contract, which the spec already requires to be transactional. `SET LOCAL` would warn and have no effect, and a failure could leave a partial rename. The README already names the transactional requirement. |
 | F14 | PostgreSQL 18 NOT NULL constraint names keep the old table name | Accepted (D3) | Cosmetic only: they are scoped to their table and cannot collide. A fresh install and an upgrade produce identical names. |
+| F15 | The consumer has created a table under one of the old names, such as `users`, and the rename is rolled back | Handled, tested (whole-branch review fix) | The rollback fails atomically ("relation already exists"). Every `scrty_` name and the consumer's table are unchanged, and the version stays recorded. Rolling back needs the consumer's table moved first. The README says so beside F12. |
 
 ## Risks / Trade-offs
 

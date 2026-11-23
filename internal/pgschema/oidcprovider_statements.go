@@ -240,7 +240,7 @@ const heldFamilies = `SELECT held.family::uuid FROM jsonb_array_elements_text($1
 var sessionsTable = regexp.MustCompile(`\bscrty_sessions\b`)
 
 // LineageStatement is a session statement run over the refresh-token lineage table,
-// which has the sessions table's columns and indexes. It is how an adapter binds a
+// which has the scrty_sessions table's columns and indexes. It is how an adapter binds a
 // session store to that table, and the table is fixed here, so a consumer can choose
 // none other (T7).
 func LineageStatement(sessionStatement string) string {

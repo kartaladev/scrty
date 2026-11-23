@@ -368,7 +368,7 @@ const (
 	SupersedeRefusalNoFamily = 2
 )
 
-// sessionLoadable is the condition, on a sessions row and the time $2, under
+// sessionLoadable is the condition, on a scrty_sessions row and the time $2, under
 // which a store returns that row: a superseded row with a retention deadline
 // while that deadline is after $2, whatever its own deadlines say, and any
 // other row, a superseded one with no retention deadline included, while both

@@ -17,7 +17,7 @@ import (
 
 // NewRefreshTokenStore returns the durable store of a provider's refresh-token lineages:
 // the session store NewSessionStore builds, with everything that says about it, over the
-// op_refresh_tokens table instead of the sessions table. No sign-in lookup reads that
+// scrty_op_refresh_tokens table instead of the scrty_sessions table. No sign-in lookup reads that
 // table, so a refresh token cannot be accepted as a sign-in.
 //
 // The table is fixed: no option names it, and the result is a type only scrty's own
@@ -49,7 +49,7 @@ func NewRefreshTokenStore(db *gorm.DB, cipher seal.Cipher, opts ...Option) (oidc
 }
 
 // boundTo is q as this store's statements must run on it: for a lineage store, on a
-// connection that names the lineage table wherever a statement names the sessions table, and
+// connection that names the lineage table wherever a statement names the scrty_sessions table, and
 // otherwise q itself. q is a session of one operation's own, so binding it changes no other.
 //
 // The binding is at the connection, not in the statements, because the session store's

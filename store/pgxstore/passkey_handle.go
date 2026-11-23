@@ -17,7 +17,7 @@ import (
 )
 
 // PasskeyHandleStore keeps each user's one WebAuthn user handle in the
-// passkey_user_handles table the migrate package creates. It implements
+// scrty_passkey_user_handles table the migrate package creates. It implements
 // passkey.HandleStore, and is safe for concurrent use.
 //
 // Assign is an insert that stores the offer only when neither the user nor
@@ -37,7 +37,7 @@ type PasskeyHandleStore struct {
 // NewPasskeyHandleStore returns a durable passkey user-handle store on pool.
 //
 // It honours WithTxResolver and WithIDGenerator (default id.NewV7Generator;
-// the identifier of each passkey_user_handles row, which no caller sees), and
+// the identifier of each scrty_passkey_user_handles row, which no caller sees), and
 // refuses any other option. It judges no time, so WithClock does not apply.
 //
 // Limit, stated: PostgreSQL text cannot hold a NUL byte or invalid UTF-8. An
