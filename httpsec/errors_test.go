@@ -281,6 +281,13 @@ func TestStatusForError(t *testing.T) {
 			want: 429,
 		},
 		{name: "the provider's foreign consent", err: oidcprovider.ErrForeignConsent, want: 404},
+		{name: "the provider's invalid user code", err: oidcprovider.ErrInvalidUserCode, want: 400},
+		{name: "the provider's throttled user-code entry", err: oidcprovider.ErrUserCodeThrottled, want: 429},
+		{
+			name: "the provider's throttled user-code entry, joined with the throttle it matches",
+			err:  errors.Join(oidcprovider.ErrUserCodeThrottled, ratelimit.ErrThrottled),
+			want: 429,
+		},
 		{name: "a provider dependency failure", err: oidcprovider.ErrDependency, want: 500},
 		{name: "a recovery's dependency failure", err: recovery.ErrDependency, want: 500},
 		{

@@ -112,6 +112,13 @@ type config struct {
 	// among the others changes what they see.
 	afterWiring []func() error
 
+	// handOver is the one step that hands something outside the chain a value it
+	// may refuse: the provider's user-code entry throttle. It runs after every
+	// check, so a chain refused for any other reason hands nothing over, and
+	// before the commits, which cannot fail. There is one, because a second
+	// fallible step after it could fail once it had already changed something.
+	handOver func() error
+
 	// commits hold the steps that change something outside the chain, such as a
 	// session manager the consumer goes on using. They run after every check, so a
 	// refused build leaves that thing as it found it, and none of them can fail.
@@ -318,6 +325,18 @@ func (c *config) wire(fn func(*Chain)) {
 // failure refuses the chain.
 func (c *config) checkAfterWiring(check func() error) {
 	c.afterWiring = append(c.afterWiring, check)
+}
+
+// handOverLast records the chain's one fallible step that changes something outside
+// it. It runs once every check has passed, as the last thing that may refuse the
+// chain. A second call is a library bug, and panics rather than silently ordering
+// two fallible steps.
+func (c *config) handOverLast(step func() error) {
+	if c.handOver != nil {
+		panic("httpsec: internal: a second fallible hand-over was registered")
+	}
+
+	c.handOver = step
 }
 
 // commit records a step that must run only once the build can no longer be refused.
@@ -770,6 +789,12 @@ func (c *config) build() (*Chain, error) {
 
 	for _, check := range c.afterWiring {
 		if err := check(); err != nil {
+			return nil, err
+		}
+	}
+
+	if c.handOver != nil {
+		if err := c.handOver(); err != nil {
 			return nil, err
 		}
 	}

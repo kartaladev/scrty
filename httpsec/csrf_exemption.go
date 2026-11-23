@@ -279,15 +279,20 @@ func (l *csrfLayer) settleExemptions(c *config) error {
 // cross-site by design: none takes a state-changing decision from a cookie
 // alone. The resume, the logout confirmation, the user's consents and UserInfo
 // are not among them, and stay judged.
+//
+// The device authorization endpoint is among them while the provider serves it: a device
+// posts it with a client credential and no cookie. Code entry is not, and stays judged: a
+// cross-site POST could make a browser claim a code.
 var providerEndpointsExempt = [...]OIDCEndpoint{
-	OIDCAuthorize, OIDCToken, OIDCRevoke, OIDCIntrospect, OIDCEndSession,
+	OIDCAuthorize, OIDCToken, OIDCRevoke, OIDCIntrospect, OIDCEndSession, OIDCDeviceAuthorization,
 }
 
 // providerExemptions is the exemption of POST to each of providerEndpointsExempt,
 // at the path the provider settled for it, so a moved path or prefix is followed.
 // Each is the exact path, compared as a literal with the path as sent: a "*" in
 // it is that character, and an escaped spelling of it is another route, which is
-// judged. A chain with no provider has none.
+// judged. A chain with no provider has none, and an endpoint the provider does not serve,
+// or one with no path, has none: an exemption is never made for a route nobody answers.
 func providerExemptions(op *oidcEndpoints) []csrfExemption {
 	if op == nil {
 		return nil
@@ -296,6 +301,10 @@ func providerExemptions(op *oidcEndpoints) []csrfExemption {
 	exemptions := make([]csrfExemption, 0, len(providerEndpointsExempt))
 
 	for _, e := range providerEndpointsExempt {
+		if !op.served(e) || op.paths[e] == "" {
+			continue
+		}
+
 		exemptions = append(exemptions, csrfExemption{method: http.MethodPost, pattern: op.paths[e]})
 	}
 

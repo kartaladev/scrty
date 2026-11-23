@@ -57,6 +57,9 @@ type flowSetup struct {
 	chain        func(t *testing.T, w *opFlow) []httpsec.Option
 	errorHandler func(w http.ResponseWriter, r *http.Request, err error)
 	noHandler    bool
+	// noCSRF builds the chain without CSRF protection, which needs a provider without
+	// browser sessions (oidcprovider.WithoutBrowserSessions).
+	noCSRF bool
 }
 
 // flowPendingStore counts what reaches the pending-request store.
@@ -198,8 +201,10 @@ func newOPFlowErr(t *testing.T, setup flowSetup) (*opFlow, error) {
 		bearer,
 		httpsec.EnableJWKSEndpoint(tokenKeys()),
 		httpsec.EnableSecurityHeaders(),
-		httpsec.EnableCSRFProtection(),
 		httpsec.EnableOIDCProvider(w.p, setup.endpoint...),
+	}
+	if !setup.noCSRF {
+		opts = append(opts, httpsec.EnableCSRFProtection())
 	}
 
 	switch {

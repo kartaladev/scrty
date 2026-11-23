@@ -59,6 +59,9 @@ type deviceConfig struct {
 	// given.
 	entryLimiter    ratelimit.Limiter
 	entryLimiterSet bool
+	// entryKeyer is what WithUserCodeEntryKeyer gave, and entryKeyerSet says it was given.
+	entryKeyer    *ratelimit.SourceKeyer
+	entryKeyerSet bool
 	// entry holds the throttle user-code entry is checked against, which New builds and
 	// UseUserCodeEntryLimiter may replace once. It is behind a pointer, so that the
 	// configuration can be copied without copying its lock.
@@ -177,6 +180,10 @@ func WithDevicePollInterval(d time.Duration) DeviceOption {
 // adds, or DeviceResultParam ("result"), which the last resume adds. Anything else fails
 // construction with ErrConfig. A nil DeviceOption
 // is skipped. Given twice, the last one wins.
+//
+// The entry page must render the form, and must never redirect to the chain's code-entry
+// endpoint: that endpoint sends a link from another site to the page, so a page that sends
+// it back would loop between the two. (httpsec refuses a page at the endpoint's own path.)
 func WithDeviceAuthorization(entryURL string, opts ...DeviceOption) Option {
 	return func(c *config) {
 		d := &deviceConfig{entryRaw: entryURL}
@@ -342,52 +349,37 @@ const (
 // minutes), which is per process and not shared by replicas. A limiter carries its own
 // rate, so the consumer sets the rate by building it.
 //
-// A limiter given here is never replaced, not even by UseUserCodeEntryLimiter. A nil
+// A limiter given here is never replaced, not even by UseUserCodeEntryLimiter, whose factory
+// is then never asked; the keyer a chain hands over still keys its sources, unless
+// WithUserCodeEntryKeyer was given. A nil
 // limiter, typed nil included, fails New with an error matching ErrConfig naming this
 // option. Given twice, the last one wins.
 func WithUserCodeEntryLimiter(limiter ratelimit.Limiter) DeviceOption {
 	return func(d *deviceConfig) { d.entryLimiter, d.entryLimiterSet = limiter, true }
 }
 
-// UseUserCodeEntryLimiter hands the provider a limiter for user-code entry after New, the
-// way the chain shares its rate-limiter factory with the provider it was built after. It is
-// meant to be called before any traffic.
+// WithUserCodeEntryKeyer sets how the user-code entry throttle turns a client address into
+// the key it counts failures under, which decides, among other things, the IPv6 prefix a
+// source is keyed by.
 //
-// It answers nil and changes nothing when the consumer gave WithUserCodeEntryLimiter,
-// whose limiter is never replaced. Otherwise the first call replaces the default limiter,
-// and a later call with the same limiter answers nil and changes nothing. A later call with
-// a different limiter is refused with an error matching ErrConfig, so that two callers
-// cannot silently split the counts between them. A nil limiter, typed nil included, and a
-// provider without the device grant (WithDeviceAuthorization) are refused with an error
-// matching ErrConfig. It is safe for concurrent use, with itself and with EnterUserCode.
-func (p *Provider) UseUserCodeEntryLimiter(limiter ratelimit.Limiter) error {
-	cfg := p.cfg.device
-	if cfg == nil {
-		return fmt.Errorf("%w: UseUserCodeEntryLimiter: the device grant is off; enable it with WithDeviceAuthorization", ErrConfig)
-	}
-	if nilcheck.IsNil(limiter) {
-		return fmt.Errorf("%w: UseUserCodeEntryLimiter: must not be nil", ErrConfig)
-	}
+// The default is the keyer a chain hands over with UseUserCodeEntryLimiter, so that the
+// throttle keys sources as the chain's other throttles do (httpsec's WithIPv6SourcePrefix),
+// and, before or without one, ratelimit.NewSourceKeyer's defaults: IPv4 per address, IPv6
+// per /64. A keyer given here is never replaced, not even by UseUserCodeEntryLimiter. A nil
+// keyer fails New with an error matching ErrConfig naming this option. Given twice, the
+// last one wins.
+func WithUserCodeEntryKeyer(keyer *ratelimit.SourceKeyer) DeviceOption {
+	return func(d *deviceConfig) { d.entryKeyer, d.entryKeyerSet = keyer, true }
+}
 
-	cfg.entry.mu.Lock()
-	defer cfg.entry.mu.Unlock()
-
-	current := cfg.entry.current.Load()
-	switch {
-	case current.consumer:
-		return nil
-	case current.handedOver && sameLimiter(current.limiter, limiter):
-		return nil
-	case current.handedOver:
-		return fmt.Errorf("%w: UseUserCodeEntryLimiter: a different limiter was already handed over, and two would split the counts", ErrConfig)
+// DeviceEntryURL is the consumer's code-entry page the provider was enabled with
+// (WithDeviceAuthorization), as it is published in verification_uri, or empty for a
+// provider without the device grant. A chain sends a browser there when it will not claim a
+// code from a link, so the user confirms the code on the page.
+func (p *Provider) DeviceEntryURL() string {
+	if p.cfg.device == nil {
+		return ""
 	}
 
-	throttle, err := newEntryThrottle(limiter, p.cfg.clock, p.cfg.logger)
-	if err != nil {
-		return fmt.Errorf("%w: UseUserCodeEntryLimiter: %w", ErrConfig, err)
-	}
-	throttle.handedOver = true
-	cfg.entry.current.Store(throttle)
-
-	return nil
+	return p.cfg.device.entryURL.String()
 }

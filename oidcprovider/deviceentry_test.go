@@ -43,13 +43,6 @@ const (
 // errLimiterBoom is a limiter's failure, whose text must never leave the provider.
 var errLimiterBoom = errors.New("redis-password-limiter-on-fire")
 
-// taggedLimiter is a limiter of a comparable struct type whose tag holds a value of a type
-// that is not, so comparing two of them with == panics at run time.
-type taggedLimiter struct {
-	ratelimit.Limiter
-	tag any
-}
-
 // entryFixture is a provider with the device grant on, over memory stores a row can read.
 type entryFixture struct {
 	p       *oidcprovider.Provider
@@ -567,8 +560,71 @@ func TestEnterUserCode_Throttle(t *testing.T) {
 	}
 }
 
-// TestUseUserCodeEntryLimiter pins how the chain's limiter is handed over: it replaces the
-// default once, never a consumer's, and a second, different one is a wiring mistake.
+// entryFlow is the namespace the chain hands the entry throttle's factory over under.
+const entryFlow = "oidc-device-entry"
+
+// handOver is one call of UseUserCodeEntryLimiter.
+type handOver struct {
+	factory   ratelimit.LimiterFactory
+	namespace string
+	keyer     *ratelimit.SourceKeyer
+}
+
+// factoryFunc is a limiter factory of a func type, which cannot be compared at all.
+type factoryFunc func(namespace string, limit int, window time.Duration) (ratelimit.Limiter, error)
+
+func (f factoryFunc) NewLimiter(namespace string, limit int, window time.Duration) (ratelimit.Limiter, error) {
+	return f(namespace, limit, window)
+}
+
+// sourceKeyer is a keyer keying IPv6 by prefix.
+func sourceKeyer(t *testing.T, prefix int) *ratelimit.SourceKeyer {
+	t.Helper()
+
+	k, err := ratelimit.NewSourceKeyer(ratelimit.WithIPv6SourcePrefix(prefix))
+	require.NoError(t, err)
+
+	return k
+}
+
+// memoryEntryLimiter is a memory limiter at the default entry rate.
+func memoryEntryLimiter(t *testing.T) *ratelimit.MemoryLimiter {
+	t.Helper()
+
+	l, err := ratelimit.NewMemoryLimiter(oidcprovider.DefaultUserCodeEntryLimit, oidcprovider.DefaultUserCodeEntryWindow)
+	require.NoError(t, err)
+
+	return l
+}
+
+// The two addresses of one /48, in two different /64s.
+const (
+	entrySourceA48 = "2001:db8:0:1::1"
+	entrySourceB48 = "2001:db8:0:2::1"
+)
+
+// failAcross48 makes the default number of failed entries, alternating between the two
+// addresses of one /48, and returns the answer to one more entry from the second.
+func failAcross48(t *testing.T, f *entryFixture) error {
+	t.Helper()
+
+	for i := range oidcprovider.DefaultUserCodeEntryLimit {
+		src := entrySourceA48
+		if i%2 == 1 {
+			src = entrySourceB48
+		}
+		_, err := f.p.EnterUserCode(t.Context(), oidcprovider.DeviceEntryInput{UserCode: otherCode, Source: src})
+		require.ErrorIsf(t, err, oidcprovider.ErrInvalidUserCode, "failure %d", i+1)
+	}
+	_, err := f.p.EnterUserCode(t.Context(), oidcprovider.DeviceEntryInput{UserCode: otherCode, Source: entrySourceB48})
+
+	return err
+}
+
+// TestUseUserCodeEntryLimiter pins how the chain hands over its rate-limiter factory and
+// source keying: the factory is asked once, at the default rate; the same hand-over again
+// changes nothing; a different one is a wiring mistake that leaves the provider as it was;
+// a consumer's limiter and keyer are never replaced.
 func TestUseUserCodeEntryLimiter(t *testing.T) {
 	t.Parallel()
 
@@ -576,10 +632,12 @@ func TestUseUserCodeEntryLimiter(t *testing.T) {
 		name string
 		// consumer is a limiter given with WithUserCodeEntryLimiter, nil for none.
 		consumer func(t *testing.T) ratelimit.Limiter
+		// consumerKeyer is a keyer given with WithUserCodeEntryKeyer, nil for none.
+		consumerKeyer func(t *testing.T) *ratelimit.SourceKeyer
 		// noDevice builds the provider without the device grant.
 		noDevice bool
 		// use is what UseUserCodeEntryLimiter is called with, in order.
-		use    func(t *testing.T) []ratelimit.Limiter
+		use    func(t *testing.T) []handOver
 		assert func(t *testing.T, f *entryFixture, errs []error)
 	}
 
@@ -593,26 +651,41 @@ func TestUseUserCodeEntryLimiter(t *testing.T) {
 
 		return l
 	}
-	// silent is a limiter no call may reach.
-	silent := func(t *testing.T) *MockLimiter {
+	// factoryOf is a factory that must be asked exactly once, for the entry namespace at the
+	// default rate, and answers limiter.
+	factoryOf := func(t *testing.T, limiter ratelimit.Limiter) *MockLimiterFactory {
+		t.Helper()
+		f := NewMockLimiterFactory(gomock.NewController(t))
+		f.EXPECT().NewLimiter(entryFlow, oidcprovider.DefaultUserCodeEntryLimit, oidcprovider.DefaultUserCodeEntryWindow).
+			Return(limiter, nil).Times(1)
+
+		return f
+	}
+	// silentFactory is a factory no call may reach.
+	silentFactory := func(t *testing.T) *MockLimiterFactory {
 		t.Helper()
 
-		return NewMockLimiter(gomock.NewController(t))
+		return NewMockLimiterFactory(gomock.NewController(t))
 	}
 	enter := func(t *testing.T, f *entryFixture) {
 		t.Helper()
 		_, err := f.p.EnterUserCode(t.Context(), oidcprovider.DeviceEntryInput{UserCode: otherCode, Source: entrySource})
 		require.ErrorIs(t, err, oidcprovider.ErrInvalidUserCode)
 	}
-	var typedNil *ratelimit.MemoryLimiter
+	refused := func(t *testing.T, err error) {
+		t.Helper()
+		require.ErrorIs(t, err, oidcprovider.ErrConfig)
+		assert.ErrorContains(t, err, "UseUserCodeEntryLimiter")
+	}
+	var typedNilFactory *MockLimiterFactory
 
 	cases := []testCase{
 		{
-			name: "it replaces the default, which is then the limiter consulted",
-			use: func(t *testing.T) []ratelimit.Limiter {
+			name: "the factory is asked once for the entry namespace at the default rate, and its limiter is consulted",
+			use: func(t *testing.T) []handOver {
 				t.Helper()
 
-				return []ratelimit.Limiter{consulted(t)}
+				return []handOver{{factoryOf(t, consulted(t)), entryFlow, sourceKeyer(t, 64)}}
 			},
 			assert: func(t *testing.T, f *entryFixture, errs []error) {
 				t.Helper()
@@ -621,30 +694,226 @@ func TestUseUserCodeEntryLimiter(t *testing.T) {
 			},
 		},
 		{
-			name: "it never replaces the consumer's limiter, and says nothing of it",
+			name: "a factory handing out a new limiter per call, handed over twice, is asked once and counts in one limiter",
+			use: func(t *testing.T) []handOver {
+				t.Helper()
+				f := NewMockLimiterFactory(gomock.NewController(t))
+				f.EXPECT().NewLimiter(entryFlow, oidcprovider.DefaultUserCodeEntryLimit, oidcprovider.DefaultUserCodeEntryWindow).
+					DoAndReturn(func(string, int, time.Duration) (ratelimit.Limiter, error) {
+						return memoryEntryLimiter(t), nil
+					}).Times(1)
+				k := sourceKeyer(t, 64)
+
+				return []handOver{{f, entryFlow, k}, {f, entryFlow, sourceKeyer(t, 64)}}
+			},
+			assert: func(t *testing.T, f *entryFixture, errs []error) {
+				t.Helper()
+				require.NoError(t, errs[0])
+				require.NoError(t, errs[1], "the same factory, namespace and prefix change nothing")
+				for range oidcprovider.DefaultUserCodeEntryLimit {
+					enter(t, f)
+				}
+				_, err := f.p.EnterUserCode(t.Context(), oidcprovider.DeviceEntryInput{UserCode: otherCode, Source: entrySource})
+				require.ErrorIs(t, err, oidcprovider.ErrUserCodeThrottled)
+			},
+		},
+		{
+			name: "a different factory is refused, and the first stays",
+			use: func(t *testing.T) []handOver {
+				t.Helper()
+
+				return []handOver{
+					{factoryOf(t, consulted(t)), entryFlow, sourceKeyer(t, 64)},
+					{silentFactory(t), entryFlow, sourceKeyer(t, 64)},
+				}
+			},
+			assert: func(t *testing.T, f *entryFixture, errs []error) {
+				t.Helper()
+				require.NoError(t, errs[0])
+				refused(t, errs[1])
+				enter(t, f)
+			},
+		},
+		{
+			name: "a different namespace is refused, and the first stays",
+			use: func(t *testing.T) []handOver {
+				t.Helper()
+				f := factoryOf(t, consulted(t))
+
+				return []handOver{{f, entryFlow, sourceKeyer(t, 64)}, {f, "elsewhere", sourceKeyer(t, 64)}}
+			},
+			assert: func(t *testing.T, f *entryFixture, errs []error) {
+				t.Helper()
+				require.NoError(t, errs[0])
+				refused(t, errs[1])
+				enter(t, f)
+			},
+		},
+		{
+			name: "a different IPv6 prefix is refused, and the first stays",
+			use: func(t *testing.T) []handOver {
+				t.Helper()
+				f := factoryOf(t, consulted(t))
+
+				return []handOver{{f, entryFlow, sourceKeyer(t, 64)}, {f, entryFlow, sourceKeyer(t, 48)}}
+			},
+			assert: func(t *testing.T, f *entryFixture, errs []error) {
+				t.Helper()
+				require.NoError(t, errs[0])
+				refused(t, errs[1])
+				enter(t, f)
+			},
+		},
+		{
+			name: "a factory whose value cannot be compared is never the same, and is refused without a panic",
+			use: func(t *testing.T) []handOver {
+				t.Helper()
+				l := consulted(t)
+				f := factoryFunc(func(string, int, time.Duration) (ratelimit.Limiter, error) { return l, nil })
+
+				return []handOver{{f, entryFlow, sourceKeyer(t, 64)}, {f, entryFlow, sourceKeyer(t, 64)}}
+			},
+			assert: func(t *testing.T, f *entryFixture, errs []error) {
+				t.Helper()
+				require.NoError(t, errs[0])
+				refused(t, errs[1])
+				enter(t, f)
+			},
+		},
+		{
+			name: "a factory of a comparable type holding an uncomparable value is refused as different, without a panic",
+			use: func(t *testing.T) []handOver {
+				t.Helper()
+				l := consulted(t)
+				f := factoryFunc(func(string, int, time.Duration) (ratelimit.Limiter, error) { return l, nil })
+
+				return []handOver{
+					{taggedFactory{LimiterFactory: f, tag: map[string]int{}}, entryFlow, sourceKeyer(t, 64)},
+					{taggedFactory{LimiterFactory: f, tag: map[string]int{}}, entryFlow, sourceKeyer(t, 64)},
+				}
+			},
+			assert: func(t *testing.T, f *entryFixture, errs []error) {
+				t.Helper()
+				require.NoError(t, errs[0])
+				refused(t, errs[1])
+				enter(t, f)
+			},
+		},
+		{
+			name: "the consumer's limiter is kept, and the factory never asked",
 			consumer: func(t *testing.T) ratelimit.Limiter {
 				t.Helper()
 
 				return consulted(t)
 			},
-			use: func(t *testing.T) []ratelimit.Limiter {
+			use: func(t *testing.T) []handOver {
 				t.Helper()
 
-				return []ratelimit.Limiter{silent(t)}
+				return []handOver{
+					{silentFactory(t), entryFlow, sourceKeyer(t, 64)},
+					{silentFactory(t), entryFlow, sourceKeyer(t, 64)},
+				}
 			},
 			assert: func(t *testing.T, f *entryFixture, errs []error) {
 				t.Helper()
 				require.NoError(t, errs[0])
+				require.NoError(t, errs[1], "a factory never asked cannot split the counts")
 				enter(t, f)
 			},
 		},
 		{
-			name: "the same limiter twice changes nothing",
-			use: func(t *testing.T) []ratelimit.Limiter {
+			name: "with the consumer's limiter, a later different prefix is still refused",
+			consumer: func(t *testing.T) ratelimit.Limiter {
 				t.Helper()
-				l := consulted(t)
 
-				return []ratelimit.Limiter{l, l}
+				return memoryEntryLimiter(t)
+			},
+			use: func(t *testing.T) []handOver {
+				t.Helper()
+
+				return []handOver{
+					{silentFactory(t), entryFlow, sourceKeyer(t, 48)},
+					{silentFactory(t), entryFlow, sourceKeyer(t, 64)},
+				}
+			},
+			assert: func(t *testing.T, f *entryFixture, errs []error) {
+				t.Helper()
+				require.NoError(t, errs[0])
+				refused(t, errs[1])
+				require.ErrorIs(t, failAcross48(t, f), oidcprovider.ErrUserCodeThrottled, "the first keying stays")
+			},
+		},
+		{
+			name: "a /48 keyer counts two addresses in one /48 as one source",
+			use: func(t *testing.T) []handOver {
+				t.Helper()
+
+				return []handOver{{factoryOf(t, memoryEntryLimiter(t)), entryFlow, sourceKeyer(t, 48)}}
+			},
+			assert: func(t *testing.T, f *entryFixture, errs []error) {
+				t.Helper()
+				require.NoError(t, errs[0])
+				err := failAcross48(t, f)
+				require.ErrorIs(t, err, oidcprovider.ErrUserCodeThrottled)
+				require.ErrorIs(t, err, ratelimit.ErrThrottled)
+			},
+		},
+		{
+			name: "the handed keyer applies to the consumer's limiter",
+			consumer: func(t *testing.T) ratelimit.Limiter {
+				t.Helper()
+
+				return memoryEntryLimiter(t)
+			},
+			use: func(t *testing.T) []handOver {
+				t.Helper()
+
+				return []handOver{{silentFactory(t), entryFlow, sourceKeyer(t, 48)}}
+			},
+			assert: func(t *testing.T, f *entryFixture, errs []error) {
+				t.Helper()
+				require.NoError(t, errs[0])
+				require.ErrorIs(t, failAcross48(t, f), oidcprovider.ErrUserCodeThrottled)
+			},
+		},
+		{
+			name: "WithUserCodeEntryKeyer wins over the handed keyer",
+			consumerKeyer: func(t *testing.T) *ratelimit.SourceKeyer {
+				t.Helper()
+
+				return sourceKeyer(t, 64)
+			},
+			use: func(t *testing.T) []handOver {
+				t.Helper()
+
+				return []handOver{{factoryOf(t, memoryEntryLimiter(t)), entryFlow, sourceKeyer(t, 48)}}
+			},
+			assert: func(t *testing.T, f *entryFixture, errs []error) {
+				t.Helper()
+				require.NoError(t, errs[0])
+				require.ErrorIs(t, failAcross48(t, f), oidcprovider.ErrInvalidUserCode,
+					"the two /64s are two sources under the consumer's keyer")
+			},
+		},
+		{
+			name: "with the consumer's limiter and keyer, a different later hand-over changes nothing and is no error",
+			consumer: func(t *testing.T) ratelimit.Limiter {
+				t.Helper()
+
+				return consulted(t)
+			},
+			consumerKeyer: func(t *testing.T) *ratelimit.SourceKeyer {
+				t.Helper()
+
+				return sourceKeyer(t, 64)
+			},
+			use: func(t *testing.T) []handOver {
+				t.Helper()
+
+				return []handOver{
+					{silentFactory(t), entryFlow, sourceKeyer(t, 48)},
+					{silentFactory(t), "elsewhere", sourceKeyer(t, 56)},
+				}
 			},
 			assert: func(t *testing.T, f *entryFixture, errs []error) {
 				t.Helper()
@@ -654,70 +923,103 @@ func TestUseUserCodeEntryLimiter(t *testing.T) {
 			},
 		},
 		{
-			name: "a different second limiter is refused, and the first stays",
-			use: func(t *testing.T) []ratelimit.Limiter {
+			name: "no factory keeps the provider's own limiter and applies the keyer",
+			use: func(t *testing.T) []handOver {
 				t.Helper()
 
-				return []ratelimit.Limiter{consulted(t), silent(t)}
+				return []handOver{{nil, entryFlow, sourceKeyer(t, 48)}, {nil, entryFlow, sourceKeyer(t, 48)}}
 			},
 			assert: func(t *testing.T, f *entryFixture, errs []error) {
 				t.Helper()
 				require.NoError(t, errs[0])
-				require.ErrorIs(t, errs[1], oidcprovider.ErrConfig)
-				assert.ErrorContains(t, errs[1], "UseUserCodeEntryLimiter")
-				enter(t, f)
+				require.NoError(t, errs[1])
+				require.ErrorIs(t, failAcross48(t, f), oidcprovider.ErrUserCodeThrottled)
 			},
 		},
 		{
-			name: "a limiter whose comparable type holds an uncomparable value is refused as different, without a panic",
-			use: func(t *testing.T) []ratelimit.Limiter {
+			name: "no factory after a factory is a different hand-over, and is refused",
+			use: func(t *testing.T) []handOver {
 				t.Helper()
-				l := consulted(t)
 
-				return []ratelimit.Limiter{
-					taggedLimiter{Limiter: l, tag: map[string]int{}},
-					taggedLimiter{Limiter: l, tag: map[string]int{}},
+				return []handOver{
+					{factoryOf(t, consulted(t)), entryFlow, sourceKeyer(t, 64)},
+					{nil, entryFlow, sourceKeyer(t, 64)},
 				}
 			},
 			assert: func(t *testing.T, f *entryFixture, errs []error) {
 				t.Helper()
 				require.NoError(t, errs[0])
-				require.ErrorIs(t, errs[1], oidcprovider.ErrConfig)
+				refused(t, errs[1])
 				enter(t, f)
 			},
 		},
 		{
-			name: "nil is refused",
-			use: func(t *testing.T) []ratelimit.Limiter {
+			name: "a factory error is a configuration error, and leaves the provider free for another hand-over",
+			use: func(t *testing.T) []handOver {
 				t.Helper()
+				failing := NewMockLimiterFactory(gomock.NewController(t))
+				failing.EXPECT().NewLimiter(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, errLimiterBoom).Times(1)
 
-				return []ratelimit.Limiter{nil}
+				return []handOver{
+					{failing, entryFlow, sourceKeyer(t, 64)},
+					{factoryOf(t, consulted(t)), entryFlow, sourceKeyer(t, 64)},
+				}
 			},
-			assert: func(t *testing.T, _ *entryFixture, errs []error) {
+			assert: func(t *testing.T, f *entryFixture, errs []error) {
 				t.Helper()
-				require.ErrorIs(t, errs[0], oidcprovider.ErrConfig)
-				assert.ErrorContains(t, errs[0], "UseUserCodeEntryLimiter")
+				refused(t, errs[0])
+				require.ErrorIs(t, errs[0], errLimiterBoom)
+				assert.ErrorContains(t, errs[0], entryFlow)
+				require.NoError(t, errs[1])
+				enter(t, f)
 			},
 		},
 		{
-			name: "a typed nil is refused",
-			use: func(t *testing.T) []ratelimit.Limiter {
+			name: "a factory answering no limiter and no error is refused",
+			use: func(t *testing.T) []handOver {
+				t.Helper()
+				var typedNil *ratelimit.MemoryLimiter
+
+				return []handOver{
+					{factoryOf(t, nil), entryFlow, sourceKeyer(t, 64)},
+					{factoryOf(t, typedNil), entryFlow, sourceKeyer(t, 64)},
+				}
+			},
+			assert: func(t *testing.T, f *entryFixture, errs []error) {
+				t.Helper()
+				refused(t, errs[0])
+				refused(t, errs[1])
+				enter(t, f)
+			},
+		},
+		{
+			name: "a typed nil factory, an empty namespace and a nil keyer are refused, and change nothing",
+			use: func(t *testing.T) []handOver {
 				t.Helper()
 
-				return []ratelimit.Limiter{typedNil}
+				return []handOver{
+					{typedNilFactory, entryFlow, sourceKeyer(t, 64)},
+					{silentFactory(t), "", sourceKeyer(t, 64)},
+					{silentFactory(t), entryFlow, nil},
+					{factoryOf(t, consulted(t)), entryFlow, sourceKeyer(t, 64)},
+				}
 			},
-			assert: func(t *testing.T, _ *entryFixture, errs []error) {
+			assert: func(t *testing.T, f *entryFixture, errs []error) {
 				t.Helper()
-				require.ErrorIs(t, errs[0], oidcprovider.ErrConfig)
+				for _, err := range errs[:3] {
+					refused(t, err)
+				}
+				require.NoError(t, errs[3], "the refusals left nothing handed over")
+				enter(t, f)
 			},
 		},
 		{
 			name:     "a provider without the device grant refuses it",
 			noDevice: true,
-			use: func(t *testing.T) []ratelimit.Limiter {
+			use: func(t *testing.T) []handOver {
 				t.Helper()
 
-				return []ratelimit.Limiter{silent(t)}
+				return []handOver{{silentFactory(t), entryFlow, sourceKeyer(t, 64)}}
 			},
 			assert: func(t *testing.T, _ *entryFixture, errs []error) {
 				t.Helper()
@@ -741,31 +1043,40 @@ func TestUseUserCodeEntryLimiter(t *testing.T) {
 				if tc.consumer != nil {
 					opts = append(opts, oidcprovider.WithUserCodeEntryLimiter(tc.consumer(t)))
 				}
+				if tc.consumerKeyer != nil {
+					opts = append(opts, oidcprovider.WithUserCodeEntryKeyer(tc.consumerKeyer(t)))
+				}
 				f = newEntryFixture(t, entrySetup{deviceOpts: opts})
 			}
 
 			var errs []error
-			for _, l := range tc.use(t) {
-				errs = append(errs, f.p.UseUserCodeEntryLimiter(l))
+			for _, h := range tc.use(t) {
+				errs = append(errs, f.p.UseUserCodeEntryLimiter(h.factory, h.namespace, h.keyer))
 			}
 			tc.assert(t, f, errs)
 		})
 	}
 }
 
-// TestUseUserCodeEntryLimiter_Concurrent pins that of concurrent hand-overs exactly one
-// wins, and that a hand-over racing entries is safe. Run it with -race.
+// taggedFactory is a factory of a comparable struct type whose tag holds a value of a type
+// that is not, so comparing two of them with == panics at run time.
+type taggedFactory struct {
+	ratelimit.LimiterFactory
+	tag any
+}
+
+// TestUseUserCodeEntryLimiter_Concurrent pins that of concurrent hand-overs of different
+// factories exactly one wins, and that a hand-over racing entries is safe. Run it with -race.
 func TestUseUserCodeEntryLimiter_Concurrent(t *testing.T) {
 	t.Parallel()
 
 	const callers = 8
 	f := newEntryFixture(t, entrySetup{})
-	limiters := make([]ratelimit.Limiter, callers)
-	for i := range limiters {
-		l, err := ratelimit.NewMemoryLimiter(oidcprovider.DefaultUserCodeEntryLimit, oidcprovider.DefaultUserCodeEntryWindow)
-		require.NoError(t, err)
-		limiters[i] = l
+	factories := make([]*ratelimit.MemoryLimiter, callers)
+	for i := range factories {
+		factories[i] = memoryEntryLimiter(t)
 	}
+	keyer := sourceKeyer(t, 64)
 
 	start := make(chan struct{})
 	errs := make([]error, callers)
@@ -773,7 +1084,9 @@ func TestUseUserCodeEntryLimiter_Concurrent(t *testing.T) {
 	for i := range callers {
 		wg.Go(func() {
 			<-start
-			errs[i] = f.p.UseUserCodeEntryLimiter(limiters[i])
+			// A pointer to a fresh value per caller, so every factory is a different one.
+			factory := &singleLimiterFactory{limiter: factories[i]}
+			errs[i] = f.p.UseUserCodeEntryLimiter(factory, entryFlow, keyer)
 		})
 		wg.Go(func() {
 			<-start
@@ -798,43 +1111,85 @@ func TestUseUserCodeEntryLimiter_Concurrent(t *testing.T) {
 	assert.Equal(t, 1, won, "exactly one hand-over wins")
 }
 
-// TestWithUserCodeEntryLimiter_Nil pins that a nil limiter is a wiring mistake.
+// singleLimiterFactory answers every request with its one limiter.
+type singleLimiterFactory struct{ limiter ratelimit.Limiter }
+
+func (f *singleLimiterFactory) NewLimiter(string, int, time.Duration) (ratelimit.Limiter, error) {
+	return f.limiter, nil
+}
+
+// TestWithUserCodeEntryKeyer pins the keying of the entry throttle without a chain: the
+// default keys IPv6 by /64, the option replaces it, and nil is a wiring mistake.
+func TestWithUserCodeEntryKeyer(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		opts   func(t *testing.T) []oidcprovider.DeviceOption
+		assert func(t *testing.T, f *entryFixture)
+	}
+
+	cases := []testCase{
+		{
+			name: "the default keys IPv6 by /64, so two /64s of one /48 are two sources",
+			opts: func(*testing.T) []oidcprovider.DeviceOption { return nil },
+			assert: func(t *testing.T, f *entryFixture) {
+				t.Helper()
+				require.ErrorIs(t, failAcross48(t, f), oidcprovider.ErrInvalidUserCode)
+			},
+		},
+		{
+			name: "a /48 keyer counts them as one source",
+			opts: func(t *testing.T) []oidcprovider.DeviceOption {
+				t.Helper()
+
+				return []oidcprovider.DeviceOption{oidcprovider.WithUserCodeEntryKeyer(sourceKeyer(t, 48))}
+			},
+			assert: func(t *testing.T, f *entryFixture) {
+				t.Helper()
+				require.ErrorIs(t, failAcross48(t, f), oidcprovider.ErrUserCodeThrottled)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, newEntryFixture(t, entrySetup{deviceOpts: tc.opts(t)}))
+		})
+	}
+}
+
+// TestWithUserCodeEntryLimiter_Nil pins that a nil limiter or keyer for the entry throttle
+// is a wiring mistake.
 func TestWithUserCodeEntryLimiter_Nil(t *testing.T) {
 	t.Parallel()
 
 	var typedNil *ratelimit.MemoryLimiter
+	refused := func(option string) func(t *testing.T, p *oidcprovider.Provider, err error) {
+		return func(t *testing.T, p *oidcprovider.Provider, err error) {
+			t.Helper()
+			require.ErrorIs(t, err, oidcprovider.ErrConfig)
+			assert.ErrorContains(t, err, option)
+			assert.Nil(t, p)
+		}
+	}
 	cases := []struct {
-		name    string
-		limiter ratelimit.Limiter
-		assert  func(t *testing.T, p *oidcprovider.Provider, err error)
+		name   string
+		opt    oidcprovider.DeviceOption
+		assert func(t *testing.T, p *oidcprovider.Provider, err error)
 	}{
-		{
-			name: "nil",
-			assert: func(t *testing.T, p *oidcprovider.Provider, err error) {
-				t.Helper()
-				require.ErrorIs(t, err, oidcprovider.ErrConfig)
-				assert.ErrorContains(t, err, "WithUserCodeEntryLimiter")
-				assert.Nil(t, p)
-			},
-		},
-		{
-			name:    "typed nil",
-			limiter: typedNil,
-			assert: func(t *testing.T, p *oidcprovider.Provider, err error) {
-				t.Helper()
-				require.ErrorIs(t, err, oidcprovider.ErrConfig)
-				assert.ErrorContains(t, err, "WithUserCodeEntryLimiter")
-				assert.Nil(t, p)
-			},
-		},
+		{name: "nil limiter", opt: oidcprovider.WithUserCodeEntryLimiter(nil), assert: refused("WithUserCodeEntryLimiter")},
+		{name: "typed nil limiter", opt: oidcprovider.WithUserCodeEntryLimiter(typedNil), assert: refused("WithUserCodeEntryLimiter")},
+		{name: "nil keyer", opt: oidcprovider.WithUserCodeEntryKeyer(nil), assert: refused("WithUserCodeEntryKeyer")},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
 			deps := validDeps(t)
-			p, err := oidcprovider.New(deps, oidcprovider.WithDeviceAuthorization(issuer+"/activate",
-				oidcprovider.WithUserCodeEntryLimiter(tc.limiter)))
+			p, err := oidcprovider.New(deps, oidcprovider.WithDeviceAuthorization(issuer+"/activate", tc.opt))
 			tc.assert(t, p, err)
 		})
 	}
@@ -1893,4 +2248,51 @@ func TestEnterUserCode_BurstIsBounded(t *testing.T) {
 	}
 	assert.Equal(t, int(oidcprovider.DefaultUserCodeEntryLimit), invalid)
 	assert.Equal(t, burst-int(oidcprovider.DefaultUserCodeEntryLimit), throttled)
+}
+
+// TestProvider_DeviceEntryURL pins the accessor a chain reads the code-entry page from.
+func TestProvider_DeviceEntryURL(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		build  func(t *testing.T) *oidcprovider.Provider
+		assert func(t *testing.T, got string)
+	}{
+		{
+			name: "the page the grant was enabled with, query kept",
+			build: func(t *testing.T) *oidcprovider.Provider {
+				t.Helper()
+				p, err := oidcprovider.New(validDeps(t), oidcprovider.WithDeviceAuthorization(issuer+"/activate?lang=en",
+					oidcprovider.WithUserCodeKey(deviceKey)))
+				require.NoError(t, err)
+
+				return p
+			},
+			assert: func(t *testing.T, got string) {
+				t.Helper()
+				assert.Equal(t, issuer+"/activate?lang=en", got)
+			},
+		},
+		{
+			name: "empty without the grant",
+			build: func(t *testing.T) *oidcprovider.Provider {
+				t.Helper()
+				p, err := oidcprovider.New(validDeps(t))
+				require.NoError(t, err)
+
+				return p
+			},
+			assert: func(t *testing.T, got string) {
+				t.Helper()
+				assert.Empty(t, got)
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tc.assert(t, tc.build(t).DeviceEntryURL())
+		})
+	}
 }

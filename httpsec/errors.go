@@ -52,10 +52,12 @@ var (
 	// request's prompt or max_age. It maps to 401: the user signs in again.
 	ErrOIDCReauthenticate = fmt.Errorf("httpsec: the sign-in must be repeated: %w", oidcprovider.ErrReauthenticate)
 
-	// ErrOIDCThrottled refuses a request to the authorization, resume, end-session or
-	// logout confirmation endpoint that the endpoint will not hear: its source is over the
-	// limit, the limiter could not answer, or the source cannot be attributed. It fails closed, as ratelimit.ErrThrottled does,
-	// and wraps it, so a consumer matching either identity reaches it.
+	// ErrOIDCThrottled refuses a request to the authorization, resume, end-session,
+	// logout confirmation or code-entry endpoint that the endpoint will not hear: its source
+	// is over the limit, the limiter could not answer, or the source cannot be attributed.
+	// It fails closed, as ratelimit.ErrThrottled does, and wraps it, so a consumer matching
+	// either identity reaches it. At code entry the limit is the provider's
+	// (oidcprovider.ErrUserCodeThrottled), which the refusal also matches.
 	//
 	// It maps to 429 (RFC 6585 section 4), where the chain's other throttled flows answer
 	// 401. Those endpoints are visited by a browser, and a 401 there reads as "sign
@@ -303,6 +305,9 @@ var statusTable = []statusRow{
 	// A browser endpoint of the OpenID Provider that will not hear its source. It wraps
 	// ratelimit.ErrThrottled, so its row must stand ahead of the one below.
 	{ErrOIDCThrottled, http.StatusTooManyRequests},
+	// The provider's own user-code entry throttle, which matches ratelimit.ErrThrottled too,
+	// reached unwrapped from a consumer's own code-entry handler: a browser endpoint's 429.
+	{oidcprovider.ErrUserCodeThrottled, http.StatusTooManyRequests},
 	{ratelimit.ErrThrottled, http.StatusUnauthorized},
 
 	// A wrong second-factor code, at verification or enrolment, and the
@@ -404,6 +409,7 @@ var statusTable = []statusRow{
 	{oidcprovider.ErrInvalidEndSession, http.StatusBadRequest},
 	{oidcprovider.ErrReauthenticate, http.StatusUnauthorized},
 	{oidcprovider.ErrForeignConsent, http.StatusNotFound},
+	{oidcprovider.ErrInvalidUserCode, http.StatusBadRequest},
 
 	// A rotation that lost a concurrent renewal of the same session. The
 	// session core's sentinel is the row, so the chain's own, which wraps it,

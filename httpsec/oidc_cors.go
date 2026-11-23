@@ -29,22 +29,28 @@ const (
 // oidcCORSBrowserEndpoints are the endpoints that never carry a CORS header: the
 // authorization request is a navigation, the resume and the end-session pair are where
 // the user's pages hand the browser back, and answering a script there would let a page
-// on another origin read what is meant for the user (RFC 9700 section 2.6).
-var oidcCORSBrowserEndpoints = []OIDCEndpoint{OIDCAuthorize, OIDCResume, OIDCEndSession, OIDCLogoutConfirm}
+// on another origin read what is meant for the user (RFC 9700 section 2.6). The device
+// endpoints are among them while the provider serves them: a device posts device
+// authorization from no web origin, and code entry is the user's own page; no browser client
+// has a reason to call either cross-origin.
+var oidcCORSBrowserEndpoints = []OIDCEndpoint{
+	OIDCAuthorize, OIDCResume, OIDCEndSession, OIDCLogoutConfirm, OIDCDeviceAuthorization, OIDCDeviceEntry,
+}
 
 // oidcCORSClientEndpoints are the endpoints a browser client's script may call.
 var oidcCORSClientEndpoints = []OIDCEndpoint{OIDCToken, OIDCUserInfo, OIDCRevoke, OIDCIntrospect}
 
 // corsScope reports how the CORS layer treats path. It reads the paths the provider
 // settled on each call, so it follows WithOIDCProviderPrefix and WithOIDCProviderPath, and
-// treats every path as the consumer's when op is nil.
+// treats every path as the consumer's when op is nil, and an endpoint's path as the
+// consumer's while the provider does not serve it.
 func (op *oidcEndpoints) corsScope(path string) corsScope {
 	if op == nil {
 		return corsScopeConsumer
 	}
 
 	for _, e := range oidcCORSBrowserEndpoints {
-		if path == op.paths[e] {
+		if op.served(e) && path == op.paths[e] {
 			return corsScopeBrowser
 		}
 	}

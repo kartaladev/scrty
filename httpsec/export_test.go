@@ -506,3 +506,13 @@ func CheckSubjectGeneratorForTest(bearer Option, g token.Generator) error {
 
 	return checkSubjectGenerator(c, "option", "field", g)
 }
+
+// WithLateRefusal refuses the chain with err in a check registered after every other the
+// wiring registers, so a test can show that a chain refused there hands nothing over.
+func WithLateRefusal(err error) Option {
+	return func(c *config) error {
+		c.wire(func(*Chain) { c.checkAfterWiring(func() error { return err }) })
+
+		return nil
+	}
+}

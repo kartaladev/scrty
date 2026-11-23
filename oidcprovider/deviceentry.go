@@ -20,7 +20,7 @@ import (
 	"github.com/kartaladev/scrty/ratelimit"
 )
 
-//go:generate mockgen -destination=limiter_mock_test.go -package=oidcprovider_test -typed github.com/kartaladev/scrty/ratelimit Limiter
+//go:generate mockgen -destination=limiter_mock_test.go -package=oidcprovider_test -typed github.com/kartaladev/scrty/ratelimit Limiter,LimiterFactory
 
 // entryState holds the entry throttle. current is read without a lock on every entry, and
 // mu serialises UseUserCodeEntryLimiter, so that of concurrent calls one decides.
@@ -34,9 +34,31 @@ type entryState struct {
 type entryThrottle struct {
 	guard   *ratelimit.SourceGuard
 	limiter ratelimit.Limiter
-	// consumer says the limiter came from WithUserCodeEntryLimiter, and handedOver that it
-	// came from UseUserCodeEntryLimiter. The default is neither.
-	consumer, handedOver bool
+	// consumer says the limiter came from WithUserCodeEntryLimiter, and consumerKeyer that
+	// the keyer came from WithUserCodeEntryKeyer. Neither is ever replaced.
+	consumer, consumerKeyer bool
+	// handedOver says UseUserCodeEntryLimiter has run, and handed is what it was given,
+	// kept so a later call can be judged the same or different.
+	handedOver bool
+	handed     entryHandOver
+}
+
+// entryHandOver is what one UseUserCodeEntryLimiter call was given.
+type entryHandOver struct {
+	factory   ratelimit.LimiterFactory
+	namespace string
+	prefix    int
+}
+
+// sameAs reports whether h and later would build the same throttle over t, comparing only
+// what applies to it: the factory and namespace only when the factory is asked (no consumer
+// limiter), and the IPv6 prefix only when the handed keyer is used (no consumer keyer).
+func (h entryHandOver) sameAs(later entryHandOver, t *entryThrottle) bool {
+	if !t.consumer && (!sameFactory(h.factory, later.factory) || h.namespace != later.namespace) {
+		return false
+	}
+
+	return t.consumerKeyer || h.prefix == later.prefix
 }
 
 // DeviceEntryInput is a user code entered on the code-entry page, with what the browser
@@ -81,11 +103,14 @@ func (e *entryRefused) Unwrap() []error {
 	return []error{ErrUserCodeThrottled, ratelimit.ErrThrottled, e.cause}
 }
 
-// newEntryThrottle builds the guard over limiter, logging through the provider's logger
-// and sampling by its clock.
-func newEntryThrottle(limiter ratelimit.Limiter, clk clock.Clock, logger *slog.Logger) (*entryThrottle, error) {
-	guard, err := ratelimit.NewSourceGuard(userCodeEntryFlow, limiter,
-		ratelimit.WithSourceGuardLogger(logger), ratelimit.WithSourceGuardClock(clk))
+// newEntryThrottle builds the guard over limiter, keying sources by keyer (the guard's
+// default when nil), logging through the provider's logger and sampling by its clock.
+func newEntryThrottle(limiter ratelimit.Limiter, keyer *ratelimit.SourceKeyer, clk clock.Clock, logger *slog.Logger) (*entryThrottle, error) {
+	opts := []ratelimit.GuardOption{ratelimit.WithSourceGuardLogger(logger), ratelimit.WithSourceGuardClock(clk)}
+	if keyer != nil {
+		opts = append(opts, ratelimit.WithSourceGuardKeyer(keyer))
+	}
+	guard, err := ratelimit.NewSourceGuard(userCodeEntryFlow, limiter, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -94,8 +119,11 @@ func newEntryThrottle(limiter ratelimit.Limiter, clk clock.Clock, logger *slog.L
 }
 
 // resolveEntry checks the limiter WithUserCodeEntryLimiter gave, or builds the default, and
-// the throttle over it.
+// the throttle over it, keyed by the keyer WithUserCodeEntryKeyer gave, or the default.
 func (d *deviceConfig) resolveEntry(clk clock.Clock, logger *slog.Logger) error {
+	if d.entryKeyerSet && d.entryKeyer == nil {
+		return fmt.Errorf("%w: WithUserCodeEntryKeyer: must not be nil", ErrConfig)
+	}
 	limiter := d.entryLimiter
 	if d.entryLimiterSet {
 		if nilcheck.IsNil(limiter) {
@@ -109,28 +137,112 @@ func (d *deviceConfig) resolveEntry(clk clock.Clock, logger *slog.Logger) error 
 		}
 		limiter = memory
 	}
-	throttle, err := newEntryThrottle(limiter, clk, logger)
+	throttle, err := newEntryThrottle(limiter, d.entryKeyer, clk, logger)
 	if err != nil {
 		return fmt.Errorf("%w: WithUserCodeEntryLimiter: %w", ErrConfig, err)
 	}
-	throttle.consumer = d.entryLimiterSet
+	throttle.consumer, throttle.consumerKeyer = d.entryLimiterSet, d.entryKeyerSet
 	d.entry = &entryState{}
 	d.entry.current.Store(throttle)
 
 	return nil
 }
 
-// sameLimiter reports whether a and b are one limiter, without panicking on a limiter that
-// cannot be compared: such a limiter is never the same as another value. Its type alone does
+// sameFactory reports whether a and b are one factory, without panicking on a factory that
+// cannot be compared: such a factory is never the same as another value. Its type alone does
 // not say so, because a comparable struct may hold a map, slice or func in an interface field;
-// reflect.Value.Comparable looks at the values.
-func sameLimiter(a, b ratelimit.Limiter) bool {
+// reflect.Value.Comparable looks at the values. Two nil factories are the same.
+func sameFactory(a, b ratelimit.LimiterFactory) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
 	va, vb := reflect.ValueOf(a), reflect.ValueOf(b)
-	if !va.IsValid() || !vb.IsValid() || va.Type() != vb.Type() || !va.Comparable() || !vb.Comparable() {
+	if va.Type() != vb.Type() || !va.Comparable() || !vb.Comparable() {
 		return false
 	}
 
 	return a == b
+}
+
+// UseUserCodeEntryLimiter hands the provider the rate-limiter factory and source keying of a
+// chain built after it, so that the user-code entry throttle counts where the chain's other
+// throttles count, and keys sources as they do. It is meant to be called before any traffic,
+// and httpsec's EnableOIDCProvider calls it as the chain's New ends.
+//
+// The first call asks factory once for a limiter under namespace at the default rate
+// (DefaultUserCodeEntryLimit failures in DefaultUserCodeEntryWindow), and rebuilds the
+// throttle over it, keyed by keyer. A nil factory (the untyped nil, for a chain configured
+// with none) keeps the provider's own in-memory limiter and applies keyer alone. A limiter
+// given with WithUserCodeEntryLimiter is kept, and factory never asked; a keyer given with
+// WithUserCodeEntryKeyer is kept, and keyer not used.
+//
+// A later call that would build the same throttle answers nil and changes nothing: the same
+// factory, compared as a value (so the same pointer; a factory whose value cannot be
+// compared is never the same), the same namespace and the same keyer.IPv6Prefix, each
+// judged only where it applies. A later call that differs is refused with an error matching
+// ErrConfig, so that two chains cannot silently split the counts; two factory values that
+// reach one backend are different here, and such a deployment gives the provider its limiter
+// with WithUserCodeEntryLimiter instead.
+//
+// A typed nil factory, an empty namespace, a nil keyer, a factory that fails or answers no
+// limiter, and a provider without the device grant (WithDeviceAuthorization) are refused with
+// an error matching ErrConfig, wrapping the factory's own error. A refused call leaves the
+// provider as it was. It is safe for concurrent use, with itself and with EnterUserCode: of
+// concurrent first calls, one decides, and the others are judged against it.
+func (p *Provider) UseUserCodeEntryLimiter(factory ratelimit.LimiterFactory, namespace string, keyer *ratelimit.SourceKeyer) error {
+	const op = "UseUserCodeEntryLimiter"
+
+	cfg := p.cfg.device
+	switch {
+	case cfg == nil:
+		return fmt.Errorf("%w: %s: the device grant is off; enable it with WithDeviceAuthorization", ErrConfig, op)
+	case factory != nil && nilcheck.IsNil(factory):
+		return fmt.Errorf("%w: %s: the factory must not be a nil pointer", ErrConfig, op)
+	case namespace == "":
+		return fmt.Errorf("%w: %s: the namespace must not be empty", ErrConfig, op)
+	case keyer == nil:
+		return fmt.Errorf("%w: %s: the source keyer must not be nil", ErrConfig, op)
+	}
+	given := entryHandOver{factory: factory, namespace: namespace, prefix: keyer.IPv6Prefix()}
+
+	cfg.entry.mu.Lock()
+	defer cfg.entry.mu.Unlock()
+
+	current := cfg.entry.current.Load()
+	if current.handedOver {
+		if current.handed.sameAs(given, current) {
+			return nil
+		}
+
+		return fmt.Errorf("%w: %s: a different factory, namespace or IPv6 source prefix was already handed over, "+
+			"and two would split the counts", ErrConfig, op)
+	}
+
+	limiter := current.limiter
+	if !current.consumer && factory != nil {
+		built, err := factory.NewLimiter(namespace, DefaultUserCodeEntryLimit, DefaultUserCodeEntryWindow)
+		if err != nil {
+			return fmt.Errorf("%w: %s: the factory could not build the limiter for namespace %q: %w", ErrConfig, op, namespace, err)
+		}
+		if nilcheck.IsNil(built) {
+			return fmt.Errorf("%w: %s: the factory answered no limiter for namespace %q", ErrConfig, op, namespace)
+		}
+		limiter = built
+	}
+	if current.consumerKeyer {
+		// The consumer's keyer stays; otherwise the handed one keys every source.
+		keyer = cfg.entryKeyer
+	}
+
+	throttle, err := newEntryThrottle(limiter, keyer, p.cfg.clock, p.cfg.logger)
+	if err != nil {
+		return fmt.Errorf("%w: %s: %w", ErrConfig, op, err)
+	}
+	throttle.consumer, throttle.consumerKeyer = current.consumer, current.consumerKeyer
+	throttle.handedOver, throttle.handed = true, given
+	cfg.entry.current.Store(throttle)
+
+	return nil
 }
 
 // EnterUserCode enters a user code typed on the code-entry page (RFC 8628 section 3.3), for

@@ -348,17 +348,24 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 //     endpoint's rule with a budget of its own, under namespace
 //     "oidc-device-authorization" (WithOIDCDeviceAuthorizationLimiter, or the
 //     chain's WithRateLimiterFactory). Code entry is throttled by the provider
-//     itself (oidcprovider.WithUserCodeEntryLimiter); with WithRateLimiterFactory
-//     and no limiter of the consumer's on the provider, New hands the provider
-//     the factory's limiter for namespace "oidc-device-entry", and fails when the
-//     factory errs or the provider already holds another chain's.
+//     itself (oidcprovider.WithUserCodeEntryLimiter, WithUserCodeEntryKeyer); New
+//     hands the provider the chain's WithRateLimiterFactory, which the provider
+//     asks for namespace "oidc-device-entry" unless it holds a limiter of the
+//     consumer's, and the chain's source keying (WithIPv6SourcePrefix), as the
+//     last step that may refuse the chain. New fails when the factory errs, or the
+//     provider already holds another chain's different factory, namespace or
+//     prefix. A GET carrying a user code that the browser does not report as its
+//     own navigation claims nothing, and is sent to the consumer's code-entry page
+//     with the code prefilled (see "Cross-site requests", below); a code-entry
+//     page on which that redirect would loop fails New.
 //   - Request bodies: DefaultLoginBodyLimit (WithOIDCAuthorizeBodyLimit,
 //     WithOIDCResumeBodyLimit, WithOIDCTokenBodyLimit, WithOIDCEndSessionBodyLimit,
 //     WithOIDCLogoutConfirmBodyLimit, WithOIDCRevokeBodyLimit,
 //     WithOIDCIntrospectBodyLimit, WithOIDCUserInfoBodyLimit,
 //     WithOIDCDeviceAuthorizationBodyLimit, WithOIDCDeviceEntryBodyLimit).
 //   - Cross-site requests: POST to the authorization, token, revocation,
-//     introspection and end-session endpoints skips CSRF protection, at the
+//     introspection, end-session and (when served) device authorization endpoints
+//     skips CSRF protection, at the
 //     paths the provider serves them (see "Cross-site requests", below). No
 //     option removes it; WithCSRFExemption adds a route, UserInfo's among them.
 //
@@ -392,10 +399,26 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // (ReadBufferSize, 8 KiB) is below the size this reads. A form POST holding the flow
 // cookie is answered directly, and avoids both.
 //
-// The resume, the logout confirmation and /consents are not exempt. The consent
-// stage and the logout confirmation may rest on the provider's browser session, a
-// cookie, so a cross-site POST to any of them is refused as ErrCrossSiteRequest
-// (403) before its handler runs.
+// The device authorization endpoint, while the provider serves it, is exempt as the
+// token endpoint is: a device posts it with a client credential and no cookie.
+//
+// The resume, the logout confirmation, /consents and code entry are not exempt. The
+// consent stage and the logout confirmation may rest on the provider's browser session,
+// a cookie, and a code entry claims a code for the browser, so a cross-site POST to any
+// of them is refused as ErrCrossSiteRequest (403) before its handler runs.
+//
+// A GET to code entry carrying user_code claims it only when the browser reports the
+// navigation as its own: one Sec-Fetch-Site line of same-origin, same-site or none, or
+// no Sec-Fetch-Site at all (a client that is no browser, or an older browser). Any other
+// GET, a link from another site among them, claims and charges nothing, sets no cookie,
+// and is answered with a 303 to the consumer's code-entry page
+// (oidcprovider.Provider.DeviceEntryURL) with user_code set, so the user confirms the
+// code there and submits it as a POST, under the check above. This gate holds with or
+// without EnableCSRFProtection, and has no option: a claim is a state change no link may
+// make. A user_code longer than 64 bytes is refused as an invalid code before anything
+// is redirected. A code-entry page whose path is the code-entry endpoint's, under any
+// spelling (case, trailing slash, empty segment, percent-encoding), fails New, because
+// the redirect would come back to the endpoint as cross-site again without end.
 //
 // The exemption follows the paths the provider serves (WithOIDCProviderPrefix,
 // WithOIDCProviderPath) and compares each exactly, with the path as the client sent
