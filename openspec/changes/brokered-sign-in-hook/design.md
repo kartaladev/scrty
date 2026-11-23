@@ -369,6 +369,17 @@ Alternatives rejected:
 | F35 | Two first sign-ins of one identity provision different references | Handled, tested | One link; the loser is refused before its `Apply`, so no orphan user |
 | F36 | A provisioned link records an empty username | Accepted | The link's username is for operators only and never a lookup key (D13) |
 
+## Follow-ups
+
+Out of scope here; each is a separate change.
+
+- **oidc-link-removal** (`identity-linking`, security administration): remove one link by provider,
+  issuer and subject, so an operator can re-point a re-created SSO account. Today the only API is
+  `LinkStore.DeleteByUser`, which removes every link a user holds.
+- **hook-provisioning-port** (`identity-model`, `identity-linking`, security administration): a
+  provisioning decision (D13) creates its user through a create-with-this-ID port, with `admin` as
+  a thin adapter over it, instead of the consumer calling `admin.Importer` under an actor.
+
 ## Risks / Trade-offs
 
 - **[E-mail matching lives in consumer code.]** The library never matches by e-mail. The

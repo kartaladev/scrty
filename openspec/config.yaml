@@ -100,12 +100,7 @@ context: |
     (bff-session, resource-server, csrf-protection), chain-time-source (http-security-chain),
     endpoint-inventory-base-path (http-security-chain, oidc-login, oidc-logout,
     oidc-provider-metadata, multi-factor-auth, passkey-authentication, reauthentication,
-    account-recovery, csrf-protection, framework-adapters, sender-constrained-tokens),
-    oidc-link-removal (identity-linking, security-administration: remove one link by provider,
-    issuer and subject, for an operator re-pointing a re-created SSO account),
-    hook-provisioning-port (identity-model, identity-linking, security-administration: a
-    provisioning sign-in decision creates its user through a create-with-this-ID port, with admin
-    as a thin adapter over it, instead of the consumer calling admin.Importer under an actor)
+    account-recovery, csrf-protection, framework-adapters, sender-constrained-tokens)
 
 rules:
   design:
