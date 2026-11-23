@@ -103,8 +103,14 @@ func TestMemoryLinkStore_DeleteLink(t *testing.T) {
 	}
 	with := func(l oidc.Link, edit func(*oidc.Link)) oidc.Link { edit(&l); return l }
 
+	zero := oidc.Link{
+		Provider: "zero", Issuer: "https://zero.example", Subject: "z-1",
+		UserID: "u-7", Username: "u-7-name", Email: "z-1@zero.example",
+	}
+
 	type testCase struct {
 		name   string
+		stored []oidc.Link
 		delete oidc.Link
 		assert func(t *testing.T, remaining []oidc.Link, removed bool, err error)
 	}
@@ -117,6 +123,15 @@ func TestMemoryLinkStore_DeleteLink(t *testing.T) {
 	}
 
 	cases := []testCase{
+		{
+			name:   "a stored zero-ID link survives a zero-ID delete",
+			stored: []oidc.Link{zero},
+			delete: zero,
+			assert: func(t *testing.T, remaining []oidc.Link, removed bool, err error) {
+				assert.False(t, removed)
+				assert.Equal(t, []oidc.Link{corp, partner, zero}, remaining)
+			},
+		},
 		{
 			name:   "the link with this ID and identity is removed and the user's other link stays",
 			delete: corp,
@@ -166,6 +181,9 @@ func TestMemoryLinkStore_DeleteLink(t *testing.T) {
 			s := oidc.NewMemoryLinkStore()
 			require.NoError(t, s.Insert(t.Context(), corp))
 			require.NoError(t, s.Insert(t.Context(), partner))
+			for _, l := range tc.stored {
+				require.NoError(t, s.Insert(t.Context(), l))
+			}
 
 			removed, err := s.DeleteLink(t.Context(), tc.delete)
 			remaining, lerr := s.ListByUser(t.Context(), "u-7")

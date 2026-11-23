@@ -261,6 +261,8 @@ type completionFlow struct {
 	// charged counts the resume throttle's recorded failures, and cancelled the
 	// held-recovery cancellations a login asked for.
 	charged, cancelled atomic.Int64
+	// cancelFails, when set, is the error the recovery-cancellation seam answers.
+	cancelFails atomic.Pointer[error]
 
 	// sessionSeen records whether a consumer interceptor outside OIDC login,
 	// registered by observeSession, found a session on the exchange or its
@@ -363,6 +365,10 @@ func newCompletionFlow(t *testing.T, setup completionSetup) *completionFlow {
 			}, extra...),
 				httpsec.CancelHeldAtLoginForTest(func(context.Context, identity.UserID) error {
 					f.cancelled.Add(1)
+
+					if err := f.cancelFails.Load(); err != nil {
+						return *err
+					}
 
 					return nil
 				}))
@@ -565,6 +571,9 @@ func mfaRequired(t *testing.T, f *completionFlow) []httpsec.Option {
 
 // errPendingDown is what a failing pending-request store answers.
 var errPendingDown = errors.New("pending-request store down")
+
+// errRecoveryCancelDown is what a failing recovery-cancellation answers.
+var errRecoveryCancelDown = errors.New("recovery cancellation down")
 
 // downablePendingStore is a pending-request store whose reads can be made to fail
 // once a row has parked its request, and which counts what is written to it.
@@ -1462,6 +1471,24 @@ func TestOIDCCompletion_FailurePaths(t *testing.T) {
 				ended(errCompletionRefused)(t, f, handle, flow, a, logs)
 				assert.Equal(t, oidcprovider.StageLogin, f.stage(t, handle, flow), "never resumed, no code")
 				assert.Empty(t, endRecords(logs), "the end succeeded")
+			},
+		},
+		{
+			name: "cancelling the held recoveries fails before the session is stored",
+			arm: func(t *testing.T, f *completionFlow, _ *completionSessionStore) {
+				t.Helper()
+
+				f.cancelFails.Store(&errRecoveryCancelDown)
+			},
+			assert: func(t *testing.T, f *completionFlow, handle, flow string, a flowAnswer, _ []slog.Record) {
+				t.Helper()
+
+				require.ErrorIs(t, a.err, errRecoveryCancelDown)
+				assert.Empty(t, a.header.Get("Location"), "no redirect to the client")
+				assert.Nil(t, a.cookie(flowSession), "no browser session")
+				assert.Zero(t, f.storedSessions(t), "no session is stored")
+				assert.False(t, f.sessionSeen.Load(), "no session on the exchange")
+				assert.Equal(t, oidcprovider.StageLogin, f.stage(t, handle, flow), "never resumed, no code")
 			},
 		},
 		{

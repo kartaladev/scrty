@@ -810,7 +810,7 @@ httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: relyingParty, Handoff: ha
 ```
 
 When the callback succeeds and the destination is the login page of a parked request, the server
-completes the sign-in itself, and the browser never holds a credential:
+completes the sign-in itself, and no session credential reaches the browser (only the provider's browser-session cookie is set):
 
 1. It checks that the handle is a live request of this browser. An unknown, expired or foreign handle
    is refused as `ErrOIDCUnknownHandle` and charged to the source, as the resume endpoint charges it.

@@ -40,8 +40,9 @@ and no migration is needed.
   `oidc.LinkStore`. The memory store and `sqlstore`, `pgxstore` and `gormstore` implement both, with
   no migration. A hook over a store without them needs `WithBrokerSignInHookAllowManyLinks`.
 - **Server-side completion of a federated sign-in.** `httpsec.WithOIDCProviderCompletion()` completes
-  a parked provider sign-in on the server, so a login page needs no script and the browser holds no
-  credential. It needs the new `httpsec.OIDCDeps.Users` loader, and falls back to the handoff when a
+  a parked provider sign-in on the server, so a login page needs no script and no session
+  credential reaches the browser (only the provider's browser-session cookie is set). It needs the
+  new `httpsec.OIDCDeps.Users` loader, and falls back to the handoff when a
   step is owed. It is off by default.
   - `oidcprovider.Provider.LoginURL()` reads the login page's address.
   - `oidcprovider.ResumeResult.Outcome`, a `oidcprovider.ResumeOutcome`, names what `RedirectTo`

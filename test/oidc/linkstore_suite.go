@@ -274,6 +274,28 @@ func RunLinkStoreSuite(t *testing.T, newStore func(t *testing.T) oidc.LinkStore)
 			},
 		},
 		{
+			name: "a stored zero-ID link survives a zero-ID delete",
+			assert: func(t *testing.T, ctx context.Context, s oidc.LinkStore) {
+				remover, ok := s.(oidc.LinkRemover)
+				if !ok {
+					t.Skip("the store does not implement DeleteLink")
+				}
+
+				zero := linkSuiteLink(linkSuiteIssuer, "s-1", "u-7")
+				zero.ID = id.ID{}
+				if err := s.Insert(ctx, zero); err != nil {
+					t.Skip("the store refuses a zero-ID link")
+				}
+
+				removed, err := remover.DeleteLink(ctx, zero)
+				if err == nil {
+					assert.False(t, removed, "a zero id names no link")
+				}
+				_, err = s.FindByExternal(ctx, "corp", linkSuiteIssuer, "s-1")
+				require.NoError(t, err, "the zero-ID link is still stored")
+			},
+		},
+		{
 			name: "deleting one link refuses a link that differs in id, identity or is unnamed, and removes nothing",
 			assert: func(t *testing.T, ctx context.Context, s oidc.LinkStore) {
 				remover, ok := s.(oidc.LinkRemover)

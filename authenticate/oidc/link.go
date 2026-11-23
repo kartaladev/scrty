@@ -122,8 +122,13 @@ func (s *MemoryLinkStore) ListByUser(_ context.Context, user identity.UserID) ([
 
 // DeleteLink removes the stored link whose ID, provider, issuer and subject
 // all equal link's, and reports whether it removed one. No other link is
-// touched.
+// touched. A zero ID names no link: it removes nothing, even a link stored
+// under a zero ID.
 func (s *MemoryLinkStore) DeleteLink(_ context.Context, link Link) (bool, error) {
+	if link.ID.IsZero() {
+		return false, nil
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
