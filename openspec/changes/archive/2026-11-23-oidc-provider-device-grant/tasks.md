@@ -4,7 +4,7 @@ Every task is test-first: write the failing test, run it with `go test -run '<Na
 
 ## 0. Gate
 
-- [ ] 0.1 Confirm `harden-chain-boundary` and `split-ci-jobs` are archived (`openspec list --json` shows neither) before any code task starts.
+- [x] 0.1 Confirm `harden-chain-boundary` and `split-ci-jobs` are archived (`openspec list --json` shows neither) before any code task starts. **Waived by the user on 2026-11-22**, not satisfied: `split-ci-jobs` was not tightly related to this change. At archive (2026-11-23) `harden-chain-boundary` is archived and `split-ci-jobs` is still active.
 
 ## 1. Client registration and the provider option (D1, D8, D9)
 
