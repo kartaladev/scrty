@@ -240,9 +240,19 @@ claimed.
   text. The consumer's chain is kept only for `errors.As` on the consumer's own types; the library's
   other sentinels are cut out of it, so that a wrapped `ErrFlowUnspent` or `ErrExchangeFailed` is not
   misread.
-- `redact` is extended with the upstream access token.
+- A broker failure from the hook carries fixed text only, never the consumer's text, scrubbed or
+  not. That is stricter than scrubbing, and it follows the project's rule that a dependency's error
+  text never reaches a returned error. The consumer's error stays reachable through `errors.As` for
+  concrete types declared outside the library; library types and interface targets match nothing,
+  so no library outcome can be read out of a consumer's chain. `errors.Is` matches nothing either:
+  a consumer sentinel made with `errors.New` shares its type with the library's sentinels, so no
+  filter can tell them apart. A consumer that needs its own text logs it inside the hook, or wraps
+  it in its own concrete type. The failure prints its fixed text through every `fmt` verb, `%#v`
+  included, as `Upstream` does (D2).
+- `redact` is extended with the upstream access token, for the library's own store-fault paths.
 - New sentinels: `ErrUserInfoFailed` (a provider failure) and `ErrUpstreamRequired` (a broker
-  failure).
+  failure). `httpsec` registers both in its sentinel inventory: the first with the provider failures
+  such as `ErrExchangeFailed`, and the second as a broker failure.
 - Hook refusals emit `AuthnLoginFail` through `emitCallbackRefused`. A completed sign-in emits the
   same events the redemption's login tail emits.
 
@@ -325,7 +335,9 @@ Alternatives rejected:
 | F41 | Discovered UserInfo endpoint off the issuer's origin or on a refused scheme | Handled, tested | Dropped with a WARN; discovery and logins proceed; `UserInfo` fails with no endpoint (D4) |
 | F6 | Context cancelled in UserInfo, the hook or `Apply` | Handled, tested | The context's error; no link inserted if before step 4 |
 | F7 | Decision empty, or a non-sentinel error | Handled, tested | Broker failure; nothing written |
-| F8 | Hook error text holds the subject, email or token | Handled, tested | Scrubbed before log and return |
+| F8 | Hook error text holds the subject, email or token | Handled, tested | The returned error carries fixed text only, in every `fmt` verb; nothing of the consumer's text is logged or returned (D10) |
+| F42 | The hook, or an `Is` method on its error, panics | Accepted | The request's panic recovery answers it, as for any consumer code on the request path |
+| F43 | The link store returns a link with an empty user reference | Handled, tested | Broker failure; the hook is not called, since an empty `linked` would read as no link |
 | F9 | Decided user missing, disabled or mismatched | Handled, tested | `ErrNoLinkedAccount`; `Apply` not run; no link |
 | F10 | Existing link names another user | Handled, tested | `ErrNoLinkedAccount`; `Apply` not run; link unchanged; WARN |
 | F11 | Two first sign-ins of one identity race | Handled, tested | One link; both resolve, or the loser refuses; `Apply` only after the link is final |

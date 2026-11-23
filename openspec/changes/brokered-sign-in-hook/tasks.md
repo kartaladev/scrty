@@ -58,7 +58,9 @@ Each task's verification names the test or command that shows it is done.
   - another error becoming a broker failure;
   - an error wrapping `ErrExchangeFailed` or `ErrFlowUnspent`, not reported as either;
   - an empty user;
-  - an error text holding the e-mail, the subject and the token, scrubbed in the error and the logs.
+  - an error text holding the e-mail, the subject and the token, absent from the error (in every `fmt` verb, `%#v` included) and from the logs;
+  - a wrapped library concrete type (such as `*httpsec.ChallengeError`) and an interface target implementing `error`, neither reachable through `errors.As`;
+  - a stored link with an empty user reference, a broker failure with the hook not called (F43).
 
   No row writes anything (F7, F8).
 - [ ] 3.4 Implement the checks made before any write (D5, step 3). **Verify:** tests show that an existing link to another user, a missing user, a disabled user and a mismatched user are each refused, with `Apply` never called and no link inserted. The link conflict logs one WARN, with no user references (F9, F10).

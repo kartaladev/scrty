@@ -89,7 +89,7 @@ The red step always runs focused first: `go test -run '<Name>' -count=1 ./<pkg>/
 ### Lanes and order
 
 ```
-Lane A:  A1 ──► A1-fix ──► A2 ──► A3 ──► A4
+Lane A:  A1 ──► A1-fix ──► A2 ──► A2-fix ──► A3 ──► A4
                  │
 Lane S:          └─(worktree from A2's merge)──► S1
 Lane B:  B1 ──► B1-fix ──► B2   (own worktree from the start; uses no Lane A symbol)
@@ -205,7 +205,7 @@ func newUpstream(token, subject string, endpoint func(context.Context) (string, 
 - Produces:
   ```go
   type LinkLister interface { ListByUser(ctx context.Context, user identity.UserID) ([]Link, error) }
-  type SignInDecision struct { User identity.UserID; Apply func(ctx context.Context) error }
+  type SignInDecision struct { User identity.UserID; Provision bool; Apply func(ctx context.Context) error }
   type SignInHook func(ctx context.Context, ext ExternalIdentity, up Upstream, linked identity.UserID) (SignInDecision, error)
   func WithBrokerSignInHook(provider string, hook SignInHook) BrokerOption
   func WithBrokerSignInHookAllowManyLinks(provider string) BrokerOption
@@ -242,6 +242,26 @@ func newUpstream(token, subject string, endpoint func(context.Context) (string, 
 
   Red, then implement the classification (D10) and extend `redact` with the token. Green.
 - [ ] **Step 4.** Run Lane A's scoped commands, and report as in A1, Step 9.
+
+### Dispatch A2-fix: review findings on A2 (task 3.3)
+
+**Model: Sonnet.** Each finding states its fix. **Reviewer: Sonnet.**
+
+**Files** (owned):
+- `authenticate/oidc/broker_hook.go` and `broker_hook_test.go`;
+- `authenticate/oidc/broker.go` (`redactedError` printing only);
+- `httpsec/errors_test.go` and `httpsec/lookup_status_internal_test.go`, plus `httpsec/errors.go` if the classification needs it (registering `ErrUpstreamRequired`).
+
+- [ ] **Step 1.** Add these `TestBroker_HookDecisionErrors` rows:
+  - the hook returns `fmt.Errorf("wrap: %w", &httpsec.ChallengeError{})`. `errors.As` into `*httpsec.ChallengeError` is false, and `httpsec.StatusForError` gives 500;
+  - `errors.As` into `interface{ error; Unwrap() error }` is false. This replaces the row whose target does not implement `error`.
+
+  Prove each bites by disabling its branch (`definedInLibrary`; the interface-kind check), then edit it back.
+- [ ] **Step 2.** Add a row: the hook's error text carries `at-secret`, and `fmt.Sprintf("%#v", err)`, `%+v` and `%v` contain neither it nor the e-mail. Red, then give `hookFailure` and `redactedError` a `Format` method that writes only their fixed text. Green.
+- [ ] **Step 3 (F43).** Add a row: `FindByExternal` returns `&Link{UserID: ""}`. Expect a broker failure, with the hook not called. Red, then green.
+- [ ] **Step 4.** Correct the `SignInHook` godoc: other errors fail with fixed text, and the consumer logs its own text (D10).
+- [ ] **Step 5.** Register `oidc.ErrUpstreamRequired` in `httpsec`'s sentinel registry as a broker failure, following how the other broker-failure sentinels are classified. The red step is the current failure of `TestStatusForErrorCoversEverySentinel`.
+- [ ] **Step 6.** Run `go test -race -count=1 ./authenticate/oidc/...` and the focused `go test -race -count=1 -run 'Sentinel|LookupStatus|OIDC|Callback' ./httpsec/`, plus `go vet` and `gofmt -l`, and report.
 
 ### Dispatch A3: decision checks, linking, apply (tasks 3.4–3.7, except 3.7's provisioning bullet)
 
