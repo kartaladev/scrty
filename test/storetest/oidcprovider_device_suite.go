@@ -291,6 +291,51 @@ func deviceCases() []suiteCase[oidcprovider.DeviceAuthorizationStore] {
 			},
 		},
 		{
+			name: "a record with no client is refused, and nothing is stored",
+			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
+				r := deviceRecord(1)
+				r.ClientID = ""
+				err := s.Create(ctx, r, deviceLive)
+				require.Error(t, err)
+				assert.NotErrorIs(t, err, oidcprovider.ErrNotFound)
+				assert.NotErrorIs(t, err, oidcprovider.ErrUserCodeTaken)
+
+				requireDeviceAbsent(ctx, t, s, 1)
+				_, err = s.LoadByUserCode(ctx, opDigest(101), deviceLive)
+				require.ErrorIs(t, err, oidcprovider.ErrNotFound, "the user code is not held")
+			},
+		},
+		{
+			name: "a record in a state this version does not know is refused, and nothing is stored",
+			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
+				r := deviceRecord(1)
+				r.State = oidcprovider.DeviceSpent + 1
+				err := s.Create(ctx, r, deviceLive)
+				require.Error(t, err)
+				assert.NotErrorIs(t, err, oidcprovider.ErrNotFound)
+				assert.NotErrorIs(t, err, oidcprovider.ErrUserCodeTaken)
+
+				requireDeviceAbsent(ctx, t, s, 1)
+				_, err = s.LoadByUserCode(ctx, opDigest(101), deviceLive)
+				require.ErrorIs(t, err, oidcprovider.ErrNotFound, "the user code is not held")
+			},
+		},
+		{
+			name: "an approved record whose approval names no grant family is refused, and nothing is stored",
+			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
+				r := deviceIn(1, oidcprovider.DeviceApproved)
+				r.Approval.GrantFamily = id.Nil
+				err := s.Create(ctx, r, deviceLive)
+				require.Error(t, err)
+				assert.NotErrorIs(t, err, oidcprovider.ErrNotFound)
+				assert.NotErrorIs(t, err, oidcprovider.ErrUserCodeTaken)
+
+				requireDeviceAbsent(ctx, t, s, 1)
+				_, err = s.LoadByUserCode(ctx, opDigest(101), deviceLive)
+				require.ErrorIs(t, err, oidcprovider.ErrNotFound, "the user code is not held")
+			},
+		},
+		{
 			name: "a record missing its identifier or a digest is refused, and nothing is stored",
 			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
 				require.Error(t, s.Create(ctx, nil, deviceLive), "a nil record")

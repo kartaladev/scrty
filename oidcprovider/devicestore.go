@@ -137,7 +137,10 @@ type DeviceAuthorizationStore interface {
 	// and has not expired at now makes it answer ErrUserCodeTaken. A record whose ID or
 	// DeviceCodeDigest is already held is refused with an error, as is a nil record, one
 	// with a zero ID or an empty digest, and one whose PollCount is negative or past
-	// math.MaxInt32, and one whose Interval is negative, and every refusal leaves what is stored unchanged.
+	// math.MaxInt32, one whose Interval is negative, one with no ClientID, one whose State
+	// is beyond DeviceSpent, and one whose Approval names a zero GrantFamily, and every
+	// refusal leaves what is stored unchanged, answers an error that is neither ErrNotFound
+	// nor ErrUserCodeTaken, and holds no user code.
 	// A released record keeps everything else, its device-code digest included, so a
 	// replay of it is still detected.
 	Create(ctx context.Context, record *DeviceAuthorization, now time.Time) error

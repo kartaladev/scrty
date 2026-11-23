@@ -105,6 +105,7 @@ var (
 	errDeviceState      = errors.New("the device authorization's state is not one DeviceState names")
 	errDevicePollCount  = errors.New("the device authorization's poll count is negative or too large to store")
 	errDeviceInterval   = errors.New("the device authorization's interval is negative")
+	errDeviceNoClient   = errors.New("a device authorization must name the client that asked")
 	errDeviceNoFamily   = errors.New("a device approval must name its grant family")
 
 	// The refusals of a stored row no write could have made, which a read reports as a failure.
@@ -130,6 +131,9 @@ func CheckDevice(r *oidcprovider.DeviceAuthorization) error {
 // are stored at the microsecond, and a zero LastPolledAt, an empty ClaimFlowDigest and a
 // nil Approval as NULL.
 func DeviceArgs(r *oidcprovider.DeviceAuthorization) ([]any, error) {
+	if r.ClientID == "" {
+		return nil, errDeviceNoClient
+	}
 	if err := checkFields(opField{"client identifier", r.ClientID}); err != nil {
 		return nil, err
 	}

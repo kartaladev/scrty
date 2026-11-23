@@ -159,8 +159,10 @@ func WithDeviceLifetime(lifetime time.Duration) DeviceOption {
 }
 
 // WithDevicePollInterval replaces how long a device must wait between polls of the token
-// endpoint, which is answered as interval in whole seconds. The default is
-// DefaultDevicePollInterval, 5 seconds.
+// endpoint, which is answered as interval in whole seconds, rounded up: 1.5 seconds is
+// answered as 2, so a device that waits what it is told is never paced faster than the
+// interval set (polls are judged against the interval as set, not as answered). The
+// default is DefaultDevicePollInterval, 5 seconds.
 //
 // New fails with an error matching ErrConfig, naming this option, for an interval under a
 // second or over a minute, zero included, and for one that is not strictly below the

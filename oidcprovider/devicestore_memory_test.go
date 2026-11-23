@@ -27,6 +27,7 @@ func TestMemoryDeviceAuthorizationStore(t *testing.T) {
 			ID:               id.MustParse(fmt.Sprintf("01926a4e-0000-7000-8000-%012x", n)),
 			DeviceCodeDigest: bytes.Repeat([]byte{n}, 32),
 			UserCodeDigest:   bytes.Repeat([]byte{n + 100}, 32),
+			ClientID:         "tv",
 			ExpiresAt:        expires,
 			State:            state,
 		}

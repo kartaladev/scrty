@@ -69,6 +69,9 @@ type deviceTokenFixture struct {
 	barrier *sync.WaitGroup
 	// loaded, when set, runs after each LoadByDeviceCode the memory store answered.
 	loaded func()
+	// loadedAs, when set, changes each record LoadByDeviceCode answers, as a store breaking
+	// its contract would: the default store refuses to hold such a record.
+	loadedAs func(*oidcprovider.DeviceAuthorization)
 
 	// grantCreateFails, grantLoadFails and grantRevokeFails fail those grant store calls as a
 	// store failing.
@@ -104,7 +107,7 @@ func deviceTokenClients() []oidcprovider.Client {
 	}
 }
 
-func newDeviceTokenFixture(t *testing.T) *deviceTokenFixture {
+func newDeviceTokenFixture(t *testing.T, device ...oidcprovider.DeviceOption) *deviceTokenFixture {
 	t.Helper()
 
 	clk := clockwork.NewFakeClockAt(deviceNow)
@@ -139,9 +142,10 @@ func newDeviceTokenFixture(t *testing.T) *deviceTokenFixture {
 		oidcprovider.WithGrantStore(f.hookGrants(ctrl)),
 		oidcprovider.WithLogger(slog.New(slog.NewTextHandler(f.logs, nil))),
 		oidcprovider.WithDeviceAuthorization(issuer+"/activate",
-			oidcprovider.WithUserCodeKey(deviceKey),
-			oidcprovider.WithDeviceAuthorizationStore(f.hookDevices(ctrl)),
-		),
+			append([]oidcprovider.DeviceOption{
+				oidcprovider.WithUserCodeKey(deviceKey),
+				oidcprovider.WithDeviceAuthorizationStore(f.hookDevices(ctrl)),
+			}, device...)...),
 	)
 	require.NoError(t, err)
 	f.p = p
@@ -180,6 +184,10 @@ func (f *deviceTokenFixture) hookDevices(ctrl *gomock.Controller) oidcprovider.D
 			if f.barrier != nil {
 				f.barrier.Done()
 				f.barrier.Wait()
+			}
+
+			if err == nil && f.loadedAs != nil {
+				f.loadedAs(record)
 			}
 
 			return record, err
@@ -671,7 +679,12 @@ func TestToken_DeviceStates(t *testing.T) {
 		},
 		{
 			name: "an approval naming the nil grant family is a dependency failure, unspent", client: tvClient,
-			seed: then(approved("openid"), func(r *oidcprovider.DeviceAuthorization) { r.Approval.GrantFamily = id.Nil }),
+			seed: approved("openid"),
+			arrange: func(_ *testing.T, f *deviceTokenFixture, code string) string {
+				f.loadedAs = func(r *oidcprovider.DeviceAuthorization) { r.Approval.GrantFamily = id.Nil }
+
+				return code
+			},
 			assert: func(t *testing.T, f *deviceTokenFixture, before *oidcprovider.DeviceAuthorization, code string, res *oidcprovider.TokenResponse, err error) {
 				dependency(t, f, before, code, res, err)
 				assert.Equal(t, oidcprovider.DeviceApproved, f.stored(t, before).State)

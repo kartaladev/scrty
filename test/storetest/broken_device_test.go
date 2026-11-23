@@ -268,6 +268,7 @@ func (r *releaseFirstDevices) Create(ctx context.Context, record *oidcprovider.D
 		decoy := &oidcprovider.DeviceAuthorization{
 			ID:               id.MustParse(fmt.Sprintf("01926a4e-0000-7000-9000-%012x", n)),
 			DeviceCodeDigest: fmt.Appendf(nil, "decoy-%d", n),
+			ClientID:         "decoy",
 			UserCodeDigest:   record.UserCodeDigest,
 			IssuedAt:         now,
 			ExpiresAt:        now,

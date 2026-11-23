@@ -402,8 +402,10 @@ func (p *Provider) claimedDevice(ctx context.Context, r *PendingRequest) (*Devic
 // the browser session, the session is looked at once the record is decided, as resumeConsent
 // looks once the code is written. A session gone by then has ended, or a look that failed
 // could not exclude that, and an approval cannot be withheld from the device as a code is from
-// the browser, so a revocation is recorded for its family, which the exchange will find, and
-// the stage is left unspent. Consent is remembered last, for an approval alone.
+// the browser, so a revocation is recorded for its family. The exchange finds it and refuses
+// the approval, which is thereby withdrawn. The user starts again from the device: their
+// resume is then an unknown handle, and the code is no longer enterable. Consent is
+// remembered last, for an approval alone.
 func (p *Provider) resumeDeviceConsent(
 	ctx context.Context, in ResumeInput, r *PendingRequest, rc *RegisteredClient, record *DeviceAuthorization,
 ) (ResumeResult, error) {

@@ -1201,7 +1201,7 @@ func TestEnterUserCode_SingleRefusal(t *testing.T) {
 	t.Parallel()
 
 	otherFlow := sha256.Sum256([]byte("another browser's flow secret"))
-	approval := &oidcprovider.DeviceApproval{User: "u-1", GrantedScopes: []string{"openid"}}
+	approval := &oidcprovider.DeviceApproval{User: "u-1", GrantedScopes: []string{"openid"}, GrantFamily: id.MustParse("01926a4e-0000-7000-8000-0000000000f1")}
 	cases := []struct {
 		name string
 		// change makes the seeded record what the row needs, and nil seeds it as issued.
@@ -1294,7 +1294,7 @@ func TestEnterUserCode_RefusesBeforeRegistry(t *testing.T) {
 	t.Parallel()
 
 	otherFlow := sha256.Sum256([]byte("another browser's flow secret"))
-	approval := &oidcprovider.DeviceApproval{User: "u-1", GrantedScopes: []string{"openid"}}
+	approval := &oidcprovider.DeviceApproval{User: "u-1", GrantedScopes: []string{"openid"}, GrantFamily: id.MustParse("01926a4e-0000-7000-8000-0000000000f1")}
 	cases := []struct {
 		name string
 		// change makes the seeded record what the row needs.

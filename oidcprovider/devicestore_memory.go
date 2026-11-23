@@ -27,6 +27,8 @@ var (
 	errDevicePollCount  = errors.New("oidcprovider: a device authorization's poll count must be between 0 and 2147483647")
 	errDeviceNoFamily   = errors.New("oidcprovider: a device approval needs the grant family it creates")
 	errDeviceInterval   = errors.New("oidcprovider: a device authorization's interval must not be negative")
+	errDeviceNoClient   = errors.New("oidcprovider: a device authorization needs the client that asked")
+	errDeviceState      = errors.New("oidcprovider: a device authorization's state is not one this version knows")
 )
 
 // cloneDeviceApproval returns an approval sharing nothing with a.
@@ -131,6 +133,15 @@ func (m *MemoryDeviceAuthorizationStore) Create(_ context.Context, record *Devic
 	}
 	if record.Interval < 0 {
 		return errDeviceInterval
+	}
+	if record.ClientID == "" {
+		return errDeviceNoClient
+	}
+	if record.State < DeviceIssued || record.State > DeviceSpent {
+		return errDeviceState
+	}
+	if record.Approval != nil && record.Approval.GrantFamily.IsZero() {
+		return errDeviceNoFamily
 	}
 
 	m.mu.Lock()

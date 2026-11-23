@@ -54,8 +54,10 @@ type DeviceAuthorizationResponse struct {
 	// VerificationURIComplete is the code-entry page with UserCode in its query, and is
 	// empty unless the client is registered for it (Client.DeviceCompleteURI).
 	VerificationURIComplete string
-	// ExpiresIn is how long both codes last, in whole seconds, and Interval how long the
-	// device must wait between polls, in whole seconds.
+	// ExpiresIn is how long both codes last, in whole seconds (rounded down), and Interval
+	// how long the device must wait between polls, in whole seconds. Interval is rounded up
+	// from WithDevicePollInterval, so a device that waits it is never paced faster than
+	// the interval that was set: 1.5 s is answered as 2.
 	ExpiresIn, Interval int
 }
 
@@ -216,6 +218,11 @@ func (p *Provider) deviceDependency(ctx context.Context, err error, text string)
 	return dependencyFailure(ctx, err, text)
 }
 
+// wholeSecondsUp is d in whole seconds, rounded up. Pacing keeps comparing with d itself.
+func wholeSecondsUp(d time.Duration) int {
+	return int((d + time.Second - 1) / time.Second)
+}
+
 // deviceResponse builds the answer, with the complete URI for a client registered for it.
 func (p *Provider) deviceResponse(rc *RegisteredClient, deviceCode, userCode string, record *DeviceAuthorization) *DeviceAuthorizationResponse {
 	entry := p.cfg.device.entryURL
@@ -224,7 +231,7 @@ func (p *Provider) deviceResponse(rc *RegisteredClient, deviceCode, userCode str
 		UserCode:        userCode,
 		VerificationURI: entry.String(),
 		ExpiresIn:       int(record.ExpiresAt.Sub(record.IssuedAt) / time.Second),
-		Interval:        int(record.Interval / time.Second),
+		Interval:        wholeSecondsUp(record.Interval),
 	}
 	if rc.DeviceCompleteURI {
 		complete := *entry
