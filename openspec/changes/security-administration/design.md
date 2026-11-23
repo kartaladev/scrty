@@ -565,6 +565,7 @@ the selected grant active when it is still held and valid, and the primary grant
 | F69 | A failed login by email | Accepted | The failure is recorded under the resolved account and under the email as typed, so the attempt store holds rows keyed by typed emails, as it already does for unknown ones; a resolver outage with scrty's provider is logged by the provider and by the chain |
 | F70 | A lock is reached by email | **Open — fix planned** (reproduced by `TestReviewProbe_OneLockReportPerAccountByEmail`) | Today the failure written under the typed email goes through the lockout's observed view, so a lock, hold or clear is also reported, and evented, under the email. Planned: write the challenge-only record without lockout reporting, so one account gives one report |
 | F71 | A consumer attempt store folds case and a user logs in with a case variant | **Open — fix planned** (unreproduced) | Today both the typed identifier and the resolved key are recorded, which such a store counts twice. Planned: skip the typed record when it equals the key ignoring case, and state on `policy.AttemptStore` that keys match exactly |
+| F72 | A consumer's user loader returns an account with an empty username to an email login | **Open — fix planned** (unreproduced; unreachable through scrty's stores, where the username is required) | Today the lockout key falls back to the identifier as typed, so case variants of one email would each get a failure budget. Planned: refuse to resolve an account with no username, or key it on its identifier |
 
 ## Risks / Trade-offs
 
