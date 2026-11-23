@@ -144,6 +144,12 @@ turns that off. A consumer outside the chain calls `authorize.WithRequestMemo` i
 - **Alternative:** a TTL cache in the authorizer. Rejected: it delays revocation by the TTL, which
   the brief rules out.
 
+The memo assumes a role's privileges depend only on the role name: a consumer loader that also reads
+the context, such as a tenant, must not share one memo across contexts that differ in it (F46).
+The memo is keyed by the authorizer and the exact role name, so two authorizers sharing one memo,
+such as two members of a `FirstOf` over different loaders, never see each other's results. In-flight
+loads count toward the bound.
+
 ### D6. `AllOf` and a guard for any requirement
 
 `authorize.AllOf(requirements...)` evaluates in order and returns the first failure unchanged,
@@ -164,6 +170,14 @@ inspector.
   caller with no role is an empty list, not a failure of the response.
 - An authorizer that does not implement the inspector gives `authorize.ErrInspectionUnsupported`.
   Guessing by calling `Authorize` N times would hide the memo and the scope.
+- Through `FirstOf`, members are asked in order: an inspector answers; one that answers
+  `ErrUnsupportedAttributes` declines and the next is asked; the ownership authorizer is passed over;
+  any other member that is not an inspector stops the walk with `ErrInspectionUnsupported`, because it
+  might judge privileges itself and the bulk answer would then disagree with `Authorize`. A consumer
+  authorizer joins by implementing the inspector, even only to decline.
+- An inspector's answer has one holding per name asked, the names exactly as asked and in order,
+  held only with `all` or `own`, and no scope when not held. `HeldPrivileges` refuses any other
+  answer with `ErrConfig` and returns the caller its own copy (F47).
 
 ### D8. One sentinel per denial reason, each still matching `ErrAccessDenied`
 
@@ -266,6 +280,16 @@ filters `deleted_at IS NULL`. The username stays held by the unchanged unique co
   material removed with the user.
 - **Override:** none. Reuse of a deleted username was considered and refused by the user.
 
+**Store rules fixed while writing the administration conformance suite (decided 2026-11-23).**
+- A forced role delete increases the version of every user whose assignment it removes (D11). A
+  role assigned only to deleted users may be deleted without force; its rows go with it.
+- Importing the identifier of a soft-deleted user is refused with `AlreadyExistsError` naming the
+  field `id`: a deleted user is never restored (D13).
+- Concurrent imports of identical payloads give one `ImportCreated` and `ImportUnchanged` for the
+  rest.
+- A store may accept an `AfterID` or `Organization.ID` it can hold, and then honours it; one it
+  cannot hold is `ErrInvalidInput`.
+
 ### D14. Import matches by identifier only and writes nothing when nothing changed
 
 `admin.Importer.Import(ctx, ImportedUser) (ImportOutcome, error)`. In one transaction it locks the
@@ -304,6 +328,18 @@ uses `ILIKE` with `%`, `_` and `\` escaped, so the search text is literal.
 - **Accepted:** a search by substring scans the users table. That is acceptable for an administration
   screen, and the index on `lower(username)` serves the order.
 
+### D16b. Password reuse and list folding (decided during implementation)
+
+**The current hash is checked too (decided 2026-11-23, during implementation).** The reuse guard
+compares a new password with the user's current hash as well as their history, as the login-side
+password change does. `UserStore` therefore has `CurrentPasswordHash(ctx, id)`, which returns the
+stored hash or none. The service hands it to the policy only; it never reaches a `User` record, an
+event or the audit port.
+
+**List order is folded in the store only.** The cursor carries the last username as stored and its
+identifier; the store compares `(lower(username), id)` with `(lower($after), $id)` in SQL, so the
+order and the cursor fold case the same way for every script.
+
 ### D17. Assignment dates are enforced when the chain builds the principal
 
 `identity.PrincipalFromDetailsAt(details, at time.Time)` keeps only grants valid at `at`: start not after it,
@@ -333,6 +369,22 @@ The pre-authentication phase then sees the resolved account's username, or the i
 when nothing resolved, and the provider authenticates the details resolved in step 1 or 2 without
 loading again.
 
+- **Only identifiers with `@` reach the email lookup (decided 2026-11-23, during
+  implementation).** Every stored email has one, so an identifier without it is never an email: it
+  costs one lookup, as today. An identifier with `@` that names a user by username also gets the
+  email lookup of step 3, the only way the conflict can be seen.
+- **The resolved details travel only from the provider that made them.** A resolution carrier is
+  honoured only by the provider that produced it; a hand-built or foreign carrier is ignored and
+  the provider loads again. An honoured carrier presented with credentials for another identifier
+  is refused, because ignoring it would let lockout judge one account while another is
+  authenticated.
+- **Resolution is reachable through composition (decided 2026-11-23, during implementation).**
+  `authenticate.IdentifierResolver` is the exported port for the resolution step. `FirstOf`
+  forwards it to its single resolving member; more than one is `ErrConfig`. The chain refuses at
+  construction an authenticator with email login on that exposes no resolver, since lockout would
+  otherwise key on the identifier as typed (F20).
+- **The email loader is checked, not trusted:** a user it returns unverified, or whose email does
+  not match the input ignoring case, counts as not found.
 - **Default:** off. Username-only login is unchanged.
 - **Why username first:** existing logins keep their exact path and cost. The email lookup is paid
   only by identifiers that are not usernames.
@@ -404,7 +456,7 @@ the selected grant active when it is still held and valid, and the primary grant
 | F25 | Write with no actor | Handled, tested | `ErrNoActor`, nothing written |
 | F26 | Audit sink fails or panics | Handled, tested | Change stays committed; failure logged without values |
 | F27 | Crash between commit and event or audit delivery | Accepted (D19) | Record lost; consumer may add an outbox |
-| F28 | Forced role delete leaves a user without a primary grant | Handled, tested | Next remaining grant becomes primary; none left means no role |
+| F28 | Forced role delete, or removing a primary assignment, leaves a user without a primary grant | Handled, tested | The remaining grant with the lowest position becomes primary; none left means no role. Each affected user's version increases |
 | F29 | Error text leaks a username, email or hash | Handled, tested | Text carries none; reason is a sentinel |
 | F30 | Grant service built without a catalogue, or a contradictory catalogue | Handled, tested | Configuration error at construction |
 | F31 | Federated first login whose username is a local email | Handled, tested | Provision refused; login fails as a provisioning refusal |
@@ -414,6 +466,17 @@ the selected grant active when it is still held and valid, and the primary grant
 | F35 | A consumer authorizer allows a scoped check without reporting the scope | Handled, tested | `CheckAnyScope` and `HasPrivilegeFor` fail with `ErrConfig`; no scope is guessed |
 | F36 | A nested check overwrites the scope an outer check reported | Handled by construction | The scope travels with the check's own attributes, not the context |
 | F37 | A member of `AnyOf` fails with an outage while no member allows | Accepted (spec authorization, `AnyOf` otherwise denies) | Denied with `ErrNotGranted`; the outage is not surfaced. Use `AllOf` or a single requirement where an outage must stay an outage |
+| F38 | `Provision` or an identifier write runs inside a consumer's long transaction | Accepted (godoc) | The identifier locks are held until that transaction ends; a savepoint rollback does not release them. Other writes of the same identifiers wait |
+| F39 | `Provision` runs inside a consumer's REPEATABLE READ or SERIALIZABLE transaction | Accepted (godoc) | The username-is-an-email check reads the caller's snapshot and can miss an email committed after it; the default READ COMMITTED path sees it |
+| F40 | The plaintext password lingers in memory | Accepted | The policy and encoder take a string, so one immutable copy lives until garbage collection; the caller's bytes are neither kept nor changed |
+| F41 | Identifiers differ only by case outside ASCII, or by Unicode normalisation | Accepted (store godoc) | Case is folded by the database's `lower()`; on a C or POSIX ctype it folds ASCII only, and composed and decomposed forms count as different identifiers. The lock, the check and the unique index fold alike, so no race opens; a consumer wanting stricter matching normalises identifiers before calling scrty |
+| F42 | The role loader panics under the memo | Handled, tested | The entry is removed, waiters wake with an error and the panic continues in the loading check; a later check loads again |
+| F43 | The check that is loading is cancelled while others wait | Handled, tested | A waiter whose own context is live loads again; one whose context ended returns its context's error |
+| F44 | A username containing `@` logs in with email login on | Accepted | One extra lookup for the conflict check; usernames without `@` cost the same as before |
+| F45 | A caller mutates the role or organization data of a resolved identifier | Accepted (godoc: read-only) | The data is shared with the loaded record; the password hash is removed from the copy |
+| F46 | A consumer role loader answers differently by something in the context other than the role name | Accepted (godoc of `WithRequestMemo`) | Within one memo, the first answer for a role is reused; such a loader installs a memo per tenant or none |
+| F47 | A consumer privilege inspector returns an answer that breaks its contract | Handled, tested | `HeldPrivileges` refuses it with `ErrConfig` and no holdings |
+| F48 | A resolution is kept and presented after its attempt | Accepted (godoc: one attempt) | It authenticates against the details loaded when it was made; only the caller's own code can hold one |
 
 ## Risks / Trade-offs
 

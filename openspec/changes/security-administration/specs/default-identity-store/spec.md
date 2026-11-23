@@ -76,7 +76,7 @@ The store SHALL implement the user, import, role, grant and assignment administr
 - **THEN** every case passes on the oldest and newest supported PostgreSQL versions
 
 ### Requirement: The administration conformance suite tests any implementation
-The test module SHALL publish an administration conformance suite a consumer can run against their own implementation of the administration ports, covering versions, serialisation, soft deletion, email and username uniqueness, import idempotence and the catalogue check.
+The test module SHALL publish an administration conformance suite a consumer can run against their own implementation of the administration ports, covering versions, serialisation, soft deletion, email and username uniqueness, import idempotence, and the primary-grant hand-over.
 
 #### Scenario: Consumer implementation
 - **WHEN** a consumer runs the suite against an implementation that ignores the version on update

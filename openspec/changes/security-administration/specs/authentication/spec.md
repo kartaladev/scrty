@@ -32,7 +32,7 @@ With login by email on, when the presented identifier is found as one user's use
 - **THEN** the uniform failure is returned and an identifier-conflict event is emitted
 
 ### Requirement: Email login reveals nothing an unknown username would not
-With login by email on, an unknown identifier, an unverified email and a load failure SHALL produce the same outcomes and spend the same password work as the username-only provider does for an unknown username and a load failure. The email lookup SHALL be made only when the username lookup reports not found.
+With login by email on, an unknown identifier, an unverified email and a load failure SHALL produce the same outcomes and spend the same password work as the username-only provider does for an unknown username and a load failure.
 
 #### Scenario: Unknown email
 - **WHEN** login by email is on and `nobody@example.com` is presented
@@ -41,3 +41,14 @@ With login by email on, an unknown identifier, an unverified email and a load fa
 #### Scenario: Email store unavailable
 - **WHEN** the username lookup reports not found and the email lookup fails with a connection error
 - **THEN** the unavailable error is returned, as for a username lookup outage
+
+### Requirement: Only an identifier that can be an email is looked up as one
+With login by email on, an identifier without `@` SHALL never be looked up as an email, so a plain username keeps the username-only path and cost. The email lookup SHALL be made when the username lookup reports not found and, for an identifier containing `@`, also after a username hit, to detect an identifier that is one user's username and another's verified email.
+
+#### Scenario: Plain username
+- **WHEN** login by email is on and `alice` is presented
+- **THEN** only the username lookup is made
+
+#### Scenario: Username containing `@`
+- **WHEN** login by email is on and `carol@example.com` names a user by username
+- **THEN** the email lookup is also made, to detect a conflict
