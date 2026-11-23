@@ -464,7 +464,7 @@ action and target only.
 ### D20. Switching the active role (decided by the user 2026-11-23: build it as a convenience)
 
 Sessions gain `SelectedRole string`, stored in a nullable `scrty_sessions.selected_role`. The chain
-gains `httpsec.WithActiveRoleSwitching()` and `Chain.SwitchActiveRole(ctx, role)`. That call reloads
+gains `httpsec.WithSwitchableRoles()` (named by the user 2026-11-23) and `Chain.SwitchActiveRole(ctx, role)`. That call reloads
 the user, checks they hold a grant of that name valid now, writes only the selected-role field of the
 current session, and emits `scrty_active_role_switched`. On every request, D17's mapping then makes
 the selected grant active when it is still held and valid, and the primary grant otherwise.
@@ -554,7 +554,7 @@ the selected grant active when it is still held and valid, and the primary grant
 | F58 | An attacker alternates a user's username and email at the login | Handled, tested | Lockout keys on the resolved account, so both count against one budget. A failure is also recorded under the identifier as typed when it differs, so the automation challenge treats a registered email exactly as an unknown one and reveals nothing |
 | F59 | The login itself builds its principal | Accepted | The password provider and magic links have no clock option and read the wall clock; every later request is built with the chain's clock. They differ only under a fake or skewed clock |
 | F60 | A role is assigned to a user who already holds it | Accepted | A second grant is added; two grants of one role may carry different date windows, and only grants valid now apply |
-| F61 | A consumer's identifier resolver fails | Handled, tested | The login is refused with the sanitized failure, an outage staying an outage, after the same decoy work; it is logged. Lockout never judges one key while another account is authenticated |
+| F61 | A consumer's identifier resolver fails | Handled, tested | The login is refused with the sanitized failure, an outage staying an outage, after the same decoy work; it is logged. Lockout never judges one key while another account is authenticated. A consumer authenticator that offers no decoy spends no password work on that refusal; the chain warns about such an authenticator at construction |
 | F62 | Lock disclosure is turned on with email login | Accepted (godoc of `WithLockDisclosure`) | Locking an account through its username, then presenting a candidate email, shows whether the email belongs to it; disclosure is the consumer's opt-in |
 | F63 | A role selection commits while a rotation of the same session is in flight | Handled, tested (`RotationTakesSelectionMadeDuringStep`, `SupersedeTakesSelectedRoleFromLockedRow`) | The successor takes the selection from the locked old row, so the switch is kept, up or down. A consumer store that skips this read-back fails the session conformance suite; if run anyway, the selection is lost and the primary role applies |
 | F64 | The identity ports provision or update a grant while a forced role delete or a super-role flag change runs | Accepted | Those ports write grants without the role's lock, as before this change, so such a grant can survive the delete, or carry the old flag, until the next administrative write to that role or user; the administration ports are serialised against it |
@@ -562,6 +562,9 @@ the selected grant active when it is still held and valid, and the primary grant
 | F66 | `SwitchActiveRole` is called on a session a consumer's own interceptor published | Handled, tested | Refused with an error matching `ErrConfig`: only a session this chain resolved can be switched, through the loader and manager that resolved it |
 | F67 | A switch is made during a request | Accepted (godoc) | That request keeps the role it was authenticated with; the switch applies from the next request. A role name over 256 bytes, or one no store could hold, is refused as not held |
 | F68 | A session is renewed through the renewal endpoint after a switch | Accepted | That one renewal response carries the primary role; the next request applies the selection again |
+| F69 | A failed login by email | Accepted | The failure is recorded under the resolved account and under the email as typed, so the attempt store holds rows keyed by typed emails, as it already does for unknown ones; a resolver outage with scrty's provider is logged by the provider and by the chain |
+| F70 | A lock is reached by email | **Open — fix planned** (reproduced by `TestReviewProbe_OneLockReportPerAccountByEmail`) | Today the failure written under the typed email goes through the lockout's observed view, so a lock, hold or clear is also reported, and evented, under the email. Planned: write the challenge-only record without lockout reporting, so one account gives one report |
+| F71 | A consumer attempt store folds case and a user logs in with a case variant | **Open — fix planned** (unreproduced) | Today both the typed identifier and the resolved key are recorded, which such a store counts twice. Planned: skip the typed record when it equals the key ignoring case, and state on `policy.AttemptStore` that keys match exactly |
 
 ## Risks / Trade-offs
 

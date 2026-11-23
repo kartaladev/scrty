@@ -170,10 +170,31 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 		return nil, err
 	}
 
+	// Resolved after the source limit and the automation challenge, so a
+	// request either refuses reads nothing about the account, and before the
+	// pre-authentication phase, so the lockout judges, counts and clears the
+	// account the identifier names, whichever of its identifiers was typed.
+	// The authenticator is still asked about the identifier as typed, with the
+	// resolution on the context so it does not load the user again. See the
+	// login form's resolveIdentifier.
+	//
+	// A resolution that fails is refused before the pre-authentication phase,
+	// without asking the authenticator, as at the login form: the lock of an
+	// account nobody could name cannot be judged. It is charged to the source
+	// as an outage is, and answered 401 like one, so Intercept challenges it.
+	ctx, key, err := resolveIdentifier(ctx, b.authn, username)
+	if err != nil {
+		recordSourceFailure(ctx, b.guard, src)
+
+		return nil, refuseUnresolved(ctx, unresolvedDeps{
+			authn: b.authn, log: b.log, sampler: b.sampler, flow: b.flow, now: now,
+		}, identity.NewUsernamePassword(username, password), err)
+	}
+
 	// Before the credential is checked, for the same reason as at the login
 	// form: a locked account must not answer differently for a right guess.
 	pre := evaluatePhase(ctx, b.engine, policy.PreAuthentication, &policy.Input{
-		Username: username,
+		Username: key,
 		Now:      now,
 	})
 	if err := refusePreAuthentication(pre, b.enforced); err != nil {
@@ -230,13 +251,18 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 			bounded, cancel := detach.Bounded(ctx, detach.WriteTimeout)
 			defer cancel()
 
+			// Under the account's key, which lockout judges, and also under
+			// the identifier as typed when it differs, which the automation
+			// challenge reads: see the login form's verifyPassword.
 			recordCtx := eventsink.WithFactor(bounded, factor.Basic)
-			recErr := b.attempts.RecordFailure(recordCtx, username, now)
-			// Only logged, but sanitized so an error that cannot be walked is
-			// recorded as an abort too.
-			if recErr = porterr.SanitizeTo(ctx, b.log, recErr, porterr.ErrUnwalkable); recErr != nil {
-				b.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
-					diag.Failure("attempt-store", recErr)...)
+			for _, k := range attemptKeys(key, username) {
+				recErr := b.attempts.RecordFailure(recordCtx, k, now)
+				// Only logged, but sanitized so an error that cannot be walked
+				// is recorded as an abort too.
+				if recErr = porterr.SanitizeTo(ctx, b.log, recErr, porterr.ErrUnwalkable); recErr != nil {
+					b.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
+						diag.Failure("attempt-store", recErr)...)
+				}
 			}
 		}
 
@@ -260,19 +286,23 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 	// A proven password supersedes the guesses before it, as at the login
 	// form: a Basic client's typos must not add up to a lock its owner keeps
 	// hitting with the right password.
-	err = b.attempts.Reset(ctx, username)
-	// Only logged, but sanitized so an error that cannot be walked is recorded
-	// as an abort too.
-	if err = porterr.SanitizeTo(ctx, b.log, err, porterr.ErrUnwalkable); err != nil {
-		b.log.LogAttrs(ctx, slog.LevelError, msgAttemptsNotReset,
-			diag.Failure("attempt-store", err)...)
+	// The identifier as typed is cleared too, when it carries failures of its
+	// own.
+	for _, k := range attemptKeys(key, username) {
+		resetErr := b.attempts.Reset(ctx, k)
+		// Only logged, but sanitized so an error that cannot be walked is
+		// recorded as an abort too.
+		if resetErr = porterr.SanitizeTo(ctx, b.log, resetErr, porterr.ErrUnwalkable); resetErr != nil {
+			b.log.LogAttrs(ctx, slog.LevelError, msgAttemptsNotReset,
+				diag.Failure("attempt-store", resetErr)...)
+		}
 	}
 
 	// Stateless: there is no later request in which this caller could answer a
 	// challenge, so the phase decides outright and its challenge carries
 	// nothing to come back to.
 	d := evaluatePhase(ctx, b.engine, policy.StatelessAuthentication, postAuthenticationInput(
-		auth.Principal, factor.Basic, username, auth.PasswordChangedAt, now))
+		auth.Principal, factor.Basic, key, auth.PasswordChangedAt, now))
 
 	switch d.Outcome {
 	case policy.Deny:

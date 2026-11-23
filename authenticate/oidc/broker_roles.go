@@ -109,8 +109,12 @@ func (b *Broker) allowRoles(provider string, names []string) []string {
 // from the claims, each carrying only its name and whether it is primary:
 // a stored grant's identifier, super-role flag and validity window are not
 // inherited. Nothing is written to the user store.
+//
+// Without role sync the stored grants are dated by the broker's clock: only
+// those in force are kept, and an expired or future primary grant leaves the
+// principal with no active role.
 func (b *Broker) principalFor(ctx context.Context, ext ExternalIdentity, det *identity.Details) *identity.Principal {
-	p := identity.PrincipalFromDetails(det)
+	p := identity.PrincipalFromDetailsAt(det, b.clock.Now())
 	if !b.roleSync[ext.Provider] {
 		return p
 	}

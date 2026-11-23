@@ -12,7 +12,6 @@ import (
 	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/porterr"
@@ -161,6 +160,11 @@ type UsernamePasswordAuthenticator struct {
 	// default; set by WithPasswordUsernameInRefusalLogs.
 	logUsername bool
 
+	// emailLogin is set by WithEmailLogin; emails is the user loader's email
+	// port, and nil unless emailLogin is set.
+	emailLogin bool
+	emails     identity.EmailLoader
+
 	// refusals holds back repeated refusal records. Its reporter writes to the
 	// same logger, so nothing it suppresses is lost.
 	refusals *logsample.Sampler
@@ -183,6 +187,10 @@ type UsernamePasswordAuthenticator struct {
 // Defaults: scrty's default password encoder, and id.NewV7Generator for the
 // identifier each success carries. WithPasswordEncoder and
 // WithPasswordIDGenerator name and replace them.
+//
+// Login by email is off by default, so the presented identifier is loaded as a
+// username only. WithEmailLogin turns it on, and requires users to implement
+// identity.EmailLoader too; construction fails with ErrConfig when it does not.
 //
 // The reference hash every unknown username is verified against is produced
 // here, by the configured encoder, and construction fails when it cannot be. A
@@ -208,6 +216,14 @@ func NewUsernamePasswordAuthenticator(
 		if opt != nil {
 			opt(a)
 		}
+	}
+
+	if a.emailLogin {
+		emails, ok := users.(identity.EmailLoader)
+		if !ok {
+			return nil, fmt.Errorf("%w: login by email needs a user loader that also implements identity.EmailLoader", ErrConfig)
+		}
+		a.emails = emails
 	}
 
 	if a.encSet && nilcheck.IsNil(a.enc) {
@@ -301,6 +317,16 @@ func NewUsernamePasswordAuthenticator(
 // reference verification too. scrty's Argon2id, bcrypt and scrypt encoders
 // implement it.
 //
+// With WithEmailLogin, the identifier is resolved as that option describes, and
+// an identifier found as neither a username nor a verified email is refused as
+// an unknown username is. When ctx carries a ResolvedIdentifier this provider
+// returned for the same credentials (see WithResolved), it is authenticated
+// without loading the user again.
+//
+// The principal of a success is dated at the authentication's Time
+// (identity.PrincipalFromDetailsAt): only the grants in force then are kept,
+// and when the primary grant is not, the principal has no active role.
+//
 // Only *identity.UsernamePassword is handled; anything else is skipped. That is
 // the stated limit: a consumer whose transport carries a password in a type of
 // its own converts to identity.NewUsernamePassword, or writes an Authenticator
@@ -321,52 +347,46 @@ func (a *UsernamePasswordAuthenticator) Authenticate(ctx context.Context, creden
 	// dump reaches.
 	presented := string(creds.Password)
 
-	details, err := a.users.LoadByUsername(ctx, creds.Username)
-	// The loader is the consumer's, and so is its error. One whose chain
-	// cannot be walked becomes a fault matching ErrUnavailable, so it takes
-	// the outage branch below and is never read as an unknown user or a
-	// hang-up; the abort is recorded once, on this provider's logger.
-	err = porterr.SanitizeTo(ctx, a.logger, err, ErrUnavailable)
-	if err != nil || details == nil {
+	r, carried := a.resolvedFrom(ctx)
+	if carried && !r.names(creds.Username) {
 		// Deliberately unused: the verification is the point, not its verdict.
 		_ = a.enc.Match(presented, a.reference)
 
-		if err == nil || errors.Is(err, identity.ErrUserNotFound) {
+		// Not routine: the caller resolved one identifier and presented
+		// another, so a lockout keyed on the first would not cover the second.
+		a.refuse(ctx, slog.LevelError, reasonResolvedMismatch, creds.Username,
+			slog.String("reason", reasonResolvedMismatch))
+
+		return nil, ErrAuthenticationFailed
+	}
+	if !carried {
+		r = a.resolve(ctx, creds.Username)
+	}
+
+	if r.outcome != resolvedUser {
+		// Every refusal before a stored hash is read costs one verification
+		// against the reference hash, so an unknown identifier, a conflict and
+		// an outage take as long as a wrong password. Deliberately unused.
+		_ = a.enc.Match(presented, a.reference)
+
+		switch r.outcome {
+		case resolvedUnavailable, resolvedEnded:
+			// Recorded where the lookup failed. Bare, or joined with the
+			// caller's own context error: nothing of the loader's text.
+			return nil, r.err
+		case resolvedConflict:
+			// Recorded and reported where the conflict was found.
+			return nil, ErrAuthenticationFailed
+		default:
 			// Routine: someone mistyped a username, or is guessing at them.
 			a.refuse(ctx, slog.LevelDebug, reasonUnknownUser, creds.Username,
 				slog.String("reason", reasonUnknownUser))
 
 			return nil, ErrAuthenticationFailed
 		}
-
-		// A load the caller's own cancellation or deadline ended judged
-		// nothing, and the store did not fail: the caller left. It is recorded
-		// at debug, under a key of its own so a burst of hang-ups cannot take
-		// the outage's place in the sampled window. It stays the uniform
-		// failure, which the endpoints charge to the source, so a client that
-		// hangs up mid-login cannot spend password work no throttle pays for;
-		// joined with the context's error, so they can tell no password was
-		// compared and record nothing for the username.
-		if hangup.ByCaller(ctx, err) {
-			a.refuse(ctx, slog.LevelDebug, reasonCallerEnded, creds.Username,
-				diag.Failure(reasonCallerEnded, err)...)
-
-			return nil, endedByCaller(ctx)
-		}
-
-		// Not routine: the store could not answer, so nobody can log in and an
-		// operator has something to fix. diag.Failure names the failure and
-		// the error's Go type, never its text: the store's error can quote
-		// another column of the row, or a value the library never saw, and a
-		// consumer who wants that detail logs it inside their own
-		// implementation of the user loader.
-		a.refuse(ctx, slog.LevelError, reasonUserLoadFailed, creds.Username,
-			diag.Failure(reasonUserLoadFailed, err)...)
-
-		// Bare: the loader's text stays out of the error as it stays out of
-		// the log.
-		return nil, ErrUnavailable
 	}
+
+	details := r.details
 
 	if reason, level, usable := a.usableHash(details.Password); !usable {
 		// Deliberately unused, and never consulted: the reference password is a
@@ -423,11 +443,16 @@ func (a *UsernamePasswordAuthenticator) Authenticate(ctx context.Context, creden
 
 	a.prepareUpgrade(ctx, details, presented)
 
+	// One instant names the authentication and dates its principal: only the
+	// grants in force at it are kept, and an expired or future primary grant
+	// leaves the principal with no active role rather than promoting another.
+	now := time.Now()
+
 	return &Authentication{
 		ID:                eventID,
 		Credentials:       creds,
-		Principal:         identity.PrincipalFromDetails(details),
-		Time:              time.Now(),
+		Principal:         identity.PrincipalFromDetailsAt(details, now),
+		Time:              now,
 		PasswordChangedAt: details.PasswordChangedAt,
 	}, nil
 }

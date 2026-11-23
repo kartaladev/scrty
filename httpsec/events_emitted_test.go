@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
@@ -66,10 +67,6 @@ var reportedElsewhere = map[string]string{
 	event.PrivilegePermissionsChanged: administrationEventsPinned,
 	event.AuthzChange:                 administrationEventsPinned,
 	event.AuthzAdmin:                  administrationEventsPinned,
-
-	// The chain reports a role switch, once switching is enabled; the row is written with
-	// that feature, which is not on the chain yet.
-	event.ActiveRoleSwitched: "the active-role switch's own tests, once the chain offers switching",
 }
 
 // administrationEventsPinned is where the administration services' events are pinned.
@@ -580,6 +577,44 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 				return emittedRun{events: rec.all(), clientIP: "192.0.2.1", secrets: []string{"wrong"}}
 			},
 			assert: emitted(event.ChallengeRefused, event.OutcomeFailure),
+		},
+		{
+			name: event.ActiveRoleSwitched,
+			run: func(t *testing.T) emittedRun {
+				w := newEventsWorld(t, httpsec.WithSwitchableRoles())
+				tok := w.signedIn(t)
+
+				var switched error
+				w.handler = func(ex *httpsec.Exchange) error {
+					// The world's user holds no grant, so clearing the selection is
+					// the switch she can make.
+					switched = w.chain.SwitchActiveRole(ex.Context(), "")
+
+					return nil
+				}
+
+				before := len(w.rec.all())
+				out := w.send(t, http.MethodGet, "/orders", tok, nil, nil)
+				require.NoError(t, out.err)
+				require.NoError(t, switched)
+
+				run := worldRun(w, e2eUser, factor.Password, tok, tok)
+				run.events = run.events[before:]
+
+				return run
+			},
+			assert: func(t *testing.T, run emittedRun) {
+				t.Helper()
+
+				emitted(event.ActiveRoleSwitched, event.OutcomeSuccess)(t, run)
+
+				for _, e := range run.events {
+					if e.Name == event.ActiveRoleSwitched {
+						assert.Equal(t, string(e2eUser), e.Actor, "the user switched her own role")
+						assert.Equal(t, []string{"active_role"}, e.Changed, "the field, never a value")
+					}
+				}
+			},
 		},
 		{
 			name: event.ExcessRateLimitExceeded,

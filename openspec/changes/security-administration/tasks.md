@@ -179,19 +179,19 @@ The whole change lands in one pull request, opened after group 14's final gate (
 
 ## 11. Login by email
 
-- [ ] 11.1 `authenticate.WithEmailLogin` and the identifier resolution step: construction refuses a
+- [x] 11.1 `authenticate.WithEmailLogin` and the identifier resolution step: construction refuses a
   loader without `EmailLoader`; username first, then verified email; the conflict refusal with decoy
   work and `scrty_identifier_conflict` (spec authentication, all four requirements; design D18, F6,
   F21). Red: the email-login scenario returns the uniform failure. Verify: `go test -race -count=1
   ./authenticate/...`.
-- [ ] 11.2 The chain's login and basic endpoints resolve before the pre-authentication phase and pass
+- [x] 11.2 The chain's login and basic endpoints resolve before the pre-authentication phase and pass
   the resolved details to the provider, so lockout keys on the account and the user is loaded once
   (spec security-policy, both requirements; design F20). Red: three failures by username and two by
   email do not lock. Verify: scoped `httpsec` run.
-- [ ] 11.3 Timing parity test: unknown email, unverified email and unknown username spend the same
+- [x] 11.3 Timing parity test: unknown email, unverified email and unknown username spend the same
   password work, counted through a counting encoder (spec "Email login reveals nothing…"). Verify:
   the focused test.
-- [ ] 11.4 Godoc and an `Example` for email login, naming the default (off). Verify:
+- [x] 11.4 Godoc and an `Example` for email login, naming the default (off). Verify:
   `go test -run Example -count=1 ./authenticate/`.
 
 ## 12. Switching the active role
@@ -199,11 +199,11 @@ The whole change lands in one pull request, opened after group 14's final gate (
 - [x] 12.1 `session.Session.SelectedRole`, a store method that writes only that field, kept by every
   rotation, in the memory store and the three durable stores (spec sessions, both requirements). Red:
   the session conformance suite's new cases fail. Verify: the session conformance suites.
-- [ ] 12.2 `httpsec.WithActiveRoleSwitching` and `Chain.SwitchActiveRole`, with `ErrRoleNotHeld` for a role
+- [x] 12.2 `httpsec.WithSwitchableRoles` and `Chain.SwitchActiveRole`, with `ErrRoleNotHeld` for a role
   not held and a not-enabled error when off; the `scrty_active_role_switched` event (spec "Switching
   the active role is opt-in"; design D20). Red: switching to `audit` leaves `sales` active. Verify:
   scoped `httpsec` run.
-- [ ] 12.3 The selected role is applied per request only while held and valid, and ignored when
+- [x] 12.3 The selected role is applied per request only while held and valid, and ignored when
   switching is off (spec "A selected role applies only while it is still held"; design F19). Red: a
   removed `audit` grant stays active. Verify: scoped `httpsec` run and the adapter integration suites.
 

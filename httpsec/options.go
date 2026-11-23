@@ -284,6 +284,9 @@ type config struct {
 	// noPrivilegeMemo is set by WithoutPrivilegeMemo.
 	noPrivilegeMemo bool
 
+	// roleSwitching is set by WithSwitchableRoles.
+	roleSwitching bool
+
 	// challenge is the automation-challenge gate EnableAutomationChallenge
 	// configured, and nil without it.
 	challenge *challengeGate
@@ -382,6 +385,58 @@ func (c *config) useSessions(m *session.Sessions) {
 func WithoutPrivilegeMemo() Option {
 	return func(c *config) error {
 		c.noPrivilegeMemo = true
+
+		return nil
+	}
+}
+
+// WithSwitchableRoles lets an authenticated caller switch the role they
+// act under to another role they hold, through Chain.SwitchActiveRole, which
+// records the choice on their session.
+//
+// With it, every request resolved by a session-bound authenticator
+// (EnableBearerToken, EnableSessionBearer) makes the session's selected role
+// its active role while the user still holds a grant of that name in force at
+// the chain's clock, and the primary grant otherwise, as if nothing were
+// selected. A selection never adds a role the user does not hold: a grant
+// removed, ended or not yet started since it was selected makes the primary
+// grant active again on the next request, never another grant.
+//
+// Every session manager the chain is wired with, whichever option brought it,
+// must record a selection (session.Sessions.SelectsRoles), or New refuses the
+// chain with a configuration error; so is a chain with no session manager at
+// all, which could record nothing. The check runs once every option has been
+// applied, so the option's position among the others does not matter. Giving
+// it twice is the same as giving it once.
+//
+// Default: off. Chain.SwitchActiveRole returns ErrRoleSwitchingDisabled, and a
+// selection a session recorded while switching was on is ignored: the primary
+// grant is active.
+func WithSwitchableRoles() Option {
+	const option = "WithSwitchableRoles"
+
+	return func(c *config) error {
+		if c.roleSwitching {
+			return nil
+		}
+
+		c.roleSwitching = true
+
+		c.checkAfterWiring(func() error {
+			if len(c.sessionManagers) == 0 {
+				return newConfigError("%s needs a session manager to record the selected role in: "+
+					"enable a session-bound authenticator such as EnableSessionBearer", option)
+			}
+
+			for _, m := range c.sessionManagers {
+				if !m.SelectsRoles() {
+					return newConfigError("%s needs every session manager the chain is wired with to "+
+						"record a selected role, and one's store does not offer session.RoleSelector", option)
+				}
+			}
+
+			return nil
+		})
 
 		return nil
 	}
@@ -799,6 +854,7 @@ func (c *config) build() (*Chain, error) {
 		now:               c.now,
 		dpop:              c.dpop,
 		certBinding:       c.certBinding,
+		roleSwitching:     c.roleSwitching,
 	}
 
 	// The built-ins are wired last, because each of them reads settings — the
@@ -1257,7 +1313,12 @@ func WithRefusalLogReporter(fn func(key string, suppressed int)) Option {
 //
 // What it gives up: the response tells anyone who can guess a username
 // whether that account exists and is locked, which the OWASP authentication
-// guidance lists among the responses a login must not give.
+// guidance lists among the responses a login must not give. With login by
+// email (authenticate.WithEmailLogin) it tells more: a lock is judged on the
+// account an identifier resolves to, so anyone who locks an account through
+// its username, by failing its password, can then present candidate emails
+// and learn from the disclosed lock which one belongs to that account.
+// Leaving locks undisclosed closes this along with the rest.
 //
 // It governs only the response to a lock, at form login, Basic and account
 // recovery's password proof, and nothing else. A lock refusal still counts

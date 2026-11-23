@@ -21,6 +21,8 @@ import (
 // a logsample.Flusher, and FlushRefusalLogs reaches every delegate that is one.
 type FirstOf struct {
 	delegates []Authenticator
+	// resolver is the one delegate that logs in by email, nil when none does.
+	resolver IdentifierResolver
 }
 
 // NewFirstOf returns a FirstOf that offers credentials to delegates in the
@@ -39,6 +41,22 @@ type FirstOf struct {
 // hands over. Skipping it would run fewer providers than the consumer wrote,
 // silently; keeping it would panic on the first request, where the mistake
 // looks like a runtime fault rather than a line of wiring.
+//
+// At most one delegate, counted through nested FirstOfs, may log in by email
+// (see ResolverOf); more is a configuration error, because a login endpoint
+// resolves an identifier through one resolver only. Any number of username-only
+// providers is allowed after it.
+//
+// One of scrty's own password providers (a UsernamePasswordAuthenticator)
+// without login by email, placed before the email-login member in the order
+// credentials are offered, nested FirstOfs included, is a configuration error
+// too. The login endpoint keys lockout on the account the identifier resolved
+// to, and that provider, deciding first, would authenticate the identifier as
+// typed against its own load: one account judged by lockout, another
+// authenticated. Place the email-login member first. A consumer's own
+// Authenticator in that position cannot be recognised as a password handler,
+// so it is allowed, and keeping it from authenticating an account other than
+// the resolved one is the consumer's responsibility.
 func NewFirstOf(delegates ...Authenticator) (*FirstOf, error) {
 	if len(delegates) == 0 {
 		return nil, fmt.Errorf("%w: a manager with no delegates authenticates nobody", ErrConfig)
@@ -49,9 +67,29 @@ func NewFirstOf(delegates ...Authenticator) (*FirstOf, error) {
 		}
 	}
 
+	// A login endpoint runs one resolution before its pre-authentication
+	// phase, so only one member may need it. A nested FirstOf reports its own
+	// member, so the count reaches every depth.
+	var resolver IdentifierResolver
+	for _, d := range delegates {
+		r, ok := ResolverOf(d)
+		if !ok {
+			continue
+		}
+		if resolver != nil {
+			return nil, fmt.Errorf("%w: more than one delegate logs in by email, and an identifier can be resolved by only one", ErrConfig)
+		}
+		resolver = r
+	}
+
+	if resolver != nil && passwordBeforeResolver(delegates) {
+		return nil, fmt.Errorf("%w: a username-only password provider is offered credentials before the member that logs in by email, "+
+			"so it would authenticate an account the lockout did not judge; place the email-login member first", ErrConfig)
+	}
+
 	// Cloned so a caller that keeps and rewrites the slice it passed cannot
 	// change which providers run, or in which order, after construction.
-	return &FirstOf{delegates: slices.Clone(delegates)}, nil
+	return &FirstOf{delegates: slices.Clone(delegates), resolver: resolver}, nil
 }
 
 // Authenticate offers credentials to each delegate in turn and returns the first answer
@@ -179,3 +217,68 @@ func (m *FirstOf) FlushRefusalLogs() error {
 }
 
 var _ logsample.Flusher = (*FirstOf)(nil)
+
+// EmailLogin reports whether a member, at any depth, logs in by email. See
+// IdentifierResolver.
+func (m *FirstOf) EmailLogin() bool { return m.resolver != nil }
+
+// ResolveIdentifier forwards to the one member that logs in by email, found at
+// construction however deeply it is nested. The resolution it returns is that
+// member's: handed to Authenticate through WithResolved, it is honoured by that
+// member alone, and every other member ignores it and loads for itself.
+//
+// With no such member there is nothing to resolve: it returns the identifier
+// as typed as the Key, no Details and a nil error, loading nothing. Every
+// member ignores that result.
+func (m *FirstOf) ResolveIdentifier(ctx context.Context, identifier string) (ResolvedIdentifier, error) {
+	if m.resolver == nil {
+		return ResolvedIdentifier{Key: identifier}, nil
+	}
+
+	return m.resolver.ResolveIdentifier(ctx, identifier)
+}
+
+var _ IdentifierResolver = (*FirstOf)(nil)
+
+// passwordBeforeResolver reports whether one of scrty's username-only password
+// providers is offered credentials before the member that logs in by email,
+// walking delegates in the order Authenticate does, through nested FirstOfs.
+func passwordBeforeResolver(delegates []Authenticator) bool {
+	found := false
+	walkMembers(delegates, func(d Authenticator) bool {
+		if _, ok := ResolverOf(d); ok {
+			return false
+		}
+		if p, ok := d.(*UsernamePasswordAuthenticator); ok && !p.EmailLogin() {
+			found = true
+
+			return false
+		}
+
+		return true
+	})
+
+	return found
+}
+
+// walkMembers calls visit on each member that is not a FirstOf, in the order
+// Authenticate offers credentials, descending into nested FirstOfs, until
+// visit returns false. It reports whether the walk ran to the end. A FirstOf
+// is immutable and built only from existing authenticators, so the nesting
+// has no cycle.
+func walkMembers(delegates []Authenticator, visit func(Authenticator) bool) bool {
+	for _, d := range delegates {
+		if m, ok := d.(*FirstOf); ok {
+			if !walkMembers(m.delegates, visit) {
+				return false
+			}
+
+			continue
+		}
+		if !visit(d) {
+			return false
+		}
+	}
+
+	return true
+}

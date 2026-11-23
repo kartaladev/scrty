@@ -65,6 +65,8 @@ func TestStatusForError(t *testing.T) {
 			want: 401,
 		},
 		{name: "authentication failed", err: authenticate.ErrAuthenticationFailed, want: 401},
+		{name: "a role switch to a role not held is a denial", err: httpsec.ErrRoleNotHeld, want: 403},
+		{name: "role switching not enabled is not a refusal", err: httpsec.ErrRoleSwitchingDisabled, want: 500},
 		{
 			name: "user store unavailable",
 			err:  fmt.Errorf("login: %w", authenticate.ErrUnavailable),
@@ -601,6 +603,8 @@ var sentinelRegistry = map[string]map[string]error{
 		"httpsec.ErrOIDCForeignConsent":              httpsec.ErrOIDCForeignConsent,
 		"httpsec.ErrOIDCInvalidEndSession":           httpsec.ErrOIDCInvalidEndSession,
 		"httpsec.ErrOIDCThrottled":                   httpsec.ErrOIDCThrottled,
+		"httpsec.ErrRoleSwitchingDisabled":           httpsec.ErrRoleSwitchingDisabled,
+		"httpsec.ErrRoleNotHeld":                     httpsec.ErrRoleNotHeld,
 	},
 	"github.com/kartaladev/scrty/session": {
 		"session.ErrConfig":             session.ErrConfig,
@@ -643,6 +647,7 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"httpsec.ErrSessionSignalsDisabled":       "returned to a consumer's own call on a chain with no stream, never to a client",
 		"httpsec.ErrInvalidSignal":                "returned to a consumer's own call refusing its signal, never to a client",
 		"httpsec.ErrSignalsBusy":                  "returned to a consumer's own call when its bus has fallen behind, never to a client",
+		"httpsec.ErrRoleSwitchingDisabled":        "returned to a consumer's own call on a chain built without switching, never to a client; a handler returning it is answered 500, as for any wiring fault",
 		"httpsec.ErrTooManyStreams":               "internal to the stream, whose answer over a cap is 200 with only a longer retry, because a browser gives up on any other",
 		"authorize.ErrUnsupportedAttributes":      "a misbuilt guard, deliberately 500 per design Decision 7",
 		"authorize.ErrInvalidAttributes":          "a misbuilt guard, deliberately 500 per design Decision 7",

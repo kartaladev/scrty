@@ -861,3 +861,139 @@ func TestResolve_GrantWindowIsReadAtChainClock(t *testing.T) {
 		})
 	}
 }
+
+// TestResolve_SelectedRole pins how a session's selected role is applied when
+// the chain builds a request's principal: it is the active role only while
+// switching is on and the user holds a grant of that name in force at the
+// chain's clock; otherwise the primary grant is active, as if nothing were
+// selected, and no other grant is ever promoted.
+func TestResolve_SelectedRole(t *testing.T) {
+	t.Parallel()
+
+	// withGrants makes the user loader return ada with roles from grants,
+	// built at the fixture's clock.
+	withGrants := func(grants func(now time.Time) []*identity.AssignedRole) func(t *testing.T, f *switchFixture) {
+		return func(t *testing.T, f *switchFixture) {
+			t.Helper()
+
+			f.user = func() *identity.Details {
+				d := adaWithGrants()
+				d.Roles = grants(f.clk.Now())
+
+				return d
+			}
+		}
+	}
+
+	type testCase struct {
+		name     string
+		setup    switchSetup
+		selected string
+		before   func(t *testing.T, f *switchFixture)
+		assert   func(t *testing.T, active string)
+	}
+
+	cases := []testCase{
+		{
+			name:     "SelectedRoleHeld: a held selection is active",
+			selected: "audit",
+			assert: func(t *testing.T, active string) {
+				assert.Equal(t, "audit", active)
+			},
+		},
+		{
+			name:     "SelectedRoleRevoked: a removed grant leaves the primary active",
+			selected: "audit",
+			before: withGrants(func(time.Time) []*identity.AssignedRole {
+				return []*identity.AssignedRole{{ID: "r-sales", Name: "sales", Primary: true}}
+			}),
+			assert: func(t *testing.T, active string) {
+				assert.Equal(t, "sales", active)
+			},
+		},
+		{
+			name:     "SelectedRoleExpired: a grant that ended leaves the primary active",
+			selected: "audit",
+			before: withGrants(func(now time.Time) []*identity.AssignedRole {
+				return []*identity.AssignedRole{
+					{ID: "r-sales", Name: "sales", Primary: true},
+					{ID: "r-audit", Name: "audit", ValidUntil: now},
+				}
+			}),
+			assert: func(t *testing.T, active string) {
+				assert.Equal(t, "sales", active)
+			},
+		},
+		{
+			name:     "SelectedRoleNotStarted: a grant not yet in force leaves the primary active",
+			selected: "audit",
+			before: withGrants(func(now time.Time) []*identity.AssignedRole {
+				return []*identity.AssignedRole{
+					{ID: "r-sales", Name: "sales", Primary: true},
+					{ID: "r-audit", Name: "audit", StartDate: now.Add(time.Second)},
+				}
+			}),
+			assert: func(t *testing.T, active string) {
+				assert.Equal(t, "sales", active)
+			},
+		},
+		{
+			name:     "SelectionNeverPromotes: a lapsed selection with no valid primary leaves no active role",
+			selected: "audit",
+			before: withGrants(func(now time.Time) []*identity.AssignedRole {
+				return []*identity.AssignedRole{
+					{ID: "r-sales", Name: "sales", Primary: true, ValidUntil: now},
+					{ID: "r-ops", Name: "ops"},
+				}
+			}),
+			assert: func(t *testing.T, active string) {
+				assert.Empty(t, active, "neither the selection nor another grant stands in for the primary")
+			},
+		},
+		{
+			name:     "SelectedRoleDuplicate: the grant of that name in force is the one applied",
+			selected: "audit",
+			before: withGrants(func(now time.Time) []*identity.AssignedRole {
+				return []*identity.AssignedRole{
+					{ID: "r-sales", Name: "sales", Primary: true},
+					{ID: "r-audit-old", Name: "audit", ValidUntil: now},
+					{ID: "r-audit", Name: "audit"},
+				}
+			}),
+			assert: func(t *testing.T, active string) {
+				assert.Equal(t, "audit", active)
+			},
+		},
+		{
+			name:     "SelectionIgnoredWhenOff: a stored selection is ignored with switching off",
+			setup:    switchSetup{off: true},
+			selected: "audit",
+			assert: func(t *testing.T, active string) {
+				assert.Equal(t, "sales", active)
+			},
+		},
+		{
+			name: "NoSelection: the primary grant is active",
+			assert: func(t *testing.T, active string) {
+				assert.Equal(t, "sales", active)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newSwitchFixture(t, tc.setup)
+			if tc.selected != "" {
+				require.NoError(t, f.sessions.SelectRole(t.Context(), f.session.ID, tc.selected))
+			}
+
+			if tc.before != nil {
+				tc.before(t, f)
+			}
+
+			tc.assert(t, f.active(t))
+		})
+	}
+}

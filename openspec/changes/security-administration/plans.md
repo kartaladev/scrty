@@ -614,7 +614,7 @@ plus `SoftDelete(t, username string)` in `test/identity.Fixture`.
   - `Session.SelectedRole string`
   - optional `session.RoleSelector interface{ SelectRole(ctx context.Context, id string, role string) error }`,
     implemented by every shipped store; a missing session gives `ErrSessionNotFound`
-  - `func WithActiveRoleSwitching() Option`. Building the chain with it over a store without
+  - `func WithSwitchableRoles() Option`. Building the chain with it over a store without
     `RoleSelector` fails with `ErrConfig`.
   - `func (c *Chain) SwitchActiveRole(ctx context.Context, role string) error`
   - `ErrRoleSwitchingDisabled`
