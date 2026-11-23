@@ -212,7 +212,7 @@ type AssignmentStore interface {
 	// AddAssignment grants the role and returns the user's new version. A
 	// role the store does not hold is ErrNotFound. A primary assignment
 	// replaces the user's previous primary grant.
-	AddAssignment(ctx context.Context, id identity.UserID, version int64, a Assignment) (int64, error)
+	AddAssignment(ctx context.Context, id identity.UserID, version int64, assignment Assignment) (int64, error)
 
 	// RemoveAssignment removes the grant with the identifier and returns the
 	// user's new version. When it was primary, another remaining grant

@@ -33,4 +33,4 @@ type Change struct {
 // and a panic in it, are logged with the action and the target only, and the
 // call that made the change still succeeds: the change is committed and an
 // audit failure cannot undo it.
-type AuditSink func(ctx context.Context, c Change) error
+type AuditSink func(ctx context.Context, change Change) error

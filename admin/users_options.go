@@ -179,13 +179,13 @@ func WithPasswordPolicy(policy *password.Policy) UsersOption {
 // generator's text form satisfies.
 //
 // Default: id.NewV7Generator.
-func WithIDGenerator(g id.Generator) UsersOption {
+func WithIDGenerator(generator id.Generator) UsersOption {
 	return usersOption(func(c *usersConfig) error {
-		if nilcheck.IsNil(g) {
+		if nilcheck.IsNil(generator) {
 			return fmt.Errorf("%w: identifier generator is nil", ErrConfig)
 		}
 
-		c.ids = g
+		c.ids = generator
 
 		return nil
 	})

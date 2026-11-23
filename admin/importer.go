@@ -105,19 +105,19 @@ func NewImporter(store ImportStore, recognizer password.Recognizer, opts ...Impo
 // UpdatedAt before CreatedAt, when both are given, is ErrInvalidInput. The
 // store's AlreadyExistsError passes through unchanged. Import keeps no
 // reference to the caller's slices and map.
-func (im *Importer) Import(ctx context.Context, u ImportedUser) (ImportOutcome, error) {
+func (im *Importer) Import(ctx context.Context, user ImportedUser) (ImportOutcome, error) {
 	actor, err := ActorFrom(ctx)
 	if err != nil {
 		return 0, err
 	}
 
-	u = copyImported(u)
+	user = copyImported(user)
 
-	if err := im.validate(u); err != nil {
+	if err := im.validate(user); err != nil {
 		return 0, err
 	}
 
-	out, err := im.store.ImportUser(ctx, u)
+	out, err := im.store.ImportUser(ctx, user)
 	if err != nil {
 		return 0, fmt.Errorf("admin: import user: %w", err)
 	}
@@ -130,9 +130,9 @@ func (im *Importer) Import(ctx context.Context, u ImportedUser) (ImportOutcome, 
 		return 0, fmt.Errorf("admin: import user: the store reported outcome %d, which is none of the defined outcomes", out)
 	}
 
-	r := changeReport{actor: actor, name: event.UserImported, user: u.ID, target: string(u.ID)}
+	r := changeReport{actor: actor, name: event.UserImported, user: user.ID, target: string(user.ID)}
 	if im.cfg.auditing() {
-		r.after = importedRecord(u)
+		r.after = importedRecord(user)
 	}
 
 	im.cfg.report(ctx, r)

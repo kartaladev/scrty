@@ -433,12 +433,12 @@ func (s *IdentityStore) ListAssignments(
 // assignment, or the first grant of a user who has no primary one, becomes
 // the user's only primary grant.
 func (s *IdentityStore) AddAssignment(
-	ctx context.Context, ref identity.UserID, version int64, a admin.Assignment,
+	ctx context.Context, ref identity.UserID, version int64, assignment admin.Assignment,
 ) (int64, error) {
 	const op = "add assignment"
 
 	uid, ok := storekit.ParseUserID(ref)
-	if !ok || !storekit.Storable(a.Role) {
+	if !ok || !storekit.Storable(assignment.Role) {
 		return 0, notFound(op)
 	}
 
@@ -451,7 +451,7 @@ func (s *IdentityStore) AddAssignment(
 	err = s.atomically(ctx, op, func(q DBTX) error {
 		// The role first, then the user: the order every writer locks in.
 		var super bool
-		err := q.QueryRowContext(ctx, pgschema.ShareAdminRole, a.Role).Scan(&super)
+		err := q.QueryRowContext(ctx, pgschema.ShareAdminRole, assignment.Role).Scan(&super)
 		if errors.Is(err, sql.ErrNoRows) {
 			return failed(op, fmt.Errorf("%w: the role is not in the catalogue", admin.ErrNotFound))
 		}
@@ -464,7 +464,7 @@ func (s *IdentityStore) AddAssignment(
 		}
 
 		now := storekit.Time(s.c.clock.Now())
-		if a.Primary {
+		if assignment.Primary {
 			if _, err := q.ExecContext(ctx, pgschema.ClearPrimaryGrant, uid, now); err != nil {
 				return dbFailed(op, err)
 			}
@@ -474,8 +474,8 @@ func (s *IdentityStore) AddAssignment(
 		if err := q.QueryRowContext(ctx, pgschema.NextGrantPosition, uid).Scan(&position); err != nil {
 			return scanFailed(op, err)
 		}
-		if _, err := q.ExecContext(ctx, pgschema.InsertGrant, gid, uid, a.Role, position, a.Primary, super,
-			nullTs(a.Start), nullTs(a.End), now, now); err != nil {
+		if _, err := q.ExecContext(ctx, pgschema.InsertGrant, gid, uid, assignment.Role, position, assignment.Primary, super,
+			nullTs(assignment.Start), nullTs(assignment.End), now, now); err != nil {
 			return dbFailed(op, err)
 		}
 

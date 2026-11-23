@@ -44,13 +44,13 @@ func (o Option) applyAssignments(c *common) error      { return o.apply(c) }
 // clock fails the constructor with an error matching ErrConfig.
 //
 // Default: clock.System().
-func WithClock(c clock.Clock) Option {
+func WithClock(clk clock.Clock) Option {
 	return func(cfg *common) error {
-		if nilcheck.IsNil(c) {
+		if nilcheck.IsNil(clk) {
 			return fmt.Errorf("%w: clock is nil", ErrConfig)
 		}
 
-		cfg.clock = c
+		cfg.clock = clk
 
 		return nil
 	}

@@ -124,24 +124,25 @@ type ResolvedIdentifier struct {
 // resolvedKey is the context key a ResolvedIdentifier travels under.
 type resolvedKey struct{}
 
-// WithResolved returns a copy of ctx carrying r, so the provider that resolved
-// it authenticates r's user without loading it again.
+// WithResolved returns a copy of ctx carrying resolved, so the provider that
+// resolved it authenticates resolved's user without loading it again.
 //
-// r is for one attempt; see ResolvedIdentifier.
+// resolved is for one attempt; see ResolvedIdentifier.
 //
-// The provider honours r only when it returned r itself and the credentials it
-// is asked to authenticate name the identifier r was resolved from, or the
-// username of the user it resolved to, as recorded when r was made; a Key
+// The provider honours resolved only when it returned resolved itself and the
+// credentials it is asked to authenticate name the identifier it was resolved
+// from, or the username of the user it resolved to, as recorded when it was
+// made; a Key
 // rewritten afterwards is not consulted. For credentials naming anything else
 // it refuses with ErrAuthenticationFailed, after the same password work as an
 // unknown username, and records a
 // "resolved-mismatch" refusal: authenticating one account after keying the
 // lockout on another would bypass the lockout.
-func WithResolved(ctx context.Context, r ResolvedIdentifier) context.Context {
-	return context.WithValue(ctx, resolvedKey{}, r)
+func WithResolved(ctx context.Context, resolved ResolvedIdentifier) context.Context {
+	return context.WithValue(ctx, resolvedKey{}, resolved)
 }
 
-// resolvedFrom returns the resolution ctx carries, when a resolved it.
+// resolvedFrom returns the resolution ctx carries, when a provider resolved it.
 func (a *UsernamePasswordAuthenticator) resolvedFrom(ctx context.Context) (ResolvedIdentifier, bool) {
 	r, ok := ctx.Value(resolvedKey{}).(ResolvedIdentifier)
 	if !ok || r.by == nil || r.by != a {
@@ -406,12 +407,12 @@ var _ IdentifierResolver = (*UsernamePasswordAuthenticator)(nil)
 // A consumer's own Authenticator that wraps a provider with login by email
 // hides it unless it implements IdentifierResolver too, forwarding both
 // methods; nothing outside the wrapper can see through it.
-func ResolverOf(a Authenticator) (IdentifierResolver, bool) {
-	if nilcheck.IsNil(a) {
+func ResolverOf(authenticator Authenticator) (IdentifierResolver, bool) {
+	if nilcheck.IsNil(authenticator) {
 		return nil, false
 	}
 
-	r, ok := a.(IdentifierResolver)
+	r, ok := authenticator.(IdentifierResolver)
 	if !ok || !r.EmailLogin() {
 		return nil, false
 	}

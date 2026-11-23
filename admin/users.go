@@ -113,13 +113,13 @@ func NewUsers(store UserStore, opts ...UsersOption) (*Users, error) {
 // maximum, or below zero, is ErrInvalidInput, as is a search or filter beyond
 // its bound and a cursor that does not decode. Next is set when the page is
 // full and continues the list.
-func (u *Users) List(ctx context.Context, f UserFilter) (UserPage, error) {
-	if f.Attribute != nil {
-		m := *f.Attribute
-		f.Attribute = &m
+func (u *Users) List(ctx context.Context, filter UserFilter) (UserPage, error) {
+	if filter.Attribute != nil {
+		m := *filter.Attribute
+		filter.Attribute = &m
 	}
 
-	q, err := u.query(f)
+	q, err := u.query(filter)
 	if err != nil {
 		return UserPage{}, err
 	}
@@ -280,7 +280,7 @@ func (u *Users) validateNew(nu NewUser) error {
 // named for a user with no email, and an empty change, or a version below one,
 // are ErrInvalidInput; a version that differs from the stored one is
 // ErrStaleUpdate and changes nothing.
-func (u *Users) Update(ctx context.Context, userID identity.UserID, version int64, c UserChange) (User, error) {
+func (u *Users) Update(ctx context.Context, userID identity.UserID, version int64, change UserChange) (User, error) {
 	actor, err := ActorFrom(ctx)
 	if err != nil {
 		return User{}, err
@@ -290,9 +290,9 @@ func (u *Users) Update(ctx context.Context, userID identity.UserID, version int6
 		return User{}, err
 	}
 
-	c.Attributes = maps.Clone(c.Attributes)
+	change.Attributes = maps.Clone(change.Attributes)
 
-	if err := u.validateChange(c); err != nil {
+	if err := u.validateChange(change); err != nil {
 		return User{}, err
 	}
 
@@ -301,14 +301,14 @@ func (u *Users) Update(ctx context.Context, userID identity.UserID, version int6
 		return User{}, fmt.Errorf("admin: update user: %w", err)
 	}
 
-	updated, err := u.store.UpdateUser(ctx, userID, version, c)
+	updated, err := u.store.UpdateUser(ctx, userID, version, change)
 	if err != nil {
 		return User{}, fmt.Errorf("admin: update user: %w", err)
 	}
 
 	report := changeReport{
 		actor: actor, name: event.UserUpdated, user: userID, target: string(userID),
-		changed: changedUserFields(c, updated),
+		changed: changedUserFields(change, updated),
 	}
 	if before != nil {
 		report.before, report.after = *before, cloneUser(updated)

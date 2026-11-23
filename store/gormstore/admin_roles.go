@@ -727,19 +727,19 @@ func (s *IdentityStore) writeAssignment(
 // assignment, or the first grant of a user who has no primary one, becomes the
 // user's only primary grant.
 func (s *IdentityStore) AddAssignment(
-	ctx context.Context, ref identity.UserID, version int64, a admin.Assignment,
+	ctx context.Context, ref identity.UserID, version int64, assignment admin.Assignment,
 ) (int64, error) {
 	const op = "add assignment"
 
 	// An empty name is a role no catalogue holds: not found, as the other
 	// adapters answer it.
-	if !storekit.Storable(a.Role) || a.Role == "" {
+	if !storekit.Storable(assignment.Role) || assignment.Role == "" {
 		return 0, notFound(op)
 	}
 
-	return s.writeAssignment(ctx, op, ref, version, a.Role,
+	return s.writeAssignment(ctx, op, ref, version, assignment.Role,
 		func(q *gorm.DB, uid id.ID, now time.Time, super bool) error {
-			if a.Primary {
+			if assignment.Primary {
 				if err := q.Exec(pgschema.ClearPrimaryGrant, uid, now).Error; err != nil {
 					return dbFailed(op, err)
 				}
@@ -754,8 +754,8 @@ func (s *IdentityStore) AddAssignment(
 			if err != nil {
 				return failed(op, err)
 			}
-			if err := q.Exec(pgschema.InsertGrant, gid, uid, a.Role, position, a.Primary, super,
-				nullTs(a.Start), nullTs(a.End), now, now).Error; err != nil {
+			if err := q.Exec(pgschema.InsertGrant, gid, uid, assignment.Role, position, assignment.Primary, super,
+				nullTs(assignment.Start), nullTs(assignment.End), now, now).Error; err != nil {
 				return dbFailed(op, err)
 			}
 

@@ -137,7 +137,7 @@ func (r *Roles) Create(ctx context.Context, role Role) (Role, error) {
 // name never changes. An empty change, or a version below one, is
 // ErrInvalidInput; a version that differs from the stored one is
 // ErrStaleUpdate and changes nothing.
-func (r *Roles) Update(ctx context.Context, name string, version int64, c RoleChange) (Role, error) {
+func (r *Roles) Update(ctx context.Context, name string, version int64, change RoleChange) (Role, error) {
 	actor, err := ActorFrom(ctx)
 	if err != nil {
 		return Role{}, err
@@ -147,12 +147,12 @@ func (r *Roles) Update(ctx context.Context, name string, version int64, c RoleCh
 		return Role{}, err
 	}
 
-	if c.Labels != nil {
-		labels := slices.Clone(*c.Labels)
-		c.Labels = &labels
+	if change.Labels != nil {
+		labels := slices.Clone(*change.Labels)
+		change.Labels = &labels
 	}
 
-	changed, err := validateRoleChange(c)
+	changed, err := validateRoleChange(change)
 	if err != nil {
 		return Role{}, err
 	}
@@ -172,7 +172,7 @@ func (r *Roles) Update(ctx context.Context, name string, version int64, c RoleCh
 		before = &got
 	}
 
-	updated, err := r.store.UpdateRole(ctx, name, version, c)
+	updated, err := r.store.UpdateRole(ctx, name, version, change)
 	if err != nil {
 		return Role{}, fmt.Errorf("admin: update role: %w", err)
 	}
