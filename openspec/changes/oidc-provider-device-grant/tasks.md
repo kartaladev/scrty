@@ -108,7 +108,7 @@ Every task is test-first: write the failing test, run it with `go test -run '<Na
 - [x] 13.2 Run `make check`, `make spec-check` and `openspec validate oidc-provider-device-grant --strict`. Verify all three pass, and keep their output.
 - [x] 13.3 A whole-branch review against every requirement in this change's specs. Verify every finding is resolved or recorded.
 - [x] 13.4 Fold the branch code review (2026-11-23), each fix starting from its reproducing triage test as the red step: answer a fractional poll interval rounded up to whole seconds while pacing by the interval as set (verify a device polling every answered interval is never slowed); make the in-memory device store's create refuse no client, an unknown state and an approval naming no grant family, pinned in the exported suite (verify every store passes and a store accepting them fails it); and correct the withdrawn-approval godoc in the resume path to say the user starts again from the device.
-- [ ] 13.5 Run the final gate again after 13.4: `make check`, `make spec-check` and `openspec validate oidc-provider-device-grant --strict`. Verify all three pass.
+- [x] 13.5 Run the final gate again after 13.4: `make check`, `make spec-check` and `openspec validate oidc-provider-device-grant --strict`. Verify all three pass.
 
 ## Workflow follow-up
 
