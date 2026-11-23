@@ -69,7 +69,7 @@ func (u Upstream) HasAccessToken() bool { return u.AccessToken() != "" }
 
 // Format writes "[redacted]" whatever the verb and flags, so no fmt verb
 // prints the token.
-func (Upstream) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, redactedMark) }
+func (Upstream) Format(state fmt.State, _ rune) { _, _ = io.WriteString(state, redactedMark) }
 
 // String returns "[redacted]".
 func (Upstream) String() string { return redactedMark }
