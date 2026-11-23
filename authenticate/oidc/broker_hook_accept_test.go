@@ -1123,7 +1123,7 @@ func newStagedLinks() *stagedLinks {
 	}
 }
 
-func (s *stagedLinks) stage(m map[string]func(), ctx context.Context) {
+func (s *stagedLinks) stage(ctx context.Context, m map[string]func()) {
 	name, _ := ctx.Value(stagedLogin{}).(string)
 	s.mu.Lock()
 	f := m[name]
@@ -1134,9 +1134,9 @@ func (s *stagedLinks) stage(m map[string]func(), ctx context.Context) {
 }
 
 func (s *stagedLinks) Insert(ctx context.Context, l oidc.Link) error {
-	s.stage(s.beforeInsert, ctx)
+	s.stage(ctx, s.beforeInsert)
 	err := s.MemoryLinkStore.Insert(ctx, l)
-	s.stage(s.afterInsert, ctx)
+	s.stage(ctx, s.afterInsert)
 	return err
 }
 

@@ -127,7 +127,7 @@ func TestMemoryLinkStore_DeleteLink(t *testing.T) {
 			name:   "a stored zero-ID link survives a zero-ID delete",
 			stored: []oidc.Link{zero},
 			delete: zero,
-			assert: func(t *testing.T, remaining []oidc.Link, removed bool, err error) {
+			assert: func(t *testing.T, remaining []oidc.Link, removed bool, _ error) {
 				assert.False(t, removed)
 				assert.Equal(t, []oidc.Link{corp, partner, zero}, remaining)
 			},

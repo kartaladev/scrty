@@ -737,7 +737,7 @@ func TestOIDCCompletion_PreChecksHandle(t *testing.T) {
 				return completionSetup{limiter: l}
 			},
 			parked: parkedWeb,
-			assert: func(t *testing.T, f *completionFlow, a flowAnswer, lookups int64) {
+			assert: func(t *testing.T, _ *completionFlow, a flowAnswer, lookups int64) {
 				t.Helper()
 
 				require.ErrorIs(t, a.err, httpsec.ErrOIDCThrottled)
@@ -1237,7 +1237,7 @@ func TestOIDCCompletion_SignsInWithoutScript(t *testing.T) {
 		{
 			name:   "the consent page, when the request needs consent",
 			client: flowWeb,
-			assert: func(t *testing.T, f *completionFlow, handle string, a flowAnswer) {
+			assert: func(t *testing.T, _ *completionFlow, handle string, a flowAnswer) {
 				t.Helper()
 
 				assert.Equal(t, opIssuer+"/consent?"+url.Values{oidcprovider.HandleParam: {handle}}.Encode(),
@@ -1366,7 +1366,7 @@ func (s *completionSessionStore) ListByUser(ctx context.Context, user identity.U
 	}
 
 	if s.endOnList.CompareAndSwap(true, false) {
-		if err := s.Store.DeleteByUser(ctx, user); err != nil {
+		if err := s.DeleteByUser(ctx, user); err != nil {
 			return nil, err
 		}
 	}
@@ -1578,7 +1578,7 @@ func TestOIDCCompletion_FailurePaths(t *testing.T) {
 						return nil
 					}
 
-					return store.Store.DeleteByUser(ctx, s.User)
+					return store.DeleteByUser(ctx, s.User)
 				}
 			},
 			assert: func(t *testing.T, f *completionFlow, handle, flow string, a flowAnswer, logs []slog.Record) {
@@ -1618,7 +1618,7 @@ func TestOIDCCompletion_FailurePaths(t *testing.T) {
 		{
 			name:           "the request is cancelled during the resume",
 			cancelInResume: true,
-			assert: func(t *testing.T, f *completionFlow, handle, flow string, a flowAnswer, logs []slog.Record) {
+			assert: func(t *testing.T, f *completionFlow, _, _ string, a flowAnswer, logs []slog.Record) {
 				t.Helper()
 
 				require.Error(t, a.err)
