@@ -43,18 +43,18 @@ func (m *MockAssignmentStore) EXPECT() *MockAssignmentStoreMockRecorder {
 }
 
 // AddAssignment mocks base method.
-func (m *MockAssignmentStore) AddAssignment(ctx context.Context, id identity.UserID, version int64, a admin.Assignment) (int64, error) {
+func (m *MockAssignmentStore) AddAssignment(ctx context.Context, id identity.UserID, version int64, assignment admin.Assignment) (int64, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "AddAssignment", ctx, id, version, a)
+	ret := m.ctrl.Call(m, "AddAssignment", ctx, id, version, assignment)
 	ret0, _ := ret[0].(int64)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // AddAssignment indicates an expected call of AddAssignment.
-func (mr *MockAssignmentStoreMockRecorder) AddAssignment(ctx, id, version, a any) *MockAssignmentStoreAddAssignmentCall {
+func (mr *MockAssignmentStoreMockRecorder) AddAssignment(ctx, id, version, assignment any) *MockAssignmentStoreAddAssignmentCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddAssignment", reflect.TypeOf((*MockAssignmentStore)(nil).AddAssignment), ctx, id, version, a)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddAssignment", reflect.TypeOf((*MockAssignmentStore)(nil).AddAssignment), ctx, id, version, assignment)
 	return &MockAssignmentStoreAddAssignmentCall{Call: call}
 }
 
