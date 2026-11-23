@@ -3562,6 +3562,272 @@ h := prblm.NewHandler(prblm.WithNamespace("/probs"), prblm.WithMappers(lockPage)
   calls to the standard library's `errors.Is` or `errors.As` on the error, and gin's `Context.Error`,
   which walks the chain before any renderer runs.
 
+## Administration
+
+The `admin` package offers the administration of users, roles, grants and role assignments as
+services your application calls. scrty serves no administration endpoint: you decide which of your
+routes reach a service, and you guard them with the requirements in [Per-route
+guards](#per-route-guards).
+
+| Service | What it does | Built from |
+|---|---|---|
+| `admin.Users` | list, read, create, update, deactivate, reactivate, delete, set a password through the password policy | `admin.NewUsers(store)` |
+| `admin.Importer` | write users from another system by identifier, idempotently, with the password hash as given | `admin.NewImporter(store, recogniser)` |
+| `admin.Roles` | list, read, create, update, delete roles; a role's name is its immutable key, a "rename" changes its display name | `admin.NewRoles(store)` |
+| `admin.Grants` | read a role's grants and replace them per resource, checked against your catalogue | `admin.NewGrants(store, catalogue)` |
+| `admin.Assignments` | list a user's role grants, add and remove one, mark one primary; a grant may carry a start and an end | `admin.NewAssignments(store)` |
+
+scrty's identity stores implement the store ports; your own store behind the same ports works too.
+The rules a service enforces before the store (input bounds, catalogue, actor, events, audit) stay
+with the service, so your store inherits them.
+
+<!-- from admin ExampleUsers -->
+```go
+users, err := admin.NewUsers(store, admin.WithEventSink(sink))
+if err != nil {
+	return err
+}
+
+ctx := admin.WithSystemActor(ctx, "onboarding")
+
+ada, err := users.Create(ctx, admin.NewUser{Username: "ada", Name: "Ada", Email: "ada@example.com"})
+if err != nil {
+	return err
+}
+
+name := "Ada Lovelace"
+ada, err = users.Update(ctx, ada.ID, ada.Version, admin.UserChange{Name: &name})
+```
+
+- **A service never decides whether the caller may make the change.** Who may administer whom is your
+  application's rule; guard the route that reaches the service.
+- **Every write names its actor.** The actor is the authenticated principal in the context, or a
+  named system actor from `admin.WithSystemActor` for a job with no principal. A write with neither
+  fails with `admin.ErrNoActor` before the store is called.
+- **Writes compare a version.** An update names the version the caller read; a stale one is
+  refused with `admin.ErrStaleUpdate` and nothing is written. A write to one role or user is
+  serialised by the store.
+- **Failures are typed.** Every failure you can act on matches exactly one of `ErrNotFound`,
+  `ErrAlreadyExists`, `ErrStillAssigned`, `ErrStaleUpdate`, `ErrUnknownPrivilege`, `ErrInvalidInput`
+  and `ErrNoActor`. A storage failure matches none. Error text never carries a username, an email,
+  an attribute value or a password hash.
+- **Importing is idempotent.** A second run with equal values reports `unchanged` and emits nothing.
+  A hash the recogniser does not recognise is refused before the store is called.
+- **Soft-deleted users are not found**, and a username may not equal another live user's email.
+
+### Events and audit
+
+Each committed change is reported to the event sink given with `admin.WithEventSink`, under the
+OWASP Logging Vocabulary name where one exists (`user_created`, `user_updated`, `user_archived`,
+`user_deleted`, `authn_password_change`, `privilege_permissions_changed`, `authz_change`,
+`authz_admin`) and under the `scrty_` prefix otherwise. An event carries the actor, the target and
+the names of the fields that changed, never a value. A refused or failed call, and a call that
+changed nothing, reports nothing.
+
+`admin.WithAudit` adds an audit sink that receives each committed change as an `admin.Change`
+(`Actor`, `Action`, `Target`, `Before`, `After`). The records have no password hash field. With an
+audit sink, a service reads the record before writing, one extra read.
+
+| Behaviour | Default | Override |
+|---|---|---|
+| Events | none, unless the chain reports them | `admin.WithEventSink` |
+| Audit | none | `admin.WithAudit` |
+| Page size of a user list | `admin.DefaultPageSize` (50) | `admin.WithPageSize` |
+| Password encoder and policy for a set password | the password package's defaults | `admin.WithPasswordEncoder`, `admin.WithPasswordPolicy` |
+| Clock, logger, id generator | the system clock, `slog.Default()`, the default generator | `admin.WithClock`, `admin.WithLogger`, `admin.WithIDGenerator` |
+
+A failing or panicking audit sink is logged with the action and target only, and the call still
+succeeds. Events and audit records are delivered after the commit, so a crash between the two
+loses them. If you need them transactionally, put an outbox behind the audit sink.
+
+## Resources, privileges and scopes
+
+A grant says which role may do what to which resource, and with which scope.
+`identity.ScopeAll` reaches every record; `identity.ScopeOwn` only the caller's own. An empty scope
+reads as `all`, so a grant from a loader that knows nothing of scopes keeps its meaning.
+
+### The catalogue
+
+`authorize.NewCatalogue` declares, in code, the resources, privileges and scopes your application
+may grant. `admin.NewGrants` requires one and checks every grant against it before writing, so a
+typo is refused instead of stored as a privilege nobody checks. The runtime authorizer does not read
+the catalogue: a privilege the catalogue no longer lists still loads and is still judged.
+
+<!-- from authorize ExampleNewCatalogue -->
+```go
+catalogue, err := authorize.NewCatalogue(authorize.CatalogueResource{
+	Group: "crm", Name: "lead",
+	Privileges: []authorize.CataloguePrivilege{
+		{Name: "view"}, // all and own
+		{Name: "create", Scopes: []identity.Scope{identity.ScopeAll}},
+	},
+})
+```
+
+Default: a privilege declared without scopes allows `all` and `own`. Override: list the scopes the
+privilege allows. `NewCatalogue` refuses blank names, duplicates and an undefined scope.
+
+### Which check reads which scope
+
+| Check | Allows when | Use it for |
+|---|---|---|
+| `authorize.HasPrivilege` | granted with `all` | route guards; an own-only grant is denied, so a forgotten ownership check fails closed |
+| `authorize.HasPrivilegeAnyScope` | granted with `all` or `own` | a list endpoint that narrows to the caller's own records |
+| `authorize.HasPrivilegeFor` | `all`, or `own` and your ownership check passes | one record |
+
+For a list, `authorize.CheckAnyScope` reports the strongest scope held (`all` before `own`), and your
+handler narrows the query when it is `own`:
+
+<!-- from authorize ExampleCheckAnyScope -->
+```go
+scope, err := authorize.CheckAnyScope(ctx, "crm", "lead", "update")
+if err != nil {
+	return err // a denial matches authorize.ErrAccessDenied
+}
+
+if scope == identity.ScopeOwn {
+	// return only the caller's own leads
+}
+```
+
+For one record, `HasPrivilegeFor` takes the two functions that say what owning a record means in your
+data. With `all`, they are not called.
+
+<!-- from authorize ExampleHasPrivilegeFor -->
+```go
+owned := authorize.OwnershipAttributes{
+	Group: "crm", Resource: "lead",
+	ResolveID: func(ctx context.Context) (string, error) { return leadID(ctx), nil },
+	OwnedBy: func(ctx context.Context, subject *identity.Principal, id string) (bool, error) {
+		return ownerOf(id) == subject.ID, nil
+	},
+}
+
+err := authorize.HasPrivilegeFor("crm", "lead", owned, "update")(ctx)
+```
+
+A record the caller does not own is denied with `authorize.ErrNotOwner`. A failure of either function
+is an outage, not a denial. Every denial matches `authorize.ErrAccessDenied` and exactly one reason:
+`ErrNoSubject`, `ErrNoActiveRole`, `ErrNotGranted`, `ErrWrongScope` or `ErrNotOwner`, so you can render
+a problem type per reason.
+
+Default: `all` only. Override: pick the check above. The meaning of `all` and `own` has no override;
+the scope column is open text, so a later release can add scopes without a migration.
+
+## The per-request privilege memo
+
+A request that passes a route guard and then asks for the caller's allowed actions would load the
+active role's privileges twice. The chain therefore attaches a memo to every request it runs, before
+any interceptor, and each role's privileges load once for that request. The memo belongs to the
+request alone: a privilege change between two requests is seen by the second.
+
+| Behaviour | Default | Override |
+|---|---|---|
+| Memo in the chain | on, one per request | `httpsec.WithoutPrivilegeMemo()` |
+| Memo outside the chain (a job, a test) | none: every check loads | `authorize.WithRequestMemo(ctx)` |
+
+<!-- from httpsec ExampleWithoutPrivilegeMemo -->
+```go
+// Two checks in one request cost one load by default, and two without the memo.
+chain, err := httpsec.New(httpsec.WithoutPrivilegeMemo())
+```
+
+A successful load and `identity.ErrPrivilegesNotFound` are remembered; any other error is not, so a
+later check retries. The memo holds at most 32 roles. It assumes a role's privileges depend only on
+the role name: a loader that also reads the context, such as a tenant, must not share one memo
+across contexts that differ in it. Keep a memo to one request or one job; a long-lived context with
+one serves its first answer for as long as it lives.
+
+### Allowed actions in one call
+
+`authorize.HeldPrivileges` answers several privilege names in one call, with the scope of each,
+for the "allowed actions" a response lists beside a record. It loads the active role once, through
+the memo.
+
+<!-- from authorize ExampleHeldPrivileges -->
+```go
+holdings, err := authorize.HeldPrivileges(ctx, "crm", "lead", "view", "update", "delete")
+if err != nil {
+	return err
+}
+
+for _, holding := range holdings {
+	fmt.Println(holding.Privilege, holding.Held, holding.Scope)
+}
+
+update, ok := holdings.Lookup("update")
+```
+
+A caller with no subject or no active role holds nothing, with no error. An authorizer that cannot
+report its privileges (one that does not implement `authorize.PrivilegeInspector`) gives
+`authorize.ErrInspectionUnsupported`, never a guess made from N checks. Inside `authorize.FirstOf`,
+members are asked in order and one that is not an inspector stops the walk with the same error; a
+consumer authorizer joins by implementing the inspector, even only to decline.
+
+## Login by email
+
+`authenticate.WithEmailLogin()` lets a user sign in with their email in place of their username.
+It is off by default: username-only login is unchanged, and an email is an unknown username.
+
+<!-- from authenticate ExampleWithEmailLogin -->
+```go
+auth, err := authenticate.NewUsernamePasswordAuthenticator(users,
+	authenticate.WithPasswordEncoder(enc),
+	authenticate.WithEmailLogin(),
+)
+```
+
+- Your user loader must also implement `identity.EmailLoader`, or construction fails.
+- Only a **verified** email signs in, matched ignoring case, and only for a live user. The loader's
+  answer is checked, not trusted: an unverified user, or one whose email does not match, counts as
+  not found.
+- The username is tried first, so existing logins keep their path and cost. Only an identifier
+  containing `@` reaches the email lookup.
+- If the identifier is one user's username and also another live user's verified email, the login is
+  refused uniformly and `scrty_identifier_conflict` is emitted. scrty's stores make this unreachable
+  by refusing a username that is another live user's email.
+- The chain's login and basic endpoints resolve the identifier before lockout, so lockout counts
+  attempts against the account whichever identifier was typed. `FirstOf` forwards the resolver to its
+  single member with email login on; more than one is a configuration error. A wrapper of your own
+  around the provider must forward `ResolveIdentifier` and `EmailLogin`, or lockout keys on the
+  identifier as typed.
+
+## Switching the active role
+
+<!-- REVIEW (main session): this section documents the API as specified in plans.md Task 16 and
+design D20, checked against `go doc` on the working tree; re-check against the final code. No
+Example covers it yet, so its snippet is not compiled. -->
+
+A user with several roles acts under one, the active role. With `httpsec.WithSwitchableRoles()`,
+an authenticated caller may switch to another role they hold, and the choice is recorded on their
+session.
+
+```go
+chain, err := httpsec.New(
+	httpsec.WithSwitchableRoles(),
+	// ...an authenticator that binds a session...
+)
+
+// in a handler behind the chain:
+err := chain.SwitchActiveRole(r.Context(), "audit")
+```
+
+`SwitchActiveRole` reloads the user, checks that they hold a grant of that name in force now, writes
+only the session's selected role, and emits `scrty_active_role_switched`. The request in progress
+keeps its principal; the next request is active as the selected role for as long as the grant stays
+held and in force, and as the primary grant otherwise. A selection never adds a role. The empty role
+clears the selection.
+
+| Behaviour | Default | Override |
+|---|---|---|
+| Switching | off: `SwitchActiveRole` returns `httpsec.ErrRoleSwitchingDisabled`, and a stored selection is ignored | `httpsec.WithSwitchableRoles()` |
+
+Refusals: a role not held (or a name no store can hold) is `httpsec.ErrRoleNotHeld`, which matches
+`authorize.ErrAccessDenied` and `authorize.ErrNoActiveRole`, and leaves the session unchanged; a
+context with no session the chain resolved is `httpsec.ErrAuthenticationRequired`. The chain
+refuses to build when a session manager cannot record a selection (the store must implement the
+optional `session.RoleSelector`; every shipped store does).
+
 ## Database tables and migrations
 
 A durable deployment applies two embedded migration sets, `migrate.SecurityState()` and, when it
