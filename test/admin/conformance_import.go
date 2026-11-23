@@ -24,6 +24,7 @@ func runImportSuite(t *testing.T, newFixture Factory) {
 	t.Run("ImportRace", func(t *testing.T) { runImportRaceCase(t, newFixture) })
 	t.Run("ImportTakeoverRefused", func(t *testing.T) { runImportTakeoverRefusedCases(t, newFixture) })
 	t.Run("ImportDeletedUserRefused", func(t *testing.T) { runImportDeletedUserRefusedCase(t, newFixture) })
+	t.Run("ImportIdentifierAsGiven", func(t *testing.T) { runImportIdentifierAsGivenCases(t, newFixture) })
 }
 
 // importHashes are two password hashes an import stores as given.
@@ -478,4 +479,75 @@ func runImportDeletedUserRefusedCase(t *testing.T, newFixture Factory) {
 
 	_, err = f.Loader().LoadByUsername(ctx, again.Username)
 	assert.ErrorIs(t, err, identity.ErrUserNotFound, "the refused payload's username names no user")
+}
+
+// runImportIdentifierAsGivenCases checks that an imported identifier is stored
+// exactly as given or refused (D14). The identifier's form is the store's to
+// judge: a store whose identifiers are UUIDs, as scrty's are, refuses any text
+// that is not a canonical lower-case UUID other than the nil UUID with
+// ErrInvalidInput and writes nothing; a store that holds any text accepts it
+// and must then return the user under exactly that identifier. Accepting it and
+// storing another spelling (a lower-cased or reparsed UUID) is the defect this
+// case exists for: the source system's identifier would then name no user.
+func runImportIdentifierAsGivenCases(t *testing.T, newFixture Factory) {
+	t.Helper()
+
+	type testCase struct {
+		name string
+		// id derives the identifier from a fresh canonical one.
+		id func(canonical identity.UserID) identity.UserID
+	}
+
+	cases := []testCase{
+		{"an upper-case UUID", func(c identity.UserID) identity.UserID {
+			return identity.UserID(strings.ToUpper(string(c)))
+		}},
+		{"text that is not a UUID", func(c identity.UserID) identity.UserID {
+			return identity.UserID("not-a-uuid-" + string(c))
+		}},
+		{"the nil UUID", func(identity.UserID) identity.UserID {
+			return "00000000-0000-0000-0000-000000000000"
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			f := newFixture(t)
+
+			in := importedUser(t, 0)
+			canonical := in.ID
+			in.ID = tc.id(canonical)
+
+			out, err := f.Importer().ImportUser(ctx, cloneImport(in))
+			if err != nil {
+				require.ErrorIs(t, err, admin.ErrInvalidInput,
+					"an identifier the store cannot hold is refused as invalid input (reason matched: %s)",
+					reasonOf(err))
+
+				for _, ref := range []identity.UserID{in.ID, canonical} {
+					residue, err := f.UserResidue(ctx, ref)
+					require.NoError(t, err)
+					assert.False(t, residue.Exists, "a refused import writes no record under %q", ref)
+				}
+
+				_, err = f.Loader().LoadByUsername(ctx, in.Username)
+				assert.ErrorIs(t, err, identity.ErrUserNotFound, "a refused import's username names no user")
+
+				return
+			}
+
+			require.Equal(t, admin.ImportCreated, out)
+			got := mustGetUser(ctx, t, f, in.ID)
+			assert.Equal(t, in.ID, got.ID, "an accepted identifier is returned exactly as given")
+
+			if folded := identity.UserID(strings.ToLower(string(in.ID))); folded != in.ID {
+				residue, err := f.UserResidue(ctx, folded)
+				require.NoError(t, err)
+				assert.False(t, residue.Exists, "the store kept another spelling of the identifier")
+			}
+		})
+	}
 }

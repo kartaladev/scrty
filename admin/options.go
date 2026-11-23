@@ -82,7 +82,9 @@ func WithEventSink(sink event.Sink) Option {
 // WithAudit sets the audit sink each committed change is also delivered to,
 // with the record before and after the change (see Change). A failing or
 // panicking audit sink is logged with the action and the target only, and the
-// call still succeeds: the change is already committed.
+// call still succeeds: the change is already committed. With a sink set, the
+// before record is read first, and one at a version other than the caller's is
+// ErrStaleUpdate with nothing written.
 //
 // A nil sink, or the option given twice, fails the constructor with an error
 // matching ErrConfig.

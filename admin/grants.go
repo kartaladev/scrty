@@ -147,9 +147,13 @@ func (g *Grants) Replace(ctx context.Context, role string, version int64, resour
 	var before []Grant
 
 	if g.cfg.auditing() {
-		got, _, err := g.store.GetGrants(ctx, role)
+		got, v, err := g.store.GetGrants(ctx, role)
 		if err != nil {
 			return 0, fmt.Errorf("admin: replace grants: %w", err)
+		}
+
+		if v != version {
+			return 0, fmt.Errorf("admin: replace grants: %w", ErrStaleUpdate)
 		}
 
 		before = slices.Clone(got)

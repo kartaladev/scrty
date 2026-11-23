@@ -17,14 +17,14 @@ import (
 
 // Ambient opens a caller's transaction the adapter's store joins, the way a
 // consumer attaches one with the adapter's WithTx, and returns a context
-// carrying it, the backend process id of its connection, and a function that
-// rolls it back. The transaction is rolled back when t ends, if it was not
-// already.
-type Ambient func(ctx context.Context, t *testing.T) (context.Context, int, func())
+// carrying it, the backend process id of its connection, a function that
+// commits it and one that rolls it back. The transaction is rolled back when t
+// ends, if it was not already committed or rolled back.
+type Ambient func(ctx context.Context, t *testing.T) (context.Context, int, func() error, func())
 
 // SQLAmbient is Ambient over a database/sql handle and the adapter's WithTx.
 func SQLAmbient(db *sql.DB, with func(context.Context, *sql.Tx) context.Context) Ambient {
-	return func(ctx context.Context, t *testing.T) (context.Context, int, func()) {
+	return func(ctx context.Context, t *testing.T) (context.Context, int, func() error, func()) {
 		t.Helper()
 
 		tx, err := db.BeginTx(ctx, nil)
@@ -36,13 +36,13 @@ func SQLAmbient(db *sql.DB, with func(context.Context, *sql.Tx) context.Context)
 		var pid int
 		require.NoError(t, tx.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&pid))
 
-		return with(ctx, tx), pid, end
+		return with(ctx, tx), pid, tx.Commit, end
 	}
 }
 
 // PgxAmbient is Ambient over a pgx pool and the adapter's WithTx.
 func PgxAmbient(pool *pgxpool.Pool, with func(context.Context, pgx.Tx) context.Context) Ambient {
-	return func(ctx context.Context, t *testing.T) (context.Context, int, func()) {
+	return func(ctx context.Context, t *testing.T) (context.Context, int, func() error, func()) {
 		t.Helper()
 
 		tx, err := pool.Begin(ctx)
@@ -54,13 +54,15 @@ func PgxAmbient(pool *pgxpool.Pool, with func(context.Context, pgx.Tx) context.C
 		var pid int
 		require.NoError(t, tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid))
 
-		return with(ctx, tx), pid, end
+		commit := func() error { return tx.Commit(context.WithoutCancel(ctx)) }
+
+		return with(ctx, tx), pid, commit, end
 	}
 }
 
 // GormAmbient is Ambient over a gorm handle and the adapter's WithTx.
 func GormAmbient(db *gorm.DB, with func(context.Context, *gorm.DB) context.Context) Ambient {
-	return func(ctx context.Context, t *testing.T) (context.Context, int, func()) {
+	return func(ctx context.Context, t *testing.T) (context.Context, int, func() error, func()) {
 		t.Helper()
 
 		tx := db.WithContext(ctx).Begin()
@@ -72,7 +74,9 @@ func GormAmbient(db *gorm.DB, with func(context.Context, *gorm.DB) context.Conte
 		var pid int
 		require.NoError(t, tx.Raw(`SELECT pg_backend_pid()`).Row().Scan(&pid))
 
-		return with(ctx, tx), pid, end
+		commit := func() error { return tx.Commit().Error }
+
+		return with(ctx, tx), pid, commit, end
 	}
 }
 
@@ -92,7 +96,7 @@ func runImportQueue(t *testing.T, h Harness, newImported func(t *testing.T, role
 	t.Parallel()
 
 	ctx := t.Context()
-	ctxB, pidB, rollbackB := h.Ambient(ctx, t)
+	ctxB, pidB, _, rollbackB := h.Ambient(ctx, t)
 
 	first := newImported(t)
 	first.Username = uniq("probe-b")
@@ -148,7 +152,7 @@ func runImportKeySpace(t *testing.T, h Harness, newImported func(t *testing.T, r
 	require.NoError(t, err)
 	require.Equal(t, admin.ImportCreated, out)
 
-	ctxB, pidB, rollbackB := h.Ambient(ctx, t)
+	ctxB, pidB, _, rollbackB := h.Ambient(ctx, t)
 	user, err := h.Users.GetUser(ctx, in.ID)
 	require.NoError(t, err)
 
@@ -188,7 +192,7 @@ func runImportKeySpace(t *testing.T, h Harness, newImported func(t *testing.T, r
 // waitBlockedBy waits until a session of the database is blocked by the
 // backend pid. A result on done first means the waiting call never waited,
 // which fails the case: the race it sets up did not happen.
-func waitBlockedBy(t *testing.T, db *sql.DB, pid int, done <-chan importResult) {
+func waitBlockedBy[R any](t *testing.T, db *sql.DB, pid int, done <-chan R) {
 	t.Helper()
 
 	deadline := time.Now().Add(importQueueBound)
@@ -203,13 +207,13 @@ WHERE datname = current_database() AND $1::int = ANY(pg_blocking_pids(pid)))`, p
 
 		select {
 		case r := <-done:
-			require.Fail(t, "the concurrent import finished without waiting for the caller's transaction",
-				"outcome %v, error %v", r.out, r.err)
+			require.Fail(t, "the concurrent call finished without waiting for the caller's transaction",
+				"result %+v", r)
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
 
-	require.Fail(t, "the concurrent import never waited for the caller's transaction")
+	require.Fail(t, "the concurrent call never waited for the caller's transaction")
 }
 
 // importResult is what one import call returned.

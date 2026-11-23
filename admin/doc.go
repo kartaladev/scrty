@@ -53,8 +53,11 @@
 // records before and after it (Change), which have no password hash field.
 // When one is configured, a service reads the record before writing, one extra
 // read, and Grants and Assignments read it after writing too, since their
-// stores return only the new version. A failing or panicking audit sink is
-// logged with the action and the target only, and the call still succeeds.
+// stores return only the new version. A record read at a version other than the
+// one the caller named is ErrStaleUpdate and nothing is written, so a before
+// record is only ever the version the write replaced. A failing or panicking
+// audit sink is logged with the action and the target only, and the call still
+// succeeds.
 //
 // Events and audit records are delivered after the store call returns, so a
 // crash between the commit and the delivery loses them. A consumer that needs

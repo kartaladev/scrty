@@ -58,7 +58,7 @@ consumer's own store)
 - Assignment start and end dates are enforced when the chain builds the principal.
 - An optional switch of the active role, recorded in the session and re-checked on every request.
 
-**Behaviour changes** (none breaks the Go API; each is called out in the v0.3.0 CHANGELOG entry)
+**Behaviour changes** (each is called out in the v0.3.0 CHANGELOG entry; two also break the Go API, listed last)
 - **BREAKING (behaviour):** a soft-deleted user loads as not found, by username and by identifier.
 - **BREAKING (behaviour):** a role grant outside its start and end dates no longer reaches the
   principal, so it no longer authorizes. Before, the dates were carried and never checked.
@@ -71,6 +71,10 @@ consumer's own store)
 - The identity ports still discard an email given to `Provision` or `Update`; only the
   administration services and import set it, so just-in-time provisioning cannot fail on an
   email collision.
+- **BREAKING (Go API):** `event.Event` is no longer comparable, because its new `Changed` field is a
+  slice. Code comparing events with `==` or keying a map by them compares fields instead.
+- **BREAKING (Go API), `test` module:** `test/identity.Fixture` gains `SeedEmail` and `SoftDelete`,
+  so a consumer's own fixture for the identity conformance suite implements both.
 
 ## Capabilities
 

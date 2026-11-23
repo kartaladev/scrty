@@ -29,6 +29,7 @@ func runUserSuite(t *testing.T, newFixture Factory) {
 	t.Run("UsernameEmailCollision", func(t *testing.T) { runUsernameEmailCollisionCases(t, newFixture) })
 	t.Run("UsernameEmailRace", func(t *testing.T) { runUsernameEmailRaceCase(t, newFixture) })
 	t.Run("SoftDelete", func(t *testing.T) { runSoftDeleteCase(t, newFixture) })
+	t.Run("RetireAfterDeletion", func(t *testing.T) { runRetireAfterDeletionCase(t, newFixture) })
 	t.Run("DeletedUserWrites", func(t *testing.T) { runDeletedUserWriteCases(t, newFixture) })
 	t.Run("AttributesRoundTrip", func(t *testing.T) { runAttributesRoundTripCase(t, newFixture) })
 	t.Run("OrganizationRoundTrip", func(t *testing.T) { runOrganizationRoundTripCase(t, newFixture) })
@@ -449,7 +450,7 @@ func runUsernameEmailCollisionCases(t *testing.T, newFixture Factory) {
 		},
 		{
 			name: "update to an email equal to another user's username",
-			act: func(ctx context.Context, t *testing.T, f Fixture, bob, other admin.User) (identity.UserID, error) {
+			act: func(ctx context.Context, _ *testing.T, f Fixture, bob, other admin.User) (identity.UserID, error) {
 				addr := strings.ToUpper(bob.Username)
 				_, err := f.Users().UpdateUser(ctx, other.ID, other.Version, admin.UserChange{Email: &addr})
 
@@ -459,7 +460,7 @@ func runUsernameEmailCollisionCases(t *testing.T, newFixture Factory) {
 		},
 		{
 			name: "update to an email equal to another user's email",
-			act: func(ctx context.Context, t *testing.T, f Fixture, bob, other admin.User) (identity.UserID, error) {
+			act: func(ctx context.Context, _ *testing.T, f Fixture, bob, other admin.User) (identity.UserID, error) {
 				addr := strings.ToUpper(bob.Email)
 				_, err := f.Users().UpdateUser(ctx, other.ID, other.Version, admin.UserChange{Email: &addr})
 
@@ -632,6 +633,40 @@ func runSoftDeleteCase(t *testing.T, newFixture Factory) {
 
 	reused := mustCreateUser(ctx, t, f, admin.NewUser{Username: username(t, 1), Email: strings.ToUpper(addr)})
 	assert.NotEqual(t, u.ID, reused.ID, "a deleted user's email is released for a new user")
+}
+
+// runRetireAfterDeletionCase checks that password history cannot be written
+// back for a deleted user (D13, F76). A password change reads the user, the
+// policy retires the replaced hash, and only then does the store write the new
+// one; a deletion that commits between the read and the retire must not leave
+// a history entry behind, so retiring a hash for a deleted user is refused and
+// records nothing. The retire goes through the same seeding path as the rest
+// of the part (see HistorySeeder), and the case requires only an error: what
+// that error matches is the history implementation's to choose.
+func runRetireAfterDeletionCase(t *testing.T, newFixture Factory) {
+	t.Helper()
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newFixture(t)
+
+	u := mustCreateUser(ctx, t, f, admin.NewUser{Username: username(t, 0), Name: "Ada"})
+	set, err := f.Users().SetPassword(ctx, u.ID, u.Version, []byte("hash-1"), passwordSetAt)
+	require.NoError(t, err)
+
+	seed := historySeeder(f)
+	require.NotNil(t, seed, "the preflight requires a way to seed password history")
+	require.NoError(t, seed(ctx, u.ID, []byte("hash-0")), "the case could not seed the password history it needs")
+
+	require.NoError(t, f.Users().DeleteUser(ctx, u.ID, set.Version))
+
+	err = seed(ctx, u.ID, []byte("hash-1"))
+	require.Error(t, err, "retiring a hash for a deleted user must be refused, not recorded")
+
+	residue, err := f.UserResidue(ctx, u.ID)
+	require.NoError(t, err)
+	assert.True(t, residue.Deleted, "the record stays deleted")
+	assert.Empty(t, residue.PasswordHistory, "a deleted user keeps no password history, even after a late retire")
 }
 
 // runDeletedUserWriteCases checks that every call of the user port on a

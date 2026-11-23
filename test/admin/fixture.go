@@ -110,7 +110,8 @@ type Fixture interface {
 // check that soft deletion removes it. It is optional: a fixture that does not
 // offer it is seeded through its user store's RetirePassword when that store
 // implements password.History, and the user part fails its preflight, naming
-// SeedPasswordHistory, when neither is offered.
+// SeedPasswordHistory, when neither is offered. Either way, retiring a hash
+// for a soft-deleted user must fail and record nothing.
 //
 // A password change does not record history through the user port: the
 // password policy's reuse rule retires the replaced hash through the
@@ -118,7 +119,9 @@ type Fixture interface {
 // way.
 type HistorySeeder interface {
 	// SeedPasswordHistory records hash as the newest retired password hash
-	// of the live user with the identifier.
+	// of the live user with the identifier. For a soft-deleted user it
+	// returns an error and records nothing, as a store's RetirePassword must:
+	// a retire racing a deletion never writes history back (RetireAfterDeletion).
 	SeedPasswordHistory(ctx context.Context, id identity.UserID, hash []byte) error
 }
 

@@ -11,7 +11,6 @@ import (
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/pkg/id"
 )
 
 // ImporterOption configures NewImporter. Every Option, such as WithEventSink,
@@ -93,7 +92,10 @@ func NewImporter(store ImportStore, recognizer password.Recognizer, opts ...Impo
 // created, updated or unchanged. A created or updated user is reported as
 // event.UserImported; an unchanged one reports nothing.
 //
-// The identifier must be a canonical lower-case UUID, the username not blank,
+// The identifier is opaque to the service: it must be neither blank nor over
+// the length bound, and its form is the store's to judge (scrty's stores
+// require a canonical lower-case UUID and refuse any other with
+// ErrInvalidInput, which Import returns as is). The username must not be blank,
 // the text fields, roles and attributes within the service's bounds, and a
 // non-empty password hash one the recogniser recognises; otherwise the call
 // fails with ErrInvalidInput before the store is called. An empty hash
@@ -139,7 +141,7 @@ func (im *Importer) Import(ctx context.Context, u ImportedUser) (ImportOutcome, 
 }
 
 func (im *Importer) validate(u ImportedUser) error {
-	if err := canonicalUserID(u.ID); err != nil {
+	if err := userIDValid(u.ID); err != nil {
 		return err
 	}
 
@@ -179,17 +181,6 @@ func (im *Importer) validate(u ImportedUser) error {
 
 	if len(u.PasswordHash) > maxHashBytes || !im.recognizer.Recognizes(u.PasswordHash) {
 		return invalid("the password hash is in no encoding the recogniser recognises")
-	}
-
-	return nil
-}
-
-// canonicalUserID checks an identifier is a canonical lower-case UUID other
-// than the nil UUID, the form the default store's column holds.
-func canonicalUserID(userID identity.UserID) error {
-	parsed, err := id.Parse(string(userID))
-	if err != nil || parsed.IsZero() || parsed.String() != string(userID) {
-		return invalid("user identifier is not a canonical UUID")
 	}
 
 	return nil

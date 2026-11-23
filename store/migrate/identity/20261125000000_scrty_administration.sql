@@ -55,7 +55,10 @@ CREATE INDEX scrty_user_attributes_name_value ON scrty_user_attributes (name, va
 -- Exactly what Up added, in reverse. IF EXISTS on every statement, so a rollback still
 -- completes after a relation was dropped by hand. Dropping a column drops the index over it.
 -- A user's email, version and deleted state, and a role's display name, description, labels
--- and version, are lost with their columns: back the data up before rolling back.
+-- and version, are lost with their columns: back the data up before rolling back. lock_timeout
+-- bounds the wait for the ACCESS EXCLUSIVE lock the statements take, as it does for Up.
+SET LOCAL lock_timeout = '5s';
+
 DROP TABLE IF EXISTS scrty_user_attributes;
 DROP INDEX IF EXISTS scrty_assigned_roles_role_name;
 DROP INDEX IF EXISTS scrty_users_username_lower;

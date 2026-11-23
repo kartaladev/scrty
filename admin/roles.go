@@ -165,6 +165,10 @@ func (r *Roles) Update(ctx context.Context, name string, version int64, c RoleCh
 			return Role{}, fmt.Errorf("admin: update role: %w", err)
 		}
 
+		if got.Version != version {
+			return Role{}, fmt.Errorf("admin: update role: %w", ErrStaleUpdate)
+		}
+
 		before = &got
 	}
 
@@ -203,6 +207,10 @@ func (r *Roles) Delete(ctx context.Context, name string, version int64, force bo
 		got, err := r.store.GetRole(ctx, name)
 		if err != nil {
 			return fmt.Errorf("admin: delete role: %w", err)
+		}
+
+		if got.Version != version {
+			return fmt.Errorf("admin: delete role: %w", ErrStaleUpdate)
 		}
 
 		before = &got

@@ -12,6 +12,7 @@ import (
 // (IdentifierLockKeys, LockIdentifierKey, EmailHeldByLiveUser,
 // UsernameHeldByLiveUser) guard usernames and emails, as they do for
 // provisioning.
+
 // ImportLockClass is the first key of LockImportIdentifier's two-key advisory
 // lock: the ASCII bytes "scrt" read as an int4. It marks the lock as scrty's
 // import lock; the single-key locks the other statements take are in a
@@ -114,6 +115,7 @@ ON CONFLICT DO NOTHING`
 	// SetUserPassword stores $2 as the password of user $1, with
 	// password_changed_at $3 and updated_at $4, and increases its version. Run
 	// it holding LockAdminUser.
+	//nolint:gosec // G101: SQL statement text naming the password column, no credential
 	SetUserPassword = `UPDATE scrty_users SET password = $2, password_changed_at = $3, updated_at = $4,
   version = version + 1 WHERE id = $1`
 
@@ -147,6 +149,25 @@ ON CONFLICT DO NOTHING`
 	LockImportUser = `SELECT username, name, email, email_verified_at, password, active, created_at, updated_at,
   deleted_at
 FROM scrty_users WHERE id = $1 FOR UPDATE`
+
+	// SetImportedUsername writes username $2 to user $1, alone. An import
+	// that changes the username runs it before UpdateImportedUser, so a
+	// unique violation of either statement names the one value that
+	// collided: the username here, the email there (the username is then
+	// already written). Run it holding LockImportUser.
+	SetImportedUsername = `UPDATE scrty_users SET username = $2 WHERE id = $1`
+
+	// ShareHistoryOwner reads whether the user with id $1 is soft-deleted and
+	// locks the row FOR SHARE until the transaction ends. A password-history
+	// write takes it before it records an entry: a deletion locks the row FOR
+	// UPDATE and removes the history in its transaction, so the two serialise
+	// and no entry recorded for the user outlives a deletion (D13). FOR SHARE
+	// rather than FOR KEY SHARE, so it also waits for a write to the row that
+	// takes no explicit lock first. It is a user-row lock, taken where D11's
+	// order puts user rows: after any role lock, before any advisory lock.
+	// No row is a reference to no user of this table: the history tables
+	// declare no foreign key, so the write goes ahead.
+	ShareHistoryOwner = `SELECT deleted_at IS NOT NULL FROM scrty_users WHERE id = $1 FOR SHARE`
 
 	// UpdateImportedUser writes an import's values to user $1: $2 username,
 	// $3 name, $4 email (NULL for none), $5 email_verified_at (NULL for

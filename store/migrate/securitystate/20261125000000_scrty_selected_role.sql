@@ -14,6 +14,9 @@ ALTER TABLE scrty_op_refresh_tokens ADD COLUMN selected_role text NULL;
 
 -- +goose Down
 -- Exactly what Up added, in reverse. IF EXISTS, so a rollback still completes after a column
--- was dropped by hand. A selection stored in a column is lost with it.
+-- was dropped by hand. A selection stored in a column is lost with it. lock_timeout bounds the
+-- wait for the ACCESS EXCLUSIVE lock the statements take, as it does for Up.
+SET LOCAL lock_timeout = '5s';
+
 ALTER TABLE IF EXISTS scrty_op_refresh_tokens DROP COLUMN IF EXISTS selected_role;
 ALTER TABLE IF EXISTS scrty_sessions DROP COLUMN IF EXISTS selected_role;

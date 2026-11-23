@@ -58,18 +58,22 @@ type Event struct {
 
 	// Actor is who made an administration change: the identifier of the
 	// authenticated principal, or "system:" and the name of the system actor
-	// a job attached. It is empty on the events of every other component.
+	// a job attached. It is empty on the events of every other component,
+	// except ActiveRoleSwitched, whose Actor is the user, who changes their
+	// own session.
 	Actor string
 
 	// Target is what an administration change concerns: a user's identifier,
-	// or a role's name. It is empty on the events of every other component.
+	// or a role's name. It is empty on the events of every other component,
+	// except ActiveRoleSwitched, whose Target is the user.
 	Target string
 
 	// Changed names the fields an administration change changed, such as
 	// "email", or the resources a grant replacement replaced, as
 	// group/resource. It never carries a field's value. It is nil on the
-	// events of every other component, and where the name says it all: a
-	// user's creation, an import and a deletion. The slice is the sink's own.
+	// events of every other component, except ActiveRoleSwitched, which carries
+	// "active_role", and where the name says it all: a user's creation, an
+	// import and a deletion. The slice is the sink's own.
 	Changed []string
 }
 

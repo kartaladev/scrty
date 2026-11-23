@@ -50,6 +50,8 @@ func TestAdminStatementsMatchSchema(t *testing.T) {
 		"LockAdminRoleFlag":        pgschema.LockAdminRoleFlag,
 		"SetHolderSuperRole":       pgschema.SetHolderSuperRole,
 		"UpdateImportedUser":       pgschema.UpdateImportedUser,
+		"SetImportedUsername":      pgschema.SetImportedUsername,
+		"ShareHistoryOwner":        pgschema.ShareHistoryOwner,
 		"ShareOrganization":        pgschema.ShareOrganization,
 		"KnownRoles":               pgschema.KnownRoles,
 		"ListAdminRoles":           pgschema.ListAdminRoles,

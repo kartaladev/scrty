@@ -530,9 +530,12 @@ func (s *IdentityStore) SetPassword(
 func (s *IdentityStore) ImportUser(ctx context.Context, in admin.ImportedUser) (admin.ImportOutcome, error) {
 	const op = "import user"
 
+	// The identifier is returned as given, so only the one spelling the
+	// users table hands back is accepted: a canonical lower-case UUID, never
+	// the nil UUID (design D14).
 	uid, ok := storekit.ParseUserID(in.ID)
-	if !ok {
-		return 0, invalidInput(op, "the identifier is not a UUID in canonical lowercase text")
+	if !ok || uid.IsZero() {
+		return 0, invalidInput(op, "the identifier is not a non-nil UUID in canonical lowercase text")
 	}
 	if in.Username == "" {
 		return 0, invalidInput(op, "the username is empty")
@@ -663,13 +666,23 @@ func (s *IdentityStore) ImportUser(ctx context.Context, in admin.ImportedUser) (
 			role = primary
 		}
 
+		// A changed username is written alone first, so a unique violation
+		// names the value that collided (pgschema.SetImportedUsername).
+		if setUsername != "" {
+			if _, err := q.ExecContext(ctx, pgschema.SetImportedUsername, uid, setUsername); err != nil {
+				if isUniqueViolation(err) {
+					return alreadyExists(op, admin.FieldUsername)
+				}
+				return dbFailed(op, err)
+			}
+		}
+
 		if _, err := q.ExecContext(ctx, pgschema.UpdateImportedUser, uid, want.username, want.name,
 			emptyNull(want.email), nullTs(want.verifiedAt), want.password, want.active, role,
 			nullTs(want.createdAt), nullTs(want.updatedAt)); err != nil {
 			if isUniqueViolation(err) {
-				if setUsername != "" {
-					return alreadyExists(op, admin.FieldUsername)
-				}
+				// The username was written alone just before, so only
+				// the email can collide here.
 				return alreadyExists(op, admin.FieldEmail)
 			}
 			return dbFailed(op, err)

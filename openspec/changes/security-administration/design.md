@@ -39,7 +39,13 @@ See `proposal.md` for why. The current state that shapes the approach:
 - Every feature works with no configuration beyond the store, and every default can be replaced
   through an option or a port (`library-design.md`).
 - No new dependency. No change to an existing exported signature: everything is added beside what
-  exists.
+  exists. **Two exceptions, found by the API report during implementation (decided 2026-11-23,
+  during implementation; a compatibility decision under the project's pre-1.0 policy, recorded in
+  the CHANGELOG as breaking):** `event.Event` is no longer comparable, because D19's `Changed` field
+  is a slice, and a slice is the natural shape for a list of field names; and `test/identity.Fixture`
+  gains `SeedEmail` and `SoftDelete`, which the email-loader and soft-deletion conformance cases need.
+  **Alternative:** a comparable `Changed` (a joined string, or a fixed array). Rejected: it would
+  push parsing onto every sink to keep a property no scrty code relies on.
 - One identity migration and one security-state migration, each with a Down section.
 
 **Non-Goals:**
@@ -257,6 +263,11 @@ administrative writes compare versions.
 
 - **Alternative:** `updated_at` as the version. Rejected: two writes inside one clock tick would
   compare equal, and an imported `updated_at` is the source system's time.
+- **With an audit sink, the service refuses early (decided 2026-11-23, during implementation; F77).**
+  The service reads the record for the audit's before value, and refuses with `ErrStaleUpdate`,
+  writing and reporting nothing, when the version it read is not the one the caller named. The
+  store's conditional write stays the authority; the early refusal only ensures a before record is
+  never reported for a version the write did not replace. Without a sink nothing is read early.
 
 ### D12. Email is a column, unique among live users, and only the administration services set it (decided by the user 2026-11-23)
 
@@ -287,6 +298,10 @@ filters `deleted_at IS NULL`. The username stays held by the unchanged unique co
 - **Why the history is removed:** the existing requirement treats password history as credential
   material removed with the user.
 - **Override:** none. Reuse of a deleted username was considered and refused by the user.
+- **The password hash stays in the row (decided 2026-11-23, during implementation).** `Delete` keeps
+  `scrty_users.password`, as it keeps the username; no loader returns a deleted user, so nothing
+  reads it. The history is what is removed, and a password change racing the delete must not write
+  history back for a deleted user (F76).
 
 **Store rules fixed while writing the administration conformance suite (decided 2026-11-23).**
 - A user's first assignment is primary whatever the request says, so a user with grants always has
@@ -321,7 +336,11 @@ when one differs. The outcome is `Created`, `Updated` or `Unchanged`.
 
 - `UpdatedAt` before `CreatedAt` is refused as invalid input; a zero `CreatedAt` takes the service
   clock.
-- The identifier must be a canonical UUID (the users table's type). The password hash is stored
+- The identifier's form is the store's to judge (decided 2026-11-23, during implementation, moving the
+  check out of the service): scrty's stores require a canonical UUID, the users table's type, other
+  than the nil UUID, and refuse any other text with `ErrInvalidInput`, so the identifier they return is the one given. The
+  service does not parse it, because `identity.UserID` is an opaque, consumer-owned string; a
+  consumer's own import store accepts whatever identifiers it holds. The password hash is stored
   as given and must be recognised by the configured encoder's recogniser, so a hash scrty could
   never verify is refused rather than locking a user out silently.
 - A username or email held by a different identifier fails with `ErrAlreadyExists`, so import can
@@ -499,6 +518,10 @@ the selected grant active when it is still held and valid, and the primary grant
   migration therefore adds it to both tables; it stays NULL on the lineage table. **Alternative:**
   a second set of session statements for the lineage table. Rejected: it duplicates every statement
   to save one nullable column.
+- **The switch event carries the administration fields (decided 2026-11-23, during implementation):**
+  `scrty_active_role_switched` names the user as both `Actor` and `Target` and `active_role` in
+  `Changed`, though the chain is not an administration component, because a user changing their own
+  session is the actor of that change. The security-events spec states it as the one exception.
 
 ## Failure modes
 
@@ -567,7 +590,7 @@ the selected grant active when it is still held and valid, and the primary grant
 | F61 | A consumer's identifier resolver fails | Handled, tested | The login is refused with the sanitized failure, an outage staying an outage, after the same decoy work; it is logged. Lockout never judges one key while another account is authenticated. A consumer authenticator that offers no decoy spends no password work on that refusal; the chain warns about such an authenticator at construction |
 | F62 | Lock disclosure is turned on with email login | Accepted (godoc of `WithLockDisclosure`) | Locking an account through its username, then presenting a candidate email, shows whether the email belongs to it; disclosure is the consumer's opt-in |
 | F63 | A role selection commits while a rotation of the same session is in flight | Handled, tested (`RotationTakesSelectionMadeDuringStep`, `SupersedeTakesSelectedRoleFromLockedRow`) | The successor takes the selection from the locked old row, so the switch is kept, up or down. A consumer store that skips this read-back fails the session conformance suite; if run anyway, the selection is lost and the primary role applies |
-| F64 | The identity ports provision or update a grant while a forced role delete or a super-role flag change runs | Accepted | Those ports write grants without the role's lock, as before this change, so such a grant can survive the delete, or carry the old flag, until the next administrative write to that role or user; the administration ports are serialised against it |
+| F64 | The identity ports provision or update a grant while a forced role delete or a super-role flag change runs | Accepted | Those ports write grants without the role's lock, as before this change, so such a grant can survive the delete, or carry the old flag, until the next administrative write to that role or user; the administration ports are serialised against it. A non-forced delete is affected too: a grant an identity port commits between the delete's holder check and its removal of assignments is removed without `ErrStillAssigned`, and the user's role column may still name the deleted role until the next administrative write |
 | F65 | An import runs inside a caller's long transaction | Accepted (godoc) | The import's identifier lock is held until that transaction ends, as in F38; other imports of that identifier wait. Two identifiers whose lock hashes collide only queue behind each other |
 | F66 | `SwitchActiveRole` is called on a session a consumer's own interceptor published | Handled, tested | Refused with an error matching `ErrConfig`: only a session this chain resolved can be switched, through the loader and manager that resolved it |
 | F67 | A switch is made during a request | Accepted (godoc) | That request keeps the role it was authenticated with; the switch applies from the next request. A role name over 256 bytes, or one no store could hold, is refused as not held |
@@ -579,6 +602,9 @@ the selected grant active when it is still held and valid, and the primary grant
 | F73 | A failed login by a registered email, timed against one by an unknown email | Accepted | The registered email makes one more attempt-store write on the response path (the account's record and the typed one, where an unknown email makes one). The decoy password hash, run either way, dominates the response time; the typed write does none of the lockout view's reads (F70). Moving it off the response path would detach a write the request no longer waits for, and was not chosen |
 | F74 | A consumer's wrapper around the lockout view hides `policy.UnreportedAttemptRecorder` | Accepted (godoc of `UnreportedAttemptRecorder`) | The typed record arrives as a plain write, which the view reports, so the identifier as typed is reported a second time, as before F70. A capped policy refuses such a wrapper at construction already; an uncapped one accepts it. Mirrors F51 |
 | F75 | An email held while it named no account is later verified for one, and its owner logs in by email | Accepted (godoc of the lockout view's `ResetUnreported`) | The success clears that hold through the unreported reset, so the earlier `ReportHeld` is never followed by `ReportReleased`. Nothing is locked or held silently |
+| F76 | A password change races a soft delete of the same user | Handled, tested (`Users/RetireAfterDeletion` in the shared suite; `RetireRacesDelete`, both interleavings, per store) | `RetirePassword` takes the user row `FOR SHARE` before writing history, and `DeleteUser` takes it `FOR UPDATE` before removing it, so the two serialise: a retire after the delete is refused with not-found (matching `identity.ErrUserNotFound` and `admin.ErrNotFound`) and writes nothing, and a delete after the retire removes what it wrote. A reference with no user row still records history, as before: the tables declare no foreign key, and the password-history port serves such references (accepted) |
+| F77 | With an audit sink, the record read for the before value is at another version than the caller named | Handled, tested (`TestAudit_BeforeIsTheVersionTheWriteReplaced`, nine writes) | `ErrStaleUpdate` before anything is written or reported (D11) |
+| F78 | A consumer runs two password changes for one user inside transactions of their own, concurrently | Accepted | The retire's share lock followed by the hash update can deadlock; PostgreSQL aborts one with an error and nothing is half-applied. The administration services make these calls outside a transaction of the consumer's, unless the consumer attaches one to the context (`WithTx`), which then carries the same risk |
 
 ## Risks / Trade-offs
 

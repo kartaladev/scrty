@@ -736,22 +736,39 @@ func runRemovePrimaryHandsOverCase(t *testing.T, newFixture Factory) {
 }
 
 // runAssignUnknownRoleCase checks that assigning a role the store does not
-// hold is not found and writes nothing.
+// hold is not found and writes nothing. An empty role name is a role no
+// catalogue holds, so it is not found too, as the port documents, rather than
+// invalid input.
 func runAssignUnknownRoleCase(t *testing.T, newFixture Factory) {
 	t.Helper()
-	t.Parallel()
 
-	ctx := t.Context()
-	f := newFixture(t)
-	u := mustCreateUser(ctx, t, f, admin.NewUser{Username: username(t, 0)})
+	type testCase struct {
+		name string
+		role func(t *testing.T) string
+	}
 
-	_, err := f.Assignments().AddAssignment(ctx, u.ID, u.Version, admin.Assignment{Role: roleName(t, "ghost"), Primary: true})
-	require.ErrorIs(t, err, admin.ErrNotFound, "an unknown role is not found (reason matched: %s)", reasonOf(err))
+	cases := []testCase{
+		{"a role not in the catalogue", func(t *testing.T) string { return roleName(t, "ghost") }},
+		{"an empty role name", func(*testing.T) string { return "" }},
+	}
 
-	roles, v, err := f.Assignments().ListAssignments(ctx, u.ID)
-	require.NoError(t, err)
-	assert.Empty(t, roles, "a refused assignment writes no grant")
-	assert.Equal(t, u.Version, v, "a refused assignment leaves the version alone")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			f := newFixture(t)
+			u := mustCreateUser(ctx, t, f, admin.NewUser{Username: username(t, 0)})
+
+			_, err := f.Assignments().AddAssignment(ctx, u.ID, u.Version, admin.Assignment{Role: tc.role(t), Primary: true})
+			require.ErrorIs(t, err, admin.ErrNotFound, "an unknown role is not found (reason matched: %s)", reasonOf(err))
+
+			roles, v, err := f.Assignments().ListAssignments(ctx, u.ID)
+			require.NoError(t, err)
+			assert.Empty(t, roles, "a refused assignment writes no grant")
+			assert.Equal(t, u.Version, v, "a refused assignment leaves the version alone")
+		})
+	}
 }
 
 // staleGrantFixture is a user with two role grants, the primary one first,

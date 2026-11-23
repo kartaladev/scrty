@@ -135,7 +135,9 @@ func (a *Assignments) SetPrimary(ctx context.Context, userID identity.UserID, ve
 }
 
 // write checks the actor and the version, reads the before record when an
-// audit sink will receive it, makes the change and reports it.
+// audit sink will receive it, makes the change and reports it. A before
+// record at a version other than the one named is ErrStaleUpdate, and nothing
+// is written.
 func (a *Assignments) write(ctx context.Context, userID identity.UserID, version int64, field string,
 	change func(ctx context.Context) (int64, error),
 ) (int64, error) {
@@ -151,9 +153,13 @@ func (a *Assignments) write(ctx context.Context, userID identity.UserID, version
 	var before []identity.AssignedRole
 
 	if a.cfg.auditing() {
-		roles, _, err := a.store.ListAssignments(ctx, userID)
+		roles, v, err := a.store.ListAssignments(ctx, userID)
 		if err != nil {
 			return 0, fmt.Errorf("admin: assignment: %w", err)
+		}
+
+		if v != version {
+			return 0, fmt.Errorf("admin: assignment: %w", ErrStaleUpdate)
 		}
 
 		before = assignedValues(roles)

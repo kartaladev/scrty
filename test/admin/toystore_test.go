@@ -51,6 +51,10 @@ const (
 	defectImportRaceReportsUpdated defect = "import-race-reports-updated"
 	// An import of a deleted user's identifier restores the user.
 	defectImportRestoresDeleted defect = "import-restores-deleted"
+	// An import stores the identifier lower-cased, not as given.
+	defectImportFoldsIdentifier defect = "import-folds-identifier"
+	// An update applies whatever version the caller names.
+	defectIgnoresVersionOnUpdate defect = "ignores-version-on-update"
 
 	// Removing a primary grant, or force-deleting its role, hands the mark
 	// to the last remaining grant rather than the first.
@@ -560,6 +564,9 @@ func (s *toyStore) UpdateUser(_ context.Context, id identity.UserID, version int
 	defer s.mu.Unlock()
 
 	u, err := s.liveVersioned("UpdateUser", id, version)
+	if s.d == defectIgnoresVersionOnUpdate {
+		u, err = s.live("UpdateUser", id)
+	}
 	if err != nil {
 		return admin.User{}, err
 	}
@@ -777,6 +784,10 @@ func (s *toyStore) importDiffers(u *toyUser, in admin.ImportedUser) bool {
 func (s *toyStore) ImportUser(_ context.Context, in admin.ImportedUser) (admin.ImportOutcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.d == defectImportFoldsIdentifier {
+		in.ID = identity.UserID(strings.ToLower(string(in.ID)))
+	}
 
 	for _, r := range in.Roles {
 		if _, ok := s.roles[r]; !ok {

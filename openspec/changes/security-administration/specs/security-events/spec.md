@@ -14,7 +14,7 @@ Administration services SHALL report each committed change to the event sink, us
 - **THEN** the sink receives no event
 
 ### Requirement: An administration event names its actor, target and changed fields
-An administration event SHALL carry the actor's reference, or the system actor's name, the target user's reference or the role name, and the names of the changed fields. It SHALL NOT carry a field's value. Events of other components SHALL leave these empty.
+An administration event SHALL carry the actor's reference, or the system actor's name, the target user's reference or the role name, and the names of the changed fields. It SHALL NOT carry a field's value. Events of other components SHALL leave these empty, except `scrty_active_role_switched`, which SHALL carry the user as both actor and target and `active_role` as the changed field, because the user changes their own session.
 
 #### Scenario: Grant change
 - **WHEN** an administrator replaces role `sales`'s grants on `crm/lead`

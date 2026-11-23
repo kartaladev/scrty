@@ -731,11 +731,10 @@ func (s *IdentityStore) AddAssignment(
 ) (int64, error) {
 	const op = "add assignment"
 
-	if !storekit.Storable(a.Role) {
+	// An empty name is a role no catalogue holds: not found, as the other
+	// adapters answer it.
+	if !storekit.Storable(a.Role) || a.Role == "" {
 		return 0, notFound(op)
-	}
-	if a.Role == "" {
-		return 0, invalidInput(op, "the role is empty")
 	}
 
 	return s.writeAssignment(ctx, op, ref, version, a.Role,

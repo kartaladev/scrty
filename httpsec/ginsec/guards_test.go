@@ -966,7 +966,7 @@ func TestGuards_Require(t *testing.T) {
 
 	// onlyLead grants read on crm/lead and denies every other resource, or
 	// fails with outage when it is set.
-	judge := func(t *testing.T, outage error) *MockAuthorizer {
+	grant := func(t *testing.T, resource string, outage error) *MockAuthorizer {
 		t.Helper()
 
 		az := NewMockAuthorizer(gomock.NewController(t))
@@ -976,7 +976,7 @@ func TestGuards_Require(t *testing.T) {
 					return outage
 				}
 
-				if p, ok := a.(authorize.PrivilegeAttributes); ok && p.Resource == "lead" {
+				if p, ok := a.(authorize.PrivilegeAttributes); ok && p.Resource == resource {
 					return nil
 				}
 
@@ -986,7 +986,13 @@ func TestGuards_Require(t *testing.T) {
 		return az
 	}
 
+	judge := func(t *testing.T, outage error) *MockAuthorizer { return grant(t, "lead", outage) }
+
 	allOf := authorize.AllOf(
+		authorize.HasPrivilege("crm", "lead", "read"),
+		authorize.HasPrivilege("crm", "deal", "read"))
+
+	anyOf := authorize.AnyOf(
 		authorize.HasPrivilege("crm", "lead", "read"),
 		authorize.HasPrivilege("crm", "deal", "read"))
 
@@ -1021,6 +1027,30 @@ func TestGuards_Require(t *testing.T) {
 				require.NoError(t, err)
 				assert.True(t, out.routeRan)
 				assert.Empty(t, out.ginErrors)
+			},
+		},
+		{
+			name:      "any-of passes when only one alternative is granted",
+			principal: testPrincipal(),
+			az:        func(t *testing.T) authorize.Authorizer { return grant(t, "deal", nil) },
+			req:       anyOf,
+			assert: func(t *testing.T, _ gin.HandlerFunc, err error, out *served) {
+				require.NoError(t, err)
+				assert.True(t, out.routeRan)
+				assert.Empty(t, out.ginErrors)
+			},
+		},
+		{
+			name:      "any-of refuses when no alternative is granted",
+			principal: testPrincipal(),
+			az:        func(t *testing.T) authorize.Authorizer { return grant(t, "contact", nil) },
+			req:       anyOf,
+			assert: func(t *testing.T, _ gin.HandlerFunc, err error, out *served) {
+				require.NoError(t, err)
+				assert.Equal(t, http.StatusForbidden, out.rec.Code)
+				assert.False(t, out.routeRan)
+				require.Len(t, out.ginErrors, 1)
+				assert.ErrorIs(t, out.ginErrors[0], authorize.ErrAccessDenied)
 			},
 		},
 		{

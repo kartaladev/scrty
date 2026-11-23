@@ -18,7 +18,7 @@ import (
 )
 
 // newAdminUser creates a live user with a unique username and the email.
-func newAdminUser(t *testing.T, s *gormstore.IdentityStore, ctx context.Context, email string) admin.User {
+func newAdminUser(ctx context.Context, t *testing.T, s *gormstore.IdentityStore, email string) admin.User {
 	t.Helper()
 
 	uid, err := seedIDs.NewID()
@@ -87,7 +87,7 @@ func TestAdminUnknownOrganization(t *testing.T) {
 		{
 			name: "update",
 			write: func(ctx context.Context, org *identity.Organization) error {
-				u := newAdminUser(t, store, ctx, "")
+				u := newAdminUser(ctx, t, store, "")
 				ref := org
 				_, err := store.UpdateUser(ctx, u.ID, u.Version, admin.UserChange{Organization: &ref})
 
@@ -151,7 +151,7 @@ func TestAdminAmbientTransaction(t *testing.T) {
 				ctx = context.WithValue(t.Context(), consumerTxKey{}, tx)
 			}
 
-			first := newAdminUser(t, store, ctx, "dup-"+t.Name()+"@example.com")
+			first := newAdminUser(ctx, t, store, "dup-"+t.Name()+"@example.com")
 
 			uid, err := seedIDs.NewID()
 			require.NoError(t, err)
@@ -214,7 +214,7 @@ func TestAdminRacedUniqueViolation(t *testing.T) {
 	store := newIdentityStore(t, d.db)
 	ctx := t.Context()
 
-	victim := newAdminUser(t, store, ctx, "")
+	victim := newAdminUser(ctx, t, store, "")
 	email := "raced-" + string(victim.ID) + "@example.com"
 
 	// An uncommitted insert of the email, from a writer that takes no lock:
@@ -258,7 +258,7 @@ func TestAdminCancelledMidWrite(t *testing.T) {
 	store := newIdentityStore(t, d.db)
 	ctx := t.Context()
 
-	u := newAdminUser(t, store, ctx, "")
+	u := newAdminUser(ctx, t, store, "")
 
 	raw, err := d.conn.DB.BeginTx(ctx, nil)
 	require.NoError(t, err)

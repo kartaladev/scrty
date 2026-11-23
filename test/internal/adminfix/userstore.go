@@ -123,6 +123,9 @@ func Run(t *testing.T, h Harness) {
 	if h.Grants != nil {
 		t.Run("Grants", func(t *testing.T) { runGrants(t, h) })
 	}
+	if h.Ambient != nil {
+		t.Run("RetireRacesDelete", func(t *testing.T) { runRetireRacesDelete(t, h) })
+	}
 }
 
 // seedPrivilege stores one granted privilege of role on group/resource,
@@ -373,16 +376,16 @@ VALUES ($1, 'Org', now(), now())`, orgID)
 					require.NoError(t, h.Users.DeleteUser(t.Context(), u.ID, u.Version))
 					return admin.NewUser{Username: uniq("f"), Email: strings.ToUpper(e)}
 				},
-				assert: func(t *testing.T, in admin.NewUser, err error) {
+				assert: func(t *testing.T, _ admin.NewUser, err error) {
 					require.NoError(t, err)
 				},
 			},
 			{
 				name: "organization that is not a UUID",
-				setup: func(t *testing.T) admin.NewUser {
+				setup: func(_ *testing.T) admin.NewUser {
 					return admin.NewUser{Username: uniq("o"), Organization: &identity.Organization{ID: "not-a-uuid"}}
 				},
-				assert: func(t *testing.T, in admin.NewUser, err error) {
+				assert: func(t *testing.T, _ admin.NewUser, err error) {
 					require.ErrorIs(t, err, admin.ErrInvalidInput)
 				},
 			},
@@ -402,7 +405,7 @@ VALUES ($1, 'Org', now(), now())`, orgID)
 	t.Run("ConcurrentCreatesOneEmail", func(t *testing.T) {
 		t.Parallel()
 		email := uniq("race") + "@example.com"
-		errs := race(8, func(i int) error {
+		errs := race(8, func(_ int) error {
 			_, err := h.Users.CreateUser(t.Context(), admin.NewUser{
 				ID: newID(t), Username: uniq("racer"), Email: email,
 			})
@@ -457,7 +460,7 @@ VALUES ($1, 'Org', now(), now())`, orgID)
 		cases := []testCase{
 			{
 				name: "only the named field changes and the version increases",
-				change: func(t *testing.T, u admin.User) (int64, admin.UserChange) {
+				change: func(_ *testing.T, u admin.User) (int64, admin.UserChange) {
 					return u.Version, admin.UserChange{Name: &name}
 				},
 				assert: func(t *testing.T, before, after admin.User, err error) {
@@ -470,7 +473,7 @@ VALUES ($1, 'Org', now(), now())`, orgID)
 			},
 			{
 				name: "stale version changes nothing",
-				change: func(t *testing.T, u admin.User) (int64, admin.UserChange) {
+				change: func(_ *testing.T, u admin.User) (int64, admin.UserChange) {
 					return u.Version + 1, admin.UserChange{Name: &name}
 				},
 				assert: func(t *testing.T, before, after admin.User, err error) {
@@ -480,31 +483,31 @@ VALUES ($1, 'Org', now(), now())`, orgID)
 			},
 			{
 				name: "attributes are replaced as a set",
-				change: func(t *testing.T, u admin.User) (int64, admin.UserChange) {
+				change: func(_ *testing.T, u admin.User) (int64, admin.UserChange) {
 					return u.Version, admin.UserChange{Attributes: map[string]string{"team": "a"}}
 				},
-				assert: func(t *testing.T, before, after admin.User, err error) {
+				assert: func(t *testing.T, _, after admin.User, err error) {
 					require.NoError(t, err)
 					assert.Equal(t, map[string]string{"team": "a"}, after.Attributes)
 				},
 			},
 			{
 				name: "an empty attribute map removes them all",
-				change: func(t *testing.T, u admin.User) (int64, admin.UserChange) {
+				change: func(_ *testing.T, u admin.User) (int64, admin.UserChange) {
 					return u.Version, admin.UserChange{Attributes: map[string]string{}}
 				},
-				assert: func(t *testing.T, before, after admin.User, err error) {
+				assert: func(t *testing.T, _, after admin.User, err error) {
 					require.NoError(t, err)
 					assert.Empty(t, after.Attributes)
 				},
 			},
 			{
 				name: "email cleared and verification cleared",
-				change: func(t *testing.T, u admin.User) (int64, admin.UserChange) {
+				change: func(_ *testing.T, u admin.User) (int64, admin.UserChange) {
 					empty, zero := "", time.Time{}
 					return u.Version, admin.UserChange{Email: &empty, EmailVerifiedAt: &zero}
 				},
-				assert: func(t *testing.T, before, after admin.User, err error) {
+				assert: func(t *testing.T, _, after admin.User, err error) {
 					require.NoError(t, err)
 					assert.Empty(t, after.Email)
 					assert.True(t, after.EmailVerifiedAt.IsZero())
@@ -512,7 +515,7 @@ VALUES ($1, 'Org', now(), now())`, orgID)
 			},
 			{
 				name: "email changed with an explicit cleared verification is unverified",
-				change: func(t *testing.T, u admin.User) (int64, admin.UserChange) {
+				change: func(_ *testing.T, u admin.User) (int64, admin.UserChange) {
 					fresh, zero := uniq("new")+"@example.com", time.Time{}
 					return u.Version, admin.UserChange{Email: &fresh, EmailVerifiedAt: &zero}
 				},
@@ -538,11 +541,11 @@ VALUES ($1, 'Org', now(), now())`, orgID)
 			},
 			{
 				name: "organization removed",
-				change: func(t *testing.T, u admin.User) (int64, admin.UserChange) {
+				change: func(_ *testing.T, u admin.User) (int64, admin.UserChange) {
 					var none *identity.Organization
 					return u.Version, admin.UserChange{Organization: &none}
 				},
-				assert: func(t *testing.T, before, after admin.User, err error) {
+				assert: func(t *testing.T, _, after admin.User, err error) {
 					require.NoError(t, err)
 					assert.Nil(t, after.Organization)
 				},
@@ -972,7 +975,7 @@ func runImport(t *testing.T, h Harness) {
 					in.Email = strings.ToUpper(e)
 					return in
 				},
-				assert: func(t *testing.T, in admin.ImportedUser, err error) {
+				assert: func(t *testing.T, _ admin.ImportedUser, err error) {
 					requireExists(t, err, admin.FieldEmail)
 				},
 			},
@@ -981,8 +984,47 @@ func runImport(t *testing.T, h Harness) {
 				setup: func(t *testing.T) admin.ImportedUser {
 					return newImported(t, uniq("nosuchrole"))
 				},
-				assert: func(t *testing.T, in admin.ImportedUser, err error) {
+				assert: func(t *testing.T, _ admin.ImportedUser, err error) {
 					require.ErrorIs(t, err, admin.ErrNotFound)
+				},
+			},
+			// The identifier's form is the store's to judge (D14): scrty's
+			// stores hold canonical lower-case UUIDs other than the nil UUID,
+			// and refuse any other text rather than store another spelling.
+			{
+				name: "upper-case identifier",
+				setup: func(t *testing.T) admin.ImportedUser {
+					in := newImported(t)
+					in.ID = identity.UserID(strings.ToUpper(string(in.ID)))
+					return in
+				},
+				assert: func(t *testing.T, in admin.ImportedUser, err error) {
+					require.ErrorIs(t, err, admin.ErrInvalidInput)
+					assert.Equal(t, 0, count(t, h.DB, `SELECT count(*) FROM scrty_users WHERE id::text = $1`,
+						strings.ToLower(string(in.ID))), "no record under the lower-cased spelling")
+				},
+			},
+			{
+				name: "identifier that is not a UUID",
+				setup: func(t *testing.T) admin.ImportedUser {
+					in := newImported(t)
+					in.ID = "not-a-uuid"
+					return in
+				},
+				assert: func(t *testing.T, _ admin.ImportedUser, err error) {
+					require.ErrorIs(t, err, admin.ErrInvalidInput)
+				},
+			},
+			{
+				name: "nil UUID identifier",
+				setup: func(t *testing.T) admin.ImportedUser {
+					in := newImported(t)
+					in.ID = "00000000-0000-0000-0000-000000000000"
+					return in
+				},
+				assert: func(t *testing.T, in admin.ImportedUser, err error) {
+					require.ErrorIs(t, err, admin.ErrInvalidInput)
+					noValues(t, err, string(in.ID), in.Username)
 				},
 			},
 			{
@@ -994,7 +1036,7 @@ func runImport(t *testing.T, h Harness) {
 					in.ID = u.ID
 					return in
 				},
-				assert: func(t *testing.T, in admin.ImportedUser, err error) {
+				assert: func(t *testing.T, _ admin.ImportedUser, err error) {
 					requireExists(t, err, "id")
 				},
 			},
@@ -1007,7 +1049,7 @@ func runImport(t *testing.T, h Harness) {
 				_, err := h.Imports.ImportUser(t.Context(), in)
 				tc.assert(t, in, err)
 				assert.Equal(t, 0, count(t, h.DB,
-					`SELECT count(*) FROM scrty_users WHERE id = $1 AND deleted_at IS NULL`, string(in.ID)))
+					`SELECT count(*) FROM scrty_users WHERE id::text = $1 AND deleted_at IS NULL`, string(in.ID)))
 			})
 		}
 	})
@@ -1015,6 +1057,8 @@ func runImport(t *testing.T, h Harness) {
 	if h.Ambient != nil {
 		t.Run("QueuesBehindCallerTx", func(t *testing.T) { runImportQueue(t, h, newImported) })
 	}
+
+	t.Run("CollisionNamesTheField", func(t *testing.T) { runImportCollisionField(t, h, newImported) })
 
 	t.Run("Race", func(t *testing.T) {
 		t.Parallel()

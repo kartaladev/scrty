@@ -40,9 +40,16 @@ type Fixture struct {
 
 var _ admintest.Fixture = Fixture{}
 
-func (f Fixture) Users() admin.UserStore                { return f.Store }
-func (f Fixture) Importer() admin.ImportStore           { return f.Store }
-func (f Fixture) Loader() identity.UserLoader           { return f.Store }
+// Users returns the store as the user port.
+func (f Fixture) Users() admin.UserStore { return f.Store }
+
+// Importer returns the store as the import port.
+func (f Fixture) Importer() admin.ImportStore { return f.Store }
+
+// Loader returns the store as the identity user loader.
+func (f Fixture) Loader() identity.UserLoader { return f.Store }
+
+// Provisioner returns the store as the identity user provisioner.
 func (f Fixture) Provisioner() identity.UserProvisioner { return f.Store }
 
 // Roles returns the store when it implements admin.RoleStore, otherwise nil,

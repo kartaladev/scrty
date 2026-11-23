@@ -136,16 +136,17 @@ EXECUTE FUNCTION %s()`, name, quoteLiteral(role), quoteLiteral(group), quoteLite
 		return "", fmt.Errorf("adminfix: install grant fault: %w", err)
 	}
 
-	f.T.Cleanup(func() { f.removeGrantFault(name) })
+	cleanupCtx := context.WithoutCancel(ctx)
+	f.T.Cleanup(func() { f.removeGrantFault(cleanupCtx, name) })
 
 	return name, nil
 }
 
 // removeGrantFault drops the trigger and its function, failing f.T when it
-// cannot. Cleanup runs after the test's context is cancelled, so it uses a
-// bounded context of its own.
-func (f Fixture) removeGrantFault(name string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+// cannot. Cleanup runs after the test's context is cancelled, so the caller
+// passes a context detached from that cancellation; it is bounded here.
+func (f Fixture) removeGrantFault(parent context.Context, name string) {
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 
 	for _, stmt := range []string{

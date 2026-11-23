@@ -298,7 +298,7 @@ func (u *Users) Update(ctx context.Context, userID identity.UserID, version int6
 		return User{}, err
 	}
 
-	before, err := u.auditBefore(ctx, userID)
+	before, err := u.auditBefore(ctx, userID, version)
 	if err != nil {
 		return User{}, fmt.Errorf("admin: update user: %w", err)
 	}
@@ -375,7 +375,7 @@ func (u *Users) setActive(ctx context.Context, userID identity.UserID, version i
 		return User{}, err
 	}
 
-	before, err := u.auditBefore(ctx, userID)
+	before, err := u.auditBefore(ctx, userID, version)
 	if err != nil {
 		return User{}, fmt.Errorf("admin: set active: %w", err)
 	}
@@ -421,7 +421,7 @@ func (u *Users) Delete(ctx context.Context, userID identity.UserID, version int6
 		return err
 	}
 
-	before, err := u.auditBefore(ctx, userID)
+	before, err := u.auditBefore(ctx, userID, version)
 	if err != nil {
 		return fmt.Errorf("admin: delete user: %w", err)
 	}
@@ -604,12 +604,11 @@ func changedUserFields(c UserChange) []string {
 }
 
 // auditBefore reads the user before a write when an audit sink will receive
-// the change, and nothing otherwise. The read is not locked with the write:
-// when another write lands between the two, the stored version no longer
-// equals the caller's, and the version-conditional write fails with
-// ErrStaleUpdate, so a before record is only ever delivered for the version
-// the write replaced.
-func (u *Users) auditBefore(ctx context.Context, userID identity.UserID) (*User, error) {
+// the change, and nothing otherwise. The read is not locked with the write, so
+// the version read is compared with the one the caller named: a user already
+// at another version is ErrStaleUpdate before anything is written, and a
+// before record is only ever delivered for the version the write replaces.
+func (u *Users) auditBefore(ctx context.Context, userID identity.UserID, version int64) (*User, error) {
 	if !u.cfg.auditing() {
 		return nil, nil //nolint:nilnil // no audit sink: no before record and no error
 	}
@@ -617,6 +616,10 @@ func (u *Users) auditBefore(ctx context.Context, userID identity.UserID) (*User,
 	got, err := u.store.GetUser(ctx, userID)
 	if err != nil {
 		return nil, err
+	}
+
+	if got.Version != version {
+		return nil, ErrStaleUpdate
 	}
 
 	before := cloneUser(got)

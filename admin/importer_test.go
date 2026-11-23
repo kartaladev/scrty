@@ -117,19 +117,33 @@ func TestImporter(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name:  "non-canonical identifier",
+			name:  "empty identifier",
+			input: with(func(u *admin.ImportedUser) { u.ID = "" }),
+			setup: func(*MockImportStore, *MockRecognizer) {}, assert: refusedNoCall,
+		},
+		{
+			name:  "blank identifier",
+			input: with(func(u *admin.ImportedUser) { u.ID = "  " }),
+			setup: func(*MockImportStore, *MockRecognizer) {}, assert: refusedNoCall,
+		},
+		{
+			name:  "non-canonical identifier is the store's to judge",
 			input: with(func(u *admin.ImportedUser) { u.ID = "0192F1E2-3C4D-7E5F-8A9B-0C1D2E3F4A5B" }),
-			setup: func(*MockImportStore, *MockRecognizer) {}, assert: refusedNoCall,
+			setup: returns(0, admin.ErrInvalidInput),
+			assert: func(t *testing.T, out admin.ImportOutcome, err error, events []event.Event) {
+				require.ErrorIs(t, err, admin.ErrInvalidInput)
+				assert.Zero(t, out)
+				assert.Empty(t, events)
+			},
 		},
 		{
-			name:  "identifier not a UUID",
+			name:  "identifier not a UUID reaches the store",
 			input: with(func(u *admin.ImportedUser) { u.ID = "ada" }),
-			setup: func(*MockImportStore, *MockRecognizer) {}, assert: refusedNoCall,
-		},
-		{
-			name:  "nil identifier",
-			input: with(func(u *admin.ImportedUser) { u.ID = "00000000-0000-0000-0000-000000000000" }),
-			setup: func(*MockImportStore, *MockRecognizer) {}, assert: refusedNoCall,
+			setup: returns(admin.ImportCreated, nil),
+			assert: func(t *testing.T, out admin.ImportOutcome, err error, _ []event.Event) {
+				require.NoError(t, err)
+				assert.Equal(t, admin.ImportCreated, out)
+			},
 		},
 		{
 			name:  "unrecognised hash",

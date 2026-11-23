@@ -96,10 +96,11 @@ type UserStore interface {
 
 // ImportStore is the storage the import service writes through.
 //
-// The service refuses an identifier that is not a canonical UUID before the
-// store is called. Error text never carries a value: a store does not pass on
-// a driver's detail, such as a unique violation's DETAIL line, which quotes
-// the conflicting username or email.
+// The service does not interpret the identifier: its form is the store's to
+// judge. A store that cannot represent one (scrty's stores require a canonical
+// lower-case UUID) answers ErrInvalidInput. Error text never carries a value: a
+// store does not pass on a driver's detail, such as a unique violation's DETAIL
+// line, which quotes the conflicting username or email.
 type ImportStore interface {
 	// ImportUser creates the user under user.ID when no user has it, or
 	// updates it when one does, in one transaction that locks the row, and
