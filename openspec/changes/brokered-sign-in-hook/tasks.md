@@ -87,8 +87,8 @@ Each task's verification names the test or command that shows it is done.
 
 ## 4. Server-side completion of a federated provider sign-in (`oidcprovider`, `httpsec`)
 
-- [ ] 4.1 Add the read-only `Provider.LoginURL()` accessor. **Verify:** a test shows it returns the configured login URL unchanged.
-- [ ] 4.2 Add `OIDCDeps.Users`, `WithOIDCProviderCompletion` and the assembly checks (F28). **Verify:** a table test refuses each of these:
+- [x] 4.1 Add the read-only `Provider.LoginURL()` accessor. **Verify:** a test shows it returns the configured login URL unchanged.
+- [x] 4.2 Add `OIDCDeps.Users`, `WithOIDCProviderCompletion` and the assembly checks (F28). **Verify:** a table test refuses each of these:
   - no provider;
   - a callback success handler;
   - a custom redeemer;
@@ -100,14 +100,14 @@ Each task's verification names the test or command that shows it is done.
   - a user loader without completion.
 
   A valid wiring is accepted.
-- [ ] 4.3 Recognise the parked-request destination, and apply the allowlist carve-out. **Verify:**
+- [x] 4.3 Recognise the parked-request destination, and apply the allowlist carve-out. **Verify:**
   - a table test over the exact URL, plus look-alikes in host, port, path case, trailing slash, encoding, an extra parameter, a repeated `req`, an empty `req`, and a relative URL (F27);
   - a login URL configured with an empty path recognised as `/`, and a URL carrying userinfo refused;
   - a chain test showing that with completion off, a `<LoginURL>?req=<handle>` destination keeps the handoff to `/`;
   - a chain test showing non-qualifying destinations take the allowlisted handoff;
   - a chain test showing a qualifying destination is never replaced by `/`, at the callback and in the answer to the fallback handoff's redemption.
-- [ ] 4.4 Pre-check the handle before any side effect (D7, step 2). **Verify:** tests for an unknown handle, an expired handle and a foreign flow cookie. Each answers the unknown-handle refusal, charges the source, and leaves no session, no login event and held recoveries untouched (F20). Also: a handle past its login stage answers the unknown-handle refusal uncharged; a throttled source answers `ErrOIDCThrottled` with no lookup; a pending-request store failure is an uncharged dependency failure (F38).
-- [ ] 4.5 Load the user and run the post-authentication policy, with the owed-step fallback (D7, steps 3–4; D8). **Verify:** tests show:
+- [x] 4.4 Pre-check the handle before any side effect (D7, step 2). **Verify:** tests for an unknown handle, an expired handle and a foreign flow cookie. Each answers the unknown-handle refusal, charges the source, and leaves no session, no login event and held recoveries untouched (F20). Also: a handle past its login stage answers the unknown-handle refusal uncharged; a throttled source answers `ErrOIDCThrottled` with no lookup; a pending-request store failure is an uncharged dependency failure (F38).
+- [x] 4.5 Load the user and run the post-authentication policy, with the owed-step fallback (D7, steps 3–4; D8). **Verify:** tests show:
   - a missing or disabled user is refused (F21);
   - a policy deny returns its reason with no session;
   - an owed second factor redirects to `<LoginURL>?req=<handle>&handoff=…` with no session;
