@@ -60,7 +60,6 @@ func (b *syncBuffer) String() string {
 // sign-in hook that adopts an imported user by verified e-mail, or provisions
 // a new one, and writes only through admin.Importer, in Apply.
 type brokeredHarness struct {
-	t        *testing.T
 	idp      *oidctest.IdentityProvider
 	store    *pgxstore.IdentityStore
 	users    *admin.Users
@@ -73,6 +72,23 @@ type brokeredHarness struct {
 	// secrets collects every value that must never reach a log: hashes and
 	// the members of every UserInfo body the test set.
 	secrets []string
+
+	// linkedSeen is the linked argument the hook received on each sign-in, in
+	// order, until takeLinked drains it.
+	linkedMu   sync.Mutex
+	linkedSeen []identity.UserID
+}
+
+// takeLinked returns the linked arguments the hook received since the last
+// call, and forgets them.
+func (h *brokeredHarness) takeLinked() []identity.UserID {
+	h.linkedMu.Lock()
+	defer h.linkedMu.Unlock()
+
+	seen := h.linkedSeen
+	h.linkedSeen = nil
+
+	return seen
 }
 
 func newBrokeredHarness(t *testing.T) *brokeredHarness {
@@ -115,7 +131,6 @@ func newBrokeredHarness(t *testing.T) *brokeredHarness {
 	logs := &syncBuffer{}
 
 	h := &brokeredHarness{
-		t:        t,
 		idp:      oidctest.NewIdentityProvider(t),
 		store:    store,
 		users:    users,
@@ -124,25 +139,25 @@ func newBrokeredHarness(t *testing.T) *brokeredHarness {
 		logs:     logs,
 		logger:   slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}
-	h.hooked = h.relyingParty(oidc.WithBrokerSignInHook(brokeredProvider, h.hook))
+	h.hooked = h.relyingParty(t, oidc.WithBrokerSignInHook(brokeredProvider, h.hook))
 
 	return h
 }
 
 // relyingParty builds a relying party for the fixture provider over the
 // harness's stores and logger, with the given broker options.
-func (h *brokeredHarness) relyingParty(opts ...oidc.BrokerOption) *oidc.RelyingParty {
-	h.t.Helper()
+func (h *brokeredHarness) relyingParty(t *testing.T, opts ...oidc.BrokerOption) *oidc.RelyingParty {
+	t.Helper()
 
 	broker, err := oidc.NewBroker(h.links, h.store, append(opts, oidc.WithBrokerLogger(h.logger))...)
-	require.NoError(h.t, err)
+	require.NoError(t, err)
 
 	registry, err := oidc.NewRegistry(h.idp.Provider(brokeredProvider, oidc.ClientSecretPost))
-	require.NoError(h.t, err)
+	require.NoError(t, err)
 
 	rp, err := oidc.NewRelyingParty(registry, broker,
-		oidc.WithOutboundClient(h.idp.Outbound(h.t)), oidc.WithLogger(h.logger))
-	require.NoError(h.t, err)
+		oidc.WithOutboundClient(h.idp.Outbound(t)), oidc.WithLogger(h.logger))
+	require.NoError(t, err)
 
 	return rp
 }
@@ -155,8 +170,8 @@ type userInfo struct {
 
 // setUserInfo makes the provider answer info for subject, and records every
 // value of it as a secret the logs must not hold.
-func (h *brokeredHarness) setUserInfo(subject string, info userInfo) {
-	h.t.Helper()
+func (h *brokeredHarness) setUserInfo(t *testing.T, subject string, info userInfo) {
+	t.Helper()
 
 	h.idp.SetUserInfo(subject, map[string]any{
 		"email":          info.email,
@@ -182,6 +197,10 @@ func read(m map[string]any, key string) string {
 func (h *brokeredHarness) hook(
 	ctx context.Context, _ oidc.ExternalIdentity, up oidc.Upstream, linked identity.UserID,
 ) (oidc.SignInDecision, error) {
+	h.linkedMu.Lock()
+	h.linkedSeen = append(h.linkedSeen, linked)
+	h.linkedMu.Unlock()
+
 	info, err := up.UserInfo(ctx)
 	if err != nil {
 		return oidc.SignInDecision{}, err
@@ -257,30 +276,30 @@ func (h *brokeredHarness) apply(
 
 // signIn runs one login of subject through rp, up to and including the
 // callback, and returns what the callback returned.
-func (h *brokeredHarness) signIn(rp *oidc.RelyingParty, subject string) (oidc.CallbackResult, error) {
-	h.t.Helper()
+func (h *brokeredHarness) signIn(t *testing.T, rp *oidc.RelyingParty, subject string) (oidc.CallbackResult, error) {
+	t.Helper()
 
-	authz, err := rp.Authorize(h.t.Context(), brokeredProvider, "/")
-	require.NoError(h.t, err)
+	authz, err := rp.Authorize(t.Context(), brokeredProvider, "/")
+	require.NoError(t, err)
 
-	callback := h.idp.Login(h.t, authz.RedirectURL, map[string]any{"sub": subject})
+	callback := h.idp.Login(t, authz.RedirectURL, map[string]any{"sub": subject})
 
 	u, err := url.Parse(callback)
-	require.NoError(h.t, err)
+	require.NoError(t, err)
 
-	return rp.Callback(h.t.Context(), brokeredProvider, u.Query().Get("code"), u.Query().Get("state"), authz.Handle)
+	return rp.Callback(t.Context(), brokeredProvider, u.Query().Get("code"), u.Query().Get("state"), authz.Handle)
 }
 
 // importUser seeds a user as another system would have exported it.
-func (h *brokeredHarness) importUser(active bool, email, name, hash string) identity.UserID {
-	h.t.Helper()
+func (h *brokeredHarness) importUser(t *testing.T, active bool, email, name, hash string) identity.UserID {
+	t.Helper()
 
 	fresh, err := id.NewV7Generator().NewID()
-	require.NoError(h.t, err)
+	require.NoError(t, err)
 
 	user := identity.UserID(fresh.String())
 
-	outcome, err := h.importer.Import(admin.WithSystemActor(h.t.Context(), "seed"), admin.ImportedUser{
+	outcome, err := h.importer.Import(admin.WithSystemActor(t.Context(), "seed"), admin.ImportedUser{
 		ID:              user,
 		Username:        email,
 		Name:            name,
@@ -291,45 +310,45 @@ func (h *brokeredHarness) importUser(active bool, email, name, hash string) iden
 		Roles:           []string{"staff"},
 		Attributes:      map[string]string{"dept": "legacy"},
 	})
-	require.NoError(h.t, err)
-	require.Equal(h.t, admin.ImportCreated, outcome)
+	require.NoError(t, err)
+	require.Equal(t, admin.ImportCreated, outcome)
 
 	return user
 }
 
-func (h *brokeredHarness) countUsers() int {
-	h.t.Helper()
+func (h *brokeredHarness) countUsers(t *testing.T) int {
+	t.Helper()
 
-	page, err := h.users.List(h.t.Context(), admin.UserFilter{PageSize: 100})
-	require.NoError(h.t, err)
-	require.Empty(h.t, page.Next, "the store holds more users than one page")
+	page, err := h.users.List(t.Context(), admin.UserFilter{PageSize: 100})
+	require.NoError(t, err)
+	require.Empty(t, page.Next, "the store holds more users than one page")
 
 	return len(page.Users)
 }
 
-func (h *brokeredHarness) user(user identity.UserID) admin.User {
-	h.t.Helper()
+func (h *brokeredHarness) user(t *testing.T, user identity.UserID) admin.User {
+	t.Helper()
 
-	u, err := h.users.Get(h.t.Context(), user)
-	require.NoError(h.t, err)
+	u, err := h.users.Get(t.Context(), user)
+	require.NoError(t, err)
 
 	return u
 }
 
-func (h *brokeredHarness) hashOf(user identity.UserID) string {
-	h.t.Helper()
+func (h *brokeredHarness) hashOf(t *testing.T, user identity.UserID) string {
+	t.Helper()
 
-	d, err := h.store.LoadByUserID(h.t.Context(), user)
-	require.NoError(h.t, err)
+	d, err := h.store.LoadByUserID(t.Context(), user)
+	require.NoError(t, err)
 
 	return string(d.Password)
 }
 
-func (h *brokeredHarness) linksOf(user identity.UserID) []oidc.Link {
-	h.t.Helper()
+func (h *brokeredHarness) linksOf(t *testing.T, user identity.UserID) []oidc.Link {
+	t.Helper()
 
-	l, err := h.links.ListByUser(h.t.Context(), user)
-	require.NoError(h.t, err)
+	l, err := h.links.ListByUser(t.Context(), user)
+	require.NoError(t, err)
 
 	return l
 }
@@ -371,119 +390,125 @@ func TestBrokeredSignIn_AdoptsImportedUser(t *testing.T) {
 	hashMallory, hashNew := encode("mallory-pw-4"), encode("new-pw-5")
 	h.secrets = append(h.secrets, hashImported)
 
-	adopted := h.importUser(true, "a@"+brokeredDomain, "Alice Imported", hashImported)
-	usersBefore := h.countUsers()
+	adopted := h.importUser(t, true, "a@"+brokeredDomain, "Alice Imported", hashImported)
+	usersBefore := h.countUsers(t)
 
 	t.Run("imported", func(t *testing.T) {
-		h.setUserInfo("sub-a", userInfo{
+		h.setUserInfo(t, "sub-a", userInfo{
 			email: "a@" + brokeredDomain, verified: true, name: "Alice Adopted",
 			dept: "dept-finance", role: "manager", hash: hashFirst,
 		})
 
-		res, err := h.signIn(h.hooked, "sub-a")
+		res, err := h.signIn(t, h.hooked, "sub-a")
 		require.NoError(t, err)
 		assert.Equal(t, adopted, res.Principal.ID)
+		assert.Equal(t, []identity.UserID{""}, h.takeLinked(), "the first sign-in has no link, so the hook matches by e-mail")
 
-		u := h.user(adopted)
+		u := h.user(t, adopted)
 		assert.Equal(t, "Alice Adopted", u.Name)
 		assert.Equal(t, map[string]string{"dept": "dept-finance"}, u.Attributes)
 		assert.Equal(t, "manager", primaryRole(u))
-		assert.Equal(t, hashFirst, h.hashOf(adopted), "the hash is stored as given")
+		assert.Equal(t, hashFirst, h.hashOf(t, adopted), "the hash is stored as given")
 		assert.True(t, u.Active)
 
-		assert.Equal(t, usersBefore, h.countUsers(), "adopting creates no second user")
+		assert.Equal(t, usersBefore, h.countUsers(t), "adopting creates no second user")
 
-		links := h.linksOf(adopted)
+		links := h.linksOf(t, adopted)
 		require.Len(t, links, 1)
 		assert.Equal(t, "sub-a", links[0].Subject)
 		assert.Equal(t, h.idp.Issuer(), links[0].Issuer)
 	})
 
 	t.Run("second", func(t *testing.T) {
-		h.setUserInfo("sub-a", userInfo{
+		h.setUserInfo(t, "sub-a", userInfo{
 			email: "a@" + brokeredDomain, verified: true, name: "Alice Refreshed",
 			dept: "dept-ops", role: "staff", hash: hashSecond,
 		})
 
-		before := h.user(adopted)
+		before := h.user(t, adopted)
 
-		res, err := h.signIn(h.hooked, "sub-a")
+		res, err := h.signIn(t, h.hooked, "sub-a")
 		require.NoError(t, err)
 		assert.Equal(t, adopted, res.Principal.ID)
+		assert.Equal(t, []identity.UserID{adopted}, h.takeLinked(), "the second sign-in resolves through the link")
 
-		u := h.user(adopted)
+		u := h.user(t, adopted)
 		assert.Equal(t, "Alice Refreshed", u.Name, "Apply runs again through the link")
 		assert.Equal(t, map[string]string{"dept": "dept-ops"}, u.Attributes)
 		assert.Equal(t, "staff", primaryRole(u))
-		assert.Equal(t, hashSecond, h.hashOf(adopted))
+		assert.Equal(t, hashSecond, h.hashOf(t, adopted))
 		assert.Greater(t, u.Version, before.Version)
 
-		assert.Len(t, h.linksOf(adopted), 1, "the link is reused, not duplicated")
-		assert.Equal(t, usersBefore, h.countUsers())
+		assert.Len(t, h.linksOf(t, adopted), 1, "the link is reused, not duplicated")
+		assert.Equal(t, usersBefore, h.countUsers(t))
 	})
 
 	t.Run("conflict", func(t *testing.T) {
-		other := h.importUser(true, "b@"+brokeredDomain, "Bob Imported", hashImported)
+		other := h.importUser(t, true, "b@"+brokeredDomain, "Bob Imported", hashImported)
 
-		h.setUserInfo("sub-b", userInfo{
+		h.setUserInfo(t, "sub-b", userInfo{
 			email: "b@" + brokeredDomain, verified: true, name: "Bob Adopted",
 			dept: "dept-sales", role: "staff", hash: hashFirst,
 		})
-		_, err := h.signIn(h.hooked, "sub-b")
+		_, err := h.signIn(t, h.hooked, "sub-b")
 		require.NoError(t, err, "the other identity is linked to its own user first")
-		require.Len(t, h.linksOf(other), 1)
+		require.Len(t, h.linksOf(t, other), 1)
 
 		// The provider now asserts a's e-mail for the identity linked to b.
-		h.setUserInfo("sub-b", userInfo{
+		h.setUserInfo(t, "sub-b", userInfo{
 			email: "a@" + brokeredDomain, verified: true, name: "Mallory",
 			dept: "dept-takeover", role: "manager", hash: hashMallory,
 		})
 
-		before := h.user(adopted)
-		beforeHash := h.hashOf(adopted)
-		usersNow := h.countUsers()
+		before := h.user(t, adopted)
+		beforeHash := h.hashOf(t, adopted)
+		beforeOther := h.user(t, other)
+		beforeOtherHash := h.hashOf(t, other)
+		usersNow := h.countUsers(t)
 
-		_, err = h.signIn(h.hooked, "sub-b")
+		_, err = h.signIn(t, h.hooked, "sub-b")
 		require.ErrorIs(t, err, oidc.ErrNoLinkedAccount)
 
-		after := h.user(adopted)
+		after := h.user(t, adopted)
 		assert.Equal(t, before, after, "a refused decision writes nothing to the matched user")
-		assert.Equal(t, beforeHash, h.hashOf(adopted))
-		assert.Len(t, h.linksOf(adopted), 1)
-		assert.Len(t, h.linksOf(other), 1, "the identity stays linked to its own user")
-		assert.Equal(t, usersNow, h.countUsers())
+		assert.Equal(t, beforeHash, h.hashOf(t, adopted))
+		assert.Equal(t, beforeOther, h.user(t, other), "a refused decision writes nothing to the identity's own user")
+		assert.Equal(t, beforeOtherHash, h.hashOf(t, other))
+		assert.Len(t, h.linksOf(t, adopted), 1)
+		assert.Len(t, h.linksOf(t, other), 1, "the identity stays linked to its own user")
+		assert.Equal(t, usersNow, h.countUsers(t))
 	})
 
 	t.Run("inactive", func(t *testing.T) {
-		inactive := h.importUser(false, "c@"+brokeredDomain, "Carol Imported", hashImported)
+		inactive := h.importUser(t, false, "c@"+brokeredDomain, "Carol Imported", hashImported)
 
-		h.setUserInfo("sub-c", userInfo{
+		h.setUserInfo(t, "sub-c", userInfo{
 			email: "c@" + brokeredDomain, verified: true, name: "Carol Adopted",
 			dept: "dept-hr", role: "manager", hash: hashFirst,
 		})
 
-		before := h.user(inactive)
-		usersNow := h.countUsers()
+		before := h.user(t, inactive)
+		usersNow := h.countUsers(t)
 
-		_, err := h.signIn(h.hooked, "sub-c")
+		_, err := h.signIn(t, h.hooked, "sub-c")
 		require.ErrorIs(t, err, oidc.ErrNoLinkedAccount)
 
-		after := h.user(inactive)
+		after := h.user(t, inactive)
 		assert.False(t, after.Active)
 		assert.Equal(t, before, after, "a deactivated account is refused before anything is written")
-		assert.Empty(t, h.linksOf(inactive), "no link is made to a deactivated account")
-		assert.Equal(t, usersNow, h.countUsers())
+		assert.Empty(t, h.linksOf(t, inactive), "no link is made to a deactivated account")
+		assert.Equal(t, usersNow, h.countUsers(t))
 	})
 
 	t.Run("provision", func(t *testing.T) {
-		h.setUserInfo("sub-x", userInfo{
+		h.setUserInfo(t, "sub-x", userInfo{
 			email: "x@" + brokeredDomain, verified: true, name: "Xavier New",
 			dept: "dept-legal", role: "staff", hash: hashNew,
 		})
 
-		usersNow := h.countUsers()
+		usersNow := h.countUsers(t)
 
-		res, err := h.signIn(h.hooked, "sub-x")
+		res, err := h.signIn(t, h.hooked, "sub-x")
 		require.NoError(t, err)
 
 		created := res.Principal.ID
@@ -491,39 +516,39 @@ func TestBrokeredSignIn_AdoptsImportedUser(t *testing.T) {
 		require.NoError(t, parseErr, "the new user's reference is a fresh UUID")
 		assert.NotEqual(t, adopted, created)
 
-		u := h.user(created)
+		u := h.user(t, created)
 		assert.True(t, u.Active)
 		assert.Equal(t, "x@"+brokeredDomain, u.Email)
 		assert.Equal(t, "Xavier New", u.Name)
-		assert.Equal(t, hashNew, h.hashOf(created))
+		assert.Equal(t, hashNew, h.hashOf(t, created))
 
-		assert.Equal(t, usersNow+1, h.countUsers())
+		assert.Equal(t, usersNow+1, h.countUsers(t))
 
-		links := h.linksOf(created)
+		links := h.linksOf(t, created)
 		require.Len(t, links, 1)
 		assert.Equal(t, "sub-x", links[0].Subject)
 	})
 
 	t.Run("hook-off", func(t *testing.T) {
-		plain := h.relyingParty()
+		plain := h.relyingParty(t)
 
-		h.setUserInfo("sub-y", userInfo{
+		h.setUserInfo(t, "sub-y", userInfo{
 			email: "y@" + brokeredDomain, verified: true, name: "Yara Unlinked",
 			dept: "dept-it", role: "staff", hash: hashNew,
 		})
 
-		usersNow := h.countUsers()
-		before := h.user(adopted)
+		usersNow := h.countUsers(t)
+		before := h.user(t, adopted)
 
-		_, err := h.signIn(plain, "sub-y")
+		_, err := h.signIn(t, plain, "sub-y")
 		require.ErrorIs(t, err, oidc.ErrNoLinkedAccount, "an unlinked identity is refused without a hook")
-		assert.Equal(t, usersNow, h.countUsers())
+		assert.Equal(t, usersNow, h.countUsers(t))
 
 		// A linked identity still resolves through its link alone, writing nothing.
-		res, err := h.signIn(plain, "sub-a")
+		res, err := h.signIn(t, plain, "sub-a")
 		require.NoError(t, err)
 		assert.Equal(t, adopted, res.Principal.ID)
-		assert.Equal(t, before, h.user(adopted))
+		assert.Equal(t, before, h.user(t, adopted))
 	})
 
 	t.Run("no-secret-in-logs", func(t *testing.T) {
