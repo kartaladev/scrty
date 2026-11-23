@@ -171,7 +171,10 @@ that completion requires. `oidcprovider.Provider` gains an exported `LoginURL() 
 which is read-only and changes no behaviour. `oidcprovider.ResumeResult` gains an `Outcome` field
 naming what `RedirectTo` carries: the consent page, an authorization code, or the client's error
 response. It is additive. Completion branches on it rather than reading the redirect's query,
-because a client's registered redirect URI may itself carry any query parameter, `error` included.
+because a client's registered redirect URI may itself carry any query parameter, `error` included. A
+client error and a device-entry answer (an expired device request) end the session and are
+redirected to; an unknown outcome ends the session, logs one ERROR and refuses with
+`ErrOIDCReauthenticate` (fail closed).
 
 At the callback, after `RelyingParty.Callback` succeeds:
 

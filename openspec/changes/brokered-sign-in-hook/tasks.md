@@ -122,7 +122,7 @@ Each task's verification names the test or command that shows it is done.
   - an owed second factor redirects to `<LoginURL>?req=<handle>&handoff=…` with no session;
   - a stored password time requiring a change falls back;
   - a meeting `amr` proceeds (F22).
-- [ ] 4.6 Implement the success path: session, recoveries, per-request policy, resume with the chain's assurance mapping, confirm after resume, and the answer (D7, steps 5–9). **Verify:** a chain test asserts:
+- [x] 4.6 Implement the success path: session, recoveries, per-request policy, resume with the chain's assurance mapping, confirm after resume, and the answer (D7, steps 5–9). **Verify:** a chain test asserts:
   - stored roles only;
   - the federated session fields and assurance;
   - a held recovery cancelled;
@@ -132,7 +132,7 @@ Each task's verification names the test or command that shows it is done.
   - `no-store`, `no-referrer`, and no handoff or credential;
   - a consent redirect when consent is needed;
   - the code exchanging at `/oauth2/token`.
-- [ ] 4.7 Implement the completion failure paths. **Verify:** tests for each of:
+- [x] 4.7 Implement the completion failure paths. **Verify:** tests for each of:
   - a per-request policy refusal, and a per-request challenge falling back to the handoff (F23);
   - an error handler that finds no session after one was ended (F46);
   - a resume error;
@@ -144,8 +144,8 @@ Each task's verification names the test or command that shows it is done.
   - a session-store failure (F26).
 
   In each, the session is ended where one was stored, and no code reaches the client.
-- [ ] 4.8 Check events and refusal reporting (D10). **Verify:** a test shows a completed sign-in emits the same events in the same order as a redemption, and a hook refusal at a completion-enabled callback emits `AuthnLoginFail`.
-- [ ] 4.9 Write godoc for `LoginURL`, `OIDCDeps.Users` and `WithOIDCProviderCompletion`, covering the default, the trusted login URL, the fallback, the exclusions and the one-SSO-login-per-browser limit (F29). **Verify:** `go doc`.
+- [x] 4.8 Check events and refusal reporting (D10). **Verify:** a test shows a completed sign-in emits the same events in the same order as a redemption, and a hook refusal at a completion-enabled callback emits `AuthnLoginFail`.
+- [x] 4.9 Write godoc for `LoginURL`, `OIDCDeps.Users` and `WithOIDCProviderCompletion`, covering the default, the trusted login URL, the fallback, the exclusions and the one-SSO-login-per-browser limit (F29). **Verify:** `go doc`.
 
 ## 5. Documentation (`README.md`)
 
