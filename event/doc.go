@@ -28,7 +28,9 @@
 //   - session.WithSecurityEvents, for a reuse the session manager detects
 //     outside a chain;
 //   - signingkey.WithSecurityEvents, for a key rotation, which runs on no
-//     request and reports only there.
+//     request and reports only there;
+//   - admin.WithEventSink, for the administration services, which an
+//     application may also call from a job outside any request.
 //
 // On a request a chain reports for, a component reports through the chain
 // and its own sink is not called, so one outcome is reported once. A nil sink,
@@ -75,7 +77,8 @@
 //     lock in the account-lockout policy, once per lock, including the lock
 //     again, for longer, after an escalating wait has run out.
 //   - authn_login_lock: the same lock, reported beside authn_login_fail_max.
-//   - authn_password_change: a password changed.
+//   - authn_password_change: a password changed, by its user or by an
+//     administrator's reset.
 //   - authn_password_change_fail: a password change refused, for a wrong
 //     current password or a new one the password policy rejected.
 //   - authn_token_created: a credential handed out for a stored session.
@@ -94,6 +97,17 @@
 //   - excess_rate_limit_exceeded: a request refused for a rate limit the
 //     library keeps.
 //   - malicious_csrf: a request the CSRF protection refused as cross-site.
+//   - user_created: a user created through the administration services.
+//   - user_updated: a user's details changed through the administration
+//     services.
+//   - user_archived: a user deactivated through the administration services.
+//   - user_deleted: a user soft-deleted through the administration services.
+//   - privilege_permissions_changed: a role's grants replaced through the
+//     administration services.
+//   - authz_change: a user's role grants added, removed or made primary
+//     through the administration services.
+//   - authz_admin: a role created, updated or deleted through the
+//     administration services.
 //
 // Under the scrty_ prefix:
 //
@@ -151,6 +165,14 @@
 //   - scrty_device_code_replayed: a device code presented after it was spent.
 //   - scrty_user_code_entry_throttled: a user-code entry refused by the entry
 //     limit.
+//   - scrty_user_reactivated: a user reactivated through the administration
+//     services.
+//   - scrty_user_imported: a user created or changed by an administration
+//     import; an import that changed nothing reports nothing.
+//   - scrty_identifier_conflict: an email login refused because the
+//     identifier names two users, naming no user and not the identifier.
+//   - scrty_active_role_switched: a user's active role switched to another
+//     role the user holds.
 //
 // # What an event carries
 //
@@ -158,7 +180,10 @@
 // concerns when one is known, the resolved client address, the first factor
 // where one applies, the digest of the session's identifier, the OAuth client
 // an OpenID provider outcome concerns, and the cause of a revocation or a
-// failed delivery, in a fixed word. It never carries the identifier itself, a
+// failed delivery, in a fixed word. An administration event also carries its
+// actor, its target (a user's identifier or a role's name) and the names of
+// the fields it changed, never their values; the events of every other
+// component leave those empty. It never carries the session's identifier, a
 // password, a token, a one-time code, an authorization code, a client secret
 // or assertion, a link secret, a key, a DPoP proof, a certificate, a CSRF
 // token or a stored hash.

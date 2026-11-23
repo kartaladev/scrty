@@ -76,8 +76,8 @@ func TestSecurityEvents_Names(t *testing.T) {
 						scrty++
 					}
 				}
-				assert.Equal(t, 35, scrty, "the outcomes the vocabulary does not name")
-				assert.Len(t, names, 18+35)
+				assert.Equal(t, 39, scrty, "the outcomes the vocabulary does not name")
+				assert.Len(t, names, 25+39)
 			},
 		},
 		{
@@ -95,6 +95,59 @@ func TestSecurityEvents_Names(t *testing.T) {
 			assert: func(t *testing.T, names []string) {
 				names[0] = "changed"
 				assert.Equal(t, event.AuthnLoginSuccess, event.Names()[0])
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, event.Names())
+		})
+	}
+}
+
+// TestNames_IncludesAdministration pins the names the administration services
+// report under: the OWASP names for user, privilege and role changes, and the
+// scrty_ names for what the vocabulary does not name.
+func TestNames_IncludesAdministration(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		assert func(t *testing.T, names []string)
+	}
+
+	contains := func(want ...string) func(t *testing.T, names []string) {
+		return func(t *testing.T, names []string) {
+			for _, w := range want {
+				assert.Contains(t, names, w)
+			}
+		}
+	}
+
+	cases := []testCase{
+		{
+			name: "OWASP names",
+			assert: contains("user_created", "user_updated", "user_archived", "user_deleted",
+				"authn_password_change", "privilege_permissions_changed", "authz_change", "authz_admin"),
+		},
+		{
+			name: "scrty_ names",
+			assert: contains("scrty_user_reactivated", "scrty_user_imported", "scrty_identifier_conflict",
+				"scrty_active_role_switched"),
+		},
+		{
+			name: "the constants carry the names",
+			assert: func(t *testing.T, names []string) {
+				for _, c := range []string{
+					event.UserCreated, event.UserUpdated, event.UserArchived, event.UserDeleted,
+					event.PrivilegePermissionsChanged, event.AuthzChange, event.AuthzAdmin,
+					event.UserReactivated, event.UserImported, event.IdentifierConflict, event.ActiveRoleSwitched,
+				} {
+					assert.Contains(t, names, c)
+				}
 			},
 		},
 	}

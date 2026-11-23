@@ -52,7 +52,28 @@ var reportedElsewhere = map[string]string{
 	event.DeviceCodeExchanged:         providerEventsPinned,
 	event.DeviceCodeReplayed:          providerEventsPinned,
 	event.UserCodeEntryThrottled:      providerEventsPinned,
+
+	// The administration services report these, below any chain: an administrator's change
+	// is made through a service call, not through a request the chain authenticates, so the
+	// chain has no flow that decides them.
+	event.UserCreated:                 administrationEventsPinned,
+	event.UserUpdated:                 administrationEventsPinned,
+	event.UserArchived:                administrationEventsPinned,
+	event.UserDeleted:                 administrationEventsPinned,
+	event.UserReactivated:             administrationEventsPinned,
+	event.UserImported:                administrationEventsPinned,
+	event.IdentifierConflict:          administrationEventsPinned,
+	event.PrivilegePermissionsChanged: administrationEventsPinned,
+	event.AuthzChange:                 administrationEventsPinned,
+	event.AuthzAdmin:                  administrationEventsPinned,
+
+	// The chain reports a role switch, once switching is enabled; the row is written with
+	// that feature, which is not on the chain yet.
+	event.ActiveRoleSwitched: "the active-role switch's own tests, once the chain offers switching",
 }
+
+// administrationEventsPinned is where the administration services' events are pinned.
+const administrationEventsPinned = "the administration services' own event tests, not the chain's"
 
 // providerEventsPinned is where the OpenID provider's events are pinned.
 const providerEventsPinned = "oidcprovider TestProvider_Events, and TestProvider_Events_ThroughChain through a chain"
