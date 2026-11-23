@@ -587,6 +587,97 @@ func TestSessionRenewal_SignedTokenMode(t *testing.T) {
 	assert.Equal(t, identity.UserID("u-1"), stored.UserID)
 }
 
+// TestSessionRenewal_PrincipalReadsGrantsAtChainClock pins that the principal a
+// renewal issues the successor's credential for is built from the grants valid
+// at the chain's clock: a user whose only grant ended has no active role, and
+// one whose grant is current only on that clock still has it.
+func TestSessionRenewal_PrincipalReadsGrantsAtChainClock(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		grant  func(now time.Time) identity.AssignedRole
+		assert func(t *testing.T, p *identity.Principal)
+	}
+
+	cases := []testCase{
+		{
+			name: "a primary grant that ended an hour before the clock leaves no active role",
+			grant: func(now time.Time) identity.AssignedRole {
+				return identity.AssignedRole{ValidUntil: now.Add(-time.Hour)}
+			},
+			assert: func(t *testing.T, p *identity.Principal) {
+				assert.Nil(t, p.ActiveRole)
+			},
+		},
+		{
+			name: "a primary grant that ends an hour after the clock is the active role",
+			grant: func(now time.Time) identity.AssignedRole {
+				return identity.AssignedRole{ValidUntil: now.Add(time.Hour)}
+			},
+			assert: func(t *testing.T, p *identity.Principal) {
+				require.NotNil(t, p.ActiveRole)
+				assert.Equal(t, "sales", p.ActiveRole.Name)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC))
+
+			sessions, err := session.New(session.WithClock(clk),
+				session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))))
+			require.NoError(t, err)
+
+			s, err := sessions.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))
+			require.NoError(t, err)
+
+			grant := tc.grant(clk.Now())
+			grant.ID, grant.Name, grant.Primary = "r-sales", "sales", true
+
+			details := storedUser()
+			details.Roles = []*identity.AssignedRole{&grant}
+
+			users := NewMockUserLoader(ctrl)
+			users.EXPECT().LoadByUserID(gomock.Any(), gomock.Any()).Return(details, nil).AnyTimes()
+
+			verifier := NewMockVerifier(ctrl)
+			verifier.EXPECT().Verify(gomock.Any(), "signed-old").Return(token.NewClaims(testSubject, s.ID), nil)
+
+			var issuedFor *identity.Principal
+
+			tokens := newMockGenerator(ctrl)
+			tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, _ string, p *identity.Principal) (string, error) {
+					issuedFor = p
+
+					return "signed-new", nil
+				})
+
+			chain, err := httpsec.New(
+				httpsec.WithClock(clk),
+				httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: verifier, Sessions: sessions, Users: users}),
+				httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Sessions: sessions, Users: users, Tokens: tokens}),
+			)
+			require.NoError(t, err)
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, httpsec.DefaultSessionRenewalPath, nil)
+			req.Header.Set("Authorization", "Bearer signed-old")
+
+			out := serve(t, chain, req)
+			require.NoError(t, out.err, "a user with no active role still renews")
+			require.Equal(t, http.StatusOK, out.rec.Code)
+			require.NotNil(t, issuedFor)
+
+			tc.assert(t, issuedFor)
+		})
+	}
+}
+
 // errSigningUnavailable stands for a key source that cannot sign: what a
 // generator reports when its signer fails.
 var errSigningUnavailable = errors.New("session_renewal_test: kms unreachable at 10.0.0.7")

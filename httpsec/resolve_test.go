@@ -717,6 +717,21 @@ func expiredPrimaryRequest(
 ) (guardRun, error) {
 	t.Helper()
 
+	return primaryGrantRequest(t, f, identity.AssignedRole{ValidUntil: f.clk.Now().Add(-time.Hour)}, build)
+}
+
+// primaryGrantRequest is expiredPrimaryRequest for a primary grant whose dates
+// the caller sets: the grant's ID, name and primary flag are filled in here.
+func primaryGrantRequest(
+	t *testing.T,
+	f resolveFixture,
+	grant identity.AssignedRole,
+	build func(g *httpsec.Guards) func(http.Handler) http.Handler,
+) (guardRun, error) {
+	t.Helper()
+
+	grant.ID, grant.Name, grant.Primary = "r-sales", "sales", true
+
 	roles := &countingRoles{grant: []*identity.ResourcePrivileges{readOn("crm", "lead")}}
 
 	az, err := authorize.NewPrivilegeAuthorizer(roles)
@@ -724,9 +739,7 @@ func expiredPrimaryRequest(
 
 	users := NewMockUserLoader(gomock.NewController(t))
 	details := storedUser()
-	details.Roles = []*identity.AssignedRole{
-		{ID: "r-sales", Name: "sales", Primary: true, ValidUntil: f.clk.Now().Add(-time.Hour)},
-	}
+	details.Roles = []*identity.AssignedRole{&grant}
 	users.EXPECT().LoadByUserID(gomock.Any(), testUserID).Return(details, nil)
 
 	permitAll := authorize.Rule[httpsec.Request]{
@@ -796,4 +809,55 @@ func TestResolve_ExpiredPrimaryKeepsSession(t *testing.T) {
 	s, err := f.sessions.Load(t.Context(), f.session.ID)
 	require.NoError(t, err, "the session is still live and not revoked")
 	assert.Equal(t, f.session.ID, s.ID)
+}
+
+// TestResolve_GrantWindowIsReadAtChainClock pins that a grant's dates are read
+// against the chain's clock, not the wall clock. The fixture's clock sits in
+// the past, so a grant that is current only on it, or not yet started on it,
+// reads the other way on the wall clock.
+func TestResolve_GrantWindowIsReadAtChainClock(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		grant  func(now time.Time) identity.AssignedRole
+		assert func(t *testing.T, run guardRun, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "a grant ending an hour after the chain's clock is current",
+			grant: func(now time.Time) identity.AssignedRole {
+				return identity.AssignedRole{ValidUntil: now.Add(time.Hour)}
+			},
+			assert: func(t *testing.T, run guardRun, err error) {
+				require.NoError(t, err)
+				require.NoError(t, run.refusal)
+				assert.True(t, run.routeRan)
+			},
+		},
+		{
+			name:  "a grant starting an hour after the chain's clock is not yet active",
+			grant: func(now time.Time) identity.AssignedRole { return identity.AssignedRole{StartDate: now.Add(time.Hour)} },
+			assert: func(t *testing.T, run guardRun, err error) {
+				require.NoError(t, err, "the request is authenticated")
+				require.ErrorIs(t, run.refusal, authorize.ErrNoActiveRole)
+				require.ErrorIs(t, run.refusal, authorize.ErrAccessDenied)
+				assert.False(t, run.routeRan)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newResolveFixture(t)
+
+			run, err := primaryGrantRequest(t, f, tc.grant(f.clk.Now()), func(g *httpsec.Guards) func(http.Handler) http.Handler {
+				return g.ResourcePrivileges("crm", "lead").RequireOne("read")
+			})
+			tc.assert(t, run, err)
+		})
+	}
 }

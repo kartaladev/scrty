@@ -1,6 +1,7 @@
 package httpsec_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,10 +15,22 @@ import (
 	"github.com/kartaladev/scrty/identity"
 )
 
-// memoRequest puts one authenticated request through a session-bearer chain
-// onto a route guarded by a privilege guard, whose handler makes nine more
-// checks on the same resource, and returns what the chain answered.
-func memoRequest(t *testing.T, roles *countingRoles, f resolveFixture, users identity.UserLoader, opts ...httpsec.Option) (*httptest.ResponseRecorder, error) {
+// memoRig is one session-bearer chain, built once, and the guard it puts on
+// its route. Every request a test serves goes through the same chain, so a
+// memo kept on the chain instead of on the request would show.
+type memoRig struct {
+	chain  *httpsec.Chain
+	guards *httpsec.Guards
+	f      resolveFixture
+
+	// inner, when set, is a request the route's handler serves through the
+	// same chain again, from the request's own context, as a request forwarded
+	// in-process to another path would be: the chain passes a request it is
+	// already running on straight on, and runs a forward in full.
+	inner bool
+}
+
+func newMemoRig(t *testing.T, roles *countingRoles, f resolveFixture, users identity.UserLoader, opts ...httpsec.Option) *memoRig {
 	t.Helper()
 
 	az, err := authorize.NewPrivilegeAuthorizer(roles)
@@ -40,8 +53,19 @@ func memoRequest(t *testing.T, roles *countingRoles, f resolveFixture, users ide
 	guards, err := httpsec.NewGuards(nil, httpsec.WithChainAuthorizer())
 	require.NoError(t, err)
 
+	return &memoRig{chain: chain, guards: guards, f: f}
+}
+
+// serve puts one authenticated request through the rig's chain onto a route
+// guarded by a privilege guard, whose handler makes nine more checks on the
+// same resource (and, for a rig with inner set, serves one more request the
+// same way), and returns what the chain answered.
+func (g *memoRig) serve(ctx context.Context, t *testing.T, path string) (*httptest.ResponseRecorder, error) {
+	t.Helper()
+
 	rec := httptest.NewRecorder()
-	req := bearerRequest(t.Context(), "Bearer "+f.session.ID)
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, path, nil)
+	req.Header.Set("Authorization", "Bearer "+g.f.session.ID)
 
 	route := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for range 9 {
@@ -53,15 +77,32 @@ func memoRequest(t *testing.T, roles *countingRoles, f resolveFixture, users ide
 		}
 	})
 
-	guarded := guards.ResourcePrivileges("crm", "lead").RequireOne("read")(route)
+	guarded := g.guards.ResourcePrivileges("crm", "lead").RequireOne("read")
 
-	run := chain.Assemble(func(ex *httpsec.Exchange) error {
-		guarded.ServeHTTP(rec, req.WithContext(ex.Context()))
+	//nolint:contextcheck // the forwarded request takes the context of the request it is forwarded from, which the handler holds as r.
+	run := g.chain.Assemble(func(ex *httpsec.Exchange) error {
+		inner := route
+
+		if g.inner {
+			inner = func(w http.ResponseWriter, r *http.Request) {
+				route(w, r)
+
+				g.inner = false
+				innerRec, err := g.serve(r.Context(), t, "/forwarded")
+				g.inner = true
+
+				if err != nil || innerRec.Code != http.StatusOK {
+					w.WriteHeader(http.StatusInternalServerError)
+				}
+			}
+		}
+
+		guarded(inner).ServeHTTP(rec, req.WithContext(ex.Context()))
 
 		return nil
 	})
 
-	err = run(httpsec.NewExchange(t.Context(), httpsec.NewHTTPRequest(req), httpsec.NewHTTPResponseWriter(rec)))
+	err := run(httpsec.NewExchange(ctx, httpsec.NewHTTPRequest(req), httpsec.NewHTTPResponseWriter(rec)))
 
 	return rec, err
 }
@@ -76,6 +117,7 @@ func TestChain_PrivilegeMemoPerRequest(t *testing.T) {
 		name     string
 		opts     []httpsec.Option
 		requests int
+		nested   bool
 		assert   func(t *testing.T, loads int64)
 	}
 
@@ -86,8 +128,14 @@ func TestChain_PrivilegeMemoPerRequest(t *testing.T) {
 			assert:   func(t *testing.T, loads int64) { assert.EqualValues(t, 1, loads) },
 		},
 		{
-			name:     "a second request loads once more and not from the first's memo",
+			name:     "a second request through the same chain loads once more and not from the first's memo",
 			requests: 2,
+			assert:   func(t *testing.T, loads int64) { assert.EqualValues(t, 2, loads) },
+		},
+		{
+			name:     "a request served from inside another through the same chain gets a memo of its own",
+			requests: 1,
+			nested:   true,
 			assert:   func(t *testing.T, loads int64) { assert.EqualValues(t, 2, loads) },
 		},
 		{
@@ -110,8 +158,11 @@ func TestChain_PrivilegeMemoPerRequest(t *testing.T) {
 			details.Roles = []*identity.AssignedRole{{ID: "r-sales", Name: "sales", Primary: true}}
 			users.EXPECT().LoadByUserID(gomock.Any(), testUserID).Return(details, nil).AnyTimes()
 
+			rig := newMemoRig(t, roles, f, users, tc.opts...)
+			rig.inner = tc.nested
+
 			for range tc.requests {
-				rec, err := memoRequest(t, roles, f, users, tc.opts...)
+				rec, err := rig.serve(t.Context(), t, "/orders")
 				require.NoError(t, err)
 				require.Equal(t, http.StatusOK, rec.Code)
 			}

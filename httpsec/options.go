@@ -370,6 +370,23 @@ func (c *config) useSessions(m *session.Sessions) {
 	}
 }
 
+// WithoutPrivilegeMemo turns off the per-request privilege memo, so every
+// privilege check loads the role's privileges from the consumer's store.
+//
+// Default: the chain attaches a new memo (authorize.WithRequestMemo) to every
+// request it runs, before any interceptor, guard or handler, so a request that
+// passes a route guard and then asks for the caller's allowed actions loads the
+// active role once. The memo belongs to that request alone and is never carried
+// to another. Turn it off for a deployment that must see a privilege change
+// made in the middle of one request, at the price of one load per check.
+func WithoutPrivilegeMemo() Option {
+	return func(c *config) error {
+		c.noPrivilegeMemo = true
+
+		return nil
+	}
+}
+
 // WithSessions sets the session manager the chain itself uses: the one
 // that records a session's activity after the handler, and the one a mark from
 // Exchange.EvaluatePerRequest is stored through.
