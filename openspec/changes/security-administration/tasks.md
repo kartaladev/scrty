@@ -6,22 +6,20 @@ for the intended reason (not a compile error), then implement, then refactor. Te
 when the task is done. Scoped runs cover the changed packages and their transitive dependents
 (`test-scope.md`); the full suite runs once, in group 14.
 
-Pull requests follow the groups: groups 1 to 3 (Part A), groups 4 to 10 (scopes, catalogue and
-administration), group 11 (email login), group 12 (active-role switch), group 13 (docs). Each leaves
-`main` green.
+The whole change lands in one pull request, opened after group 14's final gate (design D1).
 
 ## 1. Identity model
 
-- [ ] 1.1 `identity.Scope`, `ScopeAll`, `ScopeOwn`, and `Privilege.Scope`, with the empty scope read
+- [x] 1.1 `identity.Scope`, `ScopeAll`, `ScopeOwn`, and `Privilege.Scope`, with the empty scope read
   as `all` by a helper `Privilege.EffectiveScope()` (spec identity-model "Scope preserved"). Red: a
   table test of `EffectiveScope` for empty, `all`, `own` and `team`, against a stub that returns the
   stored value, fails on the empty case. Verify: `go test -race -count=1 ./identity/`.
-- [ ] 1.2 `Details.Email`, `Details.EmailVerifiedAt` and `Details.EmailVerified()` (spec "Unverified
+- [x] 1.2 `Details.Email`, `Details.EmailVerifiedAt` and `Details.EmailVerified()` (spec "Unverified
   email"). Red: `EmailVerified` reports true for a zero time. Verify: `go test -race -count=1 ./identity/`.
-- [ ] 1.3 `identity.EmailLoader` port with godoc stating the contract (spec "Email loader contract");
+- [x] 1.3 `identity.EmailLoader` port with godoc stating the contract (spec "Email loader contract");
   regenerate the mocks that consumers of `identity` use. Verify: `go vet ./identity/` and
   `go generate ./...` leaves no diff after a second run.
-- [ ] 1.4 `identity.PrincipalFromDetailsAt(details, at)` keeps only grants valid at `at` and makes the first
+- [x] 1.4 `identity.PrincipalFromDetailsAt(details, at)` keeps only grants valid at `at` and makes the first
   kept primary grant active, or none (spec "Expired primary grant", "Grant not yet started",
   "Boundary"; design D17, F18). Red: a table test with an expired primary grant expects no active
   role and gets `sales`. Verify: `go test -race -count=1 ./identity/`.
@@ -229,4 +227,4 @@ administration), group 11 (email login), group 12 (active-role switch), group 13
 ## Workflow follow-up
 
 - Archive the change after the final gate and the review.
-- The maintainer tags v0.3.0 once every pull request of this change has merged.
+- The maintainer tags v0.3.0 once this change's pull request has merged.

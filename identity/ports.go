@@ -291,3 +291,23 @@ type UserProvisioner interface {
 type MFARequirementLookup interface {
 	Required(ctx context.Context, userID UserID) (bool, error)
 }
+
+// EmailLoader loads users by their verified email address.
+//
+// It is optional: a component that looks users up by email needs one and is
+// given none fails at construction, and the library supplies no default. The
+// library's opt-in identity stores implement it.
+//
+// An email is matched ignoring case, and only among users that are not deleted
+// and whose email is verified, so an address nobody has proved they control
+// never resolves to an account. This is the opposite of passing an email to
+// WithUserEmail, which stores it without ever matching on it.
+type EmailLoader interface {
+	// LoadByEmail loads the user whose verified email is email. A miss, an
+	// unverified email and a deleted user all return ErrUserNotFound. Input the
+	// store cannot represent, such as text its encoding cannot hold, is reported
+	// as ErrUserNotFound too, since no user can match it. Any other failure
+	// returns an error that is not ErrUserNotFound, so a caller can tell "no such
+	// user" from "the store is down".
+	LoadByEmail(ctx context.Context, email string) (*Details, error)
+}
