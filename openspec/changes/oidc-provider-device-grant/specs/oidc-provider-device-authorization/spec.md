@@ -121,7 +121,7 @@ A new user code SHALL differ from every unexpired device authorization's user co
 - **THEN** the request fails as a server error, and nothing is stored
 
 ### Requirement: The device authorization lifetime and polling interval are bounded
-A device authorization SHALL expire 600 seconds after issue by default, and the polling interval SHALL be 5 seconds by default. A consumer MAY set the lifetime between 60 seconds and 30 minutes, and the interval between 1 and 60 seconds and below the lifetime. Any other value SHALL fail construction.
+A device authorization SHALL expire 600 seconds after issue by default, and the polling interval SHALL be 5 seconds by default. A consumer MAY set the lifetime between 60 seconds and 30 minutes, and the interval between 1 and 60 seconds and below the lifetime. Any other value SHALL fail construction. An interval that is no whole number of seconds SHALL be answered rounded up to whole seconds, while polls are paced by the interval as set.
 
 #### Scenario: A consumer's lifetime
 - **WHEN** the consumer sets the lifetime to 15 minutes
@@ -130,6 +130,10 @@ A device authorization SHALL expire 600 seconds after issue by default, and the 
 #### Scenario: A lifetime past the bound
 - **WHEN** the consumer sets the lifetime to 1 hour
 - **THEN** building the provider fails with a configuration error naming the option
+
+#### Scenario: An interval that is no whole number of seconds
+- **WHEN** the consumer sets the interval to 1.5 seconds, and a device polls every `interval` seconds as answered
+- **THEN** responses carry `interval` 2, and the device is never answered `slow_down`
 
 ### Requirement: An entered user code is normalised before it is compared
 An entered user code SHALL be compared after removing whitespace and dashes and converting to upper case, when the format's alphabet has no lower-case letters. A code with any other character outside the alphabet, or of the wrong length after normalisation, SHALL be answered as an invalid code.

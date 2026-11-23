@@ -540,6 +540,24 @@ The task is named `"oidc-provider.device-authorizations"` and runs `devices.Dele
 
 - [ ] A fresh Opus reviewer, given the specs and design but not this plan's conclusions, first enumerates how the change fails, category by category (`defensive-coding.md`), then checks every requirement and scenario in `specs/`. Findings follow `defect-claims.md`. They are fixed in a fresh dispatch of the owning lane, then E2 runs again.
 
+
+### Task E4: Fold the branch code review (task 13.4) — Sonnet: each fix is decided (design D10, D3a) and has a reproducing test
+
+**Carried from the triage (2026-11-23):** the reproducing tests are in the session scratchpad `triage/` (`TestTriage2_*`, `TestTriage7_*`, `TestTriage5_*`, overlay `overlay.json`). Rewrite each as a real test in the tree; it is the red step.
+
+**Files:**
+- Modify: `oidcprovider/deviceauthorize.go` (`deviceResponse`: `Interval` rounded up to whole seconds), `oidcprovider/devicestore_memory.go` (`Create` refusals), `oidcprovider/devicestore.go` (port godoc lists them), `oidcprovider/resume.go` (withdrawn-approval godoc), `test/storetest/oidcprovider_device_suite.go` (three refusal cases), and tests beside each.
+- Do not change pacing: `paceDevicePoll` keeps comparing with the interval as set.
+
+- [ ] **Step 1 (interval):** `TestAuthorizeDevice_FractionalIntervalRoundsUp` (table, fake clock): `WithDevicePollInterval(1500*time.Millisecond)` answers `Interval == 2`; `2500ms` answers 3; `5s` answers 5. `TestToken_DeviceFollowingAnsweredInterval`: a device that polls every answered interval, adding 5 s after any `slow_down`, gets `authorization_pending` on every poll before approval and its tokens after, with no `slow_down`. Red: `Interval == 1` and `slow_down`.
+- [ ] **Step 2 (store parity):** exported-suite cases "a record with no client is refused, and nothing is stored", "a record in a state this version does not know is refused, and nothing is stored", "an approved record whose approval names no grant family is refused, and nothing is stored": an error neither `ErrNotFound` nor `ErrUserCodeTaken`, nothing stored by device code and the user code not held. Red on the memory store (`Create` returns nil); green after `Create` refuses with fixed-text errors (no digest). The SQL, pgx and GORM stores pass unchanged.
+- [ ] **Step 3 (godoc):** the withdrawn-approval comment in `resume.go` says the approval is withdrawn by a revocation the exchange finds, and that the user starts again from the device (their resume is an unknown handle and the code is no longer enterable); drop "the stage is left unspent" as a recovery hint. No test (comment only); `TestTriage5` behaviour stays as it is.
+- [ ] **Step 4:** `go vet ./oidcprovider/ && go test -count=1 -race ./oidcprovider/`; `cd test && go test -count=1 -race -timeout 20m ./storetest/ ./sqlstore/ ./pgxstore/ ./gormstore/ && go test -count=1 -race -run 'Device' .`; then the `httpsec` row on its own with `-timeout 25m`; `gofmt -l`; `golangci-lint`.
+
+### Task E5: Final gate again (task 13.5) — main session
+
+- [ ] After E4 is reviewed, run `make check`, `make spec-check` and `openspec validate oidc-provider-device-grant --strict`, and read all three outputs.
+
 ---
 
 ## Not in a task
