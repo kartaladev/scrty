@@ -339,7 +339,7 @@ func (s *MemoryStore) deleteLocked(sessionID string) {
 
 // Save updates the stored session, whole except for MFAAtFirstFactor,
 // AuthenticatedAt, the sign-in state (KeyBinding, CSRFToken, ClientIP and
-// UserAgent) and the family, supersession (RetainUntil and
+// UserAgent), SelectedRole and the family, supersession (RetainUntil and
 // RotatedStrictly included) and presentation fields, and never inserts. Those
 // are kept as Create, Supersede and MarkPresented wrote them, whatever the
 // saved session says. A superseded record also keeps both of its own
@@ -375,6 +375,7 @@ func (s *MemoryStore) Save(_ context.Context, sess *Session) error {
 	rec.RotatedStrictly = stored.RotatedStrictly
 	rec.FirstPresentedAt = stored.FirstPresentedAt
 	keepSignInState(rec, stored)
+	rec.SelectedRole = stored.SelectedRole
 	if !stored.SupersededAt.IsZero() {
 		rec.IdleExpiresAt = stored.IdleExpiresAt
 		rec.AbsoluteExpiresAt = stored.AbsoluteExpiresAt
@@ -628,7 +629,8 @@ func (s *MemoryStore) RecordActivity(_ context.Context, id string, lastAccessed,
 // their RetainUntil, so housekeeping removes them only when their family
 // could no longer be live, and no supersession lowers a retention deadline.
 // Neither record's own deadlines change. Old takes op.Strict as its
-// RotatedStrictly; the successor is inserted unmarked, as Create inserts it.
+// RotatedStrictly; the successor is inserted unmarked, as Create inserts it,
+// with Old's stored SelectedRole, which is also written to op.Successor.
 //
 // Nothing else is written: no other record of the family is touched, however
 // many renewals came before.
@@ -679,6 +681,10 @@ func (s *MemoryStore) Supersede(_ context.Context, op Supersession) error {
 	old.SuccessorDigest = sessionDigest(op.Successor.ID)
 	old.RotatedStrictly = op.Strict
 	retain(old, op.RetainUntil)
+	// The selected role is the superseded record's as it stands now, under
+	// the lock, not the copy the caller built the successor from: a selection
+	// recorded since that copy was loaded must be neither lost nor undone.
+	op.Successor.SelectedRole = old.SelectedRole
 	s.putLocked(op.Successor.clone())
 
 	return nil
@@ -764,6 +770,31 @@ func (s *MemoryStore) MarkPresented(_ context.Context, id string, at time.Time) 
 
 	return nil
 }
+
+// SelectRole writes role as the selected role of the session with this
+// identifier, and nothing else, under the store's lock: a session that is not
+// stored is ErrNotFound, a superseded one ErrSuperseded, and one past either
+// deadline at the store's clock ErrExpired, each with nothing written. It
+// never inserts.
+func (s *MemoryStore) SelectRole(_ context.Context, id string, role string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, found := s.records[id]
+	switch {
+	case !found:
+		return ErrNotFound
+	case rec.superseded():
+		return ErrSuperseded
+	case rec.expired(s.clock.Now()):
+		return ErrExpired
+	}
+	rec.SelectedRole = role
+
+	return nil
+}
+
+var _ RoleSelector = (*MemoryStore)(nil)
 
 // SuccessorPresented reports whether the current successor of the session
 // with this identifier was used, under the store's read lock, writing

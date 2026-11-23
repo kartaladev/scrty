@@ -30,7 +30,9 @@ func TestMemorySessionStore(t *testing.T) {
 
 	newStore := func(t *testing.T, clk clock.Clock) session.Store {
 		t.Helper()
-		return must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk.(clock.Timed))))
+		s := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk.(clock.Timed))))
+		require.Implements(t, (*session.RoleSelector)(nil), s, "the memory store must record a selected role")
+		return s
 	}
 	storetest.RunSessionStoreSuite(t, newStore)
 }
@@ -78,6 +80,8 @@ func TestEncryptedSessionStore(t *testing.T) {
 		s, err := session.NewEncryptedStore(
 			must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk.(clock.Timed)))), xorCipher{})
 		require.NoError(t, err)
+		require.Implements(t, (*session.RoleSelector)(nil), s,
+			"the wrapper over a store that records a selected role must record one too")
 
 		return s
 	}

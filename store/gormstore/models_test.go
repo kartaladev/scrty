@@ -156,7 +156,7 @@ func TestModels(t *testing.T) {
 
 // TestModels_AdministrationColumnsAreInert pins that the model fields for the
 // columns later changes wire (the user's email, its verification time, the
-// deletion time and the version; the session's selected role) are read-only:
+// deletion time and the version) are read-only:
 // gorm neither inserts nor updates them from a struct, so a store write can
 // never put a zero value (a version of 0, an empty email, a zero time) over
 // what the migration gave the column, and the columns stay at their NULL or
@@ -176,7 +176,6 @@ func TestModels_AdministrationColumnsAreInert(t *testing.T) {
 			model:   &userRow{},
 			columns: []string{"email", "email_verified_at", "deleted_at", "version"},
 		},
-		{name: "sessions", model: &sessionRow{}, columns: []string{"selected_role"}},
 	}
 
 	for _, tc := range cases {
@@ -195,4 +194,21 @@ func TestModels_AdministrationColumnsAreInert(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestModels_SessionSelectedRoleIsWrittenByTheInsertOnly pins how the
+// session's selected role reaches its column: the insert writes it, from the
+// row's nil (NULL) or the role, and a save never does, so a copy loaded before
+// a selection cannot undo it. Only SelectRole's own statement updates it.
+func TestModels_SessionSelectedRoleIsWrittenByTheInsertOnly(t *testing.T) {
+	t.Parallel()
+
+	s, err := schema.Parse(&sessionRow{}, &sync.Map{}, schema.NamingStrategy{})
+	require.NoError(t, err)
+
+	f := s.LookUpField("selected_role")
+	require.NotNil(t, f, "the model has no field for column selected_role")
+	assert.True(t, f.Creatable, "the insert does not write the selected role")
+	assert.True(t, f.Readable, "the selected role is not read")
+	assert.Contains(t, savedColumnsOmitted, "selected_role", "a save writes the selected role")
 }

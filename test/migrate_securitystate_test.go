@@ -2467,7 +2467,7 @@ func TestMigrations(t *testing.T) {
 						"0192f000-0000-7000-8000-0000000000e1", []byte{1}, "u-1", time.Now(), time.Now(), time.Now(), time.Now(),
 						"", 0, nil, false, "", "", "", "", "{}", nil, nil, nil, "[]", "", false,
 						"0192f000-0000-7000-8000-0000000000e2", time.Now(), nil, nil, nil, nil, time.Now(), nil,
-						nil, nil, nil, nil, nil)
+						nil, nil, nil, nil, nil, nil)
 					require.NoError(t, err)
 					n, err := result.RowsAffected()
 					require.NoError(t, err)

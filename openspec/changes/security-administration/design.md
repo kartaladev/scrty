@@ -299,6 +299,9 @@ filters `deleted_at IS NULL`. The username stays held by the unchanged unique co
   rest.
 - A store may accept an `AfterID` or `Organization.ID` it can hold, and then honours it; one it
   cannot hold is `ErrInvalidInput`.
+  An `Organization.ID` it can hold but that names no organization is `ErrInvalidInput` too; the
+  schema has no foreign key, so the store checks the organization under a key-share lock in the
+  write's transaction.
 
 ### D14. Import matches by identifier only and writes nothing when nothing changed
 
@@ -465,6 +468,10 @@ the selected grant active when it is still held and valid, and the primary grant
   `ErrExpired`. `Save` and a strict rotation keep the stored selection, so a stale copy cannot undo
   it. The empty role clears it, and durable stores store NULL. A role the database cannot hold is
   refused without echoing it.
+  A supersession gives the successor the selection read from the locked old row, whatever the
+  caller's copy says, so a switch that commits while a rotation is in flight is kept. The session
+  manager exposes `SelectsRoles` and `SelectRole` so the chain reaches the store's selector without
+  holding the store.
 - **The lineage table gains the column too (decided 2026-11-23, during implementation):** the
   refresh-token lineage table runs every session statement with only the table name rewritten, and
   its columns are pinned identical to the sessions table's. Adding `selected_role` to
@@ -534,6 +541,12 @@ the selected grant active when it is still held and valid, and the primary grant
 | F55 | An import changes a user while an audit port is set | Accepted (spec) | The audit record carries the imported values as After and no Before; the import port does not return the previous record |
 | F56 | A write that changes nothing but the version, such as setting an already-primary grant primary or an update with equal values | Accepted | It is versioned and reported like any change; only `SetActive` and import detect a no-op |
 | F57 | An administration write waits on a row lock held by a slow writer | Accepted | The wait is bounded by the caller's context deadline, as for every store call; the consumer sets it |
+| F58 | An attacker alternates a user's username and email at the login | Handled, tested | Lockout keys on the resolved account, so both count against one budget. A failure is also recorded under the identifier as typed when it differs, so the automation challenge treats a registered email exactly as an unknown one and reveals nothing |
+| F59 | The login itself builds its principal | Accepted | The password provider and magic links have no clock option and read the wall clock; every later request is built with the chain's clock. They differ only under a fake or skewed clock |
+| F60 | A role is assigned to a user who already holds it | Accepted | A second grant is added; two grants of one role may carry different date windows, and only grants valid now apply |
+| F61 | A consumer's identifier resolver fails | Handled, tested | The login is refused with the sanitized failure, an outage staying an outage, after the same decoy work; it is logged. Lockout never judges one key while another account is authenticated |
+| F62 | Lock disclosure is turned on with email login | Accepted (godoc of `WithLockDisclosure`) | Locking an account through its username, then presenting a candidate email, shows whether the email belongs to it; disclosure is the consumer's opt-in |
+| F63 | A role selection commits while a rotation of the same session is in flight | Handled, tested (`RotationTakesSelectionMadeDuringStep`, `SupersedeTakesSelectedRoleFromLockedRow`) | The successor takes the selection from the locked old row, so the switch is kept, up or down. A consumer store that skips this read-back fails the session conformance suite; if run anyway, the selection is lost and the primary role applies |
 
 ## Risks / Trade-offs
 

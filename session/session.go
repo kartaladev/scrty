@@ -302,6 +302,18 @@ type Session struct {
 	// this field before it reaches a durable store.
 	ExternalIDToken string
 
+	// SelectedRole is the name of the role the session's user chose to act as,
+	// and the empty string, the default, when none was chosen. It records a
+	// choice and grants nothing: whoever reads it checks that the user still
+	// holds a grant of that name before acting on it.
+	//
+	// Only RoleSelector.SelectRole writes it, changing no other field.
+	// Create stores it as given, every successor in the family carries it from
+	// the stored record, and Save keeps the stored value whatever the session
+	// handed to it says, so a copy loaded before a selection cannot undo it.
+	// Library-owned: a consumer cannot set it through Data.
+	SelectedRole string
+
 	// Data is the consumer's own map. The library stores and returns it
 	// byte-for-byte, and never reads, adds, renames or removes an entry. No
 	// library state is kept in it: the first factor, the second-factor state

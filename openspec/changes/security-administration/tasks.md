@@ -196,7 +196,7 @@ The whole change lands in one pull request, opened after group 14's final gate (
 
 ## 12. Switching the active role
 
-- [ ] 12.1 `session.Session.SelectedRole`, a store method that writes only that field, kept by every
+- [x] 12.1 `session.Session.SelectedRole`, a store method that writes only that field, kept by every
   rotation, in the memory store and the three durable stores (spec sessions, both requirements). Red:
   the session conformance suite's new cases fail. Verify: the session conformance suites.
 - [ ] 12.2 `httpsec.WithActiveRoleSwitching` and `Chain.SwitchActiveRole`, with `ErrRoleNotHeld` for a role

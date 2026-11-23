@@ -93,10 +93,10 @@ type sessionRow struct {
 	BindingKind       *string `gorm:"column:binding_kind;type:text"`
 	BindingThumbprint *string `gorm:"column:binding_thumbprint;type:text"`
 	CSRFToken         *string `gorm:"column:csrf_token;type:text"`
-	// SelectedRole is the role the session's user switched to, NULL for none.
-	// It is read-only here ("->"): no insert or update of this store writes
-	// it, so the column keeps its NULL. A later change wires the write.
-	SelectedRole *string `gorm:"column:selected_role;type:text;->"`
+	// SelectedRole is the role the session's user chose to act as, NULL for
+	// none. It is written on create only here ("<-:create"): the insert writes
+	// it, a save omits it, and SelectRole's own statement alone updates it.
+	SelectedRole *string `gorm:"column:selected_role;type:text;<-:create"`
 }
 
 // TableName is the scrty_sessions table the migration creates for sessions.

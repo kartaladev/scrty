@@ -300,7 +300,10 @@ func (m *Sessions) RotateWithGrace(ctx context.Context, current *Session, grace 
 // the successor, not on the mark surviving the rotation.
 //
 // issue is handed the successor as it will be stored, which is also the
-// session returned, and must not modify it. Unlike RotateIssuing, it runs
+// session returned, and must not modify it. Its SelectedRole alone may still
+// change: the store gives the successor the selected role stored on the old
+// session when it supersedes it (see Store.Supersede), so a selection recorded
+// while issue runs is the one returned and stored. Unlike RotateIssuing, it runs
 // under no lock of this manager: the store's conditional supersession alone
 // decides which of two concurrent renewals stores its successor. A nil issue
 // runs no step and returns an empty credential, which is RotateWithGrace.
