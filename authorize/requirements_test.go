@@ -351,3 +351,189 @@ func TestRequirements(t *testing.T) {
 		})
 	}
 }
+
+// TestRequirements_DenialReasons pins the reason each denial this package
+// produces gives, beside ErrAccessDenied: exactly one, and the one named.
+func TestRequirements_DenialReasons(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		req    authorize.Requirement
+		ctx    func(ctx context.Context) context.Context
+		assert func(t *testing.T, err error)
+	}
+
+	viewer := func(ctx context.Context) context.Context { return withRole(ctx, "viewer") }
+	roleless := func(ctx context.Context) context.Context {
+		return identity.WithPrincipal(ctx, &identity.Principal{ID: "u-1"})
+	}
+	service := func(ctx context.Context) context.Context { return withScopes(ctx, "orders:read") }
+	blankRole := func(ctx context.Context) context.Context { return withRole(ctx, "  ") }
+
+	cases := []testCase{
+		{
+			name: "HasAnyRole naming a blank role", req: authorize.HasAnyRole("  "), ctx: blankRole,
+			assert: deniedFor(authorize.ErrNoActiveRole),
+		},
+		{
+			name: "HasAnyRole with a blank active role", req: authorize.HasAnyRole("admin"), ctx: blankRole,
+			assert: deniedFor(authorize.ErrNoActiveRole),
+		},
+		{
+			name: "HasAnyRole with an empty active role", req: authorize.HasAnyRole(""),
+			ctx:    func(ctx context.Context) context.Context { return withRole(ctx, "") },
+			assert: deniedFor(authorize.ErrNoActiveRole),
+		},
+		{name: "DenyAll", req: authorize.DenyAll(), ctx: viewer, assert: deniedFor(authorize.ErrNotGranted)},
+		{
+			name: "HasAnyRole without the role", req: authorize.HasAnyRole("admin"), ctx: viewer,
+			assert: deniedFor(authorize.ErrNotGranted),
+		},
+		{
+			name: "HasAnyRole with no active role", req: authorize.HasAnyRole("admin"), ctx: roleless,
+			assert: deniedFor(authorize.ErrNoActiveRole),
+		},
+		{
+			name: "HasAnyScope without the scope", req: authorize.HasAnyScope("orders:write"), ctx: service,
+			assert: deniedFor(authorize.ErrNotGranted),
+		},
+		{
+			name: "HasAllScopes missing one", req: authorize.HasAllScopes("orders:read", "orders:write"),
+			ctx: service, assert: deniedFor(authorize.ErrNotGranted),
+		},
+		{
+			name: "HasAllScopes of none", req: authorize.HasAllScopes(), ctx: service,
+			assert: deniedFor(authorize.ErrNotGranted),
+		},
+		{
+			name: "AnyOf of none", req: authorize.AnyOf(), ctx: viewer,
+			assert: deniedFor(authorize.ErrNotGranted),
+		},
+		{
+			name: "AnyOf whose members deny", req: authorize.AnyOf(authorize.DenyAll(), authorize.HasAnyRole("admin")),
+			ctx: viewer, assert: deniedFor(authorize.ErrNotGranted),
+		},
+		{
+			name: "HasPrivilege without an authorizer", req: authorize.HasPrivilege("crm", "lead", "view"),
+			ctx: viewer, assert: deniedFor(authorize.ErrNotGranted),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, tc.req(tc.ctx(t.Context())))
+		})
+	}
+}
+
+func TestAllOf(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		req    func(t *testing.T) authorize.Requirement
+		ctx    func(ctx context.Context) context.Context // nil means an anonymous caller
+		assert func(t *testing.T, err error)
+	}
+
+	viewer := func(ctx context.Context) context.Context { return withRole(ctx, "viewer") }
+
+	// leadOnly is an authorizer whose role grants read on crm/lead and
+	// nothing on crm/deal.
+	leadOnly := func(t *testing.T) authorize.Authorizer {
+		roles := NewMockRoleLoader(gomock.NewController(t))
+		roles.EXPECT().LoadPrivileges(gomock.Any(), "viewer").
+			Return(scoped("crm", "lead", identity.Privilege{Name: "read", Granted: true}), nil).
+			AnyTimes()
+
+		authorizer, err := authorize.NewPrivilegeAuthorizer(roles)
+		require.NoError(t, err)
+
+		return authorizer
+	}
+
+	cases := []testCase{
+		{
+			name: "across resources it denies with the second member's denial",
+			req: func(t *testing.T) authorize.Requirement {
+				return func(ctx context.Context) error {
+					return authorize.AllOf(
+						authorize.HasPrivilege("crm", "lead", "read"),
+						authorize.HasPrivilege("crm", "deal", "read"),
+					)(authorize.WithAuthorizer(ctx, leadOnly(t)))
+				}
+			},
+			ctx: viewer,
+			assert: func(t *testing.T, err error) {
+				deniedFor(authorize.ErrNotGranted)(t, err)
+				assert.Contains(t, err.Error(), "crm/deal", "the denial is not the second member's")
+			},
+		},
+		{
+			name: "every member met allows",
+			req: func(*testing.T) authorize.Requirement {
+				return authorize.AllOf(authorize.Authenticated(), authorize.HasAnyRole("viewer"))
+			},
+			ctx:    viewer,
+			assert: func(t *testing.T, err error) { require.NoError(t, err) },
+		},
+		{
+			name:   "no members denies",
+			req:    func(*testing.T) authorize.Requirement { return authorize.AllOf() },
+			ctx:    viewer,
+			assert: deniedFor(authorize.ErrNotGranted),
+		},
+		{
+			name: "an absent member denies",
+			req: func(*testing.T) authorize.Requirement {
+				return authorize.AllOf(authorize.Authenticated(), nil)
+			},
+			ctx:    viewer,
+			assert: deniedFor(authorize.ErrNotGranted),
+		},
+		{
+			name: "the first failure is returned unchanged, so an anonymous caller is asked to authenticate",
+			req: func(*testing.T) authorize.Requirement {
+				return authorize.AllOf(authorize.Authenticated(), authorize.DenyAll())
+			},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, authorize.ErrAuthenticationRequired)
+				assert.NotErrorIs(t, err, authorize.ErrAccessDenied)
+			},
+		},
+		{
+			name: "an outage is passed through unchanged and later members are not evaluated",
+			req: func(t *testing.T) authorize.Requirement {
+				return authorize.AllOf(
+					func(context.Context) error { return errBackendDown },
+					func(context.Context) error {
+						t.Error("a member after the failing one was evaluated")
+
+						return nil
+					},
+				)
+			},
+			ctx: viewer,
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, errBackendDown)
+				assert.NotErrorIs(t, err, authorize.ErrAccessDenied, "an outage became a denial")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			tc.assert(t, tc.req(t)(ctx))
+		})
+	}
+}

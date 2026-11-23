@@ -6,6 +6,15 @@
 // caller's active role and for ownership of the record being acted on ship
 // here, and a consumer adds their own by implementing Authorizer.
 //
+// A granted privilege carries a scope: identity.ScopeAll reaches every record
+// and identity.ScopeOwn only the caller's own. A plain privilege check accepts
+// only all; HasPrivilegeAnyScope and CheckAnyScope accept either and report the
+// strongest held, and HasPrivilegeFor adds the ownership check a record needs
+// when only own is held. Every denial matches ErrAccessDenied and exactly one
+// reason — ErrNoSubject, ErrNoActiveRole, ErrNotGranted, ErrWrongScope or
+// ErrNotOwner — while an outage matches neither. A Catalogue declares, at
+// start-up, the privileges and scopes an application may grant.
+//
 // Declining to judge and refusing are kept apart, because the manager skips one
 // and stops on the other. An authorizer handed a shape of attributes it does
 // not handle says so and is passed over; one that recognises the shape but

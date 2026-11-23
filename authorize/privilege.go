@@ -118,19 +118,22 @@ func (a *PrivilegeAuthorizer) Authorize(ctx context.Context, attrs Attributes) e
 
 	subject, ok := identity.PrincipalFromContext(ctx)
 	if !ok {
-		return fmt.Errorf("%w: the request carries no subject", ErrAccessDenied)
+		return fmt.Errorf("%w: %w: the request carries no subject", ErrAccessDenied, ErrNoSubject)
 	}
 
 	role := subject.ActiveRole
 	if role == nil {
-		return fmt.Errorf("%w: the subject has no active role", ErrAccessDenied)
+		return fmt.Errorf("%w: %w: the subject has no active role", ErrAccessDenied, ErrNoActiveRole)
 	}
 
 	// A super role is the consumer's own statement that this role is not
 	// subject to privilege checks, so the loader is never asked: a role that
 	// bypasses matching must not be able to be denied by an outage in the store
-	// whose answer is not going to be read.
+	// whose answer is not going to be read. It holds every privilege with
+	// ScopeAll, whatever scopes the attributes accept.
 	if role.SuperRole {
+		required.report.record(identity.ScopeAll)
+
 		return nil
 	}
 
@@ -138,7 +141,7 @@ func (a *PrivilegeAuthorizer) Authorize(ctx context.Context, attrs Attributes) e
 	// fail for a reason that has nothing to do with this caller or, in a store
 	// that treats the empty name as a row, hand back privileges nobody granted.
 	if strings.TrimSpace(role.Name) == "" {
-		return fmt.Errorf("%w: the subject's active role has no name", ErrAccessDenied)
+		return fmt.Errorf("%w: %w: the subject's active role has no name", ErrAccessDenied, ErrNoActiveRole)
 	}
 
 	granted, err := a.roles.LoadPrivileges(ctx, role.Name)
@@ -147,7 +150,7 @@ func (a *PrivilegeAuthorizer) Authorize(ctx context.Context, attrs Attributes) e
 	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	if err != nil {
 		if errors.Is(err, identity.ErrPrivilegesNotFound) {
-			return fmt.Errorf("%w: role %q grants no privileges", ErrAccessDenied, role.Name)
+			return fmt.Errorf("%w: %w: role %q grants no privileges", ErrAccessDenied, ErrNotGranted, role.Name)
 		}
 
 		// Anything else is an outage: the check did not happen. It is wrapped
@@ -161,12 +164,16 @@ func (a *PrivilegeAuthorizer) Authorize(ctx context.Context, attrs Attributes) e
 		return diag.Wrap(err, "authorize: the role's privileges could not be loaded")
 	}
 
-	if a.satisfied(a.entryFor(granted, required), required) {
-		return nil
+	scope, reason := a.decide(a.entryFor(granted, required), required)
+	if reason != nil {
+		return fmt.Errorf("%w: %w: role %q does not grant %s of %v on %s/%s with a scope in %v",
+			ErrAccessDenied, reason, role.Name, required.Mode, required.Required,
+			required.Group, required.Resource, required.Accept)
 	}
 
-	return fmt.Errorf("%w: role %q does not grant %s of %v on %s/%s",
-		ErrAccessDenied, role.Name, required.Mode, required.Required, required.Group, required.Resource)
+	required.report.record(scope)
+
+	return nil
 }
 
 // privilegeAttributes narrows attrs to the kind this authorizer judges and
@@ -226,6 +233,19 @@ func privilegeAttributes(attrs Attributes) (PrivilegeAttributes, error) {
 		return required, fmt.Errorf("%w: match mode %d is not defined", ErrInvalidAttributes, required.Mode)
 	}
 
+	// An undefined accepted scope is refused rather than skipped: no grant can
+	// ever carry it usefully, so listing it is a mistake in the check, and
+	// dropping it quietly would leave a check narrower than the one written.
+	for i, scope := range required.Accept {
+		if _, defined := scopeRank(scope); !defined {
+			return required, fmt.Errorf("%w: accepted scope %d is not defined", ErrInvalidAttributes, i)
+		}
+	}
+
+	if len(required.Accept) == 0 {
+		required.Accept = plainAccept
+	}
+
 	return required, nil
 }
 
@@ -255,40 +275,61 @@ func (a *PrivilegeAuthorizer) entryFor(
 	return nil
 }
 
-// satisfied reports whether entry grants what required asks for.
+// decide reports the scope with which entry grants what required asks for, or
+// the reason it does not.
 //
-// Only granted privileges count. A privilege the role carries as refused is
-// deliberately not the same as one it never mentions — the identity model keeps
-// them apart — but neither of them permits anything, so both fail here.
-func (a *PrivilegeAuthorizer) satisfied(entry *identity.ResourcePrivileges, required PrivilegeAttributes) bool {
-	if entry == nil {
-		return false
-	}
+// Only granted privileges count, and only with a scope required.Accept lists.
+// A privilege the role carries as refused is deliberately not the same as one
+// it never mentions — the identity model keeps them apart — but neither of them
+// permits anything, so both fail here as not granted. A privilege granted only
+// with a scope the check does not accept, or with one this package does not
+// define, fails as the wrong scope.
+//
+// Under any-of the scope is the strongest among the privileges held; under
+// all-of it is the weakest, since every one of them is needed and the check
+// reaches no further than the narrowest grant.
+func (a *PrivilegeAuthorizer) decide(entry *identity.ResourcePrivileges, required PrivilegeAttributes) (identity.Scope, error) {
+	var (
+		result    identity.Scope
+		found     bool
+		wrongOnly bool // a name failed only because of its scope
+	)
 
 	for _, name := range required.Required {
-		held := a.grants(entry, name)
+		scope, held := strongestHeld(entry, name, required.Accept, a.same)
+		if !held {
+			wrongScope := grantedWithAnyScope(entry, name, a.same)
+			if required.Mode == MatchAllOf {
+				return "", denialReason(wrongScope)
+			}
 
-		if required.Mode == MatchAnyOf && held {
-			return true
+			wrongOnly = wrongOnly || wrongScope
+
+			continue
 		}
 
-		if required.Mode == MatchAllOf && !held {
-			return false
+		switch {
+		case !found:
+			result, found = scope, true
+		case required.Mode == MatchAnyOf && stronger(scope, result):
+			result = scope
+		case required.Mode == MatchAllOf && stronger(result, scope):
+			result = scope
 		}
 	}
 
-	// Every name was checked: under all-of none failed, and under any-of none
-	// succeeded.
-	return required.Mode == MatchAllOf
+	if !found {
+		return "", denialReason(wrongOnly)
+	}
+
+	return result, nil
 }
 
-// grants reports whether entry holds name as granted.
-func (a *PrivilegeAuthorizer) grants(entry *identity.ResourcePrivileges, name string) bool {
-	for _, held := range entry.Privileges {
-		if held.Granted && a.same(held.Name, name) {
-			return true
-		}
+// denialReason picks the reason a privilege that is not held gives.
+func denialReason(wrongScope bool) error {
+	if wrongScope {
+		return ErrWrongScope
 	}
 
-	return false
+	return ErrNotGranted
 }

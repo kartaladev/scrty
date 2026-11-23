@@ -26,18 +26,18 @@ The whole change lands in one pull request, opened after group 14's final gate (
 
 ## 2. Authorization core
 
-- [ ] 2.1 Denial reasons `ErrNoSubject`, `ErrNoActiveRole`, `ErrNotGranted`, `ErrWrongScope`,
+- [x] 2.1 Denial reasons `ErrNoSubject`, `ErrNoActiveRole`, `ErrNotGranted`, `ErrWrongScope`,
   `ErrNotOwner`, each wrapped with `ErrAccessDenied` by the privilege and ownership authorizers and
   the requirements (spec "Denials say why"; design D8). Red: `errors.Is(err, ErrNoActiveRole)` is
   false for a subject without a role. Verify: `go test -race -count=1 ./authorize/`.
-- [ ] 2.2 Scope in the privilege authorizer: `PrivilegeAttributes.Accept`, empty meaning `all` only;
+- [x] 2.2 Scope in the privilege authorizer: `PrivilegeAttributes.Accept`, empty meaning `all` only;
   an own-only grant fails a plain check with `ErrWrongScope`; an undefined scope covers nothing
   (spec MODIFIED "Privilege checks match…", "A grant carries a scope"; design D4, F12, F13). Red: the
   own-only scenario is allowed. Verify: `go test -race -count=1 ./authorize/`.
-- [ ] 2.3 `authorize.AllOf` (spec MODIFIED "Requirements distinguish…": all-of across resources,
+- [x] 2.3 `authorize.AllOf` (spec MODIFIED "Requirements distinguish…": all-of across resources,
   empty, absent member; design D6). Red: the across-resources case is allowed. Verify:
   `go test -race -count=1 ./authorize/`.
-- [ ] 2.4 `HasPrivilegeAnyScope`, which reports the strongest scope held through the context, and
+- [x] 2.4 `HasPrivilegeAnyScope`, which reports the strongest scope held through the context, and
   `HasPrivilegeFor` with `OwnershipAttributes`, which calls the ownership check only for `own` (spec
   "A check can accept any scope…", "A check for one record…"; design D4). Red: the all-scope record
   check calls the ownership mock, which `gomock` rejects. Verify: `go test -race -count=1 ./authorize/`.
@@ -50,7 +50,7 @@ The whole change lands in one pull request, opened after group 14's final gate (
   `ErrInspectionUnsupported` for an authorizer without it (spec "One call reports…"; design D7, F32).
   Red: the allowed-actions scenario reports `update` as not held. Verify:
   `go test -race -count=1 ./authorize/`.
-- [ ] 2.7 `authorize.Catalogue`: construction refusals, default scopes, `Allows`, and a defensive copy
+- [x] 2.7 `authorize.Catalogue`: construction refusals, default scopes, `Allows`, and a defensive copy
   (spec resource-catalogue, all requirements; design D9, F30). Red: a duplicate `view`/`VIEW` is
   accepted. Verify: `go test -race -count=1 ./authorize/`.
 - [ ] 2.8 Godoc for every new exported name, naming its default and override, and an `Example` for the

@@ -97,5 +97,5 @@ func (r *Rules[R]) Evaluate(ctx context.Context, request R) error {
 		return nil
 	}
 
-	return fmt.Errorf("%w: no rule covers this request", ErrAccessDenied)
+	return fmt.Errorf("%w: %w: no rule covers this request", ErrAccessDenied, ErrNotGranted)
 }

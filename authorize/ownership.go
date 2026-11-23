@@ -54,7 +54,7 @@ func (a *OwnershipAuthorizer) Authorize(ctx context.Context, attrs Attributes) e
 	// a nil guard of its own — the one an implementation forgets.
 	subject, ok := identity.PrincipalFromContext(ctx)
 	if !ok {
-		return fmt.Errorf("%w: the request carries no subject to own anything", ErrAccessDenied)
+		return fmt.Errorf("%w: %w: the request carries no subject to own anything", ErrAccessDenied, ErrNoSubject)
 	}
 
 	// Both functions are the consumer's. Their errors are sanitized before they
@@ -79,8 +79,8 @@ func (a *OwnershipAuthorizer) Authorize(ctx context.Context, attrs Attributes) e
 	}
 
 	if !isOwner {
-		return fmt.Errorf("%w: the subject does not own the %s/%s in question",
-			ErrAccessDenied, owned.Group, owned.Resource)
+		return fmt.Errorf("%w: %w: the subject does not own the %s/%s in question",
+			ErrAccessDenied, ErrNotOwner, owned.Group, owned.Resource)
 	}
 
 	return nil

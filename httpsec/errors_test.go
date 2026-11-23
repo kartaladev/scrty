@@ -465,6 +465,11 @@ var sentinelRegistry = map[string]map[string]error{
 		"authorize.ErrConfig":                 authorize.ErrConfig,
 		"authorize.ErrInvalidAttributes":      authorize.ErrInvalidAttributes,
 		"authorize.ErrUnsupportedAttributes":  authorize.ErrUnsupportedAttributes,
+		"authorize.ErrNoSubject":              authorize.ErrNoSubject,
+		"authorize.ErrNoActiveRole":           authorize.ErrNoActiveRole,
+		"authorize.ErrNotGranted":             authorize.ErrNotGranted,
+		"authorize.ErrWrongScope":             authorize.ErrWrongScope,
+		"authorize.ErrNotOwner":               authorize.ErrNotOwner,
 	},
 	"github.com/kartaladev/scrty/authenticate/mfa": {
 		"mfa.ErrAlreadyEnrolled":         mfa.ErrAlreadyEnrolled,
@@ -640,6 +645,11 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"httpsec.ErrTooManyStreams":               "internal to the stream, whose answer over a cap is 200 with only a longer retry, because a browser gives up on any other",
 		"authorize.ErrUnsupportedAttributes":      "a misbuilt guard, deliberately 500 per design Decision 7",
 		"authorize.ErrInvalidAttributes":          "a misbuilt guard, deliberately 500 per design Decision 7",
+		"authorize.ErrNoSubject":                  "a denial reason, only ever returned wrapped with ErrAccessDenied, which answers it 403",
+		"authorize.ErrNoActiveRole":               "a denial reason, only ever returned wrapped with ErrAccessDenied, which answers it 403",
+		"authorize.ErrNotGranted":                 "a denial reason, only ever returned wrapped with ErrAccessDenied, which answers it 403",
+		"authorize.ErrWrongScope":                 "a denial reason, only ever returned wrapped with ErrAccessDenied, which answers it 403",
+		"authorize.ErrNotOwner":                   "a denial reason, only ever returned wrapped with ErrAccessDenied, which answers it 403",
 		"session.ErrConfig":                       "a wiring fault, refused at construction",
 		"session.ErrNotFound": "leaves the chain only joined with ErrAuthenticationRequired, " +
 			"which answers it 401",

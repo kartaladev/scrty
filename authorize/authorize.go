@@ -51,6 +51,46 @@ var (
 	ErrAuthenticationRequired = errors.New("authorize: authentication required")
 )
 
+// The reasons a denial gives.
+//
+// Every denial from the privilege and ownership authorizers, from FirstOf and
+// from the requirements in this package matches ErrAccessDenied and exactly one
+// of these, so a caller that only asks "was this refused?" keeps working, and
+// one that wants to say why — a problem type per reason, a metric label — asks
+// errors.Is for the reason. None of them is ever returned on its own: a reason
+// without ErrAccessDenied would read, to existing callers, as an outage.
+//
+// A failure that is not a decision about the caller — a role loader or an
+// ownership check that could not be reached — carries no reason and does not
+// match ErrAccessDenied. The one place an outage is turned into a denial is
+// AnyOf, which treats a member it could not evaluate as one that did not
+// allow and so may answer ErrNotGranted; a requirement that must surface an
+// outage uses AllOf or stands alone.
+var (
+	// ErrNoSubject is the reason when the request carries no principal for an
+	// authorizer to judge. Requirements report a missing principal as
+	// ErrAuthenticationRequired instead, which is not a denial.
+	ErrNoSubject = errors.New("no subject")
+
+	// ErrNoActiveRole is the reason when the principal acts under no role, or
+	// under a role with a blank name.
+	ErrNoActiveRole = errors.New("no active role")
+
+	// ErrNotGranted is the reason when the caller has not been shown to hold
+	// what was asked for: the privilege, role or scope is absent, refused or
+	// unknown to the store, or nothing was configured to judge the attempt.
+	ErrNotGranted = errors.New("not granted")
+
+	// ErrWrongScope is the reason when the privilege is granted, but only with
+	// a scope the check does not accept: an own-only grant under a plain check,
+	// or a grant whose scope this package does not define.
+	ErrWrongScope = errors.New("wrong scope")
+
+	// ErrNotOwner is the reason when the caller is not the owner of the record
+	// an ownership check was asked about.
+	ErrNotOwner = errors.New("not the owner")
+)
+
 // Attributes describe one attempt for an Authorizer to judge.
 //
 // It is an empty interface because the set of things a consumer may want
@@ -131,6 +171,23 @@ type PrivilegeAttributes struct {
 	// Mode says whether every required privilege must be granted or only one of
 	// them. The zero value demands every one.
 	Mode MatchMode
+
+	// Accept lists the scopes a grant may carry for this check to count it.
+	// Empty, the default, accepts only identity.ScopeAll, so a plain check is
+	// never met by an own-only grant: a route guarded by a plain check whose
+	// handler forgot the ownership check would otherwise show an own-only
+	// caller every record. A check that serves own records too lists
+	// identity.ScopeOwn as well, as HasPrivilegeAnyScope does. Only the scopes
+	// identity defines may be listed; any other value is refused as
+	// ErrInvalidAttributes, because a grant with an undefined scope covers
+	// nothing and a check accepting one could never be met by it.
+	Accept []identity.Scope
+
+	// report receives the scope the check was allowed with, for the checks in
+	// this package that read it. It is unexported so that a consumer cannot
+	// supply one, and travels with the attributes rather than in the context so
+	// that a nested check sharing the context cannot overwrite the answer.
+	report *scopeReport
 }
 
 // OwnershipAttributes ask whether the subject owns the record being acted on.
@@ -252,5 +309,5 @@ func (m *FirstOf) Authorize(ctx context.Context, attrs Attributes) error {
 		return err
 	}
 
-	return fmt.Errorf("%w: no authorizer judges attributes of type %T", ErrAccessDenied, attrs)
+	return fmt.Errorf("%w: %w: no authorizer judges attributes of type %T", ErrAccessDenied, ErrNotGranted, attrs)
 }
