@@ -3780,7 +3780,7 @@ auth, err := authenticate.NewUsernamePasswordAuthenticator(users,
 - Your user loader must also implement `identity.EmailLoader`, or construction fails.
 - Only a **verified** email signs in, matched ignoring case, and only for a live user. The loader's
   answer is checked, not trusted: an unverified user, or one whose email does not match, counts as
-  not found.
+  not found, and so does an account with an empty username.
 - The username is tried first, so existing logins keep their path and cost. Only an identifier
   containing `@` reaches the email lookup.
 - If the identifier is one user's username and also another live user's verified email, the login is
@@ -3791,25 +3791,39 @@ auth, err := authenticate.NewUsernamePasswordAuthenticator(users,
   single member with email login on; more than one is a configuration error. A wrapper of your own
   around the provider must forward `ResolveIdentifier` and `EmailLogin`, or lockout keys on the
   identifier as typed.
+- A failed login by email is also recorded under the email as typed, so the automation challenge
+  treats a registered email exactly as an unknown one. Lockout reports and events it only once, under
+  the account. Your attempt store must match identifiers exactly, without folding case.
 
 ## Switching the active role
 
-<!-- REVIEW (main session): this section documents the API as specified in plans.md Task 16 and
-design D20, checked against `go doc` on the working tree; re-check against the final code. No
-Example covers it yet, so its snippet is not compiled. -->
-
 A user with several roles acts under one, the active role. With `httpsec.WithSwitchableRoles()`,
-an authenticated caller may switch to another role they hold, and the choice is recorded on their
+a caller authenticated through a session-bound authenticator (`EnableBearerToken` or
+`EnableSessionBearer`) may switch to another role they hold, and the choice is recorded on their
 session.
 
+<!-- from httpsec ExampleWithSwitchableRoles -->
 ```go
 chain, err := httpsec.New(
+	httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),
 	httpsec.WithSwitchableRoles(),
-	// ...an authenticator that binds a session...
 )
+if err != nil {
+	return err
+}
 
-// in a handler behind the chain:
-err := chain.SwitchActiveRole(r.Context(), "audit")
+// A handler behind the chain switches the caller's role.
+app := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	if err := chain.SwitchActiveRole(r.Context(), "audit"); err != nil {
+		// httpsec.ErrRoleNotHeld, httpsec.ErrAuthenticationRequired, ...
+		w.WriteHeader(http.StatusForbidden)
+
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+})
+
+handler := chain.Middleware()(app)
 ```
 
 `SwitchActiveRole` reloads the user, checks that they hold a grant of that name in force now, writes
@@ -3824,9 +3838,10 @@ clears the selection.
 
 Refusals: a role not held (or a name no store can hold) is `httpsec.ErrRoleNotHeld`, which matches
 `authorize.ErrAccessDenied` and `authorize.ErrNoActiveRole`, and leaves the session unchanged; a
-context with no session the chain resolved is `httpsec.ErrAuthenticationRequired`. The chain
-refuses to build when a session manager cannot record a selection (the store must implement the
-optional `session.RoleSelector`; every shipped store does).
+context with no live session the chain resolved is `httpsec.ErrAuthenticationRequired`. The chain
+refuses to build when it has no session manager, or one that cannot record a selection
+(`session.Sessions.SelectsRoles`; the store must implement the optional `session.RoleSelector`, and
+every shipped store does).
 
 ## Database tables and migrations
 

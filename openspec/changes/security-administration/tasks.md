@@ -209,10 +209,10 @@ The whole change lands in one pull request, opened after group 14's final gate (
 
 ## 13. Documentation and release notes
 
-- [ ] 13.1 README: the administration services, the catalogue, scopes, the memo, email login and role
+- [x] 13.1 README: the administration services, the catalogue, scopes, the memo, email login and role
   switching, each with its default and override. Verify: every code block in the new sections compiles
   as an `Example` or is copied from one.
-- [ ] 13.2 CHANGELOG under Unreleased: Added entries, the three behaviour changes under Changed marked
+- [x] 13.2 CHANGELOG under Unreleased: Added entries, the three behaviour changes under Changed marked
   breaking, the two migrations, and the note on a consumer-added `email` column. Verify: `make spec-check` and a read of
   the entry against proposal.md's behaviour changes.
 
