@@ -136,11 +136,23 @@ func TestDeviceEvents(t *testing.T) {
 		secrets []string
 	}
 	type testCase struct {
-		name string
-		run  func(t *testing.T) scene
-		// want is how many of each named event the row reports, and zero for those left out.
-		want   map[string]int
+		name   string
+		run    func(t *testing.T) scene
 		assert func(t *testing.T, got []event.Event)
+	}
+
+	// counted asserts how many of each named event a row reports, and zero for those left
+	// out, then runs the row's further assertions.
+	counted := func(want map[string]int, further ...func(*testing.T, []event.Event)) func(*testing.T, []event.Event) {
+		return func(t *testing.T, got []event.Event) {
+			t.Helper()
+			for _, name := range append(deviceEventNames, event.GrantRevoked) {
+				assert.Len(t, named(got, name), want[name], "%s", name)
+			}
+			for _, f := range further {
+				f(t, got)
+			}
+		}
 	}
 
 	approveAsks := oidcprovider.ConsentAnswer{Scopes: []string{"openid"}}
@@ -197,10 +209,9 @@ func TestDeviceEvents(t *testing.T) {
 
 				return scene{events: s.events.all(), secrets: []string{resp.DeviceCode, resp.UserCode}}
 			},
-			want: map[string]int{event.DeviceAuthorizationIssued: 1},
-			assert: func(t *testing.T, got []event.Event) {
+			assert: counted(map[string]int{event.DeviceAuthorizationIssued: 1}, func(t *testing.T, got []event.Event) {
 				reportsOf(t, first(t, got, event.DeviceAuthorizationIssued), tvClient, "", event.OutcomeSuccess)
-			},
+			}),
 		},
 		{
 			name: "a first entry claims, and the same browser's re-entry claims nothing more",
@@ -214,44 +225,39 @@ func TestDeviceEvents(t *testing.T) {
 
 				return scene{events: f.events.all(), secrets: []string{entryCode, entryDisplay, flow}}
 			},
-			want: map[string]int{event.DeviceAuthorizationClaimed: 1},
-			assert: func(t *testing.T, got []event.Event) {
+			assert: counted(map[string]int{event.DeviceAuthorizationClaimed: 1}, func(t *testing.T, got []event.Event) {
 				reportsOf(t, first(t, got, event.DeviceAuthorizationClaimed), "tv", "", event.OutcomeSuccess)
-			},
+			}),
 		},
 		{
 			name: "an approval names the client and the user",
 			run:  consentRow(approveAsks, false),
-			want: map[string]int{event.DeviceAuthorizationClaimed: 1, event.DeviceAuthorizationApproved: 1},
-			assert: func(t *testing.T, got []event.Event) {
+			assert: counted(map[string]int{event.DeviceAuthorizationClaimed: 1, event.DeviceAuthorizationApproved: 1}, func(t *testing.T, got []event.Event) {
 				clientAndUser(event.DeviceAuthorizationApproved, "tv")(t, got)
 				assert.Equal(t, event.OutcomeSuccess, first(t, got, event.DeviceAuthorizationApproved).Outcome)
-			},
+			}),
 		},
 		{
 			name: "a denial names the client and the user, as a failure",
 			run:  consentRow(denies, false),
-			want: map[string]int{event.DeviceAuthorizationClaimed: 1, event.DeviceAuthorizationDenied: 1},
-			assert: func(t *testing.T, got []event.Event) {
+			assert: counted(map[string]int{event.DeviceAuthorizationClaimed: 1, event.DeviceAuthorizationDenied: 1}, func(t *testing.T, got []event.Event) {
 				clientAndUser(event.DeviceAuthorizationDenied, "tv")(t, got)
 				assert.Equal(t, event.OutcomeFailure, first(t, got, event.DeviceAuthorizationDenied).Outcome)
-			},
+			}),
 		},
 		{
 			name: "an approval whose stage spend fails is reported once, without the consent event",
 			run:  consentRow(approveAsks, true),
-			want: map[string]int{event.DeviceAuthorizationClaimed: 1, event.DeviceAuthorizationApproved: 1},
-			assert: func(t *testing.T, got []event.Event) {
+			assert: counted(map[string]int{event.DeviceAuthorizationClaimed: 1, event.DeviceAuthorizationApproved: 1}, func(t *testing.T, got []event.Event) {
 				assert.Empty(t, named(got, event.ConsentGiven))
-			},
+			}),
 		},
 		{
 			name: "a denial whose stage spend fails is reported once, without the consent event",
 			run:  consentRow(denies, true),
-			want: map[string]int{event.DeviceAuthorizationClaimed: 1, event.DeviceAuthorizationDenied: 1},
-			assert: func(t *testing.T, got []event.Event) {
+			assert: counted(map[string]int{event.DeviceAuthorizationClaimed: 1, event.DeviceAuthorizationDenied: 1}, func(t *testing.T, got []event.Event) {
 				assert.Empty(t, named(got, event.ConsentDenied))
-			},
+			}),
 		},
 		{
 			name: "a resume retried after the failed spend reports no second decision",
@@ -266,10 +272,9 @@ func TestDeviceEvents(t *testing.T) {
 
 				return scene{events: f.events.all(), secrets: []string{entryCode, entryDisplay, handle, flow, session}}
 			},
-			want: map[string]int{event.DeviceAuthorizationClaimed: 1, event.DeviceAuthorizationApproved: 1},
-			assert: func(t *testing.T, got []event.Event) {
+			assert: counted(map[string]int{event.DeviceAuthorizationClaimed: 1, event.DeviceAuthorizationApproved: 1}, func(t *testing.T, got []event.Event) {
 				assert.Empty(t, named(got, event.ConsentGiven))
-			},
+			}),
 		},
 		{
 			name: "an approval withdrawn for a session gone is reported approved, with no consent event",
@@ -284,26 +289,24 @@ func TestDeviceEvents(t *testing.T) {
 
 				return scene{events: f.events.all(), secrets: []string{entryCode, entryDisplay, handle, flow, session}}
 			},
-			want: map[string]int{event.DeviceAuthorizationClaimed: 1, event.DeviceAuthorizationApproved: 1},
-			assert: func(t *testing.T, got []event.Event) {
+			assert: counted(map[string]int{event.DeviceAuthorizationClaimed: 1, event.DeviceAuthorizationApproved: 1}, func(t *testing.T, got []event.Event) {
 				assert.Empty(t, named(got, event.ConsentGiven))
-			},
+			}),
 		},
 		{
 			name: "an exchange that returns tokens names the client and the user",
 			run:  exchangeRow(nil, 0),
-			want: map[string]int{event.DeviceCodeExchanged: 1},
-			assert: func(t *testing.T, got []event.Event) {
+			assert: counted(map[string]int{event.DeviceCodeExchanged: 1}, func(t *testing.T, got []event.Event) {
 				clientAndUser(event.DeviceCodeExchanged, tvRefresh)(t, got)
 				assert.Len(t, named(got, event.GrantCreated), 1)
-			},
+			}),
 		},
 		{
 			name: "an exchange that lost the spend reports no exchange",
 			run: exchangeRow(func(_ *testing.T, s *eventScene, _ *oidcprovider.DeviceAuthorization) {
 				s.store.lost = true
 			}, 0),
-			want: map[string]int{},
+			assert: counted(map[string]int{}),
 		},
 		{
 			name: "a grant created over a revocation reports no exchange",
@@ -311,22 +314,21 @@ func TestDeviceEvents(t *testing.T) {
 				_, err := s.grants.Revoke(t.Context(), r.Approval.GrantFamily, oidcprovider.CauseConsentRevoked, deviceNow)
 				require.NoError(t, err)
 			}, 0),
-			want: map[string]int{},
+			assert: counted(map[string]int{}),
 		},
 		{
 			name: "a replay names the client and the user, beside the one grant revocation",
 			run:  exchangeRow(nil, 1),
-			want: map[string]int{event.DeviceCodeExchanged: 1, event.DeviceCodeReplayed: 1, event.GrantRevoked: 1},
-			assert: func(t *testing.T, got []event.Event) {
+			assert: counted(map[string]int{event.DeviceCodeExchanged: 1, event.DeviceCodeReplayed: 1, event.GrantRevoked: 1}, func(t *testing.T, got []event.Event) {
 				clientAndUser(event.DeviceCodeReplayed, tvRefresh)(t, got)
 				assert.Equal(t, event.OutcomeFailure, first(t, got, event.DeviceCodeReplayed).Outcome)
 				assert.Equal(t, string(oidcprovider.CauseCodeReplay), first(t, got, event.GrantRevoked).Cause)
-			},
+			}),
 		},
 		{
-			name: "each further replay is reported, and the grant is not revoked again",
-			run:  exchangeRow(nil, 2),
-			want: map[string]int{event.DeviceCodeExchanged: 1, event.DeviceCodeReplayed: 2, event.GrantRevoked: 1},
+			name:   "each further replay is reported, and the grant is not revoked again",
+			run:    exchangeRow(nil, 2),
+			assert: counted(map[string]int{event.DeviceCodeExchanged: 1, event.DeviceCodeReplayed: 2, event.GrantRevoked: 1}),
 		},
 		{
 			name: "a sixth entry from a source that failed five times is reported throttled",
@@ -343,10 +345,9 @@ func TestDeviceEvents(t *testing.T) {
 
 				return scene{events: events.all(), secrets: []string{entryCode, entryDisplay, otherCode}}
 			},
-			want: map[string]int{event.UserCodeEntryThrottled: 1},
-			assert: func(t *testing.T, got []event.Event) {
+			assert: counted(map[string]int{event.UserCodeEntryThrottled: 1}, func(t *testing.T, got []event.Event) {
 				reportsOf(t, first(t, got, event.UserCodeEntryThrottled), "", "", event.OutcomeFailure)
-			},
+			}),
 		},
 		{
 			name: "an entry from an unattributable source is refused but not reported throttled",
@@ -358,7 +359,7 @@ func TestDeviceEvents(t *testing.T) {
 
 				return scene{events: events.all(), secrets: []string{entryCode, entryDisplay}}
 			},
-			want: map[string]int{},
+			assert: counted(map[string]int{}),
 		},
 		{
 			name: "an entry whose caller left is refused but not reported throttled",
@@ -372,7 +373,7 @@ func TestDeviceEvents(t *testing.T) {
 
 				return scene{events: events.all(), secrets: []string{entryCode, entryDisplay}}
 			},
-			want: map[string]int{},
+			assert: counted(map[string]int{}),
 		},
 	}
 
@@ -382,9 +383,6 @@ func TestDeviceEvents(t *testing.T) {
 
 			s := tc.run(t)
 
-			for _, name := range append(deviceEventNames, event.GrantRevoked) {
-				assert.Len(t, named(s.events, name), tc.want[name], "%s", name)
-			}
 			for _, e := range s.events {
 				raw, err := json.Marshal(e)
 				require.NoError(t, err)
@@ -393,9 +391,7 @@ func TestDeviceEvents(t *testing.T) {
 					assert.NotContains(t, string(raw), secret, "%s carries a secret", e.Name)
 				}
 			}
-			if tc.assert != nil {
-				tc.assert(t, s.events)
-			}
+			tc.assert(t, s.events)
 		})
 	}
 }

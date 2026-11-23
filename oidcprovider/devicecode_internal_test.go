@@ -191,22 +191,25 @@ func TestHoldsAtLeast(t *testing.T) {
 	type testCase struct {
 		name           string
 		n, length, min int
-		want           bool
+		assert         func(t *testing.T, held bool)
 	}
 
+	holds := func(t *testing.T, held bool) { t.Helper(); assert.True(t, held) }
+	falls := func(t *testing.T, held bool) { t.Helper(); assert.False(t, held) }
+
 	cases := []testCase{
-		{name: "93 characters over 5 positions pass 2^31", n: 93, length: 5, min: minUserCodeSpace, want: true},
-		{name: "6 characters over 12 positions pass 2^31", n: 6, length: 12, min: minUserCodeSpace, want: true},
-		{name: "2 characters over 29 positions reach the floor exactly", n: 2, length: 29, min: minUserCodeSpace, want: true},
-		{name: "2 characters over 28 positions fall short", n: 2, length: 28, min: minUserCodeSpace, want: false},
-		{name: "93 characters over 32 positions do not overflow", n: 93, length: 32, min: minUserCodeSpace, want: true},
+		{name: "93 characters over 5 positions pass 2^31", n: 93, length: 5, min: minUserCodeSpace, assert: holds},
+		{name: "6 characters over 12 positions pass 2^31", n: 6, length: 12, min: minUserCodeSpace, assert: holds},
+		{name: "2 characters over 29 positions reach the floor exactly", n: 2, length: 29, min: minUserCodeSpace, assert: holds},
+		{name: "2 characters over 28 positions fall short", n: 2, length: 28, min: minUserCodeSpace, assert: falls},
+		{name: "93 characters over 32 positions do not overflow", n: 93, length: 32, min: minUserCodeSpace, assert: holds},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Equal(t, tc.want, holdsAtLeast(tc.n, tc.length, tc.min))
+			tc.assert(t, holdsAtLeast(tc.n, tc.length, tc.min))
 		})
 	}
 }

@@ -719,11 +719,10 @@ func TestToken_DeviceStates(t *testing.T) {
 func TestToken_DeviceSlowDown(t *testing.T) {
 	t.Parallel()
 
-	// step is one poll, at an offset from issue, and the error code it is answered with, or ""
-	// for tokens.
+	// step is one poll, at an offset from issue, and the assertion on its answer.
 	type step struct {
-		at   time.Duration
-		want string
+		at     time.Duration
+		assert func(t *testing.T, res *oidcprovider.TokenResponse, err error)
 	}
 	type testCase struct {
 		name   string
@@ -732,7 +731,22 @@ func TestToken_DeviceSlowDown(t *testing.T) {
 		assert func(t *testing.T, f *deviceTokenFixture, record *oidcprovider.DeviceAuthorization)
 	}
 
-	pending, slow := oidcprovider.CodeAuthorizationPending, oidcprovider.CodeSlowDown
+	// answered asserts the poll is refused with code.
+	answered := func(code string) func(*testing.T, *oidcprovider.TokenResponse, error) {
+		return func(t *testing.T, res *oidcprovider.TokenResponse, err error) {
+			t.Helper()
+			assert.Nil(t, res)
+			assertRefused(t, err, code)
+		}
+	}
+	// tokens asserts the poll is answered with tokens.
+	tokens := func(t *testing.T, res *oidcprovider.TokenResponse, err error) {
+		t.Helper()
+		require.NoError(t, err)
+		assert.NotEmpty(t, res.AccessToken)
+	}
+	pending, slow := answered(oidcprovider.CodeAuthorizationPending), answered(oidcprovider.CodeSlowDown)
+	denied, expired := answered(oidcprovider.CodeAccessDenied), answered(oidcprovider.CodeExpiredToken)
 	justPolled := func(r *oidcprovider.DeviceAuthorization) { r.LastPolledAt, r.PollCount = r.IssuedAt, 1 }
 	noPace := func(t *testing.T, f *deviceTokenFixture, _ *oidcprovider.DeviceAuthorization) {
 		assert.Zero(t, f.polls.Load(), "no RecordPoll for a record answered by its state")
@@ -786,21 +800,19 @@ func TestToken_DeviceSlowDown(t *testing.T) {
 		{
 			name:   "an approved record polled too soon gets its tokens",
 			seed:   then(justPolled, approved("openid")),
-			steps:  []step{{time.Second, ""}},
+			steps:  []step{{time.Second, tokens}},
 			assert: noPace,
 		},
 		{
 			name:   "a denied record polled each second answers access_denied",
 			seed:   then(justPolled, func(r *oidcprovider.DeviceAuthorization) { r.State = oidcprovider.DeviceDenied }),
-			steps:  []step{{time.Second, oidcprovider.CodeAccessDenied}, {2 * time.Second, oidcprovider.CodeAccessDenied}},
+			steps:  []step{{time.Second, denied}, {2 * time.Second, denied}},
 			assert: noPace,
 		},
 		{
-			name: "an expired record polled each second answers expired_token",
-			seed: then(justPolled, func(r *oidcprovider.DeviceAuthorization) { r.ExpiresAt = r.IssuedAt.Add(time.Second) }),
-			steps: []step{
-				{time.Second, oidcprovider.CodeExpiredToken}, {2 * time.Second, oidcprovider.CodeExpiredToken},
-			},
+			name:   "an expired record polled each second answers expired_token",
+			seed:   then(justPolled, func(r *oidcprovider.DeviceAuthorization) { r.ExpiresAt = r.IssuedAt.Add(time.Second) }),
+			steps:  []step{{time.Second, expired}, {2 * time.Second, expired}},
 			assert: noPace,
 		},
 	}
@@ -814,14 +826,7 @@ func TestToken_DeviceSlowDown(t *testing.T) {
 			for _, s := range tc.steps {
 				f.clk.Advance(deviceNow.Add(s.at).Sub(f.clk.Now()))
 				res, err := f.p.Token(t.Context(), deviceRequest(tvClient, code))
-				if s.want == "" {
-					require.NoError(t, err, "at %v", s.at)
-					assert.NotEmpty(t, res.AccessToken)
-
-					continue
-				}
-				assert.Nil(t, res)
-				assertRefused(t, err, s.want)
+				s.assert(t, res, err)
 			}
 			tc.assert(t, f, record)
 		})

@@ -2732,6 +2732,40 @@ func TestMigrateSecurityState_DeviceGrant(t *testing.T) {
 			},
 		},
 		{
+			name: "applied, the device authorization table has an index for every lookup the stores make",
+			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+				_, err := p.Up(t.Context())
+				require.NoError(t, err)
+
+				// index name -> the definition, as pg_indexes reports it.
+				defs := map[string]string{}
+				for _, line := range queryStrings(t, db, `SELECT indexname || '|' || indexdef FROM pg_indexes
+					WHERE schemaname = current_schema() AND tablename = 'op_device_authorizations'`) {
+					name, def, _ := strings.Cut(line, "|")
+					defs[name] = def
+				}
+
+				for name, columns := range map[string]string{
+					"op_device_authorizations_device_code_digest_key": "UNIQUE INDEX|(device_code_digest)",
+					"op_device_authorizations_user_code_digest_key":   "UNIQUE INDEX|(user_code_digest)",
+					"op_device_authorizations_expiry":                 "INDEX|(expires_at)",
+					"op_device_authorizations_user_client":            "INDEX|(user_ref, client_id)",
+					"op_device_authorizations_sign_in":                "INDEX|(sign_in_family)",
+				} {
+					kind, cols, _ := strings.Cut(columns, "|")
+					def, ok := defs[name]
+					if !assert.True(t, ok, "index %s exists", name) {
+						continue
+					}
+					assert.Contains(t, def, "CREATE "+kind+" "+name, name)
+					assert.Contains(t, def, cols, name)
+					if kind == "INDEX" {
+						assert.NotContains(t, def, "UNIQUE", name)
+					}
+				}
+			},
+		},
+		{
 			name: "rolled back, the table and the six columns are gone and everything else is as it was",
 			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
 				ctx := t.Context()

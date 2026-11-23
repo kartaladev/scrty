@@ -141,14 +141,22 @@ func TestWithDeviceAuthorization(t *testing.T) {
 			assert: refused(),
 		},
 		{
-			name:   "an entry URL with a user_code in the query",
-			opts:   []oidcprovider.Option{oidcprovider.WithDeviceAuthorization(issuer + "/activate?user_code=x")},
-			assert: refused("user_code=x"),
+			name: "an entry URL with a user_code in the query",
+			opts: []oidcprovider.Option{oidcprovider.WithDeviceAuthorization(issuer + "/activate?user_code=x")},
+			assert: func(t *testing.T, p *oidcprovider.Provider, err error) {
+				t.Helper()
+				refused("user_code=x")(t, p, err)
+				assert.ErrorContains(t, err, "user_code")
+			},
 		},
 		{
-			name:   "an entry URL with an empty user_code in a longer query",
-			opts:   []oidcprovider.Option{oidcprovider.WithDeviceAuthorization(issuer + "/activate?a=1&user_code=")},
-			assert: refused(),
+			name: "an entry URL with an empty user_code in a longer query",
+			opts: []oidcprovider.Option{oidcprovider.WithDeviceAuthorization(issuer + "/activate?a=1&user_code=")},
+			assert: func(t *testing.T, p *oidcprovider.Provider, err error) {
+				t.Helper()
+				refused()(t, p, err)
+				assert.ErrorContains(t, err, "user_code")
+			},
 		},
 		{
 			name: "an entry URL with a result in the query",

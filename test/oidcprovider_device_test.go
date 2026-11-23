@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/store/migrate"
+	"github.com/kartaladev/scrty/store/seal"
 	"github.com/kartaladev/scrty/test"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/token/signingkey"
@@ -43,18 +45,31 @@ type devE2E struct {
 	sessions *session.Sessions
 	// oauthCtx makes the oauth2 client trust the server's certificate.
 	oauthCtx context.Context
+	// active is the replica that serves requests.
+	active atomic.Int32
 }
 
-// newDevE2E builds the deployment over in-memory stores, or over sqlstore on a migrated
-// PostgreSQL database when durable.
-func newDevE2E(t *testing.T, durable bool) *devE2E {
+// newDevE2E builds the deployment over in-memory stores, or, when adapter names one of
+// opAdapters, over that adapter's stores on a migrated PostgreSQL database.
+func newDevE2E(t *testing.T, adapter string) *devE2E {
 	t.Helper()
 
+	return newDevE2EReplicas(t, adapter, 1)
+}
+
+// newDevE2EReplicas is newDevE2E with replicas providers behind the one server, as a consumer
+// runs them behind a load balancer: each has its own handles on the same durable stores and
+// the same user-code key. Requests go to the replica e.active names. Replicas above one
+// need a durable adapter, since in-memory stores are not shared.
+func newDevE2EReplicas(t *testing.T, adapter string, replicas int) *devE2E {
+	t.Helper()
+	require.True(t, replicas == 1 || adapter != "", "replicas share state only through a durable adapter")
+
 	e := &devE2E{}
-	// The handler is set once the issuer, which is the server's own address, is known.
-	var handler http.Handler
+	// The handlers are set once the issuer, which is the server's own address, is known.
+	handlers := make([]http.Handler, replicas)
 	e.srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handler.ServeHTTP(w, r)
+		handlers[e.active.Load()].ServeHTTP(w, r)
 	}))
 	e.srv.EnableHTTP2 = false
 	e.srv.StartTLS()
@@ -71,53 +86,82 @@ func newDevE2E(t *testing.T, durable bool) *devE2E {
 		GrantTypes: []oidcprovider.GrantType{oidcprovider.GrantDeviceCode, oidcprovider.GrantRefreshToken},
 		IDTokenAlg: signingkey.ES256,
 	}
-	deps := oidcprovider.Deps{
+	baseDeps := oidcprovider.Deps{
 		Issuer: e.issuer, Keys: keys, Users: durUsers{},
 		LoginURL: e.issuer + "/login", ConsentURL: e.issuer + "/consent",
 		LogoutURL: e.issuer + "/logout-page", LoggedOutURL: e.issuer + "/bye",
 	}
-	// A short interval keeps the polling quick; the entry page is on the issuer's origin.
-	device := []oidcprovider.DeviceOption{oidcprovider.WithDevicePollInterval(time.Second)}
-	var opts []oidcprovider.Option
 
-	if durable {
-		set := migrate.SecurityState()
-		conn := test.RunTestPostgres(t, test.WithTestPostgresMigrations(set.FS(), set.Dir, set.VersionTable))
-		cipher := storefix.TestCipher(t)
-		st := opAdapters[0].open(t, conn, cipher, clock.System())
-		consents, clients := durAdmins["sqlstore"](t, conn)
-		require.NoError(t, clients.Put(t.Context(), client))
-		devices := deviceStores["sqlstore"](t, conn)
-
-		deps.Registry = clients
-		device = append(device, oidcprovider.WithUserCodeKey(deviceUserCodeKey),
-			oidcprovider.WithDeviceAuthorizationStore(devices))
-		opts = append(opts,
-			oidcprovider.WithPendingRequestStore(st.pending), oidcprovider.WithCodeStore(st.codes),
-			oidcprovider.WithGrantStore(st.grants), oidcprovider.WithCodeTokenStore(st.tokens),
-			oidcprovider.WithAccessTokenStore(st.access), oidcprovider.WithAssertionIDStore(st.assertions),
-			oidcprovider.WithBrowserSessionStore(st.browser), oidcprovider.WithRefreshTokenStore(st.lineage),
-			oidcprovider.WithRefreshSuccessorKey(durSuccessorKey), oidcprovider.WithConsentStore(consents))
-	} else {
-		deps.Clients = []oidcprovider.Client{client}
-	}
-	opts = append(opts, oidcprovider.WithDeviceAuthorization(e.issuer+devE2EEntryPath, device...))
-
-	p, err := oidcprovider.New(deps, opts...)
-	require.NoError(t, err)
-
-	e.sessions, err = session.New(session.WithEndObserver(p))
-	require.NoError(t, err)
-
-	chain, err := httpsec.New(
-		httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: e.sessions, Users: durUsers{}}),
-		httpsec.EnableJWKSEndpoint(keys),
-		httpsec.EnableSecurityHeaders(),
-		httpsec.EnableCSRFProtection(),
-		httpsec.EnableOIDCProvider(p),
+	var (
+		conn   test.PostgresConn
+		cipher seal.Cipher
+		open   func(*testing.T, test.PostgresConn, seal.Cipher, clock.Clock) opStores
 	)
+	if adapter != "" {
+		set := migrate.SecurityState()
+		conn = test.RunTestPostgres(t, test.WithTestPostgresMigrations(set.FS(), set.Dir, set.VersionTable))
+		cipher = storefix.TestCipher(t)
+		for _, a := range opAdapters {
+			if a.name == adapter {
+				open = a.open
+			}
+		}
+		require.NotNil(t, open, "adapter %s is in opAdapters", adapter)
+		_, clients := durAdmins[adapter](t, conn)
+		require.NoError(t, clients.Put(t.Context(), client))
+	}
+
+	providers := make([]*oidcprovider.Provider, replicas)
+	for i := range providers {
+		deps := baseDeps
+		// A short interval keeps the polling quick; the entry page is on the issuer's origin.
+		device := []oidcprovider.DeviceOption{oidcprovider.WithDevicePollInterval(time.Second)}
+		var opts []oidcprovider.Option
+
+		if adapter != "" {
+			st := open(t, conn, cipher, clock.System())
+			consents, clients := durAdmins[adapter](t, conn)
+			devices := deviceStores[adapter](t, conn)
+
+			deps.Registry = clients
+			device = append(device, oidcprovider.WithUserCodeKey(deviceUserCodeKey),
+				oidcprovider.WithDeviceAuthorizationStore(devices))
+			opts = append(opts,
+				oidcprovider.WithPendingRequestStore(st.pending), oidcprovider.WithCodeStore(st.codes),
+				oidcprovider.WithGrantStore(st.grants), oidcprovider.WithCodeTokenStore(st.tokens),
+				oidcprovider.WithAccessTokenStore(st.access), oidcprovider.WithAssertionIDStore(st.assertions),
+				oidcprovider.WithBrowserSessionStore(st.browser), oidcprovider.WithRefreshTokenStore(st.lineage),
+				oidcprovider.WithRefreshSuccessorKey(durSuccessorKey), oidcprovider.WithConsentStore(consents))
+		} else {
+			deps.Clients = []oidcprovider.Client{client}
+		}
+		opts = append(opts, oidcprovider.WithDeviceAuthorization(e.issuer+devE2EEntryPath, device...))
+
+		providers[i], err = oidcprovider.New(deps, opts...)
+		require.NoError(t, err)
+	}
+
+	// Every replica's session manager reports its sign-in ends to its own provider, over the one
+	// store, so a session one replica created is the others' too.
+	sessionStore, err := session.NewMemoryStore()
 	require.NoError(t, err)
-	handler = chain.Middleware()(http.NotFoundHandler())
+
+	for i, p := range providers {
+		sessions, err := session.New(session.WithStore(sessionStore), session.WithEndObserver(p))
+		require.NoError(t, err)
+		if i == 0 {
+			e.sessions = sessions
+		}
+		chain, err := httpsec.New(
+			httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: durUsers{}}),
+			httpsec.EnableJWKSEndpoint(keys),
+			httpsec.EnableSecurityHeaders(),
+			httpsec.EnableCSRFProtection(),
+			httpsec.EnableOIDCProvider(p),
+		)
+		require.NoError(t, err)
+		handlers[i] = chain.Middleware()(http.NotFoundHandler())
+	}
 
 	e.conf = &oauth2.Config{
 		ClientID: devE2EClient,
@@ -230,7 +274,7 @@ func (e *devE2E) approve(t *testing.T, code string) {
 	ctx := t.Context()
 	b := e.newBrowser(t)
 
-	entered := b.enter(ctx, e.issuer, code, "none")
+	entered := b.enter(ctx, e.issuer, code, "same-origin")
 	require.Equal(t, http.StatusSeeOther, entered.status, entered.body)
 	require.Equal(t, "/login", entered.location.Path, "the browser is sent to the consumer's login page")
 	handle := entered.location.Query().Get(oidcprovider.HandleParam)
@@ -340,7 +384,7 @@ func TestOIDCProvider_DeviceGrantEndToEnd(t *testing.T) {
 
 	// crossSiteLinkClaimsNothing is the phishing gate: a cross-site navigation to the
 	// code-entry endpoint with a user code claims nothing and goes to the entry page, so the
-	// device keeps waiting, and the same code is still claimable by a navigation of the user's own.
+	// device keeps waiting, and the same code is still claimable by a same-origin navigation from the entry page.
 	crossSiteLinkClaimsNothing := func(t *testing.T, e *devE2E) {
 		ctx := e.oauthCtx
 		da, err := e.conf.DeviceAuth(ctx)
@@ -359,30 +403,43 @@ func TestOIDCProvider_DeviceGrantEndToEnd(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, status)
 		assert.Equal(t, "authorization_pending", code, "the code was not claimed")
 
-		// The user's own navigation, as the entry page's submit makes it, claims the code.
-		claimed := b.enter(t.Context(), e.issuer, da.UserCode, "none")
+		// A user-initiated navigation (Sec-Fetch-Site none) is gated too: it is no proof the
+		// entry page was involved.
+		typed := b.enter(t.Context(), e.issuer, da.UserCode, "none")
+		require.Equal(t, http.StatusSeeOther, typed.status, typed.body)
+		assert.Equal(t, devE2EEntryPath, typed.location.Path, "the browser is sent to the entry page")
+		assert.Empty(t, typed.location.Query().Get(oidcprovider.HandleParam), "no request is parked")
+		assert.Empty(t, b.client.Jar.Cookies(&url.URL{Scheme: "https", Host: strings.TrimPrefix(e.issuer, "https://")}),
+			"no flow cookie is set")
+
+		// The entry page's own navigation claims the code.
+		claimed := b.enter(t.Context(), e.issuer, da.UserCode, "same-origin")
 		require.Equal(t, http.StatusSeeOther, claimed.status, claimed.body)
 		assert.Equal(t, "/login", claimed.location.Path)
 	}
 
 	type testCase struct {
-		name    string
-		durable bool
+		name string
+		// adapter names an opAdapters entry; empty means in-memory stores.
+		adapter string
 		assert  func(t *testing.T, e *devE2E)
 	}
 
 	cases := []testCase{
 		{name: "in-memory stores: the grant end to end", assert: grantEndToEnd},
-		{name: "sqlstore on PostgreSQL: the grant end to end", durable: true, assert: grantEndToEnd},
 		{name: "in-memory stores: a cross-site link claims nothing", assert: crossSiteLinkClaimsNothing},
-		{name: "sqlstore on PostgreSQL: a cross-site link claims nothing", durable: true, assert: crossSiteLinkClaimsNothing},
+	}
+	for _, a := range opAdapters {
+		cases = append(cases,
+			testCase{name: a.name + " on PostgreSQL: the grant end to end", adapter: a.name, assert: grantEndToEnd},
+			testCase{name: a.name + " on PostgreSQL: a cross-site link claims nothing", adapter: a.name, assert: crossSiteLinkClaimsNothing})
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			tc.assert(t, newDevE2E(t, tc.durable))
+			tc.assert(t, newDevE2E(t, tc.adapter))
 		})
 	}
 }

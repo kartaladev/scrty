@@ -377,13 +377,14 @@ const (
 	DeviceAuthorizationClaimed = "scrty_device_authorization_claimed"
 
 	// DeviceAuthorizationApproved is a user's approval of a device
-	// authorization, reported once the decision and the consent stage are
-	// stored. It names the client and the user.
+	// authorization, reported right after the device record's decision is
+	// stored, so a failure to store the consent stage afterwards does not
+	// withdraw it. It names the client and the user.
 	DeviceAuthorizationApproved = "scrty_device_authorization_approved"
 
 	// DeviceAuthorizationDenied is a user's denial of a device authorization, a
-	// failure outcome as a refusal is, reported once the decision and the
-	// consent stage are stored. It names the client and the user.
+	// failure outcome as a refusal is, reported right after the device record's
+	// decision is stored. It names the client and the user.
 	DeviceAuthorizationDenied = "scrty_device_authorization_denied"
 
 	// DeviceCodeExchanged is a device code exchanged for tokens, reported once
