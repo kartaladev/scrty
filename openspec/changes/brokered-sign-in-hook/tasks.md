@@ -70,6 +70,9 @@ Each task's verification names the test or command that shows it is done.
   - with allow-many, the same case links;
   - a barrier test under `-race` races two first sign-ins of one identity (one link, both resolve) (F11);
   - a barrier test races two new subjects for one user (at most one link; refused logins never `Apply`) (F17);
+  - a barrier test where a sign-in of the same identity finds the link mid-undo: it is refused by the existing-link check, never signed in through a link that is then removed;
+  - a user holding two links from one issuer is refused through either (unless allow-many);
+  - a request cancelled after the insert still removes its duplicate (the undo is detached), leaving at most one link;
   - store faults on find, insert, list and delete are broker failures (F12).
 - [ ] 3.6 Implement `Apply` after the link, then the reload and the active check (D5, steps 5–6). **Verify:** tests show `Apply` runs once on first and later sign-ins; a failing `Apply` keeps the link and is a broker failure (F13); `Apply` deactivating the user is refused, with the link kept (F19).
 - [ ] 3.8 Implement the provisioning decision (D13). **Verify:** tests show:
@@ -127,7 +130,8 @@ Each task's verification names the test or command that shows it is done.
   - a consent redirect when consent is needed;
   - the code exchanging at `/oauth2/token`.
 - [ ] 4.7 Implement the completion failure paths. **Verify:** tests for each of:
-  - a per-request policy refusal (F23);
+  - a per-request policy refusal, and a per-request challenge falling back to the handoff (F23);
+  - an error handler that finds no session after one was ended (F46);
   - a resume error;
   - a resume answering `login_required` with no error;
   - a confirmation failure (F24);

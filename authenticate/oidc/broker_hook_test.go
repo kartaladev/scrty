@@ -21,15 +21,24 @@ import (
 	"github.com/kartaladev/scrty/identity"
 )
 
-// The library broker asks for upstream access, and its memory store lists.
+// The library broker asks for upstream access, and its memory store lists
+// and removes one link.
 var (
 	_ oidc.UpstreamBroker = (*oidc.Broker)(nil)
 	_ oidc.LinkLister     = (*oidc.MemoryLinkStore)(nil)
+	_ oidc.LinkRemover    = (*oidc.MemoryLinkStore)(nil)
 )
 
 // linkStoreOnly is a consumer's decorator that embeds only the LinkStore
 // interface, so it hides ListByUser even when the store it wraps has it.
 type linkStoreOnly struct{ oidc.LinkStore }
+
+// listerOnly is a consumer's decorator that passes ListByUser through but
+// hides DeleteLink.
+type listerOnly struct {
+	oidc.LinkStore
+	oidc.LinkLister
+}
 
 // noopHook decides nothing; the wiring rows never call it.
 func noopHook(context.Context, oidc.ExternalIdentity, oidc.Upstream, identity.UserID) (oidc.SignInDecision, error) {
@@ -63,6 +72,10 @@ func TestNewBroker_SignInHookWiring(t *testing.T) {
 	}
 	hook := oidc.WithBrokerSignInHook("corp", noopHook)
 	wrapped := func() oidc.LinkStore { return linkStoreOnly{oidc.NewMemoryLinkStore()} }
+	listerOnlyStore := func() oidc.LinkStore {
+		m := oidc.NewMemoryLinkStore()
+		return listerOnly{LinkStore: m, LinkLister: m}
+	}
 
 	cases := []testCase{
 		{
@@ -163,6 +176,20 @@ func TestNewBroker_SignInHookWiring(t *testing.T) {
 					oidc.WithBrokerSignInHookAllowManyLinks("partner")}
 			},
 			assert: refused("ListByUser", `"corp"`),
+		},
+		{
+			name:   "a store that lists but cannot remove one link is refused",
+			links:  listerOnlyStore,
+			opts:   func(*gomock.Controller) []oidc.BrokerOption { return []oidc.BrokerOption{hook} },
+			assert: refused("WithBrokerSignInHook", "DeleteLink", `"corp"`),
+		},
+		{
+			name:  "the same store is built once corp allows many links",
+			links: listerOnlyStore,
+			opts: func(*gomock.Controller) []oidc.BrokerOption {
+				return []oidc.BrokerOption{hook, oidc.WithBrokerSignInHookAllowManyLinks("corp")}
+			},
+			assert: built,
 		},
 		{
 			name: "a hooked provider is a configured provider",
@@ -286,7 +313,7 @@ func TestBroker_HookDispatch(t *testing.T) {
 			name: "a hooked provider through Broker is ErrUpstreamRequired and the hook is not called",
 			links: func(_ *testing.T, ctrl *gomock.Controller) oidc.LinkStore {
 				// No expectation: the store is not consulted either.
-				return hookLinkStore{MockLinkStore: NewMockLinkStore(ctrl), MockLinkLister: NewMockLinkLister(ctrl)}
+				return hookLinkStore{MockLinkStore: NewMockLinkStore(ctrl), MockLinkLister: NewMockLinkLister(ctrl), MockLinkRemover: NewMockLinkRemover(ctrl)}
 			},
 			call: func(ctx context.Context, b *oidc.Broker) (*identity.Principal, error) {
 				return b.Broker(ctx, brokerCorpIdentity())
@@ -328,7 +355,7 @@ func TestBroker_HookDispatch(t *testing.T) {
 				s := NewMockLinkStore(ctrl)
 				s.EXPECT().FindByExternal(gomock.Any(), "corp", brokerCorpIssuer, "s-1").
 					Return(nil, errors.New("db down s-1 alice@corp.example"))
-				return hookLinkStore{MockLinkStore: s, MockLinkLister: NewMockLinkLister(ctrl)}
+				return hookLinkStore{MockLinkStore: s, MockLinkLister: NewMockLinkLister(ctrl), MockLinkRemover: NewMockLinkRemover(ctrl)}
 			},
 			call: func(ctx context.Context, b *oidc.Broker) (*identity.Principal, error) {
 				return b.BrokerUpstream(ctx, brokerCorpIdentity(), up)
@@ -385,10 +412,12 @@ func TestBroker_HookDispatch(t *testing.T) {
 	}
 }
 
-// hookLinkStore is a mocked link store that also lists, as a hook needs.
+// hookLinkStore is a mocked link store that also lists and removes one link,
+// as a hook needs.
 type hookLinkStore struct {
 	*MockLinkStore
 	*MockLinkLister
+	*MockLinkRemover
 }
 
 // consumerHookError is a consumer's own error type, which a hook failure keeps
@@ -620,13 +649,15 @@ func TestBroker_HookDecisionErrors(t *testing.T) {
 			links.EXPECT().DeleteByUser(gomock.Any(), gomock.Any()).Times(0)
 			lister := NewMockLinkLister(ctrl)
 			lister.EXPECT().ListByUser(gomock.Any(), gomock.Any()).Times(0)
+			remover := NewMockLinkRemover(ctrl)
+			remover.EXPECT().DeleteLink(gomock.Any(), gomock.Any()).Times(0)
 			users := NewMockUserLoader(ctrl) // no call expected: nothing is loaded
 
 			var logs bytes.Buffer
 			hook := func(ctx context.Context, _ oidc.ExternalIdentity, _ oidc.Upstream, _ identity.UserID) (oidc.SignInDecision, error) {
 				return tc.decide(ctx)
 			}
-			b, err := oidc.NewBroker(hookLinkStore{MockLinkStore: links, MockLinkLister: lister}, users,
+			b, err := oidc.NewBroker(hookLinkStore{MockLinkStore: links, MockLinkLister: lister, MockLinkRemover: remover}, users,
 				oidc.WithBrokerLogger(testTextLogger(&logs)), oidc.WithBrokerSignInHook("corp", hook))
 			require.NoError(t, err)
 

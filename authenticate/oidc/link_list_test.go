@@ -89,3 +89,88 @@ func TestMemoryLinkStore_ListByUser(t *testing.T) {
 		})
 	}
 }
+
+func TestMemoryLinkStore_DeleteLink(t *testing.T) {
+	t.Parallel()
+
+	corp := oidc.Link{
+		ID: id.MustParse("01926a4e-0000-7000-8000-000000000001"), Provider: "corp", Issuer: brokerCorpIssuer, Subject: "s-1",
+		UserID: "u-7", Username: "u-7-name", Email: "s-1@corp.example",
+	}
+	partner := oidc.Link{
+		ID: id.MustParse("01926a4e-0000-7000-8000-000000000002"), Provider: "partner", Issuer: "https://partner.example", Subject: "p-1",
+		UserID: "u-7", Username: "u-7-name", Email: "p-1@partner.example",
+	}
+	with := func(l oidc.Link, edit func(*oidc.Link)) oidc.Link { edit(&l); return l }
+
+	type testCase struct {
+		name   string
+		delete oidc.Link
+		assert func(t *testing.T, remaining []oidc.Link, removed bool, err error)
+	}
+
+	unchanged := func(t *testing.T, remaining []oidc.Link, removed bool, err error) {
+		t.Helper()
+		require.NoError(t, err)
+		assert.False(t, removed)
+		assert.Equal(t, []oidc.Link{corp, partner}, remaining)
+	}
+
+	cases := []testCase{
+		{
+			name:   "the link with this ID and identity is removed and the user's other link stays",
+			delete: corp,
+			assert: func(t *testing.T, remaining []oidc.Link, removed bool, err error) {
+				require.NoError(t, err)
+				assert.True(t, removed)
+				assert.Equal(t, []oidc.Link{partner}, remaining)
+			},
+		},
+		{
+			name:   "the ID with another subject removes nothing",
+			delete: with(corp, func(l *oidc.Link) { l.Subject = "s-2" }),
+			assert: unchanged,
+		},
+		{
+			name:   "the identity with another ID removes nothing",
+			delete: with(corp, func(l *oidc.Link) { l.ID = id.MustParse("01926a4e-0000-7000-8000-000000000009") }),
+			assert: unchanged,
+		},
+		{
+			name:   "the ID and subject under another provider remove nothing",
+			delete: with(corp, func(l *oidc.Link) { l.Provider = "partner" }),
+			assert: unchanged,
+		},
+		{
+			name:   "the ID and subject under another issuer remove nothing",
+			delete: with(corp, func(l *oidc.Link) { l.Issuer = "https://other.example" }),
+			assert: unchanged,
+		},
+		{
+			name: "the user reference and other recorded fields are not part of the match",
+			delete: with(corp, func(l *oidc.Link) {
+				l.UserID, l.Username, l.Email = "u-9", "", ""
+			}),
+			assert: func(t *testing.T, remaining []oidc.Link, removed bool, err error) {
+				require.NoError(t, err)
+				assert.True(t, removed)
+				assert.Equal(t, []oidc.Link{partner}, remaining)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := oidc.NewMemoryLinkStore()
+			require.NoError(t, s.Insert(t.Context(), corp))
+			require.NoError(t, s.Insert(t.Context(), partner))
+
+			removed, err := s.DeleteLink(t.Context(), tc.delete)
+			remaining, lerr := s.ListByUser(t.Context(), "u-7")
+			require.NoError(t, lerr)
+			tc.assert(t, remaining, removed, err)
+		})
+	}
+}

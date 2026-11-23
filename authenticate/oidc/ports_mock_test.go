@@ -489,6 +489,69 @@ func (c *MockLinkListerListByUserCall) DoAndReturn(f func(context.Context, ident
 	return c
 }
 
+// MockLinkRemover is a mock of LinkRemover interface.
+type MockLinkRemover struct {
+	ctrl     *gomock.Controller
+	recorder *MockLinkRemoverMockRecorder
+	isgomock struct{}
+}
+
+// MockLinkRemoverMockRecorder is the mock recorder for MockLinkRemover.
+type MockLinkRemoverMockRecorder struct {
+	mock *MockLinkRemover
+}
+
+// NewMockLinkRemover creates a new mock instance.
+func NewMockLinkRemover(ctrl *gomock.Controller) *MockLinkRemover {
+	mock := &MockLinkRemover{ctrl: ctrl}
+	mock.recorder = &MockLinkRemoverMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockLinkRemover) EXPECT() *MockLinkRemoverMockRecorder {
+	return m.recorder
+}
+
+// DeleteLink mocks base method.
+func (m *MockLinkRemover) DeleteLink(ctx context.Context, link oidc.Link) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteLink", ctx, link)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// DeleteLink indicates an expected call of DeleteLink.
+func (mr *MockLinkRemoverMockRecorder) DeleteLink(ctx, link any) *MockLinkRemoverDeleteLinkCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteLink", reflect.TypeOf((*MockLinkRemover)(nil).DeleteLink), ctx, link)
+	return &MockLinkRemoverDeleteLinkCall{Call: call}
+}
+
+// MockLinkRemoverDeleteLinkCall wrap *gomock.Call
+type MockLinkRemoverDeleteLinkCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockLinkRemoverDeleteLinkCall) Return(arg0 bool, arg1 error) *MockLinkRemoverDeleteLinkCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockLinkRemoverDeleteLinkCall) Do(f func(context.Context, oidc.Link) (bool, error)) *MockLinkRemoverDeleteLinkCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockLinkRemoverDeleteLinkCall) DoAndReturn(f func(context.Context, oidc.Link) (bool, error)) *MockLinkRemoverDeleteLinkCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // MockHandoffStore is a mock of HandoffStore interface.
 type MockHandoffStore struct {
 	ctrl     *gomock.Controller

@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/porterr"
 )
 
@@ -22,9 +24,22 @@ var ErrUpstreamRequired = errors.New("oidc: the provider's sign-in hook needs up
 // SignInDecision is what a SignInHook decides: the user a verified identity
 // belongs to, and the consumer's writes for that user.
 //
-// The decision itself writes nothing. The broker first checks it against the
-// identity's link and the user store, links the identity, and only then runs
-// Apply, so a decision the broker refuses leaves no trace.
+// The decision itself writes nothing. The broker accepts it in this order,
+// and refuses it at the first step that fails:
+//
+//  1. checks, with nothing written: a link the identity already has must name
+//     User; User must load with that reference and be active; and, unless
+//     WithBrokerSignInHookAllowManyLinks allows it, User must have no link
+//     from another subject of the same provider and issuer, whether the
+//     identity is linked already or not;
+//  2. the identity is linked to User, unless its link already names User;
+//  3. Apply runs, with the link final;
+//  4. User is loaded again, must still be active, and is the login's
+//     principal.
+//
+// A decision the broker refuses therefore runs no Apply and leaves no trace:
+// that covers a link to another user, a lost race, a second link and a
+// missing or inactive user, all refused as ErrNoLinkedAccount.
 type SignInDecision struct {
 	// User is the user reference the identity belongs to. A decision naming
 	// no user is a broker failure.
@@ -37,14 +52,32 @@ type SignInDecision struct {
 	// Apply holds the consumer's writes for User, such as storing a password
 	// hash fetched through Upstream. It is optional unless Provision is set,
 	// and runs only after the broker accepted the decision and the link is
-	// final. Its error is a broker failure.
+	// final, so it writes only for the user the login resolves to; it should
+	// close over User, not over a user its own lookup found. It runs within
+	// the request, bounded only by ctx.
+	//
+	// Its error fails the login as a broker failure with fixed text, as a
+	// hook's error does, and the link stays: the next sign-in decides and
+	// applies again, so Apply must be safe to repeat. So does an Apply that
+	// leaves User inactive, which fails the login as ErrNoLinkedAccount.
 	Apply func(ctx context.Context) error
 }
 
 // SignInHook decides which user a verified identity of one provider belongs
 // to, on every login through that provider. ext is the verified identity, up
 // the provider's upstream access for this callback, and linked the user the
-// identity is already linked to, or empty when it has none.
+// identity is already linked to, or empty when it has none. A hook should
+// prefer linked when it is set: the broker refuses a decision that names
+// another user, since a link is re-pointed only by an operator.
+//
+// The hook decides; it does not write. Its writes belong in the decision's
+// Apply, which the broker runs only after it accepted the decision (see
+// SignInDecision). The library never matches an identity to a user by email:
+// a hook that does so owns that choice, and should match only an email whose
+// email_verified claim is true, and only at a provider that controls the
+// email's domain, or anyone who registers that address at the provider takes
+// over the matching account. The one-link-per-user default limits what a
+// mistaken match can reach.
 //
 // It returns a decision, or an error: ErrNoLinkedAccount or
 // ErrProvisioningRefused refuses the login as that authentication failure;
@@ -52,8 +85,11 @@ type SignInDecision struct {
 // error's own text reaches neither the caller nor a log, since it may quote
 // the identity's subject or email or the access token, so a consumer who
 // wants it logs it inside the hook. The error stays reachable through
-// errors.As for concrete types the consumer declares. It runs within the
-// request, bounded only by ctx.
+// errors.As for concrete types the consumer declares.
+//
+// It runs within the request, on every login of the provider, bounded only by
+// ctx: a slow hook, UserInfo fetch or Apply holds the login for as long, so
+// a consumer bounds its own calls.
 type SignInHook func(ctx context.Context, ext ExternalIdentity, up Upstream, linked identity.UserID) (SignInDecision, error)
 
 // WithBrokerSignInHook sets the sign-in hook that decides, for provider
@@ -61,12 +97,25 @@ type SignInHook func(ctx context.Context, ext ExternalIdentity, up Upstream, lin
 // an identity resolves through its link alone. A hooked provider is brokered
 // through BrokerUpstream; Broker refuses it with ErrUpstreamRequired.
 //
+// By default the broker keeps one link per user for each provider and issuer:
+// a decision that would link a second subject to a user already linked is
+// refused as ErrNoLinkedAccount before Apply runs, and a link inserted while a
+// racing sign-in linked the same user is removed again, alone, before the
+// login is refused. That removal is detached from the request's cancellation,
+// so a client that goes away cannot leave the second link behind, and is
+// bounded by five seconds of its own. Two such sign-ins may then both be refused, and
+// the next one succeeds. A sign-in through an existing link applies the rule
+// too, so a user who holds two links of one provider and issuer, by a failed
+// removal or an operator's write, is refused through either until one is
+// removed. WithBrokerSignInHookAllowManyLinks lifts the rule.
+//
 // A nil hook, an empty provider and a second hook for one provider are
 // refused with ErrConfig. So is a hook on a provider that WithBrokerJIT,
 // WithBrokerClaimMirror or WithBrokerRoleSync also turns on, since two writers
 // of one user would contradict each other, and a hook over a link store that
-// does not implement LinkLister, which the one-link-per-user rule needs,
-// unless WithBrokerSignInHookAllowManyLinks lifts that rule for provider. A
+// does not implement both LinkLister and LinkRemover, which the
+// one-link-per-user rule needs, unless WithBrokerSignInHookAllowManyLinks
+// lifts that rule for provider. A
 // provider the relying party's registry does not hold is refused by
 // NewRelyingParty.
 func WithBrokerSignInHook(provider string, hook SignInHook) BrokerOption {
@@ -90,8 +139,9 @@ func WithBrokerSignInHook(provider string, hook SignInHook) BrokerOption {
 // user to more than one identity of the same provider and issuer. The default
 // refuses a decision that would give a user a second such link. Allowing many
 // links also removes the hook's need for a link store that implements
-// LinkLister. An empty provider, or one with no WithBrokerSignInHook, is
-// refused with ErrConfig.
+// LinkLister and LinkRemover. Identities of other providers and issuers never
+// count against the rule. An empty provider, or one with no
+// WithBrokerSignInHook, is refused with ErrConfig.
 func WithBrokerSignInHookAllowManyLinks(provider string) BrokerOption {
 	return func(b *Broker) error {
 		if provider == "" {
@@ -110,6 +160,7 @@ func WithBrokerSignInHookAllowManyLinks(provider string) BrokerOption {
 // are checked in the order options named them, so the error is stable.
 func (b *Broker) checkSignInHooks() error {
 	_, lists := b.links.(LinkLister)
+	_, removes := b.links.(LinkRemover)
 	for _, p := range b.providers {
 		if _, hooked := b.hooks[p]; !hooked {
 			if b.hookManyLinks[p] {
@@ -131,8 +182,15 @@ func (b *Broker) checkSignInHooks() error {
 			return fmt.Errorf("%w: WithBrokerSignInHook and %s both write the users of provider %q",
 				ErrConfig, other, p)
 		}
-		if !lists && !b.hookManyLinks[p] {
+		if b.hookManyLinks[p] {
+			continue
+		}
+		if !lists {
 			return fmt.Errorf("%w: WithBrokerSignInHook for provider %q needs a link store with ListByUser (LinkLister) "+
+				"to keep one link per user, or WithBrokerSignInHookAllowManyLinks(%q)", ErrConfig, p, p)
+		}
+		if !removes {
+			return fmt.Errorf("%w: WithBrokerSignInHook for provider %q needs a link store with DeleteLink (LinkRemover) "+
 				"to keep one link per user, or WithBrokerSignInHookAllowManyLinks(%q)", ErrConfig, p, p)
 		}
 	}
@@ -202,13 +260,256 @@ func hookIdentifying(ext ExternalIdentity, up Upstream, linked identity.UserID) 
 
 // acceptDecision checks the hook's decision d for ext, whose link is l (nil
 // when it has none), links the identity, runs d.Apply and resolves the user
-// (D5 steps 3 to 6, D11, D13). d.User is not empty.
+// (D5 steps 3 to 6, D11). d.User is not empty.
 //
-// Until those steps are implemented it accepts nothing: every decision fails
-// as a broker failure, before anything is written and without running Apply.
-func (b *Broker) acceptDecision(_ context.Context, _ ExternalIdentity, _ Upstream, _ *Link, _ SignInDecision) (*identity.Principal, error) {
-	return nil, errors.New("oidc: accepting a sign-in decision is not implemented")
+// The order is the security property: every check runs before anything is
+// written, and d.Apply runs only once the link to d.User is final, so a
+// decision the broker refuses leaves no trace.
+func (b *Broker) acceptDecision(ctx context.Context, ext ExternalIdentity, up Upstream, l *Link, d SignInDecision) (*identity.Principal, error) {
+	if d.Provision {
+		// Provisioning (D13) is not accepted yet: refused before anything is
+		// written, and Apply does not run.
+		return nil, errHookProvisionUnsupported
+	}
+	values := hookIdentifying(ext, up, d.User)
+	if l != nil {
+		values.names = append(values.names, string(l.UserID))
+	}
+
+	// Step 3: checks, with nothing written.
+	if l != nil && l.UserID != d.User {
+		b.refusal(ctx, slog.LevelWarn, "the sign-in hook decided a user other than the identity's link", ext.Provider, ext.Email)
+		return nil, ErrNoLinkedAccount
+	}
+	det, err := b.loadDecided(ctx, ext, d.User, values, loadBeforeApply)
+	if err != nil {
+		return nil, err
+	}
+	values.names = append(values.names, det.Username)
+	if l != nil && !b.hookManyLinks[ext.Provider] {
+		// The existing link may be one a racing login inserted against the
+		// rule and is about to remove: signing in through it would issue a
+		// session through a link that then vanishes. A user holding two links
+		// is refused through either until one is removed (fail closed).
+		if err := b.checkOneLink(ctx, ext, d.User, values); err != nil {
+			return nil, err
+		}
+	}
+
+	// Step 4: link, unless the identity's own link already names the user.
+	if l == nil {
+		if l, err = b.linkDecided(ctx, ext, det, values); err != nil {
+			return nil, err
+		}
+	}
+
+	// Step 5: the consumer's writes, with the link final.
+	if d.Apply != nil {
+		if err := d.Apply(ctx); err != nil {
+			return nil, b.hookError(ctx, ext, hookStageApply, err)
+		}
+	}
+
+	// Step 6: the apply step may have changed the user; the link stays
+	// whatever the reload finds.
+	values.names = append(values.names, l.Username)
+	if det, err = b.loadDecided(ctx, ext, l.UserID, values, loadAfterApply); err != nil {
+		return nil, err
+	}
+	return b.principalFor(ctx, ext, det), nil
 }
+
+// linkDecided links ext to det, the decided user, and returns the link that
+// is final for ext (D5 step 4, D11).
+//
+// Unless the provider allows many links, det must have no other link from
+// ext's provider and issuer, both before the insert and after it: a sign-in
+// of another identity racing for the same user may insert between the two,
+// and the link this call inserted is then removed again, by its identifier
+// and identity alone, before the login is refused. When the insert finds the
+// identity already linked, by a racing sign-in of the same identity, the
+// stored link is re-read: one naming another user is refused, one naming det
+// is final, subject to the same one-link rule, and is never removed here.
+func (b *Broker) linkDecided(ctx context.Context, ext ExternalIdentity, det *identity.Details, values identifying) (*Link, error) {
+	one := !b.hookManyLinks[ext.Provider]
+	if one {
+		if err := b.checkOneLink(ctx, ext, det.ID, values); err != nil {
+			return nil, err
+		}
+	}
+
+	linkID, err := idgen.New(b.ids)
+	err = porterr.SanitizeTo(ctx, b.log, err, porterr.ErrUnwalkable)
+	if err != nil {
+		return nil, fmt.Errorf("oidc: generating a link identifier: %w", redact(err, values))
+	}
+	link := Link{
+		ID: linkID, Provider: ext.Provider, Issuer: ext.Issuer, Subject: ext.Subject,
+		UserID: det.ID, Username: det.Username, Email: ext.Email,
+		CreatedAt: b.clock.Now(),
+	}
+	err = b.links.Insert(ctx, link)
+	err = porterr.SanitizeTo(ctx, b.log, err, porterr.ErrUnwalkable)
+	switch {
+	case errors.Is(err, ErrLinkExists):
+		return b.rereadLink(ctx, ext, det.ID, values)
+	case err != nil:
+		return nil, fmt.Errorf("oidc: linking the decided user: %w", redact(err, values))
+	}
+
+	if one {
+		if err := b.checkOneLink(ctx, ext, det.ID, values); err != nil {
+			return nil, b.undoLink(ctx, link, values, err)
+		}
+	}
+	return &link, nil
+}
+
+// rereadLink reads the link of ext after an insert found it already linked,
+// and accepts it only when it names user (D5 step 4).
+func (b *Broker) rereadLink(ctx context.Context, ext ExternalIdentity, user identity.UserID, values identifying) (*Link, error) {
+	l, err := b.links.FindByExternal(ctx, ext.Provider, ext.Issuer, ext.Subject)
+	// Before the ErrLinkNotFound check: a chain that cannot be walked is a
+	// store fault.
+	err = porterr.SanitizeTo(ctx, b.log, err, porterr.ErrUnwalkable)
+	switch {
+	case errors.Is(err, ErrLinkNotFound), err == nil && l == nil:
+		// The store reported the identity linked, then not: it contradicts
+		// itself, and nothing can be accepted.
+		return nil, errLinkVanished
+	case err != nil:
+		return nil, fmt.Errorf("oidc: re-reading a link: %w", redact(err, values))
+	case l.UserID != user:
+		b.refusal(ctx, slog.LevelWarn, "the sign-in hook decided a user other than the identity's link", ext.Provider, ext.Email)
+		return nil, ErrNoLinkedAccount
+	}
+	if !b.hookManyLinks[ext.Provider] {
+		// Not this call's link, so it is not removed; the login that
+		// inserted it applies the rule to it.
+		if err := b.checkOneLink(ctx, ext, user, values); err != nil {
+			return nil, err
+		}
+	}
+	return l, nil
+}
+
+// checkOneLink refuses, as ErrNoLinkedAccount, a user that has a link from
+// ext's provider and issuer for another subject (D11). A listing fault is a
+// broker failure.
+func (b *Broker) checkOneLink(ctx context.Context, ext ExternalIdentity, user identity.UserID, values identifying) error {
+	lister, ok := b.links.(LinkLister)
+	if !ok {
+		// NewBroker refuses this wiring; reaching it is a defect, refused.
+		return errNoLinkLister
+	}
+	links, err := lister.ListByUser(ctx, user)
+	err = porterr.SanitizeTo(ctx, b.log, err, porterr.ErrUnwalkable)
+	if err != nil {
+		return fmt.Errorf("oidc: listing the decided user's links: %w", redact(err, values))
+	}
+	for _, o := range links {
+		if o.Provider == ext.Provider && o.Issuer == ext.Issuer && o.Subject != ext.Subject {
+			b.refusal(ctx, slog.LevelWarn, "the sign-in hook decided a user already linked to another identity of the provider",
+				ext.Provider, ext.Email)
+			return ErrNoLinkedAccount
+		}
+	}
+	return nil
+}
+
+// linkUndoTimeout bounds the removal of a link inserted against the one-link
+// rule (D11). The removal is detached from the request's cancellation, so it
+// needs a bound of its own: one row deleted by its key, which a healthy store
+// finishes well within it. A removal that runs out of time is a broker
+// failure, logged at ERROR, and the user keeps two links, which the one-link
+// check then refuses through either (F48).
+const linkUndoTimeout = 5 * time.Second
+
+// undoLink removes link, which this login inserted and whose one-link
+// re-check failed with cause, and returns the login's error: cause once the
+// link is removed, or else a broker failure, never the refusal cause may be,
+// since the link may still stand. Only link itself is removed, by its
+// identifier and identity; the user's other links stay.
+//
+// The removal keeps ctx's values but not its cancellation, under
+// linkUndoTimeout: a client that disconnects just after the insert must not
+// leave the duplicate behind.
+func (b *Broker) undoLink(ctx context.Context, link Link, values identifying, cause error) error {
+	remover, ok := b.links.(LinkRemover)
+	if !ok {
+		// NewBroker refuses this wiring; reaching it is a defect, refused.
+		return errNoLinkRemover
+	}
+	undoCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), linkUndoTimeout)
+	defer cancel()
+	_, err := remover.DeleteLink(undoCtx, link)
+	err = porterr.SanitizeTo(undoCtx, b.log, err, porterr.ErrUnwalkable)
+	if err != nil {
+		b.log.LogAttrs(ctx, slog.LevelError,
+			"oidc: a link inserted against the one-link rule could not be removed; the user may keep two links "+
+				"of the provider until an operator removes one",
+			slog.String("provider", link.Provider),
+			slog.String("email_domain", emailDomain(link.Email)))
+		return fmt.Errorf("oidc: removing a duplicate link: %w", redact(err, values))
+	}
+	return cause
+}
+
+// loadStage says whether loadDecided runs before the decision's apply step
+// (D5 step 3) or after it (step 6).
+type loadStage bool
+
+const (
+	loadBeforeApply loadStage = false
+	loadAfterApply  loadStage = true
+)
+
+// loadDecided loads user, the decided user of a login of ext, and requires it
+// to exist, match its reference and be active. A refusal is
+// ErrNoLinkedAccount; a loader fault is a broker failure with values redacted.
+// A user missing after the apply step was there before it, so its refusal is
+// a warning of its own rather than a decision for a missing user.
+func (b *Broker) loadDecided(ctx context.Context, ext ExternalIdentity, user identity.UserID, values identifying,
+	stage loadStage,
+) (*identity.Details, error) {
+	det, err := b.users.LoadByUserID(ctx, user)
+	// A chain that cannot be walked is a loader fault, never ErrUserNotFound.
+	err = porterr.SanitizeTo(ctx, b.log, err, porterr.ErrUnwalkable)
+	switch {
+	case errors.Is(err, identity.ErrUserNotFound) && stage == loadAfterApply:
+		b.refusal(ctx, slog.LevelWarn, "the user disappeared during the sign-in hook's apply step", ext.Provider, ext.Email)
+		return nil, ErrNoLinkedAccount
+	case errors.Is(err, identity.ErrUserNotFound):
+		b.refusal(ctx, slog.LevelDebug, "the sign-in hook decided a user that does not exist", ext.Provider, ext.Email)
+		return nil, ErrNoLinkedAccount
+	case err != nil:
+		return nil, fmt.Errorf("oidc: loading the decided user: %w", redact(err, values))
+	case det == nil || det.ID != user:
+		b.refusal(ctx, slog.LevelWarn, "the sign-in hook's decided user loaded as another user", ext.Provider, ext.Email)
+		return nil, ErrNoLinkedAccount
+	case !det.Active:
+		b.refusal(ctx, slog.LevelDebug, "the sign-in hook decided an inactive user", ext.Provider, ext.Email)
+		return nil, ErrNoLinkedAccount
+	}
+	return det, nil
+}
+
+// errLinkVanished is the broker failure of a link store that refused an
+// insert as already linked, then found no link for the identity.
+var errLinkVanished = errors.New("oidc: the link store reported the identity linked, then found no link")
+
+// errNoLinkLister and errNoLinkRemover are the broker failures of a one-link
+// check over a store that cannot list or remove one link, which NewBroker
+// refuses; they are reached only if that check is bypassed.
+var (
+	errNoLinkLister  = errors.New("oidc: the link store cannot list a user's links")
+	errNoLinkRemover = errors.New("oidc: the link store cannot remove one link")
+)
+
+// errHookProvisionUnsupported is the broker failure of a provisioning
+// decision, which the broker does not accept yet. Nothing is written and
+// Apply does not run.
+var errHookProvisionUnsupported = errors.New("oidc: the sign-in hook decided to provision a user, which is not supported")
 
 // errLinkNamesNoUser is the broker failure of a link store that returned a
 // link naming no user (F43). The hook is not called.

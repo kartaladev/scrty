@@ -44,8 +44,9 @@ type MemoryLinkStore struct {
 }
 
 var (
-	_ LinkStore  = (*MemoryLinkStore)(nil)
-	_ LinkLister = (*MemoryLinkStore)(nil)
+	_ LinkStore   = (*MemoryLinkStore)(nil)
+	_ LinkLister  = (*MemoryLinkStore)(nil)
+	_ LinkRemover = (*MemoryLinkStore)(nil)
 )
 
 // NewMemoryLinkStore returns an empty in-memory link store.
@@ -117,4 +118,20 @@ func (s *MemoryLinkStore) ListByUser(_ context.Context, user identity.UserID) ([
 			strings.Compare(a.Subject, b.Subject))
 	})
 	return links, nil
+}
+
+// DeleteLink removes the stored link whose ID, provider, issuer and subject
+// all equal link's, and reports whether it removed one. No other link is
+// touched.
+func (s *MemoryLinkStore) DeleteLink(_ context.Context, link Link) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	k := linkKeyOf(link)
+	stored, ok := s.links[k]
+	if !ok || stored.ID != link.ID {
+		return false, nil
+	}
+	delete(s.links, k)
+	return true, nil
 }

@@ -149,6 +149,25 @@ type LinkLister interface {
 	ListByUser(ctx context.Context, user identity.UserID) ([]Link, error)
 }
 
+// LinkRemover is implemented by a LinkStore that can also remove one link,
+// and only that link. It is optional beside LinkStore, so a consumer's
+// existing store keeps compiling. A sign-in hook's one-link rule needs it with
+// LinkLister: a link inserted while a concurrent sign-in linked the same user
+// is removed again before the login is refused, and LinkStore.DeleteByUser,
+// which removes every link the user holds, cannot do that (see
+// WithBrokerSignInHook). Every link store the library ships implements it.
+//
+// It is discovered by type assertion on the store given to NewBroker, so a
+// wrapper must itself have the method.
+type LinkRemover interface {
+	// DeleteLink removes the stored link whose ID and provider, issuer and
+	// subject all equal link's, and reports whether it removed one. No other
+	// link is touched. The other fields of link are not compared. A link
+	// that is not stored, or is stored under another ID, is no error: it
+	// returns false and a nil error.
+	DeleteLink(ctx context.Context, link Link) (bool, error)
+}
+
 // HandoffRecord is one issued handoff code, as its store holds it.
 //
 // The code itself is never stored: TokenID finds the record and SecretHash

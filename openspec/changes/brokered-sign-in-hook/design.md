@@ -193,7 +193,10 @@ At the callback, after `RelyingParty.Callback` succeeds:
    server.
 6. **Per-request policy.** Judge the stored session under the chain's per-request policy, with the
    full-session and raised-challenge checks the resume route applies. On a refusal: end the session,
-   then refuse.
+   then refuse. When the per-request policy raises a challenge (a step it requires before this
+   request), end the session and fall back to the handoff to the login page, as D8 does for an owed
+   step: the script path meets the same challenge at the resume route, and the login page is where
+   it is answered.
 7. **Resume.** `Provider.Resume` with `oidcSignInOf(session, <the chain's sign-in assurance mapping>)`,
    the flow cookie, the browser-session cookie and the session manager's idle timeout. An error, or a
    result that carries no code (such as `login_required` from an `id_token_hint` mismatch), ends the
@@ -204,7 +207,9 @@ At the callback, after `RelyingParty.Callback` succeeds:
    `RedirectTo` with `no-store` and `no-referrer`.
 
 Wherever this list says "end the session", a failure to end it is logged at ERROR. No credential for
-the session exists, so it is unusable either way.
+the session exists, so it is unusable either way. An ended session is also removed from the
+exchange and the request context, so the consumer's error handler never sees a session that no
+longer exists.
 
 - **Default:** off.
 - **Override:** enable it. For a custom response, use `WithOIDCCallbackSuccess`, which is exclusive
@@ -273,7 +278,15 @@ other providers.
   `oidc_links_user` index already exists, so there is no migration. `LinkStore` itself is unchanged,
   so a consumer's store does not break.
 - **Race:** the rule is re-checked after the insert, and this identity's own new link is removed with
-  `DeleteLink` before the login is refused; no other link is touched. Two concurrent new subjects for one user therefore end with at most one link.
+  `DeleteLink` before the login is refused; no other link is touched. The removal is detached from
+  the request's cancellation and bounded by a fixed 5-second timeout, so a client that disconnects
+  cannot leave the duplicate behind. The bound has no option: it only limits the removal of one row,
+  and a consumer bounds their own store through its own timeouts.
+- **Existing links are checked too:** a sign-in through an existing link also applies the rule, unless
+  several links are allowed. Any state in which a user holds two links from one provider and issuer
+  therefore refuses sign-ins through either of them (fail closed) until one is removed. This closes
+  the interleaving where a second sign-in of the same identity uses a link that its inserter is about
+  to undo. Two concurrent new subjects for one user therefore end with at most one link.
   The worst case is both refused, which is safe, and the next sign-in retries.
 - **Default:** refuse. A hook over a store without `ListByUser` and `DeleteLink` fails construction.
 - **Override:** `WithBrokerSignInHookAllowManyLinks(provider)`, which also removes the need for both
@@ -346,6 +359,9 @@ Alternatives rejected:
 | F10 | Existing link names another user | Handled, tested | `ErrNoLinkedAccount`; `Apply` not run; link unchanged; WARN |
 | F11 | Two first sign-ins of one identity race | Handled, tested | One link; both resolve, or the loser refuses; `Apply` only after the link is final |
 | F12 | Link store fault on find, insert, list or delete | Handled, tested | Broker failure, redacted; never "no link" |
+| F45 | A SQL store lists links in the database's locale order, not byte order | Accepted | Each SQL store orders with `COLLATE "C"`, matching the memory store. The test container's default collation may already order by bytes, so the suite cannot prove the clause; it is pinned in code |
+| F47 | A sign-in completes through an existing link in the instant before a concurrent inserter undoes that link | Accepted | One session for the decided user is issued through a link that is then removed; the next sign-in of that identity re-checks and is linked again or refused. The user is the one the hook decided, so no other account is reached |
+| F48 | Undoing a duplicate fails (store fault), or the undo's own 5-second timeout passes | Accepted | Broker failure and one ERROR log (provider and email domain). Two links remain, and every sign-in through either is refused by the existing-link check until an operator removes one |
 | F44 | Undoing a duplicate link would remove more than that link | Handled, tested | `DeleteLink` removes only the row with this link's ID and external identity; the user's other links stay (D11) |
 | F13 | `Apply` fails after the link is inserted | Accepted | Broker failure; the link stays and is correct; the next sign-in re-applies |
 | F14 | Hook plus JIT, mirroring or role sync on one provider | Handled, tested | Construction error |
@@ -358,7 +374,8 @@ Alternatives rejected:
 | F38 | Completion: handle past its login stage, source over the throttle, or the pending-request store fails | Handled, tested | Unknown-handle refusal (not charged), `ErrOIDCThrottled`, or a dependency failure (not charged); nothing created |
 | F21 | Completion: user missing, disabled or mismatched | Handled, tested | Refused as redemption refuses |
 | F22 | Completion: post-auth policy denies, or owes a step | Handled, tested | The policy's refusal, or the handoff fallback (D8) |
-| F23 | Completion: per-request policy refuses | Handled, tested | The session is ended; the refusal is returned; no code |
+| F23 | Completion: per-request policy refuses, or raises a challenge | Handled, tested | The session is ended; a refusal is returned, or a challenge falls back to the handoff to the login page (D8); no code |
+| F46 | Completion: the error handler reads the session after it was ended | Handled, tested | The exchange and the request context no longer carry the ended session |
 | F24 | Completion: resume error, resume without a code, or confirmation fails | Handled, tested | The session is ended; a refusal or the client's error response; no code |
 | F25 | Completion: ending a session fails | Accepted | ERROR log; no credential exists, so the session is unusable |
 | F26 | Completion: session store fails | Handled, tested | Dependency failure; nothing resumed |
