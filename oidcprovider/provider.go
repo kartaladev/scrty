@@ -334,4 +334,10 @@ func isLoopbackHost(host string) bool {
 // LoginURL returns the consumer's login page, exactly as Deps.LoginURL gave it: the
 // page a parked request is sent to as LoginURL?req=<handle>. It is read-only and
 // changes nothing; a caller recognising that destination compares against it.
+//
+// The chain's server-side completion of a federated sign-in
+// (httpsec.WithOIDCProviderCompletion) is one such caller. It treats a login whose
+// destination is exactly this URL carrying one handle alone as started for that
+// parked request, and anything short of an exact match as an ordinary destination,
+// so a login URL meant for it carries no query of its own.
 func (p *Provider) LoginURL() string { return p.loginURL }

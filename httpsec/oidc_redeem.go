@@ -144,8 +144,26 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 		loginDocument: loginDocument{
 			AccessToken: tok, ValidUntil: ex.Session.IdleExpiresAt, TokenType: tokenTypeOf(ex.Session),
 		},
-		Next: i.redirects.Resolve(res.Next),
+		Next: i.redeemedNext(res.Next),
 	})
+}
+
+// redeemedNext is where a redemption sends the browser for next, the destination
+// the handoff recorded: the redirect allowlist's resolution of it, or, with
+// WithOIDCProviderCompletion, next itself when it is the provider's login page
+// carrying one parked request's handle alone (parkedHandle). That is the code an
+// owed step fell back with (D8), and the page that redeems it must be sent back to
+// the request it parked, not to "/", whatever the allowlist holds (F37). The
+// recognition is the callback's own, so nothing short of an exact match is
+// answered outside the allowlist.
+func (i *oidcInterceptor) redeemedNext(next string) string {
+	if i.completion {
+		if _, ok := parkedHandle(next, i.loginURL); ok {
+			return next
+		}
+	}
+
+	return i.redirects.Resolve(next)
 }
 
 // loginTail is what the login tail of a federated login needs, from this

@@ -382,6 +382,7 @@ func expired(t *testing.T, f *deviceConsentFixture, res oidcprovider.ResumeResul
 
 	require.NoError(t, err)
 	assert.Equal(t, oidcprovider.DeviceResultExpired, f.entryResult(t, res.RedirectTo))
+	assert.Equal(t, oidcprovider.ResumeOutcomeDeviceEntry, res.Outcome)
 	assert.Empty(t, res.BrowserSessionSecret)
 	assert.Nil(t, f.state(t).Approval, "nothing is approved")
 	assert.Zero(t, f.decided.Load(), "nothing is decided")
@@ -640,6 +641,7 @@ func TestResume_DeviceApprove(t *testing.T) {
 			s, res, err := f.answer(t, handle, flow, oidcprovider.ConsentAnswer{Scopes: tc.scopes})
 			require.NoError(t, err)
 			assert.Equal(t, oidcprovider.DeviceResultApproved, f.entryResult(t, res.RedirectTo))
+			assert.Equal(t, oidcprovider.ResumeOutcomeDeviceEntry, res.Outcome)
 			assert.Empty(t, res.BrowserSessionSecret)
 			stored := f.state(t)
 			assert.Equal(t, oidcprovider.DeviceApproved, stored.State)
@@ -671,6 +673,7 @@ func TestResume_DeviceDeny(t *testing.T) {
 				t.Helper()
 				require.NoError(t, err)
 				assert.Equal(t, oidcprovider.DeviceResultDenied, f.entryResult(t, res.RedirectTo))
+				assert.Equal(t, oidcprovider.ResumeOutcomeDeviceEntry, res.Outcome)
 				stored := f.state(t)
 				assert.Equal(t, oidcprovider.DeviceDenied, stored.State)
 				assert.Nil(t, stored.Approval)

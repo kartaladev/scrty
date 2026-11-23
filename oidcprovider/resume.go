@@ -105,7 +105,42 @@ type ResumeResult struct {
 	// BrowserSessionSecret is the value to set the browser-session cookie to, and is empty
 	// unless a login stage resumed with browser sessions on.
 	BrowserSessionSecret string
+
+	// Outcome names what RedirectTo carries. A caller deciding what to do with the
+	// answer reads it here, never from RedirectTo's query, which a client's registered
+	// redirect URI may fill with parameters of its own, error among them. It is
+	// ResumeOutcomeUnknown only on the zero ResumeResult that accompanies an error.
+	Outcome ResumeOutcome
 }
+
+// ResumeOutcome is what a resume's answer sends the browser to. Its zero value,
+// ResumeOutcomeUnknown, names nothing, so a caller that branches on it treats that as a
+// refusal rather than guess.
+type ResumeOutcome uint8
+
+const (
+	// ResumeOutcomeUnknown names no outcome: it is what a ResumeResult holds when Resume
+	// failed, and what a ResumeResult built anywhere else holds.
+	ResumeOutcomeUnknown ResumeOutcome = iota
+
+	// ResumeOutcomeConsent sends the browser to the consent page, carrying the handle.
+	// The request is parked at StageConsent, and nothing has been issued yet.
+	ResumeOutcomeConsent
+
+	// ResumeOutcomeCode sends the browser to the client's redirect URI carrying an
+	// authorization code, with state and iss. The request is answered.
+	ResumeOutcomeCode
+
+	// ResumeOutcomeClientError sends the browser to the client's redirect URI carrying an
+	// authorization error response (RFC 6749, section 4.1.2.1), such as login_required
+	// for an id_token_hint naming another subject, or access_denied for a denial. It
+	// carries no code, and the request is answered.
+	ResumeOutcomeClientError
+
+	// ResumeOutcomeDeviceEntry sends the browser back to the device code-entry page with
+	// DeviceResultParam set. No code is ever issued for a device request.
+	ResumeOutcomeDeviceEntry
+)
 
 // Format writes the redacted form under every verb.
 func (ResumeResult) Format(state fmt.State, _ rune) { _, _ = state.Write([]byte(redacted)) }
@@ -282,9 +317,9 @@ func (p *Provider) resumeLogin(ctx context.Context, in ResumeInput, r *PendingRe
 		return ResumeResult{}, err
 	}
 
-	target, to := withQuery(p.consentURL, url.Values{HandleParam: {in.Handle}}), StageConsent
+	target, to, outcome := withQuery(p.consentURL, url.Values{HandleParam: {in.Handle}}), StageConsent, ResumeOutcomeConsent
 	if !consentNeeded(rc, r, remembered) {
-		to = StageDone
+		to, outcome = StageDone, ResumeOutcomeCode
 		if target, err = p.issueCode(ctx, r, rc, s, r.Scopes); err != nil {
 			return ResumeResult{}, err
 		}
@@ -299,7 +334,7 @@ func (p *Provider) resumeLogin(ctx context.Context, in ResumeInput, r *PendingRe
 	}
 	p.dropBrowserSession(ctx, in.BrowserSessionSecret, secret)
 
-	return ResumeResult{RedirectTo: target, BrowserSessionSecret: secret}, nil
+	return ResumeResult{RedirectTo: target, BrowserSessionSecret: secret, Outcome: outcome}, nil
 }
 
 // resumeConsent answers the consent stage, for the user who signed in at the login stage.
@@ -364,7 +399,7 @@ func (p *Provider) resumeConsent(ctx context.Context, in ResumeInput, r *Pending
 		p.logFailedAfterSpend(ctx, "oidcprovider: a consent the user gave could not be remembered", err)
 	}
 
-	return ResumeResult{RedirectTo: target}, nil
+	return ResumeResult{RedirectTo: target, Outcome: ResumeOutcomeCode}, nil
 }
 
 // claimedDevice reads the device authorization a device request answers, which must still be
@@ -546,7 +581,7 @@ func (p *Provider) deviceResult(result string) ResumeResult {
 	query.Set(DeviceResultParam, result)
 	entry.RawQuery = query.Encode()
 
-	return ResumeResult{RedirectTo: entry.String()}
+	return ResumeResult{RedirectTo: entry.String(), Outcome: ResumeOutcomeDeviceEntry}
 }
 
 // consentSignIn returns who is answering: the sign-in given, or the browser session's in
@@ -701,7 +736,7 @@ func (p *Provider) refuseRequest(ctx context.Context, r *PendingRequest, from St
 	}
 	refusal := redirectRefusal{code: code, redirectURI: r.RedirectURI, state: r.State}
 
-	return ResumeResult{RedirectTo: refusal.location(p.issuer)}, nil
+	return ResumeResult{RedirectTo: refusal.location(p.issuer), Outcome: ResumeOutcomeClientError}, nil
 }
 
 // putBrowserSession stores a new session for the sign-in and returns its secret, which

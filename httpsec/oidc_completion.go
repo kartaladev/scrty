@@ -3,24 +3,24 @@ package httpsec
 import (
 	"errors"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/origin"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/session"
 )
-
-// errProviderSignInUnfinished answers a completion the policy owes nothing, until
-// D7's steps 5 to 9 complete it.
-var errProviderSignInUnfinished = errors.New("httpsec: server-side completion is not finished")
 
 // optionProviderCompletion names server-side completion in configuration errors.
 const optionProviderCompletion = "WithOIDCProviderCompletion"
@@ -233,8 +233,239 @@ type providerSignIn struct {
 
 // finishProviderSignIn is D7's steps 5 to 9: the session, the per-request
 // judgement, the resume, its confirmation and the answer.
-func (i *oidcInterceptor) finishProviderSignIn(_ *Exchange, _ string, _ oidc.CallbackResult, _ providerSignIn) error {
-	return errProviderSignInUnfinished
+//
+//  5. The session is built by the login tail on the decision step 4 recorded,
+//     with the provider session and the asserted assurance in its one creating
+//     write, after the user's held recoveries are cancelled
+//     (commitFederatedLogin). Its credential is dropped: nothing a browser could
+//     present leaves the server. A store that cannot write it is a dependency
+//     failure, with nothing stored and nothing resumed (F26).
+//  6. The stored session is judged under the chain's per-request policy, then by
+//     the checks the resume endpoint applies to a sign-in (resumableSignIn). A
+//     refusal ends the session and is returned. A challenge, a step the policy
+//     requires before this request, ends the session and falls back to the
+//     handoff to the login page carrying the handle, as an owed step does (D8).
+//  7. The parked request is resumed with the sign-in the chain's assurance
+//     mapping states. An error refuses. What the answer carries is read from
+//     its outcome (answerFor), never from its query, which a client's
+//     registered redirect URI may fill: the client's error response, such as
+//     login_required for an id_token_hint naming another subject, or the device
+//     code-entry page, is redirected to and carries no code; an outcome
+//     completion does not know is refused, failing closed.
+//  8. The sign-in is confirmed as the resume endpoint confirms one
+//     (confirmSignIn), so an end that landed while the resume wrote is caught.
+//  9. The browser is sent, by 303, where the resume says, carrying the
+//     provider's browser-session cookie.
+//
+// From step 6 on, anything short of the 303 to a code or to the consent page
+// ends the session step 5 stored before it answers (endCompleted), so no
+// refused completion leaves a live sign-in behind (F23, F24), and takes it off
+// the exchange and its context, so nothing answering the refusal reads it
+// (F46). Every refusal is returned for the chain's error handling to answer,
+// and sends no redirect.
+func (i *oidcInterceptor) finishProviderSignIn(ex *Exchange, provider string, res oidc.CallbackResult, signIn providerSignIn) error {
+	op := i.provider
+	ctx := ex.Context()
+
+	login := newRedemptionLogin(i.loginTail(session.KeyBinding{}), signIn.out)
+
+	in := postAuthenticationInput(&signIn.principal, factor.OIDC, "", signIn.passwordChangedAt, i.now())
+	in.FederatedAssurance = signIn.out.federated
+
+	if err := login.issue(ctx, in); err != nil {
+		return err
+	}
+
+	issued, err := login.redeemed()
+	if err != nil {
+		return err
+	}
+
+	// The credential is not kept: the browser is given the provider's own
+	// cookie, and the session is reached through the sign-in it resumes.
+	if _, err := commitFederatedLogin(ex, login, issued, federatedSession{
+		provider: res.Provider, issuer: res.Issuer, sessionID: res.SessionID, idToken: res.IDToken,
+	}, signIn.principal.ID); err != nil {
+		return err
+	}
+
+	s := ex.Session
+
+	if ph := ex.perRequest; ph != nil {
+		if err := ex.evaluatePerRequest(ph, s, &signIn.principal, signIn.passwordChangedAt, ph.now()); err != nil {
+			return i.endCompleted(ex, provider, s, false, err)
+		}
+	}
+
+	resumed, err := resumableSignIn(ex, s, op.resume.assurance)
+	if ch := (*ChallengeError)(nil); errors.As(err, &ch) {
+		// A step this request requires is answered on the login page, as an
+		// owed step is (D8): the script path meets the same challenge at the
+		// resume route. The session is ended first, so the fallback leaves
+		// none behind, and the page's redemption stores its own (F23).
+		if err := i.endCompleted(ex, provider, s, false, nil); err != nil {
+			return err
+		}
+
+		return i.conveyHandoff(ex, provider, res, res.Next)
+	}
+
+	if err != nil {
+		return i.endCompleted(ex, provider, s, false, err)
+	}
+
+	flow, _ := ex.Request.Cookie(oidcCookieName(op.provider, OIDCFlowCookie))
+	browser, _ := ex.Request.Cookie(oidcCookieName(op.provider, OIDCBrowserSessionCookie))
+
+	// The handle was found live and bound to this browser moments ago, so an
+	// unknown handle here is a race with another resume of it, not a guess, and
+	// is not charged to the source.
+	out, err := op.provider.Resume(ctx, oidcprovider.ResumeInput{
+		Handle:               signIn.handle,
+		FlowSecret:           flow,
+		SignIn:               resumed,
+		BrowserSessionSecret: browser,
+		IdleTimeout:          op.sessions.IdleTimeout(),
+	})
+	if err != nil {
+		return i.endCompleted(ex, provider, s, false, oidcResumeRefusal(err))
+	}
+
+	switch answerFor(out.Outcome) {
+	case answerKept:
+	case answerEnded:
+		// The request was answered without this sign-in: the sign-in it was
+		// resumed with is of no further use, and the browser is sent where the
+		// resume endpoint would send it.
+		if err := i.endCompleted(ex, provider, s, true, nil); err != nil {
+			return err
+		}
+
+		redirectCompleted(ex, out.RedirectTo)
+
+		return nil
+	default:
+		// The resume named no outcome completion knows, so what RedirectTo
+		// carries is unknown: refused, failing closed.
+		i.logCallbackRecord(ex, slog.LevelError, completionReasonOutcomeUnknown, provider)
+
+		return i.endCompleted(ex, provider, s, true, ErrOIDCReauthenticate)
+	}
+
+	if err := op.confirmSignIn(ctx, resumed); err != nil {
+		return i.endCompleted(ex, provider, s, true, err)
+	}
+
+	if out.BrowserSessionSecret != "" {
+		setOIDCCookie(ex.Writer, op.provider, OIDCBrowserSessionCookie, out.BrowserSessionSecret)
+	}
+
+	redirectCompleted(ex, out.RedirectTo)
+
+	return nil
+}
+
+// redirectCompleted answers a completed sign-in with a 303 to target, where the
+// resume sends the browser. The target may carry a code, so no cache keeps the
+// answer and no referrer is sent from where it lands.
+func redirectCompleted(ex *Exchange, target string) {
+	ex.Writer.SetHeader("Cache-Control", "no-store")
+	ex.Writer.SetHeader("Referrer-Policy", "no-referrer")
+	ex.Writer.SetHeader("Location", target)
+	ex.Writer.WriteHeader(http.StatusSeeOther)
+}
+
+// completedAnswer is how completion answers a resume's outcome.
+type completedAnswer uint8
+
+const (
+	// answerRefused ends the session and refuses, with no redirect: an outcome
+	// completion does not know.
+	answerRefused completedAnswer = iota
+	// answerKept keeps the session and redirects: a code or the consent page.
+	answerKept
+	// answerEnded ends the session and redirects: the request was answered with
+	// no code, by the client's error response or the device code-entry page.
+	answerEnded
+)
+
+// answerFor maps outcome to its answer. It reads the outcome the resume named,
+// never RedirectTo's query, which a client's registered redirect URI may fill with
+// an error parameter of its own. The zero outcome, and any it does not know, are
+// refused.
+func answerFor(outcome oidcprovider.ResumeOutcome) completedAnswer {
+	switch outcome {
+	case oidcprovider.ResumeOutcomeCode, oidcprovider.ResumeOutcomeConsent:
+		return answerKept
+	case oidcprovider.ResumeOutcomeClientError, oidcprovider.ResumeOutcomeDeviceEntry:
+		return answerEnded
+	default:
+		return answerRefused
+	}
+}
+
+// completionReasonOutcomeUnknown keys the record of a resume that named no outcome
+// completion knows.
+const completionReasonOutcomeUnknown = "completion-outcome-unknown"
+
+// completionReasonNotEnded keys the record of a completed session that could not
+// be ended.
+const completionReasonNotEnded = "completion-session-not-ended"
+
+// endCompleted ends s, the session a completion stored, because the completion
+// will not answer with it, and returns refusal unchanged (nil when the answer is
+// the client's error response). resumed says the provider's resume has written
+// for s's sign-in, a code or a browser session, which the provider ends first, as
+// logout does, so a failure there cannot leave them behind a session already
+// gone.
+//
+// The end is detached from the request, so a client hanging up cannot leave the
+// session live, and bounded, so a store that hangs cannot hold the request. A
+// failure to end it is recorded once at ERROR, by its reason and Go type, never
+// its text, and does not replace refusal (F25): no credential for s ever left the
+// server, so it is unusable until it expires either way.
+//
+// s is taken off the exchange and its context whether or not the end succeeded
+// (F46): the completion has abandoned it, so whatever answers the request, an
+// enclosing interceptor or the consumer's error handling, reads no session
+// rather than one that is gone or about to be.
+func (i *oidcInterceptor) endCompleted(ex *Exchange, provider string, s *session.Session, resumed bool, refusal error) error {
+	unpublishCompleted(ex, s)
+
+	ctx, cancel := detach.Bounded(ex.Context(), detach.RevocationTimeout)
+	defer cancel()
+
+	var failed []error
+
+	if resumed {
+		if _, err := i.provider.provider.EndSignIn(ctx, oidcprovider.SignInSelector{Family: s.FamilyID}); err != nil {
+			failed = append(failed, err)
+		}
+	}
+
+	if _, err := i.provider.sessions.RevokeFamily(ctx, s.FamilyID); err != nil {
+		failed = append(failed, err)
+	}
+
+	if err := errors.Join(failed...); err != nil {
+		i.logCallbackRecord(ex, slog.LevelError, completionReasonNotEnded, provider,
+			diag.Failure(completionReasonNotEnded, err)...)
+	}
+
+	return refusal
+}
+
+// unpublishCompleted takes s, the session a completion stored and is ending, off
+// ex and its context, where the login tail published it (preparedLogin.commit).
+// A session other than s, which nothing on this path publishes, is left alone.
+func unpublishCompleted(ex *Exchange, s *session.Session) {
+	if ex.Session == s {
+		ex.Session = nil
+	}
+
+	if published, ok := SessionFromContext(ex.Context()); ok && published == s {
+		ex.SetContext(withSession(ex.Context(), nil))
+	}
 }
 
 // The reasons completion's own refusal records are keyed by.
