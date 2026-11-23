@@ -153,3 +153,46 @@ func TestModels(t *testing.T) {
 		}
 	}
 }
+
+// TestModels_AdministrationColumnsAreInert pins that the model fields for the
+// columns later changes wire (the user's email, its verification time, the
+// deletion time and the version; the session's selected role) are read-only:
+// gorm neither inserts nor updates them from a struct, so a store write can
+// never put a zero value (a version of 0, an empty email, a zero time) over
+// what the migration gave the column, and the columns stay at their NULL or
+// default. A later change that wires one of them removes it from this list.
+func TestModels_AdministrationColumnsAreInert(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name    string
+		model   any
+		columns []string
+	}
+
+	cases := []testCase{
+		{
+			name:    "users",
+			model:   &userRow{},
+			columns: []string{"email", "email_verified_at", "deleted_at", "version"},
+		},
+		{name: "sessions", model: &sessionRow{}, columns: []string{"selected_role"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			s, err := schema.Parse(tc.model, &sync.Map{}, schema.NamingStrategy{})
+			require.NoError(t, err)
+
+			for _, column := range tc.columns {
+				f := s.LookUpField(column)
+				require.NotNil(t, f, "the model has no field for column %s", column)
+				assert.False(t, f.Creatable, "column %s is written by an insert", column)
+				assert.False(t, f.Updatable, "column %s is written by an update", column)
+				assert.True(t, f.Readable, "column %s is not read", column)
+			}
+		})
+	}
+}

@@ -77,20 +77,20 @@ The whole change lands in one pull request, opened after group 14's final gate (
 
 ## 4. Migrations
 
-- [ ] 4.1 Identity migration `<ts>_scrty_administration.sql` after `20261124000000_scrty_prefix`: user
+- [x] 4.1 Identity migration `<ts>_scrty_administration.sql` after `20261124000000_scrty_prefix`: user
   email, verification, deletion and version columns; role display name, description, labels and
   version; privilege scope (default `all`); `scrty_user_attributes`; the partial unique email index;
   the down section in reverse (spec schema-migrations "The identity set adds…", "…rolls back exactly
   what it added"; design D11 to D15). Red: a catalog test in `test/` expects the new columns and
   table and fails. Verify: the identity migration tests on PostgreSQL 15 and 18.
-- [ ] 4.2 Atomic-failure migration test: add a consumer `email` column to `scrty_users`, then apply;
+- [x] 4.2 Atomic-failure migration test: add a consumer `email` column to `scrty_users`, then apply;
   the migration fails and the catalog shows nothing added (spec "Consumer already added an email
   column"; design F22).
   Verify: the focused test.
-- [ ] 4.3 Populated-database test: users, roles and privileges written before the migration read back
+- [x] 4.3 Populated-database test: users, roles and privileges written before the migration read back
   with no email, version 1 and scope `all` (spec "Apply to a populated database"). Verify: the focused
   test.
-- [ ] 4.4 Security-state migration `<ts>_scrty_selected_role.sql` adding the nullable
+- [x] 4.4 Security-state migration `<ts>_scrty_selected_role.sql` adding the nullable
   `scrty_sessions.selected_role`, with its down section and an existing-sessions test (spec "The
   security-state set adds the selected-role column"). Verify: the security-state migration tests.
 
