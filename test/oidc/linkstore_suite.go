@@ -43,6 +43,13 @@ func linkSuiteLink(issuer, subject string, user identity.UserID) oidc.Link {
 	}
 }
 
+// linkRemover is the optional single-link removal a store may offer beside
+// oidc.LinkStore: DeleteLink removes the stored link whose ID, provider, issuer
+// and subject all equal link's, and reports whether it removed one.
+type linkRemover interface {
+	DeleteLink(ctx context.Context, link oidc.Link) (bool, error)
+}
+
 // RunLinkStoreSuite checks a LinkStore against the contract the library's
 // broker relies on: a link is found only by provider, issuer and subject
 // together; an insert of a key that is already linked is refused with
@@ -176,6 +183,92 @@ func RunLinkStoreSuite(t *testing.T, newStore func(t *testing.T) oidc.LinkStore)
 						assert.NotContains(t, e.Error(), v)
 					}
 				}
+			},
+		},
+		{
+			name: "listing a user's links returns exactly theirs, sorted, byte for byte",
+			assert: func(t *testing.T, ctx context.Context, s oidc.LinkStore) {
+				lister, ok := s.(oidc.LinkLister)
+				if !ok {
+					t.Skip("the store does not implement oidc.LinkLister")
+				}
+
+				// Inserted out of order, with subjects that sort differently by
+				// byte and by a locale's collation ("B" before "a" by byte).
+				social := linkSuiteLink("https://social.example", "s-9", "u-7")
+				social.Provider = "social"
+				second := linkSuiteLink(linkSuiteIssuer, "a-low", "u-7")
+				first := linkSuiteLink(linkSuiteIssuer, "B-high", "u-7")
+				first.Username, first.Email = " Ada@Example.COM", "ada@corp.example"
+				other := linkSuiteLink(linkSuiteIssuer, "s-5", "u-8")
+				exotic := linkSuiteLink(linkSuiteIssuer, "s-6", "U-7 \u00e9\u4e16")
+				for _, l := range []oidc.Link{social, second, first, other, exotic} {
+					require.NoError(t, s.Insert(ctx, l))
+				}
+
+				got, err := lister.ListByUser(ctx, "u-7")
+				require.NoError(t, err)
+				assert.Equal(t, []oidc.Link{first, second, social}, got,
+					"every link of u-7 and no other, by provider, issuer and subject")
+
+				got, err = lister.ListByUser(ctx, "U-7 \u00e9\u4e16")
+				require.NoError(t, err)
+				assert.Equal(t, []oidc.Link{exotic}, got, "a reference matches byte for byte")
+
+				got, err = lister.ListByUser(ctx, "u-9")
+				require.NoError(t, err)
+				assert.NotNil(t, got, "no link is an empty list, not nil")
+				assert.Empty(t, got)
+
+				got, err = lister.ListByUser(ctx, "")
+				require.NoError(t, err)
+				assert.Empty(t, got, "an empty reference lists nothing")
+
+				_, err = lister.ListByUser(ctx, "u-7\x00")
+				assert.NoError(t, err, "a reference that cannot be stored matches nothing")
+
+				cancelled, cancel := context.WithCancel(ctx)
+				cancel()
+				_, err = lister.ListByUser(cancelled, "u-7")
+				if err != nil {
+					assert.ErrorIs(t, err, context.Canceled)
+				}
+			},
+		},
+		{
+			name: "deleting one link removes only the link whose id and identity all match",
+			assert: func(t *testing.T, ctx context.Context, s oidc.LinkStore) {
+				remover, ok := s.(linkRemover)
+				if !ok {
+					t.Skip("the store does not implement DeleteLink")
+				}
+
+				corp := linkSuiteLink(linkSuiteIssuer, "s-1", "u-7")
+				partner := linkSuiteLink(linkSuiteIssuer, "p-1", "u-7")
+				partner.Provider = "partner"
+				require.NoError(t, s.Insert(ctx, corp))
+				require.NoError(t, s.Insert(ctx, partner))
+
+				wrongSubject := corp
+				wrongSubject.Subject = "s-2"
+				removed, err := remover.DeleteLink(ctx, wrongSubject)
+				require.NoError(t, err)
+				assert.False(t, removed, "the id alone does not name the link")
+				_, err = s.FindByExternal(ctx, "corp", linkSuiteIssuer, "s-1")
+				require.NoError(t, err, "nothing was removed")
+
+				removed, err = remover.DeleteLink(ctx, corp)
+				require.NoError(t, err)
+				assert.True(t, removed)
+				_, err = s.FindByExternal(ctx, "corp", linkSuiteIssuer, "s-1")
+				assert.ErrorIs(t, err, oidc.ErrLinkNotFound)
+				kept, err := s.FindByExternal(ctx, "partner", linkSuiteIssuer, "p-1")
+				require.NoError(t, err, "the user's other link remains")
+				assert.Equal(t, partner.ID, kept.ID)
+
+				removed, err = remover.DeleteLink(ctx, corp)
+				require.NoError(t, err, "an absent link is not an error")
+				assert.False(t, removed)
 			},
 		},
 		{

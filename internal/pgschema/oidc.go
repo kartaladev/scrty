@@ -20,6 +20,17 @@ WHERE provider = $1 AND issuer = $2 AND subject = $3`
 	// matches nothing.
 	LinkDeleteByUser = `DELETE FROM scrty_oidc_links WHERE user_id = $1 AND $1 <> ''`
 
+	// LinkListByUser reads every link of user $1 in byte order of provider,
+	// issuer and subject, whatever the database collation; an empty reference
+	// matches nothing.
+	LinkListByUser = `SELECT id, provider, issuer, subject, username, email, created_at FROM scrty_oidc_links
+WHERE user_id = $1 AND $1 <> ''
+ORDER BY provider COLLATE "C", issuer COLLATE "C", subject COLLATE "C"`
+
+	// LinkDeleteOne removes the one link whose id is $1 and whose provider,
+	// issuer and subject are $2, $3 and $4; no other link is touched.
+	LinkDeleteOne = `DELETE FROM scrty_oidc_links WHERE id = $1 AND provider = $2 AND issuer = $3 AND subject = $4`
+
 	// FlowInsert stores a flow: $1 id, $2 handle, $3 provider, $4 state,
 	// $5 nonce, $6 verifier, $7 next, $8 expires_at.
 	FlowInsert = `INSERT INTO scrty_oidc_flows (id, handle, provider, state, nonce, verifier, next, expires_at)
