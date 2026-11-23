@@ -44,7 +44,7 @@ tests; group 4 restores the full scoped suites.
 
 ## 3. Identity rename migration
 
-- [ ] 3.1 Identity catalog test (spec "Identity set alone"): every identity relation, the sequence
+- [x] 3.1 Identity catalog test (spec "Identity set alone"): every identity relation, the sequence
   included, is prefixed, and the versions are in `goose_identity`. Red: it fails listing `users`.
   Green: add `store/migrate/identity/20261124000000_scrty_prefix.sql`, with the bounded lock wait,
   renames and down section. Update the identity `pg_indexes` and column checks in
@@ -54,7 +54,7 @@ tests; group 4 restores the full scoped suites.
   and history read back, `pg_get_serial_sequence` names `scrty_password_history_seq_seq`, and the
   next history entry orders after the existing ones. Red: with the sequence rename removed from the
   migration, the catalog assertion fails. Verify: the focused test passes.
-- [ ] 3.3 Independence (spec "One set renamed, the other not yet", "Rolling back the identity
+- [x] 3.3 Independence (spec "One set renamed, the other not yet", "Rolling back the identity
   rename"): renaming or rolling back one set changes no relation or version record of the other.
   Verify: the focused test passes.
 

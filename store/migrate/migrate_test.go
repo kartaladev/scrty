@@ -29,17 +29,19 @@ func TestIdentitySet(t *testing.T) {
 
 	entries, err := fs.ReadDir(sub, ".")
 	require.NoError(t, err)
-	require.Len(t, entries, 1, "the identity set has exactly one migration file")
+	require.Len(t, entries, 2, "the identity set holds its schema migration and the scrty_ rename")
 
-	name := entries[0].Name()
-	assert.True(t, strings.HasSuffix(name, ".sql"), "file %s", name)
+	var content string
+	for _, entry := range entries {
+		name := entry.Name()
+		assert.True(t, strings.HasSuffix(name, ".sql"), "file %s", name)
 
-	data, err := fs.ReadFile(sub, name)
-	require.NoError(t, err)
-	content := string(data)
-
-	assert.Contains(t, content, "-- +goose Up")
-	assert.Contains(t, content, "-- +goose Down")
+		data, err := fs.ReadFile(sub, name)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), "-- +goose Up", "file %s", name)
+		assert.Contains(t, string(data), "-- +goose Down", "file %s", name)
+		content += string(data)
+	}
 
 	upper := strings.ToUpper(content)
 	assert.NotContains(t, upper, "REFERENCES", "no identity table declares a foreign key")
