@@ -168,7 +168,10 @@ non-overwriting meaning.
 
 `WithOIDCProviderCompletion()` on `EnableOIDCLogin`, plus a new `OIDCDeps.Users identity.UserLoader`
 that completion requires. `oidcprovider.Provider` gains an exported `LoginURL() string` accessor,
-which is read-only and changes no behaviour.
+which is read-only and changes no behaviour. `oidcprovider.ResumeResult` gains an `Outcome` field
+naming what `RedirectTo` carries: the consent page, an authorization code, or the client's error
+response. It is additive. Completion branches on it rather than reading the redirect's query,
+because a client's registered redirect URI may itself carry any query parameter, `error` included.
 
 At the callback, after `RelyingParty.Callback` succeeds:
 
@@ -199,7 +202,7 @@ At the callback, after `RelyingParty.Callback` succeeds:
    it is answered.
 7. **Resume.** `Provider.Resume` with `oidcSignInOf(session, <the chain's sign-in assurance mapping>)`,
    the flow cookie, the browser-session cookie and the session manager's idle timeout. An error, or a
-   result that carries no code (such as `login_required` from an `id_token_hint` mismatch), ends the
+   result whose `Outcome` is the client's error response, so it carries no code (such as `login_required` from an `id_token_hint` mismatch), ends the
    session. On an error, refuse. On a result with no code, redirect to that client error response.
 8. **Confirm.** `confirmSignIn` after `Resume`, as the resume route does. On a failure: end the
    session, refuse, and send no redirect.
@@ -307,13 +310,21 @@ other providers.
 A hook adopts existing users (D5), but a consumer also needs to create a user on a first sign-in
 through a hooked provider. JIT provisioning cannot do it, because it shares the provider with the
 hook (D6). So `SignInDecision.Provision` lets the decision name a user reference that does not
-exist yet, with an `Apply` that creates it under that reference (for example `admin.Importer` with
-a fresh UUID).
+exist yet, with an `Apply` that creates it under that reference. `admin.Importer` can serve with a
+fresh random UUID, but it creates or updates, so such an `Apply` must treat any outcome other than
+`admin.ImportCreated` on a first sign-in as a failure (F53). A create-only port with a chosen ID is
+the `hook-provisioning-port` follow-up.
 
 For a provisioning decision, D5 runs with these differences:
 
 - **Step 3, checks:** `Apply` must be set, otherwise a broker failure. The named user must **not**
-  load (`ErrUserNotFound`), unless the identity's own link already names it. A user that loads
+  load (`ErrUserNotFound`), unless the identity's own link already names it; a user that loads
+  through that link must then match and be active, as an adopted user must. The reference must be
+  fresh: when the store can list links, a reference that any other identity's link names (from any
+  provider) is refused as `ErrNoLinkedAccount`, so two identities never share one pending user. The
+  check runs again after this sign-in's own insert, and on a refusal the sign-in undoes its own link,
+  so two identities racing for one reference end with at most one link (both may be refused; the next
+  sign-in succeeds). A user that loads
   without that link is refused as `ErrNoLinkedAccount`: provisioning never adopts. A loader fault is
   a broker failure. The conflict check and the one-link rule (D11) apply unchanged.
 - **Step 4, link:** the link is inserted **before** the user exists, with an empty username (no user
@@ -392,6 +403,8 @@ Alternatives rejected:
 | F33 | A provisioning decision has no `Apply` | Handled, tested | Broker failure; nothing written |
 | F34 | A provisioning `Apply` fails, or returns without creating the user | Handled, tested | Broker failure; the link to the missing user stays; a later provisioning decision for it resumes |
 | F35 | Two first sign-ins of one identity provision different references | Handled, tested | One link; the loser is refused before its `Apply`, so no orphan user |
+| F52 | A provisioning decision names an absent reference that another identity's link already names, before or concurrently with this sign-in | Handled, tested | `ErrNoLinkedAccount`, nothing written, when the store lists links. Without a lister (allow-many over a consumer store) the check cannot run: accepted, and the consumer's reference generator must give fresh values |
+| F53 | Another writer creates the provisioning reference between the check and `Apply` | Accepted | The broker cannot tell it from a resume. `Apply` on a first sign-in must create only, failing when the user exists, and references must be fresh values no other writer produces (the godoc says so); then the sign-in fails as a broker failure and the link stays for an operator |
 | F36 | A provisioned link records an empty username | Accepted | The link's username is for operators only and never a lookup key (D13) |
 
 ## Follow-ups

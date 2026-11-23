@@ -81,7 +81,9 @@ Each task's verification names the test or command that shows it is done.
   - provisioning a user that exists and is not linked to the identity is refused, with `Apply` never called and no link (F32);
   - provisioning with no `Apply` is a broker failure, with no link (F33);
   - an `Apply` that fails, or returns without creating the user, is a broker failure, and the link stays; a later provisioning decision resumes and resolves (F34);
-  - a barrier test under `-race` races two first sign-ins provisioning `u-a` and `u-b`: one link, the loser refused, and the loser's `Apply` never called (F35).
+  - a barrier test under `-race` races two first sign-ins provisioning `u-a` and `u-b`: one link, the loser refused, and the loser's `Apply` never called (F35);
+  - provisioning a reference that another identity's link already names (another provider included) is refused, with nothing written (F52);
+  - a barrier test where two identities of different providers provision the same reference at once ends with at most one link, and no refused sign-in runs `Apply` (F52).
 - [x] 3.7 Write godoc and an example for the hook. The godoc covers:
   - decide-then-apply and its ordering;
   - the meaning of the `linked` argument;
@@ -135,7 +137,9 @@ Each task's verification names the test or command that shows it is done.
   - an error handler that finds no session after one was ended (F46);
   - a resume error;
   - a resume answering `login_required` with no error;
-  - a confirmation failure (F24);
+  - a confirmation failure (F24), including a sign-in that ends during `Resume`'s own write, which must reach no client (confirm runs after resume);
+  - a client whose registered redirect URI carries its own `error` parameter completes, because completion reads `ResumeResult.Outcome`, not the query;
+  - a cancelled request still ends the session (the end is detached), and a failed confirmation with a failing family delete still ends the provider sign-in;
   - a session-end failure logging ERROR (F25);
   - a session-store failure (F26).
 

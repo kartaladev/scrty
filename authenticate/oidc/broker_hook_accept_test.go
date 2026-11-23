@@ -184,13 +184,12 @@ func TestBroker_HookChecksBeforeWrite(t *testing.T) {
 		logs    string
 	}
 	type testCase struct {
-		name      string
-		ctx       func(ctx context.Context) context.Context
-		link      *oidc.Link // the identity's link before the login; nil means none
-		decide    identity.UserID
-		provision bool
-		prepare   func(d *hookDirectory)
-		assert    func(t *testing.T, e env, p *identity.Principal, err error)
+		name    string
+		ctx     func(ctx context.Context) context.Context
+		link    *oidc.Link // the identity's link before the login; nil means none
+		decide  identity.UserID
+		prepare func(d *hookDirectory)
+		assert  func(t *testing.T, e env, p *identity.Principal, err error)
 	}
 
 	refusedUnlinked := func(t *testing.T, e env, p *identity.Principal, err error) {
@@ -248,18 +247,6 @@ func TestBroker_HookChecksBeforeWrite(t *testing.T) {
 			},
 		},
 		{
-			// Provisioning decisions are not accepted yet: refused before
-			// anything is written, whatever the user store holds.
-			name:      "a provisioning decision is a broker failure, and nothing is written",
-			decide:    "u-7",
-			provision: true,
-			assert: func(t *testing.T, e env, p *identity.Principal, err error) {
-				assertBrokerFailure(t, p, err)
-				assert.Empty(t, e.applies.all())
-				assert.Nil(t, findCorp(t, e.links, "s-1"))
-			},
-		},
-		{
 			name: "a context cancelled during the checks is the context's error, and nothing is written",
 			ctx: func(ctx context.Context) context.Context {
 				cctx, cancel := context.WithCancel(ctx)
@@ -296,7 +283,7 @@ func TestBroker_HookChecksBeforeWrite(t *testing.T) {
 			}
 			applies := &applyRecord{}
 			hook := func(_ context.Context, ext oidc.ExternalIdentity, _ oidc.Upstream, _ identity.UserID) (oidc.SignInDecision, error) {
-				return oidc.SignInDecision{User: tc.decide, Provision: tc.provision, Apply: applies.step(links, ext, tc.decide, nil)}, nil
+				return oidc.SignInDecision{User: tc.decide, Apply: applies.step(links, ext, tc.decide, nil)}, nil
 			}
 			var logs bytes.Buffer
 			b, err := oidc.NewBroker(links, dir.loader(gomock.NewController(t)),
@@ -875,6 +862,8 @@ func TestBroker_HookRaces(t *testing.T) {
 	type login struct {
 		subject string
 		decide  identity.UserID
+		// provider is the login's provider; empty means corp.
+		provider string
 	}
 	type outcome struct {
 		login
@@ -885,7 +874,57 @@ func TestBroker_HookRaces(t *testing.T) {
 		name    string
 		barrier string // the method both logins are held after
 		logins  [2]login
-		assert  func(t *testing.T, links *barrierLinks, applies *applyRecord, out [2]outcome)
+		// provision makes both decisions provision their user, which their
+		// apply step creates.
+		provision bool
+		// manyLinks allows corp many links per user.
+		manyLinks bool
+		assert    func(t *testing.T, links *barrierLinks, dir *hookDirectory, applies *applyRecord, out [2]outcome)
+	}
+
+	// identityOf is the external identity a login signs in with.
+	identityOf := func(l login) oidc.ExternalIdentity {
+		if l.provider == "partner" {
+			return oidc.ExternalIdentity{Provider: "partner", Issuer: "https://partner.example", Subject: l.subject,
+				Email: "bob@partner.example", EmailVerified: true}
+		}
+		return corpIdentity(l.subject)
+	}
+
+	// sharedReference asserts the outcome of two identities racing to
+	// provision u-new (F52): at most one link names it, a refused login was
+	// refused as ErrNoLinkedAccount with its link removed and never applied,
+	// and the user exists only if a winner applied.
+	sharedReference := func(t *testing.T, links *barrierLinks, dir *hookDirectory, applies *applyRecord, out [2]outcome) {
+		t.Helper()
+		named, err := links.MemoryLinkStore.ListByUser(t.Context(), "u-new")
+		require.NoError(t, err)
+		require.LessOrEqual(t, len(named), 1, "at most one link names u-new: %v", named)
+		var won []oidc.ExternalIdentity
+		for _, o := range out {
+			ext := identityOf(o.login)
+			if o.err != nil {
+				require.ErrorIs(t, o.err, oidc.ErrNoLinkedAccount)
+				l, ferr := links.MemoryLinkStore.FindByExternal(t.Context(), ext.Provider, ext.Issuer, ext.Subject)
+				require.ErrorIs(t, ferr, oidc.ErrLinkNotFound, "a refused login's link was removed: %v", l)
+				continue
+			}
+			require.NotNil(t, o.p)
+			assert.Equal(t, identity.UserID("u-new"), o.p.ID)
+			won = append(won, ext)
+		}
+		require.Len(t, named, len(won), "every winner keeps its link")
+		calls := applies.all()
+		require.Len(t, calls, len(won), "no refused login applied")
+		for i, c := range calls {
+			require.NotNil(t, c.link)
+			assert.Equal(t, won[i].Provider, c.link.Provider)
+			assert.Equal(t, won[i].Subject, c.link.Subject)
+		}
+		if len(won) == 0 {
+			_, err := dir.load(t.Context(), "u-new")
+			require.ErrorIs(t, err, identity.ErrUserNotFound, "no refused login created u-new")
+		}
 	}
 
 	// corpLinks returns every corp link the store holds for the subjects.
@@ -904,8 +943,8 @@ func TestBroker_HookRaces(t *testing.T) {
 		{
 			name:    "two first sign-ins of one identity deciding u-7 leave one link, both resolve, both apply after it",
 			barrier: "find",
-			logins:  [2]login{{"s-1", "u-7"}, {"s-1", "u-7"}},
-			assert: func(t *testing.T, links *barrierLinks, applies *applyRecord, out [2]outcome) {
+			logins:  [2]login{{subject: "s-1", decide: "u-7"}, {subject: "s-1", decide: "u-7"}},
+			assert: func(t *testing.T, links *barrierLinks, _ *hookDirectory, applies *applyRecord, out [2]outcome) {
 				for _, o := range out {
 					require.NoError(t, o.err)
 					assert.Equal(t, identity.UserID("u-7"), o.p.ID)
@@ -923,8 +962,8 @@ func TestBroker_HookRaces(t *testing.T) {
 		{
 			name:    "two first sign-ins of one identity deciding u-7 and u-9: one wins, the other is refused and never applies",
 			barrier: "find",
-			logins:  [2]login{{"s-1", "u-7"}, {"s-1", "u-9"}},
-			assert: func(t *testing.T, links *barrierLinks, applies *applyRecord, out [2]outcome) {
+			logins:  [2]login{{subject: "s-1", decide: "u-7"}, {subject: "s-1", decide: "u-9"}},
+			assert: func(t *testing.T, links *barrierLinks, _ *hookDirectory, applies *applyRecord, out [2]outcome) {
 				var won []outcome
 				for _, o := range out {
 					if o.err == nil {
@@ -946,8 +985,8 @@ func TestBroker_HookRaces(t *testing.T) {
 		{
 			name:    "two new subjects deciding u-7 leave at most one link, and every refused login never applies",
 			barrier: "list",
-			logins:  [2]login{{"s-1", "u-7"}, {"s-2", "u-7"}},
-			assert: func(t *testing.T, links *barrierLinks, applies *applyRecord, out [2]outcome) {
+			logins:  [2]login{{subject: "s-1", decide: "u-7"}, {subject: "s-2", decide: "u-7"}},
+			assert: func(t *testing.T, links *barrierLinks, _ *hookDirectory, applies *applyRecord, out [2]outcome) {
 				remaining := corpLinks(t, links, "s-1", "s-2")
 				require.LessOrEqual(t, len(remaining), 1, "at most one link to u-7 from the issuer remains: %v", remaining)
 				var wonSubjects []string
@@ -969,6 +1008,53 @@ func TestBroker_HookRaces(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "two first sign-ins of one identity provisioning u-a and u-b leave one link; " +
+				"the loser is refused before its apply step, so its user is never created (F35)",
+			barrier:   "find",
+			logins:    [2]login{{subject: "s-1", decide: "u-a"}, {subject: "s-1", decide: "u-b"}},
+			provision: true,
+			assert: func(t *testing.T, links *barrierLinks, dir *hookDirectory, applies *applyRecord, out [2]outcome) {
+				var won, lost []outcome
+				for _, o := range out {
+					if o.err == nil {
+						won = append(won, o)
+						continue
+					}
+					require.ErrorIs(t, o.err, oidc.ErrNoLinkedAccount)
+					lost = append(lost, o)
+				}
+				require.Len(t, won, 1)
+				require.Len(t, lost, 1)
+				assert.Equal(t, won[0].decide, won[0].p.ID)
+				l := findCorp(t, links, "s-1")
+				require.NotNil(t, l)
+				assert.Equal(t, won[0].decide, l.UserID, "the one link names the winner's user")
+				assert.Empty(t, l.Username)
+				calls := applies.all()
+				require.Len(t, calls, 1, "the loser's apply step never ran")
+				assert.Equal(t, won[0].decide, calls[0].target)
+				_, err := dir.load(t.Context(), lost[0].decide)
+				require.ErrorIs(t, err, identity.ErrUserNotFound, "the loser's user was never created")
+			},
+		},
+		{
+			name: "first sign-ins through corp and partner both provisioning u-new, held after the fresh-reference " +
+				"check, leave at most one link and no refused login applies (F52)",
+			barrier:   "list",
+			logins:    [2]login{{subject: "s-1", decide: "u-new"}, {subject: "p-1", decide: "u-new", provider: "partner"}},
+			provision: true,
+			assert:    sharedReference,
+		},
+		{
+			name: "two corp subjects provisioning u-new under allow-many, held after the fresh-reference check, " +
+				"leave at most one link and no refused login applies (F52)",
+			barrier:   "list",
+			logins:    [2]login{{subject: "s-1", decide: "u-new"}, {subject: "s-2", decide: "u-new"}},
+			provision: true,
+			manyLinks: true,
+			assert:    sharedReference,
+		},
 	}
 
 	for _, tc := range cases {
@@ -977,14 +1063,22 @@ func TestBroker_HookRaces(t *testing.T) {
 
 			links := newBarrierLinks(tc.barrier)
 			applies := &applyRecord{}
+			dir := newHookDirectory(activeUser("u-7"), activeUser("u-9"))
 			hook := func(_ context.Context, ext oidc.ExternalIdentity, up oidc.Upstream, _ identity.UserID) (oidc.SignInDecision, error) {
 				// Each login's access token carries its decision, which tells two
 				// logins of one identity apart.
 				decide := identity.UserID(up.AccessToken())
-				return oidc.SignInDecision{User: decide, Apply: applies.step(links, ext, decide, nil)}, nil
+				var then func(context.Context) error
+				if tc.provision {
+					then = func(context.Context) error { dir.create(activeUser(decide)); return nil }
+				}
+				return oidc.SignInDecision{User: decide, Provision: tc.provision, Apply: applies.step(links, ext, decide, then)}, nil
 			}
-			dir := newHookDirectory(activeUser("u-7"), activeUser("u-9"))
-			b, err := oidc.NewBroker(links, dir.loader(gomock.NewController(t)), oidc.WithBrokerSignInHook("corp", hook))
+			opts := []oidc.BrokerOption{oidc.WithBrokerSignInHook("corp", hook), oidc.WithBrokerSignInHook("partner", hook)}
+			if tc.manyLinks {
+				opts = append(opts, oidc.WithBrokerSignInHookAllowManyLinks("corp"))
+			}
+			b, err := oidc.NewBroker(links, dir.loader(gomock.NewController(t)), opts...)
 			require.NoError(t, err)
 
 			var (
@@ -993,14 +1087,14 @@ func TestBroker_HookRaces(t *testing.T) {
 			)
 			for i, l := range tc.logins {
 				wg.Go(func() {
-					p, err := b.BrokerUpstream(t.Context(), corpIdentity(l.subject),
+					p, err := b.BrokerUpstream(t.Context(), identityOf(l),
 						oidc.NewUpstreamForTest(string(l.decide), l.subject, nil, nil))
 					out[i] = outcome{login: l, p: p, err: err}
 				})
 			}
 			wg.Wait()
 			require.EqualValues(t, 2, min(links.calls.Load(), 2), "both logins reached the barrier")
-			tc.assert(t, links, applies, out)
+			tc.assert(t, links, dir, applies, out)
 		})
 	}
 }
