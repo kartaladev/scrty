@@ -330,3 +330,8 @@ func isLoopbackHost(host string) bool {
 
 	return err == nil && addr.Unmap().IsLoopback()
 }
+
+// LoginURL returns the consumer's login page, exactly as Deps.LoginURL gave it: the
+// page a parked request is sent to as LoginURL?req=<handle>. It is read-only and
+// changes nothing; a caller recognising that destination compares against it.
+func (p *Provider) LoginURL() string { return p.loginURL }

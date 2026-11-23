@@ -6,6 +6,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/oidc"
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/assurance"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/policy"
@@ -60,21 +61,7 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 	// and before the redeemer consumes the code, so a credential that cannot
 	// be issued leaves the code redeemable. The session is stored only once
 	// the code is spent, below.
-	login := newRedemptionLogin(loginTailDeps{
-		engine:            i.engine,
-		sessions:          i.sessions,
-		tokens:            i.tokens,
-		issue:             i.issue,
-		enrolmentLifetime: i.enrolmentLifetime,
-		enforced:          i.enforced,
-		log:               i.log,
-		sampler:           i.sampler,
-		now:               i.now,
-		challengeMethods:  i.challengeMethods,
-		cancelHeld:        i.cancelHeld,
-		csrfToken:         i.csrfToken,
-		binding:           binding,
-	}, out)
+	login := newRedemptionLogin(i.loginTail(binding), out)
 
 	// One check, as the redeemer has always been handed: the refusal check,
 	// then, only once it has passed, the issuing step.
@@ -139,22 +126,10 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 
 	// The provider session is known only from the redeemer's result, after
 	// the consume, and the credential issued inside the checks does not
-	// depend on it. It is recorded on the session before the one write that
-	// creates it, so no request ever sees a federated session without it, and
-	// back-channel logout can find it from its first moment. The asserted
-	// assurance was recorded when the session was built, from the evidence
-	// the guards above have just shown is what the check decided on.
-	session.WithExternalSession(res.Provider, res.Issuer, res.SessionID, res.IDToken)(issued.session())
-
-	// The code is spent, so the first factor is proved: the user's held
-	// recoveries are cancelled before the session is stored, as completeLogin
-	// cancels them for every login. A cancellation that cannot be recorded
-	// refuses the login, with the code already spent.
-	if err := login.deps.cancelHeldRecoveries(ctx, res.Principal.ID); err != nil {
-		return err
-	}
-
-	tok, err := issued.commit(ex)
+	// depend on it. The code is spent, so the first factor is proved.
+	tok, err := commitFederatedLogin(ex, login, issued, federatedSession{
+		provider: res.Provider, issuer: res.Issuer, sessionID: res.SessionID, idToken: res.IDToken,
+	}, res.Principal.ID)
 	if err != nil {
 		return err
 	}
@@ -171,6 +146,58 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 		},
 		Next: i.redirects.Resolve(res.Next),
 	})
+}
+
+// loginTail is what the login tail of a federated login needs, from this
+// interceptor's settings, with binding as the key the sign-in is bound to (the
+// zero value for an unbound one). A handoff redemption and a server-side
+// completion end their logins through it alike.
+func (i *oidcInterceptor) loginTail(binding session.KeyBinding) loginTailDeps {
+	return loginTailDeps{
+		engine:            i.engine,
+		sessions:          i.sessions,
+		tokens:            i.tokens,
+		issue:             i.issue,
+		enrolmentLifetime: i.enrolmentLifetime,
+		enforced:          i.enforced,
+		log:               i.log,
+		sampler:           i.sampler,
+		now:               i.now,
+		challengeMethods:  i.challengeMethods,
+		cancelHeld:        i.cancelHeld,
+		csrfToken:         i.csrfToken,
+		binding:           binding,
+	}
+}
+
+// federatedSession is the provider session a federated login records on the
+// session it creates.
+type federatedSession struct {
+	provider, issuer, sessionID, idToken string
+}
+
+// commitFederatedLogin stores the session issued for a federated login whose
+// first factor is proved, and returns its credential as preparedLogin.commit does.
+//
+// The provider session is recorded on the session before the one write that
+// creates it, so no request ever sees a federated session without it, and
+// back-channel logout can find it from its first moment. The asserted assurance
+// was recorded when the session was built, from the evidence the caller's guards
+// have shown is what the check decided on.
+//
+// user's held recoveries are cancelled before the session is stored, as
+// completeLogin cancels them for every login. A cancellation that cannot be
+// recorded refuses the login, with nothing stored.
+func commitFederatedLogin(
+	ex *Exchange, login *redemptionLogin, issued *preparedLogin, fed federatedSession, user identity.UserID,
+) (string, error) {
+	session.WithExternalSession(fed.provider, fed.issuer, fed.sessionID, fed.idToken)(issued.session())
+
+	if err := login.deps.cancelHeldRecoveries(ex.Context(), user); err != nil {
+		return "", err
+	}
+
+	return issued.commit(ex)
 }
 
 // oidcHandoffDocument is the default success body of a redemption. It embeds a

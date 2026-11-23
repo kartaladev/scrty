@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate/oidc"
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/origin"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
@@ -29,6 +30,10 @@ type OIDCDeps struct {
 	// login instead, and must then be nil: that conveyance issues no code, so
 	// there is nothing for a handoff to govern.
 	Handoff *oidc.Handoff
+
+	// Users loads the user a federated sign-in completed on the server is for
+	// (WithOIDCProviderCompletion), which requires it.
+	Users identity.UserLoader
 }
 
 // EnableOIDCLogin answers the federated-login endpoints at the OIDC slot:
@@ -109,6 +114,7 @@ func EnableOIDCLogin(deps OIDCDeps, opts ...OIDCOption) Option {
 		i := &oidcInterceptor{
 			manager:         deps.RelyingParty,
 			handoffs:        deps.Handoff,
+			users:           deps.Users,
 			now:             c.now,
 			authorizePath:   defaultPath(DefaultOIDCAuthorizePath),
 			callbackPath:    defaultPath(DefaultOIDCCallbackPath),
@@ -147,6 +153,12 @@ func EnableOIDCLogin(deps OIDCDeps, opts ...OIDCOption) Option {
 // It runs once every option has been applied, so a session manager wired by
 // another built-in after EnableOIDCLogin still counts.
 func (i *oidcInterceptor) check(c *config, option string) error {
+	if i.completion {
+		if err := i.checkCompletion(c, option); err != nil {
+			return err
+		}
+	}
+
 	if i.callbackSuccess != nil {
 		if err := i.checkConveyance(option); err != nil {
 			return err
@@ -740,6 +752,16 @@ func WithOIDCRPInitiatedLogout(on bool) OIDCOption {
 func WithoutOIDCRedirectPathCheck() OIDCOption {
 	return func(i *oidcInterceptor) error {
 		i.redirectCheckWaived = true
+
+		return nil
+	}
+}
+
+// WithOIDCProviderCompletion completes a federated sign-in started from the
+// chain's own OpenID Provider login page on the server.
+func WithOIDCProviderCompletion() OIDCOption {
+	return func(i *oidcInterceptor) error {
+		i.completion = true
 
 		return nil
 	}

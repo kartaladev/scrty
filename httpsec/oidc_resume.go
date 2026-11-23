@@ -208,7 +208,7 @@ func (g *oidcResumeGroup) serve(ex *Exchange, _ Next) error {
 
 	// A denial grants nothing, so nothing it wrote could outlive the sign-in.
 	if signIn != nil && !doc.Deny {
-		if err := g.confirmSignIn(ctx, signIn); err != nil {
+		if err := g.op.confirmSignIn(ctx, signIn); err != nil {
 			return err
 		}
 	}
@@ -242,8 +242,11 @@ func (g *oidcResumeGroup) serve(ex *Exchange, _ Next) error {
 // is then a code and a session no one was given the secret of, which expire. The stage stays spent,
 // so a resume that reached the client must start again, and one bound for the consent page may
 // answer it with the sign-in, which is read again then.
-func (g *oidcResumeGroup) confirmSignIn(ctx context.Context, signIn *oidcprovider.SignIn) error {
-	live, err := g.op.sessions.ListSignIns(ctx, signIn.User, nil)
+//
+// It is the provider's, rather than the resume endpoint's, so a sign-in completed
+// on the server is confirmed after its resume exactly as the endpoint confirms one.
+func (op *oidcEndpoints) confirmSignIn(ctx context.Context, signIn *oidcprovider.SignIn) error {
+	live, err := op.sessions.ListSignIns(ctx, signIn.User, nil)
 	if err != nil {
 		return err
 	}
@@ -252,7 +255,7 @@ func (g *oidcResumeGroup) confirmSignIn(ctx context.Context, signIn *oidcprovide
 		return nil
 	}
 
-	if _, err := g.op.provider.EndSignIn(ctx, oidcprovider.SignInSelector{Family: signIn.Family}); err != nil {
+	if _, err := op.provider.EndSignIn(ctx, oidcprovider.SignInSelector{Family: signIn.Family}); err != nil {
 		return err
 	}
 
@@ -301,6 +304,17 @@ func (g *oidcResumeGroup) resumeSignIn(ex *Exchange) (*oidcprovider.SignIn, erro
 		return nil, ErrAuthenticationRequired
 	}
 
+	return resumableSignIn(ex, s, g.assurance)
+}
+
+// resumableSignIn is the provider sign-in s states, once the checks the resume
+// applies to a sign-in have passed: s is a full session, owing no step, and the
+// per-request policy raised no challenge of the consumer's own on ex. Its amr and
+// acr are what assure says of s. A sign-in completed on the server is judged by
+// it as the resume endpoint judges one.
+func resumableSignIn(
+	ex *Exchange, s *session.Session, assure func(*session.Session) ([]string, string),
+) (*oidcprovider.SignIn, error) {
 	if err := fullSessionOnly(s); err != nil {
 		return nil, err
 	}
@@ -309,7 +323,7 @@ func (g *oidcResumeGroup) resumeSignIn(ex *Exchange) (*oidcprovider.SignIn, erro
 		return nil, err
 	}
 
-	signIn := oidcSignInOf(s, g.assurance)
+	signIn := oidcSignInOf(s, assure)
 
 	return &signIn, nil
 }

@@ -5,9 +5,11 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate/oidc"
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/origin"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -152,6 +154,17 @@ type oidcInterceptor struct {
 	// the login instead, and then the redemption endpoint is not answered.
 	redeemer        HandoffRedeemer
 	callbackSuccess CallbackSuccess
+
+	// completion is WithOIDCProviderCompletion: a login whose destination is
+	// the provider's login page carrying one parked request's handle is
+	// completed on the server (completeProviderSignIn). users is
+	// OIDCDeps.Users, which completion loads the user through; provider and
+	// loginURL are the chain's OpenID Provider and its parsed login page,
+	// settled by check.
+	completion bool
+	users      identity.UserLoader
+	provider   *oidcEndpoints
+	loginURL   *url.URL
 
 	sessions *session.Sessions
 	tokens   token.Generator
