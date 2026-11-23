@@ -81,8 +81,8 @@ Every task is test-first: write the failing test, run it with `go test -run '<Na
 
 - [x] 10.1 Write a migration test first: apply to a database populated with grants and pending requests (per `use-testcontainers`), and check the new table, the grant and pending-request columns' defaults and a full rollback. See it fail. Then add the security-state migration after `20261103000000_oidc_provider.sql`.
 - [x] 10.2 `sqlstore` device authorization store and grant columns. Verify that the exported suite (3.2, 3.3) and the existing grant suites pass under `-race` on PostgreSQL 15 and 18.
-- [ ] 10.3 `pgxstore`, verified the same way.
-- [ ] 10.4 `gormstore`, verified the same way.
+- [x] 10.3 `pgxstore`, verified the same way.
+- [x] 10.4 `gormstore`, verified the same way.
 
 ## 11. Chain wiring (D6, D12)
 

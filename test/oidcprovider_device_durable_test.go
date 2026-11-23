@@ -6,26 +6,58 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/postgres"
+	gormdb "gorm.io/gorm"
 
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/store/gormstore"
+	"github.com/kartaladev/scrty/store/pgxstore"
 	"github.com/kartaladev/scrty/store/sqlstore"
+	"github.com/kartaladev/scrty/test"
 )
 
 // deviceUserCodeKey is the user-code key of the providers these tests build, as a durable
 // device store needs one shared by every replica.
 var deviceUserCodeKey = []byte("device tests user-code key, 32b+")
 
-// TestOIDCProvider_DeviceApprovalsOverSQL holds a provider with the device grant, over the
-// sqlstore grant, code and device stores, to reaching an approval the device has not
+// deviceStores is each adapter's device authorization store over a database, by the adapter's
+// name in opAdapters. Each builds its own handle on the database, as durAdmins does.
+var deviceStores = map[string]func(t *testing.T, conn test.PostgresConn) oidcprovider.DeviceAuthorizationStore{
+	"sqlstore": func(_ *testing.T, conn test.PostgresConn) oidcprovider.DeviceAuthorizationStore {
+		return mustStore(sqlstore.NewDeviceAuthorizationStore(conn.DB))
+	},
+	"pgx": func(t *testing.T, conn test.PostgresConn) oidcprovider.DeviceAuthorizationStore {
+		cfg, err := pgxpool.ParseConfig(conn.DSN)
+		require.NoError(t, err)
+		pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
+		require.NoError(t, err)
+		t.Cleanup(pool.Close)
+
+		return mustStore(pgxstore.NewDeviceAuthorizationStore(pool))
+	},
+	"gorm": func(t *testing.T, conn test.PostgresConn) oidcprovider.DeviceAuthorizationStore {
+		db, err := gormdb.Open(postgres.Open(conn.DSN), &gormdb.Config{DisableAutomaticPing: true})
+		require.NoError(t, err)
+		sqlDB, err := db.DB()
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sqlDB.Close() })
+
+		return mustStore(gormstore.NewDeviceAuthorizationStore(db))
+	},
+}
+
+// TestOIDCProvider_DeviceApprovalsOverDurableStores holds a provider with the device grant, over
+// each durable adapter's (sqlstore, pgx, gorm) grant, code and device stores, to reaching an approval the device has not
 // exchanged yet: the grant store reads outstanding families from the union of the code and
 // device stores, so a sign-in's end, a user's revocation and a consent's revocation each
 // record a revocation for the approval's grant family, by the one rule that decides which
 // approvals end with their sign-in. A second provider over the same stores joins an equal
 // union.
-func TestOIDCProvider_DeviceApprovalsOverSQL(t *testing.T) {
+func TestOIDCProvider_DeviceApprovalsOverDurableStores(t *testing.T) {
 	t.Parallel()
 
 	signInFamily := id.MustParse("0192f000-0000-7000-8000-0000000d0001")
@@ -106,37 +138,43 @@ func TestOIDCProvider_DeviceApprovalsOverSQL(t *testing.T) {
 		},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, a := range opAdapters {
+		t.Run(a.name, func(t *testing.T) {
 			t.Parallel()
 
-			ctx := t.Context()
-			e := newDurEnv(t, "sqlstore", opAdapters[0].open)
-			require.Equal(t, "sqlstore", opAdapters[0].name)
-			st := opAdapters[0].open(t, e.conn, e.cipher, e.clk)
-			devices, err := sqlstore.NewDeviceAuthorizationStore(e.conn.DB)
-			require.NoError(t, err)
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					t.Parallel()
 
-			build := func() *oidcprovider.Provider {
-				return e.build(t, nil,
-					oidcprovider.WithGrantStore(st.grants), oidcprovider.WithCodeStore(st.codes),
-					oidcprovider.WithDeviceAuthorization(opIssuer+"/device",
-						oidcprovider.WithUserCodeKey(deviceUserCodeKey), oidcprovider.WithDeviceAuthorizationStore(devices)))
+					ctx := t.Context()
+					e := newDurEnv(t, a.name, a.open)
+					st := a.open(t, e.conn, e.cipher, e.clk)
+					openDevices, ok := deviceStores[a.name]
+					require.True(t, ok, "a device store builder for adapter %s", a.name)
+					devices := openDevices(t, e.conn)
+
+					build := func() *oidcprovider.Provider {
+						return e.build(t, nil,
+							oidcprovider.WithGrantStore(st.grants), oidcprovider.WithCodeStore(st.codes),
+							oidcprovider.WithDeviceAuthorization(opIssuer+"/device",
+								oidcprovider.WithUserCodeKey(deviceUserCodeKey), oidcprovider.WithDeviceAuthorizationStore(devices)))
+					}
+					p := build()
+					_ = build() // a second provider over the same stores joins an equal union
+
+					for n := byte(1); n <= 4; n++ {
+						r := approved(n, n == 2 || n == 4, n == 4, n == 3 || n == 4)
+						require.NoError(t, devices.Create(ctx, r, r.IssuedAt))
+					}
+
+					if tc.gaveConsent {
+						require.NoError(t, e.consents.Give(ctx, durUser, durWeb.id, []string{"openid"}, true, e.clk.Now()))
+					}
+					tc.revoke(ctx, t, p)
+
+					tc.assert(t, ctx, st.grants)
+				})
 			}
-			p := build()
-			_ = build() // a second provider over the same stores joins an equal union
-
-			for n := byte(1); n <= 4; n++ {
-				r := approved(n, n == 2 || n == 4, n == 4, n == 3 || n == 4)
-				require.NoError(t, devices.Create(ctx, r, r.IssuedAt))
-			}
-
-			if tc.gaveConsent {
-				require.NoError(t, e.consents.Give(ctx, durUser, durWeb.id, []string{"openid"}, true, e.clk.Now()))
-			}
-			tc.revoke(ctx, t, p)
-
-			tc.assert(t, ctx, st.grants)
 		})
 	}
 }
