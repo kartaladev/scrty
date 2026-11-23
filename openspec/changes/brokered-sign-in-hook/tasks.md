@@ -38,11 +38,11 @@ Each task's verification names the test or command that shows it is done.
 ## 2. Listing a user's links (link stores)
 
 - [x] 2.1 Add the optional `LinkLister` interface and implement it on `NewMemoryLinkStore`. **Verify:** a test lists a user with three links across two providers, and a user with none (empty list, no error).
-- [ ] 2.6 Add the optional `LinkRemover` interface (`DeleteLink(ctx, Link) (bool, error)`) and implement it on `NewMemoryLinkStore`; require it beside `LinkLister` under a hook without allow-many (D11). **Verify:** a test removes one of a user's two links and keeps the other, a mismatched identity removes nothing, and a hook over a store with a lister but no remover is refused at construction.
-- [ ] 2.2 Add `ListByUser` and `DeleteLink` cases to the link-store conformance suite in `test/oidc`, skipped for a store without the capability. **Verify:** the suite runs green against the memory store.
-- [ ] 2.3 Implement `ListByUser` and `DeleteLink` in `store/sqlstore`, with the query in `internal/pgschema`. **Verify:** the conformance suite runs green against it in a PostgreSQL container (`use-testcontainers`).
-- [ ] 2.4 Implement `ListByUser` and `DeleteLink` in `store/pgxstore`. **Verify:** the conformance suite is green.
-- [ ] 2.5 Implement `ListByUser` and `DeleteLink` in `store/gormstore`. **Verify:** the conformance suite is green.
+- [x] 2.6 Add the optional `LinkRemover` interface (`DeleteLink(ctx, Link) (bool, error)`) and implement it on `NewMemoryLinkStore`; require it beside `LinkLister` under a hook without allow-many (D11). **Verify:** a test removes one of a user's two links and keeps the other, a mismatched identity removes nothing, and a hook over a store with a lister but no remover is refused at construction.
+- [x] 2.2 Add `ListByUser` and `DeleteLink` cases to the link-store conformance suite in `test/oidc`, skipped for a store without the capability. **Verify:** the suite runs green against the memory store.
+- [x] 2.3 Implement `ListByUser` and `DeleteLink` in `store/sqlstore`, with the query in `internal/pgschema`. **Verify:** the conformance suite runs green against it in a PostgreSQL container (`use-testcontainers`).
+- [x] 2.4 Implement `ListByUser` and `DeleteLink` in `store/pgxstore`. **Verify:** the conformance suite is green.
+- [x] 2.5 Implement `ListByUser` and `DeleteLink` in `store/gormstore`. **Verify:** the conformance suite is green.
 
 ## 3. Sign-in hook on the library broker (`authenticate/oidc`)
 
@@ -64,8 +64,8 @@ Each task's verification names the test or command that shows it is done.
   - a stored link with an empty user reference, a broker failure with the hook not called (F43).
 
   No row writes anything (F7, F8).
-- [ ] 3.4 Implement the checks made before any write (D5, step 3). **Verify:** tests show that an existing link to another user, a missing user, a disabled user and a mismatched user are each refused, with `Apply` never called and no link inserted. The link conflict logs one WARN, with no user references (F9, F10).
-- [ ] 3.5 Implement the link insert, the `ErrLinkExists` re-read, and the one-link rule with its post-insert re-check (D5, step 4; D11). **Verify:**
+- [x] 3.4 Implement the checks made before any write (D5, step 3). **Verify:** tests show that an existing link to another user, a missing user, a disabled user and a mismatched user are each refused, with `Apply` never called and no link inserted. The link conflict logs one WARN, with no user references (F9, F10).
+- [x] 3.5 Implement the link insert, the `ErrLinkExists` re-read, and the one-link rule with its post-insert re-check (D5, step 4; D11). **Verify:**
   - a test refuses a second subject for an already linked user, without running `Apply` (F16);
   - with allow-many, the same case links;
   - a barrier test under `-race` races two first sign-ins of one identity (one link, both resolve) (F11);
@@ -75,14 +75,14 @@ Each task's verification names the test or command that shows it is done.
   - a request cancelled after the insert still removes its duplicate (the undo is detached), leaving at most one link;
   - an insert that hits `ErrLinkExists` whose link a concurrent undo then removes is refused as `ErrNoLinkedAccount`, not a store fault (F49);
   - store faults on find, insert, list and delete are broker failures (F12).
-- [ ] 3.6 Implement `Apply` after the link, then the reload and the active check (D5, steps 5–6). **Verify:** tests show `Apply` runs once on first and later sign-ins; a failing `Apply` keeps the link and is a broker failure (F13); `Apply` deactivating the user is refused, with the link kept (F19).
+- [x] 3.6 Implement `Apply` after the link, then the reload and the active check (D5, steps 5–6). **Verify:** tests show `Apply` runs once on first and later sign-ins; a failing `Apply` keeps the link and is a broker failure (F13); `Apply` deactivating the user is refused, with the link kept (F19).
 - [ ] 3.8 Implement the provisioning decision (D13). **Verify:** tests show:
   - a first sign-in that provisions `u-new` stores the link before `Apply` runs, with an empty username, and resolves to `u-new`;
   - provisioning a user that exists and is not linked to the identity is refused, with `Apply` never called and no link (F32);
   - provisioning with no `Apply` is a broker failure, with no link (F33);
   - an `Apply` that fails, or returns without creating the user, is a broker failure, and the link stays; a later provisioning decision resumes and resolves (F34);
   - a barrier test under `-race` races two first sign-ins provisioning `u-a` and `u-b`: one link, the loser refused, and the loser's `Apply` never called (F35).
-- [ ] 3.7 Write godoc and an example for the hook. The godoc covers:
+- [x] 3.7 Write godoc and an example for the hook. The godoc covers:
   - decide-then-apply and its ordering;
   - the meaning of the `linked` argument;
   - the library never matching by e-mail, with the `email_verified` advice;
