@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -48,6 +49,20 @@ type IdentityProvider struct {
 	// for it. The token endpoint answers a code exactly once: redeeming it
 	// removes the entry.
 	pending map[string]string
+
+	// pendingSubject maps an issued code to the sub its ID token asserts, so
+	// the access token the exchange issues can be bound to that subject.
+	pendingSubject map[string]string
+
+	// accessTokens maps every access token the token endpoint issued to the
+	// subject of the login it answered, in no order. issued lists the same
+	// tokens in issue order, so a test can assert none of them is leaked.
+	accessTokens map[string]string
+	issued       []string
+
+	// userInfo maps a subject to the members its UserInfo answer carries,
+	// beside the sub the endpoint always adds when the body has none.
+	userInfo map[string]map[string]any
 
 	discoveryCalls atomic.Int64
 	jwksCalls      atomic.Int64
@@ -91,6 +106,10 @@ func NewIdentityProvider(t *testing.T, opts ...IdentityProviderOption) *Identity
 	p := &IdentityProvider{
 		clientSecrets: make(map[string]string),
 		pending:       make(map[string]string),
+
+		pendingSubject: make(map[string]string),
+		accessTokens:   make(map[string]string),
+		userInfo:       make(map[string]map[string]any),
 	}
 	p.key = newRSAKey(t, "k1")
 	p.keys = []jwk.Key{p.key}
@@ -105,6 +124,7 @@ func NewIdentityProvider(t *testing.T, opts ...IdentityProviderOption) *Identity
 	mux.HandleFunc("GET /.well-known/openid-configuration", p.serveDiscovery)
 	mux.HandleFunc("GET /jwks", p.serveJWKS)
 	mux.HandleFunc("POST /token", p.serveToken)
+	mux.HandleFunc("GET /userinfo", p.serveUserInfo)
 
 	p.srv = httptest.NewTLSServer(mux)
 	t.Cleanup(p.srv.Close)
@@ -166,6 +186,32 @@ func (p *IdentityProvider) Rotate(t *testing.T, kid string) {
 	p.keys = append(p.keys, k)
 }
 
+// SetUserInfo sets the members the UserInfo endpoint answers for subject, from
+// now on and to every access token issued for that subject, earlier ones
+// included. The answer carries sub too: body's own when it names one, else
+// subject, so a test can also make the provider assert another subject.
+// A subject with no body set is answered with its sub alone.
+func (p *IdentityProvider) SetUserInfo(subject string, body map[string]any) {
+	cp := make(map[string]any, len(body))
+	for k, v := range body {
+		cp[k] = v
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.userInfo[subject] = cp
+}
+
+// AccessTokens returns every access token the token endpoint has issued, in
+// issue order, so a test can assert that none of them reached a log.
+func (p *IdentityProvider) AccessTokens() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return append([]string(nil), p.issued...)
+}
+
 // Calls reports how many times discovery, the key set and the token endpoint
 // have each been requested.
 func (p *IdentityProvider) Calls() (discovery, jwks, token int64) {
@@ -223,7 +269,8 @@ func (p *IdentityProvider) Login(
 	}
 
 	raw := p.sign(t, final, opts...)
-	code := p.issueCode(t, raw)
+	sub, _ := final["sub"].(string)
+	code := p.issueCode(t, raw, sub)
 
 	redirect, err := url.Parse(redirectURI)
 	require.NoError(t, err, "the authorization redirect carried an unparsable redirect_uri: %q", redirectURI)
@@ -256,14 +303,16 @@ func (p *IdentityProvider) LogoutToken(t *testing.T, claims map[string]any, opts
 	return p.sign(t, final, opts...)
 }
 
-// issueCode records raw under a fresh single-use code and returns it.
-func (p *IdentityProvider) issueCode(t *testing.T, raw string) string {
+// issueCode records raw, whose subject is sub, under a fresh single-use code
+// and returns it.
+func (p *IdentityProvider) issueCode(t *testing.T, raw, sub string) string {
 	t.Helper()
 
 	code := randomHex(t, 16)
 
 	p.mu.Lock()
 	p.pending[code] = raw
+	p.pendingSubject[code] = sub
 	p.mu.Unlock()
 
 	return code
@@ -299,6 +348,7 @@ func (p *IdentityProvider) serveDiscovery(w http.ResponseWriter, _ *http.Request
 		"issuer":                                p.Issuer(),
 		"authorization_endpoint":                p.Issuer() + "/authorize",
 		"token_endpoint":                        p.Issuer() + "/token",
+		"userinfo_endpoint":                     p.Issuer() + "/userinfo",
 		"jwks_uri":                              p.Issuer() + "/jwks",
 		"end_session_endpoint":                  p.Issuer() + "/logout",
 		"response_types_supported":              []string{"code"},
@@ -374,8 +424,13 @@ func (p *IdentityProvider) serveToken(w http.ResponseWriter, r *http.Request) {
 
 	p.mu.Lock()
 	raw, found := p.pending[code]
+	var accessToken string
 	if found {
 		delete(p.pending, code)
+		accessToken = "at-" + hex.EncodeToString(randomBytes())
+		p.accessTokens[accessToken] = p.pendingSubject[code]
+		p.issued = append(p.issued, accessToken)
+		delete(p.pendingSubject, code)
 	}
 	p.mu.Unlock()
 
@@ -386,10 +441,49 @@ func (p *IdentityProvider) serveToken(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{
-		"access_token": "discarded",
+		"access_token": accessToken,
 		"token_type":   "Bearer",
 		"id_token":     raw,
 	})
+}
+
+// serveUserInfo answers the UserInfo request of an access token this provider
+// issued with the members SetUserInfo set for the token's subject. A request
+// without a known bearer token is refused with 401.
+func (p *IdentityProvider) serveUserInfo(w http.ResponseWriter, r *http.Request) {
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+
+	p.mu.Lock()
+	subject, known := p.accessTokens[token]
+	body := make(map[string]any, len(p.userInfo[subject])+1)
+	for k, v := range p.userInfo[subject] {
+		body[k] = v
+	}
+	p.mu.Unlock()
+
+	if !ok || !known {
+		w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+		w.WriteHeader(http.StatusUnauthorized)
+
+		return
+	}
+
+	if _, has := body["sub"]; !has {
+		body["sub"] = subject
+	}
+
+	writeJSON(w, body)
+}
+
+// randomBytes returns 16 random bytes for an access token, panicking if the
+// system's entropy source fails, as a fixture cannot continue without it.
+func randomBytes() []byte {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+
+	return b
 }
 
 // clientCredentials reads the client's id and secret from an HTTP Basic
