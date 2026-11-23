@@ -64,14 +64,17 @@ FROM scrty_passkey_credentials WHERE user_id = $1 ORDER BY created_at, id`
 	// PasskeyRecordAssertion sets credential $1's counter to $2, its backup
 	// state to $3 and its last use to $4, only while it is active (state 1)
 	// and its stored counter is lower than $2, or both are zero.
+	//nolint:gosec // G101: SQL text, not a credential
 	PasskeyRecordAssertion = `UPDATE scrty_passkey_credentials SET sign_count = $2, backup_state = $3, last_used_at = $4
 WHERE id = $1 AND state = 1 AND (sign_count < $2 OR (sign_count = 0 AND $2 = 0))`
 
 	// PasskeyRecordUse sets credential $1's backup state to $2 and its last
 	// use to $3, leaving its counter, only while it is active (state 1).
+	//nolint:gosec // G101: SQL text, not a credential
 	PasskeyRecordUse = `UPDATE scrty_passkey_credentials SET backup_state = $2, last_used_at = $3 WHERE id = $1 AND state = 1`
 
 	// PasskeySuspend moves credential $1 from active (1) to suspended (3).
+	//nolint:gosec // G101: SQL text, not a credential
 	PasskeySuspend = `UPDATE scrty_passkey_credentials SET state = 3 WHERE id = $1 AND state = 1`
 
 	// PasskeyClearReason clears reason $3 of user $2's credential $1, only
@@ -79,6 +82,7 @@ WHERE id = $1 AND state = 1 AND (sign_count < $2 OR (sign_count = 0 AND $2 = 0))
 	// results: active (1) when no reason remains. Clearing the emailed-code
 	// reason (2) drops the code and its expiry. $3 must be exactly one reason,
 	// 1 or 2; the adapters refuse any other value before running it.
+	//nolint:gosec // G101: SQL text, not a credential
 	PasskeyClearReason = `UPDATE scrty_passkey_credentials
    SET pending = pending & ~$3::smallint,
        state = CASE WHEN pending & ~$3::smallint = 0 THEN 1 ELSE state END,
@@ -93,18 +97,22 @@ RETURNING state`
 	// pending (state 2) on its emailed code (reason 2), the code is
 	// outstanding and not expired at $3, and fewer than $4 attempts are
 	// charged. No row returned is the refusal.
+	//nolint:gosec // G101: SQL text, not a credential
 	PasskeyChargeEmailAttempt = `UPDATE scrty_passkey_credentials SET email_code_attempts = email_code_attempts + 1
  WHERE id = $1 AND user_id = $2 AND state = 2 AND pending & 2 <> 0
    AND email_code IS NOT NULL AND email_code_expires_at > $3 AND email_code_attempts < $4
 RETURNING email_code, email_code_expires_at, email_code_attempts`
 
 	// PasskeyRename sets the name of user $2's credential $1 to $3.
+	//nolint:gosec // G101: SQL text, not a credential
 	PasskeyRename = `UPDATE scrty_passkey_credentials SET name = $3 WHERE id = $1 AND user_id = $2`
 
 	// PasskeyDelete removes user $2's credential $1.
+	//nolint:gosec // G101: SQL text, not a credential
 	PasskeyDelete = `DELETE FROM scrty_passkey_credentials WHERE id = $1 AND user_id = $2`
 
 	// PasskeyDeleteUser removes every credential of user $1.
+	//nolint:gosec // G101: SQL text, not a credential
 	PasskeyDeleteUser = `DELETE FROM scrty_passkey_credentials WHERE user_id = $1`
 )
 
@@ -119,6 +127,7 @@ RETURNING email_code, email_code_expires_at, email_code_attempts`
 const (
 	// PasskeyHandleInsert stores handle $3 for user $2 under row id $1,
 	// unless the user or the handle is already held.
+	//nolint:gosec // G101: SQL text, not a credential
 	PasskeyHandleInsert = `INSERT INTO scrty_passkey_user_handles (id, user_id, handle) VALUES ($1, $2, $3)
 ON CONFLICT DO NOTHING`
 

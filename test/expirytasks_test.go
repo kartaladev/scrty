@@ -805,7 +805,7 @@ func TestExpiryTasks_OIDCProvider(t *testing.T) {
 
 				res := e.run(t)
 
-				for task, table := range map[string]string{
+				for task, table := range map[string]string{ //nolint:gosec // G101: table names, not credentials
 					"oidc-provider.pending-requests": "scrty_op_pending_requests",
 					"oidc-provider.browser-sessions": "scrty_op_browser_sessions",
 					"oidc-provider.access-tokens":    "scrty_op_access_tokens",

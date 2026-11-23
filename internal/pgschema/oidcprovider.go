@@ -31,9 +31,11 @@ const (
 	// sessions table's columns and indexes, so a session store's statements run over it
 	// unchanged but for the table's name, and it is never the table a sign-in is read
 	// from.
+	//nolint:gosec // G101: a table name, not a credential
 	RefreshTokenTable = "scrty_op_refresh_tokens"
 
 	// AccessTokenTable holds the opaque access tokens.
+	//nolint:gosec // G101: a table name, not a credential
 	AccessTokenTable = "scrty_op_access_tokens"
 
 	// AssertionIDTable holds the client-assertion identifiers already accepted.

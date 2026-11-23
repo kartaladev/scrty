@@ -116,6 +116,7 @@ ON CONFLICT DO NOTHING`
 	AccessTokenSelect = `SELECT ` + accessTokenColumns + ` FROM scrty_op_access_tokens WHERE id = $1`
 
 	// AccessTokenRevoke marks token $1 revoked. No row affected means it is not held.
+	//nolint:gosec // G101: SQL text, not a credential
 	AccessTokenRevoke = `UPDATE scrty_op_access_tokens SET revoked = true WHERE id = $1`
 
 	// AccessTokenDeleteExpired removes the tokens that expired strictly before $1.
@@ -190,6 +191,7 @@ ON CONFLICT (client_id) DO UPDATE SET
 	// ClientSetSecrets replaces client $1's secrets with $3, only while it still has the
 	// authentication method $2 they were generated for. No row affected means the client
 	// is gone, or has moved to another method.
+	//nolint:gosec // G101: SQL text, not a credential
 	ClientSetSecrets = `UPDATE scrty_op_clients SET secrets = $3 WHERE client_id = $1 AND auth_method = $2`
 )
 

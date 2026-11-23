@@ -232,8 +232,8 @@ func RunSessionCSRFSuccessor(t *testing.T, raw *sql.DB, newStore func(t *testing
 
 			// The column names are this table's, not input: they are fixed
 			// above.
-			_, err := raw.ExecContext(t.Context(), //nolint:gosec // G202: fixed column names
-				`UPDATE scrty_sessions SET `+tc.to+` = `+tc.from+` WHERE id_digest = $1`, Digest(tc.sid))
+			_, err := raw.ExecContext(t.Context(),
+				`UPDATE scrty_sessions SET `+tc.to+` = `+tc.from+` WHERE id_digest = $1`, Digest(tc.sid)) //nolint:gosec // G202: fixed column names
 			require.NoError(t, err)
 
 			got, err := s.Load(t.Context(), tc.sid)
