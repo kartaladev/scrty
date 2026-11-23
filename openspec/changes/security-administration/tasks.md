@@ -227,7 +227,7 @@ The whole change lands in one pull request, opened after group 14's final gate (
 - [x] 14.1 Whole-branch review against every spec requirement this change covers, by a fresh reviewer
   that did not write the code, findings fixed in fresh dispatches. Verify: the review reports no open
   finding.
-- [ ] 14.2 Full suite after the last code edit, so after groups 13 and 15: `make check` and `make spec-check`, and the test leg on
+- [x] 14.2 Full suite after the last code edit, so after groups 13 and 15: `make check` and `make spec-check`, and the test leg on
   PostgreSQL 15. Verify: each exits 0, with the output read by the main session.
 
 ## 15. Review follow-ups (code review, `/opsx:verify` and security review, triaged 2026-11-23)
