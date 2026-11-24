@@ -131,7 +131,7 @@ func TestIssuer(t *testing.T) {
 				require.NoError(t, err)
 
 				got.verified(t, token.TypeIDToken)
-				for _, other := range []string{token.TypeFirstParty, token.TypeAccessToken, token.TypeLogoutToken} {
+				for _, other := range []string{token.TypeSessionToken, token.TypeAccessToken, token.TypeLogoutToken} {
 					_, verifyErr := verifierFor(t, got.keys, other).Verify(t.Context(), got.raw)
 					require.ErrorIs(t, verifyErr, token.ErrInvalid, other)
 				}
@@ -530,8 +530,8 @@ func TestIssuer_RefusalAsksNoKey(t *testing.T) {
 	}{
 		{name: "a reserved claim", in: accessIssue(withClaim("iss", "x"))},
 		{name: "a claim its registered type refuses", in: accessIssue(withClaim("nbf", "not a date"))},
-		{name: "the first-party type", in: accessIssue(func(in *token.Issue) { in.Type = token.TypeFirstParty })},
-		{name: "the first-party type, spelled with the prefix and other case", in: accessIssue(func(in *token.Issue) { in.Type = "Application/SCRTY+JWT" })},
+		{name: "the session token type", in: accessIssue(func(in *token.Issue) { in.Type = token.TypeSessionToken })},
+		{name: "the session token type, spelled with the prefix and other case", in: accessIssue(func(in *token.Issue) { in.Type = "Application/SCRTY+JWT" })},
 	}
 
 	for _, tc := range cases {
@@ -610,7 +610,7 @@ func TestNewIssuer(t *testing.T) {
 		{name: "another algorithm", opts: []token.Option{token.WithSigningAlg(signingkey.ES256)}, assert: refused},
 		{name: "a username subject", opts: []token.Option{token.WithUsernameSubject()}, assert: refused},
 		{name: "the same algorithm, named again", opts: []token.Option{token.WithSigningAlg(signingkey.RS256)}, assert: refused},
-		{name: "the first-party type, named again", opts: []token.Option{token.WithTokenType(token.TypeFirstParty)}, assert: refused},
+		{name: "the session token type, named again", opts: []token.Option{token.WithTokenType(token.TypeSessionToken)}, assert: refused},
 		{name: "one type for every token", opts: []token.Option{token.WithTokenType("app+jwt")}, assert: refused},
 	}
 

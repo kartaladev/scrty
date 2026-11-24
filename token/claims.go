@@ -67,13 +67,13 @@
 // the same issuer and audience, do not stand in for one another (RFC 8725 section
 // 3.12). A token with no typ is refused too.
 //
-// A generator declares TypeFirstParty, "scrty+jwt", and a verifier accepts it, by
+// A generator declares TypeSessionToken, "scrty+jwt", and a verifier accepts it, by
 // default. WithTokenType replaces the first, and refuses the type of another kind
 // of token; WithVerifyTokenType replaces the second, and takes any one type, such
 // as TypeAccessToken for a resource server. Types are compared without regard to
 // case and with an "application/" prefix ignored.
 //
-// A Generator's first-party tokens carry its subject mode. Every other kind comes
+// A Generator's session tokens carry its subject mode. Every other kind comes
 // from an Issuer, built by NewIssuer over a key source, an algorithm and an issuer
 // identifier. It issues a token of the type declared by each Issue, for the
 // subject and audience named there, with further claims, which cannot replace the

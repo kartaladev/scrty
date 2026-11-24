@@ -17,9 +17,9 @@ type Issue struct {
 	// Type is the token's typ header: TypeAccessToken, TypeIDToken,
 	// TypeLogoutToken or a type of the consumer's own. There is no default,
 	// because a token's kind is what a verifier tells it apart by. An empty or
-	// blank one fails with ErrConfig, and so does TypeFirstParty, compared
+	// blank one fails with ErrConfig, and so does TypeSessionToken, compared
 	// without regard to case and with an "application/" prefix ignored: an
-	// issuer must not stand in for a Generator, which alone issues first-party
+	// issuer must not stand in for a Generator, which alone issues session
 	// tokens, and nothing is issued.
 	Type string
 
@@ -205,8 +205,8 @@ func checkIssue(in Issue) error {
 	if strings.TrimSpace(typ) == "" {
 		return fmt.Errorf("%w: a token must declare a type", ErrConfig)
 	}
-	if typ == normalizeTokenType(TypeFirstParty) {
-		return fmt.Errorf("%w: an issuer does not issue first-party tokens: use a Generator", ErrConfig)
+	if typ == normalizeTokenType(TypeSessionToken) {
+		return fmt.Errorf("%w: an issuer does not issue session tokens: use a Generator", ErrConfig)
 	}
 	if len(in.Audience) == 0 {
 		return fmt.Errorf("%w: a token must name an audience", ErrConfig)

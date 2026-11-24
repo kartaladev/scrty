@@ -197,7 +197,7 @@ func TestVerifyKeySelection(t *testing.T) {
 		return func(t *testing.T, keys *signingkey.Keys) string {
 			t.Helper()
 
-			raw := signWithHeader(t, keys, map[string]any{"alg": alg, "typ": token.TypeFirstParty})
+			raw := signWithHeader(t, keys, map[string]any{"alg": alg, "typ": token.TypeSessionToken})
 			_, hasAlg := decodeHeader(t, raw)["alg"]
 			require.Equal(t, alg != nil, hasAlg, "the header carries alg exactly when the row gives one")
 

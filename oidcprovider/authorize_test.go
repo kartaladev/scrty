@@ -837,7 +837,7 @@ func TestValidateAuthorizationRequest(t *testing.T) {
 		})},
 		{name: "access token as a hint", params: set("id_token_hint", hints.issued(t, token.TypeAccessToken, issuer, time.Now())), assert: refused(oidcprovider.CodeInvalidRequest)},
 		{name: "logout token as a hint", params: set("id_token_hint", hints.issued(t, token.TypeLogoutToken, issuer, time.Now())), assert: refused(oidcprovider.CodeInvalidRequest)},
-		{name: "first-party token as a hint", params: set("id_token_hint", signed(t, "RS256", hints.private, map[string]any{"kid": publishedKid, "typ": token.TypeFirstParty}, hintClaims(nil))), assert: refused(oidcprovider.CodeInvalidRequest)},
+		{name: "first-party token as a hint", params: set("id_token_hint", signed(t, "RS256", hints.private, map[string]any{"kid": publishedKid, "typ": token.TypeSessionToken}, hintClaims(nil))), assert: refused(oidcprovider.CodeInvalidRequest)},
 		{name: "hint declaring no type", params: set("id_token_hint", signed(t, "RS256", hints.private, map[string]any{"kid": publishedKid}, hintClaims(nil))), assert: refused(oidcprovider.CodeInvalidRequest)},
 		{name: "hint signed by another key under a published kid", params: set("id_token_hint", signed(t, "RS256", hints.foreign, idHeader, hintClaims(nil))), assert: refused(oidcprovider.CodeInvalidRequest)},
 		{name: "hint from another issuer", params: set("id_token_hint", hints.issued(t, token.TypeIDToken, "https://other.example.com", time.Now())), assert: refused(oidcprovider.CodeInvalidRequest)},
