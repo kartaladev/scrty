@@ -237,6 +237,34 @@ func browserCases() []suiteCase[oidcprovider.BrowserSessionStore] {
 			},
 		},
 		{
+			name: "a session keeps its sign-in's second-factor marker and federated evidence",
+			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
+				given := browserRecord(1, provenSignIn("u-1", 1))
+				require.NoError(t, s.Put(ctx, given))
+				given.SignIn.ExternalAMR[0] = "scribbled"
+
+				got := loadBrowser(ctx, t, s, 1)
+				assert.Equal(t, normalBrowser(browserRecord(1, provenSignIn("u-1", 1))), normalBrowser(got))
+				assertProven(t, got.SignIn)
+
+				require.NotEmpty(t, got.SignIn.ExternalAMR, "the upstream amr was not returned")
+				got.SignIn.ExternalAMR[0] = "scribbled"
+				assertProven(t, loadBrowser(ctx, t, s, 1).SignIn)
+			},
+		},
+		{
+			name: "a session from a local sign-in reads back no marker and no evidence",
+			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
+				require.NoError(t, s.Put(ctx, browserRecord(1, opSignIn("u-1", 1))))
+
+				got := loadBrowser(ctx, t, s, 1)
+				assert.False(t, got.SignIn.SecondFactorVerified)
+				assert.Empty(t, got.SignIn.ExternalProvider)
+				assert.Nil(t, got.SignIn.ExternalAMR)
+				assert.Empty(t, got.SignIn.ExternalACR)
+			},
+		},
+		{
 			name: "a session stored or loaded is the caller's own copy",
 			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
 				given := browserRecord(1, signIn)

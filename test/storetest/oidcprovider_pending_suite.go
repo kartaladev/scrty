@@ -320,6 +320,26 @@ func pendingCases() []suiteCase[oidcprovider.PendingRequestStore] {
 			},
 		},
 		{
+			name: "an advance keeps the sign-in's second-factor marker and federated evidence",
+			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
+				mine := provenSignIn("u-1", 1)
+				require.NoError(t, s.Create(ctx, pendingRecord(1)))
+				require.NoError(t, s.Advance(ctx, opDigest(1), oidcprovider.StageLogin, oidcprovider.StageConsent, &mine))
+				mine.ExternalAMR[0] = "scribbled"
+
+				got := loadPending(ctx, t, s, 1)
+				require.NotNil(t, got.SignIn)
+				assert.Equal(t, normalSignIn(provenSignIn("u-1", 1)), normalSignIn(*got.SignIn))
+				assertProven(t, *got.SignIn)
+
+				require.NotEmpty(t, got.SignIn.ExternalAMR, "the upstream amr was not returned")
+				got.SignIn.ExternalAMR[0] = "scribbled"
+				again := loadPending(ctx, t, s, 1)
+				require.NotNil(t, again.SignIn)
+				assertProven(t, *again.SignIn)
+			},
+		},
+		{
 			name: "the sign-in an advance stores is a copy of the caller's",
 			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
 				mine := opSignIn("u-1", 1)

@@ -575,6 +575,27 @@ func deviceCases() []suiteCase[oidcprovider.DeviceAuthorizationStore] {
 			},
 		},
 		{
+			name: "an approval keeps its sign-in's second-factor marker and federated evidence",
+			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
+				require.NoError(t, s.Create(ctx, deviceIn(1, oidcprovider.DeviceClaimed), deviceLive))
+				approval := deviceApproval("u-1", 1)
+				approval.SignIn = provenSignIn("u-1", 1)
+				require.NoError(t, s.Decide(ctx, suiteID(1), approval, deviceLive))
+				approval.SignIn.ExternalAMR[0] = "scribbled"
+
+				got := loadDevice(ctx, t, s, 1)
+				require.NotNil(t, got.Approval)
+				assert.Equal(t, normalSignIn(provenSignIn("u-1", 1)), normalSignIn(got.Approval.SignIn))
+				assertProven(t, got.Approval.SignIn)
+
+				require.NotEmpty(t, got.Approval.SignIn.ExternalAMR, "the upstream amr was not returned")
+				got.Approval.SignIn.ExternalAMR[0] = "scribbled"
+				again := loadDevice(ctx, t, s, 1)
+				require.NotNil(t, again.Approval)
+				assertProven(t, again.Approval.SignIn)
+			},
+		},
+		{
 			name: "a decision naming no grant family is refused, and the record stays claimed",
 			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
 				require.NoError(t, s.Create(ctx, deviceIn(1, oidcprovider.DeviceClaimed), deviceLive))

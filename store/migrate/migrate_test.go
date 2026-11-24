@@ -56,13 +56,19 @@ func TestSecurityStateSet(t *testing.T) {
 	require.NoError(t, err)
 	entries, err := fs.ReadDir(sub, ".")
 	require.NoError(t, err)
-	require.Len(t, entries, 1, "the security-state set is one baseline migration")
-	assert.Equal(t, "20261126000000_security_state.sql", entries[0].Name())
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.Name()
+	}
+	assert.Equal(t, []string{"20261126000000_security_state.sql", "20261127000000_sign_in_proof.sql"}, names,
+		"the security-state set is its baseline and the migrations after it, in order")
 
-	data, err := fs.ReadFile(sub, entries[0].Name())
-	require.NoError(t, err)
-	assert.Contains(t, string(data), "-- +goose Up")
-	assert.Contains(t, string(data), "-- +goose Down")
+	for _, name := range names {
+		data, err := fs.ReadFile(sub, name)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), "-- +goose Up", name)
+		assert.Contains(t, string(data), "-- +goose Down", name)
+	}
 }
 
 // TestSecurityStateFilesAvoidNoTransactionAnnotation walks the embedded

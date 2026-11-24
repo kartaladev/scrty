@@ -274,6 +274,10 @@ var securityStateColumns = map[string][]column{
 		defaulted("external_session_id", colText, defEmptyText),
 		required("idle_expires_at", colTimestamptz),
 		required("absolute_expires_at", colTimestamptz),
+		optional("second_factor_verified", colBoolean),
+		optional("external_provider", colText),
+		optional("external_amr", colJSONB),
+		optional("external_acr", colText),
 	},
 	"scrty_op_authorization_codes": {
 		required("token_id", colUUID),
@@ -296,6 +300,10 @@ var securityStateColumns = map[string][]column{
 		defaulted("offline", colBoolean, "false"),
 		defaulted("ends_with_sign_in", colBoolean, "false"),
 		required("expires_at", colTimestamptz),
+		optional("second_factor_verified", colBoolean),
+		optional("external_provider", colText),
+		optional("external_amr", colJSONB),
+		optional("external_acr", colText),
 	},
 	"scrty_op_consents": {
 		required("id", colUUID),
@@ -331,6 +339,10 @@ var securityStateColumns = map[string][]column{
 		optional("sign_in_ended_at", colTimestamptz),
 		defaulted("origin", colSmallint, "0"),
 		defaulted("survives_sign_in_end", colBoolean, "false"),
+		optional("second_factor_verified", colBoolean),
+		optional("external_provider", colText),
+		optional("external_amr", colJSONB),
+		optional("external_acr", colText),
 	},
 	"scrty_op_device_authorizations": {
 		required("id", colUUID),
@@ -938,8 +950,8 @@ func TestSecurityStateMigrations_Schema(t *testing.T) {
 }
 
 // securityStateMigrationCount is how many migration files the security-state
-// set holds.
-const securityStateMigrationCount = 1
+// set holds: the baseline, and the sign-in proof migration after it.
+const securityStateMigrationCount = 2
 
 // rollBackAtCleanup registers a cleanup that rolls p back to version zero,
 // failing the test if that errors, and then fails naming every table left in
@@ -1362,6 +1374,11 @@ var flatSignIn = map[string]string{
 	"AbsoluteExpiresAt": "sign_in_absolute_expires_at",
 	"ExternalIssuer":    "external_issuer",
 	"ExternalSessionID": "external_session_id",
+
+	"SecondFactorVerified": "second_factor_verified",
+	"ExternalProvider":     "external_provider",
+	"ExternalAMR":          "external_amr",
+	"ExternalACR":          "external_acr",
 }
 
 // providerRecordColumns covers every record the provider's ports hold.
@@ -1447,6 +1464,8 @@ var providerRecordColumns = []recordColumns{
 			"CreatedAt": "created_at", "ExpiresAt": "expires_at", "Revoked": "revoked",
 			"RevokedAt": "revoked_at", "RevokeCause": "revoke_cause", "SignInEndedAt": "sign_in_ended_at",
 			"Origin": "origin", "SurvivesSignInEnd": "survives_sign_in_end",
+			"SecondFactorVerified": "second_factor_verified", "ExternalProvider": "external_provider",
+			"ExternalAMR": "external_amr", "ExternalACR": "external_acr",
 		},
 	},
 	{
@@ -1896,15 +1915,19 @@ func TestMigrations(t *testing.T) {
 }
 
 // versionSecurityStateBaseline is the version of the security-state set's
-// single baseline migration.
+// baseline migration.
 const versionSecurityStateBaseline int64 = 20261126000000
+
+// versionSignInProof is the version of the migration after the baseline that adds
+// how a sign-in was proved to grants, codes and browser sessions.
+const versionSignInProof int64 = 20261127000000
 
 // securityStateBaselineVersionTable is the version table the baseline records
 // into by default; it is spelled out so a changed default is caught here.
 const securityStateBaselineVersionTable = "scrty_state_migrate"
 
 // TestSecurityStateBaseline pins how the security-state set applies to a
-// database: one recorded migration, beside a consumer's own tables of the
+// database: its migrations recorded in order, beside a consumer's own tables of the
 // old unprefixed names, atomically when its last relation already exists, and
 // into a version table the consumer names.
 func TestSecurityStateBaseline(t *testing.T) {
@@ -1919,12 +1942,12 @@ func TestSecurityStateBaseline(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name:         "one migration recorded",
+			name:         "the baseline and the migration after it recorded",
 			versionTable: securityStateBaselineVersionTable,
 			assert: func(t *testing.T, db *sql.DB, err error) {
 				require.NoError(t, err)
-				assert.Equal(t, []string{"20261126000000"}, queryStrings(t, db,
-					`SELECT version_id::text FROM scrty_state_migrate WHERE version_id > 0`))
+				assert.Equal(t, []string{"20261126000000", "20261127000000"}, queryStrings(t, db,
+					`SELECT version_id::text FROM scrty_state_migrate WHERE version_id > 0 ORDER BY version_id`))
 			},
 		},
 		{
@@ -1962,8 +1985,8 @@ func TestSecurityStateBaseline(t *testing.T) {
 			versionTable: "auth_schema_versions",
 			assert: func(t *testing.T, db *sql.DB, err error) {
 				require.NoError(t, err)
-				assert.Equal(t, []string{"20261126000000"}, queryStrings(t, db,
-					`SELECT version_id::text FROM auth_schema_versions WHERE version_id > 0`))
+				assert.Equal(t, []string{"20261126000000", "20261127000000"}, queryStrings(t, db,
+					`SELECT version_id::text FROM auth_schema_versions WHERE version_id > 0 ORDER BY version_id`))
 				assert.False(t, regclassExists(t, db, securityStateBaselineVersionTable),
 					"the default version table is not created")
 			},

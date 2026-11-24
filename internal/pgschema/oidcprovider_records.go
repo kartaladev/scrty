@@ -475,6 +475,13 @@ type storedSignIn struct {
 	AbsoluteExpiresAt time.Time `json:"absolute_expires_at"`
 	ExternalIssuer    string    `json:"external_issuer"`
 	ExternalSessionID string    `json:"external_session_id"`
+
+	// The sign-in's proof. A document stored before these existed lacks the keys, and
+	// reads as no second-factor marker and no federated evidence.
+	SecondFactorVerified bool     `json:"second_factor_verified"`
+	ExternalProvider     string   `json:"external_provider"`
+	ExternalAMR          []string `json:"external_amr"`
+	ExternalACR          string   `json:"external_acr"`
 }
 
 // checkSignIn refuses a sign-in holding text PostgreSQL cannot store.
@@ -484,6 +491,8 @@ func checkSignIn(s *oidcprovider.SignIn) error {
 		opField{"sign-in's acr", s.ACR},
 		opField{"sign-in's upstream issuer", s.ExternalIssuer},
 		opField{"sign-in's upstream session", s.ExternalSessionID},
+		opField{"sign-in's identity provider", s.ExternalProvider},
+		opField{"sign-in's upstream acr", s.ExternalACR},
 	); err != nil {
 		return err
 	}
@@ -492,6 +501,50 @@ func checkSignIn(s *oidcprovider.SignIn) error {
 			return unstorableField("sign-in's amr")
 		}
 	}
+	for _, v := range s.ExternalAMR {
+		if !storableText(v) {
+			return unstorableField("sign-in's upstream amr")
+		}
+	}
+
+	return nil
+}
+
+// signInProofArgs is the signInProofColumns' arguments for a sign-in's proof. Every
+// column is written, an unproved sign-in as false and empty values, so NULL is left to
+// mean a row written before the columns existed. The caller has checked the text.
+func signInProofArgs(verified bool, provider string, amr []string, acr string) ([]any, error) {
+	encoded, err := encodeList("upstream amr", amr)
+	if err != nil {
+		return nil, err
+	}
+
+	return []any{verified, provider, encoded, acr}, nil
+}
+
+// signInProofRow holds the scanned signInProofColumns. Each is nullable, and NULL reads
+// as the zero value: no second-factor marker and no federated evidence.
+type signInProofRow struct {
+	verified      sql.NullBool
+	provider, acr sql.NullString
+	amr           []byte
+}
+
+func (r *signInProofRow) dest() []any {
+	return []any{&r.verified, &r.provider, &r.amr, &r.acr}
+}
+
+// set writes the scanned proof into the record's fields. An upstream amr that is NULL or
+// empty is nil.
+func (r *signInProofRow) set(verified *bool, provider *string, amr *[]string, acr *string) error {
+	var list []string
+	if r.amr != nil {
+		var err error
+		if list, err = decodeList[string]("upstream amr", r.amr); err != nil {
+			return err
+		}
+	}
+	*verified, *provider, *amr, *acr = r.verified.Valid && r.verified.Bool, r.provider.String, list, r.acr.String
 
 	return nil
 }
@@ -509,10 +562,15 @@ func EncodeSignIn(s *oidcprovider.SignIn) (any, error) {
 	if amr == nil {
 		amr = []string{}
 	}
+	externalAMR := s.ExternalAMR
+	if externalAMR == nil {
+		externalAMR = []string{}
+	}
 	b, err := json.Marshal(storedSignIn{
 		User: string(s.User), Family: s.Family, AuthenticatedAt: opTime(s.AuthenticatedAt), AMR: amr, ACR: s.ACR,
 		AbsoluteExpiresAt: opTime(s.AbsoluteExpiresAt), ExternalIssuer: s.ExternalIssuer,
-		ExternalSessionID: s.ExternalSessionID,
+		ExternalSessionID: s.ExternalSessionID, SecondFactorVerified: s.SecondFactorVerified,
+		ExternalProvider: s.ExternalProvider, ExternalAMR: externalAMR, ExternalACR: s.ExternalACR,
 	})
 	if err != nil {
 		return nil, err
@@ -532,10 +590,14 @@ func decodeSignIn(raw []byte) (*oidcprovider.SignIn, error) {
 	s := &oidcprovider.SignIn{
 		User: identity.UserID(stored.User), Family: stored.Family, AuthenticatedAt: stored.AuthenticatedAt.UTC(),
 		ACR: stored.ACR, AbsoluteExpiresAt: stored.AbsoluteExpiresAt.UTC(), ExternalIssuer: stored.ExternalIssuer,
-		ExternalSessionID: stored.ExternalSessionID,
+		ExternalSessionID: stored.ExternalSessionID, SecondFactorVerified: stored.SecondFactorVerified,
+		ExternalProvider: stored.ExternalProvider, ExternalACR: stored.ExternalACR,
 	}
 	if len(stored.AMR) > 0 {
 		s.AMR = stored.AMR
+	}
+	if len(stored.ExternalAMR) > 0 {
+		s.ExternalAMR = stored.ExternalAMR
 	}
 
 	return s, nil
@@ -711,13 +773,17 @@ func CodeArgs(r *oidcprovider.CodeRecord) ([]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	proof, err := signInProofArgs(r.SignIn.SecondFactorVerified, r.SignIn.ExternalProvider, r.SignIn.ExternalAMR, r.SignIn.ExternalACR)
+	if err != nil {
+		return nil, err
+	}
 
-	return []any{
+	return append([]any{
 		r.TokenID.String(), r.ClientID, r.RedirectURI, r.Challenge, r.Nonce, r.DPoPJKT, scopes, resources,
 		string(r.SignIn.User), r.SignIn.Family.String(), opTime(r.SignIn.AuthenticatedAt), amr, r.SignIn.ACR,
 		opTime(r.SignIn.AbsoluteExpiresAt), r.SignIn.ExternalIssuer, r.SignIn.ExternalSessionID,
 		r.GrantFamily.String(), r.Offline, r.EndsWithSignIn, opTime(r.ExpiresAt),
-	}, nil
+	}, proof...), nil
 }
 
 // signInRow holds the sign-in columns a code and a browser session share.
@@ -727,6 +793,7 @@ type signInRow struct {
 	authenticated, signIn time.Time
 	amr                   []byte
 	acr, issuer, session  string
+	proof                 signInProofRow
 }
 
 func (r *signInRow) record() (oidcprovider.SignIn, error) {
@@ -735,10 +802,15 @@ func (r *signInRow) record() (oidcprovider.SignIn, error) {
 		return oidcprovider.SignIn{}, err
 	}
 
-	return oidcprovider.SignIn{
+	s := oidcprovider.SignIn{
 		User: identity.UserID(r.user), Family: r.family, AuthenticatedAt: r.authenticated.UTC(), AMR: amr, ACR: r.acr,
 		AbsoluteExpiresAt: r.signIn.UTC(), ExternalIssuer: r.issuer, ExternalSessionID: r.session,
-	}, nil
+	}
+	if err := r.proof.set(&s.SecondFactorVerified, &s.ExternalProvider, &s.ExternalAMR, &s.ExternalACR); err != nil {
+		return oidcprovider.SignIn{}, err
+	}
+
+	return s, nil
 }
 
 // CodeRow holds a scanned scrty_op_authorization_codes row.
@@ -755,7 +827,7 @@ func (r *CodeRow) Dest() []any {
 		&r.rec.TokenID, &r.rec.ClientID, &r.rec.RedirectURI, &r.rec.Challenge, &r.rec.Nonce, &r.rec.DPoPJKT, &r.scopes,
 		&r.resources, &r.signIn.user, &r.signIn.family, &r.signIn.authenticated, &r.signIn.amr, &r.signIn.acr,
 		&r.signIn.signIn, &r.signIn.issuer, &r.signIn.session, &r.rec.GrantFamily, &r.rec.Offline, &r.rec.EndsWithSignIn,
-		&r.expires,
+		&r.expires, &r.signIn.proof.verified, &r.signIn.proof.provider, &r.signIn.proof.amr, &r.signIn.proof.acr,
 	}
 }
 
@@ -857,6 +929,7 @@ func GrantArgs(g *oidcprovider.Grant) ([]any, error) {
 		opField{"key binding", g.KeyBinding}, opField{"certificate binding", g.CertBinding},
 		opField{"upstream issuer", g.ExternalIssuer},
 		opField{"upstream session", g.ExternalSessionID}, opField{"revocation cause", string(g.RevokeCause)},
+		opField{"identity provider", g.ExternalProvider}, opField{"upstream acr", g.ExternalACR},
 	); err != nil {
 		return nil, err
 	}
@@ -872,13 +945,17 @@ func GrantArgs(g *oidcprovider.Grant) ([]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	proof, err := signInProofArgs(g.SecondFactorVerified, g.ExternalProvider, g.ExternalAMR, g.ExternalACR)
+	if err != nil {
+		return nil, err
+	}
 
-	return []any{
+	return append([]any{
 		g.Family.String(), string(g.User), g.ClientID, scopes, resources, opNullTime(g.AuthTime), amr, g.ACR, g.KeyBinding,
 		g.CertBinding, opNullID(g.CodeID), opNullID(g.SignInFamily), g.ExternalIssuer, g.ExternalSessionID, g.Offline, g.EndsWithSignIn,
 		g.HoldsLineage, opTime(g.CreatedAt), opTime(g.ExpiresAt), g.Revoked, opNullTime(g.RevokedAt), string(g.RevokeCause),
 		opNullTime(g.SignInEndedAt), int16(g.Origin), g.SurvivesSignInEnd,
-	}, nil
+	}, proof...), nil
 }
 
 // The refusals of a grant whose origin GrantOrigin does not name, written or stored. Their
@@ -896,6 +973,7 @@ type GrantRow struct {
 	code, signIn                               sql.Null[id.ID]
 	authTime, created, expires, revoked, ended sql.NullTime
 	origin                                     int16
+	proof                                      signInProofRow
 }
 
 // Dest is what a row scans into.
@@ -904,7 +982,7 @@ func (r *GrantRow) Dest() []any {
 		&r.rec.Family, &r.user, &r.rec.ClientID, &r.scopes, &r.resources, &r.authTime, &r.amr, &r.rec.ACR, &r.rec.KeyBinding,
 		&r.rec.CertBinding, &r.code, &r.signIn, &r.rec.ExternalIssuer, &r.rec.ExternalSessionID, &r.rec.Offline, &r.rec.EndsWithSignIn,
 		&r.rec.HoldsLineage, &r.created, &r.expires, &r.rec.Revoked, &r.revoked, &r.cause, &r.ended, &r.origin,
-		&r.rec.SurvivesSignInEnd,
+		&r.rec.SurvivesSignInEnd, &r.proof.verified, &r.proof.provider, &r.proof.amr, &r.proof.acr,
 	}
 }
 
@@ -923,6 +1001,9 @@ func (r *GrantRow) Record() (*oidcprovider.Grant, error) {
 		return nil, err
 	}
 	if out.AMR, err = decodeList[string]("amr", r.amr); err != nil {
+		return nil, err
+	}
+	if err = r.proof.set(&out.SecondFactorVerified, &out.ExternalProvider, &out.ExternalAMR, &out.ExternalACR); err != nil {
 		return nil, err
 	}
 	out.User, out.RevokeCause = identity.UserID(r.user), oidcprovider.RevocationCause(r.cause)
@@ -1025,16 +1106,20 @@ func BrowserSessionArgs(rowID id.ID, s *oidcprovider.BrowserSession) ([]any, err
 	if err != nil {
 		return nil, err
 	}
+	proof, err := signInProofArgs(s.SignIn.SecondFactorVerified, s.SignIn.ExternalProvider, s.SignIn.ExternalAMR, s.SignIn.ExternalACR)
+	if err != nil {
+		return nil, err
+	}
 	idle := s.IdleExpiresAt
 	if idle.After(s.AbsoluteExpiresAt) {
 		idle = s.AbsoluteExpiresAt
 	}
 
-	return []any{
+	return append([]any{
 		rowID.String(), s.Digest, string(s.SignIn.User), s.SignIn.Family.String(), opTime(s.SignIn.AuthenticatedAt), amr,
 		s.SignIn.ACR, opTime(s.SignIn.AbsoluteExpiresAt), s.SignIn.ExternalIssuer, s.SignIn.ExternalSessionID,
 		opTime(idle), opTime(s.AbsoluteExpiresAt),
-	}, nil
+	}, proof...), nil
 }
 
 // BrowserSessionRow holds a scanned scrty_op_browser_sessions row.
@@ -1048,7 +1133,8 @@ type BrowserSessionRow struct {
 func (r *BrowserSessionRow) Dest() []any {
 	return []any{
 		&r.rec.Digest, &r.signIn.user, &r.signIn.family, &r.signIn.authenticated, &r.signIn.amr, &r.signIn.acr,
-		&r.signIn.signIn, &r.signIn.issuer, &r.signIn.session, &r.idle, &r.absolut,
+		&r.signIn.signIn, &r.signIn.issuer, &r.signIn.session, &r.idle, &r.absolut, &r.signIn.proof.verified,
+		&r.signIn.proof.provider, &r.signIn.proof.amr, &r.signIn.proof.acr,
 	}
 }
 

@@ -123,7 +123,40 @@ func TestEncodeSignIn(t *testing.T) {
 				assert.JSONEq(t, `{"user":"u-1","family":"01926a4e-0000-7000-8000-000000000001",
 					"authenticated_at":"2030-01-01T10:00:00Z","amr":["pwd"],"acr":"loa2",
 					"absolute_expires_at":"2030-01-01T11:00:00Z","external_issuer":"https://idp.example.com",
-					"external_session_id":"x-9"}`, got.(string))
+					"external_session_id":"x-9","second_factor_verified":false,"external_provider":"",
+					"external_amr":[],"external_acr":""}`, got.(string))
+			},
+		},
+		{
+			name: "a sign-in's proof is in the object",
+			in: &oidcprovider.SignIn{
+				User: "u-1", Family: family, AuthenticatedAt: at, ACR: "loa2", AbsoluteExpiresAt: at.Add(time.Hour),
+				ExternalIssuer: "https://idp.example.com", SecondFactorVerified: true, ExternalProvider: "corp",
+				ExternalAMR: []string{"mfa", "hwk"}, ExternalACR: "urn:corp:loa:2",
+			},
+			assert: func(t *testing.T, got any, err error) {
+				require.NoError(t, err)
+				assert.JSONEq(t, `{"user":"u-1","family":"01926a4e-0000-7000-8000-000000000001",
+					"authenticated_at":"2030-01-01T10:00:00Z","amr":[],"acr":"loa2",
+					"absolute_expires_at":"2030-01-01T11:00:00Z","external_issuer":"https://idp.example.com",
+					"external_session_id":"","second_factor_verified":true,"external_provider":"corp",
+					"external_amr":["mfa","hwk"],"external_acr":"urn:corp:loa:2"}`, got.(string))
+			},
+		},
+		{
+			name: "an upstream amr PostgreSQL cannot hold is refused, and not repeated",
+			in:   &oidcprovider.SignIn{User: "u-1", ExternalAMR: []string{"bad\x00value"}},
+			assert: func(t *testing.T, _ any, err error) {
+				require.Error(t, err)
+				assert.NotContains(t, err.Error(), "bad")
+			},
+		},
+		{
+			name: "an identity provider PostgreSQL cannot hold is refused, and not repeated",
+			in:   &oidcprovider.SignIn{User: "u-1", ExternalProvider: "bad\x00value"},
+			assert: func(t *testing.T, _ any, err error) {
+				require.Error(t, err)
+				assert.NotContains(t, err.Error(), "bad")
 			},
 		},
 	}
