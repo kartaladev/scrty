@@ -101,7 +101,7 @@ below names what each dispatch may change; no two dispatches run on one file at 
 | C5 | 9.7–9.8 | `httpsec`: per-request challenge refusal, dependency mapping, events; `policy` (`NeedsFederatedAssuranceSource` for the new kind); `event` names list | Opus | Refusal semantics and events | After C4 |
 | D1 | 10.1–10.5 | `httpsec`: `logout.go`, `role_switch.go`, `authorization.go`, `guards.go`, `bearer.go` (403 `insufficient_scope`), `errors.go`; **`internal/guardauth/`**; `httpsec/ginsec/guards.go`, `httpsec/fibersec/guards.go` and their tests; `httpsec/prblmsec` (`insufficient-scope`); session-endpoint test files | Opus | Refusal logic across endpoints and the shared guard rules, in three modules | After C5 |
 | E1 | 11.1–11.3 | `test/httpsecconformance/resource_server_scenarios.go`, `README.md`, `CHANGELOG.md`, `httpsec/example_resource_server_test.go` | Sonnet | Fixtures and docs | After D1 |
-| — | 11.5 | main session | — | Verification is never delegated | Last |
+| — | 11.4 | main session | — | Verification is never delegated | Last |
 
 - **Every dispatch gets a fresh reviewer that edits nothing:** an Opus reviewer for Opus dispatches,
   and a Sonnet reviewer for Sonnet ones.
@@ -366,7 +366,7 @@ below names what each dispatch may change; no two dispatches run on one file at 
   by hand with the other v0.6.0 entries.
 - [ ] Verify: the `test` module's scoped run.
 
-### Task F: Final gate (task 11.5, main session)
+### Task F: Final gate (task 11.4, main session)
 
 - [ ] Run `gofmt -l` (empty), `go vet`, and the scoped command in every workspace module.
 - [ ] Run `make check` and `make spec-check` after the last edit, and read the output.

@@ -78,10 +78,11 @@ code (`golang-tdd.md`). Verification is scoped to the changed packages and their
 - [ ] 11.1 Add conformance scenarios in `test/httpsecconformance` for a provider-and-API chain, an API-only chain with a remote issuer, and two resource servers by prefix trusting one issuer; verify they pass on net/http, fiber and gin
 - [ ] 11.2 Document every option with the default it replaces (godoc), and add README sections for the resource server (a provider-and-API example and an API-only example), `password.WithRule` and `WithInactiveDisclosure`; verify an example test compiles the README examples
 - [ ] 11.3 Record the change in `CHANGELOG.md` under *Unreleased*: *Added* for the new API, *Changed* for every entry of design's Migration Plan (recency, logout, inactive accounts, pre-upgrade grants, per-request policies without a session), merged by hand with the other v0.6.0 changes' entries; verify the three **BREAKING (behaviour)** entries
-- [x] 11.4 Mark `bff-resource-server`'s resource-server mode as moved to this change; verify its proposal names `resource-server`
-- [ ] 11.5 Run `gofmt -l`, `go vet` and the scoped tests across every workspace module, then the full gate `make check` and `make spec-check` after the last edit; verify all pass
+- [ ] 11.4 Run `gofmt -l`, `go vet` and the scoped tests across every workspace module, then the full gate `make check` and `make spec-check` after the last edit; verify all pass
 
 ## Workflow follow-up
+
+- When `bff-resource-server` is next revised (it needs spec deltas to validate), record there that its resource-server mode moved to `resource-server`.
 
 - Close PR #117 (`provider-resource-server`) with a link to PR #151.
 - Message crm-coordinator the settled API: `EnableResourceServer` with `FromProvider`, the client's `DefaultAudience`, DPoP enabled, handlers reading `identity.PrincipalFromContext` and `httpsec.AccessTokenFromContext`, and sign-out through revocation and end-session.

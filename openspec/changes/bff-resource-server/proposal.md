@@ -18,14 +18,14 @@ Before either mode can be specified, the team must decide where the browser-faci
   - its lifetime follows the idle and absolute expiry that `sessions` already enforces;
   - the session identifier rotates whenever the session's privilege changes;
   - every request runs the per-request policy phase with the session's recorded first factor, exactly as the bearer path does.
-- ~~Add a **resource-server mode**~~ **Moved (2026-11-25) to `resource-server`**, which owns the `resource-server` capability: remote issuers, introspection, and the chain's own provider as token sources. This change keeps only the browser-session (BFF) mode. The original scope was:
+- Add a **resource-server mode**:
   - an API verifies JWTs issued by scrty or by another issuer, using a remote key set;
   - issuer and audience are required configuration;
   - verified scopes and claims are mapped into the principal that `authorization` evaluates.
 - ~~Add **CSRF protection**~~ **Moved (2026-11-01) to `close-security-gaps`**, which owns the `csrf-protection` capability: the Fetch Metadata and Origin check, the session-bound token, and the rule that a chain with cookie authentication fails construction without CSRF protection. This change's cookie session declares itself cookie-authenticating so that rule applies to it.
 - Record a comparison of token refresh strategies: a refresh token held by the BFF on the server, or short sessions that fall back to re-login.
 - Make the **magic-link endpoints' form parameters and body limit replaceable**, as form login's already are. They hard-code `email`, `next` and `token`, and bound their body with a constant named for the login endpoint that no option can set. Form login exposes all four through `WithLoginParams` and `WithLoginBodyLimit`, so this is a parity gap rather than a decision: `library-design` requires every default to be replaceable without forking, or the design to say why not, and there is no why. It lands here because this change revisits how every browser-facing, state-changing POST is read — the magic-link consume endpoint being one of them — but it is a small, self-contained fix that could equally ride with any change that next touches that interceptor. Inherited from `auth-methods`.
-- List five **open questions** for the team. They block the specs for the remaining capability, `bff-session`.
+- List five **open questions** for the team. They block the specs for all three capabilities.
 
 Not in this change:
 - Specs and tasks. They follow once the open questions are answered.
@@ -37,7 +37,7 @@ Not in this change:
 
 ### New Capabilities
 
-Specs for the remaining capability are deferred until the open questions in design.md are answered.
+Specs for all three are deferred until the open questions in design.md are answered.
 
 - `bff-session`: the cookie-borne browser session:
   - cookie attributes and naming;
@@ -46,7 +46,11 @@ Specs for the remaining capability are deferred until the open questions in desi
   - expiry and logout;
   - per-request policy evaluation with the recorded first factor;
   - how the BFF obtains and forwards tokens to APIs, including refresh.
-- ~~`resource-server`~~: moved to the `resource-server` change (2026-11-25), which owns it.
+- `resource-server`: verifying bearer JWTs from a configured issuer against its remote key set:
+  - required issuer and audience;
+  - algorithm pinning;
+  - key-set caching and refetch;
+  - mapping scopes and claims into the principal used for authorization.
 - ~~`csrf-protection`~~: moved to `close-security-gaps` (2026-11-01). This change depends on it.
 
 ### Modified Capabilities
@@ -59,7 +63,7 @@ None. No specs have been archived yet. Two modifications are expected once the q
 
 - **New code (expected), core module:**
   - a cookie session interceptor in `httpsec` (the CSRF interceptor comes from `close-security-gaps`);
-  - ~~a resource-server verifier~~ (moved to `resource-server`).
+  - a resource-server verifier.
 - **Placement is not decided.** It depends on open question 1, the in-app BFF versus a standalone proxy.
 - **Dependencies:** no new JOSE library. Remote key sets reuse jwx v4, its `jwkfetch` companion, and the key-set cache semantics that `oidc-brokering` defines. A standalone proxy, if chosen, would be a new nested module.
 - **Depends on:**
