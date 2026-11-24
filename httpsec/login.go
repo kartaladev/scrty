@@ -158,6 +158,10 @@ type formLogin struct {
 	// discloseLocks is the chain's WithLockDisclosure, settled at assembly.
 	discloseLocks bool
 
+	// discloseInactive is the chain's WithInactiveDisclosure, settled at
+	// assembly.
+	discloseInactive bool
+
 	now func() time.Time
 
 	// path is the endpoint's path: where the options placed it, and where it
@@ -246,6 +250,7 @@ func (c *config) wirePasswordLogin() error {
 
 	if err := eachInterceptor(c, func(l *formLogin) error {
 		l.discloseLocks = c.discloseLocks
+		l.discloseInactive = c.discloseInactive
 		c.warnWithoutDecoy("EnableFormLogin", l.authn)
 
 		g, flow, err := guardFor("EnableFormLogin", passwordLoginFormFlow, l.limiter)
@@ -258,6 +263,7 @@ func (c *config) wirePasswordLogin() error {
 
 	return eachInterceptor(c, func(b *basicAuth) error {
 		b.discloseLocks = c.discloseLocks
+		b.discloseInactive = c.discloseInactive
 		c.warnWithoutDecoy("EnableBasicAuth", b.authn)
 
 		g, flow, err := guardFor("EnableBasicAuth", passwordLoginBasicFlow, b.limiter)
@@ -605,7 +611,7 @@ func (l *formLogin) judgePassword(
 			reportRefused(ctx, refused)
 		}
 
-		return nil, key, err
+		return nil, key, discloseInactive(l.discloseInactive, err)
 	}
 
 	return auth, key, nil
@@ -1199,4 +1205,47 @@ func (l *formLogin) endpoints() []Endpoint {
 		declare("EnableFormLogin", "WithLoginRequestPath", OperationSignInPassword, l.path.at(),
 			MatchExact, OtherMethodsPassThrough, RequiresNothing, http.MethodPost),
 	}
+}
+
+// WithInactiveDisclosure answers a correct password for an inactive account
+// with that refusal alone, instead of as a wrong password.
+//
+// Default: concealed. The password provider joins
+// authenticate.ErrAccountInactive beneath authenticate.ErrAuthenticationFailed,
+// and only once the password has verified, so form login and Basic answer it
+// 401, Basic with its challenge, and the problem-details integration gives it
+// the type a wrong password gets: neither the status, the headers, the problem
+// type nor the time taken tells a client the account exists and is inactive.
+// errors.Is(err, authenticate.ErrAccountInactive) still holds, so a consumer's
+// own error handler can render it however it chooses.
+//
+// With this option the refusal is authenticate.ErrAccountInactive alone, which
+// StatusForError answers 403 Forbidden: the caller is identified and refused,
+// and a 401 would invite a retry with the same credentials. A 403 is not a 401,
+// so a disclosed Basic refusal carries no WWW-Authenticate header. A wrong
+// password for an inactive account is never disclosed: the provider does not
+// judge the account's state until the password verifies.
+//
+// What it gives up: the response tells anyone who holds an account's password
+// that the account is inactive, which is no more than that the password is
+// right. It governs only form login and Basic, exactly where WithLockDisclosure
+// applies, and changes nothing a refusal counts against.
+func WithInactiveDisclosure() Option {
+	return func(c *config) error {
+		c.discloseInactive = true
+
+		return nil
+	}
+}
+
+// discloseInactive returns the inactive-account refusal alone when disclose is
+// on and err carries it, and err unchanged otherwise. The provider joins the
+// refusal only after the password verified, so a wrong password never reaches
+// the first branch.
+func discloseInactive(disclose bool, err error) error {
+	if disclose && errors.Is(err, authenticate.ErrAccountInactive) {
+		return authenticate.ErrAccountInactive
+	}
+
+	return err
 }

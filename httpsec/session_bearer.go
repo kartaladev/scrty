@@ -132,6 +132,12 @@ func (b *sessionBearer) wire(c *Chain) {
 // extraction is the resolution core the signed bearer also runs, so the two
 // modes refuse identically.
 func (b *sessionBearer) Intercept(ex *Exchange, next Next) error {
+	// A credential the resource server accepted as an access token is not
+	// this mode's to judge again.
+	if ex.accessTokenClaimed {
+		return next(ex)
+	}
+
 	presented, underDPoP, ok := presentedBearer(ex.Request.Header("Authorization"), b.scheme, false, b.dpop)
 	if !ok {
 		return next(ex)

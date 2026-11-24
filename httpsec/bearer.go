@@ -98,6 +98,12 @@ func (b *bearerToken) wire(c *Chain) {
 // errors.As. A consumer who wants a store's full error logs it inside their
 // own implementation.
 func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
+	// A credential the resource server accepted as an access token is not
+	// this mode's to judge again.
+	if ex.accessTokenClaimed {
+		return next(ex)
+	}
+
 	presented, underDPoP, ok := presentedBearer(ex.Request.Header("Authorization"),
 		b.scheme, b.allowEmptyScheme, b.dpop)
 	if !ok {

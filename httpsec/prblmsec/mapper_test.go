@@ -104,6 +104,11 @@ func TestMapper_TypePerRefusal(t *testing.T) {
 			assert: typed("authentication-failed"),
 		},
 		{
+			name:   "concealed inactive account",
+			err:    errors.Join(authenticate.ErrAuthenticationFailed, authenticate.ErrAccountInactive),
+			assert: typed("authentication-failed"),
+		},
+		{
 			name:   "user store unavailable",
 			err:    fmt.Errorf("%w: %w", authenticate.ErrUnavailable, errConn),
 			assert: typed("authentication-failed"),
@@ -138,6 +143,7 @@ func TestMapper_TypePerRefusal(t *testing.T) {
 		{name: "cross-site request", err: httpsec.ErrCrossSiteRequest, assert: typed("cross-site-request")},
 		{name: "cross-site stream", err: httpsec.ErrCrossSiteStream, assert: typed("cross-site-request")},
 		{name: "automation challenge", err: httpsec.ErrChallengeRequired, assert: typed("automation-challenge-required")},
+		{name: "disclosed inactive account", err: authenticate.ErrAccountInactive, assert: typed("account-inactive")},
 		{name: "access denied", err: authorize.ErrAccessDenied, assert: typed("access-denied")},
 		{name: "access denied wrapped", err: wrap(authorize.ErrAccessDenied), assert: typed("access-denied")},
 		{name: "policy denied", err: policy.ErrDenied, assert: typed("access-denied")},

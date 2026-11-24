@@ -116,6 +116,12 @@ func (i *apiKeyInterceptor) flushRefusalLogs() error {
 //  6. Publish the caller with no session. A machine has nobody to prompt and
 //     nothing to keep between requests.
 func (i *apiKeyInterceptor) Intercept(ex *Exchange, next Next) error {
+	// A credential the resource server accepted as an access token, under a
+	// scheme this mode shares with it, is not this mode's to judge again.
+	if ex.accessTokenClaimed {
+		return next(ex)
+	}
+
 	presented, claimed := strings.CutPrefix(ex.Request.Header("Authorization"), i.scheme)
 	if !claimed {
 		return next(ex)

@@ -153,6 +153,12 @@ func TestStatusForError(t *testing.T) {
 			err:  errors.Join(authenticate.ErrAuthenticationFailed, lockout.ErrAccountLocked),
 			want: 401,
 		},
+		{name: "disclosed inactive account", err: authenticate.ErrAccountInactive, want: 403},
+		{
+			name: "concealed inactive account answers as the authentication failure",
+			err:  errors.Join(authenticate.ErrAuthenticationFailed, authenticate.ErrAccountInactive),
+			want: 401,
+		},
 		{name: "too many sessions", err: policy.ErrTooManySessions, want: 429},
 		{
 			name: "wrapped renewal conflict",
@@ -456,6 +462,7 @@ var sentinelRegistry = map[string]map[string]error{
 	},
 	"github.com/kartaladev/scrty/authenticate": {
 		"authenticate.ErrAuthenticationFailed":    authenticate.ErrAuthenticationFailed,
+		"authenticate.ErrAccountInactive":         authenticate.ErrAccountInactive,
 		"authenticate.ErrConfig":                  authenticate.ErrConfig,
 		"authenticate.ErrNoEligibleAuthenticator": authenticate.ErrNoEligibleAuthenticator,
 		"authenticate.ErrUnavailable":             authenticate.ErrUnavailable,
@@ -526,6 +533,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"password.ErrReused":             password.ErrReused,
 		"password.ErrPasswordRejected":   password.ErrPasswordRejected,
 		"password.ErrLookupUnavailable":  password.ErrLookupUnavailable,
+		"password.ErrRuleFailed":         password.ErrRuleFailed,
 		"password.ErrTooLong":            password.ErrTooLong,
 		"password.ErrContainsNUL":        password.ErrContainsNUL,
 		"password.ErrWeakParameters":     password.ErrWeakParameters,
@@ -714,6 +722,7 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"password.ErrWeakParameters":            "a wiring fault, refused at construction",
 		"password.ErrHistoryUnavailable":        "a dependency failure, deliberately 500",
 		"password.ErrLookupUnavailable":         "a dependency failure, deliberately 500",
+		"password.ErrRuleFailed":                "a consumer rule that could not answer, a dependency failure deliberately 500",
 		"password.ErrTooLong":                   "the encoder's error is returned as is, and the consumer decides",
 		"password.ErrContainsNUL":               "the encoder's error is returned as is, and the consumer decides",
 		"recovery.ErrConfig":                    "a wiring fault, refused at construction",

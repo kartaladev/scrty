@@ -74,7 +74,7 @@
 //
 //	Sub-type                       Status  What it answers
 //	authentication-required        401     authentication required, an idle or expired session, a re-authentication refusal from the provider
-//	authentication-failed          401     the status default: every form of failed authentication, a concealed lock, an unavailable user store, a throttled source, a refused magic link
+//	authentication-failed          401     the status default: every form of failed authentication, a concealed lock or inactive account, an unavailable user store, a throttled source, a refused magic link
 //	second-factor-failed           401     an invalid or throttled second-factor attempt or enrolment, a throttled passkey registration begin
 //	proof-of-possession-failed     401     a missing or invalid DPoP proof, a DPoP nonce required, a certificate-bound token without its certificate
 //	mfa-required                   401     a challenge of the second-factor kind
@@ -85,6 +85,7 @@
 //	reauthentication-required      403     any re-authentication-required refusal
 //	cross-site-request             403     a cross-site request refused by CSRF protection or the signal stream
 //	automation-challenge-required  403     a request refused by the automation-challenge verifier
+//	account-inactive               403     the disclosed inactive account (httpsec.WithInactiveDisclosure)
 //	access-denied                  403     the status default
 //	invalid-request                400     the status default
 //	not-found                      404     the status default

@@ -391,6 +391,14 @@ var statusTable = []statusRow{
 	// to authenticate.ErrAuthenticationFailed, which the row above answers 401
 	// first, so a lock reads as a wrong password.
 	{lockout.ErrAccountLocked, http.StatusTooManyRequests},
+
+	// An inactive account whose password was right. This row answers only a
+	// refusal the consumer chose to disclose (WithInactiveDisclosure): by
+	// default the password provider joins it to
+	// authenticate.ErrAuthenticationFailed, which the row above answers 401
+	// first, so it reads as a wrong password. 403, because the caller is
+	// identified and refused, and a 401 would invite a retry.
+	{authenticate.ErrAccountInactive, http.StatusForbidden},
 	// A held identifier is also a locked one; it answers the same way.
 	{lockout.ErrAccountHeld, http.StatusTooManyRequests},
 	{policy.ErrTooManySessions, http.StatusTooManyRequests},

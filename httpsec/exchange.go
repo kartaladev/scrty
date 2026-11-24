@@ -428,6 +428,11 @@ type Exchange struct {
 	// DPoP proof beside it carries ath over it.
 	bearerCredential string
 
+	// accessTokenClaimed records that the resource server accepted the
+	// request's Authorization credential as an access token, so the bearer
+	// modes after it, which read the same header, do not judge it again.
+	accessTokenClaimed bool
+
 	// terminals and extra are the stack of runs in progress on this exchange,
 	// one entry per Assemble step entered and not yet returned: the chain and
 	// the terminal that run was given. The prebuilt fold is shared by every
@@ -676,6 +681,7 @@ type runScope struct {
 	session          *session.Session
 	authentication   *authenticate.Authentication
 	bearerCredential string
+	accessToken      bool
 	renewal          string
 	chargeRenewal    func(context.Context)
 	admitRenewal     func(*Exchange, *session.Session) (*identity.Details, error)
@@ -691,6 +697,7 @@ func (e *Exchange) saveScope() runScope {
 		session:          e.Session,
 		authentication:   e.Authentication,
 		bearerCredential: e.bearerCredential,
+		accessToken:      e.accessTokenClaimed,
 		renewal:          e.renewal,
 		chargeRenewal:    e.chargeRenewal,
 		admitRenewal:     e.admitRenewal,
@@ -706,6 +713,7 @@ func (e *Exchange) restoreScope(s runScope) {
 	e.Session = s.session
 	e.Authentication = s.authentication
 	e.bearerCredential = s.bearerCredential
+	e.accessTokenClaimed = s.accessToken
 	e.renewal = s.renewal
 	e.chargeRenewal = s.chargeRenewal
 	e.admitRenewal = s.admitRenewal

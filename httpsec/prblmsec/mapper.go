@@ -6,6 +6,7 @@ import (
 
 	"github.com/kartaladev/prblm"
 
+	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/authenticate/password"
@@ -115,6 +116,10 @@ var selectors = map[string]selector{
 		httpsec.ErrCrossSiteStream,
 	}},
 	"automation-challenge-required": {targets: []error{httpsec.ErrChallengeRequired}},
+	// Only the disclosed refusal reaches it: a concealed one is joined to
+	// authenticate.ErrAuthenticationFailed, which the core answers 401, and
+	// types are chosen only among their status's.
+	"account-inactive": {targets: []error{authenticate.ErrAccountInactive}},
 	"account-locked": {targets: []error{
 		lockout.ErrAccountLocked,
 		lockout.ErrAccountHeld,
