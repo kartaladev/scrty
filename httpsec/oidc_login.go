@@ -184,15 +184,19 @@ func (i *oidcInterceptor) callback(ex *Exchange, provider string) error {
 		// page (D3). res.Next is read from the stored flow, never from err (D5).
 		if code, ok := parkedFailureCode(failure); ok {
 			if handle, ok := i.parkedDestination(res.Next); ok {
+				answered, perr := i.returnParkedAnswering(ex, parkedAtCallback, provider, handle, code, err)
+
 				// A server_error answer hides the fault behind a redirect, so it
-				// is logged here (D7): the reason and the cause's type, never
-				// the handle, state, redirect target or error text.
-				if code == oidcprovider.CodeServerError {
-					i.logCallbackRecord(ex, slog.LevelError, callbackReasonServerError, provider,
-						diag.Failure(callbackReasonServerError, err)...)
+				// is logged here (D7), once it is committed: a return that failed
+				// answered the original error and has its own record. The record
+				// holds the reason and the cause's type, never the handle, state,
+				// redirect target or error text.
+				if perr == nil && answered == oidcprovider.CodeServerError {
+					i.logLoginRecord(ex, oidcCallbackFlow, msgCallbackFailed, slog.LevelError,
+						callbackReasonServerError, provider, diag.Failure(callbackReasonServerError, err)...)
 				}
 
-				return i.returnParked(ex, parkedAtCallback, provider, handle, code, err)
+				return perr
 			}
 		}
 
@@ -485,6 +489,10 @@ func (i *oidcInterceptor) logCallbackRecord(
 
 // msgCallbackRefused is the message of the callback's own records.
 const msgCallbackRefused = "httpsec: oidc callback refused"
+
+// msgCallbackFailed is the message of the record of a failure answered with
+// server_error, which no caller sees as a refusal.
+const msgCallbackFailed = "httpsec: oidc callback failed"
 
 // logLoginRecord writes one sampled record with msg, keyed by flow and reason,
 // naming flow and provider; attrs must carry the reason themselves.
