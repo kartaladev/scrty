@@ -222,9 +222,9 @@ func (g *oidcDeviceAuthorizationGroup) serve(ex *Exchange, _ Next) error {
 		return writeOIDCRefusal(ex, oidcprovider.CodeInvalidRequest)
 	}
 
-	src, ok := g.throttle.admit(ex, g.op)
+	src, ok, err := g.throttle.admitClient(ex, g.op)
 	if !ok {
-		return writeOIDCRefusal(ex, oidcprovider.CodeInvalidClient)
+		return err
 	}
 
 	creds, err := readOIDCClientRequest(ex.Context(), ex.Request, g.bodyLimit)
@@ -267,7 +267,15 @@ type oidcDeviceEntryGroup struct {
 	// chain is the chain the group is wired into, which the gate's refusal record is
 	// written through (its logger, sampler and clock).
 	chain *Chain
+
+	// redirects is WithOIDCEntryRedirects: a refused entry is sent back to page
+	// (sendBack) instead of to the chain's error handling.
+	redirects bool
 }
+
+// oidcEntryResultParam is the query parameter a refused entry is sent back to the
+// code-entry page with, under WithOIDCEntryRedirects.
+const oidcEntryResultParam = "result"
 
 // wire keeps the chain, whose logger, sampler and clock are read when a record is written.
 func (g *oidcDeviceEntryGroup) wire(ch *Chain) { g.chain = ch }
@@ -460,7 +468,7 @@ func (g *oidcDeviceEntryGroup) serve(ex *Exchange, _ Next) error {
 
 	code, err := readOIDCUserCode(ex.Context(), ex.Request, g.bodyLimit)
 	if err != nil {
-		return err
+		return g.refuse(ex, err)
 	}
 
 	if method == http.MethodGet && !ownNavigation(ex.Request) {
@@ -487,7 +495,7 @@ func (g *oidcDeviceEntryGroup) serve(ex *Exchange, _ Next) error {
 	}
 
 	if err != nil {
-		return oidcUserCodeRefusal(err)
+		return g.refuse(ex, oidcUserCodeRefusal(err))
 	}
 
 	ex.Writer.SetHeader("Location", res.Location)
@@ -556,6 +564,41 @@ func (g *oidcDeviceEntryGroup) toEntryPage(ex *Exchange, code string) error {
 	page := *g.page
 	query := page.Query()
 	query.Set(oidcUserCodeParam, code)
+	page.RawQuery = query.Encode()
+
+	ex.Writer.SetHeader("Location", page.String())
+	ex.Writer.WriteHeader(http.StatusSeeOther)
+
+	return nil
+}
+
+// refuse answers err, a refused entry. Under WithOIDCEntryRedirects an invalid code
+// (errOIDCInvalidUserCode) is sent back to the code-entry page with result=invalid, and
+// a throttled entry (errOIDCUserCodeThrottled) with result=throttled. Every invalid
+// code, whether unknown, expired, claimed or malformed, is the one error, so the
+// redirect tells them apart no more than the error does. Anything else, and every
+// refusal without the option, is returned to the chain's error handling.
+func (g *oidcDeviceEntryGroup) refuse(ex *Exchange, err error) error {
+	if !g.redirects {
+		return err
+	}
+
+	var result string
+
+	switch {
+	case errors.Is(err, errOIDCUserCodeThrottled):
+		result = "throttled"
+	case errors.Is(err, errOIDCInvalidUserCode):
+		result = "invalid"
+	default:
+		return err
+	}
+
+	// The provider's configured page, never anything from the request; its own
+	// query is kept.
+	page := *g.page
+	query := page.Query()
+	query.Set(oidcEntryResultParam, result)
 	page.RawQuery = query.Encode()
 
 	ex.Writer.SetHeader("Location", page.String())

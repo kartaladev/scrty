@@ -126,6 +126,11 @@ func TestPgxStore(t *testing.T) {
 				return newPendingStore(t, emptied(t, conn, pgschema.PendingRequestTable))
 			})
 		},
+		"PendingRequests/CountCancelled": func(t *testing.T, conn database) {
+			storetest.PendingRequestCountCancelled(t, func(t *testing.T) oidcprovider.PendingRequestStore {
+				return newPendingStore(t, emptied(t, conn, pgschema.PendingRequestTable))
+			})
+		},
 		"CodeRecords": func(t *testing.T, conn database) {
 			storetest.CodeRecordSuite(t, func(t *testing.T) oidcprovider.CodeStore {
 				return newCodeStore(t, emptied(t, conn, pgschema.CodeTable))

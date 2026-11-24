@@ -875,7 +875,7 @@ func TestGin_RequireAuthenticationWithinFailsAtWiring(t *testing.T) {
 
 // TestGin_GuardsDPoPChallenge pins that a gin guard behind a chain with DPoP
 // on refuses a caller nothing authenticated with the challenge the chain's
-// own refusal carries, and that without DPoP it answers as it always did.
+// own refusal carries, and that without DPoP it carries the Bearer challenge.
 //
 // It stands on its own: a whole chain with DPoP configured in front of the
 // guard, which no other gin guard test has.
@@ -910,8 +910,8 @@ func TestGin_GuardsDPoPChallenge(t *testing.T) {
 			assert: challenged(`DPoP algs="ES256"`),
 		},
 		{
-			name:   "DPoP off: no challenge, as before",
-			assert: challenged(),
+			name:   "DPoP off: the Bearer challenge, as the bearer chain's own 401s carry",
+			assert: challenged("Bearer"),
 		},
 		{
 			name: "a consumer's error handler finds the challenge set",

@@ -771,7 +771,7 @@ func TestExpiryTasks_OIDCProvider(t *testing.T) {
 			assert: func(t *testing.T, e *opEnv) {
 				ctx := t.Context()
 				e.authorize(t)
-				e.clk.Advance(11 * minute)
+				e.clk.Advance(21 * minute) // past the lifetime and the default grace window
 				e.authorize(t)
 				now := e.clk.Now()
 

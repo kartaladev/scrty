@@ -830,8 +830,8 @@ Completion decides from the provider's resume outcome (`oidcprovider.ResumeResul
 from the redirect's query, so a client's registered redirect URI may carry any query parameter,
 `error` included.
 
-A failure after the session is stored ends that session, and a refusal sends no redirect. The one
-redirect after the session ends is the client's error response. A resume outcome completion does not
+A failure after the session is stored ends that session. The one redirect after the session ends is
+the client's error response, and a refusal that cannot be answered there sends none. A resume outcome completion does not
 know ends the session and is refused with `httpsec.ErrOIDCReauthenticate`.
 
 **When a step is owed.** If the post-authentication policy owes a step (a second factor, an
@@ -855,6 +855,32 @@ second SSO login started in the same browser before the first returns invalidate
 first callback is answered as an invalid state, and the user starts again. Held account recoveries
 are cancelled before the resume, as in a redemption; if the resume then fails, the user is signed in
 at the upstream provider but the recoveries are gone.
+
+**A failed login returns to the login page.** When a brokered login for a parked request fails, at
+the start or at the callback, the browser goes back to `<LoginURL>?req=<handle>&error=<code>` with
+**303**, `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. The request stays parked, so the
+page can show the message and let the user retry, choose another way in, or cancel. The code is one of
+`access_denied`, `temporarily_unavailable` or `server_error`, and none names an account: every
+refusal is `access_denied`, with no description. A page that ignores `error` leaves the user on a
+usable login page, and the request expires as usual.
+
+- The query parameter is `error` (`httpsec.DefaultOIDCLoginErrorParam`). Rename it with
+  `httpsec.WithOIDCLoginErrorParam`; construction refuses a name the page already reads (`req`,
+  `handoff`) and the option without `WithOIDCProviderCompletion`.
+- `httpsec.WithOIDCFailToClient()` replaces the return: the request is ended and the client's
+  redirect URI is answered with the error, `state` and `iss`. It needs `WithOIDCProviderCompletion`.
+
+**Cancelling.** A login page ends a request the user gave up on with a POST to
+`/authorize/cancel` under the provider prefix (`httpsec.OIDCCancel`, operation
+`httpsec.OperationOAuth2AuthorizeCancel`), with the body `{"req": handle}`. It needs no signed-in
+session, follows the resume endpoint's TLS, origin, flow-cookie and throttle rules, and answers 200
+with `redirect_to`, the client's redirect URI carrying `access_denied`. An unknown handle is refused as
+the resume refuses it.
+
+**The grace window.** A request that expired a moment ago, and is still bound to this browser, is
+still answered at the client's redirect URI with `access_denied`, rather than refused as an unknown
+handle. The window is 10 minutes by default; `oidcprovider.WithPendingRequestGrace` sets it, between
+0 and 30 minutes, and `WithPendingRequestGrace(0)` answers no expired request.
 
 ### The browser session
 
@@ -1006,6 +1032,30 @@ but a browser client on another origin sends an `Origin` the check judges. Trust
 `EnableCORS` or `WithCSRFTrustedOrigins`, or exempt the route yourself:
 `httpsec.WithCSRFExemption(http.MethodPost, "/oauth2/userinfo")`.
 
+### Failures the client is answered
+
+A resume that fails after the request was read answers the client at its redirect URI where it can:
+`server_error` for a store failure, `unauthorized_client` for a client that lost the code grant and
+`invalid_scope` for a client left with no usable scope. A client removed, or a redirect URI no longer
+registered, is still refused with no redirect. The login page's own way to end a request is the
+cancel endpoint (see "Federated sign-in without a page script").
+
+**The bearer challenge.** On a chain with a built-in bearer, every 401 the chain answers carries a
+`WWW-Authenticate: Bearer` challenge (`DPoP` with DPoP required, both with DPoP optional), with
+`error="invalid_token"` when a bearer token was presented and refused. A response that already names the scheme gets no second one. `httpsec.WithoutBearerChallenge()`
+turns it off; a chain without a built-in bearer refuses the option.
+
+**Opt-in hardening, all off by default.**
+
+- `oidcprovider.WithPendingRequestLimit(n)` caps live parked requests; at the cap a new request is
+  answered `temporarily_unavailable`. The store must implement `oidcprovider.PendingRequestCounter`.
+- `httpsec.WithOIDCThrottle429()` answers a throttled source at the token, revocation, introspection
+  and device-authorization endpoints with 429 and `Retry-After`, in place of `invalid_client`.
+- `oidcprovider.WithStrictRevocation()` answers the revocation of a valid JWT access token with
+  `unsupported_token_type`, in place of success with nothing revoked.
+- `httpsec.WithOIDCEntryRedirects()` sends a refused device user code back to the code-entry page with
+  `result=invalid` or `result=throttled`, in place of a 400 or 429.
+
 ### Defaults
 
 | Setting | Default | Replace with |
@@ -1020,6 +1070,9 @@ but a browser client on another origin sends an `Origin` the check judges. Trust
 | Logout confirmation throttle | 30 unknown handles per source a minute | `WithOIDCLogoutConfirmLimiter`, `WithRateLimiterFactory` |
 | End-session and confirmation bodies | `DefaultLoginBodyLimit` | `WithOIDCEndSessionBodyLimit`, `WithOIDCLogoutConfirmBodyLimit` |
 | Browser session | on | `oidcprovider.WithoutBrowserSessions` |
+| Expired request | answered `access_denied` for 10 minutes past expiry | `oidcprovider.WithPendingRequestGrace` |
+| Failed brokered login | returns to the login page with `error=<code>` | `WithOIDCFailToClient`, `WithOIDCLoginErrorParam` |
+| Bearer challenge on a 401 | on, with a built-in bearer | `WithoutBearerChallenge` |
 | Exempt from CSRF | `POST` to authorization, token, revocation, introspection and end-session | add a route with `httpsec.WithCSRFExemption`; the provider's own cannot be removed |
 | Cookie names | `__Host-scrty-op-flow`, `__Host-scrty-op-session` | none: the prefix is what stops another host planting one |
 
@@ -2556,6 +2609,30 @@ untrusted caller.
 - **The chain's authorizer.** It runs above the stream's slot, so it is not consulted for the stream
   at all. What runs below the slot, including an interceptor you register there to gate the stream, is
   not run again until the client reconnects, which `MaxAge` bounds.
+
+## Scheduled jobs (later work)
+
+A deployment on durable stores must run these `expiry.Task`s on a schedule. Each deletes expired
+state. Collect them and run them through `expiry.Runner`, the `expiry/sweep` scheduler, or a job of
+your own. A durable store is swept only when you do: expired rows are unusable, but they pile up. A
+wiring guide, and a helper that gathers the tasks, are later work.
+
+- `oidcprovider.ExpiryTasks(provider)`: `oidc-provider.pending-requests` (it keeps a request for the
+  grace window past its expiry), `oidc-provider.browser-sessions`, `oidc-provider.codes`,
+  `oidc-provider.grants`, `oidc-provider.refresh-tokens`, `oidc-provider.access-tokens`,
+  `oidc-provider.assertion-ids` and `oidc-provider.device-authorizations` (with the device grant).
+- `(*httpsec.Chain).ExpiryTasks()`: `mfa-challenges:<method>`, `reauth-challenges:<method>` and the
+  account-recovery tasks `recovery-issued-codes`, `recovery-finish-tokens` and `recovery-cancel-tokens`.
+- `session.ExpiryTask`: `sessions`.
+- `lockout.ExpiryTask`: `login-attempts`.
+- `ratelimit.ExpiryTask`: `ratelimit`, for a limiter store that needs pruning.
+- `oidc.FlowExpiryTask`: `oidc-flows`. `oidc.HandoffExpiryTask`: `oidc-handoffs`.
+- `magiclink.ExpiryTask`: `magiclink-tokens`.
+- `(*passkey.Passkeys).ExpiryTasks()`: `passkey-login-challenges` and `passkey-registration-challenges`.
+- `onetime.ExpiryTask` and `onetime.ExpiryTaskNamed`: for your own one-time tokens.
+
+The signing-key manager is not an expiry task: it rotates (hourly by default) and reloads (every
+minute) on its own once started, and only needs `Start`.
 
 ## Behind a reverse proxy
 

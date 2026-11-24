@@ -145,7 +145,8 @@ func (AuthorizeResult) LogValue() slog.Value { return slog.StringValue(redacted)
 //   - login_required, parking nothing, when id_token_hint names another subject.
 //
 // Otherwise the request is parked, and the Location is the consumer's login page with the
-// handle in its req parameter. The page reads the request with PendingRequest, signs the
+// handle in its req parameter. At the WithPendingRequestLimit, it is answered
+// temporarily_unavailable at the redirect URI instead, parking nothing. The page reads the request with PendingRequest, signs the
 // user in, and hands the sign-in to Resume, whose answer says where the browser goes next.
 // Under prompt=none no page is ever shown, and it is answered login_required instead.
 //
@@ -156,6 +157,7 @@ func (AuthorizeResult) LogValue() slog.Value { return slog.StringValue(redacted)
 // is never one. Each of those is a browser with no session, and a failing store or user
 // loader is none of them: it is answered at the redirect URI with server_error, showing no
 // page and deciding nothing about the user. A caller who left gets its own context's error.
+// A code written before such a failure is never handed out, and the exchange refuses it.
 //
 // A session is used only here and at the consent stage: nothing else in the library reads
 // it, so it signs no one in to anything but the provider's own endpoints. Answering from it
@@ -180,6 +182,12 @@ func (p *Provider) Authorize(ctx context.Context, in AuthorizeInput) (AuthorizeR
 	}
 
 	res, err := p.answer(ctx, in, req, rc)
+	if errors.Is(err, errCeilingReached) {
+		// The record names no request, so it leaks no requester's value.
+		p.cfg.logger.LogAttrs(ctx, slog.LevelWarn, "oidcprovider: the parked-request ceiling is reached, and a request was refused")
+
+		return p.refuseAtRedirectURI(req, CodeTemporarilyUnavailable), nil
+	}
 	if errors.Is(err, ErrDependency) {
 		// The client and redirect URI are valid, so the requester is owed an answer where
 		// it can hear it. Only the error's type is logged: a store's text is not ours to repeat.
@@ -192,9 +200,9 @@ func (p *Provider) Authorize(ctx context.Context, in AuthorizeInput) (AuthorizeR
 	return res, err
 }
 
-// codeServerError is the code a validated request is answered with when a dependency fails
+// codeServerError is CodeServerError, the answer to a validated request whose dependency failed
 // (RFC 6749 section 4.1.2.1).
-const codeServerError = "server_error"
+const codeServerError = CodeServerError
 
 // answer answers a validated request from the browser's session, or by parking it.
 func (p *Provider) answer(ctx context.Context, in AuthorizeInput, req *PendingRequest, rc *RegisteredClient) (AuthorizeResult, error) {

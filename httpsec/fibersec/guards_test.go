@@ -950,8 +950,8 @@ func TestFiber_GuardsBuildersWithNilGuardsFailAtWiring(t *testing.T) {
 
 // TestFiber_GuardsDPoPChallenge pins that a fiber guard behind a chain with
 // DPoP on refuses a caller nothing authenticated with the challenge the
-// chain's own refusal carries, and that without DPoP it answers as it always
-// did.
+// chain's own refusal carries, and that without DPoP it carries the Bearer
+// challenge.
 //
 // It stands on its own: a whole chain with DPoP configured in front of the
 // guard, which no other fiber guard test has.
@@ -990,9 +990,9 @@ func TestFiber_GuardsDPoPChallenge(t *testing.T) {
 			assert: challenged(`DPoP algs="ES256"`),
 		},
 		{
-			name:   "DPoP off: no challenge, as before",
+			name:   "DPoP off: the Bearer challenge, as the bearer chain's own 401s carry",
 			config: withErrorHandler,
-			assert: challenged(),
+			assert: challenged("Bearer"),
 		},
 		{
 			name:   "fiber's own error handler keeps the challenge",

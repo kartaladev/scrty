@@ -104,6 +104,13 @@ func idNilRun(t *testing.T, site idNilSite, kind idNilKind) idNilOutcome {
 
 		res, err := x.p.Resume(t.Context(), r.input(&signIn))
 		out = idNilOutcome{err: err, answered: res.RedirectTo != ""}
+
+		// A dependency failure once the request was read and judged is answered at the
+		// redirect URI, carrying no code.
+		answer := queryOf(t, res.RedirectTo)
+		if err == nil && answer.Get("error") == "server_error" && answer.Get("code") == "" {
+			out = idNilOutcome{err: fmt.Errorf("%w: answered server_error at the redirect URI", oidcprovider.ErrDependency)}
+		}
 	case idNilToken, idNilJTI:
 		c := issueOpaque(t, x)
 		armed.Store(1)

@@ -241,13 +241,21 @@ type completionSetup struct {
 	pending *downablePendingStore
 	// codes replaces the provider's code store, so a row can read the codes held.
 	codes *oidcprovider.MemoryCodeStore
+	// provider are options of the OpenID Provider beside the pending and code stores.
+	provider []oidcprovider.Option
 	// endpoint are options of the OpenID Provider's endpoints beside the resume
 	// limiter.
 	endpoint []httpsec.OIDCProviderOption
 	// sessions are options of the session manager the chain shares.
 	sessions []session.Option
+	// bearer replaces the chain's session bearer.
+	bearer func(t *testing.T, w *opFlow) httpsec.Option
 	// unlinked links the upstream's subject to no one.
 	unlinked bool
+	// broker replaces the relying party's broker, which otherwise is completionRP's.
+	broker func(t *testing.T, idp *oidcTestProvider) oidc.IdentityBroker
+	// rp replaces the relying party, whose redirect URL must be on origin.
+	rp func(t *testing.T, idp *oidcTestProvider, origin string) *oidc.RelyingParty
 	// clients are registered beside the provider flow's own.
 	clients []oidcprovider.Client
 	chain   func(t *testing.T, f *completionFlow) []httpsec.Option
@@ -327,8 +335,15 @@ func newCompletionFlow(t *testing.T, setup completionSetup) *completionFlow {
 	}
 
 	f.rp = completionRP(t, f.idp, origin, setup.unlinked)
+	if setup.broker != nil {
+		f.rp = brokeredRP(t, f.idp, origin, setup.broker(t, f.idp))
+	}
 
-	var provider []oidcprovider.Option
+	if setup.rp != nil {
+		f.rp = setup.rp(t, f.idp, origin)
+	}
+
+	provider := append([]oidcprovider.Option(nil), setup.provider...)
 	if setup.pending != nil {
 		provider = append(provider, oidcprovider.WithPendingRequestStore(setup.pending))
 	}
@@ -347,6 +362,7 @@ func newCompletionFlow(t *testing.T, setup completionSetup) *completionFlow {
 		provider: provider,
 		clients:  setup.clients,
 		sessions: setup.sessions,
+		bearer:   setup.bearer,
 		endpoint: append([]httpsec.OIDCProviderOption{httpsec.WithOIDCResumeLimiter(limiter)}, setup.endpoint...),
 		chain: func(t *testing.T, w *opFlow) []httpsec.Option {
 			t.Helper()
@@ -602,6 +618,10 @@ type downablePendingStore struct {
 	// store that answered the pre-check and fails the resume.
 	downAfterNext atomic.Bool
 
+	// onLoad, when a row sets it, runs inside each read before the store answers,
+	// and fails the read when it fails: a caller that hangs up mid-read.
+	onLoad func(ctx context.Context) error
+
 	// onAdvance, when a row sets it before the request, runs inside each stage
 	// spend, before the store writes, and fails the spend when it fails.
 	onAdvance func(ctx context.Context, signIn *oidcprovider.SignIn) error
@@ -626,6 +646,12 @@ func (s *downablePendingStore) Create(ctx context.Context, r *oidcprovider.Pendi
 }
 
 func (s *downablePendingStore) Load(ctx context.Context, digest []byte) (*oidcprovider.PendingRequest, error) {
+	if s.onLoad != nil {
+		if err := s.onLoad(ctx); err != nil {
+			return nil, err
+		}
+	}
+
 	if s.down.Load() {
 		return nil, errPendingDown
 	}
@@ -639,7 +665,7 @@ func (s *downablePendingStore) Load(ctx context.Context, digest []byte) (*oidcpr
 
 // TestOIDCCompletion_PreChecksHandle pins that completion checks the parked request
 // before anything else happens (D7, step 2; F20, F38): an unknown handle, one expired
-// before the callback, and one the browser's flow cookie does not bind are each
+// past its grace window, and one the browser's flow cookie does not bind are each
 // answered with the unknown-handle refusal, charged to the source once; a handle past
 // its login stage is refused the same, uncharged; a source over the resume limit is
 // throttled before the request is looked up; a failing store is a dependency failure,
@@ -688,12 +714,13 @@ func TestOIDCCompletion_PreChecksHandle(t *testing.T) {
 			assert: unknown(1),
 		},
 		{
-			name: "a handle expired before the callback",
+			name: "a handle expired before the callback, past its grace window",
 			parked: func(t *testing.T, f *completionFlow) (string, string) {
 				t.Helper()
 
 				handle, flow := f.park(t, flowWeb)
-				f.clk.Advance(10*time.Minute + time.Second)
+				// The default lifetime and grace window, both 10 minutes (D7).
+				f.clk.Advance(20*time.Minute + time.Second)
 
 				return handle, flow
 			},
@@ -923,7 +950,8 @@ func loaderAnswering(t *testing.T, details *identity.Details, err error) identit
 
 // TestOIDCCompletion_PolicyAndFallback pins D7's steps 3 and 4 and D8: completion
 // loads the user and refuses a missing, disabled or mismatched one as a redemption
-// does (F21); a policy denial is the policy's reason; a policy that owes a step —
+// does (F21), returning to the login page with access_denied, and a loader failure
+// with server_error; a policy denial returns with access_denied; a policy that owes a step —
 // a second factor the upstream's amr does not meet, a password change the stored
 // time requires — falls back to the handoff to the login page carrying the handle
 // (F22), storing no session; and an amr that meets the requirement completes the
@@ -940,12 +968,14 @@ func TestOIDCCompletion_PolicyAndFallback(t *testing.T) {
 		assert func(t *testing.T, f *completionFlow, handle string, a flowAnswer)
 	}
 
-	refusedAs := func(want error) func(t *testing.T, f *completionFlow, _ string, a flowAnswer) {
-		return func(t *testing.T, f *completionFlow, _ string, a flowAnswer) {
+	// A refusal returns to the login page with its code (D3, D4).
+	refusedAs := func(code string) func(t *testing.T, f *completionFlow, handle string, a flowAnswer) {
+		return func(t *testing.T, f *completionFlow, handle string, a flowAnswer) {
 			t.Helper()
 
-			require.ErrorIs(t, a.err, want)
-			assert.Empty(t, a.header.Get("Location"), "no redirect")
+			require.NoError(t, a.err, "nothing reached the error handling")
+			require.Equal(t, http.StatusSeeOther, a.status, a.body)
+			assert.Equal(t, parkedReturn(handle, httpsec.DefaultOIDCLoginErrorParam, code), a.header.Get("Location"))
 			assert.Zero(t, f.storedHandoffs(t), "no handoff issued")
 			assert.Zero(t, f.storedSessions(t), "no session")
 			assert.Zero(t, f.cancelled.Load(), "held recoveries untouched")
@@ -966,35 +996,29 @@ func TestOIDCCompletion_PolicyAndFallback(t *testing.T) {
 		{
 			name:   "a user the loader does not know",
 			setup:  completionSetup{users: loaderAnswering(t, nil, identity.ErrUserNotFound)},
-			assert: refusedAs(oidc.ErrInvalidHandoff),
+			assert: refusedAs(oidcprovider.CodeAccessDenied),
 		},
 		{
 			name:   "a loader answering no user",
 			setup:  completionSetup{users: loaderAnswering(t, nil, nil)},
-			assert: refusedAs(oidc.ErrInvalidHandoff),
+			assert: refusedAs(oidcprovider.CodeAccessDenied),
 		},
 		{
 			name: "a disabled user",
 			setup: completionSetup{users: loaderAnswering(t,
 				&identity.Details{ID: oidcTestUserID, Username: "ada@example.com"}, nil)},
-			assert: refusedAs(oidc.ErrInvalidHandoff),
+			assert: refusedAs(oidcprovider.CodeAccessDenied),
 		},
 		{
 			name: "a loader answering another user",
 			setup: completionSetup{users: loaderAnswering(t,
 				&identity.Details{ID: "u-9", Username: "eve@example.com", Active: true}, nil)},
-			assert: refusedAs(oidc.ErrInvalidHandoff),
+			assert: refusedAs(oidcprovider.CodeAccessDenied),
 		},
 		{
-			name:  "a loader that fails",
-			setup: completionSetup{users: loaderAnswering(t, nil, errCompletionLoaderDown)},
-			assert: func(t *testing.T, f *completionFlow, h string, a flowAnswer) {
-				t.Helper()
-
-				refusedAs(errCompletionLoaderDown)(t, f, h, a)
-				assert.NotErrorIs(t, a.err, oidc.ErrInvalidHandoff, "an outage, not a refusal")
-				assert.NotContains(t, a.err.Error(), errCompletionLoaderDown.Error(), "behind fixed text")
-			},
+			name:   "a loader that fails",
+			setup:  completionSetup{users: loaderAnswering(t, nil, errCompletionLoaderDown)},
+			assert: refusedAs(oidcprovider.CodeServerError),
 		},
 		{
 			name: "the policy denies",
@@ -1003,7 +1027,7 @@ func TestOIDCCompletion_PolicyAndFallback(t *testing.T) {
 
 				return []httpsec.Option{httpsec.WithPolicyEngine(denyingEngine(t, errCompletionDenied))}
 			}},
-			assert: refusedAs(errCompletionDenied),
+			assert: refusedAs(oidcprovider.CodeAccessDenied),
 		},
 		{
 			name:   "a second factor the upstream's amr does not meet",
@@ -1484,8 +1508,9 @@ func hintFor(t *testing.T, f *completionFlow, client, subject string) string {
 // once it has stored the session (D7, steps 5 to 8): a per-request refusal, a resume
 // that fails, a resume answering the client's error response, and a sign-in that
 // ends before its confirmation each end the session just stored and send no code
-// (F23, F24); a failure to end it is logged once at ERROR and changes nothing of
-// the refusal (F25); a session store that cannot store it is a dependency failure,
+// (F23, F24), and a per-request refusal then returns to the login page; a failure
+// to end it is logged once at ERROR and answers the refusal unchanged (F25); a
+// session store that cannot store it returns to the login page with server_error,
 // and the request is never resumed (F26).
 func TestOIDCCompletion_FailurePaths(t *testing.T) {
 	t.Parallel()
@@ -1557,7 +1582,13 @@ func TestOIDCCompletion_FailurePaths(t *testing.T) {
 			assert: func(t *testing.T, f *completionFlow, handle, flow string, a flowAnswer, logs []slog.Record) {
 				t.Helper()
 
-				ended(errCompletionRefused)(t, f, handle, flow, a, logs)
+				// The session is ended, then the login page is told (D3, D4).
+				require.NoError(t, a.err)
+				assert.Equal(t, parkedReturn(handle, httpsec.DefaultOIDCLoginErrorParam,
+					oidcprovider.CodeAccessDenied), a.header.Get("Location"))
+				assert.Zero(t, f.storedSessions(t), "the session is ended")
+				assert.Equal(t, int64(1), f.cancelled.Load(), "the session was stored first")
+				assert.False(t, f.sessionSeen.Load(), "the ended session is gone from the exchange (F46)")
 				assert.Equal(t, oidcprovider.StageLogin, f.stage(t, handle, flow), "never resumed, no code")
 				assert.Empty(t, endRecords(logs), "the end succeeded")
 			},
@@ -1572,8 +1603,10 @@ func TestOIDCCompletion_FailurePaths(t *testing.T) {
 			assert: func(t *testing.T, f *completionFlow, handle, flow string, a flowAnswer, _ []slog.Record) {
 				t.Helper()
 
-				require.ErrorIs(t, a.err, errRecoveryCancelDown)
-				assert.Empty(t, a.header.Get("Location"), "no redirect to the client")
+				// A failure storing the session returns to the login page (D4).
+				require.NoError(t, a.err)
+				assert.Equal(t, parkedReturn(handle, httpsec.DefaultOIDCLoginErrorParam,
+					oidcprovider.CodeServerError), a.header.Get("Location"), "not to the client")
 				assert.Nil(t, a.cookie(flowSession), "no browser session")
 				assert.Zero(t, f.storedSessions(t), "no session is stored")
 				assert.False(t, f.sessionSeen.Load(), "no session on the exchange")
@@ -1750,10 +1783,11 @@ func TestOIDCCompletion_FailurePaths(t *testing.T) {
 			assert: func(t *testing.T, f *completionFlow, handle, flow string, a flowAnswer, _ []slog.Record) {
 				t.Helper()
 
-				require.ErrorIs(t, a.err, errSessionStoreDown, "a dependency failure")
+				// A dependency failure returns to the login page (D4).
+				require.NoError(t, a.err)
 				assert.False(t, f.sessionSeen.Load(), "no session on the exchange")
-				assert.NotErrorIs(t, a.err, oidc.ErrInvalidHandoff)
-				assert.Empty(t, a.header.Get("Location"), "no redirect")
+				assert.Equal(t, parkedReturn(handle, httpsec.DefaultOIDCLoginErrorParam,
+					oidcprovider.CodeServerError), a.header.Get("Location"), "not to the client")
 				assert.Zero(t, f.storedSessions(t), "no session")
 				assert.Equal(t, oidcprovider.StageLogin, f.stage(t, handle, flow), "never resumed")
 				assert.Nil(t, a.cookie(flowSession), "no browser session")
@@ -1902,8 +1936,11 @@ func TestOIDCCompletion_Events(t *testing.T) {
 				handle, flow := f.park(t, flowFirstParty)
 				before := len(f.events.names())
 
+				// The refusal returns to the login page (D3), emitting what it did.
 				a := f.signIn(t, parkedAt(handle), flowCookieOf(flowCookie, flow))
-				require.ErrorIs(t, a.err, oidc.ErrNoLinkedAccount)
+				require.NoError(t, a.err)
+				assert.Equal(t, parkedReturn(handle, httpsec.DefaultOIDCLoginErrorParam,
+					oidcprovider.CodeAccessDenied), a.header.Get("Location"))
 				assert.Zero(t, f.storedSessions(t))
 
 				return f.events.names()[before:]

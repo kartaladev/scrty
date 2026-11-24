@@ -686,6 +686,17 @@ func TestProvider_ResumeLogin_WriteOrder(t *testing.T) {
 		assert.Equal(t, oidcprovider.ResumeResult{}, res, "nothing leaves")
 		assert.Equal(t, oidcprovider.StageLogin, stageOf(t, f, r), "the handle stays unspent")
 	}
+	// serverError: a failure once the request was read and judged is answered at the
+	// redirect URI with server_error, spending the stage, and nothing else leaves.
+	serverError := func(t *testing.T, f *parkFixture, r parked, res oidcprovider.ResumeResult, err error) {
+		t.Helper()
+		require.NoError(t, err)
+		assert.Equal(t, oidcprovider.ResumeOutcomeClientError, res.Outcome)
+		assert.Empty(t, res.BrowserSessionSecret, "no session leaves")
+		assert.Equal(t, url.Values{"error": {"server_error"}, "state": {authzState}, "iss": {issuer}}, queryOf(t, res.RedirectTo))
+		assert.Equal(t, oidcprovider.StageDone, stageOf(t, f, r), "the stage is spent")
+		assert.NotContains(t, f.logs.String(), errOutage.Error())
+	}
 
 	cases := []struct {
 		name    string
@@ -706,7 +717,7 @@ func TestProvider_ResumeLogin_WriteOrder(t *testing.T) {
 			},
 			assert: func(t *testing.T, f *parkFixture, r parked, res oidcprovider.ResumeResult, err error) {
 				t.Helper()
-				failing(t, f, r, res, err)
+				serverError(t, f, r, res, err)
 				assert.Zero(t, codesHeld(t, f, "u-1", "billing-web"), "no record without its token")
 			},
 		},
@@ -720,7 +731,7 @@ func TestProvider_ResumeLogin_WriteOrder(t *testing.T) {
 
 				return oidcprovider.WithCodeStore(store)
 			},
-			assert: failing,
+			assert: serverError,
 		},
 		{
 			name: "the browser session cannot be written",
@@ -731,15 +742,15 @@ func TestProvider_ResumeLogin_WriteOrder(t *testing.T) {
 
 				return oidcprovider.WithBrowserSessionStore(store)
 			},
-			assert: failing,
+			assert: serverError,
 		},
 		{
-			name: "the stage cannot be spent",
+			name: "the stage cannot be spent, for the answer nor for server_error",
 			wire: func(t *testing.T, f *parkFixture) oidcprovider.Option {
 				t.Helper()
 				store := passThroughPending(t, f.store)
 				store.EXPECT().Load(gomock.Any(), gomock.Any()).DoAndReturn(f.store.Load).AnyTimes()
-				store.EXPECT().Advance(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(errOutage)
+				store.EXPECT().Advance(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(errOutage).Times(2)
 
 				return oidcprovider.WithPendingRequestStore(store)
 			},
@@ -754,7 +765,7 @@ func TestProvider_ResumeLogin_WriteOrder(t *testing.T) {
 
 				return oidcprovider.WithConsentStore(store)
 			},
-			assert: failing,
+			assert: serverError,
 		},
 		{
 			name: "the race for the stage is lost: an unknown handle, and nothing leaves",
@@ -1489,7 +1500,7 @@ func TestProvider_ResumeConsent_WriteOrder(t *testing.T) {
 		assert func(*testing.T, *parkFixture, parked, oidcprovider.ResumeResult, error)
 	}{
 		{
-			name: "the code's record cannot be written: the stage is unspent, and nothing is remembered",
+			name: "the code's record cannot be written: answered server_error, and nothing is remembered",
 			wire: func(t *testing.T, _ *parkFixture) oidcprovider.Option {
 				t.Helper()
 				store := NewMockCodeStore(gomock.NewController(t))
@@ -1499,21 +1510,23 @@ func TestProvider_ResumeConsent_WriteOrder(t *testing.T) {
 			},
 			assert: func(t *testing.T, f *parkFixture, r parked, res oidcprovider.ResumeResult, err error) {
 				t.Helper()
-				require.ErrorIs(t, err, oidcprovider.ErrDependency)
-				assert.Equal(t, oidcprovider.ResumeResult{}, res)
-				assert.Equal(t, oidcprovider.StageConsent, stageOf(t, f, r))
+				require.NoError(t, err)
+				assert.Equal(t, oidcprovider.ResumeOutcomeClientError, res.Outcome)
+				assert.Equal(t, "server_error", queryOf(t, res.RedirectTo).Get("error"))
+				assert.Empty(t, queryOf(t, res.RedirectTo).Get("code"))
+				assert.Equal(t, oidcprovider.StageDone, stageOf(t, f, r))
 
 				_, loadErr := f.consents.Load(t.Context(), "u-1", "billing-web")
 				require.ErrorIs(t, loadErr, oidcprovider.ErrNotFound)
 			},
 		},
 		{
-			name: "the stage cannot be spent: nothing leaves, and nothing is remembered",
+			name: "the stage cannot be spent, for the answer nor for server_error: nothing leaves, and nothing is remembered",
 			wire: func(t *testing.T, f *parkFixture) oidcprovider.Option {
 				t.Helper()
 				store := passThroughPending(t, f.store)
 				store.EXPECT().Load(gomock.Any(), gomock.Any()).DoAndReturn(f.store.Load).AnyTimes()
-				store.EXPECT().Advance(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(errOutage)
+				store.EXPECT().Advance(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(errOutage).Times(2)
 
 				return oidcprovider.WithPendingRequestStore(store)
 			},

@@ -159,8 +159,10 @@ type corsLayer struct {
 //   - A request from an origin not allowed gets no CORS header but Vary, and
 //     is otherwise handled as if CORS were off.
 //   - With DPoP enabled, DPoP is allowed and DPoP-Nonce and WWW-Authenticate
-//     are exposed; with CSRF protection reading a token header, that header is
-//     allowed. WithoutAutomaticCORSHeaders turns these additions off.
+//     are exposed; WWW-Authenticate is also exposed whenever the chain adds
+//     the bearer challenge (WithoutBearerChallenge turns that off); with CSRF
+//     protection reading a token header, that header is allowed.
+//     WithoutAutomaticCORSHeaders turns these additions off.
 //   - With an OpenID Provider on the chain (EnableOIDCProvider), its endpoints
 //     are treated as the protocol requires, at the paths the provider settled:
 //     the token, UserInfo, revocation and introspection endpoints, and the
@@ -217,7 +219,15 @@ func EnableCORS(policy CORSPolicy, opts ...CORSOption) Option {
 		// The features the layer follows may be enabled by options given after
 		// this one, so it reads them once every option has been applied.
 		c.wire(func(*Chain) {
-			l.follow(c.dpopEnabled, c.csrfTokenHeader)
+			var challenges bool
+
+			_ = eachInterceptor(c, func(*bearerChallenge) error {
+				challenges = true
+
+				return nil
+			})
+
+			l.follow(c.dpopEnabled, challenges, c.csrfTokenHeader)
 			l.provider = c.oidcProvider
 		})
 
@@ -493,7 +503,8 @@ func (p originPattern) matches(scheme, host, port string) bool {
 // lists.
 //
 // Default: with DPoP enabled, DPoP is an allowed request header and
-// DPoP-Nonce and WWW-Authenticate are exposed response headers; with CSRF
+// DPoP-Nonce and WWW-Authenticate are exposed response headers, and
+// WWW-Authenticate is exposed whenever the chain adds the bearer challenge; with CSRF
 // protection reading a token header, that header is allowed. Without these, a
 // browser page on another origin cannot send a DPoP proof or a CSRF token, nor
 // read a DPoP nonce, unless the consumer lists them.
@@ -528,12 +539,14 @@ const (
 
 // follow adds the headers the chain's enabled features need, unless the
 // consumer turned the additions off. It runs once, when the chain is built.
-func (l *corsLayer) follow(dpop bool, csrfTokenHeader string) {
+//
+// challenges is whether the chain adds a bearer challenge of its own, which a
+// page must be able to read with DPoP off as well.
+func (l *corsLayer) follow(dpop, challenges bool, csrfTokenHeader string) {
 	if !l.manual {
 		if dpop {
 			l.allowHeader(headerDPoP)
 			l.expose(headerDPoPNonce)
-			l.expose(headerWWWAuthenticate)
 		}
 
 		if csrfTokenHeader != "" {
@@ -541,7 +554,13 @@ func (l *corsLayer) follow(dpop bool, csrfTokenHeader string) {
 		}
 	}
 
+	// Derived before the challenge's exposure below, so the provider's own
+	// lists keep their order: DPoP-Nonce, then WWW-Authenticate.
 	l.deriveClientLists()
+
+	if !l.manual && (dpop || challenges) {
+		l.expose(headerWWWAuthenticate)
+	}
 }
 
 // expose adds name to the exposed response headers, unless a spelling of it is

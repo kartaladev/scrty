@@ -10,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/origin"
+	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -134,6 +135,7 @@ func EnableOIDCLogin(deps OIDCDeps, opts ...OIDCOption) Option {
 			countRefusals:   true,
 			scope:           BackchannelLogoutScopeIssuer,
 			rpLogout:        true,
+			parked:          parkedFailureConfig{param: DefaultOIDCLoginErrorParam},
 		}
 
 		for _, opt := range opts {
@@ -160,6 +162,16 @@ func EnableOIDCLogin(deps OIDCDeps, opts ...OIDCOption) Option {
 // It runs once every option has been applied, so a session manager wired by
 // another built-in after EnableOIDCLogin still counts.
 func (i *oidcInterceptor) check(c *config, option string) error {
+	if i.parked.toClient && !i.completion {
+		return newConfigError("%s WithOIDCFailToClient needs %s: only a login completion "+
+			"recognises as a parked request's can end that request", option, optionProviderCompletion)
+	}
+
+	if i.parked.paramSet && !i.completion {
+		return newConfigError("%s WithOIDCLoginErrorParam needs %s: only a login completion "+
+			"recognises as a parked request's returns to the login page", option, optionProviderCompletion)
+	}
+
 	if i.completion {
 		if err := i.checkCompletion(c, option); err != nil {
 			return err
@@ -792,9 +804,11 @@ func WithoutOIDCRedirectPathCheck() OIDCOption {
 //
 // What it does, in order:
 //   - checks the parked request before anything else, behind the resume
-//     endpoint's source throttle: one that is unknown, expired or bound to
-//     another browser is refused with ErrOIDCUnknownHandle and charged to the
-//     source; one past its login stage is refused the same, uncharged;
+//     endpoint's source throttle: one that is unknown, expired past its grace
+//     window or bound to another browser is refused with ErrOIDCUnknownHandle
+//     and charged to the source; one past its login stage is refused the same,
+//     uncharged; one expired within the window is answered access_denied at the
+//     client, uncharged;
 //   - loads the user through OIDCDeps.Users, refusing a missing, disabled or
 //     mismatched one as a redemption does;
 //   - runs the post-authentication policy on the stored details and the
@@ -809,11 +823,13 @@ func WithoutOIDCRedirectPathCheck() OIDCOption {
 //   - sets the provider's browser-session cookie and answers 303, with
 //     Cache-Control: no-store and Referrer-Policy: no-referrer.
 //
-// A refusal after the session is stored ends that session before it is
-// returned, and sends no redirect to the client. What the resume answered is
-// read from its outcome (oidcprovider.ResumeResult.Outcome), never from the
-// redirect's query, so a client whose registered redirect URI carries a
-// parameter of its own, error included, completes. A resume that answers the
+// A refused or disabled user, a policy's denial, and a user loader or session
+// store that fails return the browser to the login page with the code
+// (WithOIDCLoginErrorParam, WithOIDCFailToClient). A refusal after the session
+// is stored ends that session first, and sends no code to the client. What the
+// resume answered is read from its outcome (oidcprovider.ResumeResult.Outcome),
+// never from the redirect's query, so a client whose registered redirect URI
+// carries a parameter of its own, error included, completes. A resume that answers the
 // client's error response, such as login_required for an id_token_hint naming
 // another subject, ends the session too, and redirects to that response; one
 // that answers the device code-entry page ends it and redirects there; one
@@ -850,6 +866,69 @@ func WithoutOIDCRedirectPathCheck() OIDCOption {
 func WithOIDCProviderCompletion() OIDCOption {
 	return func(i *oidcInterceptor) error {
 		i.completion = true
+
+		return nil
+	}
+}
+
+// DefaultOIDCLoginErrorParam is the query parameter that carries the error code
+// when a failed login for a parked request returns to the provider's login page.
+// WithOIDCLoginErrorParam replaces it.
+const DefaultOIDCLoginErrorParam = "error"
+
+// WithOIDCLoginErrorParam names the query parameter that carries the error code
+// back to the login page.
+//
+// Default: DefaultOIDCLoginErrorParam. Construction refuses an empty name, a
+// name the login page already reads (req, handoff), one that is not a plain
+// query key of letters, digits, "-", ".", "_" and "~", and the option without
+// WithOIDCProviderCompletion.
+func WithOIDCLoginErrorParam(name string) OIDCOption {
+	return func(i *oidcInterceptor) error {
+		if !plainQueryKey(name) || name == oidcprovider.HandleParam || name == DefaultOIDCHandoffParam {
+			return newConfigError("WithOIDCLoginErrorParam was given %q, which the login page could not "+
+				"read apart from its own parameters", name)
+		}
+
+		i.parked.param = name
+		i.parked.paramSet = true
+
+		return nil
+	}
+}
+
+// plainQueryKey reports whether name is non-empty and made only of RFC 3986's
+// unreserved characters, so it is written and read back unescaped.
+func plainQueryKey(name string) bool {
+	if name == "" {
+		return false
+	}
+
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '-', r == '.', r == '_', r == '~':
+		default:
+			return false
+		}
+	}
+
+	return true
+}
+
+// WithOIDCFailToClient ends a parked request whose brokered login failed, and
+// answers the client's redirect URI with the error, state and iss. The codes
+// are those the login page would get. A request that cannot be ended gets the
+// login's own error, with one ERROR record.
+//
+// A device request has no client to answer: it returns to the login page.
+//
+// Default: off. The browser returns to the login page with the error code
+// (WithOIDCLoginErrorParam), and the request stays parked. It needs
+// WithOIDCProviderCompletion, or construction fails.
+func WithOIDCFailToClient() OIDCOption {
+	return func(i *oidcInterceptor) error {
+		i.parked.toClient = true
 
 		return nil
 	}

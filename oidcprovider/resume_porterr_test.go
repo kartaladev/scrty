@@ -109,6 +109,13 @@ type pe7gOutcome struct {
 	sessions   int
 
 	aborts, failures []map[string]any
+
+	// hits is how many times the failing port was called: an answered failure tries a
+	// second spend, which a failing Advance fails again.
+	hits int32
+
+	// callerLeft says the row's context was cancelled before the resume returned.
+	callerLeft bool
 }
 
 // pe7gRun parks a request and resumes it on ctx while site's port call fails
@@ -313,6 +320,8 @@ func pe7gRun(ctx context.Context, t *testing.T, site pe7gSite, portErr error) pe
 	out.sessions = held
 
 	out.aborts, out.failures = pe7eAbortsAndLogs(t, logs.String(), pe7gLogged(site))
+	out.hits = hits.Load()
+	out.callerLeft = ctx.Err() != nil
 
 	return out
 }
@@ -322,10 +331,23 @@ func pe7gRun(ctx context.Context, t *testing.T, site pe7gSite, portErr error) pe
 func pe7gSameAsPlain(t *testing.T, site pe7gSite, plain, got pe7gOutcome) {
 	t.Helper()
 
-	if pe7gLogged(site) == "" {
+	switch {
+	case site == pe7gAdvanceLogin || site == pe7gAdvanceConsent:
+		// The answer's spend fails, and so does server_error's, so the failure is returned.
 		require.True(t, plain.dependency || plain.canceled, "precondition: a plain outage is a dependency failure")
 		require.False(t, plain.reauth || plain.unknown, "precondition: a plain outage is no refusal")
-	} else {
+	case pe7gLogged(site) == "" && plain.callerLeft:
+		// A caller that left would hear no answer, so none is spent on it.
+		require.True(t, plain.dependency || plain.canceled, "precondition: a plain outage is a dependency failure")
+		require.Empty(t, plain.errorCode, "precondition: nothing is answered to a caller that left")
+		require.False(t, plain.reauth || plain.unknown, "precondition: a plain outage is no refusal")
+	case pe7gLogged(site) == "":
+		// The request was read and judged, so the client hears of it: server_error at the
+		// redirect URI, the stage spent.
+		require.Equal(t, "server_error", plain.errorCode, "precondition: a plain outage is answered server_error")
+		require.Equal(t, oidcprovider.StageDone, plain.stage, "precondition: the answer spends the stage")
+		require.False(t, plain.reauth || plain.unknown, "precondition: a plain outage is no refusal")
+	default:
 		require.Empty(t, plain.text, "precondition: a plain outage of a log-only site costs no answer")
 		require.NotEmpty(t, plain.failures, "precondition: a plain outage of a log-only site is logged")
 	}
@@ -347,6 +369,21 @@ func pe7gSameAsPlain(t *testing.T, site pe7gSite, plain, got pe7gOutcome) {
 	assert.Equal(t, plain.sessions, got.sessions, "the same sessions held")
 	assert.Len(t, got.failures, len(plain.failures), "the same failure records")
 	assert.NotContains(t, got.text, pe7bSecret)
+}
+
+// pe7gAbortPerHit asserts one abort record, on the provider's logger, for each call of the
+// failing port: once for most sites, and twice where an answered failure's spend fails again.
+func pe7gAbortPerHit(t *testing.T, got pe7gOutcome, reason string) {
+	t.Helper()
+
+	require.Len(t, got.aborts, int(got.hits), "one abort record per failing call, on the provider's logger")
+	for _, rec := range got.aborts {
+		assert.Equal(t, "ERROR", rec["level"])
+		assert.Equal(t, reason, rec["reason"])
+	}
+	for _, rec := range got.failures {
+		assert.Equal(t, pe7eFaultType, rec["error_type"], "the failure record names the sanitized error")
+	}
 }
 
 // pe7gRow is one hostile port error, tried at every site.
@@ -396,10 +433,11 @@ func pe7gRows() []pe7gRow {
 // TestPortErrors_Resume pins that each store a resume writes or reads through
 // failing with an error whose chain cannot be walked, or a load answering no
 // record and no error, is answered and leaves state exactly as a plain outage
-// of that port: ErrDependency where the outage is answered, never
+// of that port: server_error at the redirect URI where the outage is answered,
+// or ErrDependency where that answer's spend fails too or the caller left, never
 // ErrReauthenticate or ErrUnknownHandle, and only a log where the answer is
-// already owed. The sanitizer writes one record, to the provider's logger,
-// and none to slog.Default().
+// already owed. The sanitizer writes one record per failing call, to the
+// provider's logger, and none to slog.Default().
 func TestPortErrors_Resume(t *testing.T) { //nolint:paralleltest // it replaces slog.Default()
 	only := os.Getenv(pe7gRowEnv)
 	if only != "" {
@@ -423,10 +461,10 @@ func TestPortErrors_Resume(t *testing.T) { //nolint:paralleltest // it replaces 
 			t.Helper()
 
 			pe7gSameAsPlain(t, site, plain, got)
-			if pe7gLogged(site) == "" {
+			if pe7gLogged(site) == "" && got.text != "" {
 				assert.True(t, got.unwalkable, "the failure carries the sanitizer's fault")
 			}
-			pe7eOneAbort(t, got.aborts, got.failures, reason)
+			pe7gAbortPerHit(t, got, reason)
 		}
 	}
 

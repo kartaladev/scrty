@@ -268,6 +268,10 @@ type config struct {
 	// header and expose DPoP-Nonce and WWW-Authenticate.
 	dpopEnabled bool
 
+	// withoutBearerChallenge is WithoutBearerChallenge: a 401 on a chain with a
+	// built-in bearer carries no challenge the chain adds.
+	withoutBearerChallenge bool
+
 	// certBinding is the certificate binding EnableCertificateBinding built,
 	// and nil without it. Both bearer modes and every issuing endpoint read
 	// it.
@@ -743,6 +747,12 @@ func (c *config) build() (*Chain, error) {
 	// The provider's endpoint groups settle here, so that what one registers with
 	// CSRF protection is there when that reads it, below.
 	if err := c.wireOIDCProvider(); err != nil {
+		return nil, err
+	}
+
+	// Once the provider is wired, whose endpoints answer their own challenges,
+	// and every bearer and DPoP option has been applied.
+	if err := c.wireBearerChallenge(); err != nil {
 		return nil, err
 	}
 

@@ -977,6 +977,23 @@ func TestDeviceEndpoints_WithoutTheGrant(t *testing.T) {
 				assert.ErrorContains(t, err, "WithOIDCDeviceAuthorizationLimiter")
 			},
 		},
+		{
+			name: "code-entry redirects given without the grant are refused",
+			build: func(t *testing.T) (*httpsec.Chain, error) {
+				t.Helper()
+
+				p := f.provider(t)
+
+				return httpsec.New(append(f.wired(t, p), httpsec.EnableOIDCProvider(p,
+					httpsec.WithOIDCEntryRedirects()))...)
+			},
+			assert: func(t *testing.T, _ *httpsec.Chain, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.ErrorContains(t, err, "WithOIDCEntryRedirects")
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -1260,5 +1277,206 @@ func TestDeviceEndpoints_NothingSecretLogged(t *testing.T) {
 	written := logs.String() + strings.Join(bodies, "\n")
 	for _, secret := range []string{issued.UserCode, raw, issued.DeviceCode, "wrong-secret", raw[:4] + "-BBBB"} {
 		assert.NotContainsf(t, written, secret, "%q is written", secret)
+	}
+}
+
+// deviceLookupStore counts the user-code lookups that reach the device store.
+type deviceLookupStore struct {
+	oidcprovider.DeviceAuthorizationStore
+
+	lookups atomic.Int64
+}
+
+func (s *deviceLookupStore) LoadByUserCode(
+	ctx context.Context, digest []byte, now time.Time,
+) (*oidcprovider.DeviceAuthorization, error) {
+	s.lookups.Add(1)
+
+	return s.DeviceAuthorizationStore.LoadByUserCode(ctx, digest, now)
+}
+
+// TestDeviceEntryRedirects pins WithOIDCEntryRedirects: a refused code entry is sent back
+// to the code-entry page with result=invalid or result=throttled and nothing else, and
+// without the option it is refused as before.
+func TestDeviceEntryRedirects(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		on   bool
+		run  func(t *testing.T, w *opFlow, store *deviceLookupStore) flowAnswer
+		// assert receives the store, so a case can say whether the code was looked up.
+		assert func(t *testing.T, a flowAnswer, store *deviceLookupStore)
+	}
+
+	sentBack := func(result string) func(*testing.T, flowAnswer, *deviceLookupStore) {
+		return func(t *testing.T, a flowAnswer, _ *deviceLookupStore) {
+			t.Helper()
+
+			require.Equal(t, http.StatusSeeOther, a.status, a.body)
+			assert.Equal(t, opIssuer+deviceEntryPage+"?result="+result, a.header.Get("Location"))
+			assert.Equal(t, "no-store", a.header.Get("Cache-Control"))
+			assert.Empty(t, a.body)
+			assert.NoError(t, a.err)
+		}
+	}
+
+	unknown := func(t *testing.T, w *opFlow, _ *deviceLookupStore) flowAnswer {
+		t.Helper()
+
+		return w.enter(t, deviceUnknownCode)
+	}
+
+	cases := []testCase{
+		{
+			name: "default: an unknown code is refused as before",
+			run:  unknown,
+			assert: func(t *testing.T, a flowAnswer, _ *deviceLookupStore) {
+				t.Helper()
+
+				assert.Equal(t, http.StatusBadRequest, a.status)
+				require.ErrorIs(t, a.err, oidcprovider.ErrInvalidUserCode)
+				assert.Empty(t, a.header.Get("Location"))
+			},
+		},
+		{name: "an unknown code: result=invalid", on: true, run: unknown, assert: sentBack("invalid")},
+		{
+			name: "an unknown code posted with a flow cookie: result=invalid",
+			on:   true,
+			run: func(t *testing.T, w *opFlow, _ *deviceLookupStore) flowAnswer {
+				t.Helper()
+
+				return w.postForm(t, deviceEntryPath, url.Values{"user_code": {deviceUnknownCode}},
+					flowCookieOf(flowCookie, "anything"))
+			},
+			assert: sentBack("invalid"),
+		},
+		{
+			name: "an expired code: result=invalid",
+			on:   true,
+			run: func(t *testing.T, w *opFlow, _ *deviceLookupStore) flowAnswer {
+				t.Helper()
+
+				code := w.issueDevice(t, deviceTV).UserCode
+				w.clk.Advance(oidcprovider.DefaultDeviceLifetime + time.Second)
+
+				return w.enter(t, code)
+			},
+			assert: sentBack("invalid"),
+		},
+		{
+			name: "a code another browser claimed: result=invalid",
+			on:   true,
+			run: func(t *testing.T, w *opFlow, _ *deviceLookupStore) flowAnswer {
+				t.Helper()
+
+				code := w.issueDevice(t, deviceTV).UserCode
+				require.Equal(t, http.StatusSeeOther, w.enter(t, code).status)
+
+				return w.enter(t, code)
+			},
+			assert: sentBack("invalid"),
+		},
+		{
+			name: "a repeated code: result=invalid, with neither code in the redirect",
+			on:   true,
+			run: func(t *testing.T, w *opFlow, _ *deviceLookupStore) flowAnswer {
+				t.Helper()
+
+				return w.entryGET(t, "user_code=AAAA-AAAA&user_code=BBBB-BBBB")
+			},
+			assert: sentBack("invalid"),
+		},
+		{
+			name: "a throttled source: result=throttled, and the code is not looked up",
+			on:   true,
+			run: func(t *testing.T, w *opFlow, store *deviceLookupStore) flowAnswer {
+				t.Helper()
+
+				code := w.issueDevice(t, deviceTV).UserCode
+				for i := range oidcprovider.DefaultUserCodeEntryLimit {
+					a := w.enter(t, deviceUnknownCode)
+					require.Equalf(t, http.StatusSeeOther, a.status, "failure %d", i+1)
+				}
+
+				store.lookups.Store(0)
+
+				return w.enter(t, code)
+			},
+			assert: func(t *testing.T, a flowAnswer, store *deviceLookupStore) {
+				t.Helper()
+
+				sentBack("throttled")(t, a, store)
+				assert.Zero(t, store.lookups.Load(), "the code was not looked up")
+				assert.Nil(t, a.cookie(flowCookie))
+			},
+		},
+		{
+			name: "plain HTTP is still refused, not sent back",
+			on:   true,
+			run: func(t *testing.T, w *opFlow, _ *deviceLookupStore) flowAnswer {
+				t.Helper()
+
+				return w.enter(t, deviceUnknownCode, flowPlainHTTP)
+			},
+			assert: func(t *testing.T, a flowAnswer, _ *deviceLookupStore) {
+				t.Helper()
+
+				assert.Equal(t, http.StatusBadRequest, a.status)
+				assert.Empty(t, a.header.Get("Location"))
+			},
+		},
+		{
+			name: "a cross-site POST is refused, not sent back",
+			on:   true,
+			run: func(t *testing.T, w *opFlow, _ *deviceLookupStore) flowAnswer {
+				t.Helper()
+
+				return w.postForm(t, deviceEntryPath, url.Values{"user_code": {deviceUnknownCode}},
+					flowHeader("Sec-Fetch-Site", "cross-site"), flowHeader("Origin", "https://evil.example.com"))
+			},
+			assert: func(t *testing.T, a flowAnswer, _ *deviceLookupStore) {
+				t.Helper()
+
+				require.ErrorIs(t, a.err, httpsec.ErrCrossSiteRequest)
+				assert.Equal(t, http.StatusForbidden, a.status)
+				assert.Empty(t, a.header.Get("Location"))
+			},
+		},
+		{
+			name: "an oversized POST is refused, not sent back",
+			on:   true,
+			run: func(t *testing.T, w *opFlow, _ *deviceLookupStore) flowAnswer {
+				t.Helper()
+
+				return w.postForm(t, deviceEntryPath, url.Values{
+					"user_code": {deviceUnknownCode},
+					"pad":       {strings.Repeat("a", int(httpsec.DefaultLoginBodyLimit))},
+				})
+			},
+			assert: func(t *testing.T, a flowAnswer, _ *deviceLookupStore) {
+				t.Helper()
+
+				require.ErrorIs(t, a.err, httpsec.ErrRequestTooLarge)
+				assert.Equal(t, http.StatusRequestEntityTooLarge, a.status)
+				assert.Empty(t, a.header.Get("Location"))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := &deviceLookupStore{DeviceAuthorizationStore: oidcprovider.NewMemoryDeviceAuthorizationStore()}
+			setup := deviceSetup("", oidcprovider.WithDeviceAuthorizationStore(store))
+			if tc.on {
+				setup.endpoint = append(setup.endpoint, httpsec.WithOIDCEntryRedirects())
+			}
+
+			w := newOPFlow(t, setup)
+
+			tc.assert(t, tc.run(t, w, store), store)
+		})
 	}
 }

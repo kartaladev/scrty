@@ -2,6 +2,7 @@ package httpsec_test
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -814,6 +815,99 @@ func TestCORS_FollowsChain(t *testing.T) {
 			req.Header = tc.header
 
 			tc.assert(t, serveCORS(t, chain, req))
+		})
+	}
+}
+
+// TestCORS_ExposesBearerChallenge pins that a chain adding the bearer challenge exposes WWW-Authenticate,
+// so a page on another origin can read it, whether or not DPoP is on.
+func TestCORS_ExposesBearerChallenge(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		bearer bool
+		// bearerLast puts the bearer option after opts instead of before.
+		bearerLast bool
+		opts       []httpsec.Option
+		assert     func(t *testing.T, run corsRun)
+	}
+
+	policy := httpsec.CORSPolicy{AllowedOrigins: []string{allowedOrigin}}
+	exposes := func(want string) func(*testing.T, corsRun) {
+		return func(t *testing.T, run corsRun) {
+			t.Helper()
+
+			assert.Equal(t, allowedOrigin, run.rec.Header().Get("Access-Control-Allow-Origin"))
+			assert.Equal(t, want, run.rec.Header().Get("Access-Control-Expose-Headers"))
+		}
+	}
+	dpop := httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL})
+
+	cases := []testCase{
+		{
+			name: "bearer chain, DPoP off, challenge on: WWW-Authenticate is exposed", bearer: true,
+			opts:   []httpsec.Option{httpsec.EnableCORS(policy)},
+			assert: exposes("WWW-Authenticate"),
+		},
+		{
+			name: "CORS enabled before the bearer option: still exposed", bearer: true, bearerLast: true,
+			opts:   []httpsec.Option{httpsec.EnableCORS(policy)},
+			assert: exposes("WWW-Authenticate"),
+		},
+		{
+			name: "the consumer already exposes it in its own spelling: listed once", bearer: true,
+			opts: []httpsec.Option{httpsec.EnableCORS(httpsec.CORSPolicy{
+				AllowedOrigins: []string{allowedOrigin}, ExposedHeaders: []string{"www-authenticate"},
+			})},
+			assert: exposes("www-authenticate"),
+		},
+		{
+			name: "WithoutBearerChallenge, DPoP off: not exposed", bearer: true,
+			opts:   []httpsec.Option{httpsec.EnableCORS(policy), httpsec.WithoutBearerChallenge()},
+			assert: exposes(""),
+		},
+		{
+			name: "WithoutBearerChallenge, DPoP on: exposed with DPoP's header", bearer: true,
+			opts:   []httpsec.Option{httpsec.EnableCORS(policy), httpsec.WithoutBearerChallenge(), dpop},
+			assert: exposes("DPoP-Nonce, WWW-Authenticate"),
+		},
+		{
+			name: "the additions turned off: nothing is exposed", bearer: true,
+			opts:   []httpsec.Option{httpsec.EnableCORS(policy, httpsec.WithoutAutomaticCORSHeaders())},
+			assert: exposes(""),
+		},
+		{
+			name:   "no built-in bearer, so no challenge: nothing is exposed",
+			opts:   []httpsec.Option{httpsec.EnableCORS(policy)},
+			assert: exposes(""),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newDPoPBearerWorld(t)
+
+			opts := []httpsec.Option{httpsec.WithClock(w.clk), httpsec.WithLogger(slog.New(slog.DiscardHandler))}
+			bearer := httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
+				Verifier: w.gen, Sessions: w.sessions, Users: w.users,
+			})
+
+			switch {
+			case tc.bearer && tc.bearerLast:
+				opts = append(append(opts, tc.opts...), bearer)
+			case tc.bearer:
+				opts = append(append(opts, bearer), tc.opts...)
+			default:
+				opts = append(opts, tc.opts...)
+			}
+
+			chain, err := httpsec.New(opts...)
+			require.NoError(t, err)
+
+			tc.assert(t, serveCORS(t, chain, corsRequest(t, http.MethodGet, allowedOrigin)))
 		})
 	}
 }

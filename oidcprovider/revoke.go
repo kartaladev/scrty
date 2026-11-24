@@ -29,8 +29,10 @@ const (
 //
 // A refresh token counts only when its secret is a record of the family it names, because a family
 // is no credential. A value that fails that, a JWT access token, an unknown value and an expired
-// token all answer success with nothing revoked. A JWT reads no key: there is nothing it could end,
-// so whose it is goes unasked, and it is answered success whichever client presents it.
+// token all answer success with nothing revoked. By default a JWT reads no key: there is nothing it
+// could end, so whose it is goes unasked, and it is answered success whichever client presents it.
+// Under WithStrictRevocation, the calling client's own valid JWT is refused with
+// unsupported_token_type instead, which reads the key and the token's grant to tell.
 //
 // A token the secret proves is another client's is refused with invalid_grant, revoking nothing. A
 // public client may revoke by naming its client_id alone (RFC 7009 §2.1).
@@ -51,9 +53,32 @@ func (p *Provider) Revoke(ctx context.Context, credentials ClientCredentials, fo
 		return p.revokeRefreshToken(ctx, raw, rc)
 	case strings.HasPrefix(raw, accessTokenPrefix):
 		return p.revokeOpaqueToken(ctx, raw, rc)
+	case p.cfg.revokeRefusesJWT:
+		return p.refuseJWTRevocation(ctx, raw, rc)
 	default:
 		return nil
 	}
+}
+
+// refuseJWTRevocation answers WithStrictRevocation: the calling client's own JWT
+// access token, valid as VerifyAccessToken reads it, is refused with unsupported_token_type (RFC
+// 7009 §2.2.1), since nothing can end it before its exp. Anything VerifyAccessToken refuses (no
+// token, an expired one, one of a revoked grant) and another client's token answer success, as
+// without the option, so a client still learns nothing of a token not its own. A key source or
+// store that cannot answer is no verdict, and is returned as it is: success would tell the client
+// a token had ended that may still be valid.
+func (p *Provider) refuseJWTRevocation(ctx context.Context, raw string, rc *RegisteredClient) error {
+	at, err := p.VerifyAccessToken(ctx, raw)
+	switch {
+	case isRefusal(err):
+		return nil
+	case err != nil:
+		return err
+	case at.ClientID != rc.ID:
+		return nil
+	}
+
+	return &Error{Code: CodeUnsupportedTokenType}
 }
 
 // readTokenRequest is what revocation and introspection share: a repeated parameter is refused, the

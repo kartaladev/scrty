@@ -401,6 +401,17 @@ func TestBroker_HookLinksThenApplies(t *testing.T) {
 			},
 		},
 		{
+			name: "an apply step wrapping ErrUserInfoFailed is a broker failure, not that outcome",
+			then: func(env) func(context.Context) error {
+				return func(context.Context) error { return fmt.Errorf("lookup: %w", oidc.ErrUserInfoFailed) }
+			},
+			assert: func(t *testing.T, e env, p *identity.Principal, err error) {
+				assertBrokerFailure(t, p, err)
+				assert.NotErrorIs(t, err, oidc.ErrUserInfoFailed)
+				require.NotNil(t, findCorp(t, e.links, "s-1"))
+			},
+		},
+		{
 			name: "an apply step stopped by a cancelled context is the context's error, and the link stays",
 			then: func(e env) func(context.Context) error {
 				return func(ctx context.Context) error {

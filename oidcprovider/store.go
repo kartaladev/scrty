@@ -148,6 +148,16 @@ type PendingRequestStore interface {
 	DeleteExpired(ctx context.Context, before time.Time) (int, error)
 }
 
+// PendingRequestCounter is what WithPendingRequestLimit asks of a PendingRequestStore: a count of
+// live requests. A store without it cannot be given a limit; New fails matching ErrConfig. The
+// MemoryPendingRequestStore and the SQL adapters' stores implement it.
+type PendingRequestCounter interface {
+	// CountLive returns how many records have an ExpiresAt strictly after now, at any Stage.
+	// It judges by now alone, writes nothing, and need not share a transaction with Create.
+	// An error must carry no digest; a failure or a negative count is a dependency failure.
+	CountLive(ctx context.Context, now time.Time) (int, error)
+}
+
 // CodeRecord is the request data of one authorization code. The code's secret and
 // its single spend live in token/onetime, and this record is keyed by that token's
 // identifier.
@@ -284,6 +294,9 @@ const (
 	CausePasswordChange RevocationCause = "password_change"
 	// CauseUserRequest is the user ending their own access.
 	CauseUserRequest RevocationCause = "user_request"
+	// CauseUnanswered is a code written but never handed out, because its answer failed. The
+	// family has no grant, and no event reports it.
+	CauseUnanswered RevocationCause = "unanswered"
 )
 
 // Grant is the authoritative record of what one code exchange granted. It is read

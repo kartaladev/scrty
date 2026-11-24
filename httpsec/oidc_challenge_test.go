@@ -379,8 +379,9 @@ func TestOIDCSignInEndpoints_OtherRefusalsCarryNoChallenge(t *testing.T) {
 	}
 }
 
-// A bad bearer token elsewhere on the chain is refused as it always was: the provider's two sign-in
-// endpoints are the only ones it challenges, and this pins that the change did not widen to the rest.
+// A bad bearer token anywhere on the chain outside the provider's own endpoints is challenged with one
+// Bearer invalid_token, as the chain's bearer challenge does for any 401. Only the provider's endpoints
+// answer their own challenges and are left as they came.
 func TestOIDCSignInEndpoints_ChallengeStaysOnItsOwnPaths(t *testing.T) {
 	t.Parallel()
 
@@ -394,6 +395,12 @@ func TestOIDCSignInEndpoints_ChallengeStaysOnItsOwnPaths(t *testing.T) {
 		assert func(t *testing.T, a flowAnswer)
 	}
 
+	challenged := func(t *testing.T, a flowAnswer) {
+		t.Helper()
+
+		require.Equal(t, http.StatusUnauthorized, a.status, a.body)
+		assert.Equal(t, []string{`Bearer error="invalid_token"`}, a.header.Values("WWW-Authenticate"))
+	}
 	unchallenged := func(t *testing.T, a flowAnswer) {
 		t.Helper()
 
@@ -402,18 +409,18 @@ func TestOIDCSignInEndpoints_ChallengeStaysOnItsOwnPaths(t *testing.T) {
 	}
 
 	cases := []testCase{
-		{name: "a path outside the provider", method: http.MethodGet, path: "/api/things", assert: unchallenged},
-		{name: "a provider path that is not a sign-in endpoint", method: http.MethodGet, path: "/oauth2/other", assert: unchallenged},
-		{name: "a path only sharing the consents list's name", method: http.MethodGet, path: consentsPath + "-other", assert: unchallenged},
+		{name: "a path outside the provider", method: http.MethodGet, path: "/api/things", assert: challenged},
+		{name: "a provider path that is not a sign-in endpoint", method: http.MethodGet, path: "/oauth2/other", assert: challenged},
+		{name: "a path only sharing the consents list's name", method: http.MethodGet, path: consentsPath + "-other", assert: challenged},
 		{
 			// The consents answer the list's path and one segment below it; another endpoint of the
 			// chain under that path (a re-authentication prefix at /oauth2/consents/a) is no consent's.
 			name:   "a deeper path under the consents list, which another endpoint of the chain may answer",
-			method: http.MethodPost, path: consentsPath + "/a/challenge/totp", assert: unchallenged,
+			method: http.MethodPost, path: consentsPath + "/a/challenge/totp", assert: challenged,
 		},
 		{
 			name:   "the consents list's path with a trailing slash",
-			method: http.MethodGet, path: consentsPath + "/", assert: unchallenged,
+			method: http.MethodGet, path: consentsPath + "/", assert: challenged,
 		},
 		{
 			// No endpoint of the provider's outer slot calls on, and each answers its own refusals. Whatever
@@ -429,21 +436,21 @@ func TestOIDCSignInEndpoints_ChallengeStaysOnItsOwnPaths(t *testing.T) {
 			setup: flowSetup{endpoint: []httpsec.OIDCProviderOption{
 				httpsec.WithOIDCProviderPath(httpsec.OIDCConsents, movedConsentsPath),
 			}},
-			method: http.MethodGet, path: consentsPath, assert: unchallenged,
+			method: http.MethodGet, path: consentsPath, assert: challenged,
 		},
 		{
 			name: "a path under the default consents path, once the consumer moved the list",
 			setup: flowSetup{endpoint: []httpsec.OIDCProviderOption{
 				httpsec.WithOIDCProviderPath(httpsec.OIDCConsents, movedConsentsPath),
 			}},
-			method: http.MethodDelete, path: consentsPath + "/" + flowWeb, assert: unchallenged,
+			method: http.MethodDelete, path: consentsPath + "/" + flowWeb, assert: challenged,
 		},
 		{
 			name: "the default resume path, once the consumer moved the resume",
 			setup: flowSetup{endpoint: []httpsec.OIDCProviderOption{
 				httpsec.WithOIDCProviderPath(httpsec.OIDCResume, movedResumePath),
 			}},
-			method: http.MethodPost, path: flowResumePath, assert: unchallenged,
+			method: http.MethodPost, path: flowResumePath, assert: challenged,
 		},
 	}
 

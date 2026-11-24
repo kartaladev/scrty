@@ -538,7 +538,8 @@ func TestManagerCallback(t *testing.T) {
 			assert: func(t *testing.T, e *callbackEnv, got oidc.CallbackResult, err error) {
 				require.ErrorIs(t, err, oidc.ErrExchangeFailed)
 				assert.NotErrorIs(t, err, oidc.ErrFlowUnspent)
-				assert.Equal(t, oidc.CallbackResult{}, got)
+				assert.Equal(t, oidc.CallbackResult{Next: "/after"}, got,
+					"a failure after the spend still reports the flow's destination")
 				spentByLater(t, e)
 			},
 		},
@@ -607,7 +608,8 @@ func TestManagerCallback(t *testing.T) {
 			assert: func(t *testing.T, e *callbackEnv, got oidc.CallbackResult, err error) {
 				require.ErrorIs(t, err, oidc.ErrNoLinkedAccount)
 				assert.NotErrorIs(t, err, oidc.ErrFlowUnspent)
-				assert.Equal(t, oidc.CallbackResult{}, got)
+				assert.Equal(t, oidc.CallbackResult{Next: "/after"}, got,
+					"a failure after the spend still reports the flow's destination")
 				spentByLater(t, e)
 			},
 		},
@@ -726,7 +728,8 @@ func TestManagerCallback(t *testing.T) {
 			assert: func(t *testing.T, _ *callbackEnv, got oidc.CallbackResult, err error) {
 				require.Error(t, err)
 				assert.NotErrorIs(t, err, oidc.ErrFlowUnspent)
-				assert.Equal(t, oidc.CallbackResult{}, got)
+				assert.Equal(t, oidc.CallbackResult{Next: "/after"}, got,
+					"a failure after the spend still reports the flow's destination")
 			},
 		},
 		// The "Consumer broker" scenario of the identity-linking spec: a consumer
@@ -821,7 +824,8 @@ func TestManagerCallback(t *testing.T) {
 			},
 			assert: func(t *testing.T, _ *callbackEnv, got oidc.CallbackResult, err error) {
 				require.ErrorIs(t, err, context.Canceled)
-				assert.Equal(t, oidc.CallbackResult{}, got)
+				assert.Equal(t, oidc.CallbackResult{Next: "/after"}, got,
+					"a failure after the spend still reports the flow's destination")
 			},
 		},
 	}

@@ -316,6 +316,10 @@ const (
 	OperationOAuth2Authorize = "scrty.oauth2.authorize"
 	// OperationOAuth2AuthorizeResume resumes a parked authorization request.
 	OperationOAuth2AuthorizeResume = "scrty.oauth2.authorize.resume"
+	// OperationOAuth2AuthorizeCancel ends a parked authorization request the user gave
+	// up on, answering the client access_denied. It is served at /authorize/cancel
+	// (OIDCCancel).
+	OperationOAuth2AuthorizeCancel = "scrty.oauth2.authorize.cancel"
 	// OperationOAuth2Token is the provider's token endpoint.
 	OperationOAuth2Token = "scrty.oauth2.token" //nolint:gosec // G101: an operation identifier, not a credential
 	// OperationOAuth2UserInfo is the provider's UserInfo endpoint.

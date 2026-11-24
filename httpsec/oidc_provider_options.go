@@ -42,6 +42,11 @@ const (
 	// OIDCDeviceEntry is where a browser enters a user code, /device. It is
 	// served only when the provider enabled the device grant.
 	OIDCDeviceEntry
+	// OIDCCancel is where a login page ends a parked request the user gave up on,
+	// /authorize/cancel: the client is answered access_denied. Move it with
+	// WithOIDCProviderPath(OIDCCancel, path). It shares the resume's throttle and
+	// body limit.
+	OIDCCancel
 
 	oidcEndpointCount
 )
@@ -61,6 +66,8 @@ var oidcEndpointNames = [oidcEndpointCount]struct{ name, suffix string }{
 
 	OIDCDeviceAuthorization: {"OIDCDeviceAuthorization", "/device-authorization"},
 	OIDCDeviceEntry:         {"OIDCDeviceEntry", "/device"},
+
+	OIDCCancel: {"OIDCCancel", "/authorize/cancel"},
 }
 
 // String names the endpoint as its constant does.
@@ -201,6 +208,46 @@ const optionWithoutOIDCIssuerBasePathCheck = "WithoutOIDCIssuerBasePathCheck"
 func WithoutOIDCIssuerBasePathCheck() OIDCProviderOption {
 	return func(op *oidcEndpoints) error {
 		op.issuerBasePathWaived = true
+
+		return nil
+	}
+}
+
+// WithOIDCThrottle429 answers a throttled source at the token, revocation,
+// introspection and device authorization endpoints with 429, a Retry-After in
+// whole seconds and the error temporarily_unavailable, without reading the
+// client's credentials.
+//
+// Default: 401 invalid_client, which a client cannot tell from a wrong
+// credential. Retry-After is the endpoint limiter's window (its policy, through
+// ratelimit.PolicyReporter, for a consumer's limiter), at least 1 second and at
+// most a day; a limiter that reports no window gives 1. A limiter that cannot
+// answer still refuses with invalid_client.
+func WithOIDCThrottle429() OIDCProviderOption {
+	return func(op *oidcEndpoints) error {
+		op.token.throttle.answer429 = true
+		op.revoke.revocation.throttle.answer429 = true
+		op.revoke.introspection.throttle.answer429 = true
+		op.deviceAuthorization.throttle.answer429 = true
+
+		return nil
+	}
+}
+
+// WithOIDCEntryRedirects sends a refused user-code entry back to the provider's
+// code-entry page with 303: an unknown, expired or claimed code, or one that does not
+// parse, with the query result=invalid, and a throttled entry with result=throttled.
+// Nothing the entry carried is added, and the page's own query is kept.
+//
+// Default: the entry is refused through the chain's error handling, 400 for an invalid
+// code and 429 for a throttled one. A provider without the device grant refuses this
+// option.
+func WithOIDCEntryRedirects() OIDCProviderOption {
+	const option = "WithOIDCEntryRedirects"
+
+	return func(op *oidcEndpoints) error {
+		op.deviceEntry.redirects = true
+		op.deviceGrantOption(option)
 
 		return nil
 	}

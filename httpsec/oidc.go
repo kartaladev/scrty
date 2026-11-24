@@ -165,6 +165,7 @@ type oidcInterceptor struct {
 	users      identity.UserLoader
 	provider   *oidcEndpoints
 	loginURL   *url.URL
+	parked     parkedFailureConfig // where a failed login for a parked request is answered
 
 	sessions *session.Sessions
 	tokens   token.Generator

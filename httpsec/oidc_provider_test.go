@@ -1616,8 +1616,8 @@ func TestOIDCProvider_Slots(t *testing.T) {
 // TestOIDCProvider_EndpointsListedAtServingSlot pins that the inventory lists
 // each provider operation at the slot that answers it: the resume and the
 // consents behind the bearer and the gates (OrderOIDCProviderSession), so
-// after form login (OrderFormLogin), and every other operation at the outer
-// slot (OrderOIDCProvider), before it. Each operation is listed once.
+// after form login (OrderFormLogin), and every other operation, the cancel
+// among them, at the outer slot (OrderOIDCProvider), before it. Each operation is listed once.
 func TestOIDCProvider_EndpointsListedAtServingSlot(t *testing.T) {
 	t.Parallel()
 
@@ -1635,7 +1635,7 @@ func TestOIDCProvider_EndpointsListedAtServingSlot(t *testing.T) {
 		httpsec.OperationOAuth2Authorize, httpsec.OperationOAuth2Token, httpsec.OperationOAuth2UserInfo,
 		httpsec.OperationOAuth2Revoke, httpsec.OperationOAuth2Introspect, httpsec.OperationOAuth2EndSession,
 		httpsec.OperationOAuth2EndSessionConfirm, httpsec.OperationOAuth2OpenIDConfiguration,
-		httpsec.OperationOAuth2AuthorizationServerMetadata,
+		httpsec.OperationOAuth2AuthorizationServerMetadata, httpsec.OperationOAuth2AuthorizeCancel,
 	} {
 		assert.Equalf(t, 1, countOf(ids, id), "%s is listed once", id)
 		assert.Lessf(t, slices.Index(ids, id), login, "%s is listed at the outer slot, before form login", id)

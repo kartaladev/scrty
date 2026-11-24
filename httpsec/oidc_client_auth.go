@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -67,7 +68,18 @@ type oidcClientThrottle struct {
 
 	guard   sourceGuard
 	sampler *refusalSampler
+
+	// answer429 is WithOIDCThrottle429: admitClient answers an over-limit source
+	// with 429 and retryAfter, rather than invalid_client.
+	answer429 bool
+
+	// retryAfter is the Retry-After an over-limit source is answered with, in
+	// whole seconds, settled from the limiter's window.
+	retryAfter string
 }
+
+// maxOIDCRetryAfter bounds the Retry-After a throttled source is told to wait.
+const maxOIDCRetryAfter = 24 * time.Hour
 
 // settle builds the guard under flow, from a group's settle.
 func (t *oidcClientThrottle) settle(c *config, flow string) error {
@@ -79,8 +91,44 @@ func (t *oidcClientThrottle) settle(c *config, flow string) error {
 
 	t.flow = flow
 	t.guard = guard
+	t.retryAfter = retryAfterSeconds(limiterWindow(t.limiter, defaultOIDCClientFailureWindow))
 
 	return nil
+}
+
+// limiterWindow is the window limiter counts over: the chain's window for its own
+// limiter (nil), the one a consumer's limiter reports (ratelimit.PolicyReporter), and
+// zero for one that reports none.
+func limiterWindow(limiter ratelimit.Limiter, chainWindow time.Duration) time.Duration {
+	if limiter == nil {
+		return chainWindow
+	}
+
+	if p, ok := limiter.(ratelimit.PolicyReporter); ok {
+		_, window := p.Policy()
+
+		return window
+	}
+
+	return 0
+}
+
+// retryAfterSeconds is d as a Retry-After value: whole seconds, rounded up, at least
+// 1 and at most maxOIDCRetryAfter. A d of zero or less, which says nothing of when a
+// retry may succeed, gives 1.
+func retryAfterSeconds(d time.Duration) string {
+	if d <= 0 {
+		return "1"
+	}
+
+	d = min(d, maxOIDCRetryAfter)
+
+	secs := d / time.Second
+	if d%time.Second != 0 {
+		secs++
+	}
+
+	return strconv.FormatInt(int64(secs), 10)
 }
 
 // wire takes the chain's sampler, from a group's wire.
@@ -106,6 +154,24 @@ func (t *oidcClientThrottle) admit(ex *Exchange, op *oidcEndpoints) (ratelimit.S
 	src, err := sourceThrottled(ex.Context(), t.guard, ex.Request.ClientIP(), t.flow, t.sampler, op.log, op.now())
 
 	return src, err == nil
+}
+
+// admitClient is admit for an endpoint a client authenticates at, answering a refused
+// source itself: invalid_client by default, and with answer429 an over-limit source
+// with 429 (writeOIDCThrottled). A source that cannot be attributed, and a limiter that
+// cannot answer, are invalid_client either way. It reports whether the source was
+// admitted, and the error writing a refusal met.
+func (t *oidcClientThrottle) admitClient(ex *Exchange, op *oidcEndpoints) (ratelimit.Source, bool, error) {
+	src, err := sourceThrottled(ex.Context(), t.guard, ex.Request.ClientIP(), t.flow, t.sampler, op.log, op.now())
+	if err == nil {
+		return src, true, nil
+	}
+
+	if t.answer429 && overLimit(err) {
+		return src, false, writeOIDCThrottled(ex, t.retryAfter)
+	}
+
+	return src, false, writeOIDCRefusal(ex, oidcprovider.CodeInvalidClient)
 }
 
 // charge counts one failed attempt against src, whether or not the caller is still
@@ -206,6 +272,22 @@ func writeOIDCRefusal(ex *Exchange, code string) error {
 
 	ex.Writer.SetHeader("Content-Type", "application/json")
 	ex.Writer.WriteHeader(status)
+	_, err = ex.Writer.Write(encoded)
+
+	return err
+}
+
+// writeOIDCThrottled answers an over-limit source with 429, retryAfter as Retry-After,
+// and temporarily_unavailable, a code that names no client.
+func writeOIDCThrottled(ex *Exchange, retryAfter string) error {
+	encoded, err := json.Marshal(oidcRefusalDocument{Error: oidcprovider.CodeTemporarilyUnavailable})
+	if err != nil {
+		return err
+	}
+
+	ex.Writer.SetHeader("Retry-After", retryAfter)
+	ex.Writer.SetHeader("Content-Type", "application/json")
+	ex.Writer.WriteHeader(http.StatusTooManyRequests)
 	_, err = ex.Writer.Write(encoded)
 
 	return err

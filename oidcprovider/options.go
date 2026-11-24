@@ -62,9 +62,19 @@ type config struct {
 	browserSessions    bool
 	logoutConfirmation bool
 	// dpopEnabled says the chain verifies DPoP proofs, so a request's dpop_jkt can be honoured.
-	dpopEnabled       bool
-	bounds            RequestBounds
-	pendingLifetime   time.Duration
+	dpopEnabled     bool
+	bounds          RequestBounds
+	pendingLifetime time.Duration
+	// expiredGrace is how long past its expiry a parked request is still answered, with
+	// access_denied, rather than refused as an unknown handle. Zero answers none.
+	expiredGrace time.Duration
+	// pendingCeiling is the number of live parked requests at which a new one is refused, and
+	// zero sets none.
+	pendingCeiling    int
+	pendingCeilingSet bool
+	// revokeRefusesJWT answers a revocation of the caller's own valid JWT access token with
+	// unsupported_token_type, rather than success with nothing revoked.
+	revokeRefusesJWT  bool
 	codeLifetime      time.Duration
 	assertionAudience AudienceRule
 	// assertionTokenEndpoint is the audience URL AudienceIssuerOrTokenEndpoint accepts.
@@ -133,6 +143,8 @@ type config struct {
 const (
 	defaultPendingLifetime     = 10 * time.Minute
 	maxPendingLifetime         = 30 * time.Minute
+	defaultPendingRequestGrace = 10 * time.Minute
+	maxPendingRequestGrace     = 30 * time.Minute
 	defaultCodeLifetime        = 60 * time.Second
 	maxCodeLifetime            = 10 * time.Minute
 	defaultAssertionMax        = 5 * time.Minute
@@ -148,6 +160,7 @@ func defaultConfig() config {
 	return config{
 		browserSessions:     true,
 		pendingLifetime:     defaultPendingLifetime,
+		expiredGrace:        defaultPendingRequestGrace,
 		codeLifetime:        defaultCodeLifetime,
 		assertionAudience:   AudienceIssuerOnly,
 		assertionMax:        defaultAssertionMax,
@@ -168,6 +181,9 @@ func defaultConfig() config {
 func (c *config) validate() error {
 	if err := checkBound("WithPendingRequestLifetime", c.pendingLifetime, maxPendingLifetime); err != nil {
 		return err
+	}
+	if c.expiredGrace < 0 || c.expiredGrace > maxPendingRequestGrace {
+		return fmt.Errorf("%w: WithPendingRequestGrace: must be between 0 and %s, got %s", ErrConfig, maxPendingRequestGrace, c.expiredGrace)
 	}
 	if err := checkBound("WithCodeLifetime", c.codeLifetime, maxCodeLifetime); err != nil {
 		return err
@@ -192,6 +208,9 @@ func (c *config) validate() error {
 	}
 	if c.pendingRequestsSet && nilcheck.IsNil(c.pendingRequests) {
 		return fmt.Errorf("%w: WithPendingRequestStore: must not be nil", ErrConfig)
+	}
+	if err := c.validateCeiling(); err != nil {
+		return err
 	}
 	if c.codesSet && nilcheck.IsNil(c.codes) {
 		return fmt.Errorf("%w: WithCodeStore: must not be nil", ErrConfig)
@@ -262,6 +281,22 @@ func (c *config) validate() error {
 	}
 
 	return c.bounds.resolve()
+}
+
+// validateCeiling refuses a ceiling that is not positive, and one over a store given that cannot
+// count. The default store can. It runs after the store is known not to be nil.
+func (c *config) validateCeiling() error {
+	if !c.pendingCeilingSet {
+		return nil
+	}
+	if c.pendingCeiling <= 0 {
+		return fmt.Errorf("%w: WithPendingRequestLimit: must be positive, got %d", ErrConfig, c.pendingCeiling)
+	}
+	if _, ok := c.pendingRequests.(PendingRequestCounter); c.pendingRequestsSet && !ok {
+		return fmt.Errorf("%w: WithPendingRequestLimit: the pending-request store %T cannot count its live requests: it must implement PendingRequestCounter", ErrConfig, c.pendingRequests)
+	}
+
+	return nil
 }
 
 func (c *config) validateLogoutDelivery() error {
@@ -358,6 +393,44 @@ func WithRequestBounds(bounds RequestBounds) Option {
 // 30 minutes.
 func WithPendingRequestLifetime(lifetime time.Duration) Option {
 	return func(c *config) { c.pendingLifetime = lifetime }
+}
+
+// WithPendingRequestGrace replaces how long past its expiry a parked request is still answered
+// at its redirect URI, with access_denied, rather than refused as an unknown handle. The default
+// is 10 minutes. The value must be between 0 and 30 minutes, or New fails matching ErrConfig;
+// zero answers no expired request.
+//
+// The window is [ExpiresAt, ExpiresAt+grace). Resume and EndPending answer within it;
+// PendingRequest never shows an expired request. ExpiryTasks keeps a request until the window
+// has passed.
+func WithPendingRequestGrace(grace time.Duration) Option {
+	return func(c *config) { c.expiredGrace = grace }
+}
+
+// WithPendingRequestLimit caps the live parked requests at limit, which must be positive or New
+// fails matching ErrConfig. The default is no limit.
+//
+// At limit or more live requests, Authorize answers a new one at its redirect URI with
+// temporarily_unavailable and parks nothing; a count that fails is answered with server_error.
+// Device and logout requests are counted but never refused. The limit protects the store, not
+// availability: a flood that reaches it refuses genuine users too. Count and insert are not
+// atomic, so concurrent parks can overshoot limit.
+//
+// The pending-request store must implement PendingRequestCounter, or New fails matching
+// ErrConfig. MemoryPendingRequestStore and the SQL adapters' stores do.
+func WithPendingRequestLimit(limit int) Option {
+	return func(c *config) { c.pendingCeiling, c.pendingCeilingSet = limit, true }
+}
+
+// WithStrictRevocation answers the revocation of the calling client's own valid JWT access token
+// with 400 and unsupported_token_type (RFC 7009 section 2.2.1). The default answers success with
+// nothing revoked, which reads no key.
+//
+// Valid means what VerifyAccessToken accepts, which costs a key and a grant read. Anything else
+// is answered success as by default. A key source or grant store that fails fails matching
+// ErrDependency.
+func WithStrictRevocation() Option {
+	return func(c *config) { c.revokeRefusesJWT = true }
 }
 
 // WithCodeLifetime replaces how long an authorization code lives. The default is

@@ -9,6 +9,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/porterr"
+	"github.com/kartaladev/scrty/pkg/id"
 )
 
 // isSilent reports a prompt=none request, which no page may ever answer.
@@ -131,20 +132,28 @@ func (p *Provider) userActive(ctx context.Context, user identity.UserID) (bool, 
 // touched only once the code is written, which makes it the last look at the session: one
 // gone by then has ended, so this answers as no session. A look that fails could not exclude
 // an end, so it is a dependency failure, as at the consent stage. Either way the code is one
-// no one was given, which expires.
+// no one was given: its family is recorded revoked (withdrawCode), and it expires.
 func (p *Provider) issueFromSession(
 	ctx context.Context, in AuthorizeInput, req *PendingRequest, rc *RegisteredClient, s SignIn, digest []byte, now time.Time,
 ) (AuthorizeResult, bool, error) {
-	target, err := p.issueCode(ctx, req, rc, s, req.Scopes)
+	target, family, err := p.issueCode(ctx, req, rc, s, req.Scopes)
 	if err != nil {
+		if family != id.Nil {
+			p.withdrawCode(ctx, family)
+		}
+
 		return AuthorizeResult{}, false, err
 	}
 
 	err = p.confirmBrowserSession(ctx, digest, in.IdleTimeout, now)
 	switch {
 	case errors.Is(err, ErrReauthenticate):
+		p.withdrawCode(ctx, family)
+
 		return AuthorizeResult{}, false, nil
 	case err != nil:
+		p.withdrawCode(ctx, family)
+
 		return AuthorizeResult{}, false, err
 	}
 

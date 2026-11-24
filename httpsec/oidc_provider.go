@@ -374,11 +374,12 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 //
 // Every throttle fails closed: a source over its limit, a limiter that cannot answer
 // and a source that cannot be attributed are refused alike. The authorization and
-// resume endpoints answer ErrOIDCThrottled, 429 with an empty body, because a browser
-// is in front of them and a 401 there reads as "sign the user in", which a page may
-// answer by repeating the call. So do the end-session endpoint and the logout
-// confirmation, which a browser is in front of too. The token endpoints answer invalid_client, which their
-// clients are told to expect.
+// resume and cancel endpoints answer ErrOIDCThrottled, 429 with an empty body, because a
+// browser is in front of them and a 401 there reads as "sign the user in", which a page may
+// answer by repeating the call. The resume's limiter and WithOIDCResumeBodyLimit govern the
+// cancel too. So do the end-session endpoint and the logout confirmation, which a browser
+// is in front of too. The token endpoints answer invalid_client, which their clients are
+// told to expect.
 //
 // # Cross-site requests
 //
@@ -405,10 +406,11 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // The device authorization endpoint, while the provider serves it, is exempt as the
 // token endpoint is: a device posts it with a client credential and no cookie.
 //
-// The resume, the logout confirmation, /consents and code entry are not exempt. The
-// consent stage and the logout confirmation may rest on the provider's browser session,
-// a cookie, and a code entry claims a code for the browser, so a cross-site POST to any
-// of them is refused as ErrCrossSiteRequest (403) before its handler runs.
+// The resume, the cancel, the logout confirmation, /consents and code entry are not
+// exempt. The consent stage and the logout confirmation may rest on the provider's browser
+// session, a cookie, the cancel ends a request on the flow cookie alone, and a code entry
+// claims a code for the browser, so a cross-site POST to any of them is refused as
+// ErrCrossSiteRequest (403) before its handler runs.
 //
 // A GET to code entry carrying user_code claims it only when the browser reports the
 // request as from the deployment's own origin: exactly one Sec-Fetch-Site line of
@@ -1276,6 +1278,7 @@ func (op *oidcEndpoints) endpoints() (outer, inner []Endpoint) {
 		at(OIDCIntrospect, OperationOAuth2Introspect, RequiresClientAuthentication, http.MethodPost),
 		at(OIDCEndSession, OperationOAuth2EndSession, RequiresNothing, http.MethodGet, http.MethodPost),
 		at(OIDCLogoutConfirm, OperationOAuth2EndSessionConfirm, RequiresNothing, http.MethodPost),
+		at(OIDCCancel, OperationOAuth2AuthorizeCancel, RequiresNothing, http.MethodPost),
 	}
 
 	if op.deviceServed() {

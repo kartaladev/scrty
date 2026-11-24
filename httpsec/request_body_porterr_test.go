@@ -351,6 +351,14 @@ func bodySites() []bodySite {
 			},
 		},
 		{
+			name: "OIDC cancel, readOIDCPageDocument", direct: false,
+			world: func(t *testing.T, ctx context.Context, extra ...httpsec.Option) (*httpsec.Chain, *http.Request, *capturingHandler) {
+				chain, _, logs := bodyOIDCWorld(t, extra...) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()
+
+				return chain, bodyPOST(ctx, opIssuer+flowCancelPath, "application/json", flowLoginBody("h")), logs
+			},
+		},
+		{
 			name: "OIDC resume, readOIDCResumeRequest", direct: false,
 			world: func(t *testing.T, ctx context.Context, extra ...httpsec.Option) (*httpsec.Chain, *http.Request, *capturingHandler) {
 				chain, s, logs := bodyOIDCWorld(t, extra...) //nolint:contextcheck // the case's ctx is the caller's; fixtures are built on t.Context()

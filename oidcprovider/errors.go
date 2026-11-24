@@ -62,14 +62,20 @@ var (
 
 // The protocol error codes an Error carries, as the standards spell them.
 const (
-	CodeInvalidRequest          = "invalid_request"
-	CodeInvalidClient           = "invalid_client"
-	CodeInvalidGrant            = "invalid_grant"
-	CodeUnauthorizedClient      = "unauthorized_client"
-	CodeUnsupportedGrantType    = "unsupported_grant_type"
-	CodeInvalidScope            = "invalid_scope"
-	CodeInvalidTarget           = "invalid_target"
-	CodeAccessDenied            = "access_denied"
+	CodeInvalidRequest       = "invalid_request"
+	CodeInvalidClient        = "invalid_client"
+	CodeInvalidGrant         = "invalid_grant"
+	CodeUnauthorizedClient   = "unauthorized_client"
+	CodeUnsupportedGrantType = "unsupported_grant_type"
+	CodeInvalidScope         = "invalid_scope"
+	CodeInvalidTarget        = "invalid_target"
+	CodeAccessDenied         = "access_denied"
+	// CodeTemporarilyUnavailable answers a request refused while the pending-request limit is
+	// reached (WithPendingRequestLimit), and may end one through EndPending.
+	CodeTemporarilyUnavailable = "temporarily_unavailable"
+	// CodeServerError answers a request a failing dependency kept from finishing, and may end
+	// one through EndPending.
+	CodeServerError             = "server_error"
 	CodeUnsupportedResponseType = "unsupported_response_type"
 	CodeLoginRequired           = "login_required"
 	CodeConsentRequired         = "consent_required"
@@ -79,6 +85,9 @@ const (
 	CodeInvalidToken            = "invalid_token"
 	CodeInsufficientScope       = "insufficient_scope"
 	CodeInvalidDPoPProof        = "invalid_dpop_proof"
+	// CodeUnsupportedTokenType answers the revocation of a valid JWT access token under
+	// WithStrictRevocation (RFC 7009).
+	CodeUnsupportedTokenType = "unsupported_token_type"
 
 	// The device authorization grant's answers to a poll (RFC 8628 section 3.5).
 	CodeAuthorizationPending = "authorization_pending"

@@ -33,30 +33,12 @@ func TestMemoryStores_ForgetWhatExpired(t *testing.T) {
 		held func(t *testing.T, n int) bool
 	}
 
+	// The pending-request store keeps a request through the grace window, so its sweep is
+	// pinned by TestMemoryPendingRequestStore_KeepsGraceWindow instead.
 	cases := []struct {
 		name    string
 		newCase func(t *testing.T, clk *clockwork.FakeClock) store
 	}{
-		{
-			name: "pending requests",
-			newCase: func(t *testing.T, clk *clockwork.FakeClock) store {
-				t.Helper()
-				s, err := oidcprovider.NewMemoryPendingRequestStore(oidcprovider.WithMemoryStoreClock(clk))
-				require.NoError(t, err)
-
-				return store{
-					add: func(t *testing.T, n int, expires time.Time) {
-						t.Helper()
-						require.NoError(t, s.Create(t.Context(), &oidcprovider.PendingRequest{HandleDigest: fmt.Append(nil, n), ExpiresAt: expires}))
-					},
-					held: func(t *testing.T, n int) bool {
-						t.Helper()
-						_, err := s.Load(t.Context(), fmt.Append(nil, n))
-						return err == nil
-					},
-				}
-			},
-		},
 		{
 			name: "code records",
 			newCase: func(t *testing.T, clk *clockwork.FakeClock) store {

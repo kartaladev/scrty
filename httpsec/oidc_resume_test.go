@@ -1,6 +1,7 @@
 package httpsec_test
 
 import (
+	"context"
 	"crypto/elliptic"
 	"encoding/base64"
 	"encoding/json"
@@ -1378,4 +1379,167 @@ func (w *opFlow) refusesOwing(t *testing.T, s *session.Session, kind policy.Chal
 	require.ErrorAs(t, a.err, &challenge)
 	assert.Equal(t, kind, challenge.Kind)
 	flowUnspent(t, w, handle, flow)
+}
+
+// failingCodeStore is a code store over a memory store whose writes fail, so a resume that
+// reaches a code fails after it read and judged the request.
+func failingCodeStore(t *testing.T) *MockCodeStore {
+	t.Helper()
+
+	mem := must.Must(oidcprovider.NewMemoryCodeStore())
+	codes := NewMockCodeStore(gomock.NewController(t))
+	codes.EXPECT().Create(gomock.Any(), gomock.Any()).Return(errors.New("store outage")).AnyTimes()
+	codes.EXPECT().Load(gomock.Any(), gomock.Any()).DoAndReturn(mem.Load).AnyTimes()
+	codes.EXPECT().UnspentBySignIn(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(mem.UnspentBySignIn).AnyTimes()
+	codes.EXPECT().UnspentByClient(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(mem.UnspentByClient).AnyTimes()
+	codes.EXPECT().DeleteExpired(gomock.Any(), gomock.Any()).DoAndReturn(mem.DeleteExpired).AnyTimes()
+
+	return codes
+}
+
+// changeFlowClient replaces clientID in w's registry after a request was parked.
+func changeFlowClient(t *testing.T, w *opFlow, clientID string, change func(*oidcprovider.Client)) {
+	t.Helper()
+
+	for _, c := range flowClients() {
+		if c.ID == clientID {
+			change(&c)
+			require.NoError(t, w.registry.Put(t.Context(), c))
+
+			return
+		}
+	}
+
+	t.Fatalf("%s is not among the flow clients", clientID)
+}
+
+// listFailingSessionStore is a session store whose listing of a user's sessions, which the
+// sign-in confirmation makes, always fails.
+type listFailingSessionStore struct{ *session.MemoryStore }
+
+func (listFailingSessionStore) ListByUser(context.Context, identity.UserID, time.Time) ([]*session.Session, error) {
+	return nil, errors.New("session store outage")
+}
+
+// TestResume_ClientErrorOutcomes pins that the resume endpoint answers every outcome the
+// provider sends to the client's redirect URI with an error exactly as it answers a code: 200
+// {"redirect_to": ...} with no-store, carrying the error, state and iss, with the request
+// spent. The outcomes are a dependency failing after the request was read (server_error), a
+// client that lost the code grant (unauthorized_client) or openid (invalid_scope) after
+// parking, and a request expired within the provider's grace window (access_denied).
+func TestResume_ClientErrorOutcomes(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		setup  func(t *testing.T) flowSetup
+		client string
+		// change is what happens between the park and the resume.
+		change func(t *testing.T, w *opFlow)
+		assert func(t *testing.T, w *opFlow, a flowAnswer, handle, flow string)
+	}
+
+	answered := func(code string) func(t *testing.T, w *opFlow, a flowAnswer, handle, flow string) {
+		return func(t *testing.T, w *opFlow, a flowAnswer, handle, flow string) {
+			t.Helper()
+
+			require.Equal(t, http.StatusOK, a.status, a.body)
+			assert.Equal(t, "no-store", a.header.Get("Cache-Control"))
+			assert.Empty(t, a.header.Get("Location"), "the answer is a document, never a redirect")
+
+			to := a.redirectTo(t)
+			assert.Equal(t, rpCallback, to.Scheme+"://"+to.Host+to.Path)
+			assert.Equal(t, url.Values{"error": {code}, "state": {"xyz"}, "iss": {w.issuer}}, to.Query(),
+				"the error, state and iss, and no code or error_description")
+
+			_, err := w.p.PendingRequest(t.Context(), handle, flow)
+			require.ErrorIs(t, err, oidcprovider.ErrUnknownHandle, "the request is spent")
+		}
+	}
+
+	cases := []testCase{
+		{
+			name: "a code store failing after the request was read answers server_error",
+			setup: func(t *testing.T) flowSetup {
+				t.Helper()
+
+				return flowSetup{provider: []oidcprovider.Option{oidcprovider.WithCodeStore(failingCodeStore(t))}}
+			},
+			client: flowFirstParty,
+			assert: answered(oidcprovider.CodeServerError),
+		},
+		{
+			name:   "a client that lost the code grant answers unauthorized_client",
+			client: flowWeb,
+			change: func(t *testing.T, w *opFlow) {
+				t.Helper()
+
+				changeFlowClient(t, w, flowWeb, func(c *oidcprovider.Client) {
+					c.GrantTypes = []oidcprovider.GrantType{oidcprovider.GrantRefreshToken}
+				})
+			},
+			assert: answered(oidcprovider.CodeUnauthorizedClient),
+		},
+		{
+			name:   "a client that lost openid answers invalid_scope",
+			client: flowWeb,
+			change: func(t *testing.T, w *opFlow) {
+				t.Helper()
+
+				changeFlowClient(t, w, flowWeb, func(c *oidcprovider.Client) { c.Scopes = []string{"profile"} })
+			},
+			assert: answered(oidcprovider.CodeInvalidScope),
+		},
+		{
+			name:   "a request expired within the grace window answers access_denied",
+			client: flowWeb,
+			change: func(t *testing.T, w *opFlow) {
+				t.Helper()
+
+				// The default lifetime is 10 minutes and the default grace 10 more.
+				w.clk.Advance(12 * time.Minute)
+			},
+			assert: answered(oidcprovider.CodeAccessDenied),
+		},
+		{
+			name: "a client error is answered although the sign-in confirmation would fail",
+			setup: func(t *testing.T) flowSetup {
+				t.Helper()
+
+				return flowSetup{sessions: []session.Option{
+					session.WithStore(listFailingSessionStore{must.Must(session.NewMemoryStore())}),
+				}}
+			},
+			client: flowWeb,
+			change: func(t *testing.T, w *opFlow) {
+				t.Helper()
+
+				changeFlowClient(t, w, flowWeb, func(c *oidcprovider.Client) {
+					c.GrantTypes = []oidcprovider.GrantType{oidcprovider.GrantRefreshToken}
+				})
+			},
+			assert: answered(oidcprovider.CodeUnauthorizedClient),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var setup flowSetup
+			if tc.setup != nil {
+				setup = tc.setup(t)
+			}
+
+			w := newOPFlow(t, setup)
+			handle, flow := w.park(t, tc.client)
+
+			if tc.change != nil {
+				tc.change(t, w)
+			}
+
+			a := w.resume(t, flowLoginBody(handle), flowBearer(w.session(t).ID), flowCookieOf(flowCookie, flow))
+			tc.assert(t, w, a, handle, flow)
+		})
+	}
 }

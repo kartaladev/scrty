@@ -28,6 +28,10 @@ WHERE handle_digest = $1 AND stage = $2`
 	// PendingRequestDeleteExpired removes the records that expired strictly before $1.
 	PendingRequestDeleteExpired = `DELETE FROM scrty_op_pending_requests WHERE expires_at < $1`
 
+	// PendingRequestCountLive counts the records that expire strictly after $1, whatever
+	// their stage. It reads only.
+	PendingRequestCountLive = `SELECT count(*) FROM scrty_op_pending_requests WHERE expires_at > $1`
+
 	// CodeInsert stores a code record, with the arguments CodeArgs returns. No row
 	// affected means its token identifier is already held.
 	CodeInsert = `INSERT INTO scrty_op_authorization_codes (` + codeColumns + `)

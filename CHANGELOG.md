@@ -12,6 +12,71 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 
 ## [Unreleased]
 
+A minor release with behaviour changes, each stated under *Changed* with its opt-out where one
+exists. Nothing in the API is removed, and no migration is needed.
+
+### Added
+
+- **A cancel endpoint for the login page.** `POST /authorize/cancel` under the provider prefix
+  (`httpsec.OIDCCancel`, operation `httpsec.OperationOAuth2AuthorizeCancel`) ends a parked request
+  with `access_denied`. It needs no signed-in session, and follows the resume endpoint's TLS, origin,
+  flow-cookie and throttle rules. `oidcprovider.Provider.EndPending` (with `EndPendingInput`) is the
+  call underneath.
+- `oidcprovider.CodeTemporarilyUnavailable`, `CodeServerError` and `CodeUnsupportedTokenType`, and the
+  revocation cause `CauseUnanswered`, for a code written but never handed out.
+- `oidc.RelyingParty.AbortFlowNext` and `oidc.AbortedFlow`, which end a flow and report where the
+  request was parked.
+- `httpsec.WithOIDCLoginErrorParam` and `httpsec.DefaultOIDCLoginErrorParam` (`error`), the query
+  parameter that carries the code back to the login page.
+- **Opt-in hardening, all off by default:**
+  - `oidcprovider.WithPendingRequestLimit(limit)` caps live parked requests and answers
+    `temporarily_unavailable` at the cap. The store must implement
+    `oidcprovider.PendingRequestCounter`, which the memory store and the SQL stores do.
+  - `httpsec.WithOIDCThrottle429()` answers a throttled source at the token, revocation,
+    introspection and device-authorization endpoints with 429 and `Retry-After`, in place of
+    `invalid_client`.
+  - `oidcprovider.WithStrictRevocation()` answers the revocation of a valid JWT access token with
+    `unsupported_token_type`, in place of success with nothing revoked.
+  - `httpsec.WithOIDCEntryRedirects()` sends a refused device user code back to the code-entry page
+    with `result=invalid` or `result=throttled`, in place of a 400 or 429.
+- A README note, "Scheduled jobs (later work)", listing every expiry task a deployment on durable
+  stores must run. Durable stores are swept only when you run them.
+
+### Changed
+
+- **BREAKING (behaviour): a failed brokered login for a parked request returns to the login page.**
+  With `WithOIDCProviderCompletion`, a failure at the SSO start or callback used to answer a problem
+  body. It now answers 303 to `<LoginURL>?req=<handle>&error=<code>`, with `access_denied`,
+  `temporarily_unavailable` or `server_error`, none naming an account. The request stays parked.
+  `httpsec.WithOIDCFailToClient()` sends the error to the client's redirect URI instead, ending the
+  request (a device request still returns to the login page). Nothing restores the problem body.
+- **BREAKING (behaviour): resume failures that can be answered are answered at the redirect URI.** A
+  store failure answers `server_error`, a client that lost the code grant `unauthorized_client`, and a
+  client with no usable scope `invalid_scope`. A removed client or an unregistered redirect URI is
+  still refused with no redirect. There is no opt-out.
+- **BREAKING (behaviour): an expired request is answered within a grace window.** A request that
+  expired, and is still bound to this browser, answers the client `access_denied` for 10 minutes past
+  its expiry, where it was an unknown handle. Opt out with `oidcprovider.WithPendingRequestGrace(0)`;
+  the window can be set from 0 to 30 minutes.
+- **BREAKING (events): a refusal beside an outage emits the login-failure event.** A callback whose
+  error is both a refusal and an outage emitted nothing, and now emits the event, for every login.
+  There is no opt-out.
+- **BREAKING (headers): bearer 401s carry a challenge.** On a chain with a built-in bearer, every 401
+  the chain answers carries `WWW-Authenticate: Bearer`, with `error="invalid_token"` when a bearer
+  token was presented and refused. Opt out with `httpsec.WithoutBearerChallenge()`.
+- **A sign-in hook's `ErrUserInfoFailed` passes through as that outcome.** `oidc.ErrUserInfoFailed`
+  returned by a hook now reaches the caller as the bare sentinel, a provider outage, in place of a
+  broker failure, so a UserInfo outage inside a hook is answered as an outage.
+- **`oidc.RelyingParty.Callback` returns `CallbackResult{Next}` when it fails after the flow is
+  spent.** Only `Next` is set, read from the stored flow. A flow the store completes with a state
+  other than the one presented is refused as `ErrInvalidState`, spent, with no `Next`.
+- **A `MemoryPendingRequestStore` you build keeps expired records for 30 minutes past expiry**, the
+  longest a grace window can be, so a store you construct never deletes a request a provider might
+  still answer.
+- **The pending-request sweep keeps the grace window.** The `oidc-provider.pending-requests` expiry
+  task deletes a request only after its expiry plus the grace window, so expired rows stay up to twice
+  as long by default. They are unusable. `WithPendingRequestGrace(0)` restores the earlier retention.
+
 ## [0.4.0] - 2026-11-24
 
 Every addition below is opt-in: a provider with no sign-in hook, a chain without server-side

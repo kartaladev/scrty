@@ -13,6 +13,8 @@ import (
 	"github.com/kartaladev/scrty/session"
 )
 
+//go:generate mockgen -destination=codestore_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/oidcprovider CodeStore
+
 // oidcResumeFlow names the resume endpoint's rate-limit buckets and sampler keys.
 const oidcResumeFlow = "oidc-resume"
 
@@ -45,9 +47,12 @@ func (g *oidcResumeGroup) bind(op *oidcEndpoints) {
 	g.assurance = defaultOIDCSignInAssurance
 }
 
+// routes names the resume, behind the bearer and the gates, and the cancel, which takes no
+// sign-in. The two share one throttle and one body limit.
 func (g *oidcResumeGroup) routes() []oidcRoute {
 	return []oidcRoute{
 		{path: g.op.paths[OIDCResume], inner: true, handle: g.serve},
+		{path: g.op.paths[OIDCCancel], handle: g.serveCancel},
 	}
 }
 
@@ -65,11 +70,11 @@ func (g *oidcResumeGroup) flushRefusalLogs() error {
 	return nil
 }
 
-// WithOIDCResumeLimiter counts the unknown handles presented at the resume endpoint, per
-// source. A source past its limit is refused with ErrOIDCThrottled, which wraps
-// ratelimit.ErrThrottled and answers 429, before its handle is looked up. A limiter that
-// cannot answer, and a source that cannot be attributed, are refused the same way: the
-// limit fails closed.
+// WithOIDCResumeLimiter counts the unknown handles presented at the resume and cancel
+// endpoints, per source, in one shared budget. A source past its limit is refused with
+// ErrOIDCThrottled, which wraps ratelimit.ErrThrottled and answers 429, before its handle is
+// looked up. A limiter that cannot answer, and a source that cannot be attributed, are
+// refused the same way: the limit fails closed.
 //
 // Default: the chain's rate-limiter factory (WithRateLimiterFactory) under namespace
 // "oidc-resume", or else an in-memory limiter of 30 per source a minute. A deployment of
@@ -90,7 +95,7 @@ func WithOIDCResumeLimiter(limiter ratelimit.Limiter) OIDCProviderOption {
 	}
 }
 
-// WithOIDCResumeBodyLimit reads at most limit bytes of a resume's body.
+// WithOIDCResumeBodyLimit reads at most limit bytes of a resume's body, and of a cancel's.
 //
 // Default: DefaultLoginBodyLimit. A body over it answers ErrRequestTooLarge. A limit of
 // zero or less is refused, because it would refuse every resume.
@@ -143,30 +148,17 @@ type oidcResumeDocument struct {
 //     at, so nothing about the handle is told to it, and the handle stays unspent;
 //  5. the provider judges the handle and answers the stage, spending it only on success.
 //
-// Only an unknown handle is charged to the source. Freshness and a malformed answer are
-// the page's to cure, and a failure is no verdict on anyone.
+// Steps 1 to 3 are admitPage's. Only an unknown handle is charged to the source. Freshness and
+// a malformed answer are the page's to cure, and a failure is no verdict on anyone.
 //
 // A 401 it returns is challenged on its way out of the provider's outer router (challengeOIDCSignIn).
 //
 // The sign-in is read a second time once the provider has written what the resume leaves, before
 // any of it is handed out (confirmSignIn).
 func (g *oidcResumeGroup) serve(ex *Exchange, _ Next) error {
-	setOIDCNoStore(ex.Writer)
-
-	if ex.Request.Method() != http.MethodPost {
-		ex.Writer.SetHeader("Allow", http.MethodPost)
-		ex.Writer.WriteHeader(http.StatusMethodNotAllowed)
-
-		return nil
-	}
-
-	if !ex.Request.Secure() && !g.op.plainHTTPAllowed() {
-		return ErrOIDCUnknownHandle
-	}
-
-	src, ok := g.throttle.admit(ex, g.op)
-	if !ok {
-		return ErrOIDCThrottled
+	src, answered, err := g.admitPage(ex)
+	if answered || err != nil {
+		return err
 	}
 
 	signIn, err := g.resumeSignIn(ex)
@@ -199,15 +191,12 @@ func (g *oidcResumeGroup) serve(ex *Exchange, _ Next) error {
 		Answer:               answer,
 	})
 	if err != nil {
-		if errors.Is(err, oidcprovider.ErrUnknownHandle) {
-			g.throttle.charge(ctx, src)
-		}
-
-		return oidcResumeRefusal(err)
+		return g.refusal(ctx, src, err)
 	}
 
-	// A denial grants nothing, so nothing it wrote could outlive the sign-in.
-	if signIn != nil && !doc.Deny {
+	// A denial and a client error grant nothing, so nothing they wrote could outlive the
+	// sign-in, and a failing confirmation must not replace the client's answer.
+	if signIn != nil && !doc.Deny && res.Outcome != oidcprovider.ResumeOutcomeClientError {
 		if err := g.op.confirmSignIn(ctx, signIn); err != nil {
 			return err
 		}
@@ -218,6 +207,50 @@ func (g *oidcResumeGroup) serve(ex *Exchange, _ Next) error {
 	}
 
 	return writeSuccessDocument(ex, oidcResumeDocument{RedirectTo: res.RedirectTo})
+}
+
+// admitPage runs the guards the resume and the cancel share before either reads its body:
+//
+//  1. no answer may be cached, whatever follows, the chain's error handling included;
+//  2. anything but POST is answered 405 with Allow, and answered is true;
+//  3. a request not made over TLS is refused as an unknown handle, with nothing read from it
+//     and nothing charged;
+//  4. the source is asked before anything else is read; a source over the limit, a limiter
+//     that cannot answer and a source that cannot be attributed are refused with
+//     ErrOIDCThrottled (429).
+//
+// It returns the source to charge an unknown handle to.
+func (g *oidcResumeGroup) admitPage(ex *Exchange) (src ratelimit.Source, answered bool, err error) {
+	setOIDCNoStore(ex.Writer)
+
+	if ex.Request.Method() != http.MethodPost {
+		ex.Writer.SetHeader("Allow", http.MethodPost)
+		ex.Writer.WriteHeader(http.StatusMethodNotAllowed)
+
+		return ratelimit.Source{}, true, nil
+	}
+
+	if !ex.Request.Secure() && !g.op.plainHTTPAllowed() {
+		return ratelimit.Source{}, false, ErrOIDCUnknownHandle
+	}
+
+	src, ok := g.throttle.admit(ex, g.op)
+	if !ok {
+		return ratelimit.Source{}, false, ErrOIDCThrottled
+	}
+
+	return src, false, nil
+}
+
+// refusal is the answer to err, a provider's refusal of a resume or a cancel. Only an unknown
+// handle is charged to src: freshness and a malformed answer are the page's to cure, and a
+// failure is no verdict on anyone.
+func (g *oidcResumeGroup) refusal(ctx context.Context, src ratelimit.Source, err error) error {
+	if errors.Is(err, oidcprovider.ErrUnknownHandle) {
+		g.throttle.charge(ctx, src)
+	}
+
+	return oidcResumeRefusal(err)
 }
 
 // confirmSignIn reads the sign-in again, now that the code and the browser session of the resume
@@ -328,22 +361,32 @@ func resumableSignIn(
 	return &signIn, nil
 }
 
-// readOIDCResumeRequest reads the document a page posts. It must be declared as JSON,
-// which a cross-site form cannot send, on top of what CSRF protection judges. A body that
-// is neither says nothing the provider could judge.
+// readOIDCResumeRequest reads the document a page posts to the resume. A body not declared
+// as JSON, or not readable as it, is a malformed answer.
 func readOIDCResumeRequest(ctx context.Context, r Request, limit int64) (oidcResumeRequest, error) {
+	return readOIDCPageDocument[oidcResumeRequest](ctx, r, limit, ErrOIDCConsentMalformed)
+}
+
+// readOIDCPageDocument reads the JSON document a page posts, of at most limit bytes. It must
+// be declared as JSON, which a cross-site form cannot send, on top of what CSRF protection
+// judges. A body that is neither says nothing the provider could judge, and is refused with
+// malformed.
+func readOIDCPageDocument[T any](ctx context.Context, r Request, limit int64, malformed error) (T, error) {
+	var doc T
+
 	body, err := readBody(ctx, r, limit)
 	if err != nil {
-		return oidcResumeRequest{}, err
+		return doc, err
 	}
 
 	if !declaresJSON(r.Header("Content-Type")) {
-		return oidcResumeRequest{}, ErrOIDCConsentMalformed
+		return doc, malformed
 	}
 
-	var doc oidcResumeRequest
 	if err := json.Unmarshal(body, &doc); err != nil {
-		return oidcResumeRequest{}, ErrOIDCConsentMalformed
+		var zero T
+
+		return zero, malformed
 	}
 
 	return doc, nil
