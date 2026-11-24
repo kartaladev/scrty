@@ -12,6 +12,15 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: `token.TypeFirstParty` is renamed `token.TypeSessionToken`.** Its value, `scrty+jwt`,
+  is unchanged, so every token already issued still verifies. "First-party" now means only an
+  OAuth client the provider trusts (`oidcprovider.Client.FirstParty`). Replace
+  `token.TypeFirstParty` with `token.TypeSessionToken`. An `Issuer` asked for that type now says
+  it "does not issue session tokens". Three scenario titles in the `token-issuance` spec keep the
+  old wording; their text says "session token".
+
 ## [0.5.0] - 2026-11-24
 
 A minor release with behaviour changes, each stated under *Changed* with its opt-out where one

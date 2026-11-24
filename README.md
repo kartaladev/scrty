@@ -895,7 +895,7 @@ Activity elsewhere does not extend it, which errs short.
 
 What it does not see is a marker placed on the sign-in afterwards, such as a required password
 change. An admin's forced change that matters must end the sign-in, which does reach it. It issues no
-first-party credential, and only the provider reads it.
+sign-in credential, and only the provider reads it.
 
 `oidcprovider.WithoutBrowserSessions()` turns it off, and CSRF protection stops being required. Every
 request then shows the login page, `prompt=none` always answers `login_required`, and every logout
@@ -941,17 +941,17 @@ decline ends nothing and goes to `LoggedOutURL`.
 | the chain's error handling, a 500 by default | a store failed | posts the same answer again |
 
 **A retry.** Ending a sign-in revokes the grants that do not outlive it (those without `offline_access`)
-and tells each client that registered a back-channel logout URI, then deletes its first-party sessions,
+and tells each client that registered a back-channel logout URI, then deletes its sessions,
 then its browser session and cookie, and spends the handle last of all. A store failing anywhere in that
 answers a 500 and leaves the browser its session, its cookie and the handle, so posting the same answer
 again, or the relying party's request again, finishes the logout and tells no client twice. While a logout
 is failing that browser session stays usable, and the user is not logged out: only the success says so.
-Nothing falls back on a hint or a first-party session to finish, because that would let an ID token's holder
+Nothing falls back on a hint or a session of the sign-in to finish, because that would let an ID token's holder
 end a sign-in from another browser. After a success the same post is an unknown handle, and only unknown
 handles count against the throttle.
 
 A caller serving these answers off the chain owes the same order: `EndSession` and `ConfirmLogout` end the
-grants and name the sign-in in `Ended`, the caller deletes its first-party sessions and finishes with
+grants and name the sign-in in `Ended`, the caller deletes the sign-in's sessions and finishes with
 `EndSignIn(Ended)`, clears the cookie, and for a confirmation calls `SpendLogout(handle, flowSecret)`.
 
 ### Consents

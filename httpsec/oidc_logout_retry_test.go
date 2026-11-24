@@ -39,12 +39,12 @@ func (s *faultySessions) DeleteFamily(ctx context.Context, family id.ID) (int, e
 	return s.Store.DeleteFamily(ctx, family)
 }
 
-// firstPartyRefused is the check that a sign-in's first-party token no longer works.
-func (f *signInEnds) firstPartyRefused(t *testing.T, s *session.Session) {
+// sessionTokenRefused is the check that a sign-in's session token no longer works.
+func (f *signInEnds) sessionTokenRefused(t *testing.T, s *session.Session) {
 	t.Helper()
 
 	a := f.consentsGET(t, consentsPath, flowBearer(s.ID))
-	assert.Equal(t, http.StatusUnauthorized, a.status, "the first-party token is refused")
+	assert.Equal(t, http.StatusUnauthorized, a.status, "the session token is refused")
 }
 
 // logoutPath is one way a browser asks for a logout: what it sends, and how that is answered once
@@ -114,7 +114,7 @@ func logoutPaths() []logoutPath {
 }
 
 // newRetryFixture is a sign-in with a real grant, on a chain reporting its events, whose
-// first-party store can fail as well as the provider's.
+// session store can fail as well as the provider's.
 func newRetryFixture(t *testing.T) (*signInEnds, *session.Session, endsGrant, *faultySessions) {
 	t.Helper()
 
@@ -132,7 +132,7 @@ func newRetryFixture(t *testing.T) (*signInEnds, *session.Session, endsGrant, *f
 
 // TestOIDCLogout_RetryFinishes pins RP-Initiated Logout section 2's MUST under a failure: an answer
 // of success from a retry means the End-User is logged out. Whichever store fails, the browser keeps
-// what lets it ask again, and asking again ends the grants and the first-party sessions, which real
+// what lets it ask again, and asking again ends the grants and the sign-in's sessions, which real
 // tokens being refused shows.
 func TestOIDCLogout_RetryFinishes(t *testing.T) {
 	t.Parallel()
@@ -142,7 +142,7 @@ func TestOIDCLogout_RetryFinishes(t *testing.T) {
 		flag func(f *signInEnds, store *faultySessions) *atomic.Bool
 	}{
 		{"the grant store", func(f *signInEnds, _ *faultySessions) *atomic.Bool { return &f.grants.failing }},
-		{"the first-party store", func(_ *signInEnds, store *faultySessions) *atomic.Bool { return &store.failing }},
+		{"the chain's session store", func(_ *signInEnds, store *faultySessions) *atomic.Bool { return &store.failing }},
 		{"the browser-session store", func(f *signInEnds, _ *faultySessions) *atomic.Bool { return &f.browsers.failing }},
 	}
 
@@ -169,7 +169,7 @@ func TestOIDCLogout_RetryFinishes(t *testing.T) {
 				assertClearsBrowser(t, a)
 
 				f.refreshRefused(t, grant)
-				f.firstPartyRefused(t, s)
+				f.sessionTokenRefused(t, s)
 				assert.Equal(t, "login_required", f.silentError(t, grant), "the browser session has gone")
 
 				logouts := f.events.named(event.SessionLogout)
@@ -185,7 +185,7 @@ func TestOIDCLogout_RetryFinishes(t *testing.T) {
 }
 
 // TestOIDCLogout_HangUpEndsAll pins that a client hanging up as a logout runs does not leave the
-// sign-in's first-party sessions live: the grants have gone, and nothing may stop short of them.
+// sign-in's sessions live: the grants have gone, and nothing may stop short of them.
 func TestOIDCLogout_HangUpEndsAll(t *testing.T) {
 	t.Parallel()
 
@@ -206,7 +206,7 @@ func TestOIDCLogout_HangUpEndsAll(t *testing.T) {
 
 			f.grants.during.Store(nil)
 			f.refreshRefused(t, grant)
-			f.firstPartyRefused(t, s)
+			f.sessionTokenRefused(t, s)
 		})
 	}
 }
@@ -223,7 +223,7 @@ func TestOIDCLogoutConfirm_RetryWithoutBrowserSessions(t *testing.T) {
 
 	cases := []testCase{
 		{"the grant store failing", func(w *logoutFlow, _ *faultySessions) *atomic.Bool { return &w.grantsAt.outage }},
-		{"the first-party store failing", func(_ *logoutFlow, store *faultySessions) *atomic.Bool { return &store.failing }},
+		{"the chain's session store failing", func(_ *logoutFlow, store *faultySessions) *atomic.Bool { return &store.failing }},
 	}
 
 	for _, tc := range cases {

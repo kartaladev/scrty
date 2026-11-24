@@ -297,7 +297,7 @@ func (s *server) confirmLogout(w http.ResponseWriter, r *http.Request) {
 
 	if res.Ended != nil {
 		// What the chain's own end-session does: the browser session goes, and so do the
-		// sign-in's first-party sessions, which the provider does not hold.
+		// sign-in's sessions, which the provider does not hold.
 		clearBrowserSession(w)
 
 		if _, err := s.sessions.Logout(ctx, res.User, res.Ended.Family); err != nil && !errors.Is(err, session.ErrNotFound) {

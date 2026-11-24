@@ -36,7 +36,7 @@ type ClientToNotify struct {
 // EndSignIn ends the sign-ins sel selects, and returns the clients to notify, each of which has also
 // been handed on for back-channel delivery. This is what the chain's own logout calls, before it
 // deletes the session, so that a failure here can fail the logout. A logout the browser asks for, through
-// EndSession or ConfirmLogout, ends the grants there and finishes here, after the first-party sessions,
+// EndSession or ConfirmLogout, ends the grants there and finishes here, after the sign-in's sessions,
 // since the browser session this deletes is what lets the browser ask again.
 //
 // A grant without offline_access ends with its sign-in, and so does any grant of a client registered
@@ -84,7 +84,7 @@ func (p *Provider) EndSignIn(ctx context.Context, sel SignInSelector) ([]ClientT
 }
 
 // endGrantsOf is EndSignIn's sweep alone, for a request made from the browser. Its browser session is
-// what lets that browser ask again, so a failure here, or in deleting the first-party sessions that
+// what lets that browser ask again, so a failure here, or in deleting the sign-in's sessions that
 // follow, has to leave it. Asked again, it tells no one twice. A code written while that session still
 // answers misses this sweep, and the EndSignIn that finishes the end reaches it.
 func (p *Provider) endGrantsOf(ctx context.Context, sel SignInSelector) error {

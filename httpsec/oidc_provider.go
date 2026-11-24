@@ -476,7 +476,7 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // A confirmation ends the sign-in of the browser's own session, whichever sign-in
 // the request's hint named. Ending a sign-in revokes the grants that do not outlive
 // it (those without offline access) and tells each client that registered a
-// back-channel logout URI, then deletes its first-party sessions, then its browser
+// back-channel logout URI, then deletes its sessions, then its browser
 // session, clearing the cookie.
 //
 // A retry behaves as follows. The handle is spent last of all, and the browser
@@ -488,7 +488,7 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // cannot leave them is that final sweep's, its delete having succeeded: a retry from that
 // browser finds no session and answers success, and a code written between the passes
 // can still make tokens until it expires. While a logout is failing that browser session
-// stays usable, and nothing falls back on a hint or a first-party session to finish,
+// stays usable, and nothing falls back on a hint or a session of the sign-in to finish,
 // which would let an ID token's holder end a sign-in from another browser. After a
 // success the same post is an unknown handle, 400, and only unknown handles count
 // against the confirmation's throttle.

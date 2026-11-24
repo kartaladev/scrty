@@ -930,7 +930,7 @@ func TestProvider_AccessToken_Verify(t *testing.T) {
 			assert: refused,
 		},
 		{
-			name: "a first-party token under the same keys and claims",
+			name: "a session token under the same keys and claims",
 			arrange: func(t *testing.T, x *exchangeFixture) string {
 				t.Helper()
 				family := liveGrantFamily(t, x)
