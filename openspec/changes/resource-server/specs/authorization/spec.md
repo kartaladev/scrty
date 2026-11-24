@@ -14,3 +14,7 @@ A requirement for any of, or all of, a set of scopes SHALL refuse a caller that 
 #### Scenario: No caller
 - **WHEN** the same requirement is judged with no caller
 - **THEN** the error is the anonymous refusal and reports no scopes
+
+#### Scenario: Inside a composite requirement
+- **WHEN** a requirement for all of "role `clerk`" and "any of `orders:write`" refuses a clerk holding `orders:read`
+- **THEN** the refusal still reports `orders:write` with "any", found beneath the composite's error

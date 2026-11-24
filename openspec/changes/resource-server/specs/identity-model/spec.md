@@ -20,18 +20,19 @@ Every principal SHALL have a kind that is either a human user or a service. A pr
 - **THEN** the principal carries no scopes
 
 ### Requirement: First-factor kinds map to channels and exemptions
-The library SHALL name the first-factor kinds `password`, `magic-link`, `oidc`, `basic`, `api-key`, `recovery`, `passkey` and `access-token`, and the channels `knowledge`, `email`, `authenticator-app`, `federated`, `machine` and `public-key`. It SHALL map kinds to channels as follows:
+The library SHALL name the first-factor kinds `password`, `magic-link`, `oidc`, `basic`, `api-key`, `recovery`, `passkey`, `access-token` and `external-access-token`, and the channels `knowledge`, `email`, `authenticator-app`, `federated`, `machine` and `public-key`. It SHALL map kinds to channels as follows:
 - `password` and `basic` report `knowledge`;
 - `magic-link` reports `email`;
 - `oidc` reports `federated`;
 - `api-key` reports `machine`;
 - `passkey` reports `public-key`, the channel of credentials an authenticator holds as a key pair and proves by signing a challenge;
 - `recovery`, the kind of a session an account recovery produces, reports no channel, because the recovery rested on two proofs of different kinds rather than on one channel;
-- `access-token`, the kind of a request authenticated by an access token a resource server accepted, reports no channel, because the token rests on a sign-in at its issuer rather than on a channel of its own.
+- `access-token`, the kind of a request authenticated by an access token the chain's own provider issued, reports no channel, because the token rests on the sign-in that made its grant, which the chain itself judged;
+- `external-access-token`, the kind of a request authenticated by an access token another issuer issued, reports `federated`, because the sign-in behind it happened at that issuer.
 
 The `authenticator-app` channel SHALL be the channel of second factors that use an authenticator app, such as TOTP, and `email` SHALL also be the channel of email-delivered second factors. The `public-key` channel SHALL also be the channel of the passkey second factor, so a passkey second factor after a passkey login is on the first factor's own channel. These kinds and channels SHALL be the complete vocabulary scrty uses. Other capabilities, including multi-factor authentication and security policy, SHALL reference these values and SHALL NOT define kinds or channels of their own.
 
-Only `api-key` and `access-token` SHALL report themselves as exempt from an MFA requirement: an API key because it is a machine credential, and an access token because a resource-server request has no session on which a challenge could be held, and the assurance of the sign-in behind the token belongs to its issuer. `oidc`, `recovery` and `passkey` SHALL NOT be exempt. How a login on the `federated` channel meets an MFA requirement SHALL be decided by the federated-assurance rules of the `security-policy` capability, not by its kind. The empty kind and every kind the library does not name SHALL report no channel and SHALL NOT be exempt.
+Only `api-key` and `access-token` SHALL report themselves as exempt from an MFA requirement: an API key because it is a machine credential, and a provider access token because the requirement was judged by the chain's own gates at the sign-in that made its grant. `external-access-token` SHALL NOT be exempt; how it meets an MFA requirement SHALL be decided by the federated-assurance rules of the `security-policy` capability, from the assurance its token asserts.
 
 #### Scenario: Authenticator-app channel
 - **WHEN** the channel vocabulary is listed
@@ -66,3 +67,7 @@ Only `api-key` and `access-token` SHALL report themselves as exempt from an MFA 
 #### Scenario: Access-token kind
 - **WHEN** the kind `access-token` is examined
 - **THEN** it reports no channel and is exempt
+
+#### Scenario: External access-token kind
+- **WHEN** the kind `external-access-token` is examined
+- **THEN** it reports channel `federated` and is not exempt

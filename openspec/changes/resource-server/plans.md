@@ -2,331 +2,327 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A generic OAuth resource-server mode for the httpsec chain, with these parts:
+**Goal:** A generic OAuth resource-server mode for the httpsec chain, comprising:
 - `EnableResourceServer` with provider, remote-issuer and introspection sources;
-- guard and challenge support;
+- guard, challenge and assurance support;
+- session-endpoint refusals;
 - consumer password rules;
 - inactive-account disclosure.
 
 **Architecture:**
-- **Leaf changes first:**
-  - the factor kind, `ScopeError`, password rules and the inactive error;
-  - provider fields;
-  - two internal packages: the key set, extracted from `authenticate/oidc`, and the introspection
-    client.
-- **Then the mode in `httpsec`**, in sequential dispatches: the core and the provider source first,
-  then the external sources, then guards and endpoints.
-- **Then the adapters, conformance and docs.**
+- **Wave 1:** the leaf packages (`authenticate/factor`, `authorize`, `authenticate/password`,
+  `authenticate`, `oidcprovider`), plus the two new internal packages (`internal/keyset`,
+  `internal/introspect`).
+- **Then the `httpsec` lane,** in sequential dispatches, each of six tasks or fewer: core, provider
+  source, external sources, guards and endpoints.
+- **Then adapter tests, conformance and docs.**
 
 **Tech Stack:** Go workspace, `lestrrat-go/jwx/v4`, `outbound`, `golang.org/x/sync/singleflight`,
 mockgen, testcontainers (conformance only).
 
-**Spec:** `openspec/changes/resource-server/`: `proposal.md`, `design.md` (decisions 1–18,
-F1–F33), `specs/` and `tasks.md`.
+**Spec:** `openspec/changes/resource-server/`: `proposal.md`, `design.md` (decisions 1–20,
+F1–F38), `specs/` and `tasks.md`.
 
 ## Global Constraints
 
-- **Binding rules (every dispatch prompt states them):** test-first (`golang-tdd.md`),
+- **Binding rules** (every dispatch prompt states them): test-first (`golang-tdd.md`),
   `library-design.md`, `defensive-coding.md`, `defect-claims.md`, the `table-test`, `use-mockgen` and
   `use-testcontainers` skills, and the read-only legacy reference.
 - **Exact values:**
-  - `OrderResourceServer = 490`;
-  - kind `"access-token"`;
-  - a 4 KiB peek bound;
-  - a clock-skew bound of 5 minutes, default 0;
+  - `OrderResourceServer = 425`;
+  - kinds `"access-token"` and `"external-access-token"`;
+  - an 8 KiB token bound;
+  - clock skew defaulting to 0, at most 5 minutes;
+  - default algorithms `RS256` and `ES256`;
   - introspection posts `token_type_hint=access_token`;
-  - the challenge error codes `invalid_token`, `insufficient_scope` and
-    `insufficient_user_authentication`, the last with `max_age` in whole seconds.
-- **No token, secret, key or introspection body in any log, error or event.**
+  - the challenge codes `invalid_token`, `insufficient_scope` and `insufficient_user_authentication`,
+    with `max_age` in whole seconds.
+- **Settled errors kept:**
+  - binding failures use `ErrInvalidDPoPProof`, the nonce-required refusal and
+    `ErrCertificateBinding`;
+  - `ErrInsufficientUserAuthentication` wraps `ErrReauthenticationRequired`;
+  - `ErrInvalidToken` wraps `authenticate.ErrAuthenticationFailed`.
+- **No secrets anywhere:** no token, secret, key or introspection body in any log, error or event.
 - **Files no dispatch touches:** `store/migrate/**`, the `test/` migration tests, and
   `httpsec/oidc_login.go`'s `callbackCode`. Those belong to PR #149.
-- **Git:** never `checkout --`, `restore`, `reset --hard`, `stash` or `clean`.
+- **Git:**
+  - never `checkout --`, `restore`, `reset --hard`, `stash` or `clean`;
+  - the main session commits;
+  - wave-1 dispatches run in their own git worktrees (`isolation: worktree`), and the main session
+    integrates them. That way no dispatch's verification compiles another's half-done packages.
 
 ## Review Focus
 
 1. A session token or session reference reaching a source, or being sent to an introspection
-   endpoint (design 5, 11). Expected: never.
-2. A recognised-but-refused access token falling through to `EnableBearerToken` (spec "not handed
-   on"). Expected: 401 `invalid_token`.
-3. A dependency outage (key set, introspection, provider store) answered as 401. Expected: 500, and
-   the outage is not counted as a refused credential.
-4. Two `WWW-Authenticate` headers on one refusal, because the DPoP challenge and the fallback both
-   write. Expected: exactly one.
-5. Recency for session callers changing. Expected: still 403, no body.
+   endpoint. Expected: never.
+2. An external `sub` loaded as a local user. Expected: only through identity links.
+3. A dependency outage answered as 401. Expected: 500, and the outage is not counted as a refused
+   credential.
+4. Two `WWW-Authenticate` headers on one refusal. Expected: exactly one, written by `bearerChallenge`.
+5. Recency for session callers changed. Expected: still 403 with no body, on every adapter.
 
 ---
+
+## Scoped test command
+
+Run it from each workspace module's directory, with `P` set to each changed package. It lists the
+package itself and every package that depends on it, under real import paths:
+
+```sh
+go list -test -f '{{if .ForTest}}{{.ForTest}}{{else}}{{.ImportPath}}{{end}}{{range .Deps}} {{.}}{{end}}' ./... \
+  | awk -v P="$P" '{ if ($1==P) {print $1; next} for (i=2;i<=NF;i++) if ($i==P) {print $1; break} }' \
+  | grep -v '\.test$' | sort -u | xargs go test -count=1
+```
+
+Modules that may import a changed package: the root module, `httpsec/fibersec`, `httpsec/ginsec`,
+`httpsec/prblmsec`, `store/gormstore`, `store/pgxstore` and `test`.
 
 ## Lanes and dispatches
 
 | Dispatch | Tasks | Owns | Model | Reason | Runs |
 |---|---|---|---|---|---|
-| A1 | 1.1–1.3 | `authenticate/factor`, `identity` (godoc), `authorize` | Sonnet | Known patterns; the signatures are given | Wave 1 |
-| A2 | 2.1–2.2 | `authenticate/password` | Sonnet | On-hold design 11, already fully specified | Wave 1 |
-| A3 | 3.1 | `authenticate` (password provider) | Opus | Security-critical refusal logic and timing | Wave 1 |
-| A4 | 4.1–4.2 | `oidcprovider` | Sonnet | Field plumbing and an accessor | Wave 1 |
-| B1 | 5.1–5.2 | `authenticate/oidc`, new `internal/keyset` | Opus | A behaviour-preserving extraction with concurrency | Wave 1 |
-| B2 | 6.1–6.2 | new `internal/introspect` | Opus | A new security-critical client with a bounded cache | Wave 1 |
-| C1 | 3.2, 7.1–7.3, 7.6–7.8 | `httpsec` (mode, routing, shared binding, challenges, inactive disclosure) | Opus | Security-critical routing and refusal; an interface other lanes compile against | Wave 2, after A1, A3, A4 |
-| C2 | 7.4–7.5 | `httpsec` (provider source, publication) | Opus | Verification and refusal logic | After C1 |
-| C3 | 8.1–8.5 | `httpsec` (external sources, strategies, checks) | Opus | Security-critical verification | After C2, B1, B2 |
-| D1 | 9.1–9.4 | `httpsec` (endpoints, rule challenges, guards, recency) | Opus | Refusal logic across many endpoints | After C3 |
-| D2 | 9.5 | `httpsec/fibersec`, `httpsec/ginsec` | Sonnet | Parity with the core; tests given | After D1 |
-| E1 | 10.1–10.4 | `test/httpsecconformance`, `README.md`, `CHANGELOG.md`, `bff-resource-server` note (main session) | Sonnet | Fixtures and docs | After D2 |
-| — | 10.5 | main session | — | Verification is never delegated | Last |
+| A1 | 1.1–1.3 | `authenticate/factor/factor.go`, `identity/principal.go` (godoc), `authorize/requirements.go`, `authorize/authorize.go`, their tests | Sonnet | Known patterns; signatures given | Wave 1 |
+| A2 | 2.1–2.2 | `authenticate/password/policy.go` and its tests | Sonnet | Fully specified | Wave 1 |
+| A3 | 3.1 | `authenticate/authenticate.go`, `authenticate/password.go`, tests | Opus | Security-critical refusal and timing | Wave 1 |
+| A4 | 4.1–4.3 | `oidcprovider/accesstoken.go`, `oidcprovider/provider.go`, `oidcprovider/revoke.go`, tests | Sonnet | Field plumbing and an accessor | Wave 1 |
+| B1 | 5.1–5.2 | new `internal/keyset/`; `authenticate/oidc/remote.go` and its callers | Opus | A behaviour-preserving extraction with concurrency | Wave 1 |
+| B2 | 6.1–6.2 | new `internal/introspect/` | Opus | A new security-critical client and a bounded cache | Wave 1 |
+| C1 | 3.2, 7.1–7.3 | `httpsec`: new `resource_server*.go`, `chain.go` (slot), the shared binding and reader files moved out of `oidc_userinfo.go`, `login.go`/`basic.go` (disclosure), `errors.go`; `httpsec/prblmsec` (disclosure concealment) | Opus | Security-critical routing; an API later dispatches compile against | After wave 1 |
+| C2 | 7.4–7.5, 8.1 | `httpsec`: `bearer.go` (`bearerChallenge`), `errors.go`, `dpop*.go`/`certbinding.go` (counting), new `resource_source_provider.go` | Opus | Challenge and binding semantics against settled specs | After C1 |
+| C3 | 8.2–8.3, 9.1–9.2 | `httpsec`: new `access_token.go`, `resource_source_issuer.go`; `httpsec/prblmsec` (new refusal types) | Opus | Verification and publication | After C2, B1 |
+| C4 | 9.3–9.6 | `httpsec`: new `resource_source_introspect.go`, `resource_strategy.go`, `resource_throttle.go`, `resource_assurance.go` | Opus | Identity resolution, throttling, assurance | After C3, B2 |
+| D1 | 10.1–10.4 | `httpsec`: `logout.go`, `role_switch.go`, `authorization.go`, `guards.go`; **`internal/guardauth/`**; session-endpoint test files | Opus | Refusal logic across endpoints, and the shared guard rules | After C4 |
+| D2 | 10.5 | tests in `httpsec/fibersec`, `httpsec/ginsec` (no production code) | Sonnet | Parity tests only, because the rules live in `guardauth` | After D1 |
+| E1 | 11.1–11.3 | `test/httpsecconformance/resource_server_scenarios.go`, `README.md`, `CHANGELOG.md`, `httpsec/example_resource_server_test.go` | Sonnet | Fixtures and docs | After D2 |
+| — | 11.5 | main session | — | Verification is never delegated | Last |
 
-- **Wave 1** runs A1, A2, A3, A4, B1 and B2 in one message. They own disjoint packages, and none
-  consumes another's new API.
-- **`httpsec` is one lane** (C1 → C2 → C3 → D1), split into sequential dispatches of six tasks or
-  fewer.
-- **Every dispatch** gets a fresh reviewer that edits nothing. Opus dispatches get an Opus reviewer;
-  Sonnet dispatches get a Sonnet reviewer.
-- **The `bff-resource-server` note (10.4)** is written by the main session, because it is an
-  OpenSpec artifact.
-
-**Scoped tests** (`test-scope.md`), run from each workspace module for the packages a dispatch
-changed:
-
-```sh
-go list -test -f '{{.ImportPath}}{{range .Deps}} {{.}}{{end}}' ./... \
-  | awk -v P="github.com/kartaladev/scrty/<changed>" '{for(i=2;i<=NF;i++) if($i==P){print $1;break}}' \
-  | grep -v '\.test$' | sort -u | xargs go test -count=1
-```
-
-Root-module dependents, measured 2026-11-25:
-
-| Package | Dependents |
-|---|---|
-| `authenticate/factor` | 50 |
-| `identity` | 54 |
-| `authorize` | 46 |
-| `authenticate` | 20 |
-| `authenticate/password` | 24 |
-| `oidcprovider` | 15 |
-| `authenticate/oidc` | 8 |
-| `httpsec` | 6, plus the `fibersec`, `ginsec`, `prblmsec` and `test` modules |
+- **Every dispatch gets a fresh reviewer that edits nothing:** an Opus reviewer for Opus dispatches,
+  and a Sonnet reviewer for Sonnet ones.
+- **Findings go to a fresh dispatch of the same lane,** and the next dispatch starts only when its
+  predecessor is green and reviewed.
+- **One whole-branch review** runs before the final gate.
 
 ---
 
-### Task A1: Kind and scope refusal (tasks 1.1–1.3)
-
-**Files:** `authenticate/factor/factor.go`, `factor_test.go`; `identity/principal.go` (godoc);
-`authorize/requirements.go`, `authorize/errors.go`, tests.
+### Task A1: Kinds and scope refusal (tasks 1.1–1.3)
 
 **Interfaces produced:**
-- `const AccessToken Kind = "access-token"`;
-- `type ScopeError struct{ Scopes []string; All bool }` with `Error() string` and
-  `Is(target error) bool`, true for `ErrAccessDenied` and `ErrNotGranted`.
+- `const AccessToken Kind = "access-token"` and `const ExternalAccessToken Kind = "external-access-token"`;
+- `type MissingScopesError struct{ Scopes []string; All bool }`, with `Error()` and `Is(target)`, true
+  for `ErrAccessDenied` and `ErrNotGranted`.
 
-- [ ] Red: a kind table row `{kind: factor.AccessToken, channel: "", exempt: true}` fails, because the
-  kind is undefined at run time through an exported lookup. If it fails only to compile, add the
-  constant first and assert on the table.
-- [ ] Green: add the kind to the channel and exemption tables.
-- [ ] Red: `HasAnyScope("orders:write")` on scopes `[orders:read]` yields `errors.As(err, &se)` with
-  `se.Scopes == [orders:write]` and `!se.All`. It fails: no `ScopeError`.
-- [ ] Green: return `ScopeError` from both requirements. Keep the anonymous path unchanged.
-- [ ] Verify: scoped tests for `authenticate/factor`, `identity`, `authorize`.
+- [ ] Red: kind-table rows for both kinds (channel, exempt) fail. Add the constants first, so the red
+  step is an assertion failure, not a compile error.
+- [ ] Green: add both kinds to the channel and exemption tables.
+- [ ] Red: `errors.As(err, &mse)` on a refusal by `HasAnyScope("orders:write")` and by
+  `AllOf(HasAnyRole("clerk"), HasAnyScope("orders:write"))` fails.
+- [ ] Green: return `MissingScopesError`, leaving the anonymous path unchanged.
+- [ ] Verify: the scoped command for `authenticate/factor`, `identity` and `authorize`.
 
 ### Task A2: Consumer password rules (tasks 2.1–2.2)
 
-**Files:** `authenticate/password/policy.go`, `options.go`, tests.
-
 **Interfaces produced:**
 - `type RuleFunc func(ctx context.Context, candidate string, user *identity.Details) (bool, error)`;
-- `func WithRule(name Rule, check RuleFunc) Option`.
+- `func WithRule(name Rule, check RuleFunc) PolicyOption`.
 
-- [ ] Red, then green, for each password-policy scenario in the spec delta, one table case each. Order:
-  1. no rule by default;
+- [ ] Red, then green, one table case per password-policy scenario. Order:
+  1. no rule;
   2. letters and digits;
   3. weak and reused stay distinct;
   4. rule failure;
-  5. a consumer rule runs before the breach lookup (a lookup mock expecting no call);
+  5. runs before the breach lookup (a lookup mock expecting no call);
   6. the construction refusals.
-- [ ] Verify: scoped tests for `authenticate/password`.
+- [ ] Verify: the scoped command for `authenticate/password`.
 
 ### Task A3: Inactive error (task 3.1)
 
-**Files:** `authenticate/errors.go`, `authenticate/password.go` (the provider), tests.
+**Interfaces produced:** `var ErrAccountInactive`, in `authenticate/authenticate.go`.
 
-**Interfaces produced:** `var ErrAccountInactive = errors.New(...)`.
-
-- [ ] Red: an inactive user with the correct password gives `errors.Is(err, ErrAccountInactive)`.
-  It fails.
-- [ ] Red: an inactive user with a wrong password gives `!errors.Is(err, ErrAccountInactive)`, with
-  the same work spent.
+- [ ] Red: an inactive user with the correct password, where `errors.Is(err, ErrAccountInactive)`
+  must hold, fails.
+- [ ] Red: an inactive user with a wrong password must carry no inactive error, with equal work spent
+  (measured by encoder calls).
 - [ ] Green: check active state only after the password verifies, and join beneath the uniform
   failure.
-- [ ] Verify: scoped tests for `authenticate`.
+- [ ] Verify: the scoped command for `authenticate`.
 
-### Task A4: Provider fields (tasks 4.1–4.2)
-
-**Files:** `oidcprovider/accesstoken.go`, `oidcprovider/provider.go`, tests.
+### Task A4: Provider fields (tasks 4.1–4.3)
 
 **Interfaces produced:**
 - `AccessToken.AuthTime time.Time`, `ACR string`, `AMR []string`;
-- `func (p *Provider) UserLoader() identity.UserLoader`.
+- `func (p *Provider) UserLoader() identity.UserLoader`;
+- the introspection answer's members `auth_time`, `acr` and `amr`.
 
-- [ ] Red: for a JWT and an opaque token issued after a sign-in at a fixed time, `VerifyAccessToken`
-  returns that `AuthTime`, `ACR` and `AMR`. It fails with a zero value.
-- [ ] Green: read the claims for a JWT, and the loaded grant for an opaque token.
-- [ ] Red, then green: `UserLoader()` returns the loader in `Deps`.
-- [ ] Verify: scoped tests for `oidcprovider`.
+- [ ] Red, then green, for each: JWT and opaque tokens carry the sign-in's time, context and methods;
+  `UserLoader()` returns `Deps.Users`; the introspection answer includes the three members for an
+  active token.
+- [ ] Verify: the scoped command for `oidcprovider`.
 
 ### Task B1: Shared key set (tasks 5.1–5.2)
 
-**Files:** new `internal/keyset/`; `authenticate/oidc/remote.go` and its callers.
-
 **Interfaces produced:**
-- `keyset.New(fetcher *outbound.Client, opts ...Option) *Cache`;
-- `(*Cache).Key(ctx, issuer, kid string) (jwk.Key, error)`;
-- `(*Cache).Metadata(ctx, issuer string) (Metadata, error)`;
-- `keyset.ErrUnknownKey`.
+- `keyset.New(name string, fetcher *outbound.Client, opts ...Option) (*Source, error)`;
+- `(*Source).Key(ctx, kid string) (jwk.Key, error)`;
+- `keyset.ErrUnknownKey`;
+- the options `WithIssuer(iss)`, `WithJWKSURL(u)`, `WithTTL`, `WithRefetchCooldown`, `WithBackoff`.
 
-- [ ] Run `go test -count=1 ./authenticate/oidc/...` and save the result as the baseline.
-- [ ] Move the tests describing TTL, backoff, cooldown and singleflight first, as tests of
-  `internal/keyset` against the moved code. They must be red until the code moves.
-- [ ] Move the code. `authenticate/oidc` uses it.
-- [ ] Rerun the baseline. Expected: identical pass list.
-- [ ] Red, then green: RFC 8414 fallback; a direct key-set URL; a `jwks_uri` on another origin refused.
-- [ ] Verify: scoped tests for `authenticate/oidc` and `internal/keyset`.
+- [ ] Run `go test -count=1 ./authenticate/oidc/...` and save the output as the baseline.
+- [ ] Copy the behavioural tests (TTL, backoff, cooldown, singleflight) into `internal/keyset` against a
+  stub `Source`. Red: assertion failures against the stub.
+- [ ] Green: implement `internal/keyset` from the existing behaviour, then switch `authenticate/oidc`
+  to it. Its tests stay byte-identical. Rerun the baseline: identical pass list.
+- [ ] Red, then green: fallback to RFC 8414 on 404 only; refuse metadata naming another issuer; refuse a
+  discovered key-set URL on another origin; accept a pinned URL; accept a replaced outbound client.
+- [ ] Verify: the scoped command for `authenticate/oidc` and `internal/keyset`.
 
 ### Task B2: Introspection client (tasks 6.1–6.2)
-
-**Files:** new `internal/introspect/`.
 
 **Interfaces produced:**
 - `introspect.New(cfg Config, fetcher *outbound.Client) (*Client, error)`;
 - `(*Client).Introspect(ctx, token string) (*Result, error)`;
-- `Result{Active bool; Issuer, Subject, ClientID string; Audience, Scopes []string; ExpiresAt, AuthTime time.Time; Confirmation map[string]string; Claims map[string]any}`.
+- `Result{Active bool; TokenType, Issuer, Subject, ClientID, ACR string; Audience, Scopes, AMR []string; ExpiresAt, AuthTime time.Time; Confirmation map[string]string; Claims map[string]any}`;
+- `Config` with `Endpoint`, `ClientID`, `Secret` or `Key`, and `Cache{MaxAge time.Duration; MaxEntries int}`.
 
 - [ ] Red, then green, one table case each:
   1. active;
   2. inactive;
-  3. 503, which is a dependency error;
-  4. a malformed body;
-  5. a non-https endpoint refused at `New`;
-  6. basic authentication;
-  7. a private-key JWT;
-  8. a log capture holding neither the token nor the secret.
-- [ ] Red, then green: the cache returns a stored answer within its bound, and never past `exp`, with a
-  fake clock.
-- [ ] Verify: scoped tests for `internal/introspect`.
+  3. `refresh_token` active, refused by the caller's acceptance helper `Accepts(resource string, now time.Time) bool`;
+  4. no `aud`;
+  5. no `sub`;
+  6. `exp` past;
+  7. 503 as a dependency error;
+  8. a malformed body;
+  9. http refused at `New`;
+  10. basic authentication;
+  11. a private-key JWT;
+  12. a log capture with no token or secret.
+- [ ] Red, then green, the cache: within bounds; never past `exp`; no `exp` means no caching; the
+  entry bound evicts the oldest; singleflight makes 10 concurrent requests into 1 call.
+- [ ] Verify: the scoped command for `internal/introspect`.
 
-### Task C1: Mode core, routing, challenges (tasks 3.2, 7.1–7.3, 7.6–7.8)
-
-**Files:** new `httpsec/resource_server.go`, `resource_server_options.go`, `resource_route.go`,
-`access_challenge.go`; the shared binding check moved out of `oidc_userinfo.go`;
-`httpsec/errors.go`; `httpsec/chain.go` (the slot constant and the verifier-of-bound-credentials
-count); `httpsec/login.go` (inactive disclosure); tests.
+### Task C1: Mode core, routing, disclosure (tasks 3.2, 7.1–7.3)
 
 **Interfaces produced:**
 - `func EnableResourceServer(resourceID string, opts ...ResourceServerOption) Option`;
 - `type ResourceServerOption`;
-- `func WithPathPrefix(prefixes ...string) ResourceServerOption`;
-- `func WithResourceAliases(aliases ...string) ResourceServerOption`;
-- `const OrderResourceServer Order = 490`;
-- `var ErrInvalidToken`;
+- `WithPathPrefix(prefixes ...string)`;
+- `WithResourceAliases(aliases ...string)`;
+- `const OrderResourceServer Order = 425`;
 - `func WithInactiveDisclosure() Option`;
-- an internal `source` interface that C2 and C3 implement:
-  `recognises(peek) bool`, `verify(ctx, raw) (*verified, error)`, `strategy`.
+- the internal `source` interface (`name() string`, `recognises(t peeked) bool`,
+  `verify(ctx, raw string) (*verifiedToken, error)`), which C2 to C4 implement.
 
-- [ ] Red, then green: the construction scenarios of spec resource-server (identifier, prefixes,
-  overlap, unscoped beside another), as a table.
-- [ ] Red, then green: the shared binding check. Run the UserInfo suite first as the baseline; it must
-  stay green.
-- [ ] Red, then green: the routing scenarios with a stub internal source. Add
-  `FuzzAccessTokenPeek`.
-- [ ] Red, then green: the challenge scenarios, plus exactly one `WWW-Authenticate` per refusal kind,
-  with DPoP on and off.
-- [ ] Red, then green: the inactive-disclosure scenarios through form login.
-- [ ] Verify: scoped tests for `httpsec`, `fibersec`, `ginsec`, `prblmsec` and `test`. Run the fuzz
-  target for 30 s.
+- [ ] Red, then green: the construction scenarios (identifier, alias, prefix syntax, overlap,
+  unscoped-alone), as a table.
+- [ ] Red, then green: extract the shared binding check and header reader. Run the UserInfo suite before
+  and after, unchanged.
+- [ ] Red, then green, against stub sources:
+  - path-first routing (two modes trusting one issuer);
+  - the size bound;
+  - the session-token exclusion and its construction check;
+  - "not handed on";
+  - off-prefix refusal;
+  - the provider's own endpoints.
 
-### Task C2: Provider source and publication (tasks 7.4–7.5)
+  Add `FuzzAccessTokenRoute`.
+- [ ] Red, then green: the inactive-disclosure scenarios through form login and Basic, and
+  prblmsec concealment.
+- [ ] Verify: the scoped command for `httpsec` in the root, `fibersec`, `ginsec`, `prblmsec` and
+  `test` modules. Run the fuzz target for 30 s.
 
-**Files:** new `httpsec/resource_source_provider.go`, `httpsec/access_token.go`, tests.
+### Task C2: Challenges, binding, provider source (tasks 7.4–7.5, 8.1)
 
 **Interfaces produced:**
+- `var ErrInvalidToken`;
 - `func FromProvider(op *oidcprovider.Provider, opts ...SourceOption) ResourceServerOption`;
-- `type SourceOption`;
-- `type AccessToken struct{ Resource, Issuer, Subject, ClientID string; Audience, Scopes []string; IssuedAt, ExpiresAt, AuthTime time.Time; ACR string; AMR []string; Confirmation map[string]string; Claims map[string]any }`;
-- `func AccessTokenFromContext(ctx context.Context) (*AccessToken, bool)`.
+- `type SourceOption`.
 
-- [ ] Red, then green, each scenario of the spec's provider, audience, type, binding, caller ("role
-  removed", "local user inactive") and publication requirements, against a real `oidcprovider` with
-  in-memory stores.
-- [ ] Verify: scoped tests as in C1.
+- [ ] Red, then green:
+  - the challenge scenarios, with `bearerChallenge` extended and an API-only chain counting as having a
+    bearer;
+  - exactly one `WWW-Authenticate` per refusal kind, with DPoP on and off;
+  - `WithoutBearerChallenge` accepted on an API-only chain.
+- [ ] Red, then green: the binding scenarios (Bearer downgrade, nonce, certificate), the
+  verifier-of-bound-credentials count, and the DPoP-required opt-out error.
+- [ ] Red, then green: the provider source's audience, type, grant and local-user scenarios, against a
+  real `oidcprovider` with in-memory stores.
+- [ ] Verify: as in C1.
 
-### Task C3: External sources and strategies (tasks 8.1–8.5)
-
-**Files:** new `httpsec/resource_source_issuer.go`, `resource_source_introspect.go`,
-`resource_strategy.go`, tests.
+### Task C3: Publication, dependencies, remote issuer (tasks 8.2–8.3, 9.1–9.2)
 
 **Interfaces produced:**
+- `type AccessToken struct{ Resource, Issuer, Subject, ClientID string; Audience, Scopes []string; IssuedAt, ExpiresAt, AuthTime time.Time; ACR string; AMR []string; Confirmation map[string]string; Claims map[string]any }`;
+- `func AccessTokenFromContext(ctx context.Context) (*AccessToken, bool)`;
 - `func FromIssuer(issuer string, opts ...SourceOption) ResourceServerOption`;
+- source options `WithSourceAudience`, `WithJWKSURL`, `WithOutboundClient`, `WithAlgorithms`,
+  `WithClockSkew`, `WithUnboundTokens`, `WithUntypedTokens(claim, value string)`,
+  `WithJWTIntrospection(cfg IntrospectionConfig)`.
+
+- [ ] Red, then green: the publication and scope scenarios (kinds, `scp` forms, a mapper that cannot
+  widen scopes, copy on read).
+- [ ] Red, then green: the dependency-failure scenarios.
+- [ ] Red, then green: each remote-issuer scenario against a local `httptest` TLS issuer serving
+  discovery, RFC 8414 metadata and JWKS. That covers rotation, flood, `none`, the embedded `jwk`,
+  required claims, `azp`, untyped tokens with a telling claim, the source audience equal to the issuer,
+  and JWT introspection.
+- [ ] Verify: as in C1.
+
+### Task C4: Introspection source, strategies, throttle, assurance (tasks 9.3–9.6)
+
+**Interfaces produced:**
 - `func FromIntrospection(endpoint, clientID string, opts ...SourceOption) ResourceServerOption`;
-- source options: `WithSourceAudience`, `WithJWKSURL`, `WithClockSkew`, `WithUnboundTokens`,
-  `WithUntypedTokens(claim, value string)`, `WithJWTIntrospection(cfg IntrospectionConfig)`,
-  `WithIntrospectionSecret`, `WithIntrospectionKey`, `WithIntrospectionCache(max time.Duration)`,
-  `WithOpaquePrefix`;
-- strategy options: `WithClaimsOnly()`,
-  `WithClaimsMapper(func(ctx context.Context, claims map[string]any) (*identity.Principal, error))`,
-  `WithLocalUsers(identity.UserLoader)`.
+- `WithIntrospectionSecret`, `WithIntrospectionKey`,
+  `WithIntrospectionCache(maxAge time.Duration, maxEntries int)`, `WithOpaquePrefix`;
+- `WithClaimsOnly()`;
+- `WithClaimsMapper(func(ctx context.Context, claims map[string]any) (*identity.Principal, error))`;
+- `WithLocalUsers(identity.UserLoader)`;
+- `WithLinkedUsers(links oidc.LinkStore, provider string, users identity.UserLoader)`;
+- `WithRefusalLimiter(ratelimit.LimiterFactory)`;
+- `var ErrInsufficientUserAuthentication`.
 
-- [ ] Red, then green, each external-source scenario against a local `httptest` TLS issuer serving
-  discovery, JWKS and introspection:
-  - rotation;
-  - flood;
-  - `none`;
-  - spelling;
-  - untyped;
-  - telling claim;
-  - JWT introspection;
-  - inactive;
-  - cache;
-  - session-reference prefix.
-- [ ] Red, then green, the caller-strategy scenarios and the remaining F25 construction checks, as a
-  table.
-- [ ] Verify: scoped tests as in C1.
+- [ ] Red, then green: the introspection-source and session-reference scenarios.
+- [ ] Red, then green: the strategy scenarios. That includes the subject-collision case, where local
+  user `42` is never loaded, and the source-wiring construction table.
+- [ ] Red, then green: the throttle scenario, asserting zero introspection calls past the limit.
+- [ ] Red, then green: the security-policy scenarios. Evidence is minted from a verified external token;
+  in challenge mode, a password-only token is refused with `ErrInsufficientUserAuthentication`;
+  exempt mode allows; a provider token is exempt.
+- [ ] Verify: as in C1.
 
-### Task D1: Endpoints, rule challenges, guards, recency (tasks 9.1–9.4)
+### Task D1: Endpoints, rule challenges, guards, recency (tasks 10.1–10.4)
 
-**Files:**
-- the session-only endpoint files: `password_change.go`, `passkey_manage.go`, `passkey_register.go`,
-  `mfa_enrol.go`, `mfa_verify.go`, `reauth_*.go`, `session_renewal.go`, `session_management.go`,
-  `logout.go`;
-- `authorization.go`;
-- `guards.go`;
-- tests.
+**Files:** `httpsec/logout.go`, `role_switch.go`, `authorization.go`, `guards.go`;
+`internal/guardauth/recency.go` and `challenge.go`; the session-endpoint test files.
 
-- [ ] Red, then green: a table over every session-only endpoint, called with an access token. Each
-  returns 401 auth-required and changes nothing; logout ends nothing.
-- [ ] Red, then green: chain-rule `insufficient_scope`; the API-key caller unchanged.
-- [ ] Red, then green: the guard scope and privilege scenarios.
-- [ ] Red, then green: every recency scenario in the reauthentication delta, plus the 401 challenge
-  with `max_age=300`; a stale session still gets 403 with no body.
-- [ ] Verify: scoped tests as in C1.
+- [ ] Characterization: a table over every session-only endpoint, called with an access token. Each
+  returns 401 and changes nothing. Show each case failing once by temporarily publishing a fake
+  session in the test, then restore.
+- [ ] Red, then green: logout refuses an access-token caller (red today: 200). Settled logout scenarios
+  stay green.
+- [ ] Red, then green: `insufficient_scope` at chain rules and guards; the API-key caller is unchanged.
+- [ ] Red, then green: recency in `internal/guardauth`. A fresh, stale, or `auth_time`-less access
+  token is answered 401 with `max_age=300` for a 5-minute window. A stale session still gets 403 with
+  no body.
+- [ ] Verify: as in C1.
 
-### Task D2: Adapter guards (task 9.5)
+### Task D2: Adapter parity tests (task 10.5)
 
-**Files:** `httpsec/fibersec/guards.go`, `httpsec/ginsec/guards.go`, their tests.
+- [ ] Write tests only, in `httpsec/fibersec` and `httpsec/ginsec`: a stale access token and a missing
+  scope on each adapter produce the same refusals and challenges as net/http.
+- [ ] Verify: `go test -count=1 ./...` in both modules.
 
-- [ ] Red, then green: the D1 guard and recency scenarios through each adapter.
-- [ ] Verify: `go test -count=1 ./...` in the `httpsec/fibersec` and `httpsec/ginsec` modules.
+### Task E1: Conformance and docs (tasks 11.1–11.3)
 
-### Task E1: Conformance and docs (tasks 10.1–10.3)
+- [ ] Write three conformance scenarios: a provider-and-API chain; an API-only chain with a remote
+  issuer; two prefixes trusting one issuer. Run them on all three adapters.
+- [ ] Write the README sections (resource server, `password.WithRule`, `WithInactiveDisclosure`), and
+  an example test compiling the resource-server examples.
+- [ ] Write the CHANGELOG *Added* entry and the three **BREAKING (behaviour)** *Changed* entries, merged
+  by hand with the other v0.6.0 entries.
+- [ ] Verify: the `test` module's scoped run.
 
-**Files:** `test/httpsecconformance/resource_server_scenarios.go`, `README.md`, `CHANGELOG.md`,
-`httpsec/example_resource_server_test.go`.
+### Task F: Final gate (task 11.5, main session)
 
-- [ ] Write three conformance scenarios: a provider-and-API chain, an API-only chain with a remote
-  issuer, and two resource servers by prefix. Run them on all three adapters.
-- [ ] Write the README sections and an example test that compiles both examples.
-- [ ] Write the CHANGELOG entries: *Added*, plus two **BREAKING (behaviour)** entries under
-  *Changed*.
-- [ ] Verify: the `test` module's scoped tests.
-
-### Task F: Final gate (task 10.5, main session)
-
-- [ ] Run `gofmt -l` (empty), `go vet`, and the scoped tests in every workspace module.
+- [ ] Run `gofmt -l` (empty), `go vet`, and the scoped command in every workspace module.
 - [ ] Run `make check` and `make spec-check` after the last edit, and read the output.
-- [ ] Whole-branch review against every requirement in `specs/`.
+- [ ] Run the whole-branch review against every requirement in `specs/`.

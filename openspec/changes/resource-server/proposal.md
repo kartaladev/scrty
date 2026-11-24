@@ -48,8 +48,10 @@ The change also carries two consumer requests that the on-hold proposal held:
 - **Caller:** three selectable strategies.
   - *Claims only* (the default for external sources): subject and scopes from the token, no roles.
   - *Claims mapper*: a consumer function derives roles from the claims.
-  - *Local user*: the subject's user is reloaded each request, so roles are current. This is the
-    default for `FromProvider`.
+  - *Local user* (provider source only, its default): the subject's user is reloaded each request,
+    so roles are current.
+  - *Linked user* (external sources): the user is found through the identity links by issuer and
+    subject; an external subject is never taken as a local user identifier.
 - **Revocation:**
   - provider tokens: immediate;
   - offline JWTs: valid until `exp`;
@@ -59,14 +61,20 @@ The change also carries two consumer requests that the on-hold proposal held:
 - `identity.PrincipalFromContext` works unchanged, carrying the token's scopes.
 - `httpsec.AccessTokenFromContext` exposes the issuer, client, audience, scopes, authentication
   time and claims.
-- A new first-factor kind, `access-token`.
+- Two new first-factor kinds: `access-token` (provider tokens, exempt from an MFA requirement because
+  the chain's own gates judged their sign-in) and `external-access-token` (federated channel, judged
+  by the existing federated-assurance rules from the token's `acr`/`amr`).
 
 **Refusals**
 - A refused access token is answered 401 with `error="invalid_token"` (RFC 6750, RFC 9449).
 - A missing scope, at a chain rule or a guard, is answered 403 with `error="insufficient_scope"` and
   the scopes needed (RFC 6750 §3.1).
-- The chain's session-only endpoints refuse an access-token caller: password change, passkey and MFA
-  management, re-authentication, session renewal and management, and logout.
+- The chain's session-only endpoints refuse an access-token caller: password change, passkeys,
+  second factors, saved codes, re-authentication, session renewal and management, session signals,
+  the provider's resume and consent, the active-role switch, and logout.
+- **BREAKING (behaviour):** logout refuses an access-token caller instead of answering 200 with
+  nothing deleted, so a client is never told it signed out while its grant lives on; it signs out
+  through token revocation (RFC 7009) and end-session.
 
 **Guards**
 - Every guard keeps working for access-token callers.
@@ -109,14 +117,18 @@ The change also carries two consumer requests that the on-hold proposal held:
 ### Modified Capabilities
 
 - `http-security-chain`: session-only endpoints refuse an access-token caller; per-endpoint guards
-  judge access-token callers.
-- `identity-model`: a user principal carries an access token's scopes; the `access-token`
-  first-factor kind.
+  judge access-token callers; logout refuses an access-token caller.
+- `identity-model`: a user principal carries an access token's scopes; the `access-token` and
+  `external-access-token` first-factor kinds.
+- `security-policy`: an external access token meets an MFA requirement on its asserted assurance, and
+  the resource server may mint federated-assurance evidence.
+- `framework-adapters`: adapter recency guards answer a stale access token as the core does.
 - `authorization`: a scope refusal names the scopes it needed.
-- `http-error-propagation`: the invalid-token refusal and challenge, the insufficient-scope
-  challenge, the insufficient-user-authentication challenge, and the inactive-account refusal.
-- `reauthentication`: the recency guard's authentication time for an access-token caller, and the
-  RFC 9470 challenge.
+- `http-error-propagation`: the invalid-token refusal; the bearer challenge covering resource
+  servers; the insufficient-scope and insufficient-user-authentication challenges; the
+  inactive-account refusal; new rows in the status table and the stable-contract list.
+- `reauthentication`: the recency guard's authentication time and default response for an
+  access-token caller.
 - `sender-constrained-tokens`: a resource server counts as a verifier of bound credentials, and
   requiring bound access tokens does not require proofs at sign-in.
 - `authentication`: an inactive account's refusal is identifiable beneath the uniform failure.
@@ -128,26 +140,32 @@ The change also carries two consumer requests that the on-hold proposal held:
   - `httpsec`:
     - `EnableResourceServer`, `ResourceServerOption`;
     - `FromProvider`, `FromIssuer`, `FromIntrospection`;
-    - `OrderResourceServer`, `WithPathPrefix`, `WithResourceAliases`, `WithSourceAudience`;
-    - `WithJWKSURL`, `WithClockSkew`, `WithOpaquePrefix`, `WithIntrospectionSecret`, `WithIntrospectionKey`;
+    - `OrderResourceServer` (425), `WithPathPrefix`, `WithResourceAliases`, `WithSourceAudience`;
+    - `WithJWKSURL`, `WithOutboundClient`, `WithAlgorithms`, `WithClockSkew`, `WithOpaquePrefix`,
+      `WithIntrospectionSecret`, `WithIntrospectionKey`;
     - `WithUnboundTokens`, `WithUntypedTokens`;
-    - `WithClaimsOnly`, `WithClaimsMapper`, `WithLocalUsers`;
+    - `WithClaimsOnly`, `WithClaimsMapper`, `WithLocalUsers`, `WithLinkedUsers`;
     - `WithJWTIntrospection`, `WithIntrospectionCache`;
-    - `AccessToken`, `AccessTokenFromContext`, `ErrInvalidToken`, `WithInactiveDisclosure`.
+    - `AccessToken`, `AccessTokenFromContext`, `ErrInvalidToken`, `ErrInsufficientUserAuthentication`,
+      `WithInactiveDisclosure`.
   - `oidcprovider`: `Provider.UserLoader`; `AccessToken` gains `AuthTime`, `ACR` and `AMR`.
-  - `authenticate/factor`: `AccessToken`.
+  - `authenticate/factor`: `AccessToken`, `ExternalAccessToken`.
   - `authenticate`: `ErrAccountInactive`.
-  - `authorize`: `ScopeError`.
+  - `authorize`: `MissingScopesError`.
   - `authenticate/password`: `WithRule`, `RuleFunc`.
 - **Behaviour changes** (recorded under *Changed*):
   - recency guards and access-token callers;
+  - logout refusing an access-token caller;
   - `ErrAccountInactive` reachable beneath the uniform failure.
 - **Packages:**
   - `httpsec`, `oidcprovider` (a verifier for the resource server; UserInfo's binding check
     shared);
-  - `authenticate/oidc`, whose key-set cache moves to an internal package;
+  - `authenticate/oidc`, whose key-set cache moves to `internal/keyset`;
+  - `internal/guardauth` (recency and challenges for every adapter's guards);
+  - `oidcprovider`'s introspection answer (`auth_time`, `acr`, `amr`);
+  - `httpsec/prblmsec` (problem types for the new refusals);
   - `identity`, `authorize`, `authenticate`, `authenticate/password`;
-  - `httpsec/fibersec` and `httpsec/ginsec` (guards and adapter tests);
+  - `httpsec/fibersec` and `httpsec/ginsec` (adapter tests);
   - `test/httpsecconformance`.
 - **Dependencies:** none new. Remote fetching uses the existing `outbound` client and `jwx`.
 - **Consumers:** crm-api sets its client's `DefaultAudience` and enables the mode. Its sign-out route
