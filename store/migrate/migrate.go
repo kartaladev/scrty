@@ -64,16 +64,17 @@ func SecurityState() Set {
 	return Set{fsys: securityStateFS, Dir: "securitystate", VersionTable: SecurityStateVersionTable}
 }
 
-// IdentityVersionTable is the version table name Identity uses by default. A
-// consumer applying the set with their own tool may record versions under any
-// other name instead.
-const IdentityVersionTable = "goose_identity"
+// IdentityVersionTable is the version table name Identity uses by default:
+// "scrty_identity_migrate". A consumer may apply the set with any other name,
+// passing it to their runner (goose.WithTableName, for one); the set never
+// reads or changes another set's version table.
+const IdentityVersionTable = "scrty_identity_migrate"
 
 // Identity returns the identity migration set: groups, organizations, roles,
-// users, assigned roles, resource privileges and password history. It
-// creates no security-state table and no foreign key to or from one (see the
-// schema-migrations spec): the identity set can be applied, or rolled back,
-// without touching security state.
+// users, assigned roles, resource privileges, user attributes and password
+// history, as one baseline migration. It creates no security-state table and no
+// foreign key to or from one (see the schema-migrations spec): the identity set
+// can be applied, or rolled back, without touching security state.
 //
 // Its relations are named with the fixed scrty_ prefix (scrty_users,
 // scrty_roles and so on); a PostgreSQL schema plus a search_path is how a

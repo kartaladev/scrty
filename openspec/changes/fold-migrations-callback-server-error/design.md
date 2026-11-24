@@ -217,6 +217,7 @@ every chain record.
 | F11 | Invalid state, unspent flow, re-authentication, unknown provider, unreadable error, hung-up caller, failed parked-request check, or a login that is not parked | Handled, tested | Unchanged: the plain error, with no redirect |
 | F12 | `goose down` on the baseline | Handled, tested | Drops the whole set and its data, bounded by `lock_timeout`; the changelog warns |
 | F13 | A broker's own deadline expires while the caller is still connected | Handled | `server_error` for a parked login rather than a plain error. Intended: the user can retry from the login page |
+| F14 | A refused baseline apply on an earlier database leaves goose's new, empty version table (`scrty_state_migrate` or `scrty_identity_migrate`) behind, because goose creates it outside the migration's transaction | Accepted: it records no version and changes nothing else; the changelog's drop statements remove it | An empty version table beside the earlier schema |
 
 ## Risks / Trade-offs
 

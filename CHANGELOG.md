@@ -20,6 +20,82 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
   `token.TypeFirstParty` with `token.TypeSessionToken`. An `Issuer` asked for that type now says
   it "does not issue session tokens". Three scenario titles in the `token-issuance` spec keep the
   old wording; their text says "session token".
+- **BREAKING: each migration set is now one baseline, and earlier databases must be recreated.**
+  `migrate.SecurityState()` is the single migration `20261126000000_security_state` and
+  `migrate.Identity()` is the single migration `20261126000000_identity`. Each creates only
+  `scrty_` relations directly, with the schema v0.5.0 ended with, and records its version in a new
+  default table: `migrate.SecurityStateVersionTable` is now `scrty_state_migrate` and
+  `migrate.IdentityVersionTable` is now `scrty_identity_migrate`. A consumer's own `users` or
+  `sessions` table no longer blocks an install. Pass `goose.WithTableName` to keep another version
+  table name, as before.
+  - **There is no upgrade path.** The baselines do not detect an earlier history. Against a database
+    that holds `scrty_` relations (v0.3.0 to v0.5.0) the first `CREATE TABLE` fails on the existing
+    relation and nothing is applied. Against a database that holds only unprefixed scrty tables
+    (v0.2.x and earlier) they create new, empty `scrty_` tables beside them. Stop every instance and
+    recreate the database, or drop scrty's relations and version tables, then start this release.
+    Run the statements for the sets you use, in a schema you own (`CASCADE` makes the order
+    irrelevant). Drop the version tables you have; those that do not exist are skipped:
+
+    ```sql
+    DROP TABLE IF EXISTS scrty_account_recoveries CASCADE;
+    DROP TABLE IF EXISTS scrty_api_keys CASCADE;
+    DROP TABLE IF EXISTS scrty_assigned_roles CASCADE;
+    DROP TABLE IF EXISTS scrty_groups CASCADE;
+    DROP TABLE IF EXISTS scrty_login_attempts CASCADE;
+    DROP TABLE IF EXISTS scrty_login_failure_streaks CASCADE;
+    DROP TABLE IF EXISTS scrty_mfa_enrolments CASCADE;
+    DROP TABLE IF EXISTS scrty_oidc_flows CASCADE;
+    DROP TABLE IF EXISTS scrty_oidc_handoffs CASCADE;
+    DROP TABLE IF EXISTS scrty_oidc_links CASCADE;
+    DROP TABLE IF EXISTS scrty_one_time_tokens CASCADE;
+    DROP TABLE IF EXISTS scrty_op_access_tokens CASCADE;
+    DROP TABLE IF EXISTS scrty_op_authorization_codes CASCADE;
+    DROP TABLE IF EXISTS scrty_op_browser_sessions CASCADE;
+    DROP TABLE IF EXISTS scrty_op_client_assertions CASCADE;
+    DROP TABLE IF EXISTS scrty_op_clients CASCADE;
+    DROP TABLE IF EXISTS scrty_op_consents CASCADE;
+    DROP TABLE IF EXISTS scrty_op_device_authorizations CASCADE;
+    DROP TABLE IF EXISTS scrty_op_grants CASCADE;
+    DROP TABLE IF EXISTS scrty_op_pending_requests CASCADE;
+    DROP TABLE IF EXISTS scrty_op_refresh_tokens CASCADE;
+    DROP TABLE IF EXISTS scrty_organizations CASCADE;
+    DROP TABLE IF EXISTS scrty_passkey_credentials CASCADE;
+    DROP TABLE IF EXISTS scrty_passkey_user_handles CASCADE;
+    DROP TABLE IF EXISTS scrty_password_history CASCADE;
+    DROP TABLE IF EXISTS scrty_rate_limit_buckets CASCADE;
+    DROP TABLE IF EXISTS scrty_recovery_codes CASCADE;
+    DROP TABLE IF EXISTS scrty_resource_privileges CASCADE;
+    DROP TABLE IF EXISTS scrty_roles CASCADE;
+    DROP TABLE IF EXISTS scrty_sessions CASCADE;
+    DROP TABLE IF EXISTS scrty_signing_keys CASCADE;
+    DROP TABLE IF EXISTS scrty_user_attributes CASCADE;
+    DROP TABLE IF EXISTS scrty_users CASCADE;
+    DROP TABLE IF EXISTS goose_security_state;
+    DROP TABLE IF EXISTS goose_identity;
+    DROP TABLE IF EXISTS scrty_state_migrate;
+    DROP TABLE IF EXISTS scrty_identity_migrate;
+    ```
+
+    The statements drop every table of both sets, security state and identity, and their data.
+    The unprefixed names of v0.2.x and earlier (`sessions`, `users`, ...) are not in the list; drop
+    those only if they are scrty's own.
+  - **Going back to v0.5.0 is not supported.** Its migrations fail partway on a database this release
+    migrated, on a relation that already exists. Recreate the database for an older release.
+  - **One `goose down` drops a whole set and its data**, bounded by a 5 second `lock_timeout`.
+  - **Applying a set from two replicas at once** fails the second on an existing relation, with
+    nothing applied, and succeeds on retry. Pass `goose.WithSessionLocker` to serialise them.
+- **BREAKING: the SSO callback answers `server_error` for an unclassified failure after a spent
+  flow.** For a login parked by the provider under `WithOIDCProviderCompletion`, a failure that is
+  neither a refusal nor an outage (a failed sign-in hook or `Apply`, a store failure) was a plain
+  500. It is now a 303 to `<LoginURL>?req=<handle>&error=server_error`, with the request still
+  parked, or to the client's redirect URI with `error=server_error`, `state` and `iss` under
+  `WithOIDCFailToClient`, which ends the request. These keep their plain answer: an unspent flow, an
+  invalid state, a caller that hung up, `ErrOIDCReauthenticate`, `oidc.ErrUnknownProvider`, a login
+  that is not parked, and a login that fails the parked-request checks. A `server_error` answer
+  writes one error-level log record, built by `diag.Failure`, that names the cause's Go type and
+  never holds the error text, the handle, the state or the redirect target; alerting that watches
+  5xx answers should also watch for it. No `AuthnLoginFail` event is emitted. There is no option to
+  restore the plain 500.
 
 ## [0.5.0] - 2026-11-24
 

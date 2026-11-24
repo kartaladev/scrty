@@ -15,7 +15,7 @@ import (
 )
 
 // TestMigrationRollback_LockBound pins that rolling back the identity
-// administration migration and the security-state baseline waits a bounded
+// and security-state baselines waits a bounded
 // time for the ACCESS EXCLUSIVE lock their DROP statements take: a long transaction
 // holding a table fails the rollback with lock_not_available within the bound,
 // instead of queueing every query on the table behind it, and leaves the
@@ -36,13 +36,13 @@ func TestMigrationRollback_LockBound(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name: "identity administration",
+			name: "identity baseline",
 			open: func(t *testing.T) (*sql.DB, *goose.Provider, string) {
 				db, p := identityAt(t)
 
 				return db, p, migrate.IdentityVersionTable
 			},
-			version: versionIdentityAdministration,
+			version: versionIdentityBaseline,
 			locked:  "scrty_users", column: "deleted_at",
 		},
 		{

@@ -11,39 +11,32 @@ import (
 	"github.com/kartaladev/scrty/store/migrate"
 )
 
-// TestIdentitySet pins the identity set's directory, its version table and
-// the shape of its embedded files: exactly one goose-annotated SQL file, and
-// no foreign key anywhere (the identity migration set is independent of
-// security state).
+// TestIdentitySet pins the identity set's directory, its default version
+// table and its single baseline file, and that no identity table declares a
+// foreign key (the identity migration set is independent of security state).
 func TestIdentitySet(t *testing.T) {
 	t.Parallel()
 
 	set := migrate.Identity()
 
 	assert.Equal(t, "identity", set.Dir)
-	assert.Equal(t, "goose_identity", migrate.IdentityVersionTable)
-	assert.Equal(t, "goose_identity", set.VersionTable)
+	assert.Equal(t, "scrty_identity_migrate", migrate.IdentityVersionTable)
+	assert.Equal(t, "scrty_identity_migrate", set.VersionTable)
 
 	sub, err := fs.Sub(set.FS(), set.Dir)
 	require.NoError(t, err)
 
 	entries, err := fs.ReadDir(sub, ".")
 	require.NoError(t, err)
-	require.Len(t, entries, 3, "the identity set holds its schema migration, the scrty_ rename and the administration columns")
+	require.Len(t, entries, 1, "the identity set is one baseline migration")
+	assert.Equal(t, "20261126000000_identity.sql", entries[0].Name())
 
-	var content string
-	for _, entry := range entries {
-		name := entry.Name()
-		assert.True(t, strings.HasSuffix(name, ".sql"), "file %s", name)
+	data, err := fs.ReadFile(sub, entries[0].Name())
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "-- +goose Up")
+	assert.Contains(t, string(data), "-- +goose Down")
 
-		data, err := fs.ReadFile(sub, name)
-		require.NoError(t, err)
-		assert.Contains(t, string(data), "-- +goose Up", "file %s", name)
-		assert.Contains(t, string(data), "-- +goose Down", "file %s", name)
-		content += string(data)
-	}
-
-	upper := strings.ToUpper(content)
+	upper := strings.ToUpper(string(data))
 	assert.NotContains(t, upper, "REFERENCES", "no identity table declares a foreign key")
 	assert.NotContains(t, upper, "FOREIGN KEY", "no identity table declares a foreign key")
 }
@@ -81,21 +74,29 @@ func TestSecurityStateSet(t *testing.T) {
 func TestSecurityStateFilesAvoidNoTransactionAnnotation(t *testing.T) {
 	t.Parallel()
 
-	set := migrate.SecurityState()
-	sub, err := fs.Sub(set.FS(), set.Dir)
-	require.NoError(t, err)
+	for name, set := range map[string]migrate.Set{
+		"security-state": migrate.SecurityState(),
+		"identity":       migrate.Identity(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	err = fs.WalkDir(sub, ".", func(path string, d fs.DirEntry, err error) error {
-		require.NoError(t, err)
-		if d.IsDir() {
-			return nil
-		}
-		data, err := fs.ReadFile(sub, path)
-		require.NoError(t, err)
-		assert.False(t, containsNoTransactionAnnotation(string(data)), "file %s", path)
-		return nil
-	})
-	require.NoError(t, err)
+			sub, err := fs.Sub(set.FS(), set.Dir)
+			require.NoError(t, err)
+
+			err = fs.WalkDir(sub, ".", func(path string, d fs.DirEntry, err error) error {
+				require.NoError(t, err)
+				if d.IsDir() {
+					return nil
+				}
+				data, err := fs.ReadFile(sub, path)
+				require.NoError(t, err)
+				assert.False(t, containsNoTransactionAnnotation(string(data)), "file %s", path)
+				return nil
+			})
+			require.NoError(t, err)
+		})
+	}
 }
 
 // containsNoTransactionAnnotation reports whether content has a line that

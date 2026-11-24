@@ -12,13 +12,6 @@ import (
 	"github.com/kartaladev/scrty/store/migrate"
 )
 
-// Versions of the identity migration that renames every table to its scrty_
-// name, and of the last identity migration before that rename.
-const (
-	versionScrtyPrefix        int64 = 20261124000000
-	versionIdentityBeforeName int64 = 20260928000000
-)
-
 // scrtyPrefix is the fixed prefix of every relation scrty's migrations
 // create.
 const scrtyPrefix = "scrty_"
@@ -172,7 +165,8 @@ var securityStateInventory = relationInventory{
 }
 
 // identityInventory is what the identity set creates, before the scrty_
-// rename, with the sequence behind password_history's serial column.
+// prefix is added to each name, with the sequence behind password_history's
+// identity column.
 var identityInventory = relationInventory{
 	Tables: []string{
 		"assigned_roles",
@@ -181,10 +175,12 @@ var identityInventory = relationInventory{
 		"password_history",
 		"resource_privileges",
 		"roles",
+		"user_attributes",
 		"users",
 	},
 	Indexes: []string{
 		"assigned_roles_pkey",
+		"assigned_roles_role_name",
 		"assigned_roles_user_id",
 		"groups_pkey",
 		"organizations_pkey",
@@ -194,8 +190,12 @@ var identityInventory = relationInventory{
 		"resource_privileges_role_name",
 		"roles_name_key",
 		"roles_pkey",
+		"user_attributes_name_value",
+		"user_attributes_pkey",
+		"users_email_live",
 		"users_pkey",
 		"users_username_key",
+		"users_username_lower",
 	},
 	Sequences: []string{"password_history_seq_seq"},
 }
@@ -227,6 +227,7 @@ func catalogRelations(t *testing.T, db *sql.DB) relationInventory {
 			  AND c.relkind = $1
 			  AND c.relname NOT LIKE 'goose\_%'
 			  AND c.relname NOT LIKE 'scrty\_state\_migrate%'
+			  AND c.relname NOT LIKE 'scrty\_identity\_migrate%'
 			ORDER BY c.relname COLLATE "C"`, kind)
 		if len(rows) == 0 {
 			return nil
@@ -236,8 +237,7 @@ func catalogRelations(t *testing.T, db *sql.DB) relationInventory {
 	return relationInventory{Tables: list("r"), Indexes: list("i"), Sequences: list("S")}
 }
 
-// TestRelationInventory pins the relations each set creates (the identity set's
-// before its scrty_ rename), under both PostgreSQL images CI runs, so a name
+// TestRelationInventory pins the relations each set creates, under both PostgreSQL images CI runs, so a name
 // that differs by server version is caught here.
 func TestRelationInventory(t *testing.T) {
 	t.Parallel()
@@ -269,11 +269,14 @@ func TestRelationInventory(t *testing.T) {
 				},
 			},
 			testCase{
-				name: "identity on " + image, set: identity, upTo: versionIdentityBeforeName, image: image,
+				name: "identity on " + image, set: identity, upTo: versionIdentityBaseline, image: image,
 				versionTable: migrate.IdentityVersionTable,
 				assert: func(t *testing.T, got relationInventory) {
-					assert.Equal(t, identityInventory, got)
-					assert.Len(t, got.Tables, 7)
+					assert.Equal(t, prefixed(identityInventory), got, "the catalog is exactly the prefixed inventory")
+					assert.Len(t, got.Tables, 8)
+					for _, n := range slices.Concat(got.Tables, got.Indexes, got.Sequences) {
+						assert.LessOrEqual(t, len(n), postgresNameLimit, "%s must fit PostgreSQL's identifier limit", n)
+					}
 				},
 			},
 		)
@@ -292,16 +295,16 @@ func TestRelationInventory(t *testing.T) {
 		})
 	}
 
-	t.Run("inventories together hold 104 indexes", func(t *testing.T) {
+	t.Run("inventories together hold 109 indexes", func(t *testing.T) {
 		t.Parallel()
 
 		// The counts below are a deliberate tripwire: they are hard-coded so that a
 		// migration adding a table, index or sequence fails here until the inventory
 		// and these numbers are updated together.
 		assert.Len(t, securityStateInventory.Indexes, 92)
-		assert.Len(t, identityInventory.Indexes, 12)
+		assert.Len(t, identityInventory.Indexes, 17)
 		assert.Len(t, securityStateInventory.Tables, 25)
-		assert.Len(t, identityInventory.Tables, 7)
+		assert.Len(t, identityInventory.Tables, 8)
 		for _, inv := range []relationInventory{securityStateInventory, identityInventory} {
 			for _, n := range append(append(append([]string{}, inv.Tables...), inv.Indexes...), inv.Sequences...) {
 				assert.LessOrEqual(t, len(scrtyPrefix+n), postgresNameLimit, n)
