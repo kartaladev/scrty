@@ -36,7 +36,7 @@ The change also carries two consumer requests that the on-hold proposal held:
   `FromIntrospection`.
 - `FromIssuer(issuer)`: any issuer's JWT access tokens, verified against its remote key set (JWKS).
   Each JWT can also be introspected, as an opt-in.
-- `FromIntrospection(issuer, endpoint)`: opaque or JWT tokens checked at an RFC 7662
+- `FromIntrospection(issuer, endpoint, clientID)`: opaque or JWT tokens checked at an RFC 7662
   introspection endpoint.
 
 **Defaults, each overridable per source**
@@ -63,7 +63,8 @@ The change also carries two consumer requests that the on-hold proposal held:
 - `httpsec.AccessTokenFromContext` exposes the issuer, client, audience, scopes, authentication
   time and claims.
 - Two new first-factor kinds, neither exempt from an MFA requirement: `access-token` (provider
-  tokens, judged every request by whether their grant's sign-in passed a second factor) and
+  tokens, judged every request by a second-factor marker the library records on the grant, or by
+  re-matching the federated evidence the grant recorded) and
   `external-access-token` (federated channel, judged by the existing federated-assurance rules from
   the token's `acr`/`amr`). A claims-only caller names no local user and is not judged by the
   requirement.
@@ -127,7 +128,10 @@ The change also carries two consumer requests that the on-hold proposal held:
   their grant's second factor, external tokens by federated assurance), never challenged; callers
   naming no local user are not judged; the resource server may mint federated-assurance evidence.
 - `problem-details-rendering`: problem types for the new refusals, and the `scope` member.
-- `oidc-provider-tokens`: the introspection answer carries the sign-in's `auth_time`, `acr` and `amr`.
+- `oidc-provider-tokens`: a grant records whether the library verified a second factor and, for a
+  federated sign-in, its federated evidence; the introspection answer carries the sign-in's
+  `auth_time`, `acr` and `amr`.
+- `security-events`: an access-token refusal event; user references only for local users.
 - `framework-adapters`: adapter recency guards answer a stale access token as the core does.
 - `authorization`: a scope refusal names the scopes it needed.
 - `http-error-propagation`: the invalid-token refusal; the bearer challenge covering resource
@@ -150,11 +154,14 @@ The change also carries two consumer requests that the on-hold proposal held:
     - `WithJWKSURL`, `WithOutboundClient`, `WithAlgorithms`, `WithClockSkew`, `WithOpaquePrefix`,
       `WithIntrospectionSecret`, `WithIntrospectionKey`;
     - `WithUnboundTokens`, `WithUntypedTokens`;
-    - `WithClaimsOnly`, `WithClaimsMapper`, `WithLocalUsers`, `WithLinkedUsers`, `WithRefusalLimiter`;
+    - `WithClaimsOnly`, `WithClaimsMapper` with `MappedCaller`, `WithLocalUsers`, `WithLinkedUsers`,
+      `WithAssuranceSource`, `WithRefusalLimiter`;
     - `WithJWTIntrospection`, `WithIntrospectionCache`;
     - `AccessToken`, `AccessTokenFromContext`, `ErrInvalidToken`, `ErrInsufficientUserAuthentication`,
       `WithInactiveDisclosure`.
-  - `oidcprovider`: `Provider.UserLoader`; `AccessToken` gains `AuthTime`, `ACR` and `AMR`.
+  - `oidcprovider`: `Provider.UserLoader`; `AccessToken` gains `AuthTime`, `ACR` and `AMR`; `Grant`
+    gains the second-factor marker and the federated evidence.
+  - `policy`: `Input.AccessTokenAssurance`, minted only by the library.
   - `authenticate/factor`: `AccessToken`, `ExternalAccessToken`.
   - `authenticate`: `ErrAccountInactive`.
   - `authorize`: `MissingScopesError`.
@@ -173,6 +180,10 @@ The change also carries two consumer requests that the on-hold proposal held:
   - `identity`, `authorize`, `authenticate`, `authenticate/password`;
   - `httpsec/fibersec` and `httpsec/ginsec` (adapter tests);
   - `test/httpsecconformance`.
+- **Storage:** grant stores (memory, `store/sqlstore`, `store/pgxstore`, `store/gormstore`) gain
+  columns through a new migration, written after `fold-migrations-callback-server-error` (PR #149)
+  merges, on top of its folded security-state baseline. Grants from before the upgrade carry no
+  marker, so an MFA-required user signs in again once.
 - **Dependencies:** none new. Remote fetching uses the existing `outbound` client and `jwx`.
 - **Consumers:** crm-api sets its client's `DefaultAudience` and enables the mode. Its sign-out route
   is a session-only endpoint, so a client holding only an access token signs out through the

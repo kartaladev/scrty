@@ -4,6 +4,8 @@
 
 See proposal.md for why this change exists. **This design is a candidate, not an agreed approach.** The five open questions below block the specs for `bff-session`, `resource-server` and `csrf-protection`. Every decision after them is written as "if the team adopts the recommendation", and names the question it depends on.
 
+> **Moved (2026-11-25):** everything this design says about the resource-server mode (remote key set, introspection, scope and claim mapping, its policy phase) is superseded by the `resource-server` change, which owns that capability. The sections below are kept as the history of this proposal; only the browser-session (BFF) parts still apply.
+
 The constraints that shape the approach:
 
 - **Starting point.** When this change is applied, the core module holds every earlier change: sessions, policy, authorization, tokens and signing keys, the `httpsec` chain, the durable stores, and OIDC brokering. There are no consumers or tags.

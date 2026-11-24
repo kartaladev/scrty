@@ -1,15 +1,19 @@
 ## ADDED Requirements
 
 ### Requirement: Session-only endpoints refuse an access-token caller
-On a path a resource server covers, every endpoint and operation of the chain that acts on the caller's sign-in session SHALL refuse a caller that resource server authenticated, with the authentication-required error, before changing anything, and no option SHALL relax this. That covers password change, passkeys, second factors, saved codes, re-authentication, session renewal and management, session signals, the provider's resume and consent, the active-role switch, and logout.
+On a path a resource server covers, every endpoint and operation of the chain that acts on the caller's sign-in session SHALL refuse a caller that resource server authenticated, with the authentication-required error, before changing anything, and no option SHALL relax this. That covers password change, passkeys, second factors, saved codes, re-authentication, session renewal and management, the provider's resume and consent, the active-role switch, and logout.
 
 #### Scenario: Password change with an access token
 - **WHEN** a client holding a valid access token for the user posts a password change
 - **THEN** the request is refused with the authentication-required error, and the password is unchanged
 
 #### Scenario: Every session-only endpoint
-- **WHEN** a valid access token is presented to each of: password change, passkey registration and removal, second-factor enrolment, method listing and verification, saved-code regeneration, re-authentication, session renewal, session listing and ending, the session-signal stream, the provider's resume and consent endpoints, and the active-role switch
+- **WHEN** a valid access token is presented to each of: password change, passkey registration and removal, second-factor enrolment, method listing and verification, saved-code regeneration, re-authentication, session renewal, session listing and ending, the provider's resume and consent endpoints, and the active-role switch
 - **THEN** each refuses it with the authentication-required error and changes nothing
+
+#### Scenario: Session-signal stream keeps its own answer
+- **WHEN** a valid access token is presented to the session-signal stream, which this requirement does not cover
+- **THEN** it is refused as the settled session-signals capability answers a request without a sign-in, and no stream opens
 
 #### Scenario: Session caller unchanged
 - **WHEN** the same user posts a password change with a session token

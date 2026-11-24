@@ -1,3 +1,16 @@
+## ADDED Requirements
+
+### Requirement: A grant records how its sign-in was proved
+A grant SHALL record, at the resume that made it, whether the library verified a second factor in that sign-in, and, for a sign-in through a federated login, the federated evidence that login asserted (provider, issuer, `amr`, `acr`). These SHALL come only from the library's own records of the session, never from the consumer's sign-in assurance mapping or the token request, and SHALL be stored with the grant.
+
+#### Scenario: Consumer mapping claims a second factor
+- **WHEN** a consumer's sign-in assurance mapping states `amr` `["mfa"]` for a password-only session, and the resumed sign-in makes a grant
+- **THEN** the grant records that no second factor was verified, whatever its `amr` says
+
+#### Scenario: Federated sign-in
+- **WHEN** a user signs in through OIDC provider `corp`, whose ID token asserted `amr` `["mfa"]`, and the sign-in makes a grant
+- **THEN** the grant records the federated evidence `corp`, its issuer and `["mfa"]`
+
 ## MODIFIED Requirements
 
 ### Requirement: An active introspection answer describes the token
@@ -9,4 +22,4 @@ For an active token the introspection answer SHALL hold `active`, `scope`, `clie
 
 #### Scenario: Sign-in members
 - **WHEN** a resource server's client introspects an access token whose grant was made by a sign-in with a password and TOTP
-- **THEN** the answer holds that sign-in's `auth_time` and an `amr` naming both methods
+- **THEN** the answer holds that sign-in's `auth_time` and the `amr` its grant records (`pwd` and `mfa` under the default sign-in assurance)

@@ -54,7 +54,7 @@ The chain SHALL first choose the resource server whose prefixes cover the reques
 - **THEN** it is refused as an invalid token, and the same token is accepted at `/orders/1`
 
 ### Requirement: An access token on a path no resource server covers is refused
-An access token the chain recognises, presented on a path no resource server covers, SHALL be refused as an invalid token where the resource server runs, before any later credential mode or endpoint judges it. The provider's token-reading endpoints (UserInfo, token, revocation, introspection), which run before it, SHALL judge the tokens they read as before.
+A token any of the chain's resource servers would recognise, presented on a path none of them covers, SHALL be refused as an invalid token, under `DPoP` when it came under `DPoP` and `Bearer` otherwise, before any later credential mode or endpoint judges it. The provider's token-reading endpoints (UserInfo, token, revocation, introspection), which run before it, SHALL judge the tokens they read as before.
 
 #### Scenario: Token outside every prefix
 - **WHEN** the only resource server covers `/api/`, and a provider access token is sent to `/admin/report`
@@ -128,7 +128,7 @@ By default a JWT access token SHALL be accepted only when typed `at+jwt`. A sour
 - **THEN** construction fails with a configuration error
 
 ### Requirement: An external JWT access token carries the claims the profile requires
-A remote-issuer source SHALL refuse a JWT access token that lacks `iss`, `exp`, `aud`, `sub`, `iat` or `client_id`, has an empty `sub`, has an `iat` or `nbf` later than now plus the source's clock skew, or, when typed `at+jwt`, lacks `jti`. A source opted in to tokens typed `JWT` MAY take the client from `azp` when `client_id` is absent.
+A remote-issuer source SHALL refuse a JWT access token that lacks `iss`, `exp`, `aud`, `sub`, `iat` or `client_id`, has an empty `sub`, has an `iat` or `nbf` later than now plus the larger of the source's clock skew and 60 seconds, or, when typed `at+jwt`, lacks `jti`. A source opted in to tokens typed `JWT` MAY take the client from `azp` when `client_id` is absent.
 
 #### Scenario: Missing subject
 - **WHEN** a verified `at+jwt` from a remote issuer has no `sub`
@@ -156,6 +156,10 @@ Every source SHALL by default refuse an access token that is not bound to a key 
 #### Scenario: Consumer opts out for one source
 - **WHEN** a remote-issuer source opts out, and its valid unbound token is sent under `Bearer`
 - **THEN** the token is accepted, and an unbound token of the provider source on the same resource server is still refused
+
+#### Scenario: Confirmation the chain cannot check
+- **WHEN** a token's confirmation names only a method the chain does not support, from a source that accepts unbound tokens
+- **THEN** it is refused as an invalid token, never treated as unbound
 
 #### Scenario: Unbound token under the DPoP scheme
 - **WHEN** an unbound token from a source that opted out is presented under the `DPoP` scheme
@@ -278,6 +282,13 @@ A consumer MAY enable a cache of introspection answers, bounded in time and in e
 - **WHEN** ten requests carrying the same uncached token arrive together
 - **THEN** one introspection call is made
 
+### Requirement: The chain provider's own tokens are never sent to an introspection endpoint
+A token in a format the chain's own provider issues (its opaque access tokens and refresh tokens) SHALL never be sent to an introspection source. On a path whose resource server has no provider source, such a token SHALL be refused as an invalid token.
+
+#### Scenario: Provider refresh token at a partner API
+- **WHEN** a chain runs a provider issuing opaque tokens and a resource server under `/partner/` whose only source is an introspection source, and the provider's refresh token is sent to `/partner/x`
+- **THEN** it is refused as an invalid token, and the partner's endpoint receives nothing
+
 ### Requirement: Other credentials are never sent to an introspection endpoint
 When the chain runs any other credential mode that reads the `Bearer` scheme, such as session-reference bearers or API keys under that scheme, an introspection source SHALL claim opaque tokens only by a prefix it is given. Building such a chain with an introspection source and no prefix SHALL fail with a configuration error.
 
@@ -294,11 +305,15 @@ When the chain runs any other credential mode that reads the `Bearer` scheme, su
 - **THEN** the session-reference bearer judges it, and the endpoint receives nothing
 
 ### Requirement: Refused access tokens are throttled per source
-A resource server SHALL count refused tokens per client address and source, through the chain's limiter factory under its own namespace and with the chain's IPv6 aggregate, and SHALL refuse a throttled address with the invalid-token refusal before verifying, fetching or introspecting anything. A consumer SHALL be able to replace the limiter. A request with no attributable client address SHALL be refused.
+A resource server SHALL count verification refusals (signature, type, audience, claims, expiry, an inactive or unknown token) per client address and source, through the chain's limiter factory under the namespace `resource-server` with its IPv6 aggregate, and refuse a throttled address as an invalid token before any verification or call. Binding, nonce, assurance and dependency failures SHALL NOT count. The limiter SHALL be replaceable.
 
 #### Scenario: Flood of invalid opaque tokens
 - **WHEN** one address sends invalid opaque tokens to an introspection source past the limit
 - **THEN** further requests are refused as invalid tokens, answered 401, and no introspection call is made for them
+
+#### Scenario: Nonce challenges do not count
+- **WHEN** a client behind one address is answered with a server-nonce challenge on every first request
+- **THEN** those answers are not counted, and the client is never throttled for them
 
 #### Scenario: Consumer replaces the limiter
 - **WHEN** a consumer gives the resource server a limiter allowing 1000 refusals a minute
@@ -322,6 +337,20 @@ Each source SHALL resolve the caller by one strategy: claims only (subject and s
 #### Scenario: Local user inactive
 - **WHEN** a local-user source loads a user who is inactive
 - **THEN** the request is refused as an invalid token
+
+### Requirement: A claims mapper declares whether its caller is a local user
+A claims mapper SHALL return, with its caller, whether that caller is a local user. A caller declared local SHALL be judged by the MFA requirement policy through the federated-assurance mode from the token's evidence; one not declared local SHALL name no local user.
+
+#### Scenario: Mapper names a local administrator
+- **WHEN** a mapper turns an external token into local user `u-7`, declares it local, and `u-7` is required to use MFA while the token asserts `amr` `["pwd"]`
+- **THEN** the request is refused with the insufficient-user-authentication refusal
+
+### Requirement: A source's issuer is an https URL without a query or fragment
+A remote-issuer or introspection source's issuer SHALL be an absolute https URL with no query and no fragment, so that it is one issuer identifier and its qualified caller identifiers cannot collide. Any other issuer SHALL fail construction.
+
+#### Scenario: Issuer with a fragment
+- **WHEN** a remote-issuer source is built for `https://sso.example#x`
+- **THEN** construction fails with a configuration error naming the issuer
 
 ### Requirement: A claims-only caller never carries a local user's identifier
 A claims-only caller's identifier SHALL be its issuer and subject together, so that it never equals a local user's identifier or another issuer's subject.
@@ -368,7 +397,7 @@ For an accepted token the chain SHALL publish a caller whose principal carries t
 - **THEN** the second read shows the original scopes
 
 ### Requirement: Failures of a source's dependencies are not refusals
-A provider store, key set, metadata or introspection endpoint that cannot answer SHALL fail the request as a dependency failure, not refuse the token, and SHALL NOT be retried within the request. A request whose own context ends during verification SHALL fail with that context's error.
+A provider store, key set, metadata, introspection endpoint, user loader, link store or claims mapper that fails SHALL fail the request as a dependency failure, not refuse the token, and SHALL NOT be retried within the request. A request whose own context ends during verification SHALL fail with that context's error.
 
 #### Scenario: Key set unreachable
 - **WHEN** a remote issuer's key set cannot be fetched and no cached set holds the token's key
