@@ -1,15 +1,23 @@
 ## ADDED Requirements
 
-### Requirement: A grant records how its sign-in was proved
-A grant SHALL record, at the resume that made it, whether the library verified a second factor in that sign-in, and, for a sign-in through a federated login, the federated evidence that login asserted (provider, issuer, `amr`, `acr`). These SHALL come only from the library's own records of the session, never from the consumer's sign-in assurance mapping or the token request, and SHALL be stored with the grant.
+### Requirement: A sign-in records how it was proved, and its grants keep it
+The sign-in a resume records SHALL carry whether the library verified a second factor in it and, for a federated sign-in, the federated evidence that login asserted (provider, issuer, `amr`, `acr`), taken only from the library's own record of the session, never from the consumer's sign-in assurance mapping or a request. Every grant made from that sign-in, by code or device exchange, SHALL keep them, and so SHALL every refresh of the grant.
 
 #### Scenario: Consumer mapping claims a second factor
-- **WHEN** a consumer's sign-in assurance mapping states `amr` `["mfa"]` for a password-only session, and the resumed sign-in makes a grant
+- **WHEN** a consumer's sign-in assurance mapping states `amr` `["mfa"]` for a password-only session, and the resumed sign-in makes a grant by code exchange
 - **THEN** the grant records that no second factor was verified, whatever its `amr` says
 
 #### Scenario: Federated sign-in
 - **WHEN** a user signs in through OIDC provider `corp`, whose ID token asserted `amr` `["mfa"]`, and the sign-in makes a grant
 - **THEN** the grant records the federated evidence `corp`, its issuer and `["mfa"]`
+
+#### Scenario: Device grant
+- **WHEN** a user approves a device authorization in a sign-in where the library verified TOTP, and the device exchanges its code
+- **THEN** the device's grant records that a second factor was verified
+
+#### Scenario: Refreshed grant
+- **WHEN** that grant is refreshed
+- **THEN** the refreshed grant still records it
 
 ## MODIFIED Requirements
 

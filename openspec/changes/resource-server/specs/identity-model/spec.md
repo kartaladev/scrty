@@ -15,6 +15,10 @@ Every principal SHALL have a kind that is either a human user or a service. A pr
 - **WHEN** a user's request is authenticated by an access token granted `openid employees:read`
 - **THEN** the principal is a human user carrying exactly `openid` and `employees:read`
 
+#### Scenario: Session principal carries no scopes
+- **WHEN** a request is authenticated by a session token
+- **THEN** the principal's scopes are empty
+
 #### Scenario: User authenticated by a session
 - **WHEN** a user's request is authenticated by a session token or a session reference
 - **THEN** the principal carries no scopes
@@ -32,7 +36,7 @@ The library SHALL name the first-factor kinds `password`, `magic-link`, `oidc`, 
 
 The `authenticator-app` channel SHALL be the channel of second factors that use an authenticator app, such as TOTP, and `email` SHALL also be the channel of email-delivered second factors. The `public-key` channel SHALL also be the channel of the passkey second factor, so a passkey second factor after a passkey login is on the first factor's own channel. These kinds and channels SHALL be the complete vocabulary scrty uses. Other capabilities, including multi-factor authentication and security policy, SHALL reference these values and SHALL NOT define kinds or channels of their own.
 
-Only `api-key` SHALL report itself as exempt from an MFA requirement, because it is a machine credential. `access-token` and `external-access-token` SHALL NOT be exempt; the `security-policy` capability decides how an access-token caller meets an MFA requirement, from the sign-in its token records.
+Only `api-key` SHALL report itself as exempt from an MFA requirement. `oidc`, `recovery` and `passkey` SHALL NOT be exempt. How a login on the `federated` channel meets an MFA requirement SHALL be decided by the federated-assurance rules of the `security-policy` capability, not by its kind. The empty kind and every kind the library does not name SHALL report no channel and SHALL NOT be exempt. `access-token` and `external-access-token` SHALL NOT be exempt either; the `security-policy` capability decides how an access-token caller meets an MFA requirement, from the sign-in its token records.
 
 #### Scenario: Authenticator-app channel
 - **WHEN** the channel vocabulary is listed
@@ -71,7 +75,3 @@ Only `api-key` SHALL report itself as exempt from an MFA requirement, because it
 #### Scenario: External access-token kind
 - **WHEN** the kind `external-access-token` is examined
 - **THEN** it reports channel `federated` and is not exempt
-
-#### Scenario: Session principal carries no scopes
-- **WHEN** a request is authenticated by a session token
-- **THEN** the principal's scopes are empty

@@ -37,7 +37,7 @@ Not in this change:
 
 ### New Capabilities
 
-Specs for all three are deferred until the open questions in design.md are answered.
+Specs for the remaining capability are deferred until the open questions in design.md are answered.
 
 - `bff-session`: the cookie-borne browser session:
   - cookie attributes and naming;

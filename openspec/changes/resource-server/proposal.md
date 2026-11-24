@@ -74,8 +74,9 @@ The change also carries two consumer requests that the on-hold proposal held:
 - A missing scope, at a chain rule or a guard, is answered 403 with `error="insufficient_scope"` and
   the scopes needed (RFC 6750 §3.1).
 - The chain's session-only endpoints refuse an access-token caller: password change, passkeys,
-  second factors, saved codes, re-authentication, session renewal and management, session signals,
-  the provider's resume and consent, the active-role switch, and logout.
+  second factors, saved codes, re-authentication, session renewal and management, the provider's
+  resume and consent, the active-role switch, and logout. The session-signal stream keeps its settled
+  answer.
 - **BREAKING (behaviour):** logout refuses an access-token caller instead of answering 200 with
   nothing deleted, so a client is never told it signed out while its grant lives on; it signs out
   through token revocation (RFC 7009) and end-session.
@@ -155,12 +156,12 @@ The change also carries two consumer requests that the on-hold proposal held:
       `WithIntrospectionSecret`, `WithIntrospectionKey`;
     - `WithUnboundTokens`, `WithUntypedTokens`;
     - `WithClaimsOnly`, `WithClaimsMapper` with `MappedCaller`, `WithLocalUsers`, `WithLinkedUsers`,
-      `WithAssuranceSource`, `WithRefusalLimiter`;
+      `WithRefusalLimiter`;
     - `WithJWTIntrospection`, `WithIntrospectionCache`;
     - `AccessToken`, `AccessTokenFromContext`, `ErrInvalidToken`, `ErrInsufficientUserAuthentication`,
       `WithInactiveDisclosure`.
-  - `oidcprovider`: `Provider.UserLoader`; `AccessToken` gains `AuthTime`, `ACR` and `AMR`; `Grant`
-    gains the second-factor marker and the federated evidence.
+  - `oidcprovider`: `Provider.UserLoader`; `AccessToken` gains `AuthTime`, `ACR` and `AMR`; `SignIn`
+    (and so every grant) gains the second-factor marker and the federated evidence.
   - `policy`: `Input.AccessTokenAssurance`, minted only by the library.
   - `authenticate/factor`: `AccessToken`, `ExternalAccessToken`.
   - `authenticate`: `ErrAccountInactive`.
@@ -168,9 +169,14 @@ The change also carries two consumer requests that the on-hold proposal held:
   - `authenticate/password`: `WithRule`, `RuleFunc`.
 - **Behaviour changes** (recorded under *Changed*):
   - recency guards and access-token callers;
+  - grants, codes and browser sessions from before the upgrade carry no second-factor marker;
+  - a consumer's per-request policy may receive a request with no session;
   - logout refusing an access-token caller;
   - `ErrAccountInactive` reachable beneath the uniform failure.
 - **Packages:**
+  - `policy` (the MFA requirement policy, `AccessTokenAssurance`, the enrolment allowlist);
+  - `internal/pgschema`, `store/sqlstore`, `store/pgxstore`, `store/gormstore`, `store/migrate` (a new
+    migration), `test/storetest`;
   - `httpsec`, `oidcprovider` (a verifier for the resource server; UserInfo's binding check
     shared);
   - `authenticate/oidc`, whose key-set cache moves to `internal/keyset`;
@@ -180,8 +186,9 @@ The change also carries two consumer requests that the on-hold proposal held:
   - `identity`, `authorize`, `authenticate`, `authenticate/password`;
   - `httpsec/fibersec` and `httpsec/ginsec` (adapter tests);
   - `test/httpsecconformance`.
-- **Storage:** grant stores (memory, `store/sqlstore`, `store/pgxstore`, `store/gormstore`) gain
-  columns through a new migration, written after `fold-migrations-callback-server-error` (PR #149)
+- **Storage:** the stores of grants, codes, browser sessions, pending requests and device
+  authorizations (memory, `store/sqlstore`, `store/pgxstore`, `store/gormstore`) keep the sign-in's
+  proof through a new migration, written after `fold-migrations-callback-server-error` (PR #149)
   merges, on top of its folded security-state baseline. Grants from before the upgrade carry no
   marker, so an MFA-required user signs in again once.
 - **Dependencies:** none new. Remote fetching uses the existing `outbound` client and `jwx`.

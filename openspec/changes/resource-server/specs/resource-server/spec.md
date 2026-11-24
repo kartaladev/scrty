@@ -54,11 +54,15 @@ The chain SHALL first choose the resource server whose prefixes cover the reques
 - **THEN** it is refused as an invalid token, and the same token is accepted at `/orders/1`
 
 ### Requirement: An access token on a path no resource server covers is refused
-A token any of the chain's resource servers would recognise, presented on a path none of them covers, SHALL be refused as an invalid token, under `DPoP` when it came under `DPoP` and `Bearer` otherwise, before any later credential mode or endpoint judges it. The provider's token-reading endpoints (UserInfo, token, revocation, introspection), which run before it, SHALL judge the tokens they read as before.
+A token presented on a path no resource server covers SHALL be refused as an invalid token, before any later mode or endpoint judges it, when it is the provider's own token, an `at+jwt`, a JWT from a source's issuer, or an opaque token with a configured introspection prefix; any other token SHALL pass on. The refusal SHALL be under `DPoP` when the token came under `DPoP`, `Bearer` otherwise.
 
 #### Scenario: Token outside every prefix
 - **WHEN** the only resource server covers `/api/`, and a provider access token is sent to `/admin/report`
 - **THEN** the request is refused as an invalid token
+
+#### Scenario: Unprefixed opaque token off every prefix
+- **WHEN** a chain's only resource server covers `/api/` with an introspection source given the prefix `kc_`, and an opaque token without that prefix is sent to `/internal/x`
+- **THEN** it passes to the chain's next credential mode
 
 #### Scenario: The provider's own endpoints
 - **WHEN** the same token is sent to the provider's UserInfo endpoint
@@ -137,6 +141,10 @@ A remote-issuer source SHALL refuse a JWT access token that lacks `iss`, `exp`, 
 #### Scenario: Client named in azp
 - **WHEN** a source that accepts tokens typed `JWT` verifies one naming its client in `azp` only
 - **THEN** the token is accepted, and its client is that value, while an `at+jwt` naming its client in `azp` only is refused
+
+#### Scenario: Issuer clock slightly ahead
+- **WHEN** a token's `iat` is 30 seconds ahead and the source's clock skew is zero
+- **THEN** it is accepted
 
 #### Scenario: Issued in the future
 - **WHEN** a token's `iat` is two minutes ahead and the source's clock skew is zero
@@ -338,12 +346,16 @@ Each source SHALL resolve the caller by one strategy: claims only (subject and s
 - **WHEN** a local-user source loads a user who is inactive
 - **THEN** the request is refused as an invalid token
 
-### Requirement: A claims mapper declares whether its caller is a local user
-A claims mapper SHALL return, with its caller, whether that caller is a local user. A caller declared local SHALL be judged by the MFA requirement policy through the federated-assurance mode from the token's evidence; one not declared local SHALL name no local user.
+### Requirement: A claims mapper's caller is a local user unless declared external
+A claims mapper SHALL be built with a provider name and SHALL return, with its caller, whether that caller is external. A caller not declared external SHALL be treated as a local user and judged by the MFA requirement policy through the federated-assurance mode from the token's evidence, under that provider name; one declared external SHALL name no local user.
 
 #### Scenario: Mapper names a local administrator
-- **WHEN** a mapper turns an external token into local user `u-7`, declares it local, and `u-7` is required to use MFA while the token asserts `amr` `["pwd"]`
+- **WHEN** a mapper turns an external token into local user `u-7`, and `u-7` is required to use MFA while the token asserts `amr` `["pwd"]`
 - **THEN** the request is refused with the insufficient-user-authentication refusal
+
+#### Scenario: Mapper declares an external caller
+- **WHEN** a mapper returns a service principal declared external
+- **THEN** the MFA requirement is not looked up for it
 
 ### Requirement: A source's issuer is an https URL without a query or fragment
 A remote-issuer or introspection source's issuer SHALL be an absolute https URL with no query and no fragment, so that it is one issuer identifier and its qualified caller identifiers cannot collide. Any other issuer SHALL fail construction.
@@ -397,7 +409,7 @@ For an accepted token the chain SHALL publish a caller whose principal carries t
 - **THEN** the second read shows the original scopes
 
 ### Requirement: Failures of a source's dependencies are not refusals
-A provider store, key set, metadata, introspection endpoint, user loader, link store or claims mapper that fails SHALL fail the request as a dependency failure, not refuse the token, and SHALL NOT be retried within the request. A request whose own context ends during verification SHALL fail with that context's error.
+A provider store, key set, metadata, introspection endpoint, user loader, link store, claims mapper, MFA requirement lookup, federated-assurance source or refusal limiter that fails SHALL fail the request as a dependency failure, never counted against the throttle, not refuse the token, and SHALL NOT be retried within the request. A request whose own context ends during verification SHALL fail with that context's error.
 
 #### Scenario: Key set unreachable
 - **WHEN** a remote issuer's key set cannot be fetched and no cached set holds the token's key
@@ -431,7 +443,7 @@ Building a chain SHALL fail with a configuration error naming the mistake when a
 - **THEN** construction fails with a configuration error naming the type
 
 ### Requirement: Source wiring mistakes fail at construction
-Building a chain SHALL fail with a configuration error naming the mistake when a source has: an empty audience or one equal to its issuer; an issuer equal to the identifier or an alias; a provider not the chain's; two caller strategies; a nil mapper, user loader or link store; a mapper on the provider source; local user on another source; a clock skew above five minutes; no algorithm or a symmetric one; a non-positive cache bound; or a plain-http introspection endpoint.
+Building a chain SHALL fail with a configuration error naming the mistake when a source has: an empty audience or one equal to its issuer; an issuer equal to the identifier or an alias; a provider not the chain's; two caller strategies; a nil mapper, user loader or link store; a mapper on the provider source; local user on another source; a clock skew above five minutes; no algorithm or a symmetric one; a non-positive cache bound; a nil refusal limiter; or a plain-http introspection endpoint.
 
 #### Scenario: Mapper on the provider source
 - **WHEN** a provider source is given a claims mapper

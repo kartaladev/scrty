@@ -101,7 +101,7 @@ The library SHALL expose distinguishable public refusal errors for at least thes
 - a new password refused by the password policy, which SHALL name the rule that refused it;
 - a session handle that names no live sign-in of the requesting user;
 - an access token a resource server refused;
-- an access-token caller whose authentication is older than a recency guard allows, which SHALL also be identifiable as the reauthentication-required refusal;
+- insufficient user authentication of an access-token caller (its sign-in too old for a recency guard, an unmet MFA requirement, or a per-request challenge it cannot hold), which SHALL also be identifiable as the reauthentication-required refusal and SHALL carry a window only in the recency case;
 - a password login for an inactive account, which by default SHALL reach the chain only beneath the authentication-failed refusal.
 
 The password-reused refusal of the password-policy capability SHALL be identifiable both as itself and as the password-policy refusal.
@@ -187,7 +187,7 @@ The library SHALL provide a public status-only mapping from an error to an HTTP 
 | challenge of any other kind | 401 |
 | invalid second-factor code, throttled second-factor verification or enrolment, throttled passkey registration begin | 401 |
 | missing or invalid DPoP proof, bound token without a proof from its key, DPoP proof without a required server nonce, certificate-bound token without its certificate | 401 |
-| access token refused by a resource server; access-token caller whose authentication is older than a recency guard allows (judged before the reauthentication-required row) | 401 |
+| access token refused by a resource server; insufficient user authentication of an access-token caller, whether its sign-in is older than a recency guard allows, does not meet the MFA requirement, or a per-request challenge was raised for it (judged before the reauthentication-required row) | 401 |
 | cross-site request refused by CSRF protection, request refused by the automation-challenge verifier | 403 |
 | access denied, refused by policy without a reason (the security-policy capability's own error), second factor required or unsatisfiable, second-factor enrolment required, second factor on the same channel as the first, already enrolled, MFA method not usable by the session's user, no MFA challenge pending, request refused during a recovery cool-down, reauthentication required for a saved-code regeneration, reauthentication required for a passkey registration or removal, passkey suspected to be a clone, passkey suspended, passkey still pending, passkey refused by the attestation policy, passkey limit reached | 403 |
 | malformed login, malformed recovery, invalid federated logout token, resolved host not allowed | 400 |

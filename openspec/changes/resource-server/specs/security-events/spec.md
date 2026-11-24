@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: An access-token event names a local user only when there is one
-An event about an access-token caller SHALL carry a user reference only when the caller is a local user: a provider token's user, a linked user, or a mapper's caller declared local. A claims-only caller SHALL be reported without a user reference, and never with the external subject in its place.
+An event about an access-token caller SHALL carry a user reference only when the caller is a local user: a provider token's user, a linked user, or a mapper's caller not declared external. A claims-only caller, or a mapper's caller declared external, SHALL be reported without a user reference, and never with the external subject in its place.
 
 #### Scenario: Claims-only caller refused at a scope rule
 - **WHEN** a claims-only caller is refused by an authorization rule

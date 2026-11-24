@@ -1,18 +1,22 @@
 ## ADDED Requirements
 
 ### Requirement: An unmet access-token sign-in is answered as insufficient user authentication
-When the MFA requirement policy denies an access-token caller with the insufficient-user-authentication reason, the chain SHALL refuse with the insufficient-user-authentication refusal, answered 401 with a `WWW-Authenticate` challenge naming `error="insufficient_user_authentication"`, so that the client obtains a token from a stronger sign-in.
+When the MFA requirement policy denies an access-token caller with the insufficient-user-authentication reason, and only then, the chain SHALL refuse with the insufficient-user-authentication refusal, answered 401 with a `WWW-Authenticate` challenge naming `error="insufficient_user_authentication"`, so that the client obtains a token from a stronger sign-in.
 
 #### Scenario: Password-only external token in challenge mode
 - **WHEN** a linked, required user calls an API with an external access token asserting `amr` `["pwd"]`, and the federated-assurance mode is challenge
 - **THEN** the response is 401 with `error="insufficient_user_authentication"`, and no second-factor challenge is raised
+
+#### Scenario: Assurance source down
+- **WHEN** the federated-assurance source fails while judging an access-token caller
+- **THEN** the request fails as a dependency failure, answered 500, and not as insufficient user authentication
 
 #### Scenario: Consumer exempts federated logins
 - **WHEN** the federated-assurance mode is exempt and the same token is presented
 - **THEN** the request is allowed
 
 ### Requirement: Access-token assurance is evidence minted only by the library
-The policy input SHALL carry an access-token caller's assurance as evidence: whether the caller names a local user, whether the library verified a second factor at the grant's sign-in, and the federated evidence the grant or token recorded. Only a resource server's verification SHALL be able to produce it. The type SHALL have no public constructor, and its zero value SHALL mean a local user, no second factor and no federated evidence.
+The policy input SHALL carry an access-token caller's assurance: whether it names a local user and whether the library verified a second factor at the grant's sign-in; its federated evidence travels in the input's existing federated-assurance evidence. Only a resource server SHALL produce it. The type SHALL have no public constructor; its zero value SHALL mean a local user with no second factor.
 
 #### Scenario: Zero value
 - **WHEN** a consumer evaluates the MFA requirement policy directly for a required user with the `access-token` first factor and leaves the assurance at its zero value
@@ -25,16 +29,20 @@ When any per-request policy, the library's or a consumer's, challenges a caller 
 - **WHEN** a consumer's per-request policy raises a password-change challenge for an access-token caller
 - **THEN** the response is 401 with `error="insufficient_user_authentication"`, and nothing is marked on any session
 
-### Requirement: Linked external callers need an assurance source
-A chain whose MFA requirement policy is enabled SHALL fail construction when a resource-server source resolves callers to local users (linked users, or a claims mapper that declares local users) and no assurance source judges that source's issuer. A source MAY be given its own assurance source.
+### Requirement: Local external callers need the policy's assurance source
+A chain whose MFA requirement policy judges external access tokens (not exempt in its federated-assurance mode nor by its exemption rule) SHALL fail construction when a resource-server source uses linked users or a claims mapper and the policy has no federated-assurance source. That source SHALL judge the resource server's evidence as it judges a federated login's.
 
 #### Scenario: No assurance source
-- **WHEN** MFA is required and a remote-issuer source uses linked users, with no assurance source for its issuer
+- **WHEN** MFA is required and a remote-issuer source uses linked users, and the policy has no federated-assurance source
 - **THEN** construction fails with a configuration error naming the source
 
-#### Scenario: Source given its own assurance source
-- **WHEN** the same source is given an assurance source that accepts `amr` `["mfa"]` from its issuer
+#### Scenario: Policy given an assurance source
+- **WHEN** the policy is given a federated-assurance source that accepts `amr` `["mfa"]` from that source's provider and issuer
 - **THEN** the chain is built, and a linked user's token asserting `["mfa"]` meets the requirement
+
+#### Scenario: Exempt mode needs no source
+- **WHEN** the federated-assurance mode is exempt and a source uses linked users with no assurance source
+- **THEN** the chain is built
 
 ## MODIFIED Requirements
 
@@ -42,7 +50,7 @@ A chain whose MFA requirement policy is enabled SHALL fail construction when a r
 For a user who is required to use MFA, the MFA requirement policy SHALL decide as follows:
 - for an access-token caller whose library-minted assurance says it names no local user (claims only, or a claims mapper that did not declare a local user), allow, before the requirement is looked up;
 - for a `federated` first factor in exempt mode, allow, before the requirement is looked up;
-- for an `access-token` or `external-access-token` first factor in the per-request phase, allow when the token's sign-in met the requirement, and otherwise deny with an insufficient-user-authentication reason, never challenging. For `access-token`, it is met when the grant records that the library verified a second factor at its sign-in, or, for a grant from a federated sign-in, when the federated evidence the grant recorded is met under the federated-assurance mode, re-matched now; for `external-access-token`, the federated-assurance mode decides from the token's evidence, refuse and challenge modes alike;
+- for an `access-token` or `external-access-token` first factor in the per-request phase, allow when the token's sign-in met the requirement, and otherwise deny with an insufficient-user-authentication reason, never challenging. For `access-token`, it is met when the grant records that the library verified a second factor at its sign-in, or, for a grant from a federated sign-in, when the federated evidence the grant recorded is met under the federated-assurance mode and exemption rule as for that sign-in's session, re-matched now; for `external-access-token`, the federated-assurance mode decides from the token's evidence, refuse and challenge modes alike;
 - in the stateless-authentication phase, deny with an MFA-required reason, whatever the user's enrolment;
 - in the per-request phase, allow a session whose second factor is already satisfied;
 - for a `federated` first factor in the post-authentication or per-request phase, deny when the assurance decision fails, and allow when the assurance is met;
