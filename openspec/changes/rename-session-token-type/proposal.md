@@ -6,8 +6,8 @@ scrty uses "first-party" with two meanings. `token.TypeFirstParty` names the tok
 to its own users at sign-in, which stands for a session. `oidcprovider.Client.FirstParty` follows
 the OAuth meaning: a client the provider's own organisation trusts, so consent is skipped. Both
 apply at once on a chain that is also a provider, and the clash has already confused the design of
-provider-issued access tokens on the chain. The token's meaning has no OAuth term. OWASP calls it a
-session token, which also names what backs it.
+provider-issued access tokens on the chain. The token's meaning has no OAuth term. OWASP's session-management guidance speaks of a "session ID
+or token"; "session token" names both what the token is and what backs it.
 
 ## What Changes
 
@@ -46,5 +46,6 @@ None.
   tests in `oidcprovider`, `httpsec`, `test/storetest`, `test/httpsecconformance` and
   `test/cmd/conformanceop`.
 - **Docs**: `README.md`, `CHANGELOG.md`.
-- **Wire, storage, behaviour**: none.
-- **Related**: `provider-resource-server` (on hold) will use "session token" from the start.
+- **Wire, storage, behaviour**: none, apart from the text of one configuration error (design F6).
+- **Related**: `resource-server` (PR #151) uses "session token" and "session reference" from the
+  start, and is implemented after this change merges.
