@@ -15,10 +15,6 @@ Every principal SHALL have a kind that is either a human user or a service. A pr
 - **WHEN** a user's request is authenticated by an access token granted `openid employees:read`
 - **THEN** the principal is a human user carrying exactly `openid` and `employees:read`
 
-#### Scenario: Session principal carries no scopes
-- **WHEN** a request is authenticated by a session token
-- **THEN** the principal's scopes are empty
-
 #### Scenario: User authenticated by a session
 - **WHEN** a user's request is authenticated by a session token or a session reference
 - **THEN** the principal carries no scopes

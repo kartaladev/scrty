@@ -48,9 +48,9 @@ A chain whose MFA requirement policy judges external access tokens (not exempt i
 
 ### Requirement: A required user is challenged or refused, never let through
 For a user who is required to use MFA, the MFA requirement policy SHALL decide as follows:
-- for an access-token caller whose library-minted assurance says it names no local user (claims only, or a claims mapper that did not declare a local user), allow, before the requirement is looked up;
+- for an access-token caller whose library-minted assurance says it names no local user (claims only, or a claims mapper's caller declared external), allow, before the requirement is looked up;
 - for a `federated` first factor in exempt mode, allow, before the requirement is looked up;
-- for an `access-token` or `external-access-token` first factor in the per-request phase, allow when the token's sign-in met the requirement, and otherwise deny with an insufficient-user-authentication reason, never challenging. For `access-token`, it is met when the grant records that the library verified a second factor at its sign-in, or, for a grant from a federated sign-in, when the federated evidence the grant recorded is met under the federated-assurance mode and exemption rule as for that sign-in's session, re-matched now; for `external-access-token`, the federated-assurance mode decides from the token's evidence, refuse and challenge modes alike;
+- for an `access-token` or `external-access-token` first factor in the per-request phase, allow when the token's sign-in met the requirement, and otherwise deny with an insufficient-user-authentication reason, never challenging. For `access-token`, it is met when the grant records that the library verified a second factor at its sign-in, or, for a grant from a federated sign-in, when the federated evidence the grant recorded is met under the federated-assurance mode and exemption rule as for that sign-in's session, re-matched now; for `external-access-token`, the federated-assurance mode decides from the token's evidence, refuse and challenge modes alike. An exemption rule that exempts `oidc` allows external tokens and provider tokens from federated grants before any lookup, as it does a federated session;
 - in the stateless-authentication phase, deny with an MFA-required reason, whatever the user's enrolment;
 - in the per-request phase, allow a session whose second factor is already satisfied;
 - for a `federated` first factor in the post-authentication or per-request phase, deny when the assurance decision fails, and allow when the assurance is met;
@@ -148,7 +148,7 @@ In the post-authentication phase a login's plain claim to have satisfied a secon
 - **THEN** the request is allowed
 
 ### Requirement: Federated assurance evidence is minted only by the library
-The policy input SHALL carry federated assurance as evidence: the provider name, verified issuer, and asserted `amr` and `acr`. Only the library's OIDC redemption, its per-request evaluation of a federated session, and a resource server's verification of an external access token SHALL be able to produce evidence that asserts anything. The evidence type SHALL have no public constructor, and its zero value SHALL assert nothing. The MFA policies SHALL decide assurance only through a configured assurance source, which matches the evidence; without a source, no evidence SHALL be met.
+The policy input SHALL carry federated assurance as evidence: the provider name, verified issuer, and asserted `amr` and `acr`. Only the library's OIDC redemption, its per-request evaluation of a federated session, and a resource server's verification of an external access token, or of a provider access token whose grant recorded federated evidence, SHALL be able to produce evidence that asserts anything. The evidence type SHALL have no public constructor, and its zero value SHALL assert nothing. The MFA policies SHALL decide assurance only through a configured assurance source, which matches the evidence; without a source, no evidence SHALL be met.
 
 #### Scenario: Zero evidence
 - **WHEN** a consumer evaluates the MFA requirement policy directly for a required user enrolled on TOTP, recording the `oidc` first factor and leaving the evidence at its zero value
@@ -157,6 +157,10 @@ The policy input SHALL carry federated assurance as evidence: the provider name,
 #### Scenario: No source wired
 - **WHEN** the policy has no assurance source and a required user enrolled on TOTP redeems an OIDC code whose token asserted `amr` `["mfa"]`
 - **THEN** the outcome is an MFA challenge
+
+#### Scenario: Evidence from a federated provider grant
+- **WHEN** a resource server accepts a provider access token whose grant recorded the federated evidence `corp`, `https://idp.example`, `["mfa"]`
+- **THEN** the per-request evaluation receives that evidence, re-matched against the assurance source's current configuration
 
 #### Scenario: Evidence from an external access token
 - **WHEN** a resource server accepts an external access token from issuer `https://sso.example` asserting `amr` `["mfa"]`

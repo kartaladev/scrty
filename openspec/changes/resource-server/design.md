@@ -296,7 +296,8 @@ Nothing is granted on the unverified read, and the source verifies again. The ro
   assurance only through its own source (`policy.WithFederatedAssuranceSource`). A chain whose policy
   judges external tokens (`NeedsFederatedAssuranceSource()` true, extended to the
   `external-access-token` kind) fails construction when a source uses `WithLinkedUsers` or
-  `WithClaimsMapper` and that source is missing. Exempt mode, or an exemption rule for the kind, needs
+  `WithClaimsMapper` and that source is missing. Exempt mode, or an exemption rule that exempts `oidc`
+  (which `NeedsFederatedAssuranceSource` already consults, and which also exempts these callers), needs
   none. The shipped `oidc.RelyingParty` source answers only for providers registered for OIDC login
   whose issuer matches (`authenticate/oidc/assurance.go`), so an API-only chain supplies its own; the
   godoc says so. There is no per-source assurance option.
@@ -305,7 +306,8 @@ Nothing is granted on the unverified read, and the source verifies again. The ro
   Consumer per-request policies may now receive a request with no session; their godoc says so.
 - **Evidence:** the resource server mints the federated evidence from a verified external token: the
   provider name (`WithLinkedUsers`'s, or the mapper's), the source's configured issuer, `amr`, `acr`.
-  It is one of the three places allowed to.
+  It also fills the evidence from a provider grant that recorded it. The security-policy delta adds
+  both to the places allowed to mint evidence.
 - **Enrolment:** the settled allowlist requirement is MODIFIED. Listing either access-token kind is a
   construction error, as for `api-key` and `basic`.
 

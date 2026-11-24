@@ -77,7 +77,7 @@ The change also carries two consumer requests that the on-hold proposal held:
   second factors, saved codes, re-authentication, session renewal and management, the provider's
   resume and consent, the active-role switch, and logout. The session-signal stream keeps its settled
   answer.
-- **BREAKING (behaviour):** logout refuses an access-token caller instead of answering 200 with
+- **BREAKING (behaviour):** on a path a resource server covers, logout refuses an access-token caller instead of answering 200 with
   nothing deleted, so a client is never told it signed out while its grant lives on; it signs out
   through token revocation (RFC 7009) and end-session.
 
@@ -142,6 +142,8 @@ The change also carries two consumer requests that the on-hold proposal held:
   access-token caller.
 - `sender-constrained-tokens`: a resource server counts as a verifier of bound credentials, and
   requiring bound access tokens does not require proofs at sign-in.
+- `schema-migrations`: one new security-state migration recording how each sign-in was proved.
+- `security-state-stores`: durable stores keep a sign-in's second-factor marker and federated evidence.
 - `authentication`: an inactive account's refusal is identifiable beneath the uniform failure.
 - `password-policy`: consumer rules.
 

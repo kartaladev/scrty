@@ -9,7 +9,7 @@ code (`golang-tdd.md`). Verification is scoped to the changed packages and their
 ## 1. Kinds, scope refusals, principal scopes
 
 - [ ] 1.1 Add `factor.AccessToken` (no channel, not exempt) and `factor.ExternalAccessToken` (`federated`, not exempt) (design 9; spec identity-model); verify the kind table cases
-- [ ] 1.2 Document `identity.Principal.Scopes` as carrying an access token's scopes on a user principal (design 17); verify `go doc ./identity Principal` shows it (the "session principal carries no scopes" scenario is tested in 8.2)
+- [ ] 1.2 Document `identity.Principal.Scopes` as carrying an access token's scopes on a user principal (design 17); verify `go doc ./identity Principal` shows it (the identity-model "User authenticated by a session" scenario is tested in 8.2)
 - [ ] 1.3 Add `authorize.MissingScopesError{Scopes, All}` from `HasAnyScope`/`HasAllScopes`, matching `ErrAccessDenied` and `ErrNotGranted`, and make `AnyOf` wrap its members' refusals so it is found beneath both composites (design 14; spec authorization); verify its five scenarios pass
 
 ## 2. Consumer password rules
@@ -28,7 +28,7 @@ code (`golang-tdd.md`). Verification is scoped to the changed packages and their
 - [ ] 4.2 Add `(*oidcprovider.Provider).UserLoader()` (design 8); verify a test asserts it returns the loader given
 - [ ] 4.3 Add `auth_time`, `acr` and `amr` to the provider's introspection answer (design 12; spec oidc-provider-tokens); verify the "sign-in members" scenario
 - [ ] 4.4 Give `oidcprovider.SignIn` the library's second-factor marker and the federated evidence, set in `oidcSignInOf` from the session only, and copy them through `newGrant`, `newDeviceGrant` and the refresh rebuild into the grant and `AccessToken`; the first red test is `TestGrantAMR_MFAWithoutLibraryVerifiedSecondFactor` (design 9; spec oidc-provider-tokens "A sign-in records how it was proved, and its grants keep it"); verify its four scenarios against the memory stores
-- [ ] 4.5 After PR #149 merges, add a security-state migration after its folded baseline with the new columns on grants, codes and browser sessions and the new fields in the pending-request and device-authorization sign-in documents, store and load them in `store/sqlstore`, `store/pgxstore` and `store/gormstore`, extend the `test/storetest` suites, and add a populated-upgrade test (design 9; spec security-state-stores); verify the suites on every store (Docker), `make generate-check` and the schema inventory tests
+- [ ] 4.5 After PR #149 merges, add a security-state migration after its folded baseline with the new columns on grants, codes and browser sessions and the new fields in the pending-request and device-authorization sign-in documents, store and load them in `store/sqlstore`, `store/pgxstore` and `store/gormstore`, extend the `test/storetest` suites, and add a populated-upgrade test (design 9; spec security-state-stores, schema-migrations); verify the suites on every store (Docker), `make generate-check` and the schema inventory tests
 
 ## 5. Shared remote key set
 

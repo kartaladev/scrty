@@ -54,7 +54,7 @@ The chain SHALL first choose the resource server whose prefixes cover the reques
 - **THEN** it is refused as an invalid token, and the same token is accepted at `/orders/1`
 
 ### Requirement: An access token on a path no resource server covers is refused
-A token presented on a path no resource server covers SHALL be refused as an invalid token, before any later mode or endpoint judges it, when it is the provider's own token, an `at+jwt`, a JWT from a source's issuer, or an opaque token with a configured introspection prefix; any other token SHALL pass on. The refusal SHALL be under `DPoP` when the token came under `DPoP`, `Bearer` otherwise.
+A token presented on a path no resource server covers SHALL be refused as an invalid token, before any later mode or endpoint judges it, when it is the provider's own token, an `at+jwt`, a JWT from a source's issuer, or an opaque token with a configured introspection prefix; any other token SHALL pass on. The refusal SHALL be under `DPoP` when the token came under `DPoP`, `Bearer` otherwise. The provider's token-reading endpoints run earlier and judge their tokens as before.
 
 #### Scenario: Token outside every prefix
 - **WHEN** the only resource server covers `/api/`, and a provider access token is sent to `/admin/report`

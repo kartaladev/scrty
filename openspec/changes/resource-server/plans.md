@@ -292,7 +292,7 @@ below names what each dispatch may change; no two dispatches run on one file at 
 - `WithLinkedUsers(links oidc.LinkStore, provider string, users identity.UserLoader)`;
 - `WithRefusalLimiter(ratelimit.Limiter)`;
 - `policy.Input.AccessTokenAssurance` (no public constructor; zero value = a local user, no second
-  factor, no evidence);
+  factor);
 - `var ErrInsufficientUserAuthentication`, wrapping `ErrReauthenticationRequired`.
 
 - [ ] Red, then green: the introspection-source scenarios, including "the provider's own tokens" and
