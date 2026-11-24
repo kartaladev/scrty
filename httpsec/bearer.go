@@ -862,7 +862,9 @@ const (
 	codeInvalidRequest = "invalid_request"
 )
 
-func (r *accessTokenRefusal) Error() string { return r.err.Error() }
+// Error is fixed text naming only the challenge's code: the cause may carry a
+// source's or a dependency's text, which stays reachable through Unwrap.
+func (r *accessTokenRefusal) Error() string { return "httpsec: access token refused: " + r.code }
 func (r *accessTokenRefusal) Unwrap() error { return r.err }
 
 // accessTokenChallenge sets on w the one challenge a resource server's refusal

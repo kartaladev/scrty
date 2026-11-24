@@ -200,7 +200,7 @@ func TestSignInProofMigration_PopulatedUpgrade(t *testing.T) {
 
 	for name, s := range proofBackends(t, conn) {
 		t.Run(name, func(t *testing.T) {
-			loadUnproved(t, ctx, s)
+			loadUnproved(ctx, t, s)
 		})
 	}
 
@@ -234,7 +234,7 @@ func TestSignInProofMigration_PopulatedUpgrade(t *testing.T) {
 
 // loadUnproved loads every seeded record through s, each of which must read back with
 // no proof and keep what it held.
-func loadUnproved(t *testing.T, ctx context.Context, s proofStores) {
+func loadUnproved(ctx context.Context, t *testing.T, s proofStores) {
 	t.Helper()
 
 	grant, err := s.grants.Load(ctx, proofGrant)
