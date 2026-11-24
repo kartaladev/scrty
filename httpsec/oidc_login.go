@@ -107,6 +107,7 @@ const (
 	callbackReasonUnboundError  = "unbound-provider-error"
 	callbackReasonNotLinked     = "not-linked"
 	callbackReasonIssueFailed   = "handoff-issue"
+	callbackReasonServerError   = "server-error"
 )
 
 // callback answers a GET on the callback prefix followed by a provider's name:
@@ -183,7 +184,19 @@ func (i *oidcInterceptor) callback(ex *Exchange, provider string) error {
 		// page (D3). res.Next is read from the stored flow, never from err (D5).
 		if code, ok := parkedFailureCode(failure); ok {
 			if handle, ok := i.parkedDestination(res.Next); ok {
-				return i.returnParked(ex, parkedAtCallback, provider, handle, code, err)
+				answered, perr := i.returnParkedAnswering(ex, parkedAtCallback, provider, handle, code, err)
+
+				// A server_error answer hides the fault behind a redirect, so it
+				// is logged here (D7), once it is committed: a return that failed
+				// answered the original error and has its own record. The record
+				// holds the reason and the cause's type, never the handle, state,
+				// redirect target or error text.
+				if perr == nil && answered == oidcprovider.CodeServerError {
+					i.logLoginRecord(ex, oidcCallbackFlow, msgCallbackFailed, slog.LevelError,
+						callbackReasonServerError, provider, diag.Failure(callbackReasonServerError, err)...)
+				}
+
+				return perr
 			}
 		}
 
@@ -246,6 +259,11 @@ type callbackFailure struct {
 	// outage decides the code only when refusal is unset.
 	refusal, outage, hungUp bool
 
+	// reauthenticate and unknownProvider are answers the callback keeps plain:
+	// a sign-in to repeat is a deliberate answer, and a bare unknown provider
+	// names no fault.
+	reauthenticate, unknownProvider bool
+
 	// code is the error a parked request's login page is answered with, empty
 	// for a failure that keeps its answer (parkedFailureCode).
 	code string
@@ -271,6 +289,9 @@ func readCallbackFailure(ctx context.Context, err error) callbackFailure {
 		notLinked:    walk.is(oidc.ErrNoLinkedAccount),
 		refusal:      walk.is(oidc.ErrInvalidIDToken, oidc.ErrNoLinkedAccount, oidc.ErrProvisioningRefused),
 		outage:       walk.is(oidc.ErrExchangeFailed, oidc.ErrDiscoveryFailed, oidc.ErrUserInfoFailed),
+
+		reauthenticate:  walk.is(ErrOIDCReauthenticate),
+		unknownProvider: walk.is(oidc.ErrUnknownProvider),
 	}
 
 	if walk.abort != nil {
@@ -288,20 +309,24 @@ func readCallbackFailure(ctx context.Context, err error) callbackFailure {
 	return f
 }
 
-// callbackCode is D4's allow-list for a callback's failure, from the answers of
-// readCallbackFailure's one walk. A failure before the flow is spent, an
-// invalid state and a hung-up caller have no code, and neither has anything the
-// list does not name.
+// callbackCode is D4's allow-list for a callback's failure, with D5's default,
+// from the answers of readCallbackFailure's one walk. A failure before the flow
+// is spent, an invalid state, a hung-up caller, a sign-in to repeat and a bare
+// unknown provider have no code and keep their plain answer. Of the rest, a
+// refusal is access_denied (it wins over an outage) and an outage is
+// temporarily_unavailable. Anything else after the flow is spent, a broker's or a
+// store's unclassified failure, is server_error, which names nothing about the
+// account.
 func callbackCode(f callbackFailure) string {
 	switch {
-	case f.flowUnspent, f.invalidState, f.hungUp:
+	case f.flowUnspent, f.invalidState, f.hungUp, f.reauthenticate, f.unknownProvider:
 		return ""
 	case f.refusal:
 		return oidcprovider.CodeAccessDenied
 	case f.outage:
 		return oidcprovider.CodeTemporarilyUnavailable
 	default:
-		return ""
+		return oidcprovider.CodeServerError
 	}
 }
 
@@ -464,6 +489,10 @@ func (i *oidcInterceptor) logCallbackRecord(
 
 // msgCallbackRefused is the message of the callback's own records.
 const msgCallbackRefused = "httpsec: oidc callback refused"
+
+// msgCallbackFailed is the message of the record of a failure answered with
+// server_error, which no caller sees as a refusal.
+const msgCallbackFailed = "httpsec: oidc callback failed"
 
 // logLoginRecord writes one sampled record with msg, keyed by flow and reason,
 // naming flow and provider; attrs must carry the reason themselves.

@@ -37,8 +37,13 @@ func grantRecord(n int, signIn oidcprovider.SignIn) *oidcprovider.Grant {
 		ExternalIssuer:    signIn.ExternalIssuer,
 		ExternalSessionID: signIn.ExternalSessionID,
 		HoldsLineage:      true,
-		CreatedAt:         suiteStart,
-		ExpiresAt:         suiteStart.Add(90 * 24 * time.Hour),
+
+		SecondFactorVerified: signIn.SecondFactorVerified,
+		ExternalProvider:     signIn.ExternalProvider,
+		ExternalAMR:          slices.Clone(signIn.ExternalAMR),
+		ExternalACR:          signIn.ExternalACR,
+		CreatedAt:            suiteStart,
+		ExpiresAt:            suiteStart.Add(90 * 24 * time.Hour),
 	}
 }
 
@@ -287,6 +292,47 @@ func grantCases() []suiteCase[grantWorld] {
 				assert.Equal(t, suiteID(7), got.SignInFamily)
 				assert.Equal(t, opIssuer, got.ExternalIssuer)
 				assert.Equal(t, opUpstream, got.ExternalSessionID)
+			},
+		},
+		{
+			name: "a grant keeps its sign-in's second-factor marker and federated evidence",
+			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
+				g := grantRecord(1, provenSignIn("u-1", 1))
+				createGrants(ctx, t, s, g)
+				g.ExternalAMR[0] = "scribbled"
+
+				got := loadGrant(ctx, t, s, 1)
+				assert.Equal(t, normalGrant(grantRecord(1, provenSignIn("u-1", 1))), normalGrant(got))
+				require.NotEmpty(t, got.ExternalAMR, "the upstream amr was not returned")
+				got.ExternalAMR[0] = "scribbled"
+				assert.Equal(t, provenSignIn("u-1", 1).ExternalAMR, loadGrant(ctx, t, s, 1).ExternalAMR,
+					"writing to what was given or loaded changes nothing")
+			},
+		},
+		{
+			name: "a grant from a local sign-in reads back no marker and no evidence",
+			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
+				createGrants(ctx, t, s, grantRecord(1, opSignIn("u-1", 1)))
+
+				got := loadGrant(ctx, t, s, 1)
+				assert.False(t, got.SecondFactorVerified)
+				assert.Empty(t, got.ExternalProvider)
+				assert.Nil(t, got.ExternalAMR)
+				assert.Empty(t, got.ExternalACR)
+			},
+		},
+		{
+			name: "a grant an end reports keeps its sign-in's marker and evidence",
+			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
+				createGrants(ctx, t, s, grantRecord(1, provenSignIn("u-1", 1)))
+
+				got, err := s.EndSignIns(ctx, oidcprovider.SignInSelector{Family: suiteID(1)}, at)
+				require.NoError(t, err)
+				require.Len(t, got, 1)
+				assert.True(t, got[0].SecondFactorVerified)
+				assert.Equal(t, "corp", got[0].ExternalProvider)
+				assert.Equal(t, []string{"mfa", "hwk"}, got[0].ExternalAMR)
+				assert.Equal(t, "urn:corp:loa:2", got[0].ExternalACR)
 			},
 		},
 		{

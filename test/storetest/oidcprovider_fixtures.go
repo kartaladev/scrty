@@ -40,6 +40,32 @@ func opSignIn(user string, n int) oidcprovider.SignIn {
 	}
 }
 
+// provenSignIn returns a federated sign-in of user in family n, through opIssuer and
+// opUpstream, whose second factor the library verified, with every piece of federated
+// evidence set and an upstream amr of more than one value, so its order shows.
+func provenSignIn(user string, n int) oidcprovider.SignIn {
+	s := federatedSignIn(user, n, opIssuer, opUpstream)
+	s.SecondFactorVerified = true
+	s.ExternalProvider = "corp"
+	s.ExternalAMR = []string{"mfa", "hwk"}
+	s.ExternalACR = "urn:corp:loa:2"
+
+	return s
+}
+
+// assertProven requires got to hold provenSignIn's second-factor marker and federated
+// evidence, the upstream amr in its order.
+func assertProven(t *testing.T, got oidcprovider.SignIn) {
+	t.Helper()
+
+	want := provenSignIn(string(got.User), 0)
+	assert.True(t, got.SecondFactorVerified, "the second-factor marker is kept")
+	assert.Equal(t, want.ExternalProvider, got.ExternalProvider, "the federated provider is kept")
+	assert.Equal(t, want.ExternalIssuer, got.ExternalIssuer, "the upstream issuer is kept")
+	assert.Equal(t, want.ExternalAMR, got.ExternalAMR, "the upstream amr is kept, in order")
+	assert.Equal(t, want.ExternalACR, got.ExternalACR, "the upstream acr is kept")
+}
+
 // userID returns user as a user reference.
 func userID(user string) identity.UserID { return identity.UserID(user) }
 

@@ -79,6 +79,38 @@ func codeCases() []suiteCase[oidcprovider.CodeStore] {
 			},
 		},
 		{
+			name: "a code keeps its sign-in's second-factor marker and federated evidence",
+			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
+				r := codeRecord(1, provenSignIn("u-1", 1))
+				require.NoError(t, s.Create(ctx, r))
+				r.SignIn.ExternalAMR[0] = "scribbled"
+
+				got, err := s.Load(ctx, suiteID(1))
+				require.NoError(t, err)
+				assert.Equal(t, normalCode(codeRecord(1, provenSignIn("u-1", 1))), normalCode(got))
+				assertProven(t, got.SignIn)
+
+				require.NotEmpty(t, got.SignIn.ExternalAMR, "the upstream amr was not returned")
+				got.SignIn.ExternalAMR[0] = "scribbled"
+				again, err := s.Load(ctx, suiteID(1))
+				require.NoError(t, err)
+				assertProven(t, again.SignIn)
+			},
+		},
+		{
+			name: "a code from a local sign-in reads back no marker and no evidence",
+			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
+				require.NoError(t, s.Create(ctx, codeRecord(1, opSignIn("u-1", 1))))
+
+				got, err := s.Load(ctx, suiteID(1))
+				require.NoError(t, err)
+				assert.False(t, got.SignIn.SecondFactorVerified)
+				assert.Empty(t, got.SignIn.ExternalProvider)
+				assert.Nil(t, got.SignIn.ExternalAMR)
+				assert.Empty(t, got.SignIn.ExternalACR)
+			},
+		},
+		{
 			name: "a missing record is not found",
 			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
 				require.NoError(t, s.Create(ctx, codeRecord(1, opSignIn("u-1", 1))))

@@ -12,8 +12,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/store/migrate"
+	"github.com/kartaladev/scrty/store/sqlstore"
 )
 
 // identityTables lists the eight tables the identity set holds once it is
@@ -104,7 +106,7 @@ func TestIdentityMigrations_Independent(t *testing.T) {
 			WithTestPostgresMigrations(set.FS(), set.Dir, "app_identity_versions"),
 		).DB
 
-		assert.Equal(t, 3, appliedVersionCount(t, db, "app_identity_versions"))
+		assert.Equal(t, 1, appliedVersionCount(t, db, "app_identity_versions"))
 		assert.False(t, regclassExists(t, db, migrate.IdentityVersionTable))
 	})
 }
@@ -371,14 +373,6 @@ func TestIdentityMigrations_Schema(t *testing.T) {
 	runSchemaChecks(t, migratedIdentity(t), identitySchemaChecks())
 }
 
-// versionIdentityPrefix and versionIdentityAdministration address the two
-// latest identity migrations: the scrty_ rename, and the administration
-// columns that follow it.
-const (
-	versionIdentityPrefix         int64 = 20261124000000
-	versionIdentityAdministration int64 = 20261125000000
-)
-
 // identityAt returns an empty database with a goose provider over the identity
 // set, rolled back at cleanup so the leftover-table check proves the set's
 // rollback drops everything it created, including a failed upgrade's remains.
@@ -391,47 +385,6 @@ func identityAt(t *testing.T) (*sql.DB, *goose.Provider) {
 	rollBackAtCleanup(t, db, p, set.VersionTable)
 
 	return db, p
-}
-
-// administrationColumns are the columns the administration migration adds,
-// keyed by table, as the catalogue renders them.
-var administrationColumns = map[string][]column{
-	"scrty_users": {
-		optional("email", colText),
-		optional("email_verified_at", colTimestamptz),
-		optional("deleted_at", colTimestamptz),
-		defaulted("version", colBigint, "1"),
-	},
-	"scrty_roles": {
-		defaulted("display_name", colText, defEmptyText),
-		defaulted("description", colText, defEmptyText),
-		defaulted("labels", colTextArray, defEmptyTextArray),
-		defaulted("version", colBigint, "1"),
-	},
-	"scrty_resource_privileges": {
-		defaulted("scope", colText, "'all'::text"),
-	},
-	"scrty_user_attributes": {
-		required("user_id", colUUID),
-		required("name", colText),
-		required("value", colText),
-	},
-}
-
-// administrationIndexes are the indexes the administration migration adds, as
-// pg_indexes defines them with the schema qualifier removed.
-var administrationIndexes = []string{
-	"CREATE UNIQUE INDEX scrty_users_email_live ON scrty_users USING btree (lower(email)) WHERE ((deleted_at IS NULL) AND (email IS NOT NULL))",
-	"CREATE INDEX scrty_users_username_lower ON scrty_users USING btree (lower(username), id)",
-	"CREATE INDEX scrty_assigned_roles_role_name ON scrty_assigned_roles USING btree (role_name)",
-	"CREATE UNIQUE INDEX scrty_user_attributes_pkey ON scrty_user_attributes USING btree (user_id, name)",
-	"CREATE INDEX scrty_user_attributes_name_value ON scrty_user_attributes USING btree (name, value)",
-}
-
-// administrationIndexNames are the names of administrationIndexes.
-var administrationIndexNames = []string{
-	"scrty_users_email_live", "scrty_users_username_lower", "scrty_assigned_roles_role_name",
-	"scrty_user_attributes_pkey", "scrty_user_attributes_name_value",
 }
 
 // tableColumns renders the named columns of table the way column.String does,
@@ -453,218 +406,6 @@ func tableColumns(t *testing.T, db *sql.DB, table string, names []string) []stri
 		table, strings.Join(names, ","))
 
 	return got
-}
-
-// columnNames returns the names of cols, in order.
-func columnNames(cols []column) []string {
-	out := make([]string, len(cols))
-	for i, c := range cols {
-		out[i] = c.name
-	}
-	return out
-}
-
-// columnStrings renders cols the way tableColumns does.
-func columnStrings(cols []column) []string {
-	out := make([]string, len(cols))
-	for i, c := range cols {
-		out[i] = c.String()
-	}
-	return out
-}
-
-// indexDefs returns the definitions of the named indexes of the current
-// schema, schema qualifier removed, in name order.
-func indexDefs(t *testing.T, db *sql.DB, names []string) []string {
-	t.Helper()
-
-	return queryStrings(t, db, `SELECT replace(indexdef, ' ON ' || quote_ident(schemaname) || '.', ' ON ')
-	          FROM pg_indexes
-	         WHERE schemaname = current_schema() AND indexname = ANY(string_to_array($1, ','))
-	         ORDER BY indexname`, strings.Join(names, ","))
-}
-
-// identityCatalog snapshots every column and index of every table in the
-// current schema except the version table, sorted, so a rollback can be
-// compared with the catalog it started from.
-func identityCatalog(t *testing.T, db *sql.DB) []string {
-	t.Helper()
-
-	cols := queryStrings(t, db, `SELECT 'column|' || c.relname || '|' || a.attname || ' ' || format_type(a.atttypid, a.atttypmod)
-	               || CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE ' NULL' END
-	               || ' DEFAULT ' || coalesce(pg_get_expr(d.adbin, d.adrelid), '')
-	          FROM pg_attribute a
-	          JOIN pg_class c ON c.oid = a.attrelid
-	          JOIN pg_namespace n ON n.oid = c.relnamespace
-	          LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
-	         WHERE n.nspname = current_schema() AND c.relkind = 'r' AND c.relname <> $1
-	           AND a.attnum > 0 AND NOT a.attisdropped`, migrate.IdentityVersionTable)
-	idx := queryStrings(t, db, `SELECT 'index|' || indexdef FROM pg_indexes
-	         WHERE schemaname = current_schema() AND tablename <> $1`, migrate.IdentityVersionTable)
-
-	out := append(cols, idx...)
-	slices.Sort(out)
-
-	return out
-}
-
-// TestIdentityMigration_Administration pins the catalogue the administration
-// migration leaves: every added column with its type, nullability and
-// default, the attribute table, every index, and the scrty_ prefix on each
-// relation it created.
-func TestIdentityMigration_Administration(t *testing.T) {
-	t.Parallel()
-
-	db, p := identityAt(t)
-	_, err := p.Up(t.Context())
-	require.NoError(t, err)
-
-	for table, cols := range administrationColumns {
-		assert.Equal(t, columnStrings(cols), tableColumns(t, db, table, columnNames(cols)), "table %s", table)
-	}
-
-	assert.Equal(t, []string{
-		"scrty_assigned_roles_role_name", "scrty_user_attributes_name_value", "scrty_user_attributes_pkey",
-		"scrty_users_email_live", "scrty_users_username_lower",
-	}, indexNamesOf(t, db, administrationIndexNames))
-
-	want := slices.Clone(administrationIndexes)
-	slices.Sort(want)
-	got := indexDefs(t, db, administrationIndexNames)
-	slices.Sort(got)
-	assert.Equal(t, want, got)
-
-	assert.Equal(t, 1, queryCount(t, db, `SELECT count(*) FROM `+migrate.IdentityVersionTable+
-		` WHERE is_applied AND version_id = $1`, versionIdentityAdministration))
-
-	unprefixed := queryStrings(t, db, `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-	         WHERE n.nspname = current_schema() AND c.relkind IN ('r','i','S')
-	           AND c.relname NOT LIKE 'scrty\_%' AND c.relname NOT LIKE $1`, migrate.IdentityVersionTable+"%")
-	assert.Empty(t, unprefixed, "every relation carries the scrty_ prefix")
-}
-
-// indexNamesOf returns which of names exist as indexes in the current schema.
-func indexNamesOf(t *testing.T, db *sql.DB, names []string) []string {
-	t.Helper()
-
-	got := queryStrings(t, db, `SELECT indexname FROM pg_indexes
-	         WHERE schemaname = current_schema() AND indexname = ANY(string_to_array($1, ','))
-	         ORDER BY indexname`, strings.Join(names, ","))
-
-	return got
-}
-
-// TestIdentityMigration_AdministrationDown pins that rolling the
-// administration migration back drops exactly what it added, leaving the
-// catalogue as it was at the prefix migration and each user's other columns
-// unchanged, including a user that held an email and attributes.
-func TestIdentityMigration_AdministrationDown(t *testing.T) {
-	t.Parallel()
-
-	db, p := identityAt(t)
-	ctx := t.Context()
-
-	_, err := p.UpTo(ctx, versionIdentityPrefix)
-	require.NoError(t, err)
-	_, err = db.ExecContext(ctx, `INSERT INTO scrty_users (id, name, username, password, role, created_at, updated_at)
-	     VALUES ('00000000-0000-0000-0000-0000000000a1', 'Ada', 'ada', '\x01', 'admin', now(), now())`)
-	require.NoError(t, err)
-	before := identityCatalog(t, db)
-	rowBefore := queryStrings(t, db, userRowQuery)
-
-	_, err = p.UpTo(ctx, versionIdentityAdministration)
-	require.NoError(t, err)
-	_, err = db.ExecContext(ctx, `UPDATE scrty_users SET email = 'ada@example.com', version = 4`)
-	require.NoError(t, err)
-	_, err = db.ExecContext(ctx, `INSERT INTO scrty_user_attributes (user_id, name, value)
-	     VALUES ('00000000-0000-0000-0000-0000000000a1', 'team', 'core')`)
-	require.NoError(t, err)
-	require.NotEqual(t, before, identityCatalog(t, db), "the migration changed the catalogue")
-
-	res, err := p.Down(ctx)
-	require.NoError(t, err)
-	assert.Equal(t, versionIdentityAdministration, res.Source.Version)
-
-	assert.Equal(t, before, identityCatalog(t, db), "the catalogue is as it was at the prefix migration")
-	assert.False(t, regclassExists(t, db, "scrty_user_attributes"))
-	assert.Empty(t, indexNamesOf(t, db, administrationIndexNames))
-	assert.Equal(t, rowBefore, queryStrings(t, db, userRowQuery))
-}
-
-// userRowQuery renders every column of scrty_users that exists before the
-// administration migration, one text row per user.
-const userRowQuery = `SELECT concat_ws('|', id::text, name, username, encode(password, 'hex'), active::text, role,
-	mfa_required::text) FROM scrty_users ORDER BY id`
-
-// TestIdentityMigration_FailsAtomically pins that the administration
-// migration applies in one transaction: on a database where a consumer already
-// added an email column to the users table it fails, and nothing it would add
-// exists afterwards.
-func TestIdentityMigration_FailsAtomically(t *testing.T) {
-	t.Parallel()
-
-	db, p := identityAt(t)
-	ctx := t.Context()
-
-	_, err := p.UpTo(ctx, versionIdentityPrefix)
-	require.NoError(t, err)
-	_, err = db.ExecContext(ctx, `ALTER TABLE scrty_users ADD COLUMN email text`)
-	require.NoError(t, err)
-	before := identityCatalog(t, db)
-
-	_, err = p.UpTo(ctx, versionIdentityAdministration)
-	var pgErr *pgconn.PgError
-	require.ErrorAs(t, err, &pgErr, "the upgrade fails with the server's error: %v", err)
-	assert.Equal(t, "42701", pgErr.Code, "duplicate_column")
-
-	assert.Equal(t, before, identityCatalog(t, db), "a failed migration leaves the catalogue as the consumer had it")
-	assert.False(t, regclassExists(t, db, "scrty_user_attributes"))
-	assert.Empty(t, indexNamesOf(t, db, administrationIndexNames))
-	for _, tc := range []struct {
-		table string
-		names []string
-	}{
-		{"scrty_users", []string{"email_verified_at", "deleted_at", "version"}},
-		{"scrty_roles", []string{"display_name", "description", "labels", "version"}},
-		{"scrty_resource_privileges", []string{"scope"}},
-	} {
-		assert.Empty(t, tableColumns(t, db, tc.table, tc.names), "table %s", tc.table)
-	}
-	assert.Equal(t, 0, queryCount(t, db, `SELECT count(*) FROM `+migrate.IdentityVersionTable+
-		` WHERE is_applied AND version_id = $1`, versionIdentityAdministration), "the failed migration is not recorded")
-}
-
-// TestIdentityMigration_AdministrationPopulated pins that rows written before
-// the migration read back with no email, not deleted, version 1, an empty role
-// display name, description and labels, and scope all.
-func TestIdentityMigration_AdministrationPopulated(t *testing.T) {
-	t.Parallel()
-
-	db, p := identityAt(t)
-	ctx := t.Context()
-
-	_, err := p.UpTo(ctx, versionIdentityPrefix)
-	require.NoError(t, err)
-	for _, stmt := range []string{
-		`INSERT INTO scrty_users (id, username, password, created_at, updated_at)
-		   VALUES ('00000000-0000-0000-0000-0000000000a1', 'ada', '\x01', now(), now())`,
-		`INSERT INTO scrty_roles (id, name, created_at, updated_at)
-		   VALUES ('00000000-0000-0000-0000-0000000000b1', 'admin', now(), now())`,
-		`INSERT INTO scrty_resource_privileges (id, role_name, resource_group, resource, privilege, granted, created_at, updated_at)
-		   VALUES ('00000000-0000-0000-0000-0000000000c1', 'admin', 'docs', 'doc', 'read', true, now(), now())`,
-	} {
-		_, err = db.ExecContext(ctx, stmt)
-		require.NoError(t, err)
-	}
-
-	_, err = p.UpTo(ctx, versionIdentityAdministration)
-	require.NoError(t, err)
-
-	assert.Equal(t, []string{"true|true|true|1"}, queryStrings(t, db, `SELECT concat_ws('|', (email IS NULL)::text, (email_verified_at IS NULL)::text,
-	     (deleted_at IS NULL)::text, version) FROM scrty_users`))
-	assert.Equal(t, []string{"true|true|true|1"}, queryStrings(t, db, `SELECT concat_ws('|', (display_name = '')::text,
-	     (description = '')::text, (labels = '{}')::text, version) FROM scrty_roles`))
-	assert.Equal(t, []string{"all"}, queryStrings(t, db, `SELECT scope FROM scrty_resource_privileges`))
 }
 
 // TestIdentifierLockKeys pins how a write that sets usernames or emails takes
@@ -812,4 +553,151 @@ func TestIdentifierLockKeys(t *testing.T) {
 		_, err = conn.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, key)
 		require.NoError(t, err)
 	})
+}
+
+// versionIdentityBaseline is the version of the identity set's single
+// baseline migration.
+const versionIdentityBaseline int64 = 20261126000000
+
+// identityBaselineVersionTable is the version table the baseline records into
+// by default; it is spelled out so a changed default is caught here.
+const identityBaselineVersionTable = "scrty_identity_migrate"
+
+// TestIdentityBaseline pins how the identity set applies to a database: one
+// recorded migration, beside a consumer's own users table, atomically when its
+// last relation already exists, and with the email and privilege-scope rules
+// the identity store depends on.
+func TestIdentityBaseline(t *testing.T) {
+	t.Parallel()
+
+	const (
+		firstUser  = "00000000-0000-0000-0000-0000000000a1"
+		secondUser = "00000000-0000-0000-0000-0000000000a2"
+	)
+	insertUser := func(t *testing.T, db *sql.DB, id, username, email string) error {
+		t.Helper()
+
+		_, err := db.ExecContext(t.Context(), `INSERT INTO scrty_users (id, username, password, email, created_at, updated_at)
+		     VALUES ($1, $2, '\x01', $3, now(), now())`, id, username, email)
+
+		return err
+	}
+
+	type testCase struct {
+		name         string
+		prepare      string
+		versionTable string
+		assert       func(t *testing.T, db *sql.DB, err error)
+	}
+
+	cases := []testCase{
+		{
+			name:         "one migration recorded",
+			versionTable: identityBaselineVersionTable,
+			assert: func(t *testing.T, db *sql.DB, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []string{"20261126000000"}, queryStrings(t, db,
+					`SELECT version_id::text FROM scrty_identity_migrate WHERE version_id > 0`))
+			},
+		},
+		{
+			name:         "beside consumer users",
+			prepare:      `CREATE TABLE users(id int); INSERT INTO users VALUES (1); INSERT INTO users VALUES (2)`,
+			versionTable: identityBaselineVersionTable,
+			assert: func(t *testing.T, db *sql.DB, err error) {
+				require.NoError(t, err)
+				for _, tbl := range identityTables {
+					assert.True(t, regclassExists(t, db, tbl), "table %s should exist", tbl)
+				}
+				assert.Len(t, identityTables, 8)
+				assert.Equal(t, 2, queryCount(t, db, `SELECT count(*) FROM users`), "the consumer's rows are kept")
+			},
+		},
+		{
+			name:         "last relation present",
+			prepare:      `CREATE TABLE scrty_password_history(id int)`,
+			versionTable: identityBaselineVersionTable,
+			assert: func(t *testing.T, db *sql.DB, err error) {
+				require.Error(t, err)
+				assert.Empty(t, queryStrings(t, db, `SELECT relname::text FROM pg_class
+					WHERE relnamespace = current_schema()::regnamespace
+					  AND relname <> 'scrty_password_history'
+					  AND relname NOT LIKE 'scrty\_identity\_migrate%'`),
+					"no relation of the set, under any name, survives the failed apply")
+				assert.Equal(t, 0, appliedVersionCount(t, db, identityBaselineVersionTable), "no version is recorded")
+			},
+		},
+		{
+			name:         "consumer version table",
+			versionTable: "auth_identity_versions",
+			assert: func(t *testing.T, db *sql.DB, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []string{"20261126000000"}, queryStrings(t, db,
+					`SELECT version_id::text FROM auth_identity_versions WHERE version_id > 0`))
+				assert.False(t, regclassExists(t, db, identityBaselineVersionTable),
+					"the default version table is not created")
+			},
+		},
+		{
+			name:         "live email unique ignoring case",
+			versionTable: identityBaselineVersionTable,
+			assert: func(t *testing.T, db *sql.DB, err error) {
+				require.NoError(t, err)
+				require.NoError(t, insertUser(t, db, firstUser, "ana", "Ana@example.com"))
+
+				var pgErr *pgconn.PgError
+				require.ErrorAs(t, insertUser(t, db, secondUser, "ana2", "ana@example.com"), &pgErr)
+				assert.Equal(t, "23505", pgErr.Code, "unique_violation")
+			},
+		},
+		{
+			name:         "deleted user's email is free",
+			versionTable: identityBaselineVersionTable,
+			assert: func(t *testing.T, db *sql.DB, err error) {
+				require.NoError(t, err)
+				require.NoError(t, insertUser(t, db, firstUser, "ana", "Ana@example.com"))
+				_, err = db.ExecContext(t.Context(), `UPDATE scrty_users SET deleted_at = now() WHERE id = $1`, firstUser)
+				require.NoError(t, err)
+
+				assert.NoError(t, insertUser(t, db, secondUser, "ana2", "ana@example.com"))
+			},
+		},
+		{
+			name:         "privilege without scope loads as all",
+			versionTable: identityBaselineVersionTable,
+			assert: func(t *testing.T, db *sql.DB, err error) {
+				require.NoError(t, err)
+				_, err = db.ExecContext(t.Context(), `INSERT INTO scrty_resource_privileges
+				     (id, role_name, resource_group, resource, privilege, granted, created_at, updated_at)
+				     VALUES ('00000000-0000-0000-0000-0000000000c1', 'admin', 'docs', 'doc', 'read', true, now(), now())`)
+				require.NoError(t, err)
+
+				store, err := sqlstore.NewIdentityStore(db)
+				require.NoError(t, err)
+				got, err := store.LoadPrivileges(t.Context(), "admin")
+				require.NoError(t, err)
+				require.Len(t, got, 1)
+				require.Len(t, got[0].Privileges, 1)
+				assert.Equal(t, identity.ScopeAll, got[0].Privileges[0].EffectiveScope())
+				assert.Equal(t, []string{"all"}, queryStrings(t, db, `SELECT scope FROM scrty_resource_privileges`))
+			},
+		},
+	}
+
+	set := migrate.Identity()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			db := RunTestPostgres(t).DB
+			if tc.prepare != "" {
+				_, err := db.ExecContext(t.Context(), tc.prepare)
+				require.NoError(t, err)
+			}
+			p := provider(t, db, set.FS(), set.Dir, tc.versionTable)
+
+			_, err := p.Up(t.Context())
+			tc.assert(t, db, err)
+		})
+	}
 }

@@ -532,7 +532,7 @@ func TestSource_Discovery(t *testing.T) {
 		},
 		{
 			name: "metadata with no key-set URL is refused",
-			setup: func(t *testing.T, e *env) []keyset.Option {
+			setup: func(_ *testing.T, e *env) []keyset.Option {
 				e.p.serveDiscovery(discoveryPath, e.issuer, "")
 				return nil
 			},
@@ -542,7 +542,7 @@ func TestSource_Discovery(t *testing.T) {
 		},
 		{
 			name: "metadata that is not JSON is refused",
-			setup: func(t *testing.T, e *env) []keyset.Option {
+			setup: func(_ *testing.T, e *env) []keyset.Option {
 				e.p.handle(discoveryPath, func(w http.ResponseWriter, _ *http.Request) {
 					_, _ = w.Write([]byte("<html>")) //nolint:errcheck // test server
 				})
@@ -554,7 +554,7 @@ func TestSource_Discovery(t *testing.T) {
 		},
 		{
 			name: "a key set that is not a JWK set is refused",
-			setup: func(t *testing.T, e *env) []keyset.Option {
+			setup: func(_ *testing.T, e *env) []keyset.Option {
 				e.p.serveDiscovery(discoveryPath, e.issuer, e.p.srv.URL+jwksPath)
 				e.p.handle(jwksPath, func(w http.ResponseWriter, _ *http.Request) {
 					_, _ = w.Write([]byte(`{"keys":"no"}`)) //nolint:errcheck // test server

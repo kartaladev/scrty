@@ -89,6 +89,19 @@ func adoptingHook(context.Context, oidc.ExternalIdentity, oidc.Upstream, identit
 	return oidc.SignInDecision{User: oidcTestUserID}, nil
 }
 
+// applyDownHook decides every identity is oidcTestUserID's, with an Apply that fails.
+func applyDownHook(context.Context, oidc.ExternalIdentity, oidc.Upstream, identity.UserID) (oidc.SignInDecision, error) {
+	return oidc.SignInDecision{
+		User:  oidcTestUserID,
+		Apply: func(context.Context) error { return errors.New("apply down") },
+	}, nil
+}
+
+// hookDownHook fails with an error naming no refusal or outage.
+func hookDownHook(context.Context, oidc.ExternalIdentity, oidc.Upstream, identity.UserID) (oidc.SignInDecision, error) {
+	return oidc.SignInDecision{}, errors.New("hook down")
+}
+
 // userInfoBroker is a consumer broker that fetches UserInfo on every login and
 // returns its failure as it is.
 type userInfoBroker struct{}
@@ -195,8 +208,11 @@ func TestCallback_ParkedFailureReturnsToLogin(t *testing.T) {
 
 	denied := returned(httpsec.DefaultOIDCLoginErrorParam, oidcprovider.CodeAccessDenied)
 	unavailable := returned(httpsec.DefaultOIDCLoginErrorParam, oidcprovider.CodeTemporarilyUnavailable)
+	serverError := returned(httpsec.DefaultOIDCLoginErrorParam, oidcprovider.CodeServerError)
 
 	cases := []testCase{
+		{name: "the sign-in hook's Apply fails", setup: completionSetup{broker: hookBroker(applyDownHook)}, assert: serverError},
+		{name: "the sign-in hook fails", setup: completionSetup{broker: hookBroker(hookDownHook)}, assert: serverError},
 		{name: "the sign-in hook refuses", setup: completionSetup{broker: hookBroker(refusingHook)}, assert: denied},
 		{
 			name: "the one-link rule refuses the hook's decision",
@@ -278,6 +294,24 @@ func TestCallback_ParkedFailureReturnsToLogin(t *testing.T) {
 			tc.assert(t, f, f.callBack(t, login, flowCookieOf(flowCookie, flow)), handle, flow)
 		})
 	}
+}
+
+// TestCallback_ServerErrorKeepsPlainAnswerOffTheLoginPage pins that a failure the
+// default now answers server_error still keeps its plain answer when the login is
+// not for a parked request: an ordinary destination gets the broker's own error and
+// no redirect (D5).
+func TestCallback_ServerErrorKeepsPlainAnswerOffTheLoginPage(t *testing.T) {
+	t.Parallel()
+
+	f := newCompletionFlow(t, completionSetup{broker: hookBroker(applyDownHook)})
+	handle, flow := f.park(t, flowWeb)
+
+	a := f.signIn(t, "/welcome", flowCookieOf(flowCookie, flow))
+
+	require.Error(t, a.err, "the failure's own plain answer")
+	assert.Empty(t, a.header.Get("Location"), "no redirect")
+	assert.Equal(t, oidcprovider.StageLogin, f.stage(t, handle, flow))
+	assert.Empty(t, f.events.named(event.AuthnLoginFail), "a server-side failure is no refused login")
 }
 
 // TestCallback_UnparkedDestinationKeepsAnswer pins that a failed login whose

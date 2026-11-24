@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -31,8 +32,8 @@ const (
 	issuer   = "https://as.example.com"
 	resource = "https://api.example.com"
 	clientID = "rs:client"
-	secret   = "s3cr3t-introspection-secret"
-	token    = "opaque-token-value-0123456789"
+	secret   = "s3cr3t-introspection-secret"   //nolint:gosec // G101: test fixture, not a credential
+	token    = "opaque-token-value-0123456789" //nolint:gosec // G101: test fixture, not a credential
 )
 
 var t0 = time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
@@ -547,3 +548,33 @@ func TestClient_CancelledContextMakesNoCall(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	assert.EqualValues(t, 0, s.calls.Load())
 }
+
+func TestClient_Introspect_TransportErrorTextStaysOutOfRecordsAndErrors(t *testing.T) {
+	t.Parallel()
+
+	hostile := errors.New("dial failed carrying " + token + " " + secret)
+	s := newServer(t, jsonAnswer(map[string]any{"active": false}))
+	out, err := outbound.New(outbound.WithHTTPClient(&http.Client{
+		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, hostile }),
+	}))
+	require.NoError(t, err)
+
+	var logs bytes.Buffer
+	cfg := s.config(func(c *introspect.Config) {
+		c.Logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	})
+	c, err := introspect.New(cfg, out)
+	require.NoError(t, err)
+
+	_, err = c.Introspect(t.Context(), token)
+
+	require.ErrorIs(t, err, introspect.ErrUnavailable)
+	for _, leak := range []string{token, secret} {
+		assert.NotContains(t, logs.String(), leak)
+		assert.NotContains(t, err.Error(), leak)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

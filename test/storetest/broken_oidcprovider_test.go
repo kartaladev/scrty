@@ -428,6 +428,7 @@ func (f *browserFake) copyOf(s *oidcprovider.BrowserSession) *oidcprovider.Brows
 	out := *s
 	out.Digest = bytes.Clone(s.Digest)
 	out.SignIn.AMR = slices.Clone(s.SignIn.AMR)
+	out.SignIn.ExternalAMR = slices.Clone(s.SignIn.ExternalAMR)
 
 	return &out
 }

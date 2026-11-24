@@ -2,7 +2,6 @@ package test
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"io/fs"
 	"os"
@@ -12,25 +11,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pressly/goose/v3"
 	"github.com/pressly/goose/v3/database"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/driver/postgres"
-	gormdb "gorm.io/gorm"
 
-	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/oidcprovider"
-	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/session"
-	"github.com/kartaladev/scrty/store/gormstore"
 	"github.com/kartaladev/scrty/store/migrate"
-	"github.com/kartaladev/scrty/store/pgxstore"
-	"github.com/kartaladev/scrty/store/seal"
-	"github.com/kartaladev/scrty/store/sqlstore"
-	"github.com/kartaladev/scrty/test/internal/storefix"
 )
 
 // provider builds a goose provider over db for the migration files in dir of
@@ -286,6 +274,10 @@ var securityStateColumns = map[string][]column{
 		defaulted("external_session_id", colText, defEmptyText),
 		required("idle_expires_at", colTimestamptz),
 		required("absolute_expires_at", colTimestamptz),
+		optional("second_factor_verified", colBoolean),
+		optional("external_provider", colText),
+		optional("external_amr", colJSONB),
+		optional("external_acr", colText),
 	},
 	"scrty_op_authorization_codes": {
 		required("token_id", colUUID),
@@ -308,6 +300,10 @@ var securityStateColumns = map[string][]column{
 		defaulted("offline", colBoolean, "false"),
 		defaulted("ends_with_sign_in", colBoolean, "false"),
 		required("expires_at", colTimestamptz),
+		optional("second_factor_verified", colBoolean),
+		optional("external_provider", colText),
+		optional("external_amr", colJSONB),
+		optional("external_acr", colText),
 	},
 	"scrty_op_consents": {
 		required("id", colUUID),
@@ -343,6 +339,10 @@ var securityStateColumns = map[string][]column{
 		optional("sign_in_ended_at", colTimestamptz),
 		defaulted("origin", colSmallint, "0"),
 		defaulted("survives_sign_in_end", colBoolean, "false"),
+		optional("second_factor_verified", colBoolean),
+		optional("external_provider", colText),
+		optional("external_amr", colJSONB),
+		optional("external_acr", colText),
 	},
 	"scrty_op_device_authorizations": {
 		required("id", colUUID),
@@ -950,325 +950,8 @@ func TestSecurityStateMigrations_Schema(t *testing.T) {
 }
 
 // securityStateMigrationCount is how many migration files the security-state
-// set holds.
-const securityStateMigrationCount = 8
-
-// Versions of the security-state migrations the family tests address.
-const (
-	versionSecurityState   int64 = 20260926000000
-	versionSessionFamilies int64 = 20261021000000
-	versionStrictRotation  int64 = 20261101000000
-	versionSessionSignIns  int64 = 20261102000000
-	versionOIDCProvider    int64 = 20261103000000
-)
-
-// sessionColumnsAndIndexes describes the sessions table as sorted column and
-// index lines, for comparing its shape before and after a migration.
-func sessionColumnsAndIndexes(t *testing.T, db *sql.DB) []string {
-	t.Helper()
-
-	lines := queryStrings(t, db, `SELECT 'col ' || a.attname || ' ' || format_type(a.atttypid, a.atttypmod)
-	        || CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE ' NULL' END
-	        || coalesce(' DEFAULT ' || pg_get_expr(d.adbin, d.adrelid), '')
-	   FROM pg_attribute a
-	   LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
-	  WHERE a.attrelid = 'sessions'::regclass AND a.attnum > 0 AND NOT a.attisdropped
-	 UNION ALL
-	 SELECT 'idx ' || replace(indexdef, current_schema() || '.', '') FROM pg_indexes
-	  WHERE tablename = 'sessions' AND schemaname = current_schema()`)
-	slices.Sort(lines)
-	return lines
-}
-
-// TestSecurityStateMigrations_SessionFamilies pins the session-family
-// migration: the columns and index it adds, the backfill of rows that already
-// exist, and a rollback that restores the previous shape. The backfill and
-// rollback are asserted with SQL against the table, not through a store.
-func TestSecurityStateMigrations_SessionFamilies(t *testing.T) {
-	t.Parallel()
-
-	set := migrate.SecurityState()
-
-	type testCase struct {
-		name string
-		run  func(t *testing.T, db *sql.DB, p *goose.Provider)
-	}
-
-	cases := []testCase{
-		{
-			name: "adds the family columns and index",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				_, err := p.UpTo(t.Context(), versionSessionFamilies)
-				require.NoError(t, err)
-
-				got := sessionColumnsAndIndexes(t, db)
-				for _, want := range []string{
-					"col family_id uuid NOT NULL DEFAULT gen_random_uuid()",
-					"col family_created_at timestamp with time zone NOT NULL DEFAULT now()",
-					"col authenticated_at timestamp with time zone NOT NULL DEFAULT now()",
-					"col superseded_at timestamp with time zone NULL",
-					"col accept_until timestamp with time zone NULL",
-					"col successor_digest bytea NULL",
-					"col first_presented_at timestamp with time zone NULL",
-					"idx CREATE INDEX sessions_family ON sessions USING btree (family_id)",
-				} {
-					assert.Contains(t, got, want)
-				}
-			},
-		},
-		{
-			name: "backfills existing sessions as their own family",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				_, err := p.UpTo(t.Context(), versionSecurityState)
-				require.NoError(t, err)
-
-				ids := []string{"0192f000-0000-7000-8000-0000000000c1", "0192f000-0000-7000-8000-0000000000c2"}
-				created := []time.Time{
-					time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC),
-					time.Date(2026, 9, 2, 11, 30, 0, 0, time.UTC),
-				}
-				for i, sid := range ids {
-					_, err := db.ExecContext(t.Context(), `INSERT INTO sessions
-						(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
-						VALUES ($1, $2, 'u', $3, $3, $4, $4)`,
-						sid, []byte{byte(i + 1)}, created[i], created[i].Add(time.Hour))
-					require.NoError(t, err)
-				}
-
-				_, err = p.UpTo(t.Context(), versionSessionFamilies)
-				require.NoError(t, err)
-
-				rows, err := db.QueryContext(t.Context(),
-					`SELECT id::text, family_id::text, created_at, family_created_at,
-					        superseded_at IS NULL, accept_until IS NULL,
-					        successor_digest IS NULL, first_presented_at IS NULL
-					   FROM sessions ORDER BY id`)
-				require.NoError(t, err)
-				defer func() { _ = rows.Close() }()
-
-				n := 0
-				for rows.Next() {
-					var sid, fid string
-					var createdAt, familyCreatedAt time.Time
-					var supersededNull, acceptNull, successorNull, presentedNull bool
-					require.NoError(t, rows.Scan(&sid, &fid, &createdAt, &familyCreatedAt,
-						&supersededNull, &acceptNull, &successorNull, &presentedNull))
-					assert.Equal(t, sid, fid, "family_id is the row's own id")
-					assert.True(t, createdAt.Equal(familyCreatedAt), "family_created_at is created_at")
-					assert.True(t, supersededNull && acceptNull && successorNull && presentedNull,
-						"the supersession columns stay NULL")
-					n++
-				}
-				require.NoError(t, rows.Err())
-				assert.Equal(t, len(ids), n)
-			},
-		},
-		{
-			name: "an older writer's insert succeeds",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				_, err := p.UpTo(t.Context(), versionSessionFamilies)
-				require.NoError(t, err)
-
-				// Names neither family column nor authenticated_at.
-				_, err = db.ExecContext(t.Context(), `INSERT INTO sessions
-					(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
-					VALUES ('0192f000-0000-7000-8000-0000000000d1', '\x07', 'u', now(), now(), now(), now())`)
-				require.NoError(t, err)
-
-				var ok bool
-				require.NoError(t, db.QueryRowContext(t.Context(),
-					`SELECT family_id IS NOT NULL AND family_created_at IS NOT NULL AND authenticated_at IS NOT NULL
-					   FROM sessions`).Scan(&ok))
-				assert.True(t, ok, "the three columns take their defaults")
-			},
-		},
-		{
-			name: "existing rows get their authentication time",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				_, err := p.UpTo(t.Context(), versionSecurityState)
-				require.NoError(t, err)
-
-				signedIn := time.Date(2026, 9, 1, 9, 0, 0, 0, time.UTC)
-				second := signedIn.Add(20 * time.Minute)
-				_, err = db.ExecContext(t.Context(), `INSERT INTO sessions
-					(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at, mfa_satisfied_at)
-					VALUES ('0192f000-0000-7000-8000-0000000000e1', '\x01', 'u', $1, $1, $2, $2, $3),
-					       ('0192f000-0000-7000-8000-0000000000e2', '\x02', 'u', $1, $1, $2, $2, NULL)`,
-					signedIn, signedIn.Add(time.Hour), second)
-				require.NoError(t, err)
-
-				_, err = p.UpTo(t.Context(), versionSessionFamilies)
-				require.NoError(t, err)
-
-				for id, want := range map[string]time.Time{
-					"0192f000-0000-7000-8000-0000000000e1": second,
-					"0192f000-0000-7000-8000-0000000000e2": signedIn,
-				} {
-					var got time.Time
-					require.NoError(t, db.QueryRowContext(t.Context(),
-						`SELECT authenticated_at FROM sessions WHERE id = $1`, id).Scan(&got))
-					assert.True(t, want.Equal(got), "session %s: authenticated_at %s, want %s", id, got, want)
-				}
-			},
-		},
-		{
-			// A row written before the column existed reads back with no
-			// retention deadline, which a store judges by the row's own
-			// deadlines; the down step removes the column again.
-			name: "adds the retention deadline, nullable with no default, unset on existing rows, removed on rollback",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				_, err := p.UpTo(t.Context(), versionSecurityState)
-				require.NoError(t, err)
-
-				_, err = db.ExecContext(t.Context(), `INSERT INTO sessions
-					(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
-					VALUES ('0192f000-0000-7000-8000-0000000000f1', '\x01', 'u', now(), now(), now(), now())`)
-				require.NoError(t, err)
-
-				_, err = p.UpTo(t.Context(), versionSessionFamilies)
-				require.NoError(t, err)
-
-				assert.Contains(t, sessionColumnsAndIndexes(t, db), "col retain_until timestamp with time zone NULL",
-					"retain_until is a nullable timestamptz with no default")
-				var unset bool
-				require.NoError(t, db.QueryRowContext(t.Context(),
-					`SELECT retain_until IS NULL FROM sessions WHERE id = '0192f000-0000-7000-8000-0000000000f1'`).
-					Scan(&unset))
-				assert.True(t, unset, "a row that existed before the column has no retention deadline")
-
-				_, err = p.Down(t.Context())
-				require.NoError(t, err)
-
-				for _, line := range sessionColumnsAndIndexes(t, db) {
-					assert.NotContains(t, line, "retain_until", "the down step removes the column")
-				}
-			},
-		},
-		{
-			name: "rollback restores the previous columns and indexes",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				_, err := p.UpTo(t.Context(), versionSecurityState)
-				require.NoError(t, err)
-				before := sessionColumnsAndIndexes(t, db)
-
-				_, err = p.UpTo(t.Context(), versionSessionFamilies)
-				require.NoError(t, err)
-				require.NotEqual(t, before, sessionColumnsAndIndexes(t, db),
-					"the family migration changed the sessions table")
-
-				_, err = p.Down(t.Context())
-				require.NoError(t, err)
-
-				assert.Equal(t, before, sessionColumnsAndIndexes(t, db))
-				assert.Equal(t, 1, appliedVersionCount(t, db, migrate.SecurityStateVersionTable))
-			},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			db, p := freshSecurityState(t, set)
-			tc.run(t, db, p)
-		})
-	}
-}
-
-// TestSecurityStateMigrations_SessionStrictRotation pins the strict-rotation
-// migration: a boolean mark that defaults to false, rows from before it read
-// back unmarked, a writer from before it still inserts, and a rollback
-// restores the previous columns and indexes.
-func TestSecurityStateMigrations_SessionStrictRotation(t *testing.T) {
-	t.Parallel()
-
-	set := migrate.SecurityState()
-
-	type testCase struct {
-		name string
-		run  func(t *testing.T, db *sql.DB, p *goose.Provider)
-	}
-
-	const oldInsert = `INSERT INTO sessions
-		(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
-		VALUES ($1, $2, 'u', now(), now(), now(), now())`
-
-	cases := []testCase{
-		{
-			name: "adds the mark as a not-null boolean defaulting to false",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				_, err := p.UpTo(t.Context(), versionStrictRotation)
-				require.NoError(t, err)
-
-				assert.Contains(t, sessionColumnsAndIndexes(t, db), "col rotated_strictly boolean NOT NULL DEFAULT false")
-			},
-		},
-		{
-			name: "a superseded row from before the migration reads unmarked",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				_, err := p.UpTo(t.Context(), versionSessionFamilies)
-				require.NoError(t, err)
-
-				_, err = db.ExecContext(t.Context(), `INSERT INTO sessions
-					(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at,
-					 superseded_at, accept_until, retain_until)
-					VALUES ('0192f000-0000-7000-8000-0000000000b1', '\x01', 'u', now(), now(), now(), now(),
-					        now(), now(), now())`)
-				require.NoError(t, err)
-
-				_, err = p.UpTo(t.Context(), versionStrictRotation)
-				require.NoError(t, err)
-
-				var marked bool
-				require.NoError(t, db.QueryRowContext(t.Context(),
-					`SELECT rotated_strictly FROM sessions WHERE id = '0192f000-0000-7000-8000-0000000000b1'`).Scan(&marked))
-				assert.False(t, marked, "a rotation from before the mark was not strict")
-			},
-		},
-		{
-			name: "an older writer's insert succeeds and is unmarked",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				_, err := p.UpTo(t.Context(), versionStrictRotation)
-				require.NoError(t, err)
-
-				_, err = db.ExecContext(t.Context(), oldInsert, "0192f000-0000-7000-8000-0000000000b2", []byte{0x02})
-				require.NoError(t, err)
-
-				var marked bool
-				require.NoError(t, db.QueryRowContext(t.Context(),
-					`SELECT rotated_strictly FROM sessions WHERE id = '0192f000-0000-7000-8000-0000000000b2'`).Scan(&marked))
-				assert.False(t, marked)
-			},
-		},
-		{
-			name: "rollback restores the previous columns and indexes",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				_, err := p.UpTo(t.Context(), versionSessionFamilies)
-				require.NoError(t, err)
-				before := sessionColumnsAndIndexes(t, db)
-
-				_, err = p.UpTo(t.Context(), versionStrictRotation)
-				require.NoError(t, err)
-				require.NotEqual(t, before, sessionColumnsAndIndexes(t, db), "the migration changed the sessions table")
-
-				_, err = p.Down(t.Context())
-				require.NoError(t, err)
-
-				assert.Equal(t, before, sessionColumnsAndIndexes(t, db))
-				assert.Equal(t, 2, appliedVersionCount(t, db, migrate.SecurityStateVersionTable))
-			},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			db, p := freshSecurityState(t, set)
-			tc.run(t, db, p)
-		})
-	}
-}
+// set holds: the baseline, and the sign-in proof migration after it.
+const securityStateMigrationCount = 2
 
 // rollBackAtCleanup registers a cleanup that rolls p back to version zero,
 // failing the test if that errors, and then fails naming every table left in
@@ -1359,7 +1042,7 @@ func TestSecurityStateMigrations_VersionTable(t *testing.T) {
 			assert: func(t *testing.T, db *sql.DB) {
 				assert.Equal(t, securityStateMigrationCount, appliedVersionCount(t, db, "auth_schema_versions"))
 				assert.False(t, regclassExists(t, db, migrate.SecurityStateVersionTable),
-					"no goose_security_state table is created")
+					"the default version table is not created")
 			},
 		},
 		{
@@ -1640,351 +1323,11 @@ func TestGooseDirect(t *testing.T) {
 	assert.Equal(t, 0, appliedVersionCount(t, db, versionTable))
 }
 
-// sessionStoreOpener is one durable session store, opened over the
-// connection a test migrated; sessionStoreOpeners lists them.
-type sessionStoreOpener struct {
-	name string
-	open func(t *testing.T, conn PostgresConn, c seal.Cipher) session.Store
-}
-
-func sessionStoreOpeners() []sessionStoreOpener {
-	return []sessionStoreOpener{
-		{
-			name: "sqlstore",
-			open: func(t *testing.T, conn PostgresConn, c seal.Cipher) session.Store {
-				s, err := sqlstore.NewSessionStore(conn.DB, c)
-				require.NoError(t, err)
-				return s
-			},
-		},
-		{
-			name: "pgx",
-			open: func(t *testing.T, conn PostgresConn, c seal.Cipher) session.Store {
-				pool, err := pgxpool.New(t.Context(), conn.DSN)
-				require.NoError(t, err)
-				t.Cleanup(pool.Close)
-
-				s, err := pgxstore.NewSessionStore(pool, c)
-				require.NoError(t, err)
-				return s
-			},
-		},
-		{
-			name: "gorm",
-			open: func(t *testing.T, conn PostgresConn, c seal.Cipher) session.Store {
-				db, err := gormdb.Open(postgres.Open(conn.DSN), &gormdb.Config{DisableAutomaticPing: true})
-				require.NoError(t, err)
-				sqlDB, err := db.DB()
-				require.NoError(t, err)
-				t.Cleanup(func() { _ = sqlDB.Close() })
-
-				s, err := gormstore.NewSessionStore(db, c)
-				require.NoError(t, err)
-				return s
-			},
-		},
-	}
-}
-
-// A row written before the strict-rotation mark existed, superseded or not,
-// reads back through each store as not marked: a rotation from before the
-// mark was not strict.
-func TestSecurityStateMigrations_StrictMarkReadsBackUnmarked(t *testing.T) {
-	t.Parallel()
-
-	set := migrate.SecurityState()
-
-	for _, tc := range sessionStoreOpeners() {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			conn := RunTestPostgres(t)
-			p := provider(t, conn.DB, set.FS(), set.Dir, migrate.SecurityStateVersionTable)
-			rollBackAtCleanup(t, conn.DB, p, migrate.SecurityStateVersionTable)
-
-			_, err := p.UpTo(t.Context(), versionSessionFamilies)
-			require.NoError(t, err)
-
-			const (
-				supersededID   = "a-superseded-session-from-before-the-mark"
-				unsupersededID = "a-live-session-from-before-the-mark"
-			)
-			supersededDigest := sha256.Sum256([]byte(supersededID))
-			unsupersededDigest := sha256.Sum256([]byte(unsupersededID))
-			_, err = conn.DB.ExecContext(t.Context(), `INSERT INTO sessions
-				(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at,
-				 superseded_at, accept_until, retain_until)
-				VALUES ('0192f000-0000-7000-8000-0000000000c1', $1, 'u', '2026-09-01', '2026-09-01',
-				        '2099-01-01', '2099-01-01', '2026-09-01', '2026-09-01', '2099-01-01')`,
-				supersededDigest[:])
-			require.NoError(t, err)
-			_, err = conn.DB.ExecContext(t.Context(), `INSERT INTO sessions
-				(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
-				VALUES ('0192f000-0000-7000-8000-0000000000c2', $1, 'u', '2026-09-01', '2026-09-01',
-				        '2099-01-01', '2099-01-01')`, unsupersededDigest[:])
-			require.NoError(t, err)
-
-			_, err = p.Up(t.Context())
-			require.NoError(t, err)
-
-			store := tc.open(t, conn, storefix.TestCipher(t))
-
-			superseded, err := store.Load(t.Context(), supersededID)
-			require.NoError(t, err)
-			assert.False(t, superseded.SupersededAt.IsZero(), "the row is superseded")
-			assert.False(t, superseded.RotatedStrictly, "a rotation from before the mark was not strict")
-
-			live, err := store.Load(t.Context(), unsupersededID)
-			require.NoError(t, err)
-			assert.False(t, live.RotatedStrictly)
-		})
-	}
-}
-
-// TestSecurityStateMigrations_ExistingSessionsReadBack pins what a session
-// written before the session-families migration looks like through each
-// durable store once the migration has run: a family of its own, created when
-// it was, and no retention deadline. The schema cases above read the columns;
-// this one reads the rows as a consumer's code does, through the stores.
-func TestSecurityStateMigrations_ExistingSessionsReadBack(t *testing.T) {
-	t.Parallel()
-
-	set := migrate.SecurityState()
-
-	cases := sessionStoreOpeners()
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			conn := RunTestPostgres(t)
-			p := provider(t, conn.DB, set.FS(), set.Dir, migrate.SecurityStateVersionTable)
-			rollBackAtCleanup(t, conn.DB, p, migrate.SecurityStateVersionTable)
-
-			_, err := p.UpTo(t.Context(), versionSecurityState)
-			require.NoError(t, err)
-
-			const (
-				sessionID = "a-session-written-by-older-code"
-				rowID     = "0192f000-0000-7000-8000-0000000000a1"
-			)
-			created := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
-			digest := sha256.Sum256([]byte(sessionID))
-			_, err = conn.DB.ExecContext(t.Context(), `INSERT INTO sessions
-				(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
-				VALUES ($1, $2, 'u', $3, $3, '2099-01-01', '2099-01-01')`,
-				rowID, digest[:], created)
-			require.NoError(t, err)
-
-			_, err = p.Up(t.Context())
-			require.NoError(t, err)
-
-			got, err := tc.open(t, conn, storefix.TestCipher(t)).Load(t.Context(), sessionID)
-			require.NoError(t, err)
-
-			assert.Equal(t, rowID, got.FamilyID.String(), "the row is a family of its own")
-			assert.True(t, got.CreatedAt.Equal(created), "created_at is kept, got %s", got.CreatedAt)
-			assert.True(t, got.FamilyCreatedAt.Equal(got.CreatedAt),
-				"the family was created when the row was: %s, want %s", got.FamilyCreatedAt, got.CreatedAt)
-			assert.True(t, got.RetainUntil.IsZero(), "a row from before the column has no retention deadline")
-		})
-	}
-}
-
-// TestSecurityStateMigrations_SessionSignIns pins the sign-in state
-// migration: five nullable text columns (the sign-in metadata, the key
-// binding's kind and thumbprint, and the sealed CSRF token) and no index, a
-// row from before it that reads back with all five null, an insert by a
-// writer from before it that still succeeds, and a rollback that restores the
-// previous shape.
-func TestSecurityStateMigrations_SessionSignIns(t *testing.T) {
-	t.Parallel()
-
-	set := migrate.SecurityState()
-	columns := []string{"client_ip", "user_agent", "binding_kind", "binding_thumbprint", "csrf_token"}
-
-	type testCase struct {
-		name string
-		run  func(t *testing.T, db *sql.DB, p *goose.Provider)
-	}
-
-	cases := []testCase{
-		{
-			name: "adds five nullable text columns and no index",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				_, err := p.UpTo(t.Context(), versionStrictRotation)
-				require.NoError(t, err)
-				before := sessionColumnsAndIndexes(t, db)
-
-				_, err = p.UpTo(t.Context(), versionSessionSignIns)
-				require.NoError(t, err)
-				after := sessionColumnsAndIndexes(t, db)
-
-				for _, c := range columns {
-					assert.Contains(t, after, "col "+c+" text NULL")
-				}
-				var added []string
-				for _, line := range after {
-					if !slices.Contains(before, line) {
-						added = append(added, line)
-					}
-				}
-				assert.Len(t, added, len(columns), "only the five columns are added, no index: %v", added)
-			},
-		},
-		{
-			name: "a populated row from before the migration reads back with every new column null",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				_, err := p.UpTo(t.Context(), versionStrictRotation)
-				require.NoError(t, err)
-
-				_, err = db.ExecContext(t.Context(), `INSERT INTO sessions
-					(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at,
-					 external_id_token, data)
-					VALUES ('0192f000-0000-7000-8000-0000000000d1', '\x01', 'u', now(), now(), now(), now(),
-					        'sealed', '{"k":"v"}')`)
-				require.NoError(t, err)
-
-				_, err = p.UpTo(t.Context(), versionSessionSignIns)
-				require.NoError(t, err)
-
-				var nulls int
-				require.NoError(t, db.QueryRowContext(t.Context(), `SELECT
-					(client_ip IS NULL)::int + (user_agent IS NULL)::int + (binding_kind IS NULL)::int
-					+ (binding_thumbprint IS NULL)::int + (csrf_token IS NULL)::int
-					FROM sessions WHERE id = '0192f000-0000-7000-8000-0000000000d1'`).Scan(&nulls))
-				assert.Equal(t, len(columns), nulls, "an existing row has no metadata, no binding and no token")
-			},
-		},
-		{
-			name: "an older writer's insert still succeeds",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				_, err := p.UpTo(t.Context(), versionSessionSignIns)
-				require.NoError(t, err)
-
-				_, err = db.ExecContext(t.Context(), `INSERT INTO sessions
-					(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
-					VALUES ('0192f000-0000-7000-8000-0000000000d2', '\x02', 'u', now(), now(), now(), now())`)
-				require.NoError(t, err)
-			},
-		},
-		{
-			name: "rollback restores the previous columns and indexes",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				_, err := p.UpTo(t.Context(), versionStrictRotation)
-				require.NoError(t, err)
-				before := sessionColumnsAndIndexes(t, db)
-
-				_, err = p.UpTo(t.Context(), versionSessionSignIns)
-				require.NoError(t, err)
-				require.NotEqual(t, before, sessionColumnsAndIndexes(t, db), "the migration changed the sessions table")
-
-				_, err = p.Down(t.Context())
-				require.NoError(t, err)
-
-				assert.Equal(t, before, sessionColumnsAndIndexes(t, db))
-				assert.Equal(t, 3, appliedVersionCount(t, db, migrate.SecurityStateVersionTable))
-			},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			db, p := freshSecurityState(t, set)
-			tc.run(t, db, p)
-		})
-	}
-}
-
-// A session written before the sign-in state migration reads back through
-// each durable store unbound, with no sign-in metadata and no CSRF token, and
-// its sealed ID token still opens.
-func TestSecurityStateMigrations_SignInStateReadsBackEmpty(t *testing.T) {
-	t.Parallel()
-
-	set := migrate.SecurityState()
-
-	for _, tc := range sessionStoreOpeners() {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			conn := RunTestPostgres(t)
-			p := provider(t, conn.DB, set.FS(), set.Dir, migrate.SecurityStateVersionTable)
-			rollBackAtCleanup(t, conn.DB, p, migrate.SecurityStateVersionTable)
-
-			_, err := p.UpTo(t.Context(), versionStrictRotation)
-			require.NoError(t, err)
-
-			const sessionID = "a-session-from-before-the-sign-in-state"
-			digest := sha256.Sum256([]byte(sessionID))
-			_, err = conn.DB.ExecContext(t.Context(), `INSERT INTO sessions
-				(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
-				VALUES ('0192f000-0000-7000-8000-0000000000d3', $1, 'u', '2026-09-01', '2026-09-01',
-				        '2099-01-01', '2099-01-01')`, digest[:])
-			require.NoError(t, err)
-
-			_, err = p.Up(t.Context())
-			require.NoError(t, err)
-
-			store := tc.open(t, conn, storefix.TestCipher(t))
-			got, err := store.Load(t.Context(), sessionID)
-			require.NoError(t, err)
-			assert.True(t, got.KeyBinding.IsZero(), "an existing row is unbound")
-			assert.Empty(t, got.ClientIP)
-			assert.Empty(t, got.UserAgent)
-			assert.Empty(t, got.CSRFToken, "an existing row has no token")
-
-			listed, err := store.ListByUser(t.Context(), "u", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
-			require.NoError(t, err)
-			require.Len(t, listed, 1, "an existing row is listed")
-			assert.Empty(t, listed[0].CSRFToken)
-		})
-	}
-}
-
-// providerOutsideSchema describes every table of the set outside the provider's migration,
-// as sorted column and index lines: what the migration must leave as it found it.
-func providerOutsideSchema(t *testing.T, db *sql.DB) []string {
-	t.Helper()
-
-	lines := queryStrings(t, db, `SELECT c.relname || ' col ' || a.attname || ' ' || format_type(a.atttypid, a.atttypmod)
-	        || CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE ' NULL' END
-	        || coalesce(' DEFAULT ' || pg_get_expr(d.adbin, d.adrelid), '')
-	   FROM pg_attribute a
-	   JOIN pg_class c ON c.oid = a.attrelid
-	   JOIN pg_namespace n ON n.oid = c.relnamespace
-	   LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
-	  WHERE n.nspname = current_schema() AND c.relkind = 'r'
-	    AND a.attnum > 0 AND NOT a.attisdropped AND c.relname NOT LIKE 'op\_%'
-	  UNION ALL
-	  SELECT tablename || ' idx ' || indexdef FROM pg_indexes
-	   WHERE schemaname = current_schema() AND tablename NOT LIKE 'op\_%'`)
-	slices.Sort(lines)
-
-	return lines
-}
-
 // sessionRows returns the stored sessions, each as every column's value.
 func sessionRows(t *testing.T, db *sql.DB, table string) []string {
 	t.Helper()
 
 	return queryStrings(t, db, `SELECT to_jsonb(s)::text FROM `+table+` s ORDER BY id`)
-}
-
-// holdSessions stores one plain and one superseded session.
-func holdSessions(t *testing.T, db *sql.DB) {
-	t.Helper()
-
-	_, err := db.ExecContext(t.Context(), `INSERT INTO sessions
-		(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at,
-		 superseded_at, accept_until, retain_until, client_ip, data)
-		VALUES ('0192f000-0000-7000-8000-0000000000c1', '\x01', 'u-1', now(), now(), now(), now(),
-		        NULL, NULL, NULL, '203.0.113.7', '{"k":"v"}'),
-		       ('0192f000-0000-7000-8000-0000000000c2', '\x02', 'u-2', now(), now(), now(), now(),
-		        now(), now(), now(), NULL, '{}')`)
-	require.NoError(t, err)
 }
 
 // orderedShape describes table's columns in their order, then its indexes with the
@@ -2031,6 +1374,11 @@ var flatSignIn = map[string]string{
 	"AbsoluteExpiresAt": "sign_in_absolute_expires_at",
 	"ExternalIssuer":    "external_issuer",
 	"ExternalSessionID": "external_session_id",
+
+	"SecondFactorVerified": "second_factor_verified",
+	"ExternalProvider":     "external_provider",
+	"ExternalAMR":          "external_amr",
+	"ExternalACR":          "external_acr",
 }
 
 // providerRecordColumns covers every record the provider's ports hold.
@@ -2038,7 +1386,7 @@ var providerRecordColumns = []recordColumns{
 	{
 		// Secret is nil once registered: only the digests in RegisteredClient.Secrets are kept.
 		record: oidcprovider.Client{},
-		table:  "op_clients",
+		table:  "scrty_op_clients",
 		columns: map[string]string{ //nolint:gosec // field-to-column names, no credential
 			"ID": "client_id", "Name": "name", "Type": "client_type", "ApplicationType": "application_type",
 			"AuthMethod": "auth_method", "PKCE": "pkce", "Secret": "", "JWKS": "jwks", "JWKSURI": "jwks_uri",
@@ -2058,12 +1406,12 @@ var providerRecordColumns = []recordColumns{
 	{
 		// The embedded Client is the entry above.
 		record:  oidcprovider.RegisteredClient{},
-		table:   "op_clients",
+		table:   "scrty_op_clients",
 		columns: map[string]string{"Client": "", "Secrets": "secrets"},
 	},
 	{
 		record: oidcprovider.PendingRequest{},
-		table:  "op_pending_requests",
+		table:  "scrty_op_pending_requests",
 		columns: map[string]string{ //nolint:gosec // field-to-column names, no credential
 			"ID": "id", "HandleDigest": "handle_digest", "FlowDigest": "flow_digest", "ClientID": "client_id",
 			"RedirectURI": "redirect_uri", "Scopes": "scopes", "Resources": "resources", "State": "state",
@@ -2077,17 +1425,17 @@ var providerRecordColumns = []recordColumns{
 	{
 		// SignIn is flattened, in the entry after this one, as a selector reads its fields.
 		record: oidcprovider.BrowserSession{},
-		table:  "op_browser_sessions",
+		table:  "scrty_op_browser_sessions",
 		columns: map[string]string{
 			"Digest": "digest", "SignIn": "", "IdleExpiresAt": "idle_expires_at",
 			"AbsoluteExpiresAt": "absolute_expires_at",
 		},
 	},
-	{record: oidcprovider.SignIn{}, table: "op_browser_sessions", columns: flatSignIn},
+	{record: oidcprovider.SignIn{}, table: "scrty_op_browser_sessions", columns: flatSignIn},
 	{
 		// SignIn is flattened, in the entry after this one, as a selector reads its fields.
 		record: oidcprovider.CodeRecord{},
-		table:  "op_authorization_codes",
+		table:  "scrty_op_authorization_codes",
 		columns: map[string]string{
 			"TokenID": "token_id", "ClientID": "client_id", "RedirectURI": "redirect_uri",
 			"Challenge": "challenge", "Nonce": "nonce", "DPoPJKT": "dpop_jkt", "Scopes": "scopes",
@@ -2095,10 +1443,10 @@ var providerRecordColumns = []recordColumns{
 			"EndsWithSignIn": "ends_with_sign_in", "ExpiresAt": "expires_at",
 		},
 	},
-	{record: oidcprovider.SignIn{}, table: "op_authorization_codes", columns: flatSignIn},
+	{record: oidcprovider.SignIn{}, table: "scrty_op_authorization_codes", columns: flatSignIn},
 	{
 		record: oidcprovider.Consent{},
-		table:  "op_consents",
+		table:  "scrty_op_consents",
 		columns: map[string]string{
 			"User": "user_ref", "ClientID": "client_id", "Scopes": "scopes", "Offline": "offline",
 			"LastGivenAt": "last_given_at",
@@ -2106,7 +1454,7 @@ var providerRecordColumns = []recordColumns{
 	},
 	{
 		record: oidcprovider.Grant{},
-		table:  "op_grants",
+		table:  "scrty_op_grants",
 		columns: map[string]string{
 			"Family": "family", "User": "user_ref", "ClientID": "client_id", "Scopes": "scopes",
 			"Resources": "resources", "AuthTime": "auth_time", "AMR": "amr", "ACR": "acr",
@@ -2116,11 +1464,13 @@ var providerRecordColumns = []recordColumns{
 			"CreatedAt": "created_at", "ExpiresAt": "expires_at", "Revoked": "revoked",
 			"RevokedAt": "revoked_at", "RevokeCause": "revoke_cause", "SignInEndedAt": "sign_in_ended_at",
 			"Origin": "origin", "SurvivesSignInEnd": "survives_sign_in_end",
+			"SecondFactorVerified": "second_factor_verified", "ExternalProvider": "external_provider",
+			"ExternalAMR": "external_amr", "ExternalACR": "external_acr",
 		},
 	},
 	{
 		record: oidcprovider.AccessTokenRecord{},
-		table:  "op_access_tokens",
+		table:  "scrty_op_access_tokens",
 		columns: map[string]string{
 			"ID": "id", "Digest": "digest", "GrantFamily": "grant_family", "ClientID": "client_id",
 			"User": "user_ref", "Scopes": "scopes", "Audience": "audience", "Confirmation": "confirmation",
@@ -2130,7 +1480,7 @@ var providerRecordColumns = []recordColumns{
 	{
 		// Approval is flattened, in the entry after this one.
 		record: oidcprovider.DeviceAuthorization{},
-		table:  "op_device_authorizations",
+		table:  "scrty_op_device_authorizations",
 		columns: map[string]string{ //nolint:gosec // field-to-column names, no credential
 			"ID": "id", "DeviceCodeDigest": "device_code_digest", "UserCodeDigest": "user_code_digest",
 			"ClaimFlowDigest": "claim_flow_digest", "ClientID": "client_id", "Scopes": "scopes",
@@ -2142,7 +1492,7 @@ var providerRecordColumns = []recordColumns{
 	{
 		// SignIn is held whole in sign_in, and the fields a selector reads are copied beside it.
 		record: oidcprovider.DeviceApproval{},
-		table:  "op_device_authorizations",
+		table:  "scrty_op_device_authorizations",
 		columns: map[string]string{
 			"User": "user_ref", "GrantedScopes": "granted_scopes", "SignIn": "sign_in", "GrantFamily": "grant_family",
 			"Offline": "offline", "EndsWithSignIn": "ends_with_sign_in", "SurvivesSignInEnd": "survives_sign_in_end",
@@ -2153,23 +1503,23 @@ var providerRecordColumns = []recordColumns{
 // credentialNamedColumns is every provider column whose name could suggest a credential,
 // with why it holds none. A new one must be added here, by someone who has checked.
 var credentialNamedColumns = []string{
-	"op_authorization_codes.token_id",             // the code token's identifier, not its secret
-	"op_clients.access_token_lifetime_ns",         // a duration
-	"op_clients.id_token_alg",                     // an algorithm's name
-	"op_clients.id_token_lifetime_ns",             // a duration
-	"op_clients.opaque_access_tokens",             // a setting
-	"op_clients.secrets",                          // digests and deadlines only
-	"op_device_authorizations.claim_flow_digest",  // a digest
-	"op_device_authorizations.device_code_digest", // a digest
-	"op_device_authorizations.user_code_digest",   // a keyed digest
-	"op_grants.code_id",                           // the code's identifier, not its secret
-	"op_pending_requests.flow_digest",             // a digest
-	"op_pending_requests.handle_digest",           // a digest
-	"op_pending_requests.id_token_hint_subject",   // a subject
-	"op_pending_requests.device_user_code",        // a claimed code, bound to one browser and yielding no token
-	"op_refresh_tokens.password_change_pending",   // a flag
-	"op_refresh_tokens.csrf_token",                // sealed, as on sessions
-	"op_refresh_tokens.external_id_token",         // sealed, as on sessions
+	"scrty_op_authorization_codes.token_id",             // the code token's identifier, not its secret
+	"scrty_op_clients.access_token_lifetime_ns",         // a duration
+	"scrty_op_clients.id_token_alg",                     // an algorithm's name
+	"scrty_op_clients.id_token_lifetime_ns",             // a duration
+	"scrty_op_clients.opaque_access_tokens",             // a setting
+	"scrty_op_clients.secrets",                          // digests and deadlines only
+	"scrty_op_device_authorizations.claim_flow_digest",  // a digest
+	"scrty_op_device_authorizations.device_code_digest", // a digest
+	"scrty_op_device_authorizations.user_code_digest",   // a keyed digest
+	"scrty_op_grants.code_id",                           // the code's identifier, not its secret
+	"scrty_op_pending_requests.flow_digest",             // a digest
+	"scrty_op_pending_requests.handle_digest",           // a digest
+	"scrty_op_pending_requests.id_token_hint_subject",   // a subject
+	"scrty_op_pending_requests.device_user_code",        // a claimed code, bound to one browser and yielding no token
+	"scrty_op_refresh_tokens.password_change_pending",   // a flag
+	"scrty_op_refresh_tokens.csrf_token",                // sealed, as on sessions
+	"scrty_op_refresh_tokens.external_id_token",         // sealed, as on sessions
 }
 
 // opLookup is one lookup a provider store makes, and the index that must serve it.
@@ -2246,54 +1596,54 @@ func providerLookups() []opLookup {
 
 	lookups := []opLookup{
 		{
-			name: "client by its identifier", table: "op_clients", index: "op_clients_client_id_key",
+			name: "client by its identifier", table: "scrty_op_clients", index: "scrty_op_clients_client_id_key",
 			where: `client_id = $1`, args: client, columns: []string{"client_id"},
 		},
 		{
-			name: "pending request by handle", table: "op_pending_requests", index: "op_pending_requests_handle_digest_key",
+			name: "pending request by handle", table: "scrty_op_pending_requests", index: "scrty_op_pending_requests_handle_digest_key",
 			where: `handle_digest = $1`, args: digest, columns: []string{"handle_digest"},
 		},
 		{
-			name: "browser session by digest", table: "op_browser_sessions", index: "op_browser_sessions_digest_key",
+			name: "browser session by digest", table: "scrty_op_browser_sessions", index: "scrty_op_browser_sessions_digest_key",
 			where: `digest = $1`, args: digest, columns: []string{"digest"},
 		},
 		{
-			name: "device authorization by device code", table: "op_device_authorizations",
-			index: "op_device_authorizations_device_code_digest_key",
+			name: "device authorization by device code", table: "scrty_op_device_authorizations",
+			index: "scrty_op_device_authorizations_device_code_digest_key",
 			where: `device_code_digest = $1`, args: digest, columns: []string{"device_code_digest"},
 		},
 		{
-			name: "device authorization by user code", table: "op_device_authorizations",
-			index: "op_device_authorizations_user_code_digest_key",
+			name: "device authorization by user code", table: "scrty_op_device_authorizations",
+			index: "scrty_op_device_authorizations_user_code_digest_key",
 			where: `user_code_digest = $1`, args: digest, columns: []string{"user_code_digest"},
 		},
 		{
-			name: "consents of a user", table: "op_consents", index: "op_consents_user_ref_client_id_key",
+			name: "consents of a user", table: "scrty_op_consents", index: "scrty_op_consents_user_ref_client_id_key",
 			where: `user_ref = $1`, args: user, columns: []string{"user_ref"},
 		},
 		{
-			name: "assertion identifier of a client", table: "op_client_assertions", index: "op_client_assertions_client_id_jti_key",
+			name: "assertion identifier of a client", table: "scrty_op_client_assertions", index: "scrty_op_client_assertions_client_id_jti_key",
 			where: `client_id = $1 AND jti = $2`, args: client + `, 'j-1'`, columns: []string{"client_id", "jti"},
 		},
-		userAndClient("held codes of a user and client", "op_authorization_codes", "op_authorization_codes_user_client"),
-		userAndClient("consent of a user and client", "op_consents", "op_consents_user_ref_client_id_key"),
-		userAndClient("grants of a user and client", "op_grants", "op_grants_user_client"),
-		userAndClient("approved device authorizations of a user and client", "op_device_authorizations",
-			"op_device_authorizations_user_client"),
-		expired("expired device authorizations", "op_device_authorizations", "op_device_authorizations_expiry", "expires_at"),
-		expired("expired pending requests", "op_pending_requests", "op_pending_requests_expiry", "expires_at"),
-		expired("browser sessions past idle", "op_browser_sessions", "op_browser_sessions_idle_expiry", "idle_expires_at"),
-		expired("browser sessions past absolute", "op_browser_sessions", "op_browser_sessions_absolute_expiry", "absolute_expires_at"),
-		expired("expired codes", "op_authorization_codes", "op_authorization_codes_expiry", "expires_at"),
-		expired("expired grants", "op_grants", "op_grants_expiry", "expires_at"),
-		expired("long revoked grants", "op_grants", "op_grants_revoked", "revoked_at"),
-		expired("expired access tokens", "op_access_tokens", "op_access_tokens_expiry", "expires_at"),
-		expired("expired assertion identifiers", "op_client_assertions", "op_client_assertions_expiry", "held_until"),
+		userAndClient("held codes of a user and client", "scrty_op_authorization_codes", "scrty_op_authorization_codes_user_client"),
+		userAndClient("consent of a user and client", "scrty_op_consents", "scrty_op_consents_user_ref_client_id_key"),
+		userAndClient("grants of a user and client", "scrty_op_grants", "scrty_op_grants_user_client"),
+		userAndClient("approved device authorizations of a user and client", "scrty_op_device_authorizations",
+			"scrty_op_device_authorizations_user_client"),
+		expired("expired device authorizations", "scrty_op_device_authorizations", "scrty_op_device_authorizations_expiry", "expires_at"),
+		expired("expired pending requests", "scrty_op_pending_requests", "scrty_op_pending_requests_expiry", "expires_at"),
+		expired("browser sessions past idle", "scrty_op_browser_sessions", "scrty_op_browser_sessions_idle_expiry", "idle_expires_at"),
+		expired("browser sessions past absolute", "scrty_op_browser_sessions", "scrty_op_browser_sessions_absolute_expiry", "absolute_expires_at"),
+		expired("expired codes", "scrty_op_authorization_codes", "scrty_op_authorization_codes_expiry", "expires_at"),
+		expired("expired grants", "scrty_op_grants", "scrty_op_grants_expiry", "expires_at"),
+		expired("long revoked grants", "scrty_op_grants", "scrty_op_grants_revoked", "revoked_at"),
+		expired("expired access tokens", "scrty_op_access_tokens", "scrty_op_access_tokens_expiry", "expires_at"),
+		expired("expired assertion identifiers", "scrty_op_client_assertions", "scrty_op_client_assertions_expiry", "held_until"),
 	}
-	lookups = append(lookups, signInLookups("op_grants", "op_grants_user")...)
-	lookups = append(lookups, signInLookups("op_authorization_codes", "op_authorization_codes_user_client")...)
-	lookups = append(lookups, signInLookups("op_browser_sessions", "op_browser_sessions_user_issuer")...)
-	lookups = append(lookups, signInLookups("op_device_authorizations", "op_device_authorizations_user_client")...)
+	lookups = append(lookups, signInLookups("scrty_op_grants", "scrty_op_grants_user")...)
+	lookups = append(lookups, signInLookups("scrty_op_authorization_codes", "scrty_op_authorization_codes_user_client")...)
+	lookups = append(lookups, signInLookups("scrty_op_browser_sessions", "scrty_op_browser_sessions_user_issuer")...)
+	lookups = append(lookups, signInLookups("scrty_op_device_authorizations", "scrty_op_device_authorizations_user_client")...)
 
 	return lookups
 }
@@ -2373,10 +1723,8 @@ func indexCondition(plan string) string {
 	return ""
 }
 
-// TestMigrations pins the migrations this set adds on top of its own earlier tests.
-//
-// The cases share the theme, not a setup shape: some compare a database before and
-// after the migration, and the rest read the applied schema.
+// TestMigrations pins the OpenID Provider's part of the security-state schema, read
+// from the applied set.
 func TestMigrations(t *testing.T) {
 	t.Parallel()
 
@@ -2396,49 +1744,6 @@ func TestMigrations(t *testing.T) {
 				run: func(t *testing.T, _ *sql.DB, _ *goose.Provider) {
 					assert.ElementsMatch(t, prefixNames(providerTables), pgschema.OIDCProviderTables())
 					assert.Contains(t, prefixNames(providerTables), pgschema.RefreshTokenTable)
-				},
-			},
-			{
-				name: "applied over a database holding sessions, the tables exist and the sessions are unchanged",
-				run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-					_, err := p.UpTo(t.Context(), versionSessionSignIns)
-					require.NoError(t, err)
-					holdSessions(t, db)
-					rows, schema := sessionRows(t, db, "sessions"), providerOutsideSchema(t, db)
-					require.Len(t, rows, 2)
-
-					_, err = p.UpTo(t.Context(), versionSecurityStateLast)
-					require.NoError(t, err)
-
-					for _, tbl := range providerTables {
-						assert.True(t, regclassExists(t, db, tbl), "table %s should exist", tbl)
-					}
-					assert.Equal(t, rows, sessionRows(t, db, "sessions"))
-					assert.Equal(t, schema, providerOutsideSchema(t, db))
-				},
-			},
-			{
-				name: "rolled back, exactly the ten are gone",
-				run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-					_, err := p.UpTo(t.Context(), versionSessionSignIns)
-					require.NoError(t, err)
-					holdSessions(t, db)
-					rows, schema := sessionRows(t, db, "sessions"), providerOutsideSchema(t, db)
-
-					_, err = p.UpTo(t.Context(), versionSecurityStateLast)
-					require.NoError(t, err)
-					for _, tbl := range providerTables {
-						require.True(t, regclassExists(t, db, tbl), "table %s should exist before the rollback", tbl)
-					}
-
-					_, err = p.DownTo(t.Context(), versionSessionSignIns)
-					require.NoError(t, err)
-
-					for _, tbl := range providerTables {
-						assert.False(t, regclassExists(t, db, tbl), "table %s should be gone", tbl)
-					}
-					assert.Equal(t, rows, sessionRows(t, db, "sessions"))
-					assert.Equal(t, schema, providerOutsideSchema(t, db))
 				},
 			},
 			{
@@ -2479,10 +1784,10 @@ func TestMigrations(t *testing.T) {
 			{
 				name: "a grant can be a revocation recorded first, with everything else unset",
 				run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-					_, err := p.UpTo(t.Context(), versionSecurityStateLast)
+					_, err := p.Up(t.Context())
 					require.NoError(t, err)
 
-					_, err = db.ExecContext(t.Context(), `INSERT INTO op_grants (family, revoked, revoked_at, revoke_cause, sign_in_ended_at)
+					_, err = db.ExecContext(t.Context(), `INSERT INTO scrty_op_grants (family, revoked, revoked_at, revoke_cause, sign_in_ended_at)
 						VALUES ('0192f000-0000-7000-8000-0000000000f1', true, now(), 'sign_in_ended', now())`)
 					require.NoError(t, err)
 
@@ -2490,7 +1795,7 @@ func TestMigrations(t *testing.T) {
 							amr = '[]', acr = '', key_binding = '', cert_binding = '', external_issuer = '', external_session_id = '',
 							NOT offline, NOT ends_with_sign_in, NOT holds_lineage,
 							auth_time IS NULL, code_id IS NULL, sign_in_family IS NULL, created_at IS NULL, expires_at IS NULL)
-						FROM op_grants`)
+						FROM scrty_op_grants`)
 					assert.Equal(t, []string{"t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t"}, got,
 						"no value is invented, and a NULL created_at is what tells it from a stored grant")
 				},
@@ -2498,7 +1803,7 @@ func TestMigrations(t *testing.T) {
 			{
 				name: "a handle digest is one request's, and an assertion identifier one client's",
 				run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-					_, err := p.UpTo(t.Context(), versionSecurityStateLast)
+					_, err := p.Up(t.Context())
 					require.NoError(t, err)
 
 					affected := func(query string) int64 {
@@ -2513,14 +1818,14 @@ func TestMigrations(t *testing.T) {
 					}
 
 					pending := func(id string) string {
-						return `INSERT INTO op_pending_requests (id, handle_digest, flow_digest, client_id, parked_at, expires_at, stage)
+						return `INSERT INTO scrty_op_pending_requests (id, handle_digest, flow_digest, client_id, parked_at, expires_at, stage)
 							VALUES ('` + id + `', '\x01', '\x02', 'billing-web', now(), now(), 0) ON CONFLICT (handle_digest) DO NOTHING`
 					}
 					assert.Equal(t, int64(1), affected(pending("0192f000-0000-7000-8000-000000000101")))
 					assert.Equal(t, int64(0), affected(pending("0192f000-0000-7000-8000-000000000102")))
 
 					assertion := func(id, client string) string {
-						return `INSERT INTO op_client_assertions (id, client_id, jti, held_until)
+						return `INSERT INTO scrty_op_client_assertions (id, client_id, jti, held_until)
 							VALUES ('` + id + `', '` + client + `', 'j-1', now()) ON CONFLICT (client_id, jti) DO NOTHING`
 					}
 					assert.Equal(t, int64(1), affected(assertion("0192f000-0000-7000-8000-000000000103", "billing-web")))
@@ -2531,29 +1836,29 @@ func TestMigrations(t *testing.T) {
 			{
 				name: "no column is named for a credential it would hold in clear",
 				run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-					_, err := p.UpTo(t.Context(), versionSecurityStateLast)
+					_, err := p.Up(t.Context())
 					require.NoError(t, err)
 
 					got := queryStrings(t, db, `SELECT table_name || '.' || column_name FROM information_schema.columns
-						WHERE table_schema = current_schema() AND table_name LIKE 'op\_%'
+						WHERE table_schema = current_schema() AND table_name LIKE 'scrty\_op\_%'
 						  AND column_name ~ '(secret|token|code|handle|flow|credential|password|assertion)'`)
 					assert.ElementsMatch(t, credentialNamedColumns, got)
 
 					bytes := queryStrings(t, db, `SELECT table_name || '.' || column_name FROM information_schema.columns
-						WHERE table_schema = current_schema() AND table_name LIKE 'op\_%' AND table_name <> 'op_clients'
-						  AND table_name <> 'op_refresh_tokens' AND data_type = 'bytea'`)
+						WHERE table_schema = current_schema() AND table_name LIKE 'scrty\_op\_%' AND table_name <> 'scrty_op_clients'
+						  AND table_name <> 'scrty_op_refresh_tokens' AND data_type = 'bytea'`)
 					assert.ElementsMatch(t, []string{
-						"op_pending_requests.handle_digest", "op_pending_requests.flow_digest",
-						"op_browser_sessions.digest", "op_access_tokens.digest",
-						"op_device_authorizations.device_code_digest", "op_device_authorizations.user_code_digest",
-						"op_device_authorizations.claim_flow_digest",
+						"scrty_op_pending_requests.handle_digest", "scrty_op_pending_requests.flow_digest",
+						"scrty_op_browser_sessions.digest", "scrty_op_access_tokens.digest",
+						"scrty_op_device_authorizations.device_code_digest", "scrty_op_device_authorizations.user_code_digest",
+						"scrty_op_device_authorizations.claim_flow_digest",
 					}, bytes, "the only binary values the records hold are digests")
 				},
 			},
 			{
 				name: "every field of every provider record has its column",
 				run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-					_, err := p.UpTo(t.Context(), versionSecurityStateLast)
+					_, err := p.Up(t.Context())
 					require.NoError(t, err)
 
 					for _, rc := range providerRecordColumns {
@@ -2585,7 +1890,7 @@ func TestMigrations(t *testing.T) {
 			t.Parallel()
 
 			db, p := freshSecurityState(t, set)
-			_, err := p.UpTo(t.Context(), versionSecurityStateLast)
+			_, err := p.Up(t.Context())
 			require.NoError(t, err)
 
 			for _, lookup := range providerLookups() {
@@ -2609,274 +1914,99 @@ func TestMigrations(t *testing.T) {
 	})
 }
 
-// Rows the device grant's migration finds, written by the migrations before it.
-const (
-	deviceMigGrant        = "0192f000-0000-7000-8000-0000000000a1"
-	deviceMigOfflineGrant = "0192f000-0000-7000-8000-0000000000a2"
-	deviceMigTombstone    = "0192f000-0000-7000-8000-0000000000a3"
-	deviceMigSignIn       = "0192f000-0000-7000-8000-0000000000a4"
-)
+// versionSecurityStateBaseline is the version of the security-state set's
+// baseline migration.
+const versionSecurityStateBaseline int64 = 20261126000000
 
-// holdProviderRows stores, through the provider's tables as the previous migrations left
-// them, a client, a grant that ends with its sign-in, an offline grant tied to it, a
-// revocation recorded first, and two pending requests, one signed in.
-func holdProviderRows(t *testing.T, db *sql.DB) {
-	t.Helper()
+// versionSignInProof is the version of the migration after the baseline that adds
+// how a sign-in was proved to grants, codes and browser sessions.
+const versionSignInProof int64 = 20261127000000
 
-	_, err := db.ExecContext(t.Context(), `INSERT INTO op_clients (id, client_id, client_type, auth_method, grant_types)
-		VALUES ('0192f000-0000-7000-8000-0000000000c9', 'billing-web', 0, 'client_secret_basic', '["authorization_code"]')`)
-	require.NoError(t, err)
-	_, err = db.ExecContext(t.Context(), `INSERT INTO op_grants
-		(family, user_ref, client_id, scopes, code_id, sign_in_family, offline, ends_with_sign_in, holds_lineage,
-		 created_at, expires_at)
-		VALUES ($1, 'u-1', 'billing-web', '["openid"]', $3, $4, false, false, true, now(), now() + interval '1 hour'),
-		       ($2, 'u-1', 'billing-web', '["openid","offline_access"]', $3, $4, true, true, true, now(), now() + interval '1 hour')`,
-		deviceMigGrant, deviceMigOfflineGrant, "0192f000-0000-7000-8000-0000000000a5", deviceMigSignIn)
-	require.NoError(t, err)
-	_, err = db.ExecContext(t.Context(), `INSERT INTO op_grants (family, revoked, revoked_at, revoke_cause, sign_in_ended_at)
-		VALUES ($1, true, now(), 'sign_in_ended', now())`, deviceMigTombstone)
-	require.NoError(t, err)
-	_, err = db.ExecContext(t.Context(), `INSERT INTO op_pending_requests
-		(id, handle_digest, flow_digest, client_id, scopes, parked_at, expires_at, stage, sign_in)
-		VALUES ('0192f000-0000-7000-8000-0000000000b1', '\x01', '\x02', 'billing-web', '["openid"]', now(), now(), 0, NULL),
-		       ('0192f000-0000-7000-8000-0000000000b2', '\x03', '\x04', 'billing-web', '["openid"]', now(), now(), 1,
-		        '{"user":"u-1","family":"`+deviceMigSignIn+`","authenticated_at":"2026-11-01T00:00:00Z","amr":["pwd"],"acr":"","absolute_expires_at":"2026-11-02T00:00:00Z","external_issuer":"","external_session_id":""}')`)
-	require.NoError(t, err)
-}
+// securityStateBaselineVersionTable is the version table the baseline records
+// into by default; it is spelled out so a changed default is caught here.
+const securityStateBaselineVersionTable = "scrty_state_migrate"
 
-// providerRows returns every client, grant and pending request, each as every column's
-// value but those named in drop. prefix is "" while the tables carry their original names
-// and scrtyPrefix once the prefix migration has renamed them.
-func providerRows(t *testing.T, db *sql.DB, prefix string, drop ...string) []string {
-	t.Helper()
-
-	strip := ""
-	for _, column := range drop {
-		strip += " - '" + column + "'"
-	}
-
-	return slices.Concat(
-		queryStrings(t, db, `SELECT (to_jsonb(c)`+strip+`)::text FROM `+prefix+`op_clients c ORDER BY id`),
-		queryStrings(t, db, `SELECT (to_jsonb(g)`+strip+`)::text FROM `+prefix+`op_grants g ORDER BY family`),
-		queryStrings(t, db, `SELECT (to_jsonb(r)`+strip+`)::text FROM `+prefix+`op_pending_requests r ORDER BY id`),
-	)
-}
-
-// schemaLines describes every column and index of the current schema, sorted: what a
-// rollback must restore exactly.
-func schemaLines(t *testing.T, db *sql.DB) []string {
-	t.Helper()
-
-	lines := queryStrings(t, db, `SELECT table_name || ' col ' || column_name || ' ' || data_type || ' ' || is_nullable
-	        || ' ' || coalesce(column_default, '')
-	   FROM information_schema.columns WHERE table_schema = current_schema()
-	  UNION ALL
-	  SELECT tablename || ' idx ' || indexdef FROM pg_indexes WHERE schemaname = current_schema()`)
-	slices.Sort(lines)
-
-	return lines
-}
-
-// TestMigrateSecurityState_DeviceGrant pins the device grant's migration over a database the
-// provider's earlier migration populated: the device authorization table is added, every
-// existing grant reads back as a code grant ending with its sign-in as it did, every pending
-// request names no device authorization, and a rollback leaves the schema and the rows
-// exactly as they were.
-func TestMigrateSecurityState_DeviceGrant(t *testing.T) {
+// TestSecurityStateBaseline pins how the security-state set applies to a
+// database: its migrations recorded in order, beside a consumer's own tables of the
+// old unprefixed names, atomically when its last relation already exists, and
+// into a version table the consumer names.
+func TestSecurityStateBaseline(t *testing.T) {
 	t.Parallel()
 
-	set := migrate.SecurityState()
-	added := []string{
-		"origin", "survives_sign_in_end", "device_authorization_id", "device_user_code",
-		"device_complete_uri", "device_grants_outlive_sign_in",
-	}
-
 	type testCase struct {
-		name string
-		run  func(t *testing.T, db *sql.DB, p *goose.Provider)
+		name         string
+		prepare      string
+		versionTable string
+		assert       func(t *testing.T, db *sql.DB, err error)
 	}
 
 	cases := []testCase{
 		{
-			name: "applied to a populated database, existing clients, grants and pending requests keep their meaning",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				ctx := t.Context()
-				_, err := p.UpTo(ctx, versionOIDCProvider)
+			name:         "the baseline and the migration after it recorded",
+			versionTable: securityStateBaselineVersionTable,
+			assert: func(t *testing.T, db *sql.DB, err error) {
 				require.NoError(t, err)
-				holdProviderRows(t, db)
-				before := providerRows(t, db, "")
-
-				_, err = p.Up(ctx)
-				require.NoError(t, err)
-
-				assert.True(t, regclassExists(t, db, "scrty_op_device_authorizations"), "the device authorization table exists")
-				assert.Equal(t, before, providerRows(t, db, scrtyPrefix, added...), "every column an existing row had is unchanged")
-				assert.Equal(t, []string{"0|false", "0|false", "0|false"},
-					queryStrings(t, db, `SELECT origin || '|' || survives_sign_in_end FROM scrty_op_grants ORDER BY family`))
-				assert.Equal(t, []string{"false|false"},
-					queryStrings(t, db, `SELECT device_complete_uri || '|' || device_grants_outlive_sign_in FROM scrty_op_clients`),
-					"an existing client has neither device setting")
-				assert.Equal(t, []string{"true|", "true|"},
-					queryStrings(t, db, `SELECT (device_authorization_id IS NULL) || '|' || device_user_code
-						FROM scrty_op_pending_requests ORDER BY id`))
-
-				grants := must.Must(sqlstore.NewGrantStore(db))
-				for _, family := range []string{deviceMigGrant, deviceMigOfflineGrant, deviceMigTombstone} {
-					g, err := grants.Load(ctx, idOf(t, family))
-					require.NoError(t, err, family)
-					assert.Equal(t, oidcprovider.OriginCode, g.Origin, family)
-					assert.False(t, g.SurvivesSignInEnd, family)
-				}
-				g, err := grants.Load(ctx, idOf(t, deviceMigOfflineGrant))
-				require.NoError(t, err)
-				assert.True(t, g.Offline && g.EndsWithSignIn, "an existing grant's sign-in-end flags read back as stored")
-
-				pending := must.Must(sqlstore.NewPendingRequestStore(db))
-				for _, handle := range [][]byte{{0x01}, {0x03}} {
-					r, err := pending.Load(ctx, handle)
-					require.NoError(t, err)
-					assert.True(t, r.DeviceAuthorizationID.IsZero())
-					assert.Empty(t, r.DeviceUserCode)
-				}
+				assert.Equal(t, []string{"20261126000000", "20261127000000"}, queryStrings(t, db,
+					`SELECT version_id::text FROM scrty_state_migrate WHERE version_id > 0 ORDER BY version_id`))
 			},
 		},
 		{
-			name: "applied, the device authorization table has an index for every lookup the stores make",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				_, err := p.UpTo(t.Context(), versionSecurityStateLast)
+			name: "beside consumer sessions and users",
+			prepare: `CREATE TABLE sessions(id int); CREATE TABLE users(id int);
+				INSERT INTO users VALUES (1)`,
+			versionTable: securityStateBaselineVersionTable,
+			assert: func(t *testing.T, db *sql.DB, err error) {
 				require.NoError(t, err)
-
-				// index name -> the definition, as pg_indexes reports it.
-				defs := map[string]string{}
-				for _, line := range queryStrings(t, db, `SELECT indexname || '|' || indexdef FROM pg_indexes
-					WHERE schemaname = current_schema() AND tablename = 'op_device_authorizations'`) {
-					name, def, _ := strings.Cut(line, "|")
-					defs[name] = def
+				for _, tbl := range securityStateTables {
+					assert.True(t, regclassExists(t, db, tbl), "table %s should exist", tbl)
 				}
-
-				for name, columns := range map[string]string{
-					"op_device_authorizations_device_code_digest_key": "UNIQUE INDEX|(device_code_digest)",
-					"op_device_authorizations_user_code_digest_key":   "UNIQUE INDEX|(user_code_digest)",
-					"op_device_authorizations_expiry":                 "INDEX|(expires_at)",
-					"op_device_authorizations_user_client":            "INDEX|(user_ref, client_id)",
-					"op_device_authorizations_sign_in":                "INDEX|(sign_in_family)",
-				} {
-					kind, cols, _ := strings.Cut(columns, "|")
-					def, ok := defs[name]
-					if !assert.True(t, ok, "index %s exists", name) {
-						continue
-					}
-					assert.Contains(t, def, "CREATE "+kind+" "+name, name)
-					assert.Contains(t, def, cols, name)
-					if kind == "INDEX" {
-						assert.NotContains(t, def, "UNIQUE", name)
-					}
-				}
+				assert.Len(t, securityStateTables, 25)
+				assert.Equal(t, 1, queryCount(t, db, `SELECT count(*) FROM users`), "the consumer's row is kept")
+				assert.True(t, regclassExists(t, db, "sessions"), "the consumer's sessions table is kept")
 			},
 		},
 		{
-			name: "rolled back, the table and the six columns are gone and everything else is as it was",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				ctx := t.Context()
-				_, err := p.UpTo(ctx, versionOIDCProvider)
+			name:         "last relation present",
+			prepare:      `CREATE TABLE scrty_rate_limit_buckets(id int)`,
+			versionTable: securityStateBaselineVersionTable,
+			assert: func(t *testing.T, db *sql.DB, err error) {
+				require.Error(t, err)
+				assert.Empty(t, queryStrings(t, db, `SELECT relname::text FROM pg_class
+					WHERE relnamespace = current_schema()::regnamespace
+					  AND relname <> 'scrty_rate_limit_buckets'
+					  AND relname NOT LIKE 'scrty\_state\_migrate%'`),
+					"no relation of the set, under any name, survives the failed apply")
+				assert.Equal(t, 0, appliedVersionCount(t, db, securityStateBaselineVersionTable),
+					"no version is recorded")
+			},
+		},
+		{
+			name:         "consumer version table",
+			versionTable: "auth_schema_versions",
+			assert: func(t *testing.T, db *sql.DB, err error) {
 				require.NoError(t, err)
-				holdProviderRows(t, db)
-				schema, rows := schemaLines(t, db), providerRows(t, db, "")
-
-				_, err = p.Up(ctx)
-				require.NoError(t, err)
-				require.True(t, regclassExists(t, db, "scrty_op_device_authorizations"), "the table exists before the rollback")
-
-				_, err = p.DownTo(ctx, versionOIDCProvider)
-				require.NoError(t, err)
-
-				assert.False(t, regclassExists(t, db, "op_device_authorizations"), "the table is gone")
-				assert.False(t, regclassExists(t, db, "scrty_op_device_authorizations"), "and so is its prefixed name")
-				assert.Empty(t, queryStrings(t, db, `SELECT table_name || '.' || column_name FROM information_schema.columns
-					WHERE table_schema = current_schema() AND column_name = ANY($1)`, "{"+strings.Join(added, ",")+"}"))
-				assert.Equal(t, schema, schemaLines(t, db), "every other column and index is unchanged")
-				assert.Equal(t, rows, providerRows(t, db, ""), "every row is unchanged")
+				assert.Equal(t, []string{"20261126000000", "20261127000000"}, queryStrings(t, db,
+					`SELECT version_id::text FROM auth_schema_versions WHERE version_id > 0 ORDER BY version_id`))
+				assert.False(t, regclassExists(t, db, securityStateBaselineVersionTable),
+					"the default version table is not created")
 			},
 		},
 	}
 
+	set := migrate.SecurityState()
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			db, p := freshSecurityState(t, set)
-			tc.run(t, db, p)
+			db := RunTestPostgres(t).DB
+			if tc.prepare != "" {
+				_, err := db.ExecContext(t.Context(), tc.prepare)
+				require.NoError(t, err)
+			}
+			p := provider(t, db, set.FS(), set.Dir, tc.versionTable)
+
+			_, err := p.Up(t.Context())
+			tc.assert(t, db, err)
 		})
-	}
-}
-
-// idOf parses a fixed identifier.
-func idOf(t *testing.T, s string) id.ID {
-	t.Helper()
-
-	v, err := id.Parse(s)
-	require.NoError(t, err)
-
-	return v
-}
-
-// versionSelectedRole addresses the migration that adds the selected-role
-// column to sessions; versionSecurityStatePrefix the rename before it.
-const (
-	versionSecurityStatePrefix int64 = 20261124000000
-	versionSelectedRole        int64 = 20261125000000
-)
-
-// TestSecurityStateMigration_SelectedRole pins the selected-role migration: it
-// adds one nullable column with no default to sessions and to the refresh-token
-// lineage table, which keeps the sessions table's columns; a row written before
-// it is unchanged with no selected role in both; and rolling it back drops
-// exactly those columns.
-func TestSecurityStateMigration_SelectedRole(t *testing.T) {
-	t.Parallel()
-
-	set := migrate.SecurityState()
-	db := RunTestPostgres(t).DB
-	p := provider(t, db, set.FS(), set.Dir, set.VersionTable)
-	rollBackAtCleanup(t, db, p, set.VersionTable)
-	ctx := t.Context()
-	tables := []string{"scrty_sessions", "scrty_op_refresh_tokens"}
-
-	_, err := p.UpTo(ctx, versionSecurityStatePrefix)
-	require.NoError(t, err)
-	insertProbeSession(t, db)
-	_, err = db.ExecContext(ctx, `INSERT INTO scrty_op_refresh_tokens
-		(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at, family_id, family_created_at)
-		VALUES ('0192f000-0000-7000-8000-0000000000cc', '\x01', 'u', now(), now(), now(), now(),
-		        '0192f000-0000-7000-8000-0000000000cc', now())`)
-	require.NoError(t, err)
-
-	rowsBefore := map[string][]string{}
-	for _, table := range tables {
-		rowsBefore[table] = queryStrings(t, db, `SELECT to_jsonb(s) - 'selected_role' FROM `+table+` s`)
-		require.Len(t, rowsBefore[table], 1, table)
-		assert.Empty(t, tableColumns(t, db, table, []string{"selected_role"}), table)
-	}
-
-	_, err = p.UpTo(ctx, versionSelectedRole)
-	require.NoError(t, err)
-
-	for _, table := range tables {
-		assert.Equal(t, []string{"selected_role text NULL DEFAULT "},
-			tableColumns(t, db, table, []string{"selected_role"}), table)
-		assert.Equal(t, rowsBefore[table], queryStrings(t, db, `SELECT to_jsonb(s) - 'selected_role' FROM `+table+` s`),
-			"an existing row of %s is unchanged", table)
-		assert.Equal(t, []string{"true"}, queryStrings(t, db, `SELECT (selected_role IS NULL)::text FROM `+table),
-			"an existing row of %s has no selected role", table)
-	}
-
-	res, err := p.Down(ctx)
-	require.NoError(t, err)
-	assert.Equal(t, versionSelectedRole, res.Source.Version)
-
-	for _, table := range tables {
-		assert.Empty(t, tableColumns(t, db, table, []string{"selected_role"}), table)
-		assert.Equal(t, rowsBefore[table], queryStrings(t, db, `SELECT to_jsonb(s) FROM `+table+` s`),
-			"the row of %s survives the rollback unchanged", table)
 	}
 }
