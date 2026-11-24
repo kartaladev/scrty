@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/ctxlog"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/clock"
@@ -80,8 +82,8 @@ const (
 // [WithoutCommonPasswords].
 //
 // Rules run cheapest first: length, then the common-password list, then
-// context words, then the breach check, then reuse. The first refusal ends the
-// check, and no later rule runs.
+// context words, then the consumer's own rules, then the breach check, then
+// reuse. The first refusal ends the check, and no later rule runs.
 //
 // The policy never logs a candidate, a hash or a context word, and does not
 // keep the candidate after a call returns. Its one log record is a
@@ -97,6 +99,7 @@ type Policy struct {
 	words     ContextWordsFunc    // nil: the context-word rule is off
 	breach    *breachRule         // nil: the breach check is off
 	reuse     *reuseRule          // nil: the reuse rule is off
+	rules     []consumerRule      // consumer rules, in the order added
 	enc       Encoder
 	clock     clock.Clock
 	logger    *slog.Logger // where the boundary sanitizer records an aborted walk
@@ -125,6 +128,8 @@ type policyConfig struct {
 
 	breach *breachRule
 	reuse  *reuseSpec
+
+	rules []consumerRule
 }
 
 // NewPolicy returns a policy with the defaults [Policy] describes, changed
@@ -171,6 +176,10 @@ func NewPolicy(opts ...PolicyOption) (*Policy, error) {
 		return nil, err
 	}
 
+	if err := validateConsumerRules(cfg.rules); err != nil {
+		return nil, err
+	}
+
 	if cfg.encSet && nilcheck.IsNil(cfg.enc) {
 		return nil, fmt.Errorf("%w: the encoder is nil", ErrConfig)
 	}
@@ -205,6 +214,7 @@ func NewPolicy(opts ...PolicyOption) (*Policy, error) {
 		byteLimit: encoderByteLimit(enc),
 		words:     cfg.words,
 		breach:    cfg.breach,
+		rules:     slices.Clone(cfg.rules),
 		enc:       enc,
 		clock:     cfg.clock,
 		logger:    cfg.logger,
@@ -359,6 +369,105 @@ func WithPolicyLogger(logger *slog.Logger) PolicyOption {
 	return func(c *policyConfig) { c.logger = logger }
 }
 
+// RuleFunc is a consumer's own password rule. It reports whether candidate is
+// acceptable for user: true accepts, false refuses with a [RejectedError]
+// naming the rule. A non-nil error means the rule could not decide, and fails
+// the check regardless of the verdict.
+type RuleFunc func(ctx context.Context, candidate string, user *identity.Details) (bool, error)
+
+// maxRuleNameLength is the longest name [WithRule] accepts, in characters.
+const maxRuleNameLength = 64
+
+// consumerRule is a [RuleFunc] with the name it refuses by.
+type consumerRule struct {
+	name  Rule
+	check RuleFunc
+}
+
+// ErrRuleFailed fails a check whose consumer rule, added with [WithRule],
+// returned an error. It is not a password refusal: it does not match
+// [ErrPasswordRejected]. Its text is fixed per rule and names the rule only,
+// never the rule's error text or the candidate; the rule's own error stays
+// reachable through [errors.Is] and [errors.As].
+var ErrRuleFailed = errors.New("password: rule failed")
+
+// ruleFailedText is the fixed text of a rule failure, before the rule's name.
+const ruleFailedText = "password: rule failed: "
+
+// WithRule adds a rule of the consumer's own, refusing a candidate with a
+// [RejectedError] whose Rule is name when check returns false.
+//
+// Consumer rules run after the length check, the common-password list and the
+// context words, in the order they were added, and before the breach lookup,
+// so a cheap local refusal never spends a network call. The first refusal ends
+// the check. An error from check fails the check and the change as a
+// [ErrRuleFailed] with the rule's error reachable, and is never taken for a
+// refusal: the policy fails closed. A panic in check is not recovered, as with
+// the context-word function: it unwinds through the caller. check must be safe for
+// concurrent use and must not retain candidate.
+//
+// Default: no consumer rule; the library imposes no composition rule. A nil
+// (typed-nil included) check fails construction, as does a name that is empty,
+// longer than 64 characters, holds anything but ASCII letters, digits, '-' and
+// '_', is the name of a built-in rule, or is already used by another consumer
+// rule.
+func WithRule(name Rule, check RuleFunc) PolicyOption {
+	return func(c *policyConfig) {
+		c.rules = append(c.rules, consumerRule{name: name, check: check})
+	}
+}
+
+// validateConsumerRules refuses rules the policy cannot work with.
+func validateConsumerRules(rules []consumerRule) error {
+	seen := make(map[Rule]struct{}, len(rules))
+
+	for _, r := range rules {
+		if nilcheck.IsNil(r.check) {
+			return fmt.Errorf("%w: the consumer rule %q has no check", ErrConfig, r.name)
+		}
+
+		if err := validRuleName(r.name); err != nil {
+			return err
+		}
+
+		if _, dup := seen[r.name]; dup {
+			return fmt.Errorf("%w: the consumer rule name %q is used twice", ErrConfig, r.name)
+		}
+
+		seen[r.name] = struct{}{}
+	}
+
+	return nil
+}
+
+// validRuleName refuses a name that is a built-in rule's, empty, over-long or
+// outside ASCII letters, digits, '-' and '_'.
+func validRuleName(name Rule) error {
+	switch name {
+	case RuleTooShort, RuleTooLong, RuleCommon, RuleContextWord, RuleBreached, RuleReused:
+		return fmt.Errorf("%w: the consumer rule name %q is the name of a built-in rule", ErrConfig, name)
+	}
+
+	if name == "" {
+		return fmt.Errorf("%w: a consumer rule needs a name", ErrConfig)
+	}
+
+	if len(name) > maxRuleNameLength {
+		return fmt.Errorf("%w: a consumer rule name is longer than %d characters", ErrConfig, maxRuleNameLength)
+	}
+
+	for i := 0; i < len(name); i++ {
+		b := name[i]
+		if b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '-' || b == '_' {
+			continue
+		}
+
+		return fmt.Errorf("%w: a consumer rule name may hold only ASCII letters, digits, '-' and '_'", ErrConfig)
+	}
+
+	return nil
+}
+
 // Check refuses candidate for user with a [RejectedError] naming the first
 // rule that refuses it, and returns nil when every rule accepts it.
 //
@@ -366,6 +475,7 @@ func WithPolicyLogger(logger *slog.Logger) PolicyOption {
 // trimmed, normalised or truncated, and an empty candidate is too short.
 //
 // Errors other than a refusal: a context-word function's error, unchanged;
+// [ErrRuleFailed] from a consumer rule that returned an error;
 // [ErrLookupUnavailable] from a failed breach lookup with [Refuse];
 // [ErrHistoryUnavailable] from a history the reuse rule could not read; and
 // the context's error when ctx ended during the breach lookup. A nil user is
@@ -401,6 +511,20 @@ func (p *Policy) Check(ctx context.Context, user *identity.Details, candidate st
 
 		if containsContextWord(candidate, words) {
 			return RejectedError{Rule: RuleContextWord}
+		}
+	}
+
+	for _, r := range p.rules {
+		ok, err := r.check(ctx, candidate, user)
+		// The rule is the consumer's, and so is its error: a hostile chain
+		// comes back as the library's fixed error, never inspected raw.
+		err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable)
+		if err != nil {
+			return diag.Wrap(err, ruleFailedText+string(r.name), ErrRuleFailed)
+		}
+
+		if !ok {
+			return RejectedError{Rule: r.name}
 		}
 	}
 
