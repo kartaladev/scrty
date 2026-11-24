@@ -22,7 +22,7 @@ go list -test -f '{{if .ForTest}}{{.ForTest}}{{else}}{{.ImportPath}}{{end}}{{ran
 
 - [ ] 2.1 Rename `token.TypeFirstParty` to `token.TypeSessionToken` with `gopls rename` (design decisions 1, 2, 5), with no alias left behind; verify `go build ./...` and `go vet ./...` succeed in every module listed in `go.work` (comment mentions of the old name remain until 2.3)
 - [ ] 2.2 Rename `validateFirstPartyType` to `validateSessionTokenType` with `gopls rename` (decision 4); verify `go vet ./token/` passes
-- [ ] 2.3 Reword the `token` lines of design decision 3's inventory, per construction, including the error text at `issuer.go:209`, keeping the literal `scrty+jwt` assertions literal; verify `go test -count=1 ./token/...` passes, `rg -n 'TypeFirstParty' --glob '!.claude' --glob '!openspec'` is empty, and `go doc -all ./token | grep -i first-party` is empty
+- [ ] 2.3 Reword the `token` lines of design decision 3's inventory (including `config.go:336`, `generator_tokentype_test.go:13` and `helpers_test.go:121`), per construction, including the error text at `issuer.go:209`, keeping the literal `scrty+jwt` assertions literal; verify `go test -count=1 ./token/...` passes, `rg -n 'TypeFirstParty' --glob '!.claude' --glob '!openspec'` is empty, and `go doc -all ./token | grep -i first-party` is empty
 
 ## 3. Wording in dependent packages
 
@@ -37,7 +37,7 @@ go list -test -f '{{if .ForTest}}{{.ForTest}}{{else}}{{.ImportPath}}{{end}}{{ran
 
 ## 5. Integration checks
 
-- [ ] 5.1 Run design F5's search: `rg -n -i 'first-party|firstparty|first party' --glob '!.claude' --glob '!openspec' .` and `rg -n -i -U 'first-\s*(//\s*)?\n?\s*(//\s*)?party' --glob '!.claude' --glob '!openspec' .`; verify every hit is on design decision 3's "not touched" list
+- [ ] 5.1 Run design F5's search: `rg -n -i 'first-party|firstparty|first party' --glob '!.claude' --glob '!openspec' --glob '!CHANGELOG.md' .` and `rg -n -i -U 'first-?\s*(//\s*)?\n\s*(//\s*)?-?party' --glob '!.claude' --glob '!openspec' .`; verify every remaining hit is the client sense, and list them in the report
 - [ ] 5.2 Run `gofmt -l` on every touched file (empty output), and `go vet` plus the scoped test command in every workspace module (`test-scope.md`)
 - [ ] 5.3 Run `openspec validate rename-session-token-type --strict` and verify it passes
 - [ ] 5.4 Run the full gate, `make check` and `make spec-check`, after the last edit, and read its output; `make release-check` reports the removed constant, which design F1 accepts

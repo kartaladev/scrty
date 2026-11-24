@@ -43,8 +43,7 @@ None.
   value. A consumer referencing the old name fails to compile, and the CHANGELOG states the
   one-line migration.
 - **Code**: `token` (constant, defaults, the issuer's reserved-type check, godoc), and godoc and
-  tests in `oidcprovider`, `httpsec`, `test/storetest`, `test/httpsecconformance` and
-  `test/cmd/conformanceop`.
+  tests in `oidcprovider`, `httpsec`, `test/storetest` and `test/cmd/conformanceop`.
 - **Docs**: `README.md`, `CHANGELOG.md`.
 - **Wire, storage, behaviour**: none, apart from the text of one configuration error (design F6).
 - **Related**: `resource-server` (PR #151) uses "session token" and "session reference" from the

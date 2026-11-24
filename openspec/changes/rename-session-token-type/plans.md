@@ -48,11 +48,13 @@ tasks (1.1–4.2), split into two sequential dispatches (`subagent-delegation.md
 
 | Dispatch | Tasks | Model | Reason |
 |---|---|---|---|
-| A | 1.1–2.3 | Sonnet | Guard red steps plus a gopls rename and the `token` rewording; the plan gives every line |
+| A | 1.1–2.3 | Sonnet | Guard red steps, a `gopls rename` of one constant that the existing tests cover (the rule's "rename the existing tests cover" case: the tool rewrites every package, so no cross-package judgement is involved), and the `token` rewording, every line given |
 | B | 3.1–4.2 | Opus | Rewording that needs judgement about which sense each sentence has and how it reads; a mistake there passes the tests and is still wrong |
 | — | 5.1–5.4 | main session | Verification is never delegated |
 
-Dispatch A gets a Sonnet reviewer and dispatch B an Opus reviewer. Each reviews against the four
+Dispatch A gets a Sonnet reviewer and dispatch B an Opus reviewer. Every dispatch prompt states
+the binding rules (test-first order, `defensive-coding.md`, `library-design.md`, `defect-claims.md`),
+the skills to read (`table-test`), the files it owns, and what to report. Each reviews against the four
 spec deltas and design decisions 1–5 before the next dispatch starts.
 
 **Scoped test command** (`test-scope.md`), run from each workspace module's directory. It lists the
@@ -107,7 +109,8 @@ In the root module this selects 14 packages, `token` included (measured 2026-11-
 - [ ] **Step 3 (2.2):** `gopls rename` `validateFirstPartyType` to `validateSessionTokenType`, then
   run `go vet ./token/`. Expected: success.
 - [ ] **Step 4 (2.3):** reword the `token` lines of the inventory by construction, including:
-  - the six comments;
+  - the six comments, plus `config.go:336`, `generator_tokentype_test.go:13` and
+    `helpers_test.go:121`;
   - the error text at `issuer.go:209`, which becomes
     `"%w: an issuer does not issue session tokens: use a Generator"`;
   - the test case names at `generator_tokentype_test.go:40`, `issuer_test.go:533,534,613` and
@@ -155,14 +158,13 @@ In the root module this selects 14 packages, `token` included (measured 2026-11-
     OAuth client the provider trusts (`oidcprovider.Client.FirstParty`). Replace
     `token.TypeFirstParty` with `token.TypeSessionToken`. An `Issuer` asked for that type now says
     it "does not issue session tokens". Three scenario titles in the `token-issuance` spec keep the
-    old wording, because the spec tooling cannot retitle a scenario in place; their text says
-    "session token".
+    old wording; their text says "session token".
   ```
 
 ### Task 5: Integration checks (tasks 5.1–5.4, main session)
 
-- [ ] **Step 1 (5.1):** run both searches of task 5.1. Expected: every hit is on the "not touched"
-  list.
+- [ ] **Step 1 (5.1):** run both searches of task 5.1. Expected: every remaining hit is the client
+  sense; the report lists them.
 - [ ] **Step 2 (5.2):** run `gofmt -l` on the touched files (empty output), then `go vet` and the scoped
   test command in every `go.work` module. Expected: PASS.
 - [ ] **Step 3 (5.3):** run `openspec validate rename-session-token-type --strict`. Expected: valid.

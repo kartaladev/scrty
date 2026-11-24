@@ -37,7 +37,8 @@ each break is stated under *Changed*.
 ## Goals / Non-Goals
 
 **Goals:**
-- One meaning of "first-party" in the tree, the OAuth client meaning.
+- One meaning of "first-party" in the tree, the OAuth client meaning, except three scenario titles in
+  the `token-issuance` spec that the spec tooling cannot retitle (see Risks).
 - The token the chain issues at sign-in is called the session token in code, godoc, specs and the
   README.
 - No change on the wire, in storage, or in any behaviour.
@@ -93,12 +94,12 @@ substituting a phrase blindly:
 | a first-party verifier / a verifier for first-party tokens | a session token verifier |
 | the first-party `Generator` / token generator | the session token `Generator` / generator |
 | a first-party, ID or logout token | a session, ID or logout token |
-| its first-party sessions | its sessions |
+| its first-party sessions, where "its" is the sign-in | its sessions; otherwise the sign-in's sessions |
 | the sign-in's first-party sessions | the sign-in's sessions |
-| the first-party sessions (the sign-in named in the sentence) | its sessions |
+| the first-party sessions, first-party sessions (bare) | the sign-in's sessions, unless the sentence already names the sign-in as the subject of "its" |
 | a first-party session | a session of the sign-in |
 | the i-th first-party session (`test/storetest`) | the i-th session |
-| the first-party store (`httpsec` logout tests) | the chain's session store |
+| the first-party store, whose first-party store (`httpsec` logout tests) | the chain's session store, whose chain session store |
 | first-party credential (README, the browser-session section) | sign-in credential |
 | first-party client, flag, `Client.FirstParty` | unchanged |
 
@@ -116,15 +117,15 @@ including phrases wrapped across lines, and reviewed line by line on 2026-11-25:
 
 | File | Lines (token sense) |
 |---|---|
-| `token/config.go` | 29-31 |
+| `token/config.go` | 29-31, 336 |
 | `token/claims.go` | 70-76 |
 | `token/generator.go` | 186, 194, 217 |
 | `token/verifier.go` | 120, 122, 147 |
 | `token/issuer.go` | 20-22, 209 (error text) |
-| `token/generator_tokentype_test.go` | 40, 43 |
+| `token/generator_tokentype_test.go` | 13, 40, 43 |
 | `token/issuer_test.go` | 533, 534, 613 |
 | `token/verifier_tokentype_test.go` | 91, 103, 144 |
-| `token/helpers_test.go` | the comment beside line 145 |
+| `token/helpers_test.go` | 121 |
 | `oidcprovider/accesstoken.go` | 232 |
 | `oidcprovider/doc.go` | 113 (not 208) |
 | `oidcprovider/endsession.go` | 51, 69, 110-120 |
@@ -139,6 +140,10 @@ including phrases wrapped across lines, and reviewed line by line on 2026-11-25:
 | `test/storetest/session_settle.go` | 157 |
 | `test/cmd/conformanceop/pages.go` | 300 |
 | `README.md` | 898, 944, 949, 954 |
+
+Three sentences need "the sign-in's sessions" rather than "its": `oidcprovider/endsession.go:116`
+("leaves the browser session and the sign-in's sessions"), `oidcprovider/endsignin.go:39` and
+`httpsec/oidc_logout_retry_test.go:135`.
 
 Client sense only, **not touched**: `httpsec/oidc_completion_test.go`, `httpsec/oidc_authorize_test.go`
 (`flowFirstParty`), `oidcprovider/endsignin_test.go`, `oidcprovider/consent*.go` and their tests,
@@ -166,7 +171,7 @@ packages included, moves at once. The wording is edited by hand, under decision 
 | F2 | The wire value changes by mistake during the rename | **Tested**: the table cases assert the literal `scrty+jwt` at the generator (`generator_tokentype_test.go:40,43`) and the verifier (`verifier_tokentype_test.go:91`). They stay literal | Without the guard, every token issued before the upgrade would be refused |
 | F3 | The issuer stops refusing an `Issue.Type` of the session token type | **Tested**: `TestIssuer_RefusalAsksNoKey/the first-party type` and `…/spelled with the prefix and other case` (`issuer_test.go:533-534`). They are renamed, not removed. (The case at `issuer_test.go:613` guards a different rule, that `NewIssuer` refuses every option, and is not part of this guard) | Without the guard, an `Issuer` could mint tokens a session verifier accepts |
 | F4 | A client-sense mention is renamed by mistake | **Handled**: decision 3's test and its "not touched" list; the reviewer checks every changed and every remaining mention | Without the guard, the consent docs would misdescribe the client flag |
-| F5 | A token-sense mention is missed, including one wrapped across lines | **Handled**: a case-insensitive search for `first-party` and for `firstparty` (ignoring separators) over the whole tree outside `openspec/` and `.claude/`, plus a multi-line search, whose every hit must be on decision 3's "not touched" list | Without the guard, the leftover term keeps the confusion alive |
+| F5 | A token-sense mention is missed, including one wrapped across lines | **Handled**: a case-insensitive search for `first-party`, `firstparty`, `first party` and the hyphen-wrapped form over the whole tree outside `openspec/`, `.claude/` and `CHANGELOG.md` (whose new entry names the old identifier on purpose); the reviewer reads every remaining hit and confirms it is the client sense | Without the guard, the leftover term keeps the confusion alive |
 | F6 | The issuer's error text changes ("does not issue session tokens") | **Accepted**: no test or settled spec asserts the text; the error's identity (`ErrConfig`) is the contract and is unchanged. Stated in the CHANGELOG | A different message for the same error |
 | F7 | The reworded prose reads wrongly ("the the sign-in's sessions") | **Handled**: decision 3 is applied per construction, and the review reads every changed sentence | Without the guard, garbled godoc |
 
