@@ -194,6 +194,11 @@ func TestParkedFailureToClient(t *testing.T) {
 			assert: answered(oidcprovider.CodeAccessDenied),
 		},
 		{
+			name:   "the sign-in hook's Apply fails",
+			setup:  completionSetup{broker: hookBroker(applyDownHook)},
+			assert: answered(oidcprovider.CodeServerError),
+		},
+		{
 			// A device request has no client redirect URI to answer at: it returns to the
 			// login page, stays parked, and records no failed end.
 			name: "a device request returns to the login page",
@@ -369,9 +374,38 @@ func TestParkedFailure_EventsAndLogs(t *testing.T) {
 		// flow the flow its record names.
 		fails      int
 		code, flow string
+		// serverError is set when the answer is server_error: exactly one ERROR record
+		// then names the reason and the cause's type. Otherwise there is none.
+		serverError bool
+		// late sets a fault once the login has started, just before the callback.
+		// A case that sets it is answered with the original error and no redirect
+		// (the parked return failed), so server_error was never answered: no record
+		// carries that reason, and exactly one ERROR record reports the failure.
+		late func(f *completionFlow)
 	}
 
 	cases := []testCase{
+		{
+			name: "an Apply failure whose end fails under fail-to-client", path: "callback",
+			setup: func(parkedPath) completionSetup {
+				return completionSetup{
+					broker: hookBroker(applyDownHook),
+					oidc:   []httpsec.OIDCOption{httpsec.WithOIDCFailToClient()},
+				}
+			},
+			late: func(f *completionFlow) {
+				f.setup.pending.onAdvance = func(context.Context, *oidcprovider.SignIn) error { return errPendingDown }
+			},
+			flow: "oidc.callback",
+		},
+		{
+			name: "an Apply failure whose parked-request check fails", path: "callback",
+			setup: func(parkedPath) completionSetup {
+				return completionSetup{broker: hookBroker(applyDownHook)}
+			},
+			late: func(f *completionFlow) { f.setup.pending.down.Store(true) },
+			flow: "oidc.callback",
+		},
 		{
 			name: "a refusal returned to the login page", path: "callback",
 			fails: 1, code: oidcprovider.CodeAccessDenied, flow: "oidc.callback",
@@ -381,6 +415,13 @@ func TestParkedFailure_EventsAndLogs(t *testing.T) {
 			setup: func(parkedPath) completionSetup { return completionSetup{} },
 			arm:   func(f *completionFlow) { f.idp.tokenDown.Store(true) },
 			fails: 0, code: oidcprovider.CodeTemporarilyUnavailable, flow: "oidc.callback",
+		},
+		{
+			name: "an Apply failure returned to the login page", path: "callback",
+			setup: func(parkedPath) completionSetup {
+				return completionSetup{broker: hookBroker(applyDownHook)}
+			},
+			fails: 0, code: oidcprovider.CodeServerError, flow: "oidc.callback", serverError: true,
 		},
 		{
 			name: "a refusal answered at the client", path: "callback",
@@ -423,6 +464,9 @@ func TestParkedFailure_EventsAndLogs(t *testing.T) {
 			var out syncBuffer
 
 			logs := &capturingHandler{}
+			setup.pending = &downablePendingStore{
+				PendingRequestStore: must.Must(oidcprovider.NewMemoryPendingRequestStore()),
+			}
 			setup.chain = func(*testing.T, *completionFlow) []httpsec.Option {
 				return []httpsec.Option{httpsec.WithLogger(slog.New(slogFanout{
 					logs, slog.NewJSONHandler(&out, &slog.HandlerOptions{Level: slog.LevelDebug}),
@@ -430,6 +474,7 @@ func TestParkedFailure_EventsAndLogs(t *testing.T) {
 			}
 
 			f := newCompletionFlow(t, setup)
+			f.setup = setup
 			handle, flow := f.park(t, flowFirstParty, withParkedState)
 			if tc.arm != nil {
 				tc.arm(f)
@@ -444,7 +489,31 @@ func TestParkedFailure_EventsAndLogs(t *testing.T) {
 			} else {
 				login := f.startSSO(t, parkedAt(handle))
 				secrets = append(secrets, login.rpFlow, login.state, login.nonce)
+				if tc.late != nil {
+					tc.late(f)
+				}
 				a = f.callBack(t, login, flowCookieOf(flowCookie, flow))
+			}
+
+			if tc.late != nil {
+				require.Error(t, a.err, "the original error is answered")
+				assert.Empty(t, a.header.Get("Location"), "no redirect")
+
+				var errs []slog.Record
+
+				for _, r := range logs.records() {
+					if reason, ok := attrValue(r, "reason"); ok {
+						assert.NotEqual(t, "server-error", reason.String(), "server_error was never answered")
+					}
+
+					if r.Level >= slog.LevelError {
+						errs = append(errs, r)
+					}
+				}
+
+				assert.Len(t, errs, 1, "exactly one ERROR record")
+
+				return
 			}
 
 			require.NoError(t, a.err)
@@ -469,7 +538,28 @@ func TestParkedFailure_EventsAndLogs(t *testing.T) {
 				assert.NotContains(t, coded[0].Message, "callback", "the start's own message")
 			}
 
+			var errs []slog.Record
+
+			for _, r := range logs.records() {
+				if r.Level >= slog.LevelError {
+					errs = append(errs, r)
+				}
+			}
+
+			if tc.serverError {
+				require.Len(t, errs, 1, "exactly one ERROR record")
+				reason, _ := attrValue(errs[0], "reason")
+				assert.Equal(t, "server-error", reason.String())
+				assert.Equal(t, "httpsec: oidc callback failed", errs[0].Message, "its own message, not a refusal's")
+				typ, ok := attrValue(errs[0], "error_type")
+				require.True(t, ok, "the error's type is named")
+				assert.NotEmpty(t, typ.String())
+			} else {
+				assert.Empty(t, errs, "no ERROR record")
+			}
+
 			written := out.String()
+			assert.NotContains(t, written, "apply down", "never the error's text")
 			for _, s := range secrets {
 				require.NotEmpty(t, s)
 				assert.NotContains(t, written, s, "no record holds a secret or the target")

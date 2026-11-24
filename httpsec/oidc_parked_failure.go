@@ -122,8 +122,20 @@ var errParkedNotAnswered = errors.New("httpsec: the parked request was ended wit
 // and an end that fails is recorded once at ERROR and answered with original
 // (F7). code must be one of D4's.
 func (i *oidcInterceptor) returnParked(ex *Exchange, site parkedSite, provider, handle, code string, original error) error {
+	_, err := i.returnParkedAnswering(ex, site, provider, handle, code, original)
+
+	return err
+}
+
+// returnParkedAnswering is returnParked, also reporting the code the browser was
+// answered with: empty when original is returned with no redirect, otherwise the
+// code of the redirect, which an expired request or an end may have changed from
+// the one asked for.
+func (i *oidcInterceptor) returnParkedAnswering(
+	ex *Exchange, site parkedSite, provider, handle, code string, original error,
+) (string, error) {
 	if !ex.Request.Secure() && !i.provider.plainHTTPAllowed() {
-		return original
+		return "", original
 	}
 
 	check := i.precheckParked(ex, provider, handle)
@@ -135,13 +147,13 @@ func (i *oidcInterceptor) returnParked(ex *Exchange, site parkedSite, provider, 
 				diag.Failure(parkedReasonUnchecked, check.err)...)
 		}
 
-		return original
+		return "", original
 	}
 
 	if check.answeredAt != "" {
 		i.answerParkedAtClient(ex, site, provider, oidcprovider.CodeAccessDenied, check.answeredAt)
 
-		return nil
+		return oidcprovider.CodeAccessDenied, nil
 	}
 
 	// A device request has no client redirect URI to answer at, and EndPending refuses it.
@@ -157,7 +169,7 @@ func (i *oidcInterceptor) returnParked(ex *Exchange, site parkedSite, provider, 
 
 	redirectCompleted(ex, target.String())
 
-	return nil
+	return code, nil
 }
 
 // endParked is WithOIDCFailToClient's answer: the parked request is ended with
@@ -165,7 +177,7 @@ func (i *oidcInterceptor) returnParked(ex *Exchange, site parkedSite, provider, 
 // code the client received, which the end may have changed. An end that fails, or
 // that names no answer for the client, is recorded once at ERROR by its Go type,
 // and original is returned (F7).
-func (i *oidcInterceptor) endParked(ex *Exchange, site parkedSite, provider, handle, code string, original error) error {
+func (i *oidcInterceptor) endParked(ex *Exchange, site parkedSite, provider, handle, code string, original error) (string, error) {
 	op := i.provider
 	flow, _ := ex.Request.Cookie(oidcCookieName(op.provider, OIDCFlowCookie))
 
@@ -182,12 +194,13 @@ func (i *oidcInterceptor) endParked(ex *Exchange, site parkedSite, provider, han
 		i.logParkedRecord(ex, site, slog.LevelError, parkedReasonNotEnded, provider,
 			diag.Failure(parkedReasonNotEnded, err)...)
 
-		return original
+		return "", original
 	}
 
-	i.answerParkedAtClient(ex, site, provider, answeredCode(target, code), target)
+	answered := answeredCode(target, code)
+	i.answerParkedAtClient(ex, site, provider, answered, target)
 
-	return nil
+	return answered, nil
 }
 
 // answeredCode is the code the client's error response at target carries: the end

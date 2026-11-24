@@ -112,6 +112,12 @@ import (
 // MFA requirement policy that calls it already denies on any lookup error, so
 // a missing identity set denies non-exempt logins rather than admitting them.
 //
+// The set is one baseline migration, recorded in the version table
+// migrate.IdentityVersionTable ("scrty_identity_migrate") unless the consumer
+// names another. It creates every relation under its scrty_ name and refuses a
+// schema that already holds one of them, leaving nothing behind; it does not
+// upgrade a database an earlier release migrated, which is recreated first.
+//
 // # Errors
 //
 // Error text never carries a username, a password hash or a user reference. A
