@@ -18,7 +18,7 @@ Before either mode can be specified, the team must decide where the browser-faci
   - its lifetime follows the idle and absolute expiry that `sessions` already enforces;
   - the session identifier rotates whenever the session's privilege changes;
   - every request runs the per-request policy phase with the session's recorded first factor, exactly as the bearer path does.
-- Add a **resource-server mode**:
+- ~~Add a **resource-server mode**~~ **Moved (2026-11-25) to `resource-server`**, which owns the `resource-server` capability: remote issuers, introspection, and the chain's own provider as token sources. This change keeps only the browser-session (BFF) mode. The original scope was:
   - an API verifies JWTs issued by scrty or by another issuer, using a remote key set;
   - issuer and audience are required configuration;
   - verified scopes and claims are mapped into the principal that `authorization` evaluates.
