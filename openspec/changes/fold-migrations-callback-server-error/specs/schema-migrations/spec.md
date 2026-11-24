@@ -15,30 +15,71 @@ The security-state set SHALL consist of one baseline migration that creates ever
 - **THEN** its version table records exactly one applied migration
 
 ### Requirement: The baseline produces the schema of the earlier chain
-The schema the security-state baseline creates SHALL equal the schema the set's earlier migrations produced once all were applied: the same tables, columns, column types, nullability and defaults, the same index names and definitions, the same sequences, and the same constraint definitions. Only the names of constraints that no index backs MAY differ.
+The schema the security-state baseline creates SHALL equal the schema the set's earlier migrations produced once all were applied: the same tables and their persistence and storage parameters, the same columns in the same order with their types, nullability, defaults and identity generation, the same index names and definitions, the same sequences, and the same constraint definitions. Only the names of constraints that no index backs MAY differ.
 
 #### Scenario: Catalog equivalence
 - **WHEN** the baseline is applied to an empty database
 - **THEN** its tables, columns, indexes, sequences and constraint definitions match the recorded inventory of the earlier chain's final schema
 
-### Requirement: A database migrated by an earlier release is refused
-The security-state baseline SHALL fail, and change nothing, when the schema holds the earlier default version table `goose_security_state` with an applied migration recorded in it, or already holds a relation the baseline creates. The error SHALL say that the database was migrated by an earlier release and must be recreated.
-
-#### Scenario: Earlier history present
-- **WHEN** the set is applied to a database whose `goose_security_state` table records applied migrations
-- **THEN** applying fails with an error naming an earlier release
-- **AND** no relation of the set is created and no version is recorded
+### Requirement: The baseline does not adopt existing relations
+The security-state baseline SHALL fail when the schema already holds any relation it creates, and SHALL then leave no relation of its own behind and record no applied version. It SHALL NOT detect or upgrade a database migrated by an earlier release; such a database is recreated.
 
 #### Scenario: Relation already present
-- **WHEN** the set is applied to a database that already holds `scrty_sessions`
+- **WHEN** the set is applied to a database that already holds a relation the baseline creates late in its order, such as `scrty_rate_limit_buckets`
 - **THEN** applying fails
-- **AND** no other relation of the set is created and no version is recorded
-
-#### Scenario: Consumer reuses the old name as their version table
-- **WHEN** a consumer applies the set to an empty database with the version table name `goose_security_state`
-- **THEN** applying succeeds and the version is recorded in `goose_security_state`
+- **AND** none of the set's other relations exists and no version is recorded
 
 ## MODIFIED Requirements
+
+### Requirement: The security-state set creates only security-state tables
+The security-state migration set SHALL create the tables for sessions, signing keys, login attempts, consecutive login failure counts, MFA enrolments, API keys, one-time tokens, OIDC links, OIDC flows, OIDC handoffs, saved recovery codes, recovery records, passkey credentials, passkey user handles and shared rate-limit buckets. It SHALL create no identity tables, SHALL declare no foreign key to any table outside the set, SHALL store every library-owned primary key in a native uuid column (rate-limit buckets, which are keyed by namespace and key rather than by a library-owned identifier, excepted), and SHALL store every user reference in a text column. The set SHALL be embedded in the library as plain SQL, so applying it needs no files on disk.
+
+#### Scenario: Fresh database
+- **WHEN** the security-state set is applied to an empty database
+- **THEN** the twenty-five security-state tables and the set's version table exist
+- **AND** no users, roles, organizations, groups or privileges table exists
+
+#### Scenario: Column types
+- **WHEN** the set has been applied
+- **THEN** every security-state table's primary key column has type uuid, except the rate-limit bucket table's
+- **AND** every column holding a user reference has type text
+
+#### Scenario: Single-use guards stay nullable
+- **WHEN** the set has been applied
+- **THEN** the consumption time columns of one-time tokens and handoffs, the completion time column of flows, the spending time column of saved recovery codes, and the completion and cancellation time columns of recovery records, are nullable and have no default
+
+#### Scenario: Login attempt indexes
+- **WHEN** the set has been applied
+- **THEN** login attempts are indexed by login name and attempt time together
+- **AND** separately by attempt time alone
+
+#### Scenario: Saved codes are unique per user and hash
+- **WHEN** the set has been applied
+- **THEN** saved recovery codes are unique by user reference and hash together
+- **AND** recovery records are indexed by user reference
+
+#### Scenario: Passkey uniqueness
+- **WHEN** the set has been applied
+- **THEN** passkey credentials are unique by credential ID and indexed by user reference
+- **AND** passkey user handles are unique by handle, and unique by user reference
+
+#### Scenario: Session marker column
+- **WHEN** the set has been applied
+- **THEN** the sessions table has a non-null boolean column for the met-by-first-factor marker, defaulting to false
+
+#### Scenario: Federated assurance columns
+- **WHEN** the set has been applied
+- **THEN** the sessions table and the OIDC handoffs table each have a non-null column for the asserted `amr` values, defaulting to an empty list, and a non-null text column for the asserted `acr`, defaulting to the empty string
+
+#### Scenario: Consecutive failure counts
+- **WHEN** the set has been applied
+- **THEN** consecutive failure counts are unique per login name, and the time an identifier became held is nullable with no default
+
+#### Scenario: Rate-limit bucket table
+- **WHEN** the set has been applied
+- **THEN** the rate-limit bucket table is a logged table keyed by namespace and key together
+- **AND** it has no index other than that key
+- **AND** it declares its own fill factor and autovacuum storage parameters
 
 ### Requirement: The set records its versions in its own version table
 Applying the security-state set SHALL record its applied migrations in a version table used by no other migration set. By default the table SHALL be named `scrty_state_migrate`. A consumer SHALL be able to use another name. Applying or rolling back another migration set SHALL NOT read or change this table.
@@ -57,7 +98,7 @@ Applying the security-state set SHALL record its applied migrations in a version
 - **THEN** every security-state table and its recorded versions remain
 
 ### Requirement: Released migrations are never edited, and later migrations apply to populated databases
-From the release that introduces the baseline, migration files SHALL NOT be edited, and schema changes SHALL be added as new migrations after the baseline. Every added migration SHALL apply successfully to a database whose tables contain rows, and SHALL leave existing rows readable.
+From the release that introduces the baseline, migration files SHALL NOT be edited or removed, and schema changes SHALL be added as new migrations after the baseline. Every added migration SHALL apply successfully to a database whose tables contain rows, and SHALL leave existing rows readable.
 
 #### Scenario: New non-nullable column on a populated table
 - **WHEN** a migration that adds a non-nullable column is applied to a database whose table already holds rows
@@ -138,7 +179,7 @@ The identity set SHALL create a unique index over the lower-cased email of users
 
 ### Requirement: The security-state set renames existing relations in place
 **Reason**: The baseline creates every relation under its `scrty_` name, so there is nothing to rename.
-**Migration**: A database migrated by an earlier release is refused by the baseline and must be recreated.
+**Migration**: A database migrated by an earlier release is recreated before the baseline is applied.
 
 ### Requirement: The identity set adds the administration columns and tables
 **Reason**: The identity set is one baseline migration that creates these columns and tables with the rest.

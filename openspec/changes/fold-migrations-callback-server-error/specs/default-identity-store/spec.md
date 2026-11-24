@@ -15,24 +15,19 @@ The identity set SHALL consist of one baseline migration that creates every iden
 - **THEN** its version table records exactly one applied migration
 
 ### Requirement: The identity baseline produces the schema of the earlier chain
-The schema the identity baseline creates SHALL equal the schema the identity set's earlier migrations produced once all were applied: the same tables, columns, column types, nullability and defaults, the same index names and definitions, the same sequences, and the same constraint definitions. Only the names of constraints that no index backs MAY differ.
+The schema the identity baseline creates SHALL equal the schema the identity set's earlier migrations produced once all were applied: the same tables and their persistence, the same columns in the same order with their types, nullability, defaults and identity generation, the same index names and definitions, the same sequences, and the same constraint definitions. Only the names of constraints that no index backs MAY differ.
 
 #### Scenario: Catalog equivalence
 - **WHEN** the identity baseline is applied to an empty database
 - **THEN** its tables, columns, indexes, sequences and constraint definitions match the recorded inventory of the earlier chain's final schema
 
-### Requirement: An identity database migrated by an earlier release is refused
-The identity baseline SHALL fail, and change nothing, when the schema holds the earlier default version table `goose_identity` with an applied migration recorded in it, or already holds a relation the baseline creates. The error SHALL say that the database was migrated by an earlier release and must be recreated.
-
-#### Scenario: Earlier history present
-- **WHEN** the identity set is applied to a database whose `goose_identity` table records applied migrations
-- **THEN** applying fails with an error naming an earlier release
-- **AND** no identity relation is created and no version is recorded
+### Requirement: The identity baseline does not adopt existing relations
+The identity baseline SHALL fail when the schema already holds any relation it creates, and SHALL then leave no relation of its own behind and record no applied version. It SHALL NOT detect or upgrade a database migrated by an earlier release; such a database is recreated.
 
 #### Scenario: Relation already present
-- **WHEN** the identity set is applied to a database that already holds `scrty_users`
+- **WHEN** the identity set is applied to a database that already holds a relation the baseline creates late in its order, such as `scrty_password_history`
 - **THEN** applying fails
-- **AND** no other identity relation is created and no version is recorded
+- **AND** none of the set's other relations exists and no version is recorded
 
 ## MODIFIED Requirements
 
@@ -50,8 +45,19 @@ Every table, index, index-backed constraint and sequence the identity set create
 - **THEN** the table is created
 - **AND** the identity store keeps reading and writing only `scrty_users`
 
+### Requirement: Privilege scopes are stored with the grant
+The store SHALL store each privilege's scope and return it from loading role privileges. A privilege written without a scope SHALL load with scope `all`.
+
+#### Scenario: Stored scope
+- **WHEN** `update` on `crm/lead` is granted to `sales` with scope `own` and the role's privileges are loaded
+- **THEN** the entry for `crm/lead` carries `update` granted with scope `own`
+
+#### Scenario: Grant from before the migration
+- **WHEN** a privilege row inserted by a statement that names no scope is loaded
+- **THEN** it carries scope `all`
+
 ## REMOVED Requirements
 
 ### Requirement: The identity set renames existing relations in place, independently of security state
 **Reason**: The identity baseline creates every relation under its `scrty_` name, so there is nothing to rename.
-**Migration**: A database migrated by an earlier release is refused by the identity baseline and must be recreated.
+**Migration**: A database migrated by an earlier release is recreated before the identity baseline is applied.

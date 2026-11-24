@@ -1,9 +1,22 @@
 # Spec Delta
 
+## ADDED Requirements
+
+### Requirement: A failure answered with server_error is logged with its cause
+When a callback failure is answered with `server_error`, at the login page or at the client, the library SHALL write one error-level record that names the failure's reason and the Go type of its cause. It SHALL NOT log the cause's text, the handle, the state or the redirect target.
+
+#### Scenario: Failing apply step logged
+- **WHEN** completion is enabled and the sign-in hook's apply step fails for a parked login
+- **THEN** one error-level record names the cause's type, and it holds no handle, state, redirect target or error text
+
+#### Scenario: Refusal not logged at error level
+- **WHEN** a parked login is refused by the hook and answered with `access_denied`
+- **THEN** no error-level record is written for it
+
 ## MODIFIED Requirements
 
 ### Requirement: The login page's error codes are a closed set that names no account
-The `error` a failed login carries back to the login page SHALL be `access_denied` for every refusal, `temporarily_unavailable` for a provider that cannot be reached, and `server_error` for a failing store or user loader and for any other failure after the flow is spent that maps to neither of the other codes. No other parameter SHALL be added. The parameter SHALL be named `error` by default, and a consumer MAY rename it.
+The `error` a failed login carries back to the login page SHALL be `access_denied` for every refusal, `temporarily_unavailable` for a provider that cannot be reached, and `server_error` for a failing store or user loader and for every other broker or store failure after the flow is spent that maps to neither of the other codes and is not one of the failures that keep their answer. No other parameter SHALL be added. The parameter SHALL be named `error` by default, and a consumer MAY rename it.
 
 #### Scenario: Unlinked and inactive look alike
 - **WHEN** one login fails for an unlinked identity and another for a disabled user, both for parked requests
@@ -35,7 +48,7 @@ The `error` a failed login carries back to the login page SHALL be `access_denie
 - **THEN** the browser is redirected to `<login URL>?req=h-1&sso_error=access_denied`
 
 ### Requirement: Failures outside the closed set keep their answer
-A failure that maps to no code of the closed set SHALL be answered as it is without this change, with no redirect. This applies only to an invalid or unknown state, a failure that leaves the flow unspent, a failure whose cause cannot be read, a request whose caller has gone, and a refusal by completion's own checks of the transport, the throttle or the handle. Every other failure after the flow is spent maps to `server_error`. Ending the parked request SHALL NOT replace the login's original error.
+A failure that maps to no code of the closed set SHALL be answered as it is without this change, with no redirect. This applies to an invalid or unknown state, a failure that leaves the flow unspent, an unknown provider, a re-authentication refusal, a failure whose cause cannot be read, a request whose caller has gone, and a refusal by completion's own checks of the transport, the throttle or the handle. A failure that maps to a code SHALL still pass the parked-request checks before any redirect, and ending the parked request SHALL NOT replace the login's original error.
 
 #### Scenario: Unknown state
 - **WHEN** a callback arrives with a state that completes no flow
@@ -51,6 +64,14 @@ A failure that maps to no code of the closed set SHALL be answered as it is with
 
 #### Scenario: Caller gone
 - **WHEN** completion is enabled and the caller's context ends while the broker resolves a parked login
+- **THEN** the callback fails as without this change, and no redirect is sent
+
+#### Scenario: Re-authentication refusal
+- **WHEN** completion is enabled and a parked login's callback fails with the re-authentication refusal
+- **THEN** the callback fails as without this change, and no redirect is sent
+
+#### Scenario: Unknown provider after the flow is spent
+- **WHEN** completion is enabled and a consumer-supplied manager returns the unknown-provider error, without marking the flow unspent, for a parked login
 - **THEN** the callback fails as without this change, and no redirect is sent
 
 #### Scenario: Ordinary destination unchanged
