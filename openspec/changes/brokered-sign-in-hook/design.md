@@ -57,14 +57,24 @@ See `proposal.md` (Why). The current state that shapes the approach:
 
 `RelyingParty` calls
 `UpstreamBroker { BrokerUpstream(ctx, ExternalIdentity, Upstream) (*identity.Principal, error) }`
-when the broker implements it, and `Broker` otherwise.
+when the broker implements it **and accepts upstream access for the login's provider**, and `Broker`
+otherwise. `UpstreamBroker` also carries `AcceptsUpstream(provider string) bool`. The library's
+`*Broker` accepts only its hooked providers. The scoping exists because a consumer's wrapper that
+embeds `*Broker` and overrides `Broker()` (to audit or refuse more) would otherwise have
+`BrokerUpstream` promoted from the embedded broker, and the callback would skip the override on
+every provider. With the scoping, an unhooked provider still reaches the wrapper's `Broker()`
+exactly as before (F54). On a hooked provider the promoted `BrokerUpstream` still runs; a wrapper
+that intercepts hooked sign-ins overrides `BrokerUpstream` too, as the godoc says (F55).
 
-- **Default:** unchanged for every existing broker.
-- **Override:** implement the interface, or use the hook (D5).
+- **Default:** unchanged for every existing broker, wrappers of the library broker included.
+- **Override:** implement the interface (returning true from `AcceptsUpstream` for the providers
+  that want the token), or use the hook (D5).
 
 Alternatives rejected:
 - A field on `ExternalIdentity`: it is plain data and prints.
 - A new `IdentityBroker` signature: breaking.
+- *Dispatch on the interface alone, documenting that wrappers must override `BrokerUpstream`:*
+  silently changes existing wrappers, so "called exactly as before" would not hold.
 
 ### D2. `Upstream` cannot print its token, even nested
 
@@ -160,7 +170,12 @@ Alternatives rejected:
 ### D6. Hook conflicts fail at construction
 
 A hook on the same provider as JIT provisioning, claim mirroring or role sync is `ErrConfig`, because
-two writers of one user would contradict each other. Hook providers join `ConfiguredProviders()`, so
+two writers of one user would contradict each other. So is any other per-provider option the hooked
+path never applies: `WithBrokerNameClaim`, `WithBrokerPasswordClaim`, `WithBrokerRoleClaim`,
+`WithBrokerRoleMapping`, `WithBrokerAllowedRoles`, `WithBrokerJITAllowUnverifiedEmail` and
+`WithBrokerJITEmailDomains`. Accepting them would let a consumer believe, for example, that an
+allowlist limits a hooked provider's roles when nothing applies it (`library-design.md`: a
+meaningless configuration fails at construction). Hook providers join `ConfiguredProviders()`, so
 an unregistered one fails `NewRelyingParty`. There is no override: the combination has no
 non-overwriting meaning.
 
@@ -182,7 +197,9 @@ At the callback, after `RelyingParty.Callback` succeeds:
    exactly one non-empty `req`. Otherwise use `conveyHandoff`, unchanged. An empty login URL path is
    compared as `/`, the equivalent http(s) form (RFC 3986 §6.2.3), so a login URL configured as
    `https://id.example` is still recognised. A URL carrying userinfo never qualifies.
-2. **Pre-check the handle.** `Provider.PendingRequest(handle, OIDCFlowCookie)`, behind the resume
+2. **Pre-check the handle.** First the resume endpoint's transport guard: a request not made over
+   TLS, while the provider does not allow plain HTTP, is refused as `ErrOIDCUnknownHandle` before
+   the throttle or any lookup (F57). Then `Provider.PendingRequest(handle, OIDCFlowCookie)`, behind the resume
    endpoint's source throttle (over the limit: `ErrOIDCThrottled`, with no lookup). Unknown, expired
    or foreign: charge the source as the resume endpoint does, and answer `ErrOIDCUnknownHandle`. A
    genuine handle that is past its login stage also answers `ErrOIDCUnknownHandle`, but is not
@@ -338,6 +355,10 @@ For a provisioning decision, D5 runs with these differences:
   disabled or mismatched user is `ErrNoLinkedAccount`, as in D5.
 - **Recovery:** on a later sign-in the hook receives the link's user as `linked`. Deciding to
   provision it again re-runs `Apply`, because a user named by the identity's own link may be absent.
+  The freshness check, before and after the insert, applies only to a first provisioning: once the
+  identity's own link names the reference, the identity owns it, and another provider's link to the
+  same user (an adoption after it was created) does not refuse the resume (F56). The conflict check
+  and the one-link rule still apply.
 
 Link-first is the safe order. Two concurrent first sign-ins of one identity pick two fresh
 references. Only one link insert wins, and the loser is refused before its `Apply`, so no orphan
@@ -380,7 +401,9 @@ Alternatives rejected:
 | F48 | Undoing a duplicate fails (store fault), or the undo's own 5-second timeout passes | Accepted | Broker failure and one ERROR log (provider and email domain). Two links remain, and every sign-in through either is refused by the existing-link check until an operator removes one |
 | F44 | Undoing a duplicate link would remove more than that link | Handled, tested | `DeleteLink` removes only the row with this link's ID and external identity; the user's other links stay (D11) |
 | F13 | `Apply` fails after the link is inserted | Accepted | Broker failure; the link stays and is correct; the next sign-in re-applies |
-| F14 | Hook plus JIT, mirroring or role sync on one provider | Handled, tested | Construction error |
+| F14 | Hook plus JIT, mirroring or role sync on one provider, or plus a per-provider option the hooked path never applies (name, password or role claim, role mapping, allowed roles, JIT sub-options) | Handled, tested | Construction error (D6) |
+| F54 | A consumer wrapper embeds `*Broker` and overrides `Broker()`; a login through an unhooked provider | Handled, tested | The wrapper's `Broker()` runs, as before this change (D1) |
+| F55 | The same wrapper; a login through a hooked provider | Accepted | The promoted `BrokerUpstream` runs and the wrapper's `Broker()` override does not; the godoc tells a wrapper to override `BrokerUpstream` too, and the hook is where a hooked sign-in is refused (D1) |
 | F15 | Hooked provider brokered without upstream access | Handled, tested | `ErrUpstreamRequired`; hook not called |
 | F16 | A second identity of the same issuer decided for an already linked user | Handled, tested | `ErrNoLinkedAccount` before `Apply` (D11) |
 | F17 | Two new subjects race for one user | Handled, tested | At most one link remains; refused logins never `Apply` |
@@ -396,6 +419,7 @@ Alternatives rejected:
 | F24 | Completion: resume error, resume without a code, or confirmation fails | Handled, tested | The session is ended; a refusal or the client's error response; no code |
 | F25 | Completion: ending a session fails | Accepted | ERROR log; no credential exists, so the session is unusable |
 | F26 | Completion: session store fails | Handled, tested | Dependency failure; nothing resumed |
+| F57 | Completion: the callback arrives over plain HTTP while the provider does not allow it | Handled, tested | `ErrOIDCUnknownHandle` before the throttle or any lookup; no session, no resume, no cookie, as at the resume endpoint (D7, step 2) |
 | F27 | Completion: destination spoofed (host, port, path case, encoding, slash, extra or repeated parameter) | Handled, tested | Ordinary allowlisted handoff |
 | F37 | Completion fallback: the handoff redemption re-resolves the parked destination against the allowlist | Handled, tested | The redemption answers the parked destination under the same exact-match carve-out, never `/` |
 | F28 | Completion wiring: no provider, a callback success handler, a custom redeemer, no handoff, no loader, a foreign session manager, a callback off the issuer's origin, a login URL with a query, or a user loader without completion | Handled, tested | Assembly configuration error |
@@ -408,6 +432,7 @@ Alternatives rejected:
 | F35 | Two first sign-ins of one identity provision different references | Handled, tested | One link; the loser is refused before its `Apply`, so no orphan user |
 | F52 | A provisioning decision names an absent reference that another identity's link already names, before or concurrently with this sign-in | Handled, tested | `ErrNoLinkedAccount`, nothing written, when the store lists links. Without a lister (allow-many over a consumer store) the check cannot run: accepted, and the consumer's reference generator must give fresh values |
 | F53 | Another writer creates the provisioning reference between the check and `Apply` | Accepted | The broker cannot tell it from a resume. `Apply` on a first sign-in must create only, failing when the user exists, and references must be fresh values no other writer produces (the godoc says so); then the sign-in fails as a broker failure and the link stays for an operator |
+| F56 | A provisioned user is later adopted through another provider, then the original identity's hook resumes provisioning it | Handled, tested | The resume resolves: the freshness check does not run when the identity's own link names the reference (D13) |
 | F36 | A provisioned link records an empty username | Accepted | The link's username is for operators only and never a lookup key (D13) |
 
 ## Follow-ups

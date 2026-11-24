@@ -102,6 +102,17 @@ The callback SHALL offer the upstream access, holding the provider's access toke
 - **WHEN** the token response carries an ID token and no access token
 - **THEN** the login proceeds, and the upstream access reports that no access token is available
 
+### Requirement: Upstream access is offered per provider
+A broker that accepts upstream access SHALL name the providers it accepts it for, and the callback SHALL call it identity-only, as before this change, for any other provider. The library's broker SHALL accept upstream access only for providers with a sign-in hook, so a consumer's broker that wraps it keeps its own identity-only behaviour on every other provider.
+
+#### Scenario: Broker that asks for other providers only
+- **WHEN** the consumer's broker accepts upstream access for `corp` only, and a callback through `partner` succeeds
+- **THEN** the broker is called with the verified identity alone, as without this change
+
+#### Scenario: Wrapper of the library broker
+- **WHEN** the consumer's broker embeds the library broker, overrides the identity-only call to refuse some identities, and a callback through a provider without a sign-in hook succeeds
+- **THEN** the consumer's override runs and its refusal is the login's outcome
+
 ### Requirement: UserInfo is fetched through the confined client and bound to the ID token's subject
 The upstream access SHALL fetch the provider's UserInfo by a GET carrying the access token as a bearer credential, through the confined client and its response size bound. It SHALL return the JSON object's members unchanged. It SHALL fail with a UserInfo failure when no endpoint is known, no access token is held, or the answer is not 200, not a JSON object, or has no `sub` or another `sub` than the ID token's.
 
@@ -171,6 +182,13 @@ Before it loads the user or creates a session, completion SHALL check that the p
 #### Scenario: Handle of another browser
 - **WHEN** completion is enabled and the browser's flow cookie does not bind handle `h-1`
 - **THEN** the callback fails with the provider's unknown-handle outcome and no session is created
+
+### Requirement: Completion refuses a callback over plain HTTP
+Before it checks the parked request, completion SHALL refuse a callback not made over TLS, when the provider does not allow plain HTTP, with the provider's unknown-handle outcome, as the resume endpoint does, and SHALL store no session, resume nothing and set no cookie.
+
+#### Scenario: Callback over plain HTTP
+- **WHEN** completion is enabled, the provider does not allow plain HTTP, and the callback for handle `h-1` arrives over plain HTTP
+- **THEN** the callback fails with the provider's unknown-handle outcome, no session is created, nothing is resumed and no browser-session cookie is set
 
 ### Requirement: Completion builds the session as a redemption does
 Completion SHALL load the user through the configured user loader and refuse a missing, disabled or mismatched user as a redemption does. It SHALL run the post-authentication policy on the stored details, including the password-change time, and the asserted assurance. When nothing is owed it SHALL create the session through the login completion step, with the external session and assurance in its creating write, after cancelling the user's held recoveries.

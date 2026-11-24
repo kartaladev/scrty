@@ -80,6 +80,10 @@ A decision SHALL be able to provision a user reference that does not exist yet, 
 - **WHEN** the identity is linked to `u-new`, `u-new` does not exist, and the hook decides to provision `u-new` again with an apply step that creates it
 - **THEN** no link is inserted, the apply step runs, and the login resolves to `u-new`
 
+#### Scenario: Provisioning resumed after another provider linked the user
+- **WHEN** the identity is linked to `u-new`, `u-new` exists and is active, another provider's identity has since been linked to `u-new`, and the hook decides to provision `u-new` again
+- **THEN** the apply step runs and the login resolves to `u-new`
+
 #### Scenario: Concurrent first logins both provision
 - **WHEN** two first logins of the same identity race, one decides to provision `u-a` and the other `u-b`, and the insert for `u-b` finds the link to `u-a`
 - **THEN** exactly one link exists, naming `u-a`; the login that decided `u-b` fails as an unlinked identity and its apply step does not run, so `u-b` is never created
@@ -196,3 +200,10 @@ Building the broker SHALL fail with a configuration error when a sign-in hook ha
 #### Scenario: Hook for an unregistered provider
 - **WHEN** a sign-in hook names `ghost` and the login manager registers only `corp`
 - **THEN** building the login manager fails with a configuration error naming `ghost`
+
+### Requirement: A hooked provider refuses options the hooked login never applies
+Building the broker SHALL fail with a configuration error naming the provider when a hooked provider also has a name, password or role claim, a role mapping, an allowed-role list, or a just-in-time sub-option, because the hooked login never applies them. The same options on a provider without a hook SHALL be accepted.
+
+#### Scenario: Hook and role allowlist on one provider
+- **WHEN** provider `corp` has a sign-in hook and an allowed-role list
+- **THEN** building the broker fails with a configuration error naming `corp`

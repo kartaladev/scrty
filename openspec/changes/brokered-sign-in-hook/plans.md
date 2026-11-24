@@ -94,6 +94,7 @@ Lane A:  A1 ──► A1-fix ──► A2 ──► A2-fix ──► A3 ──�
 Lane S:          └─(worktree from A2's merge)──► S1
 Lane B:  B1 ──► B1-fix ──► B2   (own worktree from the start; uses no Lane A symbol)
 Then:    merge S and B ──► C (README) ──► D (integration) ──► 6.2 / 6.3 (main session)
+Review:  /code-review findings ──► R1 (tasks 1.7, 3.9, 3.10, 4.10) ──► 6.3 again (main session)
 ```
 
 - Lane S needs A2's `LinkLister` and memory implementation. It runs in a worktree cut after A2 is reviewed clean, beside A3 and A4, because the stores import `authenticate/oidc`, which A3 is editing.
@@ -558,7 +559,56 @@ func newUpstream(token, subject string, endpoint func(context.Context) (string, 
   Run it: green. Prove it bites without touching library code: temporarily make the test's own hook write in its decide phase instead of in `Apply`. The conflict subtest must then fail. Edit the hook back afterwards.
 - [ ] **Step 3.** Run `go test -race -count=1 ./...` in `test/`, and report.
 
+### Dispatch R1: code-review findings (tasks 1.7, 3.9, 3.10 and 4.10)
+
+**Model: Opus.** It changes `UpstreamBroker`, an interface the stores, `httpsec` and consumers compile against, and it touches the provisioning re-check that runs under races. **Reviewer: Opus.** Runs in Lane A's worktree, after D and before the final gate, with no other dispatch running.
+
+**Files** (owned):
+- `authenticate/oidc/ports.go`, `login.go`, `broker_hook.go`, `broker.go` (godoc only), and their tests: `callback_upstream_test.go`, `broker_hook_test.go`, `broker_hook_provision_test.go`, `example_test.go`.
+- `httpsec/oidc_completion.go` and `httpsec/oidc_completion_test.go`.
+- `README.md` and `CHANGELOG.md`, the lines that name `oidc.UpstreamBroker` only.
+
+**Must not touch:** anything under `openspec/`, the stores, `oidcprovider`.
+
+**Interfaces:**
+- Produces: `UpstreamBroker` gains `AcceptsUpstream(provider string) bool`, beside `BrokerUpstream`. `(*Broker).AcceptsUpstream` returns true only for a provider named by `WithBrokerSignInHook`.
+- Consumes: the plain-HTTP guard the resume endpoint applies (`!ex.Request.Secure() && !<op>.plainHTTPAllowed()` → `ErrOIDCUnknownHandle`, as in `httpsec/oidc_resume.go`).
+
+- [ ] **Step 1 (1.7, red).** Add rows to `TestCallback_Upstream`:
+
+  | Case | Expected |
+  |---|---|
+  | a consumer type `struct{ *oidc.Broker }` overriding `Broker()` to return `ErrNoLinkedAccount` for subject `s-deny`; login through an unhooked provider as `s-deny` | `ErrNoLinkedAccount`; the override was called once (F54) |
+  | a consumer `UpstreamBroker` whose `AcceptsUpstream` is true for `corp` only; login through `partner` | `Broker` called, `BrokerUpstream` not called |
+  | the same broker; login through `corp` | `BrokerUpstream` called with a token-holding `Upstream` |
+
+  Run it focused. The first row must fail because the identity signs in (the override is skipped), not because of a compile error: add `AcceptsUpstream` to the interface and to `*Broker` returning true for every provider first, so it compiles and shows today's behaviour.
+- [ ] **Step 2 (1.7, green).** `Callback` calls `BrokerUpstream` only when `ub.AcceptsUpstream(ext.Provider)` is true. `(*Broker).AcceptsUpstream` reads `b.hooks`. Update the godoc on `UpstreamBroker`, `(*Broker).BrokerUpstream` and `Callback`. It must say that a wrapper which embeds `*Broker` and wants to intercept hooked sign-ins overrides `BrokerUpstream` too (F55). Update the README and CHANGELOG lines that describe `UpstreamBroker`. Green, together with every existing `TestBroker_HookDispatch` row.
+- [ ] **Step 3 (3.9, red).** Add a row to `TestBroker_HookProvisions`:
+  1. Provider `a` provisions `u-new`, and `Apply` creates it.
+  2. Provider `b`'s hook adopts `u-new`. Allow-many is off, so this works because the one-link rule is per provider and issuer.
+  3. `a` signs in again with `{User: u-new, Provision: true, Apply: ensureCreated}`.
+
+  Expected: the principal is `u-new` and `Apply` runs once on that sign-in. Run it focused: it fails with `ErrNoLinkedAccount` from `checkFresh` (F56).
+- [ ] **Step 4 (3.9, green).** In `acceptDecision`, skip `checkFresh` when the identity's own link names `d.User` (`l != nil`). Skip it both before the insert and in the post-insert re-check, which never runs there anyway because no insert happens. Every F52 row stays green. Then prove the fix is what turns the row green: temporarily restore the unconditional call, watch the new row fail, and edit it back.
+- [ ] **Step 5 (3.10, red then green).** Add these rows to `TestNewBroker_SignInHookWiring`, each with a hook on `corp` and expecting `ErrConfig` naming `corp`:
+  - `WithBrokerNameClaim("corp", …)`
+  - `WithBrokerPasswordClaim("corp", …)`
+  - `WithBrokerRoleClaim("corp", …)`
+  - `WithBrokerRoleMapping("corp", …)`
+  - `WithBrokerAllowedRoles("corp", …)`
+  - `WithBrokerJITAllowUnverifiedEmail("corp")`
+  - `WithBrokerJITEmailDomains("corp", …)`
+
+  Add one row with the same options on unhooked `partner`, which is accepted. If a JIT sub-option is already refused without JIT, its row passes before the change. Report that, and keep the row. Red, then extend `checkSignInHooks` to check each option's per-provider map. Green.
+- [ ] **Step 6 (4.10, red then green).** Add `TestOIDCCompletion_PlainHTTP`, a chain test.
+  - A qualifying callback over plain HTTP, with plain HTTP not allowed, answers `ErrOIDCUnknownHandle`. It makes no `PendingRequest` call, creates no session, resumes nothing and sets no browser-session cookie (F57). It must fail first, by completing.
+  - The same callback with plain HTTP allowed completes.
+
+  Green: put the guard at the start of `completeProviderSignIn`, before the throttle.
+- [ ] **Step 7.** Run Lane A's scoped commands and Lane B's `httpsec` commands. Report the files changed, the tests added, each red step's failing output, and the final results.
+
 ### Main session: 6.2 and 6.3
 
 - [ ] **6.2.** After every dispatch, run that lane's scoped commands, `go vet` and `gofmt -l`, and read the output.
-- [ ] **6.3.** Run `make check` and `make spec-check` once, after the last code edit, and read the output. Then dispatch the whole-branch review (Opus) against every requirement of both deltas.
+- [ ] **6.3.** Run `make check` and `make spec-check` once, after the last code edit (R1's, now), and read the output. Then dispatch the whole-branch review (Opus) against every requirement of both deltas.
