@@ -409,17 +409,25 @@ func oidcResumeRefusal(err error) error {
 
 // oidcSignInOf is the sign-in s states. Its amr and acr are what assure says of s: the
 // group's default, or the consumer's replacement.
+//
+// Whether a second factor was verified, and the federated evidence, are the library's own
+// record of s and never assure's: a mapping may state mfa, and an upstream may assert it, without
+// the library having verified anything. Only MFASatisfied marks the sign-in.
 func oidcSignInOf(s *session.Session, assure func(*session.Session) ([]string, string)) oidcprovider.SignIn {
 	amr, acr := assure(s)
 
 	return oidcprovider.SignIn{
-		User:              s.UserID,
-		Family:            s.FamilyID,
-		AuthenticatedAt:   s.AuthenticatedAt,
-		AMR:               amr,
-		ACR:               acr,
-		AbsoluteExpiresAt: s.AbsoluteExpiresAt,
-		ExternalIssuer:    s.ExternalIssuer,
-		ExternalSessionID: s.ExternalSessionID,
+		User:                 s.UserID,
+		Family:               s.FamilyID,
+		AuthenticatedAt:      s.AuthenticatedAt,
+		AMR:                  amr,
+		ACR:                  acr,
+		AbsoluteExpiresAt:    s.AbsoluteExpiresAt,
+		ExternalIssuer:       s.ExternalIssuer,
+		ExternalSessionID:    s.ExternalSessionID,
+		SecondFactorVerified: s.MFA == session.MFASatisfied,
+		ExternalProvider:     s.ExternalProvider,
+		ExternalAMR:          slices.Clone(s.FederatedAMR),
+		ExternalACR:          s.FederatedACR,
 	}
 }

@@ -844,6 +844,9 @@ func TestProvider_Introspect(t *testing.T) {
 					"iss":        issuer,
 					"aud":        []string{issuer},
 					"token_type": "Bearer",
+					"auth_time":  f.clk.Now().Unix(),
+					"acr":        "urn:example:mfa",
+					"amr":        []string{"pwd", "otp"},
 				}, got.answer)
 			},
 		},
@@ -864,6 +867,9 @@ func TestProvider_Introspect(t *testing.T) {
 					"iss":        issuer,
 					"aud":        []string{issuer},
 					"token_type": "Bearer",
+					"auth_time":  f.clk.Now().Unix(),
+					"acr":        "urn:example:mfa",
+					"amr":        []string{"pwd", "otp"},
 				}, got.answer)
 			},
 		},
