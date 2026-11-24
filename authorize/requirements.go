@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/porterr"
@@ -273,13 +272,11 @@ func AnyOf(requirements ...Requirement) Requirement {
 // still reaches the first typed one.
 type memberDenials []error
 
+// Error counts the denials and does not repeat them: a member may be the
+// consumer's own function, and its denial's text is not the library's to
+// reproduce. The denials stay reachable through Unwrap.
 func (d memberDenials) Error() string {
-	reasons := make([]string, len(d))
-	for i, err := range d {
-		reasons[i] = err.Error()
-	}
-
-	return strings.Join(reasons, "; ")
+	return fmt.Sprintf("%d alternatives denied the caller", len(d))
 }
 
 func (d memberDenials) Unwrap() []error { return d }

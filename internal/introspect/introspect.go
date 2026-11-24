@@ -46,6 +46,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/kartaladev/scrty/internal/ctxlog"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/outbound"
 )
 
@@ -311,8 +312,8 @@ func (c *Client) call(ctx context.Context, token string) (*Result, error) {
 	if err != nil {
 		// outbound's errors name the URL and the failure, never the form or
 		// header, so the cause is kept for errors.Is.
-		c.warn(ctx, "the introspection request failed", slog.String("error", err.Error()))
-		return nil, fmt.Errorf("%w: %w", ErrUnavailable, err)
+		c.warn(ctx, "the introspection request failed", diag.Failure("request", err)...)
+		return nil, diag.Wrap(err, "introspect: the introspection endpoint could not answer", ErrUnavailable)
 	}
 	if res.Status != http.StatusOK {
 		c.warn(ctx, "the introspection endpoint answered an error status", slog.Int("status", res.Status))

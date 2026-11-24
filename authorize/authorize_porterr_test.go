@@ -509,3 +509,21 @@ func azRunChild(t *testing.T, row string) {
 
 	require.True(t, ran, "the child never ran row %q (no line equals %q); output:\n%s", row, want, out)
 }
+
+// TestAnyOf_RefusalTextCarriesNoMemberText pins that a member's own denial text
+// does not reach the text of the refusal AnyOf returns, while the denial stays
+// reachable beneath it.
+func TestAnyOf_RefusalTextCarriesNoMemberText(t *testing.T) {
+	t.Parallel()
+
+	const secret = "member-denial-secret-0123"
+
+	req := authorize.AnyOf(func(context.Context) error {
+		return fmt.Errorf("%w: %s", authorize.ErrAccessDenied, secret)
+	})
+
+	err := req(azPrincipal(t.Context()))
+
+	require.ErrorIs(t, err, authorize.ErrAccessDenied)
+	assert.NotContains(t, err.Error(), secret)
+}
