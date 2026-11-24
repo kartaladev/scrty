@@ -20,9 +20,10 @@ var securityStateFS embed.FS
 var identityFS embed.FS
 
 // SecurityStateVersionTable is the version table name SecurityState uses by
-// default. A consumer may apply the set with any other name; the set never
-// reads or changes another set's version table.
-const SecurityStateVersionTable = "goose_security_state"
+// default: "scrty_state_migrate". A consumer may apply the set with any other
+// name, passing it to their runner (goose.WithTableName, for one); the set
+// never reads or changes another set's version table.
+const SecurityStateVersionTable = "scrty_state_migrate"
 
 // Set is one embedded migration set: goose-annotated plain SQL files under
 // Dir inside FS(), named with a UTC timestamp version

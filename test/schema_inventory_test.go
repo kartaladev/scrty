@@ -1,33 +1,23 @@
 package test
 
 import (
-	"context"
 	"database/sql"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/store/migrate"
 )
 
-// Versions of the migrations that rename every table to its scrty_ name, and
-// of the last migration each set holds before that rename.
+// Versions of the identity migration that renames every table to its scrty_
+// name, and of the last identity migration before that rename.
 const (
 	versionScrtyPrefix        int64 = 20261124000000
-	versionSecurityStateLast  int64 = 20261122000000
 	versionIdentityBeforeName int64 = 20260928000000
 )
-
-// securityStateCountAtPrefix is how many security-state migrations are applied
-// once the rename is: the count the rename's own tests expect, whatever
-// migrations follow it.
-const securityStateCountAtPrefix = 7
 
 // scrtyPrefix is the fixed prefix of every relation scrty's migrations
 // create.
@@ -53,9 +43,10 @@ type relationInventory struct {
 	Sequences []string
 }
 
-// securityStateInventory is what the security-state set creates, before the
-// scrty_ rename. It excludes the version table and the version table's own
-// index and sequence.
+// securityStateInventory names what the security-state set creates, without
+// the scrty_ prefix every one of them carries: prefixed(securityStateInventory)
+// is the set's catalog. It excludes the version table and the version table's
+// own index and sequence.
 var securityStateInventory = relationInventory{
 	Tables: []string{
 		"account_recoveries",
@@ -225,8 +216,8 @@ func prefixed(inv relationInventory) relationInventory {
 }
 
 // catalogRelations lists the current schema's tables, indexes and sequences,
-// each sorted, leaving out goose's version tables and what they own: those
-// are named by the consumer and never renamed.
+// each sorted, leaving out the version tables and what they own: those are
+// named by the consumer and are no relation of a set.
 func catalogRelations(t *testing.T, db *sql.DB) relationInventory {
 	t.Helper()
 
@@ -235,6 +226,7 @@ func catalogRelations(t *testing.T, db *sql.DB) relationInventory {
 			WHERE c.relnamespace = current_schema()::regnamespace
 			  AND c.relkind = $1
 			  AND c.relname NOT LIKE 'goose\_%'
+			  AND c.relname NOT LIKE 'scrty\_state\_migrate%'
 			ORDER BY c.relname COLLATE "C"`, kind)
 		if len(rows) == 0 {
 			return nil
@@ -244,39 +236,9 @@ func catalogRelations(t *testing.T, db *sql.DB) relationInventory {
 	return relationInventory{Tables: list("r"), Indexes: list("i"), Sequences: list("S")}
 }
 
-// catalogSnapshot renders the current schema's tables, columns, indexes,
-// constraints and sequences as sorted lines, version tables excluded. Two
-// snapshots are equal exactly when the catalogs are the same under every name.
-func catalogSnapshot(t *testing.T, db *sql.DB) []string {
-	t.Helper()
-
-	var out []string
-	for _, q := range []struct{ label, query string }{
-		{"table", `SELECT relname FROM pg_class
-			WHERE relnamespace = current_schema()::regnamespace AND relkind = 'r' AND relname NOT LIKE 'goose\_%'`},
-		{"column", `SELECT table_name || '.' || column_name || ' ' || data_type || ' ' || is_nullable || ' '
-				|| coalesce(column_default, '')
-			FROM information_schema.columns
-			WHERE table_schema = current_schema() AND table_name NOT LIKE 'goose\_%'`},
-		{"index", `SELECT indexname || ' ' || indexdef FROM pg_indexes
-			WHERE schemaname = current_schema() AND tablename NOT LIKE 'goose\_%'`},
-		{"constraint", `SELECT conrelid::regclass::text || ' ' || conname || ' ' || pg_get_constraintdef(oid)
-			FROM pg_constraint
-			WHERE connamespace = current_schema()::regnamespace AND conrelid::regclass::text NOT LIKE 'goose\_%'`},
-		{"sequence", `SELECT relname FROM pg_class
-			WHERE relnamespace = current_schema()::regnamespace AND relkind = 'S' AND relname NOT LIKE 'goose\_%'`},
-	} {
-		for _, line := range queryStrings(t, db, q.query) {
-			out = append(out, q.label+" "+line)
-		}
-	}
-	slices.Sort(out)
-	return out
-}
-
-// TestRelationInventory pins the relations each set creates before the scrty_
-// rename, under both PostgreSQL images CI runs, so a name that differs by
-// server version is caught here.
+// TestRelationInventory pins the relations each set creates (the identity set's
+// before its scrty_ rename), under both PostgreSQL images CI runs, so a name
+// that differs by server version is caught here.
 func TestRelationInventory(t *testing.T) {
 	t.Parallel()
 
@@ -296,11 +258,14 @@ func TestRelationInventory(t *testing.T) {
 	for _, image := range []string{postgres15Image, postgres18Image} {
 		cases = append(cases,
 			testCase{
-				name: "security-state on " + image, set: security, upTo: versionSecurityStateLast, image: image,
+				name: "security-state on " + image, set: security, upTo: versionSecurityStateBaseline, image: image,
 				versionTable: migrate.SecurityStateVersionTable,
 				assert: func(t *testing.T, got relationInventory) {
-					assert.Equal(t, securityStateInventory, got)
+					assert.Equal(t, prefixed(securityStateInventory), got, "the catalog is exactly the prefixed inventory")
 					assert.Len(t, got.Tables, 25)
+					for _, n := range slices.Concat(got.Tables, got.Indexes, got.Sequences) {
+						assert.LessOrEqual(t, len(n), postgresNameLimit, "%s must fit PostgreSQL's identifier limit", n)
+					}
 				},
 			},
 			testCase{
@@ -346,57 +311,6 @@ func TestRelationInventory(t *testing.T) {
 	})
 }
 
-// TestSecurityStatePrefix_Catalog pins the catalog the rename migration
-// leaves: exactly the scrty_ names, none above the identifier limit, and the
-// rename recorded in the version table. It stops at the rename's own version,
-// so a later migration cannot change what it pins; a last step applies the rest
-// of the set and pins the final inventory. It runs on both PostgreSQL images,
-// because index and constraint names must not depend on the server version.
-func TestSecurityStatePrefix_Catalog(t *testing.T) {
-	t.Parallel()
-
-	type testCase struct {
-		name  string
-		image string
-	}
-
-	cases := []testCase{
-		{name: "postgres 15", image: postgres15Image},
-		{name: "postgres 18", image: postgres18Image},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			set := migrate.SecurityState()
-			db := RunTestPostgres(t, WithTestPostgresImage(tc.image)).DB
-			p := provider(t, db, set.FS(), set.Dir, set.VersionTable)
-			rollBackAtCleanup(t, db, p, set.VersionTable)
-
-			_, err := p.UpTo(t.Context(), versionScrtyPrefix)
-			require.NoError(t, err)
-
-			got := catalogRelations(t, db)
-			assert.Equal(t, prefixed(securityStateInventory), got, "the catalog is exactly the prefixed inventory")
-
-			for _, n := range append(append(append([]string{}, got.Tables...), got.Indexes...), got.Sequences...) {
-				assert.LessOrEqual(t, len(n), postgresNameLimit, "%s must fit PostgreSQL's identifier limit", n)
-			}
-
-			assert.Equal(t, 1, queryCount(t, db, `SELECT count(*) FROM `+set.VersionTable+
-				` WHERE is_applied AND version_id = 20261124000000`), "the rename is recorded as applied")
-			assert.Equal(t, securityStateCountAtPrefix, appliedVersionCount(t, db, set.VersionTable))
-
-			_, err = p.Up(t.Context())
-			require.NoError(t, err)
-			assert.Equal(t, prefixed(securityStateInventory), catalogRelations(t, db),
-				"the migrations after the rename add no relation")
-			assert.Equal(t, securityStateMigrationCount, appliedVersionCount(t, db, set.VersionTable))
-		})
-	}
-}
-
 // queryCount runs a single-integer query.
 func queryCount(t *testing.T, db *sql.DB, query string, args ...any) int {
 	t.Helper()
@@ -413,231 +327,4 @@ func prefixNames(names []string) []string {
 		out[i] = scrtyPrefix + n
 	}
 	return out
-}
-
-// TestSecurityStatePrefix_Failures pins what the rename does when it cannot
-// run: a lock held on a table, and a name that is already taken. In every case
-// the upgrade fails with an error naming the cause, nothing is renamed, no
-// version is recorded, and the database still accepts the upgrade once the
-// cause is gone.
-//
-// Each case sets up its obstacle differently, so each is a self-contained run
-// over a database at the last version before the rename.
-func TestSecurityStatePrefix_Failures(t *testing.T) {
-	t.Parallel()
-
-	set := migrate.SecurityState()
-
-	// oldNames reports whether every inventory table still has its original
-	// name and none has its prefixed one.
-	oldNames := func(t *testing.T, db *sql.DB) {
-		t.Helper()
-
-		for _, table := range securityStateInventory.Tables {
-			assert.True(t, regclassExists(t, db, table), "table %s keeps its name", table)
-		}
-	}
-	noVersion := func(t *testing.T, db *sql.DB) {
-		t.Helper()
-
-		assert.Equal(t, 0, queryCount(t, db, `SELECT count(*) FROM `+set.VersionTable+
-			` WHERE is_applied AND version_id = $1`, versionScrtyPrefix), "no version is recorded")
-		assert.Equal(t, securityStateCountAtPrefix-1, appliedVersionCount(t, db, set.VersionTable))
-	}
-
-	type testCase struct {
-		name string
-		run  func(t *testing.T, db *sql.DB, p *goose.Provider)
-	}
-
-	cases := []testCase{
-		{
-			name: "a lock held on a table fails the upgrade within the bound, and a retry succeeds",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				ctx := t.Context()
-
-				// A reader mid-transaction holds ACCESS SHARE, which the rename's
-				// ACCESS EXCLUSIVE lock waits behind.
-				holder, err := db.BeginTx(ctx, nil)
-				require.NoError(t, err)
-				released := false
-				release := func() {
-					if !released {
-						released = true
-						_ = holder.Rollback()
-					}
-				}
-				t.Cleanup(release)
-				_, err = holder.ExecContext(ctx, `LOCK TABLE sessions IN ACCESS SHARE MODE`)
-				require.NoError(t, err)
-
-				const deadline = 10 * time.Second
-				upCtx, cancel := context.WithTimeout(ctx, deadline)
-				defer cancel()
-				started := time.Now()
-				_, err = p.UpTo(upCtx, versionScrtyPrefix)
-				elapsed := time.Since(started)
-
-				var pgErr *pgconn.PgError
-				require.ErrorAs(t, err, &pgErr, "the upgrade fails with the server's error, not a client timeout: %v", err)
-				assert.Equal(t, "55P03", pgErr.Code, "lock_not_available")
-				assert.Less(t, elapsed, deadline, "the bound, not the caller's deadline, ended the wait")
-
-				oldNames(t, db)
-				noVersion(t, db)
-
-				release()
-				_, err = p.UpTo(ctx, versionScrtyPrefix)
-				require.NoError(t, err, "the same upgrade succeeds once the lock is gone")
-				assert.True(t, regclassExists(t, db, "scrty_sessions"))
-			},
-		},
-		{
-			name: "a table name already taken fails the upgrade and leaves that table untouched",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				ctx := t.Context()
-
-				_, err := db.ExecContext(ctx, `CREATE TABLE scrty_sessions (x int)`)
-				require.NoError(t, err)
-				t.Cleanup(func() {
-					// Runs before the rollback registered by freshSecurityState.
-					dctx := context.WithoutCancel(ctx)
-					_, _ = db.ExecContext(dctx, `DROP TABLE IF EXISTS scrty_sessions`)
-				})
-
-				_, err = p.UpTo(ctx, versionScrtyPrefix)
-				require.Error(t, err)
-				var pgErr *pgconn.PgError
-				require.ErrorAs(t, err, &pgErr)
-				assert.Equal(t, "42P07", pgErr.Code, "duplicate_table")
-
-				assert.True(t, regclassExists(t, db, "sessions"), "the table that would have been renamed keeps its name")
-				assert.Equal(t, []string{"x"}, queryStrings(t, db, `SELECT column_name FROM information_schema.columns
-					WHERE table_schema = current_schema() AND table_name = 'scrty_sessions'`),
-					"the pre-existing table is left as it was")
-				oldNames(t, db)
-				noVersion(t, db)
-			},
-		},
-		{
-			name: "an index name taken after every table is renamed rolls every rename back",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				ctx := t.Context()
-
-				// A table shares the namespace of the indexes, so it blocks an index rename.
-				_, err := db.ExecContext(ctx, `CREATE TABLE scrty_sessions_user (x int)`)
-				require.NoError(t, err)
-				t.Cleanup(func() {
-					dctx := context.WithoutCancel(ctx)
-					_, _ = db.ExecContext(dctx, `DROP TABLE IF EXISTS scrty_sessions_user`)
-				})
-
-				_, err = p.UpTo(ctx, versionScrtyPrefix)
-				var pgErr *pgconn.PgError
-				require.ErrorAs(t, err, &pgErr)
-				assert.Equal(t, "42P07", pgErr.Code)
-
-				oldNames(t, db)
-				for _, table := range securityStateInventory.Tables {
-					assert.False(t, regclassExists(t, db, scrtyPrefix+table), "table %s was renamed", table)
-				}
-				assert.True(t, regclassExists(t, db, "sessions_user"), "the index keeps its name")
-				noVersion(t, db)
-			},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			db, p := freshSecurityState(t, set)
-			_, err := p.UpTo(t.Context(), versionSecurityStateLast)
-			require.NoError(t, err)
-
-			tc.run(t, db, p)
-		})
-	}
-}
-
-// TestSecurityStatePrefix_Rollback pins the rename's Down section: it restores
-// the catalog exactly as it was before the rename, it still completes when a
-// relation has since been dropped, and the rename can be applied again after
-// it.
-func TestSecurityStatePrefix_Rollback(t *testing.T) {
-	t.Parallel()
-
-	set := migrate.SecurityState()
-
-	type testCase struct {
-		name string
-		run  func(t *testing.T, db *sql.DB, p *goose.Provider)
-	}
-
-	cases := []testCase{
-		{
-			name: "rolling the rename back restores every table, column, index, constraint and sequence",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				ctx := t.Context()
-
-				before := catalogSnapshot(t, db)
-				require.NotEmpty(t, before)
-
-				_, err := p.UpTo(ctx, versionScrtyPrefix)
-				require.NoError(t, err)
-				require.NotEqual(t, before, catalogSnapshot(t, db), "the rename changed the catalog")
-
-				_, err = p.Down(ctx)
-				require.NoError(t, err)
-
-				assert.Equal(t, securityStateInventory, catalogRelations(t, db), "no relation keeps its prefixed name")
-				assert.Equal(t, before, catalogSnapshot(t, db), "everything else is as it was")
-				assert.Equal(t, securityStateCountAtPrefix-1, appliedVersionCount(t, db, set.VersionTable))
-			},
-		},
-		{
-			name: "rolling back to zero succeeds after a table was dropped",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				ctx := t.Context()
-
-				_, err := p.UpTo(ctx, versionScrtyPrefix)
-				require.NoError(t, err)
-				_, err = db.ExecContext(ctx, `DROP TABLE scrty_sessions`)
-				require.NoError(t, err)
-
-				_, err = p.DownTo(ctx, 0)
-				require.NoError(t, err, "rollback succeeds even though a table was already dropped")
-
-				assert.Equal(t, relationInventory{}, catalogRelations(t, db), "nothing but the version table is left")
-				assert.Equal(t, 0, appliedVersionCount(t, db, set.VersionTable))
-			},
-		},
-		{
-			name: "applying again after a rollback gives the prefixed catalog",
-			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				ctx := t.Context()
-
-				_, err := p.UpTo(ctx, versionScrtyPrefix)
-				require.NoError(t, err)
-				_, err = p.Down(ctx)
-				require.NoError(t, err)
-				_, err = p.UpTo(ctx, versionScrtyPrefix)
-				require.NoError(t, err)
-
-				assert.Equal(t, prefixed(securityStateInventory), catalogRelations(t, db))
-			},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			db, p := freshSecurityState(t, set)
-			_, err := p.UpTo(t.Context(), versionSecurityStateLast)
-			require.NoError(t, err)
-
-			tc.run(t, db, p)
-		})
-	}
 }

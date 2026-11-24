@@ -193,12 +193,11 @@ func TestPrefix_ConsumerSchema(t *testing.T) {
 	}
 }
 
-// TestLimiterVerify_RefusesUnrenamedSchema pins that a binary built for the
-// prefixed schema refuses, when its limiter factory is built, a database whose
-// security-state set stops short of the rename. The error is a configuration
-// error naming the table it could not find, so the operator sees which
-// migration is missing.
-func TestLimiterVerify_RefusesUnrenamedSchema(t *testing.T) {
+// TestLimiterVerify_RefusesSchemaWithoutSet pins that a limiter factory
+// refuses, when it is built, a database the security-state set was not applied
+// to. The error is a configuration error naming the table it could not find,
+// so the operator sees which migration is missing.
+func TestLimiterVerify_RefusesSchemaWithoutSet(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
@@ -232,14 +231,9 @@ func TestLimiterVerify_RefusesUnrenamedSchema(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			set := migrate.SecurityState()
 			conn := RunTestPostgres(t)
-			p := provider(t, conn.DB, set.FS(), set.Dir, set.VersionTable)
-			rollBackAtCleanup(t, conn.DB, p, set.VersionTable)
-			_, err := p.UpTo(t.Context(), versionSecurityStateLast)
-			require.NoError(t, err)
 
-			err = tc.verify(t, conn)
+			err := tc.verify(t, conn)
 			require.ErrorIs(t, err, ratelimit.ErrConfig)
 			assert.ErrorContains(t, err, "scrty_rate_limit_buckets")
 		})

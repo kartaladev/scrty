@@ -435,9 +435,9 @@ func versionRows(t *testing.T, db *sql.DB, table string) []string {
 		|| tstamp::text FROM `+table+` ORDER BY id`)
 }
 
-// TestPrefix_SetsIndependent pins that the two sets rename on their own:
-// renaming one set's relations changes no relation or version row of the
-// other, and rolling the identity rename back reverts only identity.
+// TestPrefix_SetsIndependent pins that the two sets are independent: the
+// identity rename, applied or rolled back beside the applied security-state
+// set, changes no relation or version row of it.
 func TestPrefix_SetsIndependent(t *testing.T) {
 	t.Parallel()
 
@@ -451,11 +451,11 @@ func TestPrefix_SetsIndependent(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name: "security-state renamed, identity not, then identity renamed",
+			name: "security-state applied, identity not renamed, then identity renamed",
 			assert: func(t *testing.T, db *sql.DB, ssP, idP *goose.Provider) {
 				ctx := t.Context()
 
-				_, err := ssP.UpTo(ctx, versionScrtyPrefix)
+				_, err := ssP.Up(ctx)
 				require.NoError(t, err)
 				_, err = idP.UpTo(ctx, versionIdentityBeforeName)
 				require.NoError(t, err)
@@ -487,7 +487,7 @@ func TestPrefix_SetsIndependent(t *testing.T) {
 			assert: func(t *testing.T, db *sql.DB, ssP, idP *goose.Provider) {
 				ctx := t.Context()
 
-				_, err := ssP.UpTo(ctx, versionScrtyPrefix)
+				_, err := ssP.Up(ctx)
 				require.NoError(t, err)
 				_, err = idP.UpTo(ctx, versionScrtyPrefix)
 				require.NoError(t, err)

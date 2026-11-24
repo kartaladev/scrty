@@ -48,6 +48,30 @@ func TestIdentitySet(t *testing.T) {
 	assert.NotContains(t, upper, "FOREIGN KEY", "no identity table declares a foreign key")
 }
 
+// TestSecurityStateSet pins the security-state set's directory, its default
+// version table and its single baseline file.
+func TestSecurityStateSet(t *testing.T) {
+	t.Parallel()
+
+	set := migrate.SecurityState()
+
+	assert.Equal(t, "securitystate", set.Dir)
+	assert.Equal(t, "scrty_state_migrate", migrate.SecurityStateVersionTable)
+	assert.Equal(t, "scrty_state_migrate", set.VersionTable)
+
+	sub, err := fs.Sub(set.FS(), set.Dir)
+	require.NoError(t, err)
+	entries, err := fs.ReadDir(sub, ".")
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "the security-state set is one baseline migration")
+	assert.Equal(t, "20261126000000_security_state.sql", entries[0].Name())
+
+	data, err := fs.ReadFile(sub, entries[0].Name())
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "-- +goose Up")
+	assert.Contains(t, string(data), "-- +goose Down")
+}
+
 // TestSecurityStateFilesAvoidNoTransactionAnnotation walks the embedded
 // security-state set and fails when any file contains a line goose's
 // migration parser would honour as its annotation for opting a migration out

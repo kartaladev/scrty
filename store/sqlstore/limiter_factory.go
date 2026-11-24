@@ -166,9 +166,9 @@ func (f *LimiterFactory) Prune(ctx context.Context) (int, error) {
 //     and namespaces are stored as UTF-8;
 //   - a scrty_rate_limit_buckets table that does not resolve through the
 //     connection's search_path, naming the security-state migration set; a
-//     table of that name in a schema outside the search_path does not count;
-//     a database whose set stops short of the scrty_ prefix migration, with
-//     the table still named rate_limit_buckets, is refused the same way;
+//     table of that name in a schema outside the search_path does not count,
+//     and neither does a table named rate_limit_buckets, without the prefix
+//     the security-state baseline gives it;
 //   - a temporary table of that name, which shadows the migration's;
 //   - an unlogged table, which a crash truncates and a standby never
 //     receives, so a failover would reset every limit to zero;
