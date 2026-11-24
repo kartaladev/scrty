@@ -227,6 +227,13 @@ type durIssued struct {
 func (e *durEnv) issue(t *testing.T, p *oidcprovider.Provider, c durClient) durIssued {
 	t.Helper()
 
+	return e.issueAs(t, p, c, nil)
+}
+
+// issueAs is issue for a sign-in that shape, when given, has changed from the default one.
+func (e *durEnv) issueAs(t *testing.T, p *oidcprovider.Provider, c durClient, shape func(*oidcprovider.SignIn)) durIssued {
+	t.Helper()
+
 	ctx := t.Context()
 	now := e.clk.Now()
 	require.NoError(t, e.consents.Give(ctx, durUser, c.id, []string{"openid", "email"}, false, now))
@@ -244,6 +251,9 @@ func (e *durEnv) issue(t *testing.T, p *oidcprovider.Provider, c durClient) durI
 	signIn := oidcprovider.SignIn{
 		User: durUser, Family: newID(), AuthenticatedAt: now, AMR: []string{"pwd"}, ACR: "urn:example:acr",
 		AbsoluteExpiresAt: now.Add(8 * time.Hour),
+	}
+	if shape != nil {
+		shape(&signIn)
 	}
 	resumed, err := p.Resume(ctx, oidcprovider.ResumeInput{
 		Handle: handle, FlowSecret: auth.FlowSecret, SignIn: &signIn, IdleTimeout: 15 * time.Minute,
@@ -809,6 +819,50 @@ func TestOIDCProvider_Durable(t *testing.T) {
 				assert.Equal(t, 4, tr.loadsAtLanding, "the other tab landed at the rotation's own read")
 				assert.Greater(t, tr.loads, tr.loadsAtLanding, "a read of the token followed the landing")
 				assert.Zero(t, tr.supersedes, "the rotation found the successor and wrote nothing")
+			},
+		},
+		{
+			name: "a code issued for a verified second factor and federated evidence exchanges into a grant and token that keep them",
+			assert: func(t *testing.T, e *durEnv) {
+				p := e.build(t, nil)
+				issued := e.issueAs(t, p, durWeb, func(s *oidcprovider.SignIn) {
+					s.ExternalIssuer, s.ExternalSessionID = "https://idp.example", "x-9"
+					s.SecondFactorVerified = true
+					s.ExternalProvider = "corp"
+					s.ExternalAMR = []string{"mfa", "hwk"}
+					s.ExternalACR = "urn:corp:loa:2"
+				})
+
+				// The grant is read through stores of their own, as another replica would.
+				grant, err := e.open(t, e.conn, e.cipher, e.clk).grants.Load(t.Context(), familyOf(t, issued.tokens.RefreshToken))
+				require.NoError(t, err)
+				assert.True(t, grant.SecondFactorVerified, "the grant records the verified second factor")
+				assert.Equal(t, "corp", grant.ExternalProvider)
+				assert.Equal(t, "https://idp.example", grant.ExternalIssuer)
+				assert.Equal(t, []string{"mfa", "hwk"}, grant.ExternalAMR)
+				assert.Equal(t, "urn:corp:loa:2", grant.ExternalACR)
+
+				// A restarted provider reads the same from the access token.
+				at, err := e.build(t, nil).VerifyAccessToken(t.Context(), issued.tokens.AccessToken)
+				require.NoError(t, err)
+				assert.True(t, at.SecondFactorVerified, "the access token's grant keeps the marker")
+				assert.Equal(t, "corp", at.ExternalProvider)
+				assert.Equal(t, []string{"mfa", "hwk"}, at.ExternalAMR)
+				assert.Equal(t, "urn:corp:loa:2", at.ExternalACR)
+			},
+		},
+		{
+			name: "a code issued for a local sign-in exchanges into a grant with no marker and no evidence",
+			assert: func(t *testing.T, e *durEnv) {
+				p := e.build(t, nil)
+				issued := e.issue(t, p, durWeb)
+
+				grant, err := e.open(t, e.conn, e.cipher, e.clk).grants.Load(t.Context(), familyOf(t, issued.tokens.RefreshToken))
+				require.NoError(t, err)
+				assert.False(t, grant.SecondFactorVerified)
+				assert.Empty(t, grant.ExternalProvider)
+				assert.Nil(t, grant.ExternalAMR)
+				assert.Empty(t, grant.ExternalACR)
 			},
 		},
 		{

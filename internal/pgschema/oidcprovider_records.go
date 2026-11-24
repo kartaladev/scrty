@@ -530,10 +530,6 @@ type signInProofRow struct {
 	amr           []byte
 }
 
-func (r *signInProofRow) dest() []any {
-	return []any{&r.verified, &r.provider, &r.amr, &r.acr}
-}
-
 // set writes the scanned proof into the record's fields. An upstream amr that is NULL or
 // empty is nil.
 func (r *signInProofRow) set(verified *bool, provider *string, amr *[]string, acr *string) error {
