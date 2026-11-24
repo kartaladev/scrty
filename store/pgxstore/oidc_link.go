@@ -114,4 +114,70 @@ func (s *LinkStore) DeleteByUser(ctx context.Context, user identity.UserID) (int
 	return int(n), err
 }
 
-var _ oidc.LinkStore = (*LinkStore)(nil)
+// ListByUser returns every link whose user reference equals user byte for
+// byte, with its stored fields unchanged, sorted by provider, issuer and
+// subject in byte order (the database collation never decides it). A user
+// with no link, an empty reference, or a reference PostgreSQL cannot store
+// yields an empty, non-nil slice and a nil error. A store fault is wrapped
+// with context.
+func (s *LinkStore) ListByUser(ctx context.Context, user identity.UserID) ([]oidc.Link, error) {
+	const op = "list links of user"
+
+	links := []oidc.Link{}
+	if !storekit.Storable(string(user)) {
+		return links, nil
+	}
+
+	err := s.c.query(ctx, op, pgschema.LinkListByUser, []any{string(user)}, func(rows pgx.Rows) error {
+		l := oidc.Link{UserID: user}
+		var (
+			linkID  pgtype.UUID
+			created time.Time
+		)
+		if err := rows.Scan(&linkID, &l.Provider, &l.Issuer, &l.Subject, &l.Username, &l.Email, &created); err != nil {
+			return err
+		}
+		var err error
+		if l.ID, err = scanID(linkID); err != nil {
+			return err
+		}
+		l.CreatedAt = created.UTC()
+		links = append(links, l)
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return links, nil
+}
+
+// DeleteLink removes the stored link whose ID, provider, issuer and subject
+// all equal link's, and reports whether it removed one. No other link is
+// touched, and an absent link is false with a nil error. A zero link.ID is
+// refused, as Insert refuses it; text PostgreSQL cannot store matches
+// nothing.
+func (s *LinkStore) DeleteLink(ctx context.Context, link oidc.Link) (bool, error) {
+	const op = "delete link"
+
+	if err := storekit.CheckID(link.ID, "link"); err != nil {
+		return false, failed(op, err)
+	}
+	if !storekit.Storable(link.Provider, link.Issuer, link.Subject) {
+		return false, nil
+	}
+
+	n, err := s.c.exec(ctx, op, pgschema.LinkDeleteOne, uuidArg(link.ID), link.Provider, link.Issuer, link.Subject)
+	if err != nil {
+		return false, err
+	}
+
+	return n == 1, nil
+}
+
+var (
+	_ oidc.LinkStore   = (*LinkStore)(nil)
+	_ oidc.LinkLister  = (*LinkStore)(nil)
+	_ oidc.LinkRemover = (*LinkStore)(nil)
+)

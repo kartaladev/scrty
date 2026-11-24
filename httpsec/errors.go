@@ -574,8 +574,8 @@ func StatusForError(err error) int {
 //     [password.ErrHistoryUnavailable], [password.ErrLookupUnavailable],
 //     [session.ErrListUnavailable], [session.ErrCipherUnavailable],
 //     [seal.ErrUnavailable], [ratelimit.ErrBackendUnavailable],
-//     [oidc.ErrExchangeFailed], [oidc.ErrDiscoveryFailed] and
-//     [token.ErrNoVerificationKeys].
+//     [oidc.ErrExchangeFailed], [oidc.ErrDiscoveryFailed],
+//     [oidc.ErrUserInfoFailed] and [token.ErrNoVerificationKeys].
 //
 // Everything else, nil included, is not recognised and is reported as
 // (500, false): the same 500 StatusForError answers, without claiming the error.
@@ -793,5 +793,6 @@ var dependencySentinels = []error{
 	ratelimit.ErrBackendUnavailable,
 	oidc.ErrExchangeFailed,
 	oidc.ErrDiscoveryFailed,
+	oidc.ErrUserInfoFailed,
 	token.ErrNoVerificationKeys,
 }

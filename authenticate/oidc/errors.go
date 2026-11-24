@@ -58,7 +58,19 @@ var (
 	// ErrDiscoveryFailed is returned when the provider's metadata or key set
 	// cannot be fetched or is unusable.
 	ErrDiscoveryFailed = errors.New("oidc: provider metadata unavailable")
+
+	// ErrUserInfoFailed is returned by Upstream.UserInfo when no access token
+	// is held, no UserInfo endpoint is known, or the provider's UserInfo
+	// endpoint cannot be reached or does not answer with a usable JSON object
+	// for the verified subject. Its text is fixed: neither the access token
+	// nor any part of the provider's answer is ever part of it, and nothing of
+	// the answer is logged.
+	ErrUserInfoFailed = errors.New(userInfoFailedText)
 )
+
+// userInfoFailedText is ErrUserInfoFailed's text, which every UserInfo
+// failure's fixed text begins with.
+const userInfoFailedText = "oidc: userinfo fetch failed"
 
 // Store contract outcomes, which the stores in this package and the
 // consumer's own return, and which the library converts before they reach a

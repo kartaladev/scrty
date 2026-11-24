@@ -499,3 +499,18 @@ func TestError_Text(t *testing.T) {
 	err := &oidcprovider.Error{Code: oidcprovider.CodeInvalidClient}
 	assert.Equal(t, "oidcprovider: invalid_client", err.Error())
 }
+
+// TestProvider_LoginURL pins that the accessor hands back the login page exactly as
+// the consumer configured it: no normalisation of case, path or trailing slash, so a
+// caller comparing a destination against it compares against what was configured.
+func TestProvider_LoginURL(t *testing.T) {
+	t.Parallel()
+
+	deps := validDeps(t)
+	deps.LoginURL = issuer + "/Sign-In/"
+
+	p, err := oidcprovider.New(deps)
+	require.NoError(t, err)
+
+	assert.Equal(t, issuer+"/Sign-In/", p.LoginURL())
+}

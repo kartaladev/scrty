@@ -107,8 +107,11 @@ const (
 // The flow cookie is cleared only once the flow is spent, which the manager
 // signals by the absence of oidc.ErrFlowUnspent on its error. On success the
 // login is conveyed by the consumer's CallbackSuccess when there is one, or by
-// a handoff code on a redirect to the allowlist-resolved destination. No
-// session is created here. Every error is returned, never written.
+// a handoff code on a redirect to the allowlist-resolved destination. With
+// WithOIDCProviderCompletion, a login whose destination is the provider's login
+// page carrying one parked request's handle is completed on the server instead
+// (completeProviderSignIn); every other login is conveyed as without it. Every
+// error is returned, never written.
 func (i *oidcInterceptor) callback(ex *Exchange, provider string) error {
 	// Checked first, so a path naming no registered provider is not found
 	// whatever else the request carries, and every name logged below is one
@@ -163,6 +166,16 @@ func (i *oidcInterceptor) callback(ex *Exchange, provider string) error {
 		return err
 	}
 
+	// With completion on, a login started from the provider's login page for a
+	// parked request is completed here (D7). The destination is recognised
+	// exactly, before the allowlist sees it: it is the carve-out from the
+	// allowlist, and anything short of it is conveyed as any other login.
+	if i.completion {
+		if handle, ok := parkedHandle(res.Next, i.loginURL); ok {
+			return i.completeProviderSignIn(ex, provider, res, handle)
+		}
+	}
+
 	// The destination the client asked for when the login started is untrusted
 	// until it is resolved here, at use.
 	next := i.redirects.Resolve(res.Next)
@@ -179,7 +192,8 @@ func (i *oidcInterceptor) callback(ex *Exchange, provider string) error {
 // asserted: an ID token that failed verification (oidc.ErrInvalidIDToken), an
 // identity linked to no account (oidc.ErrNoLinkedAccount), or one whose
 // provisioning was refused (oidc.ErrProvisioningRefused). A provider that
-// could not be reached (oidc.ErrExchangeFailed, oidc.ErrDiscoveryFailed), a
+// could not be reached (oidc.ErrExchangeFailed, oidc.ErrDiscoveryFailed,
+// oidc.ErrUserInfoFailed), a
 // flow store fault, an invalid state, which is a forged or stale callback
 // rather than a login attempt, and a request whose own context ended before
 // the verdict report nothing.
@@ -228,7 +242,7 @@ func readCallbackFailure(ctx context.Context, err error) callbackFailure {
 		invalidState: walk.is(oidc.ErrInvalidState),
 		notLinked:    walk.is(oidc.ErrNoLinkedAccount),
 		refusal:      walk.is(oidc.ErrInvalidIDToken, oidc.ErrNoLinkedAccount, oidc.ErrProvisioningRefused),
-		outage:       walk.is(oidc.ErrExchangeFailed, oidc.ErrDiscoveryFailed),
+		outage:       walk.is(oidc.ErrExchangeFailed, oidc.ErrDiscoveryFailed, oidc.ErrUserInfoFailed),
 	}
 
 	if walk.abort != nil {

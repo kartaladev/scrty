@@ -223,6 +223,107 @@ func (c *MockIdentityBrokerBrokerCall) DoAndReturn(f func(context.Context, oidc.
 	return c
 }
 
+// MockUpstreamBroker is a mock of UpstreamBroker interface.
+type MockUpstreamBroker struct {
+	ctrl     *gomock.Controller
+	recorder *MockUpstreamBrokerMockRecorder
+	isgomock struct{}
+}
+
+// MockUpstreamBrokerMockRecorder is the mock recorder for MockUpstreamBroker.
+type MockUpstreamBrokerMockRecorder struct {
+	mock *MockUpstreamBroker
+}
+
+// NewMockUpstreamBroker creates a new mock instance.
+func NewMockUpstreamBroker(ctrl *gomock.Controller) *MockUpstreamBroker {
+	mock := &MockUpstreamBroker{ctrl: ctrl}
+	mock.recorder = &MockUpstreamBrokerMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockUpstreamBroker) EXPECT() *MockUpstreamBrokerMockRecorder {
+	return m.recorder
+}
+
+// AcceptsUpstream mocks base method.
+func (m *MockUpstreamBroker) AcceptsUpstream(provider string) bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AcceptsUpstream", provider)
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// AcceptsUpstream indicates an expected call of AcceptsUpstream.
+func (mr *MockUpstreamBrokerMockRecorder) AcceptsUpstream(provider any) *MockUpstreamBrokerAcceptsUpstreamCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AcceptsUpstream", reflect.TypeOf((*MockUpstreamBroker)(nil).AcceptsUpstream), provider)
+	return &MockUpstreamBrokerAcceptsUpstreamCall{Call: call}
+}
+
+// MockUpstreamBrokerAcceptsUpstreamCall wrap *gomock.Call
+type MockUpstreamBrokerAcceptsUpstreamCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockUpstreamBrokerAcceptsUpstreamCall) Return(arg0 bool) *MockUpstreamBrokerAcceptsUpstreamCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockUpstreamBrokerAcceptsUpstreamCall) Do(f func(string) bool) *MockUpstreamBrokerAcceptsUpstreamCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockUpstreamBrokerAcceptsUpstreamCall) DoAndReturn(f func(string) bool) *MockUpstreamBrokerAcceptsUpstreamCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// BrokerUpstream mocks base method.
+func (m *MockUpstreamBroker) BrokerUpstream(ctx context.Context, ext oidc.ExternalIdentity, up oidc.Upstream) (*identity.Principal, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "BrokerUpstream", ctx, ext, up)
+	ret0, _ := ret[0].(*identity.Principal)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// BrokerUpstream indicates an expected call of BrokerUpstream.
+func (mr *MockUpstreamBrokerMockRecorder) BrokerUpstream(ctx, ext, up any) *MockUpstreamBrokerBrokerUpstreamCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BrokerUpstream", reflect.TypeOf((*MockUpstreamBroker)(nil).BrokerUpstream), ctx, ext, up)
+	return &MockUpstreamBrokerBrokerUpstreamCall{Call: call}
+}
+
+// MockUpstreamBrokerBrokerUpstreamCall wrap *gomock.Call
+type MockUpstreamBrokerBrokerUpstreamCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockUpstreamBrokerBrokerUpstreamCall) Return(arg0 *identity.Principal, arg1 error) *MockUpstreamBrokerBrokerUpstreamCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockUpstreamBrokerBrokerUpstreamCall) Do(f func(context.Context, oidc.ExternalIdentity, oidc.Upstream) (*identity.Principal, error)) *MockUpstreamBrokerBrokerUpstreamCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockUpstreamBrokerBrokerUpstreamCall) DoAndReturn(f func(context.Context, oidc.ExternalIdentity, oidc.Upstream) (*identity.Principal, error)) *MockUpstreamBrokerBrokerUpstreamCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // MockLinkStore is a mock of LinkStore interface.
 type MockLinkStore struct {
 	ctrl     *gomock.Controller
@@ -359,6 +460,132 @@ func (c *MockLinkStoreInsertCall) Do(f func(context.Context, oidc.Link) error) *
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockLinkStoreInsertCall) DoAndReturn(f func(context.Context, oidc.Link) error) *MockLinkStoreInsertCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// MockLinkLister is a mock of LinkLister interface.
+type MockLinkLister struct {
+	ctrl     *gomock.Controller
+	recorder *MockLinkListerMockRecorder
+	isgomock struct{}
+}
+
+// MockLinkListerMockRecorder is the mock recorder for MockLinkLister.
+type MockLinkListerMockRecorder struct {
+	mock *MockLinkLister
+}
+
+// NewMockLinkLister creates a new mock instance.
+func NewMockLinkLister(ctrl *gomock.Controller) *MockLinkLister {
+	mock := &MockLinkLister{ctrl: ctrl}
+	mock.recorder = &MockLinkListerMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockLinkLister) EXPECT() *MockLinkListerMockRecorder {
+	return m.recorder
+}
+
+// ListByUser mocks base method.
+func (m *MockLinkLister) ListByUser(ctx context.Context, user identity.UserID) ([]oidc.Link, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListByUser", ctx, user)
+	ret0, _ := ret[0].([]oidc.Link)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListByUser indicates an expected call of ListByUser.
+func (mr *MockLinkListerMockRecorder) ListByUser(ctx, user any) *MockLinkListerListByUserCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListByUser", reflect.TypeOf((*MockLinkLister)(nil).ListByUser), ctx, user)
+	return &MockLinkListerListByUserCall{Call: call}
+}
+
+// MockLinkListerListByUserCall wrap *gomock.Call
+type MockLinkListerListByUserCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockLinkListerListByUserCall) Return(arg0 []oidc.Link, arg1 error) *MockLinkListerListByUserCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockLinkListerListByUserCall) Do(f func(context.Context, identity.UserID) ([]oidc.Link, error)) *MockLinkListerListByUserCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockLinkListerListByUserCall) DoAndReturn(f func(context.Context, identity.UserID) ([]oidc.Link, error)) *MockLinkListerListByUserCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// MockLinkRemover is a mock of LinkRemover interface.
+type MockLinkRemover struct {
+	ctrl     *gomock.Controller
+	recorder *MockLinkRemoverMockRecorder
+	isgomock struct{}
+}
+
+// MockLinkRemoverMockRecorder is the mock recorder for MockLinkRemover.
+type MockLinkRemoverMockRecorder struct {
+	mock *MockLinkRemover
+}
+
+// NewMockLinkRemover creates a new mock instance.
+func NewMockLinkRemover(ctrl *gomock.Controller) *MockLinkRemover {
+	mock := &MockLinkRemover{ctrl: ctrl}
+	mock.recorder = &MockLinkRemoverMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockLinkRemover) EXPECT() *MockLinkRemoverMockRecorder {
+	return m.recorder
+}
+
+// DeleteLink mocks base method.
+func (m *MockLinkRemover) DeleteLink(ctx context.Context, link oidc.Link) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteLink", ctx, link)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// DeleteLink indicates an expected call of DeleteLink.
+func (mr *MockLinkRemoverMockRecorder) DeleteLink(ctx, link any) *MockLinkRemoverDeleteLinkCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteLink", reflect.TypeOf((*MockLinkRemover)(nil).DeleteLink), ctx, link)
+	return &MockLinkRemoverDeleteLinkCall{Call: call}
+}
+
+// MockLinkRemoverDeleteLinkCall wrap *gomock.Call
+type MockLinkRemoverDeleteLinkCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockLinkRemoverDeleteLinkCall) Return(arg0 bool, arg1 error) *MockLinkRemoverDeleteLinkCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockLinkRemoverDeleteLinkCall) Do(f func(context.Context, oidc.Link) (bool, error)) *MockLinkRemoverDeleteLinkCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockLinkRemoverDeleteLinkCall) DoAndReturn(f func(context.Context, oidc.Link) (bool, error)) *MockLinkRemoverDeleteLinkCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate/oidc"
+	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/origin"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
@@ -29,6 +31,16 @@ type OIDCDeps struct {
 	// login instead, and must then be nil: that conveyance issues no code, so
 	// there is nothing for a handoff to govern.
 	Handoff *oidc.Handoff
+
+	// Users loads the user a federated sign-in completed on the server is for
+	// (WithOIDCProviderCompletion). The session is built from the details it
+	// returns, the stored roles and password-change time among them, never from
+	// the broker's principal, as a handoff redemption builds it from its record.
+	//
+	// Default: nil, and nothing reads it. Completion requires it, and refuses a
+	// nil one, or an interface holding a nil pointer, at construction. A loader
+	// given without completion is refused too, since nothing would call it.
+	Users identity.UserLoader
 }
 
 // EnableOIDCLogin answers the federated-login endpoints at the OIDC slot:
@@ -109,6 +121,7 @@ func EnableOIDCLogin(deps OIDCDeps, opts ...OIDCOption) Option {
 		i := &oidcInterceptor{
 			manager:         deps.RelyingParty,
 			handoffs:        deps.Handoff,
+			users:           deps.Users,
 			now:             c.now,
 			authorizePath:   defaultPath(DefaultOIDCAuthorizePath),
 			callbackPath:    defaultPath(DefaultOIDCCallbackPath),
@@ -147,6 +160,18 @@ func EnableOIDCLogin(deps OIDCDeps, opts ...OIDCOption) Option {
 // It runs once every option has been applied, so a session manager wired by
 // another built-in after EnableOIDCLogin still counts.
 func (i *oidcInterceptor) check(c *config, option string) error {
+	if i.completion {
+		if err := i.checkCompletion(c, option); err != nil {
+			return err
+		}
+	} else if !nilcheck.IsNil(i.users) {
+		// The loader is read by completion alone: one given without it would
+		// read as though federated logins loaded their user through it, while
+		// nothing ever calls it (F28).
+		return newConfigError("%s OIDCDeps.Users is read only by %s, which is not enabled: "+
+			"enable it, or leave Users nil", option, optionProviderCompletion)
+	}
+
 	if i.callbackSuccess != nil {
 		if err := i.checkConveyance(option); err != nil {
 			return err
@@ -740,6 +765,91 @@ func WithOIDCRPInitiatedLogout(on bool) OIDCOption {
 func WithoutOIDCRedirectPathCheck() OIDCOption {
 	return func(i *oidcInterceptor) error {
 		i.redirectCheckWaived = true
+
+		return nil
+	}
+}
+
+// WithOIDCProviderCompletion completes, on the server, a federated sign-in
+// started from the login page of the chain's own OpenID Provider: the callback
+// runs what a handoff redemption followed by a resume would run, and answers the
+// browser with a 303 to where the resume sends it, so the login page needs no
+// script to finish the sign-in.
+//
+// Default: off. Every federated login is conveyed by a handoff code to the
+// allowlisted destination, and a page the provider parked a request at redeems
+// it and resumes the request itself.
+//
+// Which logins it completes. Only a login whose destination is exactly the
+// provider's login URL (oidcprovider.Provider.LoginURL) carrying one parked
+// request's handle and nothing else: the same scheme and host, the port as
+// written, the raw path byte for byte (an empty one read as "/"), no user
+// information, no fragment, and a query of exactly one non-empty req parameter.
+// A trailing slash, another case, a percent-encoded path, an extra or repeated
+// parameter, or a relative destination is not one, and is conveyed by the
+// handoff as without this option. A recognised destination is never replaced by
+// "/", whatever the allowlist (WithOIDCAllowedRedirects) holds.
+//
+// What it does, in order:
+//   - checks the parked request before anything else, behind the resume
+//     endpoint's source throttle: one that is unknown, expired or bound to
+//     another browser is refused with ErrOIDCUnknownHandle and charged to the
+//     source; one past its login stage is refused the same, uncharged;
+//   - loads the user through OIDCDeps.Users, refusing a missing, disabled or
+//     mismatched one as a redemption does;
+//   - runs the post-authentication policy on the stored details and the
+//     assurance the verified ID token asserted;
+//   - stores the session with the provider session and the asserted assurance,
+//     after cancelling the user's held account recoveries, and keeps its
+//     credential on the server;
+//   - judges it under the chain's per-request policy and the resume endpoint's
+//     checks, resumes the request with the sign-in the provider's assurance
+//     mapping (WithOIDCSignInAssurance) states, and confirms the sign-in after
+//     the resume;
+//   - sets the provider's browser-session cookie and answers 303, with
+//     Cache-Control: no-store and Referrer-Policy: no-referrer.
+//
+// A refusal after the session is stored ends that session before it is
+// returned, and sends no redirect to the client. What the resume answered is
+// read from its outcome (oidcprovider.ResumeResult.Outcome), never from the
+// redirect's query, so a client whose registered redirect URI carries a
+// parameter of its own, error included, completes. A resume that answers the
+// client's error response, such as login_required for an id_token_hint naming
+// another subject, ends the session too, and redirects to that response; one
+// that answers the device code-entry page ends it and redirects there; one
+// naming no outcome completion knows ends it and is refused with
+// ErrOIDCReauthenticate, with no redirect. A session that cannot be ended is
+// recorded at ERROR and the refusal returned unchanged; no credential for it
+// was ever handed out. The end is detached from the request, so a client that
+// hangs up does not leave the session live.
+//
+// The fallback. A login that still owes a step (a second factor, an enrolment,
+// an account recovery or a password change) is not completed and stores no
+// session: it is conveyed by a handoff code to the login URL carrying the
+// handle, as without this option. The page redeems the code, whose answer names
+// that same destination, finishes the step and resumes the request. A login the
+// per-request policy challenges (a step it requires before this request, once
+// the session is stored) falls back the same way: the stored session is ended
+// first, then the login is handed off to the login URL carrying the handle, so
+// the page answers the challenge and its redemption stores a session of its own.
+//
+// Exclusions. It needs EnableOIDCProvider on the same chain, OIDCDeps.Handoff,
+// OIDCDeps.Users, OIDC login storing sessions in the provider's session manager,
+// every provider's redirect URL on the issuer's origin (where the provider's
+// host-only cookies are sent), and a login URL with no query of its own. It
+// cannot be combined with WithOIDCCallbackSuccess, which replaces the conveyance
+// it falls back to, or WithOIDCHandoffRedeemer, since it runs the library's own
+// redemption checks. Each of these is refused at construction.
+//
+// One SSO login at a time per browser. The relying party's flow cookie has a
+// single name, so an SSO login started before an earlier one in the same
+// browser has called back makes the earlier callback an invalid state
+// (oidc.ErrInvalidState), with nothing created; the user starts that one again.
+// Requests parked in several tabs and signed in one after the other each
+// complete.
+func WithOIDCProviderCompletion() OIDCOption {
+	return func(i *oidcInterceptor) error {
+		i.completion = true
 
 		return nil
 	}

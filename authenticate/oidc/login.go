@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/origin"
@@ -116,7 +117,12 @@ var errForeignFlow = fmt.Errorf("%w: the flow store completed another provider's
 //
 // It completes the flow the handle names, bound to provider and state, then
 // exchanges the code with the flow's PKCE verifier, verifies the ID token
-// against the flow's nonce and resolves the identity through the broker. It
+// against the flow's nonce and resolves the identity through the broker: by
+// BrokerUpstream, with the token response's access token as an Upstream, when
+// the broker implements UpstreamBroker and its AcceptsUpstream reports true
+// for provider, and by Broker otherwise. The access
+// token lives only in that Upstream, for this call: it is never part of the
+// result, a flow, a log or an error, and the refresh token is discarded. It
 // returns the principal, the provider, its issuer, the provider session (the
 // token's sid, empty when there is none), the raw ID token, the flow's
 // untrusted Next, and the amr and acr the token asserted (see
@@ -163,7 +169,7 @@ func (m *RelyingParty) Callback(ctx context.Context, provider, code, state, hand
 	if err != nil {
 		return CallbackResult{}, err
 	}
-	raw, err := m.exchange(ctx, p, md, code, f.Verifier)
+	raw, accessToken, err := m.exchange(ctx, p, md, code, f.Verifier)
 	if err != nil {
 		return CallbackResult{}, err
 	}
@@ -181,14 +187,20 @@ func (m *RelyingParty) Callback(ctx context.Context, provider, code, state, hand
 		m.logMalformedAssurance(ctx, p.Name, "acr")
 	}
 
-	principal, err := m.broker.Broker(ctx, ExternalIdentity{
+	ext := ExternalIdentity{
 		Provider:      p.Name,
 		Issuer:        p.Issuer,
 		Subject:       claims.Subject,
 		Email:         claims.Email,
 		EmailVerified: claims.EmailVerified,
 		Claims:        claims.Claims,
-	})
+	}
+	var principal *identity.Principal
+	if ub, ok := m.broker.(UpstreamBroker); ok && ub.AcceptsUpstream(p.Name) {
+		principal, err = ub.BrokerUpstream(ctx, ext, m.upstreamFor(p, accessToken, claims.Subject))
+	} else {
+		principal, err = m.broker.Broker(ctx, ext)
+	}
 	// A chain that cannot be walked is the broker failing, never the
 	// link-state refusal (ErrNoLinkedAccount, ErrProvisioningRefused) it
 	// might claim.
@@ -210,6 +222,26 @@ func (m *RelyingParty) Callback(ctx context.Context, provider, code, state, hand
 		AMR:       claims.AMR,
 		ACR:       claims.ACR,
 	}, nil
+}
+
+// upstreamFor builds the upstream access a callback at p hands an
+// UpstreamBroker: the access token, bound to the verified ID token's subject,
+// with UserInfo fetched through the manager's outbound client and its records
+// written to the manager's logger. The endpoint is p's pin, else the cached
+// metadata's userinfo_endpoint, resolved only when UserInfo is called.
+func (m *RelyingParty) upstreamFor(p Provider, token, subject string) Upstream {
+	up := newUpstream(token, subject, func(ctx context.Context) (string, error) {
+		if p.UserInfoEndpoint != "" {
+			return p.UserInfoEndpoint, nil
+		}
+		md, err := m.metadataFor(ctx, p.Name)
+		if err != nil {
+			return "", err
+		}
+		return md.UserInfoEndpoint, nil
+	}, m.out)
+	up.s.log = m.log
+	return up
 }
 
 // AbortFlow ends the flow when the echoed state completes it, and reports
@@ -336,15 +368,36 @@ func (m *RelyingParty) logMalformedAssurance(ctx context.Context, provider, clai
 const maxLoggedProviderBody = 256
 
 // tokenResponse is the part of a token endpoint's answer the library reads.
-// The access and refresh tokens are deliberately not decoded: they are
-// discarded, never held.
+// The access token is decoded for the callback's Upstream alone; the refresh
+// token is deliberately not decoded, so it is discarded, never held.
 type tokenResponse struct {
-	IDToken string `json:"id_token"`
-	Error   string `json:"error"`
+	IDToken     string         `json:"id_token"`
+	AccessToken stringOrAbsent `json:"access_token"`
+	Error       string         `json:"error"`
+}
+
+// stringOrAbsent decodes a JSON string, and any other JSON value (an object, a
+// number, null, an array, a boolean) as the empty string, so a provider's odd
+// access_token never fails the login: the response just has no access token.
+type stringOrAbsent string
+
+func (s *stringOrAbsent) UnmarshalJSON(b []byte) error {
+	*s = ""
+	if len(b) == 0 || b[0] != '"' {
+		return nil
+	}
+	var v string
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*s = stringOrAbsent(v)
+	return nil
 }
 
 // exchange redeems an authorization code at the provider's token endpoint and
-// returns the raw ID token, the only part of the answer the library keeps.
+// returns the raw ID token and the access token, empty when the answer has
+// none. The access token is for the callback's Upstream only; the refresh
+// token is never read.
 //
 // The request carries grant_type, code, redirect_uri and code_verifier, and
 // authenticates the client as the provider is configured: client_id and
@@ -356,7 +409,7 @@ type tokenResponse struct {
 // object, one carrying an error member, and one without an ID token are all
 // ErrExchangeFailed. The provider's answer is logged, truncated, through the
 // sampler and is never part of the returned error.
-func (m *RelyingParty) exchange(ctx context.Context, p Provider, md metadata, code, verifier string) (string, error) {
+func (m *RelyingParty) exchange(ctx context.Context, p Provider, md metadata, code, verifier string) (idToken, accessToken string, err error) {
 	form := url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
@@ -377,13 +430,13 @@ func (m *RelyingParty) exchange(ctx context.Context, p Provider, md metadata, co
 
 	res, err := m.out.PostForm(ctxlog.With(ctx, m.log), md.TokenEndpoint, form, header)
 	if err != nil {
-		return "", fmt.Errorf("%w: provider %q: %w", ErrExchangeFailed, p.Name, err)
+		return "", "", fmt.Errorf("%w: provider %q: %w", ErrExchangeFailed, p.Name, err)
 	}
 
 	if res.Status != http.StatusOK {
 		m.logExchangeFailure(ctx, p.Name, "the token endpoint refused the code",
 			slog.Int("status", res.Status), slog.String("body", truncateUTF8(res.Body, maxLoggedProviderBody)))
-		return "", fmt.Errorf("%w: provider %q: status %d", ErrExchangeFailed, p.Name, res.Status)
+		return "", "", fmt.Errorf("%w: provider %q: status %d", ErrExchangeFailed, p.Name, res.Status)
 	}
 
 	// A success-status body may hold live access and refresh tokens, so from
@@ -392,16 +445,16 @@ func (m *RelyingParty) exchange(ctx context.Context, p Provider, md metadata, co
 	switch {
 	case json.Unmarshal(res.Body, &tr) != nil:
 		m.logExchangeFailure(ctx, p.Name, "the token response is not a JSON object")
-		return "", fmt.Errorf("%w: provider %q: the token response is not a JSON object", ErrExchangeFailed, p.Name)
+		return "", "", fmt.Errorf("%w: provider %q: the token response is not a JSON object", ErrExchangeFailed, p.Name)
 	case tr.Error != "":
 		m.logExchangeFailure(ctx, p.Name, "the token response carries an error")
-		return "", fmt.Errorf("%w: provider %q: the token response carries an error", ErrExchangeFailed, p.Name)
+		return "", "", fmt.Errorf("%w: provider %q: the token response carries an error", ErrExchangeFailed, p.Name)
 	case tr.IDToken == "":
 		m.logExchangeFailure(ctx, p.Name, "the token response has no ID token")
-		return "", fmt.Errorf("%w: provider %q: the token response has no ID token", ErrExchangeFailed, p.Name)
+		return "", "", fmt.Errorf("%w: provider %q: the token response has no ID token", ErrExchangeFailed, p.Name)
 	}
 
-	return tr.IDToken, nil
+	return tr.IDToken, string(tr.AccessToken), nil
 }
 
 // logExchangeFailure writes one WARN record for a failed exchange through the

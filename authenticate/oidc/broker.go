@@ -27,6 +27,13 @@ import (
 // the provider, provisions a user for an identity with no link.
 //
 // Build one with NewBroker. A Broker is safe for concurrent use.
+//
+// It is also an UpstreamBroker that accepts upstream access only for the
+// providers WithBrokerSignInHook hooks. A consumer type that embeds it by
+// pointer, under a name other than Broker (a type alias such as "type
+// libraryBroker = oidc.Broker", embedded as *libraryBroker), and overrides Broker keeps
+// that override on every other provider; to intercept a hooked provider's
+// sign-ins it overrides BrokerUpstream too.
 type Broker struct {
 	links   LinkStore
 	users   identity.UserLoader
@@ -66,6 +73,11 @@ type Broker struct {
 	allowedRoles map[string][]string
 	roleSync     map[string]bool
 
+	// Sign-in hooks, per provider, and the providers whose hook may link a
+	// user to more than one identity of one issuer.
+	hooks         map[string]SignInHook
+	hookManyLinks map[string]bool
+
 	// providers is every provider an option named, in the order first named.
 	providers []string
 }
@@ -96,6 +108,7 @@ func NewBroker(links LinkStore, users identity.UserLoader, opts ...BrokerOption)
 		passwordClaims: map[string]string{}, mirrors: map[string]bool{},
 		roleClaims: map[string]string{}, roleMappings: map[string]map[string]string{},
 		allowedRoles: map[string][]string{}, roleSync: map[string]bool{},
+		hooks: map[string]SignInHook{}, hookManyLinks: map[string]bool{},
 		passwordMinCost: defaultPasswordClaimMinCost, passwordMaxCost: defaultPasswordClaimMaxCost,
 	}
 	for _, opt := range opts {
@@ -128,6 +141,9 @@ func NewBroker(links LinkStore, users identity.UserLoader, opts ...BrokerOption)
 		return nil, err
 	}
 	if err := b.checkRoles(); err != nil {
+		return nil, err
+	}
+	if err := b.checkSignInHooks(); err != nil {
 		return nil, err
 	}
 	return b, nil
@@ -172,7 +188,15 @@ func (b *Broker) nameProvider(provider string) {
 // provisioner failure is returned wrapped, and is not an authentication
 // failure; its text has the login's subject, email (kept as its domain),
 // username and user reference redacted.
+//
+// A provider with a sign-in hook (WithBrokerSignInHook) needs the upstream
+// access only BrokerUpstream carries: through Broker it fails with
+// ErrUpstreamRequired, a broker failure, before the link store or the hook is
+// consulted.
 func (b *Broker) Broker(ctx context.Context, ext ExternalIdentity) (*identity.Principal, error) {
+	if _, hooked := b.hooks[ext.Provider]; hooked {
+		return nil, ErrUpstreamRequired
+	}
 	l, err := b.links.FindByExternal(ctx, ext.Provider, ext.Issuer, ext.Subject)
 	// Before the ErrLinkNotFound check: a chain that cannot be walked is a
 	// store fault, never "no link", which would provision a duplicate user.
@@ -291,12 +315,14 @@ var bcryptShaped = regexp.MustCompile(`\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}`)
 const redactedMark = "[redacted]"
 
 // identifying names the values of the current login that must not reach logs
-// or error text: the external subject, emails (kept as their domain), and
-// usernames and user references. Empty values are skipped.
+// or error text: the external subject, emails (kept as their domain),
+// usernames and user references, and secrets such as the upstream access
+// token. Empty values are skipped.
 type identifying struct {
 	subject string
 	emails  []string
 	names   []string // usernames and user references
+	secrets []string // credentials such as the upstream access token
 }
 
 // replacer returns the replacements for the values in v, longest first so a
@@ -316,6 +342,11 @@ func (v identifying) replacer() *strings.Replacer {
 	for _, n := range v.names {
 		if n != "" {
 			pairs = append(pairs, pair{n, redactedMark})
+		}
+	}
+	for _, sec := range v.secrets {
+		if sec != "" {
+			pairs = append(pairs, pair{sec, redactedMark})
 		}
 	}
 	if len(pairs) == 0 {

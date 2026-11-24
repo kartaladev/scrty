@@ -80,6 +80,14 @@ type testProvider struct {
 	// can craft a malformed or hostile answer.
 	discoveryBody, jwksBody atomic.Value
 
+	// discoveredUserInfo, when it holds a string, is published as the
+	// generated discovery document's userinfo_endpoint.
+	discoveredUserInfo atomic.Value
+
+	// userInfoPaths records the path of every UserInfo request, which /userinfo
+	// and /me both answer with {"sub":"subject-1"}.
+	userInfoPaths []string
+
 	// jwksGate, when set, is called by the key-set handler before it answers,
 	// so a test can hold a fetch in flight.
 	jwksGate atomic.Pointer[func()]
@@ -105,6 +113,8 @@ func newTestProvider(t *testing.T) *testProvider {
 	mux.HandleFunc("GET /.well-known/openid-configuration", p.serveDiscovery)
 	mux.HandleFunc("GET /jwks", p.serveJWKS)
 	mux.HandleFunc("POST /token", p.serveToken)
+	mux.HandleFunc("GET /userinfo", p.serveUserInfo)
+	mux.HandleFunc("GET /me", p.serveUserInfo)
 	p.handler = mux
 	p.srv = httptest.NewTLSServer(mux)
 	t.Cleanup(p.srv.Close)
@@ -287,7 +297,7 @@ func (p *testProvider) serveDiscovery(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(body))
 		return
 	}
-	writeJSON(w, map[string]any{
+	doc := map[string]any{
 		"issuer":                                p.Issuer(),
 		"authorization_endpoint":                p.Issuer() + "/authorize",
 		"token_endpoint":                        p.Issuer() + "/token",
@@ -296,7 +306,25 @@ func (p *testProvider) serveDiscovery(w http.ResponseWriter, _ *http.Request) {
 		"response_types_supported":              []string{"code"},
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": []string{"RS256"},
-	})
+	}
+	if ui, ok := p.discoveredUserInfo.Load().(string); ok {
+		doc["userinfo_endpoint"] = ui
+	}
+	writeJSON(w, doc)
+}
+
+func (p *testProvider) serveUserInfo(w http.ResponseWriter, r *http.Request) {
+	p.mu.Lock()
+	p.userInfoPaths = append(p.userInfoPaths, r.URL.Path)
+	p.mu.Unlock()
+	writeJSON(w, map[string]any{"sub": "subject-1"})
+}
+
+// UserInfoPaths returns the path of every UserInfo request so far.
+func (p *testProvider) UserInfoPaths() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.userInfoPaths)
 }
 
 func (p *testProvider) serveJWKS(w http.ResponseWriter, _ *http.Request) {
