@@ -169,6 +169,27 @@ httpsec.EnableResourceServer("urn:example:orders:api",
 
 Nothing is granted on the unverified read, and the source verifies again. The routing read is fuzzed.
 
+Implementation decisions (2026-11-25):
+
+- **The provider's bound is read, not computed.** `(*oidcprovider.Provider).MaxAccessTokenSize()`
+  returns the verifier bound under the provider's own request bounds, so a consumer who raises
+  `WithRequestBounds` keeps UserInfo and the resource server in step.
+- **A repeated `Authorization` header is answered 400 `invalid_request`** under the resource server's
+  challenge, not passed on. RFC 9110 §11.6.2 defines the field as a single credential, and RFC 6750
+  §3.1 names a malformed request `invalid_request`; passing it on would let a later mode read a
+  different instance of the header than the one routed.
+- **The type-collision construction check (item 2) lands with untyped-token support (C3)**, through a
+  read-only accessor for a generator's declared type. Until then the runtime exclusion of the
+  chain's session type holds, and `token.NewGenerator` already refuses `at+jwt`.
+- **A token the mode accepts claims the credential.** The session bearer, the signed bearer and API
+  keys under the `Bearer` scheme skip a request whose `Authorization` the resource server has
+  already accepted, so one credential is never judged twice. The mark lives on the request's
+  exchange and is scoped to its run.
+- **The internal source contract** also reports a source's issuer and whether it allows unbound
+  tokens (for the construction checks), and recognition is three-way (not recognised, recognised as a
+  fallback, recognised by its marker), so an unprefixed introspection source never refuses a token
+  off every covered path.
+
 ### 6. Token type and required claims
 
 - **Type:**
@@ -532,7 +553,7 @@ inactive account carry no distinguishing error, and cost the same work.
 
 | # | Failure | State | What the caller sees |
 |---|---|---|---|
-| F1 | Empty, scheme-only or duplicated `Authorization` | Handled (the shared header reader), tested | 400 `invalid_request`, or not claimed |
+| F1 | Empty, scheme-only or duplicated `Authorization` | Handled (the shared header reader), tested | 400 `invalid_request` for a duplicated header; an empty or scheme-only one is not claimed |
 | F2 | Token over 8 KiB; header or payload not base64url or not JSON | Handled before decoding, tested; routing read fuzzed | 401 `invalid_token`, or not recognised |
 | F3 | ID, session or logout token sent to an API route | Handled by type routing, required claims and `aud`, tested | Session token: judged by the session modes; others: 401 |
 | F4 | Untyped token without the opt-in; a session generator typed like an access token | Handled at verification and at construction, tested | 401; construction error |
@@ -663,6 +684,11 @@ throttle, and the cache's default entry limit when enabled.
   exists.
 
 **Primary documentation** (relied on and cited as such, not re-checked on these dates):
+- **Decision 5, repeated `Authorization` header**:
+  - [RFC 9110 §11.6.2](https://www.rfc-editor.org/rfc/rfc9110#section-11.6.2): `Authorization` carries
+    one set of credentials.
+  - [RFC 6750 §3.1](https://www.rfc-editor.org/rfc/rfc6750#section-3.1): a malformed request is
+    `invalid_request`, answered 400.
 - [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068): §2.1 `at+jwt`; §2.2 required claims; §4 audience
   validation. Decisions 3, 5, 6, 10.
 - [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750): §3.1 `invalid_token`, `insufficient_scope`.
