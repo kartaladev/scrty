@@ -29,7 +29,7 @@ const (
 	// TypeSessionToken is the type of a token a Generator issues, and the one a
 	// Verifier accepts, by default. WithTokenType and WithVerifyTokenType replace
 	// it.
-	TypeSessionToken = "scrty+jwt"
+	TypeSessionToken = "scrty+jwt" //nolint:gosec // G101: a JWT typ media type, not a credential
 
 	// TypeAccessToken is the type of an OAuth access token (RFC 9068).
 	TypeAccessToken = "at+jwt"
