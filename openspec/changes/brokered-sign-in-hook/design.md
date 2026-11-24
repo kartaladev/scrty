@@ -424,6 +424,11 @@ Out of scope here; each is a separate change.
   sign-in hook the library supplies, so JIT and a consumer's `Provision` decision share one pipeline
   (link first, then create). It depends on hook-provisioning-port. Until then, both paths exist, and
   D6 keeps them off the same provider.
+- **postgres-teardown-deadlock** (test infrastructure): under heavy machine load the shared
+  PostgreSQL test teardown can fail rolling back the security-state migrations with `deadlock
+  detected` (SQLSTATE 40P01), and a session timing test can exceed its bound. Seen in
+  `test/gormstore`, `test/pgxstore` and `test/sqlstore` in tests this change does not touch; each
+  passes alone. The teardown should retry a deadlocked rollback.
 
 ## Risks / Trade-offs
 
