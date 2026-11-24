@@ -7,6 +7,7 @@ import (
 
 	"github.com/kartaladev/scrty/internal/idgen"
 	"github.com/kartaladev/scrty/internal/porterr"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token/onetime"
 )
 
@@ -38,21 +39,24 @@ func (p *Provider) codeTokens() (*onetime.Tokens, error) {
 // which a binding would refuse without spending. The secret exists only in what this
 // returns, so a token written with no record behind it is a code no one can ever present.
 // The caller shows the answer only once the stage is spent.
+//
+// A failed write still returns the family, since the store may have committed it; the caller
+// withdraws it (withdrawCode). The family is id.Nil when the failure came before the write.
 func (p *Provider) issueCode(
 	ctx context.Context, r *PendingRequest, rc *RegisteredClient, s SignIn, scopes []string,
-) (string, error) {
+) (string, id.ID, error) {
 	family, err := idgen.New(p.cfg.ids)
 	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
-		return "", dependencyFailure(ctx, err, "oidcprovider: mint a grant family")
+		return "", id.Nil, dependencyFailure(ctx, err, "oidcprovider: mint a grant family")
 	}
 	tokens, err := p.codeTokens()
 	if err != nil {
-		return "", dependencyFailure(ctx, err, "oidcprovider: build the code tokens")
+		return "", id.Nil, dependencyFailure(ctx, err, "oidcprovider: build the code tokens")
 	}
 	code, tok, err := tokens.Issue(ctx, string(s.User))
 	if err != nil {
-		return "", dependencyFailure(ctx, err, "oidcprovider: issue a code")
+		return "", id.Nil, dependencyFailure(ctx, err, "oidcprovider: issue a code")
 	}
 
 	err = p.stores.codes.Create(ctx, &CodeRecord{
@@ -72,7 +76,7 @@ func (p *Provider) issueCode(
 	})
 	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	if err != nil {
-		return "", dependencyFailure(ctx, err, "oidcprovider: store the code record")
+		return "", family, dependencyFailure(ctx, err, "oidcprovider: store the code record")
 	}
 
 	answer := url.Values{paramCode: {code}, "iss": {p.issuer}}
@@ -80,5 +84,5 @@ func (p *Provider) issueCode(
 		answer.Set(paramState, r.State)
 	}
 
-	return withQuery(r.RedirectURI, answer), nil
+	return withQuery(r.RedirectURI, answer), family, nil
 }

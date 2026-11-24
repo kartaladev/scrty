@@ -64,6 +64,18 @@ func TestProvider_Resume_ClientChangedAfterParking(t *testing.T) {
 			assert.Equal(t, stage, stageOf(t, f, r), "the handle is left unspent")
 		}
 	}
+	// redirected asserts the consent stage was answered at the redirect URI with code, and
+	// spent, with nothing issued. The login stage's rows are in TestResume_RejudgeAnswers.
+	redirected := func(code string) func(*testing.T, *parkFixture, parked, oidcprovider.ResumeResult, error) {
+		return func(t *testing.T, f *parkFixture, r parked, res oidcprovider.ResumeResult, err error) {
+			t.Helper()
+			require.NoError(t, err)
+			assert.Equal(t, oidcprovider.ResumeOutcomeClientError, res.Outcome)
+			assert.Equal(t, url.Values{"error": {code}, "state": {authzState}, "iss": {issuer}}, queryOf(t, res.RedirectTo))
+			assert.Zero(t, codesHeld(t, f, "u-1", "billing-web"), "no code")
+			assert.Equal(t, oidcprovider.StageDone, stageOf(t, f, r), "the stage is spent")
+		}
+	}
 	record := func(t *testing.T, f *parkFixture, res oidcprovider.ResumeResult, err error) *oidcprovider.CodeRecord {
 		t.Helper()
 		require.NoError(t, err)
@@ -90,30 +102,12 @@ func TestProvider_Resume_ClientChangedAfterParking(t *testing.T) {
 			assert: unknown(oidcprovider.StageLogin),
 		},
 		{
-			name: "login: a client that lost the code grant is an unknown handle",
-			change: func(c *oidcprovider.Client) {
-				c.GrantTypes = []oidcprovider.GrantType{oidcprovider.GrantRefreshToken}
-			},
-			assert: unknown(oidcprovider.StageLogin),
-		},
-		{
 			name:   "login: a scope since withdrawn is left out of the code",
 			change: scopes("openid", "offline_access"),
 			assert: func(t *testing.T, f *parkFixture, _ parked, res oidcprovider.ResumeResult, err error) {
 				t.Helper()
 				assert.Equal(t, []string{"openid"}, record(t, f, res, err).Scopes)
 			},
-		},
-		{
-			name:   "login: openid since withdrawn is an unknown handle",
-			change: scopes("profile"),
-			assert: unknown(oidcprovider.StageLogin),
-		},
-		{
-			name:   "login: a request left with no scope is an unknown handle",
-			params: withScope("api.read"),
-			change: scopes("openid"),
-			assert: unknown(oidcprovider.StageLogin),
 		},
 		{
 			name:   "login: a request without openid keeps the scopes the client may still ask for",
@@ -163,12 +157,12 @@ func TestProvider_Resume_ClientChangedAfterParking(t *testing.T) {
 			assert: unknown(oidcprovider.StageConsent),
 		},
 		{
-			name: "consent: a client that lost the code grant is an unknown handle",
+			name: "consent: a client that lost the code grant is answered unauthorized_client",
 			change: func(c *oidcprovider.Client) {
 				c.GrantTypes = []oidcprovider.GrantType{oidcprovider.GrantRefreshToken}
 			},
 			answer: &oidcprovider.ConsentAnswer{Scopes: []string{"openid"}},
-			assert: unknown(oidcprovider.StageConsent),
+			assert: redirected(oidcprovider.CodeUnauthorizedClient),
 		},
 		{
 			name:   "consent: an answer naming a scope since withdrawn grants the rest",
@@ -180,23 +174,23 @@ func TestProvider_Resume_ClientChangedAfterParking(t *testing.T) {
 			},
 		},
 		{
-			name:   "consent: openid since withdrawn is an unknown handle",
+			name:   "consent: openid since withdrawn is answered invalid_scope",
 			change: scopes("profile"),
 			answer: &oidcprovider.ConsentAnswer{Scopes: []string{"openid", "profile"}},
-			assert: unknown(oidcprovider.StageConsent),
+			assert: redirected(oidcprovider.CodeInvalidScope),
 		},
 		{
-			name:   "consent: openid since withdrawn is an unknown handle also for a denial",
+			name:   "consent: openid since withdrawn is answered invalid_scope also for a denial",
 			change: scopes("profile"),
 			answer: &oidcprovider.ConsentAnswer{Deny: true},
-			assert: unknown(oidcprovider.StageConsent),
+			assert: redirected(oidcprovider.CodeInvalidScope),
 		},
 		{
-			name:   "consent: a request left with no scope is an unknown handle",
+			name:   "consent: a request left with no scope is answered invalid_scope",
 			params: withScope("api.read"),
 			change: scopes("openid"),
 			answer: &oidcprovider.ConsentAnswer{Scopes: []string{"api.read"}},
-			assert: unknown(oidcprovider.StageConsent),
+			assert: redirected(oidcprovider.CodeInvalidScope),
 		},
 		{
 			name:   "consent: a client that lost the refresh grant holds no offline access",
@@ -433,4 +427,163 @@ func mustFamily(t *testing.T) id.ID {
 	require.NoError(t, err)
 
 	return got
+}
+
+// TestResume_RejudgeAnswers judges a login-stage request against the client as it is read
+// at a resume and at an end. What leaves nowhere safe to redirect is an unknown handle; what
+// leaves a request the client may no longer make is answered at its redirect URI and spent;
+// what only narrows the request carries on (F10, F11).
+func TestResume_RejudgeAnswers(t *testing.T) {
+	t.Parallel()
+
+	scopes := func(s ...string) func(*oidcprovider.Client) {
+		return func(c *oidcprovider.Client) { c.Scopes = s }
+	}
+
+	// op is what the row presents: a resume with a sign-in, or an end with access_denied.
+	type op struct {
+		name string
+		call func(*testing.T, *parkFixture, parked) (oidcprovider.ResumeResult, error)
+	}
+	ops := []op{
+		{name: "resume", call: func(t *testing.T, f *parkFixture, r parked) (oidcprovider.ResumeResult, error) {
+			t.Helper()
+			signIn := testSignIn(f, "u-1")
+
+			return f.p.Resume(t.Context(), r.input(&signIn))
+		}},
+		{name: "end", call: func(t *testing.T, f *parkFixture, r parked) (oidcprovider.ResumeResult, error) {
+			t.Helper()
+
+			return f.p.EndPending(t.Context(), r.end(oidcprovider.CodeAccessDenied))
+		}},
+	}
+
+	type assertFn func(*testing.T, *parkFixture, parked, string, oidcprovider.ResumeResult, error)
+	unknown := func(t *testing.T, f *parkFixture, r parked, _ string, res oidcprovider.ResumeResult, err error) {
+		t.Helper()
+		require.ErrorIs(t, err, oidcprovider.ErrUnknownHandle)
+		assert.Empty(t, res.RedirectTo, "no Location, to a URI the client may have lost or any other")
+		assert.Equal(t, oidcprovider.ResumeOutcomeUnknown, res.Outcome)
+		assert.Equal(t, oidcprovider.StageLogin, stageOf(t, f, r), "the request is left as it was")
+		assert.Zero(t, codesHeld(t, f, "u-1", "billing-web"), "no code")
+	}
+	answered := func(code string) assertFn {
+		return func(t *testing.T, f *parkFixture, r parked, _ string, res oidcprovider.ResumeResult, err error) {
+			t.Helper()
+			require.NoError(t, err)
+			assert.Equal(t, oidcprovider.ResumeOutcomeClientError, res.Outcome)
+			assert.Empty(t, res.BrowserSessionSecret)
+			assert.True(t, strings.HasPrefix(res.RedirectTo, authzRedirect+"?"), res.RedirectTo)
+			assert.Equal(t, url.Values{"error": {code}, "state": {authzState}, "iss": {issuer}}, queryOf(t, res.RedirectTo),
+				"the error, state and iss, and no error_description")
+			assert.Equal(t, oidcprovider.StageDone, stageOf(t, f, r), "the request is spent")
+			assert.Zero(t, codesHeld(t, f, "u-1", "billing-web"), "no code")
+
+			signIn := testSignIn(f, "u-1")
+			_, again := f.p.Resume(t.Context(), r.input(&signIn))
+			require.ErrorIs(t, again, oidcprovider.ErrUnknownHandle, "a second resume is an unknown handle")
+		}
+	}
+
+	cases := []struct {
+		name   string
+		params func(url.Values)
+		change func(*testing.T, *parkFixture)
+		assert assertFn
+	}{
+		{
+			name: "a redirect URI since unregistered is an unknown handle",
+			change: func(t *testing.T, f *parkFixture) {
+				changeClient(t, f, func(c *oidcprovider.Client) { c.RedirectURIs = []string{otherRedirect} })
+			},
+			assert: unknown,
+		},
+		{
+			name:   "a client since removed is an unknown handle",
+			change: func(t *testing.T, f *parkFixture) { require.NoError(t, f.registry.Delete(t.Context(), "billing-web")) },
+			assert: unknown,
+		},
+		{
+			name: "a client that lost the code grant is answered unauthorized_client",
+			change: func(t *testing.T, f *parkFixture) {
+				changeClient(t, f, func(c *oidcprovider.Client) {
+					c.GrantTypes = []oidcprovider.GrantType{oidcprovider.GrantRefreshToken}
+				})
+			},
+			assert: answered(oidcprovider.CodeUnauthorizedClient),
+		},
+		{
+			name:   "openid since withdrawn is answered invalid_scope",
+			change: func(t *testing.T, f *parkFixture) { changeClient(t, f, scopes("profile")) },
+			assert: answered(oidcprovider.CodeInvalidScope),
+		},
+		{
+			name:   "a request left with no scope is answered invalid_scope",
+			params: func(v url.Values) { v.Set("scope", "api.read") },
+			change: func(t *testing.T, f *parkFixture) { changeClient(t, f, scopes("openid")) },
+			assert: answered(oidcprovider.CodeInvalidScope),
+		},
+		{
+			name:   "a scope since withdrawn is left out, and the request carries on",
+			change: func(t *testing.T, f *parkFixture) { changeClient(t, f, scopes("openid", "offline_access")) },
+			assert: func(t *testing.T, f *parkFixture, _ parked, op string, res oidcprovider.ResumeResult, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				if op == "end" {
+					assert.Equal(t, "access_denied", queryOf(t, res.RedirectTo).Get("error"), "the end's own code")
+
+					return
+				}
+				code := queryOf(t, res.RedirectTo).Get("code")
+				require.NotEmpty(t, code, res.RedirectTo)
+				assert.Equal(t, []string{"openid"}, recordOf(t, f, code).Scopes, "the code is for openid alone")
+			},
+		},
+	}
+	for _, o := range ops {
+		for _, tc := range cases {
+			t.Run(o.name+": "+tc.name, func(t *testing.T) {
+				t.Parallel()
+				f := newParkFixture(t, issuer+"/login")
+				rememberAll(t, f)
+				r := park(t, f, tc.params)
+				tc.change(t, f)
+
+				res, err := o.call(t, f, r)
+				tc.assert(t, f, r, o.name, res, err)
+			})
+		}
+	}
+}
+
+// TestResume_DeviceRejudgeKeepsUnknown keeps a device request that its client may no longer
+// make an unknown handle: it has no redirect URI to answer at, so no verdict redirects it.
+func TestResume_DeviceRejudgeKeepsUnknown(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		change func(tv *oidcprovider.Client)
+	}{
+		{name: "openid since withdrawn", change: func(tv *oidcprovider.Client) { tv.Scopes = []string{"profile"} }},
+		{name: "the device grant since withdrawn", change: func(tv *oidcprovider.Client) {
+			tv.GrantTypes = []oidcprovider.GrantType{oidcprovider.GrantAuthorizationCode}
+			tv.RedirectURIs = []string{authzRedirect}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newDeviceConsentFixture(t, deviceConsentSetup{})
+			handle, flow := f.atLogin(t)
+			f.putTV(t, tc.change)
+
+			s := f.signIn(t, "u-1")
+			res, err := f.p.Resume(t.Context(), oidcprovider.ResumeInput{Handle: handle, FlowSecret: flow, SignIn: &s})
+			require.ErrorIs(t, err, oidcprovider.ErrUnknownHandle)
+			assert.Empty(t, res.RedirectTo, "no Location of any kind")
+			assert.Equal(t, oidcprovider.StageLogin, f.stage(t, handle), "the request is left as it was")
+		})
+	}
 }

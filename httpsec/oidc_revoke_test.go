@@ -395,6 +395,22 @@ func TestOIDCRevoke(t *testing.T) {
 			assert: issued,
 		},
 		{
+			name: "a JWT access token under WithStrictRevocation is 400 unsupported_token_type",
+			setup: opWorldSetup{provider: func(*testing.T) []oidcprovider.Option {
+				return []oidcprovider.Option{oidcprovider.WithStrictRevocation()}
+			}},
+			send: func(t *testing.T, w *opWorld) tokenAnswer {
+				t.Helper()
+
+				at, _ := w.issued(t, tokenWeb, nil)["access_token"].(string)
+				require.NotEmpty(t, at)
+
+				return w.post(t, revokeURL, tokenForm(at), asClient(tokenWeb))
+			},
+			// assertTokenRefused pins 400, the JSON content type and the exact body.
+			assert: refused(oidcprovider.CodeUnsupportedTokenType),
+		},
+		{
 			name: "a value that is no token is success",
 			send: func(t *testing.T, w *opWorld) tokenAnswer {
 				t.Helper()

@@ -82,7 +82,7 @@ func loadPending(ctx context.Context, t *testing.T, s oidcprovider.PendingReques
 func PendingRequestSuite(t *testing.T, newStore func(t *testing.T) oidcprovider.PendingRequestStore) {
 	t.Helper()
 
-	runSuite(t, slices.Concat(pendingCases(), pendingMoveCases()), withoutClock(newStore))
+	runSuite(t, slices.Concat(pendingCases(), pendingMoveCases(), pendingCountCases()), withoutClock(newStore))
 }
 
 func pendingCases() []suiteCase[oidcprovider.PendingRequestStore] {
@@ -446,5 +446,104 @@ func scribblePending(r *oidcprovider.PendingRequest) {
 	if r.SignIn != nil {
 		r.SignIn.User = "scribbled"
 		r.SignIn.AMR[0] = "scribbled"
+	}
+}
+
+// countingPending is s as the oidcprovider.PendingRequestCounter every store of the suite
+// implements: a store that does not fails the case, never skips it.
+func countingPending(t *testing.T, s oidcprovider.PendingRequestStore) oidcprovider.PendingRequestCounter {
+	t.Helper()
+
+	counter, ok := s.(oidcprovider.PendingRequestCounter)
+	require.True(t, ok, "%T must implement oidcprovider.PendingRequestCounter", s)
+
+	return counter
+}
+
+// PendingRequestCountCancelled checks that CountLive under an already cancelled context returns
+// an error, never zero. newStore returns an empty store. The in-memory store is not held to it.
+func PendingRequestCountCancelled(t *testing.T, newStore func(t *testing.T) oidcprovider.PendingRequestStore) {
+	t.Helper()
+
+	s := newStore(t)
+	counter := countingPending(t, s)
+	require.NoError(t, s.Create(t.Context(), pendingRecord(1)))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	n, err := counter.CountLive(ctx, suiteStart)
+	require.Error(t, err, "a cancelled count is a failure")
+	assert.Zero(t, n)
+	assertNoDigest(t, err, opDigest(1))
+}
+
+// pendingCountCases holds CountLive to the contract oidcprovider.PendingRequestCounter
+// documents.
+func pendingCountCases() []suiteCase[oidcprovider.PendingRequestStore] {
+	type store = oidcprovider.PendingRequestStore
+
+	return []suiteCase[store]{
+		{
+			name: "count live of a store with no records is zero",
+			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
+				n, err := countingPending(t, s).CountLive(ctx, suiteStart)
+				require.NoError(t, err)
+				assert.Zero(t, n)
+			},
+		},
+		{
+			name: "count live counts the records that have not expired, whatever their stage",
+			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
+				now := suiteStart.Add(time.Hour)
+				login, answered, expired := pendingRecord(1), pendingRecord(2), pendingRecord(3)
+				login.ExpiresAt = now.Add(time.Minute)
+				answered.ExpiresAt = now.Add(time.Minute)
+				expired.ExpiresAt = now.Add(-time.Minute)
+				for _, r := range []*oidcprovider.PendingRequest{login, answered, expired} {
+					require.NoError(t, s.Create(ctx, r))
+				}
+				signIn := opSignIn("u-1", 1)
+				require.NoError(t, s.Advance(ctx, opDigest(2), oidcprovider.StageLogin, oidcprovider.StageDone, &signIn))
+
+				n, err := countingPending(t, s).CountLive(ctx, now)
+				require.NoError(t, err)
+				assert.Equal(t, 2, n, "an answered request counts until it expires; an expired one does not")
+			},
+		},
+		{
+			name: "count live does not count a record expiring at the caller's time",
+			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
+				now := suiteStart.Add(time.Hour)
+				atNow, after := pendingRecord(1), pendingRecord(2)
+				atNow.ExpiresAt = now
+				after.ExpiresAt = now.Add(time.Microsecond)
+				require.NoError(t, s.Create(ctx, atNow))
+				require.NoError(t, s.Create(ctx, after))
+
+				n, err := countingPending(t, s).CountLive(ctx, now)
+				require.NoError(t, err)
+				assert.Equal(t, 1, n, "strictly after the caller's time")
+			},
+		},
+		{
+			name: "count live judges by the caller's time, never the wall clock, and writes nothing",
+			assert: func(t *testing.T, ctx context.Context, s store, _ *clockwork.FakeClock) {
+				past := pendingRecord(1)
+				past.ExpiresAt = longAgo.Add(time.Hour)
+				require.NoError(t, s.Create(ctx, past))
+				counter := countingPending(t, s)
+
+				n, err := counter.CountLive(ctx, longAgo)
+				require.NoError(t, err)
+				assert.Equal(t, 1, n, "live at the caller's time, though the wall clock has passed it")
+
+				n, err = counter.CountLive(ctx, suiteStart)
+				require.NoError(t, err)
+				assert.Zero(t, n, "expired at the caller's later time")
+
+				loadPending(ctx, t, s, 1)
+			},
+		},
 	}
 }

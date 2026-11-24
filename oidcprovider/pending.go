@@ -16,7 +16,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
-//go:generate mockgen -destination=pending_mock_test.go -package=oidcprovider_test -typed github.com/kartaladev/scrty/oidcprovider PendingRequestStore,ConsentStore
+//go:generate mockgen -destination=pending_mock_test.go -package=oidcprovider_test -typed github.com/kartaladev/scrty/oidcprovider PendingRequestStore,PendingRequestCounter,ConsentStore
 
 // HandleParam is the query parameter that carries a pending request's handle to the
 // consumer's login and consent pages.
@@ -99,10 +99,52 @@ func (p *Provider) park(ctx context.Context, req *PendingRequest, flowSecret str
 }
 
 // parkRequest stores a validated request at the login stage under a new handle, and returns
-// the handle and the browser's flow secret, which leave here and are stored only as digests.
+// the handle and the browser's flow secret, which leave here and are stored only as digests. A
+// request with a redirect URI is admitted under the limit first (admitPark).
 func (p *Provider) parkRequest(ctx context.Context, req *PendingRequest, flowSecret string) (string, string, error) {
+	if err := p.admitPark(ctx, req); err != nil {
+		return "", "", err
+	}
+
 	return p.parkAt(ctx, req, flowSecret, StageLogin)
 }
+
+// errCeilingReached says the live requests reached the limit (WithPendingRequestLimit).
+// Authorize answers it at the redirect URI.
+var errCeilingReached = errors.New("oidcprovider: the parked-request ceiling is reached")
+
+// errNegativeCount is a PendingRequestCounter answering a negative count.
+var errNegativeCount = errors.New("oidcprovider: a store counted fewer than no live requests")
+
+// admitPark refuses req with errCeilingReached when the live requests are at the limit or over.
+// It counts nothing with no limit set or for a device request. A count that fails or is
+// negative is a dependency failure. Concurrent parks may overshoot the limit (F17).
+func (p *Provider) admitPark(ctx context.Context, req *PendingRequest) error {
+	if p.cfg.pendingCeiling <= 0 || req.DeviceAuthorizationID != id.Nil {
+		return nil
+	}
+	counter, ok := p.stores.pendingRequests.(PendingRequestCounter)
+	if !ok {
+		// New refuses this wiring; refuse here too rather than park.
+		return dependencyFailure(ctx, errNoCounter, "oidcprovider: count the live pending requests")
+	}
+
+	live, err := counter.CountLive(ctx, p.cfg.clock.Now())
+	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
+	switch {
+	case err != nil:
+		return dependencyFailure(ctx, err, "oidcprovider: count the live pending requests")
+	case live < 0:
+		return dependencyFailure(ctx, errNegativeCount, "oidcprovider: count the live pending requests")
+	case live >= p.cfg.pendingCeiling:
+		return errCeilingReached
+	}
+
+	return nil
+}
+
+// errNoCounter is a limit over a store that cannot count, which New refuses.
+var errNoCounter = errors.New("oidcprovider: the pending-request store cannot count")
 
 // parkAt is parkRequest for a request waiting at stage.
 func (p *Provider) parkAt(ctx context.Context, req *PendingRequest, flowSecret string, stage Stage) (string, string, error) {
@@ -154,34 +196,66 @@ func splitHandle(handle string) (id.ID, []byte, bool) {
 // the one it was parked with. Every way of failing that is the requester's answers
 // ErrUnknownHandle, so a guess learns nothing from which it was. A store answering
 // neither a request nor an error breaks its contract, and is a dependency failure, never
-// an unknown handle. The stage is the caller's to judge.
+// an unknown handle. The stage is the caller's to judge. A request expired within the
+// grace window is an unknown handle here; only Resume and EndPending answer it.
 func (p *Provider) loadPending(ctx context.Context, handle, flowSecret string) (*PendingRequest, error) {
+	r, age, err := p.loadPendingInGrace(ctx, handle, flowSecret)
+	if err != nil {
+		return nil, err
+	}
+	if age != pendingLive {
+		return nil, ErrUnknownHandle
+	}
+
+	return r, nil
+}
+
+// pendingAge says where a bound request stands against its expiry, by the provider's clock.
+type pendingAge uint8
+
+const (
+	// pendingLive: the request has not expired.
+	pendingLive pendingAge = iota
+	// pendingExpiredInGrace: expired less than the grace window ago (WithPendingRequestGrace).
+	pendingExpiredInGrace
+)
+
+// loadPendingInGrace is loadPending, except that a request expired within the grace window,
+// [ExpiresAt, ExpiresAt+grace), is returned too, as pendingExpiredInGrace. The clock is read once.
+func (p *Provider) loadPendingInGrace(ctx context.Context, handle, flowSecret string) (*PendingRequest, pendingAge, error) {
 	recordID, handleDigest, ok := splitHandle(handle)
 	if !ok {
-		return nil, ErrUnknownHandle
+		return nil, pendingLive, ErrUnknownHandle
 	}
 	flowDigest, ok := digestEncoded(flowSecret)
 	if !ok {
-		return nil, ErrUnknownHandle
+		return nil, pendingLive, ErrUnknownHandle
 	}
 
 	r, err := p.stores.pendingRequests.Load(ctx, handleDigest)
 	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrNotFound):
-		return nil, ErrUnknownHandle
+		return nil, pendingLive, ErrUnknownHandle
 	case err != nil:
-		return nil, dependencyFailure(ctx, err, "oidcprovider: load the pending request")
+		return nil, pendingLive, dependencyFailure(ctx, err, "oidcprovider: load the pending request")
 	case r == nil:
-		return nil, dependencyFailure(ctx, errNoRecord, "oidcprovider: load the pending request")
+		return nil, pendingLive, dependencyFailure(ctx, errNoRecord, "oidcprovider: load the pending request")
 	}
 
 	bound := subtle.ConstantTimeCompare(r.FlowDigest, flowDigest) == 1
-	if !bound || r.ID != recordID || !p.cfg.clock.Now().Before(r.ExpiresAt) {
-		return nil, ErrUnknownHandle
+	if !bound || r.ID != recordID {
+		return nil, pendingLive, ErrUnknownHandle
 	}
-
-	return r, nil
+	now := p.cfg.clock.Now()
+	switch {
+	case now.Before(r.ExpiresAt):
+		return r, pendingLive, nil
+	case now.Before(r.ExpiresAt.Add(p.cfg.expiredGrace)):
+		return r, pendingExpiredInGrace, nil
+	default:
+		return nil, pendingLive, ErrUnknownHandle
+	}
 }
 
 // PendingView is what the consumer's login and consent pages may know of a pending

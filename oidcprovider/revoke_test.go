@@ -1407,3 +1407,164 @@ func TestProvider_Revoke_Concurrently(t *testing.T) {
 	require.NoError(t, <-answers)
 	assertEndedByClient(t, f, s)
 }
+
+// TestRevoke_JWTAccessToken is WithStrictRevocation. Without it, revoking a JWT
+// access token answers success with nothing revoked. With it, the calling client's own valid JWT
+// is refused with unsupported_token_type, since nothing can end it before its exp; anything else
+// is answered as without it: an unknown value, an expired JWT, one of a revoked grant and
+// another client's are success, and an opaque token is revoked. A key source or store that
+// cannot say whether the JWT is valid is no verdict, and matches ErrDependency, rather than a
+// success that would tell the client its token had ended.
+func TestRevoke_JWTAccessToken(t *testing.T) {
+	t.Parallel()
+
+	refusing := []oidcprovider.Option{oidcprovider.WithStrictRevocation()}
+
+	type testCase struct {
+		name  string
+		opts  []oidcprovider.Option
+		start func(*testing.T, *refreshFixture) *refreshScene
+		ctx   func(context.Context) context.Context
+		// arrange returns who presents what.
+		arrange func(*testing.T, *refreshFixture, *refreshScene) (oidcprovider.ClientCredentials, url.Values)
+		assert  func(*testing.T, *refreshFixture, *refreshScene, error)
+	}
+	own := func(_ *testing.T, _ *refreshFixture, s *refreshScene) (oidcprovider.ClientCredentials, url.Values) {
+		return credsOf("billing-web"), tokenForm(s.first.AccessToken)
+	}
+	// succeeded asserts success, with the token as it was: a JWT cannot be ended.
+	succeeded := func(t *testing.T, f *refreshFixture, s *refreshScene, err error) {
+		t.Helper()
+		require.NoError(t, err)
+		assertGrantLive(t, f, s)
+	}
+
+	cases := []testCase{
+		{
+			name:    "without the option, the client's own valid JWT answers success",
+			arrange: own,
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, err error) {
+				t.Helper()
+				succeeded(t, f, s, err)
+				assertAccessTokenWorks(t, f, s.first.AccessToken)
+			},
+		},
+		{
+			name: "with it, the client's own valid JWT is unsupported_token_type, and stays valid",
+			opts: refusing, arrange: own,
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, err error) {
+				t.Helper()
+				assertRefused(t, err, oidcprovider.CodeUnsupportedTokenType)
+				assertGrantLive(t, f, s)
+				assertAccessTokenWorks(t, f, s.first.AccessToken)
+			},
+		},
+		{
+			name: "with it, a value that is no token answers success", opts: refusing,
+			arrange: func(*testing.T, *refreshFixture, *refreshScene) (oidcprovider.ClientCredentials, url.Values) {
+				return credsOf("billing-web"), tokenForm("not.a.token")
+			},
+			assert: succeeded,
+		},
+		{
+			name: "with it, another client's JWT answers success, as without it", opts: refusing,
+			arrange: func(_ *testing.T, _ *refreshFixture, s *refreshScene) (oidcprovider.ClientCredentials, url.Values) {
+				return credsOf(tiedClient), tokenForm(s.first.AccessToken)
+			},
+			assert: succeeded,
+		},
+		{
+			name: "with it, an expired JWT answers success", opts: refusing,
+			arrange: func(_ *testing.T, f *refreshFixture, s *refreshScene) (oidcprovider.ClientCredentials, url.Values) {
+				f.clk.Advance(16 * time.Minute)
+
+				return credsOf("billing-web"), tokenForm(s.first.AccessToken)
+			},
+			assert: func(t *testing.T, _ *refreshFixture, _ *refreshScene, err error) {
+				t.Helper()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "with it, a JWT of a grant its client revoked answers success", opts: refusing,
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) (oidcprovider.ClientCredentials, url.Values) {
+				t.Helper()
+				require.NoError(t, f.p.Revoke(t.Context(), credsOf("billing-web"), tokenForm(s.first.RefreshToken)))
+
+				return credsOf("billing-web"), tokenForm(s.first.AccessToken)
+			},
+			assert: func(t *testing.T, _ *refreshFixture, _ *refreshScene, err error) {
+				t.Helper()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "with it, the client's own opaque token is revoked, and answers success", opts: refusing,
+			start: startClient(opaqueClient, opaqueRedirect),
+			arrange: func(_ *testing.T, _ *refreshFixture, s *refreshScene) (oidcprovider.ClientCredentials, url.Values) {
+				return credsOf(opaqueClient), tokenForm(s.first.AccessToken)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				_, verr := f.p.VerifyAccessToken(t.Context(), s.first.AccessToken)
+				assertRefused(t, verr, oidcprovider.CodeInvalidToken)
+			},
+		},
+		{
+			name: "with it, a key source that cannot verify is a dependency failure, saying nothing of the token", opts: refusing,
+			arrange: func(_ *testing.T, f *refreshFixture, s *refreshScene) (oidcprovider.ClientCredentials, url.Values) {
+				f.keys.failVerifying(func(context.Context) error { return errOutage })
+
+				return credsOf("billing-web"), tokenForm(s.first.AccessToken)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, oidcprovider.ErrDependency)
+				assert.NotContains(t, err.Error(), errOutage.Error())
+				assert.NotContains(t, err.Error(), s.first.AccessToken)
+				f.keys.failVerifying(nil)
+				assertGrantLive(t, f, s)
+			},
+		},
+		{
+			name: "with it, a caller who left hears its own context's error", opts: refusing,
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+				return cctx
+			},
+			arrange: func(_ *testing.T, f *refreshFixture, s *refreshScene) (oidcprovider.ClientCredentials, url.Values) {
+				f.keys.failVerifying(func(ctx context.Context) error { return ctx.Err() })
+
+				return credsOf("billing-web"), tokenForm(s.first.AccessToken)
+			},
+			assert: func(t *testing.T, f *refreshFixture, _ *refreshScene, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, context.Canceled)
+				f.keys.failVerifying(nil)
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newRefreshFixture(t, tc.opts...)
+			start := tc.start
+			if start == nil {
+				start = startBilling
+			}
+			s := start(t, f)
+			s.grant = grantNow(t, f, s)
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+			creds, form := tc.arrange(t, f, s)
+
+			tc.assert(t, f, s, f.p.Revoke(ctx, creds, form))
+		})
+	}
+}

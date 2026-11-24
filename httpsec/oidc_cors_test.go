@@ -101,6 +101,7 @@ func TestCORS_OIDCProvider(t *testing.T) {
 	browser := []struct{ name, path string }{
 		{name: "authorization", path: "/oauth2/authorize"},
 		{name: "resume", path: "/oauth2/authorize/resume"},
+		{name: "cancel", path: "/oauth2/authorize/cancel"},
 		{name: "end-session", path: "/oauth2/logout"},
 		{name: "logout confirmation", path: "/oauth2/logout/confirm"},
 	}

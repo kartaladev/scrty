@@ -20,7 +20,8 @@ import (
 // and the code-token purge, which drops only the tokens the store itself finds expired.
 // The tasks:
 //
-//   - "oidc-provider.pending-requests": the parked requests past their deadline;
+//   - "oidc-provider.pending-requests": the parked requests expired longer ago than the
+//     grace window (WithPendingRequestGrace);
 //   - "oidc-provider.browser-sessions": the sessions past either deadline;
 //   - "oidc-provider.codes": the code records a minute past their expiry and the tokens
 //     of those codes. A spent code is kept that long so a valid replay still revokes
@@ -72,8 +73,9 @@ func (p *Provider) sweepDeviceAuthorizations(ctx context.Context) (int, error) {
 	return p.cfg.device.store.DeleteExpired(ctx, p.cfg.clock.Now())
 }
 
+// sweepPendingRequests deletes the requests past the grace window, by the provider's clock.
 func (p *Provider) sweepPendingRequests(ctx context.Context) (int, error) {
-	return p.stores.pendingRequests.DeleteExpired(ctx, p.cfg.clock.Now())
+	return p.stores.pendingRequests.DeleteExpired(ctx, p.cfg.clock.Now().Add(-p.cfg.expiredGrace))
 }
 
 func (p *Provider) sweepBrowserSessions(ctx context.Context) (int, error) {

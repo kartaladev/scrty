@@ -772,6 +772,7 @@ func TestChainEndpoints_PinsEveryOperation(t *testing.T) {
 
 		{httpsec.OperationOAuth2Authorize, "scrty.oauth2.authorize", pinned(m(get, post), "/auth/oauth2/authorize", exact, refused, nothing, opPrefix, "")},
 		{httpsec.OperationOAuth2AuthorizeResume, "scrty.oauth2.authorize.resume", pinned(m(post), "/auth/oauth2/authorize/resume", exact, refused, signedIn, opPrefix, "")},
+		{httpsec.OperationOAuth2AuthorizeCancel, "scrty.oauth2.authorize.cancel", pinned(m(post), "/auth/oauth2/authorize/cancel", exact, refused, nothing, opPrefix, "")},
 		{httpsec.OperationOAuth2Token, "scrty.oauth2.token", pinned(m(post), "/auth/oauth2/token", exact, refused, clientAuthn, opPrefix, "")},
 		{httpsec.OperationOAuth2UserInfo, "scrty.oauth2.userinfo", pinned(m(get, post), "/auth/oauth2/userinfo", exact, refused, bearer, opPrefix, "")},
 		{httpsec.OperationOAuth2Revoke, "scrty.oauth2.revoke", pinned(m(post), "/auth/oauth2/revoke", exact, refused, clientAuthn, opPrefix, "")},

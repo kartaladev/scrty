@@ -405,7 +405,13 @@ func setNonce(w guardauth.HeaderWriter, nonce string) {
 // answered. It is always on with EnableDPoP, because the RFC asks for it; a
 // consumer's WithErrorHandler or WithGuardErrorHandler may replace or remove
 // the header it set.
-type dpopChallenge struct{ v *dpopVerifier }
+type dpopChallenge struct {
+	v *dpopVerifier
+
+	// bearer is the bearer challenge (wireBearerChallenge) this interceptor also
+	// answers for, and nil when the chain has no built-in bearer or turned it off.
+	bearer *bearerChallenge
+}
 
 // orderDPoPChallenge is the challenge interceptor's slot.
 const orderDPoPChallenge = OrderSecurityHeaders + 1
@@ -413,7 +419,14 @@ const orderDPoPChallenge = OrderSecurityHeaders + 1
 // Intercept runs the rest of the chain, and sets the challenge a refusal
 // coming back from it calls for. It publishes the challenge on the request,
 // so a guard behind the chain answers its own refusal alike.
+//
+// With a bearer challenge on the chain, it also answers every other 401 outside the
+// provider's endpoints (bearerChallenge.challenge).
 func (c *dpopChallenge) Intercept(ex *Exchange, next Next) error {
+	if c.bearer != nil {
+		return c.bearer.Intercept(ex, next)
+	}
+
 	ctx := guardauth.WithChallenger(ex.Context(), c.v.challenge)
 	if c.v.cfg.Nonce {
 		ctx = context.WithValue(ctx, dpopResponseKey{}, ex.Writer)
@@ -426,6 +439,12 @@ func (c *dpopChallenge) Intercept(ex *Exchange, next Next) error {
 		return nil
 	}
 
+	return c.answer(ex, err)
+}
+
+// answer sets the challenge DPoP's refusal err calls for, and returns the error the
+// request fails with.
+func (c *dpopChallenge) answer(ex *Exchange, err error) error {
 	// Every DPoP chain on the exchange challenges the same refused error, so
 	// the abort is reported once for the exchange, not once per run.
 	out, abort := c.v.challenge(ex.Context(), ex.Writer, err)
@@ -460,6 +479,20 @@ func (c *dpopChallenge) Intercept(ex *Exchange, next Next) error {
 // err, the chain's own interceptor by reportQuietly, a guard by its own (it is
 // the guardauth.Challenger the chain publishes).
 func (v *dpopVerifier) challenge(ctx context.Context, w guardauth.HeaderWriter, err error) (out, abort error) {
+	_, out, abort = v.challengeAnswered(ctx, w, err, 0)
+
+	return out, abort
+}
+
+// challengeAnswered is challenge, also reporting whether err is one of the
+// errors it answers, whether or not a challenge could be set for it. It sets
+// no challenge for a scheme set already names.
+func (v *dpopVerifier) challengeAnswered(
+	ctx context.Context,
+	w guardauth.HeaderWriter,
+	err error,
+	set challengeSchemes,
+) (answered bool, out, abort error) {
 	walk := walkRefusal(err)
 	nonceRequired := walk.is(ErrDPoPNonceRequired)
 	invalidProof := !nonceRequired && walk.is(ErrInvalidDPoPProof)
@@ -467,7 +500,7 @@ func (v *dpopVerifier) challenge(ctx context.Context, w guardauth.HeaderWriter, 
 		walk.is(ErrAuthenticationRequired, authorize.ErrAuthenticationRequired)
 
 	if walk.abort != nil {
-		return err, walk.abort
+		return false, err, walk.abort
 	}
 
 	// Only a consumer's error can ask for a nonce on a chain whose server
@@ -480,25 +513,32 @@ func (v *dpopVerifier) challenge(ctx context.Context, w guardauth.HeaderWriter, 
 
 	algs := "algs=" + strconv.Quote(v.algorithmNames())
 
+	add := func(scheme challengeSchemes, value string) {
+		if set&scheme == 0 {
+			w.AddHeader(headerWWWAuthenticate, value)
+		}
+	}
+
 	switch {
 	case nonceRequired:
 		nonce, _, serr := v.issueNonce(ctx, false)
 		if serr != nil {
-			return serr, nil
+			return true, serr, nil
 		}
 
-		w.AddHeader(headerWWWAuthenticate, `DPoP error="use_dpop_nonce", `+algs)
+		add(schemeDPoP, `DPoP error="use_dpop_nonce", `+algs)
 		setNonce(w, nonce)
 	case invalidProof:
-		w.AddHeader(headerWWWAuthenticate, `DPoP error="invalid_dpop_proof", `+algs)
+		add(schemeDPoP, `DPoP error="invalid_dpop_proof", `+algs)
 	case mustAuthenticate:
-		w.AddHeader(headerWWWAuthenticate, "DPoP "+algs)
+		add(schemeDPoP, "DPoP "+algs)
+
 		if !v.cfg.Require {
-			w.AddHeader(headerWWWAuthenticate, "Bearer")
+			add(schemeBearer, "Bearer")
 		}
 	}
 
-	return err, nil
+	return nonceRequired || invalidProof || mustAuthenticate, err, nil
 }
 
 // algorithmNames is the accepted proof algorithms, space-separated, as a

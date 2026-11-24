@@ -344,8 +344,14 @@ func TestMemoryAtAnyClock(t *testing.T) {
 				s.put(t, 1, at.Add(time.Hour))
 				s.put(t, 2, at.Add(time.Second))
 
-				// Past the sweep's minute, so this write sweeps with both of them held.
-				clk.Advance(2 * time.Minute)
+				// Past the sweep's minute, so this write sweeps with both of them held. A pending
+				// request is kept 30 minutes past its expiry, the longest grace window, before
+				// the store forgets it.
+				advance := 2 * time.Minute
+				if name == "PendingRequests" {
+					advance += 30 * time.Minute
+				}
+				clk.Advance(advance)
 				s.put(t, 3, at.Add(time.Hour))
 
 				assert.False(t, s.held(t, 2, at), "the sweep ran, and forgot what its clock says has expired")

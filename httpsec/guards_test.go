@@ -1416,9 +1416,9 @@ func TestRecencyGuard(t *testing.T) {
 	}
 }
 
-// TestGuards_DPoPChallenge pins that a guard behind a chain with DPoP on
-// refuses a caller nothing authenticated with the challenge the chain's own
-// refusal carries, and that without DPoP it answers as it always did.
+// TestGuards_DPoPChallenge pins that a guard behind a chain with a built-in
+// bearer refuses a caller nothing authenticated with the challenge the chain's
+// own refusal carries: DPoP's with DPoP on, and Bearer without it.
 //
 // It stands on its own: a whole chain, run as net/http middleware, in front
 // of the guard.
@@ -1453,8 +1453,8 @@ func TestGuards_DPoPChallenge(t *testing.T) {
 			assert: challenged(`DPoP algs="ES256"`),
 		},
 		{
-			name:   "DPoP off: no challenge, as before",
-			assert: challenged(),
+			name:   "DPoP off: the Bearer challenge, as the bearer chain's own 401s carry",
+			assert: challenged("Bearer"),
 		},
 		{
 			name: "a consumer's error handler finds the challenge set, as the chain's does",

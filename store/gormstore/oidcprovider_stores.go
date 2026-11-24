@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"math"
 	"time"
 
 	"gorm.io/gorm"
@@ -87,6 +88,23 @@ func (c *config) queryRow(ctx context.Context, op, query string, args []any, des
 
 	return failed(op, err)
 }
+
+// count runs a count(*) query and returns its result as an int. An answer no int can hold
+// is refused, never truncated.
+func (c *config) count(ctx context.Context, op, query string, args ...any) (int, error) {
+	var n int64
+	if err := c.queryRow(ctx, op, query, args, &n); err != nil {
+		return 0, err
+	}
+	if n < 0 || n > math.MaxInt {
+		return 0, failed(op, errCountRange)
+	}
+
+	return int(n), nil
+}
+
+// errCountRange is a count(*) answer no int can hold.
+var errCountRange = errors.New("count out of range")
 
 // scanOne runs a statement on q and scans the first row it returns into dest, reporting
 // sql.ErrNoRows when there is none. It reads through QueryContext, never QueryRowContext:
@@ -292,6 +310,12 @@ func (s *PendingRequestStore) Advance(
 
 	return s.c.execOrRefuse(ctx, op, oidcprovider.ErrNotFound, pgschema.PendingRequestAdvance,
 		storekit.OrEmpty(handleDigest), int16(from), int16(to), encoded)
+}
+
+// CountLive implements oidcprovider.PendingRequestCounter. A cancelled context, a failed
+// statement or a count too large for an int is an error of fixed text, never a count.
+func (s *PendingRequestStore) CountLive(ctx context.Context, now time.Time) (int, error) {
+	return s.c.count(ctx, "count live pending requests", pgschema.PendingRequestCountLive, storekit.Time(now))
 }
 
 // DeleteExpired implements oidcprovider.PendingRequestStore.
@@ -758,11 +782,12 @@ func (s *ClientStore) GenerateSecret(ctx context.Context, clientID string) (stri
 }
 
 var (
-	_ oidcprovider.PendingRequestStore = (*PendingRequestStore)(nil)
-	_ oidcprovider.CodeStore           = (*CodeStore)(nil)
-	_ oidcprovider.ConsentStore        = (*ConsentStore)(nil)
-	_ oidcprovider.AccessTokenStore    = (*AccessTokenStore)(nil)
-	_ oidcprovider.AssertionIDStore    = (*AssertionIDStore)(nil)
-	_ oidcprovider.BrowserSessionStore = (*BrowserSessionStore)(nil)
-	_ oidcprovider.ClientStore         = (*ClientStore)(nil)
+	_ oidcprovider.PendingRequestStore   = (*PendingRequestStore)(nil)
+	_ oidcprovider.PendingRequestCounter = (*PendingRequestStore)(nil)
+	_ oidcprovider.CodeStore             = (*CodeStore)(nil)
+	_ oidcprovider.ConsentStore          = (*ConsentStore)(nil)
+	_ oidcprovider.AccessTokenStore      = (*AccessTokenStore)(nil)
+	_ oidcprovider.AssertionIDStore      = (*AssertionIDStore)(nil)
+	_ oidcprovider.BrowserSessionStore   = (*BrowserSessionStore)(nil)
+	_ oidcprovider.ClientStore           = (*ClientStore)(nil)
 )

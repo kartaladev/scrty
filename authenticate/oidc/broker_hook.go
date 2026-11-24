@@ -835,9 +835,10 @@ const (
 //
 //   - an error whose chain cannot be walked is a broker failure with no
 //     chain, never a refusal it might claim;
-//   - from the hook only, ErrNoLinkedAccount and ErrProvisioningRefused
-//     pass through as that bare sentinel: an authentication failure, with
-//     none of the consumer's text;
+//   - from the hook only, ErrNoLinkedAccount, ErrProvisioningRefused and
+//     ErrUserInfoFailed pass through as that bare sentinel, with none of the
+//     consumer's text: the first two are authentication failures, the third
+//     a provider outage, and only the refusals write a log record;
 //   - with the request's context done, the context's error, wrapped in fixed
 //     text;
 //   - anything else is a *hookFailure: a broker failure whose text is fixed,
@@ -857,6 +858,9 @@ func (b *Broker) hookError(ctx context.Context, ext ExternalIdentity, stage hook
 				b.refusal(ctx, slog.LevelDebug, "the sign-in hook refused the identity", ext.Provider, ext.Email)
 				return sentinel
 			}
+		}
+		if errors.Is(err, ErrUserInfoFailed) {
+			return ErrUserInfoFailed
 		}
 	}
 	if cerr := ctx.Err(); cerr != nil {

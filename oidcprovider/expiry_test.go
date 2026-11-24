@@ -154,6 +154,9 @@ func TestExpiryTasks(t *testing.T) {
 		},
 		{
 			name: "the pending, browser, access and assertion tasks keep a record still live at now, and remove one that is not",
+			// With no grace window, the pending task's cutoff is now, as the others' is; the
+			// window is TestSweepPendingRequests_KeepsGraceWindow's.
+			opts: []oidcprovider.Option{oidcprovider.WithPendingRequestGrace(0)},
 			assert: func(t *testing.T, x *exchangeFixture) {
 				ctx := t.Context()
 				now := x.clk.Now()
@@ -417,6 +420,69 @@ func TestExpiryTasks_Device(t *testing.T) {
 			t.Parallel()
 
 			tc.assert(t)
+		})
+	}
+}
+
+// TestSweepPendingRequests_KeepsGraceWindow sweeps a parked request only once the grace window
+// past its expiry has passed, by the provider's clock, so a request the provider would still
+// answer is never swept first (F14).
+func TestSweepPendingRequests_KeepsGraceWindow(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		opts   []oidcprovider.Option
+		assert func(t *testing.T, removed int, held func(past time.Duration) bool)
+	}
+	cases := []testCase{
+		{
+			name: "the default grace keeps a request 5 minutes past expiry and removes one 11 minutes past",
+			assert: func(t *testing.T, removed int, held func(time.Duration) bool) {
+				t.Helper()
+				assert.Equal(t, 1, removed)
+				assert.True(t, held(5*time.Minute), "inside the window")
+				assert.False(t, held(11*time.Minute), "past the window")
+			},
+		},
+		{
+			name: "a grace of zero sweeps everything expired",
+			opts: []oidcprovider.Option{oidcprovider.WithPendingRequestGrace(0)},
+			assert: func(t *testing.T, removed int, held func(time.Duration) bool) {
+				t.Helper()
+				assert.Equal(t, 2, removed)
+				assert.False(t, held(5*time.Minute))
+				assert.False(t, held(11*time.Minute))
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newParkFixture(t, issuer+"/login", tc.opts...)
+			now := f.clk.Now()
+			digest := func(past time.Duration) []byte { return []byte(past.String()) }
+			for _, past := range []time.Duration{5 * time.Minute, 11 * time.Minute} {
+				require.NoError(t, f.store.Create(t.Context(), &oidcprovider.PendingRequest{
+					ID: id.MustParse("01926a4e-0000-7000-8000-0000000000bb"), HandleDigest: digest(past),
+					ClientID: "billing-web", ParkedAt: now.Add(-past - 10*time.Minute), ExpiresAt: now.Add(-past),
+				}))
+			}
+
+			var sweep expiry.Task
+			for _, task := range oidcprovider.ExpiryTasks(f.p) {
+				if task.Name == "oidc-provider.pending-requests" {
+					sweep = task
+				}
+			}
+			require.NotNil(t, sweep.Run)
+			removed, err := sweep.Run(t.Context())
+			require.NoError(t, err)
+
+			tc.assert(t, removed, func(past time.Duration) bool {
+				_, err := f.store.Load(t.Context(), digest(past))
+				return err == nil
+			})
 		})
 	}
 }

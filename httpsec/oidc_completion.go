@@ -145,24 +145,27 @@ func rootedPath(u *url.URL) string {
 
 // completeProviderSignIn completes, on the server, a federated login whose
 // destination was the provider's login page carrying handle (D7). It replays a
-// handoff redemption followed by a resume, step for step, and returns every
-// refusal for the chain's error handling to answer.
+// handoff redemption followed by a resume, step for step. A refusal D4 maps
+// returns to the login page (refuseCompletion); any other is returned for the
+// chain's error handling to answer.
 //
 //  1. The destination was recognised by the callback (parkedHandle).
 //  2. A callback not made over TLS, while the provider does not allow plain HTTP,
 //     is refused as ErrOIDCUnknownHandle, as the resume endpoint refuses it, before
 //     the throttle or any lookup. Then the parked request is checked
 //     (precheckParked), before the user is loaded or anything is written, so a
-//     handle that is unknown, expired or bound to another browser costs the source
-//     one charge and changes nothing else.
+//     handle that is unknown, expired past its grace window or bound to another
+//     browser costs the source one charge and changes nothing else; one expired
+//     within the window is answered at the client (D7).
 //  3. The user is loaded through OIDCDeps.Users (loadCompleting): the session is
 //     built from the stored details, never from the broker's principal, as a
 //     redemption builds it.
 //  4. The post-authentication policy decides, on the stored details, the stored
 //     password-change time and the assurance the verified ID token asserted, by the
-//     check a redemption runs (oidcRedemptionCheck). A denial is its reason, with
-//     nothing stored. A step owed falls back to the handoff to the login page,
-//     carrying the handle (D8), with nothing stored either.
+//     check a redemption runs (oidcRedemptionCheck). A denial stores nothing and
+//     returns to the login page with access_denied, or with WithOIDCFailToClient
+//     answers the client. A step owed falls back to the handoff to the login
+//     page, carrying the handle (D8), with nothing stored either.
 //
 // The rest — the session, the resume and the answer — is finishProviderSignIn's.
 func (i *oidcInterceptor) completeProviderSignIn(ex *Exchange, provider string, res oidc.CallbackResult, handle string) error {
@@ -173,19 +176,27 @@ func (i *oidcInterceptor) completeProviderSignIn(ex *Exchange, provider string, 
 		return ErrOIDCUnknownHandle
 	}
 
-	if err := i.precheckParked(ex, handle); err != nil {
-		return err
+	parked := i.precheckParked(ex, provider, handle)
+	if parked.err != nil {
+		return parked.err
+	}
+
+	if parked.answeredAt != "" {
+		// Expired within its grace window: answered at the client (D7).
+		i.answerParkedAtClient(ex, parkedAtCallback, provider, oidcprovider.CodeAccessDenied, parked.answeredAt)
+
+		return nil
 	}
 
 	if res.Principal == nil || res.Principal.ID == "" {
 		// The relying party never answers so; a broker that did names no one to
 		// load, and is refused as a redemption refuses an unknown user.
-		return oidc.ErrInvalidHandoff
+		return i.refuseCompletion(ex, provider, handle, completionStageUser, oidc.ErrInvalidHandoff)
 	}
 
 	details, err := i.loadCompleting(ex, provider, res.Principal.ID)
 	if err != nil {
-		return err
+		return i.refuseCompletion(ex, provider, handle, completionStageUser, err)
 	}
 
 	signIn := providerSignIn{
@@ -205,18 +216,22 @@ func (i *oidcInterceptor) completeProviderSignIn(ex *Exchange, provider string, 
 		AMR:               slices.Clone(res.AMR),
 		ACR:               res.ACR,
 	}); err != nil {
-		return err
+		return i.refuseCompletion(ex, provider, handle, completionStageRefusal, err)
 	}
 
 	// The check ran and allowed or challenged; anything else is refused here, as
 	// the redemption's guards refuse it, so nothing below acts on a decision it
 	// was not made for.
 	if err := guardRedemption(out, signIn.principal, signIn.passwordChangedAt); err != nil {
-		return err
+		// Refusal stage. Unreachable through the chain: the check that just
+		// succeeded recorded an allow or a challenge for this very principal.
+		return i.refuseCompletion(ex, provider, handle, completionStageRefusal, err)
 	}
 
 	if err := guardFederatedAssurance(out, res.Provider, res.Issuer, res.AMR, res.ACR); err != nil {
-		return err
+		// Refusal stage. Unreachable through the chain: the check was handed
+		// these very values, so the evidence it decided on cannot differ.
+		return i.refuseCompletion(ex, provider, handle, completionStageRefusal, err)
 	}
 
 	if out.decision.Outcome == policy.Challenge {
@@ -271,8 +286,9 @@ type providerSignIn struct {
 // ends the session step 5 stored before it answers (endCompleted), so no
 // refused completion leaves a live sign-in behind (F23, F24), and takes it off
 // the exchange and its context, so nothing answering the refusal reads it
-// (F46). Every refusal is returned for the chain's error handling to answer,
-// and sends no redirect.
+// (F46). A per-request refusal whose session was ended returns to the login page
+// (refuseCompletion); every other refusal is returned for the chain's error
+// handling to answer, and sends no redirect.
 func (i *oidcInterceptor) finishProviderSignIn(ex *Exchange, provider string, res oidc.CallbackResult, signIn providerSignIn) error {
 	op := i.provider
 	ctx := ex.Context()
@@ -283,12 +299,14 @@ func (i *oidcInterceptor) finishProviderSignIn(ex *Exchange, provider string, re
 	in.FederatedAssurance = signIn.out.federated
 
 	if err := login.issue(ctx, in); err != nil {
-		return err
+		return i.refuseCompletion(ex, provider, signIn.handle, completionStageSession, err)
 	}
 
 	issued, err := login.redeemed()
 	if err != nil {
-		return err
+		// Session stage. Unreachable through the chain: issue has just succeeded
+		// for this very login, which is what redeemed reports.
+		return i.refuseCompletion(ex, provider, signIn.handle, completionStageSession, err)
 	}
 
 	// The credential is not kept: the browser is given the provider's own
@@ -296,14 +314,20 @@ func (i *oidcInterceptor) finishProviderSignIn(ex *Exchange, provider string, re
 	if _, err := commitFederatedLogin(ex, login, issued, federatedSession{
 		provider: res.Provider, issuer: res.Issuer, sessionID: res.SessionID, idToken: res.IDToken,
 	}, signIn.principal.ID); err != nil {
-		return err
+		return i.refuseCompletion(ex, provider, signIn.handle, completionStageSession, err)
 	}
 
 	s := ex.Session
 
 	if ph := ex.perRequest; ph != nil {
 		if err := ex.evaluatePerRequest(ph, s, &signIn.principal, signIn.passwordChangedAt, ph.now()); err != nil {
-			return i.endCompleted(ex, provider, s, false, err)
+			// Returned to the login page only once the session is gone; one
+			// that could not be ended answers the refusal unchanged (F25).
+			if !i.endCompletedSession(ex, provider, s, false) {
+				return err
+			}
+
+			return i.refuseCompletion(ex, provider, signIn.handle, completionStageRefusal, err)
 		}
 	}
 
@@ -440,6 +464,13 @@ const completionReasonNotEnded = "completion-session-not-ended"
 // enclosing interceptor or the consumer's error handling, reads no session
 // rather than one that is gone or about to be.
 func (i *oidcInterceptor) endCompleted(ex *Exchange, provider string, s *session.Session, resumed bool, refusal error) error {
+	i.endCompletedSession(ex, provider, s, resumed)
+
+	return refusal
+}
+
+// endCompletedSession is endCompleted's end of s, reporting whether it succeeded.
+func (i *oidcInterceptor) endCompletedSession(ex *Exchange, provider string, s *session.Session, resumed bool) bool {
 	unpublishCompleted(ex, s)
 
 	ctx, cancel := detach.Bounded(ex.Context(), detach.RevocationTimeout)
@@ -457,12 +488,13 @@ func (i *oidcInterceptor) endCompleted(ex *Exchange, provider string, s *session
 		failed = append(failed, err)
 	}
 
-	if err := errors.Join(failed...); err != nil {
+	err := errors.Join(failed...)
+	if err != nil {
 		i.logCallbackRecord(ex, slog.LevelError, completionReasonNotEnded, provider,
 			diag.Failure(completionReasonNotEnded, err)...)
 	}
 
-	return refusal
+	return err == nil
 }
 
 // unpublishCompleted takes s, the session a completion stored and is ending, off
@@ -526,39 +558,76 @@ func (i *oidcInterceptor) loadCompleting(ex *Exchange, provider string, user ide
 }
 
 // precheckParked is D7's step 2: the parked request must exist, be live, be bound
-// to the browser's provider flow cookie and stand at its login stage. Provider's
-// PendingRequest judges the first three alike, and its unknown-handle answer is
-// charged to the source as the resume endpoint charges it, and answered
-// ErrOIDCUnknownHandle. A source already over the resume endpoint's limit is
-// refused with ErrOIDCThrottled before the handle is looked up, as there. A request
-// past its login stage is no login to complete: it is refused as unknown too, and
-// not charged, since its handle is genuine. A store that cannot answer is a
-// dependency failure, returned as the provider words it.
+// to the browser's provider flow cookie and stand at its login stage. A source
+// already over the resume endpoint's limit is refused with ErrOIDCThrottled
+// before the handle is looked up, as there. Provider's PendingRequest judges the
+// rest alike; its unknown-handle answer is first offered to EndPending, so a
+// request expired within its grace window, bound to this browser, is answered
+// access_denied at the client and reported in answeredAt, uncharged (D7).
+// Otherwise it is charged to the source as the resume endpoint charges it, and
+// refused ErrOIDCUnknownHandle. A request past its login stage is refused as
+// unknown too, uncharged, since its handle is genuine. A store that cannot
+// answer is a failure, returned as the provider words it, uncharged.
 //
-// It reads and writes nothing else, so every refusal here leaves no session, no
-// login event and the user's held recoveries as they were (F20).
-func (i *oidcInterceptor) precheckParked(ex *Exchange, handle string) error {
+// It writes nothing else, so every refusal here leaves no session, no login
+// event and the user's held recoveries as they were (F20).
+func (i *oidcInterceptor) precheckParked(ex *Exchange, provider, handle string) parkedCheck {
 	op := i.provider
+	ctx := ex.Context()
 
 	src, ok := op.resume.throttle.admit(ex, op)
 	if !ok {
-		return ErrOIDCThrottled
+		return parkedCheck{err: ErrOIDCThrottled}
 	}
 
 	flow, _ := ex.Request.Cookie(oidcCookieName(op.provider, OIDCFlowCookie))
 
-	view, err := op.provider.PendingRequest(ex.Context(), handle, flow)
-	if err != nil {
-		if errors.Is(err, oidcprovider.ErrUnknownHandle) {
-			op.resume.throttle.charge(ex.Context(), src)
+	view, err := op.provider.PendingRequest(ctx, handle, flow)
+	if errors.Is(err, oidcprovider.ErrUnknownHandle) {
+		// PendingRequest never shows an expired request; EndPending answers one
+		// within the grace window, and refuses anything else as unknown.
+		res, err := op.provider.EndPending(ctx, oidcprovider.EndPendingInput{
+			Handle: handle, FlowSecret: flow, Code: oidcprovider.CodeAccessDenied,
+		})
+
+		switch {
+		case errors.Is(err, oidcprovider.ErrUnknownHandle):
+			op.resume.throttle.charge(ctx, src)
+
+			return parkedCheck{err: ErrOIDCUnknownHandle}
+		case err != nil:
+			return parkedCheck{err: err, failure: true}
 		}
 
-		return oidcResumeRefusal(err)
+		target, ok := answeredAtClient(res)
+		if !ok {
+			// Ended, with no answer completion knows: refused, failing closed.
+			i.logCallbackRecord(ex, slog.LevelError, completionReasonOutcomeUnknown, provider)
+
+			return parkedCheck{err: ErrOIDCReauthenticate}
+		}
+
+		return parkedCheck{answeredAt: target}
+	}
+
+	if err != nil {
+		return parkedCheck{err: oidcResumeRefusal(err), failure: true}
 	}
 
 	if view.Stage != oidcprovider.StageLogin {
-		return ErrOIDCUnknownHandle
+		return parkedCheck{err: ErrOIDCUnknownHandle}
 	}
 
-	return nil
+	return parkedCheck{device: view.Device != nil}
+}
+
+// refuseCompletion answers err, completion's refusal at stage of the login for
+// the parked request handle: one D4 maps returns to the login page
+// (returnParked), and anything else is returned.
+func (i *oidcInterceptor) refuseCompletion(ex *Exchange, provider, handle string, stage completionStage, err error) error {
+	if code, ok := completionFailureCode(ex.Context(), stage, err); ok {
+		return i.returnParked(ex, parkedAtCallback, provider, handle, code, err)
+	}
+
+	return err
 }

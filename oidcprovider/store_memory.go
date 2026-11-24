@@ -52,7 +52,7 @@ func (c *config) buildStores() (providerStores, error) {
 
 	var err error
 	if !c.pendingRequestsSet {
-		if stores.pendingRequests, err = NewMemoryPendingRequestStore(clk); err != nil {
+		if stores.pendingRequests, err = NewMemoryPendingRequestStore(clk, withPendingKeptPastExpiry(c.expiredGrace)); err != nil {
 			return providerStores{}, err
 		}
 	}
@@ -114,6 +114,14 @@ type MemoryStoreOption func(*memoryConfig)
 
 type memoryConfig struct {
 	clock clock.Clock
+	// pendingKept is how long past its expiry a MemoryPendingRequestStore keeps a request.
+	pendingKept time.Duration
+}
+
+// withPendingKeptPastExpiry sets how long a MemoryPendingRequestStore keeps a request past its
+// expiry. New passes the provider's grace window.
+func withPendingKeptPastExpiry(kept time.Duration) MemoryStoreOption {
+	return func(c *memoryConfig) { c.pendingKept = kept }
 }
 
 // WithMemoryStoreClock replaces the time source an in-memory store reads when it
@@ -127,7 +135,7 @@ func WithMemoryStoreClock(clk clock.Clock) MemoryStoreOption {
 }
 
 func newMemoryConfig(opts []MemoryStoreOption) (memoryConfig, error) {
-	cfg := memoryConfig{clock: clock.System()}
+	cfg := memoryConfig{clock: clock.System(), pendingKept: maxPendingRequestGrace}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&cfg)
@@ -194,17 +202,21 @@ func clonePending(r *PendingRequest) *PendingRequest {
 // errPendingHeld is fixed text, so it can carry no digest.
 var errPendingHeld = errors.New("oidcprovider: a pending request with this handle is already stored")
 
-// MemoryPendingRequestStore is the default PendingRequestStore, safe for concurrent
-// use. It holds its own copies of records, on the way in and on the way out.
+// MemoryPendingRequestStore is the default PendingRequestStore, and a PendingRequestCounter,
+// safe for concurrent use. It holds its own copies of records, on the way in and on the way out.
 //
-// It is per process and not durable, so a parked request does not survive a restart,
-// and a deployment of more than one instance needs a shared store. Anyone can park a
-// request, so what it holds must stay bounded: a Create forgets every record already
-// expired by the store's clock, at most once per minute, and so does DeleteExpired,
-// with the caller's time.
+// It is per process and not durable, so a parked request does not survive a restart, and a
+// deployment of more than one instance needs a shared store. Anyone can park a request, so what
+// it holds must stay bounded: a Create forgets, at most once a minute, every record that expired
+// 30 minutes or more ago by the store's clock, and DeleteExpired forgets what its cutoff says.
+//
+// A store the consumer builds keeps an expired record for 30 minutes, the longest
+// WithPendingRequestGrace allows; run ExpiryTasks to delete sooner. The store a provider builds
+// for itself keeps records for its own grace window.
 type MemoryPendingRequestStore struct {
 	mu      sync.Mutex
 	sweep   memorySweep
+	kept    time.Duration
 	records map[string]*PendingRequest
 }
 
@@ -218,6 +230,7 @@ func NewMemoryPendingRequestStore(opts ...MemoryStoreOption) (*MemoryPendingRequ
 
 	return &MemoryPendingRequestStore{
 		sweep:   memorySweep{clock: cfg.clock},
+		kept:    cfg.pendingKept,
 		records: make(map[string]*PendingRequest),
 	}, nil
 }
@@ -228,7 +241,7 @@ func (m *MemoryPendingRequestStore) Create(_ context.Context, request *PendingRe
 	defer m.mu.Unlock()
 
 	if now, due := m.sweep.due(); due {
-		m.deleteExpiredLocked(now)
+		m.deleteExpiredLocked(now.Add(-m.kept))
 	}
 	key := string(request.HandleDigest)
 	if _, held := m.records[key]; held {
@@ -268,6 +281,21 @@ func (m *MemoryPendingRequestStore) Advance(_ context.Context, handleDigest []by
 	}
 
 	return nil
+}
+
+// CountLive implements PendingRequestCounter.
+func (m *MemoryPendingRequestStore) CountLive(_ context.Context, now time.Time) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	live := 0
+	for _, r := range m.records {
+		if r.ExpiresAt.After(now) {
+			live++
+		}
+	}
+
+	return live, nil
 }
 
 // DeleteExpired implements PendingRequestStore.

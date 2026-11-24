@@ -133,7 +133,7 @@ type logoutFixture struct {
 
 const logoutFixtureURI = "https://rp.example.com/bye"
 
-func newLogoutFixture(t *testing.T) *logoutFixture {
+func newLogoutFixture(t *testing.T, opts ...oidcprovider.Option) *logoutFixture {
 	t.Helper()
 
 	f := &logoutFixture{
@@ -172,13 +172,13 @@ func newLogoutFixture(t *testing.T) *logoutFixture {
 		ConsentURL:   issuer + "/consent",
 		LogoutURL:    issuer + "/logout",
 		LoggedOutURL: issuer + "/bye",
-	},
+	}, append([]oidcprovider.Option{
 		oidcprovider.WithClock(f.clk),
 		oidcprovider.WithLogger(slog.New(slog.NewTextHandler(f.logs, nil))),
 		oidcprovider.WithPendingRequestStore(f.pending),
 		oidcprovider.WithBrowserSessionStore(f.browsers),
 		oidcprovider.WithGrantStore(f.grants),
-	)
+	}, opts...)...)
 	require.NoError(t, err)
 
 	now := f.clk.Now()

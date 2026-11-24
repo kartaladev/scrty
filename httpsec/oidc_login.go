@@ -15,6 +15,7 @@ import (
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/oidcprovider"
 )
 
 //go:generate mockgen -destination=flowstore_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/authenticate/oidc FlowStore
@@ -33,9 +34,22 @@ import (
 // unchanged, which the status table answers as not found. A flow store that
 // cannot begin the flow is refused with the manager's error, whose text is
 // fixed and never the store's; the store's error still matches by identity.
+// With completion on, a provider that cannot be discovered for a login whose
+// destination is a parked request's login page returns there instead
+// (returnParked), with temporarily_unavailable.
 func (i *oidcInterceptor) authorize(ex *Exchange, provider string) error {
-	auth, err := i.manager.Authorize(ex.Context(), provider, ex.Request.Query(DefaultOIDCNextParam))
+	next := ex.Request.Query(DefaultOIDCNextParam)
+
+	auth, err := i.manager.Authorize(ex.Context(), provider, next)
 	if err != nil {
+		// A parked request's login page is told its provider cannot be reached
+		// (D3). No flow was stored, so no cookie is set.
+		if handle, ok := i.parkedDestination(next); ok {
+			if code, ok := startFailureCode(ex.Context(), err); ok {
+				return i.returnParked(ex, parkedAtStart, provider, handle, code, err)
+			}
+		}
+
 		return err
 	}
 
@@ -111,7 +125,9 @@ const (
 // WithOIDCProviderCompletion, a login whose destination is the provider's login
 // page carrying one parked request's handle is completed on the server instead
 // (completeProviderSignIn); every other login is conveyed as without it. Every
-// error is returned, never written.
+// error is returned, never written, except a mapped failure (D4) of a login
+// whose stored destination is a parked request's login page, which returns
+// there instead (returnParked).
 func (i *oidcInterceptor) callback(ex *Exchange, provider string) error {
 	// Checked first, so a path naming no registered provider is not found
 	// whatever else the request carries, and every name logged below is one
@@ -163,6 +179,14 @@ func (i *oidcInterceptor) callback(ex *Exchange, provider string) error {
 		i.logCallbackFailure(ex, provider, failure)
 		emitCallbackRefused(ex.Context(), failure)
 
+		// A mapped failure of a login for a parked request returns to the login
+		// page (D3). res.Next is read from the stored flow, never from err (D5).
+		if code, ok := parkedFailureCode(failure); ok {
+			if handle, ok := i.parkedDestination(res.Next); ok {
+				return i.returnParked(ex, parkedAtCallback, provider, handle, code, err)
+			}
+		}
+
 		return err
 	}
 
@@ -170,10 +194,8 @@ func (i *oidcInterceptor) callback(ex *Exchange, provider string) error {
 	// parked request is completed here (D7). The destination is recognised
 	// exactly, before the allowlist sees it: it is the carve-out from the
 	// allowlist, and anything short of it is conveyed as any other login.
-	if i.completion {
-		if handle, ok := parkedHandle(res.Next, i.loginURL); ok {
-			return i.completeProviderSignIn(ex, provider, res, handle)
-		}
+	if handle, ok := i.parkedDestination(res.Next); ok {
+		return i.completeProviderSignIn(ex, provider, res, handle)
 	}
 
 	// The destination the client asked for when the login started is untrusted
@@ -191,16 +213,18 @@ func (i *oidcInterceptor) callback(ex *Exchange, provider string) error {
 // event.AuthnLoginFail when it refuses the external identity the provider
 // asserted: an ID token that failed verification (oidc.ErrInvalidIDToken), an
 // identity linked to no account (oidc.ErrNoLinkedAccount), or one whose
-// provisioning was refused (oidc.ErrProvisioningRefused). A provider that
-// could not be reached (oidc.ErrExchangeFailed, oidc.ErrDiscoveryFailed,
-// oidc.ErrUserInfoFailed), a
+// provisioning was refused (oidc.ErrProvisioningRefused). An error that is
+// both a refusal and an outage counts as the refusal, as callbackCode answers
+// it, so the failed login is always recorded. A provider that could not be
+// reached (oidc.ErrExchangeFailed, oidc.ErrDiscoveryFailed,
+// oidc.ErrUserInfoFailed) on its own, a
 // flow store fault, an invalid state, which is a forged or stale callback
 // rather than a login attempt, and a request whose own context ended before
 // the verdict report nothing.
 //
 // failure is the callback's error as readCallbackFailure read it.
 func emitCallbackRefused(ctx context.Context, failure callbackFailure) {
-	if !failure.refusal || failure.outage || failure.hungUp {
+	if !failure.refusal || failure.hungUp {
 		return
 	}
 
@@ -218,9 +242,13 @@ type callbackFailure struct {
 	// invalidState and notLinked are the failures the interceptor logs.
 	invalidState, notLinked bool
 
-	// refusal, outage and hungUp decide the refusal event
-	// (emitCallbackRefused).
+	// refusal and hungUp decide the refusal event (emitCallbackRefused);
+	// outage decides the code only when refusal is unset.
 	refusal, outage, hungUp bool
+
+	// code is the error a parked request's login page is answered with, empty
+	// for a failure that keeps its answer (parkedFailureCode).
+	code string
 
 	abort error
 }
@@ -255,8 +283,26 @@ func readCallbackFailure(ctx context.Context, err error) callbackFailure {
 	}
 
 	f.hungUp = hungUp
+	f.code = callbackCode(f)
 
 	return f
+}
+
+// callbackCode is D4's allow-list for a callback's failure, from the answers of
+// readCallbackFailure's one walk. A failure before the flow is spent, an
+// invalid state and a hung-up caller have no code, and neither has anything the
+// list does not name.
+func callbackCode(f callbackFailure) string {
+	switch {
+	case f.flowUnspent, f.invalidState, f.hungUp:
+		return ""
+	case f.refusal:
+		return oidcprovider.CodeAccessDenied
+	case f.outage:
+		return oidcprovider.CodeTemporarilyUnavailable
+	default:
+		return ""
+	}
 }
 
 // providerError answers the error branch of the callback.
@@ -267,7 +313,9 @@ func readCallbackFailure(ctx context.Context, err error) callbackFailure {
 // someone else's login or write text of its choosing into the log. Either way
 // the answer is an invalid state; the provider's text is never returned. A flow
 // store that cannot end the flow is refused with the manager's error, whose
-// text is fixed and never the store's.
+// text is fixed and never the store's. With completion on, an ended flow whose
+// destination is a parked request's login page returns there with
+// access_denied instead (returnParked).
 func (i *oidcInterceptor) providerError(ex *Exchange, provider, handle string) error {
 	state := ex.Request.Query("state")
 	if handle == "" || state == "" {
@@ -276,13 +324,13 @@ func (i *oidcInterceptor) providerError(ex *Exchange, provider, handle string) e
 		return oidc.ErrInvalidState
 	}
 
-	ended, err := i.manager.AbortFlow(ex.Context(), provider, state, handle)
+	aborted, err := i.manager.AbortFlowNext(ex.Context(), provider, state, handle)
 	if err != nil {
 		// A store fault, which the manager has already logged.
 		return err
 	}
 
-	if !ended {
+	if !aborted.Ended {
 		i.logCallbackRefusal(ex, slog.LevelWarn, callbackReasonUnboundError, provider)
 
 		return oidc.ErrInvalidState
@@ -292,6 +340,12 @@ func (i *oidcInterceptor) providerError(ex *Exchange, provider, handle string) e
 	i.logCallbackRefusal(ex, slog.LevelInfo, callbackReasonProviderError, provider,
 		slog.String("provider_error", boundedText(ex.Request.Query("error"))),
 		slog.String("provider_error_description", boundedText(ex.Request.Query("error_description"))))
+
+	// Whatever the provider's error, a parked request's login page is told
+	// access_denied (D4). aborted.Next is the ended flow's, never the request's.
+	if parked, ok := i.parkedDestination(aborted.Next); ok {
+		return i.returnParked(ex, parkedAtCallback, provider, parked, oidcprovider.CodeAccessDenied, oidc.ErrInvalidState)
+	}
 
 	return oidc.ErrInvalidState
 }
@@ -405,13 +459,23 @@ func (i *oidcInterceptor) logCallbackRefusal(
 func (i *oidcInterceptor) logCallbackRecord(
 	ex *Exchange, level slog.Level, reason, provider string, attrs ...slog.Attr,
 ) {
+	i.logLoginRecord(ex, oidcCallbackFlow, msgCallbackRefused, level, reason, provider, attrs...)
+}
+
+// msgCallbackRefused is the message of the callback's own records.
+const msgCallbackRefused = "httpsec: oidc callback refused"
+
+// logLoginRecord writes one sampled record with msg, keyed by flow and reason,
+// naming flow and provider; attrs must carry the reason themselves.
+func (i *oidcInterceptor) logLoginRecord(
+	ex *Exchange, flow, msg string, level slog.Level, reason, provider string, attrs ...slog.Attr,
+) {
 	attrs = append([]slog.Attr{
-		slog.String("flow", oidcCallbackFlow),
+		slog.String("flow", flow),
 		slog.String("provider", provider),
 	}, attrs...)
 
-	logSampled(ex.Context(), i.sampler, i.log, level, i.now(),
-		oidcCallbackFlow+sampleKeySeparator+reason, "httpsec: oidc callback refused", attrs...)
+	logSampled(ex.Context(), i.sampler, i.log, level, i.now(), flow+sampleKeySeparator+reason, msg, attrs...)
 }
 
 // boundedText cuts s to maxLoggedProviderError bytes and replaces any invalid

@@ -27,14 +27,15 @@ const (
 )
 
 // oidcCORSBrowserEndpoints are the endpoints that never carry a CORS header: the
-// authorization request is a navigation, the resume and the end-session pair are where
-// the user's pages hand the browser back, and answering a script there would let a page
-// on another origin read what is meant for the user (RFC 9700 section 2.6). The device
+// authorization request is a navigation, the resume and the cancel are where the user's
+// pages hand the browser back, the end-session pair is the user's own logout, and answering
+// a script there would let a page on another origin read what is meant for the user
+// (RFC 9700 section 2.6). The device
 // endpoints are among them while the provider serves them: a device posts device
 // authorization from no web origin, and code entry is the user's own page; no browser client
 // has a reason to call either cross-origin.
 var oidcCORSBrowserEndpoints = []OIDCEndpoint{
-	OIDCAuthorize, OIDCResume, OIDCEndSession, OIDCLogoutConfirm, OIDCDeviceAuthorization, OIDCDeviceEntry,
+	OIDCAuthorize, OIDCResume, OIDCCancel, OIDCEndSession, OIDCLogoutConfirm, OIDCDeviceAuthorization, OIDCDeviceEntry,
 }
 
 // oidcCORSClientEndpoints are the endpoints a browser client's script may call.

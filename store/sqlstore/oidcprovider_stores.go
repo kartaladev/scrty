@@ -163,6 +163,12 @@ func (s *PendingRequestStore) Advance(
 		storekit.OrEmpty(handleDigest), int16(from), int16(to), encoded)
 }
 
+// CountLive implements oidcprovider.PendingRequestCounter. A cancelled context, a failed
+// statement or a count too large for an int is an error of fixed text, never a count.
+func (s *PendingRequestStore) CountLive(ctx context.Context, now time.Time) (int, error) {
+	return s.c.count(ctx, "count live pending requests", pgschema.PendingRequestCountLive, storekit.Time(now))
+}
+
 // DeleteExpired implements oidcprovider.PendingRequestStore.
 func (s *PendingRequestStore) DeleteExpired(ctx context.Context, before time.Time) (int, error) {
 	return s.c.deleteBefore(ctx, "delete expired pending requests", pgschema.PendingRequestDeleteExpired, before)
@@ -625,11 +631,12 @@ func (s *ClientStore) GenerateSecret(ctx context.Context, clientID string) (stri
 }
 
 var (
-	_ oidcprovider.PendingRequestStore = (*PendingRequestStore)(nil)
-	_ oidcprovider.CodeStore           = (*CodeStore)(nil)
-	_ oidcprovider.ConsentStore        = (*ConsentStore)(nil)
-	_ oidcprovider.AccessTokenStore    = (*AccessTokenStore)(nil)
-	_ oidcprovider.AssertionIDStore    = (*AssertionIDStore)(nil)
-	_ oidcprovider.BrowserSessionStore = (*BrowserSessionStore)(nil)
-	_ oidcprovider.ClientStore         = (*ClientStore)(nil)
+	_ oidcprovider.PendingRequestStore   = (*PendingRequestStore)(nil)
+	_ oidcprovider.PendingRequestCounter = (*PendingRequestStore)(nil)
+	_ oidcprovider.CodeStore             = (*CodeStore)(nil)
+	_ oidcprovider.ConsentStore          = (*ConsentStore)(nil)
+	_ oidcprovider.AccessTokenStore      = (*AccessTokenStore)(nil)
+	_ oidcprovider.AssertionIDStore      = (*AssertionIDStore)(nil)
+	_ oidcprovider.BrowserSessionStore   = (*BrowserSessionStore)(nil)
+	_ oidcprovider.ClientStore           = (*ClientStore)(nil)
 )

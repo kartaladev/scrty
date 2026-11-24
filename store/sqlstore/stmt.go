@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/kartaladev/scrty/internal/storekit"
@@ -97,9 +98,15 @@ func (c *config) count(ctx context.Context, op, query string, args ...any) (int,
 	if err := c.queryRow(ctx, op, query, args, &n); err != nil {
 		return 0, err
 	}
+	if n < 0 || n > math.MaxInt {
+		return 0, failed(op, errCountRange)
+	}
 
 	return int(n), nil
 }
+
+// errCountRange is a count(*) answer no int can hold.
+var errCountRange = errors.New("count out of range")
 
 // nullTs is t as stored in a nullable column: NULL for the zero time.
 func nullTs(t time.Time) any {

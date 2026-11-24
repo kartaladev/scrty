@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/guardauth"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/session"
@@ -596,4 +599,308 @@ func WithBearerUsernameSubject() BearerTokenOption {
 		b.subject = token.SubjectUsername
 		return nil
 	}
+}
+
+// WithoutBearerChallenge stops the chain adding a WWW-Authenticate challenge to
+// the 401s it answers on a chain with a built-in bearer.
+//
+// Default: such a 401 outside the OpenID Provider's endpoints carries Bearer,
+// Bearer error="invalid_token" for a Bearer token a built-in bearer refused,
+// or DPoP's challenge with EnableDPoP (with optional DPoP, DPoP and Bearer). A
+// scheme the response names already is not added again. A chain with no
+// built-in bearer refuses this option.
+//
+// Two limits are accepted: an error handler that changes a 401's status must
+// clear the challenge itself, and an interceptor ordered before the bearer that
+// refuses a valid token sends invalid_token.
+func WithoutBearerChallenge() Option {
+	return func(c *config) error {
+		c.withoutBearerChallenge = true
+
+		return nil
+	}
+}
+
+// bearerInvalidTokenChallenge is the challenge for a Bearer token a built-in
+// bearer refused (RFC 6750 section 3.1).
+const bearerInvalidTokenChallenge = `Bearer error="invalid_token"` //nolint:gosec // G101: a challenge, and no credential
+
+// bearerChallenge answers the 401s of a chain with a built-in bearer with the
+// challenge RFC 9110 section 15.5.2 requires. With DPoP on, DPoP's challenge
+// interceptor runs it in its place, so one interceptor answers a request.
+type bearerChallenge struct {
+	// dpop is the chain's DPoP verifier, nil while DPoP is off.
+	dpop *dpopVerifier
+
+	// readsBearerScheme is whether a built-in bearer reads the Bearer scheme,
+	// which invalid_token is defined for.
+	readsBearerScheme bool
+
+	// provider is the chain's OpenID Provider, nil without one. Its endpoints
+	// answer their own challenges.
+	provider *oidcEndpoints
+}
+
+// wireBearerChallenge puts the bearer challenge on a chain with a built-in
+// bearer, unless WithoutBearerChallenge turned it off, and refuses that
+// option on a chain without one.
+func (c *config) wireBearerChallenge() error {
+	if !hasBuiltInBearer(c) {
+		if c.withoutBearerChallenge {
+			return newConfigError("WithoutBearerChallenge was given, but the chain has no built-in bearer " +
+				"(EnableBearerToken, EnableSessionBearer), so there is no challenge to turn off")
+		}
+
+		return nil
+	}
+
+	if c.withoutBearerChallenge {
+		return nil
+	}
+
+	b := &bearerChallenge{
+		dpop:              c.dpop,
+		readsBearerScheme: bearerReadsScheme(c, DefaultBearerScheme),
+		provider:          c.oidcProvider,
+	}
+
+	if c.dpop == nil {
+		c.register(b, orderDPoPChallenge)
+
+		return nil
+	}
+
+	return eachInterceptor(c, func(d *dpopChallenge) error {
+		d.bearer = b
+
+		return nil
+	})
+}
+
+// hasBuiltInBearer reports whether the chain authenticates bearer tokens with a
+// built-in bearer of either mode.
+func hasBuiltInBearer(c *config) bool {
+	var found bool
+
+	_ = eachInterceptor(c, func(*sessionBearer) error {
+		found = true
+
+		return nil
+	})
+	_ = eachInterceptor(c, func(*bearerToken) error {
+		found = true
+
+		return nil
+	})
+
+	return found
+}
+
+// Intercept runs the rest of the chain and challenges a 401 coming back from
+// it. It publishes the challenge on the request, so a guard behind the chain
+// answers its own 401 alike.
+//
+// A challenge for a scheme something inside the chain already set on the
+// response is not added again. The consumer's error handler runs afterwards
+// and finds the challenge set; it replaces it with Header().Set.
+func (b *bearerChallenge) Intercept(ex *Exchange, next Next) error {
+	ctx := guardauth.WithChallenger(ex.Context(), b.guardChallenge)
+	if b.dpop != nil && b.dpop.cfg.Nonce {
+		ctx = context.WithValue(ctx, dpopResponseKey{}, ex.Writer)
+	}
+
+	ex.SetContext(ctx)
+
+	watch := &challengeWatch{ResponseWriter: ex.Writer}
+	err := watch.run(ex, next)
+	if err == nil {
+		return nil
+	}
+
+	var (
+		out   error
+		abort error
+	)
+
+	switch {
+	case b.provider != nil && b.provider.answersPath(ex.Request.Path()):
+		// The provider's endpoints challenge as they always have: DPoP's own
+		// refusals alone, and the resume and consents through their router.
+		if b.dpop == nil {
+			return err
+		}
+
+		out, abort = b.dpop.challenge(ex.Context(), ex.Writer, err)
+	default:
+		out, abort = b.challenge(ex.Context(), ex.Writer, err, b.refusedBearerToken(ex), watch.set)
+	}
+
+	// Every challenge on the exchange reads the same refused error, so the
+	// abort is reported once for the exchange.
+	if abort != nil {
+		ex.reportQuietlyOnce(ex.Context(), err, abort)
+	}
+
+	return out
+}
+
+// guardChallenge is the challenge a guard behind the chain answers its refusal
+// with. A guard runs only once the chain let the request through, so no token
+// was refused.
+func (b *bearerChallenge) guardChallenge(ctx context.Context, w guardauth.HeaderWriter, err error) (out, abort error) {
+	return b.challenge(ctx, w, err, false, 0)
+}
+
+// challenge sets on w the challenge err calls for, and returns the error the
+// request fails with and the abort that stopped a walk of err, nil when none
+// did; it reports nothing.
+//
+// DPoP's own refusals get DPoP's challenge (dpopVerifier.challenge). Any other
+// error whose status is 401 gets, unless set already names its scheme:
+//
+//   - with DPoP on: DPoP's code-less challenge, and Bearer beside it unless
+//     DPoP is required;
+//   - otherwise: Bearer error="invalid_token" when invalidToken, else Bearer.
+//
+// Nothing the request carried is written into a challenge.
+func (b *bearerChallenge) challenge(
+	ctx context.Context,
+	w guardauth.HeaderWriter,
+	err error,
+	invalidToken bool,
+	set challengeSchemes,
+) (out, abort error) {
+	if b.dpop != nil {
+		answered, out, abort := b.dpop.challengeAnswered(ctx, w, err, set)
+		if abort != nil || answered {
+			return out, abort
+		}
+	}
+
+	status, _, abort := lookup(err)
+	if abort != nil {
+		return err, abort
+	}
+
+	if status != http.StatusUnauthorized {
+		return err, nil
+	}
+
+	addBearer := func(value string) {
+		if set&schemeBearer == 0 {
+			w.AddHeader(headerWWWAuthenticate, value)
+		}
+	}
+
+	switch {
+	case b.dpop != nil:
+		if set&schemeDPoP == 0 {
+			w.AddHeader(headerWWWAuthenticate, dpopScheme+" algs="+strconv.Quote(b.dpop.algorithmNames()))
+		}
+
+		if !b.dpop.cfg.Require {
+			addBearer(DefaultBearerScheme)
+		}
+	case invalidToken:
+		addBearer(bearerInvalidTokenChallenge)
+	default:
+		addBearer(DefaultBearerScheme)
+	}
+
+	return err, nil
+}
+
+// refusedBearerToken reports whether the request presented a token a built-in
+// bearer refused: one Authorization line under the Bearer scheme, which a
+// built-in bearer reads, and no session published.
+func (b *bearerChallenge) refusedBearerToken(ex *Exchange) bool {
+	if !b.readsBearerScheme || ex.Session != nil {
+		return false
+	}
+
+	lines := ex.Request.HeaderValues("Authorization")
+	if len(lines) != 1 {
+		return false
+	}
+
+	_, ok := presentedCredential(lines[0], DefaultBearerScheme, false)
+
+	return ok
+}
+
+// answersPath reports whether path is one of the provider's endpoints, which
+// answer their own challenges.
+func (op *oidcEndpoints) answersPath(path string) bool {
+	if _, ok := op.outer.routes[path]; ok {
+		return true
+	}
+
+	if _, ok := op.inner.routes[path]; ok {
+		return true
+	}
+
+	return op.restsOnSignIn(path)
+}
+
+// challengeSchemes is the set of challenge schemes a response already names.
+type challengeSchemes uint8
+
+const (
+	schemeBearer challengeSchemes = 1 << iota
+	schemeDPoP
+)
+
+// challengeWatch is the exchange's writer while the rest of the chain runs,
+// noting the challenge schemes set on the response, so none is added twice.
+type challengeWatch struct {
+	ResponseWriter
+
+	set challengeSchemes
+}
+
+// run runs next with w as the exchange's writer, and puts the writer back
+// however next ends.
+func (w *challengeWatch) run(ex *Exchange, next Next) error {
+	ex.Writer = w
+
+	defer func() { ex.Writer = w.ResponseWriter }()
+
+	return next(ex)
+}
+
+func (w *challengeWatch) SetHeader(name, value string) {
+	if strings.EqualFold(name, headerWWWAuthenticate) {
+		w.set = schemesIn(value)
+	}
+
+	w.ResponseWriter.SetHeader(name, value)
+}
+
+func (w *challengeWatch) AddHeader(name, value string) {
+	if strings.EqualFold(name, headerWWWAuthenticate) {
+		w.set |= schemesIn(value)
+	}
+
+	w.ResponseWriter.AddHeader(name, value)
+}
+
+// schemesIn is the Bearer and DPoP schemes a WWW-Authenticate value names. A
+// piece of the comma-separated list whose first word holds no "=" is a scheme.
+// A quoted parameter holding a comma may read as one too, which can only
+// withhold a challenge, never repeat one.
+func schemesIn(value string) challengeSchemes {
+	var set challengeSchemes
+
+	for piece := range strings.SplitSeq(value, ",") {
+		word, _, _ := strings.Cut(strings.TrimSpace(piece), " ")
+		switch {
+		case strings.Contains(word, "="):
+		case strings.EqualFold(word, DefaultBearerScheme):
+			set |= schemeBearer
+		case strings.EqualFold(word, dpopScheme):
+			set |= schemeDPoP
+		}
+	}
+
+	return set
 }

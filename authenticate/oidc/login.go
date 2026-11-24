@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -108,10 +109,10 @@ func (m *RelyingParty) Authorize(ctx context.Context, provider, next string) (Au
 	return Authorization{RedirectURL: endpoint.String(), Handle: handle, ExpiresAt: expires}, nil
 }
 
-// errForeignFlow is a refusal of a flow the store completed for another
-// provider than the one asked for. Unlike a plain ErrInvalidState the store
-// has consumed the flow, so it is spent.
-var errForeignFlow = fmt.Errorf("%w: the flow store completed another provider's flow", ErrInvalidState)
+// errForeignFlow refuses a flow the store completed for another provider or
+// state, which breaks the FlowStore contract. Unlike ErrInvalidState, the
+// store has consumed the flow.
+var errForeignFlow = fmt.Errorf("%w: the flow store completed a flow other than the one presented", ErrInvalidState)
 
 // Callback completes a login the provider has redirected back with a code.
 //
@@ -133,6 +134,10 @@ var errForeignFlow = fmt.Errorf("%w: the flow store completed another provider's
 // array of strings, is treated as absent: it never fails the login, and it
 // writes a sampled warning naming the provider and the claim, never its value.
 //
+// A failure after the flow is spent still returns a CallbackResult holding
+// only Next, which is untrusted as on success. A failure before the flow is
+// spent, or a flow of another provider or state, returns the empty result.
+//
 // Every failure at or before completing the flow leaves the flow live and is
 // joined with ErrFlowUnspent, so the caller keeps the flow cookie: an
 // unregistered provider (ErrUnknownProvider), an empty code or a flow the
@@ -140,7 +145,7 @@ var errForeignFlow = fmt.Errorf("%w: the flow store completed another provider's
 // wrapped with fixed library text — still matching the store's own error by
 // identity — and logged at ERROR. After completion the flow is spent, and a
 // failure is returned without the marker: ErrInvalidState when the store
-// completed a flow of another provider, ErrDiscoveryFailed,
+// completed a flow of another provider or state, ErrDiscoveryFailed,
 // ErrExchangeFailed, ErrInvalidIDToken, or the broker's error as the broker
 // returned it (ErrNoLinkedAccount, ErrProvisioningRefused, or a failure).
 func (m *RelyingParty) Callback(ctx context.Context, provider, code, state, handle string) (CallbackResult, error) {
@@ -158,27 +163,31 @@ func (m *RelyingParty) Callback(ctx context.Context, provider, code, state, hand
 	f, err := m.completeFlow(ctx, p.Name, state, handle)
 	switch {
 	case errors.Is(err, errForeignFlow):
-		// The store completed, and so spent, a flow of another provider.
+		// The store completed, and so spent, a flow of another provider or state.
 		return CallbackResult{}, ErrInvalidState
 	case err != nil:
 		return unspent(err)
 	}
 
-	// From here the flow is spent: no return carries ErrFlowUnspent.
+	// From here the flow is spent: no return carries ErrFlowUnspent. A failure
+	// still reports Next, read from the stored flow alone.
+	spent := func(err error) (CallbackResult, error) {
+		return CallbackResult{Next: f.Next}, err
+	}
 	md, err := m.metadataFor(ctx, p.Name)
 	if err != nil {
-		return CallbackResult{}, err
+		return spent(err)
 	}
 	raw, accessToken, err := m.exchange(ctx, p, md, code, f.Verifier)
 	if err != nil {
-		return CallbackResult{}, err
+		return spent(err)
 	}
 	claims, err := m.verifyIDToken(ctx, p, raw, f.Nonce)
 	if err != nil {
 		if errors.Is(err, ErrInvalidIDToken) {
 			m.logCallbackRefusal(ctx, slog.LevelWarn, "invalid-id-token", p.Name, err)
 		}
-		return CallbackResult{}, err
+		return spent(err)
 	}
 	if claims.MalformedAMR {
 		m.logMalformedAssurance(ctx, p.Name, "amr")
@@ -206,10 +215,10 @@ func (m *RelyingParty) Callback(ctx context.Context, provider, code, state, hand
 	// might claim.
 	err = porterr.SanitizeTo(ctx, m.log, err, porterr.ErrUnwalkable)
 	if err != nil {
-		return CallbackResult{}, err
+		return spent(err)
 	}
 	if principal == nil {
-		return CallbackResult{}, fmt.Errorf("oidc: provider %q: the identity broker returned no principal and no error", p.Name)
+		return spent(fmt.Errorf("oidc: provider %q: the identity broker returned no principal and no error", p.Name))
 	}
 
 	return CallbackResult{
@@ -244,9 +253,45 @@ func (m *RelyingParty) upstreamFor(p Provider, token, subject string) Upstream {
 	return up
 }
 
+// AbortedFlow is the outcome of AbortFlowNext.
+//
+// Ended reports whether the echoed state ended the flow. Next is the
+// destination requested at Authorize, as untrusted as CallbackResult.Next. It
+// is empty unless Ended, and when the store completed a flow of another
+// provider or state.
+type AbortedFlow struct {
+	Ended bool
+	Next  string
+}
+
+// AbortFlowNext is AbortFlow that also reports the ended flow's Next, for a
+// caller that sends the user back to where the request was parked.
+//
+// The rules are AbortFlow's: only Ended true permits clearing the flow cookie
+// or logging the provider's error text. A state that does not complete the
+// flow changes nothing and returns the zero AbortedFlow with no error. A flow
+// of another provider or state is ended with no Next. An unregistered provider
+// is ErrUnknownProvider and a store fault is returned wrapped; neither ends the
+// flow.
+func (m *RelyingParty) AbortFlowNext(ctx context.Context, provider, state, handle string) (AbortedFlow, error) {
+	p, ok := m.registry.Lookup(provider)
+	if !ok {
+		return AbortedFlow{}, ErrUnknownProvider
+	}
+	f, err := m.completeFlow(ctx, p.Name, state, handle)
+	switch {
+	case errors.Is(err, errForeignFlow):
+		return AbortedFlow{Ended: true}, nil // the store spent it; it cannot be completed again
+	case errors.Is(err, ErrInvalidState):
+		return AbortedFlow{}, nil
+	case err != nil:
+		return AbortedFlow{}, err
+	}
+	return AbortedFlow{Ended: true, Next: f.Next}, nil
+}
+
 // AbortFlow ends the flow when the echoed state completes it, and reports
-// whether it did. It is the error branch of the callback: a provider that
-// redirects back with an error echoes the flow's state.
+// whether it did. It is AbortFlowNext without the destination.
 //
 // Only when it returns true may the caller clear the flow cookie or log the
 // provider's error text. A state that does not complete the flow, including an
@@ -256,29 +301,16 @@ func (m *RelyingParty) upstreamFor(p Provider, token, subject string) Upstream {
 // text, still matching the store's own error by identity; neither ends the
 // flow.
 func (m *RelyingParty) AbortFlow(ctx context.Context, provider, state, handle string) (bool, error) {
-	p, ok := m.registry.Lookup(provider)
-	if !ok {
-		return false, ErrUnknownProvider
-	}
-	_, err := m.completeFlow(ctx, p.Name, state, handle)
-	switch {
-	case errors.Is(err, errForeignFlow):
-		return true, nil // the store spent it; it cannot be completed again
-	case errors.Is(err, ErrInvalidState):
-		return false, nil
-	case err != nil:
-		return false, err
-	}
-	return true, nil
+	res, err := m.AbortFlowNext(ctx, provider, state, handle)
+	return res.Ended, err
 }
 
 // completeFlow completes the flow through the store and checks that the flow
-// it returns belongs to provider, so a store that ignored the binding cannot
-// hand one provider's flow to another's callback.
+// it returns belongs to provider and carries the presented state, compared in
+// constant time.
 //
-// A refusal is ErrInvalidState. A flow of another provider is errForeignFlow:
-// the store has already consumed it, so the flow is spent though refused. Any
-// other store error is a fault, logged at ERROR and returned wrapped with
+// A refusal is ErrInvalidState. A flow of another provider or state is
+// errForeignFlow: the store has consumed it. Any other store error is a fault, logged at ERROR and returned wrapped with
 // fixed library text; a consumer who wants its own detail logs it inside
 // their own implementation of FlowStore.
 func (m *RelyingParty) completeFlow(ctx context.Context, provider, state, handle string) (Flow, error) {
@@ -292,7 +324,8 @@ func (m *RelyingParty) completeFlow(ctx context.Context, provider, state, handle
 	case err != nil:
 		m.logCallbackFailure(ctx, provider, "flow-store", err)
 		return Flow{}, diag.Wrap(err, "oidc: completing the login flow")
-	case f.Provider != provider:
+	case f.Provider != provider,
+		subtle.ConstantTimeCompare([]byte(f.State), []byte(state)) != 1:
 		return Flow{}, errForeignFlow
 	}
 	return f, nil

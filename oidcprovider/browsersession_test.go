@@ -1275,23 +1275,34 @@ func TestProvider_BrowserSession_ConsentLooksBeforeItSpends(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
-	reauthenticate := func(t *testing.T, err error) {
+	reauthenticate := func(t *testing.T, res oidcprovider.ResumeResult, err error) {
 		t.Helper()
 		require.ErrorIs(t, err, oidcprovider.ErrReauthenticate)
+		assert.Empty(t, res.RedirectTo, "nothing is answered")
 	}
-	dependency := func(t *testing.T, err error) {
+	// serverError: the request was read and judged, so a failing look is answered at the
+	// redirect URI with server_error, spending the stage.
+	serverError := func(t *testing.T, res oidcprovider.ResumeResult, err error) {
 		t.Helper()
-		require.ErrorIs(t, err, oidcprovider.ErrDependency)
-		assert.NotContains(t, err.Error(), errOutage.Error())
+		require.NoError(t, err)
+		assert.Equal(t, oidcprovider.ResumeOutcomeClientError, res.Outcome)
+		assert.Equal(t, "server_error", queryOf(t, res.RedirectTo).Get("error"))
 	}
 
 	cases := []struct {
 		name   string
 		touch  error
-		assert func(*testing.T, error)
+		stage  oidcprovider.Stage
+		assert func(*testing.T, oidcprovider.ResumeResult, error)
 	}{
-		{name: "a session that ended at the last look is no session", touch: oidcprovider.ErrNotFound, assert: reauthenticate},
-		{name: "a failing session store is a dependency failure, also before the write", touch: errOutage, assert: dependency},
+		{
+			name:  "a session that ended at the last look is no session",
+			touch: oidcprovider.ErrNotFound, stage: oidcprovider.StageConsent, assert: reauthenticate,
+		},
+		{
+			name:  "a failing session store is answered server_error, also before the write",
+			touch: errOutage, stage: oidcprovider.StageDone, assert: serverError,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1327,13 +1338,13 @@ func TestProvider_BrowserSession_ConsentLooksBeforeItSpends(t *testing.T) {
 				IdleTimeout: sessionIdle, Answer: &oidcprovider.ConsentAnswer{Scopes: []string{"openid", "profile"}},
 			})
 
-			tc.assert(t, err)
-			assert.Empty(t, answer.RedirectTo, "no code is released")
+			tc.assert(t, answer, err)
+			assert.Empty(t, queryOf(t, answer.RedirectTo).Get("code"), "no code is released")
 			assert.Equal(t, 1, codesHeld(t, f.parkFixture, "u-1", "billing-web"),
 				"the look comes after the code is written, so that an end after it reaches the code; this one is never given to anyone")
 			stored, loadErr := f.store.Load(t.Context(), handleDigestOf(t, handleOf(t, res.Location)))
 			require.NoError(t, loadErr)
-			assert.Equal(t, oidcprovider.StageConsent, stored.Stage, "the handle stays unspent")
+			assert.Equal(t, tc.stage, stored.Stage)
 			_, consentErr := f.consents.Load(t.Context(), "u-1", "billing-web")
 			assert.ErrorIs(t, consentErr, oidcprovider.ErrNotFound, "no consent remembered")
 		})

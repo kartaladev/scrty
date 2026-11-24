@@ -152,26 +152,39 @@ func (ResumeResult) LogValue() slog.Value { return slog.StringValue(redacted) }
 // and an Answer resumes the consent stage.
 //
 // It refuses with ErrUnknownHandle, the same error in every case, when the handle is
-// unknown, expired, already spent, at another stage, or not bound to the flow secret; when
-// its client has since been removed; and when a consent stage is answered by a user other
+// unknown, expired past the grace window, already spent, at another stage, or not bound to the
+// flow secret; when its client has since been removed; and when a consent stage is answered by a user other
 // than the one who signed in. It refuses with ErrReauthenticate when there is no sign-in,
 // when one cannot be judged or has passed its absolute deadline, and when prompt=login or
 // max_age is not met by the time the user last authenticated, which at each stage is the
 // presented sign-in's and never the time of a renewal. It refuses with ErrConsentMalformed
 // when an answer does not fit the request. A sign-in naming no user fails matching
 // token.ErrNoSubject. A request is judged at every resume against the client as it is
-// read then: one whose redirect URI the client no longer registers, or whose client lost
-// the authorization_code grant, or is left with no scope or without openid it asked for, is
-// an unknown handle too, and the scopes and resources the client may no longer ask for are
-// left out of what is granted. A failing store fails matching ErrDependency. None of these spends
-// the stage, so the page may finish what is missing and resume again. Nor do they carry a
-// handle, secret or code.
+// read then: one whose redirect URI the client no longer registers is an unknown handle too,
+// and the scopes and resources the client may no longer ask for are left out of what is
+// granted. None of these spends the stage, so the page may finish what is missing and resume
+// again. Nor do they carry a handle, secret or code.
+//
+// A request expired less than the grace window ago (WithPendingRequestGrace) is answered at its
+// redirect URI with CodeAccessDenied and ResumeOutcomeClientError, spending the stage, whatever
+// the sign-in; it is never resumed. Where a live request would be an unknown handle, so is it.
+//
+// A request the client may no longer make is answered at its redirect URI with
+// ResumeOutcomeClientError, spending the stage: CodeUnauthorizedClient when the client lost the
+// authorization_code grant, CodeInvalidScope when no scope is left or openid is gone.
+//
+// A failing store fails matching ErrDependency while the request is read and judged. After
+// that, a dependency failure is answered with CodeServerError at the redirect URI, spending the
+// stage; only if that spend fails too is ErrDependency returned, the stage unspent. A code
+// written before the failure is never handed out and the exchange refuses it. A device request
+// has no redirect URI, so its failures are returned as they are.
 //
 // Each stage is spent by one conditional write, which everything else is arranged around:
 // whatever the answer needs is written before it, so a failure leaves the stage unspent,
 // and nothing is shown or recorded as the user's until it has succeeded. Of any number of
 // racing resumes, one is answered. The others are unknown handles, and what they wrote on
-// the way is a code and a session no one was ever given the secret of, which expire.
+// the way is a code the exchange refuses and a session no one was given the secret of, which
+// expire.
 //
 // A code carries the facts of the sign-in that was presented when it was issued, never a
 // value from the current time. An end of the sign-in can reach only a code already written, so a
@@ -197,7 +210,7 @@ func (p *Provider) Resume(ctx context.Context, in ResumeInput) (ResumeResult, er
 		return ResumeResult{}, fmt.Errorf("%w: ResumeInput.IdleTimeout: must not be negative", ErrConfig)
 	}
 
-	r, err := p.loadPending(ctx, in.Handle, in.FlowSecret)
+	r, age, err := p.loadPendingInGrace(ctx, in.Handle, in.FlowSecret)
 	if err != nil {
 		return ResumeResult{}, err
 	}
@@ -220,10 +233,14 @@ func (p *Provider) Resume(ctx context.Context, in ResumeInput) (ResumeResult, er
 		return ResumeResult{}, err
 	}
 
-	r, dropped, ok := rejudge(r, rc)
-	if !ok {
-		return ResumeResult{}, ErrUnknownHandle
+	judged, dropped, verdict := rejudge(r, rc)
+	switch {
+	case age == pendingExpiredInGrace:
+		return p.answerExpired(ctx, r, verdict)
+	case verdict != rejudgeOK:
+		return p.answerVerdict(ctx, r, verdict)
 	}
+	r = judged
 	if in.Answer != nil && !in.Answer.Deny && len(dropped) > 0 {
 		in.Answer = &ConsentAnswer{Scopes: slices.DeleteFunc(slices.Clone(in.Answer.Scopes), func(scope string) bool {
 			return slices.Contains(dropped, scope)
@@ -245,27 +262,42 @@ func (p *Provider) Resume(ctx context.Context, in ResumeInput) (ResumeResult, er
 	return resume(ctx, in, r, rc)
 }
 
+// rejudgeVerdict is what rejudge found of a parked request.
+type rejudgeVerdict uint8
+
+const (
+	// rejudgeOK: the request may carry on, narrowed to what the client may still ask for.
+	rejudgeOK rejudgeVerdict = iota
+	// rejudgeUnknown: no redirect can safely be used; an unknown handle.
+	rejudgeUnknown
+	// rejudgeUnauthorized: the client lost the authorization_code grant.
+	rejudgeUnauthorized
+	// rejudgeInvalidScope: no scope is left, or openid was asked for and is gone.
+	rejudgeInvalidScope
+)
+
 // rejudge judges a parked request against the client as it is read now, which may not be
 // the client it was parked for. It returns the request to answer, with the scopes and
 // resources the client may no longer ask for left out, as a refresh leaves out the scopes a
-// client has lost, and the scopes it left out. It says false for a request that cannot be
-// answered: its redirect URI is no longer one the client registers, the client lost the
-// authorization_code grant, no scope is left, or openid was asked for and is gone. The
-// caller refuses that as an unknown handle, with no redirect, because nothing says where a
-// redirect could safely go. A client that lost the refresh grant is left holding no
-// offline_access.
+// client has lost, and the scopes it left out, under rejudgeOK. A client that lost the
+// refresh grant is left holding no offline_access.
 //
-// A request answering a device authorization has no redirect URI, and is judged by the
-// device grant instead: a client that lost GrantDeviceCode cannot be answered, and one
-// that names a redirect URI as well is no request the provider parks. A code-flow request
-// is never judged by the device grant.
-func rejudge(r *PendingRequest, rc *RegisteredClient) (*PendingRequest, []string, bool) {
-	if r.DeviceAuthorizationID != id.Nil {
-		if r.RedirectURI != "" || !slices.Contains(rc.GrantTypes, GrantDeviceCode) {
-			return nil, nil, false
-		}
-	} else if !rc.MatchRedirectURI(r.RedirectURI) || !slices.Contains(rc.GrantTypes, GrantAuthorizationCode) {
-		return nil, nil, false
+// A request whose redirect URI the client no longer registers is rejudgeUnknown. Otherwise one
+// the client may no longer make is rejudgeUnauthorized (grant lost) or rejudgeInvalidScope (no
+// scope left, or openid gone); neither returns a request.
+//
+// A device request has no redirect URI, so any verdict but rejudgeOK is rejudgeUnknown for it.
+// It is judged by the device grant: a client that lost GrantDeviceCode, or a request that also
+// names a redirect URI, is unknown. A code-flow request is never judged by the device grant.
+func rejudge(r *PendingRequest, rc *RegisteredClient) (*PendingRequest, []string, rejudgeVerdict) {
+	device := r.DeviceAuthorizationID != id.Nil
+	switch {
+	case device && (r.RedirectURI != "" || !slices.Contains(rc.GrantTypes, GrantDeviceCode)):
+		return nil, nil, rejudgeUnknown
+	case !device && !rc.MatchRedirectURI(r.RedirectURI):
+		return nil, nil, rejudgeUnknown
+	case !device && !slices.Contains(rc.GrantTypes, GrantAuthorizationCode):
+		return nil, nil, rejudgeUnauthorized
 	}
 
 	refreshes := slices.Contains(rc.GrantTypes, GrantRefreshToken)
@@ -279,7 +311,11 @@ func rejudge(r *PendingRequest, rc *RegisteredClient) (*PendingRequest, []string
 		return gone
 	})
 	if len(kept) == 0 || slices.Contains(r.Scopes, scopeOpenID) && !slices.Contains(kept, scopeOpenID) {
-		return nil, nil, false
+		if device {
+			return nil, nil, rejudgeUnknown
+		}
+
+		return nil, nil, rejudgeInvalidScope
 	}
 
 	judged := *r
@@ -288,12 +324,58 @@ func rejudge(r *PendingRequest, rc *RegisteredClient) (*PendingRequest, []string
 		return !slices.Contains(rc.Resources, resource)
 	})
 
-	return &judged, dropped, true
+	return &judged, dropped, rejudgeOK
 }
 
-// resumeLogin answers the login stage. Only a sign-in can: a browser session stands in at
-// the consent stage alone.
+// answerVerdict answers a request rejudge refused: an unknown handle for rejudgeUnknown, else the
+// verdict's error at the redirect URI, spending the stage. A spend lost to a race is an unknown
+// handle.
+func (p *Provider) answerVerdict(ctx context.Context, r *PendingRequest, verdict rejudgeVerdict) (ResumeResult, error) {
+	var code string
+	switch verdict {
+	case rejudgeUnauthorized:
+		code = CodeUnauthorizedClient
+	case rejudgeInvalidScope:
+		code = CodeInvalidScope
+	default:
+		return ResumeResult{}, ErrUnknownHandle
+	}
+	if r.DeviceAuthorizationID != id.Nil || r.RedirectURI == "" {
+		// rejudge never answers a device request at a redirect URI; this keeps it so.
+		return ResumeResult{}, ErrUnknownHandle
+	}
+
+	return p.refuseRequest(ctx, r, r.Stage, code)
+}
+
+// answerExpired answers a request expired within the grace window (WithPendingRequestGrace)
+// with access_denied at its redirect URI, spending the stage. Where no redirect is safe (an
+// unregistered redirect URI, a device request) it is an unknown handle. A failed spend is
+// returned as it is, leaving the request parked.
+func (p *Provider) answerExpired(ctx context.Context, r *PendingRequest, verdict rejudgeVerdict) (ResumeResult, error) {
+	if verdict == rejudgeUnknown || r.DeviceAuthorizationID != id.Nil || r.RedirectURI == "" {
+		return ResumeResult{}, ErrUnknownHandle
+	}
+
+	return p.refuseRequest(ctx, r, r.Stage, CodeAccessDenied)
+}
+
+// resumeLogin answers the login stage, handling failure as failedAfterJudging does.
 func (p *Provider) resumeLogin(ctx context.Context, in ResumeInput, r *PendingRequest, rc *RegisteredClient) (ResumeResult, error) {
+	var issued id.ID
+	res, err := p.answerLogin(ctx, in, r, rc, &issued)
+	if err != nil {
+		return p.failedAfterJudging(ctx, r, StageLogin, issued, err)
+	}
+
+	return res, nil
+}
+
+// answerLogin answers the login stage. Only a sign-in can: a browser session stands in at
+// the consent stage alone. It sets issued to the family of a code it wrote.
+func (p *Provider) answerLogin(
+	ctx context.Context, in ResumeInput, r *PendingRequest, rc *RegisteredClient, issued *id.ID,
+) (ResumeResult, error) {
 	if in.SignIn == nil {
 		return ResumeResult{}, ErrReauthenticate
 	}
@@ -320,7 +402,7 @@ func (p *Provider) resumeLogin(ctx context.Context, in ResumeInput, r *PendingRe
 	target, to, outcome := withQuery(p.consentURL, url.Values{HandleParam: {in.Handle}}), StageConsent, ResumeOutcomeConsent
 	if !consentNeeded(rc, r, remembered) {
 		to, outcome = StageDone, ResumeOutcomeCode
-		if target, err = p.issueCode(ctx, r, rc, s, r.Scopes); err != nil {
+		if target, *issued, err = p.issueCode(ctx, r, rc, s, r.Scopes); err != nil {
 			return ResumeResult{}, err
 		}
 	}
@@ -345,6 +427,19 @@ func (p *Provider) resumeLogin(ctx context.Context, in ResumeInput, r *PendingRe
 // The consent is remembered last, once this answer is the one that won. Remembering it
 // sooner would keep a grant that lost to a denial racing it.
 func (p *Provider) resumeConsent(ctx context.Context, in ResumeInput, r *PendingRequest, rc *RegisteredClient) (ResumeResult, error) {
+	var issued id.ID
+	res, err := p.answerConsent(ctx, in, r, rc, &issued)
+	if err != nil {
+		return p.failedAfterJudging(ctx, r, StageConsent, issued, err)
+	}
+
+	return res, nil
+}
+
+// answerConsent answers the consent stage. It sets issued to the family of a code it wrote.
+func (p *Provider) answerConsent(
+	ctx context.Context, in ResumeInput, r *PendingRequest, rc *RegisteredClient, issued *id.ID,
+) (ResumeResult, error) {
 	if r.SignIn == nil {
 		return ResumeResult{}, ErrUnknownHandle
 	}
@@ -381,7 +476,8 @@ func (p *Provider) resumeConsent(ctx context.Context, in ResumeInput, r *Pending
 		return ResumeResult{}, ErrReauthenticate
 	}
 
-	target, err := p.issueCode(ctx, r, rc, s, granted)
+	target, family, err := p.issueCode(ctx, r, rc, s, granted)
+	*issued = family
 	if err != nil {
 		return ResumeResult{}, err
 	}
@@ -400,6 +496,43 @@ func (p *Provider) resumeConsent(ctx context.Context, in ResumeInput, r *Pending
 	}
 
 	return ResumeResult{RedirectTo: target, Outcome: ResumeOutcomeCode}, nil
+}
+
+// failedAfterJudging answers err, a failure of a judged resume at stage from: a dependency
+// failure becomes CodeServerError at the redirect URI, spending the stage, logged by type alone.
+// If that spend fails, err is returned and the stage is left as it was. Anything else is
+// returned as it is: a refusal, a caller that hung up, a device request's failure.
+//
+// issued is the grant family of a code written before the failure, or id.Nil. It is withdrawn
+// first.
+func (p *Provider) failedAfterJudging(ctx context.Context, r *PendingRequest, from Stage, issued id.ID, err error) (ResumeResult, error) {
+	if issued != id.Nil {
+		p.withdrawCode(ctx, issued)
+	}
+	if !errors.Is(err, ErrDependency) || errors.Is(err, ErrUnknownHandle) || errors.Is(err, ErrReauthenticate) ||
+		errors.Is(err, ErrConsentMalformed) || ctx.Err() != nil || r.DeviceAuthorizationID != id.Nil || r.RedirectURI == "" {
+		return ResumeResult{}, err
+	}
+
+	res, spendErr := p.refuseRequest(ctx, r, from, CodeServerError)
+	if spendErr != nil {
+		return ResumeResult{}, err
+	}
+	p.cfg.logger.LogAttrs(ctx, slog.LevelError, "oidcprovider: a parked request could not be answered",
+		slog.String("error_type", fmt.Sprintf("%T", err)))
+
+	return res, nil
+}
+
+// withdrawCode revokes the grant family of a code no answer carried, within its own budget
+// whatever became of the caller. A failure is logged; the unclaimed code expires.
+func (p *Provider) withdrawCode(ctx context.Context, family id.ID) {
+	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
+	defer cancel()
+	_, err := p.stores.grants.Revoke(detached, family, CauseUnanswered, p.cfg.clock.Now())
+	if err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable); err != nil {
+		p.logFailedAfterSpend(ctx, "oidcprovider: a code no answer carried could not be withdrawn", err)
+	}
 }
 
 // claimedDevice reads the device authorization a device request answers, which must still be

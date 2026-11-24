@@ -988,7 +988,8 @@ func TestProvider_Park_Resume(t *testing.T) {
 		assert func(t *testing.T, res oidcprovider.ResumeResult, err error)
 	}{
 		{
-			name:  "a resume at 10 minutes 1 second is an unknown handle",
+			name:  "a resume at 10 minutes 1 second, with the grace window turned off, is an unknown handle",
+			opts:  []oidcprovider.Option{oidcprovider.WithPendingRequestGrace(0)},
 			after: 10*time.Minute + time.Second,
 			assert: func(t *testing.T, res oidcprovider.ResumeResult, err error) {
 				t.Helper()
@@ -997,13 +998,27 @@ func TestProvider_Park_Resume(t *testing.T) {
 			},
 		},
 		{
-			name:  "a resume at 6 minutes under a 5 minute lifetime is an unknown handle",
-			opts:  []oidcprovider.Option{oidcprovider.WithPendingRequestLifetime(5 * time.Minute)},
+			name: "a resume at 6 minutes under a 5 minute lifetime, with the grace window turned off, is an unknown handle",
+			opts: []oidcprovider.Option{
+				oidcprovider.WithPendingRequestLifetime(5 * time.Minute), oidcprovider.WithPendingRequestGrace(0),
+			},
 			after: 6 * time.Minute,
 			assert: func(t *testing.T, res oidcprovider.ResumeResult, err error) {
 				t.Helper()
 				require.ErrorIs(t, err, oidcprovider.ErrUnknownHandle)
 				assert.Empty(t, res.RedirectTo)
+			},
+		},
+		{
+			name:  "a resume at 11 minutes, within the default grace window, is answered access_denied and no code",
+			after: 11 * time.Minute,
+			assert: func(t *testing.T, res oidcprovider.ResumeResult, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Equal(t, oidcprovider.ResumeOutcomeClientError, res.Outcome)
+				q := queryOf(t, res.RedirectTo)
+				assert.Equal(t, "access_denied", q.Get("error"))
+				assert.False(t, q.Has("code"), "no code is issued")
 			},
 		},
 		{

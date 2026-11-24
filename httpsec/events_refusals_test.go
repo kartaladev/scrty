@@ -570,11 +570,11 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			},
 		},
 		{
-			name: "an OIDC callback refused beside an outage reports nothing",
+			name: "an OIDC callback refused beside an outage reports the refusal",
 			run:  oidcBrokered(failsWith(errors.Join(oidc.ErrNoLinkedAccount, oidc.ErrExchangeFailed))),
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, oidc.ErrExchangeFailed)
-				reportedNothing(t, run)
+				reported(event.AuthnLoginFail, "192.0.2.1", factor.OIDC)(t, run)
 			},
 		},
 		{

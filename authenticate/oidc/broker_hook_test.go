@@ -541,13 +541,26 @@ func TestBroker_HookDecisionErrors(t *testing.T) {
 		{
 			name: "a wrapped library outcome is a broker failure, not that outcome",
 			decide: func(context.Context) (oidc.SignInDecision, error) {
-				return oidc.SignInDecision{}, fmt.Errorf("wrap: %w", errors.Join(oidc.ErrExchangeFailed, oidc.ErrFlowUnspent, oidc.ErrUserInfoFailed))
+				return oidc.SignInDecision{}, fmt.Errorf("wrap: %w", errors.Join(oidc.ErrExchangeFailed, oidc.ErrFlowUnspent))
 			},
 			assert: func(t *testing.T, p *identity.Principal, err error, _ string) {
 				brokerFailure(t, p, err)
 				assert.NotErrorIs(t, err, oidc.ErrExchangeFailed)
 				assert.NotErrorIs(t, err, oidc.ErrFlowUnspent)
-				assert.NotErrorIs(t, err, oidc.ErrUserInfoFailed)
+			},
+		},
+		{
+			name: "ErrUserInfoFailed passes through as the bare sentinel, with none of the hook's text",
+			decide: func(context.Context) (oidc.SignInDecision, error) {
+				return oidc.SignInDecision{}, fmt.Errorf("lookup for %s %s: %w", ext.Email, token, oidc.ErrUserInfoFailed)
+			},
+			assert: func(t *testing.T, p *identity.Principal, err error, logs string) {
+				require.ErrorIs(t, err, oidc.ErrUserInfoFailed)
+				assert.Equal(t, oidc.ErrUserInfoFailed.Error(), err.Error())
+				assert.Nil(t, p)
+				noSecrets(t, err.Error())
+				noSecrets(t, logs)
+				assert.NotContains(t, logs, "refused", "a provider failure writes no refusal record")
 			},
 		},
 		{
