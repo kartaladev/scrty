@@ -14,9 +14,9 @@ import (
 	"github.com/kartaladev/scrty/store/migrate"
 )
 
-// TestMigrationRollback_LockBound pins that rolling back the administration
-// and selected-role migrations waits a bounded time for the ACCESS EXCLUSIVE
-// lock its DROP statements take, as their upgrades do: a long transaction
+// TestMigrationRollback_LockBound pins that rolling back the identity
+// and security-state baselines waits a bounded
+// time for the ACCESS EXCLUSIVE lock their DROP statements take: a long transaction
 // holding a table fails the rollback with lock_not_available within the bound,
 // instead of queueing every query on the table behind it, and leaves the
 // migration applied; the same rollback succeeds once the lock is gone.
@@ -29,24 +29,24 @@ func TestMigrationRollback_LockBound(t *testing.T) {
 		// and version table.
 		open    func(t *testing.T) (*sql.DB, *goose.Provider, string)
 		version int64
-		// locked is the table a reader holds; column is one the migration
-		// added to it, which a refused rollback keeps.
+		// locked is the table a reader holds; column is one of its columns
+		// the migration created, which a refused rollback keeps.
 		locked, column string
 	}
 
 	cases := []testCase{
 		{
-			name: "identity administration",
+			name: "identity baseline",
 			open: func(t *testing.T) (*sql.DB, *goose.Provider, string) {
 				db, p := identityAt(t)
 
 				return db, p, migrate.IdentityVersionTable
 			},
-			version: versionIdentityAdministration,
+			version: versionIdentityBaseline,
 			locked:  "scrty_users", column: "deleted_at",
 		},
 		{
-			name: "security-state selected role",
+			name: "security-state baseline",
 			open: func(t *testing.T) (*sql.DB, *goose.Provider, string) {
 				set := migrate.SecurityState()
 				db := RunTestPostgres(t).DB
@@ -55,7 +55,7 @@ func TestMigrationRollback_LockBound(t *testing.T) {
 
 				return db, p, set.VersionTable
 			},
-			version: versionSelectedRole,
+			version: versionSecurityStateBaseline,
 			locked:  "scrty_sessions", column: "selected_role",
 		},
 	}

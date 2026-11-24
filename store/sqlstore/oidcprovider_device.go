@@ -65,8 +65,8 @@ type DeviceAuthorizationStore struct {
 // The provider's default is an in-memory store (oidcprovider.MemoryDeviceAuthorizationStore),
 // lost with the process; pass this one to oidcprovider.WithDeviceAuthorizationStore to replace
 // it. The provider then also needs oidcprovider.WithUserCodeKey, the same on every replica,
-// or New fails. The table comes from the security-state migration
-// 20261122000000_oidc_provider_device.
+// or New fails. The table comes from the security-state baseline,
+// 20261126000000_security_state.
 func NewDeviceAuthorizationStore(db *sql.DB, opts ...Option) (*DeviceAuthorizationStore, error) {
 	c, err := newConfig(db, opts)
 	if err != nil {
