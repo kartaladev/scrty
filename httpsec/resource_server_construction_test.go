@@ -319,6 +319,37 @@ func TestResourceServer_Construction(t *testing.T) {
 			assert: builds,
 		},
 		{
+			name: "nested prefixes inside one resource server beside another resource server",
+			build: func(*testing.T) []httpsec.Option {
+				return withBinding(
+					httpsec.EnableResourceServer("urn:api", httpsec.WithPathPrefix("/api/", "/api/v2/"), bound("a", "")),
+					httpsec.EnableResourceServer("urn:billing", httpsec.WithPathPrefix("/billing/"), bound("b", "")),
+				)
+			},
+			assert: builds,
+		},
+		{
+			name: "nested prefixes inside one resource server beside two others",
+			build: func(*testing.T) []httpsec.Option {
+				return withBinding(
+					httpsec.EnableResourceServer("urn:api", httpsec.WithPathPrefix("/api/", "/api/v2/"), bound("a", "")),
+					httpsec.EnableResourceServer("urn:billing", httpsec.WithPathPrefix("/billing/"), bound("b", "")),
+					httpsec.EnableResourceServer("urn:orders", httpsec.WithPathPrefix("/orders/"), bound("c", "")),
+				)
+			},
+			assert: builds,
+		},
+		{
+			name: "a prefix nested across resource servers beside nested prefixes",
+			build: func(*testing.T) []httpsec.Option {
+				return withBinding(
+					httpsec.EnableResourceServer("urn:api", httpsec.WithPathPrefix("/api/", "/api/v2/"), bound("a", "")),
+					httpsec.EnableResourceServer("urn:billing", httpsec.WithPathPrefix("/api/v2/billing/"), bound("b", "")),
+				)
+			},
+			assert: refused(`"/api/v2/billing/"`),
+		},
+		{
 			name: "prefixes of two resource servers differing only in case overlap",
 			build: func(*testing.T) []httpsec.Option {
 				return withBinding(

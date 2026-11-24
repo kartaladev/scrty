@@ -146,6 +146,11 @@ func (p *Provider) offeredScopes() []string {
 // the bounds a consumer raises. A resource server on the same chain reads tokens up to it, so that a
 // token the provider's UserInfo accepts is never refused for its size.
 func (p *Provider) MaxAccessTokenSize() int {
-	// The same bound buildAccessVerifier gives the provider's verifier.
-	return 2*(p.cfg.bounds.Scope+maxResources*p.cfg.bounds.Resource) + 8<<10
+	return maxAccessTokenSize(&p.cfg)
+}
+
+// maxAccessTokenSize is the bound behind MaxAccessTokenSize, and the one buildAccessVerifier gives
+// the provider's verifier, so the two cannot drift.
+func maxAccessTokenSize(cfg *config) int {
+	return 2*(cfg.bounds.Scope+maxResources*cfg.bounds.Resource) + 8<<10
 }

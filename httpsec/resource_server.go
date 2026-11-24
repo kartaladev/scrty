@@ -239,7 +239,8 @@ func (rs *resourceServer) checkSources(c *config) error {
 }
 
 // check refuses resource servers that cannot share a chain: one covering every path beside
-// another, and prefixes that overlap, a prefix of another included.
+// another, and prefixes of different resource servers that overlap, a prefix of another included.
+// Prefixes nested inside one resource server are accepted: it is the one judge of them all.
 func (s *resourceServers) check() error {
 	if len(s.modes) < 2 {
 		return nil
@@ -260,6 +261,10 @@ func (s *resourceServers) check() error {
 
 	for i, a := range owners {
 		for _, b := range owners[i+1:] {
+			if a.id == b.id {
+				continue // nested prefixes of one resource server are one judge, not two
+			}
+
 			if hasPrefixFold(a.prefix, b.prefix) || hasPrefixFold(b.prefix, a.prefix) {
 				return newConfigError("%s: the prefixes %q (%s) and %q (%s) overlap, so a path could be "+
 					"judged by either; give them prefixes that share no path", optionResourceServer,
@@ -475,6 +480,9 @@ func (s *resourceServers) Intercept(ex *Exchange, next Next) error {
 func (s *resourceServers) refuse(err error, underDPoP bool, src source) error {
 	dpop := s.dpop != nil &&
 		(underDPoP || s.dpopRequired() || src != nil && !src.allowsUnbound() && !s.certBinding)
+	if errors.Is(err, ErrCertificateBinding) {
+		dpop = false // RFC 8705 answers a certificate-binding refusal under Bearer alone
+	}
 
 	return &accessTokenRefusal{err: err, dpop: dpop, code: codeInvalidToken}
 }

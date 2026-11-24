@@ -51,8 +51,8 @@ const optionFromProvider = "FromProvider"
 // texts of its own, so an error handler that logs by text does not report a client that left as
 // an outage.
 const (
-	textTokenUserNotLoaded = "httpsec: the access token's user could not be loaded"
-	textTokenUserLoadEnded = "httpsec: the request ended while the access token's user loaded"
+	textTokenUserNotLoaded = "httpsec: the access token's user could not be loaded"            //nolint:gosec // G101: error text, not a credential
+	textTokenUserLoadEnded = "httpsec: the request ended while the access token's user loaded" //nolint:gosec // G101: error text, not a credential
 )
 
 // FromProvider trusts the access tokens the chain's own provider issues, JWT and opaque alike.

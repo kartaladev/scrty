@@ -17,6 +17,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
@@ -38,12 +39,26 @@ type psWorld struct {
 
 	// inactive, gone, down and admin change what the user store says of every user.
 	inactive, gone, down, admin *atomic.Bool
+
+	// wrongID makes the user store answer another user's details, nilDetails answers no details
+	// and no error, and hangup has the request's caller leave while the user loads.
+	wrongID, nilDetails, hangup *atomic.Bool
+
+	// leave ends the request of the call in flight.
+	leave atomic.Pointer[context.CancelFunc]
 }
 
 // psSetup is what a case asks of its world.
 type psSetup struct {
 	// rs replaces the resource server: it is handed the world's provider.
 	rs func(p *oidcprovider.Provider) httpsec.Option
+
+	// failure, when set, receives the error the chain answers a request with, which then is written
+	// as its status alone.
+	failure *atomic.Pointer[error]
+
+	// events, when set, receives the chain's security events.
+	events *eventRecorder
 }
 
 func newPSWorld(t *testing.T, setup psSetup) *psWorld {
@@ -51,12 +66,25 @@ func newPSWorld(t *testing.T, setup psSetup) *psWorld {
 
 	clk := clockwork.NewFakeClockAt(time.Now())
 	consents := must.Must(oidcprovider.NewMemoryConsentStore())
-	w := &psWorld{inactive: &atomic.Bool{}, gone: &atomic.Bool{}, down: &atomic.Bool{}, admin: &atomic.Bool{}}
+	w := &psWorld{
+		inactive: &atomic.Bool{}, gone: &atomic.Bool{}, down: &atomic.Bool{}, admin: &atomic.Bool{},
+		wrongID: &atomic.Bool{}, nilDetails: &atomic.Bool{}, hangup: &atomic.Bool{},
+	}
 
 	users := NewMockUserLoader(gomock.NewController(t))
 	users.EXPECT().LoadByUserID(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(_ context.Context, user identity.UserID) (*identity.Details, error) {
 			switch {
+			case w.hangup.Load():
+				if leave := w.leave.Load(); leave != nil {
+					(*leave)()
+				}
+
+				return nil, context.Canceled
+			case w.nilDetails.Load():
+				return nil, nil
+			case w.wrongID.Load():
+				return &identity.Details{ID: user + "-other", Active: true, Username: "eve@example.com"}, nil
 			case w.down.Load():
 				return nil, errors.New("user store secret text")
 			case w.gone.Load():
@@ -104,6 +132,17 @@ func newPSWorld(t *testing.T, setup psSetup) *psWorld {
 	f := &opFixture{keys: tokenKeys()}
 	opts := append([]httpsec.Option{httpsec.WithClock(clk), httpsec.EnableDPoP(httpsec.DPoP{PublicURL: opIssuer})},
 		f.wired(t, p)...)
+	if setup.failure != nil {
+		opts = append(opts, httpsec.WithErrorHandler(func(rw http.ResponseWriter, _ *http.Request, err error) {
+			setup.failure.Store(&err)
+			rw.WriteHeader(httpsec.StatusForError(err))
+		}))
+	}
+
+	if setup.events != nil {
+		opts = append(opts, httpsec.EnableSecurityEvents(setup.events.sink))
+	}
+
 	opts = append(opts, httpsec.EnableOIDCProvider(p), rs)
 
 	chain, err := httpsec.New(opts...)
@@ -149,7 +188,12 @@ type psCall struct {
 func (w *psWorld) call(t *testing.T, tok string, k *dpopKey, jti string) psCall {
 	t.Helper()
 
-	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, psAPIURL, nil)
+	ctx, leave := context.WithCancel(t.Context())
+	defer leave()
+
+	w.leave.Store(&leave)
+
+	r := httptest.NewRequestWithContext(ctx, http.MethodGet, psAPIURL, nil)
 	r.RemoteAddr = tokenAddr
 
 	if k == nil {
@@ -215,6 +259,12 @@ func TestResourceServer_FromProvider(t *testing.T) {
 		assert.False(t, out.passedOn)
 		assert.Equal(t, []string{`DPoP error="invalid_token", algs="ES256"`}, out.header.Values("WWW-Authenticate"))
 	}
+
+	// hungUp receives the error of the case where the caller leaves.
+	hungUp := &atomic.Pointer[error]{}
+
+	// outage receives the events of the case where the user store is down.
+	outage := &eventRecorder{}
 
 	cases := []testCase{
 		{
@@ -316,7 +366,47 @@ func TestResourceServer_FromProvider(t *testing.T) {
 			assert: invalidToken,
 		},
 		{
-			name: "a user store that fails is a dependency failure, not a refusal",
+			name: "a loader that answers another user's details is refused as an invalid token",
+			act: func(t *testing.T, w *psWorld) psCall {
+				tok := w.token(t, psJWTClient, &k, forAPI)
+				w.wrongID.Store(true)
+
+				return w.call(t, tok, &k, "j-1")
+			},
+			assert: invalidToken,
+		},
+		{
+			name: "a loader that answers no details and no error is refused as an invalid token",
+			act: func(t *testing.T, w *psWorld) psCall {
+				tok := w.token(t, psJWTClient, &k, forAPI)
+				w.nilDetails.Store(true)
+
+				return w.call(t, tok, &k, "j-1")
+			},
+			assert: invalidToken,
+		},
+		{
+			name:  "a caller who leaves while the user loads is neither refused nor an outage",
+			setup: psSetup{failure: hungUp},
+			act: func(t *testing.T, w *psWorld) psCall {
+				tok := w.token(t, psJWTClient, &k, forAPI)
+				w.hangup.Store(true)
+
+				return w.call(t, tok, &k, "j-1")
+			},
+			assert: func(t *testing.T, _ *psWorld, out psCall) {
+				assert.False(t, out.passedOn)
+
+				failure := hungUp.Load()
+				require.NotNil(t, failure)
+				require.ErrorIs(t, *failure, context.Canceled)
+				assert.NotErrorIs(t, *failure, httpsec.ErrInvalidToken, "a hang-up is not a refusal")
+				assert.NotContains(t, (*failure).Error(), "could not be loaded", "a hang-up is not an outage")
+			},
+		},
+		{
+			name:  "a user store that fails is a dependency failure, not a refusal",
+			setup: psSetup{events: outage},
 			act: func(t *testing.T, w *psWorld) psCall {
 				tok := w.token(t, psJWTClient, &k, forAPI)
 				w.down.Store(true)
@@ -327,6 +417,10 @@ func TestResourceServer_FromProvider(t *testing.T) {
 				assert.Equal(t, http.StatusInternalServerError, out.status)
 				assert.Empty(t, out.header.Values("WWW-Authenticate"))
 				assert.NotContains(t, out.body, "secret text")
+
+				for _, e := range outage.all() {
+					assert.NotEqual(t, event.OutcomeFailure, e.Outcome, "the outage was recorded as a refused credential: %s", e.Name)
+				}
 			},
 		},
 		{
@@ -487,4 +581,32 @@ func TestResourceServer_FromProviderRefusalIdentity(t *testing.T) {
 	assert.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
 	assert.False(t, out.handlerRan)
 	assert.NotContains(t, out.err.Error(), "not-a-token")
+}
+
+// TestResourceServer_AudienceNamed pins that a token's audience must name the resource server or
+// an alias by exact match, and that an empty audience names nothing.
+func TestResourceServer_AudienceNamed(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		audience []string
+		assert   func(t *testing.T, named bool)
+	}{
+		{"no audience", nil, func(t *testing.T, named bool) { assert.False(t, named) }},
+		{"an empty list", []string{}, func(t *testing.T, named bool) { assert.False(t, named) }},
+		{"an empty string", []string{""}, func(t *testing.T, named bool) { assert.False(t, named) }},
+		{"only the issuer", []string{opIssuer}, func(t *testing.T, named bool) { assert.False(t, named) }},
+		{"the identifier in another case", []string{"URN:ORDERS"}, func(t *testing.T, named bool) { assert.False(t, named) }},
+		{"the identifier", []string{"urn:orders"}, func(t *testing.T, named bool) { assert.True(t, named) }},
+		{"an alias beside another audience", []string{opIssuer, "urn:legacy"}, func(t *testing.T, named bool) { assert.True(t, named) }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, httpsec.AudienceNamedBy("urn:orders", []string{"urn:legacy"}, tc.audience))
+		})
+	}
 }

@@ -75,3 +75,8 @@ func WithStubSource(s *StubSource) ResourceServerOption { return withSource(s) }
 
 // WithNilSource adds a nil source to a resource server.
 func WithNilSource() ResourceServerOption { return withSource(nil) }
+
+// AudienceNamedBy says whether audience names the resource server id, or one of its aliases.
+func AudienceNamedBy(id string, aliases, audience []string) bool {
+	return (&resourceServer{id: id, aliases: aliases}).audienceNamed(audience)
+}

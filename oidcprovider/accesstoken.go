@@ -264,7 +264,7 @@ func buildAccessVerifier(keys signingkey.KeySource, issuer string, cfg *config) 
 		token.WithoutVerifyAudience(),
 		token.WithVerifyClock(cfg.clock),
 		token.WithVerifyTokenType(token.TypeAccessToken),
-		token.WithVerifyMaxTokenSize(2*(cfg.bounds.Scope+maxResources*cfg.bounds.Resource)+8<<10),
+		token.WithVerifyMaxTokenSize(maxAccessTokenSize(cfg)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("%w: Keys: %w", ErrConfig, err)

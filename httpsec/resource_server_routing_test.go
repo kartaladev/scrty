@@ -397,7 +397,7 @@ func TestResourceServer_ProviderBound(t *testing.T) {
 				assert.Zero(t, src.Offered())
 			},
 		},
-		{
+		{ //nolint:gosec // G101: test fixture, not a credential
 			name:  "UserInfo judges a provider token off every prefix, as before",
 			path:  "/oauth2/userinfo",
 			token: "at.not-a-token-the-provider-issued",
