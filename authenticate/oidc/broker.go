@@ -27,6 +27,13 @@ import (
 // the provider, provisions a user for an identity with no link.
 //
 // Build one with NewBroker. A Broker is safe for concurrent use.
+//
+// It is also an UpstreamBroker that accepts upstream access only for the
+// providers WithBrokerSignInHook hooks. A consumer type that embeds it by
+// pointer, under a name other than Broker (a type alias such as "type
+// libraryBroker = oidc.Broker", embedded as *libraryBroker), and overrides Broker keeps
+// that override on every other provider; to intercept a hooked provider's
+// sign-ins it overrides BrokerUpstream too.
 type Broker struct {
 	links   LinkStore
 	users   identity.UserLoader

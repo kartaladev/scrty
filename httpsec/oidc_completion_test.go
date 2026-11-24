@@ -73,7 +73,13 @@ func completionRP(t *testing.T, idp *oidcTestProvider, origin string, unlinked .
 	reg := idp.provider()
 	reg.RedirectURL = origin + httpsec.DefaultOIDCCallbackPath + testOIDCProvider
 
-	client := must.Must(outbound.New(outbound.WithHTTPClient(idp.srv.Client())))
+	out := []outbound.Option{outbound.WithHTTPClient(idp.srv.Client())}
+	if strings.HasPrefix(origin, "http://") {
+		// A loopback http issuer's chain is called back over plain http.
+		out = append(out, outbound.WithAllowedSchemes("https", "http"))
+	}
+
+	client := must.Must(outbound.New(out...))
 
 	return must.Must(oidc.NewRelyingParty(must.Must(oidc.NewRegistry(reg)), broker,
 		oidc.WithOutboundClient(client), oidc.WithFlowStore(must.Must(oidc.NewMemoryFlowStore()))))
@@ -216,6 +222,9 @@ const completionLoginURL = opIssuer + "/login"
 
 // completionSetup is what a completion row changes of its chain.
 type completionSetup struct {
+	// issuer is the OpenID Provider's issuer, which the chain also serves the
+	// login from; empty is opIssuer.
+	issuer string
 	// users is OIDCDeps.Users; nil is the provider flow's own loader, which answers
 	// every user as active.
 	users identity.UserLoader
@@ -312,7 +321,12 @@ func newCompletionFlow(t *testing.T, setup completionSetup) *completionFlow {
 		handoffs: oidc.NewMemoryHandoffStore(),
 		events:   &eventRecorder{},
 	}
-	f.rp = completionRP(t, f.idp, opIssuer, setup.unlinked)
+	origin := setup.issuer
+	if origin == "" {
+		origin = opIssuer
+	}
+
+	f.rp = completionRP(t, f.idp, origin, setup.unlinked)
 
 	var provider []oidcprovider.Option
 	if setup.pending != nil {
@@ -329,6 +343,7 @@ func newCompletionFlow(t *testing.T, setup completionSetup) *completionFlow {
 	}
 
 	f.opFlow = newOPFlow(t, flowSetup{
+		issuer:   setup.issuer,
 		provider: provider,
 		clients:  setup.clients,
 		sessions: setup.sessions,
@@ -397,7 +412,7 @@ func (f *completionFlow) startSSO(t *testing.T, next string) ssoLogin {
 	t.Helper()
 
 	start := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
-		opIssuer+httpsec.DefaultOIDCAuthorizePath+testOIDCProvider+"?"+
+		f.issuer+httpsec.DefaultOIDCAuthorizePath+testOIDCProvider+"?"+
 			url.Values{httpsec.DefaultOIDCNextParam: {next}}.Encode(), nil)
 
 	started := f.serve(t, start, nil)
@@ -417,7 +432,7 @@ func (f *completionFlow) callBack(t *testing.T, login ssoLogin, change ...flowCh
 	t.Helper()
 
 	callback := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
-		opIssuer+httpsec.DefaultOIDCCallbackPath+testOIDCProvider+"?"+
+		f.issuer+httpsec.DefaultOIDCCallbackPath+testOIDCProvider+"?"+
 			url.Values{"code": {login.nonce}, "state": {login.state}}.Encode(), nil)
 
 	return f.serve(t, callback, append([]flowChange{
@@ -802,6 +817,80 @@ func TestOIDCCompletion_PreChecksHandle(t *testing.T) {
 			assert.Empty(t, f.events.named(event.SessionCreated), "no session event")
 			assert.Zero(t, f.cancelled.Load(), "held recoveries untouched")
 			assert.Zero(t, f.storedHandoffs(t), "no handoff issued")
+		})
+	}
+}
+
+// TestOIDCCompletion_PlainHTTP pins that completion applies the resume endpoint's
+// transport guard before anything else (D7, step 2; F57): a qualifying callback not
+// made over TLS, while the provider does not allow plain HTTP, is refused as an
+// unknown handle with no pending-request lookup, no session, nothing resumed and no
+// browser-session cookie; a provider on a loopback http issuer, which allows plain
+// HTTP, completes the same callback.
+func TestOIDCCompletion_PlainHTTP(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		issuer string // empty is opIssuer, over https
+		// flowCookie is the OpenID Provider's flow cookie for the issuer.
+		flowCookie string
+		assert     func(t *testing.T, f *completionFlow, handle, flow string, a flowAnswer, lookups int64)
+	}
+
+	cases := []testCase{
+		{
+			name:       "over plain http while the provider insists on TLS: refused before any lookup",
+			flowCookie: flowCookie,
+			assert: func(t *testing.T, f *completionFlow, handle, flow string, a flowAnswer, lookups int64) {
+				t.Helper()
+
+				require.ErrorIs(t, a.err, httpsec.ErrOIDCUnknownHandle)
+				assert.Zero(t, lookups, "the pending request was never looked up")
+				assert.Zero(t, f.charged.Load(), "not charged: the source was never admitted")
+				assert.Empty(t, a.header.Get("Location"), "no redirect")
+				assert.Nil(t, a.cookie(flowSession), "no browser-session cookie")
+				assert.Nil(t, a.cookie(flowSessionPlain), "no browser-session cookie")
+				assert.Zero(t, f.storedSessions(t), "no session")
+				assert.Zero(t, f.cancelled.Load(), "held recoveries untouched")
+				assert.Zero(t, f.storedHandoffs(t), "no handoff issued")
+				assert.Empty(t, f.events.named(event.SessionCreated), "no session event")
+				assert.Equal(t, oidcprovider.StageLogin, f.stage(t, handle, flow), "nothing resumed")
+			},
+		},
+		{
+			name:       "over plain http on a loopback http issuer, which allows it: completed",
+			issuer:     flowLoopback,
+			flowCookie: flowCookiePlain,
+			assert: func(t *testing.T, f *completionFlow, _, _ string, a flowAnswer, lookups int64) {
+				t.Helper()
+
+				require.NoError(t, a.err)
+				require.Equal(t, http.StatusSeeOther, a.status, a.body)
+				assert.Positive(t, lookups, "the pending request was looked up")
+				loc := a.location(t)
+				assert.Equal(t, rpCallback, loc.Scheme+"://"+loc.Host+loc.Path)
+				assert.NotEmpty(t, loc.Query().Get("code"), "an authorization code")
+				browser := a.cookie(flowSessionPlain)
+				require.NotNil(t, browser, "the browser-session cookie is set")
+				assert.False(t, browser.Secure)
+				assert.Equal(t, 1, f.storedSessions(t))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newCompletionFlow(t, completionSetup{issuer: tc.issuer})
+			handle, flow := f.parkIn(t, tc.flowCookie, flowFirstParty)
+
+			login := f.startSSO(t, f.issuer+"/login?"+url.Values{oidcprovider.HandleParam: {handle}}.Encode())
+			before := f.pending.loads.Load()
+			a := f.callBack(t, login, flowCookieOf(tc.flowCookie, flow), flowPlainHTTP)
+
+			tc.assert(t, f, handle, flow, a, f.pending.loads.Load()-before)
 		})
 	}
 }

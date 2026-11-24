@@ -247,6 +247,44 @@ func (m *MockUpstreamBroker) EXPECT() *MockUpstreamBrokerMockRecorder {
 	return m.recorder
 }
 
+// AcceptsUpstream mocks base method.
+func (m *MockUpstreamBroker) AcceptsUpstream(provider string) bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AcceptsUpstream", provider)
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// AcceptsUpstream indicates an expected call of AcceptsUpstream.
+func (mr *MockUpstreamBrokerMockRecorder) AcceptsUpstream(provider any) *MockUpstreamBrokerAcceptsUpstreamCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AcceptsUpstream", reflect.TypeOf((*MockUpstreamBroker)(nil).AcceptsUpstream), provider)
+	return &MockUpstreamBrokerAcceptsUpstreamCall{Call: call}
+}
+
+// MockUpstreamBrokerAcceptsUpstreamCall wrap *gomock.Call
+type MockUpstreamBrokerAcceptsUpstreamCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockUpstreamBrokerAcceptsUpstreamCall) Return(arg0 bool) *MockUpstreamBrokerAcceptsUpstreamCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockUpstreamBrokerAcceptsUpstreamCall) Do(f func(string) bool) *MockUpstreamBrokerAcceptsUpstreamCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockUpstreamBrokerAcceptsUpstreamCall) DoAndReturn(f func(string) bool) *MockUpstreamBrokerAcceptsUpstreamCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // BrokerUpstream mocks base method.
 func (m *MockUpstreamBroker) BrokerUpstream(ctx context.Context, ext oidc.ExternalIdentity, up oidc.Upstream) (*identity.Principal, error) {
 	m.ctrl.T.Helper()

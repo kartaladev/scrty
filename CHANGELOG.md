@@ -21,7 +21,12 @@ and no migration is needed.
 - **Upstream access for a sign-in.** `oidc.Upstream` carries the access token of the token response
   that carried the verified ID token, bound to its subject, and prints redacted. `Upstream.UserInfo`
   makes one GET to the provider's UserInfo endpoint, checks that `sub` matches, and returns the members
-  unchanged. A broker that wants it implements `oidc.UpstreamBroker`.
+  unchanged. A broker that wants it implements `oidc.UpstreamBroker` and names the providers it
+  wants it for with `AcceptsUpstream`; every other provider's login calls `Broker` as before. The
+  library's `oidc.Broker` accepts it only for its hooked providers, so a wrapper that embeds it by pointer under
+  another name (a type alias such as `type libraryBroker = oidc.Broker`, embedded as `*libraryBroker`)
+  and overrides `Broker` keeps that override on unhooked providers (and overrides `BrokerUpstream` too to
+  intercept hooked sign-ins).
   - `oidc.Provider.UserInfoEndpoint` pins the endpoint, replacing the one in the discovery document
     (default: discovered, and dropped with a warning if off the issuer's origin).
   - Every UserInfo failure wraps `oidc.ErrUserInfoFailed`, except a cancelled or expired context, which

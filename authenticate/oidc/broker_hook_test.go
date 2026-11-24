@@ -77,6 +77,29 @@ func TestNewBroker_SignInHookWiring(t *testing.T) {
 		return listerOnly{LinkStore: m, LinkLister: m}
 	}
 
+	enc := fastBcryptEncoder(t)
+	// unapplied are the per-provider options the hooked login never applies
+	// (D6, F14), each for provider p; JIT sub-options need JIT on p to be
+	// accepted at all, and a password claim needs an encoder.
+	unapplied := []struct {
+		option string
+		on     func(p string) oidc.BrokerOption
+	}{
+		{"WithBrokerNameClaim", func(p string) oidc.BrokerOption { return oidc.WithBrokerNameClaim(p, "name") }},
+		{"WithBrokerPasswordClaim", func(p string) oidc.BrokerOption { return oidc.WithBrokerPasswordClaim(p, "pwd_hash") }},
+		{"WithBrokerRoleClaim", func(p string) oidc.BrokerOption { return oidc.WithBrokerRoleClaim(p, "realm_access.roles") }},
+		{"WithBrokerRoleMapping", func(p string) oidc.BrokerOption {
+			return oidc.WithBrokerRoleMapping(p, map[string]string{"corp-admin": "admin"})
+		}},
+		{"WithBrokerAllowedRoles", func(p string) oidc.BrokerOption { return oidc.WithBrokerAllowedRoles(p, "viewer") }},
+		// checkProvisioning refuses these two JIT sub-options first, so the
+		// unappliedOption branches for them are defence in depth.
+		{"WithBrokerJITAllowUnverifiedEmail", oidc.WithBrokerJITAllowUnverifiedEmail},
+		{"WithBrokerJITEmailDomains", func(p string) oidc.BrokerOption {
+			return oidc.WithBrokerJITEmailDomains(p, "corp.example")
+		}},
+	}
+
 	cases := []testCase{
 		{
 			name: "a nil hook is refused",
@@ -202,6 +225,28 @@ func TestNewBroker_SignInHookWiring(t *testing.T) {
 			},
 		},
 	}
+
+	for _, u := range unapplied {
+		cases = append(cases, testCase{
+			name: "a hook and " + u.option + " on one provider are refused",
+			opts: func(*gomock.Controller) []oidc.BrokerOption {
+				return []oidc.BrokerOption{hook, oidc.WithBrokerPasswordEncoder(enc), u.on("corp")}
+			},
+			assert: refused(u.option, `"corp"`),
+		})
+	}
+	cases = append(cases, testCase{
+		name: "a hook on corp and every option it refuses, on unhooked partner, are built",
+		opts: func(ctrl *gomock.Controller) []oidc.BrokerOption {
+			opts := []oidc.BrokerOption{hook, oidc.WithBrokerPasswordEncoder(enc),
+				oidc.WithBrokerProvisioner(NewMockUserProvisioner(ctrl)), oidc.WithBrokerJIT("partner")}
+			for _, u := range unapplied {
+				opts = append(opts, u.on("partner"))
+			}
+			return opts
+		},
+		assert: built,
+	})
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

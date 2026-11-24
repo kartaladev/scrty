@@ -260,6 +260,50 @@ func TestBroker_HookProvisions(t *testing.T) {
 			},
 		},
 		{
+			// F56: u-new was provisioned through corp, then partner's hook
+			// adopted it; corp's identity resuming its own provisioning is not
+			// a first provisioning, so the freshness check does not refuse it.
+			name: "a sign-in provisioning u-new again through its own link, after another provider's hook adopted u-new, " +
+				"applies once and resolves (F56)",
+			seed:    []oidc.Link{pending, partnerLink},
+			prepare: func(d *hookDirectory, _ *provisionLinks) { d.create(activeUser("u-new")) },
+			assert: func(t *testing.T, e env, p *identity.Principal, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, p)
+				assert.Equal(t, identity.UserID("u-new"), p.ID)
+				assert.Equal(t, []identity.UserID{"u-new"}, e.linked)
+				assert.Zero(t, e.links.inserts.Load())
+				require.Len(t, e.applies.all(), 1)
+				got, ferr := e.links.FindByExternal(t.Context(), "partner", "https://partner.example", "p-1")
+				require.NoError(t, ferr, "the other provider's link is untouched")
+				assert.Equal(t, identity.UserID("u-new"), got.UserID)
+			},
+		},
+		{
+			// F48: partner's leftover race link (empty username, a failed
+			// undo) names u-new, which does not exist yet; resuming through
+			// corp's own link must not let two identities share one pending
+			// user, so freshness runs while the user does not load.
+			name: "a sign-in resuming the absent u-new through its own link, while another identity's leftover link names it, " +
+				"is refused before Apply and both links stay (F48)",
+			seed: func() []oidc.Link {
+				leftover := partnerLink
+				leftover.Username = ""
+				return []oidc.Link{pending, leftover}
+			}(),
+			assert: func(t *testing.T, e env, p *identity.Principal, err error) {
+				require.ErrorIs(t, err, oidc.ErrNoLinkedAccount)
+				assert.Nil(t, p)
+				assert.Empty(t, e.applies.all(), "a refused resume never runs its apply step")
+				assert.Zero(t, e.links.inserts.Load())
+				assert.Equal(t, &pending, findCorp(t, e.links, "s-1"), "the identity's own link is unchanged")
+				got, ferr := e.links.FindByExternal(t.Context(), "partner", "https://partner.example", "p-1")
+				require.NoError(t, ferr, "the other identity's link is untouched")
+				assert.Equal(t, identity.UserID("u-new"), got.UserID)
+				assert.Empty(t, got.Username)
+			},
+		},
+		{
 			name: "a sign-in provisioning u-new again while it exists disabled is refused before Apply, and the link stays",
 			seed: []oidc.Link{pending},
 			prepare: func(d *hookDirectory, _ *provisionLinks) {

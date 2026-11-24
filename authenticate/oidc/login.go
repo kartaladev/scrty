@@ -119,7 +119,8 @@ var errForeignFlow = fmt.Errorf("%w: the flow store completed another provider's
 // exchanges the code with the flow's PKCE verifier, verifies the ID token
 // against the flow's nonce and resolves the identity through the broker: by
 // BrokerUpstream, with the token response's access token as an Upstream, when
-// the broker implements UpstreamBroker, and by Broker otherwise. The access
+// the broker implements UpstreamBroker and its AcceptsUpstream reports true
+// for provider, and by Broker otherwise. The access
 // token lives only in that Upstream, for this call: it is never part of the
 // result, a flow, a log or an error, and the refresh token is discarded. It
 // returns the principal, the provider, its issuer, the provider session (the
@@ -195,7 +196,7 @@ func (m *RelyingParty) Callback(ctx context.Context, provider, code, state, hand
 		Claims:        claims.Claims,
 	}
 	var principal *identity.Principal
-	if ub, ok := m.broker.(UpstreamBroker); ok {
+	if ub, ok := m.broker.(UpstreamBroker); ok && ub.AcceptsUpstream(p.Name) {
 		principal, err = ub.BrokerUpstream(ctx, ext, m.upstreamFor(p, accessToken, claims.Subject))
 	} else {
 		principal, err = m.broker.Broker(ctx, ext)

@@ -77,16 +77,31 @@ type IdentityBroker interface {
 // provider's upstream access: the access token the token endpoint issued
 // beside the ID token, and the UserInfo fetch it allows.
 //
-// It is optional. RelyingParty.Callback calls BrokerUpstream in place of
-// Broker when the broker it was given implements this interface, and Broker
-// otherwise, so every existing broker is called exactly as before. The
-// principal and error follow Broker's contract: ErrNoLinkedAccount or
-// ErrProvisioningRefused for a refusal, anything else for a failure.
+// It is optional, and it is scoped by provider. RelyingParty.Callback calls
+// BrokerUpstream in place of Broker only when the broker it was given
+// implements this interface and AcceptsUpstream reports true for the
+// login's provider; for any other provider, and for a broker that does not
+// implement it, Callback calls Broker, so every existing broker is called
+// exactly as before. The principal and error follow Broker's contract:
+// ErrNoLinkedAccount or ErrProvisioningRefused for a refusal, anything else
+// for a failure.
+//
+// The library's *Broker accepts upstream access only for the providers that
+// WithBrokerSignInHook hooks. A consumer type that embeds the library
+// broker by pointer, under a name other than Broker (a type alias such as
+// "type libraryBroker = oidc.Broker", embedded as *libraryBroker), and overrides
+// Broker, to audit or refuse more, keeps that override on every
+// unhooked provider; on a hooked provider the promoted BrokerUpstream runs and
+// the override does not, so such a wrapper overrides BrokerUpstream too when
+// it means to intercept hooked sign-ins.
 //
 // The verified identity is what the login is decided on: up carries no
 // assurance, and UserInfo members are the provider's statements, not verified
 // claims.
 type UpstreamBroker interface {
+	// AcceptsUpstream reports whether a login through provider is brokered
+	// by BrokerUpstream. False sends it to Broker, without upstream access.
+	AcceptsUpstream(provider string) bool
 	// BrokerUpstream returns the principal ext resolves to. up holds the
 	// access token of the callback's token response; see Upstream.
 	BrokerUpstream(ctx context.Context, ext ExternalIdentity, up Upstream) (*identity.Principal, error)

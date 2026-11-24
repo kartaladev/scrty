@@ -131,13 +131,18 @@ func ExampleWithAssuranceEvaluator() {
 }
 
 // departmentBroker resolves users by the department their provider's UserInfo
-// states. It implements oidc.UpstreamBroker, so the callback hands it the
-// upstream access; Broker is only called for a broker that does not.
+// states. It implements oidc.UpstreamBroker and accepts upstream access for
+// corp, so a callback through corp hands it the upstream access; a callback
+// through any other provider calls Broker.
 type departmentBroker struct{}
 
 func (departmentBroker) Broker(context.Context, oidc.ExternalIdentity) (*identity.Principal, error) {
 	return nil, oidc.ErrNoLinkedAccount
 }
+
+// AcceptsUpstream asks for upstream access on corp's logins only; any other
+// provider's are brokered by Broker.
+func (departmentBroker) AcceptsUpstream(provider string) bool { return provider == "corp" }
 
 func (departmentBroker) BrokerUpstream(ctx context.Context, ext oidc.ExternalIdentity, up oidc.Upstream) (*identity.Principal, error) {
 	members, err := up.UserInfo(ctx)

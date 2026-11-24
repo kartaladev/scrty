@@ -387,7 +387,10 @@ read the provider's UserInfo) sets a **sign-in hook** for one provider with
 `oidc.WithBrokerSignInHook`. The hook runs on every login through that provider. It receives the
 verified `oidc.ExternalIdentity`, an `oidc.Upstream` (the provider's upstream access for this
 callback) and `linked`, and returns an `oidc.SignInDecision`. Nothing changes for a provider with no
-hook, or for a broker that does not implement `oidc.UpstreamBroker`.
+hook, or for a broker that does not implement `oidc.UpstreamBroker` or whose `AcceptsUpstream` does
+not name the login's provider. A wrapper that embeds the library broker by pointer under another name (a type alias
+such as `type libraryBroker = oidc.Broker`, embedded as `*libraryBroker`; a field named `Broker` clashes
+with the method) and overrides `Broker` keeps that override on unhooked providers; it overrides `BrokerUpstream` too to intercept hooked sign-ins.
 
 #### Decide, then apply
 

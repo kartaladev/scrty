@@ -68,7 +68,14 @@ type SignInDecision struct {
 	// be refused; the next sign-in succeeds). A store that does not
 	// (possible only under WithBrokerSignInHookAllowManyLinks) is not
 	// checked, or not re-checked, so a hook there must choose references
-	// that are fresh.
+	// that are fresh. Freshness is checked on a first provisioning, and
+	// on a resume only while the user does not load: once the identity's own
+	// link names the reference, provisioning it again resumes, and when the
+	// user exists a link another identity gained to it since, such as another
+	// provider's hook adopting it, does not refuse the resume. While the user
+	// is still absent, another identity's link to it refuses the resume, so
+	// two identities never share one pending user. The one-link rule still
+	// applies to a resume.
 	//
 	// References must be fresh values that no other writer can produce,
 	// such as a new random UUID: the broker cannot tell a user that another
@@ -186,7 +193,11 @@ type SignInHook func(ctx context.Context, ext ExternalIdentity, up Upstream, lin
 // A nil hook, an empty provider and a second hook for one provider are
 // refused with ErrConfig. So is a hook on a provider that WithBrokerJIT,
 // WithBrokerClaimMirror or WithBrokerRoleSync also turns on, since two writers
-// of one user would contradict each other, and a hook over a link store that
+// of one user would contradict each other; a hook on a provider that
+// WithBrokerNameClaim, WithBrokerPasswordClaim, WithBrokerRoleClaim,
+// WithBrokerRoleMapping, WithBrokerAllowedRoles,
+// WithBrokerJITAllowUnverifiedEmail or WithBrokerJITEmailDomains also names,
+// since the hooked login never applies them; and a hook over a link store that
 // does not implement both LinkLister and LinkRemover, which the
 // one-link-per-user rule needs, unless WithBrokerSignInHookAllowManyLinks
 // lifts that rule for provider. A
@@ -231,7 +242,8 @@ func WithBrokerSignInHookAllowManyLinks(provider string) BrokerOption {
 
 // checkSignInHooks refuses a hook configuration that contradicts itself or
 // another option (D6, D11): a second writer of the hooked provider's users
-// (JIT provisioning, claim mirroring or role sync), a one-link rule the link
+// (JIT provisioning, claim mirroring or role sync), a per-provider option the
+// hooked login never applies (see unappliedOption), a one-link rule the link
 // store cannot enforce, or an allowance for a provider with no hook. Providers
 // are checked in the order options named them, so the error is stable.
 func (b *Broker) checkSignInHooks() error {
@@ -258,6 +270,10 @@ func (b *Broker) checkSignInHooks() error {
 			return fmt.Errorf("%w: WithBrokerSignInHook and %s both write the users of provider %q",
 				ErrConfig, other, p)
 		}
+		if unapplied := b.unappliedOption(p); unapplied != "" {
+			return fmt.Errorf("%w: %s names provider %q, whose WithBrokerSignInHook login never applies it",
+				ErrConfig, unapplied, p)
+		}
 		if b.hookManyLinks[p] {
 			continue
 		}
@@ -273,11 +289,59 @@ func (b *Broker) checkSignInHooks() error {
 	return nil
 }
 
+// unappliedOption names the first per-provider option set for provider that
+// a hooked login never applies (D6, F14), or returns "" when there is none.
+// Accepting one would let a consumer believe, for example, that an allowlist
+// limits a hooked provider's roles when nothing applies it.
+func (b *Broker) unappliedOption(provider string) string {
+	_, name := b.nameClaims[provider]
+	_, pwd := b.passwordClaims[provider]
+	_, roleClaim := b.roleClaims[provider]
+	_, mapping := b.roleMappings[provider]
+	_, allowed := b.allowedRoles[provider]
+	_, domains := b.jitDomains[provider]
+	switch {
+	case name:
+		return "WithBrokerNameClaim"
+	case pwd:
+		return "WithBrokerPasswordClaim"
+	case roleClaim:
+		return "WithBrokerRoleClaim"
+	case mapping:
+		return "WithBrokerRoleMapping"
+	case allowed:
+		return "WithBrokerAllowedRoles"
+	case b.jitUnverified[provider]:
+		return "WithBrokerJITAllowUnverifiedEmail"
+	case domains:
+		return "WithBrokerJITEmailDomains"
+	}
+	return ""
+}
+
 var _ UpstreamBroker = (*Broker)(nil)
+
+// AcceptsUpstream reports whether a login through provider is brokered by
+// BrokerUpstream: true only for a provider WithBrokerSignInHook hooks, which
+// needs the upstream access. Every other provider's logins go to Broker, so a
+// consumer type that embeds the library broker, under a name other than
+// Broker, and overrides Broker keeps its override there.
+func (b *Broker) AcceptsUpstream(provider string) bool {
+	_, hooked := b.hooks[provider]
+	return hooked
+}
 
 // BrokerUpstream returns the principal ext resolves to, given the provider's
 // upstream access for this callback. RelyingParty.Callback calls it in place
-// of Broker, since Broker implements UpstreamBroker.
+// of Broker for the providers AcceptsUpstream accepts, the hooked ones.
+//
+// A consumer type that embeds the library broker and overrides Broker, to
+// audit or refuse more, has this method promoted: a hooked provider's login
+// runs it and not the override. The broker is embedded by pointer under
+// another name, since a field named Broker clashes with the method (a type
+// alias such as "type libraryBroker = oidc.Broker", embedded as
+// *libraryBroker). Such a wrapper overrides BrokerUpstream too when it means to
+// intercept hooked sign-ins.
 //
 // A provider with no sign-in hook resolves exactly as through Broker, and up
 // is not read. A hooked provider's identity is looked up by provider, issuer
@@ -364,12 +428,20 @@ func (b *Broker) acceptDecision(ctx context.Context, ext ExternalIdentity, up Up
 	// one-link check that would come before the insert.
 	var listed bool
 	if d.Provision {
-		if err := b.checkProvisioned(ctx, ext, d.User, l != nil, values); err != nil {
+		loaded, err := b.checkProvisioned(ctx, ext, d.User, l != nil, values)
+		if err != nil {
 			return nil, err
 		}
-		var err error
-		if listed, err = b.checkFresh(ctx, ext, d.User, values); err != nil {
-			return nil, err
+		// Freshness guards a first provisioning, and a resume while the user
+		// does not load (F48): a pending user is shared by no two identities.
+		// Once the user loads through the identity's own link, the identity
+		// owns it, and another provider's link to it, an adoption made after
+		// it was created, must not refuse the resume (F56). The one-link
+		// rule below still applies to a resume.
+		if l == nil || !loaded {
+			if listed, err = b.checkFresh(ctx, ext, d.User, values); err != nil {
+				return nil, err
+			}
 		}
 	} else {
 		det, err := b.loadDecided(ctx, ext, d.User, values, loadBeforeApply)
@@ -421,9 +493,13 @@ func (b *Broker) acceptDecision(ctx context.Context, ext ExternalIdentity, up Up
 }
 
 // checkFresh refuses, as ErrNoLinkedAccount, a provisioning decision whose
-// reference user is named by a link other than ext's own (D13 step 3): the
-// reference must be fresh, or provisioning would give the identity a user
-// that another identity, or another provider's, already reaches. A listing
+// reference user is named by a link other than ext's own (D13 step 3). It runs
+// on a first provisioning, and on a resume through ext's own link only while
+// the user does not load (F48); a resumed user that loads is owned by the
+// identity, and another provider's later adoption of it does not refuse the
+// resume (F56). The reference must be fresh, or provisioning would give the
+// identity a user that another identity, or another provider's, already
+// reaches. A listing
 // fault is a broker failure with values redacted.
 //
 // listed reports that the links were listed and none of ext's provider and
@@ -460,27 +536,29 @@ func (b *Broker) checkFresh(ctx context.Context, ext ExternalIdentity, user iden
 // the identity's link must match and be active, as an adopted user must. A
 // user that loads without that link is refused as ErrNoLinkedAccount; a
 // loader fault is a broker failure with values redacted.
+//
+// loaded reports that the user loaded, which only a resume can answer true.
 func (b *Broker) checkProvisioned(ctx context.Context, ext ExternalIdentity, user identity.UserID, linked bool,
 	values identifying,
-) error {
+) (loaded bool, err error) {
 	if linked {
-		_, err := b.loadDecided(ctx, ext, user, values, loadBeforeResume)
-		return err
+		det, err := b.loadDecided(ctx, ext, user, values, loadBeforeResume)
+		return det != nil, err
 	}
-	_, err := b.users.LoadByUserID(ctx, user)
+	_, err = b.users.LoadByUserID(ctx, user)
 	// A chain that cannot be walked is a loader fault, never ErrUserNotFound.
 	err = porterr.SanitizeTo(ctx, b.log, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound):
-		return nil
+		return false, nil
 	case err != nil:
-		return fmt.Errorf("oidc: loading the user to provision: %w", redact(err, values))
+		return false, fmt.Errorf("oidc: loading the user to provision: %w", redact(err, values))
 	default:
 		// The reference loads (or the loader answered neither a user nor an
 		// error): provisioning it would hand the identity a user it was never
 		// linked to (F32).
 		b.refusal(ctx, slog.LevelWarn, "the sign-in hook decided to provision a user that already exists", ext.Provider, ext.Email)
-		return ErrNoLinkedAccount
+		return false, ErrNoLinkedAccount
 	}
 }
 

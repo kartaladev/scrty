@@ -149,9 +149,12 @@ func rootedPath(u *url.URL) string {
 // refusal for the chain's error handling to answer.
 //
 //  1. The destination was recognised by the callback (parkedHandle).
-//  2. The parked request is checked (precheckParked), before the user is loaded or
-//     anything is written, so a handle that is unknown, expired or bound to another
-//     browser costs the source one charge and changes nothing else.
+//  2. A callback not made over TLS, while the provider does not allow plain HTTP,
+//     is refused as ErrOIDCUnknownHandle, as the resume endpoint refuses it, before
+//     the throttle or any lookup. Then the parked request is checked
+//     (precheckParked), before the user is loaded or anything is written, so a
+//     handle that is unknown, expired or bound to another browser costs the source
+//     one charge and changes nothing else.
 //  3. The user is loaded through OIDCDeps.Users (loadCompleting): the session is
 //     built from the stored details, never from the broker's principal, as a
 //     redemption builds it.
@@ -163,6 +166,13 @@ func rootedPath(u *url.URL) string {
 //
 // The rest — the session, the resume and the answer — is finishProviderSignIn's.
 func (i *oidcInterceptor) completeProviderSignIn(ex *Exchange, provider string, res oidc.CallbackResult, handle string) error {
+	// The resume endpoint's transport guard, before the throttle or any lookup
+	// (F57): completion resumes the parked request as that endpoint would, so a
+	// callback the endpoint would refuse over plain HTTP is refused here too.
+	if !ex.Request.Secure() && !i.provider.plainHTTPAllowed() {
+		return ErrOIDCUnknownHandle
+	}
+
 	if err := i.precheckParked(ex, handle); err != nil {
 		return err
 	}
