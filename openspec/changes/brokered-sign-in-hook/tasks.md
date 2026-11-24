@@ -161,7 +161,7 @@ Each task's verification names the test or command that shows it is done.
   - a conflicting e-mail on a linked identity writes nothing;
   - with the hook off, behaviour is unchanged;
   - no access token, UserInfo body or password hash appears in any log.
-- [ ] 6.2 Run the scoped verification after each dispatch (`test-scope.md`): `go test -race`, `go vet` and `gofmt -l`. **Verify:** read the output; it is green with no files listed.
+- [x] 6.2 Run the scoped verification after each dispatch (`test-scope.md`): `go test -race`, `go vet` and `gofmt -l`. **Verify:** read the output; it is green with no files listed.
 - [ ] 6.3 Run the final gate, `make check` and `make spec-check`, after the last code edit. **Verify:** read the output; it is green.
 
 ## Workflow follow-up
