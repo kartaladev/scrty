@@ -32,11 +32,13 @@ var ErrUnsupportedCredentials = errors.New("authenticate: unsupported credential
 
 // ErrAuthenticationFailed is the one failure every refusal reads as.
 //
-// An unknown username, a wrong password and a correct password for an inactive
-// account all return it, bare and alike, because telling them apart turns the
-// login endpoint into an oracle for which accounts exist and which are
-// disabled. What distinguishes them is written to the log, where the operator
-// can see it and the caller cannot. A user store that could not answer is not a
+// An unknown username and a wrong password, on any account, return it bare and
+// alike, because telling them apart turns the login endpoint into an oracle for
+// which accounts exist and which are disabled. A correct password for an
+// inactive account returns it joined with ErrAccountInactive, which reveals
+// nothing to a caller who does not already hold the password. What
+// distinguishes them is written to the log, where the operator can see it and
+// the caller cannot. A user store that could not answer is not a
 // refusal and returns ErrUnavailable instead.
 //
 // A load that the caller's own cancellation or deadline ended is not an
@@ -50,6 +52,22 @@ var ErrUnsupportedCredentials = errors.New("authenticate: unsupported credential
 // failure for the username, and a recovery counts nothing against the user's
 // recovery limit.
 var ErrAuthenticationFailed = errors.New("authenticate: authentication failed")
+
+// ErrAccountInactive reports that the presented password was correct for an
+// account that is not active.
+//
+// It is never returned alone. The password provider joins it beneath
+// ErrAuthenticationFailed, and only after the password verifies, so every
+// caller that matches the uniform failure still refuses it the same way. An
+// unknown username, a wrong password, and a wrong password on an inactive
+// account never carry it, and cost the same work, so it tells nothing to
+// anyone who does not already hold the password.
+//
+// httpsec conceals it by default: the refusal answers exactly as a wrong
+// password does, in status, headers and problem type. A consumer whose sign-in
+// page needs a stable reason opts in to disclosure through httpsec; errors.Is
+// on the returned error is the stable way to recognise it.
+var ErrAccountInactive = errors.New("authenticate: account inactive")
 
 // ErrUnavailable reports that the user store could not answer, so the
 // credential was never judged.

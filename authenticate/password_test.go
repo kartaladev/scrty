@@ -699,6 +699,8 @@ func TestPasswordAuthenticatorDoesNotRevealWhyItFailed(t *testing.T) {
 				t.Helper()
 
 				bare(t, err)
+				assert.NotErrorIs(t, err, authenticate.ErrAccountInactive,
+					"a wrong password revealed the account is inactive")
 
 				matches, _ := enc.calls()
 				assert.Equal(t, 1, matches)
@@ -719,7 +721,10 @@ func TestPasswordAuthenticatorDoesNotRevealWhyItFailed(t *testing.T) {
 			assert: func(t *testing.T, err error, enc *recordingEncoder) {
 				t.Helper()
 
-				bare(t, err)
+				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+				assert.ErrorIs(t, err, authenticate.ErrAccountInactive,
+					"a correct password on an inactive account does not say so beneath the uniform failure")
+				assert.NotErrorIs(t, err, authenticate.ErrUnavailable)
 
 				matches, _ := enc.calls()
 				assert.Equal(t, 1, matches,
