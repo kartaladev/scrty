@@ -18,3 +18,7 @@ A requirement for any of, or all of, a set of scopes SHALL refuse a caller that 
 #### Scenario: Inside a composite requirement
 - **WHEN** a requirement for all of "role `clerk`" and "any of `orders:write`" refuses a clerk holding `orders:read`
 - **THEN** the refusal still reports `orders:write` with "any", found beneath the composite's error
+
+#### Scenario: Inside an any-of composite
+- **WHEN** a requirement for any of "role `admin`" or "any of `orders:write`" refuses a clerk holding `orders:read`
+- **THEN** the refusal still reports `orders:write` with "any", found beneath the composite's error

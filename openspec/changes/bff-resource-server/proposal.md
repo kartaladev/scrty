@@ -46,11 +46,7 @@ Specs for all three are deferred until the open questions in design.md are answe
   - expiry and logout;
   - per-request policy evaluation with the recorded first factor;
   - how the BFF obtains and forwards tokens to APIs, including refresh.
-- `resource-server`: verifying bearer JWTs from a configured issuer against its remote key set:
-  - required issuer and audience;
-  - algorithm pinning;
-  - key-set caching and refetch;
-  - mapping scopes and claims into the principal used for authorization.
+- ~~`resource-server`~~: moved to the `resource-server` change (2026-11-25), which owns it.
 - ~~`csrf-protection`~~: moved to `close-security-gaps` (2026-11-01). This change depends on it.
 
 ### Modified Capabilities

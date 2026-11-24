@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Session-only endpoints refuse an access-token caller
-Every endpoint and operation of the chain that acts on the caller's sign-in session SHALL refuse a caller a resource server authenticated, with the authentication-required error, before changing anything, and no option SHALL relax this. That covers password change, passkeys, second factors, saved codes, re-authentication, session renewal and management, session signals, the provider's resume and consent, the active-role switch, and logout.
+On a path a resource server covers, every endpoint and operation of the chain that acts on the caller's sign-in session SHALL refuse a caller that resource server authenticated, with the authentication-required error, before changing anything, and no option SHALL relax this. That covers password change, passkeys, second factors, saved codes, re-authentication, session renewal and management, session signals, the provider's resume and consent, the active-role switch, and logout.
 
 #### Scenario: Password change with an access token
 - **WHEN** a client holding a valid access token for the user posts a password change

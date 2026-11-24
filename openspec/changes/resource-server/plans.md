@@ -74,8 +74,13 @@ go list -test -f '{{if .ForTest}}{{.ForTest}}{{else}}{{.ImportPath}}{{end}}{{ran
   | grep -v '\.test$' | sort -u | xargs go test -count=1
 ```
 
-Modules that may import a changed package: the root module, `httpsec/fibersec`, `httpsec/ginsec`,
-`httpsec/prblmsec`, `store/gormstore`, `store/pgxstore` and `test`.
+Modules that may import a changed package: the root module, `authenticate/passkey/webauthn`,
+`httpsec/fibersec`, `httpsec/ginsec`, `httpsec/prblmsec`, `store/gormstore`, `store/pgxstore` and
+`test`.
+
+The `httpsec` lane (C1 → C2 → C3 → C4 → D1) is one lane run in order, never concurrently, so a later
+dispatch may extend a file an earlier one changed (`errors.go`, `bearer.go`, `prblmsec`). Ownership
+below names what each dispatch may change; no two dispatches run on one file at the same time.
 
 ## Lanes and dispatches
 
@@ -88,12 +93,11 @@ Modules that may import a changed package: the root module, `httpsec/fibersec`, 
 | B1 | 5.1–5.2 | new `internal/keyset/`; `authenticate/oidc/remote.go` and its callers | Opus | A behaviour-preserving extraction with concurrency | Wave 1 |
 | B2 | 6.1–6.2 | new `internal/introspect/` | Opus | A new security-critical client and a bounded cache | Wave 1 |
 | C1 | 3.2, 7.1–7.3 | `httpsec`: new `resource_server*.go`, `chain.go` (slot), the shared binding and reader files moved out of `oidc_userinfo.go`, `login.go`/`basic.go` (disclosure), `errors.go`; `httpsec/prblmsec` (disclosure concealment) | Opus | Security-critical routing; an API later dispatches compile against | After wave 1 |
-| C2 | 7.4–7.5, 8.1 | `httpsec`: `bearer.go` (`bearerChallenge`), `errors.go`, `dpop*.go`/`certbinding.go` (counting), new `resource_source_provider.go` | Opus | Challenge and binding semantics against settled specs | After C1 |
+| C2 | 7.4–7.5, 8.1 | `httpsec`: `bearer.go` (`bearerChallenge`), `errors.go`, `dpop*.go`/`certbinding.go` (counting), new `resource_source_provider.go`; `httpsec/prblmsec` (`invalid-token`) | Opus | Challenge and binding semantics against settled specs | After C1 |
 | C3 | 8.2–8.3, 9.1–9.2 | `httpsec`: new `access_token.go`, `resource_source_issuer.go`; `httpsec/prblmsec` (new refusal types) | Opus | Verification and publication | After C2, B1 |
-| C4 | 9.3–9.6 | `httpsec`: new `resource_source_introspect.go`, `resource_strategy.go`, `resource_throttle.go`, `resource_assurance.go` | Opus | Identity resolution, throttling, assurance | After C3, B2 |
-| D1 | 10.1–10.4 | `httpsec`: `logout.go`, `role_switch.go`, `authorization.go`, `guards.go`; **`internal/guardauth/`**; session-endpoint test files | Opus | Refusal logic across endpoints, and the shared guard rules | After C4 |
-| D2 | 10.5 | tests in `httpsec/fibersec`, `httpsec/ginsec` (no production code) | Sonnet | Parity tests only, because the rules live in `guardauth` | After D1 |
-| E1 | 11.1–11.3 | `test/httpsecconformance/resource_server_scenarios.go`, `README.md`, `CHANGELOG.md`, `httpsec/example_resource_server_test.go` | Sonnet | Fixtures and docs | After D2 |
+| C4 | 9.3–9.6 | `httpsec`: new `resource_source_introspect.go`, `resource_strategy.go`, `resource_throttle.go`, `resource_assurance.go`, `errors.go` (`ErrInsufficientUserAuthentication` and its row); `policy` (the MFA requirement policy, assurance evidence); `httpsec/prblmsec` (`insufficient-user-authentication`) | Opus | Identity resolution, throttling, assurance | After C3, B2 |
+| D1 | 10.1–10.5 | `httpsec`: `logout.go`, `role_switch.go`, `authorization.go`, `guards.go`, `bearer.go` (403 `insufficient_scope`), `errors.go`; **`internal/guardauth/`**; `httpsec/ginsec/guards.go`, `httpsec/fibersec/guards.go` and their tests; `httpsec/prblmsec` (`insufficient-scope`); session-endpoint test files | Opus | Refusal logic across endpoints and the shared guard rules, in three modules | After C4 |
+| E1 | 11.1–11.3 | `test/httpsecconformance/resource_server_scenarios.go`, `README.md`, `CHANGELOG.md`, `httpsec/example_resource_server_test.go` | Sonnet | Fixtures and docs | After D1 |
 | — | 11.5 | main session | — | Verification is never delegated | Last |
 
 - **Every dispatch gets a fresh reviewer that edits nothing:** an Opus reviewer for Opus dispatches,
@@ -107,7 +111,7 @@ Modules that may import a changed package: the root module, `httpsec/fibersec`, 
 ### Task A1: Kinds and scope refusal (tasks 1.1–1.3)
 
 **Interfaces produced:**
-- `const AccessToken Kind = "access-token"` and `const ExternalAccessToken Kind = "external-access-token"`;
+- `const AccessToken Kind = "access-token"` and `const ExternalAccessToken Kind = "external-access-token"`, neither exempt;
 - `type MissingScopesError struct{ Scopes []string; All bool }`, with `Error()` and `Is(target)`, true
   for `ErrAccessDenied` and `ErrNotGranted`.
 
@@ -116,7 +120,7 @@ Modules that may import a changed package: the root module, `httpsec/fibersec`, 
 - [ ] Green: add both kinds to the channel and exemption tables.
 - [ ] Red: `errors.As(err, &mse)` on a refusal by `HasAnyScope("orders:write")` and by
   `AllOf(HasAnyRole("clerk"), HasAnyScope("orders:write"))` fails.
-- [ ] Green: return `MissingScopesError`, leaving the anonymous path unchanged.
+- [ ] Green: return `MissingScopesError`, and make `AnyOf` wrap its members' refusals, leaving the anonymous path unchanged.
 - [ ] Verify: the scoped command for `authenticate/factor`, `identity` and `authorize`.
 
 ### Task A2: Consumer password rules (tasks 2.1–2.2)
@@ -178,7 +182,7 @@ Modules that may import a changed package: the root module, `httpsec/fibersec`, 
 ### Task B2: Introspection client (tasks 6.1–6.2)
 
 **Interfaces produced:**
-- `introspect.New(cfg Config, fetcher *outbound.Client) (*Client, error)`;
+- `introspect.New(cfg Config, fetcher *outbound.Client) (*Client, error)`, with `Config.Issuer` required;
 - `(*Client).Introspect(ctx, token string) (*Result, error)`;
 - `Result{Active bool; TokenType, Issuer, Subject, ClientID, ACR string; Audience, Scopes, AMR []string; ExpiresAt, AuthTime time.Time; Confirmation map[string]string; Claims map[string]any}`;
 - `Config` with `Endpoint`, `ClientID`, `Secret` or `Key`, and `Cache{MaxAge time.Duration; MaxEntries int}`.
@@ -214,8 +218,8 @@ Modules that may import a changed package: the root module, `httpsec/fibersec`, 
 
 - [ ] Red, then green: the construction scenarios (identifier, alias, prefix syntax, overlap,
   unscoped-alone), as a table.
-- [ ] Red, then green: extract the shared binding check and header reader. Run the UserInfo suite before
-  and after, unchanged.
+- [ ] Red, then green: refactor the binding check to return typed results and write nothing; UserInfo
+  maps them to its settled answers. Run the UserInfo suite before and after, unchanged.
 - [ ] Red, then green, against stub sources:
   - path-first routing (two modes trusting one issuer);
   - the size bound;
@@ -270,7 +274,7 @@ Modules that may import a changed package: the root module, `httpsec/fibersec`, 
 ### Task C4: Introspection source, strategies, throttle, assurance (tasks 9.3–9.6)
 
 **Interfaces produced:**
-- `func FromIntrospection(endpoint, clientID string, opts ...SourceOption) ResourceServerOption`;
+- `func FromIntrospection(issuer, endpoint, clientID string, opts ...SourceOption) ResourceServerOption`;
 - `WithIntrospectionSecret`, `WithIntrospectionKey`,
   `WithIntrospectionCache(maxAge time.Duration, maxEntries int)`, `WithOpaquePrefix`;
 - `WithClaimsOnly()`;
@@ -284,9 +288,10 @@ Modules that may import a changed package: the root module, `httpsec/fibersec`, 
 - [ ] Red, then green: the strategy scenarios. That includes the subject-collision case, where local
   user `42` is never loaded, and the source-wiring construction table.
 - [ ] Red, then green: the throttle scenario, asserting zero introspection calls past the limit.
-- [ ] Red, then green: the security-policy scenarios. Evidence is minted from a verified external token;
-  in challenge mode, a password-only token is refused with `ErrInsufficientUserAuthentication`;
-  exempt mode allows; a provider token is exempt.
+- [ ] Red, then green: the security-policy scenarios. A provider token without a second factor in its
+  grant is refused for a required user, and one with it is allowed; evidence is minted from a verified
+  external token; in challenge mode, a password-only external token is refused with
+  `ErrInsufficientUserAuthentication`; exempt mode allows; a claims-only caller is not judged.
 - [ ] Verify: as in C1.
 
 ### Task D1: Endpoints, rule challenges, guards, recency (tasks 10.1–10.4)
@@ -302,14 +307,9 @@ Modules that may import a changed package: the root module, `httpsec/fibersec`, 
 - [ ] Red, then green: `insufficient_scope` at chain rules and guards; the API-key caller is unchanged.
 - [ ] Red, then green: recency in `internal/guardauth`. A fresh, stale, or `auth_time`-less access
   token is answered 401 with `max_age=300` for a 5-minute window. A stale session still gets 403 with
-  no body.
+  no body. Move the gin and fiber guards onto `guardauth`'s time source and error choice.
+- [ ] Red, then green: the gin and fiber scope and recency scenarios.
 - [ ] Verify: as in C1.
-
-### Task D2: Adapter parity tests (task 10.5)
-
-- [ ] Write tests only, in `httpsec/fibersec` and `httpsec/ginsec`: a stale access token and a missing
-  scope on each adapter produce the same refusals and challenges as net/http.
-- [ ] Verify: `go test -count=1 ./...` in both modules.
 
 ### Task E1: Conformance and docs (tasks 11.1–11.3)
 

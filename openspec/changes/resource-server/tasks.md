@@ -8,25 +8,25 @@ code (`golang-tdd.md`). Verification is scoped to the changed packages and their
 
 ## 1. Kinds, scope refusals, principal scopes
 
-- [ ] 1.1 Add `factor.AccessToken` (no channel, exempt) and `factor.ExternalAccessToken` (`federated`, not exempt) (design 9; spec identity-model); verify the kind table cases for both pass
-- [ ] 1.2 Document `identity.Principal.Scopes` as carrying an access token's scopes on a user principal (design 17); verify `go doc ./identity Principal` shows it
-- [ ] 1.3 Add `authorize.MissingScopesError{Scopes, All}` from `HasAnyScope`/`HasAllScopes`, matching `ErrAccessDenied` and `ErrNotGranted`, found beneath composites (spec authorization); verify its four scenarios pass
+- [ ] 1.1 Add `factor.AccessToken` (no channel, not exempt) and `factor.ExternalAccessToken` (`federated`, not exempt), and refuse either on the enrolment allowlist at construction (design 9; spec identity-model); verify the kind table cases and the allowlist refusal
+- [ ] 1.2 Document `identity.Principal.Scopes` as carrying an access token's scopes on a user principal (design 17); verify `go doc ./identity Principal` shows it (the "session principal carries no scopes" scenario is tested in 8.2)
+- [ ] 1.3 Add `authorize.MissingScopesError{Scopes, All}` from `HasAnyScope`/`HasAllScopes`, matching `ErrAccessDenied` and `ErrNotGranted`, and make `AnyOf` wrap its members' refusals so it is found beneath both composites (design 14; spec authorization); verify its five scenarios pass
 
 ## 2. Consumer password rules
 
 - [ ] 2.1 Add `password.WithRule(name, RuleFunc) PolicyOption`, run after the lists and before the breach lookup (design 18; spec password-policy ADDED); verify the "letters and digits", "weak and reused stay distinct", "rule failure" and "no rule by default" scenarios pass
-- [ ] 2.2 Add the construction refusals and the "consumer rule runs before the breach lookup" ordering (spec password-policy MODIFIED); verify the table tests pass
+- [ ] 2.2 Add the construction refusals, including the rule-name syntax, and the "consumer rule runs before the breach lookup" ordering (design 18; spec password-policy MODIFIED); verify the table tests pass
 
 ## 3. Inactive accounts
 
 - [ ] 3.1 Add `authenticate.ErrAccountInactive`, joined beneath the uniform failure only after the password verifies, with equal work (design 19; spec authentication); verify the "inactive account" scenario, and that a wrong password on an inactive account carries no inactive error
-- [ ] 3.2 Add `httpsec.WithInactiveDisclosure()` for form login and Basic, 403 alone, Basic without a challenge, the status-table row, and concealment in prblmsec (design 20; spec http-error-propagation inactive requirement and status table); verify its five scenarios, including the prblmsec problem type
+- [ ] 3.2 Add `httpsec.WithInactiveDisclosure()` for form login and Basic, 403 alone, Basic without a challenge, the status-table row, and the prblmsec `account-inactive` type with concealment (design 20; spec http-error-propagation inactive requirement and status table; spec problem-details-rendering); verify their scenarios
 
 ## 4. Provider support
 
 - [ ] 4.1 Give `oidcprovider.AccessToken` `AuthTime`, `ACR` and `AMR`, from the JWT's claims or from the grant (design 13); verify table tests for a JWT and an opaque token
 - [ ] 4.2 Add `(*oidcprovider.Provider).UserLoader()` (design 8); verify a test asserts it returns the loader given
-- [ ] 4.3 Add `auth_time`, `acr` and `amr` to the provider's introspection answer (design 12); verify an introspection test reads them for an active token
+- [ ] 4.3 Add `auth_time`, `acr` and `amr` to the provider's introspection answer (design 12; spec oidc-provider-tokens); verify the "sign-in members" scenario
 
 ## 5. Shared remote key set
 
@@ -35,16 +35,16 @@ code (`golang-tdd.md`). Verification is scoped to the changed packages and their
 
 ## 6. Introspection client
 
-- [ ] 6.1 Add `internal/introspect`: `client_secret_basic` and `private_key_jwt`, https only, acceptance rules for `active`, `token_type`, `aud`, `sub` and `exp`, and `auth_time`/`acr`/`amr`/`cnf` read (design 12; spec introspection requirements); verify table tests for active, inactive, a refresh token reported active, no audience, endpoint 503, a malformed body, and that no log or error carries the token or secret
-- [ ] 6.2 Add the cache: bounded by age, entries and `exp`, keyed by digest, no caching without `exp`, singleflight per token (spec "Introspection answers are cached only within bounds"); verify its two scenarios with a fake clock
+- [ ] 6.1 Add `internal/introspect`: `client_secret_basic` and `private_key_jwt`, https only, acceptance rules for `active`, `token_type`, `iss`, `aud`, `sub` and `exp`, and `auth_time`/`acr`/`amr`/`cnf` read (design 12; spec introspection requirements); verify table tests for active, inactive, a refresh token reported active, another issuer, no audience, endpoint 503, a malformed body, and that no log or error carries the token or secret
+- [ ] 6.2 Add the per-source cache: bounded by age, entries and `exp`, keyed by digest, no caching without `exp`, singleflight per token (spec "Introspection answers are cached only within bounds"); verify its two scenarios with a fake clock
 
 ## 7. Mode core
 
 - [ ] 7.1 Add `EnableResourceServer`, `OrderResourceServer = 425`, `ResourceServerOption`, `WithPathPrefix`, `WithResourceAliases`, prefix rules and the mode-level construction checks (design 1–3; spec identity, prefix, segment and wiring requirements); verify those scenarios as table cases
-- [ ] 7.2 Extract UserInfo's binding check and its header reader into code shared with the resource server, one replay store (design 7); verify `go test -count=1 -run 'UserInfo' ./httpsec/` is unchanged and green, and the "one replay store" scenario passes
-- [ ] 7.3 Add the size bound, path-first routing, recognition, the session-token exclusion and its construction check, with a fuzz test of the routing read (design 2, 5; spec routing, bound, "not handed on" and off-prefix requirements); verify those scenarios and a 30 s clean fuzz run
-- [ ] 7.4 Add `ErrInvalidToken`, extend `bearerChallenge` so the resource server counts as a built-in bearer, and add the status-table row and stable-contract entry (design 14; spec http-error-propagation invalid-token, contract, table and challenge requirements); verify their scenarios and exactly one `WWW-Authenticate` per refusal, with DPoP on and off
-- [ ] 7.5 Map binding failures to the settled refusals, including nonces and certificates; count the resource server as a verifier of bound credentials; refuse an opt-out on a DPoP-required chain (design 7; spec binding requirements, sender-constrained-tokens); verify those scenarios
+- [ ] 7.2 Refactor UserInfo's binding check into one that returns typed results and writes nothing, with UserInfo mapping them to its settled answers, and share the header reader (design 7); verify `go test -count=1 -run 'UserInfo' ./httpsec/` is unchanged and green, and the "one replay store" scenario passes
+- [ ] 7.3 Add the size bound derived from the provider's, path-first routing, recognition, the session-token exclusion and its construction check, with a fuzz test of the routing read (design 2, 5; spec routing, bound, "not handed on" and off-prefix requirements); verify those scenarios, a provider token at the provider's maximum size accepted, and a 30 s clean fuzz run
+- [ ] 7.4 Add `ErrInvalidToken`, extend `bearerChallenge` so the resource server counts as a built-in bearer, add the status-table row, the stable-contract entry and the prblmsec `invalid-token` type (design 14; spec http-error-propagation invalid-token, contract, table and challenge requirements; spec problem-details-rendering); verify their scenarios and exactly one `WWW-Authenticate` per refusal with DPoP off, optional and required
+- [ ] 7.5 Map binding failures to the settled refusals, including nonces, certificates and an unbound token under the `DPoP` scheme; count the resource server as a verifier of bound credentials; refuse an opt-out on a DPoP-required chain (design 7; spec binding requirements, sender-constrained-tokens); verify those scenarios
 
 ## 8. Provider source and publication
 
@@ -54,20 +54,20 @@ code (`golang-tdd.md`). Verification is scoped to the changed packages and their
 
 ## 9. External sources
 
-- [ ] 9.1 Add `FromIssuer(issuer, opts...)` with `WithSourceAudience`, `WithJWKSURL`, `WithOutboundClient`, `WithAlgorithms`, `WithClockSkew`, `WithUnboundTokens`, `WithUntypedTokens`, and the required claims (design 6, 7, 11; spec remote-issuer requirements); verify their scenarios against a local TLS test issuer
+- [ ] 9.1 Add `FromIssuer(issuer, opts...)` with `WithSourceAudience`, `WithJWKSURL`, `WithOutboundClient`, `WithAlgorithms`, `WithClockSkew`, `WithUnboundTokens`, `WithUntypedTokens`, the required claims, `iat`/`nbf`, and the no-`kid` rule (design 6, 7, 11, 16; spec remote-issuer requirements); verify their scenarios, including the override scenarios, against a local TLS test issuer
 - [ ] 9.2 Add `WithJWTIntrospection(cfg)` on `FromIssuer` (design 10); verify its two scenarios
-- [ ] 9.3 Add `FromIntrospection(endpoint, clientID, opts...)` with `WithIntrospectionSecret`, `WithIntrospectionKey`, `WithIntrospectionCache` and `WithOpaquePrefix`, and the session-reference check (design 12); verify the introspection and session-reference scenarios
-- [ ] 9.4 Add `WithClaimsOnly`, `WithClaimsMapper` and `WithLinkedUsers`, and the strategy construction checks (design 8; spec caller-strategy, external-subject and source-wiring requirements); verify their scenarios, including the subject-collision scenario
-- [ ] 9.5 Add per-address, per-source throttling of refused tokens, before any fetch or call, with a replaceable limiter (spec "Refused access tokens are throttled per source"); verify its scenario
-- [ ] 9.6 Mint federated-assurance evidence from verified external tokens, and refuse unmet assurance with `ErrInsufficientUserAuthentication` (design 9; spec security-policy); verify its four scenarios
+- [ ] 9.3 Add `FromIntrospection(issuer, endpoint, clientID, opts...)` with `WithIntrospectionSecret`, `WithIntrospectionKey`, `WithIntrospectionCache` and `WithOpaquePrefix`, and the prefix check against every other `Bearer`-scheme mode (design 12); verify the introspection and "other credentials" scenarios
+- [ ] 9.4 Add `WithClaimsOnly` (issuer-qualified identifier), `WithClaimsMapper` and `WithLinkedUsers`, every caller refusal as `ErrInvalidToken`, and the strategy construction checks (design 8; spec caller-strategy, qualified-identifier, external-subject and source-wiring requirements); verify their scenarios, including the subject-collision scenario
+- [ ] 9.5 Add per-address, per-source throttling of refused tokens through the chain's limiter factory (namespace `resource-server`, IPv6 aggregate), refusing with `ErrInvalidToken` before any fetch or call, with `WithRefusalLimiter` (design 12; spec "Refused access tokens are throttled per source"); verify its two scenarios and the unattributable-request refusal
+- [ ] 9.6 Judge access-token callers in the MFA requirement policy: provider tokens by their grant's second factor, external tokens by federated assurance from minted evidence, callers naming no local user not judged, unmet answered with `ErrInsufficientUserAuthentication` plus its status row and prblmsec type (design 9; spec security-policy); verify its scenarios
 
 ## 10. Guards and session-only endpoints
 
 - [ ] 10.1 Add characterization tests showing every session-only endpoint refuses an access-token caller and changes nothing, each shown to fail once by temporarily publishing a fake session; give `SwitchActiveRole` the same check (design 15; spec http-security-chain session-only requirement); verify the table passes
 - [ ] 10.2 Make logout refuse an access-token caller (real red: today it answers 200), with its godoc naming revocation and end-session (spec http-security-chain logout MODIFIED); verify the "access-token caller" scenario and the settled logout scenarios
-- [ ] 10.3 Answer scope refusals of access-token callers with 403 `insufficient_scope`, at chain rules and in `internal/guardauth` for guards (design 14); verify the "chain rule", "guard" and "API key caller" scenarios
-- [ ] 10.4 Make the recency rule in `internal/guardauth` use an access-token caller's `AuthTime`, and refuse with `ErrInsufficientUserAuthentication` answered 401 with `max_age` (design 16; spec reauthentication and http-error-propagation recency requirements); verify all their scenarios, with sessions unchanged
-- [ ] 10.5 Add adapter tests in `httpsec/fibersec` and `httpsec/ginsec` for scope and recency challenges, with no adapter code expected to change (spec framework-adapters); verify both modules' tests pass
+- [ ] 10.3 Answer scope refusals of access-token callers with 403 `insufficient_scope`, through `bearerChallenge` for chain rules and `internal/guardauth` for guards, with the prblmsec `insufficient-scope` type and `scope` member (design 14; spec http-error-propagation, problem-details-rendering); verify the "chain rule", "guard" and "API key caller" scenarios
+- [ ] 10.4 Make the recency rule in `internal/guardauth` use an access-token caller's `AuthTime` and choose the error, refusing with `ErrInsufficientUserAuthentication` answered 401 with `max_age`, and make the gin and fiber guards take both from `guardauth` (design 14, 16; spec reauthentication, http-error-propagation recency requirements, framework-adapters); verify their scenarios on all three adapters, with sessions unchanged
+- [ ] 10.5 Add adapter tests in `httpsec/fibersec` and `httpsec/ginsec` for scope challenges (spec framework-adapters); verify both modules' tests pass
 
 ## 11. Conformance, docs and integration
 

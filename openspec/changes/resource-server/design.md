@@ -47,7 +47,7 @@ See proposal.md for the motivation. On `main` after v0.5.0:
 - **Identity links.** `authenticate/oidc.LinkStore` keys links by provider, issuer and subject (the
   settled `identity-linking` capability).
 - **The established design** has no resource-server mode. It keeps scopes on service principals
-  only, and always conceals inactive accounts. This change departs from it in decisions 16 and 20.
+  only, and always conceals inactive accounts. This change departs from it in decisions 17 and 20.
 
 ## Goals / Non-Goals
 
@@ -109,8 +109,11 @@ httpsec.EnableResourceServer("urn:example:orders:api",
 - **Routing:** the mode is chosen by path **first**, then the source by token within that mode
   (decision 5). Each mode holds its own sources, so two modes may trust one issuer or one provider.
 - **Off-prefix tokens:** a recognised access token on a path no mode covers is refused with
-  `invalid_token` at slot 425. Endpoints later in the chain never see it. The provider's endpoints
-  (250) run earlier and are unaffected.
+  `invalid_token` at slot 425, and nothing later in the chain sees it. That includes the provider's
+  session endpoints at 850 (resume, consent) and the chain's session endpoints. The session-only
+  refusal of decision 15 therefore applies on covered paths; off them the answer is `invalid_token`.
+  The provider's token-reading endpoints at 250 (UserInfo, token, revocation, introspection) run
+  earlier and are unaffected.
 
 ### 3. Resource identity
 
@@ -137,8 +140,9 @@ httpsec.EnableResourceServer("urn:example:orders:api",
 
 ### 5. Recognition and routing
 
-1. The whole token is bounded at 8 KiB before anything is decoded (the provider verifier's bound).
-   A longer token is refused.
+1. The whole token is bounded before anything is decoded. The bound is the larger of 8 KiB and the
+   chain provider's own verifier bound (`2*(maxScope+10*maxResource)+8 KiB`, `accesstoken.go:245`), so
+   a token UserInfo accepts is never refused for its size. A longer token is refused.
 2. A session token is never offered to a source. Neither is a token typed as the chain's session
    generators declare. A generator whose type the resource server would recognise is a construction
    error. That covers a type equal to `at+jwt` without regard to case, and `JWT` while a source opts in
@@ -147,8 +151,10 @@ httpsec.EnableResourceServer("urn:example:orders:api",
    - an `at.` prefix goes to its `FromProvider` source;
    - a JWT, read without verification and only to route it, goes to the source whose issuer equals
      its `iss`;
-   - an opaque token goes to its `FromIntrospection` source, if any. With session references on the
-     chain, only a token with that source's prefix goes there (decision 12).
+   - an opaque token goes to its `FromIntrospection` source, if any. With any other mode on the chain
+     reading the `Bearer` scheme (session references, or API keys under `WithAPIKeyScheme("Bearer ")`),
+     only a token with that source's prefix goes there, and a missing prefix is a construction error
+     (decision 12).
 4. A JWT typed `at+jwt` that no source of the mode names is refused. Any other unrecognised token
    passes to the next mode.
 5. Two sources naming one issuer **in one mode** is a construction error.
@@ -164,26 +170,33 @@ Nothing is granted on the unverified read, and the source verifies again. The ro
     Keycloak's `typ: Bearer` claim is the example (unverified against current vendor documentation).
   - Without a claim the option is a construction error.
 - **Required claims, for external JWTs:**
-  - `iss`, `exp`, `aud`, `sub` (non-empty), `iat`, and a client in `client_id` or `azp`;
-  - `jti` as well for `at+jwt` (RFC 9068 §2.2).
+  - `iss`, `exp`, `aud`, `sub` (non-empty), `iat` and `client_id`;
+  - `jti` as well for `at+jwt` (RFC 9068 §2.2);
+  - `iat` and `nbf` no later than now plus the source's skew.
 
-  `azp` is accepted because widely used issuers name the client there.
+  Only a source opted in to untyped tokens may take the client from `azp`, because issuers of untyped
+  tokens name it there; RFC 9068 requires `client_id` for `at+jwt`.
 
 ### 7. Binding: required by default, opt-out per source (user decision, 2026-11-25)
 
 - **Default:** a token without `cnf` is refused with `invalid_token`.
 - **Override:** `WithUnboundTokens()` on one source. It is a construction error on a chain whose DPoP
   is required (user decision, 2026-11-25), so the settled "The consumer can require DPoP" guarantee
-  is never relaxed.
+  is never relaxed. An unbound token presented under the `DPoP` scheme is refused with
+  `ErrInvalidDPoPProof` (RFC 9449 §7.1).
 - **Binding failures keep the settled refusals:**
   - a DPoP-bound token under `Bearer`, without a proof, with a failing proof or a proof from another
     key → `ErrInvalidDPoPProof` (RFC 9449 §7.1, §7.2);
   - a missing required nonce → the nonce-required refusal with a fresh `DPoP-Nonce` (RFC 9449 §9),
     whenever the chain enables nonces;
   - a missing or mismatched certificate → `ErrCertificateBinding` (RFC 8705 §3).
-- **Shared code:** UserInfo's `holdToKey` moves into a check that both UserInfo and the resource
-  server call, with one replay store. Only the header part of UserInfo's reader is shared; its
-  form-body reading stays UserInfo's.
+- **Shared code:** UserInfo's `holdToKey` writes UserInfo's own answers, and answers a key that does
+  not fit with `invalid_token`, as UserInfo's settled spec says. It is refactored into a check that
+  **returns typed results** (unbound, key mismatch, proof invalid, nonce required, certificate
+  mismatch) and writes nothing. UserInfo maps them to its settled answers, unchanged and pinned by its
+  existing tests. The resource server maps them to the settled sender-constrained refusals (a key
+  mismatch is `ErrInvalidDPoPProof`). There is one replay store. Only the header part of UserInfo's
+  reader is shared; its form-body reading stays UserInfo's.
 - **Construction check:** the existing check that DPoP needs a verifier of bound credentials counts
   the resource server. Binding required with neither DPoP nor certificate binding is a
   construction error.
@@ -192,13 +205,19 @@ Nothing is granted on the unverified read, and the source verifies again. The ro
 
 | Strategy | Option | Allowed on | Default for | Caller |
 |---|---|---|---|---|
-| Claims only | `WithClaimsOnly()` | every source | `FromIssuer`, `FromIntrospection` | subject = `sub`; scopes; no roles; user kind |
+| Claims only | `WithClaimsOnly()` | `FromIssuer`, `FromIntrospection` | `FromIssuer`, `FromIntrospection` | identifier = `<issuer>#<sub>`, never a local user's; scopes; no roles; user kind |
 | Claims mapper | `WithClaimsMapper(fn)` | `FromIssuer`, `FromIntrospection` | — | `fn(ctx, claims) (*identity.Principal, error)`; an error fails closed; nil refuses |
 | Local user | `WithLocalUsers(users)` | `FromProvider` only | `FromProvider`, with `op.UserLoader()` | the user loaded by `sub`; must exist, be active, and be that user |
-| Linked user | `WithLinkedUsers(links, provider, users)` | `FromIssuer`, `FromIntrospection` | — | the user found by `links.FindByExternal(provider, iss, sub)`; unlinked is refused; must exist and be active |
+| Linked user | `WithLinkedUsers(links, provider, users)` | `FromIssuer`, `FromIntrospection` | — | the user found by `links.FindByExternal(provider, issuer, sub)`, with the source's configured issuer; unlinked is refused; must exist and be active |
 
 - **No raw external subject:** an external token's `sub` is never used as a local user identifier
-  (user decision, 2026-11-25). Two issuers, or an issuer and the local store, can share subject
+  (user decision, 2026-11-25). A claims-only caller's identifier is `<issuer>#<sub>`, so neither the MFA
+  requirement lookup, the enrolment lookup, security events nor a consumer's ownership check can
+  mistake it for a local user. A claims mapper's principal is the consumer's: the library treats it as
+  naming no local user (decision 9), and the mapper's godoc says that returning a local user's
+  identifier makes the consumer responsible for that mapping.
+- **Every refusal of the caller is `invalid_token`:** an unlinked subject, a missing or inactive user,
+  and a mapper returning nil. The resource server judges whether this token is good for this API. Two issuers, or an issuer and the local store, can share subject
   values. That would let issuer A's `sub` 42 act as local user 42, or pass an ownership check on user
   42's records.
 - **No mapper on `FromProvider`:** provider tokens publish no claims map (decision 13).
@@ -208,24 +227,33 @@ Nothing is granted on the unverified read, and the source verifies again. The ro
   request's privilege memo, exactly as for a session principal, because the same loader and
   authorizer are used.
 
-### 9. MFA assurance (user decision, 2026-11-25)
+### 9. MFA assurance (user decisions, 2026-11-25)
 
-| Kind | Channel | Exempt | Why |
+| Kind | Channel | Exempt | How it meets an MFA requirement |
 |---|---|---|---|
-| `access-token` | none | yes | Provider tokens: the grant was made after the chain's own MFA gates judged the sign-in |
-| `external-access-token` | `federated` | no | Another issuer's sign-in: decided by the settled federated-assurance rules |
+| `access-token` | none | no | Its grant records a second factor the library verified (the grant's `amr`), re-judged every request |
+| `external-access-token` | `federated` | no | The settled federated-assurance mode, from the token's verified `amr`/`acr`, re-matched every request |
 
-- **Evidence:** the resource server mints the federated-assurance evidence (provider name, verified
-  issuer, `amr`, `acr`) from a verified external token. It is one of the three places allowed to mint
-  it (security-policy delta).
-- **Unmet assurance:** refused in both challenge and refuse mode, because no session can hold a
-  second-factor challenge.
-  - The answer is 401 `insufficient_user_authentication` (RFC 9470), telling the client to obtain a
-    stronger sign-in.
-  - `acr_values` is not emitted in this change (Non-Goals).
-- **Exempt mode** allows the request.
-- **Enrolment:** the enrolment path's allowlist of first-factor kinds does not include either kind, so
-  an access-token caller can never enrol a second factor.
+- **The policy:** the settled "A required user is challenged or refused, never let through" is
+  MODIFIED for both kinds in the per-request phase.
+  - Met: allow.
+  - Unmet: deny with an insufficient-user-authentication reason, in both challenge and refuse mode,
+    because no session can hold a second-factor challenge.
+  - Exempt mode (external only): allow.
+  - The deny is answered as `ErrInsufficientUserAuthentication`, 401, with the RFC 9470 challenge.
+- **Provider tokens:** a user who becomes MFA-required mid-grant is refused at the next request whose
+  token's grant records no second factor. The user signs in again with one. This replaces the earlier
+  exemption, which left such a user through until the grant ended.
+- **No local user, no requirement:** a caller naming no local user (claims only, or a mapper) is
+  allowed by the MFA requirement policy before any lookup. The requirement is about local users, and
+  machine tokens from client-credentials grants (no end user) must not be refused by "MFA required for
+  all". A consumer who needs assurance there checks `acr`/`amr` from `AccessTokenFromContext` in a
+  guard.
+- **Evidence:** the resource server mints the federated-assurance evidence (provider name, the
+  source's configured issuer, `amr`, `acr`) from a verified external token. It is one of the three
+  places allowed to (the security-policy delta).
+- **Enrolment:** the enrolment path's allowlist may not name either kind. Naming one is a construction
+  error, as for `api-key` and `basic`, so an access-token caller can never enrol a second factor.
 
 ### 10. Revocation per source (user decision, 2026-11-25)
 
@@ -257,8 +285,12 @@ Nothing is granted on the unverified read, and the source verifies again. The ro
 
 ### 12. Introspection
 
-- **Endpoint:** `FromIntrospection(endpoint, clientID, opts...)` posts `token` and
-  `token_type_hint=access_token` through `outbound`.
+- **Endpoint:** `FromIntrospection(issuer, endpoint, clientID, opts...)` posts `token` and
+  `token_type_hint=access_token` through `outbound`. It is built with the issuer it trusts. An answer
+  naming another `iss` is refused. The configured issuer keys identity links and assurance evidence,
+  so one endpoint fronting several issuers cannot blur them.
+- **Source audience:** `WithSourceAudience` applies as for `FromIssuer`, and may not equal the
+  configured issuer.
 - **Client authentication:** `WithIntrospectionSecret` (`client_secret_basic`, the default) or
   `WithIntrospectionKey` (`private_key_jwt`).
 - **Acceptance:** `active: true`, a `token_type` that is absent or names an access token
@@ -266,11 +298,24 @@ Nothing is granted on the unverified read, and the source verifies again. The ro
   in the future. RFC 7662 §2.1 obliges the server to search every token type, so a refresh token can
   come back active.
 - **Cache:** `WithIntrospectionCache(maxAge, maxEntries)`, off by default.
-  - It is keyed by the SHA-256 of the token.
+  - It is held per source, keyed by the SHA-256 of the token.
   - An answer is never kept past its token's `exp`, and an answer with no `exp` is not cached.
   - Concurrent requests for one token share one call (singleflight).
-- **Session references:** with `EnableSessionBearer` on the chain, `WithOpaquePrefix` is required, so
-  a session reference is never sent to a third party.
+- **Other credentials:** with any other mode reading the `Bearer` scheme (`EnableSessionBearer`, or
+  API keys under that scheme), `WithOpaquePrefix` is required, so neither a session reference nor an
+  API key is ever sent to a third party.
+- **Throttle:** refused tokens are counted per client address and source.
+  - The count goes through the chain's limiter factory, under the namespace `resource-server`, with
+    the chain's IPv6 aggregate.
+  - A throttled address is refused with `ErrInvalidToken`, which maps to 401 as the settled table's
+    "throttled source" does, before any verification, fetch or call.
+  - `WithRefusalLimiter` replaces the limiter.
+  - The default follows the API-key limiter's defaults.
+  - **Accepted:** clients sharing one address behind a gateway or NAT share the budget, so one
+    attacker can make valid tokens from that address be refused until the window passes. This is the
+    settled API-key trade-off, and a consumer with such clients raises the limit or keys by a trusted
+    proxy's client address.
+  - An unattributable request is refused, as for API keys.
 - **The provider's own introspection answer** gains `auth_time`, `acr` and `amr`, as RFC 9470 §6.2
   expects. A `FromIntrospection` source pointed at a scrty provider can then serve recency guards.
 
@@ -297,13 +342,20 @@ Nothing is granted on the unverified read, and the source verifies again. The ro
 | `ErrInvalidToken` (wraps `authenticate.ErrAuthenticationFailed`) | 401 | `error="invalid_token"` |
 | Binding failures | as settled | as settled |
 | `authorize.MissingScopesError` (an access-token caller) | 403 | `error="insufficient_scope", scope="…"` |
-| `ErrInsufficientUserAuthentication` (an access-token caller at a recency guard, or unmet external assurance; wraps `ErrReauthenticationRequired`, carries the window) | 401 | `error="insufficient_user_authentication", max_age=<s>` when a window applies |
+| `ErrInsufficientUserAuthentication` (an access-token caller at a recency guard, or with an unmet MFA requirement; wraps `ErrReauthenticationRequired`, carries the window when one applies) | 401 | `error="insufficient_user_authentication"`, with `max_age=<s>` when a window applies |
 
 - **Who writes them:** `bearerChallenge` is extended. The resource server counts as a built-in bearer,
   so an API-only chain gets challenges and may use `WithoutBearerChallenge`. No second challenge
   interceptor is added, and `challengeWatch` keeps it to one challenge per response.
-- **Scheme:** `DPoP` with `algs` when the token came under `DPoP` or its source requires binding;
-  `Bearer` otherwise.
+- **Scheme:** `DPoP` with `algs` when the token came under `DPoP` or its source requires DPoP binding;
+  `Bearer` otherwise (certificate-bound sources included, as RFC 8705 uses `Bearer`). A resource
+  server's refusal carries that one challenge alone, even with DPoP optional. Other 401s keep the
+  settled "one of each".
+- **`bearerChallenge` answers 403 too:** it writes `insufficient_scope` on a 403 for an access-token
+  caller, where today it returns early unless the status is 401.
+- **Problem details:** the `problem-details-rendering` delta adds the types `invalid-token`,
+  `insufficient-user-authentication` (with `max_age`), `insufficient-scope` (with `scope`) and
+  `account-inactive`. `reauthentication-required` is narrowed to session callers.
 - **The status table** gains rows for the invalid-token and insufficient-user-authentication
   refusals. The second is judged before the reauthentication-required row (403), so that row keeps
   meaning "a session caller".
@@ -312,8 +364,12 @@ Nothing is granted on the unverified read, and the source verifies again. The ro
   - It is renamed from `ScopeError`, which would collide with `identity.Scope`.
   - A composite requirement wraps the refusing requirement's error, so `errors.As` finds the first
     one, and that one names the challenge's `scope`.
-- **Guards:** the challenge logic lives in `internal/guardauth`, so the net/http, gin and fiber guards
-  write the same challenges.
+- **Guards:** `internal/guardauth` gains the access-token time source and the error choice. The gin and
+  fiber guards build their own time source and return `ReauthenticationRequiredError` themselves
+  (`ginsec/guards.go`, `fibersec/guards.go`), so they are changed to take both from `guardauth`, and
+  all three adapters behave alike.
+- **`AnyOf` keeps the members' errors:** today `AnyOf` returns a fresh error, which loses
+  `MissingScopesError`. It is changed to wrap its members' refusals.
 
 ### 15. Session-only endpoints refuse access-token callers
 
@@ -349,6 +405,8 @@ Nothing is granted on the unverified read, and the source verifies again. The ro
   is answered 401 with `max_age` (RFC 9470).
 - **Session callers** keep the session's time and today's 403.
 - **Override:** `WithAuthenticationTime` still replaces the time source.
+- **No identifier:** a token with no `kid` is verified only when the source's key set holds exactly
+  one signing key.
 - **BREAKING (behaviour):** an access-token caller was refused before; a fresh one now passes.
 
 ### 17. Scopes on user principals
@@ -368,7 +426,9 @@ only.
 - **Failure:** an error from a rule fails closed, behind fixed text, with the error reachable.
 - **Default:** no consumer rule. The library imposes no composition rule (NIST SP 800-63B, which
   advises verifiers against composition rules).
-- **Construction errors:** a nil, typed-nil or unnamed rule, a built-in name, or a duplicate.
+- **Construction errors:** a nil, typed-nil or unnamed rule; a name over 64 characters or holding
+  anything but letters, digits, `-` and `_` (it reaches error text and the problem's `rule` member); a
+  built-in name; or a duplicate.
 
 ### 19. Inactive accounts in the password provider
 
@@ -412,13 +472,16 @@ inactive account carry no distinguishing error, and cost the same work.
 | F17 | Introspection answers a refresh token as active; no `aud`, `sub` or `exp` | Handled, tested | 401 |
 | F18 | Introspection cache: kept past revocation; unbounded growth; raw token in memory | Bounded by age, entries and `exp`; keyed by digest; off by default. Stale-within-bound **accepted** | Accepted until the bound |
 | F19 | Offline JWT revoked at its issuer | **Accepted** (decision 10), documented | Accepted until `exp` |
-| F20 | Session reference sent to a third-party introspection endpoint | Handled at construction, tested | Construction error |
+| F20 | Session reference sent to a third-party introspection endpoint | Handled at construction (decision 12), tested | Construction error |
 | F21 | External `sub` colliding with a local user identifier or another issuer's subject | Handled: no raw-subject strategy; linked users keyed by provider, issuer and subject. Tested | Unlinked: 401 |
 | F22 | Local or linked user missing, inactive, or loader answering for another user | Handled, tested | 401; proof not consumed |
 | F23 | Loader or link-store outage | Handled, tested | Dependency failure; proof not consumed |
 | F24 | Claims mapper errors, returns nil, or tries to widen scopes | Handled: fails closed; scopes always the token's. Tested. A panic propagates (**accepted**, like any consumer port) | Dependency failure / 401 |
 | F25 | Role removed after the token was issued | Handled under local and linked users, tested; **accepted** under claims strategies, where the claims are the issuer's statement | Current roles / token roles |
-| F26 | Required-MFA user with a password-only external token | Handled by federated assurance (decision 9), tested | 401 `insufficient_user_authentication` |
+| F26 | Required-MFA user with a password-only external token, or a provider token whose grant has no second factor (including a user made MFA-required mid-grant) | Handled (decision 9), re-judged every request, tested | 401 `insufficient_user_authentication` |
+| F39 | Client-credentials (machine) token under "MFA required for all" | Handled: callers naming no local user are not judged by the requirement (decision 9), tested | Allowed by that policy |
+| F40 | API key or session reference sent to a third-party introspection endpoint | Handled at construction (decision 12), tested | Construction error |
+| F41 | Throttle shared by clients behind one address | **Accepted** (decision 12), as for API keys; the limit is configurable | Valid tokens from that address refused until the window passes |
 | F27 | Access token at a session-only endpoint, or at logout | Handled, tested (characterization, plus logout's real red) | 401 auth-required; nothing changed |
 | F28 | Stale or `auth_time`-less token at a recency guard, on any adapter | Handled, tested on net/http, gin and fiber | 401 `insufficient_user_authentication` |
 | F29 | Missing scope at a rule or guard, including inside a composite | Handled, tested | 403 `insufficient_scope` |
@@ -451,6 +514,8 @@ inactive account carry no distinguishing error, and cost the same work.
 
 - Additive for consumers who enable nothing new, apart from the two behaviour changes recorded in the
   CHANGELOG under *Changed* for v0.6.0.
+- **A scrty provider in another binary** is trusted through `FromIssuer` (JWKS) or `FromIntrospection`,
+  like any issuer. `FromProvider` takes only the chain's own provider (user decision, 2026-11-25).
 - **crm-api:**
   1. Set `DefaultAudience: []string{"urn:kartala:hris:api"}` on its client.
   2. Enable DPoP with its public host. This is already required to verify nextgen's bound tokens, and
@@ -478,13 +543,14 @@ throttle, and the cache's default entry limit when enabled.
   - [Spring Security: opaque token](https://docs.spring.io/spring-security/reference/servlet/oauth2/resource-server/opaque-token.html).
   - [zitadel/oidc rs](https://pkg.go.dev/github.com/zitadel/oidc/v3/pkg/client/rs).
 - **Decision 11:**
-  - [lestrrat-go/jwx jwk.Cache](https://pkg.go.dev/github.com/lestrrat-go/jwx/v3/jwk).
+  - [lestrrat-go/jwx jwk.Cache](https://pkg.go.dev/github.com/lestrrat-go/jwx/v4/jwk).
   - [auth0 go-jwt-middleware jwks](https://pkg.go.dev/github.com/auth0/go-jwt-middleware/v2/jwks).
   - [coreos/go-oidc](https://pkg.go.dev/github.com/coreos/go-oidc/v3/oidc).
 - **Decision 7:**
   - [Spring Security: DPoP-bound tokens](https://docs.spring.io/spring-security/reference/servlet/oauth2/resource-server/dpop-tokens.html).
-- **User decisions** of 2026-11-25: decisions 1, 2, 7, 8, 9, 10 and 16, and the choice in decision 15
-  to follow the standards.
+- **User decisions** of 2026-11-25: decisions 1, 2, 7, 8, 9 (provider tokens re-judged by the grant's
+  `amr`, external tokens by federated assurance), 10 and 16, `FromProvider` limited to the chain's own
+  provider, and the choice in decision 15 to follow the standards.
 - **Reasoned from scrty's own settled specs and code, and the established design:** decisions 13, 14,
   15, 17, 19 and 20, drawing on `http-error-propagation`, `sender-constrained-tokens`,
   `reauthentication`, `framework-adapters`, `identity-linking`, `security-policy`, `password-policy`

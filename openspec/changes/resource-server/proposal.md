@@ -31,12 +31,13 @@ The change also carries two consumer requests that the on-hold proposal held:
   scoped to its own path prefixes, one per API.
 
 **Token sources** (several per mode)
-- `FromProvider(op)`: the chain's own provider, in process or over a shared store. The grant is
-  checked on every request.
+- `FromProvider(op)`: the chain's own provider. The grant is checked on every request. A scrty
+  provider in another binary is trusted like any issuer, through `FromIssuer` or
+  `FromIntrospection`.
 - `FromIssuer(issuer)`: any issuer's JWT access tokens, verified against its remote key set (JWKS).
   Each JWT can also be introspected, as an opt-in.
-- `FromIntrospection(endpoint)`: opaque or JWT tokens checked at an RFC 7662 introspection
-  endpoint.
+- `FromIntrospection(issuer, endpoint)`: opaque or JWT tokens checked at an RFC 7662
+  introspection endpoint.
 
 **Defaults, each overridable per source**
 - **Audience:** a token must name the API's resource identifier.
@@ -45,7 +46,7 @@ The change also carries two consumer requests that the on-hold proposal held:
 - **Binding:** DPoP or mTLS binding is required. A source can opt out of it.
 - **Token type:** `at+jwt` (RFC 9068) is required. A source can opt in to untyped `JWT` access
   tokens, but only together with a claim that tells them from ID tokens.
-- **Caller:** three selectable strategies.
+- **Caller:** four strategies, one per source.
   - *Claims only* (the default for external sources): subject and scopes from the token, no roles.
   - *Claims mapper*: a consumer function derives roles from the claims.
   - *Local user* (provider source only, its default): the subject's user is reloaded each request,
@@ -61,9 +62,11 @@ The change also carries two consumer requests that the on-hold proposal held:
 - `identity.PrincipalFromContext` works unchanged, carrying the token's scopes.
 - `httpsec.AccessTokenFromContext` exposes the issuer, client, audience, scopes, authentication
   time and claims.
-- Two new first-factor kinds: `access-token` (provider tokens, exempt from an MFA requirement because
-  the chain's own gates judged their sign-in) and `external-access-token` (federated channel, judged
-  by the existing federated-assurance rules from the token's `acr`/`amr`).
+- Two new first-factor kinds, neither exempt from an MFA requirement: `access-token` (provider
+  tokens, judged every request by whether their grant's sign-in passed a second factor) and
+  `external-access-token` (federated channel, judged by the existing federated-assurance rules from
+  the token's `acr`/`amr`). A claims-only caller names no local user and is not judged by the
+  requirement.
 
 **Refusals**
 - A refused access token is answered 401 with `error="invalid_token"` (RFC 6750, RFC 9449).
@@ -120,8 +123,11 @@ The change also carries two consumer requests that the on-hold proposal held:
   judge access-token callers; logout refuses an access-token caller.
 - `identity-model`: a user principal carries an access token's scopes; the `access-token` and
   `external-access-token` first-factor kinds.
-- `security-policy`: an external access token meets an MFA requirement on its asserted assurance, and
-  the resource server may mint federated-assurance evidence.
+- `security-policy`: access-token callers meet an MFA requirement per request (provider tokens by
+  their grant's second factor, external tokens by federated assurance), never challenged; callers
+  naming no local user are not judged; the resource server may mint federated-assurance evidence.
+- `problem-details-rendering`: problem types for the new refusals, and the `scope` member.
+- `oidc-provider-tokens`: the introspection answer carries the sign-in's `auth_time`, `acr` and `amr`.
 - `framework-adapters`: adapter recency guards answer a stale access token as the core does.
 - `authorization`: a scope refusal names the scopes it needed.
 - `http-error-propagation`: the invalid-token refusal; the bearer challenge covering resource
@@ -138,13 +144,13 @@ The change also carries two consumer requests that the on-hold proposal held:
 
 - **New public API**, all additive:
   - `httpsec`:
-    - `EnableResourceServer`, `ResourceServerOption`;
+    - `EnableResourceServer`, `ResourceServerOption`, `SourceOption`, `IntrospectionConfig`;
     - `FromProvider`, `FromIssuer`, `FromIntrospection`;
     - `OrderResourceServer` (425), `WithPathPrefix`, `WithResourceAliases`, `WithSourceAudience`;
     - `WithJWKSURL`, `WithOutboundClient`, `WithAlgorithms`, `WithClockSkew`, `WithOpaquePrefix`,
       `WithIntrospectionSecret`, `WithIntrospectionKey`;
     - `WithUnboundTokens`, `WithUntypedTokens`;
-    - `WithClaimsOnly`, `WithClaimsMapper`, `WithLocalUsers`, `WithLinkedUsers`;
+    - `WithClaimsOnly`, `WithClaimsMapper`, `WithLocalUsers`, `WithLinkedUsers`, `WithRefusalLimiter`;
     - `WithJWTIntrospection`, `WithIntrospectionCache`;
     - `AccessToken`, `AccessTokenFromContext`, `ErrInvalidToken`, `ErrInsufficientUserAuthentication`,
       `WithInactiveDisclosure`.

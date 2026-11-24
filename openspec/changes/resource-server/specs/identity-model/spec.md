@@ -27,12 +27,12 @@ The library SHALL name the first-factor kinds `password`, `magic-link`, `oidc`, 
 - `api-key` reports `machine`;
 - `passkey` reports `public-key`, the channel of credentials an authenticator holds as a key pair and proves by signing a challenge;
 - `recovery`, the kind of a session an account recovery produces, reports no channel, because the recovery rested on two proofs of different kinds rather than on one channel;
-- `access-token`, the kind of a request authenticated by an access token the chain's own provider issued, reports no channel, because the token rests on the sign-in that made its grant, which the chain itself judged;
+- `access-token`, the kind of a request authenticated by an access token the chain's own provider issued, reports no channel, because the token rests on the sign-in that made its grant;
 - `external-access-token`, the kind of a request authenticated by an access token another issuer issued, reports `federated`, because the sign-in behind it happened at that issuer.
 
 The `authenticator-app` channel SHALL be the channel of second factors that use an authenticator app, such as TOTP, and `email` SHALL also be the channel of email-delivered second factors. The `public-key` channel SHALL also be the channel of the passkey second factor, so a passkey second factor after a passkey login is on the first factor's own channel. These kinds and channels SHALL be the complete vocabulary scrty uses. Other capabilities, including multi-factor authentication and security policy, SHALL reference these values and SHALL NOT define kinds or channels of their own.
 
-Only `api-key` and `access-token` SHALL report themselves as exempt from an MFA requirement: an API key because it is a machine credential, and a provider access token because the requirement was judged by the chain's own gates at the sign-in that made its grant. `external-access-token` SHALL NOT be exempt; how it meets an MFA requirement SHALL be decided by the federated-assurance rules of the `security-policy` capability, from the assurance its token asserts.
+Only `api-key` SHALL report itself as exempt from an MFA requirement, because it is a machine credential. `access-token` and `external-access-token` SHALL NOT be exempt; the `security-policy` capability decides how an access-token caller meets an MFA requirement, from the sign-in its token records.
 
 #### Scenario: Authenticator-app channel
 - **WHEN** the channel vocabulary is listed
@@ -66,8 +66,12 @@ Only `api-key` and `access-token` SHALL report themselves as exempt from an MFA 
 
 #### Scenario: Access-token kind
 - **WHEN** the kind `access-token` is examined
-- **THEN** it reports no channel and is exempt
+- **THEN** it reports no channel and is not exempt
 
 #### Scenario: External access-token kind
 - **WHEN** the kind `external-access-token` is examined
 - **THEN** it reports channel `federated` and is not exempt
+
+#### Scenario: Session principal carries no scopes
+- **WHEN** a request is authenticated by a session token
+- **THEN** the principal's scopes are empty

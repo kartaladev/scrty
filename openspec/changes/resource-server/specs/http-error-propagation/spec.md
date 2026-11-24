@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: An invalid access token is a public refusal mapped to 401
-The library SHALL expose a public invalid-token refusal for an access token a resource server refuses for any reason other than a failed binding, which keeps the refusals the sender-constrained-tokens capability defines. It SHALL also be identifiable as the uniform authentication failure, and the status mapping SHALL answer it 401. Only a resource server's refusal SHALL be it.
+The library SHALL expose a public invalid-token refusal for an access token a resource server refuses for any reason other than a failed binding, which keeps the refusals the sender-constrained-tokens capability defines, or an insufficient user authentication, which has its own refusal. It SHALL also be identifiable as the uniform authentication failure, and the status mapping SHALL answer it 401. Only a resource server's refusal SHALL be it.
 
 #### Scenario: Status and identity
 - **WHEN** the invalid-token refusal is mapped to a status
@@ -448,7 +448,7 @@ Federated login refusals that are authentication failures (an invalid flow, an i
 - **THEN** the mapping returns 500, not 403
 
 ### Requirement: A 401 on a chain with a built-in bearer carries a challenge
-On a chain with a built-in bearer, every 401 the chain answers outside the provider's endpoints SHALL carry one `Bearer` challenge; with DPoP required, one `DPoP` challenge instead; and with DPoP optional, one of each. With DPoP off, a `Bearer` token a built-in bearer refused SHALL get `error="invalid_token"`, and any other 401 no error code. A consumer MAY turn this off. A resource server SHALL count as a built-in bearer. A token a resource server refused as an invalid token SHALL get `error="invalid_token"`, under `DPoP` with the accepted algorithms when the token came under `DPoP` or its source requires binding, and under `Bearer` otherwise, whether or not DPoP is on; each refusal SHALL carry one challenge. A chain with no built-in bearer SHALL be unaffected.
+On a chain with a built-in bearer, every 401 the chain answers outside the provider's endpoints SHALL carry one `Bearer` challenge; with DPoP required, one `DPoP` challenge instead; and with DPoP optional, one of each. With DPoP off, a `Bearer` token a built-in bearer refused SHALL get `error="invalid_token"`, and any other 401 no error code. A consumer MAY turn this off. A resource server SHALL count as a built-in bearer. A token a resource server refused as an invalid token SHALL get `error="invalid_token"`, under `DPoP` with the accepted algorithms when the token came under `DPoP` or its source requires DPoP binding, and under `Bearer` otherwise, whether or not DPoP is on; such a refusal SHALL carry that one challenge alone, even with DPoP optional. A chain with no built-in bearer SHALL be unaffected.
 
 #### Scenario: Expired token at a consumer's route
 - **WHEN** a request presents an expired `Bearer` token at a consumer's protected route, with DPoP off
@@ -477,3 +477,7 @@ On a chain with a built-in bearer, every 401 the chain answers outside the provi
 #### Scenario: API-only chain without DPoP
 - **WHEN** a chain whose only credential mode is a resource server with a source accepting unbound tokens refuses an expired token under `Bearer`
 - **THEN** the response carries `WWW-Authenticate: Bearer error="invalid_token"`, once
+
+#### Scenario: Resource-server refusal with DPoP optional
+- **WHEN** DPoP is optional and a resource server refuses an expired token presented under `Bearer` from a source that accepts unbound tokens
+- **THEN** the response carries exactly one `WWW-Authenticate: Bearer error="invalid_token"`
