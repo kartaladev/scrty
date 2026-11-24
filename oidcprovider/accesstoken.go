@@ -229,7 +229,7 @@ func (p *Provider) mintAccessToken(
 }
 
 // buildAccessVerifier returns what reads the provider's own JWT access tokens: its keys, its
-// issuer, its clock and the at+jwt type alone, so a first-party token, an ID token or a logout
+// issuer, its clock and the at+jwt type alone, so a session token, an ID token or a logout
 // token under the same keys is refused. Audience is left to whoever accepts the token.
 //
 // Its size bound follows the request bounds, because a token states its scope and its resources:

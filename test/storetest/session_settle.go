@@ -154,7 +154,7 @@ func settleSessionID(user identity.UserID, i int) string {
 	return string(user) + "-session-" + strconv.Itoa(i)
 }
 
-// settleSession is the i-th first-party session the settle cases create for
+// settleSession is the i-th session the settle cases create for
 // user.
 func settleSession(i int, user identity.UserID) *session.Session {
 	return sessionRecord(settleSessionID(user, i), user)

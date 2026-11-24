@@ -48,7 +48,7 @@ type EndSessionResult struct {
 	// FlowSecret is the flow cookie's value when the request parked, and empty when it did not.
 	FlowSecret string
 	// Ended selects the sign-in the request is ending by its family, and is nil when it ends none. Its
-	// grants have ended. The caller still owes the rest, in this order: its first-party sessions, which
+	// grants have ended. The caller still owes the rest, in this order: the sign-in's sessions, which
 	// the provider does not hold, then EndSignIn(Ended) for its browser session.
 	Ended *SignInSelector
 	// User is the ended sign-in's user, and empty when Ended is nil.
@@ -66,7 +66,7 @@ type LogoutResult struct {
 	// RedirectTo is where the page sends the browser.
 	RedirectTo string
 	// Ended selects the sign-in the answer is ending by its family, and is nil when it ends none. Its
-	// grants have ended. The caller still owes the rest, in this order: its first-party sessions, which
+	// grants have ended. The caller still owes the rest, in this order: the sign-in's sessions, which
 	// the provider does not hold, then EndSignIn(Ended) for its browser session, then SpendLogout.
 	Ended *SignInSelector
 	// User is the ended sign-in's user, and empty when Ended is nil.
@@ -107,17 +107,17 @@ type endSessionRequest struct {
 // redirect.
 //
 // What it ends without asking is the sign-in's grants, and no more: Ended says what the caller still
-// owes. An end goes grants, then first-party sessions, then browser session, because the browser
-// session is what lets the browser ask again. A caller off the chain deletes the sign-in's first-party
+// owes. An end goes grants, then the sign-in's sessions, then browser session, because the browser
+// session is what lets the browser ask again. A caller off the chain deletes the sign-in's
 // sessions and finishes with EndSignIn(Ended), which deletes the browser session, and clears the cookie
 // only once that has succeeded.
 //
 // A failing store, registry or key source matches ErrDependency, and one read before anything ends
-// leaves it all as it was. A failure of the grants' write leaves the browser session and the first-party
+// leaves it all as it was. A failure of the grants' write leaves the browser session and the sign-in's
 // sessions, so asking again from this browser finishes the end, and tells no one twice. While a logout
 // is failing that browser session stays usable, so an authorization request from the browser can still
 // be answered from it: a failed logout has not logged anyone out, and its answer says so. Nothing falls
-// back on the hint or on a first-party session to finish, as that would let a token's holder end a
+// back on the hint or on a session of the sign-in to finish, as that would let a token's holder end a
 // sign-in from another browser, without the question section 2 requires.
 func (p *Provider) EndSession(ctx context.Context, in EndSessionInput) (*EndSessionResult, error) {
 	req, err := p.readEndSession(ctx, in.Params)

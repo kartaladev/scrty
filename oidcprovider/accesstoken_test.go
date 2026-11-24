@@ -930,12 +930,12 @@ func TestProvider_AccessToken_Verify(t *testing.T) {
 			assert: refused,
 		},
 		{
-			name: "a first-party token under the same keys and claims",
+			name: "a session token under the same keys and claims",
 			arrange: func(t *testing.T, x *exchangeFixture) string {
 				t.Helper()
 				family := liveGrantFamily(t, x)
 
-				return signed(t, signingkey.RS256, testRSAKey(), map[string]any{"kid": rsKid, "typ": token.TypeFirstParty}, map[string]any{
+				return signed(t, signingkey.RS256, testRSAKey(), map[string]any{"kid": rsKid, "typ": token.TypeSessionToken}, map[string]any{
 					"iss": issuer, "sub": "u-1", "aud": issuer, "jti": "j", "client_id": "billing-web", "scope": "openid",
 					"gid": family.String(), "exp": x.clk.Now().Add(time.Minute).Unix(), "iat": x.clk.Now().Unix(),
 				})

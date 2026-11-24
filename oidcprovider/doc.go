@@ -110,7 +110,7 @@
 // ends it again when the refresh then answers an error.
 //
 // [Provider.VerifyAccessToken] reads both kinds, and refuses anything else as invalid_token: a
-// first-party, ID or logout token under the same keys, a refresh token, or a code. A token whose
+// session, ID or logout token under the same keys, a refresh token, or a code. A token whose
 // grant is revoked, expired or gone is refused too, as a JWT carries gid so its grant can be
 // read. A resource server verifying a JWT offline makes no such read, so for it a token lasts
 // until its exp. A store or key source that cannot answer is no verdict on the token.

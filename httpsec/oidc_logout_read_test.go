@@ -65,7 +65,7 @@ func TestOIDCLogout_CompletesWhileSessionReadsFail(t *testing.T) {
 			assert.EqualValues(t, reads, store.reads.Load(), "a logout reads no session past its bearer")
 
 			f.refreshRefused(t, grant)
-			f.firstPartyRefused(t, s)
+			f.sessionTokenRefused(t, s)
 			assert.Equal(t, "login_required", f.silentError(t, grant), "the browser session has gone")
 			assert.Len(t, f.events.named(event.SessionLogout), 1)
 			assert.Equal(t, []string{s.FamilyID.String()}, sidsOf(f.toldOf(t)), "the client is told once")

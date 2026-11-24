@@ -88,7 +88,7 @@ func TestVerifier_TokenType(t *testing.T) {
 	atVerifier := []token.VerifyOption{token.WithVerifyTokenType(token.TypeAccessToken)}
 
 	cases := []testCase{
-		{name: "the first-party type is accepted", token: withTyp("scrty+jwt"), assert: accepted},
+		{name: "the session token type is accepted", token: withTyp("scrty+jwt"), assert: accepted},
 		{name: "the type is compared without regard to case", token: withTyp("SCRTY+JWT"), assert: accepted},
 		{name: "the media-type prefix is ignored", token: withTyp("application/SCRTY+JWT"), assert: accepted},
 		{
@@ -100,7 +100,7 @@ func TestVerifier_TokenType(t *testing.T) {
 			},
 			assert: rejected,
 		},
-		// The token-type confusion test: an access token with the first-party
+		// The token-type confusion test: an access token with the session token
 		// verifier's own keys, issuer and audience.
 		{name: "an access token is refused", token: withTyp("at+jwt"), assert: rejected},
 		{name: "an ID token is refused", token: withTyp("JWT"), assert: rejected},
@@ -141,7 +141,7 @@ func TestVerifier_TokenType(t *testing.T) {
 			assert: accepted,
 		},
 		{
-			name:   "a verifier for access tokens refuses a first-party token",
+			name:   "a verifier for access tokens refuses a session token",
 			opts:   atVerifier,
 			token:  withTyp("scrty+jwt"),
 			assert: rejected,

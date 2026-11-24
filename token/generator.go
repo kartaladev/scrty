@@ -183,7 +183,7 @@ func WithUsernameSubject() Option {
 
 // WithTokenType replaces the type a generator declares in the typ header of
 // every token it issues, and the type its own Verify accepts. Default:
-// TypeFirstParty, "scrty+jwt".
+// TypeSessionToken, "scrty+jwt".
 //
 // A verifier built separately accepts only its own declared type, so it needs
 // WithVerifyTokenType with the same value.
@@ -191,7 +191,7 @@ func WithUsernameSubject() Option {
 // A blank typ, and one equal to TypeAccessToken, TypeIDToken or TypeLogoutToken,
 // fails construction with ErrConfig. Those are compared as a verifier compares
 // them, without regard to case and with an "application/" prefix ignored,
-// because a first-party token declaring another kind's type would validate as
+// because a session token declaring another kind's type would validate as
 // that kind wherever keys are shared.
 func WithTokenType(typ string) Option {
 	return func(c *config) {
@@ -214,7 +214,7 @@ type JWTGenerator struct{ cfg *config }
 // configured, with WithIssuer and WithAudience, or waived by name, with
 // WithoutIssuer and WithoutAudience. There is no default that issues and checks
 // neither. Defaults: a 15-minute lifetime; RS256; the system clock; the
-// principal's user identifier as the subject; TypeFirstParty as the declared
+// principal's user identifier as the subject; TypeSessionToken as the declared
 // type. Each is an Option naming its own default.
 //
 // A nil option is skipped, so a consumer may build the slice conditionally.
@@ -250,7 +250,7 @@ func NewGenerator(keys signingkey.KeySource, opts ...Option) (*JWTGenerator, err
 	if err := cfg.validateLifetime(); err != nil {
 		return nil, err
 	}
-	if err := cfg.validateFirstPartyType(); err != nil {
+	if err := cfg.validateSessionTokenType(); err != nil {
 		return nil, err
 	}
 

@@ -15,7 +15,7 @@ import (
 )
 
 // TestBearer_RefusesOtherTokenTypes pins that the chain's signed bearer accepts
-// first-party tokens only. Every token is signed by the chain's own keys, and
+// session tokens only. Every token is signed by the chain's own keys, and
 // names its own issuer, its own audience, a live session and that session's user,
 // so nothing but the declared type can tell the rows apart.
 func TestBearer_RefusesOtherTokenTypes(t *testing.T) {
@@ -60,7 +60,7 @@ func TestBearer_RefusesOtherTokenTypes(t *testing.T) {
 		{
 			// The control: the same keys, issuer, audience, session and user, so
 			// the rows above were refused for their type and nothing else.
-			name: "a first-party token",
+			name: "a session token",
 			token: func(t *testing.T, keys *signingkey.Keys) string {
 				t.Helper()
 

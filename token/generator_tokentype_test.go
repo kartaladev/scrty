@@ -10,7 +10,7 @@ import (
 )
 
 // TestGenerator_TokenType pins the typ header a generator declares, and that a
-// first-party token cannot be given the type of another kind of token, however
+// session token cannot be given the type of another kind of token, however
 // that type is spelled.
 func TestGenerator_TokenType(t *testing.T) {
 	t.Parallel()
@@ -37,10 +37,10 @@ func TestGenerator_TokenType(t *testing.T) {
 	}
 
 	cases := []testCase{
-		{name: "the default is the first-party type", assert: declares("scrty+jwt")},
+		{name: "the default is the session token type", assert: declares("scrty+jwt")},
 		{
 			name:   "the default option names the same type",
-			opts:   []token.Option{token.WithTokenType(token.TypeFirstParty)},
+			opts:   []token.Option{token.WithTokenType(token.TypeSessionToken)},
 			assert: declares("scrty+jwt"),
 		},
 		{

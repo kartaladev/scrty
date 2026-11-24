@@ -117,9 +117,9 @@ func WithVerifyMaxTokenSize(size int) VerifyOption {
 func WithVerifyClock(clk clock.Clock) VerifyOption { return VerifyOption(setClock(clk)) }
 
 // WithVerifyTokenType sets the one type the verifier accepts in a token's typ
-// header. Default: TypeFirstParty, "scrty+jwt". A token declaring another type,
+// header. Default: TypeSessionToken, "scrty+jwt". A token declaring another type,
 // or none, is refused as an invalid token, whatever else about it is valid. So
-// a verifier for first-party tokens refuses an access token signed with the same
+// a session token verifier refuses an access token signed with the same
 // keys, issuer and audience, and one for access tokens takes TypeAccessToken.
 //
 // The comparison ignores case and an "application/" prefix on either side. The
@@ -144,7 +144,7 @@ type JWTVerifier struct{ cfg *config }
 // audience: each is enforced, with WithVerifyIssuer and WithVerifyAudience, or
 // waived by name, with WithoutVerifyIssuer and WithoutVerifyAudience. There is
 // no default that checks neither. Defaults: the system clock; an 8192-byte
-// maximum token size; TypeFirstParty as the one accepted type. Each is a
+// maximum token size; TypeSessionToken as the one accepted type. Each is a
 // VerifyOption naming its own default.
 //
 // A nil option is skipped, so a consumer may build the slice conditionally.

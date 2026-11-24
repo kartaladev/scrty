@@ -26,10 +26,10 @@ var ErrConfig = errors.New("token: invalid configuration")
 // verifier accepts only the one it is for, so a token of one kind never
 // validates as another, even under the same keys, issuer and audience.
 const (
-	// TypeFirstParty is the type of a token a Generator issues, and the one a
+	// TypeSessionToken is the type of a token a Generator issues, and the one a
 	// Verifier accepts, by default. WithTokenType and WithVerifyTokenType replace
 	// it.
-	TypeFirstParty = "scrty+jwt"
+	TypeSessionToken = "scrty+jwt" //nolint:gosec // G101: a JWT typ media type, not a credential
 
 	// TypeAccessToken is the type of an OAuth access token (RFC 9068).
 	TypeAccessToken = "at+jwt"
@@ -108,7 +108,7 @@ func newConfig() *config {
 		lifetime:     defaultLifetime,
 		alg:          signingkey.RS256,
 		clock:        clock.System(),
-		tokenType:    TypeFirstParty,
+		tokenType:    TypeSessionToken,
 		maxTokenSize: defaultMaxTokenSize,
 	}
 }
@@ -333,9 +333,9 @@ func (c *config) checkLifetime(lifetime time.Duration) error {
 	return nil
 }
 
-// validateFirstPartyType refuses a type a first-party token cannot declare: a
+// validateSessionTokenType refuses a type a session token cannot declare: a
 // blank one, and the type of another kind of token.
-func (c *config) validateFirstPartyType() error {
+func (c *config) validateSessionTokenType() error {
 	wanted := normalizeTokenType(c.tokenType)
 	if strings.TrimSpace(wanted) == "" {
 		return fmt.Errorf("%w: the token type given to WithTokenType is empty or blank", ErrConfig)
