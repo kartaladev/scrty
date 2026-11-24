@@ -331,7 +331,13 @@ Nothing is granted on the unverified read, and the source verifies again. The ro
   - The metadata's `issuer` must equal the configured issuer (RFC 8414 §3.3, OIDC Discovery §4.3).
   - A discovered `jwks_uri` must be on the issuer's origin.
 - **Pinned URL:** `WithJWKSURL(u)` skips discovery, and may name another origin, over https.
-- **Outbound client:** `WithOutboundClient(c)` replaces it, for a proxy or custom CAs.
+- **Outbound client:** `keyset.New` takes the `*outbound.Client` as an argument; the mode's
+  `WithOutboundClient(c)` passes it through, for a proxy or custom CAs. A nil client means
+  `outbound.New()` with its defaults.
+- **No stale keys:** an expired key set is never served after a failed refetch; the source answers
+  `ErrUnavailable` until a fetch succeeds.
+- **Key filtering:** keys with `use: enc`, symmetric keys, and keys whose `key_ops` is present but
+  lacks `verify` are dropped. An issuer URL carrying userinfo is refused at construction.
 - **Algorithms:** `WithAlgorithms(...)`, default `RS256` and `ES256`. `none` and HS\* are refused at
   construction and at verification. Header `jku`/`jwk`/`x5u` are ignored, and so are keys with
   `use: enc`.
@@ -401,6 +407,10 @@ Nothing is granted on the unverified read, and the source verifies again. The ro
   identifier and the source. A throttle emits `excess_rate_limit_exceeded`. DPoP and binding refusals
   keep their events. An event carries a user reference only for a local user; a claims-only caller's
   external subject is never put in its place (`security-events` delta).
+
+- **Where the facts are read:** a verified access token's `AuthTime`, `ACR` and `AMR` are read from
+  the grant that holds it, for JWT and opaque tokens alike. A JWT's claims were minted from that same
+  grant, and a refresh never changes it, so both formats answer the same.
 
 ### 14. Challenges
 
@@ -489,7 +499,10 @@ only.
   the breach lookup, because they are cheap local checks that should not spend a network call.
 - **Refusal:** `RejectedError{Rule: name}`, a password-rejected error but not a reused one. The
   consumer can then tell "weak" from "reused".
-- **Failure:** an error from a rule fails closed, behind fixed text, with the error reachable.
+- **Failure:** an error from a rule fails closed as `password.ErrRuleFailed` (fixed text naming the
+  rule), joined with the rule's sanitized error, which stays reachable through `errors.Is`. A
+  sentinel, not a new error type, matches the package's other port failures. A panicking rule is not
+  recovered, as with the context-word function; the consumer owns its rule.
 - **Default:** no consumer rule. The library imposes no composition rule (NIST SP 800-63B, which
   advises verifiers against composition rules).
 - **Construction errors:** a nil, typed-nil or unnamed rule; a name over 64 characters or holding
@@ -571,6 +584,9 @@ inactive account carry no distinguishing error, and cost the same work.
 | F50 | A claims-only or external-declared caller's subject leaking into events as a user reference | Handled: no user reference for callers naming no local user (decision 13). Tested | — |
 | F51 | A mapper forgets to say whether its caller is local | Handled: the zero value is a local user, judged (decision 8). Tested | Judged by the MFA requirement |
 | F52 | An unprefixed opaque token on a path no resource server covers | Handled: passes on to the next mode (decision 5). Tested | Judged by that mode |
+| F53 | A durable store before G1 drops the sign-in's second-factor marker and federated evidence | Accepted only within this change: G1 (task 4.5) ships in the same release. Until then the marker reads false, which fails closed | A federated or MFA user is judged as having no verified second factor |
+| F54 | `introspect.Result.Accepts` reports a bound token acceptable without its proof | Handled by the caller: the introspection source checks the proof against `Result.Confirmation` before accepting (decision 7). Tested in C4 | 401 `invalid_token` for a missing or wrong proof |
+| F55 | A caller of the introspection client whose context is already cancelled | Handled: no outbound call is made. Tested | The context error |
 
 ## Risks / Trade-offs
 
