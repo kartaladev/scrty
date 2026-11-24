@@ -12,6 +12,8 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-24
+
 Every addition below is opt-in: a provider with no sign-in hook, a chain without server-side
 completion and a link store that implements neither new interface behave as before. Nothing breaks,
 and no migration is needed.
@@ -850,7 +852,8 @@ exported identifiers; the moves and renames change no behaviour.
 - A user-store outage during a password login no longer places a hold on a real account.
 - The limit on saved recovery codes holds when the codes are presented concurrently.
 
-[Unreleased]: https://github.com/kartaladev/scrty/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/kartaladev/scrty/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/kartaladev/scrty/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/kartaladev/scrty/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/kartaladev/scrty/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/kartaladev/scrty/compare/v0.1.1...v0.2.0
