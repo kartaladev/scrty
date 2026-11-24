@@ -3,7 +3,6 @@ package httpsec
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/url"
 	"strings"
 	"unicode/utf8"
@@ -12,11 +11,6 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 )
-
-// errInvalidAccessToken refuses an access token a resource server recognised: one no source
-// verified, one off every prefix that is unmistakably an access token, and one too large to read.
-// It is answered 401, as authenticate.ErrAuthenticationFailed is.
-var errInvalidAccessToken = fmt.Errorf("%w: httpsec: invalid access token", authenticate.ErrAuthenticationFailed)
 
 // optionResourceServer names EnableResourceServer in configuration errors.
 const optionResourceServer = "EnableResourceServer"
@@ -37,7 +31,7 @@ type source interface {
 	// recognises says how strongly the source claims a token from its unverified read.
 	recognises(t peeked) recognition
 
-	// verify verifies raw and returns what it states. A refusal wraps errInvalidAccessToken; any
+	// verify verifies raw and returns what it states. A refusal wraps ErrInvalidToken; any
 	// other error is a dependency failure or the request's own context ending.
 	verify(ctx context.Context, raw string) (*verifiedToken, error)
 }
@@ -184,6 +178,8 @@ func (rs *resourceServer) check(c *config) error {
 		}
 	}
 
+	rs.prefixes = distinctPrefixes(rs.prefixes)
+
 	return rs.checkSources(c)
 }
 
@@ -202,6 +198,12 @@ func (rs *resourceServer) checkSources(c *config) error {
 			return newConfigError("%s (%s) was given a nil token source", optionResourceServer, rs.id)
 		}
 
+		if w, ok := src.(sourceWiring); ok {
+			if err := w.checkWiring(c); err != nil {
+				return err
+			}
+		}
+
 		iss := src.issuer()
 		if iss == "" {
 			continue
@@ -217,6 +219,12 @@ func (rs *resourceServer) checkSources(c *config) error {
 
 	for _, src := range rs.sources {
 		if src.allowsUnbound() {
+			if c.dpop != nil && c.dpop.cfg.Require {
+				return newConfigError("%s (%s): the source %s accepts unbound tokens, and the chain's DPoP is "+
+					"required (DPoP.Require), which refuses every unbound token; keep the source's default "+
+					"binding, or leave DPoP optional", optionResourceServer, rs.id, src.name())
+			}
+
 			continue
 		}
 
@@ -252,7 +260,7 @@ func (s *resourceServers) check() error {
 
 	for i, a := range owners {
 		for _, b := range owners[i+1:] {
-			if strings.HasPrefix(a.prefix, b.prefix) || strings.HasPrefix(b.prefix, a.prefix) {
+			if hasPrefixFold(a.prefix, b.prefix) || hasPrefixFold(b.prefix, a.prefix) {
 				return newConfigError("%s: the prefixes %q (%s) and %q (%s) overlap, so a path could be "+
 					"judged by either; give them prefixes that share no path", optionResourceServer,
 					a.prefix, a.id, b.prefix, b.id)
@@ -292,7 +300,31 @@ func checkPathPrefix(prefix string) error {
 	}
 }
 
+// distinctPrefixes is prefixes with each repeat dropped, a repeat that differs only in ASCII case
+// included, since a prefix matches without regard to it: the same prefix given twice is one prefix,
+// not an overlap. The first spelling is kept.
+func distinctPrefixes(prefixes []string) []string {
+	seen := make(map[string]bool, len(prefixes))
+	out := prefixes[:0:0]
+
+	for _, prefix := range prefixes {
+		key := asciiLower(prefix)
+		if seen[key] {
+			continue
+		}
+
+		seen[key] = true
+		out = append(out, prefix)
+	}
+
+	return out
+}
+
 // WithPathPrefix confines the resource server to the paths under prefixes.
+//
+// A prefix matches a path without regard to ASCII case, as several routers match routes by
+// default: a path a router serves under the prefix is never left uncovered for its case. Covering a
+// path that differs only in case is the safe side: it is judged, never left to a later mode.
 func WithPathPrefix(prefixes ...string) ResourceServerOption {
 	return func(rs *resourceServer) error {
 		rs.prefixGiven = true
@@ -331,6 +363,10 @@ type resourceServers struct {
 
 	// dpop is the chain's DPoP verifier, handed over at assembly, and nil while DPoP is off.
 	dpop *dpopVerifier
+
+	// certBinding says the chain checks certificate bindings, handed over at assembly. A source
+	// requiring a binding then may be answered with a certificate, so its challenge is Bearer's.
+	certBinding bool
 }
 
 // resourceServersOf returns the chain's resource-server interceptor, registering it at
@@ -355,9 +391,10 @@ func resourceServersOf(c *config) *resourceServers {
 	// EnableDPoP and EnableOIDCProvider may come after this option.
 	c.wire(func(*Chain) {
 		s.dpop = c.dpop
+		s.certBinding = c.certBinding != nil
 
-		if c.oidcProvider != nil {
-			s.bound = max(s.bound, providerTokenBound)
+		if c.oidcProvider != nil && c.oidcProvider.provider != nil {
+			s.bound = max(s.bound, c.oidcProvider.provider.MaxAccessTokenSize())
 		}
 	})
 
@@ -367,8 +404,8 @@ func resourceServersOf(c *config) *resourceServers {
 // Intercept judges an access token on the request. In order:
 //
 //  1. a request with no token under the Bearer scheme, or the DPoP scheme while DPoP is on, passes
-//     on, and so does one with more than one Authorization header, which is not this mode's to
-//     judge;
+//     on; one with more than one Authorization header is refused with invalid_request on a covered
+//     path, as which header a mode reads would be a guess, and passes on off every covered path;
 //  2. on a path a resource server covers, a token over the bound is refused before any of it is
 //     decoded;
 //  3. the token is read for routing only; a session token is never offered to a source;
@@ -378,23 +415,27 @@ func resourceServersOf(c *config) *resourceServers {
 //     handed on, when it is an access token no source can take;
 //  6. the source verifies it, and its binding is held to the request; the proof is recorded last.
 //
-// Every refusal is errInvalidAccessToken, or the sender-constrained refusal its binding calls for.
-// A source's dependency failure is returned as it is, and is not a refusal.
+// Every refusal is ErrInvalidToken, or the sender-constrained refusal its binding calls for, and
+// carries the one challenge bearerChallenge answers it with. A source's dependency failure is
+// returned as it is, and is not a refusal.
 func (s *resourceServers) Intercept(ex *Exchange, next Next) error {
-	raw, underDPoP, claimed, err := readAuthorization(ex.Request, s.dpop)
-	if err != nil || !claimed || raw == "" {
-		return next(ex)
-	}
-
 	path := canonicalPath(ex.Request.Path())
 	rs := s.covering(path)
+
+	raw, underDPoP, claimed, err := readAuthorization(ex.Request, s.dpop)
+	switch {
+	case err != nil && rs != nil:
+		return &accessTokenRefusal{err: err, dpop: s.dpopRequired(), code: codeInvalidRequest}
+	case err != nil || !claimed || raw == "":
+		return next(ex)
+	}
 
 	if len(raw) > s.bound {
 		if rs == nil {
 			return next(ex)
 		}
 
-		return errInvalidAccessToken
+		return s.refuse(ErrInvalidToken, underDPoP, nil)
 	}
 
 	t := peek(raw)
@@ -404,7 +445,7 @@ func (s *resourceServers) Intercept(ex *Exchange, next Next) error {
 
 	if rs == nil {
 		if s.offPrefixRefused(t) {
-			return errInvalidAccessToken
+			return s.refuse(ErrInvalidToken, underDPoP, nil)
 		}
 
 		return next(ex)
@@ -415,7 +456,7 @@ func (s *resourceServers) Intercept(ex *Exchange, next Next) error {
 	switch {
 	case src != nil:
 	case refuse:
-		return errInvalidAccessToken
+		return s.refuse(ErrInvalidToken, underDPoP, nil)
 	default:
 		return next(ex)
 	}
@@ -427,17 +468,32 @@ func (s *resourceServers) Intercept(ex *Exchange, next Next) error {
 	return next(ex)
 }
 
+// refuse is err, a refusal of a token presented under DPoP when underDPoP, carrying its
+// challenge: DPoP's when the token came under DPoP, when the chain requires DPoP, or when src
+// requires a binding only DPoP can prove; Bearer's otherwise, a certificate-bound source's
+// included (RFC 8705 uses Bearer). src is nil when no source took the token.
+func (s *resourceServers) refuse(err error, underDPoP bool, src source) error {
+	dpop := s.dpop != nil &&
+		(underDPoP || s.dpopRequired() || src != nil && !src.allowsUnbound() && !s.certBinding)
+
+	return &accessTokenRefusal{err: err, dpop: dpop, code: codeInvalidToken}
+}
+
+// dpopRequired says the chain's DPoP is on and required, so every token is presented under DPoP.
+func (s *resourceServers) dpopRequired() bool { return s.dpop != nil && s.dpop.cfg.Require }
+
 // admit verifies raw at src, holds it to its binding, and publishes its caller on ex.
 func (s *resourceServers) admit(ex *Exchange, src source, raw string, underDPoP bool) error {
 	ctx := ex.Context()
 
 	vt, err := src.verify(ctx, raw)
-	if err != nil {
+	switch {
+	case errors.Is(err, ErrInvalidToken):
+		return s.refuse(err, underDPoP, src)
+	case err != nil:
 		return err
-	}
-
-	if vt == nil || vt.principal == nil {
-		return errInvalidAccessToken
+	case vt == nil || vt.principal == nil:
+		return s.refuse(ErrInvalidToken, underDPoP, src)
 	}
 
 	check, err := checkBinding(ex, s.dpop, underDPoP, raw, vt.confirmation)
@@ -446,7 +502,7 @@ func (s *resourceServers) admit(ex *Exchange, src source, raw string, underDPoP 
 	}
 
 	if err := bindingRefusal(check.verdict, src); err != nil {
-		return err
+		return s.refuse(err, underDPoP, src)
 	}
 
 	verdict, err := check.record(ctx, s.dpop)
@@ -455,7 +511,7 @@ func (s *resourceServers) admit(ex *Exchange, src source, raw string, underDPoP 
 	}
 
 	if err := bindingRefusal(verdict, src); err != nil {
-		return err
+		return s.refuse(err, underDPoP, src)
 	}
 
 	ex.SetContext(WithCaller(ctx, &authenticate.Authentication{Principal: vt.principal}))
@@ -475,7 +531,7 @@ func bindingRefusal(verdict bindingVerdict, src source) error {
 			return nil
 		}
 
-		return errInvalidAccessToken
+		return ErrInvalidToken
 	case bindingKeyMismatch, bindingProofInvalid:
 		return ErrInvalidDPoPProof
 	case bindingNonceRequired:
@@ -483,7 +539,7 @@ func bindingRefusal(verdict bindingVerdict, src source) error {
 	case bindingCertificateMismatch:
 		return ErrCertificateBinding
 	default:
-		return errInvalidAccessToken
+		return ErrInvalidToken
 	}
 }
 

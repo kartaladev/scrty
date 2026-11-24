@@ -124,6 +124,7 @@ func TestMapper_TypePerRefusal(t *testing.T) {
 		{name: "dpop nonce required", err: httpsec.ErrDPoPNonceRequired, assert: typed("proof-of-possession-failed")},
 		{name: "invalid dpop proof", err: httpsec.ErrInvalidDPoPProof, assert: typed("proof-of-possession-failed")},
 		{name: "certificate binding", err: httpsec.ErrCertificateBinding, assert: typed("proof-of-possession-failed")},
+		{name: "invalid access token", err: fmt.Errorf("x: %w", httpsec.ErrInvalidToken), assert: typed("invalid-token")},
 		{name: "mfa challenge", err: challenge(policy.ChallengeMFA), assert: typed("mfa-required")},
 		{name: "consumer challenge", err: challenge(policy.ChallengeKind(100)), assert: typed("challenge-required")},
 		{name: "none-kind challenge", err: challenge(policy.ChallengeNone), assert: typed("challenge-required")},

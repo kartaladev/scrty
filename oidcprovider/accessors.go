@@ -139,3 +139,13 @@ func (p *Provider) offeredScopes() []string {
 
 	return append(scopes, slices.Sorted(maps.Keys(others))...)
 }
+
+// MaxAccessTokenSize is the largest access token, in bytes, the provider's verifier reads under
+// its request bounds (WithRequestBounds). A token states its scope and its resources, which
+// base64url and JSON at most double, and the rest of a token fits in 8 KiB, so the bound grows with
+// the bounds a consumer raises. A resource server on the same chain reads tokens up to it, so that a
+// token the provider's UserInfo accepts is never refused for its size.
+func (p *Provider) MaxAccessTokenSize() int {
+	// The same bound buildAccessVerifier gives the provider's verifier.
+	return 2*(p.cfg.bounds.Scope+maxResources*p.cfg.bounds.Resource) + 8<<10
+}

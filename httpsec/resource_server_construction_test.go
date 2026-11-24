@@ -269,6 +269,65 @@ func TestResourceServer_Construction(t *testing.T) {
 			},
 			assert: builds,
 		},
+		{
+			name: "DPoP on a chain whose only credential mode is a resource server",
+			build: func(*testing.T) []httpsec.Option {
+				return []httpsec.Option{
+					httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL}),
+					httpsec.EnableResourceServer("urn:orders", bound("a", "")),
+				}
+			},
+			assert: builds,
+		},
+		{
+			name: "a source opting out of binding on a chain that requires DPoP",
+			build: func(*testing.T) []httpsec.Option {
+				return []httpsec.Option{
+					httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL, Require: true}),
+					httpsec.EnableResourceServer("urn:orders",
+						httpsec.WithStubSource(&httpsec.StubSource{Name: "partner-sso", Unbound: true})),
+				}
+			},
+			assert: refused("partner-sso", "unbound", "DPoP.Require"),
+		},
+		{
+			name: "a source opting out of binding on a chain whose DPoP is optional",
+			build: func(*testing.T) []httpsec.Option {
+				return []httpsec.Option{
+					httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL}),
+					httpsec.EnableResourceServer("urn:orders",
+						httpsec.WithStubSource(&httpsec.StubSource{Name: "partner-sso", Unbound: true})),
+				}
+			},
+			assert: builds,
+		},
+		{
+			name: "the challenge turned off on a chain whose only credential mode is a resource server",
+			build: func(*testing.T) []httpsec.Option {
+				return withBinding(httpsec.WithoutBearerChallenge(), httpsec.EnableResourceServer("urn:orders", bound("a", "")))
+			},
+			assert: builds,
+		},
+		{
+			name: "the same prefix given twice to one resource server is one prefix",
+			build: func(*testing.T) []httpsec.Option {
+				return withBinding(
+					httpsec.EnableResourceServer("urn:api", httpsec.WithPathPrefix("/api/", "/API/"), bound("a", "")),
+					httpsec.EnableResourceServer("urn:billing", httpsec.WithPathPrefix("/billing/"), bound("b", "")),
+				)
+			},
+			assert: builds,
+		},
+		{
+			name: "prefixes of two resource servers differing only in case overlap",
+			build: func(*testing.T) []httpsec.Option {
+				return withBinding(
+					httpsec.EnableResourceServer("urn:api", httpsec.WithPathPrefix("/api/"), bound("a", "")),
+					httpsec.EnableResourceServer("urn:billing", httpsec.WithPathPrefix("/API/billing/"), bound("b", "")),
+				)
+			},
+			assert: refused(`"/api/"`, `"/API/billing/"`),
+		},
 	}
 
 	for _, tc := range cases {

@@ -154,6 +154,7 @@ func TestStatusForError(t *testing.T) {
 			want: 401,
 		},
 		{name: "disclosed inactive account", err: authenticate.ErrAccountInactive, want: 403},
+		{name: "wrapped invalid access token", err: fmt.Errorf("x: %w", httpsec.ErrInvalidToken), want: 401},
 		{
 			name: "concealed inactive account answers as the authentication failure",
 			err:  errors.Join(authenticate.ErrAuthenticationFailed, authenticate.ErrAccountInactive),
@@ -594,6 +595,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"httpsec.ErrInvalidDPoPProof":                httpsec.ErrInvalidDPoPProof,
 		"httpsec.ErrDPoPNonceRequired":               httpsec.ErrDPoPNonceRequired,
 		"httpsec.ErrCertificateBinding":              httpsec.ErrCertificateBinding,
+		"httpsec.ErrInvalidToken":                    httpsec.ErrInvalidToken,
 		"httpsec.ErrCrossSiteRequest":                httpsec.ErrCrossSiteRequest,
 		"httpsec.ErrChallengeRequired":               httpsec.ErrChallengeRequired,
 		"httpsec.ErrChallengeUnavailable":            httpsec.ErrChallengeUnavailable,

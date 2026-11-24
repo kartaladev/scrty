@@ -33,12 +33,6 @@ const (
 // by default.
 const minTokenBound = 8 << 10
 
-// providerTokenBound is the largest access token the chain's provider issues under its default
-// request bounds (4096 bytes of scope, ten resources of 2048 bytes each), as its own verifier
-// computes it: base64url and JSON at most double the scope and the resources, and the rest of a
-// token fits in 8 KiB.
-const providerTokenBound = 2*(4096+10*2048) + 8<<10
-
 // peeked is what the routing read learned of a token. Nothing is granted on it: the source the
 // token is routed to verifies it again.
 type peeked struct {
@@ -171,19 +165,50 @@ func (rs *resourceServer) marked(t peeked) source {
 
 // covers says whether rs covers path, a canonical path: a resource server with no prefix covers
 // every path, and a prefix covers the path it names without its slash and every path beneath it,
-// whole segment by whole segment.
+// whole segment by whole segment, without regard to ASCII case.
 func (rs *resourceServer) covers(path string) bool {
 	if len(rs.prefixes) == 0 {
 		return true
 	}
 
 	for _, prefix := range rs.prefixes {
-		if strings.HasPrefix(path, prefix) || path == strings.TrimSuffix(prefix, "/") {
+		if hasPrefixFold(path, prefix) || equalFoldASCII(path, strings.TrimSuffix(prefix, "/")) {
 			return true
 		}
 	}
 
 	return false
+}
+
+// hasPrefixFold says s begins with prefix, without regard to ASCII case.
+func hasPrefixFold(s, prefix string) bool {
+	return len(s) >= len(prefix) && equalFoldASCII(s[:len(prefix)], prefix)
+}
+
+// equalFoldASCII says a and b are equal without regard to ASCII case. Every other byte, those of
+// a multi-byte character included, must be equal: Unicode folding (the Kelvin sign as "k") is not
+// a router's case-insensitive match.
+func equalFoldASCII(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	for i := range len(a) {
+		x, y := a[i], b[i]
+		if 'A' <= x && x <= 'Z' {
+			x += 'a' - 'A'
+		}
+
+		if 'A' <= y && y <= 'Z' {
+			y += 'a' - 'A'
+		}
+
+		if x != y {
+			return false
+		}
+	}
+
+	return true
 }
 
 // canonicalPath is path as the resource servers match it: repeated slashes collapsed, so that

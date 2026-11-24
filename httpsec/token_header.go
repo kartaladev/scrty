@@ -1,10 +1,12 @@
 package httpsec
 
-import "errors"
+import "fmt"
 
 // errRepeatedAuthorization refuses a request carrying more than one Authorization header: which
-// one a credential mode reads would be a guess (RFC 6750 section 3.1).
-var errRepeatedAuthorization = errors.New("httpsec: the request carries more than one Authorization header")
+// one a credential mode reads would be a guess (RFC 9110 section 11.6.2 defines the field as one
+// credential), so it is a malformed request (RFC 6750 section 3.1, invalid_request), answered 400.
+var errRepeatedAuthorization = fmt.Errorf("httpsec: the request carries more than one Authorization header: %w",
+	ErrMalformedRequest)
 
 // readAuthorization reads an access token from the Authorization header, under the DPoP scheme
 // when DPoP is on (v not nil) or under Bearer, each matched without regard to case. claimed is

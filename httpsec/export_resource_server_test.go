@@ -75,6 +75,3 @@ func WithStubSource(s *StubSource) ResourceServerOption { return withSource(s) }
 
 // WithNilSource adds a nil source to a resource server.
 func WithNilSource() ResourceServerOption { return withSource(nil) }
-
-// ErrInvalidAccessToken is the resource server's refusal of an access token, for its tests.
-var ErrInvalidAccessToken = errInvalidAccessToken

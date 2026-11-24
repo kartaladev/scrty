@@ -96,6 +96,7 @@ var selectors = map[string]selector{
 		mfa.ErrEnrolmentThrottled,
 		passkey.ErrRegistrationThrottled,
 	}},
+	"invalid-token": {targets: []error{httpsec.ErrInvalidToken}},
 	"proof-of-possession-failed": {targets: []error{
 		httpsec.ErrDPoPNonceRequired,
 		httpsec.ErrInvalidDPoPProof,

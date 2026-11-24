@@ -13,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/errwalk"
 	"github.com/kartaladev/scrty/internal/guardauth"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/porterr"
@@ -616,6 +617,14 @@ func WithBearerUsernameSubject() BearerTokenOption {
 // scheme the response names already is not added again. A chain with no
 // built-in bearer refuses this option.
 //
+// A resource server (EnableResourceServer) counts as a built-in bearer, so a
+// chain serving only an API gets these challenges and may turn them off. Its
+// own refusals carry exactly one challenge: error="invalid_token" (or
+// invalid_request for a repeated Authorization header), under DPoP with the
+// accepted algorithms when the token came under DPoP, the chain requires DPoP,
+// or its source requires a binding only DPoP can prove, and under Bearer
+// otherwise; a binding failure keeps DPoP's settled challenge.
+//
 // Two limits are accepted: an error handler that changes a 401's status must
 // clear the challenge itself, and an interceptor ordered before the bearer that
 // refuses a valid token sends invalid_token.
@@ -654,7 +663,7 @@ func (c *config) wireBearerChallenge() error {
 	if !hasBuiltInBearer(c) {
 		if c.withoutBearerChallenge {
 			return newConfigError("WithoutBearerChallenge was given, but the chain has no built-in bearer " +
-				"(EnableBearerToken, EnableSessionBearer), so there is no challenge to turn off")
+				"(EnableBearerToken, EnableSessionBearer, EnableResourceServer), so there is no challenge to turn off")
 		}
 
 		return nil
@@ -684,9 +693,16 @@ func (c *config) wireBearerChallenge() error {
 }
 
 // hasBuiltInBearer reports whether the chain authenticates bearer tokens with a
-// built-in bearer of either mode.
+// built-in bearer of either mode, or accepts access tokens with a resource
+// server, which counts as one.
 func hasBuiltInBearer(c *config) bool {
 	var found bool
+
+	_ = eachInterceptor(c, func(*resourceServers) error {
+		found = true
+
+		return nil
+	})
 
 	_ = eachInterceptor(c, func(*sessionBearer) error {
 		found = true
@@ -727,6 +743,14 @@ func (b *bearerChallenge) Intercept(ex *Exchange, next Next) error {
 		out   error
 		abort error
 	)
+
+	if answered, stop := b.accessTokenChallenge(ex.Writer, err, watch.set); stop != nil {
+		ex.reportQuietlyOnce(ex.Context(), err, stop)
+
+		return err
+	} else if answered {
+		return err
+	}
 
 	switch {
 	case b.provider != nil && b.provider.answersPath(ex.Request.Path()):
@@ -814,6 +838,65 @@ func (b *bearerChallenge) challenge(
 	}
 
 	return err, nil
+}
+
+// accessTokenRefusal is a resource server's refusal, carrying the one challenge
+// it is answered with (RFC 6750 section 3.1, RFC 9449 section 7.1). It is
+// returned as err itself: errors.Is and errors.As see err, and its text is
+// err's, which names no token.
+type accessTokenRefusal struct {
+	err error
+
+	// dpop says the challenge is under the DPoP scheme, with the accepted
+	// algorithms; Bearer otherwise.
+	dpop bool
+
+	// code is the challenge's error code: invalid_token, or invalid_request
+	// for a request the resource server cannot read one credential from.
+	code string
+}
+
+// The error codes a resource server's challenge names.
+const (
+	codeInvalidToken   = "invalid_token"
+	codeInvalidRequest = "invalid_request"
+)
+
+func (r *accessTokenRefusal) Error() string { return r.err.Error() }
+func (r *accessTokenRefusal) Unwrap() error { return r.err }
+
+// accessTokenChallenge sets on w the one challenge a resource server's refusal
+// carries, and reports whether err was one it answered. DPoP's own refusals, an
+// invalid proof or a missing nonce, are left to DPoP's challenge, as settled,
+// when DPoP is on; with DPoP off a key-bound token's refusal is answered here.
+// A scheme set already names is not added again. abort is the walk that gave
+// up, which answers nothing.
+func (b *bearerChallenge) accessTokenChallenge(w guardauth.HeaderWriter, err error, set challengeSchemes) (bool, error) {
+	walk := walkRefusal(err)
+	if b.dpop != nil && walk.is(ErrDPoPNonceRequired, ErrInvalidDPoPProof) {
+		return false, nil
+	}
+
+	if walk.abort != nil {
+		return false, walk.abort
+	}
+
+	r, found, abort := errwalk.As[*accessTokenRefusal](walk.chain)
+	if abort != nil || !found {
+		return false, abort
+	}
+
+	switch {
+	case r.dpop && b.dpop != nil:
+		if set&schemeDPoP == 0 {
+			w.AddHeader(headerWWWAuthenticate, dpopScheme+` error="`+r.code+`", algs=`+
+				strconv.Quote(b.dpop.algorithmNames()))
+		}
+	case set&schemeBearer == 0:
+		w.AddHeader(headerWWWAuthenticate, DefaultBearerScheme+` error="`+r.code+`"`)
+	}
+
+	return true, nil
 }
 
 // refusedBearerToken reports whether the request presented a token a built-in

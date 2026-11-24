@@ -176,6 +176,20 @@ var (
 	// allowed hosts. The chain refuses it before any interceptor runs. It maps
 	// to 400. Its text never names the host.
 	ErrHostNotAllowed = errors.New("httpsec: host not allowed")
+
+	// ErrInvalidToken refuses an access token a resource server
+	// (EnableResourceServer) recognised and would not accept: one no source
+	// verified, whatever the reason (expired, wrong audience, untyped, unbound,
+	// a grant revoked, a caller that could not be resolved), one too large to
+	// read, and one that is unmistakably an access token on a path no resource
+	// server covers. A failed binding is not it: that keeps the refusals of
+	// sender-constrained tokens (ErrInvalidDPoPProof, ErrDPoPNonceRequired,
+	// ErrCertificateBinding). It matches authenticate.ErrAuthenticationFailed,
+	// and maps to 401 with a challenge naming error="invalid_token" (RFC 6750
+	// section 3.1). Only a resource server returns it: a session token the
+	// bearer refuses stays the plain authentication failure. Its text names no
+	// token, issuer or reason.
+	ErrInvalidToken = fmt.Errorf("httpsec: invalid access token: %w", authenticate.ErrAuthenticationFailed)
 )
 
 // ReauthenticationRequiredError is the recency guard's refusal. It carries the
@@ -299,6 +313,10 @@ var statusTable = []statusRow{
 	// otherwise would tell a held account from a free one, and a known user
 	// from an unknown one, wherever the store fails for some rows only.
 	{authenticate.ErrUnavailable, http.StatusUnauthorized},
+	// An access token a resource server refused. It wraps the authentication
+	// failure, so the row below would answer it alike; it has its own row
+	// because it is a stable contract of its own.
+	{ErrInvalidToken, http.StatusUnauthorized},
 	{authenticate.ErrAuthenticationFailed, http.StatusUnauthorized},
 	{policy.ErrSessionIdle, http.StatusUnauthorized},
 

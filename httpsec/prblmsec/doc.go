@@ -76,6 +76,7 @@
 //	authentication-required        401     authentication required, an idle or expired session, a re-authentication refusal from the provider
 //	authentication-failed          401     the status default: every form of failed authentication, a concealed lock or inactive account, an unavailable user store, a throttled source, a refused magic link
 //	second-factor-failed           401     an invalid or throttled second-factor attempt or enrolment, a throttled passkey registration begin
+//	invalid-token                  401     an access token a resource server refused (httpsec.EnableResourceServer)
 //	proof-of-possession-failed     401     a missing or invalid DPoP proof, a DPoP nonce required, a certificate-bound token without its certificate
 //	mfa-required                   401     a challenge of the second-factor kind
 //	challenge-required             401     a challenge of any other kind answered 401

@@ -16,6 +16,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
+	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -41,7 +42,7 @@ func rsJWT(typ, iss, aud string) string {
 func forAudience(aud string) func(context.Context, string) (*identity.Principal, map[string]string, error) {
 	return func(_ context.Context, raw string) (*identity.Principal, map[string]string, error) {
 		if !strings.HasSuffix(raw, "."+aud) {
-			return nil, nil, httpsec.ErrInvalidAccessToken
+			return nil, nil, httpsec.ErrInvalidToken
 		}
 
 		return &identity.Principal{ID: "u-1"}, nil, nil
@@ -80,7 +81,7 @@ func TestResourceServer_Routing(t *testing.T) {
 
 	refused := func(t *testing.T, out rsRoute) {
 		t.Helper()
-		require.ErrorIs(t, out.err, httpsec.ErrInvalidAccessToken)
+		require.ErrorIs(t, out.err, httpsec.ErrInvalidToken)
 		assert.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
 		assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
 		assert.False(t, out.handlerRan)
@@ -184,6 +185,24 @@ func TestResourceServer_Routing(t *testing.T) {
 			assert: func(t *testing.T, out rsRoute, s sources) {
 				refused(t, out)
 				assert.Zero(t, s.orders.Offered(), "no resource server covers the path")
+			},
+		},
+		{
+			name:   "a prefix covers a path without regard to ASCII case",
+			path:   "/ORDERS/1",
+			header: "Bearer " + ordersToken,
+			assert: func(t *testing.T, out rsRoute, s sources) {
+				accepted(t, out)
+				assert.Equal(t, 1, s.orders.Offered())
+			},
+		},
+		{
+			name:   "a mixed-case path is still judged by the covering resource server",
+			path:   "/Billing/1",
+			header: "Bearer " + ordersToken,
+			assert: func(t *testing.T, out rsRoute, s sources) {
+				refused(t, out)
+				assert.Equal(t, 1, s.billing.Offered())
 			},
 		},
 		{
@@ -329,10 +348,36 @@ func TestResourceServer_ProviderBound(t *testing.T) {
 		name   string
 		path   string
 		token  string
+		opts   []oidcprovider.Option
 		assert func(t *testing.T, out rsRoute, src *httpsec.StubSource)
 	}
 
+	// raised is a provider whose request bounds are raised, so its verifier reads larger tokens.
+	raised := oidcprovider.RequestBounds{Scope: 16 << 10, Resource: 4 << 10}
+	raisedBound := 2*(16<<10+10*4<<10) + 8<<10
+
 	cases := []testCase{
+		{
+			name:  "a provider with raised request bounds has its larger tokens read",
+			path:  "/api/orders",
+			token: "at." + strings.Repeat("A", raisedBound-len("at.")),
+			opts:  []oidcprovider.Option{oidcprovider.WithRequestBounds(raised)},
+			assert: func(t *testing.T, out rsRoute, src *httpsec.StubSource) {
+				require.NoError(t, out.err)
+				assert.True(t, out.handlerRan)
+				assert.Equal(t, 1, src.Offered())
+			},
+		},
+		{
+			name:  "a provider with raised request bounds still refuses a token over them",
+			path:  "/api/orders",
+			token: "at." + strings.Repeat("A", raisedBound),
+			opts:  []oidcprovider.Option{oidcprovider.WithRequestBounds(raised)},
+			assert: func(t *testing.T, out rsRoute, src *httpsec.StubSource) {
+				require.ErrorIs(t, out.err, httpsec.ErrInvalidToken)
+				assert.Zero(t, src.Offered())
+			},
+		},
 		{
 			name:  "a provider token at the provider's own bound is read",
 			path:  "/api/orders",
@@ -348,7 +393,7 @@ func TestResourceServer_ProviderBound(t *testing.T) {
 			path:  "/api/orders",
 			token: "at." + strings.Repeat("A", 2*(4096+10*2048)+8<<10),
 			assert: func(t *testing.T, out rsRoute, src *httpsec.StubSource) {
-				require.ErrorIs(t, out.err, httpsec.ErrInvalidAccessToken)
+				require.ErrorIs(t, out.err, httpsec.ErrInvalidToken)
 				assert.Zero(t, src.Offered())
 			},
 		},
@@ -370,7 +415,7 @@ func TestResourceServer_ProviderBound(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			p := f.provider(t)
+			p := f.provider(t, tc.opts...)
 			src := &httpsec.StubSource{Name: "provider", Provider: true, Unbound: true}
 
 			opts := append(f.wired(t, p),
@@ -400,10 +445,10 @@ func TestResourceServer_SourceRefusalNotHandedOn(t *testing.T) {
 		{
 			name: "an expired provider token is refused and the signed bearer never judges it",
 			verify: func(context.Context, string) (*identity.Principal, map[string]string, error) {
-				return nil, nil, httpsec.ErrInvalidAccessToken
+				return nil, nil, httpsec.ErrInvalidToken
 			},
 			assert: func(t *testing.T, out rsRoute) {
-				require.ErrorIs(t, out.err, httpsec.ErrInvalidAccessToken)
+				require.ErrorIs(t, out.err, httpsec.ErrInvalidToken)
 				assert.False(t, out.laterRan)
 			},
 		},
@@ -424,7 +469,7 @@ func TestResourceServer_SourceRefusalNotHandedOn(t *testing.T) {
 				return nil, nil, nil
 			},
 			assert: func(t *testing.T, out rsRoute) {
-				require.ErrorIs(t, out.err, httpsec.ErrInvalidAccessToken)
+				require.ErrorIs(t, out.err, httpsec.ErrInvalidToken)
 				assert.False(t, out.laterRan)
 			},
 		},
@@ -458,7 +503,7 @@ func TestResourceServer_Binding(t *testing.T) {
 	cases := []testCase{
 		{
 			name:   "an unbound token is refused by default",
-			assert: func(t *testing.T, out rsRoute) { require.ErrorIs(t, out.err, httpsec.ErrInvalidAccessToken) },
+			assert: func(t *testing.T, out rsRoute) { require.ErrorIs(t, out.err, httpsec.ErrInvalidToken) },
 		},
 		{
 			name:    "an unbound token is accepted by a source that accepts unbound tokens",
@@ -472,7 +517,7 @@ func TestResourceServer_Binding(t *testing.T) {
 			name:    "a confirmation the chain cannot check is refused, never taken for unbound",
 			unbound: true,
 			cnf:     map[string]string{"other": "x"},
-			assert:  func(t *testing.T, out rsRoute) { require.ErrorIs(t, out.err, httpsec.ErrInvalidAccessToken) },
+			assert:  func(t *testing.T, out rsRoute) { require.ErrorIs(t, out.err, httpsec.ErrInvalidToken) },
 		},
 		{
 			name: "a certificate-bound token without its certificate is the certificate-binding refusal",
