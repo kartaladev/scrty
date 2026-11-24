@@ -1311,47 +1311,11 @@ func TestGooseDirect(t *testing.T) {
 	assert.Equal(t, 0, appliedVersionCount(t, db, versionTable))
 }
 
-// providerOutsideSchema describes every table of the set outside the provider's migration,
-// as sorted column and index lines: what the migration must leave as it found it.
-func providerOutsideSchema(t *testing.T, db *sql.DB) []string {
-	t.Helper()
-
-	lines := queryStrings(t, db, `SELECT c.relname || ' col ' || a.attname || ' ' || format_type(a.atttypid, a.atttypmod)
-	        || CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE ' NULL' END
-	        || coalesce(' DEFAULT ' || pg_get_expr(d.adbin, d.adrelid), '')
-	   FROM pg_attribute a
-	   JOIN pg_class c ON c.oid = a.attrelid
-	   JOIN pg_namespace n ON n.oid = c.relnamespace
-	   LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
-	  WHERE n.nspname = current_schema() AND c.relkind = 'r'
-	    AND a.attnum > 0 AND NOT a.attisdropped AND c.relname NOT LIKE 'op\_%'
-	  UNION ALL
-	  SELECT tablename || ' idx ' || indexdef FROM pg_indexes
-	   WHERE schemaname = current_schema() AND tablename NOT LIKE 'op\_%'`)
-	slices.Sort(lines)
-
-	return lines
-}
-
 // sessionRows returns the stored sessions, each as every column's value.
 func sessionRows(t *testing.T, db *sql.DB, table string) []string {
 	t.Helper()
 
 	return queryStrings(t, db, `SELECT to_jsonb(s)::text FROM `+table+` s ORDER BY id`)
-}
-
-// holdSessions stores one plain and one superseded session.
-func holdSessions(t *testing.T, db *sql.DB) {
-	t.Helper()
-
-	_, err := db.ExecContext(t.Context(), `INSERT INTO sessions
-		(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at,
-		 superseded_at, accept_until, retain_until, client_ip, data)
-		VALUES ('0192f000-0000-7000-8000-0000000000c1', '\x01', 'u-1', now(), now(), now(), now(),
-		        NULL, NULL, NULL, '203.0.113.7', '{"k":"v"}'),
-		       ('0192f000-0000-7000-8000-0000000000c2', '\x02', 'u-2', now(), now(), now(), now(),
-		        now(), now(), now(), NULL, '{}')`)
-	require.NoError(t, err)
 }
 
 // orderedShape describes table's columns in their order, then its indexes with the
