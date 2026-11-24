@@ -94,7 +94,7 @@ Lane A:  A1 ──► A1-fix ──► A2 ──► A2-fix ──► A3 ──�
 Lane S:          └─(worktree from A2's merge)──► S1
 Lane B:  B1 ──► B1-fix ──► B2   (own worktree from the start; uses no Lane A symbol)
 Then:    merge S and B ──► C (README) ──► D (integration) ──► 6.2 / 6.3 (main session)
-Review:  /code-review findings ──► R1 (tasks 1.7, 3.9, 3.10, 4.10) ──► 6.3 again (main session)
+Review:  /code-review findings ──► R1 (tasks 1.7, 3.9, 3.10, 4.10) ──► R1-fix (3.9, 1.7 godoc) ──► 6.3 again (main session)
 ```
 
 - Lane S needs A2's `LinkLister` and memory implementation. It runs in a worktree cut after A2 is reviewed clean, beside A3 and A4, because the stores import `authenticate/oidc`, which A3 is editing.
@@ -578,7 +578,7 @@ func newUpstream(token, subject string, endpoint func(context.Context) (string, 
 
   | Case | Expected |
   |---|---|
-  | a consumer type `struct{ *oidc.Broker }` overriding `Broker()` to return `ErrNoLinkedAccount` for subject `s-deny`; login through an unhooked provider as `s-deny` | `ErrNoLinkedAccount`; the override was called once (F54) |
+  | a consumer type embedding the library broker under an alias (`type libraryBroker = oidc.Broker`; a plain `*oidc.Broker` embed cannot also declare `Broker()`) and overriding `Broker()` to return `ErrNoLinkedAccount` for subject `s-deny`; login through an unhooked provider as `s-deny` | `ErrNoLinkedAccount`; the override was called once (F54) |
   | a consumer `UpstreamBroker` whose `AcceptsUpstream` is true for `corp` only; login through `partner` | `Broker` called, `BrokerUpstream` not called |
   | the same broker; login through `corp` | `BrokerUpstream` called with a token-holding `Upstream` |
 
@@ -607,6 +607,26 @@ func newUpstream(token, subject string, endpoint func(context.Context) (string, 
 
   Green: put the guard at the start of `completeProviderSignIn`, before the throttle.
 - [ ] **Step 7.** Run Lane A's scoped commands and Lane B's `httpsec` commands. Report the files changed, the tests added, each red step's failing output, and the final results.
+
+### Dispatch R1-fix: review findings on R1 (task 3.9, and 1.7's godoc)
+
+**Model: Sonnet.** The review states each fix, and the reviewer verified the main one in a scratch copy. **Reviewer: Sonnet.** Runs after R1.
+
+**Files** (owned): `authenticate/oidc/broker_hook.go`, `broker_hook_provision_test.go`, `broker_hook_test.go` (a comment only), `broker.go` and `ports.go` (godoc only), and the `UpstreamBroker` lines of `README.md` and `CHANGELOG.md`.
+
+**Must not touch:** anything else.
+
+- [ ] **Step 1 (3.9, red; F48/D13).** Add this row to `TestBroker_HookProvisions`.
+  - Seed: the identity's own link to `u-new`, and a `partner` link with an empty username to `u-new`.
+  - `u-new` is not created.
+  - The hook resumes by provisioning `u-new`.
+  - Expect `ErrNoLinkedAccount`, `Apply` never called, and both links unchanged.
+
+  Run it focused. It must fail with `got nil`.
+- [ ] **Step 2 (3.9, green).** On a resume (`l != nil`), run `checkFresh` only when the user did not load. Reuse the load result `checkProvisioned` already has rather than loading again. The F56 row and every F52 row stay green. Update the `checkFresh` and `SignInDecision.Provision` godoc to match.
+- [ ] **Step 3 (1.7 godoc, N1).** In `broker.go`, `ports.go` and `broker_hook.go`, and on the README and CHANGELOG lines, replace "embeds *Broker and overrides Broker" with wording that compiles: embed the library broker under another name, through a type alias such as `type libraryBroker = oidc.Broker`, embedded as `*libraryBroker`.
+- [ ] **Step 4 (N2).** Keep `unappliedOption`'s two JIT branches as defence in depth. Above the two JIT sub-option rows in `TestNewBroker_SignInHookWiring`, add a comment saying `checkProvisioning` refuses them first.
+- [ ] **Step 5.** Run Lane A's scoped commands, and report.
 
 ### Main session: 6.2 and 6.3
 

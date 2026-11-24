@@ -60,7 +60,9 @@ See `proposal.md` (Why). The current state that shapes the approach:
 when the broker implements it **and accepts upstream access for the login's provider**, and `Broker`
 otherwise. `UpstreamBroker` also carries `AcceptsUpstream(provider string) bool`. The library's
 `*Broker` accepts only its hooked providers. The scoping exists because a consumer's wrapper that
-embeds `*Broker` and overrides `Broker()` (to audit or refuse more) would otherwise have
+embeds the library broker and overrides `Broker()` (to audit or refuse more; Go needs the embedding
+by pointer under another name, such as a type alias embedded as `*libraryBroker`, since an
+embedded `*Broker` field is itself named `Broker`) would otherwise have
 `BrokerUpstream` promoted from the embedded broker, and the callback would skip the override on
 every provider. With the scoping, an unhooked provider still reaches the wrapper's `Broker()`
 exactly as before (F54). On a hooked provider the promoted `BrokerUpstream` still runs; a wrapper
@@ -355,10 +357,12 @@ For a provisioning decision, D5 runs with these differences:
   disabled or mismatched user is `ErrNoLinkedAccount`, as in D5.
 - **Recovery:** on a later sign-in the hook receives the link's user as `linked`. Deciding to
   provision it again re-runs `Apply`, because a user named by the identity's own link may be absent.
-  The freshness check, before and after the insert, applies only to a first provisioning: once the
-  identity's own link names the reference, the identity owns it, and another provider's link to the
-  same user (an adoption after it was created) does not refuse the resume (F56). The conflict check
-  and the one-link rule still apply.
+  The freshness check, before and after the insert, runs on a first provisioning, and on a resume
+  only while the user does not load yet. A missing user cannot have been adopted (adoption requires
+  the user to load), so another link naming it is a leftover of a provisioning race and refuses the
+  resume, keeping "two identities never share one pending user" (F48). Once the user exists, another
+  provider's link to it is an adoption after it was created and does not refuse the resume (F56).
+  The conflict check and the one-link rule still apply.
 
 Link-first is the safe order. Two concurrent first sign-ins of one identity pick two fresh
 references. Only one link insert wins, and the loser is refused before its `Apply`, so no orphan
@@ -402,7 +406,7 @@ Alternatives rejected:
 | F44 | Undoing a duplicate link would remove more than that link | Handled, tested | `DeleteLink` removes only the row with this link's ID and external identity; the user's other links stay (D11) |
 | F13 | `Apply` fails after the link is inserted | Accepted | Broker failure; the link stays and is correct; the next sign-in re-applies |
 | F14 | Hook plus JIT, mirroring or role sync on one provider, or plus a per-provider option the hooked path never applies (name, password or role claim, role mapping, allowed roles, JIT sub-options) | Handled, tested | Construction error (D6) |
-| F54 | A consumer wrapper embeds `*Broker` and overrides `Broker()`; a login through an unhooked provider | Handled, tested | The wrapper's `Broker()` runs, as before this change (D1) |
+| F54 | A consumer wrapper embeds the library broker (through an alias or an interface) and overrides `Broker()`; a login through an unhooked provider | Handled, tested | The wrapper's `Broker()` runs, as before this change (D1) |
 | F55 | The same wrapper; a login through a hooked provider | Accepted | The promoted `BrokerUpstream` runs and the wrapper's `Broker()` override does not; the godoc tells a wrapper to override `BrokerUpstream` too, and the hook is where a hooked sign-in is refused (D1) |
 | F15 | Hooked provider brokered without upstream access | Handled, tested | `ErrUpstreamRequired`; hook not called |
 | F16 | A second identity of the same issuer decided for an already linked user | Handled, tested | `ErrNoLinkedAccount` before `Apply` (D11) |
@@ -432,7 +436,8 @@ Alternatives rejected:
 | F35 | Two first sign-ins of one identity provision different references | Handled, tested | One link; the loser is refused before its `Apply`, so no orphan user |
 | F52 | A provisioning decision names an absent reference that another identity's link already names, before or concurrently with this sign-in | Handled, tested | `ErrNoLinkedAccount`, nothing written, when the store lists links. Without a lister (allow-many over a consumer store) the check cannot run: accepted, and the consumer's reference generator must give fresh values |
 | F53 | Another writer creates the provisioning reference between the check and `Apply` | Accepted | The broker cannot tell it from a resume. `Apply` on a first sign-in must create only, failing when the user exists, and references must be fresh values no other writer produces (the godoc says so); then the sign-in fails as a broker failure and the link stays for an operator |
-| F56 | A provisioned user is later adopted through another provider, then the original identity's hook resumes provisioning it | Handled, tested | The resume resolves: the freshness check does not run when the identity's own link names the reference (D13) |
+| F56 | A provisioned user is later adopted through another provider, then the original identity's hook resumes provisioning it | Handled, tested | The resume resolves: once the user exists, the freshness check does not run when the identity's own link names the reference. While the user is still missing it does, so a leftover race link from another identity refuses the resume (D13) |
+| F58 | Two identities provisioned one reference (a reference generator that is not fresh, F53), the loser's undo failed (F48), and the winner's `Apply` then created the user | Accepted | The loser's leftover link names an existing user, so its resume is indistinguishable from a provisioned user adopted later (F56) and resolves to that user. It needs both a broken fresh-reference contract and a failed undo, which logs ERROR; the operator removes the leftover link |
 | F36 | A provisioned link records an empty username | Accepted | The link's username is for operators only and never a lookup key (D13) |
 
 ## Follow-ups

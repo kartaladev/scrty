@@ -34,8 +34,8 @@ Each task's verification names the test or command that shows it is done.
 
   Every row also asserts, by log capture, that neither the token nor the body appears in a log record or an error (F3–F6).
 - [x] 1.6 Write godoc for every symbol added in 1.1–1.5, each naming its default and override. **Verify:** `go doc`, and an `ExampleUpstream_UserInfo` that runs.
-- [ ] 1.7 Scope the upstream dispatch by provider (D1): `UpstreamBroker` gains `AcceptsUpstream(provider string) bool`, `Callback` calls `BrokerUpstream` only when it returns true, and the library's `*Broker` accepts only its hooked providers. **Verify:** tests show:
-  - a consumer wrapper that embeds `*Broker` and overrides `Broker()` to refuse an identity has its refusal applied on an unhooked provider (F54);
+- [x] 1.7 Scope the upstream dispatch by provider (D1): `UpstreamBroker` gains `AcceptsUpstream(provider string) bool`, `Callback` calls `BrokerUpstream` only when it returns true, and the library's `*Broker` accepts only its hooked providers. **Verify:** tests show:
+  - a consumer wrapper that embeds the library broker (through an alias) and overrides `Broker()` to refuse an identity has its refusal applied on an unhooked provider (F54);
   - a consumer `UpstreamBroker` accepting `corp` only is called identity-only through `partner`;
   - a hooked provider still receives the upstream access.
 
@@ -90,8 +90,8 @@ Each task's verification names the test or command that shows it is done.
   - a barrier test under `-race` races two first sign-ins provisioning `u-a` and `u-b`: one link, the loser refused, and the loser's `Apply` never called (F35);
   - provisioning a reference that another identity's link already names (another provider included) is refused, with nothing written (F52);
   - a barrier test where two identities of different providers provision the same reference at once ends with at most one link, and no refused sign-in runs `Apply` (F52).
-- [ ] 3.9 Skip the freshness check on a provisioning resume (D13). **Verify:** a test provisions `u-new` through provider A, adopts `u-new` through provider B's hook (allow-many off, so the one-link rule is per provider), then signs in again through A with a provisioning decision for `u-new`: the login resolves to `u-new` and `Apply` runs (F56). The existing F52 rows (a first provisioning of a reference another identity's link names) still refuse.
-- [ ] 3.10 Refuse, at construction, every per-provider option the hooked path never applies (D6): `WithBrokerNameClaim`, `WithBrokerPasswordClaim`, `WithBrokerRoleClaim`, `WithBrokerRoleMapping`, `WithBrokerAllowedRoles`, `WithBrokerJITAllowUnverifiedEmail` and `WithBrokerJITEmailDomains`. **Verify:** one row per option in the 3.1 construction table, each failing with `ErrConfig` naming the provider; each option on a different, unhooked provider is still accepted (F14).
+- [x] 3.9 Skip the freshness check on a provisioning resume (D13). **Verify:** a test provisions `u-new` through provider A, adopts `u-new` through provider B's hook (allow-many off, so the one-link rule is per provider), then signs in again through A with a provisioning decision for `u-new`: the login resolves to `u-new` and `Apply` runs (F56). The existing F52 rows (a first provisioning of a reference another identity's link names) still refuse. A resume of a user that is still missing, while another provider's link also names it, is refused as `ErrNoLinkedAccount` with `Apply` never called (F48, D13).
+- [x] 3.10 Refuse, at construction, every per-provider option the hooked path never applies (D6): `WithBrokerNameClaim`, `WithBrokerPasswordClaim`, `WithBrokerRoleClaim`, `WithBrokerRoleMapping`, `WithBrokerAllowedRoles`, `WithBrokerJITAllowUnverifiedEmail` and `WithBrokerJITEmailDomains`. **Verify:** one row per option in the 3.1 construction table, each failing with `ErrConfig` naming the provider; each option on a different, unhooked provider is still accepted (F14).
 - [x] 3.7 Write godoc and an example for the hook. The godoc covers:
   - decide-then-apply and its ordering;
   - the meaning of the `linked` argument;
@@ -153,7 +153,7 @@ Each task's verification names the test or command that shows it is done.
 
   In each, the session is ended where one was stored, and no code reaches the client.
 - [x] 4.8 Check events and refusal reporting (D10). **Verify:** a test shows a completed sign-in emits the same events in the same order as a redemption, and a hook refusal at a completion-enabled callback emits `AuthnLoginFail`.
-- [ ] 4.10 Apply the resume endpoint's transport guard at the start of completion (D7, step 2). **Verify:** a chain test shows a qualifying callback over plain HTTP, with plain HTTP not allowed, answers the unknown-handle refusal with no pending-request lookup, no session stored, nothing resumed and no browser-session cookie (F57); with plain HTTP allowed, the same callback completes.
+- [x] 4.10 Apply the resume endpoint's transport guard at the start of completion (D7, step 2). **Verify:** a chain test shows a qualifying callback over plain HTTP, with plain HTTP not allowed, answers the unknown-handle refusal with no pending-request lookup, no session stored, nothing resumed and no browser-session cookie (F57); with plain HTTP allowed, the same callback completes.
 - [x] 4.9 Write godoc for `LoginURL`, `OIDCDeps.Users` and `WithOIDCProviderCompletion`, covering the default, the trusted login URL, the fallback, the exclusions and the one-SSO-login-per-browser limit (F29). **Verify:** `go doc`.
 
 ## 5. Documentation (`README.md`)
