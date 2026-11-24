@@ -79,6 +79,24 @@ func TestKind(t *testing.T) {
 			},
 		},
 		{
+			name: "access token reports no channel and is not exempt",
+			kind: factor.AccessToken,
+			assert: func(t *testing.T, channel factor.Channel, exempt bool) {
+				assert.Empty(t, channel, "a provider token rests on its grant's sign-in, not one channel")
+				assert.False(t, exempt)
+				assert.Equal(t, factor.Kind("access-token"), factor.AccessToken)
+			},
+		},
+		{
+			name: "external access token is federated and not exempt",
+			kind: factor.ExternalAccessToken,
+			assert: func(t *testing.T, channel factor.Channel, exempt bool) {
+				assert.Equal(t, factor.Federated, channel)
+				assert.False(t, exempt, "an external token meets an MFA requirement by federated assurance")
+				assert.Equal(t, factor.Kind("external-access-token"), factor.ExternalAccessToken)
+			},
+		},
+		{
 			name: "the empty kind fails closed",
 			kind: factor.Kind(""),
 			assert: func(t *testing.T, channel factor.Channel, exempt bool) {
