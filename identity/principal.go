@@ -129,7 +129,7 @@ type Principal struct {
 	ActiveRole   *AssignedRole
 	Organization *Organization
 	Kind         Kind
-	Scopes       []string // granted scopes; service principals only
+	Scopes       []string // granted scopes: a service principal's, or an access token's on a user principal
 }
 
 // IsService reports whether p is a machine caller rather than a human user.

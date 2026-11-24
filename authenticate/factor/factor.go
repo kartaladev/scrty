@@ -41,6 +41,20 @@ const (
 	// user-verified passkey login also met the second factor is recorded by the
 	// library as a separate proof, never inferred from the kind.
 	Passkey Kind = "passkey"
+
+	// AccessToken is the kind of a caller that presented an access token the
+	// library's own provider issued. The token rests on the sign-in that
+	// produced its grant, not on one channel of its own, so it reports no
+	// channel, and it is not exempt from MFA: whether the grant's sign-in met a
+	// second factor is judged from what the library recorded, never from this
+	// kind.
+	AccessToken Kind = "access-token"
+
+	// ExternalAccessToken is the kind of a caller that presented an access
+	// token another issuer minted. It travels on the Federated channel, and it
+	// is not exempt from MFA: it meets a requirement only by the federated
+	// assurance rules, as an OIDC login does.
+	ExternalAccessToken Kind = "external-access-token"
 )
 
 // Channel is the medium a factor travels over.
@@ -77,7 +91,7 @@ func (k Kind) Channel() Channel {
 		return Knowledge
 	case MagicLink:
 		return Email
-	case OIDC:
+	case OIDC, ExternalAccessToken:
 		return Federated
 	case APIKey:
 		return Machine
@@ -92,7 +106,8 @@ func (k Kind) Channel() Channel {
 // second-factor requirement.
 //
 // Only APIKey is exempt: a machine caller has no one to prompt. Every other
-// kind is enforced, including OIDC, Recovery, Passkey, the empty kind and kinds
+// kind is enforced, including OIDC, Recovery, Passkey, AccessToken,
+// ExternalAccessToken, the empty kind and kinds
 // the library does not name.
 //
 // OIDC is not exempt by its kind. A login on the Federated channel meets a

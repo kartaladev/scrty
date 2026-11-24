@@ -2,6 +2,7 @@ package authorize_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -536,4 +537,209 @@ func TestAllOf(t *testing.T) {
 			tc.assert(t, tc.req(t)(ctx))
 		})
 	}
+}
+
+func TestMissingScopesError(t *testing.T) {
+	t.Parallel()
+
+	// clerk is a user principal acting as clerk and holding the given scopes.
+	clerk := func(scopes ...string) func(*testing.T, context.Context) context.Context {
+		return func(_ *testing.T, ctx context.Context) context.Context {
+			role := &identity.AssignedRole{ID: "r-1", Name: "clerk", Primary: true}
+
+			return identity.WithPrincipal(ctx, &identity.Principal{
+				ID:         "u-1",
+				Roles:      []*identity.AssignedRole{role},
+				ActiveRole: role,
+				Scopes:     scopes,
+			})
+		}
+	}
+
+	// found asserts the refusal is a denial that is not the anonymous one, and
+	// that errors.As finds a MissingScopesError reporting scopes and all.
+	found := func(scopes []string, all bool) func(*testing.T, error) {
+		return func(t *testing.T, err error) {
+			t.Helper()
+
+			require.ErrorIs(t, err, authorize.ErrAccessDenied)
+			require.ErrorIs(t, err, authorize.ErrNotGranted)
+			assert.NotErrorIs(t, err, authorize.ErrAuthenticationRequired)
+
+			var missing *authorize.MissingScopesError
+			require.ErrorAs(t, err, &missing, "the refusal does not carry the scopes it needed")
+			assert.Equal(t, scopes, missing.Scopes)
+			assert.Equal(t, all, missing.All)
+		}
+	}
+
+	notScopes := func(t *testing.T, err error) {
+		t.Helper()
+
+		var missing *authorize.MissingScopesError
+		assert.NotErrorAs(t, err, &missing)
+	}
+
+	type testCase struct {
+		name   string
+		req    authorize.Requirement
+		ctx    func(t *testing.T, ctx context.Context) context.Context // nil means an anonymous caller
+		assert func(t *testing.T, err error)
+	}
+
+	cases := []testCase{
+		{
+			name:   "any of reports the scope and any",
+			req:    authorize.HasAnyScope("orders:write"),
+			ctx:    clerk("orders:read"),
+			assert: found([]string{"orders:write"}, false),
+		},
+		{
+			name:   "all of reports both scopes and all",
+			req:    authorize.HasAllScopes("orders:read", "orders:export"),
+			ctx:    clerk("orders:read"),
+			assert: found([]string{"orders:read", "orders:export"}, true),
+		},
+		{
+			name: "no caller stays the anonymous refusal and reports no scopes",
+			req:  authorize.HasAnyScope("orders:write"),
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, authorize.ErrAuthenticationRequired)
+				assert.NotErrorIs(t, err, authorize.ErrAccessDenied)
+				notScopes(t, err)
+			},
+		},
+		{
+			name: "no caller for all of stays the anonymous refusal",
+			req:  authorize.HasAllScopes("orders:write"),
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, authorize.ErrAuthenticationRequired)
+				notScopes(t, err)
+			},
+		},
+		{
+			name: "inside an all-of composite",
+			req: authorize.AllOf(
+				authorize.HasAnyRole("clerk"),
+				authorize.HasAnyScope("orders:write"),
+			),
+			ctx:    clerk("orders:read"),
+			assert: found([]string{"orders:write"}, false),
+		},
+		{
+			name: "inside an any-of composite",
+			req: authorize.AnyOf(
+				authorize.HasAnyRole("admin"),
+				authorize.HasAnyScope("orders:write"),
+			),
+			ctx:    clerk("orders:read"),
+			assert: found([]string{"orders:write"}, false),
+		},
+		{
+			name: "an any-of composite reports the first scope refusal",
+			req: authorize.AnyOf(
+				authorize.HasAnyScope("orders:write"),
+				authorize.HasAllScopes("orders:read", "orders:export"),
+			),
+			ctx:    clerk("orders:read"),
+			assert: found([]string{"orders:write"}, false),
+		},
+		{
+			name:   "naming no scopes still refuses, reporting none",
+			req:    authorize.HasAnyScope(),
+			ctx:    clerk("orders:read"),
+			assert: found([]string(nil), false),
+		},
+		{
+			name: "all of no scopes still refuses",
+			req:  authorize.HasAllScopes(),
+			ctx:  clerk("orders:read"),
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, authorize.ErrAccessDenied)
+				require.ErrorIs(t, err, authorize.ErrNotGranted)
+			},
+		},
+		{
+			// A caller holding no scopes at all is a known caller who lacks
+			// them, not an anonymous one.
+			name:   "a caller holding no scopes is refused with the scopes named",
+			req:    authorize.HasAnyScope("orders:write"),
+			ctx:    clerk(),
+			assert: found([]string{"orders:write"}, false),
+		},
+		{
+			// An any-of whose members are all anonymous stays the anonymous
+			// refusal, and wrapping must not turn it into a denial.
+			name: "an any-of of anonymous members stays anonymous",
+			req:  authorize.AnyOf(authorize.HasAnyScope("a"), authorize.HasAnyScope("b")),
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, authorize.ErrAuthenticationRequired)
+				assert.NotErrorIs(t, err, authorize.ErrAccessDenied)
+				notScopes(t, err)
+			},
+		},
+		{
+			// A member that wants authentication must not leak that demand
+			// through the denial the other member produced.
+			name: "an any-of mixing anonymous and scope refusals is a denial only",
+			req: authorize.AnyOf(
+				func(context.Context) error { return authorize.ErrAuthenticationRequired },
+				authorize.HasAnyScope("orders:write"),
+			),
+			ctx:    clerk("orders:read"),
+			assert: found([]string{"orders:write"}, false),
+		},
+		{
+			// An outage inside a member stays dropped, as AnyOf documents; the
+			// refusal beneath it must not make the outage match.
+			name: "an outage in an any-of member is not carried into the refusal",
+			req: authorize.AnyOf(
+				func(context.Context) error { return errOutage },
+				authorize.HasAnyScope("orders:write"),
+			),
+			ctx: clerk("orders:read"),
+			assert: func(t *testing.T, err error) {
+				found([]string{"orders:write"}, false)(t, err)
+				assert.NotErrorIs(t, err, errOutage)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(t, ctx)
+			}
+
+			tc.assert(t, tc.req(ctx))
+		})
+	}
+}
+
+var errOutage = errors.New("role store unreachable")
+
+func TestMissingScopesError_OwnsItsScopes(t *testing.T) {
+	t.Parallel()
+
+	named := []string{"orders:write"}
+	req := authorize.HasAnyScope(named...)
+
+	named[0] = "mutated"
+
+	err := req(withScopes(t.Context(), "orders:read"))
+
+	var missing *authorize.MissingScopesError
+	require.ErrorAs(t, err, &missing)
+	assert.Equal(t, []string{"orders:write"}, missing.Scopes,
+		"the refusal reads the caller's slice after the requirement was built")
+
+	missing.Scopes[0] = "changed"
+
+	again := req(withScopes(t.Context(), "orders:read"))
+	require.ErrorAs(t, again, &missing)
+	assert.Equal(t, []string{"orders:write"}, missing.Scopes,
+		"one refusal's scopes are shared with the next")
 }

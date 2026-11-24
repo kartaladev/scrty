@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/porterr"
@@ -60,6 +61,47 @@ func Authenticated() Requirement {
 	}
 }
 
+// MissingScopesError is the refusal of HasAnyScope and HasAllScopes: the caller
+// is known and does not hold what the requirement names.
+//
+// It matches ErrAccessDenied and ErrNotGranted, so everything that reads a
+// scope refusal as a denial keeps doing so. It adds what a denial alone cannot
+// say, the scopes the requirement named and whether all of them or any one was
+// needed, so a caller can be told which scopes to ask for. Find it with
+// errors.As: a composite requirement keeps it beneath its own error.
+//
+// A refusal for a caller who has not been identified is not this error; it
+// stays ErrAuthenticationRequired.
+type MissingScopesError struct {
+	// Scopes are the scopes the requirement named, in the order it named them.
+	// The slice is the error's own copy.
+	Scopes []string
+
+	// All reports that every one of Scopes was needed; false means any one of
+	// them would have sufficed.
+	All bool
+}
+
+// Error describes the refusal, naming the scopes and the mode.
+func (e *MissingScopesError) Error() string {
+	mode := "any of"
+	if e.All {
+		mode = "all of"
+	}
+
+	if len(e.Scopes) == 0 {
+		return fmt.Sprintf("%s: %s: the requirement names no scopes", ErrAccessDenied, ErrNotGranted)
+	}
+
+	return fmt.Sprintf("%s: %s: the caller does not hold %s the scopes %v",
+		ErrAccessDenied, ErrNotGranted, mode, e.Scopes)
+}
+
+// Is reports a match for ErrAccessDenied and ErrNotGranted.
+func (e *MissingScopesError) Is(target error) bool {
+	return target == ErrAccessDenied || target == ErrNotGranted
+}
+
 // HasAnyRole requires that the caller's active role be one of roles.
 //
 // Only the active role counts, which is the same rule the privilege authorizer
@@ -104,6 +146,8 @@ func HasAnyRole(roles ...string) Requirement {
 // requirement someone meant to fill in, and allowing it would turn that typo
 // into an open operation.
 func HasAnyScope(scopes ...string) Requirement {
+	scopes = slices.Clone(scopes)
+
 	return func(ctx context.Context) error {
 		subject, err := subjectOf(ctx)
 		if err != nil {
@@ -116,7 +160,7 @@ func HasAnyScope(scopes ...string) Requirement {
 			}
 		}
 
-		return fmt.Errorf("%w: %w: the caller holds none of the scopes %v", ErrAccessDenied, ErrNotGranted, scopes)
+		return &MissingScopesError{Scopes: slices.Clone(scopes)}
 	}
 }
 
@@ -126,6 +170,8 @@ func HasAnyScope(scopes ...string) Requirement {
 // reading that "every one of nothing is held" is exactly the one that would
 // open the operation, so it is refused rather than taken.
 func HasAllScopes(scopes ...string) Requirement {
+	scopes = slices.Clone(scopes)
+
 	return func(ctx context.Context) error {
 		subject, err := subjectOf(ctx)
 		if err != nil {
@@ -133,13 +179,12 @@ func HasAllScopes(scopes ...string) Requirement {
 		}
 
 		if len(scopes) == 0 {
-			return fmt.Errorf("%w: %w: a requirement for all of no scopes names nothing to check",
-				ErrAccessDenied, ErrNotGranted)
+			return &MissingScopesError{All: true}
 		}
 
 		for _, scope := range scopes {
 			if !slices.Contains(subject.Scopes, scope) {
-				return fmt.Errorf("%w: %w: the caller does not hold scope %q", ErrAccessDenied, ErrNotGranted, scope)
+				return &MissingScopesError{Scopes: slices.Clone(scopes), All: true}
 			}
 		}
 
@@ -167,6 +212,13 @@ func HasAllScopes(scopes ...string) Requirement {
 // use AllOf or a single requirement, which return the failing member's error
 // unchanged.
 //
+// The refusal keeps the members' denials beneath its own, so errors.As finds
+// the first member's MissingScopesError, or any other typed denial, through it.
+// Only denials are kept: a member's demand to authenticate or its outage is
+// not, so neither can be matched through a refusal that is a plain denial. A
+// member's denial is kept whole: one whose error also joins its own outage
+// carries that outage with it, because the error is the member's to shape.
+//
 // Naming no members denies: none of nothing is satisfiable. An absent member is
 // treated as one that cannot be satisfied rather than skipped, so a set that
 // was meant to hold a check and holds a nil does not quietly become one check
@@ -174,6 +226,8 @@ func HasAllScopes(scopes ...string) Requirement {
 func AnyOf(requirements ...Requirement) Requirement {
 	return func(ctx context.Context) error {
 		allAnonymous := len(requirements) > 0
+
+		var denials memberDenials
 
 		for _, required := range requirements {
 			if required == nil {
@@ -192,6 +246,10 @@ func AnyOf(requirements ...Requirement) Requirement {
 
 			if !errors.Is(err, ErrAuthenticationRequired) {
 				allAnonymous = false
+
+				if errors.Is(err, ErrAccessDenied) {
+					denials = append(denials, err)
+				}
 			}
 		}
 
@@ -200,10 +258,31 @@ func AnyOf(requirements ...Requirement) Requirement {
 				ErrAuthenticationRequired)
 		}
 
-		return fmt.Errorf("%w: %w: the caller meets none of the %d alternatives",
-			ErrAccessDenied, ErrNotGranted, len(requirements))
+		if len(denials) == 0 {
+			return fmt.Errorf("%w: %w: the caller meets none of the %d alternatives",
+				ErrAccessDenied, ErrNotGranted, len(requirements))
+		}
+
+		return fmt.Errorf("%w: %w: the caller meets none of the %d alternatives: %w",
+			ErrAccessDenied, ErrNotGranted, len(requirements), denials)
 	}
 }
+
+// memberDenials are the denials AnyOf's members gave, in member order. It
+// exists so a composite refusal can hold several beneath it while errors.As
+// still reaches the first typed one.
+type memberDenials []error
+
+func (d memberDenials) Error() string {
+	reasons := make([]string, len(d))
+	for i, err := range d {
+		reasons[i] = err.Error()
+	}
+
+	return strings.Join(reasons, "; ")
+}
+
+func (d memberDenials) Unwrap() []error { return d }
 
 // AllOf requires that every one of requirements be met, such as privileges on
 // two resources one operation touches.
