@@ -172,6 +172,7 @@ func (m *memorySweep) due() (time.Time, bool) {
 // cloneSignIn returns a sign-in sharing nothing with s.
 func cloneSignIn(s SignIn) SignIn {
 	s.AMR = slices.Clone(s.AMR)
+	s.ExternalAMR = slices.Clone(s.ExternalAMR)
 
 	return s
 }
@@ -567,6 +568,7 @@ func cloneGrant(g *Grant) Grant {
 	out.Scopes = slices.Clone(g.Scopes)
 	out.Resources = slices.Clone(g.Resources)
 	out.AMR = slices.Clone(g.AMR)
+	out.ExternalAMR = slices.Clone(g.ExternalAMR)
 
 	return out
 }

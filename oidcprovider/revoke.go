@@ -207,8 +207,9 @@ func isRefusal(err error) bool {
 // expired or revoked one, a JWT of a revoked grant included, answers exactly {"active": false}, so
 // the answer does not say which it was.
 //
-// An active answer holds active, scope, client_id, sub, exp, iat, iss, aud and token_type, and cnf
-// when the token is bound. token_type is DPoP for a token bound to a proof's key, Bearer for any other
+// An active answer holds active, scope, client_id, sub, exp, iat, iss, aud and token_type, cnf
+// when the token is bound, and for an access token the auth_time, acr and amr of the sign-in
+// behind its grant, as far as the grant records them. token_type is DPoP for a token bound to a proof's key, Bearer for any other
 // access token, and refresh_token for a refresh token, whose aud is the issuer, the only party it is
 // presented to, and whose exp is the first of its grant's end, its own deadlines and the client's idle timeout and
 // absolute lifetime as they stand.
@@ -271,6 +272,17 @@ func describeAccessToken(at *AccessToken) map[string]any {
 	}
 	if len(at.Confirmation) > 0 {
 		answer["cnf"] = at.Confirmation
+	}
+	// The sign-in's members, as far as the grant records them. The second-factor marker and
+	// the federated evidence are the library's own, and are not published.
+	if !at.AuthTime.IsZero() {
+		answer["auth_time"] = at.AuthTime.Unix()
+	}
+	if at.ACR != "" {
+		answer["acr"] = at.ACR
+	}
+	if len(at.AMR) > 0 {
+		answer["amr"] = slices.Clone(at.AMR)
 	}
 
 	return answer

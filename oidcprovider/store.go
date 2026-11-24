@@ -66,6 +66,22 @@ type SignIn struct {
 	// ExternalIssuer and ExternalSessionID name the upstream sign-in of a federated
 	// one, as the session recorded them. Both are empty for a local sign-in.
 	ExternalIssuer, ExternalSessionID string
+
+	// SecondFactorVerified reports that the library itself verified a second factor in
+	// this sign-in. It is set from the library's own record of the session, never from
+	// AMR, which a consumer's sign-in assurance mapping or an upstream provider states: a
+	// grant's amr saying mfa is no proof that a second factor was verified. The zero
+	// value, false, is the fail-closed reading.
+	SecondFactorVerified bool
+	// ExternalProvider, ExternalAMR and ExternalACR are the federated evidence of a
+	// federated sign-in, with ExternalIssuer: the provider's configured name and the amr
+	// and acr its verified ID token asserted, as the session recorded them. All are empty
+	// for a local sign-in. Whoever judges assurance re-matches them against its own rules.
+	ExternalProvider string
+	// ExternalAMR is the amr the upstream provider asserted.
+	ExternalAMR []string
+	// ExternalACR is the acr the upstream provider asserted.
+	ExternalACR string
 }
 
 // PendingRequest is an authorization or end-session request parked while the
@@ -339,6 +355,16 @@ type Grant struct {
 	SignInFamily id.ID
 	// ExternalIssuer and ExternalSessionID name a federated sign-in's upstream, unchanged.
 	ExternalIssuer, ExternalSessionID string
+	// SecondFactorVerified, ExternalProvider, ExternalAMR and ExternalACR are the
+	// sign-in's, copied by every exchange and kept by every refresh (see SignIn). Unlike
+	// AMR, they come only from the library's own record of the session.
+	SecondFactorVerified bool
+	// ExternalProvider names the identity provider of a federated sign-in.
+	ExternalProvider string
+	// ExternalAMR is the amr the upstream provider asserted.
+	ExternalAMR []string
+	// ExternalACR is the acr the upstream provider asserted.
+	ExternalACR string
 	// Offline reports that the grant holds offline_access, and so outlives its sign-in.
 	Offline bool
 	// EndsWithSignIn ties the grant to its sign-in even when Offline is true.
