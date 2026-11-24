@@ -194,6 +194,11 @@ func TestParkedFailureToClient(t *testing.T) {
 			assert: answered(oidcprovider.CodeAccessDenied),
 		},
 		{
+			name:   "the sign-in hook's Apply fails",
+			setup:  completionSetup{broker: hookBroker(applyDownHook)},
+			assert: answered(oidcprovider.CodeServerError),
+		},
+		{
 			// A device request has no client redirect URI to answer at: it returns to the
 			// login page, stays parked, and records no failed end.
 			name: "a device request returns to the login page",
@@ -369,6 +374,9 @@ func TestParkedFailure_EventsAndLogs(t *testing.T) {
 		// flow the flow its record names.
 		fails      int
 		code, flow string
+		// serverError is set when the answer is server_error: exactly one ERROR record
+		// then names the reason and the cause's type. Otherwise there is none.
+		serverError bool
 	}
 
 	cases := []testCase{
@@ -381,6 +389,13 @@ func TestParkedFailure_EventsAndLogs(t *testing.T) {
 			setup: func(parkedPath) completionSetup { return completionSetup{} },
 			arm:   func(f *completionFlow) { f.idp.tokenDown.Store(true) },
 			fails: 0, code: oidcprovider.CodeTemporarilyUnavailable, flow: "oidc.callback",
+		},
+		{
+			name: "an Apply failure returned to the login page", path: "callback",
+			setup: func(parkedPath) completionSetup {
+				return completionSetup{broker: hookBroker(applyDownHook)}
+			},
+			fails: 0, code: oidcprovider.CodeServerError, flow: "oidc.callback", serverError: true,
 		},
 		{
 			name: "a refusal answered at the client", path: "callback",
@@ -469,7 +484,27 @@ func TestParkedFailure_EventsAndLogs(t *testing.T) {
 				assert.NotContains(t, coded[0].Message, "callback", "the start's own message")
 			}
 
+			var errs []slog.Record
+
+			for _, r := range logs.records() {
+				if r.Level >= slog.LevelError {
+					errs = append(errs, r)
+				}
+			}
+
+			if tc.serverError {
+				require.Len(t, errs, 1, "exactly one ERROR record")
+				reason, _ := attrValue(errs[0], "reason")
+				assert.Equal(t, "server-error", reason.String())
+				typ, ok := attrValue(errs[0], "error_type")
+				require.True(t, ok, "the error's type is named")
+				assert.NotEmpty(t, typ.String())
+			} else {
+				assert.Empty(t, errs, "no ERROR record")
+			}
+
 			written := out.String()
+			assert.NotContains(t, written, "apply down", "never the error's text")
 			for _, s := range secrets {
 				require.NotEmpty(t, s)
 				assert.NotContains(t, written, s, "no record holds a secret or the target")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -117,7 +118,8 @@ func TestParkedFailureCode(t *testing.T) {
 			assert: none,
 		},
 		{name: "the re-authentication refusal", code: callback(ErrOIDCReauthenticate), assert: none},
-		{name: "an unclassifiable broker error", code: callback(errBroker), assert: none},
+		{name: "a bare unknown provider", code: callback(oidc.ErrUnknownProvider), assert: none},
+		{name: "an unclassifiable broker error", code: callback(errBroker), assert: serverError},
 
 		// At the login start, only discovery is listed.
 		{name: "start: discovery down", code: start(fmt.Errorf("%w: 404", oidc.ErrDiscoveryFailed)), assert: unavailable},
@@ -172,4 +174,25 @@ func TestParkedFailureCode(t *testing.T) {
 			tc.assert(t, code, ok)
 		})
 	}
+}
+
+// TestParkedDestination_EmptyNextKeepsPlainError pins that a failure the default
+// answers server_error still returns plain when the manager reported no destination:
+// a consumer's manager that fails before spending, without marking the flow unspent,
+// returns an empty CallbackResult, and parkedDestination refuses it.
+func TestParkedDestination_EmptyNextKeepsPlainError(t *testing.T) {
+	t.Parallel()
+
+	loginURL, err := url.Parse("https://op.example/login")
+	assert.NoError(t, err)
+
+	i := &oidcInterceptor{completion: true, loginURL: loginURL}
+
+	code, ok := parkedFailureCode(readCallbackFailure(t.Context(), errors.New("x")))
+	assert.True(t, ok, "the failure itself has a code")
+	assert.Equal(t, oidcprovider.CodeServerError, code)
+
+	handle, parked := i.parkedDestination(oidc.CallbackResult{}.Next)
+	assert.False(t, parked, "an empty destination is not a parked login")
+	assert.Empty(t, handle)
 }
