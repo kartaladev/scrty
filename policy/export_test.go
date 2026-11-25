@@ -32,3 +32,7 @@ var MintFederatedForTest = assurance.NewFederated
 // FederatedMetForTest exposes the one rule both MFA policies decide federated
 // assurance by, so its refusals to ask the source can be pinned directly.
 var FederatedMetForTest = federatedMet
+
+// MintAccessTokenAssuranceForTest mints access-token assurance, which only a
+// resource server does.
+var MintAccessTokenAssuranceForTest = assurance.NewAccessToken

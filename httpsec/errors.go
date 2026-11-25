@@ -190,6 +190,19 @@ var (
 	// bearer refuses stays the plain authentication failure. Its text names no
 	// token, issuer or reason.
 	ErrInvalidToken = fmt.Errorf("httpsec: invalid access token: %w", authenticate.ErrAuthenticationFailed)
+
+	// ErrInsufficientUserAuthentication refuses an access-token caller whose
+	// sign-in is not strong enough for the request: the MFA requirement policy
+	// denied it because the token's grant records no second factor the
+	// library verified and no federated evidence the policy's assurance source
+	// meets (or an external token's evidence is not met). It matches
+	// ErrReauthenticationRequired, so existing handling keeps matching it, and
+	// maps to 401, ahead of that sentinel's 403, with a challenge naming
+	// error="insufficient_user_authentication" (RFC 9470), so the client
+	// obtains a token from a stronger sign-in. Nothing is marked on any
+	// session. Its text names no token, user or reason.
+	ErrInsufficientUserAuthentication = fmt.Errorf("httpsec: insufficient user authentication: %w",
+		ErrReauthenticationRequired)
 )
 
 // ReauthenticationRequiredError is the recency guard's refusal. It carries the
@@ -317,6 +330,11 @@ var statusTable = []statusRow{
 	// failure, so the row below would answer it alike; it has its own row
 	// because it is a stable contract of its own.
 	{ErrInvalidToken, http.StatusUnauthorized},
+	// An access-token caller whose sign-in is too weak. It wraps
+	// ErrReauthenticationRequired, whose row (403) below means a session
+	// caller, so it is judged here first.
+	{ErrInsufficientUserAuthentication, http.StatusUnauthorized},
+	{policy.ErrInsufficientUserAuthentication, http.StatusUnauthorized},
 	{authenticate.ErrAuthenticationFailed, http.StatusUnauthorized},
 	{policy.ErrSessionIdle, http.StatusUnauthorized},
 

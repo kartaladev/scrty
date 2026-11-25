@@ -97,6 +97,10 @@ var selectors = map[string]selector{
 		passkey.ErrRegistrationThrottled,
 	}},
 	"invalid-token": {targets: []error{httpsec.ErrInvalidToken}},
+	"insufficient-user-authentication": {targets: []error{
+		httpsec.ErrInsufficientUserAuthentication,
+		policy.ErrInsufficientUserAuthentication,
+	}},
 	"proof-of-possession-failed": {targets: []error{
 		httpsec.ErrDPoPNonceRequired,
 		httpsec.ErrInvalidDPoPProof,

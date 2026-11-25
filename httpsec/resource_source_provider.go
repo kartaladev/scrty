@@ -9,9 +9,8 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/internal/hangup"
-	"github.com/kartaladev/scrty/internal/porterr"
+	"github.com/kartaladev/scrty/internal/assurance"
+	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/oidcprovider"
 )
 
@@ -29,14 +28,6 @@ type sourceWiring interface {
 // optionFromProvider names FromProvider in configuration errors and as a source.
 const optionFromProvider = "FromProvider"
 
-// The fixed texts a provider source answers a failure that is not a refusal with. A hang-up has
-// texts of its own, so an error handler that logs by text does not report a client that left as
-// an outage.
-const (
-	textTokenUserNotLoaded = "httpsec: the access token's user could not be loaded"            //nolint:gosec // G101: error text, not a credential
-	textTokenUserLoadEnded = "httpsec: the request ended while the access token's user loaded" //nolint:gosec // G101: error text, not a credential
-)
-
 // FromProvider trusts the access tokens the chain's own provider issues, JWT and opaque alike.
 // op must be the provider given to EnableOIDCProvider on the same chain.
 //
@@ -46,7 +37,8 @@ const (
 // audience is only the issuer is meant for UserInfo, and is refused.
 //
 // Default: the caller is the local user the token's subject names, loaded on every request
-// through the provider's own user loader (oidcprovider.Provider.UserLoader), so a role removed
+// through the provider's own user loader (oidcprovider.Provider.UserLoader; WithLocalUsers replaces
+// it), so a role removed
 // after the token was issued is not held. A user who is missing, inactive, or loaded as another
 // user is refused as an invalid token; a loader that fails is a dependency failure, answered 500,
 // never a refusal. The caller carries the token's scopes.
@@ -111,7 +103,11 @@ func (s *providerSource) checkWiring(c *config) error {
 		return newConfigError("%s (%s) was given a nil provider to %s", optionResourceServer, s.rs.id, optionFromProvider)
 	}
 
-	if err := s.cfg.refuseOptions(s.rs.id, optionFromProvider); err != nil {
+	if err := s.cfg.refuseOptions(s.rs.id, optionFromProvider, optionLocalUsers); err != nil {
+		return err
+	}
+
+	if err := s.cfg.strategy.checkStrategy(s.rs.id, optionFromProvider, false); err != nil {
 		return err
 	}
 
@@ -121,8 +117,12 @@ func (s *providerSource) checkWiring(c *config) error {
 			optionResourceServer, s.rs.id, optionFromProvider)
 	}
 
-	s.users = s.op.UserLoader()
+	s.users = s.cfg.strategy.localUsers
 	if s.users == nil {
+		s.users = s.op.UserLoader()
+	}
+
+	if nilcheck.IsNil(s.users) {
 		return newConfigError("%s (%s): the provider given to %s has no user loader", optionResourceServer,
 			s.rs.id, optionFromProvider)
 	}
@@ -151,7 +151,7 @@ func (s *providerSource) verify(ctx context.Context, raw string) (*verifiedToken
 		return nil, ErrInvalidToken
 	}
 
-	principal, err := s.localUser(ctx, at.Subject)
+	principal, err := loadLocalUser(ctx, s.users, at.Subject, s.now())
 	if err != nil {
 		return nil, err
 	}
@@ -162,6 +162,10 @@ func (s *providerSource) verify(ctx context.Context, raw string) (*verifiedToken
 		principal:    principal,
 		confirmation: at.Confirmation,
 		kind:         factor.AccessToken,
+
+		secondFactor: at.SecondFactorVerified,
+		evidence:     assurance.NewFederated(at.ExternalProvider, at.ExternalIssuer, at.ExternalAMR, at.ExternalACR),
+
 		token: &AccessToken{
 			Issuer:       at.Issuer,
 			Subject:      string(at.Subject),
@@ -176,35 +180,6 @@ func (s *providerSource) verify(ctx context.Context, raw string) (*verifiedToken
 			Confirmation: maps.Clone(at.Confirmation),
 		},
 	}, nil
-}
-
-// localUser loads the user subject names. A user who is missing, inactive or loaded as another is
-// ErrInvalidToken.
-func (s *providerSource) localUser(ctx context.Context, subject identity.UserID) (*identity.Principal, error) {
-	if subject == "" {
-		return nil, ErrInvalidToken
-	}
-
-	details, err := s.users.LoadByUserID(ctx, subject)
-	// The loader is the consumer's, and so is its error: one whose chain cannot be walked becomes
-	// a fault that matches neither ErrUserNotFound nor the request's cancellation.
-	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
-
-	switch {
-	case errors.Is(err, identity.ErrUserNotFound):
-		return nil, ErrInvalidToken
-	case hangup.ByCaller(ctx, err):
-		return nil, diag.Wrap(err, textTokenUserLoadEnded, ctx.Err())
-	case err != nil:
-		return nil, diag.Wrap(err, textTokenUserNotLoaded)
-	case details == nil || details.ID != subject || !details.Active:
-		return nil, ErrInvalidToken
-	}
-
-	principal := identity.PrincipalFromDetailsAt(details, s.now())
-	principal.Kind = identity.KindUser
-
-	return principal, nil
 }
 
 // audienceNamed says audience names the resource server's identifier or one of its aliases, by

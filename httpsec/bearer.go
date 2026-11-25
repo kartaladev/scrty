@@ -864,6 +864,10 @@ type accessTokenRefusal struct {
 const (
 	codeInvalidToken   = "invalid_token"
 	codeInvalidRequest = "invalid_request"
+
+	// codeInsufficientUserAuthentication answers an access-token caller whose sign-in is not
+	// strong enough (RFC 9470 section 3).
+	codeInsufficientUserAuthentication = "insufficient_user_authentication"
 )
 
 // Error is fixed text naming only the challenge's code: the cause may carry a

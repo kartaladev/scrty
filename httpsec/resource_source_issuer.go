@@ -16,7 +16,6 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jws"
 
 	"github.com/kartaladev/scrty/authenticate/factor"
-	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/introspect"
@@ -87,6 +86,18 @@ type sourceConfig struct {
 	untypedGiven               bool
 
 	introspection *IntrospectionConfig
+
+	// strategy is the caller strategy (resource_strategy.go).
+	strategy strategyConfig
+
+	// The introspection source's own settings (resource_source_introspect.go).
+	introspectSecret  string
+	introspectKey     *IntrospectionKey
+	cacheMaxAge       time.Duration
+	cacheMaxEntries   int
+	cacheGiven        bool
+	opaquePrefix      string
+	opaquePrefixGiven bool
 }
 
 // newSourceConfig applies opts, skipping nil ones.
@@ -339,6 +350,10 @@ func (s *issuerSource) checkWiring(c *config) error {
 		return err
 	}
 
+	if err := checkNotOwnIssuer(c, s.rs.id, optionFromIssuer, s.iss); err != nil {
+		return err
+	}
+
 	s.now = c.clock.Now
 
 	keyOpts := []keyset.Option{keyset.WithIssuer(s.iss), keyset.WithClock(c.clock)}
@@ -360,7 +375,12 @@ func (s *issuerSource) checkWiring(c *config) error {
 			cfg.Key = &introspect.Key{Signer: ic.Key.Signer, Algorithm: ic.Key.Algorithm, KeyID: ic.Key.KeyID}
 		}
 
-		client, err := introspect.New(cfg, s.cfg.fetcher)
+		fetcher, err := s.cfg.outboundClient()
+		if err != nil {
+			return err
+		}
+
+		client, err := introspect.New(cfg, fetcher)
 		if err != nil {
 			return fmt.Errorf("%w: %s (%s): %s was given %s it cannot use: %w", ErrConfig,
 				optionResourceServer, s.rs.id, s.name(), optionJWTIntrospection, err)
@@ -375,6 +395,16 @@ func (s *issuerSource) checkWiring(c *config) error {
 // checkOptions refuses the source's issuer and options when they are a mistake, and settles its
 // algorithms.
 func (s *issuerSource) checkOptions() error {
+	if err := s.cfg.refuseOptions(s.rs.id, s.name(), optionSourceAudience, optionJWKSURL, optionOutboundClient,
+		optionAlgorithms, optionClockSkew, optionUnboundTokens, optionUntypedTokens, optionJWTIntrospection,
+		optionClaimsOnly, optionClaimsMapper, optionLocalUsers, optionLinkedUsers); err != nil {
+		return err
+	}
+
+	if err := s.cfg.strategy.checkStrategy(s.rs.id, s.name(), true); err != nil {
+		return err
+	}
+
 	if err := checkSourceIssuer(s.iss); err != nil {
 		return newConfigError("%s (%s) was given the issuer %q to %s, which %s", optionResourceServer, s.rs.id,
 			s.iss, optionFromIssuer, err)
@@ -465,6 +495,11 @@ func (s *issuerSource) verify(ctx context.Context, raw string) (*verifiedToken, 
 		return nil, diag.Wrap(err, textIssuerKeysUnavailable)
 	}
 
+	// A key that names its own algorithm is used with that algorithm alone (RFC 8725 section 3.1).
+	if named, found := key.Algorithm(); found && named.String() != alg.String() {
+		return nil, ErrInvalidToken
+	}
+
 	payload, err := jws.Verify([]byte(raw), jws.WithKey(alg, key))
 	if err != nil {
 		return nil, ErrInvalidToken
@@ -484,18 +519,17 @@ func (s *issuerSource) verify(ctx context.Context, raw string) (*verifiedToken, 
 		return nil, err
 	}
 
-	principal := &identity.Principal{
-		ID:     identity.UserID(s.iss + "#" + tok.Subject),
-		Kind:   identity.KindUser,
-		Scopes: slices.Clone(tok.Scopes),
-	}
-
-	return &verifiedToken{
-		principal:    principal,
+	vt := &verifiedToken{
 		confirmation: tok.Confirmation,
 		kind:         factor.ExternalAccessToken,
 		token:        tok,
-	}, nil
+	}
+
+	if err := s.cfg.strategy.resolveExternal(ctx, s.iss, tok, s.now(), vt); err != nil {
+		return nil, err
+	}
+
+	return vt, nil
 }
 
 // readHeader reads raw's protected header: an algorithm among the source's, the key id (empty when
@@ -691,7 +725,7 @@ func (s *issuerSource) introspect(ctx context.Context, raw string) error {
 	}
 }
 
-// numericDate reads a JSON NumericDate, whole or fractional seconds.
+// numericDate reads a JSON NumericDate, whole or fractional seconds. A negative one is refused.
 func numericDate(v any) (time.Time, bool) {
 	n, ok := v.(json.Number)
 	if !ok {
@@ -699,6 +733,10 @@ func numericDate(v any) (time.Time, bool) {
 	}
 
 	if i, err := n.Int64(); err == nil {
+		if i < 0 {
+			return time.Time{}, false
+		}
+
 		return time.Unix(i, 0), true
 	}
 
@@ -788,4 +826,19 @@ func confirmationOf(claims map[string]any) (map[string]string, bool) {
 	}
 
 	return out, len(out) > 0
+}
+
+// outboundClient is the source's outbound client: WithOutboundClient's, or else outbound.New() with
+// its defaults.
+func (cfg *sourceConfig) outboundClient() (*outbound.Client, error) {
+	if cfg.fetcher != nil {
+		return cfg.fetcher, nil
+	}
+
+	client, err := outbound.New()
+	if err != nil {
+		return nil, fmt.Errorf("%w: the default outbound client could not be built: %w", ErrConfig, err)
+	}
+
+	return client, nil
 }

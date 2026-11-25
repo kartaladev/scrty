@@ -3,6 +3,7 @@ package httpsec
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/url"
 	"slices"
 	"strings"
@@ -12,8 +13,10 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/assurance"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/token"
 )
 
@@ -70,6 +73,15 @@ type verifiedToken struct {
 	// provider's own tokens, factor.ExternalAccessToken for every other source's.
 	kind factor.Kind
 
+	// external says the principal is not a local user. Its zero value means a local user, so a
+	// source that records nothing is judged by the MFA requirement (it fails closed). secondFactor
+	// is the provider grant's library-recorded marker; evidence is the federated evidence the
+	// caller is judged by, from the grant or from the external token. All three feed
+	// policy.Input's assurance.
+	external     bool
+	secondFactor bool
+	evidence     assurance.Federated
+
 	// token is what the token states, published for the request's handlers. Its scopes are the
 	// caller's, whatever the principal carries.
 	token *AccessToken
@@ -89,6 +101,11 @@ type resourceServer struct {
 	// prefixGiven records that WithPathPrefix was given, so one given no prefix is refused rather
 	// than read as covering every path.
 	prefixGiven bool
+
+	// limiter counts the resource server's verification refusals (WithRefusalLimiter), and is nil
+	// for the chain factory's; limiterGiven records that the option was given.
+	limiter      ratelimit.Limiter
+	limiterGiven bool
 }
 
 // EnableResourceServer accepts OAuth access tokens for the API identified by resourceID, at
@@ -192,6 +209,10 @@ func (rs *resourceServer) check(c *config) error {
 	}
 
 	rs.prefixes = distinctPrefixes(rs.prefixes)
+
+	if err := rs.checkLimiter(); err != nil {
+		return err
+	}
 
 	return rs.checkSources(c)
 }
@@ -390,6 +411,11 @@ type resourceServers struct {
 	// authentication: both handed over at assembly.
 	engine *policy.Engine
 	now    func() time.Time
+
+	// guards count each source's verification refusals per client address, built once the chain
+	// exists (resource_throttle.go); log is the chain's logger.
+	guards map[source]sourceGuard
+	log    *slog.Logger
 }
 
 // resourceServersOf returns the chain's resource-server interceptor, registering it at
@@ -410,6 +436,9 @@ func resourceServersOf(c *config) *resourceServers {
 	s := &resourceServers{bound: minTokenBound}
 	c.register(s, OrderResourceServer)
 	c.bindingVerifiers = append(c.bindingVerifiers, optionResourceServer)
+
+	// The refusal guards need the chain's keyer, which exists only once the chain is built.
+	c.checkAfterWiring(func() error { return s.buildGuards(c) })
 
 	// EnableDPoP and EnableOIDCProvider may come after this option.
 	c.wire(func(*Chain) {
@@ -515,13 +544,28 @@ func (s *resourceServers) dpopRequired() bool { return s.dpop != nil && s.dpop.c
 func (s *resourceServers) admit(ex *Exchange, rs *resourceServer, src source, raw string, underDPoP bool) error {
 	ctx := ex.Context()
 
-	vt, err := src.verify(ctx, raw)
+	// A throttled address is refused before anything is fetched or called for its token.
+	rsrc, err := s.admitSource(ctx, src, ex.Request.ClientIP())
 	switch {
 	case errors.Is(err, ErrInvalidToken):
 		return s.refuse(err, underDPoP, src)
 	case err != nil:
 		return err
+	}
+
+	// Only a verification refusal is counted: binding, nonce and assurance answers below, and
+	// dependency failures, are not.
+	vt, err := src.verify(ctx, raw)
+	switch {
+	case errors.Is(err, ErrInvalidToken):
+		s.countRefusal(ctx, src, rsrc)
+
+		return s.refuse(err, underDPoP, src)
+	case err != nil:
+		return err
 	case vt == nil || vt.principal == nil:
+		s.countRefusal(ctx, src, rsrc)
+
 		return s.refuse(ErrInvalidToken, underDPoP, src)
 	}
 
@@ -543,13 +587,13 @@ func (s *resourceServers) admit(ex *Exchange, rs *resourceServer, src source, ra
 		return s.refuse(err, underDPoP, src)
 	}
 
-	return s.publish(ex, rs, vt)
+	return s.publish(ex, rs, vt, underDPoP, src)
 }
 
 // publish runs the per-request policy phase for vt's caller and, when it allows, publishes the
 // caller and the token on ex. The caller's scopes are the token's, whatever the source's principal
 // carried, so no caller strategy can widen them.
-func (s *resourceServers) publish(ex *Exchange, rs *resourceServer, vt *verifiedToken) error {
+func (s *resourceServers) publish(ex *Exchange, rs *resourceServer, vt *verifiedToken, underDPoP bool, src source) error {
 	ctx := ex.Context()
 	now := s.now()
 
@@ -569,15 +613,16 @@ func (s *resourceServers) publish(ex *Exchange, rs *resourceServer, vt *verified
 	p := *vt.principal
 	p.Scopes = slices.Clone(tok.Scopes)
 
-	in := &policy.Input{Principal: &p, Username: p.Username, FirstFactor: kind, Now: now}
-	if kind == factor.AccessToken {
-		in.User = p.ID // only the provider's own tokens name a local user here
-	}
+	in := accessTokenInput(&p, kind, vt, now)
 
 	d := evaluatePhase(ctx, s.engine, policy.PerRequest, in)
 
 	switch d.Outcome {
 	case policy.Deny:
+		if errors.Is(d.Reason, policy.ErrInsufficientUserAuthentication) {
+			return s.refuseInsufficient(underDPoP, src)
+		}
+
 		return policyDenyReason(d)
 	case policy.Challenge:
 		// There is no session to mark: the caller cannot answer a challenge on this request.
@@ -689,4 +734,15 @@ func checkSessionTokenType(c *config, option, field string, g token.Generator) e
 
 		return nil
 	})
+}
+
+// checkNotOwnIssuer refuses a remote source (option names it) whose issuer is the chain's own
+// provider's: only FromProvider may trust the provider's tokens, as it reads the grant they name.
+func checkNotOwnIssuer(c *config, rsID, option, iss string) error {
+	if c.oidcProvider == nil || c.oidcProvider.provider == nil || c.oidcProvider.provider.Issuer() != iss {
+		return nil
+	}
+
+	return newConfigError("%s (%s): %s names the chain provider's own issuer %q; only FromProvider may trust "+
+		"the provider's own tokens", optionResourceServer, rsID, option, iss)
 }

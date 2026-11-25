@@ -651,6 +651,24 @@ func TestResourceServer_FromIssuer(t *testing.T) {
 			assert: invalidToken,
 		},
 		{
+			name: "a token signed RS256 under a key that names RS512 as its algorithm is refused",
+			setup: riSetup{keys: []riKey{func() riKey {
+				k := newRIKey(t, "rsa", jwa.RS256())
+				require.NoError(t, k.pub.Set(jwk.AlgorithmKey, jwa.RS512()))
+
+				return k
+			}()}},
+			act: func(t *testing.T, w *riWorld) riCall {
+				return w.call(t, w.token(t, w.issuers[0], w.issuers[0].keys[0], nil), nil)
+			},
+			assert: invalidToken,
+		},
+		{
+			name:   "a token whose iat is a negative integer is refused",
+			act:    simple(func(tok *riToken) { tok.claims["iat"] = -5 }),
+			assert: invalidToken,
+		},
+		{
 			name: "a token carrying the key that signed it in a jwk header is refused",
 			act: func(t *testing.T, w *riWorld) riCall {
 				stranger := newRIKey(t, "stranger", jwa.ES256())
@@ -978,6 +996,13 @@ func TestResourceServer_FromIssuerConstruction(t *testing.T) {
 				Endpoint: "http://sso.example/introspect", ClientID: "api", Secret: "s",
 			})),
 			assert: refused("WithJWTIntrospection"),
+		},
+		{
+			name: "an https introspection endpoint through the default outbound client",
+			build: issuer(iss, httpsec.WithJWTIntrospection(httpsec.IntrospectionConfig{
+				Endpoint: "https://sso.example/introspect", ClientID: "api", Secret: "s",
+			})),
+			assert: built,
 		},
 		{
 			name: "unbound tokens on a chain that requires DPoP",

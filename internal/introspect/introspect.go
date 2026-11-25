@@ -140,6 +140,10 @@ type Result struct {
 // token (access_token, Bearer, DPoP), its audience names resource, its subject
 // is not empty, and it carries an exp later than now. A refresh token an
 // authorization server reports active is refused here.
+//
+// It does not verify sender binding: a token whose Confirmation names a key or a
+// certificate is reported acceptable without any proof of possession, so the
+// caller checks the request's proof against Confirmation before accepting it.
 func (r *Result) Accepts(resource string, now time.Time) bool {
 	if r == nil || !r.Active || resource == "" || r.Subject == "" || r.ExpiresAt.IsZero() || !now.Before(r.ExpiresAt) {
 		return false

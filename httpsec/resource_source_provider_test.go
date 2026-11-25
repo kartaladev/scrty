@@ -62,6 +62,12 @@ type psSetup struct {
 
 	// provider adds options to the provider.
 	provider []oidcprovider.Option
+
+	// chain adds options to the chain, ahead of the provider and the resource server.
+	chain []httpsec.Option
+
+	// buildErr, when set, receives the chain's construction error, and the world is not built.
+	buildErr *error
 }
 
 func newPSWorld(t *testing.T, setup psSetup) *psWorld {
@@ -146,9 +152,16 @@ func newPSWorld(t *testing.T, setup psSetup) *psWorld {
 		opts = append(opts, httpsec.EnableSecurityEvents(setup.events.sink))
 	}
 
+	opts = append(opts, setup.chain...)
 	opts = append(opts, httpsec.EnableOIDCProvider(p), rs)
 
 	chain, err := httpsec.New(opts...)
+	if setup.buildErr != nil {
+		*setup.buildErr = err
+
+		return w
+	}
+
 	require.NoError(t, err)
 
 	w.tokenEndpoint = &tokenEndpoint{p: p, chain: chain, clk: clk, consents: consents, outage: &atomic.Bool{}}
@@ -540,6 +553,27 @@ func TestResourceServer_FromProviderConstruction(t *testing.T) {
 					httpsec.EnableResourceServer("urn:orders", httpsec.FromProvider(p), httpsec.FromProvider(p)))
 			},
 			assert: refused(opIssuer),
+		},
+		{
+			name: "the chain's own issuer as a remote issuer",
+			build: func(t *testing.T) []httpsec.Option {
+				p := f.provider(t)
+
+				return append(f.wired(t, p), httpsec.EnableCertificateBinding(), httpsec.EnableOIDCProvider(p),
+					httpsec.EnableResourceServer("urn:orders", httpsec.FromIssuer(p.Issuer())))
+			},
+			assert: refused("FromIssuer", "FromProvider", "own issuer"),
+		},
+		{
+			name: "the chain's own issuer as an introspection source",
+			build: func(t *testing.T) []httpsec.Option {
+				p := f.provider(t)
+
+				return append(f.wired(t, p), httpsec.EnableCertificateBinding(), httpsec.EnableOIDCProvider(p),
+					httpsec.EnableResourceServer("urn:orders", httpsec.FromIntrospection(p.Issuer(),
+						p.Issuer()+"/introspect", "orders-api", httpsec.WithIntrospectionSecret("s"), httpsec.WithOpaquePrefix("op."))))
+			},
+			assert: refused("FromIntrospection", "FromProvider", "own issuer"),
 		},
 		{
 			name: "a nil source option is skipped",
