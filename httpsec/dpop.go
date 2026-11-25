@@ -327,6 +327,10 @@ func checkIssuingGenerator(c *config, option, field string, g token.Generator) e
 		return err
 	}
 
+	if err := checkSessionTokenType(c, option, field, g); err != nil {
+		return err
+	}
+
 	return checkSubjectGenerator(c, option, field, g)
 }
 

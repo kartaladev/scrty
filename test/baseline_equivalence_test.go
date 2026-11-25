@@ -2,10 +2,12 @@ package test
 
 import (
 	"database/sql"
+	"io/fs"
 	"os"
 	"slices"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
@@ -208,12 +210,28 @@ func TestBaselineMatchesV050Chain(t *testing.T) {
 			).DB
 			baseline := RunTestPostgres(t,
 				WithTestPostgresImage(tc.image),
-				WithTestPostgresMigrations(tc.set.FS(), tc.set.Dir, tc.set.VersionTable),
+				WithTestPostgresMigrations(baselineOnly(t, tc.set), tc.set.Dir, tc.set.VersionTable),
 			).DB
 
 			tc.assert(t, catalogOf(t, chain), catalogOf(t, baseline))
 		})
 	}
+}
+
+// baselineOnly is set's files with only its first migration, the baseline, under
+// set.Dir. A migration added after the baseline changes the schema on purpose, and is
+// no part of what the v0.5.0 chain is compared with.
+func baselineOnly(t *testing.T, set migrate.Set) fs.FS {
+	t.Helper()
+
+	names, err := fs.Glob(set.FS(), set.Dir+"/*.sql")
+	require.NoError(t, err)
+	require.NotEmpty(t, names, "the set has no migration")
+	slices.Sort(names)
+	data, err := fs.ReadFile(set.FS(), names[0])
+	require.NoError(t, err)
+
+	return fstest.MapFS{names[0]: &fstest.MapFile{Data: data}}
 }
 
 // TestBaselineRefusesV050Chain pins that a database already at the end of the

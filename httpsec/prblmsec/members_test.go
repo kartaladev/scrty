@@ -25,7 +25,8 @@ import (
 
 // allowedMembers are the only extension members a problem may carry.
 var allowedMembers = map[string]bool{
-	"challenge": true, "methods": true, "max_age": true, "rule": true, "access_token": true, "token_type": true,
+	"challenge": true, "methods": true, "max_age": true, "rule": true, "scope": true, "access_token": true,
+	"token_type": true,
 }
 
 // standardMembers are RFC 9457's own members.
@@ -162,6 +163,25 @@ func TestMapper_Members(t *testing.T) {
 				assert.Equal(t, map[string]any{"max_age": json.Number("1")}, ofType(t, err, prob, "reauthentication-required"))
 			},
 		},
+		{
+			name: "max_age of a stale access token",
+			err:  fmt.Errorf("guard: %w", &httpsec.InsufficientUserAuthenticationError{Window: 5 * time.Minute}),
+			assert: func(t *testing.T, err error, prob *prblm.Problem) {
+				t.Helper()
+				assert.Equal(t, map[string]any{"max_age": json.Number("300")}, ofType(t, err, prob, "insufficient-user-authentication"))
+			},
+		},
+		{name: "insufficient user authentication with no window", err: httpsec.ErrInsufficientUserAuthentication, assert: noMembers("insufficient-user-authentication")},
+		{
+			name: "scope of an access-token caller missing scopes",
+			err: errors.Join(httpsec.ErrInsufficientScope,
+				fmt.Errorf("rule: %w", &authorize.MissingScopesError{Scopes: []string{"orders:read", "orders:export"}, All: true})),
+			assert: func(t *testing.T, err error, prob *prblm.Problem) {
+				t.Helper()
+				assert.Equal(t, map[string]any{"scope": "orders:read orders:export"}, ofType(t, err, prob, "insufficient-scope"))
+			},
+		},
+		{name: "insufficient scope naming no scope", err: httpsec.ErrInsufficientScope, assert: noMembers("insufficient-scope")},
 		{name: "zero window", err: &httpsec.ReauthenticationRequiredError{}, assert: noMembers("reauthentication-required")},
 		{name: "negative window", err: &httpsec.ReauthenticationRequiredError{Window: -time.Second}, assert: noMembers("reauthentication-required")},
 		{name: "reauthentication sentinel", err: httpsec.ErrReauthenticationRequired, assert: noMembers("reauthentication-required")},

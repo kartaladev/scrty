@@ -121,8 +121,9 @@ func WithMFAEnrolmentPath(opts ...EnrolmentPathOption) MFARequirementOption {
 //
 // # Kinds that can never be listed
 //
-// factor.APIKey and factor.Basic authenticate statelessly and have no session
-// to confine, so listing either fails construction, wrapping ErrConfig. So does
+// factor.APIKey, factor.Basic, factor.AccessToken and
+// factor.ExternalAccessToken authenticate statelessly and have no session to
+// confine, so listing any of them fails construction, wrapping ErrConfig. So does
 // an empty list: the path would admit nothing, yet the policy would still
 // declare the enrolment challenge and demand its interceptor.
 func WithEnrolmentFirstFactors(kinds ...factor.Kind) EnrolmentPathOption {
@@ -217,7 +218,7 @@ func (e *enrolmentPath) validate() error {
 			"entered", ErrConfig)
 	}
 
-	for _, k := range []factor.Kind{factor.APIKey, factor.Basic} {
+	for _, k := range []factor.Kind{factor.APIKey, factor.Basic, factor.AccessToken, factor.ExternalAccessToken} {
 		if e.firstFactors[k] {
 			return fmt.Errorf("%w: the enrolment path cannot admit the %q first factor: it "+
 				"authenticates statelessly and has no session to confine", ErrConfig, k)

@@ -2,10 +2,12 @@ package prblmsec
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/kartaladev/prblm"
 
+	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/authenticate/password"
@@ -25,12 +27,13 @@ const (
 	memberMethods     = "methods"
 	memberMaxAge      = "max_age"
 	memberRule        = "rule"
+	memberScope       = "scope"
 	memberAccessToken = "access_token"
 	memberTokenType   = "token_type"
 )
 
 var memberNames = []string{
-	memberChallenge, memberMethods, memberMaxAge, memberRule, memberAccessToken, memberTokenType,
+	memberChallenge, memberMethods, memberMaxAge, memberRule, memberScope, memberAccessToken, memberTokenType,
 }
 
 // Sub-types the mapper sets members on.
@@ -39,6 +42,8 @@ const (
 	subReauthRequired    = "reauthentication-required"
 	subPasswordRejected  = "password-rejected"
 	subChallengeRequired = "challenge-required"
+	subInsufficientAuth  = "insufficient-user-authentication"
+	subInsufficientScope = "insufficient-scope"
 )
 
 // method is one entry of the methods member. Its json tags name the members in
@@ -95,6 +100,12 @@ var selectors = map[string]selector{
 		mfa.ErrEnrolmentThrottled,
 		passkey.ErrRegistrationThrottled,
 	}},
+	"invalid-token":      {targets: []error{httpsec.ErrInvalidToken}},
+	subInsufficientScope: {targets: []error{httpsec.ErrInsufficientScope}},
+	subInsufficientAuth: {targets: []error{
+		httpsec.ErrInsufficientUserAuthentication,
+		policy.ErrInsufficientUserAuthentication,
+	}},
 	"proof-of-possession-failed": {targets: []error{
 		httpsec.ErrDPoPNonceRequired,
 		httpsec.ErrInvalidDPoPProof,
@@ -115,6 +126,10 @@ var selectors = map[string]selector{
 		httpsec.ErrCrossSiteStream,
 	}},
 	"automation-challenge-required": {targets: []error{httpsec.ErrChallengeRequired}},
+	// Only the disclosed refusal reaches it: a concealed one is joined to
+	// authenticate.ErrAuthenticationFailed, which the core answers 401, and
+	// types are chosen only among their status's.
+	"account-inactive": {targets: []error{authenticate.ErrAccountInactive}},
 	"account-locked": {targets: []error{
 		lockout.ErrAccountLocked,
 		lockout.ErrAccountHeld,
@@ -207,7 +222,7 @@ func checkMembers() error {
 // mapper ahead of it that also matches one of scrty's refusals answers that
 // refusal instead.
 //
-// The only extension members are challenge, methods, max_age, rule,
+// The only extension members are challenge, methods, max_age, rule, scope,
 // access_token and token_type. The challenge member names the kind of a
 // challenge by a fixed vocabulary (mfa, password-change, mfa-enrolment,
 // account-recovery); a challenge of any other kind, a consumer's own included,
@@ -218,6 +233,14 @@ func checkMembers() error {
 // given, and then also carries the response header Cache-Control: no-store.
 // prblm's hooks (OnError, AddErrorHook) receive that problem, access_token
 // included, so a hook that logs extensions logs the token.
+//
+// An insufficient-scope problem's scope member carries every scope the first
+// refusing scope requirement names, as given and space-separated, JSON-encoded
+// as any string member is. The WWW-Authenticate header the chain sets for the
+// same refusal is stricter: it omits its scope parameter when any scope lies
+// outside the RFC 6750 scope-token charset, since a quoted string cannot carry
+// it unchanged. The two can differ for such a scope, and the body is the
+// complete one.
 //
 // A chain the core's walk gives up on (a cycle, a fan-out past its budget, a
 // link whose Unwrap, Is or As method panics) is not recognised, so the mapper
@@ -330,6 +353,22 @@ func (p *Problems) specificProblem(c candidate, chain errwalk.Chain, err error) 
 		}
 		if found && r.Window > 0 {
 			set(prob, memberMaxAge, int64(r.Window/time.Second))
+		}
+	case subInsufficientAuth:
+		r, found, abort := errwalk.As[*httpsec.InsufficientUserAuthenticationError](chain)
+		if abort != nil {
+			return nil //nolint:nilerr // see above
+		}
+		if found && r.Window > 0 {
+			set(prob, memberMaxAge, int64(r.Window/time.Second))
+		}
+	case subInsufficientScope:
+		r, found, abort := errwalk.As[*authorize.MissingScopesError](chain)
+		if abort != nil {
+			return nil //nolint:nilerr // see above
+		}
+		if found && len(r.Scopes) > 0 {
+			set(prob, memberScope, strings.Join(r.Scopes, " "))
 		}
 	case subPasswordRejected:
 		rule, abort := ruleOf(chain)

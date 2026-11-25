@@ -119,7 +119,7 @@ func TestRecency_Judge(t *testing.T) {
 				ctx = tc.ctx(ctx)
 			}
 
-			r, reason := guardauth.NewRecency(guardsWindow, clockwork.NewFakeClockAt(now), tc.authTime)
+			r, reason := guardauth.NewRecency(guardsWindow, clockwork.NewFakeClockAt(now), tc.authTime, testRefusals(noAccessToken))
 			require.Empty(t, reason)
 			require.NotNil(t, r)
 
@@ -178,6 +178,24 @@ func TestNewRecency(t *testing.T) {
 			assert:   refused("WithRecentAuthenticationWindow needs a window above zero, got -1s"),
 		},
 		{
+			name:     "a window under one second is refused",
+			window:   999 * time.Millisecond,
+			clk:      clockwork.NewFakeClockAt(now),
+			authTime: source,
+			assert: refused("WithRecentAuthenticationWindow needs a window of at least one second, got 999ms: " +
+				"max_age is whole seconds (RFC 9470)"),
+		},
+		{
+			name:     "a window of exactly one second builds a judge",
+			window:   time.Second,
+			clk:      clockwork.NewFakeClockAt(now),
+			authTime: source,
+			assert: func(t *testing.T, r *guardauth.Recency, reason string) {
+				assert.Empty(t, reason)
+				assert.NotNil(t, r)
+			},
+		},
+		{
 			name:     "a nil clock is refused",
 			window:   time.Minute,
 			clk:      nil,
@@ -212,7 +230,7 @@ func TestNewRecency(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			r, reason := guardauth.NewRecency(tc.window, tc.clk, tc.authTime)
+			r, reason := guardauth.NewRecency(tc.window, tc.clk, tc.authTime, testRefusals(noAccessToken))
 			tc.assert(t, r, reason)
 		})
 	}

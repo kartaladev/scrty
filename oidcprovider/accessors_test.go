@@ -241,3 +241,42 @@ func TestProvider_Capabilities_FreshCopies(t *testing.T) {
 		assert.NotContains(t, list, "changed")
 	}
 }
+
+func TestProvider_MaxAccessTokenSize(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		opts   []oidcprovider.Option
+		assert func(t *testing.T, size int)
+	}
+
+	cases := []testCase{
+		{
+			name: "the default request bounds give twice the scope and ten resources, and 8 KiB more",
+			assert: func(t *testing.T, size int) {
+				assert.Equal(t, 2*(4096+10*2048)+8<<10, size)
+			},
+		},
+		{
+			name: "raised request bounds raise the bound with them",
+			opts: []oidcprovider.Option{oidcprovider.WithRequestBounds(oidcprovider.RequestBounds{
+				Scope: 16 << 10, Resource: 4 << 10,
+			})},
+			assert: func(t *testing.T, size int) {
+				assert.Equal(t, 2*(16<<10+10*4<<10)+8<<10, size)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			p, err := oidcprovider.New(validDeps(t), tc.opts...)
+			require.NoError(t, err)
+
+			tc.assert(t, p.MaxAccessTokenSize())
+		})
+	}
+}

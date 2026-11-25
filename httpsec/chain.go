@@ -859,6 +859,14 @@ const (
 	// OrderBasicAuth is HTTP Basic authentication.
 	OrderBasicAuth Order = 400
 
+	// OrderResourceServer is the resource server: access tokens for the
+	// chain's APIs (EnableResourceServer). It is after the provider's own
+	// endpoints, which answer their own tokens, and before the session-token
+	// bearer, so a recognised access token is claimed first. A consumer
+	// interceptor meant to see access tokens before the resource server
+	// registers before this slot.
+	OrderResourceServer Order = 425
+
 	// OrderAPIKey is reserved for API key authentication.
 	OrderAPIKey Order = 450
 
@@ -974,6 +982,11 @@ func After(order Order) Order { return order + 1 }
 // authenticate.WithAuthentication alone announces the event without the caller,
 // and every guard behind the interceptor then refuses a caller it had just
 // authenticated.
+//
+// One meant to see OAuth access tokens before the resource server judges
+// them (EnableResourceServer) registers before OrderResourceServer: a token
+// the resource server recognises is accepted or refused there, and never
+// handed on.
 //
 // One that authenticates on a session, publishing it with
 // Exchange.PublishSession, belongs at OrderBearerToken, no later, so the

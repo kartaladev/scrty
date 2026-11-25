@@ -41,6 +41,7 @@ func TestSecurityEvents_Names(t *testing.T) {
 			assert: func(t *testing.T, names []string) {
 				for _, want := range []string{
 					"scrty_recovery_started", "scrty_recovery_completed", "scrty_recovery_refused",
+					"scrty_access_token_refused",
 				} {
 					assert.Contains(t, names, want)
 				}
@@ -76,8 +77,8 @@ func TestSecurityEvents_Names(t *testing.T) {
 						scrty++
 					}
 				}
-				assert.Equal(t, 39, scrty, "the outcomes the vocabulary does not name")
-				assert.Len(t, names, 25+39)
+				assert.Equal(t, 40, scrty, "the outcomes the vocabulary does not name")
+				assert.Len(t, names, 25+40)
 			},
 		},
 		{

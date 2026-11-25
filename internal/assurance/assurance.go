@@ -101,3 +101,30 @@ func (f Federated) AMR() []string { return slices.Clone(f.amr) }
 // ACR is the authentication context class the provider asserted, or empty when
 // it asserted none.
 func (f Federated) ACR() string { return f.acr }
+
+// AccessToken is what a resource server established about an access-token
+// caller for the MFA requirement: whether the caller names a local user, and
+// whether the library verified a second factor at the sign-in behind the
+// token's grant. Federated evidence is not here: it travels as Federated.
+//
+// The zero value means a local user with no verified second factor, so a
+// value nobody minted fails closed.
+type AccessToken struct {
+	external     bool
+	secondFactor bool
+}
+
+// NewAccessToken returns the assurance of an access-token caller.
+// namesLocalUser is false for a caller that names no local user (a claims-only
+// caller, or a mapper's caller declared external); secondFactorVerified is the
+// grant's library-recorded marker.
+func NewAccessToken(namesLocalUser, secondFactorVerified bool) AccessToken {
+	return AccessToken{external: !namesLocalUser, secondFactor: secondFactorVerified}
+}
+
+// NamesLocalUser reports whether the caller is a local user.
+func (a AccessToken) NamesLocalUser() bool { return !a.external }
+
+// SecondFactorVerified reports whether the library verified a second factor
+// at the sign-in behind the token's grant.
+func (a AccessToken) SecondFactorVerified() bool { return a.secondFactor }

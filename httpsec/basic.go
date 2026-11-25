@@ -65,6 +65,10 @@ type basicAuth struct {
 	// discloseLocks is the chain's WithLockDisclosure, settled at assembly.
 	discloseLocks bool
 
+	// discloseInactive is the chain's WithInactiveDisclosure, settled at
+	// assembly.
+	discloseInactive bool
+
 	now func() time.Time
 
 	realm string
@@ -264,8 +268,9 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 		recordSourceFailure(ctx, b.guard, src)
 
 		// The authenticator's own refusal, not a restatement of it: it already
-		// carries no detail that would tell one refusal from another.
-		return nil, err
+		// carries no detail that would tell one refusal from another, unless
+		// the consumer chose to disclose an inactive account.
+		return nil, discloseInactive(b.discloseInactive, err)
 	}
 
 	// A provider that names no principal has proved no one: the consumer's

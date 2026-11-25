@@ -341,3 +341,8 @@ func isLoopbackHost(host string) bool {
 // parked request, and anything short of an exact match as an ordinary destination,
 // so a login URL meant for it carries no query of its own.
 func (p *Provider) LoginURL() string { return p.loginURL }
+
+// UserLoader returns the loader the provider was built with, Deps.Users, exactly as given. A
+// resource server judging the provider's own access tokens loads their subjects through it, so
+// both read users from one place.
+func (p *Provider) UserLoader() identity.UserLoader { return p.users }

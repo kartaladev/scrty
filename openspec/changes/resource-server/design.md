@@ -139,6 +139,14 @@ httpsec.EnableResourceServer("urn:example:orders:api",
 - **The line:** a consumer who needs another token kind uses `RegisterInterceptor` before
   `OrderResourceServer`. A public port can be added later without breaking anything.
 
+- **The chain provider's issuer belongs to `FromProvider` only** (2026-11-25): a `FromIssuer` or
+  `FromIntrospection` source naming it is a construction error. Otherwise the provider's tokens could
+  be verified as an external issuer's, with no grant and no second-factor marker, and pass as
+  claims-only callers.
+- **An introspection prefix must be unmistakable:** beside another `Bearer` reader, a prefix made only
+  of characters a session reference uses is a construction error, so no session reference can carry
+  it and be sent to a third party.
+
 ### 5. Recognition and routing
 
 1. The whole token is bounded before anything is decoded. The bound is the larger of 8 KiB and the
@@ -153,7 +161,8 @@ httpsec.EnableResourceServer("urn:example:orders:api",
    - a JWT, read without verification and only to route it, goes to the source whose issuer equals
      its `iss`;
    - an opaque token goes to its `FromIntrospection` source, if any. With any other mode on the chain
-     reading the `Bearer` scheme (session references, or API keys under `WithAPIKeyScheme("Bearer ")`),
+     reading the `Bearer` scheme (session references, signed bearer tokens, or API keys under
+     `WithAPIKeyScheme("Bearer ")`),
      only a token with that source's prefix goes there, and a missing prefix is a construction error
      (decision 12).
 4. A JWT typed `at+jwt` that no source of the mode names is refused. Any other unrecognised token
@@ -168,6 +177,27 @@ httpsec.EnableResourceServer("urn:example:orders:api",
 7. Two sources naming one issuer **in one mode** is a construction error.
 
 Nothing is granted on the unverified read, and the source verifies again. The routing read is fuzzed.
+
+Implementation decisions (2026-11-25):
+
+- **The provider's bound is read, not computed.** `(*oidcprovider.Provider).MaxAccessTokenSize()`
+  returns the verifier bound under the provider's own request bounds, so a consumer who raises
+  `WithRequestBounds` keeps UserInfo and the resource server in step.
+- **A repeated `Authorization` header is answered 400 `invalid_request`** under the resource server's
+  challenge, not passed on. RFC 9110 §11.6.2 defines the field as a single credential, and RFC 6750
+  §3.1 names a malformed request `invalid_request`; passing it on would let a later mode read a
+  different instance of the header than the one routed.
+- **The type-collision construction check (item 2) lands with untyped-token support (C3)**, through a
+  read-only accessor for a generator's declared type. Until then the runtime exclusion of the
+  chain's session type holds, and `token.NewGenerator` already refuses `at+jwt`.
+- **A token the mode accepts claims the credential.** The session bearer, the signed bearer and API
+  keys under the `Bearer` scheme skip a request whose `Authorization` the resource server has
+  already accepted, so one credential is never judged twice. The mark lives on the request's
+  exchange and is scoped to its run.
+- **The internal source contract** also reports a source's issuer and whether it allows unbound
+  tokens (for the construction checks), and recognition is three-way (not recognised, recognised as a
+  fallback, recognised by its marker), so an unprefixed introspection source never refuses a token
+  off every covered path.
 
 ### 6. Token type and required claims
 
@@ -331,7 +361,13 @@ Nothing is granted on the unverified read, and the source verifies again. The ro
   - The metadata's `issuer` must equal the configured issuer (RFC 8414 §3.3, OIDC Discovery §4.3).
   - A discovered `jwks_uri` must be on the issuer's origin.
 - **Pinned URL:** `WithJWKSURL(u)` skips discovery, and may name another origin, over https.
-- **Outbound client:** `WithOutboundClient(c)` replaces it, for a proxy or custom CAs.
+- **Outbound client:** `keyset.New` takes the `*outbound.Client` as an argument; the source option
+  `WithOutboundClient(c)` (a `SourceOption`, set per source) passes it through, for a proxy or custom CAs. A nil client means
+  `outbound.New()` with its defaults.
+- **No stale keys:** an expired key set is never served after a failed refetch; the source answers
+  `ErrUnavailable` until a fetch succeeds.
+- **Key filtering:** keys with `use: enc`, symmetric keys, and keys whose `key_ops` is present but
+  lacks `verify` are dropped. An issuer URL carrying userinfo is refused at construction.
 - **Algorithms:** `WithAlgorithms(...)`, default `RS256` and `ES256`. `none` and HS\* are refused at
   construction and at verification. Header `jku`/`jwk`/`x5u` are ignored, and so are keys with
   `use: enc`.
@@ -401,6 +437,21 @@ Nothing is granted on the unverified read, and the source verifies again. The ro
   identifier and the source. A throttle emits `excess_rate_limit_exceeded`. DPoP and binding refusals
   keep their events. An event carries a user reference only for a local user; a claims-only caller's
   external subject is never put in its place (`security-events` delta).
+
+- **Where the facts are read:** a verified access token's `AuthTime`, `ACR` and `AMR` are read from
+  the grant that holds it, for JWT and opaque tokens alike. A JWT's claims were minted from that same
+  grant, and a refresh never changes it, so both formats answer the same.
+
+- **How the kind is published** (2026-11-25): the caller's credentials report it through
+  `Credentials.Type()`, `access-token` for a provider token and `external-access-token` for a
+  remote-issuer or introspected one, as every other mode's credentials report theirs.
+- **JWT introspection** (`WithJWTIntrospection`) refuses only an inactive answer: the JWT has already
+  been verified for audience, subject and expiry, so the answer adds revocation and nothing else.
+- **The session-type check** runs wherever the chain can see a generator (DPoP's issuing generator
+  and a bearer verifier that is one). `token.NewGenerator` already refuses `at+jwt` and `JWT`, so
+  the check bites on a consumer's own generator that reports its type.
+- **A key that names its algorithm** is used with that algorithm only (RFC 8725 §3.1): a token whose
+  header names another is refused.
 
 ### 14. Challenges
 
@@ -475,6 +526,21 @@ Nothing is granted on the unverified read, and the source verifies again. The ro
 - **Override:** `WithAuthenticationTime` still replaces the time source.
 - **BREAKING (behaviour):** an access-token caller was refused before; a fresh one now passes.
 
+Implementation decisions (2026-11-25):
+
+- **Second-factor enrolment is session-only:** an access-token caller posting under the enrolment
+  prefixes is refused with `ErrAuthenticationRequired`, as the other session-only endpoints are.
+- **`ErrInsufficientScope`** marks a scope refusal that the bearer challenge answered with
+  `insufficient_scope`, so the problem mapper can choose `insufficient-scope`. Under
+  `WithoutBearerChallenge` no challenge is written, the marker is absent, and the refusal stays a
+  plain 403 `access-denied`.
+- **`InsufficientUserAuthenticationError{Window}`** carries the recency window, which a sentinel
+  cannot; it matches `ErrInsufficientUserAuthentication` and `ErrReauthenticationRequired`. A handler
+  reading the window through `*ReauthenticationRequiredError` does not find it for an access-token
+  caller.
+- **`WithAuthenticationTime`** replaces only the time a guard judges. Whether the refusal is the
+  session's 403 or the access token's 401 still follows the caller.
+
 ### 17. Scopes on user principals
 
 `Principal.Scopes` now also carries an access token's scopes on a user principal. A session principal
@@ -489,7 +555,10 @@ only.
   the breach lookup, because they are cheap local checks that should not spend a network call.
 - **Refusal:** `RejectedError{Rule: name}`, a password-rejected error but not a reused one. The
   consumer can then tell "weak" from "reused".
-- **Failure:** an error from a rule fails closed, behind fixed text, with the error reachable.
+- **Failure:** an error from a rule fails closed as `password.ErrRuleFailed` (fixed text naming the
+  rule), joined with the rule's sanitized error, which stays reachable through `errors.Is`. A
+  sentinel, not a new error type, matches the package's other port failures. A panicking rule is not
+  recovered, as with the context-word function; the consumer owns its rule.
 - **Default:** no consumer rule. The library imposes no composition rule (NIST SP 800-63B, which
   advises verifiers against composition rules).
 - **Construction errors:** a nil, typed-nil or unnamed rule; a name over 64 characters or holding
@@ -519,7 +588,7 @@ inactive account carry no distinguishing error, and cost the same work.
 
 | # | Failure | State | What the caller sees |
 |---|---|---|---|
-| F1 | Empty, scheme-only or duplicated `Authorization` | Handled (the shared header reader), tested | 400 `invalid_request`, or not claimed |
+| F1 | Empty, scheme-only or duplicated `Authorization` | Handled (the shared header reader), tested | 400 `invalid_request` for a duplicated header; an empty or scheme-only one is not claimed |
 | F2 | Token over 8 KiB; header or payload not base64url or not JSON | Handled before decoding, tested; routing read fuzzed | 401 `invalid_token`, or not recognised |
 | F3 | ID, session or logout token sent to an API route | Handled by type routing, required claims and `aud`, tested | Session token: judged by the session modes; others: 401 |
 | F4 | Untyped token without the opt-in; a session generator typed like an access token | Handled at verification and at construction, tested | 401; construction error |
@@ -571,6 +640,12 @@ inactive account carry no distinguishing error, and cost the same work.
 | F50 | A claims-only or external-declared caller's subject leaking into events as a user reference | Handled: no user reference for callers naming no local user (decision 13). Tested | — |
 | F51 | A mapper forgets to say whether its caller is local | Handled: the zero value is a local user, judged (decision 8). Tested | Judged by the MFA requirement |
 | F52 | An unprefixed opaque token on a path no resource server covers | Handled: passes on to the next mode (decision 5). Tested | Judged by that mode |
+| F53 | A durable store before G1 drops the sign-in's second-factor marker and federated evidence | Accepted only within this change: G1 (task 4.5) ships in the same release. Until then the marker reads false, which fails closed | A federated or MFA user is judged as having no verified second factor |
+| F54 | `introspect.Result.Accepts` reports a bound token acceptable without its proof | Handled by the caller: the introspection source checks the proof against `Result.Confirmation` before accepting (decision 7). Tested | The settled binding refusal: 401 `invalid_dpop_proof` for a missing or wrong DPoP proof, the certificate-binding refusal for a certificate |
+| F55 | A caller of the introspection client whose context is already cancelled | Handled: no outbound call is made. Tested | The context error |
+| F56 | A source left without saying whether its caller is local | Handled: the zero value is a local user, judged by the MFA requirement (fail closed). Tested | Judged |
+| F57 | An introspection answer with a future `iat` or `nbf` | Accepted: RFC 7662 makes both optional; the answer's `active`, `exp`, audience and subject decide | Accepted as the issuer answered |
+| F58 | A per-route `RequireAuthenticationWithin` window under one second | Accepted: such a window cannot be stated in `max_age`'s whole seconds, so the challenge omits `max_age`; the chain-wide window refuses it at construction | 401 `insufficient_user_authentication` with no `max_age` |
 
 ## Risks / Trade-offs
 
@@ -647,6 +722,13 @@ throttle, and the cache's default entry limit when enabled.
   exists.
 
 **Primary documentation** (relied on and cited as such, not re-checked on these dates):
+- **Decision 13, key algorithm:** [RFC 8725 §3.1](https://www.rfc-editor.org/rfc/rfc8725#section-3.1):
+  use each key with one algorithm and check it.
+- **Decision 5, repeated `Authorization` header**:
+  - [RFC 9110 §11.6.2](https://www.rfc-editor.org/rfc/rfc9110#section-11.6.2): `Authorization` carries
+    one set of credentials.
+  - [RFC 6750 §3.1](https://www.rfc-editor.org/rfc/rfc6750#section-3.1): a malformed request is
+    `invalid_request`, answered 400.
 - [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068): §2.1 `at+jwt`; §2.2 required claims; §4 audience
   validation. Decisions 3, 5, 6, 10.
 - [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750): §3.1 `invalid_token`, `insufficient_scope`.

@@ -74,17 +74,21 @@
 //
 //	Sub-type                       Status  What it answers
 //	authentication-required        401     authentication required, an idle or expired session, a re-authentication refusal from the provider
-//	authentication-failed          401     the status default: every form of failed authentication, a concealed lock, an unavailable user store, a throttled source, a refused magic link
+//	authentication-failed          401     the status default: every form of failed authentication, a concealed lock or inactive account, an unavailable user store, a throttled source, a refused magic link
 //	second-factor-failed           401     an invalid or throttled second-factor attempt or enrolment, a throttled passkey registration begin
+//	invalid-token                  401     an access token a resource server refused (httpsec.EnableResourceServer)
+//	insufficient-user-authentication 401   an access-token caller whose sign-in does not meet the MFA requirement, or is older than a recency guard allows
 //	proof-of-possession-failed     401     a missing or invalid DPoP proof, a DPoP nonce required, a certificate-bound token without its certificate
 //	mfa-required                   401     a challenge of the second-factor kind
 //	challenge-required             401     a challenge of any other kind answered 401
 //	password-change-required       403     a challenge of the password-change kind
 //	mfa-enrolment-required         403     a challenge of the second-factor enrolment kind
 //	account-recovery-required      403     a challenge of the account-recovery kind
-//	reauthentication-required      403     any re-authentication-required refusal
+//	reauthentication-required      403     any re-authentication-required refusal of a session caller
+//	insufficient-scope             403     an access-token caller missing a scope a chain rule or guard requires (httpsec.ErrInsufficientScope)
 //	cross-site-request             403     a cross-site request refused by CSRF protection or the signal stream
 //	automation-challenge-required  403     a request refused by the automation-challenge verifier
+//	account-inactive               403     the disclosed inactive account (httpsec.WithInactiveDisclosure)
 //	access-denied                  403     the status default
 //	invalid-request                400     the status default
 //	not-found                      404     the status default
@@ -103,7 +107,7 @@
 // # Extension members
 //
 // A problem's only extension members are challenge, methods, max_age, rule,
-// access_token and token_type:
+// scope, access_token and token_type:
 //
 //   - challenge is the kind of a challenge, one of the fixed tokens mfa,
 //     password-change, mfa-enrolment or account-recovery. A challenge of any
@@ -111,8 +115,11 @@
 //     member, and so does every other refusal.
 //   - methods is on mfa-required: the usable second-factor methods in the
 //     challenge's order, each with name, channel and begins.
-//   - max_age is on reauthentication-required: the required recency in whole
-//     seconds, when the refusal carries one.
+//   - max_age is on reauthentication-required and
+//     insufficient-user-authentication: the required recency in whole seconds,
+//     when the refusal carries one.
+//   - scope is on insufficient-scope: the scopes the refusing scope
+//     requirement names (authorize.MissingScopesError), space-separated.
 //   - rule is on password-rejected: the password.Rule the consumer's policy
 //     reported, passed through unchanged. It is the consumer's data, and the
 //     library does not interpret it.

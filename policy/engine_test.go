@@ -3,6 +3,7 @@ package policy_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -1434,6 +1435,82 @@ func TestADeny(t *testing.T) {
 
 			d := e.EvaluatePhase(t.Context(), policy.StatelessAuthentication, &policy.Input{})
 			tc.assert(t, d)
+		})
+	}
+}
+
+// TestEngine_UnwiredFederatedAssuranceFor pins that the wiring check for one kind honours an
+// exemption rule exempting that kind, not only the oidc kind, and agrees with
+// UnwiredFederatedAssurance for the kinds the rule leaves enforced.
+func TestEngine_UnwiredFederatedAssuranceFor(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		opts   []policy.MFARequirementOption
+		kind   factor.Kind
+		assert func(t *testing.T, unwired []string)
+	}
+
+	unwired := func(t *testing.T, got []string) {
+		t.Helper()
+		assert.Equal(t, []string{"mfa-requirement"}, got)
+	}
+	wired := func(t *testing.T, got []string) {
+		t.Helper()
+		assert.Empty(t, got)
+	}
+
+	exempting := func(kinds ...factor.Kind) policy.MFARequirementOption {
+		return policy.WithMFAExemption(func(k factor.Kind) bool {
+			return slices.Contains(kinds, k) || k.MFAExempt()
+		})
+	}
+
+	cases := []testCase{
+		{name: "an enforced external token kind without a source", kind: factor.ExternalAccessToken, assert: unwired},
+		{
+			name: "an exemption of the external token kind needs no source for it",
+			opts: []policy.MFARequirementOption{exempting(factor.ExternalAccessToken)},
+			kind: factor.ExternalAccessToken, assert: wired,
+		},
+		{
+			name: "an exemption of the oidc kind needs no source for the external token kind",
+			opts: []policy.MFARequirementOption{exempting(factor.OIDC)},
+			kind: factor.ExternalAccessToken, assert: wired,
+		},
+		{
+			name: "an exemption of the external token kind leaves the oidc kind needing a source",
+			opts: []policy.MFARequirementOption{exempting(factor.ExternalAccessToken)},
+			kind: factor.OIDC, assert: unwired,
+		},
+		{
+			name: "exempt mode needs no source for the external token kind",
+			opts: []policy.MFARequirementOption{
+				policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceExempt)},
+			kind: factor.ExternalAccessToken, assert: wired,
+		},
+		{
+			name: "a given source needs nothing",
+			opts: []policy.MFARequirementOption{
+				policy.WithFederatedAssuranceSource(assuranceSource(t, false, false, nil))},
+			kind: factor.ExternalAccessToken, assert: wired,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			p, err := policy.NewMFARequirement(nil,
+				mfaMethods(idleMFAMethod(t, mfaMethodName(factor.AuthenticatorApp))),
+				append([]policy.MFARequirementOption{policy.WithMFARequiredForAll()}, tc.opts...)...)
+			require.NoError(t, err)
+
+			e, err := policy.NewEngine(p)
+			require.NoError(t, err)
+
+			tc.assert(t, e.UnwiredFederatedAssuranceFor(tc.kind))
 		})
 	}
 }

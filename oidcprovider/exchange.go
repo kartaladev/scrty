@@ -515,11 +515,17 @@ func newGrant(
 		SignInFamily:      s.Family,
 		ExternalIssuer:    s.ExternalIssuer,
 		ExternalSessionID: s.ExternalSessionID,
-		Offline:           record.Offline,
-		EndsWithSignIn:    record.EndsWithSignIn,
-		HoldsLineage:      holdsLineage,
-		CreatedAt:         now,
-		ExpiresAt:         expiresAt,
+		// The marker and the evidence are the sign-in's, as the library recorded it, and
+		// never read from AMR.
+		SecondFactorVerified: s.SecondFactorVerified,
+		ExternalProvider:     s.ExternalProvider,
+		ExternalAMR:          slices.Clone(s.ExternalAMR),
+		ExternalACR:          s.ExternalACR,
+		Offline:              record.Offline,
+		EndsWithSignIn:       record.EndsWithSignIn,
+		HoldsLineage:         holdsLineage,
+		CreatedAt:            now,
+		ExpiresAt:            expiresAt,
 	}
 	if rc.Type == Public {
 		grant.KeyBinding = binding.JKT
@@ -554,13 +560,19 @@ func newDeviceGrant(
 		SignInFamily:      s.Family,
 		ExternalIssuer:    s.ExternalIssuer,
 		ExternalSessionID: s.ExternalSessionID,
-		Offline:           a.Offline,
-		EndsWithSignIn:    a.EndsWithSignIn,
-		SurvivesSignInEnd: a.SurvivesSignInEnd,
-		HoldsLineage:      holdsLineage,
-		Origin:            OriginDevice,
-		CreatedAt:         now,
-		ExpiresAt:         expiresAt,
+		// The marker and the evidence are the sign-in's, as the library recorded it, and
+		// never read from AMR.
+		SecondFactorVerified: s.SecondFactorVerified,
+		ExternalProvider:     s.ExternalProvider,
+		ExternalAMR:          slices.Clone(s.ExternalAMR),
+		ExternalACR:          s.ExternalACR,
+		Offline:              a.Offline,
+		EndsWithSignIn:       a.EndsWithSignIn,
+		SurvivesSignInEnd:    a.SurvivesSignInEnd,
+		HoldsLineage:         holdsLineage,
+		Origin:               OriginDevice,
+		CreatedAt:            now,
+		ExpiresAt:            expiresAt,
 	}
 	if rc.Type == Public {
 		grant.KeyBinding = binding.JKT

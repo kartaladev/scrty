@@ -158,15 +158,16 @@ func NewRelyingParty(registry *Registry, broker IdentityBroker, opts ...Option) 
 	if m.flowTTL == 0 {
 		m.flowTTL = DefaultFlowTTL
 	}
-	if m.cache.ttl == 0 {
-		m.cache.ttl = DefaultDiscoveryTTL
+	if m.cache.TTL == 0 {
+		m.cache.TTL = DefaultDiscoveryTTL
 	}
-	if m.cache.backoffBase == 0 {
-		m.cache.backoffBase, m.cache.backoffMax = DefaultDiscoveryBackoffBase, DefaultDiscoveryBackoffMax
+	if m.cache.BackoffBase == 0 {
+		m.cache.BackoffBase, m.cache.BackoffMax = DefaultDiscoveryBackoffBase, DefaultDiscoveryBackoffMax
 	}
-	if m.cache.cooldown == 0 {
-		m.cache.cooldown = DefaultJWKSRefetchCooldown
+	if m.cache.Cooldown == 0 {
+		m.cache.Cooldown = DefaultJWKSRefetchCooldown
 	}
+	m.wireCache()
 	m.sampler = logsample.New(refusalLogInterval, logsample.WithReporter(m.reportSuppressed))
 
 	if err := m.checkSchemes(); err != nil {
@@ -442,7 +443,7 @@ func WithDiscoveryTTL(ttl time.Duration) Option {
 		if ttl <= 0 {
 			return fmt.Errorf("%w: WithDiscoveryTTL must be positive, got %s", ErrConfig, ttl)
 		}
-		m.cache.ttl = ttl
+		m.cache.TTL = ttl
 		return nil
 	}
 }
@@ -460,7 +461,7 @@ func WithDiscoveryFailureBackoff(base, maxWindow time.Duration) Option {
 			return fmt.Errorf("%w: WithDiscoveryFailureBackoff needs 0 < base <= max, got %s and %s",
 				ErrConfig, base, maxWindow)
 		}
-		m.cache.backoffBase, m.cache.backoffMax = base, maxWindow
+		m.cache.BackoffBase, m.cache.BackoffMax = base, maxWindow
 		return nil
 	}
 }
@@ -475,7 +476,7 @@ func WithJWKSRefetchCooldown(cooldown time.Duration) Option {
 		if cooldown <= 0 {
 			return fmt.Errorf("%w: WithJWKSRefetchCooldown must be positive, got %s", ErrConfig, cooldown)
 		}
-		m.cache.cooldown = cooldown
+		m.cache.Cooldown = cooldown
 		return nil
 	}
 }
@@ -494,7 +495,7 @@ func WithDiscoveryStaleWhileError(window time.Duration) Option {
 		if window < 0 {
 			return fmt.Errorf("%w: WithDiscoveryStaleWhileError must not be negative, got %s", ErrConfig, window)
 		}
-		m.cache.stale = window
+		m.cache.Stale = window
 		return nil
 	}
 }

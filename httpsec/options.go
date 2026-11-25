@@ -252,6 +252,11 @@ type config struct {
 	// (WithLockDisclosure), rather than as a wrong password.
 	discloseLocks bool
 
+	// discloseInactive answers a correct password for an inactive account
+	// with authenticate.ErrAccountInactive alone (WithInactiveDisclosure),
+	// rather than as a wrong password.
+	discloseInactive bool
+
 	// proxies is the validated configuration EnableTrustedProxies was given,
 	// and nil without it.
 	proxies *trustedProxies

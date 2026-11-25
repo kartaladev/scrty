@@ -54,6 +54,28 @@ type AccessToken struct {
 	Issuer string
 	// IssuedAt and ExpiresAt bound the token's own life.
 	IssuedAt, ExpiresAt time.Time
+
+	// AuthTime, ACR and AMR are the sign-in's behind the token's grant: a JWT's auth_time,
+	// acr and amr claims, or an opaque token's grant. AMR states what the sign-in
+	// assurance mapping said, and is no proof of a second factor: SecondFactorVerified is.
+	AuthTime time.Time
+	// ACR is the authentication context the sign-in reached.
+	ACR string
+	// AMR lists the authentication methods the sign-in used.
+	AMR []string
+
+	// SecondFactorVerified, ExternalProvider, ExternalIssuer, ExternalAMR and ExternalACR
+	// are read from the token's grant, never from the token, which does not carry them
+	// (see Grant).
+	SecondFactorVerified bool
+	// ExternalProvider names the identity provider of a federated sign-in.
+	ExternalProvider string
+	// ExternalIssuer is the upstream issuer of a federated sign-in.
+	ExternalIssuer string
+	// ExternalAMR is the amr the upstream provider asserted.
+	ExternalAMR []string
+	// ExternalACR is the acr the upstream provider asserted.
+	ExternalACR string
 }
 
 // resolveAudience decides what an access token is for, from a request's resource values
@@ -242,7 +264,7 @@ func buildAccessVerifier(keys signingkey.KeySource, issuer string, cfg *config) 
 		token.WithoutVerifyAudience(),
 		token.WithVerifyClock(cfg.clock),
 		token.WithVerifyTokenType(token.TypeAccessToken),
-		token.WithVerifyMaxTokenSize(2*(cfg.bounds.Scope+maxResources*cfg.bounds.Resource)+8<<10),
+		token.WithVerifyMaxTokenSize(maxAccessTokenSize(cfg)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("%w: Keys: %w", ErrConfig, err)
@@ -277,32 +299,55 @@ func (p *Provider) VerifyAccessToken(ctx context.Context, raw string) (*AccessTo
 	if err != nil {
 		return nil, err
 	}
-	if err := p.requireGrantHolds(ctx, at); err != nil {
+	grant, err := p.grantHolding(ctx, at)
+	if err != nil {
 		return nil, err
 	}
+	withSignInFacts(at, grant)
 
 	return at, nil
+}
+
+// withSignInFacts sets at's sign-in facts from its grant, which a JWT's auth_time, acr and amr
+// were minted from and a refresh never changes, and which alone holds the second-factor marker
+// and the federated evidence. Nothing is shared with grant.
+func withSignInFacts(at *AccessToken, grant *Grant) {
+	at.AuthTime = grant.AuthTime
+	at.ACR = grant.ACR
+	at.AMR = slices.Clone(grant.AMR)
+	at.SecondFactorVerified = grant.SecondFactorVerified
+	at.ExternalProvider = grant.ExternalProvider
+	at.ExternalIssuer = grant.ExternalIssuer
+	at.ExternalAMR = slices.Clone(grant.ExternalAMR)
+	at.ExternalACR = grant.ExternalACR
 }
 
 // requireGrantHolds refuses a token whose grant is revoked, expired or gone, or names another
 // client or user. Its row is what ends a token, and a store that cannot answer is no verdict.
 func (p *Provider) requireGrantHolds(ctx context.Context, at *AccessToken) error {
+	_, err := p.grantHolding(ctx, at)
+
+	return err
+}
+
+// grantHolding is requireGrantHolds, returning the grant that holds the token.
+func (p *Provider) grantHolding(ctx context.Context, at *AccessToken) (*Grant, error) {
 	grant, err := p.stores.grants.Load(ctx, at.GrantFamily)
 	err = porterr.SanitizeTo(ctx, p.cfg.logger, err, porterr.ErrUnwalkable)
 	switch {
 	case errors.Is(err, ErrNotFound):
-		return refuseToken()
+		return nil, refuseToken()
 	case err != nil:
-		return dependencyFailure(ctx, err, "oidcprovider: read the access token's grant")
+		return nil, dependencyFailure(ctx, err, "oidcprovider: read the access token's grant")
 	case grant == nil:
-		return dependencyFailure(ctx, errNoRecord, "oidcprovider: read the access token's grant")
+		return nil, dependencyFailure(ctx, errNoRecord, "oidcprovider: read the access token's grant")
 	case grant.Revoked || !p.cfg.clock.Now().Before(grant.ExpiresAt):
-		return refuseToken()
+		return nil, refuseToken()
 	case grant.ClientID != at.ClientID || grant.User != at.Subject:
-		return refuseToken()
+		return nil, refuseToken()
 	}
 
-	return nil
+	return grant, nil
 }
 
 // readOpaqueAccessToken reads <id>.<secret>. A secret of no shape the provider mints is refused

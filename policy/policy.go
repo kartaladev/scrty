@@ -64,7 +64,12 @@ const (
 	// a challenge.
 	PostAuthentication
 
-	// PerRequest is reached on every request carrying an established session.
+	// PerRequest is reached on every request carrying an established session,
+	// and on every request a resource server accepted an access token for. The
+	// latter carries no session: Input.Session is nil, and FirstFactor is
+	// factor.AccessToken or factor.ExternalAccessToken. No session can hold a
+	// challenge for it, so any challenge raised for such a caller, a consumer
+	// policy's included, is refused as insufficient user authentication.
 	PerRequest
 
 	// PostHandler is reached after the application's handler has run, for
@@ -406,6 +411,18 @@ type Input struct {
 	// stand in for it.
 	FederatedAssurance FederatedAssurance
 
+	// AccessTokenAssurance is what a resource server established about an
+	// access-token caller (factor.AccessToken, factor.ExternalAccessToken):
+	// whether it names a local user, and whether the library verified a
+	// second factor at the sign-in behind the token's grant. Its federated
+	// evidence, from the grant or from the token, is in FederatedAssurance.
+	//
+	// The type has no public constructor: only a resource server mints one.
+	// The zero value means a local user with no verified second factor, so a
+	// consumer evaluating the requirement policy directly for an access-token
+	// first factor fails closed. Other first factors ignore it.
+	AccessTokenAssurance AccessTokenAssurance
+
 	// Reauthenticating reports that this evaluation re-authenticates an
 	// existing session rather than signing a user in: the user proved a
 	// factor again on a session they already hold, and the phase decides
@@ -433,6 +450,12 @@ type Input struct {
 	// passed.
 	Now time.Time
 }
+
+// AccessTokenAssurance is what a resource server established about an
+// access-token caller for the MFA requirement policy. It has no public
+// constructor, and its zero value means a local user with no verified second
+// factor (see Input.AccessTokenAssurance).
+type AccessTokenAssurance = assurance.AccessToken
 
 // SecondFactorProof is the library's proof that a login's second factor was
 // met at its first factor, as a user-verified passkey login does.

@@ -143,11 +143,20 @@ func sessionEvent(name, outcome string, s *session.Session) event.Event {
 func callerEvent(name, outcome string, ex *Exchange) event.Event {
 	e := sessionEvent(name, outcome, ex.Session)
 
-	if e.User == "" && ex.Authentication != nil && ex.Authentication.Principal != nil {
+	if e.User == "" && ex.Authentication != nil && ex.Authentication.Principal != nil && namesLocalUser(ex.Authentication) {
 		e.User = ex.Authentication.Principal.ID
 	}
 
 	return e
+}
+
+// namesLocalUser says a's principal is a local user, whose identifier an event may carry: every
+// caller but an access-token caller naming no local user (claims only, or a mapper's caller declared
+// external), whose identifier is the issuer's subject, never a user reference.
+func namesLocalUser(a *authenticate.Authentication) bool {
+	c, ok := a.Credentials.(accessTokenCredentials)
+
+	return !ok || !c.external
 }
 
 // userEvent is an event named name, with outcome, about user and the first

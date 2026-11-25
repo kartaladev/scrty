@@ -88,6 +88,9 @@ type tokenEndpoint struct {
 	clk      *clockwork.FakeClock
 	consents *oidcprovider.MemoryConsentStore
 	outage   *atomic.Bool
+
+	// signIn, when set, changes the sign-in issue resumes with.
+	signIn func(*oidcprovider.SignIn)
 }
 
 func newTokenEndpoint(t *testing.T, setup tokenSetup) *tokenEndpoint {
@@ -220,16 +223,21 @@ func (e *tokenEndpoint) issue(t *testing.T, clientID string, change func(url.Val
 	family, err := id.NewV7Generator().NewID()
 	require.NoError(t, err)
 
+	signIn := &oidcprovider.SignIn{
+		User:              user,
+		Family:            family,
+		AuthenticatedAt:   e.clk.Now(),
+		AMR:               []string{"pwd"},
+		AbsoluteExpiresAt: e.clk.Now().Add(8 * time.Hour),
+	}
+	if e.signIn != nil {
+		e.signIn(signIn)
+	}
+
 	res, err := e.p.Resume(t.Context(), oidcprovider.ResumeInput{
-		Handle:     login.Query().Get("req"),
-		FlowSecret: parked.FlowSecret,
-		SignIn: &oidcprovider.SignIn{
-			User:              user,
-			Family:            family,
-			AuthenticatedAt:   e.clk.Now(),
-			AMR:               []string{"pwd"},
-			AbsoluteExpiresAt: e.clk.Now().Add(8 * time.Hour),
-		},
+		Handle:      login.Query().Get("req"),
+		FlowSecret:  parked.FlowSecret,
+		SignIn:      signIn,
 		IdleTimeout: 15 * time.Minute,
 	})
 	require.NoError(t, err)

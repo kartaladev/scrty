@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/errwalk"
 	"github.com/kartaladev/scrty/internal/guardauth"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/porterr"
@@ -98,6 +100,12 @@ func (b *bearerToken) wire(c *Chain) {
 // errors.As. A consumer who wants a store's full error logs it inside their
 // own implementation.
 func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
+	// A credential the resource server accepted as an access token is not
+	// this mode's to judge again.
+	if ex.accessTokenClaimed {
+		return next(ex)
+	}
+
 	presented, underDPoP, ok := presentedBearer(ex.Request.Header("Authorization"),
 		b.scheme, b.allowEmptyScheme, b.dpop)
 	if !ok {
@@ -486,6 +494,10 @@ func EnableBearerToken(deps BearerTokenDeps, opts ...BearerTokenOption) Option {
 			// is given. One hidden behind a verifier that does not itself implement
 			// token.Generator cannot be seen.
 			if g, ok := deps.Verifier.(token.Generator); ok {
+				if err := checkSessionTokenType(c, option, "BearerTokenDeps.Verifier", g); err != nil {
+					return err
+				}
+
 				return checkSubjectGenerator(c, option, "BearerTokenDeps.Verifier", g)
 			}
 
@@ -610,6 +622,14 @@ func WithBearerUsernameSubject() BearerTokenOption {
 // scheme the response names already is not added again. A chain with no
 // built-in bearer refuses this option.
 //
+// A resource server (EnableResourceServer) counts as a built-in bearer, so a
+// chain serving only an API gets these challenges and may turn them off. Its
+// own refusals carry exactly one challenge: error="invalid_token" (or
+// invalid_request for a repeated Authorization header), under DPoP with the
+// accepted algorithms when the token came under DPoP, the chain requires DPoP,
+// or its source requires a binding only DPoP can prove, and under Bearer
+// otherwise; a binding failure keeps DPoP's settled challenge.
+//
 // Two limits are accepted: an error handler that changes a 401's status must
 // clear the challenge itself, and an interceptor ordered before the bearer that
 // refuses a valid token sends invalid_token.
@@ -648,7 +668,7 @@ func (c *config) wireBearerChallenge() error {
 	if !hasBuiltInBearer(c) {
 		if c.withoutBearerChallenge {
 			return newConfigError("WithoutBearerChallenge was given, but the chain has no built-in bearer " +
-				"(EnableBearerToken, EnableSessionBearer), so there is no challenge to turn off")
+				"(EnableBearerToken, EnableSessionBearer, EnableResourceServer), so there is no challenge to turn off")
 		}
 
 		return nil
@@ -678,9 +698,16 @@ func (c *config) wireBearerChallenge() error {
 }
 
 // hasBuiltInBearer reports whether the chain authenticates bearer tokens with a
-// built-in bearer of either mode.
+// built-in bearer of either mode, or accepts access tokens with a resource
+// server, which counts as one.
 func hasBuiltInBearer(c *config) bool {
 	var found bool
+
+	_ = eachInterceptor(c, func(*resourceServers) error {
+		found = true
+
+		return nil
+	})
 
 	_ = eachInterceptor(c, func(*sessionBearer) error {
 		found = true
@@ -721,6 +748,14 @@ func (b *bearerChallenge) Intercept(ex *Exchange, next Next) error {
 		out   error
 		abort error
 	)
+
+	if answered, stop := b.accessTokenChallenge(ex.Writer, err, watch.set); stop != nil {
+		ex.reportQuietlyOnce(ex.Context(), err, stop)
+
+		return err
+	} else if answered {
+		return err
+	}
 
 	switch {
 	case b.provider != nil && b.provider.answersPath(ex.Request.Path()):
@@ -782,6 +817,12 @@ func (b *bearerChallenge) challenge(
 		return err, abort
 	}
 
+	if underDPoP, ok := accessTokenCallerFrom(ctx); ok {
+		if answered, out, abort := b.accessTokenCallerChallenge(w, err, status, underDPoP, set); abort != nil || answered {
+			return out, abort
+		}
+	}
+
 	if status != http.StatusUnauthorized {
 		return err, nil
 	}
@@ -808,6 +849,200 @@ func (b *bearerChallenge) challenge(
 	}
 
 	return err, nil
+}
+
+// accessTokenCallerKey is the context key under which a resource server
+// records, for the caller it authenticated, whether that caller's challenges
+// go under DPoP. Only a resource server publishes it, so its presence is what
+// makes a request's caller an access-token caller to the challenges.
+type accessTokenCallerKey struct{}
+
+// withAccessTokenCaller records on ctx that its caller is an access-token
+// caller, whose challenges go under DPoP when underDPoP is true.
+func withAccessTokenCaller(ctx context.Context, underDPoP bool) context.Context {
+	return context.WithValue(ctx, accessTokenCallerKey{}, underDPoP)
+}
+
+// accessTokenCallerFrom reports whether ctx's caller is an access-token caller,
+// and whether its challenges go under DPoP.
+func accessTokenCallerFrom(ctx context.Context) (underDPoP, ok bool) {
+	underDPoP, ok = ctx.Value(accessTokenCallerKey{}).(bool)
+
+	return underDPoP, ok
+}
+
+// The error codes a challenge to an access-token caller names after it was
+// accepted: a scope it lacks (RFC 6750 section 3.1) and a sign-in too old for
+// a recency guard (RFC 9470 section 3).
+const codeInsufficientScope = "insufficient_scope"
+
+// insufficientScope is the refusal of an access-token caller whose token lacks
+// a required scope: err, the requirement's refusal, marked as
+// ErrInsufficientScope. Its text is fixed: err may be a consumer's.
+type insufficientScope struct{ err error }
+
+// textInsufficientScope is the fixed text of an insufficientScope refusal: ErrInsufficientScope's.
+const textInsufficientScope = "httpsec: insufficient scope: authorize: access denied"
+
+func (r *insufficientScope) Error() string   { return textInsufficientScope }
+func (r *insufficientScope) Unwrap() []error { return []error{ErrInsufficientScope, r.err} }
+
+// accessTokenCallerChallenge sets on w the one challenge a refusal of an
+// access-token caller, met after its token was accepted, is answered with, and
+// reports whether it answered err:
+//
+//   - status 403 with an *authorize.MissingScopesError beneath it:
+//     error="insufficient_scope" and the scopes the first refusing scope
+//     requirement names, and err is returned marked as ErrInsufficientScope;
+//   - status 401 with an *InsufficientUserAuthenticationError beneath it (a
+//     recency guard): error="insufficient_user_authentication" and max_age,
+//     the window in whole seconds.
+//
+// The scheme is DPoP, with the accepted algorithms, when underDPoP and DPoP is
+// on; Bearer otherwise. When set names any scheme, nothing is written: exactly
+// one challenge is ever on a response. Any
+// other refusal is left to the settled challenges. abort is the walk that gave
+// up, which answers nothing.
+func (b *bearerChallenge) accessTokenCallerChallenge(
+	w guardauth.HeaderWriter, err error, status int, underDPoP bool, set challengeSchemes,
+) (answered bool, out, abort error) {
+	var params string
+
+	walk := walkRefusal(err)
+	if walk.abort != nil {
+		return false, err, walk.abort
+	}
+
+	switch status {
+	case http.StatusForbidden:
+		missing, found, stop := errwalk.As[*authorize.MissingScopesError](walk.chain)
+		if stop != nil || !found {
+			return false, err, stop
+		}
+
+		params = `error="` + codeInsufficientScope + `"`
+		if scope, ok := scopeParam(missing.Scopes); ok {
+			params += `, scope="` + scope + `"`
+		}
+
+		out = &insufficientScope{err: err}
+	case http.StatusUnauthorized:
+		stale, found, stop := errwalk.As[*InsufficientUserAuthenticationError](walk.chain)
+		if stop != nil || !found {
+			return false, err, stop
+		}
+
+		params = `error="` + codeInsufficientUserAuthentication + `"`
+		if secs := int64(stale.Window / time.Second); secs > 0 {
+			params += ", max_age=" + strconv.FormatInt(secs, 10)
+		}
+
+		out = err
+	default:
+		return false, err, nil
+	}
+
+	switch {
+	case set != 0:
+		// A challenge is already on the response, under either scheme: the
+		// refusal is still answered, but exactly one challenge is ever written.
+	case underDPoP && b.dpop != nil:
+		w.AddHeader(headerWWWAuthenticate, dpopScheme+" "+params+", algs="+strconv.Quote(b.dpop.algorithmNames()))
+	default:
+		w.AddHeader(headerWWWAuthenticate, DefaultBearerScheme+" "+params)
+	}
+
+	return true, out, nil
+}
+
+// scopeParam is scopes as a challenge's scope value, space-separated, and
+// false when there is none or one cannot be written inside a quoted string
+// unchanged: a scope token is one or more of %x21 / %x23-5B / %x5D-7E (RFC 6749
+// section 3.3), and a requirement's scopes are the consumer's, so one outside
+// that set leaves the parameter out rather than be rewritten.
+func scopeParam(scopes []string) (string, bool) {
+	if len(scopes) == 0 {
+		return "", false
+	}
+
+	for _, s := range scopes {
+		if s == "" {
+			return "", false
+		}
+
+		for i := range len(s) {
+			if c := s[i]; c < 0x21 || c > 0x7e || c == '"' || c == '\\' {
+				return "", false
+			}
+		}
+	}
+
+	return strings.Join(scopes, " "), true
+}
+
+// accessTokenRefusal is a resource server's refusal, carrying the one challenge
+// it is answered with (RFC 6750 section 3.1, RFC 9449 section 7.1). It is
+// returned as err itself: errors.Is and errors.As see err, and its text is
+// err's, which names no token.
+type accessTokenRefusal struct {
+	err error
+
+	// dpop says the challenge is under the DPoP scheme, with the accepted
+	// algorithms; Bearer otherwise.
+	dpop bool
+
+	// code is the challenge's error code: invalid_token, or invalid_request
+	// for a request the resource server cannot read one credential from.
+	code string
+}
+
+// The error codes a resource server's challenge names.
+const (
+	codeInvalidToken   = "invalid_token"
+	codeInvalidRequest = "invalid_request"
+
+	// codeInsufficientUserAuthentication answers an access-token caller whose sign-in is not
+	// strong enough (RFC 9470 section 3).
+	codeInsufficientUserAuthentication = "insufficient_user_authentication"
+)
+
+// Error is fixed text naming only the challenge's code: the cause may carry a
+// source's or a dependency's text, which stays reachable through Unwrap.
+func (r *accessTokenRefusal) Error() string { return "httpsec: access token refused: " + r.code }
+func (r *accessTokenRefusal) Unwrap() error { return r.err }
+
+// accessTokenChallenge sets on w the one challenge a resource server's refusal
+// carries, and reports whether err was one it answered. DPoP's own refusals, an
+// invalid proof or a missing nonce, are left to DPoP's challenge, as settled,
+// when DPoP is on; with DPoP off a key-bound token's refusal is answered here.
+// A scheme set already names is not added again. abort is the walk that gave
+// up, which answers nothing.
+func (b *bearerChallenge) accessTokenChallenge(w guardauth.HeaderWriter, err error, set challengeSchemes) (bool, error) {
+	walk := walkRefusal(err)
+	if b.dpop != nil && walk.is(ErrDPoPNonceRequired, ErrInvalidDPoPProof) {
+		return false, nil
+	}
+
+	if walk.abort != nil {
+		return false, walk.abort
+	}
+
+	r, found, abort := errwalk.As[*accessTokenRefusal](walk.chain)
+	if abort != nil || !found {
+		return false, abort
+	}
+
+	switch {
+	case set != 0:
+		// A challenge is already on the response: exactly one is ever written.
+	case r.dpop && b.dpop != nil:
+		w.AddHeader(headerWWWAuthenticate, dpopScheme+` error="`+r.code+`", algs=`+
+			strconv.Quote(b.dpop.algorithmNames()))
+	default:
+		w.AddHeader(headerWWWAuthenticate, DefaultBearerScheme+` error="`+r.code+`"`)
+	}
+
+	return true, nil
 }
 
 // refusedBearerToken reports whether the request presented a token a built-in

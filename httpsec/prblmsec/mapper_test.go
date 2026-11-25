@@ -104,6 +104,11 @@ func TestMapper_TypePerRefusal(t *testing.T) {
 			assert: typed("authentication-failed"),
 		},
 		{
+			name:   "concealed inactive account",
+			err:    errors.Join(authenticate.ErrAuthenticationFailed, authenticate.ErrAccountInactive),
+			assert: typed("authentication-failed"),
+		},
+		{
 			name:   "user store unavailable",
 			err:    fmt.Errorf("%w: %w", authenticate.ErrUnavailable, errConn),
 			assert: typed("authentication-failed"),
@@ -119,11 +124,16 @@ func TestMapper_TypePerRefusal(t *testing.T) {
 		{name: "dpop nonce required", err: httpsec.ErrDPoPNonceRequired, assert: typed("proof-of-possession-failed")},
 		{name: "invalid dpop proof", err: httpsec.ErrInvalidDPoPProof, assert: typed("proof-of-possession-failed")},
 		{name: "certificate binding", err: httpsec.ErrCertificateBinding, assert: typed("proof-of-possession-failed")},
+		{name: "invalid access token", err: fmt.Errorf("x: %w", httpsec.ErrInvalidToken), assert: typed("invalid-token")},
+		{name: "insufficient user authentication", err: fmt.Errorf("x: %w", httpsec.ErrInsufficientUserAuthentication), assert: typed("insufficient-user-authentication")},
+		{name: "stale access token at a recency guard", err: fmt.Errorf("guard: %w", &httpsec.InsufficientUserAuthenticationError{Window: 5 * time.Minute}), assert: typed("insufficient-user-authentication")},
 		{name: "mfa challenge", err: challenge(policy.ChallengeMFA), assert: typed("mfa-required")},
 		{name: "consumer challenge", err: challenge(policy.ChallengeKind(100)), assert: typed("challenge-required")},
 		{name: "none-kind challenge", err: challenge(policy.ChallengeNone), assert: typed("challenge-required")},
 
 		// 403
+		{name: "access-token caller missing a scope", err: errors.Join(httpsec.ErrInsufficientScope, &authorize.MissingScopesError{Scopes: []string{"orders:write"}}), assert: typed("insufficient-scope")},
+		{name: "missing scope of any other caller", err: fmt.Errorf("rule: %w", &authorize.MissingScopesError{Scopes: []string{"orders:write"}}), assert: typed("access-denied")},
 		{name: "password change challenge", err: challenge(policy.ChallengePasswordChange), assert: typed("password-change-required")},
 		{name: "mfa enrolment challenge", err: challenge(policy.ChallengeMFAEnrolment), assert: typed("mfa-enrolment-required")},
 		{name: "account recovery challenge", err: challenge(policy.ChallengeAccountRecovery), assert: typed("account-recovery-required")},
@@ -138,6 +148,7 @@ func TestMapper_TypePerRefusal(t *testing.T) {
 		{name: "cross-site request", err: httpsec.ErrCrossSiteRequest, assert: typed("cross-site-request")},
 		{name: "cross-site stream", err: httpsec.ErrCrossSiteStream, assert: typed("cross-site-request")},
 		{name: "automation challenge", err: httpsec.ErrChallengeRequired, assert: typed("automation-challenge-required")},
+		{name: "disclosed inactive account", err: authenticate.ErrAccountInactive, assert: typed("account-inactive")},
 		{name: "access denied", err: authorize.ErrAccessDenied, assert: typed("access-denied")},
 		{name: "access denied wrapped", err: wrap(authorize.ErrAccessDenied), assert: typed("access-denied")},
 		{name: "policy denied", err: policy.ErrDenied, assert: typed("access-denied")},

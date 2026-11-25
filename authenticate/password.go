@@ -275,9 +275,14 @@ func NewUsernamePasswordAuthenticator(
 //
 // Every refusal of the credential returns the bare ErrAuthenticationFailed,
 // with nothing wrapped and nothing added, so an unknown username, a wrong
-// password and an inactive account are one answer rather than three. What
-// separates them goes to the log, where an operator sees it and a caller does
-// not.
+// password and a wrong password on an inactive account are one answer rather
+// than three. What separates them goes to the log, where an operator sees it
+// and a caller does not.
+//
+// The one refusal with more beneath it is a correct password on an inactive
+// account: ErrAuthenticationFailed joined with ErrAccountInactive. Active is
+// read only after the password verifies, so the extra error reveals nothing to
+// anyone without the password, and costs the same single verification.
 //
 // A user loader that fails with anything other than identity.ErrUserNotFound
 // is not a refusal: the credential was never judged. That returns the bare
@@ -416,7 +421,11 @@ func (a *UsernamePasswordAuthenticator) Authenticate(ctx context.Context, creden
 		a.refuse(ctx, slog.LevelWarn, reasonAccountInactive, creds.Username,
 			slog.String("reason", reasonAccountInactive))
 
-		return nil, ErrAuthenticationFailed
+		// Joined beneath the uniform failure, never in its place: every caller
+		// matching ErrAuthenticationFailed refuses it as before, and only one
+		// that asks for ErrAccountInactive learns more — which is no more than
+		// the caller already proved by presenting the right password.
+		return nil, errors.Join(ErrAuthenticationFailed, ErrAccountInactive)
 	}
 
 	// Named before the wipe, so a generator that cannot mint an identifier

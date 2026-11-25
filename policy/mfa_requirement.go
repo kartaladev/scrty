@@ -39,6 +39,17 @@ var ErrMFAEnrolmentRequired = errors.New("policy: this user must enrol a second 
 var ErrFederatedAssuranceNotMet = errors.New(
 	"policy: the provider did not assert the assurance this login requires")
 
+// ErrInsufficientUserAuthentication is the reason the requirement policy
+// denies a required user's access-token caller whose sign-in did not meet the
+// requirement: the grant records no second factor the library verified and no
+// federated evidence the assurance source meets, or an external token's
+// evidence is not met. It is never a challenge: an access-token caller holds no
+// session to answer one on. A resource server answers it 401 with an
+// insufficient_user_authentication challenge, so the client obtains a token
+// from a stronger sign-in.
+var ErrInsufficientUserAuthentication = errors.New(
+	"policy: the access token's sign-in does not meet this user's second-factor requirement")
+
 // ErrMFARequirementLookupMissing is the configuration error for a requirement
 // policy built with no lookup and no instruction to require a second factor of
 // everyone. Such a policy has no way to answer the only question it exists to
@@ -157,6 +168,16 @@ type MFARequirement struct {
 //     challenge for MFA; for any other first factor allow, leaving the login
 //     challenge to the challenge policy;
 //  13. any other phase: deny ErrMFARequired.
+//
+// # Access-token callers
+//
+// A caller of the factor.AccessToken or factor.ExternalAccessToken kind, which
+// a resource server publishes, is judged by its own rule (see
+// Input.AccessTokenAssurance): a caller naming no local user is allowed before
+// any lookup, and a required user's token is allowed only when the grant
+// records a second factor the library verified or its federated evidence is met
+// now, and otherwise denied with ErrInsufficientUserAuthentication. It is never
+// challenged.
 //
 // # Federated logins
 //
@@ -335,6 +356,12 @@ func (p *MFARequirement) Evaluate(ctx context.Context, in *Input) Decision {
 		proofLogin = known && phase == PostAuthentication
 	}
 
+	// An access-token caller holds no session to answer a challenge on, so it
+	// is judged by its own rule, which allows or denies and never challenges.
+	if in.FirstFactor == factor.AccessToken || in.FirstFactor == factor.ExternalAccessToken {
+		return p.evaluateAccessToken(ctx, in)
+	}
+
 	federated := in.FirstFactor.Channel() == factor.Federated
 
 	// 1. An exempt first factor is decided before anything is looked up: a
@@ -479,6 +506,91 @@ func (p *MFARequirement) Evaluate(ctx context.Context, in *Input) Decision {
 	default:
 		return p.denyRequired(ctx, in, phaseName(phase, known))
 	}
+}
+
+// evaluateAccessToken judges an access-token caller (factor.AccessToken or
+// factor.ExternalAccessToken), in this order:
+//
+//  1. a caller whose Input.AccessTokenAssurance names no local user: allow,
+//     before anything is looked up;
+//  2. an external token, or a provider token whose grant recorded federated
+//     evidence, under FederatedAssuranceExempt or an exemption rule exempting
+//     factor.OIDC: allow, exactly as that sign-in's session would be; a first
+//     factor the exemption rule exempts: allow;
+//  3. the requirement, as for any caller: a failing lookup denies, a user not
+//     required is allowed;
+//  4. any phase other than the per-request phase: deny ErrMFARequired;
+//  5. a provider token whose grant records a second factor the library
+//     verified: allow;
+//  6. federated evidence (the grant's, or the external token's) the assurance
+//     source meets, re-matched now: allow. A source error denies with fixed
+//     text wrapping it, never as insufficient;
+//  7. otherwise deny ErrInsufficientUserAuthentication, in challenge and refuse
+//     mode alike.
+func (p *MFARequirement) evaluateAccessToken(ctx context.Context, in *Input) Decision {
+	if !in.AccessTokenAssurance.NamesLocalUser() {
+		return Decision{Outcome: Allow}
+	}
+
+	fromFederated := in.FirstFactor == factor.ExternalAccessToken || in.FederatedAssurance.Asserted()
+	if fromFederated && (p.federatedMode == FederatedAssuranceExempt || p.exempt(factor.OIDC)) {
+		return Decision{Outcome: Allow}
+	}
+
+	if p.exempt(in.FirstFactor) {
+		return Decision{Outcome: Allow}
+	}
+
+	required, err := p.isRequired(ctx, in)
+	if err != nil {
+		p.reportLookupFailure(ctx, in, err)
+
+		return Decision{
+			Outcome: Deny,
+			Reason: diag.Wrap(err,
+				"policy: whether this user must use a second factor could not be read, and "+
+					"a requirement that cannot be read is not absent"),
+		}
+	}
+
+	if !required {
+		return Decision{Outcome: Allow}
+	}
+
+	phase, known := p.phaseOf(ctx, in)
+	if !known || phase != PerRequest {
+		return p.denyRequired(ctx, in, phaseName(phase, known))
+	}
+
+	if in.FirstFactor == factor.AccessToken && in.AccessTokenAssurance.SecondFactorVerified() {
+		return Decision{Outcome: Allow}
+	}
+
+	if fromFederated && in.FederatedAssurance.Asserted() && !nilcheck.IsNil(p.federated.src) {
+		met, err := p.federated.src.MeetsAssurance(ctx, in.User, in.FederatedAssurance)
+		if err = porterr.SanitizeTo(ctx, p.logger, err, porterr.ErrUnwalkable); err != nil {
+			p.reportSourceFailure(ctx, in, err)
+
+			return Decision{
+				Outcome: Deny,
+				Reason: diag.Wrap(err,
+					"policy: whether the provider's assurance meets this user's requirement "+
+						"could not be decided, and an assurance that cannot be decided is not met"),
+			}
+		}
+
+		if met {
+			return Decision{Outcome: Allow}
+		}
+	}
+
+	p.sampled(ctx, slog.LevelWarn, msgInsufficientUserAuthentication,
+		strings.Join([]string{sampleInsufficientUserAuth, string(in.User), string(in.FirstFactor)},
+			mfaKeySeparator),
+		slog.String("user", string(in.User)),
+		slog.String("first_factor", string(in.FirstFactor)))
+
+	return Decision{Outcome: Deny, Reason: ErrInsufficientUserAuthentication}
 }
 
 // isRequired answers step 2. With a requirement for everyone the lookup is not
@@ -651,6 +763,8 @@ const (
 	msgFederatedAssuranceNotMet = "policy: refusing a federated login whose provider assurance is not met"
 	msgAssuranceSourceFailed    = "policy: the federated assurance source failed"
 	msgAssuranceSourceEnded     = "policy: the federated assurance source ended with its request"
+
+	msgInsufficientUserAuthentication = "policy: refusing an access token whose sign-in does not meet the requirement"
 )
 
 // The sampler key families for this policy.
@@ -664,6 +778,8 @@ const (
 	sampleLookupFailed = "lookup-failed"
 
 	sampleAssuranceNotMet = "assurance-not-met"
+
+	sampleInsufficientUserAuth = "insufficient-user-authentication"
 
 	// sampleSourceFailed is one key for every user, for the reason
 	// sampleLookupFailed is.

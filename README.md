@@ -1085,6 +1085,217 @@ limiter that cannot answer, and a source that cannot be attributed, are refused 
 limit, 429 at the authorization, resume, end-session and logout confirmation endpoints and
 `invalid_client` at the token endpoints.
 
+## Resource server
+
+`httpsec.EnableResourceServer(resourceID, opts...)` lets the chain accept OAuth access tokens on an
+API's routes, whether the tokens come from the chain's own OpenID Provider or from an identity
+provider you do not run. It is named for the role it plays beside `EnableOIDCProvider`. The resource
+identifier is an absolute URI with no fragment that names the API, and a token is accepted only when
+its audience names it.
+
+A token that resource server recognises and refuses is refused for good: it is never handed to a
+later credential mode, so a refused access token cannot be read as something else. A token it does
+not recognise passes on, so the chain's session tokens, session references and API keys still reach
+their own modes.
+
+### A provider and its API on one chain
+
+```go
+chain, err := httpsec.New(
+    httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),
+    httpsec.EnableJWKSEndpoint(keys),
+    httpsec.EnableCSRFProtection(),
+    httpsec.EnableSecurityHeaders(),
+    httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "https://id.example.com"}),
+    httpsec.EnableOIDCProvider(provider),
+    httpsec.EnableResourceServer("https://api.example.com/orders",
+        httpsec.WithPathPrefix("/api/"),
+        httpsec.FromProvider(provider),
+    ),
+)
+```
+
+`FromProvider` trusts the tokens `provider` issues, JWT and opaque alike. The provider must be the
+one given to `EnableOIDCProvider` on the same chain. The grant is checked on every request, so a
+revoked grant, an expired token, or a user who has become inactive is refused on the next request.
+A client whose tokens name the API sets `oidcprovider.Client.DefaultAudience` (or asks for it with
+the `resource` parameter, from `Client.Resources`). A token whose audience is only the issuer is
+meant for UserInfo, and the resource server refuses it.
+
+### An API that only verifies
+
+```go
+chain, err := httpsec.New(
+    httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "https://api.example.com"}),
+    httpsec.EnableResourceServer("https://api.example.com/orders",
+        httpsec.FromIssuer("https://idp.example.com"),
+    ),
+)
+```
+
+### Sources
+
+A resource server holds one or more sources. Each is scoped to the resource server and verifies the
+tokens it recognises.
+
+| Source | Trusts | Verified by |
+|---|---|---|
+| `FromProvider(op)` | the chain's own provider | the provider, on every request |
+| `FromIssuer(issuer)` | an issuer's JWT access tokens | the issuer's key set, found from its metadata (`WithJWKSURL` pins it) |
+| `FromIntrospection(issuer, endpoint, clientID)` | opaque or JWT tokens | the issuer's introspection endpoint, RFC 7662, on every request |
+
+- **Revocation follows the source.** A provider token is refused at once. A JWT from `FromIssuer` is
+  valid until it expires unless `WithJWTIntrospection(httpsec.IntrospectionConfig{...})` asks the
+  issuer about each one. An introspected token is refused at once, or within the bound
+  `WithIntrospectionCache(maxAge, maxEntries)` sets; the cache is off by default.
+- **Opaque tokens need a way to be recognised.** An introspection source claims every opaque token no
+  other source claims, and only while no other mode on the chain reads the `Bearer` scheme. Give it
+  `WithOpaquePrefix("op.")` to claim only tokens with that prefix, which a chain with session-reference
+  bearers, signed bearer tokens (`EnableBearerToken`) or API keys under `Bearer` requires. `FromIntrospection` authenticates with
+  `WithIntrospectionSecret` or `WithIntrospectionKey`.
+- **An unreachable issuer is not the caller's fault.** A key set or an introspection endpoint that
+  cannot answer is a dependency failure, answered 500, never a 401.
+- **Fetches are confined.** Metadata, key sets and introspection go through `outbound.New()`: https
+  only, redirects kept on the origin, bounded in time and size. `WithOutboundClient` replaces it, for
+  a proxy or a private certificate authority.
+- **Verification refusals are throttled.** Per client address and source, 20 a minute by default, and
+  an address over its budget is refused before a key set is fetched or an endpoint is called.
+  `WithRefusalLimiter` replaces it, and `WithRateLimiterFactory` shares it between replicas. Binding
+  and nonce answers are not counted, so an ordinary DPoP client is never throttled for answering a
+  nonce challenge.
+
+### Prefixes
+
+By default a resource server covers every path, and is then allowed only as the chain's one resource
+server. `WithPathPrefix` confines it to the paths under its prefixes, so that one binary can serve
+several APIs, each trusting its own sources, even the same issuer:
+
+```go
+chain, err := httpsec.New(
+    httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "https://api.example.com"}),
+    httpsec.EnableResourceServer("https://api.example.com/orders",
+        httpsec.WithPathPrefix("/orders/"),
+        httpsec.FromIssuer("https://idp.example.com", httpsec.WithSourceAudience("orders")),
+    ),
+    httpsec.EnableResourceServer("https://api.example.com/billing",
+        httpsec.WithPathPrefix("/billing/"),
+        httpsec.WithResourceAliases("https://billing.example.com"),
+        httpsec.FromIssuer("https://idp.example.com"),
+    ),
+)
+```
+
+A prefix begins and ends with `/`, is absolute rather than relative to the chain's base path, and
+matches whole segments, so `/orders/` does not cover `/orders-v2/1`. Prefixes may not overlap. A
+token is judged by the resource server covering the request's path, then by its source: a token for
+`/billing` sent to `/orders/1` is refused as an invalid token, though both trust its issuer. A token
+the library can tell is an access token (the provider's own, an `at+jwt`, a JWT from a source's
+issuer) on a path no resource server covers is refused too.
+
+The audience a token must name is the resource identifier, any `WithResourceAliases`, and the
+source's own `WithSourceAudience` for an issuer that spells the API differently.
+
+### Bound tokens by default
+
+Every source requires a token bound to a DPoP key or a certificate (RFC 9449, RFC 8705), so the chain
+must enable DPoP or certificate binding; a resource server counts as a feature that verifies bound
+credentials, and requiring bound tokens does not require proofs at sign-in. A token with no binding,
+or whose confirmation names only a method the chain cannot check, is refused. A bound token is
+held to its binding: a missing or wrong proof, a replayed proof or a missing nonce is answered as the
+DPoP section describes, and a certificate mismatch as the certificate-binding section does.
+
+`WithUnboundTokens()` opts one source out. It is a construction error on a chain whose DPoP is
+required, and the provider source takes no opt-out. Tokens must also be typed `at+jwt` (RFC 9068);
+`WithUntypedTokens(claim, value)` accepts untyped JWTs, but only together with a claim that tells an
+access token from an ID token.
+
+### Who the caller is
+
+A source resolves the caller by one strategy, and each strategy is a source option:
+
+| Strategy | Option | Default for | The caller |
+|---|---|---|---|
+| Local user | `WithLocalUsers(loader)` | `FromProvider` (the provider's own `UserLoader`) | the user the subject names, reloaded on every request, so roles are current; a missing, inactive or mismatched user is refused as an invalid token |
+| Claims only | `WithClaimsOnly()` | `FromIssuer`, `FromIntrospection` | a user principal named `<issuer>#<subject>`, with the token's scopes and no role |
+| Claims mapper | `WithClaimsMapper(provider, fn)` | none | whatever `fn` returns from the verified claims, as `httpsec.MappedCaller` |
+| Linked user | `WithLinkedUsers(links, provider, users)` | none | the local user the identity link for the issuer and subject names |
+
+An external subject is never taken as a local user identifier: subject `42` at a remote issuer is not
+local user `42`, and only a link makes it so. `MappedCaller`'s zero value is a local user, so a mapper
+that forgets `External: true` is judged as one and fails closed. Each strategy's refusal is
+`httpsec.ErrInvalidToken`; a loader, link store or mapper that fails is a dependency failure, 500.
+
+What a handler sees: `identity.PrincipalFromContext` works unchanged, and the principal carries the
+token's scopes (`Principal.Scopes`) beside any roles. `httpsec.AccessTokenFromContext(ctx)` returns
+a copy of the accepted token's issuer, subject, client, audience, scopes, authentication time,
+`acr`, `amr` and, for a remote or introspected token, its claims. The principal's first factor is
+`factor.AccessToken` for the provider source and `factor.ExternalAccessToken` for the others.
+
+### Multi-factor authentication
+
+Neither access-token kind is exempt from an MFA requirement, and neither is ever challenged: a token
+cannot answer a second-factor prompt, so a caller that does not meet the requirement is refused 401
+with `insufficient_user_authentication`.
+
+- **Provider tokens** are judged on every request by the second-factor marker the library records on
+  the grant's sign-in, or by re-matching the federated evidence the grant recorded. A grant from before
+  the upgrade carries no marker, so an MFA-required user signs in again once.
+- **External tokens** are judged by the federated-assurance rules from the token's `acr` and `amr`,
+  which need the policy's assurance source, as an OIDC login does.
+- **A claims-only caller names no local user**, so the requirement is not looked up for it.
+
+### Challenges
+
+A refused access token is answered 401 with `WWW-Authenticate: Bearer error="invalid_token"` (RFC
+6750), or under `DPoP` with `algs` when the token came under `DPoP` or its source requires DPoP
+binding (RFC 9449). The response carries one challenge. The bearer challenge also covers:
+
+| Refusal | Status | Challenge |
+|---|---|---|
+| a refused token | 401 | `error="invalid_token"` |
+| a repeated `Authorization` header | 400 | `error="invalid_request"` |
+| a scope a chain rule or guard needs (`httpsec.ErrInsufficientScope`) | 403 | `error="insufficient_scope", scope="orders:write"` |
+| a sign-in older than a recency guard allows (`httpsec.ErrInsufficientUserAuthentication`) | 401 | `error="insufficient_user_authentication", max_age=300` (RFC 9470) |
+
+`authorize.HasAnyScope` and `HasAllScopes` refuse with `*authorize.MissingScopesError`, which names the
+scopes and whether all were needed, still matching `authorize.ErrAccessDenied`; find it with
+`errors.As`. `httpsec.WithoutBearerChallenge` writes no challenge, and a scope refusal then stays a
+plain 403. A recency guard refuses an access-token caller with
+`*httpsec.InsufficientUserAuthenticationError`, which carries the window and also matches
+`httpsec.ErrReauthenticationRequired`, so existing handling keeps matching; it judges the token's
+authentication time, and a token that states none is refused. A session caller keeps today's 403.
+
+### Session-only endpoints
+
+On a path a resource server covers, every endpoint that acts on the caller's sign-in session refuses
+an access-token caller with `httpsec.ErrAuthenticationRequired`, before changing anything, and no
+option relaxes it: password change, passkeys, second factors and saved codes, re-authentication,
+session renewal and management, the provider's resume and consent, the active-role switch, and logout.
+A client holding only an access token signs out through the provider's token revocation (RFC 7009)
+and end-session endpoints. The session-signal stream keeps its answer.
+
+### Defaults
+
+| Setting | Default | Replace with |
+|---|---|---|
+| Coverage | every path, one resource server per chain | `WithPathPrefix` |
+| Audience | the resource identifier | `WithResourceAliases`, `WithSourceAudience` |
+| Binding | required, DPoP or certificate | `WithUnboundTokens` (not on `FromProvider`, not where DPoP is required) |
+| Token type | `at+jwt` | `WithUntypedTokens(claim, value)` |
+| Algorithms | `RS256`, `ES256` | `WithAlgorithms` |
+| Clock skew | none | `WithClockSkew`, at most five minutes |
+| Caller | local user for the provider, claims only for the rest | `WithLocalUsers`, `WithClaimsOnly`, `WithClaimsMapper`, `WithLinkedUsers` |
+| Key-set location | the issuer's metadata | `WithJWKSURL` |
+| Outbound requests | `outbound.New()` | `WithOutboundClient` |
+| JWT revocation | valid until `exp` | `WithJWTIntrospection` |
+| Introspection cache | none | `WithIntrospectionCache` |
+| Refusal throttle | 20 per address and source a minute, in memory | `WithRefusalLimiter`, `WithRateLimiterFactory` |
+| Order | `httpsec.OrderResourceServer` (425) | none |
+
+Every wiring mistake, a source with no issuer, an option a source does not take, overlapping
+prefixes, a binding requirement with nothing to verify it, a provider that is not the chain's, is a
+configuration error from `New`.
+
 ## CLI clients
 
 A command-line program has no web server to receive a redirect and no secret to keep. Register it as
@@ -1829,6 +2040,11 @@ the window for one route. A stale session, a session with no recorded authentica
 caller with no session at all (an API key, Basic) are refused with a
 `*httpsec.ReauthenticationRequiredError` (403, `httpsec.ErrReauthenticationRequired`) that carries
 the window, so an error handler can tell the client how recent a proof it needs.
+
+An access-token caller (see "Resource server") is judged by its token's authentication time instead: a
+stale token, or one that states none, is refused with a `*httpsec.InsufficientUserAuthenticationError`
+(401, `error="insufficient_user_authentication"` with `max_age`), which also matches
+`httpsec.ErrReauthenticationRequired`.
 
 - **The window is fixed.** Calling the route does not extend it, nor does a session renewal; only
   an authentication moves the time.
@@ -2732,6 +2948,7 @@ the others alone.
 | Common passwords | the bundled list, case-insensitive | `password.CommonPasswords`, `password.WithoutCommonPasswords` |
 | Words tied to the user or the service | none | `password.ContextWords` |
 | Breached passwords | no check | `password.Breached(password.PwnedPasswords(client), password.Refuse)` |
+| Your own rules | none | `password.WithRule(name, check)` |
 | Reuse | no history | `password.NoReuse(history, depth)` |
 | Encoder for a change | Argon2id at its defaults | `password.WithEncoder` |
 
@@ -2798,6 +3015,45 @@ stored hash changed meanwhile, nothing is written, the store reports `identity.E
 the write treats that as done: the newer password stays, and the next login upgrades it. The
 password's age is not moved, because a rehash is not a password change. A consumer store must
 honour the condition too; the identity conformance suite (`test/identity`) checks it.
+
+### Your own rules
+
+`password.WithRule(name, check)` adds a rule you own, such as a ban on your company's name. `check`
+is a `password.RuleFunc`, `func(ctx, candidate string, user *identity.Details) (bool, error)`: true
+accepts, false refuses.
+
+```go
+policy, err := password.NewPolicy(
+    password.WithRule("no-company-name", func(_ context.Context, candidate string, _ *identity.Details) (bool, error) {
+        return !strings.Contains(strings.ToLower(candidate), "acme"), nil
+    }),
+)
+```
+
+- **Order.** Your rules run after the length check, the common list and the context words, in the
+  order added, and before the breach lookup, so a cheap local refusal never spends a network call.
+- **The refusal names the rule.** It is a `password.RejectedError` with `Rule` set to your name, so
+  it matches `password.ErrPasswordRejected` (422) and not the reuse refusal, and the problem's `rule`
+  member carries it unchanged.
+- **An error fails closed.** A rule that returns an error fails the check and the change with
+  `password.ErrRuleFailed`, whose text names the rule and nothing else; the rule's own error stays
+  reachable through `errors.Is`. It is never taken for a refusal.
+- **Limits.** The name is 1 to 64 ASCII letters, digits, `-` and `_`, not a built-in rule's and not
+  used twice, and `check` is not nil, or `NewPolicy` fails. `check` must be safe for concurrent use and
+  must not keep `candidate`. A panic in it is not recovered: the rule is yours.
+
+### Inactive accounts
+
+A correct password for an inactive account is refused as a wrong password is, in status, headers,
+problem type and time taken: the provider joins `authenticate.ErrAccountInactive` beneath
+`authenticate.ErrAuthenticationFailed`, and only after the password verified, so nothing tells a
+client the account exists. `errors.Is(err, authenticate.ErrAccountInactive)` still holds in your own
+error handler.
+
+`httpsec.WithInactiveDisclosure()` answers that case 403 instead, with the `account-inactive` problem
+type, and no `WWW-Authenticate` header on a Basic refusal. It governs form login and Basic, and gives
+up one thing: whoever holds an account's password learns the account is inactive, which is no more
+than that the password is right. A wrong password for an inactive account is never disclosed.
 
 ## Security headers
 
@@ -3111,7 +3367,7 @@ webhook, from both checks. Every other protection still applies to it.
 holds (RFC 9449). The client signs a short proof for every request, so a token
 copied out of a log, a proxy or a browser extension is of no use without the
 private key. It needs a feature that verifies bound credentials (today
-`EnableBearerToken` or `EnableSessionBearer`; your own handler that checks
+`EnableBearerToken`, `EnableSessionBearer` or `EnableResourceServer`; your own handler that checks
 proofs does not count), and is off until you enable it. It also needs the host
 your proofs name, declared by you: `PublicURL`, or trusted proxies that name
 their allowed hosts with `ForwardedHost`. The chain never takes it from the
@@ -3875,10 +4131,11 @@ Cache-Control: no-store
 ```
 
 The `title` and `detail` are fixed library text, and no error's text appears in any member. The only
-extension members are `challenge`, `methods`, `max_age`, `rule`, `access_token` and `token_type`.
+extension members are `challenge`, `methods`, `max_age`, `rule`, `scope`, `access_token` and `token_type`.
 `challenge` is one of the fixed tokens `mfa`, `password-change`, `mfa-enrolment` or `account-recovery`,
 and is absent for a challenge of any other kind and for every other refusal. `max_age` is the required
-recency in seconds, on `reauthentication-required`. `rule` is the password policy rule that refused a
+recency in seconds, on `reauthentication-required` and `insufficient-user-authentication`. `scope` is the
+scopes the refusing requirement named, space-separated, on `insufficient-scope`. `rule` is the password policy rule that refused a
 candidate, on `password-rejected`; it is your data, passed through unchanged.
 
 ### Types
@@ -3892,6 +4149,8 @@ type of its own is answered `about:blank` with no detail, and a recognised 500 a
 | `authentication-required` | 401 | authentication required, an idle or expired session, a provider's re-authentication refusal |
 | `authentication-failed` | 401 | the status default: failed authentication in every form, a concealed lock, an unavailable user store, a throttled source, a refused magic link |
 | `second-factor-failed` | 401 | an invalid or throttled second-factor attempt or enrolment, a throttled passkey registration begin |
+| `invalid-token` | 401 | an access token a resource server refused |
+| `insufficient-user-authentication` | 401 | an access-token caller whose sign-in does not meet the MFA requirement or a recency guard |
 | `proof-of-possession-failed` | 401 | a missing or invalid DPoP proof, a DPoP nonce required, a certificate-bound token without its certificate |
 | `mfa-required` | 401 | a challenge of the second-factor kind |
 | `challenge-required` | 401 | a challenge of any other kind answered 401 |
@@ -3899,8 +4158,10 @@ type of its own is answered `about:blank` with no detail, and a recognised 500 a
 | `mfa-enrolment-required` | 403 | a challenge of the second-factor enrolment kind |
 | `account-recovery-required` | 403 | a challenge of the account-recovery kind |
 | `reauthentication-required` | 403 | any re-authentication-required refusal |
+| `insufficient-scope` | 403 | an access-token caller missing a scope a rule or guard requires |
 | `cross-site-request` | 403 | a cross-site request refused by CSRF protection or the signal stream |
 | `automation-challenge-required` | 403 | a request refused by the automation-challenge verifier |
+| `account-inactive` | 403 | the disclosed inactive account (`httpsec.WithInactiveDisclosure`) |
 | `access-denied` | 403 | the status default |
 | `invalid-request` | 400 | the status default |
 | `not-found` | 404 | the status default |

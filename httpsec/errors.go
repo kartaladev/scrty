@@ -176,6 +176,45 @@ var (
 	// allowed hosts. The chain refuses it before any interceptor runs. It maps
 	// to 400. Its text never names the host.
 	ErrHostNotAllowed = errors.New("httpsec: host not allowed")
+
+	// ErrInvalidToken refuses an access token a resource server
+	// (EnableResourceServer) recognised and would not accept: one no source
+	// verified, whatever the reason (expired, wrong audience, untyped, unbound,
+	// a grant revoked, a caller that could not be resolved), one too large to
+	// read, and one that is unmistakably an access token on a path no resource
+	// server covers. A failed binding is not it: that keeps the refusals of
+	// sender-constrained tokens (ErrInvalidDPoPProof, ErrDPoPNonceRequired,
+	// ErrCertificateBinding). It matches authenticate.ErrAuthenticationFailed,
+	// and maps to 401 with a challenge naming error="invalid_token" (RFC 6750
+	// section 3.1). Only a resource server returns it: a session token the
+	// bearer refuses stays the plain authentication failure. Its text names no
+	// token, issuer or reason.
+	ErrInvalidToken = fmt.Errorf("httpsec: invalid access token: %w", authenticate.ErrAuthenticationFailed)
+
+	// ErrInsufficientUserAuthentication refuses an access-token caller whose
+	// sign-in is not strong enough for the request: the MFA requirement policy
+	// denied it because the token's grant records no second factor the
+	// library verified and no federated evidence the policy's assurance source
+	// meets (or an external token's evidence is not met). It matches
+	// ErrReauthenticationRequired, so existing handling keeps matching it, and
+	// maps to 401, ahead of that sentinel's 403, with a challenge naming
+	// error="insufficient_user_authentication" (RFC 9470), so the client
+	// obtains a token from a stronger sign-in. Nothing is marked on any
+	// session. Its text names no token, user or reason.
+	ErrInsufficientUserAuthentication = fmt.Errorf("httpsec: insufficient user authentication: %w",
+		ErrReauthenticationRequired)
+
+	// ErrInsufficientScope marks the refusal of an access-token caller (one a
+	// resource server, EnableResourceServer, authenticated) whose token lacks
+	// a scope a chain rule or a guard requires. It matches
+	// authorize.ErrAccessDenied, so it maps to 403, and the refusal it marks
+	// still matches the requirement's *authorize.MissingScopesError, which
+	// names the scopes. The chain's bearer challenge marks the refusal and
+	// answers it with error="insufficient_scope" and those scopes (RFC 6750
+	// section 3.1); a chain built WithoutBearerChallenge sets no challenge and
+	// leaves the refusal unmarked, the plain access denial. A refusal of any
+	// other caller is never marked. Its text names no scope, token or user.
+	ErrInsufficientScope = fmt.Errorf("httpsec: insufficient scope: %w", authorize.ErrAccessDenied)
 )
 
 // ReauthenticationRequiredError is the recency guard's refusal. It carries the
@@ -199,6 +238,37 @@ func (e *ReauthenticationRequiredError) Error() string {
 // Is reports whether target is ErrReauthenticationRequired.
 func (e *ReauthenticationRequiredError) Is(target error) bool {
 	return target == ErrReauthenticationRequired
+}
+
+// InsufficientUserAuthenticationError is a recency guard's refusal of an
+// access-token caller (one a resource server, EnableResourceServer,
+// authenticated) whose token's authentication time is older than the guard's
+// window, or which carries none. It carries the window, so a client can say
+// how recent a sign-in is needed.
+//
+// The guards (Guards.RequireRecentAuthentication, RequireAuthenticationWithin,
+// and the gin and fiber guards) return it in place of
+// *ReauthenticationRequiredError for such a caller. It matches both
+// ErrInsufficientUserAuthentication and ErrReauthenticationRequired through
+// errors.Is, so existing handling keeps matching, and maps to 401: the chain's
+// bearer challenge answers it with error="insufficient_user_authentication"
+// and max_age, the window in whole seconds (RFC 9470). A session caller's
+// refusal stays *ReauthenticationRequiredError (403). Its text names the
+// window and nothing else: no token, user or session.
+type InsufficientUserAuthenticationError struct {
+	// Window is how recently the caller's sign-in must have happened.
+	Window time.Duration
+}
+
+// Error names the window and nothing else.
+func (e *InsufficientUserAuthenticationError) Error() string {
+	return fmt.Sprintf("httpsec: insufficient user authentication: sign-in required within %s", e.Window)
+}
+
+// Is reports whether target is ErrInsufficientUserAuthentication or
+// ErrReauthenticationRequired, which the first wraps.
+func (e *InsufficientUserAuthenticationError) Is(target error) bool {
+	return target == ErrInsufficientUserAuthentication || target == ErrReauthenticationRequired
 }
 
 // ChallengeError refuses a request that must satisfy a challenge before it
@@ -299,6 +369,15 @@ var statusTable = []statusRow{
 	// otherwise would tell a held account from a free one, and a known user
 	// from an unknown one, wherever the store fails for some rows only.
 	{authenticate.ErrUnavailable, http.StatusUnauthorized},
+	// An access token a resource server refused. It wraps the authentication
+	// failure, so the row below would answer it alike; it has its own row
+	// because it is a stable contract of its own.
+	{ErrInvalidToken, http.StatusUnauthorized},
+	// An access-token caller whose sign-in is too weak. It wraps
+	// ErrReauthenticationRequired, whose row (403) below means a session
+	// caller, so it is judged here first.
+	{ErrInsufficientUserAuthentication, http.StatusUnauthorized},
+	{policy.ErrInsufficientUserAuthentication, http.StatusUnauthorized},
 	{authenticate.ErrAuthenticationFailed, http.StatusUnauthorized},
 	{policy.ErrSessionIdle, http.StatusUnauthorized},
 
@@ -391,6 +470,14 @@ var statusTable = []statusRow{
 	// to authenticate.ErrAuthenticationFailed, which the row above answers 401
 	// first, so a lock reads as a wrong password.
 	{lockout.ErrAccountLocked, http.StatusTooManyRequests},
+
+	// An inactive account whose password was right. This row answers only a
+	// refusal the consumer chose to disclose (WithInactiveDisclosure): by
+	// default the password provider joins it to
+	// authenticate.ErrAuthenticationFailed, which the row above answers 401
+	// first, so it reads as a wrong password. 403, because the caller is
+	// identified and refused, and a 401 would invite a retry.
+	{authenticate.ErrAccountInactive, http.StatusForbidden},
 	// A held identifier is also a locked one; it answers the same way.
 	{lockout.ErrAccountHeld, http.StatusTooManyRequests},
 	{policy.ErrTooManySessions, http.StatusTooManyRequests},
@@ -694,7 +781,9 @@ func lookup(err error) (status int, ok bool, abort error) {
 
 	// An issuing failure is a dependency failure whatever its cause wraps,
 	// so it is answered before the challenge and the refusal table are read.
-	if _, found, stop := errwalk.As[*issueFailure](chain); stop != nil {
+	// So is a dependency a resource server's per-request policy consulted (*dependencyFailure): both
+	// mark themselves, so one scan finds either.
+	if _, found, stop := errwalk.As[forcedDependency](chain); stop != nil {
 		return unrecognised(stop)
 	} else if found {
 		return http.StatusInternalServerError, true, nil

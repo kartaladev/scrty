@@ -87,6 +87,7 @@ func TestEndpointAnswering_ClassifiesEveryEnableOption(t *testing.T) {
 		"EnableCSRFProtection":      false,
 		"EnableDPoP":                false,
 		"EnableRecoveryCooldown":    false,
+		"EnableResourceServer":      false,
 		"EnableSecurityEvents":      false,
 		"EnableSecurityHeaders":     false,
 		"EnableSessionBearer":       false,

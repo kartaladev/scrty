@@ -162,11 +162,10 @@ func (g *oidcUserInfoGroup) readToken(ex *Exchange) (raw string, underDPoP bool,
 func (g *oidcUserInfoGroup) readHeaderOrForm(ex *Exchange) (raw string, underDPoP bool, err error) {
 	r := ex.Request
 
-	if len(r.HeaderValues(oidcAuthorizationHeader)) > 1 {
+	raw, underDPoP, claimed, err := readAuthorization(r, ex.dpop())
+	if err != nil {
 		return "", false, &oidcprovider.Error{Code: oidcprovider.CodeInvalidRequest}
 	}
-
-	raw, underDPoP, claimed := presentedBearer(r.Header(oidcAuthorizationHeader), "Bearer", false, ex.dpop())
 
 	if r.Method() != http.MethodPost || !declaresForm(r.Header("Content-Type")) {
 		return raw, underDPoP, nil
@@ -210,54 +209,44 @@ func (g *oidcUserInfoGroup) refuse(ex *Exchange, asDPoP bool, err error) error {
 }
 
 // holdToKey is D8's check of a presented credential, for a token the provider read rather than the
-// chain's bearer: a certificate binding is judged against the request's certificate, a DPoP binding
-// against a proof over the token, and an unbound token is held to whether DPoP is required. It refuses
-// what the chain's bearer modes refuse, and tells a proof that failed (invalid_dpop_proof) from a key
-// that does not fit (invalid_token), as RFC 9449 section 7.1 does.
+// chain's bearer: the binding is judged by checkBinding, and its verdict answered as UserInfo's
+// settled spec says. A proof that failed is invalid_dpop_proof, a missing nonce is use_dpop_nonce
+// with a fresh one, and any other binding that does not hold (a key that does not fit, a missing
+// certificate, a confirmation the chain cannot honour) is invalid_token, as RFC 9449 section 7.1
+// does. The proof is recorded last, so a replayed one reads no user and no claims.
 //
 // When answered is true the request has had its answer, and err is what to return.
 func holdToKey(ex *Exchange, v *dpopVerifier, underDPoP bool, raw string, at *oidcprovider.AccessToken, asDPoP bool) (bool, error) {
-	ctx := ex.Context()
-
-	var known int
-	binding := keyBinding{jkt: at.Confirmation[oidcConfirmationJKT], x5tS256: at.Confirmation[oidcConfirmationX5T]}
-
-	if binding.jkt != "" {
-		known++
-	}
-	if binding.x5tS256 != "" {
-		known++
+	check, err := checkBinding(ex, v, underDPoP, raw, at.Confirmation)
+	if err != nil {
+		return true, err
 	}
 
-	binding.other = len(at.Confirmation) > known
+	if answered, err := answerBinding(ex, v, check.verdict, asDPoP); answered {
+		return true, err
+	}
 
-	var proof *dpopProof
+	verdict, err := check.record(ex.Context(), v)
+	if err != nil {
+		return true, err
+	}
 
-	switch {
-	case binding.x5tS256 != "" || binding.other:
-		// Judged with no proof verified. Under the DPoP scheme it is refused for that alone, when the
-		// chain can judge certificates at all.
-		if underDPoP && ex.certBinding() != nil && binding.jkt == "" && !binding.other {
-			return true, writeOIDCChallenge(ex, asDPoP, oidcprovider.CodeInvalidToken)
-		}
+	return answerBinding(ex, v, verdict, asDPoP)
+}
+
+// answerBinding answers a binding verdict as UserInfo does, and reports false for a binding that
+// holds, or a token that is unbound and was admitted as such.
+func answerBinding(ex *Exchange, v *dpopVerifier, verdict bindingVerdict, asDPoP bool) (bool, error) {
+	switch verdict {
+	case bindingHeld, bindingUnbound:
+		return false, nil
+	case bindingProofInvalid:
+		return true, refuseOIDCProof(ex, v, ErrInvalidDPoPProof)
+	case bindingNonceRequired:
+		return true, refuseOIDCProof(ex, v, ErrDPoPNonceRequired)
 	default:
-		var err error
-
-		proof, err = presentedProof(ctx, v, ex.Request, underDPoP, raw)
-		if err != nil {
-			return true, refuseOIDCProof(ex, v, err)
-		}
-	}
-
-	if err := admitBinding(ex, v, proof, binding); err != nil {
 		return true, writeOIDCChallenge(ex, asDPoP, oidcprovider.CodeInvalidToken)
 	}
-
-	if err := recordProof(ctx, v, proof); err != nil {
-		return true, refuseOIDCProof(ex, v, err)
-	}
-
-	return false, nil
 }
 
 // refuseOIDCProof answers the failure of a request's proof in the form a resource server does (RFC

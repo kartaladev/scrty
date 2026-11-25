@@ -35,7 +35,8 @@ WHERE handle_digest = $1 AND stage = $2`
 	// CodeInsert stores a code record, with the arguments CodeArgs returns. No row
 	// affected means its token identifier is already held.
 	CodeInsert = `INSERT INTO scrty_op_authorization_codes (` + codeColumns + `)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
+  $24)
 ON CONFLICT DO NOTHING`
 
 	// CodeSelect reads the record of token identifier $1.
@@ -75,7 +76,7 @@ ON CONFLICT (user_ref, client_id) DO UPDATE SET
 	// affects no row, and that is the refusal.
 	GrantInsert = `INSERT INTO scrty_op_grants (` + grantColumns + `)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
-  $24, $25)
+  $24, $25, $26, $27, $28, $29)
 ON CONFLICT (family) DO UPDATE SET
   user_ref = EXCLUDED.user_ref, client_id = EXCLUDED.client_id, scopes = EXCLUDED.scopes,
   resources = EXCLUDED.resources, auth_time = EXCLUDED.auth_time, amr = EXCLUDED.amr, acr = EXCLUDED.acr,
@@ -84,7 +85,9 @@ ON CONFLICT (family) DO UPDATE SET
   external_issuer = EXCLUDED.external_issuer, external_session_id = EXCLUDED.external_session_id,
   offline = EXCLUDED.offline, ends_with_sign_in = EXCLUDED.ends_with_sign_in,
   holds_lineage = EXCLUDED.holds_lineage, created_at = EXCLUDED.created_at, expires_at = EXCLUDED.expires_at,
-  origin = EXCLUDED.origin, survives_sign_in_end = EXCLUDED.survives_sign_in_end
+  origin = EXCLUDED.origin, survives_sign_in_end = EXCLUDED.survives_sign_in_end,
+  second_factor_verified = EXCLUDED.second_factor_verified, external_provider = EXCLUDED.external_provider,
+  external_amr = EXCLUDED.external_amr, external_acr = EXCLUDED.external_acr
 WHERE scrty_op_grants.created_at IS NULL`
 
 	// GrantSelect reads the record of family $1.
@@ -138,7 +141,7 @@ ON CONFLICT (client_id, jti) DO NOTHING`
 	// BrowserSessionInsert stores a session, with the arguments BrowserSessionArgs
 	// returns. No row affected means its digest is already held.
 	BrowserSessionInsert = `INSERT INTO scrty_op_browser_sessions (id, ` + browserSessionColumns + `)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 ON CONFLICT (digest) DO NOTHING`
 
 	// BrowserSessionSelect reads the session of digest $1 while $2 is before both of
@@ -207,20 +210,25 @@ const (
 
 	codeColumns = `token_id, client_id, redirect_uri, challenge, nonce, dpop_jkt, scopes, resources, user_ref,
   sign_in_family, authenticated_at, amr, acr, sign_in_absolute_expires_at, external_issuer, external_session_id,
-  grant_family, offline, ends_with_sign_in, expires_at`
+  grant_family, offline, ends_with_sign_in, expires_at, ` + signInProofColumns
 
 	consentColumns = `user_ref, client_id, scopes, offline, last_given_at`
 
 	grantColumns = `family, user_ref, client_id, scopes, resources, auth_time, amr, acr, key_binding, cert_binding, code_id,
   sign_in_family, external_issuer, external_session_id, offline, ends_with_sign_in, holds_lineage, created_at,
-  expires_at, revoked, revoked_at, revoke_cause, sign_in_ended_at, origin, survives_sign_in_end`
+  expires_at, revoked, revoked_at, revoke_cause, sign_in_ended_at, origin, survives_sign_in_end, ` + signInProofColumns
 
 	//nolint:gosec // a column list, and no credential
 	accessTokenColumns = `id, digest, grant_family, client_id, user_ref, scopes, audience, confirmation, issued_at,
   expires_at, revoked`
 
 	browserSessionColumns = `digest, user_ref, sign_in_family, authenticated_at, amr, acr, sign_in_absolute_expires_at,
-  external_issuer, external_session_id, idle_expires_at, absolute_expires_at`
+  external_issuer, external_session_id, idle_expires_at, absolute_expires_at, ` + signInProofColumns
+
+	// signInProofColumns are how a sign-in was proved, last on each table that keeps a
+	// sign-in in columns. They are nullable: a row from before they were added holds NULL
+	// in each, which reads as no second-factor marker and no federated evidence.
+	signInProofColumns = `second_factor_verified, external_provider, external_amr, external_acr`
 
 	clientColumns = `client_id, name, client_type, application_type, auth_method, pkce, jwks, jwks_uri, redirect_uris,
   post_logout_redirect_uris, back_channel_logout_uri, scopes, resources, default_audience, resource_identifier,

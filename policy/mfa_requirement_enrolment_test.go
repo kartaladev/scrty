@@ -314,6 +314,16 @@ func TestEnrolmentFirstFactors(t *testing.T) {
 			first: factor.Password, assert: refusedAtConstruction,
 		},
 		{
+			name:  "the access-token first factor cannot be listed",
+			list:  []factor.Kind{factor.Password, factor.AccessToken},
+			first: factor.Password, assert: refusedAtConstruction,
+		},
+		{
+			name:  "the external-access-token first factor cannot be listed",
+			list:  []factor.Kind{factor.Password, factor.ExternalAccessToken},
+			first: factor.Password, assert: refusedAtConstruction,
+		},
+		{
 			name:  "the basic first factor cannot be listed",
 			list:  []factor.Kind{factor.Password, factor.Basic},
 			first: factor.Password, assert: refusedAtConstruction,

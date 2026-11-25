@@ -152,6 +152,10 @@ type Effects struct {
 	// durable stores as Recovery, and nil for every other scenario.
 	Passkey *PasskeyFixture
 
+	// resourceServer is the issuer a resource-server scenario trusts, and nil
+	// for every other scenario.
+	resourceServer *rsIssuer
+
 	// SessionID is the session Build pre-created, for the scenarios that need a
 	// request to arrive already authenticated. It is empty where none was.
 	SessionID string
@@ -467,6 +471,11 @@ type Result struct {
 	SessionKnown   bool
 	Upstream       string
 
+	// AccessToken is what a route behind the chain read with
+	// httpsec.AccessTokenFromContext, and nil when the request was not
+	// authenticated by an access token.
+	AccessToken *httpsec.AccessToken
+
 	// Effects are the stores the scenario's chain was wired with, carried here
 	// so an assertion reads the response and the side effects in one place.
 	Effects *Effects
@@ -488,6 +497,10 @@ func ReadContext(ctx context.Context, res *Result) {
 
 	if v, ok := ctx.Value(UpstreamKey{}).(string); ok {
 		res.Upstream = v
+	}
+
+	if at, ok := httpsec.AccessTokenFromContext(ctx); ok {
+		res.AccessToken = at
 	}
 }
 
@@ -569,7 +582,7 @@ func Scenarios() []Scenario {
 		unattributableClientAddress(),
 		storeFailureTextStaysOutOfTheRefusal(),
 		twoCookiesAreBothSent(),
-	}, slices.Concat(proxyScenarios(), reauthScenarios(), oidcScenarios(), oidcAssuranceScenarios(), enrolmentScenarios(), requestScenarios(), recoveryScenarios(), passkeyScenarios(), lockoutScenarios(), holdScenarios(), headerScenarios(), corsScenarios(), sessionManagementScenarios(), csrfScenarios(), dpopScenarios(), subjectScenarios(), streamScenarios(), signalsScenarios(), signalsThrottleScenarios(), basePathScenarios())...)
+	}, slices.Concat(proxyScenarios(), reauthScenarios(), oidcScenarios(), oidcAssuranceScenarios(), enrolmentScenarios(), requestScenarios(), recoveryScenarios(), passkeyScenarios(), lockoutScenarios(), holdScenarios(), headerScenarios(), corsScenarios(), sessionManagementScenarios(), csrfScenarios(), dpopScenarios(), resourceServerScenarios(), subjectScenarios(), streamScenarios(), signalsScenarios(), signalsThrottleScenarios(), basePathScenarios())...)
 }
 
 // formLoginOptions is the wiring every login scenario shares.

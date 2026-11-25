@@ -257,6 +257,12 @@ func NewGenerator(keys signingkey.KeySource, opts ...Option) (*JWTGenerator, err
 	return &JWTGenerator{cfg: cfg}, nil
 }
 
+// TokenType reports the type this generator declares in the typ header of every token it issues,
+// as it was given: TypeSessionToken by default, or the type WithTokenType set. It is read-only, so
+// that whoever wires a generator beside a reader of typed tokens can refuse a type that reader
+// would take for its own.
+func (g *JWTGenerator) TokenType() string { return g.cfg.tokenType }
+
 // SubjectMode reports the subject this generator writes. See Generator.
 func (g *JWTGenerator) SubjectMode() SubjectMode { return g.cfg.subject }
 
