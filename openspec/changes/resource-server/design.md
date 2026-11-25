@@ -139,6 +139,14 @@ httpsec.EnableResourceServer("urn:example:orders:api",
 - **The line:** a consumer who needs another token kind uses `RegisterInterceptor` before
   `OrderResourceServer`. A public port can be added later without breaking anything.
 
+- **The chain provider's issuer belongs to `FromProvider` only** (2026-11-25): a `FromIssuer` or
+  `FromIntrospection` source naming it is a construction error. Otherwise the provider's tokens could
+  be verified as an external issuer's, with no grant and no second-factor marker, and pass as
+  claims-only callers.
+- **An introspection prefix must be unmistakable:** beside another `Bearer` reader, a prefix made only
+  of characters a session reference uses is a construction error, so no session reference can carry
+  it and be sent to a third party.
+
 ### 5. Recognition and routing
 
 1. The whole token is bounded before anything is decoded. The bound is the larger of 8 KiB and the
@@ -617,8 +625,10 @@ inactive account carry no distinguishing error, and cost the same work.
 | F51 | A mapper forgets to say whether its caller is local | Handled: the zero value is a local user, judged (decision 8). Tested | Judged by the MFA requirement |
 | F52 | An unprefixed opaque token on a path no resource server covers | Handled: passes on to the next mode (decision 5). Tested | Judged by that mode |
 | F53 | A durable store before G1 drops the sign-in's second-factor marker and federated evidence | Accepted only within this change: G1 (task 4.5) ships in the same release. Until then the marker reads false, which fails closed | A federated or MFA user is judged as having no verified second factor |
-| F54 | `introspect.Result.Accepts` reports a bound token acceptable without its proof | Handled by the caller: the introspection source checks the proof against `Result.Confirmation` before accepting (decision 7). Tested in C4 | 401 `invalid_token` for a missing or wrong proof |
+| F54 | `introspect.Result.Accepts` reports a bound token acceptable without its proof | Handled by the caller: the introspection source checks the proof against `Result.Confirmation` before accepting (decision 7). Tested | The settled binding refusal: 401 `invalid_dpop_proof` for a missing or wrong DPoP proof, the certificate-binding refusal for a certificate |
 | F55 | A caller of the introspection client whose context is already cancelled | Handled: no outbound call is made. Tested | The context error |
+| F56 | A source left without saying whether its caller is local | Handled: the zero value is a local user, judged by the MFA requirement (fail closed). Tested | Judged |
+| F57 | An introspection answer with a future `iat` or `nbf` | Accepted: RFC 7662 makes both optional; the answer's `active`, `exp`, audience and subject decide | Accepted as the issuer answered |
 
 ## Risks / Trade-offs
 
