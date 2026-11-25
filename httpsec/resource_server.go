@@ -365,6 +365,8 @@ func distinctPrefixes(prefixes []string) []string {
 // A prefix matches a path without regard to ASCII case, as several routers match routes by
 // default: a path a router serves under the prefix is never left uncovered for its case. Covering a
 // path that differs only in case is the safe side: it is judged, never left to a later mode.
+//
+// Default: every path; a resource server with no prefix must be the chain's only one.
 func WithPathPrefix(prefixes ...string) ResourceServerOption {
 	return func(rs *resourceServer) error {
 		rs.prefixGiven = true
@@ -375,6 +377,8 @@ func WithPathPrefix(prefixes ...string) ResourceServerOption {
 }
 
 // WithResourceAliases accepts tokens whose audience names one of aliases as well as the identifier.
+//
+// Default: none; a token is accepted only when its audience names the identifier.
 func WithResourceAliases(aliases ...string) ResourceServerOption {
 	return func(rs *resourceServer) error {
 		rs.aliases = append(rs.aliases, aliases...)
@@ -417,6 +421,12 @@ type resourceServers struct {
 	// exists (resource_throttle.go); log is the chain's logger.
 	guards map[source]sourceGuard
 	log    *slog.Logger
+
+	// sessionTypes holds the normalized type of every session token the chain's generators declare:
+	// the default scrty+jwt, and each type checkSessionTokenType saw at construction. A token of one
+	// of them is the signed bearer's to judge and is never offered to a source. A generator that does
+	// not report its type cannot be seen, and its tokens are routed by issuer like any other.
+	sessionTypes map[string]struct{}
 }
 
 // resourceServersOf returns the chain's resource-server interceptor, registering it at
@@ -434,7 +444,10 @@ func resourceServersOf(c *config) *resourceServers {
 		return found
 	}
 
-	s := &resourceServers{bound: minTokenBound}
+	s := &resourceServers{
+		bound:        minTokenBound,
+		sessionTypes: map[string]struct{}{sessionTypeOf(token.TypeSessionToken): {}},
+	}
 	c.register(s, OrderResourceServer)
 	c.bindingVerifiers = append(c.bindingVerifiers, optionResourceServer)
 
@@ -495,7 +508,7 @@ func (s *resourceServers) Intercept(ex *Exchange, next Next) error {
 	}
 
 	t := peek(raw)
-	if t.sessionTyped() {
+	if t.sessionTyped(s.sessionTypes) {
 		return next(ex)
 	}
 
@@ -735,15 +748,21 @@ type tokenTyped interface {
 
 // checkSessionTokenType refuses a session token generator whose declared type a resource server on
 // the chain would take for an access token's: at+jwt in any case or spelling, and JWT while a source
-// accepts untyped tokens. A generator that does not report its type cannot be seen.
+// accepts untyped tokens. It records every other declared type on the resource servers, so a token
+// of that type is never offered to a source. A generator that does not report its type cannot be
+// seen.
 func checkSessionTokenType(c *config, option, field string, g token.Generator) error {
+	if nilcheck.IsNil(g) {
+		return nil
+	}
+
 	typed, ok := g.(tokenTyped)
-	if nilcheck.IsNil(g) || !ok {
+	if !ok {
 		return nil
 	}
 
 	declared := typed.TokenType()
-	typ := strings.TrimPrefix(asciiLower(declared), "application/")
+	typ := sessionTypeOf(declared)
 
 	return eachInterceptor(c, func(s *resourceServers) error {
 		if typ == token.TypeAccessToken {
@@ -751,7 +770,13 @@ func checkSessionTokenType(c *config, option, field string, g token.Generator) e
 				"server takes for an access token; give session tokens a type of their own", option, field, declared)
 		}
 
+		if typ == "" {
+			return nil
+		}
+
 		if typ != "jwt" {
+			s.sessionTypes[typ] = struct{}{}
+
 			return nil
 		}
 
@@ -764,6 +789,9 @@ func checkSessionTokenType(c *config, option, field string, g token.Generator) e
 				}
 			}
 		}
+
+		// No source takes a JWT-typed token, so it is the signed bearer's alone.
+		s.sessionTypes[typ] = struct{}{}
 
 		return nil
 	})

@@ -3,6 +3,8 @@ package httpsec
 import (
 	"strings"
 	"testing"
+
+	"github.com/kartaladev/scrty/token"
 )
 
 // FuzzAccessTokenRoute fuzzes the routing read, which parses hostile input before anything is
@@ -40,7 +42,7 @@ func FuzzAccessTokenRoute(f *testing.F) {
 			t.Fatalf("a JWT read from %d segments", strings.Count(raw, ".")+1)
 		}
 
-		if tok.accessTyped() && tok.sessionTyped() {
+		if tok.accessTyped() && tok.sessionTyped(fuzzSessionTypes) {
 			t.Fatalf("typed both as an access token and a session token")
 		}
 
@@ -54,7 +56,7 @@ func FuzzAccessTokenRoute(f *testing.F) {
 				t.Fatalf("the provider's own format was routed to a source that does not mark it")
 			}
 
-			if src != nil && tok.sessionTyped() && src.recognises(tok) != recMarked {
+			if src != nil && tok.sessionTyped(fuzzSessionTypes) && src.recognises(tok) != recMarked {
 				t.Fatalf("a session token was offered by fallback")
 			}
 		}
@@ -82,3 +84,6 @@ func (s *fuzzSource) recognises(t peeked) recognition {
 		return recNone
 	}
 }
+
+// fuzzSessionTypes is the session types a chain with only the default session generator holds.
+var fuzzSessionTypes = map[string]struct{}{sessionTypeOf(token.TypeSessionToken): {}}

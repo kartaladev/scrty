@@ -50,9 +50,24 @@ type peeked struct {
 // accessTyped says the token is typed as an access token (RFC 9068 section 2.1).
 func (t peeked) accessTyped() bool { return t.format == formatJWT && t.typ == token.TypeAccessToken }
 
-// sessionTyped says the token is typed as the chain's signed session tokens are by default. It is
-// never offered to a source, whatever issuer it names.
-func (t peeked) sessionTyped() bool { return t.format == formatJWT && t.typ == token.TypeSessionToken }
+// sessionTyped says the token is typed as one of the chain's signed session tokens: types holds
+// every type the chain's session generators declare, normalized as typ is (sessionTypeOf). Such a
+// token is never offered to a source, whatever issuer it names.
+func (t peeked) sessionTyped(types map[string]struct{}) bool {
+	if t.format != formatJWT {
+		return false
+	}
+
+	_, ok := types[t.typ]
+
+	return ok
+}
+
+// sessionTypeOf normalizes a declared token type as peek normalizes a token's typ: lower-cased,
+// with any "application/" prefix removed.
+func sessionTypeOf(declared string) string {
+	return strings.TrimPrefix(asciiLower(declared), "application/")
+}
 
 // peek reads raw for routing. It is bounded by the caller before it is called, decodes at most the
 // header and the payload, and never fails: a token it cannot read as a JWT is opaque.
