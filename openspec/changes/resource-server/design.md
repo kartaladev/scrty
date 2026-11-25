@@ -525,6 +525,21 @@ Implementation decisions (2026-11-25):
 - **Override:** `WithAuthenticationTime` still replaces the time source.
 - **BREAKING (behaviour):** an access-token caller was refused before; a fresh one now passes.
 
+Implementation decisions (2026-11-25):
+
+- **Second-factor enrolment is session-only:** an access-token caller posting under the enrolment
+  prefixes is refused with `ErrAuthenticationRequired`, as the other session-only endpoints are.
+- **`ErrInsufficientScope`** marks a scope refusal that the bearer challenge answered with
+  `insufficient_scope`, so the problem mapper can choose `insufficient-scope`. Under
+  `WithoutBearerChallenge` no challenge is written, the marker is absent, and the refusal stays a
+  plain 403 `access-denied`.
+- **`InsufficientUserAuthenticationError{Window}`** carries the recency window, which a sentinel
+  cannot; it matches `ErrInsufficientUserAuthentication` and `ErrReauthenticationRequired`. A handler
+  reading the window through `*ReauthenticationRequiredError` does not find it for an access-token
+  caller.
+- **`WithAuthenticationTime`** replaces only the time a guard judges. Whether the refusal is the
+  session's 403 or the access token's 401 still follows the caller.
+
 ### 17. Scopes on user principals
 
 `Principal.Scopes` now also carries an access token's scopes on a user principal. A session principal
