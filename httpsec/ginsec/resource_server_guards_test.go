@@ -140,7 +140,7 @@ func TestGin_AccessTokenGuards(t *testing.T) {
 			chainOpts := iss.opts
 			path := "/api/orders"
 
-			var guardClock ginsec.GuardOption = ginsec.WithGuardClock(iss.clk)
+			guardClock := ginsec.WithGuardClock(iss.clk)
 
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://example.com/api/orders", nil)
 			if tc.staleSession {
