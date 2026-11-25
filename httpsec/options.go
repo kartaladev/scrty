@@ -730,6 +730,10 @@ func (c *config) build() (*Chain, error) {
 		return nil, err
 	}
 
+	if err := c.wireSessionCookie(); err != nil {
+		return nil, err
+	}
+
 	// Form login and Basic share one password-login guard, so it is settled
 	// once both have been registered and every limiter option applied.
 	if err := c.wirePasswordLogin(); err != nil {

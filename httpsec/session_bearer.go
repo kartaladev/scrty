@@ -153,7 +153,7 @@ func (b *sessionBearer) Intercept(ex *Exchange, next Next) error {
 		}, nil
 	}
 
-	if err := b.ref.resolve(ex, presented, transportHeader, check); err != nil {
+	if _, err := b.ref.resolve(ex, presented, transportHeader, check); err != nil {
 		return err
 	}
 
@@ -233,7 +233,7 @@ func EnableSessionBearer(deps SessionBearerDeps, opts ...SessionBearerOption) Op
 		b := &sessionBearer{
 			sessions: deps.Sessions,
 			users:    deps.Users,
-			ref:      sessionReference{now: c.now},
+			ref:      sessionReference{now: c.now, flow: sessionReferenceFlow},
 			scheme:   DefaultBearerScheme,
 		}
 

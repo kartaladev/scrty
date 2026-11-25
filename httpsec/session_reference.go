@@ -23,7 +23,7 @@ const (
 	transportHeader referenceTransport = iota + 1
 
 	// transportCookie is a reference presented in the session cookie.
-	transportCookie //nolint:unused // the session cookie's transport; no mode presents it yet
+	transportCookie
 )
 
 // referenceCheck is a transport's own check of a well-formed reference: it
@@ -47,17 +47,25 @@ type sessionReference struct {
 
 	now func() time.Time
 
+	// flow names the transport's rate-limit namespace and its sampler and log
+	// keys, so an operator can tell the refusals of one transport from the
+	// other's: sessionReferenceFlow for the header, sessionCookieFlow for the
+	// cookie.
+	flow string
+
 	limiter ratelimit.Limiter
 	guard   sourceGuard
 	sampler *refusalSampler
 	log     *slog.Logger
 }
 
-// resolve judges the reference id, which reached the chain by transport, and
+// resolve judges the reference id, which reached the chain by transport t, and
 // resolves its session and user onto ex. A reference that resolved is the
 // caller's to record as presented once resolve returns nil; resolve itself
-// records one only when the per-request phase throttled the caller it
-// published (Exchange.recordThrottledBearer).
+// records one only for a header credential whose caller it published and the
+// per-request phase then throttled (Exchange.recordThrottledBearer). A cookie
+// is never recorded: what is recorded is what a DPoP proof's ath is judged
+// against, and a cookie is no access token.
 //
 // The source is checked first, before the value is even parsed, so a
 // throttled scanner costs one bucket read. A value that cannot be a session
@@ -68,20 +76,31 @@ type sessionReference struct {
 // ended, which reach no verdict and so do not match ErrAuthenticationRequired.
 //
 // It returns nil when the request may go on, and otherwise the request's
-// answer.
-func (r *sessionReference) resolve(ex *Exchange, id string, _ referenceTransport, check referenceCheck) error {
+// answer. rejected reports whether that answer is a verdict on the reference
+// itself, and is true for exactly the refusals charged to the source: a
+// malformed value, a missing, expired, unreadable or reused session, a user
+// refused on reload, and a refusal an admit step returned matching
+// ErrAuthenticationRequired. It is false for every answer reached without
+// judging the reference, even one matching ErrAuthenticationRequired: a
+// source over its allowance, a limiter that could not answer or an address
+// that cannot be attributed, an error from check, and any error once the
+// caller was published. A dependency failure and a request whose own context
+// ended are never verdicts.
+func (r *sessionReference) resolve(
+	ex *Exchange, id string, t referenceTransport, check referenceCheck,
+) (rejected bool, err error) {
 	ctx := ex.Context()
 
-	src, err := sourceThrottled(ctx, r.guard, ex.Request.ClientIP(), sessionReferenceFlow,
+	src, err := sourceThrottled(ctx, r.guard, ex.Request.ClientIP(), r.flow,
 		r.sampler, r.log, r.now())
 	if err != nil {
-		return ErrAuthenticationRequired
+		return false, ErrAuthenticationRequired
 	}
 
 	if !session.ValidIdentifier(id) {
 		recordSourceFailure(ctx, r.guard, src)
 
-		return ErrAuthenticationRequired
+		return true, ErrAuthenticationRequired
 	}
 
 	resolver := r.resolver
@@ -89,25 +108,28 @@ func (r *sessionReference) resolve(ex *Exchange, id string, _ referenceTransport
 	if check != nil {
 		admit, err := check(ex)
 		if err != nil {
-			return err
+			return false, err
 		}
 
 		resolver.admit = admit
 	}
 
 	if err := resolver.resolve(ex, id); err != nil {
-		ex.recordThrottledBearer(err, id)
+		if t == transportHeader {
+			ex.recordThrottledBearer(err, id)
+		}
 
 		// Only a refusal of the reference itself is a failed guess. Once the
 		// session and its user are resolved the caller is published, so an
 		// error after that point is a policy decision about a valid session,
 		// and counting it would let a policy misconfiguration lock out the
 		// very clients it governs.
-		if ex.Authentication == nil && errors.Is(err, ErrAuthenticationRequired) {
+		rejected := ex.Authentication == nil && errors.Is(err, ErrAuthenticationRequired)
+		if rejected {
 			recordSourceFailure(ctx, r.guard, src)
 		}
 
-		return err
+		return rejected, err
 	}
 
 	if ex.renewal != "" {
@@ -118,5 +140,5 @@ func (r *sessionReference) resolve(ex *Exchange, id string, _ referenceTransport
 		ex.chargeRenewal = func(ctx context.Context) { recordSourceFailure(ctx, r.guard, src) }
 	}
 
-	return nil
+	return false, nil
 }
