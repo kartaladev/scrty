@@ -1,9 +1,7 @@
 package httpsec
 
 import (
-	"context"
 	"errors"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -54,19 +52,11 @@ type sessionBearer struct {
 	sessions *session.Sessions
 	users    identity.UserLoader
 
-	// resolver is the resolution core, built by wire over the bearer's own
-	// session manager and user loader and the chain's engine, enforcer set and
-	// enrolment lifetime: the same core the signed bearer joins.
-	resolver sessionResolver
-
-	now func() time.Time
+	// ref is the session-reference pipeline the presented reference is
+	// judged by, its resolution core built by wire.
+	ref sessionReference
 
 	scheme string
-
-	limiter ratelimit.Limiter
-	guard   sourceGuard
-	sampler *refusalSampler
-	log     *slog.Logger
 
 	// dpop is the chain's DPoP verifier, handed over at assembly, and nil
 	// while DPoP is off.
@@ -77,13 +67,13 @@ type sessionBearer struct {
 // assembled configuration, once every option has been applied.
 func (c *config) wireSessionBearer() error {
 	return eachInterceptor(c, func(b *sessionBearer) error {
-		guard, err := c.resolveSourceGuard("EnableSessionBearer", sessionReferenceFlow, b.limiter,
+		guard, err := c.resolveSourceGuard("EnableSessionBearer", sessionReferenceFlow, b.ref.limiter,
 			defaultSessionReferenceFailureLimit, defaultSessionReferenceFailureWindow, c.refusalInterval)
 		if err != nil {
 			return err
 		}
 
-		b.guard = guard
+		b.ref.guard = guard
 
 		return nil
 	})
@@ -91,8 +81,8 @@ func (c *config) wireSessionBearer() error {
 
 // flushRefusalLogs reports what the source guard is holding back.
 func (b *sessionBearer) flushRefusalLogs() error {
-	if b.guard != nil {
-		b.guard.Flush()
+	if b.ref.guard != nil {
+		b.ref.guard.Flush()
 	}
 
 	return nil
@@ -101,9 +91,9 @@ func (b *sessionBearer) flushRefusalLogs() error {
 // wire takes the settings the chain resolved, once every option has been
 // applied.
 func (b *sessionBearer) wire(c *Chain) {
-	b.sampler = c.sampler
-	b.log = c.logger
-	b.resolver = sessionResolver{
+	b.ref.sampler = c.sampler
+	b.ref.log = c.logger
+	b.ref.resolver = sessionResolver{
 		sessions: b.sessions,
 		users:    b.users,
 		log:      c.logger,
@@ -112,7 +102,7 @@ func (b *sessionBearer) wire(c *Chain) {
 			sessions:          b.sessions,
 			enrolmentLifetime: c.enrolmentLifetime,
 			enforced:          c.enforced,
-			now:               b.now,
+			now:               b.ref.now,
 		},
 	}
 }
@@ -128,9 +118,9 @@ func (b *sessionBearer) wire(c *Chain) {
 // session is not, and neither is a dependency failure or a request whose own
 // context ended, which reach no verdict and so do not match
 // ErrAuthenticationRequired. A request with no claimed Authorization header
-// never reaches the limiter. Everything after
-// extraction is the resolution core the signed bearer also runs, so the two
-// modes refuse identically.
+// never reaches the limiter. Everything after extraction is the
+// session-reference pipeline (sessionReference.resolve), whose core the signed
+// bearer also runs, so the modes refuse identically.
 func (b *sessionBearer) Intercept(ex *Exchange, next Next) error {
 	// A credential the resource server accepted as an access token is not
 	// this mode's to judge again.
@@ -143,60 +133,28 @@ func (b *sessionBearer) Intercept(ex *Exchange, next Next) error {
 		return next(ex)
 	}
 
-	ctx := ex.Context()
-
-	src, err := sourceThrottled(ctx, b.guard, ex.Request.ClientIP(), sessionReferenceFlow,
-		b.sampler, b.log, b.now())
-	if err != nil {
-		return ErrAuthenticationRequired
-	}
-
-	if !session.ValidIdentifier(presented) {
-		recordSourceFailure(ctx, b.guard, src)
-
-		return ErrAuthenticationRequired
-	}
-
 	// The proof is checked before the session is loaded, its ath over the
 	// reference, so a bad proof costs no store read. Its key is judged
 	// against the session's binding once the session is loaded (admit).
-	proof, err := presentedProof(ctx, b.dpop, ex.Request, underDPoP, presented)
-	if err != nil {
-		return err
-	}
-
-	resolver := b.resolver
-	resolver.admit = func(ex *Exchange, s *session.Session) (*identity.Details, error) {
-		ctx := ex.Context()
-		if err := admitBinding(ex, b.dpop, proof,
-			keyBinding{jkt: s.KeyBinding.JKT, x5tS256: s.KeyBinding.X5TS256}); err != nil {
-			return nil, refusedReference(err)
+	check := func(ex *Exchange) (func(*Exchange, *session.Session) (*identity.Details, error), error) {
+		proof, err := presentedProof(ex.Context(), b.dpop, ex.Request, underDPoP, presented)
+		if err != nil {
+			return nil, err
 		}
 
-		return nil, recordProof(ctx, b.dpop, proof)
+		return func(ex *Exchange, s *session.Session) (*identity.Details, error) {
+			ctx := ex.Context()
+			if err := admitBinding(ex, b.dpop, proof,
+				keyBinding{jkt: s.KeyBinding.JKT, x5tS256: s.KeyBinding.X5TS256}); err != nil {
+				return nil, refusedReference(err)
+			}
+
+			return nil, recordProof(ctx, b.dpop, proof)
+		}, nil
 	}
 
-	if err := resolver.resolve(ex, presented); err != nil {
-		ex.recordThrottledBearer(err, presented)
-
-		// Only a refusal of the reference itself is a failed guess. Once the
-		// session and its user are resolved the caller is published, so an
-		// error after that point is a policy decision about a valid session,
-		// and counting it would let a policy misconfiguration lock out the
-		// very clients it governs.
-		if ex.Authentication == nil && errors.Is(err, ErrAuthenticationRequired) {
-			recordSourceFailure(ctx, b.guard, src)
-		}
-
+	if err := b.ref.resolve(ex, presented, transportHeader, check); err != nil {
 		return err
-	}
-
-	if ex.renewal != "" {
-		// A late credential let through to the renewal endpoint is judged
-		// there, after the bearer has gone by, so the endpoint is left the
-		// means to charge the source this request came from when it refuses
-		// the credential.
-		ex.chargeRenewal = func(ctx context.Context) { recordSourceFailure(ctx, b.guard, src) }
 	}
 
 	ex.RecordPresentedToken(presented)
@@ -275,7 +233,7 @@ func EnableSessionBearer(deps SessionBearerDeps, opts ...SessionBearerOption) Op
 		b := &sessionBearer{
 			sessions: deps.Sessions,
 			users:    deps.Users,
-			now:      c.now,
+			ref:      sessionReference{now: c.now},
 			scheme:   DefaultBearerScheme,
 		}
 
@@ -313,7 +271,7 @@ func EnableSessionBearer(deps SessionBearerDeps, opts ...SessionBearerOption) Op
 		c.wire(b.wire)
 		// The renewal endpoint may be enabled after this option, so it is
 		// handed to the core once every option has been applied.
-		c.wire(func(*Chain) { b.resolver.renewal = c.renewal })
+		c.wire(func(*Chain) { b.ref.resolver.renewal = c.renewal })
 		// EnableDPoP may come after this option too.
 		c.wire(func(*Chain) { b.dpop = c.dpop })
 		c.register(b, OrderBearerToken)
@@ -408,7 +366,7 @@ func WithSessionBearerLimiter(limiter ratelimit.Limiter) SessionBearerOption {
 			return err
 		}
 
-		b.limiter = limiter
+		b.ref.limiter = limiter
 
 		return nil
 	}
