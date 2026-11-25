@@ -1,0 +1,303 @@
+# Design
+
+## Context
+
+See proposal.md for why. Each decision below names the alternatives considered and why they lost.
+The user accepted these decisions on 2026-11-25 (user decision).
+
+What the code already gives a cookie session:
+
+- **The session-reference pipeline.** `EnableSessionBearer` (slot `OrderBearerToken`, 500) reads
+  the session identifier from `Authorization`, then: shape check, load by digest, reuse detection
+  with family revocation, user reload, per-request policy, per-source throttling of refused
+  references, and the outage-versus-refusal split. With it on, every issuing endpoint hands out the
+  session identifier (`issueSessionReference`, chosen by `config.credentialIssuer`).
+- **CSRF.** `CookieAuthenticator` makes `New` refuse a cookie authenticator without
+  `EnableCSRFProtection` (or the explicit opt-out), and refuses one ordered at or before
+  `OrderCSRF` (75). Sign-ins carry a CSRF token that survives every rotation (`sessions` spec).
+- **Rotation.** Second-factor verification (`mfa_verify.go`) and re-authentication
+  (`reauth_resolve.go`) already rotate through `session.Sessions.RotateIssuing`, in every mode.
+  Renewal rotates with a grace window (`RotateWithGraceIssuing`). The active-role switch
+  (`SelectRole`) and the password change at the gate's resolve endpoint (`Save`) keep the
+  identifier. The `bff-resource-server` draft stated that a satisfied second factor keeps its
+  identifier; that is no longer true and is not carried forward.
+- **Provider linkage.** The session manager reports every explicit end of a sign-in (logout, reuse,
+  revocation, deletion) to its end observers, and the chain refuses to build the provider unless the
+  manager reports to it. Chain logout ends the sign-in at the provider first, and fails retryably
+  when a provider store fails.
+- **Responders.** Each issuing endpoint already has a replaceable responder (`WithLoginResponder`,
+  `WithMagicLinkResponder`, `WithRenewalResponder`, …). OIDC login has `WithOIDCCallbackSuccess`,
+  which replaces the handoff code.
+- **Magic link.** Field names are constants (`DefaultMagicLinkAddressParam`, `…NextParam`,
+  `…TokenParam`); the body limit is a fixed field with no option. An oversized body is read as
+  empty, which keeps the request endpoint's answer uniform.
+
+The established design had no cookie session, so nothing here departs from it. The decisions rest on
+scrty's own settled specs, the established design's patterns, and the sources listed in References.
+
+## Goals / Non-Goals
+
+**Goals:**
+- One implementation of the session-reference checks, used by both transports.
+- No path on a cookie chain that writes a credential anywhere JavaScript can read it.
+- Every override bounded by a stated line, checked at construction.
+
+**Non-Goals:**
+- The pages that will use this (later changes), and any HTML rendering.
+- Tokens for downstream APIs, a reverse proxy, refresh tokens (`api-token-forwarding`, later).
+- Cross-site cookies (`SameSite=None`) and a chain that issues both cookies and tokens.
+
+## Decisions
+
+### 1. Scope: the cookie session only; `bff-resource-server` is superseded
+
+The draft's other capabilities landed elsewhere (`csrf-protection`, `resource-server`). Its Q2, Q3
+and Q5 (downstream token, proxy, refresh) move to a later `api-token-forwarding` change with the
+draft's candidates as its starting point; the draft is retired in a separate step.
+- **Alternatives:** keep the draft and answer all five (blocks the pages on unrelated questions); a
+  new change beside the old one (two overlapping changes).
+
+### 2. In the consumer's app, for local and federated sign-ins
+
+The session lives in the consumer's chain, because the pages are served from it. Every sign-in path
+can create it, because they all end in one completion step and most planned pages are local-account
+pages.
+- **Default:** no cookie session; it is opt-in per chain.
+- **Override:** none needed now. A consumer who wants federated sign-in only enables only
+  `EnableOIDCLogin`; a construction check that enforces it can be added later.
+- **Alternatives:** a standalone proxy (scrty becomes an operated product); OIDC only (leaves most
+  planned pages with nothing to talk to).
+
+### 3. One session-reference pipeline, two transports
+
+The body of `sessionBearer.Intercept` after the header read is extracted into a shared pipeline
+that takes the identifier and a transport descriptor (header or cookie) and returns the same
+outcomes it returns today. `EnableSessionCookie(deps SessionBearerDeps, opts ...SessionCookieOption)`
+wires it at `OrderBearerToken`, reading the identifier from the cookie, and implements
+`CookieAuthenticator`. It reuses the session-bearer limiter defaults
+(`WithSessionCookieLimiter` replaces it) and calls `CheckCSRFToken` with the loaded session for
+unsafe methods before publishing.
+- **Default:** cookie name `__Host-scrty-session`; 100 refused references per minute per source, as
+  the session bearer.
+- **Override:** the options in decisions 7 and 8.
+- **Why extract rather than copy:** the six checks are where security bugs live; a second copy
+  doubles where they can hide. The existing session-bearer suite runs unchanged against the
+  extracted pipeline and is the refactor's safety net.
+- **Alternative:** a separate interceptor with its own copy (the draft's `OrderCookieSession`).
+
+### 4. Delivery is per chain, behind a bounded port
+
+With `EnableSessionCookie` on, `config.credentialIssuer` returns the session identifier, as for the
+session bearer, and every issuing endpoint hands the credential to a delivery step instead of its
+response body: the default sets the cookie (decision 7) and returns nothing for the body. Issuing
+endpoints in scope: form login, magic link redemption, OIDC callback (decision 6), passwordless
+passkey login, second-factor verification, re-authentication, recovery completion, session
+renewal. A `ChallengeError` raised on a cookie chain carries the session but an empty `Token`.
+
+`New` refuses `EnableSessionCookie` with `EnableSessionBearer` or `EnableBearerToken`. A consumer
+serving browsers and native clients builds two chains; one takes `WithBasePath`, as the collision
+check already requires.
+
+- **Default:** cookie delivery.
+- **Override:** `WithSessionDelivery(SessionDelivery)`, a port that writes the credential.
+  The line: the port returns `(bodyCredential string, err error)`; a non-empty `bodyCredential` for
+  a request the cookie authenticated (renewal, second factor, re-authentication) is refused as an
+  issuing failure before anything is written. On a fresh sign-in (no cookie yet) it is also
+  refused, because the chain is a cookie chain. The port therefore customises how the cookie is
+  written (extra attributes, audit), not whether a token leaks.
+- **Alternatives:** per request, chosen from headers (a script chooses token delivery); no port
+  (no control for unusual setups).
+
+### 5. Both credentials on one request are refused, before either is read
+
+A small guard registered at `OrderCSRF + 5` (80) on cookie chains refuses, with
+`ErrAuthenticationRequired`, any request that carries the session cookie and an `Authorization`
+header, before Basic (400), the resource server (425) or the cookie session (500) read anything.
+- **Default:** refuse. **Override:** none; leniency would make the caller's identity depend on
+  interceptor order. A named option stating which credential wins can be added if a real
+  deployment needs it.
+- **Alternatives:** header wins; cookie wins (both silent).
+
+### 6. Federated sign-in completes in the callback
+
+On a cookie chain with no consumer `WithOIDCCallbackSuccess`, the chain supplies one: it runs the
+login completion with the `oidc` first factor and the federated fields in the creating write, sets
+the cookie, and answers `303` to the destination the redirect allowlist resolved. `New` refuses a
+handoff manager on a cookie chain, as `WithOIDCCallbackSuccess` already does. A challenge raised by
+the post-authentication phase leaves the cookie of the pending session and still redirects; the
+pending-challenge refusals on later requests are what a page answers.
+- **Default:** that callback. **Override:** `WithOIDCCallbackSuccess`, unchanged.
+
+### 7. Negotiated answers and the destination
+
+Every issuing endpoint's default responder on a cookie chain negotiates:
+- **HTML:** the request's `Content-Type` is a form (`application/x-www-form-urlencoded` or
+  `multipart/form-data`), or its `Accept` prefers `text/html` to `application/json`. Answer
+  `303 See Other` to the destination, `Cache-Control: no-store`.
+- **JSON:** otherwise. Answer `200` with `{"idle_expires_at": "<RFC 3339>"}` and no credential.
+
+Destination: the endpoint's existing destination where it has one (magic link and OIDC already
+resolve theirs through an allowlist); otherwise the `next` form field (or JSON member), accepted
+only as a relative path that begins with exactly one `/` and contains no `\`, or as a target the
+consumer allowlisted exactly; anything else is `/`.
+- **Default:** as above; field `next`; no allowlisted absolute targets.
+- **Override:** each endpoint's responder option, unchanged; `WithSessionCookieNextParam(name)`;
+  `WithSessionCookieRedirects(targets ...string)`, exact matches, validated as absolute `https`
+  URLs at construction.
+- **Alternatives:** always redirect (breaks the later React components); always JSON (breaks plain
+  forms).
+
+### 8. Cookie attributes
+
+| Attribute | Default | Override | Line, checked by `New` |
+|---|---|---|---|
+| Name | `__Host-scrty-session` | `WithSessionCookieName` | a valid cookie name; a `__Host-` name takes no `Domain` |
+| `Path` | `/` | none | required by `__Host-` |
+| `Secure`, `HttpOnly` | always | none | browsers treat `http://localhost` as secure, so local development needs no escape |
+| `SameSite` | `Lax` | `WithSessionCookieSameSite(http.SameSiteStrictMode)` | `None` and `Default` refused |
+| `Domain` | none | `WithSessionCookieDomain` | needs a `__Secure-` name |
+| `Max-Age` | none | decision 9 | never past the absolute deadline |
+
+`Lax`, not `Strict`: `Strict` drops the cookie on any cross-site navigation, so a user following a
+link from email or returning from an identity provider would land signed out; the OIDC flow cookie
+reached the same conclusion. CSRF protection covers what `Lax` leaves.
+
+### 9. Persistence per sign-in, recorded on the session
+
+`WithSessionCookiePersistence(decide func(*Exchange) bool)` is asked at every new sign-in. True
+creates the session with the new `session.WithPersistentCookie()` create option, which sets the
+library-owned `Session.PersistentCookie` in the creating write; every rotation carries it, and
+`Save` keeps the stored value, as `MFAAtFirstFactor` works today. A persistent cookie's `Max-Age`
+is the seconds to the session's absolute deadline, rounded up, at least 1. A chain-wide choice is
+`func(*Exchange) bool { return true }`.
+- **Default:** nil decision; every cookie is a browser-session cookie.
+- **Why on the session:** a rotation has no sign-in form to ask again, and the browser does not send
+  `Max-Age` back, so the choice must be stored to survive rotation.
+- **Cost:** a new `scrty_sessions.persistent_cookie boolean NULL` column through one new
+  security-state migration, in `sqlstore`, `pgxstore`, `gormstore` and the conformance suite. As
+  the project's added columns do, it is nullable with no default, so adding it rewrites no row, and
+  a NULL reads as unset: a sign-in from before the migration gets a browser-session cookie, the
+  fail-closed reading.
+- **Alternatives:** persistent by default with `Max-Age` on every cookie (the draft's candidate;
+  unsafe on shared machines); chain-wide only (no "remember me").
+- **Note:** a chain-wide option and a per-form-login option were both considered; one decision
+  function asked at every sign-in path covers both with one option.
+
+### 10. Rotation on privilege change: on by default, opt-out only for the rotations this change adds
+
+On a cookie chain, the active-role switch and the password change at the password-change gate's
+resolve endpoint rotate through `RotateIssuing` and re-set the cookie. Second-factor verification
+and re-authentication already rotate and keep doing so; on a cookie chain they re-set the cookie.
+Sign-in always creates a new session.
+- `SwitchActiveRole` gets the request's response through the chain-owned role source it already
+  reads from the context, so it can re-set the cookie; called on a context the chain did not
+  resolve, it fails as today.
+- **Default:** all four rotate.
+- **Override:** `WithoutSessionRotation(RotateOnRoleSwitch, RotateOnPasswordChange)`, each named;
+  its documentation states that it reopens session fixation for those changes.
+- **Line:** no option turns off rotation at second-factor verification or re-authentication. They
+  rotate today in every mode and the `sessions` spec relies on it; offering an off switch would
+  weaken a guarantee scrty already makes. The user asked for both behaviours to be selectable
+  ("i still need both applicable selection", user decision, 2026-11-25); this line keeps that
+  choice for every rotation the change adds, and not for the two that already exist.
+- **Alternatives:** rotate only at sign-in (leaves session fixation open at every later privilege
+  change); both behaviours as equal peers (nothing safe by default).
+
+### 11. Ending the cookie
+
+- Logout success: the cookie is expired with the attributes it was set with (`Max-Age=0`).
+- A cookie refused because its session is missing, expired, unreadable or reused: the refusal
+  response expires the cookie.
+- A store or cipher outage while loading: the cookie is left alone, because the session may be fine.
+- A logout that fails on a provider store: nothing is expired, the session stays, and the logout
+  can be retried, as the chain's logout already guarantees.
+
+### 12. The provider's browser sessions end with the sign-in
+
+Kept as two records (the chain session, the provider's `BrowserSession`), linked by the sign-in.
+The linkage already exists: the manager reports every explicit end to the provider, and the chain
+refuses to build the provider without it. This change adds the `browser-session` requirement and
+tests that the cookie path's ends (logout, reuse detected through the cookie, revocation) reach it.
+- **Alternatives:** merge into one record (rewrites a settled provider design); one cookie value
+  keying both stores (one secret opening two stores).
+
+### 13. Magic-link parity
+
+`WithMagicLinkParams(address, next, token string)` and `WithMagicLinkBodyLimit(limit int64)`,
+mirroring `WithLoginParams` and `WithLoginBodyLimit`. Names apply to form bodies and, for the
+request endpoint, JSON members. An oversized body keeps today's behaviour: read as no values.
+- **Default:** `email`, `next`, `token`; 64 KiB.
+- **Override:** the two options. **Line:** empty or duplicate names, and a limit of zero or less,
+  fail construction.
+
+## Failure modes
+
+| Failure | Category | State | Outcome a caller sees |
+|---|---|---|---|
+| Cookie session without CSRF protection | Wiring | Handled, tested | `ErrConfig` from `New` (existing `CookieAuthenticator` rule) |
+| Cookie session with a bearer mode | Wiring | Handled, tested | `ErrConfig` naming both |
+| Cookie overrides breaking a prefix rule, `SameSite=None`, bad name | Wiring | Handled, tested | `ErrConfig` |
+| Handoff manager on a cookie chain | Wiring | Handled, tested | `ErrConfig` |
+| Malformed, unknown, expired cookie | Input | Handled, tested | 401, counted against the source, cookie expired |
+| Superseded identifier after its window, in the cookie | Security | Handled, tested | 401 + reuse; family revoked; provider sessions end |
+| Session or user store outage on load | Dependency | Handled, tested | dependency failure (500 by default), cookie kept |
+| Cookie and `Authorization` together | Input | Handled, tested | 401 before any credential is read |
+| `next` off-site (`https://…`, `//…`, `/\…`) | Security | Handled, tested | `303` to `/` |
+| Delivery port returning a body credential | Configuration | Handled, tested | issuing failure, nothing written |
+| Two tabs rotating at once (role switch, renewal) | Concurrency | Handled, tested | one rotation wins; the loser's identifier works through the window (barrier test) |
+| Request context cancelled during rotation | Concurrency | Handled, tested | nothing stored, cookie not re-set, the old identifier still valid |
+| Rotation write fails | State | Handled, tested | dependency failure, old cookie kept |
+| Logout: provider store fails | State | Handled, tested | retryable failure, cookie not expired |
+| Persistent mark lost by a store or a rotation | State | Handled, tested | conformance round trip; rotation carries it |
+| Rows written before the migration | State | Handled, tested | read with the mark unset |
+| Persistent cookie on a shared machine | Security | Accepted | opt-in only; documented on the option |
+| Opted-out rotation reopens fixation | Security | Accepted | named per change; documented on the option |
+| Cookie dropped by a browser (blocked cookies, private mode) | Dependency | Accepted | the user appears signed out; the server state is unaffected |
+| Refused-cookie responses not expiring on a framework adapter | Wiring | Handled, tested | adapter suites on net/http, gin and fiber assert the expiring `Set-Cookie` |
+
+## Risks / Trade-offs
+
+- [Extracting the pipeline changes shipped security code] → test-first against the existing
+  session-bearer suite before and after, with an Opus implementer and reviewer.
+- [Every issuing endpoint must route through delivery; one missed path leaks a token into a body]
+  → a table test over every issuing endpoint asserting no credential in body or headers on a
+  cookie chain.
+- [Negotiation misclassifies a client] → the rule uses only `Content-Type` and `Accept`, and
+  every responder is replaceable.
+- [The new session column touches three stores and a migration] → the column has a default and is
+  write-once like `MFAAtFirstFactor`; the conformance suite carries the round trip.
+- [Two chains on one mux confuse consumers] → an example test and godoc showing the two-chain
+  setup with `WithBasePath`.
+
+## Migration Plan
+
+- Additive: chains without `EnableSessionCookie` behave as before.
+- Apply the new security-state migration before deploying a build that writes the column; existing
+  rows hold NULL, read as unset. Rolling back the build leaves the column unused.
+- After this change is archived, `bff-resource-server` is retired and `api-token-forwarding` is
+  proposed with Q2, Q3 and Q5.
+
+## Open Questions
+
+- The exact helper names for the rotation opt-outs (`RotateOnRoleSwitch` or a typed set) can be
+  settled during implementation without changing the specs.
+
+## References
+
+**Researched** (accessed 2026-11-25):
+- Decisions 3, 8, 10, 11:
+  - [OWASP Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html): renew the session identifier after any privilege change; restrictive cookie attributes.
+  - [MDN: Session management](https://developer.mozilla.org/en-US/docs/Web/Security/Authentication/Session_management): renewal and the OWASP guidance on non-persistent cookies (decision 9).
+- Decision 2:
+  - [IETF draft-ietf-oauth-browser-based-apps](https://datatracker.ietf.org/doc/draft-ietf-oauth-browser-based-apps/): the backend-for-frontend pattern. Its current status (draft or RFC) was not verified.
+- Decision 5:
+  - [draft-ietf-oauth-browser-based-apps-11](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-browser-based-apps-11): `SameSite` is not by itself sufficient CSRF protection (2022 text).
+- Decisions 4, 10:
+  - [Spring Security: session management](https://docs.spring.io/spring-security/reference/5.7/servlet/authentication/session-management.html): fixation protection on by default, `none` as an explicit setting; separate filter chains per path.
+- Decision 12:
+  - [Keycloak CookieType](https://www.keycloak.org/docs-api/26.5.7/javadocs/org/keycloak/cookie/CookieType.html) and the [Keycloak forum on cookies](https://forum.keycloak.org/t/how-are-cookies-used-in-operations/4098): separate SSO and application cookies, and reports of the layers drifting apart at logout (forum reports, not official documentation).
+
+**Primary documentation:**
+- [RFC 6265bis, cookie name prefixes](https://datatracker.ietf.org/doc/draft-ietf-httpbis-rfc6265bis/): `__Host-` and `__Secure-` rules (decision 8).
+
+Decisions 1, 6, 7 and 13 are reasoned from scrty's own settled specs and the established design.
