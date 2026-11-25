@@ -138,7 +138,7 @@ func TestFiber_AccessTokenGuards(t *testing.T) {
 			chainOpts := iss.opts
 			path := "/api/orders"
 
-			var guardClock fibersec.GuardOption = fibersec.WithGuardClock(iss.clk)
+			guardClock := fibersec.WithGuardClock(iss.clk)
 
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://example.com/api/orders", nil)
 			if tc.staleSession {

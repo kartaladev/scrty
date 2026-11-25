@@ -12,6 +12,63 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 
 ## [Unreleased]
 
+### Added
+
+- **A resource server: the chain accepts OAuth access tokens on an API's routes.**
+  `httpsec.EnableResourceServer(resourceID, opts...)` (`ResourceServerOption`, ordered at
+  `httpsec.OrderResourceServer`) takes tokens from one or more sources. `httpsec.FromProvider(op)`
+  trusts the chain's own provider and checks the grant on every request, `httpsec.FromIssuer(issuer)`
+  verifies a remote issuer's JWT access tokens against its key set, and
+  `httpsec.FromIntrospection(issuer, endpoint, clientID)` asks an RFC 7662 endpoint on every request.
+  A chain may enable several, each confined by `httpsec.WithPathPrefix` and naming its API by
+  `httpsec.WithResourceAliases`.
+  - **Defaults, each replaceable per source.** The audience must name the resource identifier
+    (`WithSourceAudience` adds another spelling). The token must be bound to a DPoP key or a
+    certificate (`WithUnboundTokens` opts one source out, never on a chain that requires DPoP, nor
+    on `FromProvider`), and typed `at+jwt` (`WithUntypedTokens` accepts untyped JWTs beside a claim
+    that tells them from ID tokens). Key sets are found from the issuer's metadata (`WithJWKSURL`),
+    fetched through `outbound.New()` (`WithOutboundClient`), signed with `RS256` or `ES256`
+    (`WithAlgorithms`), judged without clock skew (`WithClockSkew`). A verified JWT is valid until it
+    expires (`WithJWTIntrospection` with `httpsec.IntrospectionConfig` introspects each one), and an
+    introspection answer is not cached (`WithIntrospectionCache`). `WithOpaquePrefix`,
+    `WithIntrospectionSecret` and `WithIntrospectionKey` (`httpsec.IntrospectionKey`) complete an
+    introspection source.
+  - **Four caller strategies, one per source.** `WithClaimsOnly` (the default for external sources: the
+    caller is named `<issuer>#<subject>`, carries the token's scopes and no role), `WithClaimsMapper`
+    (the consumer derives the caller; `httpsec.MappedCaller`), `WithLocalUsers` (the default for
+    `FromProvider`: the subject's user, reloaded on every request) and `WithLinkedUsers` (the user
+    found through the identity links by issuer and subject). An external subject is never taken as a
+    local user identifier.
+  - **Refusals are throttled** per client address and source, through `WithRefusalLimiter` or the
+    chain's rate-limiter factory, before any key set is fetched or endpoint called.
+  - **What a handler sees.** `identity.PrincipalFromContext` carries the token's scopes
+    (`Principal.Scopes`, now also set on a user principal), and `httpsec.AccessTokenFromContext`
+    returns the accepted token (`httpsec.AccessToken`). Two first-factor kinds, `factor.AccessToken`
+    and `factor.ExternalAccessToken`, are exempt from no MFA requirement; `policy.Input.AccessTokenAssurance`
+    carries what the resource server established, and only the library mints it.
+  - **Challenges.** `httpsec.ErrInvalidToken` is answered 401 with `error="invalid_token"`;
+    `httpsec.ErrInsufficientScope` and `authorize.MissingScopesError` are answered 403 with
+    `error="insufficient_scope"` and the scopes needed; `httpsec.ErrInsufficientUserAuthentication`
+    and `httpsec.InsufficientUserAuthenticationError` are answered 401 with
+    `error="insufficient_user_authentication"` and `max_age` (RFC 9470). The problem-details
+    integration gains the types `invalid-token`, `insufficient-scope`,
+    `insufficient-user-authentication` and `account-inactive`, and the member `scope`.
+  - **Session-only endpoints refuse an access-token caller** on a covered path: password change,
+    passkeys, second factors, saved codes, re-authentication, session renewal and management, the
+    provider's resume and consent, the active-role switch and logout.
+  - **Supporting API.** `oidcprovider.Provider.UserLoader` and `Provider.MaxAccessTokenSize`;
+    `oidcprovider.AccessToken` gains `AuthTime`, `ACR` and `AMR`, and the introspection answer carries
+    them; a grant records whether a second factor was verified at its sign-in and the federated
+    evidence it rested on. The remote key-set cache is now shared between `authenticate/oidc` and the
+    resource server.
+- **Password rules you own.** `password.WithRule(name, check)` (`password.RuleFunc`) adds a rule that
+  runs after the built-in lists and before the breach lookup, and refuses with a
+  `password.RejectedError` naming the rule. A rule that returns an error fails closed as
+  `password.ErrRuleFailed`.
+- **An opt-in disclosure of inactive accounts.** `authenticate.ErrAccountInactive` identifies a correct
+  password for an inactive account, and `httpsec.WithInactiveDisclosure()` answers it 403 in place of
+  the uniform 401.
+
 ### Changed
 
 - **BREAKING: `token.TypeFirstParty` is renamed `token.TypeSessionToken`.** Its value, `scrty+jwt`,
@@ -96,6 +153,37 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
   never holds the error text, the handle, the state or the redirect target; alerting that watches
   5xx answers should also watch for it. No `AuthnLoginFail` event is emitted. There is no option to
   restore the plain 500.
+- **BREAKING (behaviour): a recency guard judges an access-token caller by its token's authentication
+  time.** Every guard that requires recent authentication (`RequireRecentAuthentication`,
+  `RequireAuthenticationWithin`, and the gin and fiber guards) refused every access-token caller,
+  because it has no session. A token whose sign-in is within the window now passes. A stale token, or
+  one that states no authentication time, is refused with
+  `*httpsec.InsufficientUserAuthenticationError`: 401 with `error="insufficient_user_authentication"`
+  and `max_age`, not 403. It also matches `httpsec.ErrReauthenticationRequired`, so an `errors.Is`
+  check keeps matching, but a handler reading the window through `*httpsec.ReauthenticationRequiredError`
+  no longer finds it for an access-token caller. A session caller keeps the session's time and the
+  403.
+- **BREAKING (behaviour): logout refuses an access-token caller on a path a resource server covers.**
+  It answered 200 and deleted nothing, so a client was told it had signed out while its grant lived on.
+  It now refuses with `httpsec.ErrAuthenticationRequired`. A client holding only an access token signs
+  out through the provider's revocation (RFC 7009) and end-session endpoints. A chain that enables no
+  resource server is unchanged.
+- **BREAKING (behaviour): `authenticate.ErrAccountInactive` is now reachable beneath the uniform
+  failure.** A correct password for an inactive account was refused as `ErrAuthenticationFailed` alone.
+  The password provider now joins `ErrAccountInactive` beneath it, only after the password verifies, so
+  `errors.Is(err, authenticate.ErrAccountInactive)` holds in a consumer's own error handler. The
+  status, headers and problem type are unchanged by default (a wrong password and a concealed inactive
+  account still look alike), and `httpsec.WithInactiveDisclosure()` discloses it. A consumer that
+  treated every `ErrAuthenticationFailed` identically but matched exact error values needs `errors.Is`.
+- **Grants, authorization codes and browser sessions from before the upgrade carry no second-factor
+  marker.** `migrate.SecurityState()` now ends with `20261127000000_sign_in_proof`, which adds
+  `second_factor_verified`, `external_provider`, `external_amr` and `external_acr` to
+  `scrty_op_grants`, `scrty_op_authorization_codes` and `scrty_op_browser_sessions`, all nullable. Run
+  it before starting this release. An MFA-required user whose grant predates it signs in again once,
+  and a resource server judges such a grant as having verified no second factor.
+- **A consumer's per-request policy may now receive a request with no session.** An access-token
+  caller has none, and a policy of the `policy.PerRequest` phase is evaluated for it. A policy that
+  dereferenced the session must check for its absence.
 
 ## [0.5.0] - 2026-11-24
 
