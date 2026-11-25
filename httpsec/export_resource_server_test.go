@@ -28,6 +28,9 @@ type StubSource struct {
 	// Unbound accepts a token bound to nothing.
 	Unbound bool
 
+	// External says the verified caller names no local user, as a claims-only caller does.
+	External bool
+
 	// TokenScopes are the scopes the verified token states, published whatever the principal
 	// Verify returns carries.
 	TokenScopes []string
@@ -68,7 +71,7 @@ func (s *StubSource) verify(ctx context.Context, raw string) (*verifiedToken, er
 	if s.Verify == nil {
 		return &verifiedToken{
 			principal: &identity.Principal{ID: "u-1", Kind: identity.KindUser},
-			kind:      factor.ExternalAccessToken, token: tok,
+			kind:      factor.ExternalAccessToken, token: tok, external: s.External,
 		}, nil
 	}
 
@@ -79,7 +82,8 @@ func (s *StubSource) verify(ctx context.Context, raw string) (*verifiedToken, er
 
 	tok.Confirmation = cnf
 
-	return &verifiedToken{principal: p, confirmation: cnf, kind: factor.ExternalAccessToken, token: tok}, nil
+	return &verifiedToken{principal: p, confirmation: cnf, kind: factor.ExternalAccessToken, token: tok,
+		external: s.External}, nil
 }
 
 // WithStubSource adds s to a resource server; a nil s is a typed nil source.

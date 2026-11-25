@@ -67,6 +67,10 @@ type strategyConfig struct {
 	linkUsers    identity.UserLoader
 }
 
+// resolvesLocal says the strategy can resolve a local user from an external token: linked users, or a
+// claims mapper whose caller is not declared external.
+func (st *strategyConfig) resolvesLocal() bool { return st.mapper != nil || st.links != nil }
+
 // WithClaimsOnly resolves the caller from the token's claims alone: a user-kind principal whose
 // identifier is the source's issuer and the token's subject joined by "#", so it is never a local
 // user's identifier nor another issuer's subject, carrying the token's scopes and no role. Such a

@@ -50,7 +50,8 @@ type Event struct {
 	// Cause is why the outcome came about, in a fixed word, and empty where
 	// the name says it all. It is the cause a grant was revoked for, the reason
 	// a back-channel logout delivery failed, or CauseGrantsNotRevoked on a
-	// RecoveryCompleted whose grants could not be revoked. It is never the text
+	// RecoveryCompleted whose grants could not be revoked, or the refusing
+	// source of an AccessTokenRefused, named as the consumer configured it. It is never the text
 	// of an error, and never a value a request supplied. The one exception to the
 	// fixed word is a cause a consumer named when it revoked a user's grants:
 	// that is the consumer's own, and is carried unchanged.
@@ -64,7 +65,8 @@ type Event struct {
 	Actor string
 
 	// Target is what an administration change concerns: a user's identifier,
-	// or a role's name. It is empty on the events of every other component,
+	// or a role's name; on AccessTokenRefused, the resource server's
+	// identifier. It is empty on the events of every other component,
 	// except ActiveRoleSwitched, whose Target is the role now active: the
 	// role switched to, or, when the selection is cleared, the primary
 	// grant's role name, empty when no primary grant is left. The user is
@@ -331,6 +333,15 @@ const (
 	// without its certificate.
 	CertificateBindingRefused = "scrty_certificate_binding_refused"
 
+	// AccessTokenRefused is an access token a resource server refused as invalid: a bad signature,
+	// type, audience or claim, an expired, inactive or unknown token, or one no source of the resource
+	// server can take. Target is the resource server's identifier, and Cause names the source that
+	// refused it, as configured (empty when no source took the token); neither is ever a value the
+	// request supplied. It carries no token and no user. A refusal for the token's binding reports
+	// DPoPRefused or CertificateBindingRefused instead, a throttled address reports
+	// ExcessRateLimitExceeded, and a dependency that failed reports nothing.
+	AccessTokenRefused = "scrty_access_token_refused" //nolint:gosec // G101: an event name, not a credential
+
 	// ChallengeRefused is a request the automation challenge refused.
 	ChallengeRefused = "scrty_challenge_refused"
 
@@ -495,7 +506,7 @@ func Names() []string {
 
 		MFAVerified, MFAVerifyFail, MFAEnrolled, MFARemoved, PasskeyRegistered, PasskeyRemoved,
 		RecoveryStarted, RecoveryCompleted, RecoveryRefused, Reauthenticated, ReauthenticationFail,
-		SignInEnded, HostRefused, DPoPRefused, CertificateBindingRefused, ChallengeRefused,
+		SignInEnded, HostRefused, DPoPRefused, CertificateBindingRefused, AccessTokenRefused, ChallengeRefused,
 		SigningKeyRotated, GrantCreated, ConsentGiven, ConsentDenied, ConsentRevoked,
 		ClientAuthRefused, CodeReplayed, RefreshReused, GrantRevoked, LogoutDeliveryFailed,
 		GrantEndFailed, GrantRevokeFailed, DeviceAuthorizationIssued, DeviceAuthorizationClaimed,

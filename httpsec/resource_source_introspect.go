@@ -141,6 +141,9 @@ func (s *introspectionSource) name() string        { return optionFromIntrospect
 func (s *introspectionSource) issuer() string      { return s.iss }
 func (s *introspectionSource) allowsUnbound() bool { return s.cfg.unbound }
 
+// resolvesLocalUsers says the source's caller strategy can name a local user.
+func (s *introspectionSource) resolvesLocalUsers() bool { return s.cfg.strategy.resolvesLocal() }
+
 // recognises claims an opaque token carrying the source's prefix, or, with no prefix, any opaque
 // token as a fallback. The provider's own formats and JWTs are never claimed.
 func (s *introspectionSource) recognises(t peeked) recognition {

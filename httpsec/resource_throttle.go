@@ -147,37 +147,37 @@ func (s *resourceServers) flushRefusalLogs() error {
 	return nil
 }
 
-// admitSource checks addr's refusal budget at src before src verifies anything. A throttled or
-// unattributable address is refused (ErrInvalidToken); a limiter that failed is a dependency failure,
-// and the request's own end its context's error.
-func (s *resourceServers) admitSource(ctx context.Context, src source, addr string) (ratelimit.Source, error) {
+// admitSource checks addr's refusal budget at src before src verifies anything. A throttled address
+// is refused (ErrInvalidToken) with throttled set, and an unattributable one refused without; a
+// limiter that failed is a dependency failure, and the request's own end its context's error.
+func (s *resourceServers) admitSource(ctx context.Context, src source, addr string) (ratelimit.Source, bool, error) {
 	g := s.guards[src]
 	if g == nil {
 		// Every source has a guard once the chain is built; a missing one is refused, never waved on.
-		return ratelimit.Source{}, ErrInvalidToken
+		return ratelimit.Source{}, false, ErrInvalidToken
 	}
 
 	if reason, ok := classifyAddress(addr); !ok {
 		s.log.LogAttrs(ctx, slog.LevelDebug, "httpsec: refusing an access token whose client address cannot be attributed",
 			slog.String("flow", resourceServerFlow), slog.String("reason", reason))
 
-		return ratelimit.Source{}, ErrInvalidToken
+		return ratelimit.Source{}, false, ErrInvalidToken
 	}
 
 	rsrc, err := g.Check(ctx, addr)
 
 	switch {
 	case err == nil:
-		return rsrc, nil
+		return rsrc, false, nil
 	case overLimit(err):
-		return rsrc, ErrInvalidToken
+		return rsrc, true, ErrInvalidToken
 	case endedBeforeTheAnswer(ctx, err):
-		return ratelimit.Source{}, diag.Wrap(err, textRefusalLimiterEnded, ctx.Err())
+		return ratelimit.Source{}, false, diag.Wrap(err, textRefusalLimiterEnded, ctx.Err())
 	default:
 		// The guard answers a limiter it could not consult as throttled, which the status table answers
 		// 401; here it is a dependency failure, so only the limiter's own failure is kept beneath the
 		// fixed text.
-		return ratelimit.Source{}, diag.Wrap(limiterCause(err), textRefusalLimiterFailed)
+		return ratelimit.Source{}, false, diag.Wrap(limiterCause(err), textRefusalLimiterFailed)
 	}
 }
 

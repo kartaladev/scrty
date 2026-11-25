@@ -12,6 +12,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/assurance"
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -439,6 +440,7 @@ func resourceServersOf(c *config) *resourceServers {
 
 	// The refusal guards need the chain's keyer, which exists only once the chain is built.
 	c.checkAfterWiring(func() error { return s.buildGuards(c) })
+	c.checkAfterWiring(func() error { return s.checkAssuranceSource(c) })
 
 	// EnableDPoP and EnableOIDCProvider may come after this option.
 	c.wire(func(*Chain) {
@@ -489,7 +491,7 @@ func (s *resourceServers) Intercept(ex *Exchange, next Next) error {
 			return next(ex)
 		}
 
-		return s.refuse(ErrInvalidToken, underDPoP, nil)
+		return s.refused(ex, rs, nil, ErrInvalidToken, underDPoP)
 	}
 
 	t := peek(raw)
@@ -499,7 +501,7 @@ func (s *resourceServers) Intercept(ex *Exchange, next Next) error {
 
 	if rs == nil {
 		if s.offPrefixRefused(t) {
-			return s.refuse(ErrInvalidToken, underDPoP, nil)
+			return s.refused(ex, nil, nil, ErrInvalidToken, underDPoP)
 		}
 
 		return next(ex)
@@ -510,7 +512,7 @@ func (s *resourceServers) Intercept(ex *Exchange, next Next) error {
 	switch {
 	case src != nil:
 	case refuse:
-		return s.refuse(ErrInvalidToken, underDPoP, nil)
+		return s.refused(ex, rs, nil, ErrInvalidToken, underDPoP)
 	default:
 		return next(ex)
 	}
@@ -536,6 +538,25 @@ func (s *resourceServers) refuse(err error, underDPoP bool, src source) error {
 	return &accessTokenRefusal{err: err, dpop: dpop, code: codeInvalidToken}
 }
 
+// refused is refuse, reporting the refusal as event.AccessTokenRefused: naming rs's identifier
+// (empty off every covered path) and src as configured (empty when no source took the token), never
+// the token. Only an invalid-token refusal is reported here; a binding refusal reports its own event
+// through the chain's refusal reporting.
+func (s *resourceServers) refused(ex *Exchange, rs *resourceServer, src source, err error, underDPoP bool) error {
+	e := event.Event{Name: event.AccessTokenRefused, Outcome: event.OutcomeFailure}
+	if rs != nil {
+		e.Target = rs.id
+	}
+
+	if src != nil {
+		e.Cause = src.name()
+	}
+
+	emitEvent(ex.Context(), e)
+
+	return s.refuse(err, underDPoP, src)
+}
+
 // dpopRequired says the chain's DPoP is on and required, so every token is presented under DPoP.
 func (s *resourceServers) dpopRequired() bool { return s.dpop != nil && s.dpop.cfg.Require }
 
@@ -545,10 +566,14 @@ func (s *resourceServers) admit(ex *Exchange, rs *resourceServer, src source, ra
 	ctx := ex.Context()
 
 	// A throttled address is refused before anything is fetched or called for its token.
-	rsrc, err := s.admitSource(ctx, src, ex.Request.ClientIP())
+	rsrc, throttled, err := s.admitSource(ctx, src, ex.Request.ClientIP())
 	switch {
-	case errors.Is(err, ErrInvalidToken):
+	case throttled:
+		emitEvent(ctx, event.Event{Name: event.ExcessRateLimitExceeded, Outcome: event.OutcomeFailure})
+
 		return s.refuse(err, underDPoP, src)
+	case errors.Is(err, ErrInvalidToken):
+		return s.refused(ex, rs, src, err, underDPoP)
 	case err != nil:
 		return err
 	}
@@ -560,13 +585,13 @@ func (s *resourceServers) admit(ex *Exchange, rs *resourceServer, src source, ra
 	case errors.Is(err, ErrInvalidToken):
 		s.countRefusal(ctx, src, rsrc)
 
-		return s.refuse(err, underDPoP, src)
+		return s.refused(ex, rs, src, err, underDPoP)
 	case err != nil:
 		return err
 	case vt == nil || vt.principal == nil:
 		s.countRefusal(ctx, src, rsrc)
 
-		return s.refuse(ErrInvalidToken, underDPoP, src)
+		return s.refused(ex, rs, src, ErrInvalidToken, underDPoP)
 	}
 
 	check, err := checkBinding(ex, s.dpop, underDPoP, raw, vt.confirmation)
@@ -619,20 +644,17 @@ func (s *resourceServers) publish(ex *Exchange, rs *resourceServer, vt *verified
 
 	switch d.Outcome {
 	case policy.Deny:
-		if errors.Is(d.Reason, policy.ErrInsufficientUserAuthentication) {
-			return s.refuseInsufficient(underDPoP, src)
-		}
-
-		return policyDenyReason(d)
+		return s.policyRefusal(d, underDPoP, src)
 	case policy.Challenge:
-		// There is no session to mark: the caller cannot answer a challenge on this request.
-		return &ChallengeError{Kind: d.Challenge}
+		// No session can hold the challenge, so the caller is sent for a stronger sign-in instead,
+		// and nothing is marked anywhere.
+		return s.refuseInsufficient(underDPoP, src)
 	case policy.Allow:
 	}
 
 	auth := &authenticate.Authentication{
 		Principal:   &p,
-		Credentials: accessTokenCredentials{kind: kind},
+		Credentials: accessTokenCredentials{kind: kind, external: vt.external},
 		Time:        now,
 	}
 

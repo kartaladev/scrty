@@ -104,8 +104,13 @@ func cloneClaim(v any) any {
 
 // accessTokenCredentials is the credential an accepted access token is published as: it names the
 // first-factor kind, factor.AccessToken for the chain provider's own tokens and
-// factor.ExternalAccessToken for every other source's, and holds no secret.
-type accessTokenCredentials struct{ kind factor.Kind }
+// factor.ExternalAccessToken for every other source's, and holds no secret. external says the
+// caller names no local user (claims only, or a mapper's caller declared external), so no event
+// takes its principal's identifier for a user reference.
+type accessTokenCredentials struct {
+	kind     factor.Kind
+	external bool
+}
 
 // Type is the factor kind, as a credentials type: "access-token" or "external-access-token".
 func (c accessTokenCredentials) Type() identity.CredentialsType {

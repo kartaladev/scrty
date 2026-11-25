@@ -331,6 +331,9 @@ func (s *issuerSource) name() string        { return optionFromIssuer + "(" + s.
 func (s *issuerSource) issuer() string      { return s.iss }
 func (s *issuerSource) allowsUnbound() bool { return s.cfg.unbound }
 
+// resolvesLocalUsers says the source's caller strategy can name a local user.
+func (s *issuerSource) resolvesLocalUsers() bool { return s.cfg.strategy.resolvesLocal() }
+
 // recognises claims a JWT naming the source's issuer.
 func (s *issuerSource) recognises(t peeked) recognition {
 	if t.format == formatJWT && t.iss == s.iss {

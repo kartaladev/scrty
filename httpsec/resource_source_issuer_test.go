@@ -228,6 +228,9 @@ type riSetup struct {
 
 	// keys are the first issuer's keys; a new ES256 key "k1" when empty.
 	keys []riKey
+
+	// chain adds options to the chain, ahead of the resource server.
+	chain []httpsec.Option
 }
 
 func newRIWorld(t *testing.T, setup riSetup) *riWorld {
@@ -278,6 +281,8 @@ func newRIWorld(t *testing.T, setup riSetup) *riWorld {
 	if setup.bound {
 		opts = append(opts, httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "https://api.example.com"}))
 	}
+
+	opts = append(opts, setup.chain...)
 
 	w.chain, err = httpsec.New(opts...)
 	require.NoError(t, err)

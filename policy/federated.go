@@ -148,7 +148,11 @@ type FederatedAssuranceUser interface {
 // federated logins on provider assurance with no source to match it against.
 //
 // It does in FederatedAssuranceChallenge and FederatedAssuranceRefuse mode
-// when WithFederatedAssuranceSource was not given. It does not in
+// when WithFederatedAssuranceSource was not given. The same answer covers the
+// external-access-token kind: a resource server whose sources resolve local
+// users from external access tokens (linked users, a claims mapper) is judged
+// through the same source, so a chain with such a source refuses to build while
+// this reports true. It does not in
 // FederatedAssuranceExempt mode, nor when the exemption rule
 // (WithMFAExemption) exempts the oidc kind, since both allow a federated login
 // before any assurance is consulted.

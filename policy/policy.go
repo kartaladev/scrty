@@ -64,7 +64,12 @@ const (
 	// a challenge.
 	PostAuthentication
 
-	// PerRequest is reached on every request carrying an established session.
+	// PerRequest is reached on every request carrying an established session,
+	// and on every request a resource server accepted an access token for. The
+	// latter carries no session: Input.Session is nil, and FirstFactor is
+	// factor.AccessToken or factor.ExternalAccessToken. No session can hold a
+	// challenge for it, so any challenge raised for such a caller, a consumer
+	// policy's included, is refused as insufficient user authentication.
 	PerRequest
 
 	// PostHandler is reached after the application's handler has run, for

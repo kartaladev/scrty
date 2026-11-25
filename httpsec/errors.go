@@ -738,7 +738,9 @@ func lookup(err error) (status int, ok bool, abort error) {
 
 	// An issuing failure is a dependency failure whatever its cause wraps,
 	// so it is answered before the challenge and the refusal table are read.
-	if _, found, stop := errwalk.As[*issueFailure](chain); stop != nil {
+	// So is a dependency a resource server's per-request policy consulted (*dependencyFailure): both
+	// mark themselves, so one scan finds either.
+	if _, found, stop := errwalk.As[forcedDependency](chain); stop != nil {
 		return unrecognised(stop)
 	} else if found {
 		return http.StatusInternalServerError, true, nil

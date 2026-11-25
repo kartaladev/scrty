@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -545,6 +546,24 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 				return emittedRun{events: rec.all(), clientIP: "192.0.2.1", secrets: []string{tok, sid}}
 			},
 			assert: emitted(event.DPoPRefused, event.OutcomeFailure),
+		},
+		{
+			name: event.AccessTokenRefused,
+			run: func(t *testing.T) emittedRun {
+				rec := &eventRecorder{}
+				src := &httpsec.StubSource{Name: "provider", Provider: true, Unbound: true, Verify: rsExpired}
+
+				chain, err := httpsec.New(httpsec.WithClock(clockwork.NewFakeClockAt(dpopNow)),
+					httpsec.WithLogger(discardLogger()), httpsec.EnableSecurityEvents(rec.sink),
+					httpsec.EnableResourceServer("urn:orders", httpsec.WithStubSource(src)))
+				require.NoError(t, err)
+
+				out := serve(t, chain, rsRequest(t, "http://example.com/api/orders", "Bearer "+rsToken))
+				require.ErrorIs(t, out.err, httpsec.ErrInvalidToken)
+
+				return emittedRun{events: rec.all(), clientIP: "192.0.2.1", secrets: []string{rsToken}}
+			},
+			assert: emitted(event.AccessTokenRefused, event.OutcomeFailure),
 		},
 		{
 			name: event.CertificateBindingRefused,

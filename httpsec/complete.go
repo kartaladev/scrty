@@ -117,6 +117,8 @@ func (f *issueFailure) Error() string { return f.text }
 // Unwrap returns the failure it marks.
 func (f *issueFailure) Unwrap() error { return f.err }
 
+func (*issueFailure) forcedDependency() {}
+
 // issuingFailure is err behind text and kinds (diag.Wrap), marked as an
 // issuing failure: nil when err is nil.
 func issuingFailure(err error, text string, kinds ...error) error {
