@@ -104,6 +104,31 @@ func (f *dependencyFailure) Unwrap() error { return f.err }
 
 func (*dependencyFailure) forcedDependency() {}
 
+// dependencyOf marks err, the failure of a dependency a source or caller strategy consulted, as a
+// dependencyFailure carrying text: diag.Wrap's result, so a consumer's error that wraps a refusal
+// (ErrInvalidToken, ErrInsufficientUserAuthentication, authenticate.ErrAuthenticationFailed) is still
+// answered 500 and never counted as a refusal. kinds are as diag.Wrap takes them.
+func dependencyOf(err error, text string, kinds ...error) error {
+	if err == nil {
+		return nil
+	}
+
+	return &dependencyFailure{text: text, err: diag.Wrap(err, text, kinds...)}
+}
+
+// isDependencyFailure says err carries a dependencyFailure. A chain that cannot be walked is one too:
+// what it says is not guessed.
+func isDependencyFailure(err error) bool {
+	chain, abort := errwalk.Flatten(err)
+	if abort != nil {
+		return true
+	}
+
+	_, found, stop := errwalk.As[*dependencyFailure](chain)
+
+	return stop != nil || found
+}
+
 // forcedDependency is a failure StatusForError answers 500 before anything else it wraps is read:
 // an issuing failure, or a dependency a resource server's per-request policy consulted.
 type forcedDependency interface {
@@ -121,13 +146,14 @@ type localExternal interface {
 // checkAssuranceSource refuses a chain whose policy judges external access tokens with no
 // federated-assurance source while a source resolves local users from them: every such caller
 // would be judged unmet, so a required user could never reach the API. Exempt mode, or an
-// exemption rule exempting oidc, needs no source, as the policy reports (UnwiredFederatedAssurance).
+// exemption rule exempting oidc or external-access-token, needs no source, as the policy reports
+// (UnwiredFederatedAssuranceFor).
 func (s *resourceServers) checkAssuranceSource(c *config) error {
 	if c.engine == nil {
 		return nil
 	}
 
-	unwired := c.engine.UnwiredFederatedAssurance()
+	unwired := c.engine.UnwiredFederatedAssuranceFor(factor.ExternalAccessToken)
 	if len(unwired) == 0 {
 		return nil
 	}
@@ -139,8 +165,8 @@ func (s *resourceServers) checkAssuranceSource(c *config) error {
 					"judges them on provider assurance with no source to match it against, so every such "+
 					"caller would be refused: give it policy.WithFederatedAssuranceSource (the shipped OIDC "+
 					"manager answers only for providers registered for OIDC login, so an API-only chain "+
-					"supplies its own), choose policy.FederatedAssuranceExempt, or exempt factor.OIDC with "+
-					"policy.WithMFAExemption", optionResourceServer, rs.id, src.name(), strings.Join(unwired, ", "))
+					"supplies its own), choose policy.FederatedAssuranceExempt, or exempt factor.OIDC or factor.ExternalAccessToken "+
+					"with policy.WithMFAExemption", optionResourceServer, rs.id, src.name(), strings.Join(unwired, ", "))
 			}
 		}
 	}

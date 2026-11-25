@@ -133,7 +133,8 @@
 //   - scrty_certificate_binding_refused: a certificate-bound token presented
 //     without its certificate.
 //   - scrty_access_token_refused: an access token a resource server refused
-//     as invalid, naming the resource server (Target) and the source (Cause).
+//     as invalid, naming the resource server (Target, empty when the token was
+//     refused off every covered path) and the source (Cause).
 //   - scrty_challenge_refused: a request the automation challenge refused.
 //   - scrty_signing_key_rotated: a signing key minted and stored by
 //     rotation.
@@ -186,8 +187,9 @@
 // actor, its target (a user's identifier or a role's name) and the names of
 // the fields it changed, never their values; the events of every other
 // component leave those empty, except scrty_access_token_refused, whose
-// target is the resource server's identifier and whose cause is the
-// refusing source as configured. It never carries the session's identifier, a
+// target is the resource server's identifier (empty when the token was
+// refused off every covered path) and whose cause is the refusing source as
+// configured. It never carries the session's identifier, a
 // password, a token, a one-time code, an authorization code, a client secret
 // or assertion, a link secret, a key, a DPoP proof, a certificate, a CSRF
 // token or a stored hash.

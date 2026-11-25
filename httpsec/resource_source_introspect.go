@@ -11,7 +11,6 @@ import (
 	"github.com/jonboulle/clockwork"
 
 	"github.com/kartaladev/scrty/authenticate/factor"
-	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/introspect"
 )
@@ -337,9 +336,9 @@ func (s *introspectionSource) verify(ctx context.Context, raw string) (*verified
 
 	switch {
 	case err != nil && hangup.ByCaller(ctx, err):
-		return nil, diag.Wrap(err, textIntrospectionCallEnded, ctx.Err())
+		return nil, dependencyOf(err, textIntrospectionCallEnded, ctx.Err())
 	case err != nil:
-		return nil, diag.Wrap(err, textIntrospectionUnusable)
+		return nil, dependencyOf(err, textIntrospectionUnusable)
 	case res == nil || !s.accepts(res):
 		return nil, ErrInvalidToken
 	}

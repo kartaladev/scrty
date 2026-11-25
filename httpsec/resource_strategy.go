@@ -11,7 +11,6 @@ import (
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/assurance"
-	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/porterr"
@@ -67,8 +66,10 @@ type strategyConfig struct {
 	linkUsers    identity.UserLoader
 }
 
-// resolvesLocal says the strategy can resolve a local user from an external token: linked users, or a
-// claims mapper whose caller is not declared external.
+// resolvesLocal says the strategy may yield a local caller from an external token: linked users, or any
+// claims mapper. A mapper's External flag is read per request, so construction cannot know which of
+// its callers are local; it is judged as possibly local, and the flag only decides, request by
+// request, whether the MFA requirement policy looks the caller up.
 func (st *strategyConfig) resolvesLocal() bool { return st.mapper != nil || st.links != nil }
 
 // WithClaimsOnly resolves the caller from the token's claims alone: a user-kind principal whose
@@ -185,9 +186,9 @@ func (st *strategyConfig) resolveExternal(ctx context.Context, iss string, tok *
 
 		switch {
 		case err != nil && hangup.ByCaller(ctx, err):
-			return diag.Wrap(err, textTokenMapperEnded, ctx.Err())
+			return dependencyOf(err, textTokenMapperEnded, ctx.Err())
 		case err != nil:
-			return diag.Wrap(err, textTokenMapperFailed)
+			return dependencyOf(err, textTokenMapperFailed)
 		case mc.Principal == nil:
 			return ErrInvalidToken
 		}
@@ -209,9 +210,9 @@ func (st *strategyConfig) resolveExternal(ctx context.Context, iss string, tok *
 		case errors.Is(err, oidc.ErrLinkNotFound):
 			return ErrInvalidToken
 		case err != nil && hangup.ByCaller(ctx, err):
-			return diag.Wrap(err, textTokenLinkEnded, ctx.Err())
+			return dependencyOf(err, textTokenLinkEnded, ctx.Err())
 		case err != nil:
-			return diag.Wrap(err, textTokenLinkNotRead)
+			return dependencyOf(err, textTokenLinkNotRead)
 		case link == nil || link.UserID == "":
 			return ErrInvalidToken
 		}
@@ -256,9 +257,9 @@ func loadLocalUser(ctx context.Context, users identity.UserLoader, id identity.U
 	case errors.Is(err, identity.ErrUserNotFound):
 		return nil, ErrInvalidToken
 	case err != nil && hangup.ByCaller(ctx, err):
-		return nil, diag.Wrap(err, textTokenUserLoadEnded, ctx.Err())
+		return nil, dependencyOf(err, textTokenUserLoadEnded, ctx.Err())
 	case err != nil:
-		return nil, diag.Wrap(err, textTokenUserNotLoaded)
+		return nil, dependencyOf(err, textTokenUserNotLoaded)
 	case details == nil || details.ID != id || !details.Active:
 		return nil, ErrInvalidToken
 	}

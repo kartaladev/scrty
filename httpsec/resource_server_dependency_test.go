@@ -4,20 +4,26 @@ import (
 	"context"
 	"crypto/elliptic"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
+	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/ratelimit"
 )
 
 // faultyTokenStore is an opaque-token store that fails every Load while down, or has the request's
@@ -177,4 +183,91 @@ func TestResourceServer_ReplayRace(t *testing.T) {
 	assert.Equal(t, 1, accepted, "exactly one request is accepted")
 	assert.Equal(t, 1, replayed, "the other is refused as a replayed proof")
 	assert.Equal(t, 2, src.Offered())
+}
+
+// failingLinks is a link store whose lookup fails with err.
+type failingLinks struct {
+	oidc.LinkStore
+
+	err error
+}
+
+func (l failingLinks) FindByExternal(context.Context, string, string, string) (*oidc.Link, error) {
+	return nil, l.err
+}
+
+// TestResourceServer_StrategyFailuresWrappingRefusals pins that a caller strategy's port that fails
+// is a dependency failure, answered 500 and not counted against the client, even when the consumer's
+// error wraps a sentinel the refusal table answers 401 (or the challenge it answers 401 with).
+func TestResourceServer_StrategyFailuresWrappingRefusals(t *testing.T) {
+	t.Parallel()
+
+	const secret = "consumer secret text"
+
+	sentinels := map[string]error{
+		"ErrInvalidToken":                      httpsec.ErrInvalidToken,
+		"ErrInsufficientUserAuthentication":    httpsec.ErrInsufficientUserAuthentication,
+		"authenticate.ErrAuthenticationFailed": authenticate.ErrAuthenticationFailed,
+	}
+
+	type testCase struct {
+		name  string
+		build func(t *testing.T, w *isWorld, cause error) httpsec.SourceOption
+	}
+
+	cases := []testCase{
+		{
+			name: "a user loader",
+			build: func(t *testing.T, w *isWorld, cause error) httpsec.SourceOption {
+				users := NewMockUserLoader(gomock.NewController(t))
+				users.EXPECT().LoadByUserID(gomock.Any(), gomock.Any()).Return(nil, cause).AnyTimes()
+
+				return httpsec.WithLinkedUsers(isLinks(t, w.ep.srv.URL, true), "corp", users)
+			},
+		},
+		{
+			name: "a link store",
+			build: func(t *testing.T, w *isWorld, cause error) httpsec.SourceOption {
+				return httpsec.WithLinkedUsers(failingLinks{LinkStore: isLinks(t, w.ep.srv.URL, true), err: cause},
+					"corp", isUsers(t, false))
+			},
+		},
+		{
+			name: "a claims mapper",
+			build: func(_ *testing.T, _ *isWorld, cause error) httpsec.SourceOption {
+				return httpsec.WithClaimsMapper("corp",
+					func(context.Context, map[string]any) (httpsec.MappedCaller, error) {
+						return httpsec.MappedCaller{}, cause
+					})
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		for sentinelName, sentinel := range sentinels {
+			t.Run(tc.name+" whose error wraps "+sentinelName, func(t *testing.T) {
+				t.Parallel()
+
+				cause := fmt.Errorf("%s: %w", secret, sentinel)
+
+				w := newISWorld(t, isSetup{
+					opts: func(w *isWorld) []httpsec.SourceOption { return []httpsec.SourceOption{tc.build(t, w, cause)} },
+					rs: []httpsec.ResourceServerOption{
+						httpsec.WithRefusalLimiter(must.Must(ratelimit.NewMemoryLimiter(1, time.Hour))),
+					},
+				})
+
+				// Two calls, with a refusal budget of one: a counted failure would throttle the second.
+				for range 2 {
+					out := w.call(t, "opaque-1", nil)
+
+					assert.Equal(t, http.StatusInternalServerError, out.status)
+					assert.False(t, out.ran)
+					assert.Empty(t, out.header.Values("WWW-Authenticate"))
+					require.Error(t, out.failure)
+					assert.NotContains(t, out.failure.Error(), secret)
+				}
+			})
+		}
+	}
 }

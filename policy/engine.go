@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/porterr"
@@ -173,6 +174,32 @@ func (e *Engine) UnwiredFederatedAssurance() []string {
 	var names []string
 
 	for _, p := range e.asked {
+		if u, ok := p.(FederatedAssuranceUser); ok && u.NeedsFederatedAssuranceSource() {
+			names = append(names, p.Name())
+		}
+	}
+
+	return names
+}
+
+// UnwiredFederatedAssuranceFor is UnwiredFederatedAssurance for logins of one
+// first-factor kind: a policy that implements FederatedAssuranceKindUser is
+// asked about that kind, so a policy exempting only the kind a component admits
+// is not reported. A policy that does not implement it is asked through
+// FederatedAssuranceUser, as UnwiredFederatedAssurance does. It returns a fresh
+// slice, nil when there is nothing to report, and is meant for wiring time.
+func (e *Engine) UnwiredFederatedAssuranceFor(kind factor.Kind) []string {
+	var names []string
+
+	for _, p := range e.asked {
+		if u, ok := p.(FederatedAssuranceKindUser); ok {
+			if u.NeedsFederatedAssuranceSourceFor(kind) {
+				names = append(names, p.Name())
+			}
+
+			continue
+		}
+
 		if u, ok := p.(FederatedAssuranceUser); ok && u.NeedsFederatedAssuranceSource() {
 			names = append(names, p.Name())
 		}

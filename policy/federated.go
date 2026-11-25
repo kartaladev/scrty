@@ -165,3 +165,33 @@ func (p *MFARequirement) NeedsFederatedAssuranceSource() bool {
 }
 
 var _ FederatedAssuranceUser = (*MFARequirement)(nil)
+
+// FederatedAssuranceKindUser is FederatedAssuranceUser for a policy whose need
+// for a source depends on the kind of the first factor it judges, so the
+// component that admits that kind can ask about it alone.
+//
+// Engine.UnwiredFederatedAssuranceFor reads it, and a policy that does not
+// implement it is asked through FederatedAssuranceUser instead, whatever the
+// kind.
+type FederatedAssuranceKindUser interface {
+	// NeedsFederatedAssuranceSourceFor reports whether the policy decides
+	// logins of the given first-factor kind on provider assurance and was given
+	// no source, so every such login it judges would be decided as unmet.
+	NeedsFederatedAssuranceSourceFor(kind factor.Kind) bool
+}
+
+// NeedsFederatedAssuranceSourceFor reports whether the requirement policy
+// decides logins of the given kind on provider assurance with no source to
+// match it against. It is the answer of NeedsFederatedAssuranceSource for one
+// kind: it does not in FederatedAssuranceExempt mode, nor when the exemption
+// rule (WithMFAExemption) exempts that kind or the oidc kind, since each allows
+// the login before any assurance is consulted.
+func (p *MFARequirement) NeedsFederatedAssuranceSourceFor(kind factor.Kind) bool {
+	if p.federatedMode == FederatedAssuranceExempt || p.exempt(kind) || p.exempt(factor.OIDC) {
+		return false
+	}
+
+	return nilcheck.IsNil(p.federated.src)
+}
+
+var _ FederatedAssuranceKindUser = (*MFARequirement)(nil)

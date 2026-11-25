@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/oidcprovider"
@@ -48,6 +49,17 @@ type undeclaredFederated struct {
 	u policy.FederatedAssuranceUser
 }
 
+// undeclaredFederatedKind is undeclaredFederated for a policy that also answers per kind.
+type undeclaredFederatedKind struct {
+	undeclaredFederated
+
+	k policy.FederatedAssuranceKindUser
+}
+
+func (p undeclaredFederatedKind) NeedsFederatedAssuranceSourceFor(kind factor.Kind) bool {
+	return p.k.NeedsFederatedAssuranceSourceFor(kind)
+}
+
 func (p undeclaredFederated) NeedsFederatedAssuranceSource() bool {
 	return p.u.NeedsFederatedAssuranceSource()
 }
@@ -59,7 +71,14 @@ func policyEngine(t *testing.T, ps ...policy.Policy) httpsec.Option {
 	wrapped := make([]policy.Policy, 0, len(ps))
 	for _, p := range ps {
 		if u, ok := p.(policy.FederatedAssuranceUser); ok {
-			wrapped = append(wrapped, undeclaredFederated{undeclared{p}, u})
+			base := undeclaredFederated{undeclared{p}, u}
+			if k, ok := p.(policy.FederatedAssuranceKindUser); ok {
+				wrapped = append(wrapped, undeclaredFederatedKind{base, k})
+
+				continue
+			}
+
+			wrapped = append(wrapped, base)
 
 			continue
 		}
@@ -229,7 +248,6 @@ func TestResourceServer_AssuranceSourceWiring(t *testing.T) {
 	refused := func(t *testing.T, err error) {
 		t.Helper()
 		require.ErrorIs(t, err, httpsec.ErrConfig)
-		assert.Contains(t, err.Error(), "FromIssuer("+iss+")")
 		assert.Contains(t, err.Error(), "WithFederatedAssuranceSource")
 	}
 
@@ -239,7 +257,13 @@ func TestResourceServer_AssuranceSourceWiring(t *testing.T) {
 		name     string
 		engine   func(t *testing.T) httpsec.Option
 		strategy func(t *testing.T) httpsec.SourceOption
-		assert   func(t *testing.T, err error)
+		// introspect builds the source with FromIntrospection, and FromIssuer otherwise.
+		introspect bool
+		assert     func(t *testing.T, err error)
+	}
+
+	exempting := func(k factor.Kind) policy.MFARequirementOption {
+		return policy.WithMFAExemption(func(got factor.Kind) bool { return got == k || got.MFAExempt() })
 	}
 
 	linked := func(t *testing.T) httpsec.SourceOption {
@@ -271,16 +295,53 @@ func TestResourceServer_AssuranceSourceWiring(t *testing.T) {
 			name:     "no policy engine judges nothing",
 			strategy: linked, assert: built,
 		},
+		{
+			name:     "an exemption of the external token kind needs no assurance source",
+			engine:   requirement(exempting(factor.ExternalAccessToken)),
+			strategy: linked, assert: built,
+		},
+		{
+			name:     "an exemption of the oidc kind needs no assurance source",
+			engine:   requirement(exempting(factor.OIDC)),
+			strategy: mapped, assert: built,
+		},
+		{
+			name:       "introspection with linked users and no assurance source",
+			engine:     requirement(),
+			strategy:   linked,
+			introspect: true, assert: refused,
+		},
+		{
+			name:       "introspection with a claims mapper and no assurance source",
+			engine:     requirement(),
+			strategy:   mapped,
+			introspect: true, assert: refused,
+		},
+		{
+			name:       "introspection under an exemption of the external token kind builds",
+			engine:     requirement(exempting(factor.ExternalAccessToken)),
+			strategy:   linked,
+			introspect: true, assert: built,
+		},
+		{
+			name:       "introspection with a given assurance source builds",
+			engine:     requirement(policy.WithFederatedAssuranceSource(asSource{})),
+			strategy:   linked,
+			introspect: true, assert: built,
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			opts := []httpsec.Option{
-				httpsec.EnableResourceServer("urn:orders",
-					httpsec.FromIssuer(iss, httpsec.WithUnboundTokens(), tc.strategy(t))),
+			source := httpsec.FromIssuer(iss, httpsec.WithUnboundTokens(), tc.strategy(t))
+			if tc.introspect {
+				source = httpsec.FromIntrospection(iss, iss+"/introspect", "orders-api",
+					httpsec.WithIntrospectionSecret("s"), httpsec.WithUnboundTokens(), tc.strategy(t))
 			}
+
+			opts := []httpsec.Option{httpsec.EnableResourceServer("urn:orders", source)}
 			if tc.engine != nil {
 				opts = append([]httpsec.Option{tc.engine(t)}, opts...)
 			}

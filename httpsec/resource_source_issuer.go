@@ -16,7 +16,6 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jws"
 
 	"github.com/kartaladev/scrty/authenticate/factor"
-	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/introspect"
 	"github.com/kartaladev/scrty/internal/keyset"
@@ -493,9 +492,9 @@ func (s *issuerSource) verify(ctx context.Context, raw string) (*verifiedToken, 
 	case errors.Is(err, keyset.ErrUnknownKey):
 		return nil, ErrInvalidToken
 	case err != nil && hangup.ByCaller(ctx, err):
-		return nil, diag.Wrap(err, textIssuerKeysEnded, ctx.Err())
+		return nil, dependencyOf(err, textIssuerKeysEnded, ctx.Err())
 	case err != nil:
-		return nil, diag.Wrap(err, textIssuerKeysUnavailable)
+		return nil, dependencyOf(err, textIssuerKeysUnavailable)
 	}
 
 	// A key that names its own algorithm is used with that algorithm alone (RFC 8725 section 3.1).
@@ -718,9 +717,9 @@ func (s *issuerSource) introspect(ctx context.Context, raw string) error {
 
 	switch {
 	case err != nil && hangup.ByCaller(ctx, err):
-		return diag.Wrap(err, textIntrospectionCallEnded, ctx.Err())
+		return dependencyOf(err, textIntrospectionCallEnded, ctx.Err())
 	case err != nil:
-		return diag.Wrap(err, textIntrospectionUnusable)
+		return dependencyOf(err, textIntrospectionUnusable)
 	case res == nil || !res.Active:
 		return ErrInvalidToken
 	default:

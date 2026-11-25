@@ -582,6 +582,9 @@ func (s *resourceServers) admit(ex *Exchange, rs *resourceServer, src source, ra
 	// dependency failures, are not.
 	vt, err := src.verify(ctx, raw)
 	switch {
+	case isDependencyFailure(err):
+		// Whatever the dependency's error wraps, it is never a refusal and never counted.
+		return err
 	case errors.Is(err, ErrInvalidToken):
 		s.countRefusal(ctx, src, rsrc)
 
