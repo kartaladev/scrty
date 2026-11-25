@@ -433,6 +433,17 @@ Implementation decisions (2026-11-25):
   the grant that holds it, for JWT and opaque tokens alike. A JWT's claims were minted from that same
   grant, and a refresh never changes it, so both formats answer the same.
 
+- **How the kind is published** (2026-11-25): the caller's credentials report it through
+  `Credentials.Type()`, `access-token` for a provider token and `external-access-token` for a
+  remote-issuer or introspected one, as every other mode's credentials report theirs.
+- **JWT introspection** (`WithJWTIntrospection`) refuses only an inactive answer: the JWT has already
+  been verified for audience, subject and expiry, so the answer adds revocation and nothing else.
+- **The session-type check** runs wherever the chain can see a generator (DPoP's issuing generator
+  and a bearer verifier that is one). `token.NewGenerator` already refuses `at+jwt` and `JWT`, so
+  the check bites on a consumer's own generator that reports its type.
+- **A key that names its algorithm** is used with that algorithm only (RFC 8725 §3.1): a token whose
+  header names another is refused.
+
 ### 14. Challenges
 
 | Refusal | Status | Challenge |
@@ -684,6 +695,8 @@ throttle, and the cache's default entry limit when enabled.
   exists.
 
 **Primary documentation** (relied on and cited as such, not re-checked on these dates):
+- **Decision 13, key algorithm:** [RFC 8725 §3.1](https://www.rfc-editor.org/rfc/rfc8725#section-3.1):
+  use each key with one algorithm and check it.
 - **Decision 5, repeated `Authorization` header**:
   - [RFC 9110 §11.6.2](https://www.rfc-editor.org/rfc/rfc9110#section-11.6.2): `Authorization` carries
     one set of credentials.
