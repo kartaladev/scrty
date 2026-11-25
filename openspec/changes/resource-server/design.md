@@ -644,6 +644,7 @@ inactive account carry no distinguishing error, and cost the same work.
 | F55 | A caller of the introspection client whose context is already cancelled | Handled: no outbound call is made. Tested | The context error |
 | F56 | A source left without saying whether its caller is local | Handled: the zero value is a local user, judged by the MFA requirement (fail closed). Tested | Judged |
 | F57 | An introspection answer with a future `iat` or `nbf` | Accepted: RFC 7662 makes both optional; the answer's `active`, `exp`, audience and subject decide | Accepted as the issuer answered |
+| F58 | A per-route `RequireAuthenticationWithin` window under one second | Accepted: such a window cannot be stated in `max_age`'s whole seconds, so the challenge omits `max_age`; the chain-wide window refuses it at construction | 401 `insufficient_user_authentication` with no `max_age` |
 
 ## Risks / Trade-offs
 

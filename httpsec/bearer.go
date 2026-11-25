@@ -899,7 +899,8 @@ func (r *insufficientScope) Unwrap() []error { return []error{ErrInsufficientSco
 //     the window in whole seconds.
 //
 // The scheme is DPoP, with the accepted algorithms, when underDPoP and DPoP is
-// on; Bearer otherwise. A scheme set already names is not added again. Any
+// on; Bearer otherwise. When set names any scheme, nothing is written: exactly
+// one challenge is ever on a response. Any
 // other refusal is left to the settled challenges. abort is the walk that gave
 // up, which answers nothing.
 func (b *bearerChallenge) accessTokenCallerChallenge(
@@ -942,11 +943,12 @@ func (b *bearerChallenge) accessTokenCallerChallenge(
 	}
 
 	switch {
+	case set != 0:
+		// A challenge is already on the response, under either scheme: the
+		// refusal is still answered, but exactly one challenge is ever written.
 	case underDPoP && b.dpop != nil:
-		if set&schemeDPoP == 0 {
-			w.AddHeader(headerWWWAuthenticate, dpopScheme+" "+params+", algs="+strconv.Quote(b.dpop.algorithmNames()))
-		}
-	case set&schemeBearer == 0:
+		w.AddHeader(headerWWWAuthenticate, dpopScheme+" "+params+", algs="+strconv.Quote(b.dpop.algorithmNames()))
+	default:
 		w.AddHeader(headerWWWAuthenticate, DefaultBearerScheme+" "+params)
 	}
 
@@ -1031,12 +1033,12 @@ func (b *bearerChallenge) accessTokenChallenge(w guardauth.HeaderWriter, err err
 	}
 
 	switch {
+	case set != 0:
+		// A challenge is already on the response: exactly one is ever written.
 	case r.dpop && b.dpop != nil:
-		if set&schemeDPoP == 0 {
-			w.AddHeader(headerWWWAuthenticate, dpopScheme+` error="`+r.code+`", algs=`+
-				strconv.Quote(b.dpop.algorithmNames()))
-		}
-	case set&schemeBearer == 0:
+		w.AddHeader(headerWWWAuthenticate, dpopScheme+` error="`+r.code+`", algs=`+
+			strconv.Quote(b.dpop.algorithmNames()))
+	default:
 		w.AddHeader(headerWWWAuthenticate, DefaultBearerScheme+` error="`+r.code+`"`)
 	}
 

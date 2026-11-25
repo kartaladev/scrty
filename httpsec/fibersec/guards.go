@@ -304,11 +304,10 @@ const DefaultRecentAuthenticationWindow = httpsec.DefaultRecentAuthenticationWin
 // counted from the caller's authentication time (the session's, or the one
 // WithAuthenticationTime reports), and nothing but an authentication moves it:
 // calling a guarded route does not extend it, nor does a session renewal. A
-// window of zero or less fails NewGuards with httpsec.ErrConfig, since no
-// caller could ever meet it. For a session, a window longer than its absolute
-// lifetime (session.WithAbsoluteTimeout) is never reached: the session ends
-// first, so the guard refuses only a caller with no recorded authentication
-// time.
+// window under one second, zero or less included, fails NewGuards with httpsec.ErrConfig: no caller
+// could meet zero, and a challenge's max_age is whole seconds (RFC 9470). For a session, a window
+// longer than its absolute lifetime (session.WithAbsoluteTimeout) is never reached: the session
+// ends first, so the guard refuses only a caller with no recorded authentication time.
 func WithRecentAuthenticationWindow(window time.Duration) GuardOption {
 	return func(g *Guards) { g.window = window }
 }

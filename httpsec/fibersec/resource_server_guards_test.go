@@ -29,8 +29,12 @@ func TestFiber_AccessTokenGuards(t *testing.T) {
 		name     string
 		scope    string
 		authTime time.Time
-		guard    func(t *testing.T, g *fibersec.Guards) fiber.Handler
-		assert   func(t *testing.T, res response, handled error, routeRan bool)
+
+		// staleSession presents a live session, not a token, judged an hour after it authenticated, on a route outside the resource server's prefix.
+		staleSession bool
+
+		guard  func(t *testing.T, g *fibersec.Guards) fiber.Handler
+		assert func(t *testing.T, res response, handled error, routeRan bool)
 	}
 
 	requiring := func(req authorize.Requirement) func(t *testing.T, g *fibersec.Guards) fiber.Handler {
@@ -104,6 +108,20 @@ func TestFiber_AccessTokenGuards(t *testing.T) {
 			assert: stale,
 		},
 		{
+			name:         "a stale session is still 403 with no body and no challenge",
+			staleSession: true,
+			guard:        recent,
+			assert: func(t *testing.T, res response, handled error, routeRan bool) {
+				t.Helper()
+				assert.False(t, routeRan)
+				assert.Equal(t, http.StatusForbidden, res.status)
+				assert.Empty(t, res.header.Values("WWW-Authenticate"))
+				assert.Empty(t, res.body)
+				require.ErrorIs(t, handled, httpsec.ErrReauthenticationRequired)
+				assert.NotErrorIs(t, handled, httpsec.ErrInsufficientUserAuthentication)
+			},
+		},
+		{
 			name:     "a fresh access token passes",
 			scope:    "orders:read",
 			authTime: now.Add(-10 * time.Minute),
@@ -117,7 +135,23 @@ func TestFiber_AccessTokenGuards(t *testing.T) {
 			t.Parallel()
 
 			iss := newRSIssuer(t, now)
-			g := mustGuards(t, permittingAuthorizer(t), fibersec.WithGuardClock(iss.clk))
+			chainOpts := iss.opts
+			path := "/api/orders"
+
+			var guardClock fibersec.GuardOption = fibersec.WithGuardClock(iss.clk)
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://example.com/api/orders", nil)
+			if tc.staleSession {
+				sessionOpts, live := authenticated(t)
+				chainOpts = append(sessionOpts, iss.opts...)
+				path = "/invoices"
+				guardClock = fibersec.WithGuardClock(&sessionClock{now: live.AuthenticatedAt.Add(time.Hour)})
+				req = bearerRequest(t.Context(), http.MethodGet, path)
+			} else {
+				req.Header.Set("Authorization", "Bearer "+iss.token(t, tc.scope, tc.authTime))
+			}
+
+			g := mustGuards(t, permittingAuthorizer(t), guardClock)
 
 			var (
 				handled  error
@@ -129,15 +163,13 @@ func TestFiber_AccessTokenGuards(t *testing.T) {
 
 				return fibersec.ErrorHandler(c, err)
 			}})
-			app.Use(fibersec.Middleware(newChain(t, iss.opts...)))
-			app.Get("/api/orders", tc.guard(t, g), func(c fiber.Ctx) error {
+
+			app.Use(fibersec.Middleware(newChain(t, chainOpts...)))
+			app.Get(path, tc.guard(t, g), func(c fiber.Ctx) error {
 				routeRan = true
 
 				return c.SendStatus(http.StatusOK)
 			})
-
-			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://example.com/api/orders", nil)
-			req.Header.Set("Authorization", "Bearer "+iss.token(t, tc.scope, tc.authTime))
 
 			tc.assert(t, serveFrom(t, app, req, referencePeer), handled, routeRan)
 		})

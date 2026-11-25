@@ -144,10 +144,30 @@ func TestResourceServer_PerRequestPolicy(t *testing.T) {
 		name   string
 		engine func(t *testing.T) httpsec.Option
 		signIn func(*oidcprovider.SignIn)
+		extra  []httpsec.Option // chain options beside the engine; nil means none
 		assert func(t *testing.T, out psCall, failure error)
 	}
 
 	cases := []testCase{
+		{
+			name: "a challenge something inside the chain already set is the only one written",
+			engine: func(t *testing.T) httpsec.Option {
+				return policyEngine(t, challengingPolicy{kind: policy.ChallengePasswordChange})
+			},
+			extra: []httpsec.Option{httpsec.RegisterInterceptor(httpsec.InterceptorFunc(
+				func(ex *httpsec.Exchange, next httpsec.Next) error {
+					ex.Writer.AddHeader("WWW-Authenticate", `Bearer realm="preset"`)
+
+					return next(ex)
+				}), httpsec.OrderSecurityHeaders+2)},
+			assert: func(t *testing.T, out psCall, failure error) {
+				t.Helper()
+				assert.Equal(t, http.StatusUnauthorized, out.status)
+				assert.Equal(t, []string{`Bearer realm="preset"`}, out.header.Values("WWW-Authenticate"),
+					"exactly one challenge, the one already set")
+				require.ErrorIs(t, failure, httpsec.ErrInsufficientUserAuthentication)
+			},
+		},
 		{
 			name: "a consumer's password-change challenge is refused as insufficient user authentication",
 			engine: func(t *testing.T) httpsec.Option {
@@ -205,7 +225,7 @@ func TestResourceServer_PerRequestPolicy(t *testing.T) {
 			t.Parallel()
 
 			failure := &atomic.Pointer[error]{}
-			w := newPSWorld(t, psSetup{failure: failure, chain: []httpsec.Option{tc.engine(t)}})
+			w := newPSWorld(t, psSetup{failure: failure, chain: append([]httpsec.Option{tc.engine(t)}, tc.extra...)})
 			w.signIn = tc.signIn
 
 			out := w.call(t, w.token(t, psJWTClient, &k, forAPI), &k, "j-1")

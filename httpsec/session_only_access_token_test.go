@@ -302,25 +302,47 @@ func providerCase(t *testing.T, method, path string) soCase {
 	}
 }
 
-// TestSessionOnlyEndpoints_EnrolmentBegin pins that second-factor enrolment refuses a caller a
-// resource server authenticated, as every other session-only endpoint does. Enrolment answers only
-// a session owing an enrolment and hands every other request on, so this is a real red, not a
-// characterization.
-func TestSessionOnlyEndpoints_EnrolmentBegin(t *testing.T) {
+// TestSessionOnlyEndpoints_Enrolment pins that every second-factor enrolment endpoint (begin,
+// confirm and email confirmation) refuses a caller a resource server authenticated, as every other
+// session-only endpoint does. Enrolment answers only a session owing an enrolment and hands every
+// other request on, so each row is a real red, not a characterization.
+func TestSessionOnlyEndpoints_Enrolment(t *testing.T) {
 	t.Parallel()
 
-	h := newPasskeyHarness(t)
-	h.extra = append(h.extra, soResourceServer())
+	type testCase struct {
+		name   string
+		path   string
+		assert func(t *testing.T, out served)
+	}
 
-	chain, err := httpsec.New(h.chainOptions(t, nil)...)
-	require.NoError(t, err)
+	refused := func(t *testing.T, out served) {
+		t.Helper()
+		require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+		assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+		assert.False(t, out.handlerRan, "the application is not reached")
+	}
 
-	out := serve(t, chain, soRequest(t, http.MethodPost, enrolBeginPath))
+	cases := []testCase{
+		{name: "begin", path: enrolBeginPath, assert: refused},
+		{name: "confirm", path: enrolConfirmPath, assert: refused},
+		{name: "email confirmation", path: enrolEmailPath, assert: refused},
+	}
 
-	require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
-	assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
-	assert.False(t, out.handlerRan, "the application is not reached")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	_, enrolled := h.enrolment(t)
-	assert.False(t, enrolled, "no enrolment begun")
+			h := newPasskeyHarness(t)
+			h.extra = append(h.extra, soResourceServer())
+
+			chain, err := httpsec.New(h.chainOptions(t, nil)...)
+			require.NoError(t, err)
+
+			out := serve(t, chain, soRequest(t, http.MethodPost, tc.path))
+			tc.assert(t, out)
+
+			_, enrolled := h.enrolment(t)
+			assert.False(t, enrolled, "no enrolment begun")
+		})
+	}
 }

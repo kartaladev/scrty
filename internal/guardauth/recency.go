@@ -51,7 +51,8 @@ type Refusals struct {
 // NewRecency validates the recency settings and returns their judge.
 //
 // It refuses, with an empty judge and a reason naming the guard option as
-// every adapter spells it, a window of zero or less, a nil clock or an
+// every adapter spells it, a window of zero or less, a window under one second
+// (a challenge's max_age is whole seconds, RFC 9470), a nil clock or an
 // interface holding a nil value, and a nil time source, judged in that order.
 // The reason is the body of the adapter's configuration error: the adapter
 // adds its own prefix and wraps its own sentinel. The reason is empty when
@@ -71,6 +72,9 @@ func NewRecency(
 	switch {
 	case window <= 0:
 		return nil, fmt.Sprintf("WithRecentAuthenticationWindow needs a window above zero, got %s", window)
+	case window < time.Second:
+		return nil, fmt.Sprintf("WithRecentAuthenticationWindow needs a window of at least one second, got %s: "+
+			"max_age is whole seconds (RFC 9470)", window)
 	case nilcheck.IsNil(clk):
 		return nil, "WithGuardClock was given no clock; omit the option to use the system clock"
 	case authTime == nil:

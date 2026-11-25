@@ -234,6 +234,14 @@ func checkMembers() error {
 // prblm's hooks (OnError, AddErrorHook) receive that problem, access_token
 // included, so a hook that logs extensions logs the token.
 //
+// An insufficient-scope problem's scope member carries every scope the first
+// refusing scope requirement names, as given and space-separated, JSON-encoded
+// as any string member is. The WWW-Authenticate header the chain sets for the
+// same refusal is stricter: it omits its scope parameter when any scope lies
+// outside the RFC 6750 scope-token charset, since a quoted string cannot carry
+// it unchanged. The two can differ for such a scope, and the body is the
+// complete one.
+//
 // A chain the core's walk gives up on (a cycle, a fan-out past its budget, a
 // link whose Unwrap, Is or As method panics) is not recognised, so the mapper
 // returns nil for it and the lookup alone logs the abort. The mapper reads the

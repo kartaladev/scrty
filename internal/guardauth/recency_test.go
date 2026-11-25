@@ -178,6 +178,24 @@ func TestNewRecency(t *testing.T) {
 			assert:   refused("WithRecentAuthenticationWindow needs a window above zero, got -1s"),
 		},
 		{
+			name:     "a window under one second is refused",
+			window:   999 * time.Millisecond,
+			clk:      clockwork.NewFakeClockAt(now),
+			authTime: source,
+			assert: refused("WithRecentAuthenticationWindow needs a window of at least one second, got 999ms: " +
+				"max_age is whole seconds (RFC 9470)"),
+		},
+		{
+			name:     "a window of exactly one second builds a judge",
+			window:   time.Second,
+			clk:      clockwork.NewFakeClockAt(now),
+			authTime: source,
+			assert: func(t *testing.T, r *guardauth.Recency, reason string) {
+				assert.Empty(t, reason)
+				assert.NotNil(t, r)
+			},
+		},
+		{
 			name:     "a nil clock is refused",
 			window:   time.Minute,
 			clk:      nil,

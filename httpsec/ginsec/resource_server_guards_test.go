@@ -29,8 +29,12 @@ func TestGin_AccessTokenGuards(t *testing.T) {
 		name     string
 		scope    string
 		authTime time.Time
-		guard    func(t *testing.T, g *ginsec.Guards) gin.HandlerFunc
-		assert   func(t *testing.T, rec *httptest.ResponseRecorder, errs []error, routeRan bool)
+
+		// staleSession presents a live session, not a token, judged an hour after it authenticated, on a route outside the resource server's prefix.
+		staleSession bool
+
+		guard  func(t *testing.T, g *ginsec.Guards) gin.HandlerFunc
+		assert func(t *testing.T, rec *httptest.ResponseRecorder, errs []error, routeRan bool)
 	}
 
 	requiring := func(req authorize.Requirement) func(t *testing.T, g *ginsec.Guards) gin.HandlerFunc {
@@ -105,6 +109,21 @@ func TestGin_AccessTokenGuards(t *testing.T) {
 			assert: stale,
 		},
 		{
+			name:         "a stale session is still 403 with no body and no challenge",
+			staleSession: true,
+			guard:        recent,
+			assert: func(t *testing.T, rec *httptest.ResponseRecorder, errs []error, routeRan bool) {
+				t.Helper()
+				assert.False(t, routeRan)
+				assert.Equal(t, http.StatusForbidden, rec.Code)
+				assert.Empty(t, rec.Header().Values("WWW-Authenticate"))
+				assert.Empty(t, rec.Body.String())
+				require.Len(t, errs, 1)
+				require.ErrorIs(t, errs[0], httpsec.ErrReauthenticationRequired)
+				assert.NotErrorIs(t, errs[0], httpsec.ErrInsufficientUserAuthentication)
+			},
+		},
+		{
 			name:     "a fresh access token passes",
 			scope:    "orders:read",
 			authTime: now.Add(-10 * time.Minute),
@@ -118,7 +137,23 @@ func TestGin_AccessTokenGuards(t *testing.T) {
 			t.Parallel()
 
 			iss := newRSIssuer(t, now)
-			g := mustGuards(t, deciding(t, nil), ginsec.WithGuardClock(iss.clk))
+			chainOpts := iss.opts
+			path := "/api/orders"
+
+			var guardClock ginsec.GuardOption = ginsec.WithGuardClock(iss.clk)
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://example.com/api/orders", nil)
+			if tc.staleSession {
+				sessionOpts, live := authenticated(t)
+				chainOpts = append(sessionOpts, iss.opts...)
+				path = "/invoices"
+				guardClock = ginsec.WithGuardClock(fixedClock{at: live.AuthenticatedAt.Add(time.Hour)})
+				req = bearerRequest(t.Context(), http.MethodGet, path)
+			} else {
+				req.Header.Set("Authorization", "Bearer "+iss.token(t, tc.scope, tc.authTime))
+			}
+
+			g := mustGuards(t, deciding(t, nil), guardClock)
 
 			var (
 				errs     []error
@@ -133,14 +168,12 @@ func TestGin_AccessTokenGuards(t *testing.T) {
 					errs = append(errs, e.Err)
 				}
 			})
-			eng.Use(ginsec.Middleware(newChain(t, iss.opts...)))
-			eng.GET("/api/orders", tc.guard(t, g), func(gc *gin.Context) {
+
+			eng.Use(ginsec.Middleware(newChain(t, chainOpts...)))
+			eng.GET(path, tc.guard(t, g), func(gc *gin.Context) {
 				routeRan = true
 				gc.Status(http.StatusOK)
 			})
-
-			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://example.com/api/orders", nil)
-			req.Header.Set("Authorization", "Bearer "+iss.token(t, tc.scope, tc.authTime))
 
 			tc.assert(t, serve(eng, req), errs, routeRan)
 		})

@@ -56,6 +56,9 @@ func TestResourceServer_InsufficientScope(t *testing.T) {
 		// noChallenge builds the chain WithoutBearerChallenge.
 		noChallenge bool
 
+		// preset is a challenge something inside the chain already set on the response.
+		preset string
+
 		assert func(t *testing.T, out scopeRoute)
 	}
 
@@ -125,6 +128,15 @@ func TestResourceServer_InsufficientScope(t *testing.T) {
 				assert.ErrorIs(t, out.err, authorize.ErrAccessDenied)
 				assert.NotErrorIs(t, out.err, httpsec.ErrInsufficientScope)
 			},
+		},
+		{
+			name:   "a DPoP caller's refusal adds no second challenge beside one already set",
+			dpop:   true,
+			bound:  true,
+			rule:   authorize.HasAnyScope("orders:write"),
+			scopes: []string{"orders:read"},
+			preset: `Bearer realm="preset"`,
+			assert: insufficient(`Bearer realm="preset"`),
 		},
 		{
 			name:   "a scope that cannot be quoted unchanged leaves the scope parameter out",
@@ -198,6 +210,15 @@ func TestResourceServer_InsufficientScope(t *testing.T) {
 
 			if tc.noChallenge {
 				opts = append(opts, httpsec.WithoutBearerChallenge())
+			}
+
+			if tc.preset != "" {
+				opts = append(opts, httpsec.RegisterInterceptor(httpsec.InterceptorFunc(
+					func(ex *httpsec.Exchange, next httpsec.Next) error {
+						ex.Writer.AddHeader("WWW-Authenticate", tc.preset)
+
+						return next(ex)
+					}), httpsec.OrderSecurityHeaders+2))
 			}
 
 			if tc.notAccessToken {
