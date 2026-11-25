@@ -28,10 +28,10 @@ code (`golang-tdd.md`). Verification is scoped to the changed packages and their
 
 ## 5. The cookie session
 
-- [ ] 5.1 Add `EnableSessionCookie(deps, opts...)` at `OrderBearerToken`, reading the identifier from the cookie through the shared pipeline and implementing `CookieAuthenticator`, off by default (design 3; spec browser-session "The cookie session is off until enabled", "A session cookie is judged by the same rules", "The cookie session requires CSRF protection"); verify their scenarios
-- [ ] 5.2 Add the cookie attribute options and their construction checks: name, same-site, domain (design 8; spec browser-session "The session cookie has safe attributes by default", "Cookie overrides that break a guarantee fail at construction"); verify table tests for every allowed and refused combination
-- [ ] 5.3 Expire the cookie on a refused cookie (missing, expired, unreadable, reused) and leave it on a store or cipher outage (design 11; spec browser-session "A refused cookie is expired, an unreadable store keeps it", "The server's deadlines stay authoritative over the cookie"); verify their scenarios
-- [ ] 5.4 Refuse the cookie session together with `EnableSessionBearer` or `EnableBearerToken` (design 4; spec browser-session "A chain delivers either cookies or tokens"); verify both refusals, and an example test with a cookie chain and a token chain under `WithBasePath("/api")` on one mux
+- [x] 5.1 Add `EnableSessionCookie(deps, opts...)` at `OrderBearerToken`, reading the identifier from the cookie through the shared pipeline and implementing `CookieAuthenticator`, off by default (design 3; spec browser-session "The cookie session is off until enabled", "A session cookie is judged by the same rules", "The cookie session requires CSRF protection"); verify their scenarios
+- [x] 5.2 Add the cookie attribute options and their construction checks: name, same-site, domain (design 8; spec browser-session "The session cookie has safe attributes by default", "Cookie overrides that break a guarantee fail at construction"); verify table tests for every allowed and refused combination
+- [x] 5.3 Expire the cookie on a refused cookie (missing, expired, unreadable, reused) and leave it on a store or cipher outage (design 11; spec browser-session "A refused cookie is expired, an unreadable store keeps it", "The server's deadlines stay authoritative over the cookie"); verify their scenarios
+- [x] 5.4 Refuse the cookie session together with `EnableSessionBearer` or `EnableBearerToken` (design 4; spec browser-session "A chain delivers either cookies or tokens"); verify both refusals, and an example test with a cookie chain and a token chain under `WithBasePath("/api")` on one mux
 
 ## 6. Credential delivery
 

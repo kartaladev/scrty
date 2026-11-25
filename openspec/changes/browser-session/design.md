@@ -84,6 +84,24 @@ unsafe methods before publishing.
   doubles where they can hide. The existing session-bearer suite runs unchanged against the
   extracted pipeline and is the refactor's safety net.
 - **Alternative:** a separate interceptor with its own copy (the draft's `OrderCookieSession`).
+- **Settled during implementation:**
+  - The pipeline reports whether it judged and refused the reference, or refused without judging
+    it; only the former expires the cookie (decision 11).
+  - Every `Cookie` header line is parsed, not just the first value. Two values under the session
+    cookie's name, or an empty, quoted, oversized or illegal value, are a malformed presentation:
+    refused with no lookup, counted against the source, and the cookie expired.
+  - A session bound to a sender key (DPoP or certificate) presented as a cookie is refused,
+    counted and expired: a cookie carries no proof, so honouring it would let a stolen bound
+    reference skip its binding.
+  - A user refused on reload (disabled, gone, or not the session's user) expires the cookie, like
+    every refusal the pipeline counts against the source.
+  - CSRF is checked on the loaded session before the user reload, so an unsafe request without a
+    token from a disabled user is answered 403, not 401. A CSRF token source that answers with the
+    authentication-required error is treated as a CSRF failure: not counted, cookie kept.
+  - The cookie value is never recorded as the request's presented bearer credential, so it can
+    never feed a DPoP `ath` binding. Rotations read the loaded session, not the presented value.
+  - The cookie transport has its own flow name, `session-cookie`, for refusal logs, sampling and
+    the rate-limiter namespace, so cookie and header refusals are told apart and limited apart.
 
 ### 4. Delivery is per chain, behind a bounded port
 
