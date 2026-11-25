@@ -479,11 +479,15 @@ Introspecting a refresh token SHALL change nothing, and SHALL NOT count as a reu
 - **THEN** the answer is `{"active": false}`, and the grant is not revoked
 
 ### Requirement: An active introspection answer describes the token
-For an active token the introspection answer SHALL hold `active`, `scope`, `client_id`, `sub`, `exp`, `iat`, `iss`, `aud`, `token_type`, and the confirmation claim when bound.
+For an active token the introspection answer SHALL hold `active`, `scope`, `client_id`, `sub`, `exp`, `iat`, `iss`, `aud`, `token_type`, the confirmation claim when bound, and, for an access token, the `auth_time`, `acr` and `amr` of the sign-in behind its grant, as far as the grant records them.
 
 #### Scenario: Active opaque token
 - **WHEN** the client that holds an opaque access token introspects it
 - **THEN** the answer holds `active` true with its `sub`, `scope`, `client_id` and `exp`
+
+#### Scenario: Sign-in members
+- **WHEN** a resource server's client introspects an access token whose grant was made by a sign-in with a password and TOTP
+- **THEN** the answer holds that sign-in's `auth_time` and the `amr` its grant records (`pwd` and `mfa` under the default sign-in assurance)
 
 ### Requirement: Grant records are durable through the store adapters
 Authorization codes, grants, refresh-token lineages, opaque access tokens, consent and pending requests SHALL each be kept in a store with an in-memory default and durable SQL adapters. No durable store SHALL hold a code, handle, refresh token, opaque access token or client secret in clear.
@@ -500,7 +504,7 @@ No code, handle, refresh token, access token, ID token, client secret or client 
 - **THEN** the log holds the client and the reason, and not the refresh token
 
 ### Requirement: The subject of every provider token is the user's identifier
-`sub` SHALL be the grant's user identifier in every token the provider issues, whatever subject mode the chain's first-party tokens use. The provider SHALL build its issuers from the key source it was given, and SHALL NOT take a first-party token generator.
+`sub` SHALL be the grant's user identifier in every token the provider issues, whatever subject mode the chain's session tokens use. The provider SHALL build its issuers from the key source it was given, and SHALL NOT take a session token generator.
 
 #### Scenario: Chain reads usernames
 - **WHEN** the chain's signed bearer and generators use the username subject, and user `u-1` named `ada` completes an authorization
@@ -615,3 +619,22 @@ A consumer MAY choose that revoking a valid JWT access token issued to the calli
 #### Scenario: Unknown value with the choice
 - **WHEN** the consumer chose the refusal, and a client revokes a value that is no token
 - **THEN** the response is 200
+
+### Requirement: A sign-in records how it was proved, and its grants keep it
+The sign-in a resume records SHALL carry whether the library verified a second factor in it and, for a federated sign-in, the federated evidence that login asserted (provider, issuer, `amr`, `acr`), taken only from the library's own record of the session, never from the consumer's sign-in assurance mapping or a request. Every grant made from that sign-in, by code or device exchange, SHALL keep them, and so SHALL every refresh of the grant.
+
+#### Scenario: Consumer mapping claims a second factor
+- **WHEN** a consumer's sign-in assurance mapping states `amr` `["mfa"]` for a password-only session, and the resumed sign-in makes a grant by code exchange
+- **THEN** the grant records that no second factor was verified, whatever its `amr` says
+
+#### Scenario: Federated sign-in
+- **WHEN** a user signs in through OIDC provider `corp`, whose ID token asserted `amr` `["mfa"]`, and the sign-in makes a grant
+- **THEN** the grant records the federated evidence `corp`, its issuer and `["mfa"]`
+
+#### Scenario: Device grant
+- **WHEN** a user approves a device authorization in a sign-in where the library verified TOTP, and the device exchanges its code
+- **THEN** the device's grant records that a second factor was verified
+
+#### Scenario: Refreshed grant
+- **WHEN** that grant is refreshed
+- **THEN** the refreshed grant still records it
