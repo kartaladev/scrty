@@ -227,7 +227,7 @@ A successful logout on a cookie chain SHALL expire the session cookie with the s
 - **THEN** the logout fails as a dependency failure, the session stays, and the cookie is not expired
 
 ### Requirement: A refused cookie is expired, an unreadable store keeps it
-When the session cookie is refused because its session is missing, expired, unreadable or reused, the response SHALL expire the cookie. When the session cannot be loaded because a store failed, the response SHALL leave the cookie in place.
+When the session cookie is refused because its session is missing, expired, unreadable or reused, the response SHALL expire the cookie. When the session cannot be loaded because a store failed, or the request is refused before its session is judged (its source is over its allowance, the source limiter cannot answer, or an unsafe request fails CSRF protection), the response SHALL leave the cookie in place.
 
 #### Scenario: Expired session
 - **WHEN** a request carries the cookie of an expired session
@@ -236,6 +236,14 @@ When the session cookie is refused because its session is missing, expired, unre
 #### Scenario: Store outage
 - **WHEN** the session store fails while a request's cookie is loaded
 - **THEN** the request fails as a dependency failure, and the response does not touch the cookie
+
+#### Scenario: Source over its allowance
+- **WHEN** a request carries a valid session cookie from a source that is over its allowance of refused references
+- **THEN** it is refused with the authentication-required error, and the response does not touch the cookie
+
+#### Scenario: Cross-site request
+- **WHEN** an unsafe request carries a valid session cookie and no valid CSRF token
+- **THEN** it is refused as a cross-site request, the response does not touch the cookie, and nothing is counted against the source
 
 ### Requirement: Ending a cookie sign-in ends the provider's browser sessions of it
 When the chain also runs the OpenID Provider, every explicit end of a cookie sign-in, by logout, by reuse detection or by revocation, SHALL end the provider's browser sessions of that sign-in, so that neither layer stays signed in after the other has ended.

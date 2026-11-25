@@ -178,6 +178,10 @@ is the seconds to the session's absolute deadline, rounded up, at least 1. A cha
   the project's added columns do, it is nullable with no default, so adding it rewrites no row, and
   a NULL reads as unset: a sign-in from before the migration gets a browser-session cookie, the
   fail-closed reading.
+- **The provider's refresh-token lineage table takes the column too.** `scrty_op_refresh_tokens`
+  mirrors `scrty_sessions` column for column, and the session statements run over both, so the same
+  migration adds `persistent_cookie boolean NULL` to it. Found during implementation; the existing
+  test that the lineage table mirrors the sessions table would otherwise fail.
 - **Alternatives:** persistent by default with `Max-Age` on every cookie (the draft's candidate;
   unsafe on shared machines); chain-wide only (no "remember me").
 - **Note:** a chain-wide option and a per-form-login option were both considered; one decision
@@ -209,6 +213,12 @@ Sign-in always creates a new session.
 - A cookie refused because its session is missing, expired, unreadable or reused: the refusal
   response expires the cookie.
 - A store or cipher outage while loading: the cookie is left alone, because the session may be fine.
+- A request refused without its session being judged keeps the cookie too: the source over its
+  allowance, the source limiter unable to answer, and a CSRF failure on an unsafe method. Expiring
+  on these would let one abusive client behind a shared address, a limiter outage, or a cross-site
+  page sign every affected browser out. The shared pipeline therefore tells its caller whether it
+  refused the reference itself or never judged it, and only the former expires the cookie.
+  (Decided during implementation, from the review of the pipeline extraction.)
 - A logout that fails on a provider store: nothing is expired, the session stays, and the logout
   can be retried, as the chain's logout already guarantees.
 
@@ -241,6 +251,8 @@ request endpoint, JSON members. An oversized body keeps today's behaviour: read 
 | Malformed, unknown, expired cookie | Input | Handled, tested | 401, counted against the source, cookie expired |
 | Superseded identifier after its window, in the cookie | Security | Handled, tested | 401 + reuse; family revoked; provider sessions end |
 | Session or user store outage on load | Dependency | Handled, tested | dependency failure (500 by default), cookie kept |
+| Source over its allowance, or the source limiter down, on a cookie request | Dependency / Security | Handled, tested | 401, cookie kept (not judged) |
+| CSRF token missing or wrong on an unsafe cookie request | Security | Handled, tested | 403 (`ErrCrossSiteRequest`), cookie kept, not charged to the source |
 | Cookie and `Authorization` together | Input | Handled, tested | 401 before any credential is read |
 | `next` off-site (`https://…`, `//…`, `/\…`) | Security | Handled, tested | `303` to `/` |
 | Delivery port returning a body credential | Configuration | Handled, tested | issuing failure, nothing written |
@@ -250,6 +262,7 @@ request endpoint, JSON members. An oversized body keeps today's behaviour: read 
 | Logout: provider store fails | State | Handled, tested | retryable failure, cookie not expired |
 | Persistent mark lost by a store or a rotation | State | Handled, tested | conformance round trip; rotation carries it |
 | Rows written before the migration | State | Handled, tested | read with the mark unset |
+| Build deployed before the migration is applied | Configuration | Accepted | every session create and load fails with the store's wrapped "column does not exist" error until the migration runs, as for every added column; the migration plan orders it first |
 | Persistent cookie on a shared machine | Security | Accepted | opt-in only; documented on the option |
 | Opted-out rotation reopens fixation | Security | Accepted | named per change; documented on the option |
 | Cookie dropped by a browser (blocked cookies, private mode) | Dependency | Accepted | the user appears signed out; the server state is unaffected |

@@ -8,23 +8,23 @@ code (`golang-tdd.md`). Verification is scoped to the changed packages and their
 
 ## 1. Session persistence mark
 
-- [ ] 1.1 Add the library-owned `session.Session.PersistentCookie` and the `session.WithPersistentCookie()` create option, set in the creating write only (design 9; spec sessions "Created persistent", "Consumer data cannot claim it"); verify with a focused `go test -run` on the new tests in `./session`
-- [ ] 1.2 Carry the mark through `Rotate`, `RotateIssuing`, `RotateWithGrace` and `RotateWithGraceIssuing`, and make `Save` keep the stored value in the memory store (spec sessions "Renewal keeps the mark", "Save cannot set the mark"); verify table tests over the four rotations and the save case
+- [x] 1.1 Add the library-owned `session.Session.PersistentCookie` and the `session.WithPersistentCookie()` create option, set in the creating write only (design 9; spec sessions "Created persistent", "Consumer data cannot claim it"); verify with a focused `go test -run` on the new tests in `./session`
+- [x] 1.2 Carry the mark through `Rotate`, `RotateIssuing`, `RotateWithGrace` and `RotateWithGraceIssuing`, and make `Save` keep the stored value in the memory store (spec sessions "Renewal keeps the mark", "Save cannot set the mark"); verify table tests over the four rotations and the save case
 
 ## 2. Durable stores
 
-- [ ] 2.1 Add a security-state migration adding `persistent_cookie boolean NULL` to `scrty_sessions` (no default, NULL read as unset), and a populated-upgrade test showing a row written before the migration loads with the mark unset (design 9; spec security-state-stores "Session stored before the migration"); verify the migration tests and `make generate-check`
-- [ ] 2.2 Store and load the mark in `store/sqlstore`, `store/pgxstore` and `store/gormstore`, write-once like `MFAAtFirstFactor`, and extend the `test/storetest` session suite with the round trip across backends (spec security-state-stores "Mark round trip across backends"); verify the store suites on every backend (Docker)
+- [x] 2.1 Add a security-state migration adding `persistent_cookie boolean NULL` to `scrty_sessions` (no default, NULL read as unset), and a populated-upgrade test showing a row written before the migration loads with the mark unset (design 9; spec security-state-stores "Session stored before the migration"); verify the migration tests and `make generate-check`
+- [x] 2.2 Store and load the mark in `store/sqlstore`, `store/pgxstore` and `store/gormstore`, write-once like `MFAAtFirstFactor`, and extend the `test/storetest` session suite with the round trip across backends (spec security-state-stores "Mark round trip across backends"); verify the store suites on every backend (Docker)
 
 ## 3. Magic-link parity
 
-- [ ] 3.1 Add `WithMagicLinkParams(address, next, token)` for form bodies and the request endpoint's JSON body, with empty and duplicate names refused (design 13; spec magic-link "Magic-link form field names are replaceable", MODIFIED "Only a POST redeems a link"); verify its scenarios
-- [ ] 3.2 Add `WithMagicLinkBodyLimit(limit)`, default 64 KiB, refusing zero or less, keeping an oversized body read as no values (spec magic-link "Magic-link request bodies are bounded by a replaceable limit"); verify its four scenarios, including that the request endpoint's answer stays uniform
+- [x] 3.1 Add `WithMagicLinkParams(address, next, token)` for form bodies and the request endpoint's JSON body, with empty and duplicate names refused (design 13; spec magic-link "Magic-link form field names are replaceable", MODIFIED "Only a POST redeems a link"); verify its scenarios
+- [x] 3.2 Add `WithMagicLinkBodyLimit(limit)`, default 64 KiB, refusing zero or less, keeping an oversized body read as no values (spec magic-link "Magic-link request bodies are bounded by a replaceable limit"); verify its four scenarios, including that the request endpoint's answer stays uniform
 
 ## 4. Shared session-reference pipeline
 
-- [ ] 4.1 Characterize the session bearer before the refactor: confirm the existing `httpsec` session-bearer tests cover the shape check, load, reuse revocation, user reload, policy, throttling and the outage split, and add any missing case as a characterization test (design 3); verify by inverting each check once and seeing its test fail
-- [ ] 4.2 Extract the pipeline out of `sessionBearer.Intercept` so it takes the identifier and its transport, with the bearer behaviour unchanged (design 3); verify the full `httpsec` session-bearer suite passes unchanged before and after, and `go test -race` on `./httpsec`
+- [x] 4.1 Characterize the session bearer before the refactor: confirm the existing `httpsec` session-bearer tests cover the shape check, load, reuse revocation, user reload, policy, throttling and the outage split, and add any missing case as a characterization test (design 3); verify by inverting each check once and seeing its test fail
+- [x] 4.2 Extract the pipeline out of `sessionBearer.Intercept` so it takes the identifier and its transport, with the bearer behaviour unchanged (design 3); verify the full `httpsec` session-bearer suite passes unchanged before and after, and `go test -race` on `./httpsec`
 
 ## 5. The cookie session
 

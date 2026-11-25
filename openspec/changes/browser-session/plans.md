@@ -142,7 +142,7 @@ Reviewers: Opus for C1–C6, Sonnet for S1, M1, C7.
 **Files:** Create `httpsec/session_reference.go`; Modify `httpsec/session_bearer.go`.
 
 **Interfaces:**
-- Produces (unexported): `type referenceTransport uint8` with `transportHeader`, `transportCookie`; `type sessionReference struct{ … }` holding `Sessions`, `Users`, limiter, guard and logger; `func (r *sessionReference) resolve(ex *Exchange, id string, t referenceTransport) (*session.Session, error)` performing the six checks and publishing nothing; publishing stays with the caller.
+- Produces (unexported): `type referenceTransport uint8` with `transportHeader`, `transportCookie`; `type sessionReference struct{ … }` holding the shared `sessionResolver`, clock, limiter, guard, sampler and logger; `type referenceCheck func(ex *Exchange) (admit func(*Exchange, *session.Session) (*identity.Details, error), err error)`; `func (r *sessionReference) resolve(ex *Exchange, id string, t referenceTransport, check referenceCheck) error`. Loading, user reload, policy and publishing stay in the existing `sessionResolver.resolve` (`resolve.go`), which the signed bearer shares, so extracting publishing would change shipped behaviour. A transport adds its own steps through `check`: it runs after the shape check and before the load (the header uses it for DPoP), and its returned `admit` runs on the loaded session before publishing (the cookie uses it for `CheckCSRFToken`). The caller records the presented reference after a nil return.
 
 - [ ] **Step 1:** Run the whole session-bearer suite and save the result: `go test -count=1 -run 'SessionBearer|SessionRenewal|Reauth' ./httpsec/ > /tmp/before.txt`.
 - [ ] **Step 2: Implement** the extraction; `sessionBearer.Intercept` reads the header and calls `resolve`.
