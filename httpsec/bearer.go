@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
@@ -816,6 +817,12 @@ func (b *bearerChallenge) challenge(
 		return err, abort
 	}
 
+	if underDPoP, ok := accessTokenCallerFrom(ctx); ok {
+		if answered, out, abort := b.accessTokenCallerChallenge(w, err, status, underDPoP, set); abort != nil || answered {
+			return out, abort
+		}
+	}
+
 	if status != http.StatusUnauthorized {
 		return err, nil
 	}
@@ -842,6 +849,133 @@ func (b *bearerChallenge) challenge(
 	}
 
 	return err, nil
+}
+
+// accessTokenCallerKey is the context key under which a resource server
+// records, for the caller it authenticated, whether that caller's challenges
+// go under DPoP. Only a resource server publishes it, so its presence is what
+// makes a request's caller an access-token caller to the challenges.
+type accessTokenCallerKey struct{}
+
+// withAccessTokenCaller records on ctx that its caller is an access-token
+// caller, whose challenges go under DPoP when underDPoP is true.
+func withAccessTokenCaller(ctx context.Context, underDPoP bool) context.Context {
+	return context.WithValue(ctx, accessTokenCallerKey{}, underDPoP)
+}
+
+// accessTokenCallerFrom reports whether ctx's caller is an access-token caller,
+// and whether its challenges go under DPoP.
+func accessTokenCallerFrom(ctx context.Context) (underDPoP, ok bool) {
+	underDPoP, ok = ctx.Value(accessTokenCallerKey{}).(bool)
+
+	return underDPoP, ok
+}
+
+// The error codes a challenge to an access-token caller names after it was
+// accepted: a scope it lacks (RFC 6750 section 3.1) and a sign-in too old for
+// a recency guard (RFC 9470 section 3).
+const codeInsufficientScope = "insufficient_scope"
+
+// insufficientScope is the refusal of an access-token caller whose token lacks
+// a required scope: err, the requirement's refusal, marked as
+// ErrInsufficientScope. Its text is fixed: err may be a consumer's.
+type insufficientScope struct{ err error }
+
+// textInsufficientScope is the fixed text of an insufficientScope refusal: ErrInsufficientScope's.
+const textInsufficientScope = "httpsec: insufficient scope: authorize: access denied"
+
+func (r *insufficientScope) Error() string   { return textInsufficientScope }
+func (r *insufficientScope) Unwrap() []error { return []error{ErrInsufficientScope, r.err} }
+
+// accessTokenCallerChallenge sets on w the one challenge a refusal of an
+// access-token caller, met after its token was accepted, is answered with, and
+// reports whether it answered err:
+//
+//   - status 403 with an *authorize.MissingScopesError beneath it:
+//     error="insufficient_scope" and the scopes the first refusing scope
+//     requirement names, and err is returned marked as ErrInsufficientScope;
+//   - status 401 with an *InsufficientUserAuthenticationError beneath it (a
+//     recency guard): error="insufficient_user_authentication" and max_age,
+//     the window in whole seconds.
+//
+// The scheme is DPoP, with the accepted algorithms, when underDPoP and DPoP is
+// on; Bearer otherwise. A scheme set already names is not added again. Any
+// other refusal is left to the settled challenges. abort is the walk that gave
+// up, which answers nothing.
+func (b *bearerChallenge) accessTokenCallerChallenge(
+	w guardauth.HeaderWriter, err error, status int, underDPoP bool, set challengeSchemes,
+) (answered bool, out, abort error) {
+	var params string
+
+	walk := walkRefusal(err)
+	if walk.abort != nil {
+		return false, err, walk.abort
+	}
+
+	switch status {
+	case http.StatusForbidden:
+		missing, found, stop := errwalk.As[*authorize.MissingScopesError](walk.chain)
+		if stop != nil || !found {
+			return false, err, stop
+		}
+
+		params = `error="` + codeInsufficientScope + `"`
+		if scope, ok := scopeParam(missing.Scopes); ok {
+			params += `, scope="` + scope + `"`
+		}
+
+		out = &insufficientScope{err: err}
+	case http.StatusUnauthorized:
+		stale, found, stop := errwalk.As[*InsufficientUserAuthenticationError](walk.chain)
+		if stop != nil || !found {
+			return false, err, stop
+		}
+
+		params = `error="` + codeInsufficientUserAuthentication + `"`
+		if secs := int64(stale.Window / time.Second); secs > 0 {
+			params += ", max_age=" + strconv.FormatInt(secs, 10)
+		}
+
+		out = err
+	default:
+		return false, err, nil
+	}
+
+	switch {
+	case underDPoP && b.dpop != nil:
+		if set&schemeDPoP == 0 {
+			w.AddHeader(headerWWWAuthenticate, dpopScheme+" "+params+", algs="+strconv.Quote(b.dpop.algorithmNames()))
+		}
+	case set&schemeBearer == 0:
+		w.AddHeader(headerWWWAuthenticate, DefaultBearerScheme+" "+params)
+	}
+
+	return true, out, nil
+}
+
+// scopeParam is scopes as a challenge's scope value, space-separated, and
+// false when there is none or one cannot be written inside a quoted string
+// unchanged: a scope token is one or more of %x21 / %x23-5B / %x5D-7E (RFC 6749
+// section 3.3), and a requirement's scopes are the consumer's, so one outside
+// that set leaves the parameter out rather than be rewritten.
+func scopeParam(scopes []string) (string, bool) {
+	if len(scopes) == 0 {
+		return "", false
+	}
+
+	for _, s := range scopes {
+		if s == "" {
+			return "", false
+		}
+
+		for i := range len(s) {
+			if c := s[i]; c < 0x21 || c > 0x7e || c == '"' || c == '\\' {
+				return "", false
+			}
+		}
+	}
+
+	return strings.Join(scopes, " "), true
 }
 
 // accessTokenRefusal is a resource server's refusal, carrying the one challenge

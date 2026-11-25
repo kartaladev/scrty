@@ -2,6 +2,7 @@ package prblmsec
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/kartaladev/prblm"
@@ -26,12 +27,13 @@ const (
 	memberMethods     = "methods"
 	memberMaxAge      = "max_age"
 	memberRule        = "rule"
+	memberScope       = "scope"
 	memberAccessToken = "access_token"
 	memberTokenType   = "token_type"
 )
 
 var memberNames = []string{
-	memberChallenge, memberMethods, memberMaxAge, memberRule, memberAccessToken, memberTokenType,
+	memberChallenge, memberMethods, memberMaxAge, memberRule, memberScope, memberAccessToken, memberTokenType,
 }
 
 // Sub-types the mapper sets members on.
@@ -40,6 +42,8 @@ const (
 	subReauthRequired    = "reauthentication-required"
 	subPasswordRejected  = "password-rejected"
 	subChallengeRequired = "challenge-required"
+	subInsufficientAuth  = "insufficient-user-authentication"
+	subInsufficientScope = "insufficient-scope"
 )
 
 // method is one entry of the methods member. Its json tags name the members in
@@ -96,8 +100,9 @@ var selectors = map[string]selector{
 		mfa.ErrEnrolmentThrottled,
 		passkey.ErrRegistrationThrottled,
 	}},
-	"invalid-token": {targets: []error{httpsec.ErrInvalidToken}},
-	"insufficient-user-authentication": {targets: []error{
+	"invalid-token":      {targets: []error{httpsec.ErrInvalidToken}},
+	subInsufficientScope: {targets: []error{httpsec.ErrInsufficientScope}},
+	subInsufficientAuth: {targets: []error{
 		httpsec.ErrInsufficientUserAuthentication,
 		policy.ErrInsufficientUserAuthentication,
 	}},
@@ -217,7 +222,7 @@ func checkMembers() error {
 // mapper ahead of it that also matches one of scrty's refusals answers that
 // refusal instead.
 //
-// The only extension members are challenge, methods, max_age, rule,
+// The only extension members are challenge, methods, max_age, rule, scope,
 // access_token and token_type. The challenge member names the kind of a
 // challenge by a fixed vocabulary (mfa, password-change, mfa-enrolment,
 // account-recovery); a challenge of any other kind, a consumer's own included,
@@ -340,6 +345,22 @@ func (p *Problems) specificProblem(c candidate, chain errwalk.Chain, err error) 
 		}
 		if found && r.Window > 0 {
 			set(prob, memberMaxAge, int64(r.Window/time.Second))
+		}
+	case subInsufficientAuth:
+		r, found, abort := errwalk.As[*httpsec.InsufficientUserAuthenticationError](chain)
+		if abort != nil {
+			return nil //nolint:nilerr // see above
+		}
+		if found && r.Window > 0 {
+			set(prob, memberMaxAge, int64(r.Window/time.Second))
+		}
+	case subInsufficientScope:
+		r, found, abort := errwalk.As[*authorize.MissingScopesError](chain)
+		if abort != nil {
+			return nil //nolint:nilerr // see above
+		}
+		if found && len(r.Scopes) > 0 {
+			set(prob, memberScope, strings.Join(r.Scopes, " "))
 		}
 	case subPasswordRejected:
 		rule, abort := ruleOf(chain)

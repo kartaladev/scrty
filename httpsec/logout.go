@@ -106,6 +106,14 @@ func (l *logout) Intercept(ex *Exchange, next Next) error {
 		return ErrAuthenticationRequired
 	}
 
+	// A caller a resource server authenticated holds an access token, not a
+	// sign-in this endpoint can end. Answering it 200 would tell the client it
+	// signed out while its grant stays live, so it is refused before anything
+	// is ended or reported.
+	if ex.accessTokenClaimed {
+		return ErrAuthenticationRequired
+	}
+
 	// A stateless first factor establishes no session, so there is nothing to
 	// delete: the caller simply stops presenting its credential. Guessing at an
 	// identifier to delete would end a session this request never named.
@@ -274,6 +282,14 @@ type LogoutOption func(*logout) error
 // endpoint. A request with no authentication result is refused with
 // ErrAuthenticationRequired, and a session that is already gone is a success:
 // two clients ending one session is ordinary.
+//
+// A caller a resource server (EnableResourceServer) authenticated by an access
+// token is refused with ErrAuthenticationRequired too, and nothing is ended or
+// reported: logout ends a sign-in session, and an access token has none. A
+// client ends its token's use by revoking it (RFC 7009, the provider's
+// revocation endpoint) or by sending its user to the provider's end-session
+// endpoint (OpenID Connect RP-Initiated Logout). This has no override. An API
+// key caller keeps the 200 above.
 //
 // Every other request, including a GET on that path, passes through untouched.
 //

@@ -203,6 +203,18 @@ var (
 	// session. Its text names no token, user or reason.
 	ErrInsufficientUserAuthentication = fmt.Errorf("httpsec: insufficient user authentication: %w",
 		ErrReauthenticationRequired)
+
+	// ErrInsufficientScope marks the refusal of an access-token caller (one a
+	// resource server, EnableResourceServer, authenticated) whose token lacks
+	// a scope a chain rule or a guard requires. It matches
+	// authorize.ErrAccessDenied, so it maps to 403, and the refusal it marks
+	// still matches the requirement's *authorize.MissingScopesError, which
+	// names the scopes. The chain's bearer challenge marks the refusal and
+	// answers it with error="insufficient_scope" and those scopes (RFC 6750
+	// section 3.1); a chain built WithoutBearerChallenge sets no challenge and
+	// leaves the refusal unmarked, the plain access denial. A refusal of any
+	// other caller is never marked. Its text names no scope, token or user.
+	ErrInsufficientScope = fmt.Errorf("httpsec: insufficient scope: %w", authorize.ErrAccessDenied)
 )
 
 // ReauthenticationRequiredError is the recency guard's refusal. It carries the
@@ -226,6 +238,37 @@ func (e *ReauthenticationRequiredError) Error() string {
 // Is reports whether target is ErrReauthenticationRequired.
 func (e *ReauthenticationRequiredError) Is(target error) bool {
 	return target == ErrReauthenticationRequired
+}
+
+// InsufficientUserAuthenticationError is a recency guard's refusal of an
+// access-token caller (one a resource server, EnableResourceServer,
+// authenticated) whose token's authentication time is older than the guard's
+// window, or which carries none. It carries the window, so a client can say
+// how recent a sign-in is needed.
+//
+// The guards (Guards.RequireRecentAuthentication, RequireAuthenticationWithin,
+// and the gin and fiber guards) return it in place of
+// *ReauthenticationRequiredError for such a caller. It matches both
+// ErrInsufficientUserAuthentication and ErrReauthenticationRequired through
+// errors.Is, so existing handling keeps matching, and maps to 401: the chain's
+// bearer challenge answers it with error="insufficient_user_authentication"
+// and max_age, the window in whole seconds (RFC 9470). A session caller's
+// refusal stays *ReauthenticationRequiredError (403). Its text names the
+// window and nothing else: no token, user or session.
+type InsufficientUserAuthenticationError struct {
+	// Window is how recently the caller's sign-in must have happened.
+	Window time.Duration
+}
+
+// Error names the window and nothing else.
+func (e *InsufficientUserAuthenticationError) Error() string {
+	return fmt.Sprintf("httpsec: insufficient user authentication: sign-in required within %s", e.Window)
+}
+
+// Is reports whether target is ErrInsufficientUserAuthentication or
+// ErrReauthenticationRequired, which the first wraps.
+func (e *InsufficientUserAuthenticationError) Is(target error) bool {
+	return target == ErrInsufficientUserAuthentication || target == ErrReauthenticationRequired
 }
 
 // ChallengeError refuses a request that must satisfy a challenge before it

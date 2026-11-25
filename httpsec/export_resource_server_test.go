@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
@@ -34,6 +35,10 @@ type StubSource struct {
 	// TokenScopes are the scopes the verified token states, published whatever the principal
 	// Verify returns carries.
 	TokenScopes []string
+
+	// AuthTime is the authentication time the verified token states; the zero time when it states
+	// none.
+	AuthTime time.Time
 
 	// Verify answers the token. Nil accepts every token as user "u-1", unbound.
 	Verify func(ctx context.Context, raw string) (*identity.Principal, map[string]string, error)
@@ -66,7 +71,7 @@ func (s *StubSource) recognises(t peeked) recognition {
 func (s *StubSource) verify(ctx context.Context, raw string) (*verifiedToken, error) {
 	s.offered.Add(1)
 
-	tok := &AccessToken{Subject: "u-1", Scopes: s.TokenScopes}
+	tok := &AccessToken{Subject: "u-1", Scopes: s.TokenScopes, AuthTime: s.AuthTime}
 
 	if s.Verify == nil {
 		return &verifiedToken{

@@ -416,6 +416,13 @@ func (c *config) flowLimiter(
 // ErrAuthenticationRequired and store nothing, and enrolment goes through the
 // chain that owns the session.
 func (i *enrolmentInterceptor) Intercept(ex *Exchange, next Next) error {
+	// A caller a resource server authenticated holds an access token, never a
+	// sign-in session an enrolment could be begun on or confirmed for, so an
+	// enrolment endpoint refuses it before anything is read or stored.
+	if ex.accessTokenClaimed && i.answersPath(ex.Request) {
+		return ErrAuthenticationRequired
+	}
+
 	s := requestSession(ex)
 	if s == nil || (s.MFA != session.MFAEnrolmentPending && s.MFA != session.MFARecoveryPending) {
 		return next(ex)
@@ -439,6 +446,12 @@ func (i *enrolmentInterceptor) Intercept(ex *Exchange, next Next) error {
 	// No token: the caller already holds the credential this session was
 	// reached with, and a gate issues nothing.
 	return &ChallengeError{Kind: policy.ChallengeMFAEnrolment, Session: s}
+}
+
+// answersPath reports whether r is a POST to one of the enrolment endpoints.
+func (i *enrolmentInterceptor) answersPath(r Request) bool {
+	return isPostUnder(r, i.beginPrefix.at()) || isPostUnder(r, i.confirmPrefix.at()) ||
+		i.emailConfirmation && isPostUnder(r, i.emailPrefix.at())
 }
 
 // passkeyRegistration reports whether r is a POST to one of the passkey

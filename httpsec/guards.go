@@ -491,14 +491,19 @@ func WithGuardClock(clock clock.Clock) GuardOption {
 // WithAuthenticationTime replaces where recency guards find when the caller
 // last proved their identity.
 //
-// Default: the authentication time of the request's session
-// (SessionFromContext), and a request with no session — a caller authenticated
-// by an API key, HTTP Basic or a consumer's own first factor — is refused
-// with ErrReauthenticationRequired. fn receives the request's context, with
+// Default: for a caller a resource server (EnableResourceServer) authenticated,
+// the authentication time its access token carries (AccessToken.AuthTime),
+// and a token carrying none is refused; for any other caller, the
+// authentication time of the request's session (SessionFromContext), and a
+// request with no session — a caller authenticated by an API key, HTTP Basic
+// or a consumer's own first factor — is refused with
+// ErrReauthenticationRequired. fn receives the request's context, with
 // the caller on it (identity.PrincipalFromContext), and reports the time and
 // whether there is one; reporting none refuses the request. When given, fn
 // replaces the session lookup entirely: a consumer who wants both reads the
-// session inside fn. A nil fn fails NewGuards with ErrConfig.
+// session inside fn. A nil fn fails NewGuards with ErrConfig. fn replaces
+// only the time: an access-token caller fn reports none for, or a stale time
+// for, is still refused with *InsufficientUserAuthenticationError.
 func WithAuthenticationTime(fn func(ctx context.Context) (time.Time, bool)) GuardOption {
 	return func(g *Guards) {
 		g.authTime = fn
@@ -512,10 +517,10 @@ func WithAuthenticationTime(fn func(ctx context.Context) (time.Time, bool)) Guar
 func (g *Guards) buildRecency() error {
 	authTime := g.authTime
 	if !g.authTimeSet {
-		authTime = guardauth.SessionAuthenticationTime(SessionFromContext)
+		authTime = guardauth.CallerAuthenticationTime(SessionFromContext, accessTokenAuthTime)
 	}
 
-	recency, reason := guardauth.NewRecency(g.window, g.clock, authTime)
+	recency, reason := guardauth.NewRecency(g.window, g.clock, authTime, recencyRefusals)
 	if reason != "" {
 		return newConfigError("%s", reason)
 	}
@@ -553,10 +558,20 @@ func (g *Guards) RequireRecentAuthentication() func(http.Handler) http.Handler {
 // Like every guard, it first refuses a request with no caller
 // (ErrAuthenticationRequired, 401) and one with no authorizer
 // (authorize.ErrAccessDenied). It then finds the caller's authentication
-// time — the request's session's, by default, or what WithAuthenticationTime
-// reports — and refuses with a *ReauthenticationRequiredError carrying window
-// (ErrReauthenticationRequired, 403) when there is none, or when it is longer
-// than window before the guards' clock (WithGuardClock) reads now. The window
+// time — the request's session's, or an access-token caller's token's, by
+// default, or what WithAuthenticationTime reports — and refuses when there is
+// none, or when it is longer than window before the guards' clock
+// (WithGuardClock) reads now:
+//
+//   - a caller a resource server authenticated, with an
+//     *InsufficientUserAuthenticationError carrying window
+//     (ErrInsufficientUserAuthentication, also ErrReauthenticationRequired;
+//     401), which the chain's bearer challenge answers with
+//     error="insufficient_user_authentication" and max_age (RFC 9470);
+//   - any other caller, with a *ReauthenticationRequiredError carrying window
+//     (ErrReauthenticationRequired, 403).
+//
+// The window
 // is inclusive, an authentication time ahead of the clock counts as just now,
 // and the window is fixed: calling the route does not extend it, and only a
 // sign-in, a second factor at sign-in or a re-authentication moves the time.
@@ -587,10 +602,27 @@ func (g *Guards) RequireAuthenticationWithin(window time.Duration) func(http.Han
 // recent builds the recency guard over window, zero meaning the guards'.
 func (g *Guards) recent(window time.Duration) func(http.Handler) http.Handler {
 	return g.guard(func(ctx context.Context, _ Request, _ authorize.Authorizer) error {
-		if recent, judged := g.recency.Judge(ctx, window); !recent {
-			return &ReauthenticationRequiredError{Window: judged}
-		}
-
-		return nil
+		return g.recency.Refuse(ctx, window)
 	})
+}
+
+// recencyRefusals are the recency guard's refusals: a session caller's
+// *ReauthenticationRequiredError (403) and an access-token caller's
+// *InsufficientUserAuthenticationError (401), each carrying the window judged;
+// guardauth chooses between them.
+var recencyRefusals = guardauth.Refusals{
+	AccessTokenCaller: accessTokenAuthTime,
+	Session:           func(w time.Duration) error { return &ReauthenticationRequiredError{Window: w} },
+	AccessToken:       func(w time.Duration) error { return &InsufficientUserAuthenticationError{Window: w} },
+}
+
+// accessTokenAuthTime reports whether ctx's caller is an access-token caller,
+// one a resource server authenticated, and its token's authentication time.
+func accessTokenAuthTime(ctx context.Context) (time.Time, bool) {
+	t, ok := AccessTokenFromContext(ctx)
+	if !ok {
+		return time.Time{}, false
+	}
+
+	return t.AuthTime, true
 }

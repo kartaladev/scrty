@@ -119,7 +119,7 @@ func TestRecency_Judge(t *testing.T) {
 				ctx = tc.ctx(ctx)
 			}
 
-			r, reason := guardauth.NewRecency(guardsWindow, clockwork.NewFakeClockAt(now), tc.authTime)
+			r, reason := guardauth.NewRecency(guardsWindow, clockwork.NewFakeClockAt(now), tc.authTime, testRefusals(noAccessToken))
 			require.Empty(t, reason)
 			require.NotNil(t, r)
 
@@ -212,7 +212,7 @@ func TestNewRecency(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			r, reason := guardauth.NewRecency(tc.window, tc.clk, tc.authTime)
+			r, reason := guardauth.NewRecency(tc.window, tc.clk, tc.authTime, testRefusals(noAccessToken))
 			tc.assert(t, r, reason)
 		})
 	}

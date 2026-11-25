@@ -529,13 +529,20 @@ func (s *resourceServers) Intercept(ex *Exchange, next Next) error {
 // requires a binding only DPoP can prove; Bearer's otherwise, a certificate-bound source's
 // included (RFC 8705 uses Bearer). src is nil when no source took the token.
 func (s *resourceServers) refuse(err error, underDPoP bool, src source) error {
-	dpop := s.dpop != nil &&
-		(underDPoP || s.dpopRequired() || src != nil && !src.allowsUnbound() && !s.certBinding)
+	dpop := s.challengesUnderDPoP(underDPoP, src)
 	if errors.Is(err, ErrCertificateBinding) {
 		dpop = false // RFC 8705 answers a certificate-binding refusal under Bearer alone
 	}
 
 	return &accessTokenRefusal{err: err, dpop: dpop, code: codeInvalidToken}
+}
+
+// challengesUnderDPoP says a challenge to a caller of src goes under DPoP: DPoP is on, and the token
+// came under DPoP, DPoP is required, or src requires DPoP binding (a certificate-binding chain's
+// bound source excepted, which RFC 8705 answers under Bearer).
+func (s *resourceServers) challengesUnderDPoP(underDPoP bool, src source) bool {
+	return s.dpop != nil &&
+		(underDPoP || s.dpopRequired() || src != nil && !src.allowsUnbound() && !s.certBinding)
 }
 
 // refused is refuse, reporting the refusal as event.AccessTokenRefused: naming rs's identifier
@@ -662,7 +669,8 @@ func (s *resourceServers) publish(ex *Exchange, rs *resourceServer, vt *verified
 	}
 
 	ex.Authentication = auth
-	ex.SetContext(withAccessToken(WithCaller(ctx, auth), tok))
+	ex.SetContext(withAccessTokenCaller(withAccessToken(WithCaller(ctx, auth), tok),
+		s.challengesUnderDPoP(underDPoP, src)))
 	ex.accessTokenClaimed = true
 
 	return nil

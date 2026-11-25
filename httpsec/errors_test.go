@@ -157,6 +157,8 @@ func TestStatusForError(t *testing.T) {
 		{name: "disclosed inactive account", err: authenticate.ErrAccountInactive, want: 403},
 		{name: "wrapped invalid access token", err: fmt.Errorf("x: %w", httpsec.ErrInvalidToken), want: 401},
 		{name: "insufficient user authentication, ahead of reauthentication required", err: fmt.Errorf("x: %w", httpsec.ErrInsufficientUserAuthentication), want: 401},
+		{name: "a recency guard's stale access token, ahead of reauthentication required", err: fmt.Errorf("x: %w", &httpsec.InsufficientUserAuthenticationError{Window: time.Minute}), want: 401},
+		{name: "insufficient scope of an access-token caller", err: fmt.Errorf("x: %w", httpsec.ErrInsufficientScope), want: 403},
 		{
 			name: "concealed inactive account answers as the authentication failure",
 			err:  errors.Join(authenticate.ErrAuthenticationFailed, authenticate.ErrAccountInactive),
@@ -600,6 +602,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"httpsec.ErrCertificateBinding":              httpsec.ErrCertificateBinding,
 		"httpsec.ErrInvalidToken":                    httpsec.ErrInvalidToken,
 		"httpsec.ErrInsufficientUserAuthentication":  httpsec.ErrInsufficientUserAuthentication,
+		"httpsec.ErrInsufficientScope":               httpsec.ErrInsufficientScope,
 		"httpsec.ErrCrossSiteRequest":                httpsec.ErrCrossSiteRequest,
 		"httpsec.ErrChallengeRequired":               httpsec.ErrChallengeRequired,
 		"httpsec.ErrChallengeUnavailable":            httpsec.ErrChallengeUnavailable,

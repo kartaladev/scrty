@@ -126,11 +126,14 @@ func TestMapper_TypePerRefusal(t *testing.T) {
 		{name: "certificate binding", err: httpsec.ErrCertificateBinding, assert: typed("proof-of-possession-failed")},
 		{name: "invalid access token", err: fmt.Errorf("x: %w", httpsec.ErrInvalidToken), assert: typed("invalid-token")},
 		{name: "insufficient user authentication", err: fmt.Errorf("x: %w", httpsec.ErrInsufficientUserAuthentication), assert: typed("insufficient-user-authentication")},
+		{name: "stale access token at a recency guard", err: fmt.Errorf("guard: %w", &httpsec.InsufficientUserAuthenticationError{Window: 5 * time.Minute}), assert: typed("insufficient-user-authentication")},
 		{name: "mfa challenge", err: challenge(policy.ChallengeMFA), assert: typed("mfa-required")},
 		{name: "consumer challenge", err: challenge(policy.ChallengeKind(100)), assert: typed("challenge-required")},
 		{name: "none-kind challenge", err: challenge(policy.ChallengeNone), assert: typed("challenge-required")},
 
 		// 403
+		{name: "access-token caller missing a scope", err: errors.Join(httpsec.ErrInsufficientScope, &authorize.MissingScopesError{Scopes: []string{"orders:write"}}), assert: typed("insufficient-scope")},
+		{name: "missing scope of any other caller", err: fmt.Errorf("rule: %w", &authorize.MissingScopesError{Scopes: []string{"orders:write"}}), assert: typed("access-denied")},
 		{name: "password change challenge", err: challenge(policy.ChallengePasswordChange), assert: typed("password-change-required")},
 		{name: "mfa enrolment challenge", err: challenge(policy.ChallengeMFAEnrolment), assert: typed("mfa-enrolment-required")},
 		{name: "account recovery challenge", err: challenge(policy.ChallengeAccountRecovery), assert: typed("account-recovery-required")},
