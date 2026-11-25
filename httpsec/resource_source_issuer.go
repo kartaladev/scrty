@@ -151,10 +151,10 @@ func WithSourceAudience(audience string) SourceOption {
 //
 // Default: the key set is found from the issuer's metadata (OpenID Connect Discovery, then RFC 8414
 // on a 404 only), which must name the issuer, and must put the key set on the issuer's own origin.
-func WithJWKSURL(u string) SourceOption {
+func WithJWKSURL(rawURL string) SourceOption {
 	return func(cfg *sourceConfig) error {
 		cfg.note(optionJWKSURL)
-		cfg.jwksURL = u
+		cfg.jwksURL = rawURL
 
 		return nil
 	}

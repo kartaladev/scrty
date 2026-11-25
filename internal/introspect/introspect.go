@@ -39,7 +39,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jonboulle/clockwork"
 	"github.com/lestrrat-go/jwx/v4/jwa"
 	"github.com/lestrrat-go/jwx/v4/jws"
 	"github.com/lestrrat-go/jwx/v4/jwt"
@@ -48,6 +47,7 @@ import (
 	"github.com/kartaladev/scrty/internal/ctxlog"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/outbound"
+	"github.com/kartaladev/scrty/pkg/clock"
 )
 
 var (
@@ -108,7 +108,7 @@ type Config struct {
 	// Cache enables the answer cache. Default: off.
 	Cache Cache
 	// Clock is the time source. Default: the real clock.
-	Clock clockwork.Clock
+	Clock clock.Clock
 	// Logger receives failure records. Default: the logger the request
 	// context carries, else slog.Default().
 	Logger *slog.Logger
@@ -194,7 +194,7 @@ type Client struct {
 	cfg     Config
 	alg     jwa.SignatureAlgorithm
 	fetcher *outbound.Client
-	clock   clockwork.Clock
+	clock   clock.Clock
 	logger  *slog.Logger
 	group   singleflight.Group
 	cache   *cache
@@ -251,7 +251,7 @@ func New(cfg Config, fetcher *outbound.Client) (*Client, error) {
 			byKey: map[[sha256.Size]byte]*list.Element{}, order: list.New()}
 	}
 	if c.clock == nil {
-		c.clock = clockwork.NewRealClock()
+		c.clock = clock.System()
 	}
 	if c.logger == nil {
 		c.logger = ctxlog.Routing()

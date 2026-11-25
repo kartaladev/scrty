@@ -8,8 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jonboulle/clockwork"
-
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/introspect"
@@ -184,9 +182,7 @@ func (s *introspectionSource) checkWiring(c *config) error {
 		cfg.Cache = introspect.Cache{MaxAge: s.cfg.cacheMaxAge, MaxEntries: s.cfg.cacheMaxEntries}
 	}
 
-	if cw, ok := c.clock.(clockwork.Clock); ok {
-		cfg.Clock = cw
-	}
+	cfg.Clock = c.clock
 
 	fetcher, err := s.cfg.outboundClient()
 	if err != nil {
