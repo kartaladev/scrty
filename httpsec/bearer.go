@@ -493,6 +493,10 @@ func EnableBearerToken(deps BearerTokenDeps, opts ...BearerTokenOption) Option {
 			// is given. One hidden behind a verifier that does not itself implement
 			// token.Generator cannot be seen.
 			if g, ok := deps.Verifier.(token.Generator); ok {
+				if err := checkSessionTokenType(c, option, "BearerTokenDeps.Verifier", g); err != nil {
+					return err
+				}
+
 				return checkSubjectGenerator(c, option, "BearerTokenDeps.Verifier", g)
 			}
 

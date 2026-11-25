@@ -4,12 +4,17 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/token"
 )
 
 // optionResourceServer names EnableResourceServer in configuration errors.
@@ -60,6 +65,14 @@ type verifiedToken struct {
 	// confirmation is the token's cnf: the key or certificate it is bound to, and empty for an
 	// unbound token.
 	confirmation map[string]string
+
+	// kind is the first-factor kind the caller is published with: factor.AccessToken for the chain
+	// provider's own tokens, factor.ExternalAccessToken for every other source's.
+	kind factor.Kind
+
+	// token is what the token states, published for the request's handlers. Its scopes are the
+	// caller's, whatever the principal carries.
+	token *AccessToken
 }
 
 // ResourceServerOption configures a resource server, or adds a token source to it.
@@ -372,6 +385,11 @@ type resourceServers struct {
 	// certBinding says the chain checks certificate bindings, handed over at assembly. A source
 	// requiring a binding then may be answered with a certificate, so its challenge is Bearer's.
 	certBinding bool
+
+	// engine runs the per-request policy phase for an accepted caller, and now dates the
+	// authentication: both handed over at assembly.
+	engine *policy.Engine
+	now    func() time.Time
 }
 
 // resourceServersOf returns the chain's resource-server interceptor, registering it at
@@ -397,6 +415,8 @@ func resourceServersOf(c *config) *resourceServers {
 	c.wire(func(*Chain) {
 		s.dpop = c.dpop
 		s.certBinding = c.certBinding != nil
+		s.engine = c.engine
+		s.now = c.clock.Now
 
 		if c.oidcProvider != nil && c.oidcProvider.provider != nil {
 			s.bound = max(s.bound, c.oidcProvider.provider.MaxAccessTokenSize())
@@ -466,7 +486,7 @@ func (s *resourceServers) Intercept(ex *Exchange, next Next) error {
 		return next(ex)
 	}
 
-	if err := s.admit(ex, src, raw, underDPoP); err != nil {
+	if err := s.admit(ex, rs, src, raw, underDPoP); err != nil {
 		return err
 	}
 
@@ -490,8 +510,9 @@ func (s *resourceServers) refuse(err error, underDPoP bool, src source) error {
 // dpopRequired says the chain's DPoP is on and required, so every token is presented under DPoP.
 func (s *resourceServers) dpopRequired() bool { return s.dpop != nil && s.dpop.cfg.Require }
 
-// admit verifies raw at src, holds it to its binding, and publishes its caller on ex.
-func (s *resourceServers) admit(ex *Exchange, src source, raw string, underDPoP bool) error {
+// admit verifies raw at src, holds it to its binding, runs the per-request policy phase for its
+// caller, and publishes the caller and the token on ex.
+func (s *resourceServers) admit(ex *Exchange, rs *resourceServer, src source, raw string, underDPoP bool) error {
 	ctx := ex.Context()
 
 	vt, err := src.verify(ctx, raw)
@@ -522,7 +543,56 @@ func (s *resourceServers) admit(ex *Exchange, src source, raw string, underDPoP 
 		return s.refuse(err, underDPoP, src)
 	}
 
-	ex.SetContext(WithCaller(ctx, &authenticate.Authentication{Principal: vt.principal}))
+	return s.publish(ex, rs, vt)
+}
+
+// publish runs the per-request policy phase for vt's caller and, when it allows, publishes the
+// caller and the token on ex. The caller's scopes are the token's, whatever the source's principal
+// carried, so no caller strategy can widen them.
+func (s *resourceServers) publish(ex *Exchange, rs *resourceServer, vt *verifiedToken) error {
+	ctx := ex.Context()
+	now := s.now()
+
+	tok := vt.token
+	if tok == nil {
+		tok = &AccessToken{}
+	}
+
+	tok = tok.clone()
+	tok.Resource = rs.id
+
+	kind := vt.kind
+	if kind == "" {
+		kind = factor.ExternalAccessToken // fail closed: never taken for the provider's own token
+	}
+
+	p := *vt.principal
+	p.Scopes = slices.Clone(tok.Scopes)
+
+	in := &policy.Input{Principal: &p, Username: p.Username, FirstFactor: kind, Now: now}
+	if kind == factor.AccessToken {
+		in.User = p.ID // only the provider's own tokens name a local user here
+	}
+
+	d := evaluatePhase(ctx, s.engine, policy.PerRequest, in)
+
+	switch d.Outcome {
+	case policy.Deny:
+		return policyDenyReason(d)
+	case policy.Challenge:
+		// There is no session to mark: the caller cannot answer a challenge on this request.
+		return &ChallengeError{Kind: d.Challenge}
+	case policy.Allow:
+	}
+
+	auth := &authenticate.Authentication{
+		Principal:   &p,
+		Credentials: accessTokenCredentials{kind: kind},
+		Time:        now,
+	}
+
+	ex.Authentication = auth
+	ex.SetContext(withAccessToken(WithCaller(ctx, auth), tok))
 	ex.accessTokenClaimed = true
 
 	return nil
@@ -578,4 +648,45 @@ func (s *resourceServers) offPrefixRefused(t peeked) bool {
 	}
 
 	return false
+}
+
+// tokenTyped is a generator that reports the type it declares, as token.JWTGenerator does.
+type tokenTyped interface {
+	TokenType() string
+}
+
+// checkSessionTokenType refuses a session token generator whose declared type a resource server on
+// the chain would take for an access token's: at+jwt in any case or spelling, and JWT while a source
+// accepts untyped tokens. A generator that does not report its type cannot be seen.
+func checkSessionTokenType(c *config, option, field string, g token.Generator) error {
+	typed, ok := g.(tokenTyped)
+	if nilcheck.IsNil(g) || !ok {
+		return nil
+	}
+
+	declared := typed.TokenType()
+	typ := strings.TrimPrefix(asciiLower(declared), "application/")
+
+	return eachInterceptor(c, func(s *resourceServers) error {
+		if typ == token.TypeAccessToken {
+			return newConfigError("%s was given a token generator (%s) declaring the type %q, which a resource "+
+				"server takes for an access token; give session tokens a type of their own", option, field, declared)
+		}
+
+		if typ != "jwt" {
+			return nil
+		}
+
+		for _, rs := range s.modes {
+			for _, src := range rs.sources {
+				if u, ok := src.(interface{ acceptsUntyped() bool }); ok && u.acceptsUntyped() {
+					return newConfigError("%s was given a token generator (%s) declaring the type %q, and %s (%s) "+
+						"accepts tokens typed JWT (%s) through %s; give session tokens a type of their own",
+						option, field, declared, optionResourceServer, rs.id, optionUntypedTokens, src.name())
+				}
+			}
+		}
+
+		return nil
+	})
 }

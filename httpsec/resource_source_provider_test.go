@@ -59,6 +59,9 @@ type psSetup struct {
 
 	// events, when set, receives the chain's security events.
 	events *eventRecorder
+
+	// provider adds options to the provider.
+	provider []oidcprovider.Option
 }
 
 func newPSWorld(t *testing.T, setup psSetup) *psWorld {
@@ -120,8 +123,8 @@ func newPSWorld(t *testing.T, setup psSetup) *psWorld {
 		ConsentURL:   opIssuer + "/consent",
 		LogoutURL:    opIssuer + "/logout-page",
 		LoggedOutURL: opIssuer + "/bye",
-	}, oidcprovider.WithClock(clk), oidcprovider.WithConsentStore(consents), oidcprovider.WithoutBrowserSessions(),
-		oidcprovider.WithDPoP())
+	}, append([]oidcprovider.Option{oidcprovider.WithClock(clk), oidcprovider.WithConsentStore(consents),
+		oidcprovider.WithoutBrowserSessions(), oidcprovider.WithDPoP()}, setup.provider...)...)
 	require.NoError(t, err)
 
 	rs := httpsec.EnableResourceServer(psAPI, httpsec.WithPathPrefix("/api/"), httpsec.FromProvider(p))

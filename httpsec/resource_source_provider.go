@@ -3,9 +3,11 @@ package httpsec
 import (
 	"context"
 	"errors"
+	"maps"
 	"slices"
 	"time"
 
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
@@ -17,26 +19,6 @@ import (
 // FromIntrospection. A nil option is skipped. An option a source does not take is a configuration
 // error from New, naming the option and the source.
 type SourceOption func(*sourceConfig) error
-
-// sourceConfig is what a source's options set. Every field's zero value is the source's default.
-type sourceConfig struct{}
-
-// newSourceConfig applies opts, skipping nil ones.
-func newSourceConfig(opts []SourceOption) (*sourceConfig, error) {
-	cfg := &sourceConfig{}
-
-	for _, opt := range opts {
-		if opt == nil {
-			continue
-		}
-
-		if err := opt(cfg); err != nil {
-			return nil, err
-		}
-	}
-
-	return cfg, nil
-}
 
 // sourceWiring is a source that checks its own wiring against the chain at New: a check that
 // needs what other options configured.
@@ -129,6 +111,10 @@ func (s *providerSource) checkWiring(c *config) error {
 		return newConfigError("%s (%s) was given a nil provider to %s", optionResourceServer, s.rs.id, optionFromProvider)
 	}
 
+	if err := s.cfg.refuseOptions(s.rs.id, optionFromProvider); err != nil {
+		return err
+	}
+
 	if c.oidcProvider == nil || c.oidcProvider.provider != s.op {
 		return newConfigError("%s (%s): %s was given a provider that is not the one EnableOIDCProvider serves "+
 			"on this chain; a resource server trusts the chain's own provider, and another issuer through FromIssuer",
@@ -172,7 +158,24 @@ func (s *providerSource) verify(ctx context.Context, raw string) (*verifiedToken
 
 	principal.Scopes = slices.Clone(at.Scopes)
 
-	return &verifiedToken{principal: principal, confirmation: at.Confirmation}, nil
+	return &verifiedToken{
+		principal:    principal,
+		confirmation: at.Confirmation,
+		kind:         factor.AccessToken,
+		token: &AccessToken{
+			Issuer:       at.Issuer,
+			Subject:      string(at.Subject),
+			ClientID:     at.ClientID,
+			Audience:     slices.Clone(at.Audience),
+			Scopes:       slices.Clone(at.Scopes),
+			IssuedAt:     at.IssuedAt,
+			ExpiresAt:    at.ExpiresAt,
+			AuthTime:     at.AuthTime,
+			ACR:          at.ACR,
+			AMR:          slices.Clone(at.AMR),
+			Confirmation: maps.Clone(at.Confirmation),
+		},
+	}, nil
 }
 
 // localUser loads the user subject names. A user who is missing, inactive or loaded as another is

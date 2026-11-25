@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
 )
 
@@ -26,6 +27,10 @@ type StubSource struct {
 
 	// Unbound accepts a token bound to nothing.
 	Unbound bool
+
+	// TokenScopes are the scopes the verified token states, published whatever the principal
+	// Verify returns carries.
+	TokenScopes []string
 
 	// Verify answers the token. Nil accepts every token as user "u-1", unbound.
 	Verify func(ctx context.Context, raw string) (*identity.Principal, map[string]string, error)
@@ -58,8 +63,13 @@ func (s *StubSource) recognises(t peeked) recognition {
 func (s *StubSource) verify(ctx context.Context, raw string) (*verifiedToken, error) {
 	s.offered.Add(1)
 
+	tok := &AccessToken{Subject: "u-1", Scopes: s.TokenScopes}
+
 	if s.Verify == nil {
-		return &verifiedToken{principal: &identity.Principal{ID: "u-1", Kind: identity.KindUser}}, nil
+		return &verifiedToken{
+			principal: &identity.Principal{ID: "u-1", Kind: identity.KindUser},
+			kind:      factor.ExternalAccessToken, token: tok,
+		}, nil
 	}
 
 	p, cnf, err := s.Verify(ctx, raw)
@@ -67,7 +77,9 @@ func (s *StubSource) verify(ctx context.Context, raw string) (*verifiedToken, er
 		return nil, err
 	}
 
-	return &verifiedToken{principal: p, confirmation: cnf}, nil
+	tok.Confirmation = cnf
+
+	return &verifiedToken{principal: p, confirmation: cnf, kind: factor.ExternalAccessToken, token: tok}, nil
 }
 
 // WithStubSource adds s to a resource server; a nil s is a typed nil source.
