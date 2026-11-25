@@ -30,7 +30,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/redis v0.45.0
 	github.com/valyala/fasthttp v1.79.0
 	go.uber.org/mock v0.6.0
-	golang.org/x/oauth2 v0.37.0
+	golang.org/x/oauth2 v0.38.0
 	gorm.io/driver/postgres v1.6.3
 	gorm.io/gorm v1.31.2
 )
