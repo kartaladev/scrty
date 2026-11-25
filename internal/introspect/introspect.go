@@ -203,7 +203,8 @@ type Client struct {
 }
 
 // New builds a Client, or returns an error wrapping ErrConfig naming what
-// cannot work. An http endpoint is refused whatever the fetcher allows.
+// cannot work. A nil fetcher is refused with ErrConfig, as is an http endpoint whatever the fetcher
+// allows.
 func New(cfg Config, fetcher *outbound.Client) (*Client, error) {
 	refuse := func(format string, args ...any) (*Client, error) {
 		return nil, fmt.Errorf("%w: "+format, append([]any{ErrConfig}, args...)...)

@@ -27,8 +27,9 @@ const (
 )
 
 // WithIntrospectionSecret authenticates a FromIntrospection source to its endpoint as
-// client_secret_basic with secret. Exactly one of it and WithIntrospectionKey is given; neither, or
-// both, is a configuration error from New. The secret is never logged or put in an error.
+// client_secret_basic with secret. Exactly one of it and WithIntrospectionKey is required: there is
+// no default client authentication, so giving neither, or both, is a configuration error from New.
+// The secret is never logged or put in an error.
 func WithIntrospectionSecret(secret string) SourceOption {
 	return func(cfg *sourceConfig) error {
 		cfg.note(optionIntrospectionSecret)
@@ -39,7 +40,8 @@ func WithIntrospectionSecret(secret string) SourceOption {
 }
 
 // WithIntrospectionKey authenticates a FromIntrospection source to its endpoint as private_key_jwt
-// (RFC 7523) with key. Exactly one of it and WithIntrospectionSecret is given.
+// (RFC 7523) with key. Exactly one of it and WithIntrospectionSecret is required: there is no
+// default client authentication, so giving neither, or both, is a configuration error from New.
 func WithIntrospectionKey(key IntrospectionKey) SourceOption {
 	return func(cfg *sourceConfig) error {
 		cfg.note(optionIntrospectionKey)
