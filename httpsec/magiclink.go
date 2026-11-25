@@ -46,6 +46,10 @@ const (
 	DefaultMagicLinkTokenParam = "token"
 )
 
+// defaultMagicLinkBodyLimit bounds a body at either endpoint, which are
+// unauthenticated.
+const defaultMagicLinkBodyLimit int64 = 64 << 10
+
 // magicLinkFlow names this flow's rate-limit buckets and sampler keys, so a
 // source that exhausts its redemption allowance still has its own allowance at
 // every other endpoint.
@@ -188,6 +192,12 @@ type magicLinkInterceptor struct {
 	cookieName    string
 	bodyLimit     int64
 	countRefusals bool
+
+	// addressParam, nextParam and tokenParam are the names the request and
+	// redeem endpoints read their values under.
+	addressParam string
+	nextParam    string
+	tokenParam   string
 
 	// automation is the automation-challenge gate when it was selected for the
 	// link request, settled at assembly, and nil otherwise.
@@ -403,20 +413,22 @@ func (i *magicLinkInterceptor) readRequest(r Request) (address, next string) {
 			return "", ""
 		}
 
-		return values.Get(DefaultMagicLinkAddressParam), values.Get(DefaultMagicLinkNextParam)
+		return values.Get(i.addressParam), values.Get(i.nextParam)
 	}
 
 	if len(body) == 0 || !declaresJSON(declared) {
 		return "", ""
 	}
 
-	var fields map[string]any
+	// Members are decoded one by one, so a member of the wrong type costs only
+	// itself: it reads as absent, and the other is still read.
+	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil {
 		return "", ""
 	}
 
-	address, _ = fields[DefaultMagicLinkAddressParam].(string)
-	next, _ = fields[DefaultMagicLinkNextParam].(string)
+	_ = json.Unmarshal(fields[i.addressParam], &address)
+	_ = json.Unmarshal(fields[i.nextParam], &next)
 
 	return address, next
 }
@@ -602,8 +614,8 @@ func (i *magicLinkInterceptor) readConsume(r Request) (token, next string) {
 		return "", ""
 	}
 
-	return values.Get(DefaultMagicLinkTokenParam),
-		i.redirects.Resolve(values.Get(DefaultMagicLinkNextParam))
+	return values.Get(i.tokenParam),
+		i.redirects.Resolve(values.Get(i.nextParam))
 }
 
 // endpoints declares asking for a link and redeeming one.
