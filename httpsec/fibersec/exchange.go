@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -267,6 +268,10 @@ func (r request) ClientIP() string {
 // remove the forwarded headers it consumed (httpsec.EnableTrustedProxies).
 // The names are collected before any is removed, because fasthttp's header
 // iteration must not see the headers change under it.
+//
+// Listing the headers makes fasthttp parse the cookies and rebuild the Cookie
+// header from the parse. That is why HeaderValues reads the Cookie lines from
+// the header block as received, and not from the header this lists.
 func (r request) DelHeaders(match func(name string) bool) {
 	h := &r.c.Request().Header
 
@@ -287,15 +292,46 @@ func (r request) DelHeaders(match func(name string) bool) {
 // chain's trusted-proxy resolution joins repeated forwarded headers rather
 // than reading the first line alone. Each value is copied out of fasthttp's
 // reused buffer.
+//
+// The Cookie lines are read from the header block exactly as the client sent
+// it (fasthttp's RawHeaders), never from the parsed header. The first time
+// fasthttp lists the headers or reads a cookie, it parses the cookies and
+// rebuilds the header from the parse: quotes stripped, values it cannot keep
+// dropped, lines merged. Which call came first is not the chain's to know, and
+// a session cookie presented twice, or quoted, is a claim the chain refuses
+// as sent, so it must never be read cleaned up. A request with no raw block (one
+// built rather than read from a connection) has nothing to read it from, and
+// is read as fasthttp holds it.
 func (r request) HeaderValues(name string) []string {
-	raw := r.c.Request().Header.PeekAll(name)
-	if len(raw) == 0 {
+	h := &r.c.Request().Header
+
+	if strings.EqualFold(name, fiber.HeaderCookie) && len(h.RawHeaders()) > 0 {
+		return rawLines(h, name)
+	}
+
+	all := h.PeekAll(name)
+	if len(all) == 0 {
 		return nil
 	}
 
-	out := make([]string, len(raw))
-	for i, v := range raw {
+	out := make([]string, len(all))
+	for i, v := range all {
 		out[i] = string(v)
+	}
+
+	return out
+}
+
+// rawLines is every line named name in the header block h received, as
+// received, or nil when it has none. AllInOrder scans that block, so it parses
+// no cookie.
+func rawLines(h *fasthttp.RequestHeader, name string) []string {
+	var out []string
+
+	for k, v := range h.AllInOrder() {
+		if strings.EqualFold(string(k), name) {
+			out = append(out, string(v))
+		}
 	}
 
 	return out
