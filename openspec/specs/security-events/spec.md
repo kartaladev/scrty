@@ -34,7 +34,7 @@ Each event SHALL carry a name from the OWASP Logging Vocabulary where one applie
 - `excess_rate_limit_exceeded`, for a rate-limit refusal;
 - `malicious_csrf`, for a CSRF refusal.
 
-Outcomes the vocabulary does not name SHALL use names under a `scrty_` prefix, documented in one list, including second-factor verification, enrolment and removal, passkey binding and removal, recovery start, completion and refusal, re-authentication, a sign-in ended through session management, host refusal, DPoP refusal, certificate-binding refusal, automation-challenge refusal and signing-key rotation.
+Outcomes the vocabulary does not name SHALL use names under a `scrty_` prefix, documented in one list, including second-factor verification, enrolment and removal, passkey binding and removal, recovery start, completion and refusal, re-authentication, a sign-in ended through session management, host refusal, DPoP refusal, certificate-binding refusal, automation-challenge refusal, access-token refusal by a resource server and signing-key rotation.
 
 #### Scenario: Lockout
 - **WHEN** an identifier reaches its lockout threshold
@@ -55,6 +55,14 @@ Outcomes the vocabulary does not name SHALL use names under a `scrty_` prefix, d
 #### Scenario: CSRF refusal
 - **WHEN** a CSRF check refuses a request
 - **THEN** the sink receives `malicious_csrf`
+
+#### Scenario: Access token refused
+- **WHEN** a resource server refuses an expired access token
+- **THEN** the sink receives the documented access-token refusal event, naming the resource server's identifier and the source, and carrying no token
+
+#### Scenario: Refused tokens throttled
+- **WHEN** a resource server throttles an address after repeated refused tokens
+- **THEN** the sink receives `excess_rate_limit_exceeded`
 
 ### Requirement: An event reports what happened, not what was attempted
 A creation event, `session_created`, `session_renewed` or `authn_token_created`, SHALL be emitted only after the session it names was stored and its credential handed out. A credential that was issued and then discarded, because its session could not be stored, a racing redemption won, or a rotation's step outlived its window, SHALL produce no creation event. A request whose own context ended before a verdict SHALL produce no failure event. A dependency failure SHALL produce no refusal event.
@@ -148,3 +156,10 @@ A successful active-role switch SHALL be reported under a `scrty_`-prefixed name
 #### Scenario: Conflict
 - **WHEN** an email login is refused because the identifier names two users
 - **THEN** the sink receives one identifier-conflict event that names no user and does not contain the identifier
+
+### Requirement: An access-token event names a local user only when there is one
+An event about an access-token caller SHALL carry a user reference only when the caller is a local user: a provider token's user, a linked user, or a mapper's caller not declared external. A claims-only caller, or a mapper's caller declared external, SHALL be reported without a user reference, and never with the external subject in its place.
+
+#### Scenario: Claims-only caller refused at a scope rule
+- **WHEN** a claims-only caller is refused by an authorization rule
+- **THEN** the sink receives `authz_fail` with no user reference

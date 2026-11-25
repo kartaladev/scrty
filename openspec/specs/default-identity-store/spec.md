@@ -441,36 +441,18 @@ Updating a user SHALL accept an option naming the password hash the caller expec
 - **THEN** the suite fails, naming the conditional-update check
 
 ### Requirement: Every relation the identity set creates carries the scrty_ prefix
-Once the identity set is at its latest version, every table, index, index-backed constraint and sequence it created, the password history's identity sequence included, SHALL be named `scrty_` followed by its former name. The identity version table SHALL keep its default or consumer-chosen name. A consumer may apply the set in a schema of their own, which the identity store finds through `search_path`.
+Every table, index, index-backed constraint and sequence the identity set creates, the password history's identity sequence included, SHALL be named with the `scrty_` prefix. The identity version table SHALL keep its default or consumer-chosen name; its default SHALL be `scrty_identity_migrate`. A consumer may apply the set in a schema of their own, which the identity store finds through `search_path`.
 
 #### Scenario: Identity set alone
 - **WHEN** only the identity set is applied to an empty database
 - **THEN** `scrty_users`, `scrty_roles`, `scrty_assigned_roles`, `scrty_organizations`, `scrty_groups`, `scrty_resource_privileges` and `scrty_password_history` exist
 - **AND** no table, index or sequence the set created has a name without the prefix
-- **AND** its applied versions are recorded in `goose_identity`
+- **AND** its applied versions are recorded in `scrty_identity_migrate`
 
 #### Scenario: Consumer's own users table
-- **WHEN** the identity set has been applied to its latest version, and the consumer then creates their own `users` table in the same schema
+- **WHEN** the identity set has been applied, and the consumer then creates their own `users` table in the same schema
 - **THEN** the table is created
 - **AND** the identity store keeps reading and writing only `scrty_users`
-
-### Requirement: The identity set renames existing relations in place, independently of security state
-The identity set SHALL gain its own migration that renames every table, index and sequence the earlier identity migrations created to its `scrty_` name. It SHALL keep every row and the password history's sequence position, SHALL apply in its own transaction with a bounded lock wait, and SHALL roll back to the previous names. Applying or rolling back the identity rename SHALL NOT require, read or change the security-state set or its version table, and the reverse SHALL hold as well.
-
-#### Scenario: Populated identity database
-- **WHEN** the identity rename migration is applied to a database holding users, role grants and password history
-- **THEN** every user, grant and history entry reads back through the identity store
-- **AND** the next password history entry recorded is ordered after every existing one
-
-#### Scenario: One set renamed, the other not yet
-- **WHEN** the security-state set is at its latest version and the identity set is still at the version before its rename
-- **THEN** every security-state store works
-- **AND** applying the identity rename afterwards succeeds and changes no security-state relation
-
-#### Scenario: Rolling back the identity rename
-- **WHEN** only the identity rename migration is rolled back
-- **THEN** every identity relation has its previous name
-- **AND** every security-state relation and its version records are unchanged
 
 ### Requirement: Provisioning refuses a username that is another user's email
 Provisioning, and an update that names a username, SHALL fail with the user-already-exists error when the username equals the email of another live user, ignoring case, and SHALL write nothing. The identity ports SHALL still not store an email they are given; only the administration services set it.
@@ -498,14 +480,14 @@ The store SHALL implement the email loader: it SHALL match the email ignoring ca
 - **THEN** it returns `ada`'s complete record
 
 ### Requirement: Privilege scopes are stored with the grant
-The store SHALL store each privilege's scope and return it from loading role privileges. A privilege written before scopes existed SHALL load with scope `all`.
+The store SHALL store each privilege's scope and return it from loading role privileges. A privilege written without a scope SHALL load with scope `all`.
 
 #### Scenario: Stored scope
 - **WHEN** `update` on `crm/lead` is granted to `sales` with scope `own` and the role's privileges are loaded
 - **THEN** the entry for `crm/lead` carries `update` granted with scope `own`
 
 #### Scenario: Grant from before the migration
-- **WHEN** a privilege row written before the administration migration is loaded
+- **WHEN** a privilege row inserted by a statement that names no scope is loaded
 - **THEN** it carries scope `all`
 
 ### Requirement: The store implements every administration port
@@ -521,3 +503,30 @@ The test module SHALL publish an administration conformance suite a consumer can
 #### Scenario: Consumer implementation
 - **WHEN** a consumer runs the suite against an implementation that ignores the version on update
 - **THEN** the stale-update case fails
+
+### Requirement: The identity set is one baseline migration
+The identity set SHALL consist of one baseline migration that creates every identity relation, the administration columns and tables included, directly under its `scrty_` name. It SHALL create no relation under an unprefixed name at any point, so it applies to a schema that already holds a consumer's `users` or `roles` table. Later schema changes SHALL be added as new migrations after the baseline.
+
+#### Scenario: Beside a consumer's users table
+- **WHEN** the identity set is applied to a schema that already holds the consumer's own `users` table with rows
+- **THEN** applying succeeds and `scrty_users` exists
+- **AND** the consumer's `users` table and its rows are unchanged
+
+#### Scenario: One migration recorded
+- **WHEN** the identity set is applied to an empty database
+- **THEN** its version table records exactly one applied migration
+
+### Requirement: The identity baseline produces the schema of the earlier chain
+The schema the identity baseline creates SHALL equal the schema the identity set's earlier migrations produced once all were applied: the same tables and their persistence, the same columns in the same order with their types, nullability, defaults and identity generation, the same index names and definitions, the same sequences, and the same constraint definitions. Only the names of constraints that no index backs MAY differ.
+
+#### Scenario: Catalog equivalence
+- **WHEN** the identity baseline is applied to an empty database
+- **THEN** its tables, columns, indexes, sequences and constraint definitions match the recorded inventory of the earlier chain's final schema
+
+### Requirement: The identity baseline does not adopt existing relations
+The identity baseline SHALL fail when the schema already holds any relation it creates, and SHALL then leave no relation of its own behind and record no applied version. It SHALL NOT detect or upgrade a database migrated by an earlier release; such a database is recreated.
+
+#### Scenario: Relation already present
+- **WHEN** the identity set is applied to a database that already holds a relation the baseline creates late in its order, such as `scrty_password_history`
+- **THEN** applying fails
+- **AND** none of the set's other relations exists and no version is recorded

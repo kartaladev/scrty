@@ -58,7 +58,10 @@ The library SHALL expose distinguishable public refusal errors for at least thes
 - a certificate-bound token presented without its certificate;
 - a request refused by the automation-challenge verifier;
 - a new password refused by the password policy, which SHALL name the rule that refused it;
-- a session handle that names no live sign-in of the requesting user.
+- a session handle that names no live sign-in of the requesting user;
+- an access token a resource server refused;
+- insufficient user authentication of an access-token caller (its sign-in too old for a recency guard, an unmet MFA requirement, or a per-request challenge it cannot hold), which SHALL also be identifiable as the reauthentication-required refusal and SHALL carry a window only in the recency case;
+- a password login for an inactive account, which by default SHALL reach the chain only beneath the authentication-failed refusal.
 
 The password-reused refusal of the password-policy capability SHALL be identifiable both as itself and as the password-policy refusal.
 
@@ -129,6 +132,10 @@ It SHALL also expose one challenge error type, whose kinds include account recov
 - **WHEN** a login with a DPoP proof is challenged for a second factor
 - **THEN** the challenge error carries the token and the token type `DPoP`
 
+#### Scenario: Invalid access token is its own refusal
+- **WHEN** a resource server refuses an expired access token
+- **THEN** the refusal is identifiable as the invalid-token refusal and as the authentication-failed refusal, and its text contains no token
+
 ### Requirement: One public table maps refusals to a status
 The library SHALL provide a public status-only mapping from an error to an HTTP status code. Every library default response and helper SHALL use it, and it SHALL recognise wrapped and joined errors:
 
@@ -139,12 +146,14 @@ The library SHALL provide a public status-only mapping from an error to an HTTP 
 | challenge of any other kind | 401 |
 | invalid second-factor code, throttled second-factor verification or enrolment, throttled passkey registration begin | 401 |
 | missing or invalid DPoP proof, bound token without a proof from its key, DPoP proof without a required server nonce, certificate-bound token without its certificate | 401 |
+| access token refused by a resource server; insufficient user authentication of an access-token caller, whether its sign-in is older than a recency guard allows, does not meet the MFA requirement, or a per-request challenge was raised for it (judged before the reauthentication-required row) | 401 |
 | cross-site request refused by CSRF protection, request refused by the automation-challenge verifier | 403 |
 | access denied, refused by policy without a reason (the security-policy capability's own error), second factor required or unsatisfiable, second-factor enrolment required, second factor on the same channel as the first, already enrolled, MFA method not usable by the session's user, no MFA challenge pending, request refused during a recovery cool-down, reauthentication required for a saved-code regeneration, reauthentication required for a passkey registration or removal, passkey suspected to be a clone, passkey suspended, passkey still pending, passkey refused by the attestation policy, passkey limit reached | 403 |
 | malformed login, malformed recovery, invalid federated logout token, resolved host not allowed | 400 |
 | unknown identity provider named in a federated login or logout path, unknown MFA method named in a second-factor path, passkey not found, API key not found, session handle naming no live sign-in of the requesting user | 404 |
 | request too large | 413 |
 | new password refused by the password policy, for any rule (too short, too long, common, context word, breached or reused), the password-reused refusal included | 422 |
+| inactive account, when inactive-account disclosure is enabled and the refusal is that alone | 403 |
 | account locked, too many sessions, session renewal throttled for its family, one-time issuance limit reached | 429 |
 | held recovery presented before its hold ends | 409 |
 | session renewal that lost a concurrent renewal | 409 |
@@ -338,8 +347,24 @@ Federated login refusals that are authentication failures (an invalid flow, an i
 - **THEN** the mapping returns 404
 
 #### Scenario: Recency guard refusal
-- **WHEN** the error is the reauthentication-required refusal of a recency guard
+- **WHEN** the error is the reauthentication-required refusal of a recency guard for a session
 - **THEN** the mapping returns 403
+
+#### Scenario: Stale access token at a recency guard
+- **WHEN** the error is the insufficient-user-authentication refusal of a recency guard for an access-token caller
+- **THEN** the mapping returns 401, although the error is also identifiable as the reauthentication-required refusal
+
+#### Scenario: Invalid access token
+- **WHEN** the error wraps the invalid-token refusal
+- **THEN** the mapping returns 401
+
+#### Scenario: Disclosed inactive account
+- **WHEN** the error is the inactive-account refusal alone
+- **THEN** the mapping returns 403
+
+#### Scenario: Concealed inactive account
+- **WHEN** the error joins the authentication failure refusal with the inactive-account refusal
+- **THEN** the mapping returns 401
 
 #### Scenario: Re-proof method not usable
 - **WHEN** the error is the refusal of a password re-proof from a user who holds a usable second factor
@@ -633,7 +658,7 @@ A nil logger given to any component's logger option SHALL fail that component's 
 - **THEN** the component's constructor returns its configuration error naming the option
 
 ### Requirement: A 401 on a chain with a built-in bearer carries a challenge
-On a chain with a built-in bearer, every 401 the chain answers outside the provider's endpoints SHALL carry one `Bearer` challenge; with DPoP required, one `DPoP` challenge instead; and with DPoP optional, one of each. With DPoP off, a `Bearer` token a built-in bearer refused SHALL get `error="invalid_token"`, and any other 401 no error code. A consumer MAY turn this off. A chain with no built-in bearer SHALL be unaffected.
+On a chain with a built-in bearer, every 401 the chain answers outside the provider's endpoints SHALL carry one `Bearer` challenge; with DPoP required, one `DPoP` challenge instead; and with DPoP optional, one of each. With DPoP off, a `Bearer` token a built-in bearer refused SHALL get `error="invalid_token"`, and any other 401 no error code. A consumer MAY turn this off. A resource server SHALL count as a built-in bearer. A token a resource server refused as an invalid token SHALL get `error="invalid_token"`, under `DPoP` with the accepted algorithms when the token came under `DPoP` or its source requires DPoP binding, and under `Bearer` otherwise, whether or not DPoP is on; such a refusal, and every other refusal of an access-token caller (insufficient scope, insufficient user authentication), SHALL carry its one challenge alone, even with DPoP optional. A chain with no built-in bearer SHALL be unaffected.
 
 #### Scenario: Expired token at a consumer's route
 - **WHEN** a request presents an expired `Bearer` token at a consumer's protected route, with DPoP off
@@ -654,3 +679,83 @@ On a chain with a built-in bearer, every 401 the chain answers outside the provi
 #### Scenario: Consumer's own challenge kept
 - **WHEN** the consumer's error handler sets its own `WWW-Authenticate` on a 401
 - **THEN** the library adds no second challenge for the same scheme
+
+#### Scenario: Resource-server refusal under DPoP
+- **WHEN** a resource server refuses a token presented under `DPoP` on a chain accepting ES256
+- **THEN** the response carries one `WWW-Authenticate: DPoP error="invalid_token", algs="ES256"`
+
+#### Scenario: API-only chain without DPoP
+- **WHEN** a chain whose only credential mode is a resource server with a source accepting unbound tokens refuses an expired token under `Bearer`
+- **THEN** the response carries `WWW-Authenticate: Bearer error="invalid_token"`, once
+
+#### Scenario: Resource-server refusal with DPoP optional
+- **WHEN** DPoP is optional and a resource server refuses an expired token presented under `Bearer` from a source that accepts unbound tokens
+- **THEN** the response carries exactly one `WWW-Authenticate: Bearer error="invalid_token"`
+
+### Requirement: An invalid access token is a public refusal mapped to 401
+The library SHALL expose a public invalid-token refusal for an access token a resource server refuses for any reason other than a failed binding, which keeps the refusals the sender-constrained-tokens capability defines, or an insufficient user authentication, which has its own refusal. It SHALL also be identifiable as the uniform authentication failure, and the status mapping SHALL answer it 401. Only a resource server's refusal SHALL be it.
+
+#### Scenario: Status and identity
+- **WHEN** the invalid-token refusal is mapped to a status
+- **THEN** the status is 401, and the error is identifiable both as the invalid-token refusal and as the authentication failure
+
+#### Scenario: Session tokens keep their refusal
+- **WHEN** signed bearer tokens refuse a session token their verifier rejects
+- **THEN** the refusal is the authentication failure and is not identifiable as the invalid-token refusal
+
+### Requirement: A missing scope is answered with an insufficient_scope challenge
+When a chain rule or a guard refuses an access-token caller because a scope requirement is not met, the response SHALL be 403 with a `WWW-Authenticate` challenge naming `error="insufficient_scope"` and a `scope` parameter listing the scopes the first refusing scope requirement names, under the scheme the token came under, with the accepted algorithms under `DPoP`. A refusal of any other caller, or for any other reason, SHALL be answered as before.
+
+#### Scenario: Chain rule
+- **WHEN** a chain rule requires any of `orders:write` and an access-token caller holding `orders:read` calls the route under `DPoP` on a chain accepting ES256
+- **THEN** the response is 403 with `WWW-Authenticate: DPoP error="insufficient_scope", scope="orders:write", algs="ES256"`
+
+#### Scenario: Guard
+- **WHEN** a guard requires all of `orders:read orders:export` and an access-token caller holding `orders:read` calls the route under `Bearer`
+- **THEN** the response is 403 with `WWW-Authenticate: Bearer error="insufficient_scope", scope="orders:read orders:export"`
+
+#### Scenario: API key caller
+- **WHEN** an API-key caller lacking a scope is refused by the same rule
+- **THEN** the response is 403 with no challenge, as before
+
+### Requirement: A stale access token is answered with an insufficient_user_authentication challenge
+When a recency guard refuses an access-token caller, the response SHALL be 401 with a `WWW-Authenticate` challenge naming `error="insufficient_user_authentication"` and a `max_age` parameter holding the guard's window in whole seconds, under the scheme the token came under, so that the client can obtain a token from a fresher sign-in. A session caller's recency refusal SHALL be answered as before.
+
+#### Scenario: Stale token
+- **WHEN** a route guarded with a 5-minute window is called with an access token whose authentication time is 20 minutes old, under `Bearer`
+- **THEN** the response is 401 with `WWW-Authenticate: Bearer error="insufficient_user_authentication", max_age=300`
+
+#### Scenario: Stale session unchanged
+- **WHEN** a stale session calls the same route
+- **THEN** the response is 403 with no body, as before
+
+### Requirement: The insufficient-user-authentication refusal carries its window
+A recency guard's refusal of an access-token caller SHALL be the insufficient-user-authentication refusal, carrying the window the route required, and SHALL also be identifiable as the reauthentication-required refusal, so that existing handling keeps matching it.
+
+#### Scenario: Both identities
+- **WHEN** a route guarded with a 5-minute window refuses a stale access token
+- **THEN** the refusal is identifiable as the insufficient-user-authentication refusal and as the reauthentication-required refusal, and reports a window of 5 minutes
+
+### Requirement: An inactive-account refusal is a public error, disclosed only by choice
+The library SHALL expose a public inactive-account refusal. By default it SHALL reach the chain only beneath the uniform authentication failure, indistinguishable from a wrong password in status, headers, problem type and timing. With disclosure enabled, a form login or HTTP Basic login for an inactive account SHALL be refused with the inactive-account refusal alone, answered 403; a disclosed Basic refusal SHALL carry no challenge, as for a disclosed lock.
+
+#### Scenario: Default is concealed
+- **WHEN** an inactive account signs in by form login with its correct password on a chain with default options
+- **THEN** the response is 401, as for a wrong password
+- **AND** a consumer's error handler finds the inactive-account refusal beneath the error
+
+#### Scenario: Concealed in the problem type
+- **WHEN** the problem-details integration renders the same refusal
+- **THEN** its problem type is the one a wrong password gets
+
+#### Scenario: Disclosed
+- **WHEN** inactive-account disclosure is enabled and an inactive account signs in with its correct password
+- **THEN** the response is 403, and the error is the inactive-account refusal, not identifiable as the uniform authentication failure
+
+#### Scenario: Disclosed over Basic
+- **WHEN** inactive-account disclosure is enabled and an inactive account authenticates by HTTP Basic with its correct password
+- **THEN** the response is 403 with no `WWW-Authenticate` header
+
+#### Scenario: Disclosure needs the password
+- **WHEN** inactive-account disclosure is enabled and an inactive account is presented with a wrong password
+- **THEN** the response is 401, the uniform authentication failure, and nothing identifies the account as inactive

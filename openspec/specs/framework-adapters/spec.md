@@ -252,6 +252,10 @@ The gin and fiber guards SHALL offer the recency guard with the same default win
 - **WHEN** guards are built on net/http, gin and fiber with a recency window of zero and no authorizer
 - **THEN** each adapter refuses construction naming the recency window, not the missing authorizer
 
+#### Scenario: Stale access token on every adapter
+- **WHEN** an access token whose authentication time is 20 minutes old calls a route under the default recency guard on net/http, gin and fiber
+- **THEN** each refuses it with the insufficient-user-authentication refusal, and the default response on each is 401 with the same `insufficient_user_authentication` challenge
+
 ### Requirement: Every adapter supplies the request's host and transport security
 The gin and fiber adapters SHALL supply the request's host from its `Host` header and whether it arrived over TLS from the transport, before any trusted-proxy resolution, so the chain resolves both identically on every adapter.
 

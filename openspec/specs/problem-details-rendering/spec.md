@@ -40,13 +40,17 @@ Each recognised refusal SHALL become a problem whose type is a sub-type under th
 | `authentication-required` | 401 | authentication required (the chain's and the authorization capability's), session idle, session expired, the provider's re-authentication refusal |
 | `authentication-failed` | 401 | the status default: authentication failed in every form (including a concealed lock), user store unavailable, a throttled source, a refused magic-link redemption |
 | `second-factor-failed` | 401 | invalid second-factor code, throttled second-factor verification or enrolment, throttled passkey registration begin |
+| `invalid-token` | 401 | an access token a resource server refused |
+| `insufficient-user-authentication` | 401 | an access-token caller whose authentication is too old or too weak |
 | `proof-of-possession-failed` | 401 | missing or invalid DPoP proof, DPoP nonce required, certificate-bound token without its certificate |
 | `mfa-required` | 401 | a challenge of the second-factor kind |
 | `challenge-required` | 401 | a challenge of any other kind answered 401 |
 | `password-change-required` | 403 | a challenge of the password-change kind |
 | `mfa-enrolment-required` | 403 | a challenge of the second-factor enrolment kind |
 | `account-recovery-required` | 403 | a challenge of the account-recovery kind |
-| `reauthentication-required` | 403 | any reauthentication-required refusal |
+| `reauthentication-required` | 403 | a reauthentication-required refusal of a session caller |
+| `insufficient-scope` | 403 | an access-token caller missing a required scope |
+| `account-inactive` | 403 | the disclosed inactive account |
 | `cross-site-request` | 403 | a cross-site request refused by CSRF protection or the signal stream |
 | `automation-challenge-required` | 403 | a request refused by the automation-challenge verifier |
 | `access-denied` | 403 | the status default |
@@ -74,6 +78,10 @@ Each recognised refusal SHALL become a problem whose type is a sub-type under th
 - **WHEN** a challenge of the second-factor kind wraps the access-denied refusal
 - **THEN** the problem is a 401 of type `security/mfa-required`
 
+#### Scenario: Stale access token
+- **WHEN** a recency guard refuses a stale access token with a 5-minute window
+- **THEN** the problem is a 401 of type `security/insufficient-user-authentication`
+
 ### Requirement: A type never reveals what the status conceals
 Where the core gives several refusals one status in order to conceal which of them occurred, the problem SHALL NOT tell them apart: not by type, title, detail or extension member. In particular, a concealed account lock and a user store that could not answer SHALL both be `authentication-failed` with the same title and detail as a wrong password.
 
@@ -89,15 +97,20 @@ Where the core gives several refusals one status in order to conceal which of th
 - **WHEN** the consumer enabled lock disclosure and a locked account's login is refused
 - **THEN** the problem is a 429 of type `security/account-locked`
 
+#### Scenario: Concealed inactive account
+- **WHEN** an inactive account's correct password is refused with default options
+- **THEN** the problem is a 401 of type `security/authentication-failed`, as for a wrong password
+
 ### Requirement: A problem carries only fixed text and safe members
-A problem's title and detail SHALL be fixed library text, and no error's text SHALL appear in any member. Its only extension members SHALL be `challenge`, `methods`, `max_age`, `rule`, `access_token` and `token_type`. No member SHALL carry a session handle, a submitted credential, a credential ID, a DPoP proof, a certificate, a CSRF token, a candidate password, a user reference or a forwarded host.
+A problem's title and detail SHALL be fixed library text, and no error's text SHALL appear in any member. Its only extension members SHALL be `challenge`, `methods`, `max_age`, `rule`, `scope`, `access_token` and `token_type`. No member SHALL carry a session handle, a submitted credential, a credential ID, a DPoP proof, a certificate, a CSRF token, a candidate password, a user reference or a forwarded host.
 
 #### Scenario: What each member holds
 - **WHEN** a problem carries an extension member
 - **THEN** it holds only what this list gives:
   - `challenge`: a challenge's kind, as one of the fixed values `mfa`, `password-change`, `mfa-enrolment` or `account-recovery`. A challenge of any other kind has no `challenge` member;
   - `methods`: on `mfa-required`, the usable second-factor methods in the challenge's order, each with `name`, `channel` and `begins`;
-  - `max_age`: on `reauthentication-required`, the required recency in whole seconds, when the refusal carries one;
+  - `max_age`: on `reauthentication-required` and `insufficient-user-authentication`, the required recency in whole seconds, when the refusal carries one;
+  - `scope`: on `insufficient-scope`, the scopes the refusing requirement names, space-separated;
   - `rule`: on `password-rejected`, the policy rule that refused the candidate;
   - `access_token` and `token_type`: as the challenge-token requirement states.
 

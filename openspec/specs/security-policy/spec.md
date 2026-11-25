@@ -329,7 +329,9 @@ The policy SHALL be constructed with the set of configured MFA methods, which MA
 
 ### Requirement: A required user is challenged or refused, never let through
 For a user who is required to use MFA, the MFA requirement policy SHALL decide as follows:
+- for an access-token caller whose library-minted assurance says it names no local user (claims only, or a claims mapper's caller declared external), allow, before the requirement is looked up;
 - for a `federated` first factor in exempt mode, allow, before the requirement is looked up;
+- for an `access-token` or `external-access-token` first factor in the per-request phase, allow when the token's sign-in met the requirement, and otherwise deny with an insufficient-user-authentication reason, never challenging. For `access-token`, it is met when the grant records that the library verified a second factor at its sign-in, or, for a grant from a federated sign-in, when the federated evidence the grant recorded is met under the federated-assurance mode and exemption rule as for that sign-in's session, re-matched now; for `external-access-token`, the federated-assurance mode decides from the token's evidence, refuse and challenge modes alike. An exemption rule that exempts `oidc` allows external tokens and provider tokens from federated grants before any lookup, as it does a federated session;
 - in the stateless-authentication phase, deny with an MFA-required reason, whatever the user's enrolment;
 - in the per-request phase, allow a session whose second factor is already satisfied;
 - for a `federated` first factor in the post-authentication or per-request phase, deny when the assurance decision fails, and allow when the assurance is met;
@@ -406,6 +408,26 @@ In the post-authentication phase a login's plain claim to have satisfied a secon
 - **WHEN** the policy is evaluated directly in the pre-authentication phase for a required, enrolled user
 - **THEN** the outcome is deny with the MFA-required reason
 
+#### Scenario: Provider token without a second factor
+- **WHEN** a user becomes required to use MFA after signing in with a password alone, and calls an API with an access token from that grant
+- **THEN** the per-request evaluation denies with the insufficient-user-authentication reason, and no challenge is raised
+
+#### Scenario: Provider token with a second factor
+- **WHEN** a required user calls an API with an access token whose grant records a TOTP second factor the library verified
+- **THEN** the request is allowed
+
+#### Scenario: Claims-only external caller
+- **WHEN** MFA is required for all users and an external access token is resolved by claims only
+- **THEN** the requirement is not looked up and the request is allowed by this policy
+
+#### Scenario: Provider token from a federated sign-in, assurance tightened
+- **WHEN** a user signed in through OIDC whose provider asserted `amr` `["mfa"]`, the provider's accepted assurance is then tightened to `hwk`, and the user calls an API with an access token from that grant
+- **THEN** the per-request evaluation denies with the insufficient-user-authentication reason
+
+#### Scenario: Provider token from an exempt federated sign-in
+- **WHEN** the federated-assurance mode is exempt and a required user calls an API with an access token from a federated sign-in that asserted no second factor
+- **THEN** the request is allowed
+
 ### Requirement: Policy refusal logs are sampled per subsystem
 Each policy that logs refusals SHALL write them through its own log sampler, with a reporter that writes a summary record of each suppressed count, and SHALL expose a flush that reports pending counts.
 
@@ -429,7 +451,7 @@ The MFA requirement policy SHALL sample its lookup-failure record under one key 
 - **AND** the outcome is still deny
 
 ### Requirement: The enrolment path admits first factors by an allowlist of kinds
-The enrolment path SHALL admit a login only when its first-factor kind is on the path's allowlist. By default the allowlist SHALL be password, magic link, account recovery and an unrecorded first factor. A session produced by an account recovery rests on two proofs of different kinds and exists to bind a new authenticator, so it is admitted by default. OIDC SHALL be off it by default. A consumer SHALL be able to replace the allowlist by an option; the option SHALL replace the list, not add to it. Listing the API-key or basic first factor SHALL fail construction with a configuration error, because those logins are stateless or exempt and have no session to confine. An empty allowlist SHALL fail construction with a configuration error, because a path that admits nothing would still declare the enrolment challenge and demand an enforcer no login can reach. The allowlist SHALL govern only entry to the path: it SHALL NOT change whether a user is required to use MFA, or which first factors are exempt. The documentation of adding OIDC SHALL state that a stolen provider account usually includes its mailbox, so the emailed code adds no assurance there.
+The enrolment path SHALL admit a login only when its first-factor kind is on the path's allowlist. By default the allowlist SHALL be password, magic link, account recovery and an unrecorded first factor. A session produced by an account recovery rests on two proofs of different kinds and exists to bind a new authenticator, so it is admitted by default. OIDC SHALL be off it by default. A consumer SHALL be able to replace the allowlist by an option; the option SHALL replace the list, not add to it. Listing the API-key, basic, `access-token` or `external-access-token` first factor SHALL fail construction with a configuration error, because those logins are stateless or exempt and have no session to confine. An empty allowlist SHALL fail construction with a configuration error, because a path that admits nothing would still declare the enrolment challenge and demand an enforcer no login can reach. The allowlist SHALL govern only entry to the path: it SHALL NOT change whether a user is required to use MFA, or which first factors are exempt. The documentation of adding OIDC SHALL state that a stolen provider account usually includes its mailbox, so the emailed code adds no assurance there.
 
 #### Scenario: Password is on the default list
 - **WHEN** the path is on and a required, unenrolled user logs in by password
@@ -454,6 +476,10 @@ The enrolment path SHALL admit a login only when its first-factor kind is on the
 #### Scenario: Ineligible kind listed
 - **WHEN** the path's allowlist includes the API-key first factor
 - **THEN** construction fails with a configuration error
+
+#### Scenario: Access-token kinds on the allowlist
+- **WHEN** the enrolment path's allowlist names `access-token` or `external-access-token`
+- **THEN** construction fails with a configuration error, as for `api-key`
 
 ### Requirement: One function decides which MFA methods a user can use
 The library SHALL provide one public function that, given the configured MFA methods, a user and the login's first factor, returns the methods the user can use: those the user is enrolled on whose channel differs from the first factor's channel, in the order the methods were configured. When the enrolment lookup of any method fails, the function SHALL return that error and SHALL NOT return a shorter list. The MFA policies, the verify and begin endpoints, the MFA challenge error's method list and the method-listing endpoint SHALL all decide usability through this function, so none of them can disagree with another. A consumer SHALL be able to call it to build their own listing.
@@ -527,7 +553,7 @@ For a required user whose first factor has the `federated` channel, the MFA requ
 - **THEN** the outcome is deny with that error as its reason
 
 ### Requirement: Federated assurance evidence is minted only by the library
-The policy input SHALL carry federated assurance as evidence: the provider name, verified issuer, and asserted `amr` and `acr`. Only the library's OIDC redemption and its per-request evaluation of a federated session SHALL be able to produce evidence that asserts anything. The evidence type SHALL have no public constructor, and its zero value SHALL assert nothing. The MFA policies SHALL decide assurance only through a configured assurance source, which matches the evidence; without a source, no evidence SHALL be met.
+The policy input SHALL carry federated assurance as evidence: the provider name, verified issuer, and asserted `amr` and `acr`. Only the library's OIDC redemption, its per-request evaluation of a federated session, and a resource server's verification of an external access token, or of a provider access token whose grant recorded federated evidence, SHALL be able to produce evidence that asserts anything. The evidence type SHALL have no public constructor, and its zero value SHALL assert nothing. The MFA policies SHALL decide assurance only through a configured assurance source, which matches the evidence; without a source, no evidence SHALL be met.
 
 #### Scenario: Zero evidence
 - **WHEN** a consumer evaluates the MFA requirement policy directly for a required user enrolled on TOTP, recording the `oidc` first factor and leaving the evidence at its zero value
@@ -536,6 +562,14 @@ The policy input SHALL carry federated assurance as evidence: the provider name,
 #### Scenario: No source wired
 - **WHEN** the policy has no assurance source and a required user enrolled on TOTP redeems an OIDC code whose token asserted `amr` `["mfa"]`
 - **THEN** the outcome is an MFA challenge
+
+#### Scenario: Evidence from a federated provider grant
+- **WHEN** a resource server accepts a provider access token whose grant recorded the federated evidence `corp`, `https://idp.example`, `["mfa"]`
+- **THEN** the per-request evaluation receives that evidence, re-matched against the assurance source's current configuration
+
+#### Scenario: Evidence from an external access token
+- **WHEN** a resource server accepts an external access token from issuer `https://sso.example` asserting `amr` `["mfa"]`
+- **THEN** the per-request evaluation receives evidence naming that source's provider, that issuer and that `amr`
 
 ### Requirement: Federated assurance is re-matched on every request
 In the per-request phase, the MFA requirement policy SHALL re-match a federated session's stored assurance against the assurance source's current configuration, and SHALL NOT rely on a decision stored at login. A session whose second factor was satisfied by the library's verification SHALL be allowed whatever its stored assurance.
@@ -851,3 +885,47 @@ With login by email on, the user found while resolving the identifier for lockou
 #### Scenario: One load
 - **WHEN** login by email is on and `ada@example.com` is presented
 - **THEN** the username lookup and the email lookup are each made at most once for the attempt
+
+### Requirement: An unmet access-token sign-in is answered as insufficient user authentication
+When the MFA requirement policy denies an access-token caller with the insufficient-user-authentication reason, and only then, the chain SHALL refuse with the insufficient-user-authentication refusal, answered 401 with a `WWW-Authenticate` challenge naming `error="insufficient_user_authentication"`, so that the client obtains a token from a stronger sign-in.
+
+#### Scenario: Password-only external token in challenge mode
+- **WHEN** a linked, required user calls an API with an external access token asserting `amr` `["pwd"]`, and the federated-assurance mode is challenge
+- **THEN** the response is 401 with `error="insufficient_user_authentication"`, and no second-factor challenge is raised
+
+#### Scenario: Assurance source down
+- **WHEN** the federated-assurance source fails while judging an access-token caller
+- **THEN** the request fails as a dependency failure, answered 500, and not as insufficient user authentication
+
+#### Scenario: Consumer exempts federated logins
+- **WHEN** the federated-assurance mode is exempt and the same token is presented
+- **THEN** the request is allowed
+
+### Requirement: Access-token assurance is evidence minted only by the library
+The policy input SHALL carry an access-token caller's assurance: whether it names a local user and whether the library verified a second factor at the grant's sign-in; its federated evidence travels in the input's existing federated-assurance evidence. Only a resource server SHALL produce it. The type SHALL have no public constructor; its zero value SHALL mean a local user with no second factor.
+
+#### Scenario: Zero value
+- **WHEN** a consumer evaluates the MFA requirement policy directly for a required user with the `access-token` first factor and leaves the assurance at its zero value
+- **THEN** the outcome is deny with the insufficient-user-authentication reason
+
+### Requirement: A per-request challenge for an access-token caller is refused
+When any per-request policy, the library's or a consumer's, challenges a caller a resource server authenticated, the chain SHALL refuse with the insufficient-user-authentication refusal instead, because no session can hold the challenge. A consumer's per-request policy SHALL be able to receive a request with no session.
+
+#### Scenario: Consumer policy challenges an API caller
+- **WHEN** a consumer's per-request policy raises a password-change challenge for an access-token caller
+- **THEN** the response is 401 with `error="insufficient_user_authentication"`, and nothing is marked on any session
+
+### Requirement: Local external callers need the policy's assurance source
+A chain whose MFA requirement policy judges external access tokens (not exempt in its federated-assurance mode nor by its exemption rule) SHALL fail construction when a resource-server source uses linked users or a claims mapper and the policy has no federated-assurance source. That source SHALL judge the resource server's evidence as it judges a federated login's.
+
+#### Scenario: No assurance source
+- **WHEN** MFA is required and a remote-issuer source uses linked users, and the policy has no federated-assurance source
+- **THEN** construction fails with a configuration error naming the source
+
+#### Scenario: Policy given an assurance source
+- **WHEN** the policy is given a federated-assurance source that accepts `amr` `["mfa"]` from that source's provider and issuer
+- **THEN** the chain is built, and a linked user's token asserting `["mfa"]` meets the requirement
+
+#### Scenario: Exempt mode needs no source
+- **WHEN** the federated-assurance mode is exempt and a source uses linked users with no assurance source
+- **THEN** the chain is built

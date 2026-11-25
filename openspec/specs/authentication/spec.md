@@ -72,14 +72,14 @@ When a deciding provider reports no error but returns no result, or a result wit
 - **THEN** the manager returns the uniform authentication failure
 
 ### Requirement: Password authentication does not reveal why it failed
-The username-and-password provider SHALL return the same uniform failure, with no distinguishing error, in all of these cases:
+The username-and-password provider SHALL return the same uniform failure, identical in status, timing and the work spent, in all of these cases:
 - an unknown username;
 - a wrong password;
 - a correct password for an inactive account.
 
 A failure to load the user other than "not found", and other than the caller's own context ending, SHALL NOT be returned as the uniform failure. It SHALL be returned as a distinct unavailable error, which is not identifiable as the uniform failure, so that a caller can tell an outage of the user store from a refused credential and never counts the outage against the account. The provider SHALL spend the same password work on a load failure as on an unknown username, so the outcome's timing does not change.
 
-The account's active state SHALL be checked only after the password has been verified. A user-load failure other than "not found", and other than the caller's own context ending, SHALL be logged at error level. A load the caller's own context ended SHALL be returned as the uniform failure, which SHALL also match that context's error, so that a caller can tell that no password was compared. Constructing the provider without a user loader SHALL fail with a configuration error.
+For an unknown username and a wrong password the failure SHALL carry no distinguishing error. For a correct password on an inactive account it SHALL also be identifiable, beneath the uniform failure, as the inactive-account refusal, so that a consumer who chooses to may disclose it; nothing else about the outcome SHALL differ. The account's active state SHALL be checked only after the password has been verified. A user-load failure other than "not found", and other than the caller's own context ending, SHALL be logged at error level. A load the caller's own context ended SHALL be returned as the uniform failure, which SHALL also match that context's error, so that a caller can tell that no password was compared. Constructing the provider without a user loader SHALL fail with a configuration error.
 
 #### Scenario: Unknown user
 - **WHEN** a username that does not exist is presented
@@ -91,7 +91,8 @@ The account's active state SHALL be checked only after the password has been ver
 
 #### Scenario: Inactive account
 - **WHEN** an inactive account's username is presented with its correct password
-- **THEN** the uniform authentication failure is returned, indistinguishable from the scenarios above
+- **THEN** the uniform authentication failure is returned, with the same work spent as in the scenarios above
+- **AND** the error is also identifiable as the inactive-account refusal, while the errors of the two scenarios above are not
 
 #### Scenario: User store unavailable
 - **WHEN** the user loader returns a connection error

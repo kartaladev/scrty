@@ -6,7 +6,7 @@ Defines the provider's UserInfo endpoint: which access tokens it accepts, which 
 ## Requirements
 
 ### Requirement: UserInfo accepts only the provider's access tokens for an OpenID grant
-The UserInfo endpoint SHALL accept GET and POST, taking the access token from the `Authorization` header, or from a POST's form body, never from the query. It SHALL accept only a valid, unexpired access token this provider issued, whose grant is not revoked, whose scopes include `openid`, and whose audience includes the issuer. A first-party token, an ID token, a refresh token or a sign-in credential SHALL be refused.
+The UserInfo endpoint SHALL accept GET and POST, taking the access token from the `Authorization` header, or from a POST's form body, never from the query. It SHALL accept only a valid, unexpired access token this provider issued, whose grant is not revoked, whose scopes include `openid`, and whose audience includes the issuer. A sign-in credential (a session token or a session reference), an ID token or a refresh token SHALL be refused.
 
 #### Scenario: Valid token
 - **WHEN** a client calls UserInfo with an access token for `openid profile`

@@ -33,7 +33,7 @@ Mapping user details to a principal SHALL carry the user reference, display name
 - **THEN** no principal is returned
 
 ### Requirement: Principals distinguish human users from services
-Every principal SHALL have a kind that is either a human user or a service. A principal whose kind was not set SHALL be a human user. Service principals SHALL carry their granted scopes.
+Every principal SHALL have a kind that is either a human user or a service. A principal whose kind was not set SHALL be a human user. Service principals SHALL carry their granted scopes. A human user's principal SHALL carry scopes only when the request was authenticated by an access token, and they SHALL then be exactly the scopes granted to that token.
 
 #### Scenario: Default kind
 - **WHEN** a principal is created without a kind
@@ -42,6 +42,14 @@ Every principal SHALL have a kind that is either a human user or a service. A pr
 #### Scenario: Service principal
 - **WHEN** a service principal is created with scope `reports:read`
 - **THEN** it reports that it is a service and carries `reports:read`
+
+#### Scenario: User authenticated by an access token
+- **WHEN** a user's request is authenticated by an access token granted `openid employees:read`
+- **THEN** the principal is a human user carrying exactly `openid` and `employees:read`
+
+#### Scenario: User authenticated by a session
+- **WHEN** a user's request is authenticated by a session token or a session reference
+- **THEN** the principal carries no scopes
 
 ### Requirement: Roles, privileges and organizations are carried as data
 An assigned role SHALL carry an identifier, a name, whether it is primary, whether it is a super role, a start date and a valid-until date. A resource privilege entry SHALL carry a group, a resource and named privileges, each granted or not and each with a scope. An organization SHALL carry an identifier, a name and an optional group, which carries an identifier, a name and whether it is internal. The identity model SHALL carry these values unchanged and SHALL NOT decide access from them. The library SHALL NOT supply any default organization.
@@ -88,17 +96,19 @@ Every presented credential SHALL report its credential type and SHALL provide a 
 - **THEN** its password material is wiped and cleanup reports no error
 
 ### Requirement: First-factor kinds map to channels and exemptions
-The library SHALL name the first-factor kinds `password`, `magic-link`, `oidc`, `basic`, `api-key`, `recovery` and `passkey`, and the channels `knowledge`, `email`, `authenticator-app`, `federated`, `machine` and `public-key`. It SHALL map kinds to channels as follows:
+The library SHALL name the first-factor kinds `password`, `magic-link`, `oidc`, `basic`, `api-key`, `recovery`, `passkey`, `access-token` and `external-access-token`, and the channels `knowledge`, `email`, `authenticator-app`, `federated`, `machine` and `public-key`. It SHALL map kinds to channels as follows:
 - `password` and `basic` report `knowledge`;
 - `magic-link` reports `email`;
 - `oidc` reports `federated`;
 - `api-key` reports `machine`;
 - `passkey` reports `public-key`, the channel of credentials an authenticator holds as a key pair and proves by signing a challenge;
-- `recovery`, the kind of a session an account recovery produces, reports no channel, because the recovery rested on two proofs of different kinds rather than on one channel.
+- `recovery`, the kind of a session an account recovery produces, reports no channel, because the recovery rested on two proofs of different kinds rather than on one channel;
+- `access-token`, the kind of a request authenticated by an access token the chain's own provider issued, reports no channel, because the token rests on the sign-in that made its grant;
+- `external-access-token`, the kind of a request authenticated by an access token another issuer issued, reports `federated`, because the sign-in behind it happened at that issuer.
 
 The `authenticator-app` channel SHALL be the channel of second factors that use an authenticator app, such as TOTP, and `email` SHALL also be the channel of email-delivered second factors. The `public-key` channel SHALL also be the channel of the passkey second factor, so a passkey second factor after a passkey login is on the first factor's own channel. These kinds and channels SHALL be the complete vocabulary scrty uses. Other capabilities, including multi-factor authentication and security policy, SHALL reference these values and SHALL NOT define kinds or channels of their own.
 
-Only `api-key` SHALL report itself as exempt from an MFA requirement. `oidc`, `recovery` and `passkey` SHALL NOT be exempt. How a login on the `federated` channel meets an MFA requirement SHALL be decided by the federated-assurance rules of the `security-policy` capability, not by its kind. The empty kind and every kind the library does not name SHALL report no channel and SHALL NOT be exempt.
+Only `api-key` SHALL report itself as exempt from an MFA requirement. `oidc`, `recovery` and `passkey` SHALL NOT be exempt. How a login on the `federated` channel meets an MFA requirement SHALL be decided by the federated-assurance rules of the `security-policy` capability, not by its kind. The empty kind and every kind the library does not name SHALL report no channel and SHALL NOT be exempt. `access-token` and `external-access-token` SHALL NOT be exempt either; the `security-policy` capability decides how an access-token caller meets an MFA requirement, from the sign-in its token records.
 
 #### Scenario: Authenticator-app channel
 - **WHEN** the channel vocabulary is listed
@@ -129,6 +139,14 @@ Only `api-key` SHALL report itself as exempt from an MFA requirement. `oidc`, `r
 #### Scenario: Passkey kind
 - **WHEN** the kind `passkey` is examined
 - **THEN** it reports channel `public-key` and is not exempt
+
+#### Scenario: Access-token kind
+- **WHEN** the kind `access-token` is examined
+- **THEN** it reports no channel and is not exempt
+
+#### Scenario: External access-token kind
+- **WHEN** the kind `external-access-token` is examined
+- **THEN** it reports channel `federated` and is not exempt
 
 ### Requirement: User loader contract
 A user loader SHALL load user details by username and by user reference. The library SHALL pass the username, and the user reference, exactly as presented. A flow that recorded a user reference SHALL load by that reference, never by a username, because a username is a reusable handle. The one exception is a signed bearer the consumer has explicitly configured to read its tokens' subject as a username: it loads by that username, and refuses a user who does not own the session. When no user matches, the loader SHALL return a "user not found" error that callers can identify. Input the loader's store cannot represent, such as text the database's encoding cannot hold, SHALL be reported as "user not found", because no user can match it, so that a client cannot cause a load failure with its own input. Any other failure SHALL be returned as an error that is not identifiable as "user not found". Details loaded by user reference SHALL carry exactly the reference asked for.
