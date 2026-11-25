@@ -161,7 +161,8 @@ httpsec.EnableResourceServer("urn:example:orders:api",
    - a JWT, read without verification and only to route it, goes to the source whose issuer equals
      its `iss`;
    - an opaque token goes to its `FromIntrospection` source, if any. With any other mode on the chain
-     reading the `Bearer` scheme (session references, or API keys under `WithAPIKeyScheme("Bearer ")`),
+     reading the `Bearer` scheme (session references, signed bearer tokens, or API keys under
+     `WithAPIKeyScheme("Bearer ")`),
      only a token with that source's prefix goes there, and a missing prefix is a construction error
      (decision 12).
 4. A JWT typed `at+jwt` that no source of the mode names is refused. Any other unrecognised token
@@ -360,8 +361,8 @@ Implementation decisions (2026-11-25):
   - The metadata's `issuer` must equal the configured issuer (RFC 8414 §3.3, OIDC Discovery §4.3).
   - A discovered `jwks_uri` must be on the issuer's origin.
 - **Pinned URL:** `WithJWKSURL(u)` skips discovery, and may name another origin, over https.
-- **Outbound client:** `keyset.New` takes the `*outbound.Client` as an argument; the mode's
-  `WithOutboundClient(c)` passes it through, for a proxy or custom CAs. A nil client means
+- **Outbound client:** `keyset.New` takes the `*outbound.Client` as an argument; the source option
+  `WithOutboundClient(c)` (a `SourceOption`, set per source) passes it through, for a proxy or custom CAs. A nil client means
   `outbound.New()` with its defaults.
 - **No stale keys:** an expired key set is never served after a failed refetch; the source answers
   `ErrUnavailable` until a fetch succeeds.

@@ -44,7 +44,7 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
   - **What a handler sees.** `identity.PrincipalFromContext` carries the token's scopes
     (`Principal.Scopes`, now also set on a user principal), and `httpsec.AccessTokenFromContext`
     returns the accepted token (`httpsec.AccessToken`). Two first-factor kinds, `factor.AccessToken`
-    and `factor.ExternalAccessToken`, are exempt from no MFA requirement; `policy.Input.AccessTokenAssurance`
+    and `factor.ExternalAccessToken`, are added; neither is exempt from an MFA requirement; `policy.Input.AccessTokenAssurance`
     carries what the resource server established, and only the library mints it.
   - **Challenges.** `httpsec.ErrInvalidToken` is answered 401 with `error="invalid_token"`;
     `httpsec.ErrInsufficientScope` and `authorize.MissingScopesError` are answered 403 with

@@ -1151,7 +1151,7 @@ tokens it recognises.
 - **Opaque tokens need a way to be recognised.** An introspection source claims every opaque token no
   other source claims, and only while no other mode on the chain reads the `Bearer` scheme. Give it
   `WithOpaquePrefix("op.")` to claim only tokens with that prefix, which a chain with session-reference
-  bearers or API keys under `Bearer` requires. `FromIntrospection` authenticates with
+  bearers, signed bearer tokens (`EnableBearerToken`) or API keys under `Bearer` requires. `FromIntrospection` authenticates with
   `WithIntrospectionSecret` or `WithIntrospectionKey`.
 - **An unreachable issuer is not the caller's fault.** A key set or an introspection endpoint that
   cannot answer is a dependency failure, answered 500, never a 401.
