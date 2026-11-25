@@ -159,7 +159,8 @@ func (s *sessionStore) Create(ctx context.Context, sess *session.Session) error 
 
 // insertArgs returns SessionInsert's arguments for sess, under a primary key
 // minted from the store's id generator, or the refusal of a session this
-// store cannot hold without altering it. Only the insert writes the marker,
+// store cannot hold without altering it. Only the insert writes the markers
+// (MFAAtFirstFactor and PersistentCookie),
 // the sign-in state (metadata, key binding and CSRF token), the selected
 // role (SelectRole aside) and the family,
 // supersession and presentation columns: SessionUpdate has no column for
@@ -189,11 +190,13 @@ func (s *sessionStore) insertArgs(op string, sess *session.Session) ([]any, erro
 		nullTs(sess.SupersededAt), nullTs(sess.AcceptUntil), storekit.OptionalDigestArg(sess.SuccessorDigest),
 		nullTs(sess.FirstPresentedAt), storekit.Time(sess.AuthenticatedAt), nullTs(sess.RetainUntil))
 	args = append(args, signIn...)
+	args = append(args, sess.PersistentCookie)
 
 	return append(args, role), nil
 }
 
-// Save replaces the stored session whole, except for MFAAtFirstFactor, the
+// Save replaces the stored session whole, except for MFAAtFirstFactor,
+// PersistentCookie, the
 // sign-in state (ClientIP, UserAgent, KeyBinding and CSRFToken), SelectedRole
 // and the
 // family, supersession (RetainUntil included) and presentation fields, and
@@ -279,7 +282,7 @@ func (r *sessionRow) dest() []any {
 		&r.amr, &r.sess.FederatedACR, &r.sess.FamilyID, &r.familyCreated, &r.superseded, &r.acceptUntil,
 		&r.sess.SuccessorDigest, &r.presented, &r.authenticated, &r.retain, &r.sess.RotatedStrictly,
 		&r.sess.ClientIP, &r.sess.UserAgent, &r.bindingKind, &r.thumbprint, &r.sess.CSRFToken,
-		&r.sess.SelectedRole,
+		&r.sess.SelectedRole, &r.sess.PersistentCookie,
 	}
 }
 

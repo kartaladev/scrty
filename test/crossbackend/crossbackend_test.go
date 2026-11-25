@@ -566,6 +566,7 @@ func TestCrossBackend(t *testing.T) {
 		{name: "enrolment flow through session.Sessions and mfa.TOTP", run: testEnrolmentDurableFlow},
 		{name: "recovery-pending session shared across backends", run: testRecoveryPendingSessionShared},
 		{name: "second factor at login shared across backends", run: testSecondFactorAtLoginShared},
+		{name: "persistent cookie mark shared across backends", run: testPersistentCookieShared},
 		{name: "federated assurance on a session shared across backends", run: testSessionAssuranceShared},
 		{name: "federated assurance on a handoff shared across backends", run: testHandoffAssuranceShared},
 		{name: "a recovery code spent on one backend is refused on the others", run: testRecoveryCodeSpentShared},
@@ -843,6 +844,36 @@ func testSecondFactorAtLoginShared(t *testing.T, b backends) {
 			again, err := s.Load(t.Context(), seed)
 			require.NoError(t, err)
 			assert.True(t, again.MFAAtFirstFactor, "a save through %s must keep the marker", reader)
+		})
+	}
+}
+
+// testPersistentCookieShared proves a session created with the persistent-cookie
+// mark through one backend loads with it set through every other, and that a save
+// through either leaves the mark as it was.
+func testPersistentCookieShared(t *testing.T, b backends) {
+	t.Helper()
+
+	const seed = "persistent-cookie"
+
+	sess := crossBackendSession(seed)
+	sess.PersistentCookie = true
+	require.NoError(t, b.sessionStore(t, "sqlstore").Create(t.Context(), sess))
+
+	for _, reader := range []string{"pgx", "gorm"} {
+		t.Run(reader, func(t *testing.T) {
+			t.Parallel()
+
+			s := b.sessionStore(t, reader)
+			got, err := s.Load(t.Context(), seed)
+			require.NoError(t, err)
+			assert.True(t, got.PersistentCookie)
+
+			got.PersistentCookie = false
+			require.NoError(t, s.Save(t.Context(), got))
+			again, err := s.Load(t.Context(), seed)
+			require.NoError(t, err)
+			assert.True(t, again.PersistentCookie, "a save through %s must keep the mark", reader)
 		})
 	}
 }

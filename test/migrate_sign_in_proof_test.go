@@ -183,7 +183,7 @@ func TestSignInProofMigration_PopulatedUpgrade(t *testing.T) {
 	baseline := catalogOf(t, db)
 	files := relfilenodes(t, db)
 
-	results, err := p.Up(ctx)
+	results, err := p.UpTo(ctx, versionSignInProof)
 	require.NoError(t, err)
 	require.Len(t, results, 1, "only the migration after the baseline is pending")
 	assert.Equal(t, versionSignInProof, results[0].Source.Version)

@@ -32,23 +32,24 @@ const (
 	// never presented), $29 authenticated_at, $30 retain_until (NULL for no
 	// retention deadline), and the sign-in columns SessionSignInArgs returns:
 	// $31 client_ip, $32 user_agent, $33 binding_kind, $34 binding_thumbprint
-	// and $35 csrf_token, each NULL for none, and $36 selected_role
-	// (SessionSelectedRoleArg: NULL for none). Zero rows affected means the
-	// digest is already stored.
+	// and $35 csrf_token, each NULL for none, $36 persistent_cookie (the mark
+	// that the sign-in's browser cookie persists), and $37 selected_role
+	// (SessionSelectedRoleArg: NULL for none; always the last argument). Zero
+	// rows affected means the digest is already stored.
 	SessionInsert = `INSERT INTO scrty_sessions (id, id_digest, user_id, created_at, last_accessed_at,
   idle_expires_at, absolute_expires_at, first_factor, mfa_state, mfa_satisfied_at,
   password_change_pending, external_provider, external_issuer, external_session_id,
   external_id_token, data, enrolment_origin_deadline, enrolment_generation, recovered_at,
   federated_amr, federated_acr, mfa_at_first_factor, family_id, family_created_at,
   superseded_at, accept_until, successor_digest, first_presented_at, authenticated_at, retain_until,
-  client_ip, user_agent, binding_kind, binding_thumbprint, csrf_token, selected_role)
+  client_ip, user_agent, binding_kind, binding_thumbprint, csrf_token, persistent_cookie, selected_role)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
-  $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36)
+  $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37)
 ON CONFLICT (id_digest) DO NOTHING`
 
 	// SessionUpdate replaces every field of the session with digest $1, in
 	// SessionInsert's order from $2 user_id to $20 federated_acr. It leaves
-	// mfa_at_first_factor, authenticated_at, the sign-in columns (client_ip,
+	// mfa_at_first_factor, persistent_cookie, authenticated_at, the sign-in columns (client_ip,
 	// user_agent, binding_kind, binding_thumbprint, csrf_token), selected_role
 	// (written by the insert and SessionSelectRole only) and the
 	// family, supersession (retain_until included) and presentation columns
@@ -313,8 +314,9 @@ const (
   retain_until, rotated_strictly, COALESCE(client_ip, ''), COALESCE(user_agent, ''),
   COALESCE(binding_kind, ''), COALESCE(binding_thumbprint, ''), `
 	// sessionReadTail is the columns those statements read after the CSRF
-	// token.
-	sessionReadTail = `, COALESCE(selected_role, '')`
+	// token. A NULL persistent_cookie, a row written before the column
+	// existed, reads as false.
+	sessionReadTail = `, COALESCE(selected_role, ''), COALESCE(persistent_cookie, false)`
 )
 
 // The binding_kind values: a DPoP key thumbprint (the cnf "jkt" member) and a
@@ -370,7 +372,7 @@ func SessionSignInArgs(s *session.Session) ([]any, error) {
 // byte or invalid UTF-8. Its text never carries the role.
 var ErrSessionRoleUnstorable = errors.New("the session's selected role cannot be stored")
 
-// SessionSelectedRoleArg is role as SessionInsert's $36 and SessionSelectRole's
+// SessionSelectedRoleArg is role as SessionInsert's $37 and SessionSelectRole's
 // $2 bind it: nil (NULL) for none, so a session with no selection never holds
 // the empty string, and the name itself otherwise. A role text PostgreSQL
 // cannot hold unchanged is refused, wrapping ErrSessionRoleUnstorable.

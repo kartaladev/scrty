@@ -60,7 +60,7 @@ func TestSecurityStateSet(t *testing.T) {
 	for i, e := range entries {
 		names[i] = e.Name()
 	}
-	assert.Equal(t, []string{"20261126000000_security_state.sql", "20261127000000_sign_in_proof.sql"}, names,
+	assert.Equal(t, []string{"20261126000000_security_state.sql", "20261127000000_sign_in_proof.sql", "20261128000000_persistent_cookie.sql"}, names,
 		"the security-state set is its baseline and the migrations after it, in order")
 
 	for _, name := range names {

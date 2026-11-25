@@ -183,6 +183,7 @@ var sessionTableColumns = []column{
 	optional("binding_thumbprint", colText),
 	optional("csrf_token", colText),
 	optional("selected_role", colText),
+	optional("persistent_cookie", colBoolean),
 }
 
 // securityStateColumns pins each table's exact columns, with their types,
@@ -950,8 +951,8 @@ func TestSecurityStateMigrations_Schema(t *testing.T) {
 }
 
 // securityStateMigrationCount is how many migration files the security-state
-// set holds: the baseline, and the sign-in proof migration after it.
-const securityStateMigrationCount = 2
+// set holds: the baseline, and the sign-in proof and persistent-cookie migrations after it.
+const securityStateMigrationCount = 3
 
 // rollBackAtCleanup registers a cleanup that rolls p back to version zero,
 // failing the test if that errors, and then fails naming every table left in
@@ -1772,7 +1773,7 @@ func TestMigrations(t *testing.T) {
 						"0192f000-0000-7000-8000-0000000000e1", []byte{1}, "u-1", time.Now(), time.Now(), time.Now(), time.Now(),
 						"", 0, nil, false, "", "", "", "", "{}", nil, nil, nil, "[]", "", false,
 						"0192f000-0000-7000-8000-0000000000e2", time.Now(), nil, nil, nil, nil, time.Now(), nil,
-						nil, nil, nil, nil, nil, nil)
+						nil, nil, nil, nil, nil, false, nil)
 					require.NoError(t, err)
 					n, err := result.RowsAffected()
 					require.NoError(t, err)
@@ -1922,6 +1923,10 @@ const versionSecurityStateBaseline int64 = 20261126000000
 // how a sign-in was proved to grants, codes and browser sessions.
 const versionSignInProof int64 = 20261127000000
 
+// versionPersistentCookie is the version of the migration that adds the persistent-cookie
+// mark to the sessions and refresh-token lineage tables.
+const versionPersistentCookie int64 = 20261128000000
+
 // securityStateBaselineVersionTable is the version table the baseline records
 // into by default; it is spelled out so a changed default is caught here.
 const securityStateBaselineVersionTable = "scrty_state_migrate"
@@ -1946,7 +1951,7 @@ func TestSecurityStateBaseline(t *testing.T) {
 			versionTable: securityStateBaselineVersionTable,
 			assert: func(t *testing.T, db *sql.DB, err error) {
 				require.NoError(t, err)
-				assert.Equal(t, []string{"20261126000000", "20261127000000"}, queryStrings(t, db,
+				assert.Equal(t, []string{"20261126000000", "20261127000000", "20261128000000"}, queryStrings(t, db,
 					`SELECT version_id::text FROM scrty_state_migrate WHERE version_id > 0 ORDER BY version_id`))
 			},
 		},
@@ -1985,7 +1990,7 @@ func TestSecurityStateBaseline(t *testing.T) {
 			versionTable: "auth_schema_versions",
 			assert: func(t *testing.T, db *sql.DB, err error) {
 				require.NoError(t, err)
-				assert.Equal(t, []string{"20261126000000", "20261127000000"}, queryStrings(t, db,
+				assert.Equal(t, []string{"20261126000000", "20261127000000", "20261128000000"}, queryStrings(t, db,
 					`SELECT version_id::text FROM auth_schema_versions WHERE version_id > 0 ORDER BY version_id`))
 				assert.False(t, regclassExists(t, db, securityStateBaselineVersionTable),
 					"the default version table is not created")

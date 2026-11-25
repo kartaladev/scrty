@@ -975,6 +975,8 @@ func (m *Sessions) RotateIssuing(
 	// So is what the sign-in fixed when it was built, apart from the binding
 	// a re-authentication may give an unbound session.
 	keepSignInState(rotated, stored)
+	// So is the persistent-cookie mark, which only the creating write sets.
+	rotated.PersistentCookie = stored.PersistentCookie
 	// So is the selected role, which only RoleSelector.SelectRole writes: a
 	// copy loaded before a selection must neither drop it nor claim another.
 	// The store's supersession settles it finally, from the record it

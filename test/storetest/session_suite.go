@@ -226,6 +226,7 @@ func assertSession(t *testing.T, want, got *session.Session) {
 	assert.Equal(t, want.EnrolmentGeneration, got.EnrolmentGeneration, "EnrolmentGeneration")
 	assertTimeEqual(t, want.RecoveredAt, got.RecoveredAt, "RecoveredAt")
 	assert.Equal(t, want.MFAAtFirstFactor, got.MFAAtFirstFactor, "MFAAtFirstFactor")
+	assert.Equal(t, want.PersistentCookie, got.PersistentCookie, "PersistentCookie")
 	assertTimeEqual(t, want.AuthenticatedAt, got.AuthenticatedAt, "AuthenticatedAt")
 	if len(want.FederatedAMR) == 0 {
 		assert.Empty(t, got.FederatedAMR, "a session stored without amr must load with none")
@@ -740,6 +741,63 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Cl
 				got, err := s.Load(ctx, "sess-a")
 				require.NoError(t, err)
 				assert.True(t, got.MFAAtFirstFactor, "a save keeps the stored marker")
+			},
+		},
+		{
+			// The persistent-cookie mark is stored in a column of its own and
+			// comes back unchanged.
+			name: "persistent cookie round trip",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				want := sessionRecord("sess-a", "u-1")
+				want.PersistentCookie = true
+				require.NoError(t, s.Create(ctx, want))
+				require.NoError(t, s.Save(ctx, want))
+
+				got, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				assertSession(t, want, got)
+				assert.True(t, got.PersistentCookie)
+			},
+		},
+		{
+			name: "saved without the persistent cookie mark loads unmarked",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				sess := sessionRecord("sess-a", "u-1")
+				require.NoError(t, s.Create(ctx, sess))
+				require.NoError(t, s.Save(ctx, sess))
+
+				got, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				assert.False(t, got.PersistentCookie)
+			},
+		},
+		{
+			name: "a save does not set the persistent cookie mark",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				sess := sessionRecord("sess-a", "u-1")
+				require.NoError(t, s.Create(ctx, sess))
+
+				sess.PersistentCookie = true
+				require.NoError(t, s.Save(ctx, sess))
+
+				got, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				assert.False(t, got.PersistentCookie, "a save must not set the mark")
+			},
+		},
+		{
+			name: "a save keeps the stored persistent cookie mark",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				sess := sessionRecord("sess-a", "u-1")
+				sess.PersistentCookie = true
+				require.NoError(t, s.Create(ctx, sess))
+
+				sess.PersistentCookie = false
+				require.NoError(t, s.Save(ctx, sess))
+
+				got, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				assert.True(t, got.PersistentCookie, "a save must not clear the mark")
 			},
 		},
 		{
@@ -1295,6 +1353,50 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 				require.NoError(t, err)
 				assert.Equal(t, old.FamilyID, got.FamilyID, "the successor is in the old session's family")
 				assertTimeEqual(t, old.FamilyCreatedAt, got.FamilyCreatedAt, "the successor's FamilyCreatedAt")
+			},
+		},
+		{
+			// A successor's library-owned marks are stored as the caller gives
+			// them, as Create would; only the selected role is taken from the
+			// superseded row.
+			name: "successor keeps the persistent cookie mark it carries",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				old.PersistentCookie = true
+				require.NoError(t, s.Create(ctx, old))
+				at := suiteStart.Add(time.Minute)
+
+				successor := successorOf(old, "sess-b", at)
+				successor.PersistentCookie = true
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: at.Add(30 * time.Second),
+					RetainUntil: sessionRetainUntil, Successor: successor, Now: at,
+				}))
+
+				got, err := s.Load(ctx, successor.ID)
+				require.NoError(t, err)
+				assert.True(t, got.PersistentCookie, "the successor carries the mark it was given")
+				assertSessionsLoad(ctx, t, s, supersededAs(old, successor.ID, at, at.Add(30*time.Second)), successor)
+			},
+		},
+		{
+			name: "successor stores its own persistent cookie mark when the old row differs",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				old.PersistentCookie = true
+				require.NoError(t, s.Create(ctx, old))
+				at := suiteStart.Add(time.Minute)
+
+				successor := successorOf(old, "sess-b", at)
+				successor.PersistentCookie = false
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: at.Add(30 * time.Second),
+					RetainUntil: sessionRetainUntil, Successor: successor, Now: at,
+				}))
+
+				got, err := s.Load(ctx, successor.ID)
+				require.NoError(t, err)
+				assert.False(t, got.PersistentCookie, "the caller's value is stored, not the old row's")
 			},
 		},
 		{

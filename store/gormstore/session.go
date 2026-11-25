@@ -112,6 +112,8 @@ func sessionRecord(op string, sess *session.Session) (sessionRow, error) {
 		return sessionRow{}, failed(op, err)
 	}
 
+	persistent := sess.PersistentCookie
+
 	return sessionRow{
 		IDDigest:              storekit.SessionDigest(sess.ID),
 		UserID:                string(sess.UserID),
@@ -137,6 +139,8 @@ func sessionRecord(op string, sess *session.Session) (sessionRow, error) {
 		FederatedACR: sess.FederatedACR,
 		// Written on Create only: Save omits the column.
 		MFAAtFirstFactor: sess.MFAAtFirstFactor,
+		// Written on Create (and a successor's insert) only: Save omits the column.
+		PersistentCookie: &persistent,
 		// Written on Create, Supersede and MarkPresented only: Save omits
 		// the columns.
 		FamilyID:         sess.FamilyID,
@@ -236,13 +240,13 @@ func insertSession(q *gorm.DB, op string, row *sessionRow) (bool, error) {
 	return res.RowsAffected > 0, nil
 }
 
-// savedColumnsOmitted are the columns a save never writes: the keys, the marker
-// (MFAAtFirstFactor, written on Create only), and the family, supersession
+// savedColumnsOmitted are the columns a save never writes: the keys, the markers
+// (MFAAtFirstFactor and PersistentCookie, written on Create only), and the family, supersession
 // and presentation columns (written on Create, Supersede and MarkPresented
 // only), the sign-in columns (written on Create and Supersede only), and the
 // selected role (written on Create, Supersede and SelectRole only).
 var savedColumnsOmitted = []string{
-	"id", "id_digest", "mfa_at_first_factor",
+	"id", "id_digest", "mfa_at_first_factor", "persistent_cookie",
 	"family_id", "family_created_at", "superseded_at", "accept_until", "successor_digest", "first_presented_at",
 	"retain_until", "authenticated_at",
 	"client_ip", "user_agent", "binding_kind", "binding_thumbprint", "csrf_token",
@@ -362,6 +366,7 @@ func (r *sessionRow) session() (*session.Session, error) {
 		EnrolmentOriginDeadline: fromNull(row.EnrolmentOriginDeadline),
 		RecoveredAt:             fromNull(row.RecoveredAt),
 		MFAAtFirstFactor:        row.MFAAtFirstFactor,
+		PersistentCookie:        row.PersistentCookie != nil && *row.PersistentCookie,
 		FamilyID:                row.FamilyID,
 		FamilyCreatedAt:         row.FamilyCreatedAt.UTC(),
 		SupersededAt:            fromNull(row.SupersededAt),

@@ -338,6 +338,7 @@ func (s *MemoryStore) deleteLocked(sessionID string) {
 }
 
 // Save updates the stored session, whole except for MFAAtFirstFactor,
+// PersistentCookie,
 // AuthenticatedAt, the sign-in state (KeyBinding, CSRFToken, ClientIP and
 // UserAgent), SelectedRole and the family, supersession (RetainUntil and
 // RotatedStrictly included) and presentation fields, and never inserts. Those
@@ -365,6 +366,7 @@ func (s *MemoryStore) Save(_ context.Context, sess *Session) error {
 	}
 	rec := sess.clone()
 	rec.MFAAtFirstFactor = stored.MFAAtFirstFactor
+	rec.PersistentCookie = stored.PersistentCookie
 	rec.AuthenticatedAt = stored.AuthenticatedAt
 	rec.FamilyID = stored.FamilyID
 	rec.FamilyCreatedAt = stored.FamilyCreatedAt

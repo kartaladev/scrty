@@ -546,6 +546,9 @@ var enrolmentPathVariants = []brokenVariant{
 	sessionVariant(sessionCreateDropsMarker, "marker round trip"),
 	sessionVariant(sessionSaveSetsMarker, "a save does not set the marker"),
 	sessionVariant(sessionSaveClearsMarker, "a save does not clear the marker"),
+	sessionVariant(sessionCreateDropsPersistentMark, "persistent cookie round trip"),
+	sessionVariant(sessionSaveSetsPersistentMark, "a save does not set the persistent cookie mark"),
+	sessionVariant(sessionSaveClearsPersistentMark, "a save keeps the stored persistent cookie mark"),
 }
 
 func deviceProofVariant(d mfaDefect, failsCase, failsWith string) brokenVariant {

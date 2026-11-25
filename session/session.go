@@ -146,6 +146,19 @@ type Session struct {
 	// challenge never carries it.
 	MFAAtFirstFactor bool
 
+	// PersistentCookie marks that the browser cookie this session's sign-in
+	// handed out persists across browser restarts (it carries a Max-Age)
+	// rather than ending with the browser session. WithPersistentCookie sets
+	// it in the creating write, and every rotation (Rotate, RotateIssuing,
+	// RotateWithGrace and RotateWithGraceIssuing) carries the stored value
+	// over, so a renewal keeps the choice the user made at sign-in. The
+	// default is false: a session cookie. Write-once: the Store writes it in
+	// Create (and a rotation's successor) only, and Save keeps the stored
+	// value, so changing it here and saving changes nothing. Library-owned: a
+	// consumer cannot set it through Data. A session stored before the mark
+	// existed reads back false.
+	PersistentCookie bool
+
 	// FederatedAMR is the authentication methods references (RFC 8176 amr
 	// values) the identity provider asserted for the login that created this
 	// session. The default is nil: no assurance was recorded, which is what a

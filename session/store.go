@@ -215,6 +215,10 @@ type Store interface {
 	// value: Save keeps the stored value whatever the session handed to it
 	// says.
 	//
+	// PersistentCookie is written by Create (and a rotation's successor) only:
+	// Save keeps the stored value whatever the session handed to it says. A SQL
+	// store leaves its column out of the UPDATE.
+	//
 	// MFAAtFirstFactor is written by Create only: Save keeps the stored value
 	// whatever the session handed to it says, so no later save can set or
 	// clear the marker. A SQL store leaves its column out of the UPDATE.
@@ -294,6 +298,9 @@ type Store interface {
 	//     op.Successor.SelectedRole when it succeeds. A selection recorded
 	//     after the caller loaded Old is therefore neither lost nor undone by
 	//     the renewal (a SQL store reads it from the row it locked).
+	//     op.Successor's other library-owned marks, MFAAtFirstFactor and
+	//     PersistentCookie, are stored as the caller gives them: only
+	//     SelectedRole is taken from the superseded row.
 	//
 	// It writes those records and no other: no earlier superseded session of
 	// the family, and no session of another family, so its cost does not
