@@ -13,6 +13,7 @@ import (
 	context "context"
 	reflect "reflect"
 
+	factor "github.com/kartaladev/scrty/authenticate/factor"
 	identity "github.com/kartaladev/scrty/identity"
 	policy "github.com/kartaladev/scrty/policy"
 	gomock "go.uber.org/mock/gomock"
@@ -77,6 +78,68 @@ func (c *MockFederatedAssuranceSourceMeetsAssuranceCall) Do(f func(context.Conte
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockFederatedAssuranceSourceMeetsAssuranceCall) DoAndReturn(f func(context.Context, identity.UserID, policy.FederatedAssurance) (bool, error)) *MockFederatedAssuranceSourceMeetsAssuranceCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// MockFederatedAssuranceKindUser is a mock of FederatedAssuranceKindUser interface.
+type MockFederatedAssuranceKindUser struct {
+	ctrl     *gomock.Controller
+	recorder *MockFederatedAssuranceKindUserMockRecorder
+	isgomock struct{}
+}
+
+// MockFederatedAssuranceKindUserMockRecorder is the mock recorder for MockFederatedAssuranceKindUser.
+type MockFederatedAssuranceKindUserMockRecorder struct {
+	mock *MockFederatedAssuranceKindUser
+}
+
+// NewMockFederatedAssuranceKindUser creates a new mock instance.
+func NewMockFederatedAssuranceKindUser(ctrl *gomock.Controller) *MockFederatedAssuranceKindUser {
+	mock := &MockFederatedAssuranceKindUser{ctrl: ctrl}
+	mock.recorder = &MockFederatedAssuranceKindUserMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockFederatedAssuranceKindUser) EXPECT() *MockFederatedAssuranceKindUserMockRecorder {
+	return m.recorder
+}
+
+// NeedsFederatedAssuranceSourceFor mocks base method.
+func (m *MockFederatedAssuranceKindUser) NeedsFederatedAssuranceSourceFor(kind factor.Kind) bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "NeedsFederatedAssuranceSourceFor", kind)
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// NeedsFederatedAssuranceSourceFor indicates an expected call of NeedsFederatedAssuranceSourceFor.
+func (mr *MockFederatedAssuranceKindUserMockRecorder) NeedsFederatedAssuranceSourceFor(kind any) *MockFederatedAssuranceKindUserNeedsFederatedAssuranceSourceForCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "NeedsFederatedAssuranceSourceFor", reflect.TypeOf((*MockFederatedAssuranceKindUser)(nil).NeedsFederatedAssuranceSourceFor), kind)
+	return &MockFederatedAssuranceKindUserNeedsFederatedAssuranceSourceForCall{Call: call}
+}
+
+// MockFederatedAssuranceKindUserNeedsFederatedAssuranceSourceForCall wrap *gomock.Call
+type MockFederatedAssuranceKindUserNeedsFederatedAssuranceSourceForCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockFederatedAssuranceKindUserNeedsFederatedAssuranceSourceForCall) Return(arg0 bool) *MockFederatedAssuranceKindUserNeedsFederatedAssuranceSourceForCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockFederatedAssuranceKindUserNeedsFederatedAssuranceSourceForCall) Do(f func(factor.Kind) bool) *MockFederatedAssuranceKindUserNeedsFederatedAssuranceSourceForCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockFederatedAssuranceKindUserNeedsFederatedAssuranceSourceForCall) DoAndReturn(f func(factor.Kind) bool) *MockFederatedAssuranceKindUserNeedsFederatedAssuranceSourceForCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
