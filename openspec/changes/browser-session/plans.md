@@ -53,11 +53,12 @@ File ownership: lane S owns `session/` and `store/**` and `test/storetest`; lane
 | C8b | 12.6 | Opus | security refusal on the provider's resume and a construction rule; scope-handling change in the chain's run |
 | C9 | 11.8 | Sonnet | applies S2's option at one call site, and registers `session.ErrStoreContract` as a dependency failure in `httpsec`'s status table; the test is given (runs in parallel with C8b, disjoint files) |
 | C8c | 12.6 (chain-scoped mark), 12.7, C9 godoc nits | Opus | rework of C8b's mark after its review reproduced two defects, plus a security refusal at construction; both in the provider's chain check and the resume |
+| C8d | 12.6 and 12.7, C8c review follow-ups | Opus | the per-chain mark is ordering logic on a security path (the resume), and the back-channel check is a refusal rule; the C8c review reproduced the regression |
 | C10 | 12.8 | Opus | security verification rules across `resource_server.go` and the provider source; a mistake passes the tests and still trusts the wrong tokens. Starts after C8c: both edit chain construction |
 | C7 | 13.1, 13.2 | Sonnet | conformance scenarios and godoc (after C10) |
 | — | 14.1 | main session | final gate |
 
-Reviewers: Opus for C1–C6, S2, C8, C8b, C8c and C10; Sonnet for S1, M1, C9 and C7.
+Reviewers: Opus for C1–C6, S2, C8, C8b, C8c, C8d and C10; Sonnet for S1, M1, C9 and C7.
 
 **Scoped verification commands** (`test-scope.md`):
 - Lane S: `go test -count=1 ./session/... ./store/... ./internal/... ./httpsec/... ./oidcprovider/... ./policy/... ./recovery/... ./authenticate/...` and, in `test/`, `go test -count=1 ./storetest/... ./sqlstore/... ./pgxstore/... ./gormstore/... ./crossbackend/...` (Docker); plus `go test -count=1 ./...` in `store/pgxstore` and `store/gormstore`; `make generate-check`.
@@ -383,7 +384,16 @@ C8b committed nothing: its run-scoped mark was reviewed and two defects reproduc
 - [ ] **Step 2: Run** `go test -count=1 -run 'TestSessionCookie_(ComposedChainResume|NestedProviderChainResume)' ./httpsec/` — expected FAIL on the first two rows: `expected: 401, actual: 200` and a 401 where a redirect was expected.
 - [ ] **Step 3: Implement**: record the chain beside the mark, compare it at the resume, and remove the clear; update the godoc in `chain.go`, `exchange.go` and `oidc_resume.go` to "the mark belongs to the chain that set it".
 - [ ] **Step 4: Run** lanes M/C scoped command with `-race` — PASS.
-- [ ] **Step 5: Commit** with 12.7: `fix(httpsec): keep the cookie sign-in to its own chain, and keep the cookie resume under CSRF protection`.
+- [ ] **Step 5:** No commit yet; C8d follows (below).
+
+**C8c review follow-ups (dispatch C8d).** C8c's chain-scoped mark refuses a legitimate resume when a cookie chain running the provider wraps the rest of its run in another cookie chain on the same cookie: that chain republishes the session and the single mark now names it (REPRODUCED by the reviewer: `TestReview_CookieProviderChainAroundCookieChainKeepsResume`, in `/private/tmp/claude-501/review-c8c/wt/httpsec/zz_review_c8c_test.go`; it fails with `httpsec: authentication required`). User decision, 2026-11-27: each chain keeps its own mark (design 12, "Each chain keeps its own mark").
+
+**Interfaces:** Unexported only. Replace the single `Exchange.cookieSessionChain` with a per-chain record of the session identifier each chain's cookie session authenticated in this request (for example `Exchange.cookieMarks map[*Chain]string`, allocated on first write, saved and restored with the run state as the mark is today). `Exchange.cookieSession` keeps pointing at the last session a built-in cookie session published. `resumeSignIn` accepts `ex.Session` when `ex.Session == ex.cookieSession` and `ex.cookieMarks[g.chain] == ex.Session.ID`.
+
+- [ ] **Step 6: Write the failing row** in `TestSessionCookie_ComposedChainResume`: a cookie provider chain whose interceptor runs another cookie chain (same cookie name, same session manager) around the rest of its run, at `OrderSessionTouch+1`; resume with the cookie and its CSRF token → resumes with a code. Keep every C8c row; in particular the header-bearer provider chain around or inside a cookie chain still → 401.
+- [ ] **Step 7: Run** `go test -count=1 -run TestSessionCookie_ComposedChainResume ./httpsec/` — expected FAIL on the new row: `Received unexpected error: httpsec: authentication required`.
+- [ ] **Step 8: Implement** the per-chain record above; update the godoc in `exchange.go`, `session_cookie.go` and `oidc_resume.go` (and rewrap `resumeSignIn`'s over-long godoc line starting "presented: whoever sent either…" to the surrounding width).
+- [ ] **Step 9: Run** lanes M/C scoped command with `-race` — PASS.
 
 ### Task 12.7: No CSRF exemption covers the cookie resume
 
@@ -394,6 +404,7 @@ C8b committed nothing: its run-scoped mark was reviewed and two defects reproduc
 - [ ] **Step 1: Write the failing table rows** in `TestSessionCookie_ProviderOnCookieChain`:
   - cookie session + provider + `WithCSRFExemption("POST", "/oauth2/authorize/resume")` → `ErrConfig` naming the resume endpoint;
   - `WithCSRFExemption("POST", "/oauth2/authorize/*")` → `ErrConfig`;
+  - `WithCSRFExemption("POST", "/oauth2/authorize/%72esume")` → `ErrConfig` (an escaped spelling the router decodes to the resume);
   - `WithBasePath("/x")` with `WithCSRFExemption("POST", "/x/oauth2/authorize/resume")` → `ErrConfig`;
   - a renamed provider prefix `/idp` with `WithCSRFExemption("POST", "/idp/authorize/resume")` → `ErrConfig`;
   - the exact exemption on a header-bearer provider chain without the cookie session → builds;
@@ -401,7 +412,14 @@ C8b committed nothing: its run-scoped mark was reviewed and two defects reproduc
 - [ ] **Step 2: Run** `go test -count=1 -run TestSessionCookie_ProviderOnCookieChain ./httpsec/` — expected FAIL on the four refusal rows: `expected ErrConfig, got nil`.
 - [ ] **Step 3: Implement**: in the provider's chain check, when the chain has the cookie session, run `POST` plus the resolved resume path through every configured exemption and refuse with `ErrConfig` on a match, naming the method and path. Add a line to `WithCSRFExemption`'s godoc stating the refusal.
 - [ ] **Step 4: Run** lanes M/C scoped command with `-race` — PASS.
-- [ ] **Step 5: Commit** with 12.6 (above).
+- [ ] **Step 5:** No commit yet; C8d follows (below).
+
+**C8c review follow-ups (dispatch C8d).** `checkResumeJudged` loops over the consumer's exemptions only, so the back-channel prefix exemption is never judged and `coversRoute`'s prefix branch never runs (the reviewer's nit; today the endpoint collision check refuses the configurations that would place the back-channel path over the resume).
+
+- [ ] **Step 6: Write the pinning rows** in `TestSessionCookie_ProviderOnCookieChain`: cookie chain with the provider and OIDC login, `WithOIDCBackchannelLogoutPath("/bc")` and `WithOIDCProviderPath(OIDCResume, "/bc/resume")` → `ErrConfig`; `WithOIDCBackchannelLogoutPath("/oauth2/authorize")` → `ErrConfig`. They may pass today through the collision check; show each fails once by disabling that check in a scratch edit, then edit it back.
+- [ ] **Step 7: Implement**: make the resume check judge the back-channel exemption too (iterate every exemption the CSRF layer applies, not only the consumer's), so `coversRoute`'s prefix branch is live and the guarantee does not rest on the collision check alone.
+- [ ] **Step 8: Run** lanes M/C scoped command with `-race` — PASS.
+- [ ] **Step 9: Commit** C8c and C8d together: `fix(httpsec): keep the cookie sign-in to its own chain, and keep the cookie resume under CSRF protection`.
 
 ### Task 12.8: `FromProvider` trusts a provider another chain serves
 

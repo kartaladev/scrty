@@ -273,7 +273,7 @@ A chain SHALL be able to run the OpenID Provider with the cookie session. On suc
 - **THEN** the resume is refused with the authentication-required error
 
 #### Scenario: Cookie chain composed with another chain
-- **WHEN** a cookie chain that runs the provider is composed with a chain that runs neither, inside it or around it, and a signed-in user posts the resume with the session cookie and the CSRF token
+- **WHEN** a cookie chain that runs the provider is composed with another chain that does not run the provider, with or without its own cookie session on the same cookie, inside it or around it, and a signed-in user posts the resume with the session cookie and the CSRF token
 - **THEN** the authorization request resumes with that sign-in
 
 ### Requirement: The cookie resume stays under CSRF protection
@@ -284,7 +284,7 @@ A chain that runs the provider with the cookie session SHALL NOT build when CSRF
 - **THEN** construction fails with a configuration error
 
 #### Scenario: CSRF exemption covering the resume
-- **WHEN** a chain enables the cookie session and the provider, and exempts from CSRF protection a route that matches the resume endpoint, exactly or through a `*` segment, under the chain's base path and provider prefix
+- **WHEN** a chain enables the cookie session and the provider, and exempts from CSRF protection a route that matches the resume endpoint, exactly, through a `*` segment or in an escaped spelling, under the chain's base path and provider prefix
 - **THEN** construction fails with a configuration error naming the resume endpoint
 
 #### Scenario: CSRF exemption covering the resume on a header-bearer chain

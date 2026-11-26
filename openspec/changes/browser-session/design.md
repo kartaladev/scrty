@@ -413,6 +413,13 @@ cookie chain, taking the cookie session as the sign-in its inner routes depend o
   with failing tests: a header-bearer provider chain whose interceptor runs the cookie chain inside
   it still took the cookie sign-in, and a cookie chain wrapping a plain chain lost its own resume.
   Scoping by chain fixes both, and needs no clearing.
+  - **Each chain keeps its own mark** (user decision, 2026-11-27, from the C8c review). A cookie
+    chain running the provider may wrap the rest of its run in another cookie chain on the same
+    cookie; that chain re-reads the cookie and publishes the session again. The resume accepts
+    `ex.Session` when its own chain's cookie session authenticated a session with the same
+    identifier earlier in this request, and the session in `ex.Session` was published by a
+    built-in cookie session. A chain whose cookie session authenticated nothing in this request,
+    such as a header-bearer provider chain, still never takes a cookie sign-in.
 - **The provider on a cookie chain requires CSRF protection** (user decision, 2026-11-26). `New`
   refuses the cookie session with the provider when CSRF protection is opted out, whether or not
   the provider keeps browser sessions: the cookie now drives the resume, which hands
@@ -422,8 +429,11 @@ cookie chain, taking the cookie session as the sign-in its inner routes depend o
 - **No CSRF exemption may cover the resume on a cookie chain** (user decision, 2026-11-27). `New`
   refuses with `ErrConfig` a chain running the cookie session and the provider when a
   `WithCSRFExemption` route matches the resume endpoint (`POST` on the provider prefix plus
-  `/authorize/resume`, under the chain's base path), checked with the exemptions' own matcher so a
-  `*` segment, the base path and a renamed provider prefix are caught. With the exemption, a page
+  `/authorize/resume`, under the chain's base path), checked so a `*` segment, the base path, a renamed
+  provider prefix and an escaped spelling (`/oauth2/authorize/%72esume`) are caught. The check
+  decodes the pattern's fixed segments, because the router matches the decoded path while an
+  exemption compares the path as sent: during implementation, an exemption spelled with an escape
+  let a cross-site POST without a CSRF token reach the resume and receive a code. With the exemption, a page
   on another site could post a resume for a parked request an attacker started with their own
   client and PKCE pair; the browser attaches the victim's cookie wherever `SameSite` lets it
   (a same-site sibling host, or a consumer's `SameSite` override), and the code goes to the
@@ -503,8 +513,10 @@ grant checks or local users, or both. This change reverses that decision (user d
 | A session owing a step at the resume, on a chain without the gates | Security | Handled, tested | the step's challenge; nothing resumed |
 | CSRF token missing or wrong at the cookie resume | Security | Handled, tested | 403, nothing charged, cookie kept |
 | A header-bearer provider chain composed with a cookie chain on one request, inside it or around it | Security | Handled, tested | the mark names the cookie chain, not the provider's; the resume refuses the cookie sign-in with 401 |
-| A cookie chain running the provider composed with another chain, inside it or around it | State | Handled, tested | the mark is not cleared by the other chain; the cookie chain's resume still takes its sign-in |
-| A CSRF exemption covering the resume on a cookie chain running the provider (exact, `*` segment, base path, renamed prefix) | Wiring / Security | Handled, tested | `ErrConfig` from `New` naming the resume endpoint; the same exemption builds on a header-bearer chain |
+| A chain forwarding a request to another of its own paths in-process, reaching its resume | Security | Accepted | the forwarded run keeps the chain's mark, so the resume takes the cookie sign-in; the same chain's CSRF check and cookie session already ran on that request, so nothing is skipped |
+| A cookie chain running the provider composed with another chain, plain or cookie, inside it or around it | State | Handled, tested | each chain keeps its own mark; the cookie chain's resume takes the session its own cookie session authenticated, even after another cookie chain published it again |
+| The back-channel logout exemption covering the resume | Wiring / Security | Handled, tested | the endpoint collision check refuses the configuration at `New`; the resume check also judges the back-channel exemption |
+| A CSRF exemption covering the resume on a cookie chain running the provider (exact, `*` segment, escaped spelling, base path, renamed prefix) | Wiring / Security | Handled, tested | `ErrConfig` from `New` naming the resume endpoint; the same exemption builds on a header-bearer chain |
 | `FromProvider` given a provider other than the chain's own | Wiring | Handled, tested | `ErrConfig` from `New`, as before |
 | `FromProvider` on a chain without a provider, with a provider no chain serves | Configuration | Accepted | tokens still verify against the provider's stores; such a provider issues nothing here, so nothing is accepted that another verifier would refuse |
 | A provider token larger than the default bound sent to the token chain | Input | Handled, tested | accepted; the bound covers the trusted provider's largest token |
