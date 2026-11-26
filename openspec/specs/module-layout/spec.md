@@ -82,7 +82,7 @@ Every scrty module SHALL declare Go 1.27 as its minimum version, and SHALL build
 - **THEN** each declares `go 1.27`
 
 ### Requirement: Build gates reject unformatted, unvetted, vulnerable or stale code
-For every module, the build gates SHALL fail when any Go file is not `gofmt`-formatted, when `go vet` or the configured linters report a finding, when `go test -race` fails, when `govulncheck` reports a vulnerability reachable from the module's code, or when running `go generate` would change a committed file. The same gates SHALL run locally through one command and in continuous integration.
+For every module, the build gates SHALL fail when any Go file is not `gofmt`-formatted, when `go vet` or the configured linters report a finding, when `go test -race` fails, when `govulncheck` reports a vulnerability reachable from the module's code, or when running `go generate` would change a committed file. The same gates SHALL run locally through one command, and in continuous integration as one job per gate.
 
 #### Scenario: Formatting drift
 - **WHEN** a Go file in any module is not `gofmt`-formatted
@@ -94,7 +94,15 @@ For every module, the build gates SHALL fail when any Go file is not `gofmt`-for
 
 #### Scenario: Local and CI parity
 - **WHEN** a contributor runs the local gate command on a clean checkout that passes CI
-- **THEN** it passes with the same set of checks
+- **THEN** it passes, having run the same build gates that CI's gate jobs run
+
+#### Scenario: One gate run on its own
+- **WHEN** a contributor runs the local command for a single gate, such as lint, on a fresh checkout
+- **THEN** it installs the tool that gate needs, at the version the repository pins, and runs only that gate
+
+#### Scenario: Checks that run only in CI
+- **WHEN** CI runs code scanning and spec validation
+- **THEN** neither is part of the local gate command, and the local gate command needs neither CodeQL nor the OpenSpec CLI
 
 ### Requirement: Integration modules are published under the concept they extend
 Each nested integration module SHALL have a module path under the directory of the core package whose concept it extends. Its package name SHALL be the last element of that path. A storage or rate-limit backend SHALL be named after its driver with a `store` suffix, so its package name never equals that of the driver library it wraps. The workspace SHALL contain no nested module other than the listed integrations, the test module and the tools module.
