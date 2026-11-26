@@ -367,6 +367,12 @@ type Exchange struct {
 	// exchange runs through, and nil on one run through none.
 	perRequest *perRequestPhase
 
+	// detached is whether this exchange is the copy a consumer's session
+	// delivery was handed (detachedCopy): it shares no per-request state with
+	// the request's own exchange, and PublishSession and EvaluatePerRequest
+	// refuse on it.
+	detached bool
+
 	// csrfOptOut is whether the chain this exchange runs through was built
 	// with WithoutCSRFProtection, which CheckCSRFToken reads when no CSRF
 	// layer judged the request.
@@ -871,6 +877,10 @@ func (f InterceptorFunc) Intercept(ex *Exchange, next Next) error { return f(ex,
 // proof beside it is judged for its ath. PublishSession is itself the
 // consumer's extension point, so it has no override.
 func (e *Exchange) PublishSession(authentication *authenticate.Authentication, sess *session.Session) error {
+	if e.detached {
+		return errDetachedExchange
+	}
+
 	// A session published once the publishing chain's gates have begun, or
 	// inside the gates of another run on this exchange that the publishing
 	// chain does not cover, reaches the handler and the authorization stage
@@ -887,6 +897,13 @@ func (e *Exchange) PublishSession(authentication *authenticate.Authentication, s
 
 	return e.publishSession(authentication, sess)
 }
+
+// errDetachedExchange is what PublishSession and EvaluatePerRequest return on
+// the exchange copy a consumer's SessionDelivery is handed: it is detached
+// from the request's own exchange, so publishing or judging on it would
+// change nothing the request is served on, or, worse, look as if it had.
+var errDetachedExchange = fmt.Errorf("%w: a session delivery's exchange is a detached copy; "+
+	"it cannot publish a session or evaluate the per-request phase", ErrConfig)
 
 // errLatePublication is what PublishSession returns for a session published
 // once the publishing chain's own gates have begun.
@@ -996,6 +1013,10 @@ func (e *Exchange) publishSession(authentication *authenticate.Authentication, s
 // judged as they are. It is itself the consumer's extension point; the
 // policies it runs are the ones given to WithPolicyEngine.
 func (e *Exchange) EvaluatePerRequest(sess *session.Session, principal *identity.Principal) error {
+	if e.detached {
+		return errDetachedExchange
+	}
+
 	if sess == nil || principal == nil {
 		return ErrAuthenticationRequired
 	}

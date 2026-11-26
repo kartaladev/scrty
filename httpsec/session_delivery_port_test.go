@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"sync"
 	"testing"
@@ -12,13 +13,18 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/session"
 )
 
 // errDeliveryDown is the failure a consumer delivery reports.
 var errDeliveryDown = errors.New("delivery_port_test: the audit log is unreachable")
+
+// errDeliveryPanic is the value a consumer delivery panics with.
+var errDeliveryPanic = errors.New("delivery_port_test: the delivery panicked")
 
 // misbehaviour is what a consumer delivery does in place of the well-behaved
 // one, handed the delivery itself so it can record what it saw.
@@ -42,6 +48,9 @@ type auditDelivery struct {
 	// to. Both are set and read on the request's goroutine.
 	cancel context.CancelFunc
 	kept   *httpsec.Exchange
+
+	// probed is what a delivery's calls on its exchange copy returned.
+	probed []error
 }
 
 // sessionCookieFor is the session cookie carrying value with the default
@@ -103,6 +112,9 @@ type deliveryRun struct {
 	d    *auditDelivery
 	logs *lockedBuffer
 	out  served
+
+	// rec is the recorder of a request a case ran itself.
+	rec *httptest.ResponseRecorder
 }
 
 // idsEnded asserts none of ids authenticates any more: each is gone from the
@@ -341,6 +353,79 @@ func TestSessionCookie_DeliveryPort(t *testing.T) {
 			assert: nothingWritten,
 		},
 		{
+			name:       "a delivery that fails ends the sign-in on a bounded context",
+			misbehaves: onPath(httpsec.DefaultLoginPath),
+			misbehave:  fails,
+			act:        login,
+			assert: func(t *testing.T, r *deliveryRun) {
+				t.Helper()
+				nothingWritten(t, r)
+				assert.True(t, r.w.store.endBounded, "a store that hangs cannot hold the request for ever")
+			},
+		},
+		{
+			name:       "a delivery that panics ends the sign-in and the panic goes on",
+			misbehaves: onPath(httpsec.DefaultLoginPath),
+			misbehave: func(_ *auditDelivery, ex *httpsec.Exchange, _ *session.Session, credential string) (string, error) {
+				ex.Writer.SetCookie(sessionCookieFor(credential))
+				ex.Writer.SetHeader("X-Audited", "yes")
+
+				panic(errDeliveryPanic)
+			},
+			act: func(t *testing.T, r *deliveryRun) served {
+				r.rec = httptest.NewRecorder()
+				req := postValues(t.Context(), httpsec.DefaultLoginPath, e2eSource, url.Values{
+					httpsec.DefaultLoginUsernameParam: {e2eAddress},
+					httpsec.DefaultLoginPasswordParam: {e2ePassword},
+				})
+				run := r.w.chain.Assemble(func(*httpsec.Exchange) error { return nil })
+				ex := httpsec.NewExchange(t.Context(), httpsec.NewHTTPRequest(req), httpsec.NewHTTPResponseWriter(r.rec))
+
+				require.PanicsWithValue(t, errDeliveryPanic, func() { _ = run(ex) }, "the consumer's panic is not swallowed")
+
+				return served{rec: r.rec}
+			},
+			assert: func(t *testing.T, r *deliveryRun) {
+				t.Helper()
+				assert.Empty(t, r.rec.Header().Values("Set-Cookie"), "no cookie reaches the response")
+				assert.Empty(t, r.rec.Header().Values("X-Audited"), "nothing the delivery wrote reaches the response")
+				assert.Empty(t, r.rec.Body.String())
+				assert.Zero(t, r.w.active(t), "the sign-in the delivery was handed is ended")
+				assert.True(t, r.w.store.endBounded, "on a bounded context")
+				idsEnded(t, r.w.sessions, r.d.seen()...)
+			},
+		},
+		{
+			name:       "a delivery that publishes and evaluates on its exchange copy changes nothing of the real one",
+			misbehaves: onPath(httpsec.DefaultLoginPath),
+			misbehave: func(d *auditDelivery, ex *httpsec.Exchange, s *session.Session, credential string) (string, error) {
+				principal := &identity.Principal{ID: e2eUser, Username: e2eAddress}
+
+				d.probed = append(d.probed,
+					ex.PublishSession(&authenticate.Authentication{Principal: principal}, s),
+					ex.EvaluatePerRequest(s, principal),
+					ex.EvaluatePerRequest(ex.Session, principal))
+
+				ex.Writer.SetCookie(sessionCookieFor(credential))
+
+				return "", nil
+			},
+			act: login,
+			assert: func(t *testing.T, r *deliveryRun) {
+				t.Helper()
+				require.NoError(t, r.out.err, "the sign-in is served as it would have been")
+				deliveredOnlyInCookie(t, r.w.sessions, r.out)
+
+				require.Len(t, r.d.probed, 3)
+
+				for _, err := range r.d.probed {
+					require.ErrorIs(t, err, httpsec.ErrConfig, "a detached copy refuses, safely, and does not panic")
+				}
+
+				assert.Equal(t, 1, r.w.active(t))
+			},
+		},
+		{
 			name:       "a delivery that fails when the sign-in cannot be ended",
 			misbehaves: onPath(httpsec.DefaultLoginPath),
 			misbehave:  fails,
@@ -354,6 +439,9 @@ func TestSessionCookie_DeliveryPort(t *testing.T) {
 				refusedUndelivered(t, r.out)
 				assert.Contains(t, r.logs.String(), "could not be ended", "the sign-in left to its deadlines is logged")
 				assert.NotContains(t, r.logs.String(), r.d.seen()[0], "the log names no credential")
+				assert.Contains(t, r.logs.String(), "reason=session-store", "the log carries the sanitized cause")
+				assert.Contains(t, r.logs.String(), "error_type=", "the log carries the cause's type")
+				assert.NotContains(t, r.logs.String(), errBrowserStoreDown.Error(), "and not its text")
 			},
 		},
 		{

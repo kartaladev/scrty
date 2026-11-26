@@ -42,9 +42,15 @@ type browserStore struct {
 	// failDeleteFamily fails the write that ends a sign-in. The write also
 	// fails when its context has ended, as a real store's does.
 	failDeleteFamily bool
+
+	// endBounded is whether the last write that ended a sign-in ran on a
+	// context with a deadline.
+	endBounded bool
 }
 
 func (s *browserStore) DeleteFamily(ctx context.Context, family id.ID) (int, error) {
+	_, s.endBounded = ctx.Deadline()
+
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}

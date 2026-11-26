@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/kartaladev/scrty/internal/detach"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/session"
 )
@@ -71,7 +73,31 @@ func (d credentialDelivery) deliver(
 		return credential, nil
 	}
 
-	if err := d.cookie.deliver(ex, s, d.log); err != nil {
+	// A delivery that panics (or ends its goroutine) has not delivered
+	// either: the sign-in is ended exactly as for any other failure, and the
+	// panic then goes on with its original value, since the library does not
+	// swallow a consumer's panic.
+	returned := false
+
+	defer func() {
+		if returned {
+			return
+		}
+
+		r := recover()
+
+		d.endUndelivered(ex.Context(), sessions, s)
+
+		if r != nil {
+			panic(r)
+		}
+	}()
+
+	err := d.cookie.deliver(ex, s, d.log)
+
+	returned = true
+
+	if err != nil {
 		d.endUndelivered(ex.Context(), sessions, s)
 
 		return "", err
@@ -86,10 +112,13 @@ func (d credentialDelivery) endUndelivered(ctx context.Context, sessions *sessio
 		return
 	}
 
-	ctx = context.WithoutCancel(ctx)
+	// Detached, so the client's hang-up cannot leave the sign-in live, and
+	// bounded, so a store that hangs cannot hold the request for ever.
+	ctx, cancel := detach.Bounded(ctx, detach.RevocationTimeout)
+	defer cancel()
 
 	if _, err := sessions.RevokeFamily(ctx, s.FamilyID); err != nil && d.log != nil {
-		d.log.WarnContext(ctx, msgUndeliveredNotEnded)
+		d.log.LogAttrs(ctx, slog.LevelWarn, msgUndeliveredNotEnded, diag.Failure("session-store", err)...)
 	}
 }
 
@@ -141,10 +170,6 @@ func (s *sessionCookie) deliver(ex *Exchange, sess *session.Session, log *slog.L
 	staged := &stagedWriter{}
 	body, err := s.consumerDelivery(ex, staged, sess, id)
 
-	// Whatever the delivery writes from here on, on a goroutine it started
-	// or through an exchange it kept, is not judged and goes nowhere.
-	staged.seal()
-
 	err = porterr.SanitizeTo(ex.Context(), log, err, porterr.ErrUnwalkable)
 	switch {
 	case err != nil:
@@ -170,11 +195,29 @@ func (s *sessionCookie) deliver(ex *Exchange, sess *session.Session, log *slog.L
 func (s *sessionCookie) consumerDelivery(
 	ex *Exchange, staged *stagedWriter, sess *session.Session, id string,
 ) (string, error) {
+	// Whatever the delivery writes once it has returned, or panicked, on a
+	// goroutine it started or through an exchange it kept, is not judged and
+	// goes nowhere.
+	defer staged.seal()
+
+	return s.delivery.Deliver(detachedCopy(ex, staged), copySession(sess), id)
+}
+
+// detachedCopy returns the exchange a consumer's delivery is handed: staged
+// is its writer for good, its session is a copy, and it shares no per-request
+// state with ex. The per-request phase is dropped and the stack of runs is
+// copied, so nothing the delivery does through it reaches the request's own
+// exchange, the store or the chain's policies, and PublishSession and
+// EvaluatePerRequest refuse on it (Exchange.detached).
+func detachedCopy(ex *Exchange, staged *stagedWriter) *Exchange {
 	port := *ex
 	port.Writer = staged
 	port.Session = copySession(ex.Session)
+	port.perRequest = nil
+	port.detached = true
+	port.extra = slices.Clone(ex.extra)
 
-	return s.delivery.Deliver(&port, copySession(sess), id)
+	return &port
 }
 
 // copySession returns a session sharing no map or slice with s, nil for nil.
@@ -303,6 +346,11 @@ func (w *stagedWriter) markWrote() {
 // identifier may appear in no other cookie (name, value, path, domain) and no
 // header (name or value), and no cookie may be set through a raw header,
 // which cannot be judged.
+//
+// The identifier is matched literally. The check guards against a delivery's
+// mistakes, not against a hostile one: a transformed copy of the identifier
+// (base64 in a header, say) is not recognised. A delivery is trusted code,
+// which the consumer wrote and wired.
 func (w *stagedWriter) check(want *Cookie, id string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -377,11 +425,22 @@ func (w *stagedWriter) replay(rw ResponseWriter) {
 
 // SessionDelivery replaces how a cookie chain writes a new session's cookie
 // (WithSessionDelivery).
+//
+// A delivery is trusted code: the chain's check of what it wrote guards
+// against its mistakes, not against a hostile delivery. The identifier is
+// matched literally, so an encoded copy of it (base64 in a header, say) is
+// not detected.
 type SessionDelivery interface {
 	// Deliver writes the session cookie carrying credential, the identifier of
 	// s, which the chain has just stored, through ex.Writer, and returns what
 	// the endpoint may write to the response body, which on a cookie chain is
 	// always "".
+	//
+	// ex is a detached copy of the request's exchange: it shares no
+	// per-request state with it, carries no per-request phase, and
+	// PublishSession and EvaluatePerRequest on it return an error wrapping
+	// ErrConfig and change nothing. A Deliver that panics ends the sign-in
+	// like any other failure, and the panic then goes on with its value.
 	//
 	// ex and s are Deliver's own copies: ex.Writer is a staging writer that
 	// the chain judges once Deliver returns and then ignores for good, so a
@@ -427,6 +486,10 @@ type SessionDelivery interface {
 // and the sign-in d was handed is ended, so the identifier it saw
 // authenticates nothing. The response is set no-store after d's headers are
 // copied.
+//
+// d is trusted code. The line is checked literally and guards against d's
+// mistakes, not against a hostile d: an encoded copy of the identifier (base64
+// in a header, say) is not detected.
 //
 // A nil delivery, including an interface holding a nil pointer, is refused.
 func WithSessionDelivery(d SessionDelivery) SessionCookieOption {
