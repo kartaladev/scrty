@@ -315,7 +315,7 @@ func WithSessionBearerScheme(scheme string) SessionBearerOption {
 // endpoint issues the session's identifier instead. field names where the
 // generator was given.
 func checkTokenGenerator(c *config, option, field string, g token.Generator) error {
-	if !c.sessionBearer {
+	if !c.issuesSessionReference() {
 		if err := requireDep(option, "token generator", g); err != nil {
 			return err
 		}
@@ -323,13 +323,28 @@ func checkTokenGenerator(c *config, option, field string, g token.Generator) err
 		return checkIssuingGenerator(c, option, field, g)
 	}
 
-	if !nilcheck.IsNil(g) {
-		return newConfigError("%s was given a token generator (%s), but EnableSessionBearer is "+
-			"on, so the chain accepts only session references and would refuse every token it "+
-			"minted; leave the generator out, and the endpoint issues the session reference", option, field)
+	if nilcheck.IsNil(g) {
+		return nil
 	}
 
-	return nil
+	if c.sessionCookie {
+		return newConfigError("%s was given a token generator (%s), but EnableSessionCookie is "+
+			"on, so the chain hands out only the session cookie and would refuse every token it "+
+			"minted; leave the generator out, and the endpoint sets the session cookie", option, field)
+	}
+
+	return newConfigError("%s was given a token generator (%s), but EnableSessionBearer is "+
+		"on, so the chain accepts only session references and would refuse every token it "+
+		"minted; leave the generator out, and the endpoint issues the session reference", option, field)
+}
+
+// issuesSessionReference reports whether the chain's sessions are reached by
+// their own identifier, in the Authorization header (EnableSessionBearer) or
+// in the session cookie (EnableSessionCookie), rather than by a signed token:
+// its issuing endpoints then take no token generator. New refuses the two
+// together, so at most one is on.
+func (c *config) issuesSessionReference() bool {
+	return c.sessionBearer || c.sessionCookie
 }
 
 // WithSessionBearerLimiter counts the unknown session references each source

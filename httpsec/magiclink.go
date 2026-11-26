@@ -152,6 +152,10 @@ type magicLinkInterceptor struct {
 	// decides, settled once every option has been applied.
 	issue credentialIssuer
 
+	// deliver hands the credential out once the session is stored: as the
+	// session cookie on a cookie chain, unchanged for the body otherwise.
+	deliver credentialDelivery
+
 	engine  *policy.Engine
 	log     *slog.Logger
 	sampler *refusalSampler
@@ -224,7 +228,7 @@ func (i *magicLinkInterceptor) declaredPaths() []declaredPath {
 // It runs once every option has been applied, so a session manager wired by
 // another built-in after EnableMagicLink still counts.
 func (i *magicLinkInterceptor) check(c *config, option string) error {
-	if c.sessionBearer {
+	if c.issuesSessionReference() {
 		if err := checkTokenGenerator(c, option, "WithMagicLinkTokens", i.tokens); err != nil {
 			return err
 		}
@@ -241,6 +245,7 @@ func (i *magicLinkInterceptor) check(c *config, option string) error {
 	}
 
 	i.issue = c.credentialIssuer(i.tokens)
+	i.deliver = c.delivery()
 
 	if i.sessions == nil && c.sessions == nil {
 		return newConfigError("%s needs a session manager, and neither WithMagicLinkSessions "+
@@ -491,6 +496,7 @@ func (i *magicLinkInterceptor) consume(ex *Exchange) error {
 		sessions:          i.sessions,
 		tokens:            i.tokens,
 		issue:             i.issue,
+		deliver:           i.deliver,
 		enrolmentLifetime: i.enrolmentLifetime,
 		enforced:          i.enforced,
 		log:               i.log,

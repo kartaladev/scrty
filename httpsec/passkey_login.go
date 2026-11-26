@@ -94,6 +94,10 @@ type passwordlessInterceptor struct {
 	// decides, settled at assembly (resolve).
 	issue credentialIssuer
 
+	// deliver hands the credential out once the session is stored: as the
+	// session cookie on a cookie chain, unchanged for the body otherwise.
+	deliver credentialDelivery
+
 	// cancelHeld cancels the user's held account recoveries at login, set at
 	// assembly when the chain's recovery may hold one, and nil otherwise.
 	cancelHeld heldRecoveryCanceller
@@ -368,7 +372,7 @@ func (p *passkeyInterceptor) checkPasswordless(option string) error {
 func (i *passwordlessInterceptor) resolve(option string, c *config) error {
 	l := c.formLogin()
 
-	if c.sessionBearer {
+	if c.issuesSessionReference() {
 		// The credential is the session's identifier, so a generator, given
 		// here or inherited from form login, would mint tokens this chain
 		// refuses. Form login's own check refuses its generator.
@@ -391,6 +395,7 @@ func (i *passwordlessInterceptor) resolve(option string, c *config) error {
 	}
 
 	i.issue = c.credentialIssuer(i.tokens)
+	i.deliver = c.delivery()
 
 	if i.respond == nil {
 		i.respond = writeLoginResult
@@ -610,6 +615,7 @@ func (i *passwordlessInterceptor) finish(ex *Exchange) error {
 		sessions:          i.sessions,
 		tokens:            i.tokens,
 		issue:             i.issue,
+		deliver:           i.deliver,
 		enrolmentLifetime: i.enrolmentLifetime,
 		enforced:          i.enforced,
 		log:               i.log,

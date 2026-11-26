@@ -67,6 +67,10 @@ type recoveryInterceptor struct {
 	// calls it, through issueRecovered, before it spends anything.
 	issueCredential credentialIssuer
 
+	// deliver hands the credential out once the session is stored: as the
+	// session cookie on a cookie chain, unchanged for the body otherwise.
+	deliver credentialDelivery
+
 	// recoverer is built at assembly (resolve), from deps, coreOpts and the
 	// chain's form login.
 	recoverer *recovery.Recoverer
@@ -184,7 +188,7 @@ func (i *recoveryInterceptor) check(c *config, option string) error {
 			"recovery-pending session could never become a full one", option)
 	}
 
-	if c.sessionBearer {
+	if c.issuesSessionReference() {
 		return checkTokenGenerator(c, option, "WithRecoveryTokens", i.tokens)
 	}
 
@@ -257,6 +261,7 @@ func (i *recoveryInterceptor) resolve(c *config) error {
 	}
 
 	i.issueCredential = c.credentialIssuer(i.tokens)
+	i.deliver = c.delivery()
 
 	// The chain's logger, clock and limiter factory first, so a
 	// recovery.WithLogger, recovery.WithClock or limiter option the consumer
@@ -479,6 +484,15 @@ func (i *recoveryInterceptor) answer(ex *Exchange, res *recovery.Result) error {
 
 	ex.Writer.SetHeader("Cache-Control", "no-store")
 
+	// The core has stored the session, so its credential is delivered (on a
+	// cookie chain, as the cookie, leaving nothing for the body) before
+	// anything publishes or reports it. A delivery that fails has ended the
+	// sign-in, and is answered as the issuing failure it is.
+	credential, err := i.deliver.deliver(ex, i.deps.Sessions, res.Session, res.Credential)
+	if err != nil {
+		return err
+	}
+
 	ex.Session = res.Session
 	ex.SetContext(withSession(ex.Context(), res.Session))
 
@@ -502,7 +516,7 @@ func (i *recoveryInterceptor) answer(ex *Exchange, res *recovery.Result) error {
 	emitEvent(ctx, sessionEvent(event.AuthnTokenCreated, event.OutcomeSuccess, res.Session))
 	emitEvent(ctx, sessionEvent(event.AuthnLoginSuccess, event.OutcomeSuccess, res.Session))
 
-	return i.respond(ex, RecoveryResult{Token: res.Credential, Recovery: res, TokenType: tokenTypeOf(res.Session)})
+	return i.respond(ex, RecoveryResult{Token: credential, Recovery: res, TokenType: tokenTypeOf(res.Session)})
 }
 
 // issueRecovered is the credential issuer the chain gives the recovery core

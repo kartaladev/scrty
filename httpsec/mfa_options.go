@@ -220,7 +220,7 @@ func EnableMFA(methods []mfa.Method, opts ...MFAOption) Option {
 					"and none of the built-ins enabled on this chain was wired to one", option)
 			}
 
-			if c.sessionBearer {
+			if c.issuesSessionReference() {
 				return checkTokenGenerator(c, option, "WithMFATokens", i.tokens)
 			}
 

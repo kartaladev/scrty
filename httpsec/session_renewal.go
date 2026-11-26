@@ -52,7 +52,8 @@ type SessionRenewalDeps struct {
 	// (session.Sessions.LoadForRenewal).
 	//
 	// Default: the manager the chain's bearer resolves sessions through,
-	// whichever bearer mode is enabled and in whatever option order. Given
+	// whichever bearer mode is enabled, the cookie session included, and in
+	// whatever option order. Given
 	// explicitly, it must be that same manager (compared by pointer): any
 	// other is refused with a configuration error naming
 	// SessionRenewalDeps.Sessions, because a successor written through a
@@ -129,6 +130,10 @@ type sessionRenewal struct {
 	// issue issues the successor's credential as the chain's bearer mode
 	// decides, handed over at assembly (config.credentialIssuer).
 	issue credentialIssuer
+
+	// deliver hands the credential out once the session is stored: as the
+	// session cookie on a cookie chain, unchanged for the body otherwise.
+	deliver credentialDelivery
 
 	// engine is the chain's policy engine, handed over at assembly, which
 	// judges a session a late renewal recovers.
@@ -219,7 +224,15 @@ func (r *sessionRenewal) Intercept(ex *Exchange, next Next) error {
 		return rotationFailure(err, issueErr)
 	}
 
-	// The successor is stored by now, and its credential is handed out below.
+	// The successor is stored by now, so its credential is delivered (on a
+	// cookie chain, as the cookie, leaving nothing for the body) before
+	// anything reports it, and handed out below. A delivery that fails has
+	// ended the sign-in.
+	credential, err = r.deliver.deliver(ex, r.sessions, successor, credential)
+	if err != nil {
+		return err
+	}
+
 	emitEvent(ctx, sessionEvent(event.SessionRenewed, event.OutcomeSuccess, successor))
 
 	return r.respond(ex, RenewalResult{
@@ -662,6 +675,7 @@ func EnableSessionRenewal(deps SessionRenewalDeps, opts ...SessionRenewalOption)
 		// chosen once every option has been applied.
 		c.wire(func(ch *Chain) {
 			r.issue = c.credentialIssuer(r.tokens)
+			r.deliver = c.delivery()
 			r.engine = ch.engine
 			r.logger = c.logger
 		})
@@ -672,7 +686,8 @@ func EnableSessionRenewal(deps SessionRenewalDeps, opts ...SessionRenewalOption)
 }
 
 // bearerSessions is the session manager the chain's bearer resolves sessions
-// through, whichever bearer mode is enabled, or nil when neither is. The
+// through, whichever bearer mode is enabled (the session reference, the
+// signed token, or the cookie session), or nil when none is. The
 // bearer may be enabled after the renewal endpoint, so it is read once every
 // option has been applied.
 func bearerSessions(c *config) *session.Sessions {
@@ -685,6 +700,11 @@ func bearerSessions(c *config) *session.Sessions {
 	})
 	_ = eachInterceptor(c, func(b *bearerToken) error {
 		m = b.sessions
+
+		return nil
+	})
+	_ = eachInterceptor(c, func(s *sessionCookie) error {
+		m = s.sessions
 
 		return nil
 	})

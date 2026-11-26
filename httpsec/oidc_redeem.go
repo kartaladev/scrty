@@ -176,6 +176,7 @@ func (i *oidcInterceptor) loginTail(binding session.KeyBinding) loginTailDeps {
 		sessions:          i.sessions,
 		tokens:            i.tokens,
 		issue:             i.issue,
+		deliver:           i.deliver,
 		enrolmentLifetime: i.enrolmentLifetime,
 		enforced:          i.enforced,
 		log:               i.log,

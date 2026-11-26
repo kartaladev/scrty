@@ -74,6 +74,10 @@ type mfaInterceptor struct {
 	// mode decides, settled at assembly (wireMFA).
 	issue credentialIssuer
 
+	// deliver hands the credential out once the session is stored: as the
+	// session cookie on a cookie chain, unchanged for the body otherwise.
+	deliver credentialDelivery
+
 	// respond writes the response a successful verification answers with.
 	respond MFAResponder
 
@@ -161,6 +165,7 @@ func (c *config) wireMFA() error {
 		i.throttle = throttle
 		i.sessions = c.sessions
 		i.issue = c.credentialIssuer(i.tokens)
+		i.deliver = c.delivery()
 		i.logoutPath = c.logoutPath
 
 		// The chain's sampler is built after every option has been applied,
@@ -580,8 +585,15 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session, raised policy
 		return rotationRefusal(err)
 	}
 
-	// The rotated session is stored, and its credential is handed out below,
-	// with the challenge error when one is still raised.
+	// The rotated session is stored, so its credential is delivered (on a
+	// cookie chain, as the cookie, leaving nothing for the body) before
+	// anything reports it, and handed out below, with the challenge error when
+	// one is still raised. A delivery that fails has ended the sign-in.
+	tok, err = i.deliver.deliver(ex, i.sessions, rotated, tok)
+	if err != nil {
+		return err
+	}
+
 	emitEvent(ctx, sessionEvent(event.MFAVerified, event.OutcomeSuccess, rotated))
 	emitEvent(ctx, sessionEvent(event.SessionRenewed, event.OutcomeSuccess, rotated))
 

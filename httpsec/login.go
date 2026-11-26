@@ -116,6 +116,10 @@ type formLogin struct {
 	// handed over at assembly.
 	issue credentialIssuer
 
+	// deliver hands the credential out once the session is stored: as the
+	// session cookie on a cookie chain, unchanged for the body otherwise.
+	deliver credentialDelivery
+
 	// engine and log are handed over once the chain exists, because an option
 	// applied after EnableFormLogin may still replace either.
 	engine *policy.Engine
@@ -427,6 +431,7 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 		sessions:          l.sessions,
 		tokens:            l.tokens,
 		issue:             l.issue,
+		deliver:           l.deliver,
 		enrolmentLifetime: l.enrolmentLifetime,
 		enforced:          l.enforced,
 		log:               l.log,

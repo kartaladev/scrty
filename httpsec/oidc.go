@@ -174,6 +174,10 @@ type oidcInterceptor struct {
 	// mode decides, settled once every option has been applied.
 	issue credentialIssuer
 
+	// deliver hands the credential out once the session is stored: as the
+	// session cookie on a cookie chain, unchanged for the body otherwise.
+	deliver credentialDelivery
+
 	engine  *policy.Engine
 	log     *slog.Logger
 	sampler *refusalSampler

@@ -135,18 +135,33 @@ func issueSessionReference(_ context.Context, s *session.Session, _ *identity.Pr
 	return s.ID, nil
 }
 
-// credentialIssuer is the issuer an endpoint holding the token generator g
-// issues through on this chain: the session reference when EnableSessionBearer
-// is on, and g otherwise. Assembly has already refused a generator in the
-// first case and a missing one in the second. A generator's error is
-// sanitized onto the chain's logger; every caller asks for its issuer once the
-// options have all been applied, so that is the logger the chain settled on.
-func (c *config) credentialIssuer(g token.Generator) credentialIssuer {
-	if c.sessionBearer {
-		return issueSessionReference
-	}
+// issueNoCredential is a cookie chain's issuer: it issues nothing an endpoint
+// could write anywhere. The session's identifier reaches the client only as
+// the session cookie, which the delivery step (credentialDelivery) sets from
+// the stored session itself once it is stored, so an endpoint that wrote what
+// it was issued, or forgot to deliver, could not hand the identifier to a
+// script: it has none to hand. A missed delivery sets no cookie, which fails
+// the sign-in visibly rather than leaking it.
+func issueNoCredential(context.Context, *session.Session, *identity.Principal) (string, error) {
+	return "", nil
+}
 
-	return signedTokens(g, c.logger)
+// credentialIssuer is the issuer an endpoint holding the token generator g
+// issues through on this chain: nothing on a cookie chain
+// (issueNoCredential), the session reference when EnableSessionBearer is on,
+// and g otherwise. Assembly has already refused a generator in the first two
+// cases and a missing one in the last. A generator's error is sanitized onto
+// the chain's logger; every caller asks for its issuer once the options have
+// all been applied, so that is the logger the chain settled on.
+func (c *config) credentialIssuer(g token.Generator) credentialIssuer {
+	switch {
+	case c.sessionCookie:
+		return issueNoCredential
+	case c.sessionBearer:
+		return issueSessionReference
+	default:
+		return signedTokens(g, c.logger)
+	}
 }
 
 // errNoUserIdentifier is the cause of an authentication whose principal has no
@@ -209,6 +224,13 @@ type loginTailDeps struct {
 	// tokens, which is what a first factor not yet handed an issuer by
 	// assembly uses.
 	issue credentialIssuer
+
+	// deliver hands the credential out once commit has stored the session
+	// (config.delivery): as the session cookie on a cookie chain, and
+	// unchanged otherwise. Its zero value hands the credential out unchanged
+	// and sets nothing, which is what a sign-in whose credential is dropped
+	// (a provider-side federated completion) is given.
+	deliver credentialDelivery
 
 	// enrolmentLifetime is how long a session marked for an enrolment
 	// challenge may live. The chain hands it to each first factor at assembly.
@@ -536,6 +558,12 @@ type preparedLogin struct {
 	prepared *session.Prepared
 	token    string
 
+	// sessions and deliver are loginTailDeps' own: commit hands the
+	// credential out through deliver, and ends the sign-in through sessions
+	// when it cannot.
+	sessions *session.Sessions
+	deliver  credentialDelivery
+
 	// afterFailures is loginTailDeps.afterFailures, for the success event.
 	afterFailures bool
 }
@@ -664,7 +692,7 @@ func prepareLogin(
 
 	return &preparedLogin{
 		in: in, decision: d, methods: methods, prepared: p, token: tok,
-		afterFailures: deps.afterFailures,
+		sessions: deps.sessions, deliver: deps.deliver, afterFailures: deps.afterFailures,
 	}, nil
 }
 
@@ -674,19 +702,32 @@ func prepareLogin(
 // tail recorded.
 func (l *preparedLogin) session() *session.Session { return l.prepared.Session() }
 
-// commit is the second half of completeLogin: the one creating write, then
-// the authentication published and the credential handed out, with a
-// challenge error when a challenge is pending.
+// commit is the second half of completeLogin: the one creating write, the
+// credential delivered (credentialDelivery), then the authentication
+// published and the credential handed out, with a challenge error when a
+// challenge is pending.
 //
 // A failure of the write discards the credential: it names a session that was
-// never stored, so it authenticates nothing, and is never handed out. It is a
-// dependency failure, as the session manager words it. A redemption that
-// reaches commit has already spent its single-use credential, which that
-// failure does not give back.
+// never stored, so it authenticates nothing, and is never handed out, and on
+// a cookie chain no cookie is set. It is a dependency failure, as the session
+// manager words it. A redemption that reaches commit has already spent its
+// single-use credential, which that failure does not give back.
+//
+// Delivery runs once the session is stored and before anything is published
+// or reported, so a cookie never names a session that was not stored, and a
+// delivery that fails leaves no sign-in reported: the sign-in it stored is
+// ended (credentialDelivery.deliver), and the failure returned. What commit
+// returns, and what a challenge carries, is what delivery left for the body:
+// nothing on a cookie chain.
 func (l *preparedLogin) commit(ex *Exchange) (string, error) {
 	ctx := ex.Context()
 
 	s, err := l.prepared.Commit(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	tok, err := l.deliver.deliver(ex, l.sessions, s, l.token)
 	if err != nil {
 		return "", err
 	}
@@ -710,13 +751,13 @@ func (l *preparedLogin) commit(ex *Exchange) (string, error) {
 	emitSignIn(ctx, s, l.afterFailures)
 
 	if l.decision.Outcome == policy.Challenge {
-		return l.token, refuseWithChallenge(ex, &ChallengeError{
-			Kind: l.decision.Challenge, Session: s, Token: l.token,
-			TokenType: challengeTokenType(l.token, s), Methods: l.methods,
+		return tok, refuseWithChallenge(ex, &ChallengeError{
+			Kind: l.decision.Challenge, Session: s, Token: tok,
+			TokenType: challengeTokenType(tok, s), Methods: l.methods,
 		})
 	}
 
-	return l.token, nil
+	return tok, nil
 }
 
 // refuseWithChallenge returns ch as the refusal, first marking the response

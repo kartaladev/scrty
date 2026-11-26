@@ -191,7 +191,10 @@ func EnableFormLogin(deps FormLoginDeps, opts ...LoginOption) Option {
 		c.wire(l.wire)
 		// The bearer mode may be enabled after form login, so the issuer is
 		// chosen once every option has been applied.
-		c.wire(func(*Chain) { l.issue = c.credentialIssuer(l.tokens) })
+		c.wire(func(*Chain) {
+			l.issue = c.credentialIssuer(l.tokens)
+			l.deliver = c.delivery()
+		})
 		c.register(l, OrderFormLogin)
 
 		return nil

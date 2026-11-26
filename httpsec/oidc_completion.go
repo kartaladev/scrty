@@ -293,7 +293,13 @@ func (i *oidcInterceptor) finishProviderSignIn(ex *Exchange, provider string, re
 	op := i.provider
 	ctx := ex.Context()
 
-	login := newRedemptionLogin(i.loginTail(session.KeyBinding{}), signIn.out)
+	// The credential is dropped (step 5), so nothing delivers it either: on a
+	// cookie chain no session cookie is set here, and the browser leaves with
+	// the provider's own cookie alone.
+	tail := i.loginTail(session.KeyBinding{})
+	tail.deliver = credentialDelivery{}
+
+	login := newRedemptionLogin(tail, signIn.out)
 
 	in := postAuthenticationInput(&signIn.principal, factor.OIDC, "", signIn.passwordChangedAt, i.now())
 	in.FederatedAssurance = signIn.out.federated

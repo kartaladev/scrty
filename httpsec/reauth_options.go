@@ -218,6 +218,7 @@ func EnableReauthentication(opts ...ReauthenticationOption) Option {
 		c.wire(func(ch *Chain) {
 			i.sessions = c.sessions
 			i.issue = c.credentialIssuer(i.tokens)
+			i.deliver = c.delivery()
 			i.log = ch.logger
 			i.sampler = ch.sampler
 		})
@@ -263,7 +264,7 @@ func (i *reauthInterceptor) settle(c *config, option string) error {
 		return err
 	}
 
-	if c.sessionBearer {
+	if c.issuesSessionReference() {
 		return checkTokenGenerator(c, option, "WithReauthenticationTokens", i.tokens)
 	}
 

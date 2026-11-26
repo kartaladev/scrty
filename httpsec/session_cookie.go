@@ -49,6 +49,10 @@ type sessionCookie struct {
 	name     string
 	sameSite http.SameSite
 	domain   string
+
+	// delivery is the consumer's SessionDelivery, nil for the default, which
+	// sets the cookie itself (credentialDelivery).
+	delivery SessionDelivery
 }
 
 // AuthenticatesByCookie marks the cookie session as a CookieAuthenticator, so
@@ -125,6 +129,15 @@ func (s *sessionCookie) Intercept(ex *Exchange, next Next) error {
 	presented, claimed := presentedCookie(ex.Request, s.name)
 	if !claimed {
 		return next(ex)
+	}
+
+	// Another authenticator has already accepted a credential the guard
+	// (sessionCookieGuard) could not see. The cookie is not read, so that
+	// neither credential silently wins and a bad cookie is never passed over:
+	// the request is refused, judging neither, so the source is not charged
+	// and the cookie is kept.
+	if besideAnotherCaller(ex, presented) {
+		return errors.Join(ErrAuthenticationRequired, errCookieBesideCaller)
 	}
 
 	rejected, err := s.ref.resolve(ex, presented, transportCookie, admitCookieSession)
@@ -296,6 +309,24 @@ func presentedCookie(r Request, name string) (value string, claimed bool) {
 // WithBasePath. It is a CookieAuthenticator, so New also refuses it without
 // EnableCSRFProtection or the explicit WithoutCSRFProtection.
 //
+// Every issuing endpoint on the chain (form login, magic link and federated
+// handoff redemption, passwordless passkey login, second-factor
+// verification, re-authentication, recovery completion, session renewal)
+// takes no token generator: once it has stored the session, it sets the
+// cookie to the session's identifier and writes no credential to the body
+// or any other header, and a challenge it raises carries the pending session
+// and an empty Token. WithSessionDelivery replaces how the cookie is
+// written, within that line.
+//
+// A request carrying the cookie and an Authorization header, of any scheme or
+// value, is refused with ErrAuthenticationRequired at OrderSessionCookieGuard,
+// before Basic authentication, the resource server, API keys or the cookie
+// session read either. So is a cookie arriving at the cookie session after
+// another authenticator has already published a caller for the request,
+// through a credential of its own: neither credential silently wins. Neither
+// refusal judges the cookie, so the source is not charged and the cookie is
+// kept. There is no option to let one credential win.
+//
 // A request carrying no cookie of the name passes through untouched. For one
 // that carries it, in order:
 //
@@ -364,6 +395,8 @@ func EnableSessionCookie(deps SessionBearerDeps, opts ...SessionCookieOption) Op
 			return newConfigError("%s was given twice; one chain has one cookie session", option)
 		}
 
+		c.sessionCookie = true
+
 		c.enable(option, func() error {
 			if hasInterceptor[*sessionBearer](c) {
 				return newConfigError("%s and EnableSessionBearer are both enabled; a chain delivers "+
@@ -390,6 +423,7 @@ func EnableSessionCookie(deps SessionBearerDeps, opts ...SessionCookieOption) Op
 		// handed to the core once every option has been applied.
 		c.wire(func(*Chain) { s.ref.resolver.renewal = c.renewal })
 		c.register(s, OrderBearerToken)
+		c.register(sessionCookieGuard{cookie: s}, OrderSessionCookieGuard)
 
 		return nil
 	}

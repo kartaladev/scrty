@@ -187,6 +187,13 @@ type config struct {
 	// generator.
 	sessionBearer bool
 
+	// sessionCookie records that EnableSessionCookie is on: the chain is a
+	// cookie chain, so every credential-issuing endpoint issues no credential
+	// of its own and none may be given a token generator; the session's
+	// identifier is handed out as the session cookie, by the delivery step
+	// (config.delivery), once the session is stored.
+	sessionCookie bool
+
 	// bindingVerifiers names the enabled features that verify bound
 	// credentials: the option names of the built-ins that check a token's
 	// binding to a DPoP key or a client certificate. EnableDPoP's and

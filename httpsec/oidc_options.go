@@ -189,7 +189,7 @@ func (i *oidcInterceptor) check(c *config, option string) error {
 			return err
 		}
 
-		if c.sessionBearer {
+		if c.issuesSessionReference() {
 			if err := checkTokenGenerator(c, option, "WithOIDCTokens", i.tokens); err != nil {
 				return err
 			}
@@ -202,7 +202,7 @@ func (i *oidcInterceptor) check(c *config, option string) error {
 				"WithOIDCCallbackSuccess conveys it instead", option)
 		}
 
-		if c.sessionBearer {
+		if c.issuesSessionReference() {
 			if err := checkTokenGenerator(c, option, "WithOIDCTokens", i.tokens); err != nil {
 				return err
 			}
@@ -216,6 +216,7 @@ func (i *oidcInterceptor) check(c *config, option string) error {
 	}
 
 	i.issue = c.credentialIssuer(i.tokens)
+	i.deliver = c.delivery()
 
 	if i.sessions == nil && c.sessions == nil {
 		return newConfigError("%s needs a session manager, and neither WithOIDCSessions "+

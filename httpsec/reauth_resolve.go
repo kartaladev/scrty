@@ -76,7 +76,15 @@ func (i *reauthInterceptor) resolve(ex *Exchange, s *session.Session, method mfa
 		return rotationRefusal(err)
 	}
 
-	// The rotated session is stored, and its credential is handed out below.
+	// The rotated session is stored, so its credential is delivered (on a
+	// cookie chain, as the cookie, leaving nothing for the body) before
+	// anything reports it, and handed out below. A delivery that fails has
+	// ended the sign-in.
+	tok, err = i.deliver.deliver(ex, i.sessions, rotated, tok)
+	if err != nil {
+		return err
+	}
+
 	emitEvent(ctx, sessionEvent(event.Reauthenticated, event.OutcomeSuccess, rotated))
 	emitEvent(ctx, sessionEvent(event.SessionRenewed, event.OutcomeSuccess, rotated))
 
