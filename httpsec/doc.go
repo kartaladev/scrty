@@ -79,6 +79,90 @@
 // but a renewal, which alone the core lets through to that endpoint, with
 // nothing published on the way.
 //
+// # Browsers and native clients: two chains
+//
+// A chain delivers cookies or tokens, never both. EnableSessionCookie
+// authenticates a browser by a session cookie and every sign-in on that chain
+// sets it; EnableBearerToken and EnableSessionBearer authenticate a native
+// client by a credential in the Authorization header and every sign-in on that
+// chain returns one. New refuses a chain that enables both. A deployment that
+// serves both kinds of client builds two chains over one session manager, so a
+// sign-in is one session whichever client holds it:
+//
+//   - Browsers use the cookie chain, at the default paths, with
+//     EnableCSRFProtection beside the cookie.
+//   - Native clients and APIs use the token chain. Under WithBasePath when it
+//     serves built-in endpoints (sign-in, renewal), so its paths do not meet
+//     the cookie chain's. A token chain that only verifies access tokens has no
+//     built-in endpoint to move, and WithBasePath refuses it; it is mounted
+//     under a mux prefix instead, with WithPathPrefix on its resource server
+//     naming the same prefix.
+//
+// On a cookie chain a request carrying the session cookie and an Authorization
+// header, of any scheme or value, is refused with ErrAuthenticationRequired at
+// OrderSessionCookieGuard, before Basic authentication or a resource server
+// reads it; neither credential silently wins. Only the OpenID Provider's outer
+// endpoints are exempt (see EnableSessionCookie). An API that takes access
+// tokens from a same-origin page therefore belongs on the token chain: the
+// browser attaches the cookie on its own, so a request from that page carries
+// both.
+//
+//	browsers, err := httpsec.New(
+//		httpsec.EnableCSRFProtection(),
+//		httpsec.EnableSessionCookie(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),
+//	)
+//	natives, err := httpsec.New(
+//		httpsec.WithBasePath("/api"),
+//		httpsec.EnableFormLogin(loginDeps),
+//		httpsec.EnableBearerToken(bearerDeps),
+//	)
+//	mux.Handle("/api/", natives.Middleware()(handler))
+//	mux.Handle("/", browsers.Middleware()(handler))
+//
+// # One binary: the provider and its API
+//
+// The OpenID Provider needs the browser's sign-in, so it runs on the cookie
+// chain (EnableOIDCProvider). The API that takes its access tokens runs on a
+// token chain that runs no provider of its own, mounted under a mux prefix
+// with a resource server whose FromProvider names the provider the cookie
+// chain serves; the token is verified through it with no network call:
+//
+//	api, err := httpsec.New(
+//		httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "https://app.example.com"}),
+//		httpsec.EnableResourceServer("https://app.example.com/api",
+//			httpsec.WithPathPrefix("/api/"),
+//			httpsec.FromProvider(provider),
+//		),
+//	)
+//	mux.Handle("/api/", api.Middleware()(handler))
+//
+// A token chain that trusts a DPoP-bound provider must enable DPoP, as above.
+//
+// # One API handler behind both chains
+//
+// The same handler can serve first-party pages and third-party clients: mount
+// it at "/app/api/" behind the cookie chain, with the prefix stripped, and at
+// "/api/" behind the token chain. Check scopes on the token mount only. A
+// third-party token carries the grant the user gave that client, so its scopes
+// bound what the client may do; the cookie carries the user, who is not limited
+// to a client's grant, so the cookie mount has no scopes to check.
+//
+//	requireScope := func(scope string, next http.Handler) http.Handler {
+//		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+//			auth, ok := authenticate.AuthenticationFromContext(r.Context())
+//			if !ok || !slices.Contains(auth.Principal.Scopes, scope) {
+//				http.Error(w, "forbidden", http.StatusForbidden)
+//
+//				return
+//			}
+//
+//			next.ServeHTTP(w, r)
+//		})
+//	}
+//
+//	mux.Handle("/app/api/", browsers.Middleware()(http.StripPrefix("/app", api)))
+//	mux.Handle("/api/", natives.Middleware()(requireScope("orders:read", api)))
+//
 // # A credential field reads the body, and only the body
 //
 // Form login, the MFA verify endpoint and the MFA enrolment endpoints each
