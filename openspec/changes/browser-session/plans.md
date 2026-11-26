@@ -249,7 +249,7 @@ Reviewers: Opus for C1–C6, Sonnet for S1, M1, C7.
 **Files:** Modify `httpsec/role_switch.go` (role source carries the exchange's writer).
 
 - [ ] **Step 1: Write the failing test** `TestSessionCookie_RoleSwitchRotates`: new identifier in `Set-Cookie`, CSRF token still accepted on the next POST, the old identifier after its window → reuse and family revoked.
-- [ ] **Steps 2–5:** run (FAIL), implement with `RotateIssuing`, run (PASS), commit `feat(httpsec): rotate the cookie session at a role switch`.
+- [ ] **Steps 2–5:** run (FAIL), implement with `RotateWithGrace` (design 10, settled), run (PASS), commit `feat(httpsec): rotate the cookie session at a role switch`.
 
 ### Task 11.3: Rotation at the password change
 

@@ -266,6 +266,24 @@ is the seconds to the session's absolute deadline, rounded up, at least 1. A cha
   unsafe on shared machines); chain-wide only (no "remember me").
 - **Note:** a chain-wide option and a per-form-login option were both considered; one decision
   function asked at every sign-in path covers both with one option.
+- **Settled during implementation:**
+  - The decision is asked once per sign-in, before anything is stored, on every path: form login,
+    passwordless passkey, magic link, both federated paths, and recovery. A decision that panics is
+    the consumer's panic; nothing is stored.
+  - `Max-Age` is computed by the chain's clock and capped at `MaxInt32`. A delivery port that
+    computes it itself may read the clock a second later, so the port's cookie passes the exact
+    check with the expected `Max-Age` or one second less, never below 1: shorter is the safe
+    direction.
+  - At a password change on a recovery-pending sign-in, the re-set cookie's `Max-Age` follows the
+    absolute deadline the session will have once the change is saved, not the lowered recovery
+    one; otherwise the browser would drop a cookie whose session is still live. If the change is
+    refused, the cookie outlives the session, and the server refuses the session and expires it.
+    A role switch made inside the change function re-sets the cookie with the same restored
+    deadline, so the last cookie the browser keeps matches the saved session.
+  - `Max-Age` is never set past the deadline the session has, or will have once the request's
+    change is saved. A deadline lowered later without a new cookie (a per-request policy marking
+    enrolment pending) leaves the cookie longer-lived; accepted, since the server's deadline is
+    authoritative.
 
 ### 10. Rotation on privilege change: on by default, opt-out only for the rotations this change adds
 
@@ -286,6 +304,32 @@ Sign-in always creates a new session.
   choice for every rotation the change adds, and not for the two that already exist.
 - **Alternatives:** rotate only at sign-in (leaves session fixation open at every later privilege
   change); both behaviours as equal peers (nothing safe by default).
+- **Settled during implementation (departs from the wording above):**
+  - The role switch and the password change rotate with a grace window
+    (`RotateWithGrace`), the renewal endpoint's grace when the chain has one, otherwise
+    `session.DefaultRenewalGrace`. A strict rotation never reports reuse, so "Old identifier
+    presented late" could not hold, and a second tab's in-flight request would be refused and expire
+    the new cookie.
+  - The password change rotates and re-sets the cookie before grants are revoked and before the
+    consumer's change function runs, because that function owns the response and a cookie set after
+    it has begun never reaches the browser. A refused change therefore still rotates, which only
+    issues a fresh identifier. A recovery-pending session rotates too.
+  - On a cookie chain, `SwitchActiveRole` called on a context kept past its request is a
+    configuration error and changes nothing: the response is gone, and a rotation the browser never
+    learns of would make its next request reuse.
+  - Accepted: a role switch called after the handler began its response stores the rotation but the
+    re-set cookie is dropped; the old identifier becomes reuse after the window and the sign-in is
+    revoked, the fail-closed outcome. No writer exposes whether the response began; the godoc says to
+    switch before writing.
+  - The password change's resolution is saved on the latest successor the chain holds in memory
+    (after any role switch made inside the change function), never reloaded from the store: the
+    store's `Save` keeps the stored selected role, so nothing is erased and no read or presentation
+    mark is added. The target comes from the chain, never from the consumer-writable
+    `Exchange.Session`; a target of another user or family is refused and nothing is saved. That
+    refusal is unreachable through the public API and is tested on the internal function.
+  - Accepted: a switch that rotates and re-sets the cookie but then fails to record the role
+    returns the error with the new cookie set and the role unchanged; the user retries on a live
+    session.
 
 ### 11. Ending the cookie
 
@@ -342,6 +386,8 @@ request endpoint, JSON members. An oversized body keeps today's behaviour: read 
 | Delivery fails after the session was stored | State | Handled, tested | 500; the family is revoked on an uncancellable, time-bounded context; a revoke failure is logged and the 500 stands |
 | Delivery port panics | Configuration | Handled, tested | the family is revoked as for any delivery failure, nothing is written, and the panic continues |
 | Session store panics while ending the sign-in after a delivery panic | Dependency | Accepted | the store's panic replaces the port's; a double fault, left to the consumer's recovery middleware |
+| Another tab re-rotates the presented identifier inside a password change's function, superseding the gate's successor | Concurrency | Accepted | the password changes and the resolution lands on a superseded record; the response succeeds, the next request on that cookie is reuse and the family is revoked, so the user signs in again: fail-closed |
+| Password change ending a recovery is refused or fails to save on a persistent sign-in | State | Accepted | the cookie was set for the restored deadline while the session keeps the lowered one; the server refuses the session at its deadline and expires the cookie |
 | Delivery port writes an encoded copy of the identifier elsewhere | Security | Accepted | not detected; the port is trusted code, and its godoc says the check is literal |
 | Delivery fails at recovery completion | State | Accepted | the user's recovery codes were already replaced and the new ones are never shown, so the user recovers again; only a consumer port can fail here |
 | Session cookie beside a credential a consumer authenticator reads | Security | Handled, tested | 401 before the cookie is read |

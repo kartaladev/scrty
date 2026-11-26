@@ -53,13 +53,13 @@ code (`golang-tdd.md`). Verification is scoped to the changed packages and their
 
 ## 10. Persistence
 
-- [ ] 10.1 Add `WithSessionCookiePersistence(decide)`, asked at every new sign-in, creating the session with the persistent mark, and set `Max-Age` from the absolute deadline on every cookie of that sign-in, rotations included (design 9; spec browser-session "A sign-in can choose a persistent cookie"); verify its three scenarios, including `Max-Age=43200` for a 12-hour session
+- [x] 10.1 Add `WithSessionCookiePersistence(decide)`, asked at every new sign-in, creating the session with the persistent mark, and set `Max-Age` from the absolute deadline on every cookie of that sign-in, rotations included (design 9; spec browser-session "A sign-in can choose a persistent cookie"); verify its three scenarios, including `Max-Age=43200` for a 12-hour session
 
 ## 11. Rotation on privilege change
 
-- [ ] 11.1 Re-set the cookie at second-factor verification and re-authentication, which already rotate (design 10); verify by characterization tests that the rotated identifier is in `Set-Cookie`, shown to fail once with the re-set removed
-- [ ] 11.2 Rotate at the active-role switch on a cookie chain, re-setting the cookie through the role source, keeping the CSRF token (design 10; spec browser-session "Privilege changes rotate the cookie session", "Role switch", "Old identifier presented late"); verify those scenarios
-- [ ] 11.3 Rotate at the password change at the gate's resolve endpoint on a cookie chain (spec browser-session "Password change"); verify the scenario
+- [x] 11.1 Re-set the cookie at second-factor verification and re-authentication, which already rotate (design 10); verify by characterization tests that the rotated identifier is in `Set-Cookie`, shown to fail once with the re-set removed
+- [x] 11.2 Rotate at the active-role switch on a cookie chain, re-setting the cookie through the role source, keeping the CSRF token (design 10; spec browser-session "Privilege changes rotate the cookie session", "Role switch", "Old identifier presented late"); verify those scenarios
+- [x] 11.3 Rotate at the password change at the gate's resolve endpoint on a cookie chain (spec browser-session "Password change"); verify the scenario
 - [ ] 11.4 Add `WithoutSessionRotation` for the role switch and the password change only, documented as reopening session fixation (design 10; spec browser-session "The added rotations can be turned off by name, and the existing ones cannot"); verify both scenarios
 - [ ] 11.5 Test concurrent rotations: two requests switching roles at once, and a context cancelled mid-rotation (design failure modes); verify with a barrier test under `-race` that one rotation wins and nothing is stored on cancellation
 
