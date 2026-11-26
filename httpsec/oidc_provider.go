@@ -1028,7 +1028,7 @@ func (op *oidcEndpoints) checkJWKS(c *config) error {
 // cannot be changed once built, so the consumer states it there too.
 func (op *oidcEndpoints) checkDPoP(c *config) error {
 	switch stated := op.provider.DPoPEnabled(); {
-	case stated && !c.dpopEnabled:
+	case dpopUnverified(op.provider, c):
 		return newConfigError("%s was given a provider built with oidcprovider.WithDPoP on a chain "+
 			"without EnableDPoP, so no proof would be verified: add EnableDPoP, or remove WithDPoP",
 			optionOIDCProvider)
@@ -1049,6 +1049,13 @@ func (op *oidcEndpoints) checkDPoP(c *config) error {
 	}
 
 	return nil
+}
+
+// dpopUnverified reports whether p is built with DPoP and chain c does not verify proofs: a
+// DPoP-scheme request would then reach the chain's handlers unverified. It is the rule for a provider
+// the chain serves (checkDPoP) and for one a FromProvider source trusts, whichever is on the chain.
+func dpopUnverified(p *oidcprovider.Provider, c *config) bool {
+	return p.DPoPEnabled() && !c.dpopEnabled
 }
 
 // checkDPoPURL refuses DPoP settings under which no proof naming the published URL of the endpoint
@@ -1092,19 +1099,41 @@ func (op *oidcEndpoints) checkDPoPURL(v *dpopVerifier, served string) error {
 // refused wherever it was presented. The provider answers only for the clients it
 // can list; a client of the consumer's own registry is judged as it is read.
 func (op *oidcEndpoints) checkBindings(c *config) error {
-	if op.provider.RequiresBinding(oidcprovider.BindingDPoP) && !c.dpopEnabled {
+	switch binding, _ := unverifiedBinding(op.provider, c); binding {
+	case bindingNameDPoP:
 		return newConfigError("%s was given a provider with a client requiring DPoP on a chain without "+
 			"EnableDPoP, so no proof would be verified: add EnableDPoP, with oidcprovider.WithDPoP on the "+
 			"provider, or drop the client's RequireBinding", optionOIDCProvider)
-	}
-
-	if op.provider.RequiresBinding(oidcprovider.BindingMTLS) && c.certBinding == nil {
+	case bindingNameCertificate:
 		return newConfigError("%s was given a provider with a client requiring a certificate binding on a "+
 			"chain without EnableCertificateBinding, so no certificate would be verified: add "+
 			"EnableCertificateBinding, or drop the client's RequireBinding", optionOIDCProvider)
 	}
 
 	return nil
+}
+
+// The sender constraints unverifiedBinding names.
+const (
+	bindingNameDPoP        = "DPoP"
+	bindingNameCertificate = "a certificate binding"
+)
+
+// unverifiedBinding names a sender constraint a client of p requires that chain c does not verify,
+// and the option that would verify it; both are "" when c verifies every constraint p's clients
+// require. It is the one rule for a provider the chain serves and for one a FromProvider source
+// trusts, as either's tokens are verified on c. Only the clients p can list are judged
+// (oidcprovider.Provider.RequiresBinding): a client of the consumer's own registry is judged as it is
+// read, and a provider built with oidcprovider.WithDPoP whose clients require no DPoP is not refused.
+func unverifiedBinding(p *oidcprovider.Provider, c *config) (binding, enable string) {
+	switch {
+	case p.RequiresBinding(oidcprovider.BindingDPoP) && !c.dpopEnabled:
+		return bindingNameDPoP, "EnableDPoP"
+	case p.RequiresBinding(oidcprovider.BindingMTLS) && c.certBinding == nil:
+		return bindingNameCertificate, "EnableCertificateBinding"
+	default:
+		return "", ""
+	}
 }
 
 // checkCSRF requires CSRF protection while the provider keeps a browser session,

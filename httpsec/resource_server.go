@@ -16,6 +16,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/assurance"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/token"
@@ -24,8 +25,9 @@ import (
 // optionResourceServer names EnableResourceServer in configuration errors.
 const optionResourceServer = "EnableResourceServer"
 
-// source is one issuer of access tokens a resource server trusts: the chain's own provider, a
-// remote issuer, or an introspection endpoint. The set is closed: no consumer implements it.
+// source is one issuer of access tokens a resource server trusts: a provider in this binary (the
+// chain's own, or one another chain serves), a remote issuer, or an introspection endpoint. The set
+// is closed: no consumer implements it.
 type source interface {
 	// name names the source in configuration errors and logs; it is never a secret.
 	name() string
@@ -113,7 +115,8 @@ type resourceServer struct {
 // OrderResourceServer.
 //
 // resourceID, and each alias WithResourceAliases adds, is an absolute URI with no fragment, and is
-// not the chain provider's issuer: a token whose audience is only the issuer is meant for UserInfo.
+// not the issuer of the chain's provider or of one a provider source trusts: a token whose audience
+// is only the issuer is meant for UserInfo.
 // Every source the options add verifies the tokens it recognises, and a token is accepted only
 // when one does.
 //
@@ -190,9 +193,9 @@ func (rs *resourceServer) check(c *config) error {
 		seen[alias] = true
 	}
 
-	if c.oidcProvider != nil && c.oidcProvider.provider != nil {
-		if iss := c.oidcProvider.provider.Issuer(); seen[iss] {
-			return newConfigError("%s names the provider's issuer %q as its identifier or an alias; a token "+
+	for _, op := range resourceServersOf(c).trustedProviders(c) {
+		if iss := op.Issuer(); seen[iss] {
+			return newConfigError("%s names a trusted provider's issuer %q as its identifier or an alias; a token "+
 				"whose audience is the issuer is meant for UserInfo, so give the API an identifier of its own",
 				optionResourceServer, iss)
 		}
@@ -219,7 +222,7 @@ func (rs *resourceServer) check(c *config) error {
 }
 
 // checkSources refuses a resource server with no source, a nil one, two answering for one issuer,
-// or a binding nothing on the chain can check.
+// more than one provider source, or a binding nothing on the chain can check.
 func (rs *resourceServer) checkSources(c *config) error {
 	if len(rs.sources) == 0 {
 		return newConfigError("%s (%s) was given no token source; add FromProvider, FromIssuer or "+
@@ -252,6 +255,11 @@ func (rs *resourceServer) checkSources(c *config) error {
 		issuers[iss] = src.name()
 	}
 
+	// Checked after the issuers, so the same provider given twice is named as one issuer twice.
+	if err := rs.checkOneProvider(); err != nil {
+		return err
+	}
+
 	for _, src := range rs.sources {
 		if src.allowsUnbound() {
 			if c.dpop != nil && c.dpop.cfg.Require {
@@ -268,6 +276,28 @@ func (rs *resourceServer) checkSources(c *config) error {
 				"checks no binding; enable EnableDPoP or EnableCertificateBinding, or let the source accept "+
 				"unbound tokens", optionResourceServer, rs.id, src.name())
 		}
+	}
+
+	return nil
+}
+
+// checkOneProvider refuses a resource server given more than one provider source. A provider's
+// opaque tokens carry its format and no issuer, so they are routed by shape to the first provider
+// source, and a second provider's would be refused by the first. Two providers are trusted on one
+// chain by two resource servers, each with its own prefixes.
+func (rs *resourceServer) checkOneProvider() error {
+	providers := 0
+
+	for _, src := range rs.sources {
+		if _, ok := src.(*providerSource); ok {
+			providers++
+		}
+	}
+
+	if providers > 1 {
+		return newConfigError("%s (%s) was given %s more than once; a provider's opaque tokens are routed "+
+			"by shape, so one resource server trusts one provider: give each provider a resource server of "+
+			"its own, with WithPathPrefix", optionResourceServer, rs.id, optionFromProvider)
 	}
 
 	return nil
@@ -401,8 +431,8 @@ func withSource(s source) ResourceServerOption {
 type resourceServers struct {
 	modes []*resourceServer
 
-	// bound is the largest token read, settled at assembly: the larger of minTokenBound and the
-	// chain provider's own.
+	// bound is the largest token read, settled at assembly: the largest of minTokenBound and the
+	// bound of every provider the chain serves or a provider source trusts (trustedProviders).
 	bound int
 
 	// dpop is the chain's DPoP verifier, handed over at assembly, and nil while DPoP is off.
@@ -462,8 +492,8 @@ func resourceServersOf(c *config) *resourceServers {
 		s.engine = c.engine
 		s.now = c.clock.Now
 
-		if c.oidcProvider != nil && c.oidcProvider.provider != nil {
-			s.bound = max(s.bound, c.oidcProvider.provider.MaxAccessTokenSize())
+		for _, op := range s.trustedProviders(c) {
+			s.bound = max(s.bound, op.MaxAccessTokenSize())
 		}
 	})
 
@@ -797,13 +827,46 @@ func checkSessionTokenType(c *config, option, field string, g token.Generator) e
 	})
 }
 
-// checkNotOwnIssuer refuses a remote source (option names it) whose issuer is the chain's own
-// provider's: only FromProvider may trust the provider's tokens, as it reads the grant they name.
+// checkNotOwnIssuer refuses a remote source (option names it) whose issuer is that of a provider the
+// chain serves or a provider source on it trusts: only FromProvider may trust that provider's tokens,
+// as it reads the grant they name.
 func checkNotOwnIssuer(c *config, rsID, option, iss string) error {
-	if c.oidcProvider == nil || c.oidcProvider.provider == nil || c.oidcProvider.provider.Issuer() != iss {
-		return nil
+	for _, op := range resourceServersOf(c).trustedProviders(c) {
+		if op.Issuer() == iss {
+			return newConfigError("%s (%s): %s names %q, the issuer of a provider the chain serves or trusts "+
+				"through FromProvider; only FromProvider may trust that provider's tokens, as it reads the grant "+
+				"they name", optionResourceServer, rsID, option, iss)
+		}
 	}
 
-	return newConfigError("%s (%s): %s names the chain provider's own issuer %q; only FromProvider may trust "+
-		"the provider's own tokens", optionResourceServer, rsID, option, iss)
+	return nil
+}
+
+// trustedProviders returns every provider whose tokens the chain's resource servers trust: the
+// chain's own, served through EnableOIDCProvider, and each one a provider source (FromProvider)
+// names, which another chain may serve. Each appears once, and a nil one never: a nil provider
+// source is refused by its own wiring check. The rules that name a provider (the token bound, the
+// issuer checks) hold for every one of them.
+func (s *resourceServers) trustedProviders(c *config) []*oidcprovider.Provider {
+	var out []*oidcprovider.Provider
+
+	add := func(op *oidcprovider.Provider) {
+		if op != nil && !slices.Contains(out, op) {
+			out = append(out, op)
+		}
+	}
+
+	if c.oidcProvider != nil {
+		add(c.oidcProvider.provider)
+	}
+
+	for _, rs := range s.modes {
+		for _, src := range rs.sources {
+			if ps, ok := src.(*providerSource); ok && ps != nil {
+				add(ps.op)
+			}
+		}
+	}
+
+	return out
 }

@@ -15,15 +15,16 @@ const (
 	// formatOpaque is any token that is neither of the others, a JWT that does not decode included.
 	formatOpaque tokenFormat = iota
 
-	// formatProvider is the chain provider's own opaque format: an access token ("at.") or a refresh
-	// token ("rt."). Neither is ever sent to an introspection source.
+	// formatProvider is a provider's own opaque format: an access token ("at.") or a refresh token
+	// ("rt."). It is read by shape, whichever chain serves the provider, and neither is ever sent to
+	// an introspection source.
 	formatProvider
 
 	// formatJWT is a compact JWS whose header and payload decode to JSON objects.
 	formatJWT
 )
 
-// The chain provider's own opaque token prefixes.
+// A provider's own opaque token prefixes, the chain's own or a trusted one's alike.
 const (
 	providerAccessPrefix  = "at."
 	providerRefreshPrefix = "rt."
