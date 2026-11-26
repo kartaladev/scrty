@@ -94,7 +94,7 @@ The consumer SHALL be able to replace how a cookie chain delivers a new session'
 - **THEN** the renewal fails as an issuing failure, and the response carries no credential
 
 ### Requirement: A request carrying both the cookie and an Authorization header is refused
-On a cookie chain, a request that carries the session cookie and an `Authorization` header SHALL be refused with the authentication-required error before either credential is loaded.
+On a cookie chain, a request that carries the session cookie and an `Authorization` header SHALL be refused with the authentication-required error before either credential is loaded. A request that carries the session cookie after another authenticator has already established its caller SHALL be refused the same way, before the cookie is read. The OpenID Provider's own endpoints that authenticate by their own credential are exempt.
 
 #### Scenario: Both credentials
 - **WHEN** a request carries a valid session cookie and `Authorization: Bearer` with any value
@@ -103,6 +103,14 @@ On a cookie chain, a request that carries the session cookie and an `Authorizati
 #### Scenario: Header only
 - **WHEN** a request on a cookie chain carries only an `Authorization` header that a resource server covering its path accepts
 - **THEN** the resource server judges it as before
+
+#### Scenario: Cookie beside a consumer credential
+- **WHEN** a consumer authenticator ordered before the cookie session establishes a caller from its own header, and the request also carries a session cookie
+- **THEN** it is refused with the authentication-required error, and the cookie is not read
+
+#### Scenario: Provider endpoint
+- **WHEN** a chain runs the OpenID Provider and the cookie session, and a request to the provider's userinfo endpoint carries an access token and the session cookie
+- **THEN** the provider judges the access token, and the guard does not refuse it
 
 ### Requirement: A browser sign-in answers by what the request prefers
 On a cookie chain, the default answer of every issuing endpoint SHALL be a `303 See Other` to the resolved destination for a form post or a request that prefers HTML, and a `200` JSON document carrying the session's idle expiry and no credential for a JSON request. Each endpoint's responder SHALL stay replaceable.

@@ -35,12 +35,12 @@ code (`golang-tdd.md`). Verification is scoped to the changed packages and their
 
 ## 6. Credential delivery
 
-- [ ] 6.1 Route every issuing endpoint through the delivery step on a cookie chain (form login, magic link, passwordless passkey, second-factor verification, re-authentication, recovery completion, renewal), so the cookie is set and no credential is written to a body or header, and a `ChallengeError` carries no token (design 4; spec browser-session "A cookie chain hands out no credential in a response body"); verify one table test over every issuing endpoint asserting `Set-Cookie` present and no credential in body or headers
-- [ ] 6.2 Add `WithSessionDelivery(SessionDelivery)` with its line: a returned body credential is an issuing failure and nothing is written (design 4; spec browser-session "A credential delivery port cannot hand a token to a cookie request"); verify its two scenarios
+- [x] 6.1 Route every issuing endpoint through the delivery step on a cookie chain (form login, magic link, passwordless passkey, second-factor verification, re-authentication, recovery completion, renewal), so the cookie is set and no credential is written to a body or header, and a `ChallengeError` carries no token (design 4; spec browser-session "A cookie chain hands out no credential in a response body"); verify one table test over every issuing endpoint asserting `Set-Cookie` present and no credential in body or headers
+- [x] 6.2 Add `WithSessionDelivery(SessionDelivery)` with its line: a returned body credential is an issuing failure and nothing is written (design 4; spec browser-session "A credential delivery port cannot hand a token to a cookie request"); verify its two scenarios
 
 ## 7. Both credentials
 
-- [ ] 7.1 Add the guard at `OrderCSRF + 5` refusing a request with the session cookie and an `Authorization` header before any credential is read (design 5; spec browser-session "A request carrying both the cookie and an Authorization header is refused"); verify both scenarios, and with a counting fake store that no session was loaded
+- [x] 7.1 Add the guard at `OrderCSRF + 5` refusing a request with the session cookie and an `Authorization` header before any credential is read (design 5; spec browser-session "A request carrying both the cookie and an Authorization header is refused"); verify both scenarios, and with a counting fake store that no session was loaded
 
 ## 8. Browser answers
 

@@ -125,6 +125,21 @@ check already requires.
   written (extra attributes, audit), not whether a token leaks.
 - **Alternatives:** per request, chosen from headers (a script chooses token delivery); no port
   (no control for unusual setups).
+- **Settled during implementation (departs from the wording above):**
+  - On a cookie chain the credential issuer hands back no credential at all; the delivery step
+    reads the identifier from the stored session. No endpoint holds the identifier, so a missed
+    delivery shows up as a missing cookie rather than a leak. A token generator given to an issuing
+    endpoint on a cookie chain is a construction error.
+  - The port is handed a copy of the session and writes into a holding writer. Its writes reach
+    the response only if it returned no error and no body credential, wrote no body or status, set
+    the session cookie with exactly the chain's attributes (name, value, path, domain, same-site,
+    secure, http-only, max-age), and placed the identifier nowhere else (no other header, cookie
+    name or attribute). Anything else is an issuing failure.
+  - Any delivery failure ends the sign-in: the whole session family is revoked, including the
+    session a rotating request presented, on a context the client's hang-up cannot cancel. The
+    client never learned the identifier, so nothing usable is left behind.
+  - The OIDC provider's own federated completion already discards its credential and keeps doing
+    so; it sets no session cookie.
 
 ### 5. Both credentials on one request are refused, before either is read
 
@@ -135,6 +150,21 @@ header, before Basic (400), the resource server (425) or the cookie session (500
   interceptor order. A named option stating which credential wins can be added if a real
   deployment needs it.
 - **Alternatives:** header wins; cookie wins (both silent).
+- **Settled during implementation:**
+  - The guard judged neither credential, so its refusal neither counts against the source nor
+    expires the cookie.
+  - Every built-in authenticator ordered before the cookie session reads `Authorization`, so the
+    guard covers them. A consumer authenticator reading its own header is not visible to the
+    guard, so the cookie session also refuses, before reading the cookie, whenever another caller
+    is already published (unless it is the session this cookie names). A consumer interceptor that
+    publishes a default or anonymous caller before the cookie session therefore locks out every
+    cookie request; its godoc says so.
+  - The OIDC provider's outer endpoints (authorization, token, userinfo, revocation,
+    introspection, metadata, end-session) authenticate by their own credential and never read the
+    chain's session, so on a chain that runs the provider with the cookie session the guard exempts
+    exactly those paths; the provider's inner, sign-in-dependent routes stay guarded. Without the
+    exemption a first-party page on the same origin calling userinfo with an access token would be
+    refused, because the browser sends the cookie on its own.
 
 ### 6. Federated sign-in completes in the callback
 
@@ -274,6 +304,10 @@ request endpoint, JSON members. An oversized body keeps today's behaviour: read 
 | Cookie and `Authorization` together | Input | Handled, tested | 401 before any credential is read |
 | `next` off-site (`https://…`, `//…`, `/\…`) | Security | Handled, tested | `303` to `/` |
 | Delivery port returning a body credential | Configuration | Handled, tested | issuing failure, nothing written |
+| Delivery port weakening the cookie, changing the identifier, or placing it elsewhere | Configuration / Security | Handled, tested | issuing failure, nothing written, sign-in ended |
+| Delivery fails after the session was stored | State | Handled, tested | 500; the family is revoked on an uncancellable context; a revoke failure is logged and the 500 stands |
+| Delivery fails at recovery completion | State | Accepted | the user's recovery codes were already replaced and the new ones are never shown, so the user recovers again; only a consumer port can fail here |
+| Session cookie beside a credential a consumer authenticator reads | Security | Handled, tested | 401 before the cookie is read |
 | Two tabs rotating at once (role switch, renewal) | Concurrency | Handled, tested | one rotation wins; the loser's identifier works through the window (barrier test) |
 | Request context cancelled during rotation | Concurrency | Handled, tested | nothing stored, cookie not re-set, the old identifier still valid |
 | Rotation write fails | State | Handled, tested | dependency failure, old cookie kept |
