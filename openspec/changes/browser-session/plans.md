@@ -56,10 +56,11 @@ File ownership: lane S owns `session/` and `store/**` and `test/storetest`; lane
 | C8d | 12.6 and 12.7, C8c review follow-ups | Opus | the per-chain mark is ordering logic on a security path (the resume), and the back-channel check is a refusal rule; the C8c review reproduced the regression |
 | C10 | 12.8 | Opus | security verification rules across `resource_server.go` and the provider source; a mistake passes the tests and still trusts the wrong tokens. Starts after C8c: both edit chain construction |
 | C10b | 12.8, C10 review follow-ups | Opus | two construction refusals on security wiring; the binding check reads the provider's binding policy across chains |
+| C10c | 12.8, C10b review follow-up | Sonnet | applies an existing rule (`checkDPoP`) at a second call site, as C10b did for `checkBindings`; the rows are given |
 | C7 | 13.1, 13.2 | Sonnet | conformance scenarios and godoc (after C10) |
 | — | 14.1 | main session | final gate |
 
-Reviewers: Opus for C1–C6, S2, C8, C8b, C8c, C8d, C10 and C10b; Sonnet for S1, M1, C9 and C7.
+Reviewers: Opus for C1–C6, S2, C8, C8b, C8c, C8d, C10 and C10b; Sonnet for S1, M1, C9, C8e, C10c and C7.
 
 **Scoped verification commands** (`test-scope.md`):
 - Lane S: `go test -count=1 ./session/... ./store/... ./internal/... ./httpsec/... ./oidcprovider/... ./policy/... ./recovery/... ./authenticate/...` and, in `test/`, `go test -count=1 ./storetest/... ./sqlstore/... ./pgxstore/... ./gormstore/... ./crossbackend/...` (Docker); plus `go test -count=1 ./...` in `store/pgxstore` and `store/gormstore`; `make generate-check`.
@@ -444,7 +445,7 @@ C8b committed nothing: its run-scoped mark was reviewed and two defects reproduc
 
 **C10 review follow-ups (dispatch C10b).** REPRODUCED by the reviewer: one resource server with `FromProvider(opB), FromProvider(opA)` builds, but the first provider source claims every opaque token by shape, so `opA`'s valid opaque token is refused (`TestReviewC10_TwoProviderSourcesInOneResourceServer`, `/private/tmp/claude-501/review-c10/wt/httpsec/review_c10_repro_test.go`, `expected: 200 actual: 401`). Gap from C10: a token chain whose binding cannot check the trusted provider's builds and refuses every token at request time.
 
-**Files:** Modify `httpsec/resource_server.go` (`checkSources`; the `source` godoc line near line 29, rewrapped to the surrounding width), `httpsec/resource_source_provider.go` (the binding check), `httpsec/resource_source_introspect.go` (godoc only: the provider's own opaque tokens are never sent to introspection, whichever provider issued them); Test `httpsec/resource_source_provider_test.go`.
+**Files:** Modify `httpsec/resource_server.go` (`checkSources`; the `source` godoc line near line 29, rewrapped to the surrounding width), `httpsec/resource_source_provider.go` (the binding check), `httpsec/oidc_provider.go` (extract the single-chain binding rule from `checkBindings` so both checks share it; `RequiresBinding` as today), `httpsec/resource_source_introspect.go` (godoc only: the provider's own opaque tokens are never sent to introspection, whichever provider issued them); Test `httpsec/resource_source_provider_test.go`.
 
 - [ ] **Step 6: Write the failing rows** in `TestResourceServer_TrustedProviderRules`:
   - one resource server, chain without a provider, `FromProvider(opB), FromProvider(opA)` with different issuers → `ErrConfig` naming `FromProvider` given twice; two resource servers each with one of them → builds, and each provider's opaque token is accepted on its own prefix;
@@ -454,6 +455,14 @@ C8b committed nothing: its run-scoped mark was reviewed and two defects reproduc
 - [ ] **Step 8: Implement**: in `checkSources`, after the issuer loop, refuse a second provider source in one resource server (placed after the loop so "the provider twice" keeps its duplicate-issuer message); check each trusted provider's binding against the chain's DPoP and certificate binding after wiring, sharing the single-chain rule. Fix the two godoc items.
 - [ ] **Step 9: Run** lanes M/C scoped command with `-race` — PASS.
 - [ ] **Step 10: Commit** C10 and C10b together: `feat(httpsec): trust a provider another chain serves through FromProvider`.
+
+**C10b review follow-up (dispatch C10c).** User decision, 2026-11-27: a token chain trusting a provider applies both of the provider's own-chain binding rules. C10b applied only the client-requirement rule (`unverifiedBinding`); the other, `checkDPoP` in `httpsec/oidc_provider.go` (a provider built with DPoP needs `EnableDPoP`), was missing, and a DPoP-scheme request then reached the handler anonymously on a certificate-only token chain (REPRODUCED: `TestReviewC10b_DPoPProviderOnCertOnlyTokenChain`, `/private/tmp/claude-501/review-c10b/wt/httpsec/review_c10b_repro_test.go`).
+
+**Files:** Modify `httpsec/oidc_provider.go` (extract the `checkDPoP` condition into a function both chains call; its messages unchanged), `httpsec/resource_source_provider.go` (`checkWiring`, chain without a provider; godoc), `httpsec/resource_server.go` (the issuer message near line 198: "a trusted provider's issuer"); Test `httpsec/resource_source_provider_test.go`.
+
+- [ ] **Step 11: Flip the row** "a provider built with DPoP and no client requiring it, trusted by a chain checking only certificates" to expect `ErrConfig` naming DPoP and `EnableDPoP`, and not `EnableOIDCProvider`; add "a provider built with DPoP trusted by a chain enabling DPoP" → builds. Run `go test -count=1 -run TestResourceServer_TrustedProviderRules ./httpsec/` — FAIL `Expected error with "httpsec: invalid configuration" in chain but got nil`.
+- [ ] **Step 12: Implement** the shared DPoP rule and call it from `checkWiring` when the chain runs no provider; reword the issuer message. Rerun — PASS; the provider's own-chain tests (`oidc_provider_test.go`) pass unchanged.
+- [ ] **Step 13: Run** lanes M/C scoped command with `-race` — PASS. Commit with C10 and C10b (Step 10).
 
 ### Task 13.1: Adapter conformance
 

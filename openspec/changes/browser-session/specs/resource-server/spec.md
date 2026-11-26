@@ -62,7 +62,7 @@ Building a chain SHALL fail with a configuration error naming the mistake when a
 - **THEN** construction fails with a configuration error naming the type
 
 ### Requirement: Source wiring mistakes fail at construction
-Building a chain SHALL fail with a configuration error naming the mistake when a source has: an empty audience or one equal to its issuer; an issuer equal to the identifier or an alias; a nil provider, a provider other than the chain's when the chain runs one, a second provider source in one resource server, or a provider whose token binding the chain cannot check; two caller strategies; a nil mapper, user loader or link store; a mapper on the provider source; local user on another source; a clock skew above five minutes; no algorithm or a symmetric one; a non-positive cache bound; a nil refusal limiter; or a plain-http introspection endpoint.
+Building a chain SHALL fail with a configuration error naming the mistake when a source has: an empty audience or one equal to its issuer; an issuer equal to the identifier or an alias; a nil provider, a provider other than the chain's when the chain runs one, a second provider source in one resource server, or a provider built with DPoP on a chain without DPoP, or whose clients require a binding the chain cannot check; two caller strategies; a nil mapper, user loader or link store; a mapper on the provider source; local user on another source; a clock skew above five minutes; no algorithm or a symmetric one; a non-positive cache bound; a nil refusal limiter; or a plain-http introspection endpoint.
 
 #### Scenario: Mapper on the provider source
 - **WHEN** a provider source is given a claims mapper
@@ -76,9 +76,13 @@ Building a chain SHALL fail with a configuration error naming the mistake when a
 - **WHEN** a resource server on a chain without a provider is given two provider sources naming different providers
 - **THEN** construction fails with a configuration error
 
-#### Scenario: Binding the token chain cannot check
-- **WHEN** a provider binds its access tokens to DPoP and a chain that enables only certificate binding trusts it through a provider source
-- **THEN** construction fails with a configuration error naming the binding
+#### Scenario: Provider with DPoP on a chain without DPoP
+- **WHEN** a provider built with DPoP is trusted through a provider source by a chain that enables only certificate binding
+- **THEN** construction fails with a configuration error naming DPoP
+
+#### Scenario: Required binding the token chain cannot check
+- **WHEN** a client of a trusted provider requires certificate binding and the chain enables only DPoP
+- **THEN** construction fails with a configuration error naming the certificate binding
 
 #### Scenario: Plain-http introspection endpoint
 - **WHEN** an introspection source is built with `http://idp.example/introspect`

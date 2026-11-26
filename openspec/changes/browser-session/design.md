@@ -478,10 +478,12 @@ grant checks or local users, or both. This change reverses that decision (user d
   with `ErrConfig`. A provider's opaque tokens are routed by their shape (`at.`, `rt.`), so the first
   provider source would claim every opaque token and the second provider's would always be refused
   (found in the C10 review). Two resource servers on one chain may each trust a different provider.
-- **Binding is checked across chains:** a token chain whose binding cannot check the tokens a
-  trusted provider issues (the provider binds to DPoP and the chain enables only certificate
-  binding, or the reverse) is refused with `ErrConfig` at construction, as the same mismatch is on
-  the provider's own chain. Without it the chain builds and refuses every token at request time.
+- **Binding is checked across chains, with both of the provider's own-chain rules** (user decision,
+  2026-11-27, from the C10b review). A token chain trusting a provider is refused with `ErrConfig`
+  at construction when the provider is built with DPoP and the chain does not enable DPoP, and
+  when a client of the provider requires a binding (DPoP or a certificate) the chain does not
+  verify. The provider's own chain applies the same two rules. Without the first, a DPoP-scheme
+  request reached the handler anonymously on a certificate-only token chain (reproduced in review).
 - **Not checked:** that some chain serves `op`. Chains are built independently and cannot see each
   other, and an unserved provider still verifies correctly against its stores.
 - **Override:** `FromIssuer` or `FromIntrospection` stay available for a provider in another binary.
@@ -537,7 +539,9 @@ grant checks or local users, or both. This change reverses that decision (user d
 | `FromProvider` given a provider other than the chain's own | Wiring | Handled, tested | `ErrConfig` from `New`, as before |
 | `FromProvider` on a chain without a provider, with a provider no chain serves | Configuration | Accepted | tokens still verify against the provider's stores; such a provider issues nothing here, so nothing is accepted that another verifier would refuse |
 | One resource server given `FromProvider` twice, naming different providers | Wiring | Handled, tested | `ErrConfig` from `New`; without it the second provider's opaque tokens were always refused |
-| A token chain whose binding cannot check the binding a trusted provider uses | Wiring | Handled, tested | `ErrConfig` from `New`, as on the provider's own chain |
+| A token chain trusting a provider built with DPoP, without `EnableDPoP` | Wiring | Handled, tested | `ErrConfig` from `New`, as on the provider's own chain |
+| A token chain that does not verify a binding a trusted provider's client requires | Wiring | Handled, tested | `ErrConfig` from `New`, as on the provider's own chain |
+| A client requiring a binding added to the provider's registry after the token chain is built | Configuration | Accepted | not judged at construction; its tokens are refused at request time on a chain that cannot verify them, as on the provider's own chain |
 | A provider token larger than the default bound sent to the token chain | Input | Handled, tested | accepted; the bound covers the trusted provider's largest token |
 | A remote-issuer source naming a trusted provider's issuer, or a resource identifier equal to it | Wiring | Handled, tested | `ErrConfig` from `New` |
 | A trusted provider's opaque or refresh token on a path whose resource server has only an introspection source | Security | Handled, tested | refused as an invalid token; nothing is sent to the introspection endpoint |
