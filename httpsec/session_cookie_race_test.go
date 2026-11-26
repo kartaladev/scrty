@@ -257,9 +257,10 @@ func TestSessionCookie_RotationCancelled(t *testing.T) {
 // landing while another request of the same sign-in switches its role. Landing
 // before the rotation, it leaves the switch refused as a sign-in that has
 // ended, with no cookie set and nothing stored. Landing after the rotation's
-// write and before the role is recorded, it still ends the whole sign-in, the
-// successor included: the switch is refused the same way, and whatever cookie
-// it set names nothing that loads. Each interleaving is placed by a barrier
+// issuing step and before its write, which records the role, the switch is
+// refused the same way, with no cookie set. Landing after the write, it ends
+// the whole sign-in, the successor included, and the cookie the finished
+// switch set names nothing that loads. Each interleaving is placed by a barrier
 // the logout, on a goroutine of its own, is released through.
 func TestSessionCookie_LogoutRacesRoleSwitch(t *testing.T) {
 	t.Parallel()
@@ -292,7 +293,25 @@ func TestSessionCookie_LogoutRacesRoleSwitch(t *testing.T) {
 			},
 		},
 		{
-			name: "logout lands between the rotation's write and the role's record",
+			name: "logout lands after the rotation's issuing step and before its write",
+			place: func(_ *testing.T, w *switchCookieWorld, logout func()) func(ex *httpsec.Exchange) error {
+				w.store.onSupersede = func(_ context.Context, write func() error) error {
+					logout()
+
+					return write()
+				}
+
+				return func(ex *httpsec.Exchange) error { return w.chain.SwitchActiveRole(ex.Context(), "audit") }
+			},
+			assert: func(t *testing.T, w *switchCookieWorld, out served, switched error) {
+				t.Helper()
+				require.ErrorIs(t, switched, httpsec.ErrAuthenticationRequired)
+				noSessionCookie(t, out)
+				familyGone(t, w)
+			},
+		},
+		{
+			name: "logout lands after the rotation's write",
 			place: func(_ *testing.T, w *switchCookieWorld, logout func()) func(ex *httpsec.Exchange) error {
 				w.store.onSupersede = func(_ context.Context, write func() error) error {
 					err := write()
@@ -305,7 +324,11 @@ func TestSessionCookie_LogoutRacesRoleSwitch(t *testing.T) {
 			},
 			assert: func(t *testing.T, w *switchCookieWorld, out served, switched error) {
 				t.Helper()
-				require.ErrorIs(t, switched, httpsec.ErrAuthenticationRequired)
+
+				// The write itself recorded the role, so the switch is complete
+				// when logout lands; logout ends the whole sign-in and the cookie
+				// the finished switch set names nothing that loads.
+				require.NoError(t, switched)
 
 				var ids []string
 				for _, c := range sessionCookiesSet(t, out) {

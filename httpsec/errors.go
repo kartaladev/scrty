@@ -660,6 +660,7 @@ func StatusForError(err error) int {
 //     dependency-unavailable sentinels:
 //     [password.ErrHistoryUnavailable], [password.ErrLookupUnavailable],
 //     [session.ErrListUnavailable], [session.ErrCipherUnavailable],
+//     [session.ErrStoreContract],
 //     [seal.ErrUnavailable], [ratelimit.ErrBackendUnavailable],
 //     [oidc.ErrExchangeFailed], [oidc.ErrDiscoveryFailed],
 //     [oidc.ErrUserInfoFailed] and [token.ErrNoVerificationKeys].
@@ -878,6 +879,7 @@ var dependencySentinels = []error{
 	password.ErrLookupUnavailable,
 	session.ErrListUnavailable,
 	session.ErrCipherUnavailable,
+	session.ErrStoreContract,
 	seal.ErrUnavailable,
 	ratelimit.ErrBackendUnavailable,
 	oidc.ErrExchangeFailed,

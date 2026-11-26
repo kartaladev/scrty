@@ -205,6 +205,7 @@ func TestLookupStatus_DependencySentinelInventory(t *testing.T) {
 		{"password.ErrLookupUnavailable", password.ErrLookupUnavailable},
 		{"session.ErrListUnavailable", session.ErrListUnavailable},
 		{"session.ErrCipherUnavailable", session.ErrCipherUnavailable},
+		{"session.ErrStoreContract", session.ErrStoreContract},
 		{"seal.ErrUnavailable", seal.ErrUnavailable},
 		{"ratelimit.ErrBackendUnavailable", ratelimit.ErrBackendUnavailable},
 		{"oidc.ErrExchangeFailed", oidc.ErrExchangeFailed},

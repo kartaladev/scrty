@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -236,9 +237,34 @@ var errPasswordRefused = errors.New("rotation_test: the new password is too weak
 
 // selectingStore is a browserStore that records selected roles through the
 // memory store it forwards to.
-type selectingStore struct{ *browserStore }
+type selectingStore struct {
+	*browserStore
+
+	hooks *storeHooks
+}
+
+// storeHooks are what a case may change in, and read from, a selectingStore
+// while its requests run.
+type storeHooks struct {
+	// selects counts the SelectRole writes the store was asked for.
+	selects atomic.Int32
+
+	// successorRole, when set, replaces the role every superseding write is
+	// asked to store on the successor, as a store that ignores the field does.
+	successorRole atomic.Pointer[string]
+}
+
+func (s selectingStore) Supersede(ctx context.Context, sup session.Supersession) error {
+	if role := s.hooks.successorRole.Load(); role != nil {
+		sup.SuccessorRole = role
+	}
+
+	return s.browserStore.Supersede(ctx, sup)
+}
 
 func (s selectingStore) SelectRole(ctx context.Context, id, role string) error {
+	s.hooks.selects.Add(1)
+
 	return s.Store.(session.RoleSelector).SelectRole(ctx, id, role) //nolint:forcetypeassert // the memory store selects roles
 }
 
@@ -251,6 +277,7 @@ type switchCookieWorld struct {
 	sessions *session.Sessions
 	chain    *httpsec.Chain
 	signIn   *session.Session
+	hooks    *storeHooks
 }
 
 func newSwitchCookieWorld(t *testing.T, extra ...httpsec.Option) *switchCookieWorld {
@@ -278,8 +305,10 @@ func newSwitchCookieWorldWith(t *testing.T, sessionOpts []session.Option, create
 	clk := clockwork.NewFakeClockAt(time.Date(2026, 11, 26, 9, 0, 0, 0, time.UTC))
 	store := &browserStore{Store: must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))}
 
+	hooks := &storeHooks{}
+
 	sessions, err := session.New(append([]session.Option{
-		session.WithClock(clk), session.WithStore(selectingStore{store}),
+		session.WithClock(clk), session.WithStore(selectingStore{browserStore: store, hooks: hooks}),
 	}, sessionOpts...)...)
 	require.NoError(t, err)
 
@@ -301,7 +330,7 @@ func newSwitchCookieWorldWith(t *testing.T, sessionOpts []session.Option, create
 	}, createOpts...)...)
 	require.NoError(t, err)
 
-	return &switchCookieWorld{clk: clk, store: store, sessions: sessions, chain: chain, signIn: signIn}
+	return &switchCookieWorld{clk: clk, store: store, sessions: sessions, chain: chain, signIn: signIn, hooks: hooks}
 }
 
 // post sends an unsafe same-origin request presenting id as the session

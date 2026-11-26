@@ -311,10 +311,15 @@ func (c *Chain) SwitchActiveRole(ctx context.Context, role string) error {
 // or reused, or a concurrent rotation won) as refusedRenewal words it, the
 // request's own end as matching its context's error, anything else as a
 // dependency failure behind fixed text, its cause reachable. A cookie that
-// cannot be delivered ends the sign-in (credentialDelivery.deliver). A
-// selection that cannot be recorded after the cookie was re-set is answered
-// as classifySelect answers it, with the cookie re-set and the role
-// unchanged.
+// cannot be delivered ends the sign-in (credentialDelivery.deliver).
+//
+// The role is recorded by the rotation's own write (session.WithSuccessorRole),
+// never by a later selection, so no successor is stored without it and no
+// cookie is set for one that is not. A store that supersedes the session but
+// writes the successor back with another role fails the rotation with
+// session.ErrStoreContract, a dependency failure: no cookie is set, and the
+// old identifier keeps working, with the role unchanged, through its grace
+// window.
 func (src *roleSource) rotateForSwitch(ctx context.Context, role string) (*session.Session, error) {
 	if src.ex == nil || src.run == nil || src.run.done.Load() {
 		return nil, newConfigError("SwitchActiveRole: %s", textRoleSwitchAfterRun)
@@ -327,7 +332,8 @@ func (src *roleSource) rotateForSwitch(ctx context.Context, role string) (*sessi
 
 	successor, err := (credentialDelivery{cookie: r.cookie, log: r.log}).rotateCookie(ctx, src.ex, r.sessions,
 		src.current, privilegeRotationGrace(r.renewal), src.deadline,
-		cookieRotationTexts{failed: textRoleNotRotated, ended: textRoleSwitchEnded})
+		cookieRotationTexts{failed: textRoleNotRotated, ended: textRoleSwitchEnded},
+		session.WithSuccessorRole(role))
 	if err != nil {
 		return nil, err
 	}
@@ -340,10 +346,6 @@ func (src *roleSource) rotateForSwitch(ctx context.Context, role string) (*sessi
 	// further switch is made on it.
 	src.ex.Session = successor
 	src.ex.SetContext(withSession(src.ex.Context(), successor)) //nolint:contextcheck // the request's own exchange context, extended, not a new root
-
-	if err := r.sessions.SelectRole(ctx, successor.ID, role); err != nil {
-		return nil, classifySelect(ctx, err)
-	}
 
 	return successor, nil
 }

@@ -310,7 +310,9 @@ type cookieRotationTexts struct{ failed, ended string }
 // successor in the same sign-in that keeps current's identifier working for
 // grace (session.Sessions.RotateWithGrace), and re-sets the session cookie to
 // it on ex's response through deliver. It returns the successor. ctx is the
-// context the rotation is written on.
+// context the rotation is written on. opts are the rotation's own options,
+// such as session.WithSuccessorRole, which a failed option fails the rotation
+// with before any cookie is set.
 //
 // It is the one place a privilege change on a cookie chain rotates, so a
 // consumer's opt-out of a rotation is decided by its callers, before it runs.
@@ -330,9 +332,9 @@ type cookieRotationTexts struct{ failed, ended string }
 // that cannot be delivered ends the sign-in (deliver).
 func (d credentialDelivery) rotateCookie(
 	ctx context.Context, ex *Exchange, sessions *session.Sessions, current *session.Session,
-	grace time.Duration, deadline time.Time, texts cookieRotationTexts,
+	grace time.Duration, deadline time.Time, texts cookieRotationTexts, opts ...session.RotateOption,
 ) (*session.Session, error) {
-	successor, _, err := sessions.RotateWithGrace(ctx, current, grace)
+	successor, _, err := sessions.RotateWithGrace(ctx, current, grace, opts...)
 	if err != nil {
 		if refusal := refusedRenewal(err); refusal != nil {
 			return nil, refusal
