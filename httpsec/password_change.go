@@ -297,15 +297,26 @@ func (g *passwordChangeGate) resolve(ex *Exchange) error {
 	// response has begun would never reach the browser. A rotation that fails
 	// has stored nothing and set no cookie: no grant is revoked, no password
 	// changed, and the old cookie keeps working.
-	if g.deliver.cookie != nil {
-		// A recovery-pending session gets its origin deadlines back once the
-		// change is saved, so the cookie is set for those, not the lowered
-		// ones the successor is stored with; any other session keeps its own.
-		var deadline time.Time
-		if s.MFA == session.MFARecoveryPending {
-			deadline = resolved.AbsoluteExpiresAt
-		}
+	//
+	// A recovery-pending session gets its origin deadlines back once the change
+	// is saved, so a cookie set on this request, by this rotation or a role
+	// switch inside the consumer's function, is set for those, not the lowered
+	// ones the session is stored with; any other session keeps its own.
+	var deadline time.Time
+	if g.deliver.cookie != nil && s.MFA == session.MFARecoveryPending {
+		deadline = resolved.AbsoluteExpiresAt
+	}
 
+	switch {
+	case g.deliver.cookie != nil && !g.deliver.cookie.rotatesAt(RotateOnPasswordChange):
+		// The consumer turned this rotation off (WithoutSessionRotation): the
+		// session keeps its identifier and the cookie is left as it is, but a
+		// switch inside the function still sets its cookie for the deadline
+		// the change restores.
+		if src != nil && !deadline.IsZero() {
+			src.moveTo(s, deadline)
+		}
+	case g.deliver.cookie != nil:
 		rotated, err := g.deliver.rotateCookie(ex.Context(), ex, g.sessions, s, g.grace, deadline,
 			cookieRotationTexts{failed: textChangeNotRotated, ended: textChangeRotationEnded})
 		if err != nil {
@@ -522,7 +533,10 @@ type PasswordChangeOption func(*passwordChangeGate) error
 // not the change then succeeds. One that cannot be written stores nothing,
 // sets no cookie and runs no function: the request fails as a dependency
 // failure and the old cookie keeps working. A function that writes its own
-// cookies must not write the session cookie.
+// cookies must not write the session cookie. WithoutSessionRotation
+// (RotateOnPasswordChange) turns the rotation off: the change is then recorded
+// on the session the request arrived on, which keeps its identifier, and no
+// cookie is set.
 //
 // A POST to the chain's logout path always passes, so a caller owing a change
 // can end the session; the path is the one EnableLogout configured, read when

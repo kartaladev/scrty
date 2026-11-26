@@ -63,6 +63,15 @@ type sessionCookie struct {
 	// persist decides, at each new sign-in, whether its cookie persists
 	// (WithSessionCookiePersistence), nil for never.
 	persist func(*Exchange) bool
+
+	// unrotated holds a bit, 1<<p, for each RotationPoint p whose rotation
+	// WithoutSessionRotation turned off; zero rotates at every one.
+	unrotated uint8
+
+	// exempt is what the both-credentials guard lets through, settled at
+	// construction (exemptFromCookieGuard); empty on a chain without the
+	// OpenID Provider.
+	exempt guardExemption
 }
 
 // AuthenticatesByCookie marks the cookie session as a CookieAuthenticator, so
@@ -100,6 +109,10 @@ func (c *config) wireSessionCookie() error {
 		}
 
 		s.ref.guard = guard
+
+		// Every path is resolved by now, the base path and the provider's
+		// overrides included, so the guard's exemption is settled once, here.
+		c.exemptFromCookieGuard(s)
 
 		return nil
 	})
@@ -355,6 +368,20 @@ func presentedCookie(r Request, name string) (value string, claimed bool) {
 // refusal judges the cookie, so the source is not charged and the cookie is
 // kept. There is no option to let one credential win.
 //
+// On a chain that also runs the OpenID Provider (EnableOIDCProvider), which
+// then takes the cookie session as the sign-in its inner routes rest on, the
+// provider's outer endpoints are exempt from that refusal: authorization,
+// token, userinfo, revocation, introspection, end-session and device
+// authorization, the OpenID configuration and the authorization-server
+// metadata, whatever the method, and the key set (EnableJWKSEndpoint) for GET.
+// They authenticate by a credential of their own and never read the session,
+// so the cookie a browser sends with a first-party page's call to one of them
+// is left unread. The exempt paths are settled at construction, under the base
+// path and the provider's path overrides, and match a request's path exactly:
+// a trailing slash, a doubled slash, another case or a path below one is not
+// exempt. Every other route of the provider (the resume, the cancel, the
+// consents, the logout confirmation, the device code entry) stays refused.
+//
 // A request carrying no cookie of the name passes through untouched. For one
 // that carries it, in order:
 //
@@ -553,6 +580,81 @@ func WithSessionCookiePersistence(decide func(*Exchange) bool) SessionCookieOpti
 		}
 
 		s.persist = decide
+
+		return nil
+	}
+}
+
+// RotationPoint names a privilege change at which a cookie chain rotates the
+// sign-in's session, for WithoutSessionRotation.
+type RotationPoint uint8
+
+// The rotation points WithoutSessionRotation can turn off.
+const (
+	// RotateOnRoleSwitch is the rotation at an active-role switch
+	// (Chain.SwitchActiveRole).
+	RotateOnRoleSwitch RotationPoint = iota + 1
+
+	// RotateOnPasswordChange is the rotation at the password-change gate's
+	// resolve endpoint (EnablePasswordChangeGate, WithPasswordChangeEndpoint).
+	RotateOnPasswordChange
+)
+
+// lastRotationPoint is the highest RotationPoint WithoutSessionRotation knows.
+const lastRotationPoint = RotateOnPasswordChange
+
+// rotatesAt reports whether the cookie session rotates at p, which it does
+// unless WithoutSessionRotation named p.
+func (s *sessionCookie) rotatesAt(p RotationPoint) bool {
+	return s.unrotated&(1<<p) == 0
+}
+
+// WithoutSessionRotation turns off the rotation of the cookie session at each
+// privilege change points names, so the session keeps its identifier there and
+// the cookie is not re-set.
+//
+// Default: a cookie chain rotates the sign-in into a new identifier, and re-sets
+// the cookie to it, at every privilege change: second-factor verification,
+// re-authentication, an active-role switch (RotateOnRoleSwitch) and the
+// password change at the gate's resolve endpoint (RotateOnPasswordChange).
+//
+// Turning a rotation off reopens session fixation at that change: an
+// identifier that existed before it, one an attacker planted in the browser or
+// read before the change included, carries the role or the changed password's
+// standing after it. Turn one off only where a rotation cannot be delivered,
+// such as a deployment whose responses at that change cannot carry a cookie.
+// With RotateOnRoleSwitch off, Chain.SwitchActiveRole records the role on the
+// session the request is on, as for a bearer session, and so may be called on a
+// context kept past its request. With RotateOnPasswordChange off, the change's
+// resolution is saved on that session, and a persistent cookie keeps the
+// Max-Age it was set with, even where the change restores a longer deadline
+// than a recovery left: the browser then drops the cookie before the server
+// would refuse the session.
+//
+// The line: only the two rotations named above can be turned off. Sign-in
+// always creates a new session, and the rotations at second-factor
+// verification and re-authentication have no off switch, since the sessions
+// they guard rely on them in every mode. Naming no point, the zero
+// RotationPoint, or one past RotateOnPasswordChange is a configuration error
+// from New; naming one twice, or giving the option more than once, turns off
+// every point named.
+func WithoutSessionRotation(points ...RotationPoint) SessionCookieOption {
+	return func(s *sessionCookie) error {
+		if len(points) == 0 {
+			return newConfigError("WithoutSessionRotation was given no rotation point; name " +
+				"RotateOnRoleSwitch, RotateOnPasswordChange or both, or leave it out to rotate at every " +
+				"privilege change")
+		}
+
+		for _, p := range points {
+			if p == 0 || p > lastRotationPoint {
+				return newConfigError("WithoutSessionRotation was given the rotation point %d, which is "+
+					"neither RotateOnRoleSwitch nor RotateOnPasswordChange; the rotations at second-factor "+
+					"verification and re-authentication cannot be turned off", p)
+			}
+
+			s.unrotated |= 1 << p
+		}
 
 		return nil
 	}

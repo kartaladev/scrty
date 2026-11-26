@@ -234,6 +234,9 @@ type completionSetup struct {
 	// off builds the chain without WithOIDCProviderCompletion, and without a user
 	// loader, which only completion takes.
 	off bool
+	// noHandoff builds OIDC login without a handoff manager, as a cookie chain,
+	// which conveys logins in the callback, is built.
+	noHandoff bool
 	// limiter replaces the resume limiter, which otherwise admits every source and
 	// counts the failures recorded against it.
 	limiter ratelimit.Limiter
@@ -386,11 +389,16 @@ func newCompletionFlow(t *testing.T, setup completionSetup) *completionFlow {
 				extra = setup.chain(t, f)
 			}
 
+			var handoff *oidc.Handoff
+			if !setup.noHandoff {
+				handoff = must.Must(oidc.NewHandoff(f.handoffs, w.users))
+			}
+
 			return append(append([]httpsec.Option{
 				httpsec.EnableSecurityEvents(f.events.sink),
 				httpsec.EnableOIDCLogin(httpsec.OIDCDeps{
 					RelyingParty: f.rp,
-					Handoff:      must.Must(oidc.NewHandoff(f.handoffs, w.users)),
+					Handoff:      handoff,
 					Users:        users,
 				}, opts...),
 			}, extra...),

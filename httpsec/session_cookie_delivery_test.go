@@ -46,6 +46,12 @@ type browserStore struct {
 	// endBounded is whether the last write that ended a sign-in ran on a
 	// context with a deadline.
 	endBounded bool
+
+	// onSupersede, when set before any request runs, stands around every
+	// superseding write the store does not fail: it is handed the write's
+	// context and the write itself, which it may run, hold behind a barrier
+	// or skip, and its answer is the write's.
+	onSupersede func(ctx context.Context, write func() error) error
 }
 
 func (s *browserStore) DeleteFamily(ctx context.Context, family id.ID) (int, error) {
@@ -73,6 +79,10 @@ func (s *browserStore) Create(ctx context.Context, sess *session.Session) error 
 func (s *browserStore) Supersede(ctx context.Context, sup session.Supersession) error {
 	if s.failSupersede {
 		return errBrowserStoreDown
+	}
+
+	if s.onSupersede != nil {
+		return s.onSupersede(ctx, func() error { return s.Store.Supersede(ctx, sup) })
 	}
 
 	return s.Store.Supersede(ctx, sup)

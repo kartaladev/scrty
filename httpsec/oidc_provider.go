@@ -557,8 +557,9 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // A chain that could not serve the provider correctly does not build. Each of
 // these is a configuration error naming this option:
 //
-//   - no bearer mode, because a resume needs a sign-in credential;
-//   - built-in bearers over more than one session manager, whatever their schemes,
+//   - no bearer mode (EnableSessionBearer, EnableBearerToken, or EnableSessionCookie,
+//     whose cookie session counts as one), because a resume needs a sign-in credential;
+//   - built-in bearers, the cookie session among them, over more than one session manager, whatever their schemes,
 //     because a live sign-in of any but the one the endpoints read would read as ended
 //     and have its grants ended (see "What the resume endpoint reads");
 //   - no EnableJWKSEndpoint, or one given a *signingkey.Keys other than the
@@ -940,17 +941,19 @@ func findInterceptor[T any](c *config) (T, bool) {
 	return zero, false
 }
 
-// checkBearer requires a bearer mode, whichever one: the resume is how a sign-in
-// reaches the provider, and it reads the credential only through one. It requires
-// every built-in bearer to share one manager, for the endpoints read one: a live
-// sign-in of any other would read as ended, and the resume would end its family.
+// checkBearer requires a bearer mode, whichever one, the cookie session counting
+// as one: the resume is how a sign-in reaches the provider, and the provider's
+// sign-in-dependent endpoints read the sign-in only through one. It requires
+// every built-in bearer and the cookie session to share one manager, for the
+// endpoints read one: a live sign-in of any other would read as ended, and the
+// resume would end its family.
 //
 // A bearer given no manager is passed over: its own option refuses it, whichever
 // comes first, and it says what is missing better than this would.
 func (op *oidcEndpoints) checkBearer(c *config) error {
-	if !hasInterceptor[*bearerToken](c) && !hasInterceptor[*sessionBearer](c) {
+	if !hasInterceptor[*bearerToken](c) && !hasInterceptor[*sessionBearer](c) && !hasInterceptor[*sessionCookie](c) {
 		return newConfigError("%s needs a bearer mode, because a resume needs a sign-in credential: "+
-			"enable EnableSessionBearer or EnableBearerToken", optionOIDCProvider)
+			"enable EnableSessionBearer, EnableBearerToken or EnableSessionCookie", optionOIDCProvider)
 	}
 
 	var shared *session.Sessions
@@ -962,9 +965,9 @@ func (op *oidcEndpoints) checkBearer(c *config) error {
 
 		if shared != nil && shared != m {
 			return newConfigError("%s reads every sign-in through one session manager, and the chain's bearers "+
-				"(EnableBearerToken, EnableSessionBearer) were given more than one, so a live sign-in of the "+
-				"other would read as ended and have its grants ended: give them all the same manager",
-				optionOIDCProvider)
+				"(EnableBearerToken, EnableSessionBearer, EnableSessionCookie) were given more than one, so a "+
+				"live sign-in of the other would read as ended and have its grants ended: give them all the "+
+				"same manager", optionOIDCProvider)
 		}
 
 		shared = m
@@ -973,6 +976,10 @@ func (op *oidcEndpoints) checkBearer(c *config) error {
 	}
 
 	if err := eachInterceptor(c, func(b *sessionBearer) error { return same(b.sessions) }); err != nil {
+		return err
+	}
+
+	if err := eachInterceptor(c, func(s *sessionCookie) error { return same(s.sessions) }); err != nil {
 		return err
 	}
 

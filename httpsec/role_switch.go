@@ -162,7 +162,12 @@ func withRoleSource(ctx context.Context, src *roleSource) context.Context {
 // once the window ends. A rotation that cannot be written stores nothing,
 // switches nothing and sets no cookie. A second switch on the same request
 // rotates the successor of the first. Bearer sessions are not rotated: the
-// credential a bearer client holds cannot be replaced by the response.
+// credential a bearer client holds cannot be replaced by the response. Neither
+// is a cookie session on a chain built with
+// WithoutSessionRotation(RotateOnRoleSwitch): the selection is recorded on the
+// session the request is on now, as for a bearer, no cookie is set, and the
+// identifier the browser holds carries the new role (session fixation at the
+// switch, which that option documents).
 //
 // It returns:
 //   - ErrRoleSwitchingDisabled on a chain built without
@@ -174,7 +179,8 @@ func withRoleSource(ctx context.Context, src *roleSource) context.Context {
 //     resolve itself, such as one a consumer interceptor published, or when
 //     the session ctx carries is no longer the one the chain resolved, as
 //     when an interceptor published another after it, and, for a cookie
-//     session, when the chain has finished handling the request;
+//     session that a switch rotates, when the chain has finished handling the
+//     request;
 //   - ErrSessionRenewalConflict when a concurrent rotation of a cookie session
 //     won, and ErrAuthenticationRequired joined to session.ErrReused when its
 //     identifier was already reused;
@@ -187,7 +193,8 @@ func withRoleSource(ctx context.Context, src *roleSource) context.Context {
 //
 // For a bearer session, a context kept past its request, such as one from
 // context.WithoutCancel, can still switch afterwards: nothing in it ends with
-// the request. A cookie session's cannot, since its response is gone. The user
+// the request, and so can a cookie session's whose switch does not rotate. A
+// cookie session's that a switch rotates cannot, since its response is gone. The user
 // is reloaded on every call and only a live session accepts the write, so a
 // session or user that has ended since is refused with
 // ErrAuthenticationRequired.
@@ -249,7 +256,7 @@ func (c *Chain) SwitchActiveRole(ctx context.Context, role string) error {
 		target = principal.ActiveRole.Name
 	}
 
-	if r.cookie != nil {
+	if r.cookie != nil && r.cookie.rotatesAt(RotateOnRoleSwitch) {
 		// A cookie session moves to a new identifier before the selection is
 		// recorded, so the role never changes on an identifier that existed
 		// before the switch (session fixation).
@@ -257,8 +264,15 @@ func (c *Chain) SwitchActiveRole(ctx context.Context, role string) error {
 		if err != nil {
 			return err
 		}
-	} else if err := r.sessions.SelectRole(ctx, s.ID, role); err != nil {
-		return classifySelect(ctx, err)
+	} else {
+		// Recorded on the session the request is on now: the one the chain
+		// resolved, or, on a cookie chain that rotates at a password change
+		// but not here, the successor that change moved the request to, since
+		// the identifier it arrived on is superseded by then.
+		s = src.latest()
+		if err := r.sessions.SelectRole(ctx, s.ID, role); err != nil {
+			return classifySelect(ctx, err)
+		}
 	}
 
 	if c.events != nil {

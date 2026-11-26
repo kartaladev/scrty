@@ -914,8 +914,15 @@ func WithoutOIDCRedirectPathCheck() OIDCOption {
 // the session is stored) falls back the same way: the stored session is ended
 // first, then the login is handed off to the login URL carrying the handle, so
 // the page answers the challenge and its redemption stores a session of its own.
+// On a chain with EnableSessionCookie, which takes no handoff manager, both fall
+// back to that chain's own conveyance instead: the callback stores the sign-in,
+// sets its session cookie and sends the browser 303 to the login URL carrying the
+// handle, where the page finishes the step under the cookie. A completed login
+// there sets no session cookie: the browser leaves with the provider's
+// browser-session cookie alone.
 //
-// Exclusions. It needs EnableOIDCProvider on the same chain, OIDCDeps.Handoff,
+// Exclusions. It needs EnableOIDCProvider on the same chain, OIDCDeps.Handoff
+// (except on a chain with EnableSessionCookie, which refuses one),
 // OIDCDeps.Users, OIDC login storing sessions in the provider's session manager,
 // every provider's redirect URL on the issuer's origin (where the provider's
 // host-only cookies are sent), and a login URL with no query of its own. It

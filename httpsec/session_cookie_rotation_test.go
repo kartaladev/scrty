@@ -264,14 +264,14 @@ func newSwitchCookieWorld(t *testing.T, extra ...httpsec.Option) *switchCookieWo
 func newSwitchCookieWorldOver(t *testing.T, extra func(*session.Sessions) []httpsec.Option) *switchCookieWorld {
 	t.Helper()
 
-	return newSwitchCookieWorldWith(t, nil, nil, extra)
+	return newSwitchCookieWorldWith(t, nil, nil, nil, extra)
 }
 
 // newSwitchCookieWorldWith is newSwitchCookieWorldOver with further session
-// manager options, and create options for the sign-in, such as its timeouts
-// and a persistent cookie.
+// manager options, create options for the sign-in, such as its timeouts and a
+// persistent cookie, and options of the cookie session.
 func newSwitchCookieWorldWith(t *testing.T, sessionOpts []session.Option, createOpts []session.CreateOption,
-	extra func(*session.Sessions) []httpsec.Option,
+	cookieOpts []httpsec.SessionCookieOption, extra func(*session.Sessions) []httpsec.Option,
 ) *switchCookieWorld {
 	t.Helper()
 
@@ -291,7 +291,7 @@ func newSwitchCookieWorldWith(t *testing.T, sessionOpts []session.Option, create
 		httpsec.WithClock(clk),
 		httpsec.WithLogger(discardLogger()),
 		httpsec.EnableCSRFProtection(),
-		httpsec.EnableSessionCookie(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),
+		httpsec.EnableSessionCookie(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}, cookieOpts...),
 		httpsec.WithSwitchableRoles(),
 	}, extra(sessions)...)...)
 	require.NoError(t, err)
@@ -671,7 +671,7 @@ func TestSessionCookie_RoleSwitchInPasswordChange(t *testing.T) {
 			t.Parallel()
 
 			f := &fixture{}
-			f.w = newSwitchCookieWorldWith(t, tc.sessionOpts, tc.createOpts,
+			f.w = newSwitchCookieWorldWith(t, tc.sessionOpts, tc.createOpts, nil,
 				func(sessions *session.Sessions) []httpsec.Option {
 					return []httpsec.Option{httpsec.EnablePasswordChangeGate(sessions,
 						httpsec.WithPasswordChangeEndpoint("/orders", func(ex *httpsec.Exchange) error {
