@@ -290,6 +290,7 @@ Reviewers: Opus for C1–C6, Sonnet for S1, M1, C7.
   - cookie + `Authorization` to `OIDCToken`, `OIDCRevoke`, `OIDCIntrospect` → reach the provider (not the guard's 401);
   - cookie + `Authorization` to `OIDCResume`, `OIDCConsents`, `OIDCLogoutConfirm` → 401 from the guard, zero session loads;
   - with `WithOIDCProviderPath(OIDCUserInfo, "/me")`: `/me` exempt, the default `/userinfo` path not.
+  - `WithOIDCProviderCompletion` on a cookie chain: today `checkCompletion` requires a handoff manager, which a cookie chain refuses; settle it so the provider's completion runs without one (the completion already discards its credential and sets no cookie, design 4), with a case proving the chain builds and a completed provider login sets no session cookie.
 - [ ] **Step 2:** run, FAIL on the `ErrConfig`.
 - [ ] **Step 3:** implement. Outer set: `OIDCAuthorize`, `OIDCToken`, `OIDCUserInfo`, `OIDCRevoke`, `OIDCIntrospect`, `OIDCEndSession`, `OIDCDeviceAuthorization`, and the discovery and JWKS documents. Every other provider route stays guarded. Match the exact cleaned path.
 - [ ] **Step 4:** run, PASS; run the scoped C-lane commands.

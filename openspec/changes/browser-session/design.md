@@ -141,7 +141,9 @@ check already requires.
     before the panic continues; the library does not swallow it.
   - The port's exchange is a detached copy with its own session and none of the request's
     per-request state; publishing a caller or evaluating per-request policy on it is a
-    configuration error, so nothing the port does on it reaches the request.
+    configuration error, so nothing the port does on it reaches the request. The copy is shallow below
+    that: the principal is shared, so a port that edits the principal in place changes the caller.
+    Accepted: the port is trusted code, and its godoc says not to.
   - The identifier check is literal. It catches a port's mistakes, not a hostile port: an encoded
     copy of the identifier (base64 in a header, say) is not detected. A delivery port is trusted
     code, as every consumer port is.
@@ -184,6 +186,13 @@ handoff manager on a cookie chain, as `WithOIDCCallbackSuccess` already does. A 
 the post-authentication phase leaves the cookie of the pending session and still redirects; the
 pending-challenge refusals on later requests are what a page answers.
 - **Default:** that callback. **Override:** `WithOIDCCallbackSuccess`, unchanged.
+- **Settled during implementation:**
+  - The callback reloads the user through the cookie session's user loader; an unknown, inactive
+    or mismatched user is refused as handoff redemption refuses one, though no handoff exists.
+  - Because the stored user is what signs in, role sync, the redemption-only options and
+    `WithOIDCTokens` are configuration errors on a cookie chain without `WithOIDCCallbackSuccess`.
+  - The callback always answers `303`; a browser is the only thing that follows an authorization
+    response, so it does not negotiate.
 
 ### 7. Negotiated answers and the destination
 
@@ -203,6 +212,20 @@ consumer allowlisted exactly; anything else is `/`.
   URLs at construction.
 - **Alternatives:** always redirect (breaks the later React components); always JSON (breaks plain
   forms).
+- **Settled during implementation:**
+  - A form `Content-Type` wins over `Accept`, so endpoints that read form bodies only (magic-link
+    redemption, TOTP verification, password re-authentication, recovery) always redirect; a script
+    that posts a form gets a `303`. `Accept` is ranked by `q` only, at most 64 ranges are read,
+    and a malformed header reads as JSON.
+  - Recovery completion that reissues codes answers `200` JSON with `idle_expires_at`, the codes,
+    `remaining` and `low` (members omitted when none were reissued), whatever the request prefers: the codes exist in readable form only in
+    that answer, and a redirect would lose them. Codes are not a session credential. Without
+    reissued codes it negotiates like every other endpoint.
+  - `next` is read from a URL-encoded or JSON body only, never the query, and at most 64 KiB of it.
+    A repeated or non-string member, a multipart body, or an oversized body resolves to `/`.
+  - The same-origin rule is stricter than stated above: the raw value must be printable ASCII
+    without spaces, and a malformed `%` escape, or DEL or a C1 control after decoding, resolves
+    to `/`.
 
 ### 8. Cookie attributes
 

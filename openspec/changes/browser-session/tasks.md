@@ -44,12 +44,12 @@ code (`golang-tdd.md`). Verification is scoped to the changed packages and their
 
 ## 8. Browser answers
 
-- [ ] 8.1 Make each issuing endpoint's default responder on a cookie chain negotiate: `303` with `Cache-Control: no-store` for a form or HTML-preferring request, `200` JSON with `idle_expires_at` otherwise, each responder still replaceable (design 7; spec browser-session "A browser sign-in answers by what the request prefers"); verify its three scenarios per endpoint in one table test
-- [ ] 8.2 Resolve the destination: `next` (replaceable by `WithSessionCookieNextParam`) as a same-origin relative path only, or an exact target from `WithSessionCookieRedirects`, validated at construction (design 7; spec browser-session "A sign-in destination stays on the same origin unless allowlisted"); verify a table of hostile values (`https://…`, `//…`, `/\…`, empty, encoded variants) resolving to `/`, and the allowlisted target
+- [x] 8.1 Make each issuing endpoint's default responder on a cookie chain negotiate: `303` with `Cache-Control: no-store` for a form or HTML-preferring request, `200` JSON with `idle_expires_at` otherwise, each responder still replaceable (design 7; spec browser-session "A browser sign-in answers by what the request prefers"); verify its three scenarios per endpoint in one table test
+- [x] 8.2 Resolve the destination: `next` (replaceable by `WithSessionCookieNextParam`) as a same-origin relative path only, or an exact target from `WithSessionCookieRedirects`, validated at construction (design 7; spec browser-session "A sign-in destination stays on the same origin unless allowlisted"); verify a table of hostile values (`https://…`, `//…`, `/\…`, empty, encoded variants) resolving to `/`, and the allowlisted target
 
 ## 9. Federated sign-in on a cookie chain
 
-- [ ] 9.1 Supply the default callback success on a cookie chain: completion with the federated first factor and fields in the creating write, cookie set, `303` to the allowlisted destination, and a handoff manager refused at construction (design 6; spec browser-session "Federated sign-in completes in the callback on a cookie chain"); verify its two scenarios and that no handoff code appears in the redirect
+- [x] 9.1 Supply the default callback success on a cookie chain: completion with the federated first factor and fields in the creating write, cookie set, `303` to the allowlisted destination, and a handoff manager refused at construction (design 6; spec browser-session "Federated sign-in completes in the callback on a cookie chain"); verify its two scenarios and that no handoff code appears in the redirect
 
 ## 10. Persistence
 
