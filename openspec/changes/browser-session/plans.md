@@ -29,14 +29,14 @@
 1. **Duplicate session cookies** (two `__Host-scrty-session` values in one `Cookie` header): expected refusal with `ErrAuthenticationRequired`, never "first wins". Test in Task 5.1.
 2. **Encoded or disguised destinations** (`%2F%2Fevil.example`, `/%5Cevil`, `/\evil`, `/\t/evil`, `https:evil`): expected `303` to `/`. Test in Task 8.2.
 3. **GET or HEAD to an issuing endpoint** on a cookie chain: expected pass-through, no `Set-Cookie`. Test in Task 6.1.
-4. **Logout racing a role switch** on the same sign-in: expected the switch fails with `ErrAuthenticationRequired`, no cookie re-set, nothing stored. Test in Task 11.5.
+4. **Logout racing a role switch** on the same sign-in: expected the switch fails with `ErrAuthenticationRequired`, no cookie re-set, nothing stored. Test in Task 11.5, with the no-cookie assertion for the second interleaving made to hold in Task 11.8 (role recorded in the rotation's write).
 5. **A persistent sign-in less than a second from its absolute deadline**: expected `Max-Age=1`, never 0 or negative. Test in Task 10.1.
 
 ---
 
 ## Lanes, dispatches and models
 
-File ownership: lane S owns `session/` and `store/**` and `test/storetest`; lane M owns `httpsec/magiclink*.go`; lane C owns every other `httpsec` file and `test/httpsecconformance`. S and M run in parallel with C's dispatches 1 and 2. C's dispatch 3 starts only after M is merged, because it edits `magiclink.go`. C's dispatch 5 starts only after S, because it uses `session.WithPersistentCookie`.
+File ownership: lane S owns `session/` and `store/**` and `test/storetest`; lane M owns `httpsec/magiclink*.go`; lane C owns every other `httpsec` file and `test/httpsecconformance`. S2 and C8 run in parallel (C8 touches no `session/` or `store/` file); C9 starts after both, because it consumes S2's option and edits files C8 may touch. S and M run in parallel with C's dispatches 1 and 2. C's dispatch 3 starts only after M is merged, because it edits `magiclink.go`. C's dispatch 5 starts only after S, because it uses `session.WithPersistentCookie`.
 
 | Dispatch | Tasks | Model | Why |
 |---|---|---|---|
@@ -48,7 +48,10 @@ File ownership: lane S owns `session/` and `store/**` and `test/storetest`; lane
 | C4 | 8.1, 8.2, 9.1 | Opus | redirect validation and federated completion |
 | C5 | 10.1, 11.1, 11.2, 11.3 | Opus | rotation ordering |
 | C6 | 11.4, 11.5, 12.1, 12.2, 12.3 | Opus | barrier tests, races, a guard exemption on security paths |
-| C7 | 13.1, 13.2 | Sonnet | conformance scenarios and godoc |
+| S2 | 11.6, 11.7 | Opus | changes the `Store` port's supersession contract other lanes compile against, atomic inside a transaction on three backends |
+| C8 | 12.4, 12.5 | Opus | a refusal rule on the provider's resume, security-critical; runs in parallel with S2 (disjoint files) |
+| C9 | 11.8 | Sonnet | applies S2's option at one call site; the test is given (after S2 and C8) |
+| C7 | 13.1, 13.2 | Sonnet | conformance scenarios and godoc (after C9) |
 | — | 14.1 | main session | final gate |
 
 Reviewers: Opus for C1–C6, Sonnet for S1, M1, C7.
@@ -270,6 +273,43 @@ Reviewers: Opus for C1–C6, Sonnet for S1, M1, C7.
 - [ ] **Step 1: Write the failing tests** under `-race`: `TestSessionCookie_ConcurrentRoleSwitch` (two switches released by a barrier: one wins, the loser's identifier works through the window); `TestSessionCookie_RotationCancelled` (context cancelled inside the issuing step: nothing stored, no `Set-Cookie`, old identifier valid); `TestSessionCookie_LogoutRacesRoleSwitch` (Review Focus 4).
 - [ ] **Steps 2–5:** run (FAIL where behaviour is missing; characterization otherwise, inverted once), implement, run with `-race` (PASS), commit `test(httpsec): cookie rotation under concurrency`.
 
+### Task 11.6: The successor's role in the rotation's write
+
+**Files:** Modify `session/store.go` (`Supersession` field, `Store.Supersede` godoc), `session/sessions_options.go` or the rotate-option file (option), `session/reuse.go` (grace rotations), `session/store_memory.go`, `session/store_encrypted.go` (pass the field through); Test `session/reuse_test.go`.
+
+**Interfaces:**
+- Produces: `Supersession.SuccessorRole *string` (nil = carry the old record's stored role, as today; non-nil = insert the successor with `*SuccessorRole`, `""` clearing it; written back to `op.Successor.SelectedRole` on success); `func WithSuccessorRole(role string) RotateOption`, taken by `RotateWithGrace` and `RotateWithGraceIssuing`, refused with `ErrConfig` by `Rotate` and `RotateIssuing` with nothing stored; `var ErrStoreContract` or a wrapped error identifying a store that wrote back another role (name it in godoc; it must not match `ErrReused`, `ErrNotFound` or `ErrRenewalConflict`).
+
+- [ ] **Step 1: Write the failing table test** `TestSessions_SuccessorRole` (table-test form): stored role `admin`, rotate with `WithSuccessorRole("audit")` through each grace rotation → successor loads `audit`, old record still `admin`, a counting store saw one `Supersede` and zero `SelectRole`; `WithSuccessorRole("")` → successor role empty; no option → successor `admin`; session deleted between load and write → error, no successor stored; a store wrapper that rewrites `op.Successor.SelectedRole` to `admin` after supersede → error matching the store-contract error, returned successor nil; `Rotate`/`RotateIssuing` with the option → `ErrConfig`, nothing stored.
+- [ ] **Step 2: Run** `go test -count=1 -run TestSessions_SuccessorRole ./session/` — FAIL on the assertions (after a compiling stub of the option).
+- [ ] **Step 3: Implement**: the option sets a field on `rotation`; the grace rotations copy it into `Supersession.SuccessorRole`; the memory store uses it in place of the old record's role inside its lock; `Sessions` compares the written-back role and fails on a mismatch. The encrypted store passes the field unchanged.
+- [ ] **Step 4: Run** lane S's scoped command — PASS.
+- [ ] **Step 5: Commit** `feat(session): record a successor's role in the rotation's own write`.
+
+### Task 11.7: Durable stores honour the named role
+
+**Files:** Modify `store/sqlstore/session.go`, `store/pgxstore/session.go`, `store/gormstore/session.go`; Test `test/storetest/session_suite.go` (beside `sessionSelectedRoleCases`).
+
+**Interfaces:** Consumes 11.6's `Supersession.SuccessorRole`. The provider's refresh-token lineage statements share the session statements; the named role applies to the sessions table only, and the lineage path passes nil.
+
+- [ ] **Step 1: Write the failing suite cases** `supersede names the successor role` (old `admin`, named `audit` → successor `audit`, old `admin`, `op.Successor.SelectedRole == "audit"`), `supersede names an empty role`, `supersede without a named role carries the stored one`; the cross-backend runner covers write-on-one, load-on-another.
+- [ ] **Step 2: Run** `cd test && go test -count=1 -run 'Session' ./sqlstore/... ./pgxstore/... ./gormstore/... ./crossbackend/...` — FAIL: successor takes `admin`.
+- [ ] **Step 3: Implement**: in each store's supersession transaction, use the named role instead of the value read from the locked old row when `SuccessorRole` is non-nil; write it back.
+- [ ] **Step 4: Run** lane S's scoped command and `make generate-check` — PASS.
+- [ ] **Step 5: Commit** `feat(store): honour a successor role named at supersession`.
+
+### Task 11.8: The role switch rotates with its role
+
+**Files:** Modify `httpsec/role_switch.go` (`rotateForSwitch` and the switch path that calls `SelectRole` after it); Test `httpsec/session_cookie_race_test.go`, `httpsec/session_cookie_rotation_test.go`.
+
+**Interfaces:** Consumes `session.WithSuccessorRole` (11.6).
+
+- [ ] **Step 1: Tighten the tests**: in `TestSessionCookie_LogoutRacesRoleSwitch`, the interleaving where logout lands after the rotation's issuing step and before its write asserts the switch fails with `ErrAuthenticationRequired`, no `Set-Cookie`, and no session of the family stored; add `TestSessionCookie_RoleSwitchStoreIgnoresRole` (a store wrapper rewriting the written-back role → switch fails, no `Set-Cookie`, role unchanged); assert a counting store saw no `SelectRole` on a rotating switch.
+- [ ] **Step 2: Run** `go test -count=1 -race -run 'TestSessionCookie_(LogoutRacesRoleSwitch|RoleSwitch)' ./httpsec/` — FAIL: a cookie is set on the failed switch.
+- [ ] **Step 3: Implement**: pass `session.WithSuccessorRole(role)` to the rotation and drop the separate `SelectRole` on the rotating path; a non-rotating switch (bearer, or rotation turned off) keeps `SelectRole`.
+- [ ] **Step 4: Run** lanes M/C scoped command with `-race` — PASS.
+- [ ] **Step 5: Commit** `fix(httpsec): record the switched role in the rotation's write`.
+
 ### Task 12.1: Logout
 
 - [ ] **Step 1: Write the failing table test** `TestSessionCookie_LogoutExpires`: success → exact expiring `Set-Cookie` with the configured name, domain and same-site; provider store failure on a provider chain → dependency failure, session present, no `Set-Cookie`.
@@ -300,6 +340,28 @@ Reviewers: Opus for C1–C6, Sonnet for S1, M1, C7.
 
 - [ ] **Step 1:** Write `TestSessionCookie_EndsProviderBrowserSessions` on a chain running the provider: after logout, and after reuse detected through the cookie, `BrowserSessionStore.Load` of that sign-in's record returns `ErrNotFound`. Remove the end-observer wiring in a scratch edit, see it FAIL, restore.
 - [ ] **Step 2: Commit** `test(httpsec): ending a cookie sign-in ends the provider's browser sessions`.
+
+### Task 12.4: The resume reads the cookie sign-in
+
+**Files:** Modify `httpsec/oidc_resume.go` (`resumeSignIn` and its godoc), `httpsec/session_cookie.go` (set the exchange mark when the cookie session publishes); Test `httpsec/session_cookie_provider_test.go`.
+
+**Interfaces:** Produces an unexported exchange field (for example `ex.cookieSession bool`) set only by `(*sessionCookie).Intercept` when it publishes, never settable through the public `Exchange` API.
+
+- [ ] **Step 1: Write the failing table test** `TestSessionCookie_ProviderResume`: cookie + CSRF token on a pending authorization → resumes (redirect to the client with a code); cookie + `Authorization` → 401 from the guard, zero session loads; cookie without CSRF token → 403, nothing counted; a consumer interceptor publishing a session from its own cookie on a cookie chain → 401; a header-bearer chain's resume unchanged (existing cases pass); end to end: `WithOIDCProviderCompletion` finds a step owed → `303` to the login page with the handle → the step finished → resume succeeds.
+- [ ] **Step 2: Run** `go test -count=1 -run TestSessionCookie_ProviderResume ./httpsec/` — FAIL: `expected 200/303 actual 401`.
+- [ ] **Step 3: Implement**: in `resumeSignIn`, accept `ex.Session` when the cookie mark is set and no `Authorization` line is present; everything after (`resumableSignIn`) unchanged.
+- [ ] **Step 4: Run** lanes M/C scoped command with `-race` — PASS.
+- [ ] **Step 5: Commit** `feat(httpsec): resume a provider authorization with the cookie sign-in`.
+
+### Task 12.5: C6 review follow-ups
+
+**Files:** `httpsec/session_cookie_provider_test.go`, `httpsec/password_change*_test.go`, `httpsec/session_cookie_race_test.go`, `httpsec/logout.go`, `httpsec/session_cookie_logout_test.go`.
+
+- [ ] **Step 1: Write the cases**: `TestSessionCookie_ProviderOnCookieChain` row "endpoint not served adds no exemption" (device grant off: cookie + `Authorization` to the device-authorization path → 401, zero session loads); a password-change row (recovery-pending persistent sign-in, `WithoutSessionRotation(RotateOnPasswordChange)`, role switch inside the change → the switch's cookie `Max-Age` follows the restored deadline); rename the manager-mismatch row to "cookie and session bearer refused" and comment the defensive `checkBearer` branch; replace the race test's `tc.name ==` check with an `owesChange bool` field; `TestSessionCookie_LogoutExpires` row "basic-auth logout without the cookie sets no `Set-Cookie`".
+- [ ] **Step 2: Run** each new row with its branch removed in a scratch edit (served filter, restored-deadline branch) and see it FAIL; the logout row fails on today's code.
+- [ ] **Step 3: Implement** the logout change: expire only when the request carried the session cookie.
+- [ ] **Step 4: Run** lanes M/C scoped command with `-race` — PASS.
+- [ ] **Step 5: Commit** `test(httpsec): pin the provider exemption filter and the restored deadline`.
 
 ### Task 13.1: Adapter conformance
 

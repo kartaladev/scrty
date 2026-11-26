@@ -212,6 +212,10 @@ On a cookie chain, the session identifier SHALL change, and the cookie SHALL be 
 - **WHEN** the identifier replaced at the role switch is presented after its window has ended
 - **THEN** it is refused as reuse, and the sign-in's family is revoked
 
+#### Scenario: Logout during a role switch
+- **WHEN** a logout ends the sign-in while a role switch on it is in progress, before the switch's rotation is stored
+- **THEN** the switch fails with the authentication-required error, its response does not re-set the cookie, and no session of the sign-in is stored
+
 ### Requirement: The added rotations can be turned off by name, and the existing ones cannot
 The consumer SHALL be able to turn off the rotation at the active-role switch, at the password change, or both, each named explicitly. The rotations at sign-in, second-factor verification and re-authentication SHALL have no off switch.
 
@@ -252,6 +256,17 @@ When the session cookie is refused because its session is missing, expired, unre
 #### Scenario: Cross-site request
 - **WHEN** an unsafe request carries a valid session cookie and no valid CSRF token
 - **THEN** it is refused as a cross-site request, the response does not touch the cookie, and nothing is counted against the source
+
+### Requirement: The OpenID Provider resumes a cookie sign-in
+A chain SHALL be able to run the OpenID Provider with the cookie session. On such a chain, the provider's resume endpoint SHALL take as its sign-in the session the cookie session authenticated, under the same checks a sign-in presented in the `Authorization` header passes, and SHALL NOT take a session that another authenticator published.
+
+#### Scenario: Resume with the cookie
+- **WHEN** a user signed in on a cookie chain that runs the provider posts the resume of a pending authorization request with the session cookie and the sign-in's CSRF token
+- **THEN** the authorization request resumes with that sign-in
+
+#### Scenario: Resume with the cookie and an Authorization header
+- **WHEN** the same resume also carries an `Authorization` header
+- **THEN** it is refused with the authentication-required error, and no session is loaded
 
 ### Requirement: Ending a cookie sign-in ends the provider's browser sessions of it
 When the chain also runs the OpenID Provider, every explicit end of a cookie sign-in, by logout, by reuse detection or by revocation, SHALL end the provider's browser sessions of that sign-in, so that neither layer stays signed in after the other has ended.

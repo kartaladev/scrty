@@ -173,9 +173,15 @@ header, before Basic (400), the resource server (425) or the cookie session (500
     chain's session, so on a chain that runs the provider with the cookie session the guard exempts
     exactly those paths; the provider's inner, sign-in-dependent routes stay guarded. Without the
     exemption a first-party page on the same origin calling userinfo with an access token would be
-    refused, because the browser sends the cookie on its own. Not built with the guard: the
-    provider's chain check still requires a bearer mode, so a chain cannot yet run the provider
-    with the cookie session. Task 12.2 allows that pairing and adds the exemption together.
+    refused, because the browser sends the cookie on its own. Built in task 12.2, with the
+    provider's chain check accepting the cookie session as its bearer mode.
+  - The exemption is the set of outer paths the provider's outer router actually serves, resolved
+    at construction after the base path and path overrides, and matched by exact equality against
+    `Request.Path()`, the comparison the outer router itself makes on every adapter. A path that
+    decodes to an exempt one (`/oauth2/user%69nfo`) is exempt because the router answers it; a
+    trailing slash, a doubled slash, another case or the bare prefix stays guarded. The key set is
+    exempt for GET only, since it passes other methods down the chain. An endpoint the provider
+    does not serve (a disabled device grant) adds no exemption.
 
 ### 6. Federated sign-in completes in the callback
 
@@ -316,7 +322,28 @@ Sign-in always creates a new session.
     issues a fresh identifier. A recovery-pending session rotates too.
   - On a cookie chain, `SwitchActiveRole` called on a context kept past its request is a
     configuration error and changes nothing: the response is gone, and a rotation the browser never
-    learns of would make its next request reuse.
+    learns of would make its next request reuse. With the role-switch rotation turned off it
+    behaves as on any chain, since no cookie is owed.
+  - `WithoutSessionRotation` accepts a repeated point, or the option given twice, as the union:
+    asking twice weakens nothing more than asking once. An empty list, `0` or an unknown point is
+    `ErrConfig`.
+  - Accepted: with the password-change rotation off, a persistent cookie is not re-set, so on a
+    recovery-pending sign-in it keeps the lowered recovery deadline as its `Max-Age`. The browser
+    drops it before the server would refuse the session, the fail-closed direction; documented on
+    the option.
+  - The role is recorded in the rotation's own write (user decision, 2026-11-26). A new
+    `session.WithSuccessorRole(role string)` rotate option, taken by `RotateWithGrace` and
+    `RotateWithGraceIssuing`, sets `Supersession.SuccessorRole` (a `*string`); `Store.Supersede`
+    then gives the successor that role instead of the old record's stored one, inside the same
+    atomic operation, and the empty role clears it. Without the option the store carries the old
+    role as today. `Sessions` compares the role the store writes back to `Successor.SelectedRole`
+    with the one asked for, and a store that ignored the field fails the rotation with a
+    store-contract error; the store-conformance suite pins the behaviour on every backend. The
+    role switch uses it, so a logout landing before the write makes the switch fail with
+    `ErrAuthenticationRequired`, no cookie re-set and nothing stored, and a logout landing after it
+    is an ordinary later logout. This replaces the earlier two writes (rotation, then
+    `SelectRole`), whose gap let a failed switch still re-set a cookie naming a successor the
+    logout had deleted.
   - Accepted: a role switch called after the handler began its response stores the rotation but the
     re-set cookie is dropped; the old identifier becomes reuse after the window and the sign-in is
     revoked, the fail-closed outcome. No writer exposes whether the response began; the godoc says to
@@ -327,9 +354,8 @@ Sign-in always creates a new session.
     mark is added. The target comes from the chain, never from the consumer-writable
     `Exchange.Session`; a target of another user or family is refused and nothing is saved. That
     refusal is unreachable through the public API and is tested on the internal function.
-  - Accepted: a switch that rotates and re-sets the cookie but then fails to record the role
-    returns the error with the new cookie set and the role unchanged; the user retries on a live
-    session.
+  - A switch whose rotation fails, including one refused because the store ignored the requested
+    role, sets no cookie and leaves the role unchanged; the user retries on a live session.
 
 ### 11. Ending the cookie
 
@@ -356,6 +382,19 @@ The provider today refuses to build on a chain without a bearer mode; this chang
 cookie chain, taking the cookie session as the sign-in its inner routes depend on (task 12.2).
 - **Alternatives:** merge into one record (rewrites a settled provider design); one cookie value
   keying both stores (one secret opening two stores).
+- **The resume reads the cookie sign-in** (user decision, 2026-11-26). On a cookie chain the
+  provider's resume endpoint takes as its sign-in the session the built-in cookie session
+  published, recognised by a mark the cookie session sets on the exchange, not by `ex.Session`
+  alone, so a session a consumer interceptor published is still refused. The resume is a POST, so
+  CSRF protection covers it. An `Authorization` line beside the cookie is still refused (the guard
+  refuses it first). On a chain with a header bearer the resume is unchanged. Without this, a
+  browser could complete an authorization only through server-side completion, since a page can
+  neither read the `HttpOnly` cookie nor add an `Authorization` header beside it.
+- **Completion on a cookie chain needs no handoff manager.** When server-side completion
+  (`WithOIDCProviderCompletion`) finds a step owed, it conveys the pending sign-in as the cookie
+  chain's own callback does: it stores it, sets its cookie and answers `303` to the parked login
+  page carrying the handle, where the page finishes the step and resumes through the endpoint
+  above. The per-request challenge fallback works the same way.
 
 ### 13. Magic-link parity
 
@@ -392,6 +431,11 @@ request endpoint, JSON members. An oversized body keeps today's behaviour: read 
 | Delivery fails at recovery completion | State | Accepted | the user's recovery codes were already replaced and the new ones are never shown, so the user recovers again; only a consumer port can fail here |
 | Session cookie beside a credential a consumer authenticator reads | Security | Handled, tested | 401 before the cookie is read |
 | Two tabs rotating at once (role switch, renewal) | Concurrency | Handled, tested | one rotation wins; the loser's identifier works through the window (barrier test) |
+| Logout landing during a role switch | Concurrency | Handled, tested | before the rotation's write: the switch fails with `ErrAuthenticationRequired`, no cookie re-set, nothing stored; after it: an ordinary later logout (role recorded in the same write, decision 10) |
+| A session store that ignores the requested successor role | Dependency / Configuration | Handled, tested | the rotation fails with a store-contract error; the switch sets no cookie; the conformance suite catches the store |
+| Client hangs up after a rotation's write has committed | Concurrency | Accepted | the new cookie never arrives; the old identifier works through the grace window and is reuse after it, revoking the sign-in; `session.WithUnusedSuccessorRecovery` softens it |
+| Cookie resume at the provider with an `Authorization` line too | Security | Handled, tested | 401 from the guard before either credential is read |
+| Persistent cookie with the password-change rotation turned off on a recovery-pending sign-in | State | Accepted | the cookie keeps the lowered recovery `Max-Age` and is dropped early by the browser: fail-closed; documented on the option |
 | Request context cancelled during rotation | Concurrency | Handled, tested | nothing stored, cookie not re-set, the old identifier still valid |
 | Rotation write fails | State | Handled, tested | dependency failure, old cookie kept |
 | Logout: provider store fails | State | Handled, tested | retryable failure, cookie not expired |
