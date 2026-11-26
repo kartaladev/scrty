@@ -50,7 +50,8 @@ File ownership: lane S owns `session/` and `store/**` and `test/storetest`; lane
 | C6 | 11.4, 11.5, 12.1, 12.2, 12.3 | Opus | barrier tests, races, a guard exemption on security paths |
 | S2 | 11.6, 11.7 | Opus | changes the `Store` port's supersession contract other lanes compile against, atomic inside a transaction on three backends |
 | C8 | 12.4, 12.5 | Opus | a refusal rule on the provider's resume, security-critical; runs in parallel with S2 (disjoint files) |
-| C9 | 11.8 | Sonnet | applies S2's option at one call site; the test is given (after S2 and C8) |
+| C8b | 12.6 | Opus | security refusal on the provider's resume and a construction rule; scope-handling change in the chain's run |
+| C9 | 11.8 | Sonnet | applies S2's option at one call site, and registers `session.ErrStoreContract` as a dependency failure in `httpsec`'s status table; the test is given (runs in parallel with C8b, disjoint files) |
 | C7 | 13.1, 13.2 | Sonnet | conformance scenarios and godoc (after C9) |
 | — | 14.1 | main session | final gate |
 
@@ -362,6 +363,21 @@ Reviewers: Opus for C1–C6, Sonnet for S1, M1, C7.
 - [ ] **Step 3: Implement** the logout change: expire only when the request carried the session cookie.
 - [ ] **Step 4: Run** lanes M/C scoped command with `-race` — PASS.
 - [ ] **Step 5: Commit** `test(httpsec): pin the provider exemption filter and the restored deadline`.
+
+### Task 12.6: C8 review follow-ups
+
+**Files:** Modify `httpsec/chain.go` (run entry), `httpsec/exchange.go` (`saveScope`/`restoreScope`), `httpsec/oidc_provider.go` (the provider's CSRF check, `checkCSRF`), `httpsec/oidc_resume.go` and `httpsec/logout.go` (godoc only); Test `httpsec/session_cookie_provider_test.go`.
+
+**Interfaces:** No new exported names. The cookie-session mark (`Exchange.cookieSession`) is cleared when a run starts and restored when it returns.
+
+- [ ] **Step 1: Write the failing tests**:
+  - `TestSessionCookie_NestedProviderChainResume`: an outer cookie chain with CSRF; a consumer interceptor runs an inner provider chain built with `EnableSessionBearer`; resume POST with the outer cookie, its CSRF token and no `Authorization` → 401 (`ErrAuthenticationRequired`), no code issued.
+  - A `TestSessionCookie_ProviderOnCookieChain` row: `EnableSessionCookie` + provider with `oidcprovider.WithoutBrowserSessions()` + `WithoutCSRFProtection()` → `ErrConfig` naming CSRF protection; the same without the provider still builds.
+  - A `TestSessionCookie_ProviderResume` row: the superseded identifier presented inside its grace window → the resume succeeds with the family's sign-in.
+- [ ] **Step 2: Run** `go test -count=1 -run 'TestSessionCookie_(NestedProviderChainResume|ProviderOnCookieChain|ProviderResume)' ./httpsec/` — expected FAIL: nested resume `expected: 401 actual: 200`; construction `expected ErrConfig, got nil`. The grace-window row may already pass; if so, show it fails once by inverting the mark check, then restore.
+- [ ] **Step 3: Implement**: clear the mark at run entry, after the scope is saved; in the provider's chain check, require CSRF protection whenever the chain has the cookie session; correct the resume godoc (the CSRF layer checks the token, and the chain requires it) and rewrap `EnableLogout`'s long line.
+- [ ] **Step 4: Run** lanes M/C scoped command with `-race` — PASS.
+- [ ] **Step 5: Commit** `fix(httpsec): keep the cookie sign-in to its own run, and require CSRF for the provider on a cookie chain`.
 
 ### Task 13.1: Adapter conformance
 

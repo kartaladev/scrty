@@ -359,7 +359,9 @@ Sign-in always creates a new session.
 
 ### 11. Ending the cookie
 
-- Logout success: the cookie is expired with the attributes it was set with (`Max-Age=0`).
+- Logout success: the cookie is expired with the attributes it was set with (`Max-Age=0`), when
+  the request carried it; a logout by another credential (Basic, an API key) on a cookie chain
+  sets no cookie. (Settled during implementation, from the review of task 12.1.)
 - A cookie refused because its session is missing, expired, unreadable or reused: the refusal
   response expires the cookie.
 - A store or cipher outage while loading: the cookie is left alone, because the session may be fine.
@@ -395,6 +397,24 @@ cookie chain, taking the cookie session as the sign-in its inner routes depend o
   chain's own callback does: it stores it, sets its cookie and answers `303` to the parked login
   page carrying the handle, where the page finishes the step and resumes through the endpoint
   above. The per-request challenge fallback works the same way.
+- **Settled during implementation:** the mark is an unexported pointer to the session the cookie
+  session published, set only when its resolution published one, and the resume accepts
+  `ex.Session` only while it is that same session. A consumer cannot set it, and a session
+  assigned to `ex.Session` afterwards, by a consumer or by anything else, no longer matches. A
+  credential a consumer recorded with `RecordPresentedToken` beside the cookie is refused. The
+  endpoint keeps its own refusal of an `Authorization` line, which the guard refuses first; it is
+  defensive against a consumer interceptor that rewrites the request after the guard.
+- **The mark belongs to the run that set it** (from the review of task 12.4). A chain run nested
+  in another run on the same request starts without the outer run's mark and gets it back when it
+  returns, so a header-bearer provider chain run inside a cookie chain does not take the outer
+  cookie sign-in at its resume; it refuses as before. The safe default, and what "a chain with a
+  header bearer is unchanged" requires.
+- **The provider on a cookie chain requires CSRF protection** (user decision, 2026-11-26). `New`
+  refuses the cookie session with the provider when CSRF protection is opted out, whether or not
+  the provider keeps browser sessions: the cookie now drives the resume, which hands
+  authorization codes to third-party clients, so a page on another site must not drive it with
+  only `SameSite=Lax` and the content-type check standing in the way. The opt-out stays available
+  on a cookie chain without the provider.
 
 ### 13. Magic-link parity
 
@@ -432,9 +452,17 @@ request endpoint, JSON members. An oversized body keeps today's behaviour: read 
 | Session cookie beside a credential a consumer authenticator reads | Security | Handled, tested | 401 before the cookie is read |
 | Two tabs rotating at once (role switch, renewal) | Concurrency | Handled, tested | one rotation wins; the loser's identifier works through the window (barrier test) |
 | Logout landing during a role switch | Concurrency | Handled, tested | before the rotation's write: the switch fails with `ErrAuthenticationRequired`, no cookie re-set, nothing stored; after it: an ordinary later logout (role recorded in the same write, decision 10) |
-| A session store that ignores the requested successor role | Dependency / Configuration | Handled, tested | the rotation fails with a store-contract error; the switch sets no cookie; the conformance suite catches the store |
+| A session store that ignores the requested successor role | Dependency / Configuration | Handled, tested | the rotation fails with `session.ErrStoreContract`; the switch sets no cookie; the conformance suite catches the store. The store has already written: the old record is superseded with its grace window open and an unheld successor is live, so the client's old identifier is reuse after the window and the family is revoked (unless `WithUnusedSuccessorRecovery` recovers it): fail-closed, as for a hang-up after the write |
+| `WithSuccessorRole` on a manager whose store cannot select roles | Configuration | Handled, tested | refused with `ErrConfig` before anything is written, as `SelectRole` refuses |
 | Client hangs up after a rotation's write has committed | Concurrency | Accepted | the new cookie never arrives; the old identifier works through the grace window and is reuse after it, revoking the sign-in; `session.WithUnusedSuccessorRecovery` softens it |
 | Cookie resume at the provider with an `Authorization` line too | Security | Handled, tested | 401 from the guard before either credential is read |
+| A session another authenticator published, or assigned in the cookie session's place, presented to the resume | Security | Handled, tested | 401; the resume accepts only the session the cookie session published |
+| A credential a consumer recorded beside the cookie at the resume | Security | Handled, tested | 401 |
+| A session owing a step at the resume, on a chain without the gates | Security | Handled, tested | the step's challenge; nothing resumed |
+| CSRF token missing or wrong at the cookie resume | Security | Handled, tested | 403, nothing charged, cookie kept |
+| A header-bearer provider chain run inside a cookie chain's request | Security | Handled, tested | the nested run starts without the outer mark; its resume refuses the cookie sign-in with 401 |
+| Cookie session and provider with CSRF protection opted out | Wiring | Handled, tested | `ErrConfig` from `New` |
+| A role switch in the same request before the provider's resume | State | Accepted | the switch replaces the request's session, so the resume no longer recognises it and refuses with 401: fail-closed; nothing in the library switches before its own resume |
 | Persistent cookie with the password-change rotation turned off on a recovery-pending sign-in | State | Accepted | the cookie keeps the lowered recovery `Max-Age` and is dropped early by the browser: fail-closed; documented on the option |
 | Request context cancelled during rotation | Concurrency | Handled, tested | nothing stored, cookie not re-set, the old identifier still valid |
 | Rotation write fails | State | Handled, tested | dependency failure, old cookie kept |
