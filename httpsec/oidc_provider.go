@@ -979,6 +979,10 @@ func (op *oidcEndpoints) checkBearer(c *config) error {
 		return err
 	}
 
+	// Defensive: a chain with the cookie session refuses every bearer mode beside
+	// it (the cookie-plus-bearer rule), so the cookie session's manager is the only
+	// one on such a chain and a mismatch cannot reach this check. It is folded in
+	// all the same, so the one-manager rule does not rest on that other rule.
 	if err := eachInterceptor(c, func(s *sessionCookie) error { return same(s.sessions) }); err != nil {
 		return err
 	}

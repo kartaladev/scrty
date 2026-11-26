@@ -169,16 +169,48 @@ func TestSessionCookie_EndsProviderBrowserSessions(t *testing.T) {
 		},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			w := newCookieProviderWorld(t)
-			require.True(t, w.browserSessionLoads(t), "the provider holds a browser session of the sign-in")
-
-			tc.end(t, w)
-
-			assert.False(t, w.browserSessionLoads(t), "no provider browser session of the sign-in loads afterwards")
-		})
+	// starts are the ways the provider's browser session of the sign-in came
+	// to be: written by the provider directly, and by the resume endpoint
+	// reading the cookie sign-in.
+	starts := []struct {
+		name  string
+		start func(w *cookieProviderWorld, t *testing.T)
+	}{
+		{name: "provider", start: func(*cookieProviderWorld, *testing.T) {}},
+		{name: "cookie resume", start: (*cookieProviderWorld).resumeByCookie},
 	}
+
+	for _, tc := range cases {
+		for _, st := range starts {
+			t.Run(tc.name+"/"+st.name, func(t *testing.T) {
+				t.Parallel()
+
+				w := newCookieProviderWorld(t)
+				st.start(w, t)
+				require.True(t, w.browserSessionLoads(t), "the provider holds a browser session of the sign-in")
+
+				tc.end(t, w)
+
+				assert.False(t, w.browserSessionLoads(t), "no provider browser session of the sign-in loads afterwards")
+			})
+		}
+	}
+}
+
+// resumeByCookie resumes a new authorization through the resume endpoint with
+// the sign-in's cookie and CSRF token, and makes the browser session it wrote
+// the one the world watches.
+func (w *cookieProviderWorld) resumeByCookie(t *testing.T) {
+	t.Helper()
+
+	before := w.digest
+	handle, flow := w.park(t, flowFirstParty)
+
+	a := w.cookieResume(t, handle, flow, w.signIn.ID, w.signIn.CSRFToken)
+	require.NoError(t, a.err)
+	require.Equal(t, http.StatusOK, a.status, a.body)
+	require.NotNil(t, a.cookie(flowSession), "the resume wrote a browser session")
+
+	w.digest = w.browsers.last(t)
+	require.NotEqual(t, before, w.digest, "the watched browser session is the one the resume wrote")
 }

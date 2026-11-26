@@ -164,6 +164,8 @@ func (s *sessionCookie) Intercept(ex *Exchange, next Next) error {
 		return errors.Join(ErrAuthenticationRequired, errCookieBesideCaller)
 	}
 
+	before := ex.Session
+
 	rejected, err := s.ref.resolve(ex, presented, transportCookie, admitCookieSession)
 	if err != nil {
 		// Only a cookie the pipeline judged bad is expired. One refused
@@ -183,6 +185,17 @@ func (s *sessionCookie) Intercept(ex *Exchange, next Next) error {
 	// is recorded is what a DPoP proof's ath is judged against at the
 	// issuing and continuing endpoints, and the cookie is no access token. A
 	// rotation that needs the sign-in reads it from the published session.
+	//
+	// What is marked instead is the session published, so the provider's
+	// resume can tell it from one a consumer's interceptor published or put in
+	// its place (Exchange.cookieSession). The core publishes a session it
+	// loaded itself, never the one already on the exchange, so a Session left
+	// as it was is one this cookie did not publish (a late renewal let through
+	// to its endpoint), and nothing is marked.
+	if ex.Session != before {
+		ex.cookieSession = ex.Session
+	}
+
 	return next(ex)
 }
 

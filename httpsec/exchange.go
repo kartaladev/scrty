@@ -434,6 +434,15 @@ type Exchange struct {
 	// DPoP proof beside it carries ath over it.
 	bearerCredential string
 
+	// cookieSession is the session the built-in cookie session
+	// (EnableSessionCookie) published on this request, and nil when it
+	// published none. Only (*sessionCookie).Intercept sets it, and nothing in
+	// the public API can, so a session a consumer's interceptor published, or
+	// assigned to Session in its place, never matches it. The provider's resume
+	// endpoint reads it (resumeSignIn) to take a cookie sign-in as the
+	// request's, and only while Session is still this very session.
+	cookieSession *session.Session
+
 	// accessTokenClaimed records that the resource server accepted the
 	// request's Authorization credential as an access token, so the bearer
 	// modes after it, which read the same header, do not judge it again.
@@ -687,6 +696,7 @@ type runScope struct {
 	session          *session.Session
 	authentication   *authenticate.Authentication
 	bearerCredential string
+	cookieSession    *session.Session
 	accessToken      bool
 	renewal          string
 	chargeRenewal    func(context.Context)
@@ -703,6 +713,7 @@ func (e *Exchange) saveScope() runScope {
 		session:          e.Session,
 		authentication:   e.Authentication,
 		bearerCredential: e.bearerCredential,
+		cookieSession:    e.cookieSession,
 		accessToken:      e.accessTokenClaimed,
 		renewal:          e.renewal,
 		chargeRenewal:    e.chargeRenewal,
@@ -719,6 +730,7 @@ func (e *Exchange) restoreScope(s runScope) {
 	e.Session = s.session
 	e.Authentication = s.authentication
 	e.bearerCredential = s.bearerCredential
+	e.cookieSession = s.cookieSession
 	e.accessTokenClaimed = s.accessToken
 	e.renewal = s.renewal
 	e.chargeRenewal = s.chargeRenewal

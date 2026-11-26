@@ -148,6 +148,9 @@ func TestSessionCookie_RotationCancelled(t *testing.T) {
 	type testCase struct {
 		name string
 
+		// owesChange makes the sign-in owe a password change before the request.
+		owesChange bool
+
 		// extra are chain options needing the world's session manager.
 		extra func(*session.Sessions) []httpsec.Option
 
@@ -175,7 +178,8 @@ func TestSessionCookie_RotationCancelled(t *testing.T) {
 			},
 		},
 		{
-			name: "at the password change",
+			name:       "at the password change",
+			owesChange: true,
 			extra: func(sessions *session.Sessions) []httpsec.Option {
 				return []httpsec.Option{httpsec.EnablePasswordChangeGate(sessions,
 					httpsec.WithPasswordChangeEndpoint("/orders", func(ex *httpsec.Exchange) error {
@@ -206,7 +210,7 @@ func TestSessionCookie_RotationCancelled(t *testing.T) {
 			w := newSwitchCookieWorldOver(t, tc.extra)
 
 			owing := *w.signIn
-			owing.PasswordChangePending = tc.name == "at the password change"
+			owing.PasswordChangePending = tc.owesChange
 			require.NoError(t, w.sessions.Save(t.Context(), &owing))
 
 			ctx, cancel := context.WithCancel(t.Context())

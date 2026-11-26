@@ -9,11 +9,13 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/oidcprovider"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -174,6 +176,31 @@ func TestSessionCookie_LogoutExpires(t *testing.T) {
 				out := w.logoutWith(t, httpsec.DefaultSessionCookieName, "")
 				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
 				assert.Empty(t, out.rec.Header().Values("Set-Cookie"))
+			},
+		},
+		{
+			name: "basic-auth logout without the cookie sets no Set-Cookie",
+			assert: func(t *testing.T) {
+				t.Helper()
+
+				w := newBrowserWorld(t)
+				authn, err := authenticate.NewUsernamePasswordAuthenticator(w.users,
+					authenticate.WithPasswordEncoder(e2eEncoder(t)))
+				require.NoError(t, err)
+
+				w.extra = append(w.extra, httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{
+					Authenticator: authn, Attempts: must.Must(lockout.NewMemoryAttemptStore()),
+				}))
+				w.build(t)
+
+				req := postValues(t.Context(), httpsec.DefaultLogoutPath, e2eSource, nil)
+				req.SetBasicAuth(e2eAddress, e2ePassword)
+
+				out := serveContext(t.Context(), t, w.chain, req)
+				require.NoError(t, out.err)
+				assert.Equal(t, http.StatusOK, out.rec.Code)
+				assert.Empty(t, out.rec.Header().Values("Set-Cookie"),
+					"a request that carried no session cookie has none to expire")
 			},
 		},
 		{

@@ -131,9 +131,13 @@ func (l *logout) Intercept(ex *Exchange, next Next) error {
 	// The sign-in is ended, so the browser is told to drop its cookie, with
 	// the attributes it was set with so that it replaces the stored one. Not
 	// before: a logout that failed keeps the session, and the cookie that
-	// names it, for a retry.
+	// names it, for a retry. Only a request that carried the cookie is told:
+	// one that authenticated another way (Basic credentials, a consumer's
+	// authenticator) ended no cookie sign-in, and has no cookie to drop.
 	if l.cookie != nil {
-		ex.Writer.SetCookie(l.cookie.cookie("", -1))
+		if _, carried := presentedCookie(ex.Request, l.cookie.name); carried {
+			ex.Writer.SetCookie(l.cookie.cookie("", -1))
+		}
 	}
 
 	// Only a session a federated login created has a provider session to end,
@@ -328,8 +332,9 @@ type LogoutOption func(*logout) error
 //
 // With EnableSessionCookie on the same chain, a logout that ended the sign-in
 // also expires the session cookie (Max-Age=0), under the name, path, domain and
-// attributes the chain sets it with, so the browser drops it. A logout that is
-// refused, or fails, at the provider's store or the session store, expires
+// attributes the chain sets it with, so the browser drops it. Only a request that
+// carried the session cookie is answered so: a logout authenticated another way,
+// Basic credentials for one, sets no cookie. A logout that is refused, or fails, at the provider's store or the session store, expires
 // nothing: the session stays, and the cookie naming it, for a retry. There is no
 // option to keep the cookie, since it would name a session that has ended.
 func EnableLogout(deps LogoutDeps, opts ...LogoutOption) Option {

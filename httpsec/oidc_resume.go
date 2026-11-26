@@ -295,20 +295,35 @@ func (op *oidcEndpoints) confirmSignIn(ctx context.Context, signIn *oidcprovider
 	return ErrOIDCReauthenticate
 }
 
-// resumeSignIn is the sign-in the request's bearer authenticated, and nil when the
-// request presented no credential at all.
+// resumeSignIn is the sign-in the request's bearer or the chain's cookie session
+// authenticated, and nil when the request presented no credential at all.
 //
-// The sign-in comes in the Authorization header and nowhere else. A request with more
-// than one Authorization line is refused, as the token endpoint refuses it, because the
-// lines may be read differently by whatever stands in front of the chain. A session that
-// a consumer's interceptor published from the query, a cookie or a header of its own is
-// refused even when the interceptor recorded the credential with
+// The sign-in comes in one of two places and nowhere else. On a chain with a header bearer it
+// comes in the Authorization header. A request with more than one Authorization line is
+// refused, as the token endpoint refuses it, because the lines may be read differently by
+// whatever stands in front of the chain.
+//
+// On a cookie chain (EnableSessionCookie) it is the session the built-in cookie session
+// published, which a browser page can present: the page can neither read the HttpOnly cookie
+// nor add an Authorization header beside it. The resume is a POST, so the cookie session has
+// judged the sign-in's CSRF token before publishing it. It is recognised by the mark that
+// cookie session sets (Exchange.cookieSession), and only while Session is still the session
+// it marked: a session a consumer's interceptor published, from its own cookie or anywhere
+// else, or assigned to Session in its place, is not it and is refused. So is the cookie
+// sign-in beside any Authorization line, or beside a credential a consumer's interceptor
+// recorded as presented: whoever sent either believed they were presenting it. The chain's
+// both-credentials guard refuses the first before either is read; this refusal holds the line
+// if a consumer's own interceptor stands before it.
+//
+// A session that a consumer's interceptor published from the query, a cookie or a header of
+// its own is refused even when the interceptor recorded the credential with
 // Exchange.RecordPresentedToken: recording says which credential authenticated, and the
 // resume endpoint still wants it presented where the protocol puts it. A consumer's own
 // bearer reaches this endpoint by reading the Authorization header.
 //
-// The session must be one the chain's manager holds, the built-in bearer's. A consumer's bearer
-// publishing one from another manager is not refused here, but confirmSignIn reads it as ended.
+// The session must be one the chain's manager holds, the built-in bearer's or cookie
+// session's. A consumer's bearer publishing one from another manager is not refused here, but
+// confirmSignIn reads it as ended.
 //
 // The provider's SignIn cannot say that a session owes a step, so that is judged here. The
 // gates ahead of this endpoint refuse such a session first on a chain enabling them, and
@@ -325,6 +340,14 @@ func (g *oidcResumeGroup) resumeSignIn(ex *Exchange) (*oidcprovider.SignIn, erro
 	}
 
 	s := ex.Session
+	if s != nil && s == ex.cookieSession {
+		if len(lines) > 0 || ex.bearerCredential != "" {
+			return nil, ErrAuthenticationRequired
+		}
+
+		return resumableSignIn(ex, s, g.assurance)
+	}
+
 	if s == nil || ex.bearerCredential == "" {
 		if ex.Authentication != nil || s != nil || len(lines) > 0 {
 			return nil, ErrAuthenticationRequired

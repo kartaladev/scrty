@@ -558,6 +558,7 @@ func TestSessionCookie_RoleSwitchInPasswordChange(t *testing.T) {
 
 		sessionOpts []session.Option
 		createOpts  []session.CreateOption
+		cookieOpts  []httpsec.SessionCookieOption
 
 		// prepare changes the stored sign-in before the request; nil marks it
 		// as owing a password change.
@@ -628,6 +629,36 @@ func TestSessionCookie_RoleSwitchInPasswordChange(t *testing.T) {
 			},
 		},
 		{
+			name:        "with the password change's rotation off, the switch's cookie carries the restored deadline",
+			sessionOpts: twelveHours,
+			createOpts:  []session.CreateOption{session.WithPersistentCookie()},
+			cookieOpts:  []httpsec.SessionCookieOption{httpsec.WithoutSessionRotation(httpsec.RotateOnPasswordChange)},
+			prepare: func(t *testing.T, f *fixture) {
+				t.Helper()
+
+				s, err := f.w.sessions.Load(t.Context(), f.w.signIn.ID)
+				require.NoError(t, err)
+				f.w.sessions.MarkRecoveryPending(s, 10*time.Minute, f.w.clk.Now())
+				s.PasswordChangePending = true
+				require.NoError(t, f.w.sessions.Save(t.Context(), s))
+			},
+			change: switchToAudit,
+			assert: func(t *testing.T, f *fixture, out served, last *http.Cookie) {
+				t.Helper()
+				require.NoError(t, out.err)
+				require.Len(t, out.rec.Header().Values("Set-Cookie"), 1, "only the switch re-sets the cookie")
+				assert.Equal(t, 43200, last.MaxAge,
+					"the deadline the change restores, not the recovery-lowered one the switch rotated from")
+
+				raw, err := f.w.store.Load(t.Context(), last.Value)
+				require.NoError(t, err)
+				assert.False(t, raw.PasswordChangePending)
+				assert.Equal(t, session.MFANone, raw.MFA)
+				assert.Equal(t, f.w.clk.Now().Add(12*time.Hour), raw.AbsoluteExpiresAt)
+				assert.Equal(t, "audit", raw.SelectedRole)
+			},
+		},
+		{
 			name: "a session the function puts on the exchange is not the one saved",
 			prepare: func(t *testing.T, f *fixture) {
 				t.Helper()
@@ -671,7 +702,7 @@ func TestSessionCookie_RoleSwitchInPasswordChange(t *testing.T) {
 			t.Parallel()
 
 			f := &fixture{}
-			f.w = newSwitchCookieWorldWith(t, tc.sessionOpts, tc.createOpts, nil,
+			f.w = newSwitchCookieWorldWith(t, tc.sessionOpts, tc.createOpts, tc.cookieOpts,
 				func(sessions *session.Sessions) []httpsec.Option {
 					return []httpsec.Option{httpsec.EnablePasswordChangeGate(sessions,
 						httpsec.WithPasswordChangeEndpoint("/orders", func(ex *httpsec.Exchange) error {
