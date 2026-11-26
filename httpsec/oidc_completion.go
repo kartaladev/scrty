@@ -299,7 +299,7 @@ func (i *oidcInterceptor) finishProviderSignIn(ex *Exchange, provider string, re
 	tail := i.loginTail(session.KeyBinding{})
 	tail.deliver = credentialDelivery{}
 
-	login := newRedemptionLogin(tail, signIn.out)
+	login := newRedemptionLogin(ex, tail, signIn.out)
 
 	in := postAuthenticationInput(&signIn.principal, factor.OIDC, "", signIn.passwordChangedAt, i.now())
 	in.FederatedAssurance = signIn.out.federated

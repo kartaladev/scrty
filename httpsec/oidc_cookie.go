@@ -74,7 +74,7 @@ func (i *oidcInterceptor) completeCookieSignIn(ex *Exchange, provider string, re
 
 	// A browser returning from its provider carries no proof of a key, so the
 	// sign-in is bound to none.
-	login := newRedemptionLogin(i.loginTail(session.KeyBinding{}), out)
+	login := newRedemptionLogin(ex, i.loginTail(session.KeyBinding{}), out)
 
 	in := postAuthenticationInput(&principal, factor.OIDC, "", details.PasswordChangedAt, i.now())
 	in.FederatedAssurance = out.federated

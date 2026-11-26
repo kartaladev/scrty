@@ -281,6 +281,12 @@ type loginTailDeps struct {
 	// context, which a redeemer may not have passed on.
 	csrfToken bool
 
+	// persistent is whether the sign-in chose a persistent cookie
+	// (WithSessionCookiePersistence), asked on the sign-in's request by
+	// completeLogin or newRedemptionLogin before anything is built, and never
+	// set by a first factor itself.
+	persistent bool
+
 	// afterFailures is whether the login's identifier had recent failed
 	// attempts, so its success is reported as
 	// event.AuthnLoginSuccessAfterFail. Only form login knows it.
@@ -518,6 +524,10 @@ func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input, opts ...s
 		return "", err
 	}
 
+	// Asked once, on the sign-in's own request, before anything is built or
+	// stored.
+	deps.persistent = deps.deliver.persists(ex)
+
 	login, err := prepareLogin(ex.Context(), deps, in, opts...)
 	if err != nil {
 		return "", err
@@ -652,6 +662,12 @@ func prepareLogin(
 	// must present, in the same creating write.
 	if deps.csrfToken {
 		create = append(create, session.WithCSRFToken())
+	}
+	// A sign-in that chose a persistent cookie records the choice in the same
+	// creating write, so every rotation carries it and its cookies keep their
+	// Max-Age.
+	if deps.persistent {
+		create = append(create, session.WithPersistentCookie())
 	}
 	if ev := in.FederatedAssurance; ev.Asserted() {
 		create = append(create, session.WithFederatedAssurance(ev.AMR(), ev.ACR()))

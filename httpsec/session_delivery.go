@@ -5,12 +5,15 @@ import (
 	"errors"
 	"log/slog"
 	"maps"
+	"math"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/kartaladev/scrty/internal/detach"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/session"
 )
@@ -157,7 +160,8 @@ var (
 // copied to the response only once it returned nothing for the body, no
 // error, no body of its own, the chain's own session cookie exactly
 // (sessionCookie.cookie: name, value, path, domain, SameSite, Secure,
-// HttpOnly and Max-Age), and the identifier nowhere else. Any other outcome is
+// HttpOnly and Max-Age, the last allowed to be one second under; see
+// sameCookie), and the identifier nowhere else. Any other outcome is
 // an issuing failure, and the response is left as it was. The identifier is
 // read before the delivery runs, so nothing it does to its copy changes what
 // it is judged against, what the endpoint publishes or what the store holds.
@@ -254,12 +258,123 @@ func copySession(s *session.Session) *session.Session {
 }
 
 // maxAgeOf is the Max-Age the cookie of sess is set with, read as
-// sessionCookie.cookie reads it: zero, so the browser keeps the cookie for
-// its own session and the server's idle and absolute deadlines decide how
-// long the sign-in lasts. It is the seam a persistent sign-in's Max-Age is
-// computed at.
-func (*sessionCookie) maxAgeOf(*session.Session) int {
-	return 0
+// sessionCookie.cookie reads it. A sign-in that did not choose a persistent
+// cookie gets zero, so the browser keeps the cookie for its own session and
+// the server's idle and absolute deadlines decide how long the sign-in lasts.
+// One that did (session.Session.PersistentCookie) gets the seconds from the
+// chain's clock to its absolute deadline, rounded up, and at least 1 however
+// close or past the deadline is: zero would set no Max-Age, and a negative
+// one would expire the very cookie being set. The server's deadlines still
+// decide whether the session loads.
+func (s *sessionCookie) maxAgeOf(sess *session.Session) int {
+	if !sess.PersistentCookie || s.ref.now == nil {
+		return 0
+	}
+
+	left := sess.AbsoluteExpiresAt.Sub(s.ref.now())
+	if left <= time.Second {
+		return 1
+	}
+
+	// Capped before rounding, so the count fits an int on every platform and
+	// the rounding below cannot overflow a deadline centuries away (Sub
+	// saturates at about 292 years): browsers cap a cookie's lifetime far
+	// below it anyway.
+	if left >= time.Duration(math.MaxInt32)*time.Second {
+		return math.MaxInt32
+	}
+
+	// Rounded up in whole seconds.
+	return int((left + time.Second - 1) / time.Second)
+}
+
+// privilegeRotationGrace is the grace window the cookie session's rotations at
+// a privilege change (an active-role switch, a password change) keep the old
+// identifier working for: the renewal endpoint's (WithRenewalGrace) when the
+// chain has one, so one chain has one window, and session.DefaultRenewalGrace
+// otherwise.
+func privilegeRotationGrace(renewal *sessionRenewal) time.Duration {
+	if renewal != nil {
+		return renewal.grace
+	}
+
+	return defaultRenewalGrace
+}
+
+// cookieRotationTexts are the fixed texts a cookie rotation that reached no
+// verdict is answered with: failed for a dependency failure, ended for the
+// request's own end.
+type cookieRotationTexts struct{ failed, ended string }
+
+// rotateCookie rotates current, the cookie session a request is on, into a
+// successor in the same sign-in that keeps current's identifier working for
+// grace (session.Sessions.RotateWithGrace), and re-sets the session cookie to
+// it on ex's response through deliver. It returns the successor. ctx is the
+// context the rotation is written on.
+//
+// It is the one place a privilege change on a cookie chain rotates, so a
+// consumer's opt-out of a rotation is decided by its callers, before it runs.
+//
+// deadline, when not zero, is the absolute deadline the session will have once
+// the caller has saved its change, which is later than the successor's own
+// when the change restores deadlines a recovery lowered. The cookie, and the
+// session a consumer's delivery is handed, carry it, so a persistent cookie's
+// Max-Age is that of the session the sign-in is left with, not of the
+// confinement it is leaving. The stored successor is not changed here.
+//
+// A rotation that fails stores nothing and sets no cookie, so current's
+// identifier keeps working: a refusal (the session gone, expired or reused,
+// or a concurrent rotation won) as refusedRenewal words it, the request's own
+// end matching ctx's error behind texts.ended, and anything else a dependency
+// failure behind texts.failed, its cause reachable through errors.Is. A cookie
+// that cannot be delivered ends the sign-in (deliver).
+func (d credentialDelivery) rotateCookie(
+	ctx context.Context, ex *Exchange, sessions *session.Sessions, current *session.Session,
+	grace time.Duration, deadline time.Time, texts cookieRotationTexts,
+) (*session.Session, error) {
+	successor, _, err := sessions.RotateWithGrace(ctx, current, grace)
+	if err != nil {
+		if refusal := refusedRenewal(err); refusal != nil {
+			return nil, refusal
+		}
+
+		if hangup.ByCaller(ctx, err) {
+			return nil, diag.Wrap(err, texts.ended, ctx.Err())
+		}
+
+		return nil, diag.Wrap(err, texts.failed)
+	}
+
+	delivered := successor
+	if !deadline.IsZero() {
+		withDeadline := *successor
+		withDeadline.AbsoluteExpiresAt = deadline
+		delivered = &withDeadline
+	}
+
+	if _, err := d.deliver(ex, sessions, delivered, ""); err != nil { //nolint:contextcheck // the cookie is delivered on the request's own exchange, as every issuing endpoint delivers it
+		return nil, err
+	}
+
+	return successor, nil
+}
+
+// persists reports whether the sign-in ex is creating chose a persistent
+// cookie (WithSessionCookiePersistence): false on a chain without the cookie
+// session or without a decision. The decision is asked once per call.
+func (d credentialDelivery) persists(ex *Exchange) bool {
+	return d.cookie != nil && d.cookie.persist != nil && d.cookie.persist(ex)
+}
+
+// signInOptions are the create options a new sign-in on ex takes from the
+// cookie session: session.WithPersistentCookie when it chose a persistent
+// cookie, and none otherwise.
+func (d credentialDelivery) signInOptions(ex *Exchange) []session.CreateOption {
+	if d.persists(ex) {
+		return []session.CreateOption{session.WithPersistentCookie()}
+	}
+
+	return nil
 }
 
 // stagedWriter is the writer a consumer's SessionDelivery writes to. It keeps
@@ -411,11 +526,24 @@ func (w *stagedWriter) check(want *Cookie, id string) error {
 	return nil
 }
 
-// sameCookie reports whether a and b would set the same cookie.
-func sameCookie(a, b *Cookie) bool {
+// sameCookie reports whether got, the cookie a delivery set, is the cookie
+// want the chain would set. Every attribute must match, with one tolerance: a
+// delivery that works out Max-Age by reading a clock itself reads it a moment
+// after the chain did and may cross a second's boundary, so got's Max-Age may
+// also be exactly one second under want's, but never below 1: that would be
+// no Max-Age at all.
+func sameCookie(got, want *Cookie) bool {
+	a, b := got, want
+
 	return a.Name == b.Name && a.Value == b.Value && a.Path == b.Path && a.Domain == b.Domain &&
-		a.Expires.Equal(b.Expires) && a.MaxAge == b.MaxAge && a.Secure == b.Secure &&
+		a.Expires.Equal(b.Expires) && maxAgeWithinASecond(a.MaxAge, b.MaxAge) && a.Secure == b.Secure &&
 		a.HttpOnly == b.HttpOnly && a.SameSite == b.SameSite && a.Partitioned == b.Partitioned
+}
+
+// maxAgeWithinASecond reports whether got is want, or one second under it
+// when that leaves at least 1. A want of zero (no Max-Age) accepts only zero.
+func maxAgeWithinASecond(got, want int) bool {
+	return got == want || (want > 1 && got == want-1)
 }
 
 // carries reports whether any text of c contains id.
@@ -445,7 +573,9 @@ func (w *stagedWriter) replay(rw ResponseWriter) {
 // A delivery is trusted code: the chain's check of what it wrote guards
 // against its mistakes, not against a hostile delivery. The identifier is
 // matched literally, so an encoded copy of it (base64 in a header, say) is
-// not detected.
+// not detected. A delivery must not switch the active role (SwitchActiveRole):
+// a role switch delivers through it, and switching again from inside would
+// wait on itself.
 type SessionDelivery interface {
 	// Deliver writes the session cookie carrying credential, the identifier of
 	// s, which the chain has just stored, through ex.Writer, and returns what
@@ -475,6 +605,15 @@ type SessionDelivery interface {
 	// cookie, set a cookie through a raw Set-Cookie header, write a body or a
 	// status, or put credential anywhere else, in a header's name or value or
 	// in another cookie's name, value or path.
+	//
+	// Max-Age is none for a session whose s.PersistentCookie is false, and
+	// otherwise the seconds from the chain's clock to s.AbsoluteExpiresAt,
+	// rounded up and at least 1, read by the chain just before Deliver runs.
+	// A Deliver that works it out by reading a clock itself reads it later,
+	// and across a second's boundary comes one second short: the chain
+	// accepts a Max-Age equal to that value or exactly one second under it,
+	// never below 1. Any other Max-Age, and a Max-Age on a cookie that has
+	// none, is refused as an altered cookie.
 	Deliver(ex *Exchange, s *session.Session, credential string) (bodyCredential string, err error)
 }
 
@@ -482,7 +621,8 @@ type SessionDelivery interface {
 // cookie with d, which every issuing endpoint then hands its stored session
 // to: form login, magic link redemption, the federated callback,
 // passwordless passkey login, second-factor verification, re-authentication,
-// recovery completion and session renewal.
+// recovery completion, session renewal, and the rotations at an active-role
+// switch and at a password change.
 //
 // Default: the chain sets the session cookie itself, under the name and
 // attributes the other options settled, and leaves the body without a

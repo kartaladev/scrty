@@ -82,6 +82,10 @@ func TestPrefersHTML(t *testing.T) {
 		{name: "q of 0.001 is valid and ranks above 0", accept: []string{"text/html;q=0.001"}, assert: html},
 		{name: "q of 0.000 refuses HTML", accept: []string{"text/html;q=0.000, */*"}, assert: json},
 		{name: "duplicated parameter", accept: []string{"text/html;q=1;q=0.5"}, assert: json},
+		{name: "quoted q", accept: []string{`text/html;q="0.5"`}, assert: json},
+		{name: "quoted q of 1", accept: []string{`text/html;q="1", application/json;q=0.5`}, assert: json},
+		{name: "quoted q under a spaced, upper-case name", accept: []string{`text/html; Q = "0.5"`}, assert: json},
+		{name: "quoted other parameter is still valid", accept: []string{`text/html;level="1"`}, assert: html},
 		{name: "too many ranges", accept: []string{strings.Repeat("a/b,", 200) + "text/html"}, assert: json},
 		{name: "unparsable content type falls to Accept", contentType: ";;", accept: []string{"text/html"}, assert: html},
 	}
@@ -100,6 +104,62 @@ func TestPrefersHTML(t *testing.T) {
 			}
 
 			tc.assert(t, prefersHTML(NewHTTPRequest(req)))
+		})
+	}
+}
+
+// TestJSONStringMember pins how a JSON sign-in body names its destination:
+// the one top-level string member of the name, wherever it sits among other
+// members of any shape, with JSON's own whitespace and escapes, and "" for a
+// body that is not one object, names it more than once or not as a string.
+func TestJSONStringMember(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		body   string
+		assert func(t *testing.T, got string)
+	}
+
+	is := func(want string) func(*testing.T, string) {
+		return func(t *testing.T, got string) {
+			t.Helper()
+			assert.Equal(t, want, got)
+		}
+	}
+
+	cases := []testCase{
+		{name: "bare member", body: `{"next":"/orders"}`, assert: is("/orders")},
+		{
+			name: "surrounding CR, LF, tab and space", body: "\r\n\t {\r\n\t\"next\" :\t\"/orders\"\r\n} \t\r\n",
+			assert: is("/orders"),
+		},
+		{
+			name: "nested object and array before", body: `{"a":{"next":"/inner","b":[1,{"c":2}]},"next":"/orders"}`,
+			assert: is("/orders"),
+		},
+		{
+			name: "nested array and object after", body: `{"next":"/orders","a":[{"next":"/inner"},[["x"]]]}`,
+			assert: is("/orders"),
+		},
+		{name: "the name only nested", body: `{"a":{"next":"/inner"}}`, assert: is("")},
+		{name: "escaped slashes", body: `{"next":"\/orders\/2"}`, assert: is("/orders/2")},
+		{name: "escaped name", body: `{"next":"/orders"}`, assert: is("/orders")},
+		{name: "unicode-escaped slash", body: `{"next":"/orders"}`, assert: is("/orders")},
+		{name: "not a string", body: `{"next":["/orders"]}`, assert: is("")},
+		{name: "null", body: `{"next":null}`, assert: is("")},
+		{name: "repeated", body: `{"next":"/orders","next":"/orders"}`, assert: is("")},
+		{name: "top-level array", body: `[{"next":"/orders"}]`, assert: is("")},
+		{name: "truncated", body: `{"next":"/orders"`, assert: is("")},
+		{name: "trailing value", body: `{"next":"/orders"} 1`, assert: is("")},
+		{name: "empty", body: ``, assert: is("")},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, jsonStringMember([]byte(tc.body), "next"))
 		})
 	}
 }

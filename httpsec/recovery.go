@@ -131,16 +131,18 @@ type recoveryInterceptor struct {
 // signInOptions are the attributes a recovery's sign-in is created with, as
 // every first factor's sign-in is (prepareLogin): the client address and user
 // agent the chain resolved for ctx, which the session manager records only
-// when it records sign-in metadata (signInMetadata), and the CSRF token its
-// unsafe cookie requests must present when the chain issues one. The recovery
-// core applies its own attributes after them.
-func (i *recoveryInterceptor) signInOptions(ctx context.Context) []session.CreateOption {
-	opts := []session.CreateOption{signInMetadata(ctx)}
+// when it records sign-in metadata (signInMetadata), the CSRF token its
+// unsafe cookie requests must present when the chain issues one, and the
+// persistent-cookie mark when the sign-in chose one
+// (WithSessionCookiePersistence, asked here once, on ex). The recovery core
+// applies its own attributes after them.
+func (i *recoveryInterceptor) signInOptions(ex *Exchange) []session.CreateOption {
+	opts := []session.CreateOption{signInMetadata(ex.Context())}
 	if i.csrfToken {
 		opts = append(opts, session.WithCSRFToken())
 	}
 
-	return opts
+	return append(opts, i.deliver.signInOptions(ex)...)
 }
 
 // resolvePaths places the five endpoints under base, from the paths the
@@ -456,7 +458,7 @@ func (i *recoveryInterceptor) complete(ex *Exchange) error {
 	}
 
 	req.Source = src.Addr()
-	req.SessionOptions = i.signInOptions(ctx)
+	req.SessionOptions = i.signInOptions(ex)
 
 	res, err := i.recoverer.Recover(ctx, req)
 	if err != nil {
@@ -864,7 +866,7 @@ func (i *recoveryInterceptor) finish(ex *Exchange) error {
 	}
 
 	res, err := i.recoverer.Finish(ex.Context(), token,
-		recovery.WithFinishKeyBinding(binding), recovery.WithFinishSessionOptions(i.signInOptions(ex.Context())...))
+		recovery.WithFinishKeyBinding(binding), recovery.WithFinishSessionOptions(i.signInOptions(ex)...))
 	if err != nil {
 		return err
 	}

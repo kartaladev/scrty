@@ -107,13 +107,13 @@ type browserWorld struct {
 	chain *httpsec.Chain
 }
 
-func newBrowserWorld(t *testing.T) *browserWorld {
+func newBrowserWorld(t *testing.T, opts ...session.Option) *browserWorld {
 	t.Helper()
 
 	clk := clockwork.NewFakeClockAt(time.Now().Truncate(time.Minute))
 	store := &browserStore{Store: must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))}
 
-	sessions, err := session.New(session.WithClock(clk), session.WithStore(store))
+	sessions, err := session.New(append([]session.Option{session.WithClock(clk), session.WithStore(store)}, opts...)...)
 	require.NoError(t, err)
 
 	w := &browserWorld{

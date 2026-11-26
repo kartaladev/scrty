@@ -41,6 +41,12 @@ type sessionResolver struct {
 	// let through to it, and to nothing else.
 	renewal *sessionRenewal
 
+	// cookie is the chain's cookie session when this core resolves the
+	// session cookie, and nil for a bearer. A role switch on a session it
+	// resolved rotates the session and re-sets the cookie (Chain.
+	// SwitchActiveRole).
+	cookie *sessionCookie
+
 	// admit, when set, judges the loaded session before its user is reloaded
 	// or anything is published; an error it returns is the request's answer.
 	// Both bearers judge the session's key binding here, and the signed bearer
@@ -212,7 +218,17 @@ func (r *sessionResolver) resolve(ex *Exchange, id string) error {
 	}
 
 	if switching != nil {
-		ex.SetContext(withRoleSource(ex.Context(), &roleSource{chain: switching, resolver: r, session: s}))
+		src := &roleSource{chain: switching, resolver: r, session: s, current: s}
+
+		// A cookie session's switch rotates it and re-sets the cookie on this
+		// request's response, so the source keeps the exchange, and the run
+		// that tells whether the response is still being written.
+		if r.cookie != nil {
+			src.ex = ex
+			src.run = runOf(ex.Context(), switching)
+		}
+
+		ex.SetContext(withRoleSource(ex.Context(), src))
 	}
 
 	return ex.evaluatePerRequest(&r.phase, s, principal, details.PasswordChangedAt, now)

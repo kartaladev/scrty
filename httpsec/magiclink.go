@@ -502,7 +502,7 @@ func (i *magicLinkInterceptor) consume(ex *Exchange) error {
 	// passed and before the redeemer consumes the link, so a credential that
 	// cannot be issued leaves the link redeemable. The session is stored only
 	// once the link is spent, below.
-	login := newRedemptionLogin(loginTailDeps{
+	login := newRedemptionLogin(ex, loginTailDeps{
 		engine:            i.engine,
 		sessions:          i.sessions,
 		tokens:            i.tokens,

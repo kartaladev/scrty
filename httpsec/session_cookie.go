@@ -59,6 +59,10 @@ type sessionCookie struct {
 	// (WithSessionCookieNextParam, WithSessionCookieRedirects).
 	nextParam string
 	redirects map[string]struct{}
+
+	// persist decides, at each new sign-in, whether its cookie persists
+	// (WithSessionCookiePersistence), nil for never.
+	persist func(*Exchange) bool
 }
 
 // AuthenticatesByCookie marks the cookie session as a CookieAuthenticator, so
@@ -119,6 +123,7 @@ func (s *sessionCookie) wire(c *Chain) {
 		sessions: s.sessions,
 		users:    s.users,
 		log:      c.logger,
+		cookie:   s,
 		phase: perRequestPhase{
 			engine:            c.engine,
 			sessions:          s.sessions,
@@ -306,7 +311,8 @@ func presentedCookie(r Request, name string) (value string, claimed bool) {
 // cookie is DefaultSessionCookieName, set with Path=/, Secure, HttpOnly and
 // SameSite=Lax, with no Domain and no Max-Age (WithSessionCookieName,
 // WithSessionCookieSameSite and WithSessionCookieDomain replace what may be
-// replaced; Secure, HttpOnly and the path cannot be). It runs at
+// replaced, and WithSessionCookiePersistence lets a sign-in's cookie carry a
+// Max-Age; Secure, HttpOnly and the path cannot be). It runs at
 // OrderBearerToken.
 //
 // A chain delivers either cookies or tokens: New refuses it together with
@@ -503,6 +509,50 @@ func WithSessionCookieLimiter(limiter ratelimit.Limiter) SessionCookieOption {
 		}
 
 		s.ref.limiter = limiter
+
+		return nil
+	}
+}
+
+// WithSessionCookiePersistence asks decide, at every new sign-in on the chain,
+// whether that sign-in's cookie persists across browser restarts ("remember
+// me"). A chain-wide choice is func(*Exchange) bool { return true }.
+//
+// Default: no decision, so every session cookie is a browser-session cookie,
+// set with no Max-Age and no Expires, which the browser drops when it closes.
+//
+// decide is asked once per sign-in, on the sign-in's own request, before its
+// session is created: form login, magic link redemption, the federated
+// callback, passwordless passkey login and recovery completion. It runs on
+// the request's goroutine and must not write to the response; a panic in it
+// is the consumer's, and nothing is stored. When it returns true the session
+// is created with session.WithPersistentCookie in its one creating write, and
+// every cookie of that sign-in, the ones re-set by second-factor
+// verification, re-authentication, renewal, a role switch and a password
+// change included, carries Max-Age: the seconds from the chain's clock to the
+// session's absolute deadline, rounded up and at least 1. A rotation asks
+// nothing, since the session records the choice.
+//
+// The line: Max-Age is never set past the absolute deadline the session has,
+// or will have once the request's change is saved (a password change that
+// ends a recovery gives the session its origin deadline back, and the cookie
+// is set for that). A deadline lowered later without a new cookie, for example
+// by a per-request policy, leaves the cookie longer-lived than the session,
+// and so does a password change that ends a recovery but is refused or fails
+// to save: the session keeps its lowered deadline.
+// The server's idle and absolute deadlines stay authoritative: it refuses the
+// session and expires the cookie, like any other that has ended. On a
+// shared machine a persistent cookie keeps the user signed in after the
+// browser closes, which is why it is opt-in. A nil decide is a configuration
+// error from New.
+func WithSessionCookiePersistence(decide func(*Exchange) bool) SessionCookieOption {
+	return func(s *sessionCookie) error {
+		if decide == nil {
+			return newConfigError("WithSessionCookiePersistence was given no decision; leave it out for " +
+				"browser-session cookies, or decide true for every sign-in")
+		}
+
+		s.persist = decide
 
 		return nil
 	}

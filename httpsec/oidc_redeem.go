@@ -61,7 +61,7 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 	// and before the redeemer consumes the code, so a credential that cannot
 	// be issued leaves the code redeemable. The session is stored only once
 	// the code is spent, below.
-	login := newRedemptionLogin(i.loginTail(binding), out)
+	login := newRedemptionLogin(ex, i.loginTail(binding), out)
 
 	// One check, as the redeemer has always been handed: the refusal check,
 	// then, only once it has passed, the issuing step.

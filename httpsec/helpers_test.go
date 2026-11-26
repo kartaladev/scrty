@@ -3544,6 +3544,9 @@ type recoveryHarness struct {
 	// every credential the chain issues is the session cookie.
 	cookie bool
 
+	// cookieOpts are the cookie session's options when cookie is set.
+	cookieOpts []httpsec.SessionCookieOption
+
 	chain *httpsec.Chain
 
 	// allow and coreCheckCalls are state a case's consumer hooks share with
@@ -3670,7 +3673,7 @@ func (h *recoveryHarness) options(t *testing.T) []httpsec.Option {
 
 	if h.cookie {
 		opts = append(opts, httpsec.WithoutCSRFProtection(),
-			httpsec.EnableSessionCookie(httpsec.SessionBearerDeps{Sessions: h.sessions, Users: h.users}))
+			httpsec.EnableSessionCookie(httpsec.SessionBearerDeps{Sessions: h.sessions, Users: h.users}, h.cookieOpts...))
 	}
 
 	if !h.noBinding {

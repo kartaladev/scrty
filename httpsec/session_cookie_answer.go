@@ -55,10 +55,10 @@ type cookieSignInDocument struct {
 // Each type's rank is the q-value of the most specific range that matches it
 // (type/subtype, then type/*, then */*), 0 when none does; parameters other
 // than q are ignored. A tie, an absent Accept, and one that does not parse (a
-// range that is not a media type, a q outside RFC 9110's qvalue grammar, a
-// parameter given twice, more than maxAcceptRanges ranges) answer JSON: a
-// script that cannot say what it wants is not sent a redirect it may not
-// follow.
+// range that is not a media type, a q outside RFC 9110's qvalue grammar or
+// given as a quoted string, a parameter given twice, more than
+// maxAcceptRanges ranges) answer JSON: a script that cannot say what it wants
+// is not sent a redirect it may not follow.
 func prefersHTML(r Request) bool {
 	if media, _, err := mime.ParseMediaType(r.Header("Content-Type")); err == nil {
 		if media == "application/x-www-form-urlencoded" || media == "multipart/form-data" {
@@ -122,12 +122,36 @@ func acceptRange(rng string) (media string, q float64, ok bool) {
 	q = 1
 
 	if raw, given := params["q"]; given {
+		// RFC 9110 writes a weight as a bare token, never a quoted string,
+		// which mime.ParseMediaType would unquote unseen; a quoted one is
+		// malformed.
+		if quotedWeight(rng) {
+			return "", 0, false
+		}
+
 		if q, ok = qvalue(raw); !ok {
 			return "", 0, false
 		}
 	}
 
 	return media, q, true
+}
+
+// quotedWeight reports whether rng gives its q parameter as a quoted string,
+// read from the raw range. A parameter list whose quoted value holds a ';'
+// may be split inside it, which can only report a quoted weight that is not
+// there: the range is then refused, the safe reading.
+func quotedWeight(rng string) bool {
+	_, params, _ := strings.Cut(rng, ";")
+
+	for param := range strings.SplitSeq(params, ";") {
+		name, value, _ := strings.Cut(param, "=")
+		if strings.EqualFold(strings.TrimSpace(name), "q") && strings.HasPrefix(strings.TrimSpace(value), `"`) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // qvalue parses a q-value by RFC 9110's grammar: "0", optionally followed by
