@@ -474,9 +474,20 @@ grant checks or local users, or both. This change reverses that decision (user d
   to its issuer is refused; a remote-issuer source naming its issuer is refused, so only
   `FromProvider` trusts its tokens; its opaque access and refresh tokens are routed to the provider
   source and never to introspection.
+- **One provider per resource server:** a resource server given `FromProvider` twice is refused
+  with `ErrConfig`. A provider's opaque tokens are routed by their shape (`at.`, `rt.`), so the first
+  provider source would claim every opaque token and the second provider's would always be refused
+  (found in the C10 review). Two resource servers on one chain may each trust a different provider.
+- **Binding is checked across chains:** a token chain whose binding cannot check the tokens a
+  trusted provider issues (the provider binds to DPoP and the chain enables only certificate
+  binding, or the reverse) is refused with `ErrConfig` at construction, as the same mismatch is on
+  the provider's own chain. Without it the chain builds and refuses every token at request time.
 - **Not checked:** that some chain serves `op`. Chains are built independently and cannot see each
   other, and an unserved provider still verifies correctly against its stores.
 - **Override:** `FromIssuer` or `FromIntrospection` stay available for a provider in another binary.
+- **Mounting:** a token chain that only verifies access tokens has no built-in endpoint, so it
+  takes no `WithBasePath` (which refuses a chain with nothing to move); it is mounted under a mux
+  prefix such as `/api/`, with `WithPathPrefix("/api/")` on its resource server.
 - **Alternative:** a dedicated option naming the other chain (`FromChainProvider(chain)`). Rejected:
   the provider object already carries everything verification needs, and a second spelling of one
   source adds API without adding a check.
@@ -525,6 +536,8 @@ grant checks or local users, or both. This change reverses that decision (user d
 | A CSRF exemption covering the resume on a cookie chain running the provider (exact, `*` segment, escaped spelling, base path, renamed prefix) | Wiring / Security | Handled, tested | `ErrConfig` from `New` naming the resume endpoint; the same exemption builds on a header-bearer chain |
 | `FromProvider` given a provider other than the chain's own | Wiring | Handled, tested | `ErrConfig` from `New`, as before |
 | `FromProvider` on a chain without a provider, with a provider no chain serves | Configuration | Accepted | tokens still verify against the provider's stores; such a provider issues nothing here, so nothing is accepted that another verifier would refuse |
+| One resource server given `FromProvider` twice, naming different providers | Wiring | Handled, tested | `ErrConfig` from `New`; without it the second provider's opaque tokens were always refused |
+| A token chain whose binding cannot check the binding a trusted provider uses | Wiring | Handled, tested | `ErrConfig` from `New`, as on the provider's own chain |
 | A provider token larger than the default bound sent to the token chain | Input | Handled, tested | accepted; the bound covers the trusted provider's largest token |
 | A remote-issuer source naming a trusted provider's issuer, or a resource identifier equal to it | Wiring | Handled, tested | `ErrConfig` from `New` |
 | A trusted provider's opaque or refresh token on a path whose resource server has only an introspection source | Security | Handled, tested | refused as an invalid token; nothing is sent to the introspection endpoint |
