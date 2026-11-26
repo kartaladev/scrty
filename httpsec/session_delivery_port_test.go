@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -382,6 +383,53 @@ func TestSessionCookie_DeliveryPort(t *testing.T) {
 				ex := httpsec.NewExchange(t.Context(), httpsec.NewHTTPRequest(req), httpsec.NewHTTPResponseWriter(r.rec))
 
 				require.PanicsWithValue(t, errDeliveryPanic, func() { _ = run(ex) }, "the consumer's panic is not swallowed")
+
+				return served{rec: r.rec}
+			},
+			assert: func(t *testing.T, r *deliveryRun) {
+				t.Helper()
+				assert.Empty(t, r.rec.Header().Values("Set-Cookie"), "no cookie reaches the response")
+				assert.Empty(t, r.rec.Header().Values("X-Audited"), "nothing the delivery wrote reaches the response")
+				assert.Empty(t, r.rec.Body.String())
+				assert.Zero(t, r.w.active(t), "the sign-in the delivery was handed is ended")
+				assert.True(t, r.w.store.endBounded, "on a bounded context")
+				idsEnded(t, r.w.sessions, r.d.seen()...)
+			},
+		},
+		{
+			name:       "a delivery that ends its goroutine ends the sign-in and writes nothing",
+			misbehaves: onPath(httpsec.DefaultLoginPath),
+			misbehave: func(_ *auditDelivery, ex *httpsec.Exchange, _ *session.Session, credential string) (string, error) {
+				ex.Writer.SetCookie(sessionCookieFor(credential))
+				ex.Writer.SetHeader("X-Audited", "yes")
+
+				runtime.Goexit()
+
+				return "", nil
+			},
+			act: func(t *testing.T, r *deliveryRun) served {
+				r.rec = httptest.NewRecorder()
+				req := postValues(t.Context(), httpsec.DefaultLoginPath, e2eSource, url.Values{
+					httpsec.DefaultLoginUsernameParam: {e2eAddress},
+					httpsec.DefaultLoginPasswordParam: {e2ePassword},
+				})
+				run := r.w.chain.Assemble(func(*httpsec.Exchange) error { return nil })
+				ex := httpsec.NewExchange(t.Context(), httpsec.NewHTTPRequest(req), httpsec.NewHTTPResponseWriter(r.rec))
+
+				// Goexit ends the goroutine it runs on, so the request runs on
+				// one of its own, and the case waits for it to end.
+				returned := make(chan bool, 1)
+				done := make(chan struct{})
+
+				go func() {
+					defer close(done)
+
+					_ = run(ex)
+					returned <- true
+				}()
+
+				<-done
+				require.Empty(t, returned, "the request's goroutine ended inside the delivery")
 
 				return served{rec: r.rec}
 			},

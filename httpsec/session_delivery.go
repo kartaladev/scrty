@@ -17,7 +17,8 @@ import (
 
 // credentialDelivery hands out the credential an issuing endpoint issued for
 // a session it has just stored: form login, magic link redemption, federated
-// handoff redemption, passwordless passkey login, second-factor
+// handoff redemption or, on a cookie chain, the federated callback,
+// passwordless passkey login, second-factor
 // verification, re-authentication, recovery completion and session renewal
 // all hand theirs out through it, once the session is stored and before
 // anything publishes or reports it.
@@ -64,8 +65,12 @@ func (c *config) delivery() credentialDelivery {
 // included when it rotated: the client never learns the stored identifier,
 // and the delivery has seen it, so leaving it live would leave a sign-in
 // nobody holds that whoever reads the delivery's records could use. The end
-// is written on a context the client's hang-up does not cancel. An end that
-// fails is logged, and the issuing failure is returned all the same.
+// is written on a context the client's hang-up does not cancel, bounded by
+// the revocation timeout logout's revocation uses (detach.RevocationTimeout),
+// so a store that hangs cannot hold the request for ever. It also runs when
+// the delivery panics, before the panic goes on with its value, and when it
+// ends its goroutine (runtime.Goexit). An end that fails is logged, and the
+// issuing failure is returned all the same.
 func (d credentialDelivery) deliver(
 	ex *Exchange, sessions *session.Sessions, s *session.Session, credential string,
 ) (string, error) {
@@ -204,15 +209,26 @@ func (s *sessionCookie) consumerDelivery(
 }
 
 // detachedCopy returns the exchange a consumer's delivery is handed: staged
-// is its writer for good, its session is a copy, and it shares no per-request
-// state with ex. The per-request phase is dropped and the stack of runs is
-// copied, so nothing the delivery does through it reaches the request's own
-// exchange, the store or the chain's policies, and PublishSession and
-// EvaluatePerRequest refuse on it (Exchange.detached).
+// is its writer for good, its session and its authentication result are
+// copies, and it shares no per-request state with ex. The authentication
+// result is copied shallowly: what its fields point to (the principal) is
+// still shared, so replacing a field on the copy is safe and editing the
+// principal in place is not. The per-request phase is dropped and the stack
+// of runs is copied, so nothing the delivery does through it reaches the
+// request's own exchange, the store or the chain's policies, and
+// PublishSession and EvaluatePerRequest refuse on it (Exchange.detached).
 func detachedCopy(ex *Exchange, staged *stagedWriter) *Exchange {
 	port := *ex
 	port.Writer = staged
 	port.Session = copySession(ex.Session)
+
+	if ex.Authentication != nil {
+		// A shallow copy: the delivery may replace the copy's fields, the
+		// caller among them, without reaching the request's own result.
+		authn := *ex.Authentication
+		port.Authentication = &authn
+	}
+
 	port.perRequest = nil
 	port.detached = true
 	port.extra = slices.Clone(ex.extra)
@@ -447,7 +463,9 @@ type SessionDelivery interface {
 	// write made after Deliver returned, on a goroutine it started or through
 	// an exchange it kept, goes nowhere; and changing s changes neither what
 	// the chain judges the delivery against nor the session it stores and
-	// publishes. Deliver runs on the request's goroutine.
+	// publishes. ex.Authentication is a shallow copy: the principal it points
+	// to is shared with the request, so Deliver must not edit the principal in
+	// place. Deliver runs on the request's goroutine.
 	//
 	// What Deliver may do: set the cookie the way the chain would (credential
 	// as the value, the chain's own name, path, domain, SameSite, Secure,
@@ -462,9 +480,9 @@ type SessionDelivery interface {
 
 // WithSessionDelivery replaces how the cookie chain writes a new session's
 // cookie with d, which every issuing endpoint then hands its stored session
-// to: form login, magic link and federated handoff redemption, passwordless
-// passkey login, second-factor verification, re-authentication, recovery
-// completion and session renewal.
+// to: form login, magic link redemption, the federated callback,
+// passwordless passkey login, second-factor verification, re-authentication,
+// recovery completion and session renewal.
 //
 // Default: the chain sets the session cookie itself, under the name and
 // attributes the other options settled, and leaves the body without a

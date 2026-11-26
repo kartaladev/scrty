@@ -78,8 +78,10 @@ type mfaInterceptor struct {
 	// session cookie on a cookie chain, unchanged for the body otherwise.
 	deliver credentialDelivery
 
-	// respond writes the response a successful verification answers with.
-	respond MFAResponder
+	// respond writes the response a successful verification answers with,
+	// and respondSet is whether the consumer replaced it (WithMFAResponder).
+	respond    MFAResponder
+	respondSet bool
 
 	// throttleOpts are what the consumer's MFA options asked of the throttle.
 	// The throttle itself is built once the chain exists, because its logger
@@ -166,6 +168,8 @@ func (c *config) wireMFA() error {
 		i.sessions = c.sessions
 		i.issue = c.credentialIssuer(i.tokens)
 		i.deliver = c.delivery()
+		i.respond = signInResponder(i.deliver, i.respondSet, i.respond,
+			func(r MFAResult) *session.Session { return r.Session })
 		i.logoutPath = c.logoutPath
 
 		// The chain's sampler is built after every option has been applied,

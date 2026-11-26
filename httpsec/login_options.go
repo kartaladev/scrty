@@ -194,6 +194,8 @@ func EnableFormLogin(deps FormLoginDeps, opts ...LoginOption) Option {
 		c.wire(func(*Chain) {
 			l.issue = c.credentialIssuer(l.tokens)
 			l.deliver = c.delivery()
+			l.respond = signInResponder(l.deliver, l.respondSet, l.respond,
+				func(r LoginResult) *session.Session { return r.Session })
 		})
 		c.register(l, OrderFormLogin)
 
@@ -263,8 +265,14 @@ func WithLoginBodyLimit(limit int64) LoginOption {
 //
 // Default: a JSON document carrying the access token, its token type
 // (LoginResult.TokenType), an empty refresh token field and the session's idle
-// expiry. fn is called instead of the downstream
-// handler, because a login is this library's own endpoint.
+// expiry. On a cookie chain (EnableSessionCookie) the default is instead the
+// chain's negotiated answer: 303 See Other to the sign-in's destination for a
+// form post or a request preferring HTML, else 200 with
+// {"idle_expires_at": ...} and no credential.
+//
+// fn is called instead of the downstream handler, because a login is this
+// library's own endpoint, and on a cookie chain after the session cookie is
+// set.
 //
 // A nil responder is refused: a login that succeeded and wrote nothing answers
 // the caller with an empty 200, which reads as a success carrying no
@@ -277,6 +285,8 @@ func WithLoginResponder(fn LoginResponder) LoginOption {
 		}
 
 		l.respond = fn
+		l.respondSet = true
+
 		return nil
 	}
 }

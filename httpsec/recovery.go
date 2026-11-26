@@ -102,9 +102,14 @@ type recoveryInterceptor struct {
 
 	countRefusals bool
 	respond       RecoveryResponder
-	respondHold   RecoveryHoldResponder
-	respondCodes  RecoveryCodesResponder
-	respondCount  RecoveryCountResponder
+
+	// respondSet is whether the consumer replaced respond
+	// (WithRecoveryResponder); without it a cookie chain answers a completed
+	// recovery itself (sessionCookie.answerRecovery).
+	respondSet   bool
+	respondHold  RecoveryHoldResponder
+	respondCodes RecoveryCodesResponder
+	respondCount RecoveryCountResponder
 
 	// logInterval is the window the endpoints' own records are sampled over,
 	// and sampler the sampler built from it once the chain's logger is known.
@@ -262,6 +267,10 @@ func (i *recoveryInterceptor) resolve(c *config) error {
 
 	i.issueCredential = c.credentialIssuer(i.tokens)
 	i.deliver = c.delivery()
+
+	if !i.respondSet && i.deliver.cookie != nil {
+		i.respond = i.deliver.cookie.answerRecovery
+	}
 
 	// The chain's logger, clock and limiter factory first, so a
 	// recovery.WithLogger, recovery.WithClock or limiter option the consumer

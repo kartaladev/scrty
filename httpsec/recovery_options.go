@@ -565,7 +565,11 @@ func WithRecoveryTokens(tokens token.Generator) RecoveryOption {
 //
 // Default: 200 with the JSON document {"access_token","expires_at",
 // "recovery_codes","remaining","low"}, where remaining and low are the
-// core's count (recovery.Result.Remaining). Whichever responder runs, the
+// core's count (recovery.Result.Remaining). On a cookie chain
+// (EnableSessionCookie) the default carries no credential: 200 with
+// {"idle_expires_at","recovery_codes","remaining","low"}, or, only when no
+// saved codes were reissued and the request is a form post or prefers HTML,
+// 303 See Other to the sign-in's destination. Whichever responder runs, the
 // endpoint has already set Cache-Control: no-store, which fn may replace. A nil
 // responder is refused: a recovery that succeeded and wrote nothing would
 // leave the caller with no credential and no new codes.
@@ -577,6 +581,7 @@ func WithRecoveryResponder(fn RecoveryResponder) RecoveryOption {
 		}
 
 		i.respond = fn
+		i.respondSet = true
 
 		return nil
 	}

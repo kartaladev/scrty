@@ -53,6 +53,12 @@ type sessionCookie struct {
 	// delivery is the consumer's SessionDelivery, nil for the default, which
 	// sets the cookie itself (credentialDelivery).
 	delivery SessionDelivery
+
+	// nextParam is the field a sign-in names its destination in, and
+	// redirects the absolute targets the consumer allowed it to be sent to
+	// (WithSessionCookieNextParam, WithSessionCookieRedirects).
+	nextParam string
+	redirects map[string]struct{}
 }
 
 // AuthenticatesByCookie marks the cookie session as a CookieAuthenticator, so
@@ -309,14 +315,30 @@ func presentedCookie(r Request, name string) (value string, claimed bool) {
 // WithBasePath. It is a CookieAuthenticator, so New also refuses it without
 // EnableCSRFProtection or the explicit WithoutCSRFProtection.
 //
-// Every issuing endpoint on the chain (form login, magic link and federated
-// handoff redemption, passwordless passkey login, second-factor
+// Every issuing endpoint on the chain (form login, magic link redemption,
+// the federated callback, passwordless passkey login, second-factor
 // verification, re-authentication, recovery completion, session renewal)
 // takes no token generator: once it has stored the session, it sets the
 // cookie to the session's identifier and writes no credential to the body
 // or any other header, and a challenge it raises carries the pending session
 // and an empty Token. WithSessionDelivery replaces how the cookie is
-// written, within that line.
+// written, within that line. The federated login completes in its callback
+// (EnableOIDCLogin), so the chain takes no handoff manager.
+//
+// Unless the endpoint's own responder option replaces it, each answers a
+// sign-in by what the request prefers. A form post (a Content-Type of
+// application/x-www-form-urlencoded or multipart/form-data), or a request
+// whose Accept ranks text/html above application/json, is sent 303 See Other
+// to its destination; any other request, a malformed Accept included, is
+// answered 200 with {"idle_expires_at": "<RFC 3339>"} and no credential.
+// Both are no-store. The destination is the endpoint's own where it has one
+// (magic link redemption and the federated callback resolve theirs through
+// their own allowlists); otherwise the body's DefaultSessionCookieNextParam
+// field or JSON member (WithSessionCookieNextParam), kept only when it is a
+// path on this origin or a target allowed by WithSessionCookieRedirects, and
+// "/" otherwise. A recovery that reissued the user's saved codes is answered
+// with a document carrying them whatever the request prefers, since a
+// redirect would lose them.
 //
 // A request carrying the cookie and an Authorization header, of any scheme or
 // value, is refused with ErrAuthenticationRequired at OrderSessionCookieGuard,
@@ -370,11 +392,12 @@ func EnableSessionCookie(deps SessionBearerDeps, opts ...SessionCookieOption) Op
 
 	return func(c *config) error {
 		s := &sessionCookie{
-			sessions: deps.Sessions,
-			users:    deps.Users,
-			ref:      sessionReference{now: c.now, flow: sessionCookieFlow},
-			name:     DefaultSessionCookieName,
-			sameSite: http.SameSiteLaxMode,
+			sessions:  deps.Sessions,
+			users:     deps.Users,
+			ref:       sessionReference{now: c.now, flow: sessionCookieFlow},
+			name:      DefaultSessionCookieName,
+			sameSite:  http.SameSiteLaxMode,
+			nextParam: DefaultSessionCookieNextParam,
 		}
 
 		for _, opt := range opts {

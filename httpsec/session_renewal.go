@@ -152,6 +152,10 @@ type sessionRenewal struct {
 	grace   time.Duration
 	respond RenewalResponder
 
+	// respondSet is whether the consumer replaced respond
+	// (WithRenewalResponder).
+	respondSet bool
+
 	// lifetime chooses the successor's absolute lifetime, and nil carries the
 	// predecessor's deadline over.
 	lifetime func(*Exchange, *session.Session) time.Duration
@@ -676,6 +680,8 @@ func EnableSessionRenewal(deps SessionRenewalDeps, opts ...SessionRenewalOption)
 		c.wire(func(ch *Chain) {
 			r.issue = c.credentialIssuer(r.tokens)
 			r.deliver = c.delivery()
+			r.respond = signInResponder(r.deliver, r.respondSet, r.respond,
+				func(res RenewalResult) *session.Session { return res.Session })
 			r.engine = ch.engine
 			r.logger = c.logger
 		})
@@ -817,6 +823,10 @@ func WithRenewalGrace(grace time.Duration) SessionRenewalOption {
 //
 // Default: the login endpoint's default JSON document carrying the
 // successor's credential and validity, with 200 and Cache-Control: no-store.
+// On a cookie chain (EnableSessionCookie) the default is instead the chain's
+// negotiated answer: 303 See Other to the sign-in's destination for a form
+// post or a request preferring HTML, else 200 with {"idle_expires_at": ...}
+// and no credential.
 // A consumer renders its own envelope here, and may write an audit record
 // inside its own transaction. A responder that writes the credential should
 // forbid caching it too. A nil function is refused. The result carries the
@@ -830,6 +840,7 @@ func WithRenewalResponder(fn RenewalResponder) SessionRenewalOption {
 		}
 
 		r.respond = fn
+		r.respondSet = true
 
 		return nil
 	}

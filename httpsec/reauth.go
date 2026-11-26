@@ -133,6 +133,10 @@ type reauthInterceptor struct {
 	beginRespond   MFABeginResponder
 	methodsRespond ReauthenticationMethodsResponder
 
+	// respondSet is whether the consumer replaced respond
+	// (WithReauthenticationResponder).
+	respondSet bool
+
 	// challengeTTL, challengeCap and challengeStore are what the re-proof
 	// challenges of challenge methods are issued with. A nil store is the
 	// default in-memory one, built at assembly.

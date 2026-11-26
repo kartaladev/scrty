@@ -176,6 +176,11 @@ type formLogin struct {
 	bodyLimit     int64
 	respond       LoginResponder
 
+	// respondSet is whether the consumer replaced respond
+	// (WithLoginResponder); without it a cookie chain answers a sign-in
+	// itself (signInResponder).
+	respondSet bool
+
 	// lifetime chooses the session's absolute lifetime, and nil keeps the
 	// manager's absolute timeout.
 	lifetime func(*Exchange, LoginFields) time.Duration

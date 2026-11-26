@@ -219,6 +219,10 @@ func (i *oidcInterceptor) callback(ex *Exchange, provider string) error {
 		return i.callbackSuccess(ex, res, next)
 	}
 
+	if i.deliver.cookie != nil {
+		return i.completeCookieSignIn(ex, provider, res, next)
+	}
+
 	return i.conveyHandoff(ex, provider, res, next)
 }
 

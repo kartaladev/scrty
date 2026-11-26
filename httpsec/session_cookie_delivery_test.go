@@ -97,6 +97,13 @@ type browserWorld struct {
 	cookieOpts []httpsec.SessionCookieOption
 	extra      []httpsec.Option
 
+	// loginOpts, mfaOpts, reauthOpts and renewalOpts are the issuing
+	// endpoints' own options, read when the chain is built.
+	loginOpts   []httpsec.LoginOption
+	mfaOpts     []httpsec.MFAOption
+	reauthOpts  []httpsec.ReauthenticationOption
+	renewalOpts []httpsec.SessionRenewalOption
+
 	chain *httpsec.Chain
 }
 
@@ -138,6 +145,16 @@ func newBrowserWorld(t *testing.T) *browserWorld {
 func (w *browserWorld) build(t *testing.T) *browserWorld {
 	t.Helper()
 
+	require.NoError(t, w.tryBuild(t))
+
+	return w
+}
+
+// tryBuild is build returning the construction error, for the cases about
+// the construction itself.
+func (w *browserWorld) tryBuild(t *testing.T) error {
+	t.Helper()
+
 	lookups, err := mfa.LookupsFor(w.totp)
 	require.NoError(t, err)
 
@@ -155,15 +172,14 @@ func (w *browserWorld) build(t *testing.T) *browserWorld {
 		httpsec.EnableSessionCookie(httpsec.SessionBearerDeps{Sessions: w.sessions, Users: w.users}, w.cookieOpts...),
 		httpsec.EnableFormLogin(httpsec.FormLoginDeps{
 			Authenticator: authn, Sessions: w.sessions, Attempts: must.Must(lockout.NewMemoryAttemptStore()),
-		}),
-		httpsec.EnableMFA([]mfa.Method{w.totp}),
-		httpsec.EnableReauthentication(),
-		httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Users: w.users}),
+		}, w.loginOpts...),
+		httpsec.EnableMFA([]mfa.Method{w.totp}, w.mfaOpts...),
+		httpsec.EnableReauthentication(w.reauthOpts...),
+		httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Users: w.users}, w.renewalOpts...),
 		httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: w.sessions}),
 	}, w.extra...)...)
-	require.NoError(t, err)
 
-	return w
+	return err
 }
 
 // enrol enrols the user on TOTP, so a password login is challenged for it.
@@ -296,8 +312,8 @@ func noSessionCookie(t *testing.T, out served) {
 // form login, a password login challenged for a second factor (whose
 // challenge carries the pending session and no token), second-factor
 // verification, re-authentication, session renewal, magic link redemption,
-// passwordless passkey login, recovery completion and a federated handoff
-// redemption. The body and every header other than Set-Cookie carry no
+// passwordless passkey login, recovery completion and the federated
+// callback. The body and every header other than Set-Cookie carry no
 // identifier, and a rotating endpoint sets the successor's.
 func TestSessionCookie_NoCredentialInBody(t *testing.T) {
 	t.Parallel()
@@ -459,16 +475,16 @@ func TestSessionCookie_NoCredentialInBody(t *testing.T) {
 			assert: fresh,
 		},
 		{
-			name: "federated login handoff redemption",
+			name: "federated callback",
 			issue: func(t *testing.T) (served, *session.Sessions, string) {
 				h := newOIDCHarness(t)
-				h.chainOpts = append(h.chainOpts, httpsec.WithoutCSRFProtection(),
-					httpsec.EnableSessionCookie(httpsec.SessionBearerDeps{Sessions: h.sessions, Users: referenceUsers(t)}))
 
-				chain, err := h.assemble(h.handoffs, httpsec.WithOIDCSessions(h.sessions))
+				chain, err := oidcCookieChain(h, referenceUsers(t), nil)
 				require.NoError(t, err)
 
-				return serve(t, chain, handoffRequest(t.Context(), oidcTestSource, h.issueHandoff(t, ""))), h.sessions, ""
+				l := startLogin(t, chain, "")
+
+				return serve(t, chain, callbackRequest(t.Context(), l.genuineCallback(), l.handle)), h.sessions, ""
 			},
 			assert: fresh,
 		},

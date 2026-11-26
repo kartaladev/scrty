@@ -194,7 +194,7 @@ func (i *oidcInterceptor) completeProviderSignIn(ex *Exchange, provider string, 
 		return i.refuseCompletion(ex, provider, handle, completionStageUser, oidc.ErrInvalidHandoff)
 	}
 
-	details, err := i.loadCompleting(ex, provider, res.Principal.ID)
+	details, err := i.loadCompleting(ex, provider, i.users, res.Principal.ID)
 	if err != nil {
 		return i.refuseCompletion(ex, provider, handle, completionStageUser, err)
 	}
@@ -528,16 +528,20 @@ const (
 // behind.
 const msgCompletionUserUnavailable = "httpsec: the user a federated sign-in completes for could not be loaded"
 
-// loadCompleting is D7's step 3: it loads user through OIDCDeps.Users and refuses
+// loadCompleting is D7's step 3: it loads user through users (OIDCDeps.Users
+// for completion, the cookie session's loader for a cookie chain's callback)
+// and refuses
 // an unknown, missing, disabled or mismatched one with oidc.ErrInvalidHandoff, as
 // a handoff redemption refuses each (F21). The loader is the consumer's, so its
 // error is walked once, bounded, before it is read (porterr.SanitizeTo); a
 // failure is a dependency failure behind fixed text (diag.Wrap), recorded by its
 // reason and Go type, never its text.
-func (i *oidcInterceptor) loadCompleting(ex *Exchange, provider string, user identity.UserID) (*identity.Details, error) {
+func (i *oidcInterceptor) loadCompleting(
+	ex *Exchange, provider string, users identity.UserLoader, user identity.UserID,
+) (*identity.Details, error) {
 	ctx := ex.Context()
 
-	details, err := i.users.LoadByUserID(ctx, user)
+	details, err := users.LoadByUserID(ctx, user)
 	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
 
 	switch {

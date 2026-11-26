@@ -3,10 +3,13 @@ package httpsec
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -50,6 +53,32 @@ func TestDetachedCopy(t *testing.T) {
 			},
 		},
 		{
+			name: "the copy has its own authentication result",
+			ex: func(ctx context.Context) *Exchange {
+				ex := NewExchange(ctx, nil, nil)
+				ex.Authentication = &authenticate.Authentication{
+					Principal: &identity.Principal{ID: "u-1"},
+					Time:      time.Unix(1, 0),
+				}
+
+				return ex
+			},
+			assert: func(t *testing.T, orig, port *Exchange, _ *stagedWriter) {
+				t.Helper()
+
+				require.NotNil(t, port.Authentication)
+				assert.NotSame(t, orig.Authentication, port.Authentication)
+				assert.Equal(t, *orig.Authentication, *port.Authentication, "the copy reads what the real one holds")
+
+				port.Authentication.Principal = &identity.Principal{ID: "someone-else"}
+				port.Authentication.Time = time.Unix(2, 0)
+
+				assert.Equal(t, identity.UserID("u-1"), orig.Authentication.Principal.ID,
+					"changing the copy's result leaves the real one's caller")
+				assert.True(t, orig.Authentication.Time.Equal(time.Unix(1, 0)))
+			},
+		},
+		{
 			name: "a copy of an exchange with no runs in progress",
 			ex:   func(ctx context.Context) *Exchange { return NewExchange(ctx, nil, nil) },
 			assert: func(t *testing.T, orig, port *Exchange, _ *stagedWriter) {
@@ -57,6 +86,7 @@ func TestDetachedCopy(t *testing.T) {
 				require.NotNil(t, port)
 				assert.Nil(t, port.extra)
 				assert.Nil(t, orig.extra)
+				assert.Nil(t, port.Authentication, "no result stays no result")
 			},
 		},
 	}

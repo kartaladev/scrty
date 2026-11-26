@@ -144,9 +144,14 @@ type magicLinkInterceptor struct {
 	manager  *magiclink.Links
 	redeemer Redeemer
 	respond  MagicLinkResponder
-	sessions *session.Sessions
-	tokens   token.Generator
-	checks   []magiclink.Check
+
+	// respondSet is whether the consumer replaced respond
+	// (WithMagicLinkResponder); without it a cookie chain answers a sign-in
+	// itself, sent to the destination the allowlist resolved.
+	respondSet bool
+	sessions   *session.Sessions
+	tokens     token.Generator
+	checks     []magiclink.Check
 
 	// issue issues the redeemed link's credential as the chain's bearer mode
 	// decides, settled once every option has been applied.
@@ -246,6 +251,12 @@ func (i *magicLinkInterceptor) check(c *config, option string) error {
 
 	i.issue = c.credentialIssuer(i.tokens)
 	i.deliver = c.delivery()
+
+	if !i.respondSet && i.deliver.cookie != nil {
+		// The link has a destination of its own, which the link's allowlist
+		// resolved: the chain's own next field is not read.
+		i.respond = func(ex *Exchange, r MagicLinkResult) error { return answerSignIn(ex, r.Session, r.Next) }
+	}
 
 	if i.sessions == nil && c.sessions == nil {
 		return newConfigError("%s needs a session manager, and neither WithMagicLinkSessions "+

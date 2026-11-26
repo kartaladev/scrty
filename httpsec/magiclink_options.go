@@ -318,7 +318,10 @@ func WithMagicLinkRedeemer(redeemer Redeemer) MagicLinkOption {
 // With none supplied, the library writes a JSON document carrying the access
 // token, an empty refresh token field, the session's validity and the resolved
 // redirect target — the same document a successful login answers with, plus
-// that target.
+// that target. On a cookie chain (EnableSessionCookie) the default is instead
+// the chain's negotiated answer, sent to that resolved target: 303 See Other
+// for a form post or a request preferring HTML (a redemption is always a form
+// post), else 200 with {"idle_expires_at": ...} and no credential.
 //
 // It is called instead of the downstream handler, because the consume endpoint
 // is the library's own and the application has no route behind it. An error it
@@ -337,6 +340,7 @@ func WithMagicLinkResponder(fn MagicLinkResponder) MagicLinkOption {
 		}
 
 		i.respond = fn
+		i.respondSet = true
 
 		return nil
 	}

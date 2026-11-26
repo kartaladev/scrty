@@ -287,9 +287,12 @@ func PasswordlessTokens(tokens token.Generator) PasswordlessSetting {
 
 // PasswordlessResponder replaces how a passwordless login is answered.
 //
-// Default: form login's responder (WithLoginResponder), or form login's
-// default document when it has none or the chain has no form login. A nil
-// function is refused; omit the setting to keep the default.
+// Default: form login's responder when the consumer gave one
+// (WithLoginResponder); otherwise form login's default document, or, on a
+// cookie chain (EnableSessionCookie), the chain's negotiated answer: 303 See
+// Other to the sign-in's destination for a request preferring HTML, else 200
+// with {"idle_expires_at": ...} and no credential. A nil function is refused;
+// omit the setting to keep the default.
 func PasswordlessResponder(fn LoginResponder) PasswordlessSetting {
 	return func(cfg *passwordlessConfig) error {
 		if fn == nil {
@@ -398,9 +401,13 @@ func (i *passwordlessInterceptor) resolve(option string, c *config) error {
 	i.deliver = c.delivery()
 
 	if i.respond == nil {
-		i.respond = writeLoginResult
-		if l != nil && l.respond != nil {
+		switch {
+		case l != nil && l.respondSet:
 			i.respond = l.respond
+		case i.deliver.cookie != nil:
+			i.respond = i.deliver.cookie.answerLogin
+		default:
+			i.respond = writeLoginResult
 		}
 	}
 
