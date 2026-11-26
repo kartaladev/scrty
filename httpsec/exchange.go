@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 
 	"github.com/kartaladev/scrty/authenticate"
@@ -435,13 +436,24 @@ type Exchange struct {
 	bearerCredential string
 
 	// cookieSession is the session the built-in cookie session
-	// (EnableSessionCookie) published on this request, and nil when it
-	// published none. Only (*sessionCookie).Intercept sets it, and nothing in
-	// the public API can, so a session a consumer's interceptor published, or
-	// assigned to Session in its place, never matches it. The provider's resume
-	// endpoint reads it (resumeSignIn) to take a cookie sign-in as the
-	// request's, and only while Session is still this very session.
+	// (EnableSessionCookie) last published on this request, and nil when none
+	// published one. cookieMarks is the mark each chain's cookie session set:
+	// the identifier of the session it authenticated in this request, by
+	// chain, nil until the first is set. The mark belongs to the chain that
+	// set it, and each chain keeps its own: the provider's resume endpoint
+	// (resumeSignIn) takes a cookie sign-in as the request's only while
+	// Session is still cookieSession and its own chain's mark names that
+	// session, so a chain whose cookie session authenticated nothing, composed
+	// with a cookie chain on one request, inside it or around it, never takes
+	// that chain's sign-in, while a cookie chain keeps its own resume whatever
+	// other cookie chain runs beside it on the same cookie. The map is never
+	// written in place: a mark is set on a copy (markCookieSession), so a run
+	// that puts back the map it found (restoreScope) puts back every chain's
+	// mark as it was. Only (*sessionCookie).Intercept sets either, and nothing
+	// in the public API can, so a session a consumer's interceptor published,
+	// or assigned to Session in its place, never matches.
 	cookieSession *session.Session
+	cookieMarks   map[*Chain]string
 
 	// accessTokenClaimed records that the resource server accepted the
 	// request's Authorization credential as an access token, so the bearer
@@ -697,6 +709,7 @@ type runScope struct {
 	authentication   *authenticate.Authentication
 	bearerCredential string
 	cookieSession    *session.Session
+	cookieMarks      map[*Chain]string
 	accessToken      bool
 	renewal          string
 	chargeRenewal    func(context.Context)
@@ -714,6 +727,7 @@ func (e *Exchange) saveScope() runScope {
 		authentication:   e.Authentication,
 		bearerCredential: e.bearerCredential,
 		cookieSession:    e.cookieSession,
+		cookieMarks:      e.cookieMarks,
 		accessToken:      e.accessTokenClaimed,
 		renewal:          e.renewal,
 		chargeRenewal:    e.chargeRenewal,
@@ -724,6 +738,19 @@ func (e *Exchange) saveScope() runScope {
 	}
 }
 
+// markCookieSession records sess as the session the cookie session of chain
+// published on this request (cookieSession), and its identifier as chain's
+// mark (cookieMarks). The marks are copied before the write, so a map an
+// enclosing run saved is never changed under it.
+func (e *Exchange) markCookieSession(chain *Chain, sess *session.Session) {
+	marks := make(map[*Chain]string, len(e.cookieMarks)+1)
+	maps.Copy(marks, e.cookieMarks)
+	marks[chain] = sess.ID
+
+	e.cookieSession = sess
+	e.cookieMarks = marks
+}
+
 // restoreScope puts back on e what saveScope recorded.
 func (e *Exchange) restoreScope(s runScope) {
 	e.ctx = s.ctx
@@ -731,6 +758,7 @@ func (e *Exchange) restoreScope(s runScope) {
 	e.Authentication = s.authentication
 	e.bearerCredential = s.bearerCredential
 	e.cookieSession = s.cookieSession
+	e.cookieMarks = s.cookieMarks
 	e.accessTokenClaimed = s.accessToken
 	e.renewal = s.renewal
 	e.chargeRenewal = s.chargeRenewal

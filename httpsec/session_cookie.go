@@ -46,6 +46,11 @@ type sessionCookie struct {
 	// by, its resolution core built by wire.
 	ref sessionReference
 
+	// chain is the chain this cookie session was built into, set by wire. The
+	// mark it sets is this chain's own (Exchange.cookieMarks), beside any
+	// other chain's mark on the same request.
+	chain *Chain
+
 	name     string
 	sameSite http.SameSite
 	domain   string
@@ -130,6 +135,7 @@ func (s *sessionCookie) flushRefusalLogs() error {
 // wire takes the settings the chain resolved, once every option has been
 // applied.
 func (s *sessionCookie) wire(c *Chain) {
+	s.chain = c
 	s.ref.sampler = c.sampler
 	s.ref.log = c.logger
 	s.ref.resolver = sessionResolver{
@@ -188,12 +194,14 @@ func (s *sessionCookie) Intercept(ex *Exchange, next Next) error {
 	//
 	// What is marked instead is the session published, so the provider's
 	// resume can tell it from one a consumer's interceptor published or put in
-	// its place (Exchange.cookieSession). The core publishes a session it
-	// loaded itself, never the one already on the exchange, so a Session left
-	// as it was is one this cookie did not publish (a late renewal let through
-	// to its endpoint), and nothing is marked.
-	if ex.Session != before {
-		ex.cookieSession = ex.Session
+	// its place (Exchange.cookieSession), and, as this chain's own mark, its
+	// identifier (Exchange.cookieMarks), so only the resume of a chain whose
+	// cookie session authenticated that session takes it. The core publishes
+	// a session it loaded itself, never the one already on the exchange, so a
+	// Session left as it was is one this cookie did not publish (a late
+	// renewal let through to its endpoint), and nothing is marked.
+	if ex.Session != before && ex.Session != nil {
+		ex.markCookieSession(s.chain, ex.Session)
 	}
 
 	return next(ex)

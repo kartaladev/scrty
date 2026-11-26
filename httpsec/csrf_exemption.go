@@ -82,6 +82,54 @@ func (e csrfExemption) matches(method, path string) bool {
 	return true
 }
 
+// coversRoute reports whether some request a router answers at path, the
+// decoded path a route is registered at, with method, is one this exemption
+// lets through: whether any spelling a client may send of path matches. A
+// fixed segment covers the path segment it decodes to, since the router
+// decodes the request's path before it matches a route; a wildcard covers any
+// real segment; a back-channel prefix is compared as matches compares it.
+func (e csrfExemption) coversRoute(method, path string) bool {
+	if method != e.method {
+		return false
+	}
+
+	if e.prefix != "" {
+		return e.matches(method, (&url.URL{Path: path}).EscapedPath())
+	}
+
+	rest, ok := strings.CutPrefix(path, "/")
+	if !ok {
+		return false
+	}
+
+	segments := e.segments
+	if segments == nil {
+		segments = strings.Split(e.pattern[1:], "/")
+	}
+
+	parts := strings.Split(rest, "/")
+	if len(parts) != len(segments) {
+		return false
+	}
+
+	for i, seg := range segments {
+		if e.segments != nil && seg == csrfWildcard {
+			if !oneRealSegment(parts[i]) {
+				return false
+			}
+
+			continue
+		}
+
+		decoded, err := url.PathUnescape(seg)
+		if err != nil || decoded != parts[i] {
+			return false
+		}
+	}
+
+	return true
+}
+
 // oneRealSegment reports whether seg is one path segment a router keeps as
 // it is: not empty, not "." or "..", and holding no "/".
 func oneRealSegment(seg string) bool {
@@ -124,7 +172,13 @@ func oneRealSegment(seg string) bool {
 //   - a fixed segment is a malformed percent-encoding ("%zz"), decodes to "."
 //     or ".." ("%2e%2e") or to one holding "/" ("a%2Fb"), or holds a character
 //     a request escapes (a space, "é"): it could never match, so it must be
-//     written in its escaped form ("a%20b", "caf%C3%A9").
+//     written in its escaped form ("a%20b", "caf%C3%A9");
+//   - the chain runs EnableSessionCookie and EnableOIDCProvider, and the
+//     exemption covers POST to the provider's resume endpoint under any
+//     spelling the router answers there (exactly, through a "*" segment or an
+//     escape, under the base path and the provider's prefix): the session
+//     cookie resumes an authorization there, so the endpoint stays judged. A
+//     chain with a header bearer may exempt it.
 func WithCSRFExemption(method, pattern string) CSRFOption {
 	const option = "WithCSRFExemption"
 
@@ -246,22 +300,38 @@ func WithoutBackchannelLogoutExemption() CSRFOption {
 	}
 }
 
-// settleExemptions settles the exempt routes: those WithCSRFExemption names,
-// the OpenID Provider's protocol endpoints when the chain has one (see
-// providerExemptions) and, unless WithoutBackchannelLogoutExemption was given,
-// the back-channel logout endpoint of the chain's one OIDC login (a second
-// EnableOIDCLogin would list its operations twice, which New refuses). An
-// exemption that cannot be built fails construction, rather than being
-// dropped.
+// settleExemptions settles the exempt routes the layer applies to requests
+// (appliedExemptions).
 func (l *csrfLayer) settleExemptions(c *config) error {
-	l.exempt = slices.Clone(l.exemptions)
-	l.exempt = append(l.exempt, providerExemptions(c.oidcProvider)...)
-
-	if l.noBackchannel {
-		return nil
+	exempt, err := l.appliedExemptions(c)
+	if err != nil {
+		return err
 	}
 
-	return eachInterceptor(c, func(i *oidcInterceptor) error {
+	l.exempt = exempt
+
+	return nil
+}
+
+// appliedExemptions is every route the layer exempts on c, in this order:
+// those WithCSRFExemption names, the OpenID Provider's protocol endpoints when
+// the chain has one (see providerExemptions) and, unless
+// WithoutBackchannelLogoutExemption was given, the back-channel logout
+// endpoint of the chain's one OIDC login (a second EnableOIDCLogin would list
+// its operations twice, which New refuses). It reads resolved paths, so it
+// runs once the chain's paths are resolved: from settleExemptions, and from
+// the provider's check that no exemption covers the cookie resume
+// (checkResumeJudged). An exemption that cannot be built fails construction,
+// rather than being dropped.
+func (l *csrfLayer) appliedExemptions(c *config) ([]csrfExemption, error) {
+	exempt := slices.Clone(l.exemptions)
+	exempt = append(exempt, providerExemptions(c.oidcProvider)...)
+
+	if l.noBackchannel {
+		return exempt, nil
+	}
+
+	err := eachInterceptor(c, func(i *oidcInterceptor) error {
 		e, err := backchannelExemption(i.backchannelPath.at())
 		if err != nil {
 			return newConfigError("the CSRF exemption of the OIDC back-channel logout endpoint cannot be built "+
@@ -269,10 +339,15 @@ func (l *csrfLayer) settleExemptions(c *config) error {
 				"judge the endpoint with WithoutBackchannelLogoutExemption", i.backchannelPath.at(), err)
 		}
 
-		l.exempt = append(l.exempt, e)
+		exempt = append(exempt, e)
 
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	return exempt, nil
 }
 
 // providerEndpointsExempt are the provider's endpoints a relying party reaches

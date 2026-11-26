@@ -68,6 +68,79 @@ func newCookieOP(t *testing.T, change func(*flowSetup)) (*opFlow, *loadCounter, 
 	return w, store, err
 }
 
+// exemptingResume is the construction error of a provider chain, on the cookie
+// session when cookie is set and on the session bearer otherwise, whose CSRF
+// protection exempts POST to pattern. opts are WithBasePath, applied to the
+// chain, or WithOIDCProviderPrefix, applied to the provider.
+func exemptingResume(t *testing.T, cookie bool, pattern string, opts ...any) error {
+	t.Helper()
+
+	change := func(s *flowSetup) {
+		s.noCSRF = true
+		s.chain = func(*testing.T, *opFlow) []httpsec.Option {
+			chain := []httpsec.Option{
+				httpsec.EnableCSRFProtection(httpsec.WithCSRFExemption(http.MethodPost, pattern)),
+			}
+
+			for _, o := range opts {
+				if o, ok := o.(httpsec.Option); ok {
+					chain = append(chain, o)
+				}
+			}
+
+			return chain
+		}
+
+		for _, o := range opts {
+			switch o := o.(type) {
+			case httpsec.OIDCProviderOption:
+				s.endpoint = append(s.endpoint, o)
+			case httpsec.Option:
+				// The provider's issuer is not under the base path these
+				// rows move the endpoints to.
+				s.endpoint = append(s.endpoint, httpsec.WithoutOIDCIssuerBasePathCheck())
+			}
+		}
+	}
+
+	if cookie {
+		_, _, err := newCookieOP(t, change)
+
+		return err
+	}
+
+	setup := flowSetup{}
+	change(&setup)
+
+	_, err := newOPFlowErr(t, setup)
+
+	return err
+}
+
+// backchannelOverResume is the construction error of a cookie chain with the
+// provider and an OIDC login whose back-channel logout endpoint answers under
+// backchannel, with endpoint applied to the provider.
+func backchannelOverResume(t *testing.T, backchannel string, endpoint ...httpsec.OIDCProviderOption) error {
+	t.Helper()
+
+	_, _, err := newCookieOP(t, func(s *flowSetup) {
+		s.endpoint = append(s.endpoint, endpoint...)
+		s.chain = func(t *testing.T, w *opFlow) []httpsec.Option {
+			t.Helper()
+
+			h := newOIDCHarness(t)
+
+			return []httpsec.Option{httpsec.EnableOIDCLogin(
+				httpsec.OIDCDeps{RelyingParty: h.manager},
+				httpsec.WithOIDCSessions(w.sessions),
+				httpsec.WithOIDCBackchannelLogoutPath(backchannel),
+			)}
+		}
+	})
+
+	return err
+}
+
 // cookieTokenAnswer is a token endpoint's success document, as far as these
 // tests read it.
 type cookieTokenAnswer struct {
@@ -248,6 +321,133 @@ func TestSessionCookie_ProviderOnCookieChain(t *testing.T) {
 				assert.Contains(t, err.Error(), "EnableSessionBearer")
 				assert.NotContains(t, err.Error(), "through one session manager",
 					"the cookie-plus-bearer rule answers, not the provider's one-manager check")
+			},
+		},
+		{
+			name: "the provider without CSRF protection is refused, naming it, even without browser sessions",
+			assert: func(t *testing.T) {
+				t.Helper()
+
+				_, _, err := newCookieOP(t, func(s *flowSetup) {
+					s.noCSRF = true
+					s.provider = append(s.provider, oidcprovider.WithoutBrowserSessions())
+					s.chain = func(*testing.T, *opFlow) []httpsec.Option {
+						return []httpsec.Option{httpsec.WithoutCSRFProtection()}
+					}
+				})
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.Contains(t, err.Error(), "EnableCSRFProtection")
+				assert.Contains(t, err.Error(), "EnableSessionCookie")
+			},
+		},
+		{
+			name: "the cookie session without the provider still opts out of CSRF protection",
+			assert: func(t *testing.T) {
+				t.Helper()
+
+				w := newOPFlow(t, flowSetup{})
+
+				_, err := httpsec.New(
+					httpsec.EnableSessionCookie(httpsec.SessionBearerDeps{Sessions: w.sessions, Users: w.users}),
+					httpsec.WithoutCSRFProtection(),
+				)
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "an exemption of the resume is refused, naming the endpoint",
+			assert: func(t *testing.T) {
+				t.Helper()
+
+				err := exemptingResume(t, true, "/oauth2/authorize/resume")
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.Contains(t, err.Error(), "WithCSRFExemption")
+				assert.Contains(t, err.Error(), "POST /oauth2/authorize/resume")
+			},
+		},
+		{
+			name: "an exemption covering the resume through a wildcard segment is refused",
+			assert: func(t *testing.T) {
+				t.Helper()
+
+				err := exemptingResume(t, true, "/oauth2/authorize/*")
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.Contains(t, err.Error(), "POST /oauth2/authorize/resume")
+			},
+		},
+		{
+			name: "an exemption spelling the resume with an escape the router decodes is refused",
+			assert: func(t *testing.T) {
+				t.Helper()
+
+				err := exemptingResume(t, true, "/oauth2/authorize/%72esume")
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.Contains(t, err.Error(), "POST /oauth2/authorize/resume")
+			},
+		},
+		{
+			name: "an exemption of the resume under the base path is refused",
+			assert: func(t *testing.T) {
+				t.Helper()
+
+				err := exemptingResume(t, true, "/x/oauth2/authorize/resume",
+					httpsec.WithBasePath("/x"))
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.Contains(t, err.Error(), "POST /x/oauth2/authorize/resume")
+			},
+		},
+		{
+			name: "an exemption of the resume under a renamed provider prefix is refused",
+			assert: func(t *testing.T) {
+				t.Helper()
+
+				err := exemptingResume(t, true, "/idp/authorize/resume",
+					httpsec.WithOIDCProviderPrefix("/idp"))
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.Contains(t, err.Error(), "POST /idp/authorize/resume")
+			},
+		},
+		{
+			name: "a back-channel logout prefix over a moved resume is refused",
+			assert: func(t *testing.T) {
+				t.Helper()
+
+				err := backchannelOverResume(t, "/bc", httpsec.WithOIDCProviderPath(httpsec.OIDCResume, "/bc/resume"))
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+			},
+		},
+		{
+			name: "a back-channel logout prefix over the authorize path is refused",
+			assert: func(t *testing.T) {
+				t.Helper()
+
+				err := backchannelOverResume(t, "/oauth2/authorize")
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+			},
+		},
+		{
+			name: "the same exemption on a header-bearer provider chain builds",
+			assert: func(t *testing.T) {
+				t.Helper()
+
+				require.NoError(t, exemptingResume(t, false, "/oauth2/authorize/resume"))
+			},
+		},
+		{
+			name: "an unrelated exemption on the cookie chain with the provider builds",
+			assert: func(t *testing.T) {
+				t.Helper()
+
+				require.NoError(t, exemptingResume(t, true, "/webhooks/payments"))
+			},
+		},
+		{
+			name: "an exemption of the resume path under the default prefix builds once the prefix moved",
+			assert: func(t *testing.T) {
+				t.Helper()
+
+				require.NoError(t, exemptingResume(t, true, "/oauth2/authorize/resume",
+					httpsec.WithOIDCProviderPrefix("/idp")))
 			},
 		},
 		{
@@ -826,6 +1026,20 @@ func TestSessionCookie_ProviderResume(t *testing.T) {
 				require.NoError(t, err)
 
 				resumedWithCode(t, w.cookieResume(t, handle, flow, successor.ID, successor.CSRFToken))
+			},
+		},
+		{
+			name: "a superseded cookie inside its grace window resumes with the family's sign-in",
+			assert: func(t *testing.T) {
+				t.Helper()
+
+				w, _, s := signedIn(t, nil)
+				handle, flow := w.park(t, flowFirstParty)
+
+				_, _, err := w.sessions.RotateWithGrace(t.Context(), s, 30*time.Second)
+				require.NoError(t, err)
+
+				resumedWithCode(t, w.cookieResume(t, handle, flow, s.ID, s.CSRFToken))
 			},
 		},
 		{

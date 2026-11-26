@@ -34,6 +34,11 @@ type oidcResumeGroup struct {
 	throttle  oidcClientThrottle
 	bodyLimit int64
 
+	// chain is the chain the provider was built into, set by wire. The resume
+	// takes a cookie sign-in only when this chain's own mark names it
+	// (Exchange.cookieMarks).
+	chain *Chain
+
 	// assurance states the amr and acr of a sign-in, and assuranceSet that a consumer
 	// replaced it.
 	assurance    func(*session.Session) (amr []string, acr string)
@@ -61,6 +66,7 @@ func (g *oidcResumeGroup) settle(c *config) error {
 }
 
 func (g *oidcResumeGroup) wire(ch *Chain) {
+	g.chain = ch
 	g.throttle.wire(ch)
 }
 
@@ -305,15 +311,25 @@ func (op *oidcEndpoints) confirmSignIn(ctx context.Context, signIn *oidcprovider
 //
 // On a cookie chain (EnableSessionCookie) it is the session the built-in cookie session
 // published, which a browser page can present: the page can neither read the HttpOnly cookie
-// nor add an Authorization header beside it. The resume is a POST, so the cookie session has
-// judged the sign-in's CSRF token before publishing it. It is recognised by the mark that
-// cookie session sets (Exchange.cookieSession), and only while Session is still the session
-// it marked: a session a consumer's interceptor published, from its own cookie or anywhere
-// else, or assigned to Session in its place, is not it and is refused. So is the cookie
-// sign-in beside any Authorization line, or beside a credential a consumer's interceptor
-// recorded as presented: whoever sent either believed they were presenting it. The chain's
-// both-credentials guard refuses the first before either is read; this refusal holds the line
-// if a consumer's own interceptor stands before it.
+// nor add an Authorization header beside it. The resume is a POST, so the chain's CSRF
+// protection has judged the request and the sign-in's CSRF token before it arrives here, and
+// the chain cannot opt out of that protection while it runs the provider beside the cookie
+// session (checkCSRF). It is recognised by the mark that cookie session sets
+// (Exchange.cookieSession), and only while Session is still the session it marked: a session
+// a consumer's interceptor published, from its own cookie or anywhere else, or assigned to
+// Session in its place, is not it and is refused. The mark belongs to the chain that set it,
+// and each chain keeps its own (Exchange.cookieMarks): the sign-in is taken only when this
+// chain's cookie session authenticated that very session in this request, so a chain with no
+// mark never matches, whatever identifier a store returned. A provider chain
+// composed with a cookie chain on one request, inside it or around it, does not take that
+// chain's cookie sign-in unless its own cookie session authenticated it too, and refuses it
+// as it refuses any session it did not authenticate, while a cookie chain composed with any
+// other, a cookie chain on the same cookie included, keeps its own resume. A composed chain
+// that publishes another session in its place is refused. The cookie sign-in is refused
+// beside any Authorization line, or beside a credential a consumer's interceptor recorded as
+// presented: whoever sent either believed they were presenting it. The chain's
+// both-credentials guard refuses the first before either is read; the refusal here is
+// defensive, for a consumer's interceptor that rewrites the request after the guard.
 //
 // A session that a consumer's interceptor published from the query, a cookie or a header of
 // its own is refused even when the interceptor recorded the credential with
@@ -340,7 +356,8 @@ func (g *oidcResumeGroup) resumeSignIn(ex *Exchange) (*oidcprovider.SignIn, erro
 	}
 
 	s := ex.Session
-	if s != nil && s == ex.cookieSession {
+	mark, marked := ex.cookieMarks[g.chain]
+	if s != nil && s == ex.cookieSession && g.chain != nil && marked && mark == s.ID {
 		if len(lines) > 0 || ex.bearerCredential != "" {
 			return nil, ErrAuthenticationRequired
 		}

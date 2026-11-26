@@ -582,7 +582,10 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 //     binding while EnableCertificateBinding is off. A client of the consumer's own
 //     registry cannot be listed here, and is judged as it is read;
 //   - no EnableCSRFProtection while the provider keeps a browser session, which
-//     oidcprovider.WithoutBrowserSessions turns off;
+//     oidcprovider.WithoutBrowserSessions turns off, or on a chain with
+//     EnableSessionCookie, whatever the provider keeps, since the session cookie
+//     then resumes an authorization; and, on such a chain, a WithCSRFExemption
+//     route covering POST to the resume endpoint;
 //   - no EnableSecurityHeaders, or security headers whose document profile does not
 //     forbid framing: no Content-Security-Policy (removed, or only reported), no
 //     frame-ancestors directive, or one naming any source but 'none', 'self'
@@ -1105,15 +1108,90 @@ func (op *oidcEndpoints) checkBindings(c *config) error {
 }
 
 // checkCSRF requires CSRF protection while the provider keeps a browser session,
-// because the consent stage may then answer from a cookie.
+// because the consent stage may then answer from a cookie; and on a chain with the
+// cookie session whatever the provider keeps, because the session cookie then
+// drives the resume, which hands authorization codes to clients: a page on another
+// site must not drive it with only SameSite=Lax and the content-type check in its
+// way. A chain with the cookie session and no provider may still opt out. On such
+// a chain no CSRF exemption may cover the resume either (checkResumeJudged).
 func (op *oidcEndpoints) checkCSRF(c *config) error {
-	if !op.provider.BrowserSessionsEnabled() || hasInterceptor[*csrfLayer](c) {
+	cookie := hasInterceptor[*sessionCookie](c)
+
+	if l, protected := findInterceptor[*csrfLayer](c); protected {
+		if cookie {
+			return op.checkResumeJudged(c, l)
+		}
+
+		return nil
+	}
+
+	if cookie {
+		return newConfigError("%s on a chain with EnableSessionCookie resumes an authorization with the "+
+			"session cookie, so it needs EnableCSRFProtection, whether or not the provider keeps browser "+
+			"sessions; WithoutCSRFProtection is available on a cookie chain without the provider",
+			optionOIDCProvider)
+	}
+
+	if !op.provider.BrowserSessionsEnabled() {
 		return nil
 	}
 
 	return newConfigError("%s keeps a browser session, whose cookie can answer a consent, so it needs "+
 		"EnableCSRFProtection; a provider built with oidcprovider.WithoutBrowserSessions needs none",
 		optionOIDCProvider)
+}
+
+// checkResumeJudged refuses any CSRF exemption covering the resume on a chain with the
+// cookie session: the cookie there resumes an authorization, so an exempt resume would
+// let a page on another site post one for a request an attacker parked with their own
+// client, wherever the browser attaches the cookie, and the code would go to the
+// attacker. Every exemption the layer applies is judged (appliedExemptions): the
+// consumer's WithCSRFExemption routes, the provider's own exempt endpoints and the
+// back-channel logout prefix of the chain's OIDC login, so the guarantee does not rest
+// on the endpoint collision check refusing a back-channel prefix placed over the
+// resume. Each is judged against every spelling the router answers at the resume
+// (coversRoute), so a "*" segment, an escape, the base path, a moved prefix and a
+// back-channel prefix followed by the resume's last segment are all caught. No
+// legitimate use needs it: the sign-in page can always obtain the CSRF token.
+func (op *oidcEndpoints) checkResumeJudged(c *config, l *csrfLayer) error {
+	resume := op.paths[OIDCResume]
+	if !op.served(OIDCResume) || resume == "" {
+		return nil
+	}
+
+	exempt, err := l.appliedExemptions(c)
+	if err != nil {
+		return err
+	}
+
+	for i, e := range exempt {
+		if !e.coversRoute(http.MethodPost, resume) {
+			continue
+		}
+
+		// appliedExemptions lists the consumer's WithCSRFExemption routes first.
+		if i < len(l.exemptions) {
+			return newConfigError("WithCSRFExemption(%q, %q) covers %s %s, the resume endpoint of %s, on a "+
+				"chain with EnableSessionCookie, where the session cookie resumes an authorization: a page on "+
+				"another site could then resume a request an attacker parked; drop the exemption, since the "+
+				"sign-in page can always obtain the CSRF token", e.method, e.pattern, http.MethodPost, resume,
+				optionOIDCProvider)
+		}
+
+		if e.prefix != "" {
+			return newConfigError("the CSRF exemption of the OIDC back-channel logout endpoint, %s %s{provider} "+
+				"(WithOIDCBackchannelLogoutPath), covers %s %s, the resume endpoint of %s, on a chain with "+
+				"EnableSessionCookie, where the session cookie resumes an authorization: a page on another site "+
+				"could then resume a request an attacker parked; give the two endpoints paths apart",
+				e.method, e.prefix, http.MethodPost, resume, optionOIDCProvider)
+		}
+
+		return newConfigError("the CSRF exemption of %s %s, an endpoint of %s, covers %s %s, its resume "+
+			"endpoint, on a chain with EnableSessionCookie, where the session cookie resumes an authorization: "+
+			"give the endpoints their own paths", e.method, e.pattern, optionOIDCProvider, http.MethodPost, resume)
+	}
+
+	return nil
 }
 
 // checkAssertionEndpoint refuses an assertion audience the token endpoint is not

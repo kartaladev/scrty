@@ -257,9 +257,10 @@ func (c *Chain) SwitchActiveRole(ctx context.Context, role string) error {
 	}
 
 	if r.cookie != nil && r.cookie.rotatesAt(RotateOnRoleSwitch) {
-		// A cookie session moves to a new identifier before the selection is
-		// recorded, so the role never changes on an identifier that existed
-		// before the switch (session fixation).
+		// A cookie session records the selection on a new identifier, in the
+		// rotation's own write (session.WithSuccessorRole), so the role never
+		// changes on an identifier that existed before the switch (session
+		// fixation).
 		s, err = src.rotateForSwitch(ctx, role)
 		if err != nil {
 			return err
@@ -288,9 +289,9 @@ func (c *Chain) SwitchActiveRole(ctx context.Context, role string) error {
 }
 
 // rotateForSwitch rotates the cookie session the request is on now into a
-// successor in the same sign-in, re-sets the cookie to it on the request's
-// response, and records role as the successor's selection. It returns the
-// successor.
+// successor in the same sign-in that carries role as its selection, written by
+// the rotation itself (session.WithSuccessorRole), and re-sets the cookie to it
+// on the request's response. It returns the successor.
 //
 // The rotation keeps the old identifier working for a grace window, the
 // renewal endpoint's when the chain has one and session.DefaultRenewalGrace
@@ -306,8 +307,9 @@ func (c *Chain) SwitchActiveRole(ctx context.Context, role string) error {
 // response the cookie would be set on is gone, and a rotation the browser
 // never learns of would turn its next request into reuse.
 //
-// A rotation that fails stores nothing and sets no cookie, so the old
-// identifier keeps working, unswitched: a refusal (the session gone, expired
+// A rotation that fails sets no cookie and, but for session.ErrStoreContract
+// below, stores nothing, so the old identifier keeps working, unswitched: a
+// refusal (the session gone, expired
 // or reused, or a concurrent rotation won) as refusedRenewal words it, the
 // request's own end as matching its context's error, anything else as a
 // dependency failure behind fixed text, its cause reachable. A cookie that
@@ -317,9 +319,11 @@ func (c *Chain) SwitchActiveRole(ctx context.Context, role string) error {
 // never by a later selection, so no successor is stored without it and no
 // cookie is set for one that is not. A store that supersedes the session but
 // writes the successor back with another role fails the rotation with
-// session.ErrStoreContract, a dependency failure: no cookie is set, and the
-// old identifier keeps working, with the role unchanged, through its grace
-// window.
+// session.ErrStoreContract, a dependency failure, after the store has written:
+// the old record is superseded and an unheld successor is live. No cookie is
+// set, and the old identifier keeps working, with the role unchanged, through
+// its grace window only; past it, it is reuse, which revokes the sign-in
+// unless session.WithUnusedSuccessorRecovery recovers it.
 func (src *roleSource) rotateForSwitch(ctx context.Context, role string) (*session.Session, error) {
 	if src.ex == nil || src.run == nil || src.run.done.Load() {
 		return nil, newConfigError("SwitchActiveRole: %s", textRoleSwitchAfterRun)

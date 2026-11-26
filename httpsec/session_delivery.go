@@ -324,12 +324,16 @@ type cookieRotationTexts struct{ failed, ended string }
 // Max-Age is that of the session the sign-in is left with, not of the
 // confinement it is leaving. The stored successor is not changed here.
 //
-// A rotation that fails stores nothing and sets no cookie, so current's
-// identifier keeps working: a refusal (the session gone, expired or reused,
-// or a concurrent rotation won) as refusedRenewal words it, the request's own
-// end matching ctx's error behind texts.ended, and anything else a dependency
-// failure behind texts.failed, its cause reachable through errors.Is. A cookie
-// that cannot be delivered ends the sign-in (deliver).
+// A rotation that fails sets no cookie, so current's identifier keeps
+// working: a refusal (the session gone, expired or reused, or a concurrent
+// rotation won) as refusedRenewal words it, the request's own end matching
+// ctx's error behind texts.ended, and anything else a dependency failure
+// behind texts.failed, its cause reachable through errors.Is. It stores
+// nothing, except when it fails with session.ErrStoreContract (a store that
+// wrote the successor back without what opts asked for): the store has
+// written by then, current is superseded and the successor live, so current's
+// identifier works through grace only and is reuse after it. A cookie that
+// cannot be delivered ends the sign-in (deliver).
 func (d credentialDelivery) rotateCookie(
 	ctx context.Context, ex *Exchange, sessions *session.Sessions, current *session.Session,
 	grace time.Duration, deadline time.Time, texts cookieRotationTexts, opts ...session.RotateOption,

@@ -334,8 +334,9 @@ type LogoutOption func(*logout) error
 // also expires the session cookie (Max-Age=0), under the name, path, domain and
 // attributes the chain sets it with, so the browser drops it. Only a request that
 // carried the session cookie is answered so: a logout authenticated another way,
-// Basic credentials for one, sets no cookie. A logout that is refused, or fails, at the provider's store or the session store, expires
-// nothing: the session stays, and the cookie naming it, for a retry. There is no
+// Basic credentials for one, sets no cookie. A logout that is refused, or fails,
+// at the provider's store or the session store, expires nothing: the session
+// stays, and the cookie naming it, for a retry. There is no
 // option to keep the cookie, since it would name a session that has ended.
 func EnableLogout(deps LogoutDeps, opts ...LogoutOption) Option {
 	const option = "EnableLogout"
