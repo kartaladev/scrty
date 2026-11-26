@@ -419,7 +419,11 @@ cookie chain, taking the cookie session as the sign-in its inner routes depend o
     `ex.Session` when its own chain's cookie session authenticated a session with the same
     identifier earlier in this request, and the session in `ex.Session` was published by a
     built-in cookie session. A chain whose cookie session authenticated nothing in this request,
-    such as a header-bearer provider chain, still never takes a cookie sign-in.
+    such as a header-bearer provider chain, still never takes a cookie sign-in. The mark is the
+    session's identifier, not a flag: a composed cookie chain that publishes a different session
+    is refused at the resume. A mark is written to a copy of the record, so a record an enclosing
+    run saved is never changed under it, and every exit from a run, a panic included, puts back
+    the marks it found.
 - **The provider on a cookie chain requires CSRF protection** (user decision, 2026-11-26). `New`
   refuses the cookie session with the provider when CSRF protection is opted out, whether or not
   the provider keeps browser sessions: the cookie now drives the resume, which hands
@@ -515,6 +519,8 @@ grant checks or local users, or both. This change reverses that decision (user d
 | A header-bearer provider chain composed with a cookie chain on one request, inside it or around it | Security | Handled, tested | the mark names the cookie chain, not the provider's; the resume refuses the cookie sign-in with 401 |
 | A chain forwarding a request to another of its own paths in-process, reaching its resume | Security | Accepted | the forwarded run keeps the chain's mark, so the resume takes the cookie sign-in; the same chain's CSRF check and cookie session already ran on that request, so nothing is skipped |
 | A cookie chain running the provider composed with another chain, plain or cookie, inside it or around it | State | Handled, tested | each chain keeps its own mark; the cookie chain's resume takes the session its own cookie session authenticated, even after another cookie chain published it again |
+| A session store returning a session whose identifier is empty, on a chain composed with a cookie chain | Dependency / Security | Handled, tested | the resume requires that its own chain set a mark, so a chain that marked nothing never takes the cookie sign-in, whatever identifier the store returns: 401 |
+| A cookie chain's own session store returning an empty identifier, at that chain's resume | Dependency | Accepted | the chain's own cookie session authenticated that session on this request, so its resume takes it; nothing crosses to another chain. It breaks the store's contract, which the conformance suite catches |
 | The back-channel logout exemption covering the resume | Wiring / Security | Handled, tested | the endpoint collision check refuses the configuration at `New`; the resume check also judges the back-channel exemption |
 | A CSRF exemption covering the resume on a cookie chain running the provider (exact, `*` segment, escaped spelling, base path, renamed prefix) | Wiring / Security | Handled, tested | `ErrConfig` from `New` naming the resume endpoint; the same exemption builds on a header-bearer chain |
 | `FromProvider` given a provider other than the chain's own | Wiring | Handled, tested | `ErrConfig` from `New`, as before |

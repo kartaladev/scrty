@@ -395,6 +395,11 @@ C8b committed nothing: its run-scoped mark was reviewed and two defects reproduc
 - [ ] **Step 8: Implement** the per-chain record above; update the godoc in `exchange.go`, `session_cookie.go` and `oidc_resume.go` (and rewrap `resumeSignIn`'s over-long godoc line starting "presented: whoever sent either…" to the surrounding width).
 - [ ] **Step 9: Run** lanes M/C scoped command with `-race` — PASS.
 
+**C8d review follow-up (dispatch C8e, Sonnet).** A chain with no mark reads `""` from the record, so a store returning a session with an empty identifier passed the check (REPRODUCED: `TestReview_HeaderProviderChainAroundCookieChain_BlankSessionID`, `/private/tmp/claude-501/review-c8d/wt/httpsec/zz_review_blankid_test.go`, `expected: 401 actual: 200`).
+
+- [ ] **Step 10: Write the failing row** in `TestSessionCookie_ComposedChainResume`: a header-bearer provider chain running a cookie chain around the rest of its run, with a session store whose `Load` returns the session with `ID` blanked → 401 `ErrAuthenticationRequired`, the request stays parked. Run it focused: FAIL `expected: 401 actual: 200`.
+- [ ] **Step 11: Implement** in `resumeSignIn`: `mark, marked := ex.cookieMarks[g.chain]`, and accept only when `marked && mark == s.ID` (with the existing conditions). Rerun — PASS; then lanes M/C scoped command with `-race`.
+
 ### Task 12.7: No CSRF exemption covers the cookie resume
 
 **Files:** Modify `httpsec/oidc_provider.go` (`checkCSRF`), and `httpsec/csrf_exemption.go` only to expose its matcher to the check if it is not already callable; Test `httpsec/session_cookie_provider_test.go`.
