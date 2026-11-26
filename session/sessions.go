@@ -796,7 +796,9 @@ func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 //
 // Rotate takes one RotateOption, WithReauthenticationBinding, which may bind
 // an unbound session and never rebinds a bound one. WithSuccessorLifetime is
-// refused with ErrConfig, since a strict rotation never extends a session.
+// refused with ErrConfig, since a strict rotation never extends a session, and
+// so is WithSuccessorRole, since a strict rotation carries the stored role;
+// nothing is stored on either refusal.
 //
 // The old entry is superseded by the new one in one write, through the
 // store's conditional Store.Supersede, marked as rotated without grace
@@ -932,6 +934,9 @@ func (m *Sessions) RotateIssuing(
 	r := rotationOf(opts)
 	if r.lifetimeSet {
 		return nil, "", fmt.Errorf("%w: a strict rotation never extends a session, so it takes no new lifetime", ErrConfig)
+	}
+	if r.roleSet {
+		return nil, "", fmt.Errorf("%w: a strict rotation carries the stored role, so it takes no successor role", ErrConfig)
 	}
 	if r.binding.both() {
 		return nil, "", fmt.Errorf("%w: a key binding names either a DPoP key or a certificate, not both", ErrConfig)

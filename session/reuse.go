@@ -136,6 +136,11 @@ type rotation struct {
 	// rotation takes.
 	binding    KeyBinding
 	bindingSet bool
+
+	// role is WithSuccessorRole's role, which only a rotation with a grace
+	// window takes.
+	role    string
+	roleSet bool
 }
 
 // rotationOf applies opts.
@@ -162,6 +167,31 @@ func WithSuccessorLifetime(lifetime time.Duration) RotateOption {
 	return func(r *rotation) {
 		r.lifetime = lifetime
 		r.lifetimeSet = true
+	}
+}
+
+// WithSuccessorRole stores the successor with role as its selected role
+// (Session.SelectedRole), in the same atomic write that supersedes the
+// current session (Supersession.SuccessorRole), in place of the default, which
+// carries the role stored on the superseded session as it stands when the
+// supersession writes. The empty role stores the successor with none. The
+// superseded session keeps its own stored role. Recording the role in the
+// rotation's own write, rather than through a later Sessions.SelectRole,
+// leaves no moment at which the successor is stored without it.
+//
+// The role is not judged: whether the user holds a grant of that name is the
+// caller's to check first, as for SelectRole.
+//
+// RotateWithGrace and RotateWithGraceIssuing take it; Rotate and
+// RotateIssuing refuse it with ErrConfig and store nothing. So does a manager
+// whose store offers no RoleSelector (Sessions.SelectsRoles), as SelectRole
+// does. Given more than once, the last option wins. A store that supersedes
+// the session but writes the successor with another role fails the rotation
+// with ErrStoreContract, and no successor is returned.
+func WithSuccessorRole(role string) RotateOption {
+	return func(r *rotation) {
+		r.role = role
+		r.roleSet = true
 	}
 }
 
@@ -226,6 +256,11 @@ func WithSuccessorLifetime(lifetime time.Duration) RotateOption {
 // ErrExpired until the expiry sweep and ErrNotFound after it, and is never
 // judged as reuse. The guarantee holds as long as the store keeps the mark,
 // which the store-conformance suite checks.
+//
+// It takes WithSuccessorLifetime and WithSuccessorRole; WithReauthenticationBinding
+// is refused with ErrConfig, since a renewal never binds a session. A store
+// that does not record the role WithSuccessorRole named fails the renewal with
+// ErrStoreContract after it has written, and no successor is returned.
 //
 // RotateWithGrace runs no step of the caller's between building the successor
 // and storing it; RotateWithGraceIssuing is the same renewal with one.
@@ -300,10 +335,13 @@ func (m *Sessions) RotateWithGrace(ctx context.Context, current *Session, grace 
 // the successor, not on the mark surviving the rotation.
 //
 // issue is handed the successor as it will be stored, which is also the
-// session returned, and must not modify it. Its SelectedRole alone may still
-// change: the store gives the successor the selected role stored on the old
-// session when it supersedes it (see Store.Supersede), so a selection recorded
-// while issue runs is the one returned and stored. Unlike RotateIssuing, it runs
+// session returned, and must not modify it. Without WithSuccessorRole its
+// SelectedRole alone may still change: the store gives the successor the
+// selected role stored on the old session when it supersedes it (see
+// Store.Supersede), so a selection recorded while issue runs is the one
+// returned and stored. With WithSuccessorRole, issue is handed the successor
+// with the named role already set, and it is the one stored whatever is
+// selected on the old session meanwhile. Unlike RotateIssuing, it runs
 // under no lock of this manager: the store's conditional supersession alone
 // decides which of two concurrent renewals stores its successor. A nil issue
 // runs no step and returns an empty credential, which is RotateWithGrace.
@@ -330,6 +368,9 @@ func (m *Sessions) RotateWithGraceIssuing(
 	if r.lifetimeSet && (r.lifetime <= 0 || r.lifetime > m.maxLifetime) {
 		return nil, 0, "", fmt.Errorf("%w: successor lifetime %s is outside 0 to the maximum %s",
 			ErrConfig, r.lifetime, m.maxLifetime)
+	}
+	if r.roleSet && !m.SelectsRoles() {
+		return nil, 0, "", fmt.Errorf("%w: the session store cannot select roles, so it cannot record a successor role", ErrConfig)
 	}
 
 	old, err := m.loadStored(ctx, current.ID, "session: the session to renew could not be loaded")
@@ -382,6 +423,14 @@ func (m *Sessions) RotateWithGraceIssuing(
 	}
 	next.AbsoluteExpiresAt = minTime(next.AbsoluteExpiresAt, familyEnd)
 	next.IdleExpiresAt = minTime(now.Add(m.idleTimeout), next.AbsoluteExpiresAt)
+	// A named role is the successor's from the start, so the step is handed
+	// the session as it will be stored.
+	var successorRole *string
+	if r.roleSet {
+		role := r.role
+		successorRole = &role
+		next.SelectedRole = role
+	}
 
 	// The caller's step runs before the only write, so a step that fails
 	// leaves the old record exactly as it is: nothing superseded, nothing
@@ -420,6 +469,7 @@ func (m *Sessions) RotateWithGraceIssuing(
 		Successor:                   next,
 		Now:                         now,
 		RequireUnpresentedSuccessor: kind == RenewalRecovery,
+		SuccessorRole:               successorRole,
 	})
 	err = porterr.SanitizeTo(ctx, m.logger, err, porterr.ErrUnwalkable)
 	if errors.Is(err, ErrSuccessorAdvanced) {
@@ -427,6 +477,18 @@ func (m *Sessions) RotateWithGraceIssuing(
 	}
 	if err != nil {
 		return nil, 0, "", storeFailed(err, "session: the session could not be renewed")
+	}
+	// A store that ignored the named role has stored a successor whose role
+	// is not the one asked for. Handing it out as a success would let the
+	// caller act on a role switch that did not happen, so the rotation fails;
+	// the record stays as the store wrote it.
+	if r.roleSet && next.SelectedRole != r.role {
+		m.logger.LogAttrs(ctx, slog.LevelError,
+			"session: the store superseded the session but did not record the successor role it was given",
+			slog.String("family", old.FamilyID.String()))
+
+		return nil, 0, "", fmt.Errorf("%w: the successor was stored with another selected role than the one named",
+			ErrStoreContract)
 	}
 
 	return next, kind, tok, nil

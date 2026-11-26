@@ -93,6 +93,26 @@ var ErrSuperseded = errors.New("session: the session has been superseded")
 // whichever backend runs.
 var ErrDeleteDidNotSettle = errors.New("session: the user-wide session delete did not settle")
 
+// ErrStoreContract is what a Sessions reports when its store answered an
+// operation in a way the Store contract rules out, so the result cannot be
+// trusted and is not handed to the caller as a success. A rotation given
+// WithSuccessorRole reports it when the store's Supersede succeeded but wrote
+// back to the successor a selected role other than the one named
+// (Supersession.SuccessorRole): a store that ignores the field. The store has
+// written by then, so what it holds is whatever it wrote; the caller is handed
+// no successor.
+//
+// Returned from a rotation, the store has already written: the old record is
+// superseded with its grace window open, and a successor that no client holds
+// is live. The caller's old identifier therefore becomes reuse once the
+// window ends, and the family is revoked, unless WithUnusedSuccessorRecovery
+// recovers it while the successor has not been presented.
+//
+// It is a dependency failure, not a verdict on the session: it
+// matches none of ErrNotFound, ErrExpired, ErrReused, ErrRenewalConflict or
+// ErrSuccessorAdvanced. The store-conformance suite catches such a store.
+var ErrStoreContract = errors.New("session: the session store broke its contract")
+
 // Supersession is one atomic supersession: Store.Supersede marks Old
 // superseded by Successor and inserts Successor, provided Old's current
 // successor is still the one the caller observed.
@@ -144,6 +164,16 @@ type Supersession struct {
 	// written on Old alone: neither Old's previous successor nor Successor is
 	// marked.
 	Strict bool
+
+	// SuccessorRole, when not nil, is the selected role the successor is
+	// inserted with, in place of Old's stored one: the store writes
+	// *SuccessorRole as the successor's SelectedRole inside the same atomic
+	// operation, and the empty role inserts it with none. Old's own stored
+	// role is left as it is. When it is nil the successor takes Old's stored
+	// role, as Store.Supersede describes. Either way the role the successor
+	// was inserted with is written back to Successor.SelectedRole on success.
+	// The Sessions sets it for a rotation given WithSuccessorRole.
+	SuccessorRole *string
 }
 
 // Store persists sessions.
@@ -297,7 +327,13 @@ type Store interface {
 	//     op.Successor's copy says, and Supersede writes that value to
 	//     op.Successor.SelectedRole when it succeeds. A selection recorded
 	//     after the caller loaded Old is therefore neither lost nor undone by
-	//     the renewal (a SQL store reads it from the row it locked).
+	//     the renewal (a SQL store reads it from the row it locked). When
+	//     op.SuccessorRole is not nil, the successor takes *op.SuccessorRole
+	//     instead, the empty role inserting it with none, in the same atomic
+	//     operation, and that value is written back to
+	//     op.Successor.SelectedRole; Old's own stored role is left as it is.
+	//     A store that inserts another role breaks the contract, and the
+	//     Sessions fails the rotation with ErrStoreContract.
 	//     op.Successor's other library-owned marks, MFAAtFirstFactor and
 	//     PersistentCookie, are stored as the caller gives them: only
 	//     SelectedRole is taken from the superseded row.

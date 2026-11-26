@@ -127,6 +127,7 @@ var portableVariants = []brokenVariant{
 		"a supersession leaves an unsuperseded member of the family unchanged"),
 	sessionVariant(sessionSaveMovesAuthenticatedAt, "save keeps the authentication time"),
 	sessionVariant(sessionSupersedeLowersDeadline, "a supersession never lowers a retention deadline"),
+	sessionVariant(sessionSupersedeIgnoresSuccessorRole, "SupersedeNamesSuccessorRole"),
 	sessionVariant(sessionSupersedeRaisesEachDeadline,
 		"a supersession keeps the record's own deadlines apart from its retention"),
 	sessionVariant(sessionSupersedeRaisesDeadlines,

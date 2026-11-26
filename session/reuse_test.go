@@ -3355,3 +3355,343 @@ func TestRotateWithGraceIssuing_ConcurrentStepsStoreOneSuccessor(t *testing.T) {
 	_, err = m.Load(t.Context(), successors[won].ID)
 	require.NoError(t, err)
 }
+
+// roleSpyStore is a store that counts the supersessions and role selections
+// it is asked for, records the last supersession it was handed, and runs a
+// test's hooks just before and just after passing a supersession on.
+type roleSpyStore struct {
+	session.Store
+
+	supersedes, selects atomic.Int32
+
+	mu   sync.Mutex
+	last session.Supersession
+
+	before func(ctx context.Context, op session.Supersession)
+	after  func(op session.Supersession)
+}
+
+func (s *roleSpyStore) Supersede(ctx context.Context, op session.Supersession) error {
+	s.supersedes.Add(1)
+	s.mu.Lock()
+	s.last = op
+	s.mu.Unlock()
+	if s.before != nil {
+		s.before(ctx, op)
+	}
+	if err := s.Store.Supersede(ctx, op); err != nil {
+		return err
+	}
+	if s.after != nil {
+		s.after(op)
+	}
+
+	return nil
+}
+
+func (s *roleSpyStore) SelectRole(ctx context.Context, id, role string) error {
+	s.selects.Add(1)
+
+	return s.Store.(session.RoleSelector).SelectRole(ctx, id, role)
+}
+
+// hidesSelector wraps a store so that it offers only session.Store, hiding
+// any RoleSelector the wrapped store has.
+type hidesSelector struct{ session.Store }
+
+func (s *roleSpyStore) lastSuccessorID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.last.Successor == nil {
+		return ""
+	}
+
+	return s.last.Successor.ID
+}
+
+// TestSessions_SuccessorRole pins that a rotation with a grace window given
+// WithSuccessorRole stores the successor with the named role in the same
+// supersession, with no separate selection, leaving the superseded record's
+// role alone; that the empty role clears it and no option carries the stored
+// one; that a store ignoring the named role fails the rotation with
+// ErrStoreContract and hands out no successor; and that the strict rotations
+// refuse the option with nothing stored.
+func TestSessions_SuccessorRole(t *testing.T) {
+	t.Parallel()
+
+	const grace = 30 * time.Second
+
+	type fixture struct {
+		m   *session.Sessions
+		spy *roleSpyStore
+		o   *session.Session
+		// stepSaw is the successor's role as the issuing step saw it, and
+		// stepped whether a step ran.
+		stepSaw string
+		stepped bool
+	}
+
+	type testCase struct {
+		name   string
+		sealed bool
+		// noSelector runs the rotation on a manager whose store hides
+		// RoleSelector; the session is prepared before it is hidden.
+		noSelector bool
+		setup      func(f *fixture)
+		act        func(ctx context.Context, f *fixture) (*session.Session, error)
+		assert     func(t *testing.T, f *fixture, got *session.Session, err error)
+	}
+
+	graceRotation := func(opts ...session.RotateOption) func(context.Context, *fixture) (*session.Session, error) {
+		return func(ctx context.Context, f *fixture) (*session.Session, error) {
+			got, _, err := f.m.RotateWithGrace(ctx, f.o, grace, opts...)
+
+			return got, err
+		}
+	}
+	issuingRotation := func(opts ...session.RotateOption) func(context.Context, *fixture) (*session.Session, error) {
+		return func(ctx context.Context, f *fixture) (*session.Session, error) {
+			got, _, _, err := f.m.RotateWithGraceIssuing(ctx, f.o, grace, func(s *session.Session) (string, error) {
+				f.stepped = true
+				f.stepSaw = s.SelectedRole
+
+				return "credential", nil
+			}, opts...)
+
+			return got, err
+		}
+	}
+	storedRole := func(t *testing.T, f *fixture, id string) string {
+		t.Helper()
+		s, err := f.m.Load(t.Context(), id)
+		require.NoError(t, err)
+
+		return s.SelectedRole
+	}
+	successorStoredWith := func(role string) func(t *testing.T, f *fixture, got *session.Session, err error) {
+		return func(t *testing.T, f *fixture, got *session.Session, err error) {
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, role, got.SelectedRole, "the role written back to the successor")
+			assert.Equal(t, role, storedRole(t, f, got.ID), "the successor's stored role")
+			assert.Equal(t, "admin", storedRole(t, f, f.o.ID), "the superseded record keeps its role")
+			assert.Equal(t, int32(1), f.spy.supersedes.Load(), "one supersession")
+			assert.Equal(t, int32(0), f.spy.selects.Load(), "no separate role selection")
+		}
+	}
+	refusedAsConfig := func(t *testing.T, f *fixture, got *session.Session, err error) {
+		require.ErrorIs(t, err, session.ErrConfig)
+		assert.Nil(t, got)
+		assert.False(t, f.stepped, "no step runs for a refused option")
+		assert.Equal(t, int32(0), f.spy.supersedes.Load(), "nothing superseded")
+		old, lerr := f.m.Load(t.Context(), f.o.ID)
+		require.NoError(t, lerr)
+		assert.True(t, old.SupersededAt.IsZero(), "the old session is not superseded")
+		assert.Equal(t, "admin", old.SelectedRole)
+	}
+
+	cases := []testCase{
+		{
+			name:   "grace rotation names the role",
+			act:    graceRotation(session.WithSuccessorRole("audit")),
+			assert: successorStoredWith("audit"),
+		},
+		{
+			name: "issuing grace rotation names the role, and the step sees it",
+			act:  issuingRotation(session.WithSuccessorRole("audit")),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				successorStoredWith("audit")(t, f, got, err)
+				assert.True(t, f.stepped)
+				assert.Equal(t, "audit", f.stepSaw, "the step is handed the successor with the named role")
+			},
+		},
+		{
+			name:   "over the sealing store the named role passes through",
+			sealed: true,
+			act:    graceRotation(session.WithSuccessorRole("audit")),
+			assert: successorStoredWith("audit"),
+		},
+		{
+			name:   "the empty role clears it",
+			act:    graceRotation(session.WithSuccessorRole("")),
+			assert: successorStoredWith(""),
+		},
+		{
+			name:   "the empty role clears it on the issuing rotation",
+			act:    issuingRotation(session.WithSuccessorRole("")),
+			assert: successorStoredWith(""),
+		},
+		{
+			name:   "no option carries the stored role",
+			act:    graceRotation(),
+			assert: successorStoredWith("admin"),
+		},
+		{
+			name:   "the last option given wins",
+			act:    graceRotation(session.WithSuccessorRole("audit"), session.WithSuccessorRole("ops")),
+			assert: successorStoredWith("ops"),
+		},
+		{
+			name: "a selection recorded on the old session during the step does not override the named role",
+			act: func(ctx context.Context, f *fixture) (*session.Session, error) {
+				got, _, _, err := f.m.RotateWithGraceIssuing(ctx, f.o, grace, func(*session.Session) (string, error) {
+					return "credential", f.m.SelectRole(ctx, f.o.ID, "other")
+				}, session.WithSuccessorRole("audit"))
+
+				return got, err
+			},
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				assert.Equal(t, "audit", got.SelectedRole)
+				assert.Equal(t, "audit", storedRole(t, f, got.ID))
+				assert.Equal(t, "other", storedRole(t, f, f.o.ID), "the superseded record keeps its latest selection")
+			},
+		},
+		{
+			name: "the session deleted between load and write stores no successor",
+			setup: func(f *fixture) {
+				f.spy.before = func(ctx context.Context, op session.Supersession) {
+					_ = f.spy.Store.Delete(ctx, op.Old)
+				}
+			},
+			act: graceRotation(session.WithSuccessorRole("audit")),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrNotFound)
+				assert.Nil(t, got)
+				id := f.spy.lastSuccessorID()
+				require.NotEmpty(t, id)
+				_, lerr := f.m.Load(t.Context(), id)
+				require.ErrorIs(t, lerr, session.ErrNotFound, "no successor is stored")
+			},
+		},
+		{
+			name: "a store that writes back another role fails the rotation",
+			setup: func(f *fixture) {
+				f.spy.after = func(op session.Supersession) { op.Successor.SelectedRole = "admin" }
+			},
+			act: graceRotation(session.WithSuccessorRole("audit")),
+			assert: func(t *testing.T, _ *fixture, got *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrStoreContract)
+				for _, verdict := range []error{
+					session.ErrReused, session.ErrNotFound, session.ErrExpired,
+					session.ErrRenewalConflict, session.ErrSuccessorAdvanced,
+				} {
+					assert.NotErrorIs(t, err, verdict)
+				}
+				assert.Nil(t, got, "no successor is handed out")
+			},
+		},
+		{
+			name: "a store that writes back another role fails the issuing rotation",
+			setup: func(f *fixture) {
+				f.spy.after = func(op session.Supersession) { op.Successor.SelectedRole = "" }
+			},
+			act: issuingRotation(session.WithSuccessorRole("audit")),
+			assert: func(t *testing.T, _ *fixture, got *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrStoreContract)
+				assert.Nil(t, got)
+			},
+		},
+		{
+			name:       "a store that cannot select roles refuses the rotation",
+			noSelector: true,
+			act:        graceRotation(session.WithSuccessorRole("audit")),
+			assert:     refusedAsConfig,
+		},
+		{
+			name:       "a store that cannot select roles refuses the issuing rotation",
+			noSelector: true,
+			act:        issuingRotation(session.WithSuccessorRole("audit")),
+			assert:     refusedAsConfig,
+		},
+		{
+			name: "a strict rotation refuses the option",
+			act: func(ctx context.Context, f *fixture) (*session.Session, error) {
+				return f.m.Rotate(ctx, f.o, session.WithSuccessorRole("audit"))
+			},
+			assert: refusedAsConfig,
+		},
+		{
+			name: "a strict issuing rotation refuses the option",
+			act: func(ctx context.Context, f *fixture) (*session.Session, error) {
+				got, _, err := f.m.RotateIssuing(ctx, f.o, func(*session.Session) (string, error) {
+					f.stepped = true
+
+					return "credential", nil
+				}, session.WithSuccessorRole("audit"))
+
+				return got, err
+			},
+			assert: refusedAsConfig,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(createdAt)
+			var inner session.Store = must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
+			if tc.sealed {
+				inner = must.Must(session.NewEncryptedStore(inner, fakeCipher{key: 0x2a}))
+			}
+			f := &fixture{spy: &roleSpyStore{Store: inner}}
+			f.m = managerFor(t, session.WithStore(f.spy), session.WithClock(clk))
+			o, err := f.m.Create(t.Context(), testUser)
+			require.NoError(t, err)
+			require.NoError(t, f.m.SelectRole(t.Context(), o.ID, "admin"))
+			f.o = o
+			f.spy.selects.Store(0)
+			if tc.noSelector {
+				f.m = managerFor(t, session.WithStore(hidesSelector{f.spy}), session.WithClock(clk))
+				require.False(t, f.m.SelectsRoles())
+			}
+			if tc.setup != nil {
+				tc.setup(f)
+			}
+
+			got, err := tc.act(t.Context(), f)
+			tc.assert(t, f, got, err)
+		})
+	}
+}
+
+// TestSessions_StoreContractOrphanIsReuseAfterWindow characterizes what a
+// rotation that failed with ErrStoreContract leaves behind: the store has
+// written, so the old identifier is superseded with its window open and an
+// unheld successor is live. Once the window ends, presenting the old
+// identifier is reuse and the family is revoked.
+func TestSessions_StoreContractOrphanIsReuseAfterWindow(t *testing.T) {
+	t.Parallel()
+
+	const grace = 30 * time.Second
+
+	clk := clockwork.NewFakeClockAt(createdAt)
+	inner := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
+	spy := &roleSpyStore{Store: inner}
+	spy.after = func(op session.Supersession) { op.Successor.SelectedRole = "admin" }
+	m := managerFor(t, session.WithStore(spy), session.WithClock(clk))
+
+	o, err := m.Create(t.Context(), testUser)
+	require.NoError(t, err)
+	require.NoError(t, m.SelectRole(t.Context(), o.ID, "admin"))
+
+	got, _, err := m.RotateWithGrace(t.Context(), o, grace, session.WithSuccessorRole("audit"))
+	require.ErrorIs(t, err, session.ErrStoreContract)
+	assert.Nil(t, got)
+
+	orphanID := spy.lastSuccessorID()
+	require.NotEmpty(t, orphanID)
+	_, err = m.Load(t.Context(), orphanID)
+	require.NoError(t, err, "the orphan successor is live")
+	_, err = m.Load(t.Context(), o.ID)
+	require.NoError(t, err, "the old identifier still loads inside its window")
+
+	clk.Advance(grace + time.Second)
+
+	_, err = m.Load(t.Context(), o.ID)
+	require.ErrorIs(t, err, session.ErrReused, "the old identifier is reuse after the window")
+	_, err = m.Load(t.Context(), orphanID)
+	require.ErrorIs(t, err, session.ErrNotFound, "the family is revoked")
+}

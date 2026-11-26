@@ -632,7 +632,8 @@ func (s *MemoryStore) RecordActivity(_ context.Context, id string, lastAccessed,
 // could no longer be live, and no supersession lowers a retention deadline.
 // Neither record's own deadlines change. Old takes op.Strict as its
 // RotatedStrictly; the successor is inserted unmarked, as Create inserts it,
-// with Old's stored SelectedRole, which is also written to op.Successor.
+// with Old's stored SelectedRole, or *op.SuccessorRole when that is set,
+// which is also written to op.Successor; Old's own role is left as it is.
 //
 // Nothing else is written: no other record of the family is touched, however
 // many renewals came before.
@@ -686,7 +687,11 @@ func (s *MemoryStore) Supersede(_ context.Context, op Supersession) error {
 	// The selected role is the superseded record's as it stands now, under
 	// the lock, not the copy the caller built the successor from: a selection
 	// recorded since that copy was loaded must be neither lost nor undone.
+	// A role the caller named takes its place.
 	op.Successor.SelectedRole = old.SelectedRole
+	if op.SuccessorRole != nil {
+		op.Successor.SelectedRole = *op.SuccessorRole
+	}
 	s.putLocked(op.Successor.clone())
 
 	return nil

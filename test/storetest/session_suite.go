@@ -2860,6 +2860,20 @@ func RunSessionRoleUnstorable[S session.Store](t *testing.T, harness Harness[S])
 			require.ErrorIs(t, err, pgschema.ErrSessionRoleUnstorable, "select")
 			assert.NotContains(t, err.Error(), role, "select: the refusal must not echo the role")
 			assertSessionsLoad(ctx, t, s, stored)
+
+			// Named at supersession: refused before anything is written, so
+			// the old session is neither superseded nor given a successor.
+			at := suiteStart.Add(5 * time.Minute)
+			successor := successorOf(stored, "sess-a-next", at)
+			named := role
+			err = s.Supersede(ctx, session.Supersession{
+				Old: stored.ID, AcceptUntil: at.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+				Successor: successor, Now: at, SuccessorRole: &named,
+			})
+			require.ErrorIs(t, err, pgschema.ErrSessionRoleUnstorable, "supersede")
+			assert.NotContains(t, err.Error(), role, "supersede: the refusal must not echo the role")
+			assertSessionsLoad(ctx, t, s, stored)
+			assertSessionsGone(ctx, t, s, successor.ID)
 		})
 	}
 }
@@ -2938,6 +2952,100 @@ func sessionSelectedRoleCases() []suiteCase[session.Store] {
 				assertSessionsLoad(ctx, t, s, supersededAs(old, successor.ID, at, at.Add(30*time.Second)), successor)
 			},
 		},
+		{
+			// A role named at supersession is the successor's, in place of the
+			// superseded row's; the empty name clears it; with none named the
+			// stored role is carried. Either way the caller's copy is told,
+			// and the superseded row keeps its own role.
+			name: "SupersedeNamesSuccessorRole",
+			assert: func(t *testing.T, _ context.Context, s session.Store, _ *clockwork.FakeClock) {
+				named := func(role string) *string { return &role }
+
+				type testCase struct {
+					name   string
+					named  *string
+					assert func(t *testing.T, successor, loaded, superseded *session.Session)
+				}
+
+				storedWith := func(role string) func(t *testing.T, successor, loaded, superseded *session.Session) {
+					return func(t *testing.T, successor, loaded, superseded *session.Session) {
+						assert.Equal(t, role, successor.SelectedRole, "the role written back to the caller's successor")
+						assert.Equal(t, role, loaded.SelectedRole, "the successor's stored role")
+						assert.Equal(t, "admin", superseded.SelectedRole, "the superseded row keeps its role")
+					}
+				}
+
+				cases := []testCase{
+					{name: "a named role replaces the stored one", named: named("audit"), assert: storedWith("audit")},
+					{name: "the empty name clears the role", named: named(""), assert: storedWith("")},
+					{name: "no name carries the stored role", named: nil, assert: storedWith("admin")},
+				}
+
+				for i, tc := range cases {
+					t.Run(tc.name, func(t *testing.T) {
+						ctx := t.Context()
+						old := withSelectedRole(sessionRecord(fmt.Sprintf("sess-named-%d", i), "u-1"), "admin")
+						require.NoError(t, s.Create(ctx, old))
+						at := suiteStart.Add(5 * time.Minute)
+						// The caller's copy carries the old role, as a successor
+						// built from a load does: the store must not take it.
+						successor := withSelectedRole(successorOf(old, fmt.Sprintf("sess-named-next-%d", i), at), "admin")
+						require.NoError(t, s.Supersede(ctx, session.Supersession{
+							Old: old.ID, AcceptUntil: at.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+							Successor: successor, Now: at, SuccessorRole: tc.named,
+						}))
+
+						loaded, err := s.Load(ctx, successor.ID)
+						require.NoError(t, err)
+						superseded, err := s.Load(ctx, old.ID)
+						require.NoError(t, err)
+						tc.assert(t, successor, loaded, superseded)
+					})
+				}
+			},
+		},
+		{
+			// A refused supersession naming a role writes nothing: the role is
+			// part of the one atomic operation, not a write of its own.
+			name: "SupersedeNamingRoleRefusedWritesNothing",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				role := "audit"
+				old := withSelectedRole(sessionRecord("sess-named-gone", "u-1"), "admin")
+				at := suiteStart.Add(5 * time.Minute)
+				successor := successorOf(old, "sess-named-gone-next", at)
+				err := s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: at.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+					Successor: successor, Now: at, SuccessorRole: &role,
+				})
+				require.ErrorIs(t, err, session.ErrNotFound)
+				assertSessionsGone(ctx, t, s, successor.ID)
+			},
+		},
+		roleCase("SupersedeNamedRoleOverridesLockedRow",
+			func(t *testing.T, ctx context.Context, s session.Store, r session.RoleSelector, _ *clockwork.FakeClock) {
+				// A selection committed on the superseded row after the
+				// caller loaded it does not displace the named role, and the
+				// superseded row keeps it.
+				old := withSelectedRole(sessionRecord("sess-named-race", "u-1"), "admin")
+				require.NoError(t, s.Create(ctx, old))
+				at := suiteStart.Add(5 * time.Minute)
+				successor := withSelectedRole(successorOf(old, "sess-named-race-next", at), "admin")
+				require.NoError(t, r.SelectRole(ctx, old.ID, "other"))
+
+				role := "audit"
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: at.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+					Successor: successor, Now: at, SuccessorRole: &role,
+				}))
+
+				assert.Equal(t, "audit", successor.SelectedRole)
+				loaded, err := s.Load(ctx, successor.ID)
+				require.NoError(t, err)
+				assert.Equal(t, "audit", loaded.SelectedRole)
+				superseded, err := s.Load(ctx, old.ID)
+				require.NoError(t, err)
+				assert.Equal(t, "other", superseded.SelectedRole)
+			}),
 		roleCase("SelectRole",
 			func(t *testing.T, ctx context.Context, s session.Store, r session.RoleSelector, _ *clockwork.FakeClock) {
 				stored := sessionRecord("sess-a", "u-1")

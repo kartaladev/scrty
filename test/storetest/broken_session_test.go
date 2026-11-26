@@ -195,6 +195,10 @@ const (
 	// Supersede also raises each of the record's own deadlines to the
 	// retention deadline, separately, as the first round's raise did.
 	sessionSupersedeRaisesEachDeadline sessionDefect = "supersede-raises-each-deadline"
+	// Supersede inserts the successor with the role the caller's copy
+	// carries, ignoring a role the supersession named, as an INSERT that
+	// never reads session.Supersession.SuccessorRole would.
+	sessionSupersedeIgnoresSuccessorRole sessionDefect = "supersede-ignores-successor-role"
 	// Supersede also holds the record to one deadline, the later of its
 	// absolute deadline and the retention, as both of its own deadlines: the
 	// first round's raise, which a renewal then read as the session's own
@@ -954,6 +958,9 @@ func (s *sessionStore) Supersede(_ context.Context, op session.Supersession) err
 		old.RotatedStrictly = op.Strict && s.defect != sessionSupersedeDropsStrictMark
 	}
 	s.retain(old, op)
+	if op.SuccessorRole != nil && s.defect != sessionSupersedeIgnoresSuccessorRole {
+		op.Successor.SelectedRole = *op.SuccessorRole
+	}
 	successor := cloneSession(op.Successor)
 	successor.RotatedStrictly = successor.RotatedStrictly && s.defect == sessionCreateWritesStrictMark
 	if s.defect == sessionSupersedeDropsSignInState {

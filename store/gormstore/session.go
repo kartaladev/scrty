@@ -779,17 +779,25 @@ func (s *sessionStore) Supersede(ctx context.Context, op session.Supersession) e
 	if err != nil {
 		return err
 	}
+	// A named role is refused before any statement runs when PostgreSQL text
+	// cannot hold it, as Create refuses it, so nothing is written.
+	if op.SuccessorRole != nil {
+		if _, err := pgschema.SessionSelectedRoleArg(*op.SuccessorRole); err != nil {
+			return failed(name, err)
+		}
+	}
 	q, ambient, err := s.c.conn(ctx)
 	if err != nil {
 		return failed(name, err)
 	}
 
-	u := &supersession{s: s, op: name, row: row, old: storekit.SessionDigest(op.Old)}
+	u := &supersession{s: s, op: name, row: row, old: storekit.SessionDigest(op.Old), named: op.SuccessorRole}
 	if err := storekit.Supersede(ctx, u, q, ambient, op); err != nil {
 		return err
 	}
-	// The successor stored took the superseded row's selected role, which
-	// the caller's copy is told, as Store.Supersede documents.
+	// The successor stored took the superseded row's selected role, or the
+	// one op named, which the caller's copy is told, as Store.Supersede
+	// documents.
 	op.Successor.SelectedRole = u.role
 
 	return nil
@@ -807,8 +815,11 @@ type supersession struct {
 	row sessionRow
 	// old is the digest of the session superseded.
 	old []byte
-	// role is the selected role the successor was inserted with: the one
-	// the superseded row held once locked.
+	// named is the role the supersession named for the successor
+	// (session.Supersession.SuccessorRole), nil when it named none.
+	named *string
+	// role is the selected role the successor was inserted with: named when
+	// set, and otherwise the one the superseded row held once locked.
 	role string
 	// tx is the transaction Begin began, when the store owns the unit.
 	tx *gorm.DB
@@ -874,15 +885,13 @@ func (u *supersession) QueryInt(_ context.Context, q *gorm.DB, stmt string, args
 // InsertSuccessor inserts the successor with the selected role the superseded
 // row holds, read on q after storekit.Supersede locked that row, never the
 // one the caller's copy carries: a selection recorded after the caller loaded
-// the session is neither lost nor undone.
+// the session is neither lost nor undone. A role the supersession named is
+// inserted instead, without reading the superseded row's, which is left as it
+// is.
 func (u *supersession) InsertSuccessor(_ context.Context, q *gorm.DB) (bool, error) {
-	var role string
-	res := q.Raw(pgschema.SessionSupersededRole, u.old).Scan(&role)
-	if res.Error != nil {
-		return false, failed(u.op, res.Error)
-	}
-	if res.RowsAffected != 1 {
-		return false, failed(u.op, errors.New("the superseded session's selected role could not be read"))
+	role, err := u.successorRole(q)
+	if err != nil {
+		return false, err
 	}
 	u.row.SelectedRole = nil
 	if role != "" {
@@ -891,6 +900,24 @@ func (u *supersession) InsertSuccessor(_ context.Context, q *gorm.DB) (bool, err
 	u.role = role
 
 	return insertSession(q, u.op, &u.row)
+}
+
+// successorRole is the role the successor is inserted with: the named one,
+// or else the superseded row's, read on q.
+func (u *supersession) successorRole(q *gorm.DB) (string, error) {
+	if u.named != nil {
+		return *u.named, nil
+	}
+	var role string
+	res := q.Raw(pgschema.SessionSupersededRole, u.old).Scan(&role)
+	if res.Error != nil {
+		return "", failed(u.op, res.Error)
+	}
+	if res.RowsAffected != 1 {
+		return "", failed(u.op, errors.New("the superseded session's selected role could not be read"))
+	}
+
+	return role, nil
 }
 
 func (u *supersession) NullTime(t time.Time) any { return nullTs(t) }
