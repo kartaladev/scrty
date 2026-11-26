@@ -47,7 +47,7 @@ File ownership: lane S owns `session/` and `store/**` and `test/storetest`; lane
 | C3 | 6.1, 6.2, 7.1 | Opus | credential delivery across endpoints; a missed path passes tests and leaks |
 | C4 | 8.1, 8.2, 9.1 | Opus | redirect validation and federated completion |
 | C5 | 10.1, 11.1, 11.2, 11.3 | Opus | rotation ordering |
-| C6 | 11.4, 11.5, 12.1, 12.2 | Opus | barrier tests, races |
+| C6 | 11.4, 11.5, 12.1, 12.2, 12.3 | Opus | barrier tests, races, a guard exemption on security paths |
 | C7 | 13.1, 13.2 | Sonnet | conformance scenarios and godoc |
 | — | 14.1 | main session | final gate |
 
@@ -275,7 +275,27 @@ Reviewers: Opus for C1–C6, Sonnet for S1, M1, C7.
 - [ ] **Step 1: Write the failing table test** `TestSessionCookie_LogoutExpires`: success → exact expiring `Set-Cookie` with the configured name, domain and same-site; provider store failure on a provider chain → dependency failure, session present, no `Set-Cookie`.
 - [ ] **Steps 2–5:** run (FAIL), implement, run (PASS), commit `feat(httpsec): logout expires the session cookie`.
 
-### Task 12.2: Provider browser sessions end with the sign-in
+### Task 12.2: The provider on a cookie chain, and its guard exemption
+
+**Files:** Modify `httpsec/oidc_provider.go` (`(*oidcEndpoints).checkBearer`), `httpsec/session_cookie_guard.go`; Test `httpsec/session_cookie_provider_test.go`.
+
+**Interfaces:**
+- Consumes: `sessionCookieGuard` and `OrderSessionCookieGuard` (7.1); the `OIDCEndpoint` constants and the provider's resolved paths.
+- Produces: `checkBearer` accepting `*sessionCookie` as a bearer mode, and folding its manager into the one-shared-manager check; the guard holding the set of outer provider paths, resolved at construction from the chain's prefix and path overrides (not matched by string prefix at request time).
+
+- [ ] **Step 1: Write the failing table test** `TestSessionCookie_ProviderOnCookieChain`:
+  - `New` with `EnableSessionCookie` + the provider → no error (today `ErrConfig` "needs a bearer mode");
+  - the cookie session given a manager other than the provider's → `ErrConfig` naming both;
+  - cookie + `Authorization: Bearer <access token>` to `OIDCUserInfo` → the provider judges the token (200 with claims), no session loaded;
+  - cookie + `Authorization` to `OIDCToken`, `OIDCRevoke`, `OIDCIntrospect` → reach the provider (not the guard's 401);
+  - cookie + `Authorization` to `OIDCResume`, `OIDCConsents`, `OIDCLogoutConfirm` → 401 from the guard, zero session loads;
+  - with `WithOIDCProviderPath(OIDCUserInfo, "/me")`: `/me` exempt, the default `/userinfo` path not.
+- [ ] **Step 2:** run, FAIL on the `ErrConfig`.
+- [ ] **Step 3:** implement. Outer set: `OIDCAuthorize`, `OIDCToken`, `OIDCUserInfo`, `OIDCRevoke`, `OIDCIntrospect`, `OIDCEndSession`, `OIDCDeviceAuthorization`, and the discovery and JWKS documents. Every other provider route stays guarded. Match the exact cleaned path.
+- [ ] **Step 4:** run, PASS; run the scoped C-lane commands.
+- [ ] **Step 5: Commit** `feat(httpsec): run the provider on a cookie chain, its outer endpoints outside the guard`.
+
+### Task 12.3: Provider browser sessions end with the sign-in
 
 - [ ] **Step 1:** Write `TestSessionCookie_EndsProviderBrowserSessions` on a chain running the provider: after logout, and after reuse detected through the cookie, `BrowserSessionStore.Load` of that sign-in's record returns `ErrNotFound`. Remove the end-observer wiring in a scratch edit, see it FAIL, restore.
 - [ ] **Step 2: Commit** `test(httpsec): ending a cookie sign-in ends the provider's browser sessions`.

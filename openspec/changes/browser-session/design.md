@@ -136,8 +136,15 @@ check already requires.
     secure, http-only, max-age), and placed the identifier nowhere else (no other header, cookie
     name or attribute). Anything else is an issuing failure.
   - Any delivery failure ends the sign-in: the whole session family is revoked, including the
-    session a rotating request presented, on a context the client's hang-up cannot cancel. The
-    client never learned the identifier, so nothing usable is left behind.
+    session a rotating request presented, on a context the client's hang-up cannot cancel, bounded
+    by the same timeout logout's revocation uses. A port that panics ends the sign-in the same way
+    before the panic continues; the library does not swallow it.
+  - The port's exchange is a detached copy with its own session and none of the request's
+    per-request state; publishing a caller or evaluating per-request policy on it is a
+    configuration error, so nothing the port does on it reaches the request.
+  - The identifier check is literal. It catches a port's mistakes, not a hostile port: an encoded
+    copy of the identifier (base64 in a header, say) is not detected. A delivery port is trusted
+    code, as every consumer port is.
   - The OIDC provider's own federated completion already discards its credential and keeps doing
     so; it sets no session cookie.
 
@@ -160,11 +167,13 @@ header, before Basic (400), the resource server (425) or the cookie session (500
     publishes a default or anonymous caller before the cookie session therefore locks out every
     cookie request; its godoc says so.
   - The OIDC provider's outer endpoints (authorization, token, userinfo, revocation,
-    introspection, metadata, end-session) authenticate by their own credential and never read the
+    introspection, end-session, device authorization, and the discovery and key-set documents) authenticate by their own credential and never read the
     chain's session, so on a chain that runs the provider with the cookie session the guard exempts
     exactly those paths; the provider's inner, sign-in-dependent routes stay guarded. Without the
     exemption a first-party page on the same origin calling userinfo with an access token would be
-    refused, because the browser sends the cookie on its own.
+    refused, because the browser sends the cookie on its own. Not built with the guard: the
+    provider's chain check still requires a bearer mode, so a chain cannot yet run the provider
+    with the cookie session. Task 12.2 allows that pairing and adds the exemption together.
 
 ### 6. Federated sign-in completes in the callback
 
@@ -276,6 +285,8 @@ Kept as two records (the chain session, the provider's `BrowserSession`), linked
 The linkage already exists: the manager reports every explicit end to the provider, and the chain
 refuses to build the provider without it. This change adds the `browser-session` requirement and
 tests that the cookie path's ends (logout, reuse detected through the cookie, revocation) reach it.
+The provider today refuses to build on a chain without a bearer mode; this change lets it build on a
+cookie chain, taking the cookie session as the sign-in its inner routes depend on (task 12.2).
 - **Alternatives:** merge into one record (rewrites a settled provider design); one cookie value
   keying both stores (one secret opening two stores).
 
@@ -305,7 +316,10 @@ request endpoint, JSON members. An oversized body keeps today's behaviour: read 
 | `next` off-site (`https://…`, `//…`, `/\…`) | Security | Handled, tested | `303` to `/` |
 | Delivery port returning a body credential | Configuration | Handled, tested | issuing failure, nothing written |
 | Delivery port weakening the cookie, changing the identifier, or placing it elsewhere | Configuration / Security | Handled, tested | issuing failure, nothing written, sign-in ended |
-| Delivery fails after the session was stored | State | Handled, tested | 500; the family is revoked on an uncancellable context; a revoke failure is logged and the 500 stands |
+| Delivery fails after the session was stored | State | Handled, tested | 500; the family is revoked on an uncancellable, time-bounded context; a revoke failure is logged and the 500 stands |
+| Delivery port panics | Configuration | Handled, tested | the family is revoked as for any delivery failure, nothing is written, and the panic continues |
+| Session store panics while ending the sign-in after a delivery panic | Dependency | Accepted | the store's panic replaces the port's; a double fault, left to the consumer's recovery middleware |
+| Delivery port writes an encoded copy of the identifier elsewhere | Security | Accepted | not detected; the port is trusted code, and its godoc says the check is literal |
 | Delivery fails at recovery completion | State | Accepted | the user's recovery codes were already replaced and the new ones are never shown, so the user recovers again; only a consumer port can fail here |
 | Session cookie beside a credential a consumer authenticator reads | Security | Handled, tested | 401 before the cookie is read |
 | Two tabs rotating at once (role switch, renewal) | Concurrency | Handled, tested | one rotation wins; the loser's identifier works through the window (barrier test) |

@@ -66,7 +66,8 @@ code (`golang-tdd.md`). Verification is scoped to the changed packages and their
 ## 12. Ending the sign-in
 
 - [ ] 12.1 Expire the cookie on logout with the attributes it was set with, and not on a logout that fails at a provider store (design 11; spec browser-session "Logout expires the cookie"); verify both scenarios
-- [ ] 12.2 Test that logout and reuse detected through the cookie end the provider's browser sessions of the sign-in, on a chain running the provider (design 12; spec browser-session "Ending a cookie sign-in ends the provider's browser sessions of it"); verify both scenarios (characterization: shown to fail once with the end observer removed)
+- [ ] 12.2 Let a chain run the OpenID Provider with the cookie session (the provider's chain check accepts it in place of a bearer mode), and exempt exactly the provider's outer endpoints (authorization, token, userinfo, revocation, introspection, end-session, device authorization, and the discovery and key-set documents) from the both-credentials guard, keeping its inner sign-in-dependent routes guarded (design 5, 12; spec browser-session "Provider endpoint"); verify the scenario, and that an inner provider route carrying the cookie and an `Authorization` header is still refused
+- [ ] 12.3 Test that logout and reuse detected through the cookie end the provider's browser sessions of the sign-in, on a chain running the provider (design 12; spec browser-session "Ending a cookie sign-in ends the provider's browser sessions of it"); verify both scenarios (characterization: shown to fail once with the end observer removed)
 
 ## 13. Framework adapters and documentation
 
