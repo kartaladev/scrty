@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.27, `net/http`, testify, mockgen (`use-mockgen`), testcontainers PostgreSQL 15/18 (`use-testcontainers`), goose migrations.
 
-**Spec:** `openspec/changes/browser-session/` (`proposal.md`, `design.md`, `specs/browser-session`, `specs/sessions`, `specs/security-state-stores`, `specs/magic-link`, `tasks.md`). Task numbers below are `tasks.md`'s.
+**Spec:** `openspec/changes/browser-session/` (`proposal.md`, `design.md`, `specs/browser-session`, `specs/sessions`, `specs/security-state-stores`, `specs/magic-link`, `specs/resource-server`, `tasks.md`). Task numbers below are `tasks.md`'s.
 
 ## Global Constraints
 
@@ -52,10 +52,12 @@ File ownership: lane S owns `session/` and `store/**` and `test/storetest`; lane
 | C8 | 12.4, 12.5 | Opus | a refusal rule on the provider's resume, security-critical; runs in parallel with S2 (disjoint files) |
 | C8b | 12.6 | Opus | security refusal on the provider's resume and a construction rule; scope-handling change in the chain's run |
 | C9 | 11.8 | Sonnet | applies S2's option at one call site, and registers `session.ErrStoreContract` as a dependency failure in `httpsec`'s status table; the test is given (runs in parallel with C8b, disjoint files) |
-| C7 | 13.1, 13.2 | Sonnet | conformance scenarios and godoc (after C9) |
+| C8c | 12.6 (chain-scoped mark), 12.7, C9 godoc nits | Opus | rework of C8b's mark after its review reproduced two defects, plus a security refusal at construction; both in the provider's chain check and the resume |
+| C10 | 12.8 | Opus | security verification rules across `resource_server.go` and the provider source; a mistake passes the tests and still trusts the wrong tokens. Starts after C8c: both edit chain construction |
+| C7 | 13.1, 13.2 | Sonnet | conformance scenarios and godoc (after C10) |
 | — | 14.1 | main session | final gate |
 
-Reviewers: Opus for C1–C6, Sonnet for S1, M1, C7.
+Reviewers: Opus for C1–C6, S2, C8, C8b, C8c and C10; Sonnet for S1, M1, C9 and C7.
 
 **Scoped verification commands** (`test-scope.md`):
 - Lane S: `go test -count=1 ./session/... ./store/... ./internal/... ./httpsec/... ./oidcprovider/... ./policy/... ./recovery/... ./authenticate/...` and, in `test/`, `go test -count=1 ./storetest/... ./sqlstore/... ./pgxstore/... ./gormstore/... ./crossbackend/...` (Docker); plus `go test -count=1 ./...` in `store/pgxstore` and `store/gormstore`; `make generate-check`.
@@ -364,20 +366,57 @@ Reviewers: Opus for C1–C6, Sonnet for S1, M1, C7.
 - [ ] **Step 4: Run** lanes M/C scoped command with `-race` — PASS.
 - [ ] **Step 5: Commit** `test(httpsec): pin the provider exemption filter and the restored deadline`.
 
-### Task 12.6: C8 review follow-ups
+### Task 12.6: C8 and C8b review follow-ups
 
-**Files:** Modify `httpsec/chain.go` (run entry), `httpsec/exchange.go` (`saveScope`/`restoreScope`), `httpsec/oidc_provider.go` (the provider's CSRF check, `checkCSRF`), `httpsec/oidc_resume.go` and `httpsec/logout.go` (godoc only); Test `httpsec/session_cookie_provider_test.go`.
+C8b committed nothing: its run-scoped mark was reviewed and two defects reproduced. C8c reworks the uncommitted C8b edits in place. The construction rule, the godoc fixes and the grace-window row from C8b stay.
 
-**Interfaces:** No new exported names. The cookie-session mark (`Exchange.cookieSession`) is cleared when a run starts and restored when it returns.
+**Files:** Modify `httpsec/chain.go` (remove the mark clear at run entry, keep the re-entry check), `httpsec/exchange.go` (the mark's chain field; rewrap the 85-column line near `exchange.go:441`), `httpsec/session_cookie.go` (`sessionCookie.chain`, set in `wire`), `httpsec/oidc_resume.go` (`oidcResumeGroup` keeps its chain), `httpsec/oidc_provider.go` (`checkCSRF`), and the C9 review's godoc nits in `httpsec/role_switch.go` and `httpsec/session_delivery.go` (the stale "moves to a new identifier before the selection is recorded" comment; `rotateForSwitch` naming `WithSuccessorRole`; `rotateForSwitch` and `rotateCookie` stating that a rotation failing with `session.ErrStoreContract` has already written); Test `httpsec/session_cookie_nested_resume_test.go`, `httpsec/session_cookie_provider_test.go`.
+
+**Interfaces:** No new exported names. Unexported: `Exchange.cookieSessionChain *Chain`, set with `Exchange.cookieSession` in `(*sessionCookie).Intercept`; `resumeSignIn` accepts `ex.Session` only when `ex.cookieSession == ex.Session` and `ex.cookieSessionChain == g.chain`.
+
+- [ ] **Step 1: Write the failing table test** `TestSessionCookie_ComposedChainResume`, one row per composition:
+  - header-bearer provider chain whose interceptor runs the cookie chain inside it (`cookieChain.Assemble(next)(ex)`); resume POST with the cookie, its CSRF token and no `Authorization` → 401, no code (the C8b review's `TestRepro_CookieChainComposedAroundHeaderProviderRun`);
+  - cookie chain with the provider whose interceptor runs a plain chain inside it → the resume succeeds (the C8b review's `TestRepro_PlainChainComposedAroundCookieProviderRun`);
+  - the existing nested row (cookie chain outside, header-bearer provider chain inside) → 401;
+  - a plain chain outside the cookie chain with the provider → the resume succeeds.
+  Keep C8b's CSRF opt-out row and grace-window row.
+- [ ] **Step 2: Run** `go test -count=1 -run 'TestSessionCookie_(ComposedChainResume|NestedProviderChainResume)' ./httpsec/` — expected FAIL on the first two rows: `expected: 401, actual: 200` and a 401 where a redirect was expected.
+- [ ] **Step 3: Implement**: record the chain beside the mark, compare it at the resume, and remove the clear; update the godoc in `chain.go`, `exchange.go` and `oidc_resume.go` to "the mark belongs to the chain that set it".
+- [ ] **Step 4: Run** lanes M/C scoped command with `-race` — PASS.
+- [ ] **Step 5: Commit** with 12.7: `fix(httpsec): keep the cookie sign-in to its own chain, and keep the cookie resume under CSRF protection`.
+
+### Task 12.7: No CSRF exemption covers the cookie resume
+
+**Files:** Modify `httpsec/oidc_provider.go` (`checkCSRF`), and `httpsec/csrf_exemption.go` only to expose its matcher to the check if it is not already callable; Test `httpsec/session_cookie_provider_test.go`.
+
+**Interfaces:** Consumes the exemption matcher `WithCSRFExemption` builds (method exact; path compared as sent; `*` matches one non-empty segment). No new exported names. The resume path is the provider prefix (`DefaultOIDCProviderPrefix` or its override) plus `/authorize/resume`, under the chain's base path.
+
+- [ ] **Step 1: Write the failing table rows** in `TestSessionCookie_ProviderOnCookieChain`:
+  - cookie session + provider + `WithCSRFExemption("POST", "/oauth2/authorize/resume")` → `ErrConfig` naming the resume endpoint;
+  - `WithCSRFExemption("POST", "/oauth2/authorize/*")` → `ErrConfig`;
+  - `WithBasePath("/x")` with `WithCSRFExemption("POST", "/x/oauth2/authorize/resume")` → `ErrConfig`;
+  - a renamed provider prefix `/idp` with `WithCSRFExemption("POST", "/idp/authorize/resume")` → `ErrConfig`;
+  - the exact exemption on a header-bearer provider chain without the cookie session → builds;
+  - `WithCSRFExemption("POST", "/webhooks/payments")` on the cookie chain with the provider → builds.
+- [ ] **Step 2: Run** `go test -count=1 -run TestSessionCookie_ProviderOnCookieChain ./httpsec/` — expected FAIL on the four refusal rows: `expected ErrConfig, got nil`.
+- [ ] **Step 3: Implement**: in the provider's chain check, when the chain has the cookie session, run `POST` plus the resolved resume path through every configured exemption and refuse with `ErrConfig` on a match, naming the method and path. Add a line to `WithCSRFExemption`'s godoc stating the refusal.
+- [ ] **Step 4: Run** lanes M/C scoped command with `-race` — PASS.
+- [ ] **Step 5: Commit** with 12.6 (above).
+
+### Task 12.8: `FromProvider` trusts a provider another chain serves
+
+**Files:** Modify `httpsec/resource_source_provider.go` (`checkWiring`, `FromProvider` godoc), `httpsec/resource_server.go` (the issuer check near line 193, the size bound near line 465, the remote-issuer refusal near line 801); Test `httpsec/resource_source_provider_test.go`, `httpsec/resource_server_construction_test.go`, new `httpsec/example_resource_server_two_chains_test.go`.
+
+**Interfaces:** No new exported names. `FromProvider(op *oidcprovider.Provider, opts ...SourceOption)` keeps its signature. Unexported: a helper returning every provider the chain's resource servers trust (the chain's own, plus each provider source's `op`), used by the three rules.
 
 - [ ] **Step 1: Write the failing tests**:
-  - `TestSessionCookie_NestedProviderChainResume`: an outer cookie chain with CSRF; a consumer interceptor runs an inner provider chain built with `EnableSessionBearer`; resume POST with the outer cookie, its CSRF token and no `Authorization` → 401 (`ErrAuthenticationRequired`), no code issued.
-  - A `TestSessionCookie_ProviderOnCookieChain` row: `EnableSessionCookie` + provider with `oidcprovider.WithoutBrowserSessions()` + `WithoutCSRFProtection()` → `ErrConfig` naming CSRF protection; the same without the provider still builds.
-  - A `TestSessionCookie_ProviderResume` row: the superseded identifier presented inside its grace window → the resume succeeds with the family's sign-in.
-- [ ] **Step 2: Run** `go test -count=1 -run 'TestSessionCookie_(NestedProviderChainResume|ProviderOnCookieChain|ProviderResume)' ./httpsec/` — expected FAIL: nested resume `expected: 401 actual: 200`; construction `expected ErrConfig, got nil`. The grace-window row may already pass; if so, show it fails once by inverting the mark check, then restore.
-- [ ] **Step 3: Implement**: clear the mark at run entry, after the scope is saved; in the provider's chain check, require CSRF protection whenever the chain has the cookie session; correct the resume godoc (the CSRF layer checks the token, and the chain requires it) and rewrap `EnableLogout`'s long line.
-- [ ] **Step 4: Run** lanes M/C scoped command with `-race` — PASS.
-- [ ] **Step 5: Commit** `fix(httpsec): keep the cookie sign-in to its own run, and require CSRF for the provider on a cookie chain`.
+  - `TestFromProvider_OtherChain` (table): a token chain under `WithBasePath("/api")` without a provider, `EnableResourceServer("https://api.example.com", FromProvider(op))`, DPoP enabled; a DPoP-bound access token `op` issued for that audience → 200 with the local user's identifier; the grant revoked through `op`, same token again → 401 invalid token; a chain running provider `op1` with `FromProvider(op2)` → `ErrConfig`; `FromProvider(nil)` → `ErrConfig`.
+  - `TestResourceServer_TrustedProviderRules` (table, on a chain without a provider and `FromProvider(op)`): a resource identifier equal to `op.Issuer()` → `ErrConfig`; a second source `FromIssuer(op.Issuer())` → `ErrConfig`; a token of `op.MaxAccessTokenSize()` bytes larger than the default bound → not refused for its size; `op`'s refresh token (`rt.` prefix) on a path whose resource server has only `FromIntrospection` → 401, the introspection endpoint receives no request (characterization: routing is by prefix and may already pass; show it fails once by inverting the prefix rule).
+  - `ExampleEnableResourceServer_twoChains`: the provider on a cookie chain at `/`, the resource server with `FromProvider(op)` on a token chain at `/api`, one mux.
+- [ ] **Step 2: Run** `go test -count=1 -run 'TestFromProvider_OtherChain|TestResourceServer_TrustedProviderRules|ExampleEnableResourceServer_twoChains' ./httpsec/` — expected FAIL: construction `ErrConfig` ("is not the one EnableOIDCProvider serves on this chain") where a build was expected, and the identifier, issuer and size rows passing where they should fail or failing where they should pass.
+- [ ] **Step 3: Implement**: in `checkWiring`, refuse a nil `op`, and refuse `op` only when the chain runs a provider that is not `op`; make the three rules iterate the trusted providers. Rewrite `FromProvider`'s godoc: default, the cross-chain case, the one-provider-per-chain line.
+- [ ] **Step 4: Run** lanes M/C scoped command with `-race`, and in `test/` `go test -count=1 ./httpsecconformance/... ./` — PASS.
+- [ ] **Step 5: Commit** `feat(httpsec): trust a provider another chain serves through FromProvider`.
 
 ### Task 13.1: Adapter conformance
 
@@ -387,8 +426,9 @@ Reviewers: Opus for C1–C6, Sonnet for S1, M1, C7.
 
 ### Task 13.2: Documentation
 
-- [ ] **Step 1:** Godoc for every new exported name, naming the default it replaces and its line; a package doc section on the two-chain setup.
-- [ ] **Step 2: Verify** `go doc ./httpsec EnableSessionCookie`, each `WithSessionCookie*`, `WithSessionDelivery`, `WithoutSessionRotation`, `WithMagicLinkParams`, `WithMagicLinkBodyLimit`, `go doc ./session WithPersistentCookie`; `go vet ./...`.
+- [ ] **Step 1:** Godoc for every new exported name, naming the default it replaces and its line; a package doc section on the two-chain setup (`httpsec/doc.go`) stating: a chain delivers cookies or tokens, never both; browsers use a cookie chain and native clients a token chain under `WithBasePath`; on a cookie chain a request carrying the session cookie and any `Authorization` header is refused with `ErrAuthenticationRequired` at `OrderSessionCookieGuard` (80), before Basic (400) or a resource server (425) reads it, and only the OIDC Provider's outer endpoints are exempt; so an API that takes access tokens from a same-origin page belongs on the token chain, since the browser attaches the cookie on its own. Add a one-binary subsection: the provider on the cookie chain and `EnableResourceServer(..., FromProvider(op))` on the token chain; and mounting one API handler on both chains (for example `/app/api/` behind the cookie chain with `http.StripPrefix("/app", api)` and `/api/` behind the token chain), with a scope check (`identity.Principal.Scopes`) on the token mount only, because a third-party token carries the user's grant to that client and the cookie carries the user.
+- [ ] **Step 2:** Update `README.md`'s chain and resource-server sections to match Step 1: the chain section names the two-chain setup and the cookie/token exclusivity, and the resource-server section carries the cookie-plus-`Authorization` refusal as a gotcha. Do not restate slot numbers the README does not already list.
+- [ ] **Step 3: Verify** `go doc ./httpsec EnableSessionCookie`, each `WithSessionCookie*`, `WithSessionDelivery`, `WithoutSessionRotation`, `WithMagicLinkParams`, `WithMagicLinkBodyLimit`, `go doc ./httpsec` (package doc shows the two-chain section), `go doc ./session WithPersistentCookie`, `go doc ./session WithSuccessorRole`, `go doc ./httpsec FromProvider` (names the cross-chain case), `go doc ./httpsec WithCSRFExemption` (names the resume refusal); `go vet ./...`.
 - [ ] **Step 3: Commit** `docs: browser session options`.
 
 ### Task 14.1: Final gate (main session)

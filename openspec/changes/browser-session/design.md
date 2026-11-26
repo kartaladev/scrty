@@ -404,17 +404,34 @@ cookie chain, taking the cookie session as the sign-in its inner routes depend o
   credential a consumer recorded with `RecordPresentedToken` beside the cookie is refused. The
   endpoint keeps its own refusal of an `Authorization` line, which the guard refuses first; it is
   defensive against a consumer interceptor that rewrites the request after the guard.
-- **The mark belongs to the run that set it** (from the review of task 12.4). A chain run nested
-  in another run on the same request starts without the outer run's mark and gets it back when it
-  returns, so a header-bearer provider chain run inside a cookie chain does not take the outer
-  cookie sign-in at its resume; it refuses as before. The safe default, and what "a chain with a
-  header bearer is unchanged" requires.
+- **The mark belongs to the chain that set it** (from the reviews of tasks 12.4 and 12.6). The mark
+  records which chain's cookie session published the session, and the resume accepts it only on
+  that same chain. A header-bearer provider chain composed with a cookie chain on one request, inside
+  it or around it, does not take the cookie sign-in at its resume; it refuses as before. A cookie
+  chain composed with another chain keeps its own resume working. A first attempt scoped the mark
+  to the run that set it, clearing it on entry to a nested run; the review reproduced two defects
+  with failing tests: a header-bearer provider chain whose interceptor runs the cookie chain inside
+  it still took the cookie sign-in, and a cookie chain wrapping a plain chain lost its own resume.
+  Scoping by chain fixes both, and needs no clearing.
 - **The provider on a cookie chain requires CSRF protection** (user decision, 2026-11-26). `New`
   refuses the cookie session with the provider when CSRF protection is opted out, whether or not
   the provider keeps browser sessions: the cookie now drives the resume, which hands
   authorization codes to third-party clients, so a page on another site must not drive it with
   only `SameSite=Lax` and the content-type check standing in the way. The opt-out stays available
   on a cookie chain without the provider.
+- **No CSRF exemption may cover the resume on a cookie chain** (user decision, 2026-11-27). `New`
+  refuses with `ErrConfig` a chain running the cookie session and the provider when a
+  `WithCSRFExemption` route matches the resume endpoint (`POST` on the provider prefix plus
+  `/authorize/resume`, under the chain's base path), checked with the exemptions' own matcher so a
+  `*` segment, the base path and a renamed provider prefix are caught. With the exemption, a page
+  on another site could post a resume for a parked request an attacker started with their own
+  client and PKCE pair; the browser attaches the victim's cookie wherever `SameSite` lets it
+  (a same-site sibling host, or a consumer's `SameSite` override), and the code goes to the
+  attacker's redirect URI. PKCE does not help, since the attacker holds the verifier. No legitimate
+  use needs the exemption: the sign-in page can always obtain the CSRF token. A header-bearer chain
+  keeps the exemption, since a forged form carries no credential there.
+  - **Alternative:** allow and document. Rejected: the outcome is an account takeover, and the
+    library's line is to refuse a configuration that removes a guarantee.
 
 ### 13. Magic-link parity
 
@@ -424,6 +441,31 @@ request endpoint, JSON members. An oversized body keeps today's behaviour: read 
 - **Default:** `email`, `next`, `token`; 64 KiB.
 - **Override:** the two options. **Line:** empty or duplicate names, and a limit of zero or less,
   fail construction.
+
+### 14. `FromProvider` trusts a provider another chain serves
+
+The provider has to run on the cookie chain, because its authorization endpoint and resume need the
+cookie sign-in, while an API taking access tokens belongs on a token chain (decision 5). The
+settled resource-server design took `FromProvider` only for the chain's own provider (user decision,
+2026-11-25), expecting a provider elsewhere to be trusted through `FromIssuer` or
+`FromIntrospection`. In one binary those would call the binary over the network, lose per-request
+grant checks or local users, or both. This change reverses that decision (user decision,
+2026-11-27).
+- **Default:** `FromProvider(op)` takes any non-nil provider. On a chain that runs a provider it must
+  be that provider, as before. Verification is unchanged: the provider checks the grant on every
+  request, the caller is the local user loaded through the provider's user loader, and binding is
+  required.
+- **Rules that named the chain's provider** also apply to every provider a provider source trusts:
+  the token size bound covers the largest token it can issue; a resource identifier or alias equal
+  to its issuer is refused; a remote-issuer source naming its issuer is refused, so only
+  `FromProvider` trusts its tokens; its opaque access and refresh tokens are routed to the provider
+  source and never to introspection.
+- **Not checked:** that some chain serves `op`. Chains are built independently and cannot see each
+  other, and an unserved provider still verifies correctly against its stores.
+- **Override:** `FromIssuer` or `FromIntrospection` stay available for a provider in another binary.
+- **Alternative:** a dedicated option naming the other chain (`FromChainProvider(chain)`). Rejected:
+  the provider object already carries everything verification needs, and a second spelling of one
+  source adds API without adding a check.
 
 ## Failure modes
 
@@ -452,7 +494,7 @@ request endpoint, JSON members. An oversized body keeps today's behaviour: read 
 | Session cookie beside a credential a consumer authenticator reads | Security | Handled, tested | 401 before the cookie is read |
 | Two tabs rotating at once (role switch, renewal) | Concurrency | Handled, tested | one rotation wins; the loser's identifier works through the window (barrier test) |
 | Logout landing during a role switch | Concurrency | Handled, tested | before the rotation's write: the switch fails with `ErrAuthenticationRequired`, no cookie re-set, nothing stored; after it: an ordinary later logout (role recorded in the same write, decision 10) |
-| A session store that ignores the requested successor role | Dependency / Configuration | Handled, tested | the rotation fails with `session.ErrStoreContract`; the switch sets no cookie; the conformance suite catches the store. The store has already written: the old record is superseded with its grace window open and an unheld successor is live, so the client's old identifier is reuse after the window and the family is revoked (unless `WithUnusedSuccessorRecovery` recovers it): fail-closed, as for a hang-up after the write |
+| A session store that ignores the requested successor role | Dependency / Configuration | Handled, tested | the rotation fails with `session.ErrStoreContract`; the switch sets no cookie; the conformance suite catches the store. The store has already written: the old record is superseded with its grace window open and an unheld successor is live, so the client's old identifier is reuse after the window and the family is revoked (unless `WithUnusedSuccessorRecovery` recovers it): fail-closed, as for a hang-up after the write. `Sessions` sees only a store that writes back another role; one that ignores the field and writes nothing back already breaks `Store.Supersede`'s write-back rule and is caught by the conformance suite, not at run time (accepted) |
 | `WithSuccessorRole` on a manager whose store cannot select roles | Configuration | Handled, tested | refused with `ErrConfig` before anything is written, as `SelectRole` refuses |
 | Client hangs up after a rotation's write has committed | Concurrency | Accepted | the new cookie never arrives; the old identifier works through the grace window and is reuse after it, revoking the sign-in; `session.WithUnusedSuccessorRecovery` softens it |
 | Cookie resume at the provider with an `Authorization` line too | Security | Handled, tested | 401 from the guard before either credential is read |
@@ -460,7 +502,15 @@ request endpoint, JSON members. An oversized body keeps today's behaviour: read 
 | A credential a consumer recorded beside the cookie at the resume | Security | Handled, tested | 401 |
 | A session owing a step at the resume, on a chain without the gates | Security | Handled, tested | the step's challenge; nothing resumed |
 | CSRF token missing or wrong at the cookie resume | Security | Handled, tested | 403, nothing charged, cookie kept |
-| A header-bearer provider chain run inside a cookie chain's request | Security | Handled, tested | the nested run starts without the outer mark; its resume refuses the cookie sign-in with 401 |
+| A header-bearer provider chain composed with a cookie chain on one request, inside it or around it | Security | Handled, tested | the mark names the cookie chain, not the provider's; the resume refuses the cookie sign-in with 401 |
+| A cookie chain running the provider composed with another chain, inside it or around it | State | Handled, tested | the mark is not cleared by the other chain; the cookie chain's resume still takes its sign-in |
+| A CSRF exemption covering the resume on a cookie chain running the provider (exact, `*` segment, base path, renamed prefix) | Wiring / Security | Handled, tested | `ErrConfig` from `New` naming the resume endpoint; the same exemption builds on a header-bearer chain |
+| `FromProvider` given a provider other than the chain's own | Wiring | Handled, tested | `ErrConfig` from `New`, as before |
+| `FromProvider` on a chain without a provider, with a provider no chain serves | Configuration | Accepted | tokens still verify against the provider's stores; such a provider issues nothing here, so nothing is accepted that another verifier would refuse |
+| A provider token larger than the default bound sent to the token chain | Input | Handled, tested | accepted; the bound covers the trusted provider's largest token |
+| A remote-issuer source naming a trusted provider's issuer, or a resource identifier equal to it | Wiring | Handled, tested | `ErrConfig` from `New` |
+| A trusted provider's opaque or refresh token on a path whose resource server has only an introspection source | Security | Handled, tested | refused as an invalid token; nothing is sent to the introspection endpoint |
+| Grant revoked while its token is used on the token chain | Security | Handled, tested | refused on the next request, as on the provider's own chain |
 | Cookie session and provider with CSRF protection opted out | Wiring | Handled, tested | `ErrConfig` from `New` |
 | A role switch in the same request before the provider's resume | State | Accepted | the switch replaces the request's session, so the resume no longer recognises it and refuses with 401: fail-closed; nothing in the library switches before its own resume |
 | Persistent cookie with the password-change rotation turned off on a recovery-pending sign-in | State | Accepted | the cookie keeps the lowered recovery `Max-Age` and is dropped early by the browser: fail-closed; documented on the option |
@@ -492,6 +542,8 @@ request endpoint, JSON members. An oversized body keeps today's behaviour: read 
 ## Migration Plan
 
 - Additive: chains without `EnableSessionCookie` behave as before.
+- Additive for `FromProvider`: a provider source on a chain without a provider, which `New` refused,
+  now builds (decision 14). A chain running a different provider is still refused.
 - Apply the new security-state migration before deploying a build that writes the column; existing
   rows hold NULL, read as unset. Rolling back the build leaves the column unused.
 - After this change is archived, `bff-resource-server` is retired and `api-token-forwarding` is
@@ -519,5 +571,8 @@ request endpoint, JSON members. An oversized body keeps today's behaviour: read 
 
 **Primary documentation:**
 - [RFC 6265bis, cookie name prefixes](https://datatracker.ietf.org/doc/draft-ietf-httpbis-rfc6265bis/): `__Host-` and `__Secure-` rules (decision 8).
+- [draft-ietf-oauth-browser-based-apps-11](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-browser-based-apps-11), researched for decision 5 above: also supports decision 12's refusal of a CSRF exemption at the resume, since `SameSite` alone is not sufficient.
+- [RFC 6265bis, `SameSite`](https://datatracker.ietf.org/doc/draft-ietf-httpbis-rfc6265bis/): same-site is decided by registrable domain, so a sibling host is same-site (decision 12).
+- [RFC 7636, PKCE](https://www.rfc-editor.org/rfc/rfc7636): PKCE binds a code to whoever started the request, not to the user's browser (decision 12).
 
-Decisions 1, 6, 7 and 13 are reasoned from scrty's own settled specs and the established design.
+Decisions 1, 6, 7, 13 and 14 are reasoned from scrty's own settled specs and the established design.

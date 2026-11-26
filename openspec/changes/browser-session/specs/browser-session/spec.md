@@ -258,7 +258,7 @@ When the session cookie is refused because its session is missing, expired, unre
 - **THEN** it is refused as a cross-site request, the response does not touch the cookie, and nothing is counted against the source
 
 ### Requirement: The OpenID Provider resumes a cookie sign-in
-A chain SHALL be able to run the OpenID Provider with the cookie session. On such a chain, the provider's resume endpoint SHALL take as its sign-in the session the cookie session authenticated, under the same checks a sign-in presented in the `Authorization` header passes, and SHALL NOT take a session that another authenticator published.
+A chain SHALL be able to run the OpenID Provider with the cookie session. On such a chain, the provider's resume endpoint SHALL take as its sign-in the session the cookie session of the same chain authenticated, under the same checks a sign-in presented in the `Authorization` header passes, and SHALL NOT take a session that another authenticator, or another chain's cookie session, published.
 
 #### Scenario: Resume with the cookie
 - **WHEN** a user signed in on a cookie chain that runs the provider posts the resume of a pending authorization request with the session cookie and the sign-in's CSRF token
@@ -268,13 +268,28 @@ A chain SHALL be able to run the OpenID Provider with the cookie session. On suc
 - **WHEN** the same resume also carries an `Authorization` header
 - **THEN** it is refused with the authentication-required error, and no session is loaded
 
+#### Scenario: Provider chain run inside a cookie chain
+- **WHEN** a chain with a header bearer that runs the provider is composed with a cookie chain on one request, inside it or around it, and the resume carries the cookie chain's session cookie and no `Authorization` header
+- **THEN** the resume is refused with the authentication-required error
+
+#### Scenario: Cookie chain composed with another chain
+- **WHEN** a cookie chain that runs the provider is composed with a chain that runs neither, inside it or around it, and a signed-in user posts the resume with the session cookie and the CSRF token
+- **THEN** the authorization request resumes with that sign-in
+
+### Requirement: The cookie resume stays under CSRF protection
+A chain that runs the provider with the cookie session SHALL NOT build when CSRF protection is opted out, or when a CSRF exemption covers the provider's resume endpoint.
+
 #### Scenario: Provider on a cookie chain without CSRF protection
 - **WHEN** a chain enables the cookie session and the provider, and opts out of CSRF protection, whether or not the provider keeps browser sessions
 - **THEN** construction fails with a configuration error
 
-#### Scenario: Provider chain run inside a cookie chain
-- **WHEN** a chain with a header bearer that runs the provider is run inside a cookie chain's request, and the resume carries the outer chain's session cookie and no `Authorization` header
-- **THEN** the resume is refused with the authentication-required error
+#### Scenario: CSRF exemption covering the resume
+- **WHEN** a chain enables the cookie session and the provider, and exempts from CSRF protection a route that matches the resume endpoint, exactly or through a `*` segment, under the chain's base path and provider prefix
+- **THEN** construction fails with a configuration error naming the resume endpoint
+
+#### Scenario: CSRF exemption covering the resume on a header-bearer chain
+- **WHEN** a chain runs the provider with a header bearer and no cookie session, and exempts the resume endpoint from CSRF protection
+- **THEN** the chain builds
 
 ### Requirement: Ending a cookie sign-in ends the provider's browser sessions of it
 When the chain also runs the OpenID Provider, every explicit end of a cookie sign-in, by logout, by reuse detection or by revocation, SHALL end the provider's browser sessions of that sign-in, so that neither layer stays signed in after the other has ended.
