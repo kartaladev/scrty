@@ -6,7 +6,7 @@
 
 ## 2. Rotation at second-factor verification and re-authentication (decision 1)
 
-- [ ] 2.0 Red, in `session`: a grace rotation of a caller's copy with MFA satisfied and a refreshed `AuthenticatedAt` stores a successor with neither, unless `WithSuccessorFromCaller()` is given. Add the option, taken by `RotateWithGrace` and `RotateWithGraceIssuing`. The successor takes the caller's state as the strict rotation does, and the sign-in state from the stored record. A superseded current is refused with `ErrRenewalConflict` and nothing is stored. Strict `Rotate` refuses the option with `ErrConfig`. Pin it on the memory store and in the store conformance suite. From the S1 review:
+- [x] 2.0 Red, in `session`: a grace rotation of a caller's copy with MFA satisfied and a refreshed `AuthenticatedAt` stores a successor with neither, unless `WithSuccessorFromCaller()` is given. Add the option, taken by `RotateWithGrace` and `RotateWithGraceIssuing`. The successor takes the caller's state as the strict rotation does, and the sign-in state from the stored record. A superseded current is refused with `ErrRenewalConflict` and nothing is stored. Strict `Rotate` refuses the option with `ErrConfig`. Pin it on the memory store and in the store conformance suite. From the S1 review:
   - pin the stored absolute deadline under `WithMaxFamilyLifetime(30 * 24h)`;
   - pin the stored role, as the issue step sees it;
   - add an issuing row for the user-mismatch refusal (the step does not run);
