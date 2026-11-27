@@ -123,9 +123,22 @@ func TestSessionCookie_Attributes(t *testing.T) {
 			assert: sets("__Host-app=" + id + "; Path=/; HttpOnly; Secure; SameSite=Lax"),
 		},
 		{
-			name:   "a __Host- name in another case builds, since prefixes match case-insensitively",
+			name:   "a __Host- name in lower case is refused, naming the canonical spelling",
 			opts:   []httpsec.SessionCookieOption{httpsec.WithSessionCookieName("__host-app")},
-			assert: sets("__host-app=" + id + "; Path=/; HttpOnly; Secure; SameSite=Lax"),
+			assert: misconfigured("__host-app", "__Host-"),
+		},
+		{
+			name:   "a __Host- name in upper case is refused, naming the canonical spelling",
+			opts:   []httpsec.SessionCookieOption{httpsec.WithSessionCookieName("__HOST-app")},
+			assert: misconfigured("__HOST-app", "__Host-"),
+		},
+		{
+			name: "a __Secure- name in lower case shared across a domain is refused, naming the canonical spelling",
+			opts: []httpsec.SessionCookieOption{
+				httpsec.WithSessionCookieName("__secure-app"),
+				httpsec.WithSessionCookieDomain("example.com"),
+			},
+			assert: misconfigured("__secure-app", "__Secure-"),
 		},
 		{
 			name:   "an empty name is refused",

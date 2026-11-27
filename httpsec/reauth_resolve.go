@@ -130,11 +130,15 @@ func (i *reauthInterceptor) resolve(ex *Exchange, s *session.Session, method mfa
 // request carries beside its credential is verified, its ath over that
 // credential, and recorded (continuingProof). The zero value binds nothing.
 //
-// On a cookie chain (d) it is always the zero value, and neither the request's
-// client certificate nor its DPoP header is read
-// (credentialDelivery.sessionBinding): a cookie session is never bound, so
-// its successor is not either, and a proof that does not verify refuses
-// nothing.
+// On a cookie chain (d) the binding is always the zero value, and neither the
+// request's client certificate nor its DPoP header is read
+// (credentialDelivery.sessionBinding): an unbound session's successor is not
+// bound either, and a proof that does not verify refuses nothing. A session
+// bound to a DPoP key or a certificate, which only a consumer's own
+// authenticator can have published on such a chain, is refused with
+// ErrAuthenticationRequired before anything is spent
+// (credentialDelivery.continuingProof): the chain judges no proof, so it
+// cannot tell the key's holder from anyone else holding the reference.
 func reauthBinding(ex *Exchange, s *session.Session, d credentialDelivery) (session.KeyBinding, error) {
 	if !s.KeyBinding.IsZero() {
 		return session.KeyBinding{}, d.continuingProof(ex, s)

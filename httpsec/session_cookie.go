@@ -1,11 +1,16 @@
 package httpsec
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ctxlog"
+	"github.com/kartaladev/scrty/internal/errwalk"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 )
@@ -254,7 +259,7 @@ func admitCookieSession(*Exchange) (func(*Exchange, *session.Session) (*identity
 		}
 
 		if err := CheckCSRFToken(ex, sess); err != nil {
-			return nil, csrfAnswer(err)
+			return nil, csrfAnswer(ex.Context(), err)
 		}
 
 		return nil, nil //nolint:nilnil // no user was loaded; the core reloads it by the session's reference
@@ -272,68 +277,111 @@ var errBoundSessionInCookie = errors.New("httpsec: a sender-bound session was pr
 //
 // A pure refusal, a token source breaking its contract (CSRFTokens.Verify
 // refuses with ErrCrossSiteRequest) by returning ErrAuthenticationRequired
-// alone, is answered as the cross-site refusal it stands for. An err that
-// carries any other cause besides it is that cause's failure: it is returned
-// as the other causes alone, so it is answered as a dependency failure, and
-// the outage is neither lost nor charged to the source. An err whose causes
-// cannot be listed within a bound is answered as a cross-site refusal, the
-// safe reading that keeps the cookie and charges nobody.
-func csrfAnswer(err error) error {
-	if !errors.Is(err, ErrAuthenticationRequired) {
+// alone, is answered as the cross-site refusal it stands for, whatever the
+// shape of its tree: nil entries and typed-nil values beside the sentinel are
+// nothing, and are never asked anything, so they neither admit the request
+// nor panic it. An err that carries any other cause besides it is that
+// cause's failure: it is returned as the other causes alone, so it is
+// answered as a dependency failure, and the outage is neither lost nor
+// charged to the source. A refusal is never answered as no error.
+//
+// The other causes are the leaves of err's tree: the errors with neither
+// Unwrap method. A wrapper is never a cause of its own, even one whose Unwrap
+// gives nothing, since telling that apart would mean asking its Unwrap again;
+// a refusal whose other errors are all such wrappers is the cross-site
+// refusal. A leaf that matches ErrAuthenticationRequired by its own Is method
+// leaves nothing the pipeline would not read as a verdict on the reference,
+// so it too makes the answer the cross-site refusal.
+//
+// err's tree is read once, by errwalk's bounded walk, which skips typed nils
+// and recovers a panicking method: each node's Unwrap is called once, and its
+// Is once per appearance of the node in the tree (a node reached twice is
+// asked twice), all inside errwalk. Within csrfAnswer no method of err is
+// called anywhere else, but CheckCSRFToken's porterr.SanitizeTo has already
+// walked the same tree before csrfAnswer runs, so that guarantee covers this
+// function alone. A walk or scan that aborts, and a tree of more than
+// csrfCauseBudget errors, are answered as the cross-site refusal, the safe
+// reading that keeps the cookie and charges nobody; each is recorded on ctx's
+// logger, the over-budget tree with the reason "budget".
+func csrfAnswer(ctx context.Context, err error) error {
+	var buf [csrfCauseBudget]error
+
+	chain, abort := errwalk.FlattenInto(buf[:], err)
+	if abort != nil {
+		porterr.ReportAbort(ctx, nil, abort)
+
+		return ErrCrossSiteRequest
+	}
+
+	refusal, causes, abort := csrfRefusalCauses(chain)
+
+	switch {
+	case abort != nil:
+		porterr.ReportAbort(ctx, nil, abort)
+
+		return ErrCrossSiteRequest
+	case !refusal:
 		return err
-	}
+	case len(chain) > csrfCauseBudget:
+		ctxlog.Routing().LogAttrs(ctx, slog.LevelError, porterr.MsgClassificationAborted,
+			slog.String("reason", "budget"), slog.Int("limit", csrfCauseBudget))
 
-	budget := csrfCauseBudget
-	causes, ok := otherCauses(err, &budget)
-
-	if !ok || len(causes) == 0 {
 		return ErrCrossSiteRequest
-	}
-
-	rest := errors.Join(causes...)
-	if errors.Is(rest, ErrAuthenticationRequired) {
-		// A cause that still matches by its own Is method: nothing to keep
-		// that the pipeline would not read as a verdict on the reference.
+	case len(causes) == 0:
 		return ErrCrossSiteRequest
+	default:
+		return errors.Join(causes...)
 	}
-
-	return rest
 }
 
-// csrfCauseBudget bounds how many errors csrfAnswer walks in an error's tree.
+// csrfCauseBudget bounds how many errors csrfAnswer keeps apart in an error's
+// tree.
 const csrfCauseBudget = 64
 
-// otherCauses lists the leaves of err's tree, in order, that are not
-// ErrAuthenticationRequired itself. ok is false when the tree is larger than
-// budget allows.
-func otherCauses(err error, budget *int) (causes []error, ok bool) {
-	if *budget--; *budget < 0 {
-		return nil, false
-	}
+// csrfRefusalCauses reads chain, a flattened tree: refusal is whether a node
+// matches ErrAuthenticationRequired, as errors.Is would, and causes are the
+// leaves that are not ErrAuthenticationRequired itself. causes is nil when a
+// leaf matches it by its own Is method. Leaves and wrappers are told apart by
+// their type alone, and each node's Is is asked through errwalk.Is, once
+// per appearance of the node in chain, and its abort is returned.
+func csrfRefusalCauses(chain errwalk.Chain) (refusal bool, causes []error, abort error) {
+	var (
+		sentinel bool
+		wrappers errwalk.Chain
+	)
 
-	switch u := err.(type) { //nolint:errorlint // the tree is walked on purpose, node by node
-	case interface{ Unwrap() []error }:
-		for _, child := range u.Unwrap() {
-			sub, ok := otherCauses(child, budget)
-			if !ok {
-				return nil, false
+	for _, node := range chain {
+		switch node.(type) { //nolint:errorlint // the flattened tree is read node by node, by type
+		case interface{ Unwrap() error }, interface{ Unwrap() []error }:
+			wrappers = append(wrappers, node)
+		default:
+			if node == ErrAuthenticationRequired { //nolint:errorlint // the sentinel itself, not an error wrapping it
+				sentinel = true
+
+				continue
 			}
 
-			causes = append(causes, sub...)
-		}
-
-		return causes, true
-	case interface{ Unwrap() error }:
-		if child := u.Unwrap(); child != nil {
-			return otherCauses(child, budget)
+			causes = append(causes, node)
 		}
 	}
 
-	if err == ErrAuthenticationRequired { //nolint:errorlint // the sentinel itself, not an error wrapping it
-		return nil, true
+	claimed, abort := errwalk.Is(causes, ErrAuthenticationRequired)
+	if abort != nil {
+		return false, nil, abort
 	}
 
-	return []error{err}, true
+	if claimed {
+		return true, nil, nil
+	}
+
+	if !sentinel {
+		wrapped, abort := errwalk.Is(wrappers, ErrAuthenticationRequired)
+		if abort != nil || !wrapped {
+			return false, nil, abort
+		}
+	}
+
+	return true, causes, nil
 }
 
 // cookieHeaderPadding is the padding trimmed around a Cookie header's pairs,
@@ -588,6 +636,17 @@ func EnableSessionCookie(deps SessionBearerDeps, opts ...SessionCookieOption) Op
 	}
 }
 
+// nonCanonicalPrefix is the configuration error for a cookie named name, which
+// starts with prefix in another letter case. Some user agents match cookie
+// name prefixes case-sensitively, and store such a name as an ordinary cookie
+// that another origin can overwrite; the canonical spelling is protected by
+// every user agent that knows prefixes, whichever way it matches.
+func nonCanonicalPrefix(name, prefix string) error {
+	return newConfigError("the session cookie is named %q, which starts with the %s prefix in another "+
+		"letter case; a browser that matches prefixes case-sensitively stores it as an ordinary cookie "+
+		"another origin can overwrite, so spell the prefix %s", name, prefix, prefix)
+}
+
 // checkAttributes refuses a cookie a browser would not store as configured,
 // or one whose name breaks its own prefix's rules, so a wiring mistake fails
 // in New rather than as a sign-in that never sticks.
@@ -598,7 +657,9 @@ func (s *sessionCookie) checkAttributes() error {
 			return newConfigError("WithSessionCookieDomain was given %q, but the cookie is named %q, and "+
 				"a browser refuses a %s cookie that names a Domain; name it with the %s prefix to share it "+
 				"across subdomains", s.domain, s.name, cookiePrefixHost, cookiePrefixSecure)
-		case !hasPrefixFold(s.name, cookiePrefixSecure):
+		case !strings.HasPrefix(s.name, cookiePrefixSecure) && hasPrefixFold(s.name, cookiePrefixSecure):
+			return nonCanonicalPrefix(s.name, cookiePrefixSecure)
+		case !strings.HasPrefix(s.name, cookiePrefixSecure):
 			return newConfigError("WithSessionCookieDomain was given %q, but the cookie is named %q; a "+
 				"cookie shared across subdomains must carry the %s prefix, so that a subdomain serving "+
 				"plain HTTP cannot overwrite it", s.domain, s.name, cookiePrefixSecure)
@@ -608,7 +669,11 @@ func (s *sessionCookie) checkAttributes() error {
 	// A host-only cookie must carry the __Host- prefix, so a browser refuses
 	// to let a sibling or plain-HTTP origin overwrite it: an unprefixed or
 	// __Secure- name without a Domain is a cookie another origin can toss.
-	if s.domain == "" && !hasPrefixFold(s.name, cookiePrefixHost) {
+	if s.domain == "" && !strings.HasPrefix(s.name, cookiePrefixHost) && hasPrefixFold(s.name, cookiePrefixHost) {
+		return nonCanonicalPrefix(s.name, cookiePrefixHost)
+	}
+
+	if s.domain == "" && !strings.HasPrefix(s.name, cookiePrefixHost) {
 		return newConfigError("the session cookie is named %q and names no Domain, so it must carry the %s "+
 			"prefix, which a browser accepts only from the origin itself; to name it otherwise, share it "+
 			"across subdomains with the %s prefix and WithSessionCookieDomain",
@@ -782,8 +847,11 @@ func WithoutSessionRotation(points ...RotationPoint) SessionCookieOption {
 // other separator); a __Host- name takes no WithSessionCookieDomain; and a
 // name without the __Host- prefix needs WithSessionCookieDomain and the
 // __Secure- prefix, because a host-only cookie another origin could overwrite
-// is not one this library sets. Each is a configuration error from New.
-// Prefixes match case-insensitively.
+// is not one this library sets. The prefixes are accepted in their canonical
+// spelling only, __Host- and __Secure-: a name that starts with either in any
+// other letter case (__host-, __SECURE-) is refused, because a browser that
+// matches prefixes case-sensitively would store it unprotected. Each is a
+// configuration error from New, which names the rule broken.
 func WithSessionCookieName(name string) SessionCookieOption {
 	return func(s *sessionCookie) error {
 		if name == "" {

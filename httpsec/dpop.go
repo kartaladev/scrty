@@ -980,11 +980,25 @@ func (d credentialDelivery) sessionBinding(ex *Exchange) (session.KeyBinding, er
 
 // continuingProof verifies the DPoP proof a request continuing the sign-in s
 // (second-factor verification, re-authentication, renewal) carries beside the
-// sign-in's credential. On a cookie chain no DPoP header is read, as
-// sessionBinding reads none, so a proof that does not verify refuses nothing;
-// on any other chain the header is judged by the package-level continuingProof.
+// sign-in's credential. On any other chain than a cookie chain the header is
+// judged by the package-level continuingProof.
+//
+// On a cookie chain no DPoP header and no client certificate is read, as
+// sessionBinding reads none, so a proof that does not verify refuses nothing
+// for an unbound sign-in. A sign-in bound to a sender key is refused with
+// ErrAuthenticationRequired, before anything is spent: such a chain judges no
+// proof, so it cannot tell the key's holder from anyone else who holds the
+// sign-in's reference. A cookie chain never creates a bound sign-in, so only
+// one a consumer's own authenticator published reaches the refusal, which
+// matches the cookie session's own refusal of a bound session presented in
+// the cookie (errBoundSessionInCookie). A consumer that continues bound
+// sign-ins runs them on a token chain, where the proof is judged.
 func (d credentialDelivery) continuingProof(ex *Exchange, s *session.Session) error {
 	if d.cookie != nil {
+		if !s.KeyBinding.IsZero() {
+			return ErrAuthenticationRequired
+		}
+
 		return nil
 	}
 

@@ -9,18 +9,18 @@ scoped to the changed packages and their dependents (`test-scope.md`). The comma
 
 ## 1. CSRF refusal fails closed (design 1)
 
-- [ ] 1.1 Red: rows in `TestSessionCookie_RefusalExpires` (or the table that holds the CSRF token-source rows) with a `CSRFTokens` mock whose `Verify` returns `errors.Join(ErrAuthenticationRequired, nil-entry)` via a custom `Unwrap() []error`, and one with a typed-nil child; assert `ErrCrossSiteRequest`, `403`, handler not run, no charge, no `Set-Cookie`, no panic; see both fail on the unmodified code (admitted / panic)
-- [ ] 1.2 Green: `otherCauses` skips nil and typed-nil entries, and `csrfAnswer` returns `ErrCrossSiteRequest` when the joined remainder is nil; the 1.1 rows and the existing outage row pass
+- [x] 1.1 Red: rows in `TestSessionCookie_RefusalExpires` (or the table that holds the CSRF token-source rows) with a `CSRFTokens` mock whose `Verify` returns `errors.Join(ErrAuthenticationRequired, nil-entry)` via a custom `Unwrap() []error`, and one with a typed-nil child; assert `ErrCrossSiteRequest`, `403`, handler not run, no charge, no `Set-Cookie`, no panic; see both fail on the unmodified code (admitted / panic)
+- [x] 1.2 Green: `otherCauses` skips nil and typed-nil entries, and `csrfAnswer` returns `ErrCrossSiteRequest` when the joined remainder is nil; the 1.1 rows and the existing outage row pass
 
 ## 2. Canonical cookie name prefixes (design 4)
 
-- [ ] 2.1 Red: rows in the cookie-options construction table for `__host-app`, `__HOST-app` (no domain) and `__secure-app` with domain `example.com`; assert `ErrConfig` whose message names `__Host-` or `__Secure-`; see them fail on the unmodified code (the chain builds)
-- [ ] 2.2 Green: `checkAttributes` matches the prefixes exactly, and refuses a name that matches a prefix only case-insensitively with a message naming the canonical spelling; existing `__Host-app` / `__Secure-scrty-session` rows still build; the godoc of `WithSessionCookieName` states the canonical-spelling rule
+- [x] 2.1 Red: rows in the cookie-options construction table for `__host-app`, `__HOST-app` (no domain) and `__secure-app` with domain `example.com`; assert `ErrConfig` whose message names `__Host-` or `__Secure-`; see them fail on the unmodified code (the chain builds)
+- [x] 2.2 Green: `checkAttributes` matches the prefixes exactly, and refuses a name that matches a prefix only case-insensitively with a message naming the canonical spelling; existing `__Host-app` / `__Secure-scrty-session` rows still build; the godoc of `WithSessionCookieName` states the canonical-spelling rule
 
 ## 3. Bound session refused at continuation on a cookie chain (design 6)
 
-- [ ] 3.1 Red: on a cookie chain with a consumer authenticator that publishes a DPoP-bound session, second-factor verification, re-authentication and renewal each are refused with `ErrAuthenticationRequired` (401), the code or proof not spent, the session not rotated; see each fail on the unmodified code
-- [ ] 3.2 Green: `credentialDelivery.continuingProof` on a cookie chain refuses a session with a key binding, and returns nil for an unbound one; the existing "Invalid proof ignored" cookie-chain rows still pass
+- [x] 3.1 Red: on a cookie chain with a consumer authenticator that publishes a DPoP-bound session, second-factor verification, re-authentication and renewal each are refused with `ErrAuthenticationRequired` (401), the code or proof not spent, the session not rotated; see each fail on the unmodified code
+- [x] 3.2 Green: `credentialDelivery.continuingProof` on a cookie chain refuses a session with a key binding, and returns nil for an unbound one; the existing "Invalid proof ignored" cookie-chain rows still pass
 
 ## 4. A delivery that quotes the cookie is refused (design 3)
 

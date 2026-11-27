@@ -158,6 +158,11 @@ own authenticator would continue there with no proof at all.
 | Token source refusal with a nil entry in its error tree | Input (port), security | Tested (1) | `403` cross-site, not charged, cookie kept |
 | Token source refusal with a typed-nil entry | Input (port) | Tested (1) | `403` cross-site, no panic |
 | Token source refusal joined to an outage | Dependencies | Tested (1, existing) | the dependency failure, as before |
+| Token source refusal whose tree walk aborts (a panicking `Is` or `Unwrap`, a cycle, errwalk's budget) | Input (port) | Tested (1) | `403` cross-site, not charged, cookie kept; the abort is logged |
+| Token source refusal tree longer than the CSRF walk budget | Input (port) | Tested (1) | `403` cross-site, not charged, cookie kept; the abort is logged |
+| A wrapper whose own `Is` claims the sentinel | Input (port) | Tested (1) | over nothing: `403` cross-site; over an outage: the outage |
+| A wrapper that wraps nothing, beside the sentinel | Input (port) | Tested (1) | `403` cross-site, not a dependency failure |
+| The consumer's error, returned as an outage, is walked again by later `errors.Is` calls with no recover | Input (port) | Accepted (1) | predates this branch and is narrowed by it; a panicking `Is` is porterr's documented limit, recovered per request by `net/http`. The outcome is never an admission |
 | Copy sets or clears `MFAAtFirstFactor`, then rotates | State | Tested (2) | successor carries the stored mark |
 | Delivery quotes the cookie value | Configuration (port) | Tested (3) | issuing failure, sign-in ended, no cookie |
 | Cookie name with a prefix in another case | Configuration | Tested (4) | configuration error from `New` naming the canonical spelling |
@@ -167,7 +172,8 @@ own authenticator would continue there with no proof at all.
 | A queued switch whose context is cancelled | Concurrency, time | Tested (5) | it gives up with the context's error and stores nothing |
 | Switch blocked on a slow store holds the handler's return | Concurrency, time | Accepted (5) | bounded by the store's own timeouts and the switch's context, not by the request context; documented in the godoc |
 | Switch after the handler began its response | Concurrency | Accepted (non-goal) | the godoc's stated outcome: the cookie is dropped and the old one becomes reuse after the window |
-| Bound session continued on a cookie chain | Security | Tested (6) | `401`, nothing spent or rotated |
+| Bound session continued on a cookie chain, with or without a valid proof | Security | Tested (6) | `401`, nothing spent or rotated |
+| Unbound session continued on a cookie chain with a DPoP header | Security | Tested (6) | proceeds as before; no proof is read |
 | A red step passes on the unmodified code | Any | Handled | that fix is dropped and the user is told |
 
 ## Risks / Trade-offs

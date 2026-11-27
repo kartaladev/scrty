@@ -268,6 +268,55 @@ func TestSessionCookie_Authenticates(t *testing.T) {
 		assert.Empty(t, f.limiter.recorded(), "nothing is charged to the source")
 	}
 
+	// shapedCSRFRefusal is a row whose token source refuses with err, an
+	// error matching the authentication-required error whose tree holds
+	// nothing else but nil or typed-nil entries: whatever its shape, it is a
+	// cross-site refusal, not charged, the cookie kept, and nothing panics.
+	shapedCSRFRefusal := func(name string, err error) testCase {
+		return testCase{
+			name: name,
+			options: func(t *testing.T, f *cookieFixture) []httpsec.Option {
+				return []httpsec.Option{
+					httpsec.WithLogger(slog.New(f.logs)),
+					httpsec.WithClock(f.clk),
+					httpsec.EnableCSRFProtection(httpsec.WithCSRFTokens(refusingTokens(t, err))),
+					httpsec.EnableSessionCookie(f.deps(), httpsec.WithSessionCookieLimiter(f.limiter)),
+				}
+			},
+			request: func(t *testing.T, f *cookieFixture) *http.Request {
+				return sessionCookieRequest(t.Context(), http.MethodPost, named(f.signIn.ID),
+					map[string]string{"X-CSRF-Token": "anything"})
+			},
+			assert: func(t *testing.T, f *cookieFixture, s served) {
+				t.Helper()
+				refusedCrossSite(t, s)
+				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(s.err))
+				assert.NotErrorIs(t, s.err, httpsec.ErrAuthenticationRequired)
+				assert.Empty(t, s.rec.Header().Values("Set-Cookie"), "a CSRF refusal keeps the cookie")
+				uncharged(t, f)
+			},
+		}
+	}
+
+	// abortedCSRFRefusal is shapedCSRFRefusal for a tree a method of which
+	// panics or loops while it is read: still a cross-site refusal, not
+	// charged, the cookie kept, nothing panics, and the aborted reading is
+	// reported once, on the chain's logger, with reason.
+	abortedCSRFRefusal := func(name string, err error, reason string) testCase {
+		tc := shapedCSRFRefusal(name, err)
+		shaped := tc.assert
+		tc.assert = func(t *testing.T, f *cookieFixture, s served) {
+			t.Helper()
+			shaped(t, f, s)
+
+			aborts := abortRecords(f.logs.records())
+			require.Len(t, aborts, 1, "the aborted reading is reported once")
+			assertAbortRecord(t, aborts[0], reason)
+		}
+
+		return tc
+	}
+
 	cases := []testCase{
 		{
 			name: "not enabled: the cookie is ignored and never looked up",
@@ -593,6 +642,18 @@ func TestSessionCookie_Authenticates(t *testing.T) {
 				uncharged(t, f)
 			},
 		},
+		shapedCSRFRefusal("a CSRF refusal holding a nil entry is still a refusal",
+			joinedWith{errs: []error{httpsec.ErrAuthenticationRequired, nil}}),
+		shapedCSRFRefusal("a CSRF refusal holding a typed nil is still a refusal",
+			joinedWith{errs: []error{httpsec.ErrAuthenticationRequired, (*typedNilErr)(nil)}}),
+		shapedCSRFRefusal("a CSRF refusal wrapping a typed nil is still a refusal",
+			joinedWith{errs: []error{httpsec.ErrAuthenticationRequired, wrapping{cause: (*typedNilErr)(nil)}}}),
+		shapedCSRFRefusal("a CSRF refusal behind a typed nil is still a refusal",
+			joinedWith{errs: []error{(*typedNilErr)(nil), httpsec.ErrAuthenticationRequired}}),
+		abortedCSRFRefusal("a CSRF refusal beside a panicking Is method is still a refusal",
+			errors.Join(httpsec.ErrAuthenticationRequired, panickyIsError{}), "panic"),
+		abortedCSRFRefusal("a CSRF refusal behind a panicking Is method is still a refusal",
+			errors.Join(panickyIsError{}, httpsec.ErrAuthenticationRequired), "panic"),
 	}
 
 	for _, tc := range cases {
@@ -778,6 +839,38 @@ func outageTokens(t *testing.T, err error) *MockCSRFTokens {
 
 	return tokens
 }
+
+// refusingTokens is a consumer's CSRF token source whose Verify refuses with
+// err.
+func refusingTokens(t *testing.T, err error) *MockCSRFTokens {
+	t.Helper()
+
+	tokens := NewMockCSRFTokens(gomock.NewController(t))
+	tokens.EXPECT().Token(gomock.Any(), gomock.Any()).AnyTimes().Return("t", nil)
+	tokens.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).Times(1).Return(err)
+
+	return tokens
+}
+
+// joinedWith is an error joining errs as they are, nil entries included,
+// which errors.Join would drop.
+type joinedWith struct{ errs []error }
+
+func (e joinedWith) Error() string   { return "joined" }
+func (e joinedWith) Unwrap() []error { return e.errs }
+
+// wrapping is an error wrapping one cause, which may be a typed nil.
+type wrapping struct{ cause error }
+
+func (e wrapping) Error() string { return "wrapping" }
+func (e wrapping) Unwrap() error { return e.cause }
+
+// typedNilErr is an error whose methods dereference their receiver, so a
+// typed nil of it panics when any of them is called.
+type typedNilErr struct{ cause error }
+
+func (e *typedNilErr) Error() string { return "typed: " + e.cause.Error() }
+func (e *typedNilErr) Unwrap() error { return e.cause }
 
 // expiredDefaultCookie is the default session cookie expired with the
 // attributes it is set with.
