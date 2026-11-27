@@ -57,10 +57,11 @@ File ownership: lane S owns `session/` and `store/**` and `test/storetest`; lane
 | C10 | 12.8 | Opus | security verification rules across `resource_server.go` and the provider source; a mistake passes the tests and still trusts the wrong tokens. Starts after C8c: both edit chain construction |
 | C10b | 12.8, C10 review follow-ups | Opus | two construction refusals on security wiring; the binding check reads the provider's binding policy across chains |
 | C10c | 12.8, C10b review follow-up | Sonnet | applies an existing rule (`checkDPoP`) at a second call site, as C10b did for `checkBindings`; the rows are given |
+| C11 | 12.9 | Opus | cookie-expiry decisions on refusal paths (security), and failure tests through delivery and revocation; a mistake passes the tests and still signs users out or keeps a bad cookie |
 | C7 | 13.1, 13.2 | Sonnet | conformance scenarios and godoc (after C10) |
 | — | 14.1 | main session | final gate |
 
-Reviewers: Opus for C1–C6, S2, C8, C8b, C8c, C8d, C10 and C10b; Sonnet for S1, M1, C9, C8e, C10c and C7.
+Reviewers: Opus for C1–C6, S2, C8, C8b, C8c, C8d, C10, C10b and C11; Sonnet for S1, M1, C9, C8e, C10c and C7.
 
 **Scoped verification commands** (`test-scope.md`):
 - Lane S: `go test -count=1 ./session/... ./store/... ./internal/... ./httpsec/... ./oidcprovider/... ./policy/... ./recovery/... ./authenticate/...` and, in `test/`, `go test -count=1 ./storetest/... ./sqlstore/... ./pgxstore/... ./gormstore/... ./crossbackend/...` (Docker); plus `go test -count=1 ./...` in `store/pgxstore` and `store/gormstore`; `make generate-check`.
@@ -463,6 +464,22 @@ C8b committed nothing: its run-scoped mark was reviewed and two defects reproduc
 - [ ] **Step 11: Flip the row** "a provider built with DPoP and no client requiring it, trusted by a chain checking only certificates" to expect `ErrConfig` naming DPoP and `EnableDPoP`, and not `EnableOIDCProvider`; add "a provider built with DPoP trusted by a chain enabling DPoP" → builds. Run `go test -count=1 -run TestResourceServer_TrustedProviderRules ./httpsec/` — FAIL `Expected error with "httpsec: invalid configuration" in chain but got nil`.
 - [ ] **Step 12: Implement** the shared DPoP rule and call it from `checkWiring` when the chain runs no provider; reword the issuer message. Rerun — PASS; the provider's own-chain tests (`oidc_provider_test.go`) pass unchanged.
 - [ ] **Step 13: Run** lanes M/C scoped command with `-race` — PASS. Commit with C10 and C10b (Step 10).
+
+### Task 12.9: Whole-branch review follow-ups
+
+From the whole-branch review. Reproductions: `/private/tmp/claude-501/review-branch/wt/httpsec/zz_review_repro_test.go` (`TestReview_LateCookieRefusedAtRenewalIsExpired` → `actual: []string(nil)` where the expiring cookie was expected; `TestReview_RenewalRequiredKeepsTheCookie` → the cookie was expired). User decision, 2026-11-27: keep the cookie on `ErrRenewalRequired` (design 11).
+
+**Files:** Modify `httpsec/session_cookie.go` (`Intercept`), `httpsec/session_delivery.go` (parameter names only: `SessionDelivery.Deliver`'s `s` and `WithSessionDelivery`'s `d`, e.g. `signIn` and `delivery`), and wherever the pipeline classifies `ErrRenewalRequired` as a judged refusal; Test `httpsec/session_cookie_refusal_test.go` (or the file holding `TestSessionCookie_RefusalExpires`), `httpsec/session_cookie_delivery_test.go`, `httpsec/session_cookie_provider_test.go`.
+
+- [ ] **Step 1: Write the failing rows**:
+  - `TestSessionCookie_RefusalExpires` "superseded cookie under recovery is kept": a manager with `session.WithUnusedSuccessorRecovery`, a rotation whose successor is never used, a GET with the old cookie after the window → 401 `ErrRenewalRequired`, no `Set-Cookie`; then a renewal POST with the same cookie and its CSRF token → succeeds and sets the successor's cookie.
+  - "superseded cookie refused at the renewal endpoint is expired": the successor used, the old cookie posted to the renewal endpoint after its window → refused, family revoked, `Set-Cookie` with `Max-Age=0` and the cookie's attributes.
+  - `TestSessionCookie_DeliveryPort` rows: a `WithSessionDelivery` returning an error at the role switch → issuing failure, no `Set-Cookie`, the old identifier refused afterwards (family revoked), the active role unchanged; the same at the password change, and the consumer's change function does not run.
+  - `TestSessionCookie_EndsProviderBrowserSessions` row "revocation": on a cookie chain running the provider, resume by cookie, then `sessions.RevokeFamily` → no provider browser session of that sign-in loads.
+- [ ] **Step 2: Run** them focused — expected FAIL on the two refusal rows (as in the reproductions). The delivery and revocation rows may already pass; show each fails once by disabling the branch it pins (`endUndelivered`, the end observer), then restore by editing back.
+- [ ] **Step 3: Implement**: in `Intercept`, when the request is a renewal (`ex.renewal != ""` after resolve), run `next` and expire the cookie when the error is `ErrAuthenticationRequired` (not on `ErrRenewalThrottled`, `ErrSessionRenewalConflict` or `ErrCrossSiteRequest`); classify `ErrRenewalRequired` as not expiring the cookie. Rename the two parameters and keep their godoc accurate.
+- [ ] **Step 4: Run** lanes M/C scoped command with `-race`, plus `go test -count=1 -run TestExportedParametersHaveDescriptiveNames .` at the module root — PASS.
+- [ ] **Step 5: Commit** `fix(httpsec): keep a cookie that needs renewal, and expire one the renewal endpoint refuses`.
 
 ### Task 13.1: Adapter conformance
 

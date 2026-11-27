@@ -257,6 +257,17 @@ When the session cookie is refused because its session is missing, expired, unre
 - **WHEN** an unsafe request carries a valid session cookie and no valid CSRF token
 - **THEN** it is refused as a cross-site request, the response does not touch the cookie, and nothing is counted against the source
 
+### Requirement: A cookie that needs renewal is kept for the renewal
+A superseded cookie refused only because its sign-in must be renewed, under unused-successor recovery, SHALL be left in place so the browser can renew with it. A cookie the renewal endpoint itself refuses SHALL be expired.
+
+#### Scenario: Renewal required
+- **WHEN** unused-successor recovery is on, and a request carries a superseded cookie whose successor was never used
+- **THEN** it is refused as needing renewal, the response does not touch the cookie, and a renewal posted with that cookie then succeeds
+
+#### Scenario: Reuse detected at the renewal endpoint
+- **WHEN** a superseded cookie is posted to the renewal endpoint after its window and its successor was used
+- **THEN** it is refused, the sign-in is revoked, and the response expires the cookie
+
 ### Requirement: The OpenID Provider resumes a cookie sign-in
 A chain SHALL be able to run the OpenID Provider with the cookie session. On such a chain, the provider's resume endpoint SHALL take as its sign-in the session the cookie session of the same chain authenticated, under the same checks a sign-in presented in the `Authorization` header passes, and SHALL NOT take a session that another authenticator, or another chain's cookie session, published.
 

@@ -273,9 +273,10 @@ is the seconds to the session's absolute deadline, rounded up, at least 1. A cha
 - **Note:** a chain-wide option and a per-form-login option were both considered; one decision
   function asked at every sign-in path covers both with one option.
 - **Settled during implementation:**
-  - The decision is asked once per sign-in, before anything is stored, on every path: form login,
-    passwordless passkey, magic link, both federated paths, and recovery. A decision that panics is
-    the consumer's panic; nothing is stored.
+  - The decision is asked once per sign-in, before the session is created, on every path: form
+    login, passwordless passkey, magic link, both federated paths, and recovery. A decision that
+    panics is the consumer's panic and no session is created; at recovery completion, held
+    recoveries the completion cancels first stay cancelled.
   - `Max-Age` is computed by the chain's clock and capped at `MaxInt32`. A delivery port that
     computes it itself may read the clock a second later, so the port's cookie passes the exact
     check with the expected `Max-Age` or one second less, never below 1: shorter is the safe
@@ -373,6 +374,15 @@ Sign-in always creates a new session.
   (Decided during implementation, from the review of the pipeline extraction.)
 - A logout that fails on a provider store: nothing is expired, the session stays, and the logout
   can be retried, as the chain's logout already guarantees.
+- **A superseded cookie under unused-successor recovery is kept** (user decision, 2026-11-27, from
+  the whole-branch review). With `session.WithUnusedSuccessorRecovery`, a request carrying a
+  superseded identifier whose successor was never used is refused with `ErrRenewalRequired`, and
+  the response keeps the cookie: it is the only credential the browser can renew with, and
+  expiring it made the option useless on a cookie chain. Nothing is granted meanwhile, and the
+  family is still revoked as reuse once the window passes. A page that receives this refusal posts
+  to the renewal endpoint. The renewal endpoint's own refusal of the cookie (reuse detected there)
+  expires it, as every refusal of a judged reference does (from the same review: the renewal path
+  had skipped the expiry).
 
 ### 12. The provider's browser sessions end with the sign-in
 
@@ -549,6 +559,10 @@ grant checks or local users, or both. This change reverses that decision (user d
 | Cookie session and provider with CSRF protection opted out | Wiring | Handled, tested | `ErrConfig` from `New` |
 | A role switch in the same request before the provider's resume | State | Accepted | the switch replaces the request's session, so the resume no longer recognises it and refuses with 401: fail-closed; nothing in the library switches before its own resume |
 | Persistent cookie with the password-change rotation turned off on a recovery-pending sign-in | State | Accepted | the cookie keeps the lowered recovery `Max-Age` and is dropped early by the browser: fail-closed; documented on the option |
+| A superseded cookie refused with `ErrRenewalRequired` under unused-successor recovery | State | Handled, tested | 401, the cookie kept, so the page can renew; family revoked as reuse after the window |
+| A superseded cookie refused at the renewal endpoint (reuse detected there) | Security | Handled, tested | 401, the family revoked, the cookie expired |
+| Delivery port failing at a role switch or a password change | State | Handled, tested | issuing failure, no `Set-Cookie`, the family revoked; at the password change the consumer's function does not run |
+| Revocation of a cookie sign-in on a chain running the provider | Security | Handled, tested | the provider's browser sessions of that sign-in no longer load |
 | Request context cancelled during rotation | Concurrency | Handled, tested | nothing stored, cookie not re-set, the old identifier still valid |
 | Rotation write fails | State | Handled, tested | dependency failure, old cookie kept |
 | Logout: provider store fails | State | Handled, tested | retryable failure, cookie not expired |
@@ -569,8 +583,8 @@ grant checks or local users, or both. This change reverses that decision (user d
   cookie chain.
 - [Negotiation misclassifies a client] → the rule uses only `Content-Type` and `Accept`, and
   every responder is replaceable.
-- [The new session column touches three stores and a migration] → the column has a default and is
-  write-once like `MFAAtFirstFactor`; the conformance suite carries the round trip.
+- [The new session column touches three stores and a migration] → the column is nullable with no
+  default (NULL read as unset, decision 9) and is write-once like `MFAAtFirstFactor`; the conformance suite carries the round trip.
 - [Two chains on one mux confuse consumers] → an example test and godoc showing the two-chain
   setup with `WithBasePath`.
 
@@ -586,8 +600,8 @@ grant checks or local users, or both. This change reverses that decision (user d
 
 ## Open Questions
 
-- The exact helper names for the rotation opt-outs (`RotateOnRoleSwitch` or a typed set) can be
-  settled during implementation without changing the specs.
+None. The rotation opt-outs were settled during implementation as `RotateOnRoleSwitch` and
+`RotateOnPasswordChange`.
 
 ## References
 
