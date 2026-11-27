@@ -131,11 +131,13 @@ design are the baseline. Decision numbers below are this change's own.
 | Client hangs up after the MFA or re-authentication rotation committed | Concurrency | Accepted | the old cookie works through the window and is reuse after it, revoking the sign-in, as the archived design accepts for the role switch; `WithUnusedSuccessorRecovery` softens it. Before this change the old cookie was signed out immediately |
 | Password change on a session close to its idle deadline | State | Handled, tested | the saved successor keeps `now + idle` from the rotation |
 | Password change ending a recovery | State | Handled, tested (existing) | the restored deadlines are saved, unchanged |
+| A recovery-pending session with no origin deadline (only a hand-built session; `MarkRecoveryPending` always sets one) | State | Accepted | nothing is restored, and the gated session's idle deadline is saved over the successor's, which can only be earlier: the session ends sooner (fail-closed) |
 | Save fails after the resolution was adopted | Dependency | Handled, tested (existing) | the in-memory successor gets back exactly the fields that were changed |
 | `Accept: text/html;q=1.` | Input | Handled, tested | read as q=1; the form gets its 303 |
 | Cookie name padded with U+00A0, U+0085, U+2000, U+205F or U+3000 | Security / Input | Handled, tested | ignored; the request is judged as carrying no session cookie |
 | A padded twin beside the real cookie | Security | Handled, tested | the real cookie authenticates; no lockout |
 | Name with space or tab padding | Input | Handled, tested | still matched (RFC 6265 optional whitespace) |
+| Exact name whose value is padded with a Unicode space | Input | Accepted | the value keeps the padding, fails the identifier's shape check, and is refused as malformed and expired: fail-closed. No browser sends it, and a planter cannot reach it, since planting the exact name makes a duplicate |
 | A name without `__Host-` and no Domain | Wiring | Handled, tested | `ErrConfig` from `New` naming the rule |
 | Fiber `encryptcookie` covering the session cookie | Wiring | Accepted, documented, tested | sign-in never sticks; the godoc names `Config.Except` as the remedy |
 | Another Fiber middleware rewriting the Cookie header | Wiring | Accepted | the chain judges the header as received; the same godoc note covers it |
