@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: A grace rotation can carry the caller's verified state
-`RotateWithGrace` and `RotateWithGraceIssuing` SHALL take `WithSuccessorFromCaller()`, which builds the successor's verification state from the caller's session. Its user, family, binding, CSRF token, sign-in metadata and role SHALL come from the stored record, and its absolute deadline SHALL be the earlier of the stored and the caller's, unless the caller lifted a stored confinement, when it is the caller's, never past the stored origin deadline. A superseded session SHALL be refused with `ErrRenewalConflict`, storing nothing.
+`RotateWithGrace` and `RotateWithGraceIssuing` SHALL take `WithSuccessorFromCaller()`, which builds the successor's verification state from the caller's session. Its user, family, binding, CSRF token, sign-in metadata and role SHALL come from the stored record. A superseded session SHALL be refused with `ErrRenewalConflict`, storing nothing.
 
 #### Scenario: Verified state carried
 - **WHEN** a caller grace-rotates its copy of a session with the second factor satisfied and a refreshed authentication time, with `WithSuccessorFromCaller()`
@@ -34,3 +34,14 @@
 #### Scenario: Strict rotation
 - **WHEN** `Rotate` is given the option
 - **THEN** it fails with `ErrConfig`, and nothing is stored
+
+### Requirement: A caller's copy cannot extend a grace successor's deadline
+With `WithSuccessorFromCaller`, the successor's absolute deadline SHALL be the earlier of the stored record's and the caller's copy's, except when the copy lifted a stored confinement: then it SHALL be the copy's, never later than the stored origin deadline.
+
+#### Scenario: Copy lowers the deadline
+- **WHEN** the caller's copy was confined during the request, lowering its absolute deadline
+- **THEN** the successor ends at the copy's lower deadline
+
+#### Scenario: Copy raises the deadline
+- **WHEN** the stored record is not confined and the copy carries a later absolute deadline
+- **THEN** the successor keeps the stored deadline
