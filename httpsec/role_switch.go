@@ -51,6 +51,8 @@ const (
 	textRoleNotRotated     = "httpsec: the session could not be rotated for the role switch"
 	textRoleSwitchAfterRun = "on a cookie chain the switch re-sets the session cookie on the request's " +
 		"response, so it must be called while the chain is still handling the request"
+	textRoleSwitchInDelivery = "a session delivery must not switch the active role: the switch that " +
+		"delivers through it holds the request's role-switch lock"
 	textRoleNotResolvedBy = "the request's session was not resolved by one of this chain's " +
 		"session-bound authenticators (EnableBearerToken, EnableSessionBearer, EnableSessionCookie), so its role " +
 		"cannot be switched"
@@ -188,7 +190,9 @@ func withRoleSource(ctx context.Context, src *roleSource) context.Context {
 //     resolve itself, such as one a consumer interceptor published, or when
 //     the session ctx carries is no longer the one the chain resolved, as
 //     when an interceptor published another after it, and, for a cookie
-//     session that a switch rotates, once the request's handler has returned;
+//     session that a switch rotates, once the request's handler has returned,
+//     or when ctx is that of the exchange a SessionDelivery is handed, or one
+//     derived from it (a delivery must not switch);
 //   - ErrSessionRenewalConflict when a concurrent rotation of a cookie session
 //     won, and ErrAuthenticationRequired joined to session.ErrReused when its
 //     identifier was already reused;
@@ -417,9 +421,19 @@ func (src *roleSource) rotateForSwitch(ctx context.Context, role string) (*sessi
 // whose cookie session rotates at a role switch gave its exchange the guard
 // before that run began (Chain.Assemble). A run without one, which that
 // wiring never makes, is refused rather than switched unguarded.
+//
+// A switch whose ctx is, or derives from, a session delivery's detached copy
+// (detachedBoundary) is refused at once, before the lock is taken: the
+// delivery runs inside a switch's rotation, under that lock, so waiting for
+// it would last until ctx ends, and the request's context ends only after the
+// chain, waiting on the outer switch, has returned.
 func (src *roleSource) holdRun(ctx context.Context) error {
 	if src.ex == nil || src.run == nil || src.run.guard == nil {
 		return newConfigError("SwitchActiveRole: %s", textRoleSwitchAfterRun)
+	}
+
+	if _, ok := ctx.Value(detachedBoundaryKey{}).(*detachedBoundary); ok {
+		return newConfigError("SwitchActiveRole: %s", textRoleSwitchInDelivery)
 	}
 
 	g := src.run.guard

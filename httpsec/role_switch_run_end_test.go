@@ -134,6 +134,10 @@ func TestSwitchActiveRole_RunEndWaitsForSwitch(t *testing.T) {
 		// ownExchange is set when after runs on an exchange of its own,
 		// which resolved no session, so it has no session to see.
 		ownExchange bool
+		// delivery is set when the switching chain delivers its cookie
+		// through a consumer's SessionDelivery, which copies the request's
+		// exchange while the handler's return waits for the switch.
+		delivery bool
 	}{
 		{
 			name: "interceptor on the switching chain",
@@ -171,6 +175,14 @@ func TestSwitchActiveRole_RunEndWaitsForSwitch(t *testing.T) {
 			},
 			ownExchange: true,
 		},
+		{
+			name: "interceptor on the switching chain, cookie delivered by a session delivery",
+			mount: func(_ *testing.T, after httpsec.Interceptor) ([]httpsec.Option, func(httpsec.Next) httpsec.Next) {
+				return []httpsec.Option{httpsec.RegisterInterceptor(after, httpsec.OrderSessionTouch)},
+					func(h httpsec.Next) httpsec.Next { return h }
+			},
+			delivery: true,
+		},
 	}
 
 	for _, tc := range tests {
@@ -199,7 +211,15 @@ func TestSwitchActiveRole_RunEndWaitsForSwitch(t *testing.T) {
 			})
 
 			opts, wrap := tc.mount(t, after)
-			w := newSwitchCookieWorld(t, opts...)
+
+			var cookieOpts []httpsec.SessionCookieOption
+			if tc.delivery {
+				cookieOpts = append(cookieOpts, httpsec.WithSessionDelivery(
+					&chainRunningDelivery{run: func(*httpsec.Exchange) error { return nil }}))
+			}
+
+			w := newSwitchCookieWorldWith(t, nil, nil, cookieOpts,
+				func(*session.Sessions) []httpsec.Option { return opts })
 
 			held := holdRotation(w, &log)
 
@@ -477,6 +497,65 @@ func TestSwitchActiveRole_DeliveryRunsChainOnItsCopy(t *testing.T) {
 			assert.Equal(t, int32(2), delivery.calls.Load(), "each switch delivered its successor")
 		})
 	}
+}
+
+// TestSwitchActiveRole_DeliverySwitchIsRefused pins that a consumer's session
+// delivery that switches the active role, which it must not, with the context
+// of the exchange copy it is handed, is refused at once with ErrConfig and
+// stores nothing, rather than waiting for the switch that called it: that
+// switch completes, delivering once, and the request does not hang.
+func TestSwitchActiveRole_DeliverySwitchIsRefused(t *testing.T) {
+	t.Parallel()
+
+	delivery := &chainRunningDelivery{}
+
+	w := newSwitchCookieWorldWith(t, nil, nil,
+		[]httpsec.SessionCookieOption{httpsec.WithSessionDelivery(delivery)},
+		func(*session.Sessions) []httpsec.Option { return nil })
+
+	var inner error
+
+	delivery.run = func(ex *httpsec.Exchange) error {
+		inner = w.chain.SwitchActiveRole(ex.Context(), "")
+
+		return nil
+	}
+
+	var outer error
+
+	done := make(chan struct{})
+
+	var out served
+
+	go func() {
+		defer close(done)
+
+		out = w.post(t, w.signIn.ID, func(ex *httpsec.Exchange) error {
+			outer = w.chain.SwitchActiveRole(ex.Context(), "audit")
+
+			return nil
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(queuedGiveUpBound):
+		// The request is left blocked; the test fails rather than hangs.
+		t.Fatal("the request hung: the delivery's switch waited for the switch that called it")
+	}
+
+	require.NoError(t, out.err)
+	require.True(t, out.handlerRan)
+	require.ErrorIs(t, inner, httpsec.ErrConfig, "the delivery's switch is refused")
+	require.NoError(t, outer, "the switch that called the delivery completed")
+	assert.Equal(t, int32(1), delivery.calls.Load(), "only the outer switch delivered a successor")
+
+	set := sessionCookiesFrom(t, out.rec.Header().Values("Set-Cookie"))
+	require.Len(t, set, 1, "the response re-sets the session cookie once")
+
+	successor, err := w.sessions.Load(t.Context(), set[0].Value)
+	require.NoError(t, err)
+	assert.Equal(t, "audit", successor.SelectedRole, "the outer switch's role is the one recorded")
 }
 
 // TestSwitchActiveRole_FannedOutChainsShareGuard pins that chains a handler

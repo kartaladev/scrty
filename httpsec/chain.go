@@ -864,10 +864,6 @@ func (c *Chain) runTerminal(ex *Exchange) error {
 		return errNoRun
 	}
 
-	entry := ex.terminalAt(i)
-	next := entry.next
-	entry.running = true
-
 	// A handler entered again, by an interceptor that passes the request on
 	// a second time, may switch roles again while it runs. Without a guard
 	// on the exchange no switch can rotate, and nothing is locked. The mark
@@ -886,6 +882,15 @@ func (c *Chain) runTerminal(ex *Exchange) error {
 		}
 	}
 
+	// The entry is marked running only once a switch in progress has
+	// released the guard: a switch that delivers its cookie through a
+	// consumer's SessionDelivery copies the exchange, this entry included
+	// (detachedCopy), so no write to the exchange on the handler's goroutine
+	// may overlap it.
+	entry := ex.terminalAt(i)
+	next := entry.next
+	entry.running = true
+
 	// The mark is cleared by position, not through entry: a run entered from
 	// inside the terminal can grow the stack and move its spilled entries.
 	//
@@ -896,16 +901,18 @@ func (c *Chain) runTerminal(ex *Exchange) error {
 	// writes (the exchange's session and context, the response's cookie) and
 	// races none of them, and every switch after it is refused. The guard is
 	// read again here, since a chain run inside the terminal may have made
-	// it.
+	// it. It is marked before the entry's running mark is cleared, so that
+	// write, like every later one on this goroutine, follows the switch's
+	// copy of the exchange (detachedCopy) rather than racing it.
 	defer func() {
+		if g := ex.roleSwitch; g != nil {
+			g.mark(true)
+		}
+
 		if i < ex.terminalCount() {
 			if e := ex.terminalAt(i); e.chain == c {
 				e.running = false
 			}
-		}
-
-		if g := ex.roleSwitch; g != nil {
-			g.mark(true)
 		}
 	}()
 

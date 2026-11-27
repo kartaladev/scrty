@@ -214,7 +214,8 @@ own authenticator would continue there with no proof at all.
 | A `SessionDelivery` runs a chain on an exchange built from its copy's context | Concurrency | Tested (5) | that exchange inherits no guard; no deadlock |
 | A handler runs another chain on its own exchange, then switches | Concurrency | Accepted (5) | `ErrConfig`, nothing stored |
 | An interceptor calls `next` twice, and the handler's second pass switches | Concurrency | Tested (5) | the switch is made |
-| A `SessionDelivery` calls `SwitchActiveRole` (forbidden by the godoc) | Configuration (port) | Accepted (5) | the inner switch waits until its context ends, returns that error and stores nothing; the outer switch completes |
+| A `SessionDelivery` calls `SwitchActiveRole` (forbidden by the godoc) | Configuration (port) | Tested (5) | the inner switch is refused at once with `ErrConfig` and stores nothing; the outer switch completes |
+| A goroutine switch whose delivery copies the exchange while the handler returns | Concurrency | Tested (5) | the handler's return waits for the switch before writing any exchange state, so there is no race |
 | Interceptor code after `next` races a goroutine switch, on this chain or on a chain nested inside it | Concurrency | Tested (5) | impossible: the switch finished first or was refused |
 | A queued switch whose context is cancelled | Concurrency, time | Tested (5) | it gives up with the context's error and stores nothing |
 | Switch blocked on a slow store holds the handler's return | Concurrency, time | Accepted (5) | bounded by the store's own timeouts and the switch's context, not by the request context; documented in the godoc |

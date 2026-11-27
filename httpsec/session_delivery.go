@@ -644,8 +644,9 @@ func (w *stagedWriter) replay(rw ResponseWriter) {
 // against its mistakes, not against a hostile delivery. The identifier is
 // matched literally, so an encoded copy of it (base64 in a header, say) is
 // not detected. A delivery must not switch the active role (SwitchActiveRole):
-// a role switch delivers through it, and switching again from inside would
-// wait on itself.
+// a role switch delivers through it, so a switch made with the delivery's
+// context, or one derived from it, is refused with an error wrapping
+// ErrConfig and stores nothing.
 type SessionDelivery interface {
 	// Deliver writes the session cookie carrying credential, the identifier of
 	// signIn, which the chain has just stored, through ex.Writer, and returns what
