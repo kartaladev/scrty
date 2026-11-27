@@ -155,12 +155,13 @@ func quotedWeight(rng string) bool {
 }
 
 // qvalue parses a q-value by RFC 9110's grammar: "0", optionally followed by
-// "." and up to three digits, or "1", optionally followed by "." and up to
-// three zeros. Anything else strconv would accept (an exponent, a hexadecimal
-// float, a sign, a missing leading digit, more digits) is not one.
+// "." and up to three digits (possibly none), or "1", optionally followed by
+// "." and up to three zeros (possibly none). Anything else strconv would
+// accept (an exponent, a hexadecimal float, a sign, a missing leading digit,
+// more digits) is not one.
 func qvalue(raw string) (float64, bool) {
-	whole, frac, dotted := strings.Cut(raw, ".")
-	if len(frac) > 3 || (dotted && frac == "") {
+	whole, frac, _ := strings.Cut(raw, ".")
+	if len(frac) > 3 {
 		return 0, false
 	}
 

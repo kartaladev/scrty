@@ -273,7 +273,8 @@ func (g *passwordChangeGate) resolve(ex *Exchange) error {
 	// not revived, and the caller is answered as for any session that no
 	// longer loads.
 	resolved := *s
-	if s.MFA == session.MFARecoveryPending {
+	recovering := s.MFA == session.MFARecoveryPending
+	if recovering {
 		if err := g.sessions.RestoreEnrolmentDeadlines(&resolved); err != nil {
 			return ErrAuthenticationRequired
 		}
@@ -376,14 +377,14 @@ func (g *passwordChangeGate) resolve(ex *Exchange) error {
 	}
 
 	previous := *target
-	adoptResolution(target, &resolved)
+	adoptResolution(target, &resolved, recovering)
 
 	// Persisted before the response returns, because the marker is what every
 	// later request is judged on: a change that cleared the flag in memory
 	// alone would be owed again on the next request. A session that cannot be
 	// saved keeps, in memory too, the state it was stored in.
 	if err := g.sessions.Save(ex.Context(), target); err != nil {
-		adoptResolution(target, &previous)
+		adoptResolution(target, &previous, recovering)
 
 		return err
 	}
@@ -493,12 +494,21 @@ func (g *passwordChangeGate) clearableUsername(ctx context.Context) string {
 }
 
 // adoptResolution copies onto dst the fields resolve changes, from src: the
-// second-factor state, the password-change marker and the deadlines a
-// recovery-pending session's resolution restores. Every other field is left
-// as dst holds it, including anything the consumer's function set.
-func adoptResolution(dst, src *session.Session) {
+// second-factor state and the password-change marker always, and the
+// deadlines only when deadlines is true, which is when the resolution ended a
+// recovery and so restored them. Otherwise dst's deadlines stay as they are,
+// so a successor the rotation gave a fresh idle deadline keeps it. Every other
+// field is left as dst holds it, including anything the consumer's function
+// set. Passing the same deadlines to restore dst from a copy taken before
+// puts back exactly the fields adopted.
+func adoptResolution(dst, src *session.Session, deadlines bool) {
 	dst.MFA = src.MFA
 	dst.PasswordChangePending = src.PasswordChangePending
+
+	if !deadlines {
+		return
+	}
+
 	dst.AbsoluteExpiresAt = src.AbsoluteExpiresAt
 	dst.IdleExpiresAt = src.IdleExpiresAt
 	dst.EnrolmentOriginDeadline = src.EnrolmentOriginDeadline

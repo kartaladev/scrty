@@ -76,7 +76,8 @@ func TestPrefersHTML(t *testing.T) {
 		{name: "q with no leading digit", accept: []string{"text/html;q=.5"}, assert: json},
 		{name: "q with an explicit plus", accept: []string{"text/html;q=+0.5"}, assert: json},
 		{name: "q of 1 with a non-zero fraction", accept: []string{"text/html;q=1.001"}, assert: json},
-		{name: "q with a trailing dot", accept: []string{"text/html;q=1."}, assert: json},
+		{name: "q with an empty fraction is valid", accept: []string{"text/html;q=1., application/json;q=0.5"}, assert: html},
+		{name: "q of 0. ranks HTML last", accept: []string{"text/html;q=0., application/json"}, assert: json},
 		{name: "q of 0.5 is valid", accept: []string{"text/html;q=0.5"}, assert: html},
 		{name: "q of 1.000 is valid", accept: []string{"text/html;q=1.000, application/json;q=0.999"}, assert: html},
 		{name: "q of 0.001 is valid and ranks above 0", accept: []string{"text/html;q=0.001"}, assert: html},
@@ -104,6 +105,54 @@ func TestPrefersHTML(t *testing.T) {
 			}
 
 			tc.assert(t, prefersHTML(NewHTTPRequest(req)))
+		})
+	}
+}
+
+// TestQvalue pins RFC 9110's q-value grammar: "0" with up to three digits
+// after an optional dot (the digits may be none), or "1" with up to three
+// zeros likewise, and nothing else.
+func TestQvalue(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		raw    string
+		assert func(t *testing.T, q float64, ok bool)
+	}
+
+	valid := func(want float64) func(t *testing.T, q float64, ok bool) {
+		return func(t *testing.T, q float64, ok bool) {
+			t.Helper()
+			require.True(t, ok)
+			assert.InDelta(t, want, q, 1e-9)
+		}
+	}
+	invalid := func(t *testing.T, _ float64, ok bool) {
+		t.Helper()
+		assert.False(t, ok)
+	}
+
+	cases := []testCase{
+		{name: "1 with an empty fraction", raw: "1.", assert: valid(1)},
+		{name: "0 with an empty fraction", raw: "0.", assert: valid(0)},
+		{name: "1.0", raw: "1.0", assert: valid(1)},
+		{name: "0.5", raw: "0.5", assert: valid(0.5)},
+		{name: "1.000", raw: "1.000", assert: valid(1)},
+		{name: "no leading digit", raw: ".5", assert: invalid},
+		{name: "above 1", raw: "1.1", assert: invalid},
+		{name: "2 with an empty fraction", raw: "2.", assert: invalid},
+		{name: "two dots", raw: "1..", assert: invalid},
+		{name: "four digits", raw: "0.5555", assert: invalid},
+		{name: "empty", raw: "", assert: invalid},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			q, ok := qvalue(tc.raw)
+			tc.assert(t, q, ok)
 		})
 	}
 }

@@ -2,6 +2,7 @@ package httpsec
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -105,6 +106,89 @@ func TestPasswordChange_ResolutionTarget(t *testing.T) {
 
 			target, err := resolutionTarget(from, gated, src)
 			tc.assert(t, target, err)
+		})
+	}
+}
+
+// TestPasswordChange_AdoptResolution pins which fields a password change's
+// resolution carries onto the session it saves, and that restoring from a copy
+// taken before puts back exactly those: the second-factor state and the marker
+// always, the deadlines only when the resolution ended a recovery, so a
+// rotation's fresh idle deadline is never overwritten and a failed save leaves
+// the in-memory session as it was stored.
+func TestPasswordChange_AdoptResolution(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 11, 26, 9, 0, 0, 0, time.UTC)
+	generation := id.MustParse("01890a5d-ac96-774b-bcce-b302099a8057")
+
+	// target is the session the resolution is saved on: a rotation's
+	// successor, with its own fresh deadlines.
+	target := func() *session.Session {
+		return &session.Session{
+			ID: "successor", MFA: session.MFARecoveryPending, PasswordChangePending: true,
+			AbsoluteExpiresAt: base.Add(12 * time.Hour), IdleExpiresAt: base.Add(30 * time.Minute),
+		}
+	}
+
+	// resolved is what resolve worked out from the session it gated: older
+	// deadlines, as a restored recovery has.
+	resolved := func() *session.Session {
+		return &session.Session{
+			ID: "gated", MFA: session.MFANone, PasswordChangePending: false,
+			AbsoluteExpiresAt: base.Add(2 * time.Hour), IdleExpiresAt: base.Add(10 * time.Second),
+			EnrolmentGeneration: generation,
+		}
+	}
+
+	type testCase struct {
+		name      string
+		deadlines bool
+		assert    func(t *testing.T, adopted, before *session.Session)
+	}
+
+	cases := []testCase{
+		{
+			name: "without deadlines only the marker and the second-factor state are adopted",
+			assert: func(t *testing.T, adopted, before *session.Session) {
+				t.Helper()
+				assert.Equal(t, session.MFANone, adopted.MFA)
+				assert.False(t, adopted.PasswordChangePending)
+				assert.Equal(t, before.IdleExpiresAt, adopted.IdleExpiresAt, "the rotation's idle deadline stays")
+				assert.Equal(t, before.AbsoluteExpiresAt, adopted.AbsoluteExpiresAt)
+				assert.Equal(t, before.EnrolmentGeneration, adopted.EnrolmentGeneration)
+				assert.Equal(t, "successor", adopted.ID, "nothing else is touched")
+			},
+		},
+		{
+			name:      "with deadlines the restored ones are adopted too",
+			deadlines: true,
+			assert: func(t *testing.T, adopted, _ *session.Session) {
+				t.Helper()
+				assert.Equal(t, session.MFANone, adopted.MFA)
+				assert.False(t, adopted.PasswordChangePending)
+				assert.Equal(t, base.Add(10*time.Second), adopted.IdleExpiresAt)
+				assert.Equal(t, base.Add(2*time.Hour), adopted.AbsoluteExpiresAt)
+				assert.Equal(t, generation, adopted.EnrolmentGeneration)
+				assert.Equal(t, "successor", adopted.ID)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			dst := target()
+			before := *dst
+
+			adoptResolution(dst, resolved(), tc.deadlines)
+			tc.assert(t, dst, &before)
+
+			// The failed-save rollback, with the same flag, restores exactly
+			// what was adopted.
+			adoptResolution(dst, &before, tc.deadlines)
+			assert.Equal(t, before, *dst, "the session is as it was before the resolution")
 		})
 	}
 }
