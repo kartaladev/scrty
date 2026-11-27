@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1624,24 +1625,56 @@ func newE2EDeployment(t *testing.T) *e2eDeployment {
 	return d
 }
 
+// newE2EEncoder is the one place the end-to-end Argon2id parameters live, so
+// e2eEncoder and e2eHash cannot drift apart.
+func newE2EEncoder() (password.Encoder, error) {
+	return password.NewArgon2idEncoder(password.WithArgon2idMemory(19456),
+		password.WithArgon2idIterations(2), password.WithArgon2idThreads(1))
+}
+
 // e2eEncoder is Argon2id at the cheapest parameters the encoder accepts, so
 // a run of logins stays quick.
 func e2eEncoder(t *testing.T) password.Encoder {
 	t.Helper()
 
-	enc, err := password.NewArgon2idEncoder(password.WithArgon2idMemory(19456),
-		password.WithArgon2idIterations(2), password.WithArgon2idThreads(1))
+	enc, err := newE2EEncoder()
 	require.NoError(t, err)
 
 	return enc
 }
 
+// e2eHashOnce derives the hash of e2ePassword at e2eEncoder's parameters, once
+// per process; sync.OnceValues makes concurrent first callers wait for the one
+// derivation and share its result.
+var e2eHashOnce = sync.OnceValues(func() (string, error) {
+	enc, err := newE2EEncoder()
+	if err != nil {
+		return "", err
+	}
+
+	hash, err := enc.Encode(e2ePassword)
+
+	return string(hash), err
+})
+
+// e2eHash is a valid Argon2id hash of e2ePassword at e2eEncoder's parameters.
+// It is derived once per process and is immutable: a caller converts it with
+// []byte(...), which copies. Use it only for a fixture that needs some valid
+// hash to log in against. A fixture whose hash is compared, whose password is
+// changed, or whose hash is rehashed must derive its own with e2eEncoder.
+func e2eHash(t *testing.T) string {
+	t.Helper()
+
+	hash, err := e2eHashOnce()
+	require.NoError(t, err)
+
+	return hash
+}
+
 func (d *e2eDeployment) wireUsers(t *testing.T) {
 	t.Helper()
 
-	var err error
-	d.hash, err = e2eEncoder(t).Encode(e2ePassword)
-	require.NoError(t, err)
+	d.hash = []byte(e2eHash(t))
 
 	details := func() *identity.Details {
 		return &identity.Details{

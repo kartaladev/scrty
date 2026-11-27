@@ -101,6 +101,30 @@ Its godoc carries the contract for callers. The archived `parallel-port-error-ch
 
 That change's Context says every child-process row goes through `limiterPortErrInChild`, and its Measurements count 236 rows in 26 tests. Its audit and review missed the three copies, because each was taken for a thin wrapper. The archive is left as it was written. This design records the correction, and its Measurements give the new counts.
 
+## Measurements
+
+Taken on 2026-11-27 on the maintainer's machine (14 CPUs, Go 1.27.4), with all three decisions applied. The machine was not fully idle: the load average was about 10, mostly from a system media-analysis process. Local figures drift.
+
+**Package, `go test -race -count=1 -timeout 300s -json ./httpsec`:**
+- `Elapsed`: **134.2 s**, against 234–262 s before this change and the 300 s goal.
+- Rows with a `pause` action: 9620.
+- Rows that never paused: 2330 leaf rows totalling 50.8 s, against 139.5 s before. The longest are the `TestPortErrors_TokenGenerator/recovery_completion` rows, at about 0.7 s each.
+
+**Decision 1, the copies go through the helper:**
+- `TestPortErrors_SourceThrottle` alone ran in 16.2 s with 0 `pause` events before, and 5.0 s with 14 after.
+- The five tests that call a former copy ran in 74.8 s before and 31.5–37.0 s after. 50 child rows now pause: SourceThrottle 14, Redemption 12, TokenGenerator 12, OIDCRedemption 6, BackchannelLinkStore 6.
+- With a `t.Fatal` induced in a child row, the row fails with "the child failed:" and the child's output. With a wrong marker printed, it fails with "the child printed no line". Both edits were reverted.
+
+**Decision 2, one fixture hash per process:**
+- `TestPortErrors_RecoveryCooldown/live/Unwrap_panicking_with_nil`, run alone with a CPU profile: 1.06 s before, 0.70 s after.
+- Argon2's share of that profile rose, from 19.6% to 39.4%, contrary to task 2.3's expectation. A process that runs one row still derives the shared hash once and verifies one login. So a one-row run removes the fixture's other derivations, not the Argon2 work itself. The saving across rows shows in the package figure above.
+- Fixtures switched to `e2eHash`: `newRecoveryHarness`, `newPwlDeployment`, `e2eDeployment.wireUsers`, `newIssuingBaseOver`, `newEventsWorldOf` and `newAuditWorld`. Each was checked: no test compares their hash, changes the password, or rehashes, and every authenticator they wire uses `e2eEncoder`'s parameters.
+- Kept: `password_outage_test.go`, which hashes a different password; the `example_*` tests; and the rehash rig.
+
+**Decision 3, the rehash target:**
+- At `rehashNewMemory = 19 * 1024`, the upgrade cases of `TestLogin_Rehash*` and every `form_login` row of `TestPortErrors_RehashWrite` fail. At `20 * 1024`, they pass.
+- `TestPortErrors_RehashWrite` wall time: 17.7 s before, 11.6 s after.
+
 ## Migration Plan
 
 Test-only. Merge after CI's `test` legs pass within the goal. To roll back, revert the commit.

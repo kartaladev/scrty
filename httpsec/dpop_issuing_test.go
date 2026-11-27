@@ -177,8 +177,7 @@ func newIssuingBase(t *testing.T) *issuingBase {
 func newIssuingBaseOver(t *testing.T, sessions, creator *session.Sessions) *issuingBase {
 	t.Helper()
 
-	hash, err := e2eEncoder(t).Encode(e2ePassword)
-	require.NoError(t, err)
+	hash := []byte(e2eHash(t))
 
 	details := func() *identity.Details {
 		return &identity.Details{ID: e2eUser, Name: "Grace Hopper", Username: e2eAddress, Password: hash, Active: true}
@@ -212,6 +211,8 @@ func newIssuingBaseOver(t *testing.T, sessions, creator *session.Sessions) *issu
 
 			return details(), nil
 		})
+
+	var err error
 
 	b.authn, err = authenticate.NewUsernamePasswordAuthenticator(b.users,
 		authenticate.WithPasswordEncoder(e2eEncoder(t)))

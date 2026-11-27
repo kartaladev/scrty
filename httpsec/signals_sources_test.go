@@ -1072,8 +1072,7 @@ func newAuditWorld(t *testing.T) *auditWorld {
 
 	w := &auditWorld{rec: &eventRecorder{}, sid: map[string]string{}}
 
-	hash, err := e2eEncoder(t).Encode(e2ePassword)
-	require.NoError(t, err)
+	hash := []byte(e2eHash(t))
 
 	details := func(user string) *identity.Details {
 		return &identity.Details{ID: identity.UserID(user), Name: user, Username: auditUsername(user), Password: hash, Active: true}
