@@ -3695,3 +3695,487 @@ func TestSessions_StoreContractOrphanIsReuseAfterWindow(t *testing.T) {
 	_, err = m.Load(t.Context(), orphanID)
 	require.ErrorIs(t, err, session.ErrNotFound, "the family is revoked")
 }
+
+// callerSuccessorStore is a memory store that counts the supersessions it is
+// asked to write and fails them with fail when it is set.
+type callerSuccessorStore struct {
+	*session.MemoryStore
+
+	supersedes atomic.Int32
+	fail       error
+}
+
+func (s *callerSuccessorStore) Supersede(ctx context.Context, op session.Supersession) error {
+	s.supersedes.Add(1)
+	if s.fail != nil {
+		return s.fail
+	}
+
+	return s.MemoryStore.Supersede(ctx, op)
+}
+
+// copyOf returns a shallow copy of s, standing in for a caller's own copy of
+// a session.
+func copyOf(s *session.Session) *session.Session {
+	c := *s
+
+	return &c
+}
+
+// TestRotateWithGrace_SuccessorFromCaller pins that a grace rotation given
+// WithSuccessorFromCaller builds its successor from the caller's copy, so the
+// verified state the caller recorded (a satisfied second factor, a refreshed
+// authentication time) is the successor's, while the sign-in state, the
+// family, the persistent-cookie mark, the selected role and the absolute
+// deadline still come from the stored record and the rotation sets the
+// timestamps and the idle deadline. The old record keeps its own lower state
+// through the window. A session already superseded is refused with
+// ErrRenewalConflict before anything is stored or revoked, a caller copy of
+// another user is refused, and the strict rotations refuse the option.
+func TestRotateWithGrace_SuccessorFromCaller(t *testing.T) {
+	t.Parallel()
+
+	const (
+		grace = 30 * time.Second
+		idle  = 30 * time.Minute
+	)
+	var (
+		verifiedAt = createdAt.Add(time.Minute)
+		rotatedAt  = createdAt.Add(5 * time.Minute)
+		storedKey  = session.KeyBinding{JKT: "stored-key-thumbprint"}
+		callerKey  = session.KeyBinding{JKT: "caller-key-thumbprint"}
+	)
+
+	type fixture struct {
+		clk   *clockwork.FakeClock
+		m     *session.Sessions
+		store *callerSuccessorStore
+		// stored is the session as the store holds it; caller is the
+		// caller's copy, verified and with the sign-in state altered.
+		stored, caller *session.Session
+		// stepSaw is the successor the issuing step was handed.
+		stepSaw *session.Session
+		stepped bool
+	}
+
+	type testCase struct {
+		name string
+		opts []session.Option
+		// prepare moves the stored record or the caller's copy before the
+		// rotation runs.
+		prepare func(t *testing.T, f *fixture)
+		act     func(ctx context.Context, f *fixture) (*session.Session, error)
+		assert  func(t *testing.T, f *fixture, got *session.Session, err error)
+	}
+
+	withGrace := func(opts ...session.RotateOption) func(context.Context, *fixture) (*session.Session, error) {
+		return func(ctx context.Context, f *fixture) (*session.Session, error) {
+			got, _, err := f.m.RotateWithGrace(ctx, f.caller, grace, opts...)
+
+			return got, err
+		}
+	}
+	issuing := func(issue error, opts ...session.RotateOption) func(context.Context, *fixture) (*session.Session, error) {
+		return func(ctx context.Context, f *fixture) (*session.Session, error) {
+			got, _, _, err := f.m.RotateWithGraceIssuing(ctx, f.caller, grace, func(s *session.Session) (string, error) {
+				f.stepped = true
+				f.stepSaw = copyOf(s)
+
+				return "credential", issue
+			}, opts...)
+
+			return got, err
+		}
+	}
+	load := func(t *testing.T, f *fixture, id string) *session.Session {
+		t.Helper()
+		s, err := f.store.Load(t.Context(), id)
+		require.NoError(t, err)
+
+		return s
+	}
+	// renewedFirst rotates the stored session once without the option, as a
+	// renewal endpoint would, and resets the supersession count.
+	renewedFirst := func(t *testing.T, f *fixture) {
+		t.Helper()
+		_, _, err := f.m.RotateWithGrace(t.Context(), f.stored, grace)
+		require.NoError(t, err)
+		f.store.supersedes.Store(0)
+	}
+	// oldKeepsItsState asserts the old record, loaded through the manager
+	// inside the window, still carries the stored state.
+	oldKeepsItsState := func(t *testing.T, f *fixture) {
+		t.Helper()
+		old, err := f.m.Load(t.Context(), f.stored.ID)
+		require.NoError(t, err, "the old identifier still loads inside the window")
+		assert.Equal(t, session.MFAPending, old.MFA)
+		assert.Equal(t, createdAt, old.AuthenticatedAt)
+	}
+	// nothingWritten asserts the old record was neither superseded nor
+	// revoked, and that no supersession was written.
+	nothingWritten := func(t *testing.T, f *fixture) {
+		t.Helper()
+		assert.Equal(t, int32(0), f.store.supersedes.Load(), "nothing superseded")
+		old := load(t, f, f.stored.ID)
+		assert.True(t, old.SupersededAt.IsZero(), "the old session is not superseded")
+		assert.Equal(t, 1, f.store.Len(), "no successor stored")
+	}
+	// carriesCallerState asserts s is built from the caller's copy, with the
+	// stored sign-in state, family, persistent mark and absolute deadline,
+	// and the rotation's own timestamps and idle deadline.
+	carriesCallerState := func(t *testing.T, f *fixture, s *session.Session) {
+		t.Helper()
+		assert.Equal(t, session.MFASatisfied, s.MFA)
+		assert.Equal(t, verifiedAt, s.MFASatisfiedAt)
+		assert.Equal(t, verifiedAt, s.AuthenticatedAt)
+		assert.Equal(t, f.stored.CSRFToken, s.CSRFToken, "the CSRF token is the stored one")
+		assert.Equal(t, storedKey, s.KeyBinding, "the key binding is the stored one")
+		assert.Equal(t, "192.0.2.1", s.ClientIP, "the client address is the stored one")
+		assert.Equal(t, "stored-agent", s.UserAgent, "the user agent is the stored one")
+		assert.Equal(t, f.stored.FamilyID, s.FamilyID, "the family is the stored one")
+		assert.Equal(t, f.stored.FamilyCreatedAt, s.FamilyCreatedAt, "the family start is the stored one")
+		assert.True(t, s.PersistentCookie, "the persistent mark is the stored one")
+		assert.Equal(t, f.stored.AbsoluteExpiresAt, s.AbsoluteExpiresAt, "the absolute deadline is the stored one")
+		assert.Equal(t, rotatedAt, s.CreatedAt)
+		assert.Equal(t, rotatedAt, s.LastAccessedAt)
+		assert.Equal(t, rotatedAt.Add(idle), s.IdleExpiresAt, "the idle deadline starts afresh")
+		assert.True(t, s.SupersededAt.IsZero())
+		assert.Empty(t, s.SuccessorDigest)
+	}
+
+	cases := []testCase{
+		{
+			name: "with the option the successor carries the caller's verified state",
+			act:  withGrace(session.WithSuccessorFromCaller()),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				carriesCallerState(t, f, got)
+				carriesCallerState(t, f, load(t, f, got.ID))
+				oldKeepsItsState(t, f)
+			},
+		},
+		{
+			name: "without it the successor is built from the stored record",
+			act:  withGrace(),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				stored := load(t, f, got.ID)
+				assert.Equal(t, session.MFAPending, stored.MFA)
+				assert.Equal(t, createdAt, stored.AuthenticatedAt)
+				assert.True(t, stored.MFASatisfiedAt.IsZero())
+				oldKeepsItsState(t, f)
+			},
+		},
+		{
+			name: "the issuing rotation hands its step the caller-built successor",
+			act:  issuing(nil, session.WithSuccessorFromCaller()),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				require.True(t, f.stepped)
+				carriesCallerState(t, f, f.stepSaw)
+				carriesCallerState(t, f, load(t, f, got.ID))
+				oldKeepsItsState(t, f)
+			},
+		},
+		{
+			name: "the role WithSuccessorRole names still applies",
+			act:  withGrace(session.WithSuccessorFromCaller(), session.WithSuccessorRole("audit")),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				assert.Equal(t, "audit", load(t, f, got.ID).SelectedRole)
+				carriesCallerState(t, f, got)
+			},
+		},
+		{
+			name: "a role on the caller's copy is not the successor's",
+			prepare: func(_ *testing.T, f *fixture) {
+				f.caller.SelectedRole = "admin"
+			},
+			act: withGrace(session.WithSuccessorFromCaller()),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				assert.Empty(t, got.SelectedRole)
+				assert.Empty(t, load(t, f, got.ID).SelectedRole)
+			},
+		},
+		{
+			name:    "a session superseded inside its window is a renewal conflict",
+			prepare: renewedFirst,
+			act:     withGrace(session.WithSuccessorFromCaller()),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrRenewalConflict)
+				assert.NotErrorIs(t, err, session.ErrReused)
+				assert.Nil(t, got)
+				assert.Equal(t, int32(0), f.store.supersedes.Load(), "nothing superseded")
+				assert.Equal(t, 2, f.store.Len(), "the store holds the old session and one successor")
+				oldKeepsItsState(t, f)
+			},
+		},
+		{
+			name:    "a superseded session given to the issuing rotation is refused before its step",
+			prepare: renewedFirst,
+			act:     issuing(nil, session.WithSuccessorFromCaller()),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrRenewalConflict)
+				assert.Nil(t, got)
+				assert.False(t, f.stepped, "no step runs")
+				assert.Equal(t, int32(0), f.store.supersedes.Load(), "nothing superseded")
+				assert.Equal(t, 2, f.store.Len(), "the store holds the old session and one successor")
+			},
+		},
+		{
+			name: "a superseded session past its window is a renewal conflict under recovery",
+			opts: []session.Option{session.WithUnusedSuccessorRecovery()},
+			prepare: func(t *testing.T, f *fixture) {
+				renewedFirst(t, f)
+				f.clk.Advance(grace + time.Second)
+			},
+			act: withGrace(session.WithSuccessorFromCaller()),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrRenewalConflict)
+				assert.NotErrorIs(t, err, session.ErrReused)
+				assert.Nil(t, got)
+				assert.Equal(t, int32(0), f.store.supersedes.Load(), "nothing superseded")
+				assert.Equal(t, 2, f.store.Len(), "nothing revoked, nothing added")
+			},
+		},
+		{
+			name: "a caller copy of another user is refused",
+			prepare: func(_ *testing.T, f *fixture) {
+				f.caller.UserID = "someone-else"
+			},
+			act: withGrace(session.WithSuccessorFromCaller()),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrConfig)
+				assert.Nil(t, got)
+				nothingWritten(t, f)
+			},
+		},
+		{
+			name: "a copy's later absolute deadline is not the successor's under a family maximum",
+			opts: []session.Option{session.WithMaxFamilyLifetime(30 * 24 * time.Hour)},
+			prepare: func(_ *testing.T, f *fixture) {
+				f.caller.AbsoluteExpiresAt = f.stored.AbsoluteExpiresAt.Add(24 * time.Hour)
+			},
+			act: withGrace(session.WithSuccessorFromCaller()),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				assert.Equal(t, f.stored.AbsoluteExpiresAt, got.AbsoluteExpiresAt)
+				assert.Equal(t, f.stored.AbsoluteExpiresAt, load(t, f, got.ID).AbsoluteExpiresAt)
+			},
+		},
+		{
+			name: "the issuing step sees the stored role, not the copy's",
+			prepare: func(t *testing.T, f *fixture) {
+				require.NoError(t, f.store.SelectRole(t.Context(), f.stored.ID, "viewer"))
+				f.caller.SelectedRole = "admin"
+			},
+			act: issuing(nil, session.WithSuccessorFromCaller()),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				require.True(t, f.stepped)
+				assert.Equal(t, "viewer", f.stepSaw.SelectedRole)
+				assert.Equal(t, "viewer", load(t, f, got.ID).SelectedRole)
+			},
+		},
+		{
+			name: "a copy of another user given to the issuing rotation is refused before its step",
+			prepare: func(_ *testing.T, f *fixture) {
+				f.caller.UserID = "someone-else"
+			},
+			act: issuing(nil, session.WithSuccessorFromCaller()),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrConfig)
+				assert.Nil(t, got)
+				assert.False(t, f.stepped, "no step runs")
+				nothingWritten(t, f)
+			},
+		},
+		{
+			name: "a password change saved after the copy was taken is not cleared",
+			prepare: func(t *testing.T, f *fixture) {
+				pending := copyOf(load(t, f, f.stored.ID))
+				pending.PasswordChangePending = true
+				require.NoError(t, f.store.Save(t.Context(), pending))
+				f.caller.PasswordChangePending = false
+			},
+			act: withGrace(session.WithSuccessorFromCaller()),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				assert.True(t, got.PasswordChangePending)
+				assert.True(t, load(t, f, got.ID).PasswordChangePending)
+			},
+		},
+		{
+			name: "a password change the copy raises is kept",
+			prepare: func(_ *testing.T, f *fixture) {
+				f.caller.PasswordChangePending = true
+			},
+			act: withGrace(session.WithSuccessorFromCaller()),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				assert.True(t, got.PasswordChangePending)
+				assert.True(t, load(t, f, got.ID).PasswordChangePending)
+			},
+		},
+		{
+			name: "a failing issuing step stores nothing",
+			act:  issuing(errStoreWrite, session.WithSuccessorFromCaller()),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.ErrorIs(t, err, errStoreWrite)
+				assert.Nil(t, got)
+				nothingWritten(t, f)
+			},
+		},
+		{
+			name: "a failing supersession stores nothing",
+			prepare: func(_ *testing.T, f *fixture) {
+				f.store.fail = errStoreWrite
+			},
+			act: withGrace(session.WithSuccessorFromCaller()),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.ErrorIs(t, err, errStoreWrite)
+				assert.Nil(t, got)
+				old := load(t, f, f.stored.ID)
+				assert.True(t, old.SupersededAt.IsZero(), "the old session is not superseded")
+				assert.Equal(t, 1, f.store.Len(), "no successor stored")
+			},
+		},
+		{
+			name: "Rotate refuses the option",
+			act: func(ctx context.Context, f *fixture) (*session.Session, error) {
+				return f.m.Rotate(ctx, f.caller, session.WithSuccessorFromCaller())
+			},
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrConfig)
+				assert.Nil(t, got)
+				nothingWritten(t, f)
+			},
+		},
+		{
+			name: "RotateIssuing refuses the option before its step",
+			act: func(ctx context.Context, f *fixture) (*session.Session, error) {
+				got, _, err := f.m.RotateIssuing(ctx, f.caller, func(*session.Session) (string, error) {
+					f.stepped = true
+
+					return "credential", nil
+				}, session.WithSuccessorFromCaller())
+
+				return got, err
+			},
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrConfig)
+				assert.Nil(t, got)
+				assert.False(t, f.stepped, "no step runs")
+				nothingWritten(t, f)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(createdAt)
+			store := &callerSuccessorStore{
+				MemoryStore: must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk))),
+			}
+			m := managerFor(t, append([]session.Option{
+				session.WithStore(store),
+				session.WithClock(clk),
+				session.WithIdleTimeout(idle),
+				session.WithAbsoluteTimeout(8 * time.Hour),
+				session.WithSessionMetadata(),
+			}, tc.opts...)...)
+			s, err := m.Create(t.Context(), testUser,
+				session.WithKeyBinding(storedKey),
+				session.WithCSRFToken(),
+				session.WithPersistentCookie(),
+				session.WithClientMetadata("192.0.2.1", "stored-agent"))
+			require.NoError(t, err)
+			s.MFA = session.MFAPending
+			require.NoError(t, m.Save(t.Context(), s))
+
+			clk.Advance(rotatedAt.Sub(createdAt))
+			stored, err := store.Load(t.Context(), s.ID)
+			require.NoError(t, err)
+
+			// The caller's copy: verified a minute after sign-in, with the
+			// sign-in state, family, persistent mark and absolute deadline
+			// altered, none of which the successor may take from it.
+			caller := copyOf(stored)
+			caller.MFA = session.MFASatisfied
+			caller.MFASatisfiedAt = verifiedAt
+			caller.AuthenticatedAt = verifiedAt
+			caller.CSRFToken = "caller-csrf-token"
+			caller.KeyBinding = callerKey
+			caller.ClientIP = "198.51.100.9"
+			caller.UserAgent = "caller-agent"
+			caller.FamilyID = id.ID{}
+			caller.FamilyCreatedAt = rotatedAt
+			caller.PersistentCookie = false
+			caller.AbsoluteExpiresAt = stored.AbsoluteExpiresAt.Add(24 * time.Hour)
+
+			f := &fixture{clk: clk, m: m, store: store, stored: stored, caller: caller}
+			if tc.prepare != nil {
+				tc.prepare(t, f)
+			}
+
+			got, err := tc.act(t.Context(), f)
+			tc.assert(t, f, got, err)
+		})
+	}
+}
+
+// TestRotateWithGrace_SuccessorFromCallerConcurrent pins that two grace
+// rotations of one session with WithSuccessorFromCaller, both reading the
+// stored record before either writes, still store exactly one successor: the
+// loser is refused with ErrRenewalConflict by the store's condition.
+func TestRotateWithGrace_SuccessorFromCallerConcurrent(t *testing.T) {
+	t.Parallel()
+
+	clk := clockwork.NewFakeClockAt(createdAt)
+	inner := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
+	store := newLoadBarrierStore(inner)
+	m := managerFor(t, session.WithStore(store), session.WithClock(clk))
+	o, err := m.Create(t.Context(), testUser)
+	require.NoError(t, err)
+	verified := copyOf(o)
+	verified.MFA = session.MFASatisfied
+	verified.MFASatisfiedAt = createdAt
+
+	var (
+		wg         sync.WaitGroup
+		successors [2]*session.Session
+		errs       [2]error
+	)
+	for i := range 2 {
+		wg.Go(func() {
+			successors[i], _, errs[i] = m.RotateWithGrace(t.Context(), verified, 30*time.Second,
+				session.WithSuccessorFromCaller())
+		})
+	}
+	wg.Wait()
+
+	won := 0
+	if errs[0] != nil {
+		won = 1
+	}
+	loser := 1 - won
+	require.NoError(t, errs[won])
+	require.ErrorIs(t, errs[loser], session.ErrRenewalConflict, "both rotations produced a successor")
+	assert.Nil(t, successors[loser])
+	assert.Equal(t, 2, inner.Len(), "the family holds the old session and exactly one successor")
+	live, err := inner.Load(t.Context(), successors[won].ID)
+	require.NoError(t, err)
+	assert.Equal(t, session.MFASatisfied, live.MFA)
+}

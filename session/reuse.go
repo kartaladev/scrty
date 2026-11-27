@@ -141,6 +141,10 @@ type rotation struct {
 	// window takes.
 	role    string
 	roleSet bool
+
+	// fromCaller is WithSuccessorFromCaller, which only a rotation with a
+	// grace window takes.
+	fromCaller bool
 }
 
 // rotationOf applies opts.
@@ -195,6 +199,47 @@ func WithSuccessorRole(role string) RotateOption {
 	}
 }
 
+// WithSuccessorFromCaller builds the successor of a rotation with a grace
+// window from the caller's copy of the session, in place of the default,
+// which builds it from the record the store holds and ignores the caller's
+// copy apart from its identifier. It is for a rotation that records a change
+// of state on the session it rotates, such as a satisfied second factor or a
+// refreshed authentication time, which the store's record does not have yet.
+//
+// The successor takes from the caller's copy the second-factor state, the
+// authentication time, the first factor, the enrolment and recovery state,
+// the federated and external-session fields and the consumer's data. It takes
+// from the stored record, whatever the copy says: the user, the family and its
+// start, the key binding, the CSRF token, the sign-in metadata (client address
+// and user agent), the persistent-cookie mark, the selected role (unless
+// WithSuccessorRole names one) and the absolute deadline (unless
+// WithSuccessorLifetime chooses one). A pending password change only rises:
+// the successor has it when either the copy or the stored record does, so a
+// copy taken before the change was recorded cannot clear it. The rotation then
+// sets the creation and last-access times and the idle deadline as it does
+// without the option, and caps the absolute deadline at the family's end. The
+// superseded record keeps its own stored state through the window, so its
+// identifier gains nothing the successor holds.
+//
+// RotateWithGrace and RotateWithGraceIssuing take it. Rotate and RotateIssuing
+// refuse it with ErrConfig, since a strict rotation already builds from the
+// caller's copy. With it:
+//
+//   - a copy naming another user than the stored record is refused with
+//     ErrConfig;
+//   - a session that is already superseded, inside its window (a re-rotation)
+//     or after it under WithUnusedSuccessorRecovery (a recovery), is refused
+//     with ErrRenewalConflict, as a lost race: the copy is stale, and rotating
+//     it again would close the window of the successor another rotation
+//     handed out.
+//
+// Every refusal is made before the issuing step runs, and nothing is stored,
+// superseded or revoked. A session past its window with recovery off is
+// reuse, exactly as without the option.
+func WithSuccessorFromCaller() RotateOption {
+	return func(r *rotation) { r.fromCaller = true }
+}
+
 // RotateWithGrace moves current to a successor in the same family, and keeps current's
 // identifier usable for a grace window after it, so a request already in
 // flight with the old identifier, or a client that never received the
@@ -236,7 +281,8 @@ func WithSuccessorRole(role string) RotateOption {
 //
 // The successor is built from the stored session, not from current, and keeps
 // everything rotation keeps (see Rotate), its family and the family's start
-// included. Its absolute deadline is carried over unless WithSuccessorLifetime
+// included; WithSuccessorFromCaller builds it from current instead, as Rotate
+// does, and refuses a session that is already superseded. Its absolute deadline is carried over unless WithSuccessorLifetime
 // chose another, and its idle deadline starts afresh, capped at the absolute
 // one.
 //
@@ -257,7 +303,7 @@ func WithSuccessorRole(role string) RotateOption {
 // judged as reuse. The guarantee holds as long as the store keeps the mark,
 // which the store-conformance suite checks.
 //
-// It takes WithSuccessorLifetime and WithSuccessorRole; WithReauthenticationBinding
+// It takes WithSuccessorLifetime, WithSuccessorRole and WithSuccessorFromCaller; WithReauthenticationBinding
 // is refused with ErrConfig, since a renewal never binds a session. A store
 // that does not record the role WithSuccessorRole named fails the renewal with
 // ErrStoreContract after it has written, and no successor is returned.
@@ -378,6 +424,13 @@ func (m *Sessions) RotateWithGraceIssuing(
 		return nil, 0, "", err
 	}
 
+	// The caller's copy is built on only when it is a copy of the session the
+	// store holds: one naming another user would carry state recorded for
+	// someone else into this family.
+	if r.fromCaller && current.UserID != old.UserID {
+		return nil, 0, "", fmt.Errorf("%w: the session given to rotate names another user than the stored one", ErrConfig)
+	}
+
 	now := m.clock.Now()
 	if old.RotatedStrictly {
 		return nil, 0, "", lostToStrictRotation(old, now)
@@ -402,6 +455,14 @@ func (m *Sessions) RotateWithGraceIssuing(
 	if kind != RenewalRecovery {
 		windowEnd = acceptUntil
 	}
+	// A caller's copy of a session already superseded is stale: another
+	// rotation, such as a renewal, has already moved the family on, and
+	// re-rotating would close that rotation's window, so whoever presents its
+	// successor next would revoke the sign-in. Refused before anything is
+	// written, as a lost race.
+	if r.fromCaller && kind != RenewalFresh {
+		return nil, 0, "", ErrRenewalConflict
+	}
 
 	// The family maximum bounds every renewal, so a family already past its
 	// end under this manager's maximum cannot be renewed, whatever deadline
@@ -416,6 +477,9 @@ func (m *Sessions) RotateWithGraceIssuing(
 		return nil, 0, "", err
 	}
 	next := successorOf(old, id)
+	if r.fromCaller {
+		next = successorFromCaller(current, old, id)
+	}
 	next.CreatedAt = now
 	next.LastAccessedAt = now
 	if r.lifetimeSet {
@@ -645,6 +709,37 @@ func successorOf(from *Session, id string) *Session {
 	next.RetainUntil = time.Time{}
 	next.SuccessorDigest = nil
 	next.FirstPresentedAt = time.Time{}
+
+	return next
+}
+
+// successorFromCaller returns the successor WithSuccessorFromCaller builds
+// under identifier id: current, the caller's copy, carried over as a strict
+// rotation carries it, with what the caller may not change taken from stored,
+// the record the store holds. The rotation then sets the timestamps and the
+// idle deadline, and caps the absolute one at the family's end.
+func successorFromCaller(current, stored *Session, id string) *Session {
+	next := successorOf(current, id)
+	// The family is the stored record's: a copy with the family cleared or
+	// altered must not move the successor out of the family the store holds.
+	next.FamilyID, next.FamilyCreatedAt = stored.FamilyID, stored.FamilyCreatedAt
+	// So is what the sign-in fixed when it was built.
+	keepSignInState(next, stored)
+	// So is the persistent-cookie mark, which only the creating write sets.
+	next.PersistentCookie = stored.PersistentCookie
+	// So is the selected role, which only RoleSelector.SelectRole and
+	// WithSuccessorRole write; the store's supersession settles it finally.
+	next.SelectedRole = stored.SelectedRole
+	// So is the absolute deadline: a grace rotation carries the stored one
+	// unless WithSuccessorLifetime chose another, and a copy must not extend
+	// it.
+	next.AbsoluteExpiresAt = stored.AbsoluteExpiresAt
+	// A pending password change only rises: one saved after the copy was
+	// taken must not be cleared by a copy that predates it, and a copy may
+	// raise it.
+	next.PasswordChangePending = next.PasswordChangePending || stored.PasswordChangePending
+	// Only Store.Supersede marks a session as rotated strictly.
+	next.RotatedStrictly = false
 
 	return next
 }

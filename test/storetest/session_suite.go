@@ -1356,6 +1356,39 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 			},
 		},
 		{
+			// WithSuccessorFromCaller hands the store a successor carrying the
+			// caller's verified state; the store inserts it as given, while
+			// the old record keeps its own.
+			name: "a grace rotation built from the caller's copy stores the successor's second factor and authentication time",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
+				m, err := session.New(session.WithStore(s), session.WithClock(clk))
+				require.NoError(t, err)
+				old, err := m.Create(ctx, "u-1")
+				require.NoError(t, err)
+				old.MFA = session.MFAPending
+				require.NoError(t, m.Save(ctx, old))
+				signedInAt := old.AuthenticatedAt
+
+				clk.Advance(time.Minute)
+				verified := *old
+				verified.MFA = session.MFASatisfied
+				verified.MFASatisfiedAt = clk.Now()
+				verified.AuthenticatedAt = clk.Now()
+				successor, _, err := m.RotateWithGrace(ctx, &verified, 30*time.Second, session.WithSuccessorFromCaller())
+				require.NoError(t, err)
+
+				got, err := s.Load(ctx, successor.ID)
+				require.NoError(t, err)
+				assert.Equal(t, session.MFASatisfied, got.MFA, "the successor's second factor")
+				assertTimeEqual(t, clk.Now(), got.MFASatisfiedAt, "the successor's MFASatisfiedAt")
+				assertTimeEqual(t, clk.Now(), got.AuthenticatedAt, "the successor's AuthenticatedAt")
+				kept, err := s.Load(ctx, old.ID)
+				require.NoError(t, err)
+				assert.Equal(t, session.MFAPending, kept.MFA, "the old record keeps its second factor")
+				assertTimeEqual(t, signedInAt, kept.AuthenticatedAt, "the old record keeps its AuthenticatedAt")
+			},
+		},
+		{
 			// A successor's library-owned marks are stored as the caller gives
 			// them, as Create would; only the selected role is taken from the
 			// superseded row.
