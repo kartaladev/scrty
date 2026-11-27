@@ -411,7 +411,11 @@ func TestPortErrors_Redemption(t *testing.T) { //nolint:paralleltest // it repla
 // printed the row's marker as a whole line: a stack overflow is fatal and only
 // a child can watch for one, and a row name that matched nothing would
 // otherwise pass without running.
+// It goes through limiterPortErrInChild, so it marks t parallel, and its
+// callers are bound by that helper's contract.
 func redemptionPortErrInChild(t *testing.T, row string) {
+	t.Helper()
+
 	limiterPortErrInChild(t, redemptionPortErrRowEnv, redemptionPortErrRan, row)
 }
 
