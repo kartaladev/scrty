@@ -211,9 +211,22 @@ func WithSuccessorRole(role string) RotateOption {
 // the federated and external-session fields and the consumer's data. It takes
 // from the stored record, whatever the copy says: the user, the family and its
 // start, the key binding, the CSRF token, the sign-in metadata (client address
-// and user agent), the persistent-cookie mark, the selected role (unless
-// WithSuccessorRole names one) and the absolute deadline (unless
-// WithSuccessorLifetime chooses one). A pending password change only rises:
+// and user agent), the persistent-cookie mark and the selected role (unless
+// WithSuccessorRole names one).
+//
+// The absolute deadline (unless WithSuccessorLifetime chooses one) is the
+// earlier of the stored record's and the copy's: a copy may lower it, as a
+// confinement marked on it does (MarkEnrolmentPending), but never raise it.
+// The one exception is a copy that lifted an enrolment confinement
+// (RestoreEnrolmentDeadlines): when the stored record carries the
+// confinement's origin deadline, the copy carries none, and the copy's
+// absolute deadline is not after that origin, the successor takes the copy's
+// absolute deadline, so leaving the confinement gives back the deadline the
+// sign-in held before it. A copy that claims a deadline past the origin gets
+// the stored one: a copy can never extend the deadline past what the sign-in
+// held.
+//
+// A pending password change only rises:
 // the successor has it when either the copy or the stored record does, so a
 // copy taken before the change was recorded cannot clear it. The rotation then
 // sets the creation and last-access times and the idle deadline as it does
@@ -730,10 +743,17 @@ func successorFromCaller(current, stored *Session, id string) *Session {
 	// So is the selected role, which only RoleSelector.SelectRole and
 	// WithSuccessorRole write; the store's supersession settles it finally.
 	next.SelectedRole = stored.SelectedRole
-	// So is the absolute deadline: a grace rotation carries the stored one
-	// unless WithSuccessorLifetime chose another, and a copy must not extend
-	// it.
-	next.AbsoluteExpiresAt = stored.AbsoluteExpiresAt
+	// The absolute deadline is the earlier of the stored one and the copy's: a
+	// copy may lower it (a confinement the caller marked on it,
+	// MarkEnrolmentPending), but must not extend it. A grace rotation carries
+	// that unless WithSuccessorLifetime chose another. The one exception is a
+	// copy that lifted an enrolment confinement (RestoreEnrolmentDeadlines): it
+	// carries the deadline the sign-in held before it, which the stored record
+	// names as its origin, and no later.
+	next.AbsoluteExpiresAt = minTime(stored.AbsoluteExpiresAt, current.AbsoluteExpiresAt)
+	if liftedConfinement(current, stored) {
+		next.AbsoluteExpiresAt = current.AbsoluteExpiresAt
+	}
 	// A pending password change only rises: one saved after the copy was
 	// taken must not be cleared by a copy that predates it, and a copy may
 	// raise it.
@@ -742,6 +762,17 @@ func successorFromCaller(current, stored *Session, id string) *Session {
 	next.RotatedStrictly = false
 
 	return next
+}
+
+// liftedConfinement reports whether current, a caller's copy of stored, lifted
+// the enrolment confinement stored carries: stored has an origin deadline,
+// current has none, and current's absolute deadline is not after that origin.
+// A copy that claims a later deadline, or keeps the confinement, has lifted
+// nothing the successor may take a deadline from.
+func liftedConfinement(current, stored *Session) bool {
+	return !stored.EnrolmentOriginDeadline.IsZero() &&
+		current.EnrolmentOriginDeadline.IsZero() &&
+		!current.AbsoluteExpiresAt.After(stored.EnrolmentOriginDeadline)
 }
 
 // keepSignInState sets on dst the state a sign-in fixes when it is built

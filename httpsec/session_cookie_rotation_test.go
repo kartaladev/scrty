@@ -19,6 +19,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
+	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -54,8 +55,9 @@ func reSetAs(t *testing.T, chain *httpsec.Chain, out served, presented string) s
 // already went through before the cookie session existed, second-factor
 // verification and re-authentication, re-set the cookie on a cookie chain:
 // the response carries the rotated identifier under the chain's own
-// attributes, the identifier presented no longer loads, and the rotated one
-// does.
+// attributes, and the rotated one loads. What the presented identifier does
+// afterwards, through its window and after it, is
+// TestSessionCookie_ExistingRotationsGrace's.
 func TestSessionCookie_ExistingRotationsReset(t *testing.T) {
 	t.Parallel()
 
@@ -114,12 +116,476 @@ func TestSessionCookie_ExistingRotationsReset(t *testing.T) {
 			rotated := reSetAs(t, w.chain, out, presented)
 			assert.Contains(t, out.rec.Header().Get("Set-Cookie"), "SameSite=Strict")
 
-			_, err := w.sessions.Load(t.Context(), presented)
-			require.Error(t, err, "the presented identifier no longer loads")
-
 			s, err := w.sessions.Load(t.Context(), rotated)
 			require.NoError(t, err, "the cookie names the stored successor")
 			assert.Equal(t, e2eUser, s.UserID)
+		})
+	}
+}
+
+// visit sends a GET for an application page, presenting cookie as the session
+// cookie.
+func (w *browserWorld) visit(t *testing.T, cookie string) served {
+	t.Helper()
+
+	req := getFrom(t.Context(), "/orders", e2eSource)
+	req.Header.Set("Cookie", named(cookie))
+
+	return serve(t, w.chain, req)
+}
+
+// verifiedSignIn signs the world's enrolled user in, verifies the second
+// factor the sign-in is challenged for, and returns the pending identifier the
+// verification was presented with and the one it re-set the cookie to.
+func verifiedSignIn(t *testing.T, w *browserWorld) (pending, rotated string, code string) {
+	t.Helper()
+
+	challenged := w.login(t)
+	require.Error(t, challenged.err)
+
+	c := cookieNamed(challenged.rec, httpsec.DefaultSessionCookieName)
+	require.NotNil(t, c, "the challenged sign-in set the pending cookie")
+
+	code = w.code(t)
+	out := w.post(t.Context(), t, testMFAVerifyPath, c.Value, url.Values{"code": {code}})
+	require.NoError(t, out.err)
+
+	return c.Value, reSetAs(t, w.chain, out, c.Value), code
+}
+
+// reauthenticated signs the world's user in, moves the clock on, so the
+// re-proof's authentication time differs from the sign-in's, re-authenticates
+// with the password, and returns the identifier presented, the one the cookie
+// was re-set to, and the sign-in's authentication time.
+func reauthenticated(t *testing.T, w *browserWorld) (old, rotated string, signedInAt time.Time) {
+	t.Helper()
+
+	old = w.signedIn(t)
+	signedInAt = loaded(t, w, old).AuthenticatedAt
+	w.clk.Advance(time.Minute)
+
+	out := w.post(t.Context(), t, reauthPasswordPath, old, url.Values{"password": {e2ePassword}})
+	require.NoError(t, out.err)
+
+	return old, reSetAs(t, w.chain, out, old), signedInAt
+}
+
+// keepsCookie asserts out did not expire the session cookie.
+func keepsCookie(t *testing.T, out served) {
+	t.Helper()
+
+	for _, line := range out.rec.Header().Values("Set-Cookie") {
+		c, err := http.ParseSetCookie(line)
+		require.NoError(t, err)
+
+		if c.Name == httpsec.DefaultSessionCookieName {
+			assert.GreaterOrEqual(t, c.MaxAge, 0, "the session cookie is not expired: %s", line)
+		}
+	}
+}
+
+// loaded is the stored session id names, failing the test when it does not
+// load.
+func loaded(t *testing.T, w *browserWorld, id string) *session.Session {
+	t.Helper()
+
+	s, err := w.sessions.Load(t.Context(), id)
+	require.NoError(t, err)
+
+	return s
+}
+
+// enrolmentBehindSecondFactor is a post-authentication policy that confines a
+// sign-in to enrolment once its second factor is satisfied, as a policy
+// demanding a further factor does, and allows anything else.
+type enrolmentBehindSecondFactor struct{}
+
+func (enrolmentBehindSecondFactor) Name() string { return "test: enrolment behind the second factor" }
+
+func (enrolmentBehindSecondFactor) Phases() []policy.Phase {
+	return []policy.Phase{policy.PostAuthentication}
+}
+
+func (enrolmentBehindSecondFactor) Challenges() []policy.ChallengeKind {
+	return []policy.ChallengeKind{policy.ChallengeMFAEnrolment}
+}
+
+func (enrolmentBehindSecondFactor) Evaluate(_ context.Context, in *policy.Input) policy.Decision {
+	if in.MFASatisfied {
+		return policy.Decision{Outcome: policy.Challenge, Challenge: policy.ChallengeMFAEnrolment}
+	}
+
+	return policy.Decision{Outcome: policy.Allow}
+}
+
+// TestSessionCookie_ExistingRotationsGrace pins that on a cookie chain
+// second-factor verification and re-authentication rotate with a grace
+// window: a request already in flight with the old cookie loads the old
+// session with its own, lower state, and its answer keeps the cookie; after
+// the window the old cookie is reuse, which revokes the sign-in. The window is
+// the renewal endpoint's grace. A double-submitted code, a second code on the
+// superseded session and a renewal that superseded the session first write
+// nothing and expire nothing; a renewal with the old cookie after a
+// re-authentication re-rotates, and the new cookie is then reuse (accepted,
+// fail-closed). An enrolment challenge raised at verification keeps the
+// confinement's lowered deadline on the successor, and with a zero grace both
+// rotate strictly, so an in-flight old cookie is not found and nothing is
+// revoked. A re-proof over mTLS or with a DPoP proof is
+// TestSessionCookie_SignInNeverBinds's.
+func TestSessionCookie_ExistingRotationsGrace(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+
+		// configure adjusts the world before its chain is built.
+		configure func(t *testing.T, w *browserWorld)
+
+		assert func(t *testing.T, w *browserWorld)
+	}
+
+	enrolled := func(t *testing.T, w *browserWorld) {
+		t.Helper()
+		w.enrol(t)
+	}
+
+	cases := []testCase{
+		{
+			name:      "second-factor verification: the old cookie inside the window loads the pending session",
+			configure: enrolled,
+			assert: func(t *testing.T, w *browserWorld) {
+				t.Helper()
+
+				pending, rotated, _ := verifiedSignIn(t, w)
+				w.clk.Advance(time.Second)
+
+				late := w.visit(t, pending)
+				var challenge *httpsec.ChallengeError
+				require.ErrorAs(t, late.err, &challenge, "the old session still owes its second factor")
+				assert.NotErrorIs(t, late.err, httpsec.ErrAuthenticationRequired)
+				assert.False(t, late.handlerRan)
+				keepsCookie(t, late)
+
+				assert.Equal(t, session.MFAPending, loaded(t, w, pending).MFA, "the old record keeps its own state")
+				assert.Equal(t, session.MFASatisfied, loaded(t, w, rotated).MFA)
+
+				next := w.visit(t, rotated)
+				require.NoError(t, next.err, "the new cookie is served")
+				assert.True(t, next.handlerRan)
+			},
+		},
+		{
+			name:      "second-factor verification: the old cookie after the window is reuse, and the family is revoked",
+			configure: enrolled,
+			assert: func(t *testing.T, w *browserWorld) {
+				t.Helper()
+
+				pending, rotated, _ := verifiedSignIn(t, w)
+				w.clk.Advance(session.DefaultRenewalGrace + time.Second)
+
+				late := w.visit(t, pending)
+				require.ErrorIs(t, late.err, httpsec.ErrAuthenticationRequired)
+				require.ErrorIs(t, late.err, session.ErrReused)
+
+				_, err := w.sessions.Load(t.Context(), rotated)
+				require.Error(t, err, "the family, the new identifier included, is revoked")
+			},
+		},
+		{
+			name: "second-factor verification: the window is the renewal endpoint's grace",
+			configure: func(t *testing.T, w *browserWorld) {
+				t.Helper()
+				w.enrol(t)
+				w.renewalOpts = append(w.renewalOpts, httpsec.WithRenewalGrace(2*time.Minute))
+			},
+			assert: func(t *testing.T, w *browserWorld) {
+				t.Helper()
+
+				pending, _, _ := verifiedSignIn(t, w)
+				w.clk.Advance(90 * time.Second)
+
+				late := w.visit(t, pending)
+				var challenge *httpsec.ChallengeError
+				require.ErrorAs(t, late.err, &challenge, "past the default grace, inside the renewal's")
+				keepsCookie(t, late)
+			},
+		},
+		{
+			name: "re-authentication: the old cookie inside the window keeps its authentication time",
+			assert: func(t *testing.T, w *browserWorld) {
+				t.Helper()
+
+				old, rotated, before := reauthenticated(t, w)
+				w.clk.Advance(time.Second)
+
+				late := w.visit(t, old)
+				require.NoError(t, late.err, "an in-flight request is not signed out")
+				require.True(t, late.handlerRan)
+				assert.Equal(t, old, late.handled.Session.ID)
+				assert.True(t, late.handled.Session.AuthenticatedAt.Equal(before),
+					"the old session's own authentication time: %s", late.handled.Session.AuthenticatedAt)
+				keepsCookie(t, late)
+
+				assert.True(t, loaded(t, w, rotated).AuthenticatedAt.After(before), "the re-proof refreshed the new one")
+			},
+		},
+		{
+			name: "re-authentication: the old cookie after the window is reuse, and the family is revoked",
+			assert: func(t *testing.T, w *browserWorld) {
+				t.Helper()
+
+				old, rotated, _ := reauthenticated(t, w)
+				w.clk.Advance(session.DefaultRenewalGrace + time.Second)
+
+				late := w.visit(t, old)
+				require.ErrorIs(t, late.err, httpsec.ErrAuthenticationRequired)
+				require.ErrorIs(t, late.err, session.ErrReused)
+
+				_, err := w.sessions.Load(t.Context(), rotated)
+				require.Error(t, err, "the family, the new identifier included, is revoked")
+			},
+		},
+		{
+			// A session confined to enrolment that has since bound a factor
+			// owes its second factor with its deadlines still lowered; the
+			// verification restores the deadline its sign-in had.
+			name:      "second-factor verification out of an enrolment confinement restores the sign-in's deadline",
+			configure: enrolled,
+			assert: func(t *testing.T, w *browserWorld) {
+				t.Helper()
+
+				challenged := w.login(t)
+				require.Error(t, challenged.err)
+
+				c := cookieNamed(challenged.rec, httpsec.DefaultSessionCookieName)
+				require.NotNil(t, c)
+
+				s := loaded(t, w, c.Value)
+				signInDeadline := s.AbsoluteExpiresAt
+
+				w.sessions.MarkEnrolmentPending(s, 15*time.Minute)
+				s.MFA = session.MFAPending
+				require.NoError(t, w.sessions.Save(t.Context(), s))
+				require.True(t, loaded(t, w, c.Value).AbsoluteExpiresAt.Before(signInDeadline), "the deadline is lowered")
+
+				out := w.post(t.Context(), t, testMFAVerifyPath, c.Value, url.Values{"code": {w.code(t)}})
+				require.NoError(t, out.err)
+
+				rotated := loaded(t, w, reSetAs(t, w.chain, out, c.Value))
+				assert.Equal(t, session.MFASatisfied, rotated.MFA)
+				assert.True(t, rotated.EnrolmentOriginDeadline.IsZero(), "the marker is cleared")
+				assert.True(t, rotated.AbsoluteExpiresAt.Equal(signInDeadline),
+					"the sign-in's deadline %s is restored, got %s", signInDeadline, rotated.AbsoluteExpiresAt)
+			},
+		},
+		{
+			name:      "a double-submitted code is a second-factor failure that rotates nothing and keeps the cookie",
+			configure: enrolled,
+			assert: func(t *testing.T, w *browserWorld) {
+				t.Helper()
+
+				pending, rotated, code := verifiedSignIn(t, w)
+				active := w.active(t)
+
+				again := w.post(t.Context(), t, testMFAVerifyPath, pending, url.Values{"code": {code}})
+				require.Error(t, again.err)
+				assert.NotErrorIs(t, again.err, httpsec.ErrAuthenticationRequired)
+				assert.NotErrorIs(t, again.err, httpsec.ErrSessionRenewalConflict, "refused as the code, before any rotation")
+				noSessionCookie(t, again)
+
+				assert.Equal(t, active, w.active(t), "nothing was stored")
+				assert.Equal(t, session.MFASatisfied, loaded(t, w, rotated).MFA, "the new cookie is untouched")
+			},
+		},
+		{
+			name: "a second code that verifies on the superseded session is a lost race that writes nothing",
+			configure: func(t *testing.T, w *browserWorld) {
+				t.Helper()
+				w.enrol(t)
+				// Wide enough that the next code's time step is inside it.
+				w.renewalOpts = append(w.renewalOpts, httpsec.WithRenewalGrace(2*time.Minute))
+			},
+			assert: func(t *testing.T, w *browserWorld) {
+				t.Helper()
+
+				pending, rotated, _ := verifiedSignIn(t, w)
+				active := w.active(t)
+
+				again := w.post(t.Context(), t, testMFAVerifyPath, pending, url.Values{"code": {w.code(t)}})
+				require.ErrorIs(t, again.err, httpsec.ErrSessionRenewalConflict)
+				assert.Equal(t, http.StatusConflict, httpsec.StatusForError(again.err))
+				noSessionCookie(t, again)
+
+				assert.Equal(t, active, w.active(t), "nothing was stored")
+				assert.Equal(t, session.MFAPending, loaded(t, w, pending).MFA, "the old record is unchanged")
+				assert.Equal(t, session.MFASatisfied, loaded(t, w, rotated).MFA, "the new cookie keeps its window")
+			},
+		},
+		{
+			name:      "a renewal that superseded the pending session first is a lost race that revokes nothing",
+			configure: enrolled,
+			assert: func(t *testing.T, w *browserWorld) {
+				t.Helper()
+
+				challenged := w.login(t)
+				require.Error(t, challenged.err)
+
+				pending := cookieNamed(challenged.rec, httpsec.DefaultSessionCookieName)
+				require.NotNil(t, pending)
+
+				// The code first, since taking it moves the clock a time step on.
+				code := w.code(t)
+
+				// Another server sharing the store renews the session first.
+				renewed, _, err := w.sessions.RotateWithGrace(t.Context(), loaded(t, w, pending.Value),
+					session.DefaultRenewalGrace)
+				require.NoError(t, err)
+
+				out := w.post(t.Context(), t, testMFAVerifyPath, pending.Value, url.Values{"code": {code}})
+				require.ErrorIs(t, out.err, httpsec.ErrSessionRenewalConflict)
+				assert.Equal(t, http.StatusConflict, httpsec.StatusForError(out.err))
+				noSessionCookie(t, out)
+
+				assert.Equal(t, session.MFAPending, loaded(t, w, renewed.ID).MFA, "the renewal's successor is kept")
+				assert.Equal(t, session.MFAPending, loaded(t, w, pending.Value).MFA)
+			},
+		},
+		{
+			name:      "a renewal with the old cookie after verification is held at the second-factor gate",
+			configure: enrolled,
+			assert: func(t *testing.T, w *browserWorld) {
+				t.Helper()
+
+				pending, rotated, _ := verifiedSignIn(t, w)
+				active := w.active(t)
+
+				renewal := w.post(t.Context(), t, httpsec.DefaultSessionRenewalPath, pending, nil)
+				var challenge *httpsec.ChallengeError
+				require.ErrorAs(t, renewal.err, &challenge, "the old session still owes its second factor")
+				noSessionCookie(t, renewal)
+				assert.Equal(t, active, w.active(t), "nothing was stored")
+
+				next := w.visit(t, rotated)
+				require.NoError(t, next.err, "the new cookie is served")
+			},
+		},
+		{
+			// Accepted, fail-closed: the renewal re-rotates the old record,
+			// which closes the re-authentication successor's window.
+			name: "a renewal with the old cookie after re-authentication re-rotates, and the new cookie is then reuse",
+			assert: func(t *testing.T, w *browserWorld) {
+				t.Helper()
+
+				old, rotated, _ := reauthenticated(t, w)
+
+				renewal := w.post(t.Context(), t, httpsec.DefaultSessionRenewalPath, old, nil)
+				require.NoError(t, renewal.err)
+				renewed := reSetAs(t, w.chain, renewal, old)
+				require.NotEqual(t, rotated, renewed)
+
+				next := w.visit(t, rotated)
+				require.ErrorIs(t, next.err, httpsec.ErrAuthenticationRequired)
+				require.ErrorIs(t, next.err, session.ErrReused, "the re-authentication's cookie is reuse")
+
+				_, err := w.sessions.Load(t.Context(), renewed)
+				require.Error(t, err, "the family is revoked")
+			},
+		},
+		{
+			// The policy confines the verified copy (MarkEnrolmentPending),
+			// lowering its deadline; the successor keeps the lowered one.
+			name: "an enrolment challenge raised at verification keeps the confinement's deadline",
+			configure: func(t *testing.T, w *browserWorld) {
+				t.Helper()
+				w.enrol(t)
+				w.policies = append(w.policies, enrolmentBehindSecondFactor{})
+				w.extra = append(w.extra, httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{
+					Users: w.users, Sender: &capturingSender{},
+				}))
+			},
+			assert: func(t *testing.T, w *browserWorld) {
+				t.Helper()
+
+				challenged := w.login(t)
+				require.Error(t, challenged.err)
+
+				pending := cookieNamed(challenged.rec, httpsec.DefaultSessionCookieName)
+				require.NotNil(t, pending)
+				signInDeadline := loaded(t, w, pending.Value).AbsoluteExpiresAt
+
+				out := w.post(t.Context(), t, testMFAVerifyPath, pending.Value, url.Values{"code": {w.code(t)}})
+				var challenge *httpsec.ChallengeError
+				require.ErrorAs(t, out.err, &challenge)
+				require.Equal(t, policy.ChallengeMFAEnrolment, challenge.Kind)
+
+				rotated := loaded(t, w, reSetAs(t, w.chain, out, pending.Value))
+				confinedUntil := w.clk.Now().Add(15 * time.Minute)
+				assert.False(t, rotated.AbsoluteExpiresAt.After(confinedUntil),
+					"the enrolment-only successor ends by %s, got %s", confinedUntil, rotated.AbsoluteExpiresAt)
+				assert.Equal(t, signInDeadline, rotated.EnrolmentOriginDeadline, "the sign-in's deadline is the origin")
+			},
+		},
+		{
+			name: "with a zero grace second-factor verification rotates strictly",
+			configure: func(t *testing.T, w *browserWorld) {
+				t.Helper()
+				w.enrol(t)
+				w.renewalOpts = append(w.renewalOpts, httpsec.WithRenewalGrace(0))
+			},
+			assert: func(t *testing.T, w *browserWorld) {
+				t.Helper()
+
+				pending, rotated, _ := verifiedSignIn(t, w)
+
+				_, err := w.sessions.Load(t.Context(), pending)
+				require.ErrorIs(t, err, session.ErrNotFound, "the old identifier is gone at once")
+
+				late := w.visit(t, pending)
+				require.ErrorIs(t, late.err, httpsec.ErrAuthenticationRequired)
+				assert.NotErrorIs(t, late.err, session.ErrReused, "an in-flight old cookie is not reuse")
+
+				next := w.visit(t, rotated)
+				require.NoError(t, next.err, "the family is not revoked: the new cookie is served")
+				assert.True(t, next.handlerRan)
+			},
+		},
+		{
+			name: "with a zero grace re-authentication rotates strictly",
+			configure: func(t *testing.T, w *browserWorld) {
+				t.Helper()
+				w.renewalOpts = append(w.renewalOpts, httpsec.WithRenewalGrace(0))
+			},
+			assert: func(t *testing.T, w *browserWorld) {
+				t.Helper()
+
+				old, rotated, _ := reauthenticated(t, w)
+
+				_, err := w.sessions.Load(t.Context(), old)
+				require.ErrorIs(t, err, session.ErrNotFound, "the old identifier is gone at once")
+
+				late := w.visit(t, old)
+				require.ErrorIs(t, late.err, httpsec.ErrAuthenticationRequired)
+				assert.NotErrorIs(t, late.err, session.ErrReused, "an in-flight old cookie is not reuse")
+
+				next := w.visit(t, rotated)
+				require.NoError(t, next.err, "the family is not revoked: the new cookie is served")
+				assert.True(t, next.handlerRan)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newBrowserWorld(t)
+			if tc.configure != nil {
+				tc.configure(t, w)
+			}
+
+			w.build(t)
+
+			tc.assert(t, w)
 		})
 	}
 }

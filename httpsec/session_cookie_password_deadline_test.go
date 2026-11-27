@@ -76,7 +76,7 @@ func TestSessionCookie_PasswordChangeDeadlines(t *testing.T) {
 		{
 			name:       "without the rotation the session keeps the idle deadline it held",
 			cookieOpts: []httpsec.SessionCookieOption{httpsec.WithoutSessionRotation(httpsec.RotateOnPasswordChange)},
-			assert: func(t *testing.T, w *switchCookieWorld, before, stored *session.Session) {
+			assert: func(t *testing.T, _ *switchCookieWorld, before, stored *session.Session) {
 				t.Helper()
 
 				assert.Equal(t, before.ID, stored.ID, "no successor")

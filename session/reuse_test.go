@@ -3726,8 +3726,9 @@ func copyOf(s *session.Session) *session.Session {
 // WithSuccessorFromCaller builds its successor from the caller's copy, so the
 // verified state the caller recorded (a satisfied second factor, a refreshed
 // authentication time) is the successor's, while the sign-in state, the
-// family, the persistent-cookie mark, the selected role and the absolute
-// deadline still come from the stored record and the rotation sets the
+// family, the persistent-cookie mark and the selected role still come from
+// the stored record, the absolute deadline is the earlier of the stored and
+// the copy's (a copy may lower it, never raise it), and the rotation sets the
 // timestamps and the idle deadline. The old record keeps its own lower state
 // through the window. A session already superseded is refused with
 // ErrRenewalConflict before anything is stored or revoked, a caller copy of
@@ -3801,6 +3802,26 @@ func TestRotateWithGrace_SuccessorFromCaller(t *testing.T) {
 		_, _, err := f.m.RotateWithGrace(t.Context(), f.stored, grace)
 		require.NoError(t, err)
 		f.store.supersedes.Store(0)
+	}
+	// confined stores the session confined to enrolment for 15 minutes, its
+	// deadline lowered and the one it held recorded as the origin, still
+	// owing its second factor, and makes the caller's copy a verified copy of
+	// that record, its deadlines as stored.
+	confined := func(t *testing.T, f *fixture) {
+		t.Helper()
+		s := load(t, f, f.stored.ID)
+		f.m.MarkEnrolmentPending(s, 15*time.Minute)
+		s.MFA = session.MFAPending
+		require.NoError(t, f.store.Save(t.Context(), s))
+
+		f.stored = load(t, f, s.ID)
+		require.False(t, f.stored.EnrolmentOriginDeadline.IsZero())
+		require.True(t, f.stored.AbsoluteExpiresAt.Before(f.stored.EnrolmentOriginDeadline), "the deadline is lowered")
+
+		f.caller = copyOf(f.stored)
+		f.caller.MFA = session.MFASatisfied
+		f.caller.MFASatisfiedAt = verifiedAt
+		f.caller.AuthenticatedAt = verifiedAt
 	}
 	// oldKeepsItsState asserts the old record, loaded through the manager
 	// inside the window, still carries the stored state.
@@ -3968,6 +3989,93 @@ func TestRotateWithGrace_SuccessorFromCaller(t *testing.T) {
 				require.NotNil(t, got)
 				assert.Equal(t, f.stored.AbsoluteExpiresAt, got.AbsoluteExpiresAt)
 				assert.Equal(t, f.stored.AbsoluteExpiresAt, load(t, f, got.ID).AbsoluteExpiresAt)
+			},
+		},
+		{
+			name: "a copy that lifted an enrolment confinement carries the restored deadline",
+			prepare: func(t *testing.T, f *fixture) {
+				t.Helper()
+				confined(t, f)
+				require.NoError(t, f.m.RestoreEnrolmentDeadlines(f.caller))
+			},
+			act: withGrace(session.WithSuccessorFromCaller()),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				origin := f.stored.EnrolmentOriginDeadline
+				assert.Equal(t, origin, got.AbsoluteExpiresAt, "the deadline the sign-in held before the confinement")
+				assert.Equal(t, origin, load(t, f, got.ID).AbsoluteExpiresAt)
+				assert.True(t, got.EnrolmentOriginDeadline.IsZero(), "the confinement is lifted")
+			},
+		},
+		{
+			name: "a copy that lifted the confinement cannot claim a deadline past its origin",
+			prepare: func(t *testing.T, f *fixture) {
+				t.Helper()
+				confined(t, f)
+				require.NoError(t, f.m.RestoreEnrolmentDeadlines(f.caller))
+				f.caller.AbsoluteExpiresAt = f.stored.EnrolmentOriginDeadline.Add(time.Hour)
+			},
+			act: withGrace(session.WithSuccessorFromCaller()),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				assert.Equal(t, f.stored.AbsoluteExpiresAt, got.AbsoluteExpiresAt, "the stored, lowered deadline")
+				assert.Equal(t, f.stored.AbsoluteExpiresAt, load(t, f, got.ID).AbsoluteExpiresAt)
+			},
+		},
+		{
+			name: "a copy that keeps the confinement keeps the stored deadline",
+			prepare: func(t *testing.T, f *fixture) {
+				t.Helper()
+				confined(t, f)
+				f.caller.AbsoluteExpiresAt = f.stored.EnrolmentOriginDeadline
+			},
+			act: withGrace(session.WithSuccessorFromCaller()),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				assert.Equal(t, f.stored.AbsoluteExpiresAt, got.AbsoluteExpiresAt, "the stored, lowered deadline")
+				assert.Equal(t, f.stored.AbsoluteExpiresAt, load(t, f, got.ID).AbsoluteExpiresAt)
+			},
+		},
+		{
+			// A policy raising an enrolment challenge during verification
+			// confines the copy, lowering its deadline.
+			name: "a copy that lowered its deadline carries the lower one",
+			prepare: func(t *testing.T, f *fixture) {
+				t.Helper()
+				f.caller.AbsoluteExpiresAt = f.stored.AbsoluteExpiresAt
+				f.m.MarkEnrolmentPending(f.caller, 15*time.Minute)
+				require.True(t, f.caller.AbsoluteExpiresAt.Before(f.stored.AbsoluteExpiresAt), "the copy's deadline is lowered")
+			},
+			act: withGrace(session.WithSuccessorFromCaller()),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				lowered := rotatedAt.Add(15 * time.Minute)
+				assert.Equal(t, lowered, got.AbsoluteExpiresAt, "the copy's lowered deadline")
+				assert.Equal(t, lowered, load(t, f, got.ID).AbsoluteExpiresAt)
+				assert.Equal(t, f.stored.AbsoluteExpiresAt, load(t, f, got.ID).EnrolmentOriginDeadline,
+					"the confinement records the deadline the sign-in held")
+				assert.Equal(t, f.stored.AbsoluteExpiresAt, load(t, f, f.stored.ID).AbsoluteExpiresAt,
+					"the old record keeps its own deadline")
+			},
+		},
+		{
+			name: "a copy that keeps the confinement and lowers its deadline further carries the lower one",
+			prepare: func(t *testing.T, f *fixture) {
+				t.Helper()
+				confined(t, f)
+				f.caller.AbsoluteExpiresAt = f.stored.AbsoluteExpiresAt.Add(-time.Minute)
+			},
+			act: withGrace(session.WithSuccessorFromCaller()),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				lowered := f.stored.AbsoluteExpiresAt.Add(-time.Minute)
+				assert.Equal(t, lowered, got.AbsoluteExpiresAt)
+				assert.Equal(t, lowered, load(t, f, got.ID).AbsoluteExpiresAt)
 			},
 		},
 		{

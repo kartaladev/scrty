@@ -114,6 +114,10 @@ type browserWorld struct {
 	reauthOpts  []httpsec.ReauthenticationOption
 	renewalOpts []httpsec.SessionRenewalOption
 
+	// policies are registered on the chain's engine after the MFA policy,
+	// read when the chain is built.
+	policies []policy.Policy
+
 	chain *httpsec.Chain
 }
 
@@ -177,7 +181,7 @@ func (w *browserWorld) tryBuild(t *testing.T) error {
 
 	w.chain, err = httpsec.New(append([]httpsec.Option{
 		httpsec.WithClock(w.clk),
-		httpsec.WithPolicyEngine(engineOf(t, challenge)),
+		httpsec.WithPolicyEngine(engineOf(t, append([]policy.Policy{challenge}, w.policies...)...)),
 		httpsec.WithoutCSRFProtection(),
 		httpsec.EnableSessionCookie(httpsec.SessionBearerDeps{Sessions: w.sessions, Users: w.users}, w.cookieOpts...),
 		httpsec.EnableFormLogin(httpsec.FormLoginDeps{

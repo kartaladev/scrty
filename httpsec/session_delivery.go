@@ -38,6 +38,12 @@ type credentialDelivery struct {
 
 	// log is the chain's logger.
 	log *slog.Logger
+
+	// grace is the window a privilege change's rotation on a cookie chain
+	// keeps the old identifier working for (privilegeRotationGrace), read
+	// when delivery is called; it means nothing on a chain without the
+	// cookie session.
+	grace time.Duration
 }
 
 // delivery is how this chain's issuing endpoints hand out their credentials.
@@ -45,7 +51,7 @@ type credentialDelivery struct {
 // sees the cookie session wherever in the options it was enabled, and the
 // logger the chain settled on.
 func (c *config) delivery() credentialDelivery {
-	d := credentialDelivery{log: c.logger}
+	d := credentialDelivery{log: c.logger, grace: privilegeRotationGrace(c.renewal)}
 
 	_ = eachInterceptor(c, func(s *sessionCookie) error {
 		d.cookie = s

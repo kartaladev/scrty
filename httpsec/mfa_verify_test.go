@@ -900,8 +900,10 @@ func TestMFAVerify(t *testing.T) {
 		assert.NotEqual(t, s.ID, h.resolved.ID, "the handle is rotated")
 		assert.Equal(t, session.MFASatisfied, h.stored(t, h.resolved.ID).MFA)
 
+		// A header-bearer chain rotates strictly: the client holds both
+		// credentials, and nothing expires the old one, so it has no window.
 		_, err := h.sessions.Load(t.Context(), s.ID)
-		require.Error(t, err, "the previous handle no longer loads")
+		require.ErrorIs(t, err, session.ErrNotFound, "the previous handle no longer loads, straight after the rotation")
 	}
 
 	refusedAs := func(sentinel error, status int) func(*testing.T, *mfaHarness, *session.Session, served) {

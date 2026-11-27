@@ -508,6 +508,19 @@ func presentedCookie(r Request, name string) (value string, claimed bool) {
 // a throttled renewal, a renewal conflict, a CSRF failure and a dependency
 // failure keep it.
 //
+// A cookie chain never binds its sessions to a sender key. It may also enable
+// EnableCertificateBinding or EnableDPoP, for the OpenID Provider or the
+// resource server it runs, and every sign-in and re-proof on it (form login,
+// magic link redemption, passwordless passkey login, recovery completion and
+// finish, second-factor verification, re-authentication) then creates or
+// rotates an unbound session all the same: the request's client certificate
+// and DPoP header are not read for the session, so a sign-in over mTLS or with
+// a proof, even one that does not verify, signs in, and DPoP.Require asks no
+// proof of it. The cookie, HttpOnly and guarded by CSRF, is the credential. The
+// provider's and the resource server's own tokens are still bound as those
+// options say. A consumer who wants sender-bound sessions uses a token chain
+// (EnableSessionBearer or EnableBearerToken) under its own base path.
+//
 // Refusals are logged and sampled under the flow "session-cookie", apart
 // from the session bearer's "session-reference".
 func EnableSessionCookie(deps SessionBearerDeps, opts ...SessionCookieOption) Option {

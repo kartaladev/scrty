@@ -86,7 +86,9 @@ const (
 // left at its zero value takes the default its comment names.
 type DPoP struct {
 	// Require refuses an unbound token, and a request to an issuing endpoint
-	// that carries no proof, before any account is looked up. Default: false,
+	// that carries no proof, before any account is looked up. A sign-in or
+	// re-proof on a cookie chain (EnableSessionCookie) is not asked for one:
+	// its session is never bound, and no proof is read for it. Default: false,
 	// so existing bearer clients keep working while DPoP clients opt in by
 	// sending proofs.
 	Require bool
@@ -945,6 +947,41 @@ func (ex *Exchange) dpop() *dpopVerifier {
 	}
 
 	return ex.perRequest.dpop
+}
+
+// sessionBinding is the key binding the session a sign-in or a re-proof on ex
+// creates or rotates takes: form login, magic link redemption, handoff
+// redemption, passwordless passkey login, recovery completion and finish, and
+// re-authentication of an unbound session.
+//
+// On a cookie chain it is always the zero value, and neither the request's
+// client certificate nor its DPoP header is read for the session: a cookie
+// carries no proof of a key, so a session bound to one would be refused on
+// the very next request, and the cookie, HttpOnly and guarded by CSRF, is the
+// credential. A proof that does not verify is therefore not refused there
+// either, and DPoP.Require asks no proof of a cookie sign-in. The chain's
+// other features that issue credentials (the OpenID Provider's token
+// endpoint) still bind theirs through issuingBinding.
+//
+// On any other chain it is issuingBinding's answer.
+func (d credentialDelivery) sessionBinding(ex *Exchange) (session.KeyBinding, error) {
+	if d.cookie != nil {
+		return session.KeyBinding{}, nil
+	}
+
+	return issuingBinding(ex.Context(), ex.dpop(), ex.certBinding(), ex.Request, ex.bearerCredential)
+}
+
+// continuingProof is continuingProof for a request continuing the sign-in s
+// on this chain: on a cookie chain no DPoP header is read, as sessionBinding
+// reads none, so a proof that does not verify refuses nothing; on any other
+// chain the header is judged as continuingProof judges it.
+func (d credentialDelivery) continuingProof(ex *Exchange, s *session.Session) error {
+	if d.cookie != nil {
+		return nil
+	}
+
+	return continuingProof(ex, s)
 }
 
 // issuingBinding verifies the proof a request to an issuing endpoint carries,

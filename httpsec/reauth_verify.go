@@ -89,7 +89,7 @@ func (i *reauthInterceptor) verify(ex *Exchange) error {
 
 	// Before the response is checked, so a bad proof leaves the challenge's
 	// attempts and the code unspent.
-	binding, err := reauthBinding(ex, s)
+	binding, err := reauthBinding(ex, s, i.deliver)
 	if err != nil {
 		return err
 	}
