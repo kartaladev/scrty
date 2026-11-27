@@ -202,6 +202,16 @@ design are the baseline. Decision numbers below are this change's own.
     the same comparison and refusal. Without it they behave as decision 9 states. The library's
     strict callers (MFA verification and re-authentication on header-bearer chains, and on a
     cookie chain at zero grace) pass the snapshot.
+  - **Snapshot source (settled during S3):** `Exchange.Session` is a public field, and consumers
+    and tests assign it directly, without the resolver. So the snapshot is taken wherever a
+    session is published (`publishSession`, which the resolver and `PublishSession` both use), and
+    the resolver replaces it with its own clone, taken after the load and before the per-request
+    phase. It is saved and restored with the chain's run scope. An endpoint uses the snapshot when
+    its identifier matches the session it rotates, and that session itself otherwise. In that case
+    marks the request set only in memory fail closed as 409, which matches the behaviour before the
+    snapshot. A consumer who publishes a session it loaded from the store sees no change.
+    - Rejected: refusing whenever no snapshot matches. That would turn today's working consumer
+      setups into 500s.
   - `loaded` must be the value the store returned: an in-memory session from `Create` or `Save`
     carries nanosecond times a microsecond store would not, and compares unequal. The godoc says so.
 
