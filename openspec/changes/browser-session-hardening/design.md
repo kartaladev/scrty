@@ -66,9 +66,29 @@ design are the baseline. Decision numbers below are this change's own.
     - Rejected: saving the restored deadline after the rotation (an extra write, and a failed save
       leaves the early deadline).
     - Rejected: `WithSuccessorLifetime(origin - now)` (drifts past the origin by the clock gap).
-  - Re-authentication with a key binding: a cookie session bound to a sender key is refused before
-    any endpoint runs, so the binding is empty on a cookie chain. A non-empty binding there is a
-    contract breach, answered as a dependency failure. It is never silently dropped.
+  - Re-authentication with a key binding: superseded by decision 7. H2 showed that the binding can
+    be non-empty on a cookie chain.
+
+### 7. A cookie chain never binds a session to a sender key
+
+- **Problem (found by H2):** a cookie chain may also enable `EnableCertificateBinding` or
+  `EnableDPoP`, for its OpenID Provider or resource server. A sign-in or re-proof that arrives over
+  mTLS, or with a DPoP header, then takes a key binding from the request through
+  `issuingBinding`. The cookie session refuses any sender-bound session, so:
+  - **Re-authentication:** refused after the factor was spent. H2 reproduced this
+    (`TestSessionCookie_ExistingRotationsGrace`, certificate row).
+  - **Login, magic link, passkey, recovery, OIDC redemption:** expected to create a bound session
+    whose cookie is refused on the next request. UNREPRODUCED; the first task reproduces it.
+- **Decision (user decision, 2026-11-27):** on a cookie chain, every sign-in and re-proof creates
+  or rotates an unbound session. The request's mTLS certificate or DPoP proof is not read for the
+  session. The provider's and resource server's own tokens still use them.
+- **Why:** the settled rule that a cookie session is never sender-bound makes a binding there
+  self-defeating. The cookie, held HttpOnly and guarded by CSRF, is the credential.
+- **Default / override:** no option. A consumer who wants sender-bound sessions uses a token chain.
+- **Alternatives:**
+  - Refuse a request carrying a binding proof before the factor is checked. Rejected: a browser
+    behind an mTLS-terminating client setup could never sign in.
+  - Refuse the combination at construction. Rejected: it breaks the one-binary provider setup.
 
 ### 2. A password change keeps the successor's idle deadline
 
@@ -139,7 +159,8 @@ design are the baseline. Decision numbers below are this change's own.
 | MFA verify or re-authentication on a session a renewal already superseded (push poll racing a renewal) | Concurrency | Handled, tested | `ErrRenewalConflict`, answered 409 as today; nothing stored, nothing revoked |
 | A caller's copy claiming another key binding or CSRF token | Security | Handled, tested | ignored; both come from the stored record |
 | Double-submitted second-factor form | Concurrency | Handled, tested | the second request loads the old session inside the window. A consumed one-time code is refused as an MFA failure, which neither rotates nor expires a cookie. A code that verifies again tries to rotate an already superseded session, which `WithSuccessorFromCaller` refuses with `ErrRenewalConflict` (409) before anything is written |
-| Renewal with the old cookie inside the window after an MFA rotation | Concurrency | Accepted | the renewal re-rotates from the stored record (second factor still pending) and closes the MFA successor's window; the next request with the new cookie is reuse and the family is revoked. Fails closed, as any re-rotation the archived design accepts |
+| Renewal with the old cookie inside the window after an MFA rotation | Concurrency | Handled, tested | the old cookie's session still owes its second factor, so the gate refuses the renewal before it runs; nothing is written and the new cookie keeps working (found by H2) |
+| Renewal with the old cookie inside the window after a re-authentication | Concurrency | Accepted, tested | the renewal re-rotates from the stored record and closes the re-authenticated successor's window; the next request with the new cookie is reuse and the family is revoked. Fails closed, as any re-rotation the archived design accepts |
 | A gate another request saved after the caller's copy was loaded | State / Security | Handled, tested | `PasswordChangePending` is raised if either the stored record or the copy has it, so a concurrent `Save` that raises it is never cleared by the rotation. The other caller-owned fields follow the copy, as a strict rotation does (accepted) |
 | Confinement or second-factor state saved by another request after the caller's copy was loaded (enrolment or recovery pending, enrolment deadlines) | State / Security | Accepted here, follow-up | the rotation writes the copy's state, as the strict rotation MFA verification and re-authentication used before this change already did, so nothing regresses. A stale copy can drop a confinement saved in the narrow window between load and rotation. The fix needs an optimistic check against the state the copy was loaded with, which must allow the enrolment marks the verification itself sets. Raised by the automated security review of 94e70b32; reported to the user |
 | Strict `Rotate` takes both deadlines and the user from the caller's copy | State | Accepted here, follow-up | the existing behaviour, reachable only by consumer code that edits the copy; out of scope for this change. `WithSuccessorFromCaller`'s godoc no longer says "as Rotate builds it", and states its own rules |

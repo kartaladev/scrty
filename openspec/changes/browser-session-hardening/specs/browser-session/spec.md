@@ -84,6 +84,10 @@ Building a cookie chain SHALL fail with a configuration error when the cookie na
 ### Requirement: Privilege changes rotate the cookie session
 On a cookie chain, the session identifier SHALL change, and the cookie SHALL be re-set, when a second factor is verified, when the user re-authenticates, when the active role is switched, and when the password is changed. Each rotation SHALL keep the previous identifier valid for a grace window, loading only its own state. The successor SHALL keep the idle deadline its rotation gave it. The CSRF token SHALL stay valid across these rotations.
 
+#### Scenario: Sign-in over mTLS on a cookie chain
+- **WHEN** a cookie chain that enables certificate binding for its provider signs a user in over mTLS, or re-authenticates them
+- **THEN** the session is not bound to the certificate, and the next request's cookie authenticates
+
 #### Scenario: Role switch
 - **WHEN** `ada` switches her active role to `audit` on a cookie chain
 - **THEN** the response re-sets the cookie with a new identifier, and her CSRF token is still accepted

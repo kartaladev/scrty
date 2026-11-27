@@ -47,6 +47,7 @@ name must be `__Host-`.
 | H1 | 1.1–1.3 | Sonnet: the fix is stated exactly | `httpsec/session_cookie.go` (`presentedCookie`, `checkAttributes`, `WithSessionCookieName` / `WithSessionCookieDomain` godoc), `httpsec/session_cookie_test.go`, `httpsec/session_cookie_options_test.go`, `httpsec/session_cookie_guard_test.go`, `httpsec/session_cookie_logout_test.go`, `httpsec/session_cookie_nested_resume_test.go`, `httpsec/fibersec/session_cookie_wire_test.go`, any other test naming a host-only cookie without `__Host-` | the H2, H3 and H4 files |
 | S1 | 2.0 | Opus: a rotation option that carries verified state, written for the first time | `session/reuse.go` (the `rotation` struct, `RotateOption`, the grace successor build at ~:418, the strict path in `session/sessions.go` ~:938 only to refuse the option), `session/reuse_test.go`, `test/storetest/session_suite.go` (one conformance row) | every `httpsec` file |
 | S1b (after S1's review) | 2.0, review follow-up | Sonnet: the fix is stated exactly | `session/reuse.go` (`successorFromCaller` and the option godoc), `session/reuse_test.go` | every `httpsec` file |
+| H2b (after H2's review) | 2.4 | Opus: a binding rule across every sign-in path, security-critical | `httpsec/login.go`, `magiclink.go`, `oidc_redeem.go`, `passkey_login.go`, `reauth_resolve.go`, `recovery.go`, `mfa_verify.go`, `dpop.go` (`issuingBinding` and a cookie-chain guard), `session_cookie.go` (godoc), and a new `httpsec/session_cookie_binding_test.go` | `oidc_token.go` (the provider's token endpoint keeps binding its tokens) |
 | H2 (after S1b) | 2.1–2.3 | Opus: rotation ordering under in-flight requests | `httpsec/mfa_verify.go`, `httpsec/reauth_resolve.go`, `httpsec/session_cookie_rotation_test.go`, `httpsec/mfa_verify_test.go`, `httpsec/reauth_resolve_test.go` | `session_cookie.go`, `password_change.go`, `session_cookie_answer.go` |
 | H3 | 3.1–3.2 | Sonnet: the fix is stated exactly | `httpsec/password_change.go`, `httpsec/session_cookie_answer.go`, `httpsec/session_cookie_answer_internal_test.go`, `httpsec/password_change_internal_test.go`, a new `httpsec/session_cookie_password_deadline_test.go` | `session_cookie_rotation_test.go` (H2 owns it) |
 | H4 | 4.1 | Sonnet: doc and adapter test | new `httpsec/fibersec/session_cookie_encryptcookie_test.go`, `httpsec/fibersec/exchange.go` (godoc only), `README.md` (Fiber note and the cookie name rule) | `session_cookie_wire_test.go` (H1 owns it) |
@@ -251,6 +252,41 @@ delivery the issuer already holds (the `deliver.cookie` pattern in `password_cha
   the old identifier is not found straight after the rotation. This asserts the strict rotation is
   unchanged, and should pass already.
 - [ ] **Step 6:** Run the scoped verification. Expected: all pass, under `-race`.
+
+### Task 2b: A cookie chain never binds a session (task 2.4, H2b, decision 7)
+
+**Files:** a new test `httpsec/session_cookie_binding_test.go`. Modify the sign-in call sites of
+`issuingBinding` (`login.go:371`, `magiclink.go:480`, `oidc_redeem.go:46`, `passkey_login.go:576`,
+`reauth_resolve.go:147`, `recovery.go:455` and `:863`) and the DPoP path of second-factor
+verification (`mfa_verify.go` ~:344). `oidc_token.go:149` is the provider's token endpoint and keeps
+binding its tokens. Do not touch it.
+
+**Interfaces:** one guard in place of seven: a cookie chain answers `session.KeyBinding{}` for the
+session without reading the certificate or the DPoP header. The implementer picks the seam, for
+example a check of the chain's credential delivery inside a wrapper of `issuingBinding` used by
+the sign-in paths. The provider's own token path is not routed through it.
+
+- [ ] **Step 1: Failing table `TestSessionCookie_SignInNeverBinds`.** The chain is a cookie chain
+  with `EnableCertificateBinding`, and a second chain with `EnableDPoP`. For each, a password login
+  sent with a client certificate, or with a valid DPoP proof header:
+  - the stored session's `KeyBinding.IsZero()`;
+  - the next request with the cookie is authenticated (200).
+
+  Add rows for magic-link redemption and passkey login on the certificate chain, and a
+  re-authentication row (with H2's certificate row in `TestSessionCookie_ExistingRotationsGrace`
+  moved here or rewritten): re-authentication over mTLS succeeds, the successor is unbound, and the
+  new cookie works.
+- [ ] **Step 2:** Run `go test -run TestSessionCookie_SignInNeverBinds -count=1 ./httpsec/`.
+  Expected: FAIL. Login creates a bound session whose cookie is refused, and re-authentication
+  answers `ErrStoreContract`. This is the reproduction decision 7 is waiting on; record the output.
+- [ ] **Step 3:** Implement the guard. Remove H2's `errReauthBindsCookieSession` refusal, which is
+  no longer reachable. Add a paragraph to the `EnableSessionCookie` godoc: a cookie chain never
+  binds its sessions to a sender key; the provider's and resource server's tokens still are.
+- [ ] **Step 4: Pin the header-bearer behaviour.** On an `EnableSessionBearer` chain with
+  `EnableCertificateBinding`, a login over mTLS still creates a bound session. This should pass
+  already; invert it once to see it fail.
+- [ ] **Step 5:** Run the H2 scoped verification and `golangci-lint run ./httpsec/...`. Expected:
+  all pass.
 
 ### Task 3: Password-change deadline and the q-value (tasks 3.1–3.2, H3)
 

@@ -16,6 +16,8 @@
 - [ ] 2.2 Red: the same pair of rows for re-authentication (old `AuthenticatedAt` inside the window; reuse after it).
 - [ ] 2.3 Pin that a header-bearer chain still rotates strictly at both endpoints (the old identifier is not found straight after), and that a double-submitted verification with a consumed code is an MFA failure that rotates nothing and expires no cookie.
 
+- [ ] 2.4 Red: on a cookie chain with `EnableCertificateBinding` (and one with `EnableDPoP`), a password login over mTLS (with a DPoP header) creates a session the next request's cookie authenticates; the same for re-authentication (replacing H2's `ErrStoreContract` refusal). Every cookie-chain sign-in and re-proof skips `issuingBinding` for the session: login, magic link, passkey, recovery, OIDC redemption and the federated callback, MFA verify and re-authentication. A header-bearer chain still binds. Godoc on `EnableSessionCookie`.
+
 ## 3. Password change deadline and the q-value (decisions 2, 3)
 
 - [x] 3.1 Red: a cookie-chain password change on a session whose stored idle deadline is seconds away saves a successor whose idle deadline is the rotation's. Carry the deadline fields in the resolution only when it ends a recovery; the rollback after a failed save restores exactly the fields changed. Existing recovery and save-failure tests stay green.
