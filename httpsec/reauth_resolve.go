@@ -32,17 +32,25 @@ import (
 // set. Inside the window the old identifier loads the old record, with its old
 // authentication time, so it gains no freshness; after it, it is reuse, which
 // revokes the sign-in. The successor is built from the re-proved copy
-// (credentialDelivery.rotateIssuing). A zero grace (WithRenewalGrace(0))
-// rotates strictly on a cookie chain too, so the old cookie is then not found,
-// never reuse. The credential is issued in the chain's bearer mode against the successor's identifier inside
-// the rotation (session.Sessions.RotateIssuing), before anything is stored. A
+// (credentialDelivery.rotateIssuing), and s, the session as the request
+// loaded it, is what the stored record is checked against: one another
+// request confined or otherwise changed meanwhile is refused as a lost race,
+// ErrSessionRenewalConflict (409), with nothing written. A zero grace
+// (WithRenewalGrace(0)) rotates strictly on a cookie chain too, so the old
+// cookie is then not found, never reuse.
+//
+// The credential is issued in the chain's bearer mode against the
+// successor's identifier inside the rotation, strict
+// (session.Sessions.RotateIssuing) or with a grace window
+// (session.Sessions.RotateWithGraceIssuing), before anything is stored. A
 // credential that cannot be issued refuses the re-proof with the issuer's
 // failure as it is (a generator's behind fixed text, its own error reachable
 // through errors.Is), never as a rotation refusal, and leaves nothing stored
 // or rotated, so the credential the caller arrived with keeps authenticating.
 //
 // Any other failed rotation is refused as rotationRefusal words it: a renewal
-// that superseded the session inside its window, or a concurrent re-proof or
+// that superseded the session inside its window, a change saved on it by
+// another request since it was loaded, or a concurrent re-proof or
 // second-factor verification of the same session that rotated it first,
 // through this server or any other sharing the session store, is
 // ErrSessionRenewalConflict (409) inside the winner's in-flight window, and a
@@ -75,7 +83,9 @@ func (i *reauthInterceptor) resolve(ex *Exchange, s *session.Session, method mfa
 	// returned as the issuer worded it and never read as a session sentinel.
 	var issueErr error
 
-	rotated, tok, err := i.deliver.rotateIssuing(ctx, i.sessions, &reproved, func(successor *session.Session) (string, error) {
+	// s is the session as the request loaded it, before the changes above,
+	// which were all made on reproved.
+	rotated, tok, err := i.deliver.rotateIssuing(ctx, i.sessions, s, &reproved, func(successor *session.Session) (string, error) {
 		tok, err := i.issue(ctx, successor, principal)
 		issueErr = err
 

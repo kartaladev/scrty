@@ -143,8 +143,9 @@ type rotation struct {
 	roleSet bool
 
 	// fromCaller is WithSuccessorFromCaller, which only a rotation with a
-	// grace window takes.
+	// grace window takes; loaded is the session as the caller loaded it.
 	fromCaller bool
+	loaded     *Session
 }
 
 // rotationOf applies opts.
@@ -206,6 +207,25 @@ func WithSuccessorRole(role string) RotateOption {
 // of state on the session it rotates, such as a satisfied second factor or a
 // refreshed authentication time, which the store's record does not have yet.
 //
+// loaded is the session as the caller loaded it from the store, before its own
+// changes; the copy given to the rotation is loaded plus those changes. It may
+// be the copy itself when the caller changed nothing. A nil loaded, or one
+// with another identifier than the copy, is a wiring mistake refused with
+// ErrConfig. Before anything is written, the rotation compares the stored
+// record with loaded on the security state: the second-factor state
+// (Session.MFA) and its time (MFASatisfiedAt), AuthenticatedAt,
+// PasswordChangePending, EnrolmentOriginDeadline, EnrolmentGeneration,
+// RecoveredAt and AbsoluteExpiresAt, times compared as instants. Any
+// difference means another request changed the session since the caller
+// loaded it, such as a confinement, a downgraded second factor or a pending
+// password change, which the copy's older state would otherwise overwrite: it
+// is refused with ErrRenewalConflict, as a lost race. The comparison is made
+// on the record the rotation reads; a save that lands between that read and
+// the rotation's own write is not seen, since the store's supersession is
+// conditioned on the successor alone (an accepted residual: the window is one
+// store round-trip). loaded is read only during the rotation and is not
+// modified.
+//
 // The successor takes from the caller's copy the second-factor state, the
 // authentication time, the first factor, the enrolment and recovery state,
 // the federated and external-session fields and the consumer's data. It takes
@@ -226,9 +246,9 @@ func WithSuccessorRole(role string) RotateOption {
 // the stored one: a copy can never extend the deadline past what the sign-in
 // held.
 //
-// A pending password change only rises:
-// the successor has it when either the copy or the stored record does, so a
-// copy taken before the change was recorded cannot clear it. The rotation then
+// A pending password change only rises: the successor has it when either the
+// copy or the stored record does, so a copy that dropped one the session
+// carried cannot clear it. The rotation then
 // sets the creation and last-access times and the idle deadline as it does
 // without the option, and caps the absolute deadline at the family's end. The
 // superseded record keeps its own stored state through the window, so its
@@ -240,6 +260,8 @@ func WithSuccessorRole(role string) RotateOption {
 //
 //   - a copy naming another user than the stored record is refused with
 //     ErrConfig;
+//   - a stored record whose security state is not loaded's is refused with
+//     ErrRenewalConflict, as above;
 //   - a session that is already superseded, inside its window (a re-rotation)
 //     or after it under WithUnusedSuccessorRecovery (a recovery), is refused
 //     with ErrRenewalConflict, as a lost race: the copy is stale, and rotating
@@ -249,8 +271,11 @@ func WithSuccessorRole(role string) RotateOption {
 // Every refusal is made before the issuing step runs, and nothing is stored,
 // superseded or revoked. A session past its window with recovery off is
 // reuse, exactly as without the option.
-func WithSuccessorFromCaller() RotateOption {
-	return func(r *rotation) { r.fromCaller = true }
+func WithSuccessorFromCaller(loaded *Session) RotateOption {
+	return func(r *rotation) {
+		r.fromCaller = true
+		r.loaded = loaded
+	}
 }
 
 // RotateWithGrace moves current to a successor in the same family, and keeps current's
@@ -295,9 +320,10 @@ func WithSuccessorFromCaller() RotateOption {
 // The successor is built from the stored session, not from current, and keeps
 // everything rotation keeps (see Rotate), its family and the family's start
 // included; WithSuccessorFromCaller builds it from current instead, as Rotate
-// does, and refuses a session that is already superseded. Its absolute deadline is carried over unless WithSuccessorLifetime
-// chose another, and its idle deadline starts afresh, capped at the absolute
-// one.
+// does, and refuses a session that is already superseded or changed since the
+// caller loaded it. Its absolute deadline is carried over unless
+// WithSuccessorLifetime chose another, and its idle deadline starts afresh,
+// capped at the absolute one.
 //
 // Two rotations of one identifier at the same time, through one manager or
 // through managers on different replicas sharing one store, produce exactly
@@ -431,6 +457,9 @@ func (m *Sessions) RotateWithGraceIssuing(
 	if r.roleSet && !m.SelectsRoles() {
 		return nil, 0, "", fmt.Errorf("%w: the session store cannot select roles, so it cannot record a successor role", ErrConfig)
 	}
+	if r.fromCaller && (r.loaded == nil || r.loaded.ID != current.ID) {
+		return nil, 0, "", fmt.Errorf("%w: the loaded session given to build the successor from is missing or another session", ErrConfig)
+	}
 
 	old, err := m.loadStored(ctx, current.ID, "session: the session to renew could not be loaded")
 	if err != nil {
@@ -483,6 +512,15 @@ func (m *Sessions) RotateWithGraceIssuing(
 	familyEnd := m.familyEnd(old)
 	if !now.Before(familyEnd) {
 		return nil, 0, "", ErrExpired
+	}
+
+	// The copy's state is the stored record's as the caller loaded it, plus
+	// the caller's own changes. A record another request changed since then
+	// (a confinement, a downgraded second factor, a pending password change)
+	// would be overwritten by the copy's older state, so it is refused before
+	// anything is written, as a lost race.
+	if r.fromCaller && !sameSecurityState(old, r.loaded) {
+		return nil, 0, "", ErrRenewalConflict
 	}
 
 	id, err := m.newIdentifier(ctx)
@@ -762,6 +800,23 @@ func successorFromCaller(current, stored *Session, id string) *Session {
 	next.RotatedStrictly = false
 
 	return next
+}
+
+// sameSecurityState reports whether stored, the record the store holds, has
+// the security state loaded, the session as a caller loaded it, had: the
+// second-factor state and time, the authentication time, the pending password
+// change, the enrolment and recovery state and the absolute deadline. Times
+// compare as instants (time.Time.Equal), so a store that returns them in
+// another location, or without a monotonic reading, is no change.
+func sameSecurityState(stored, loaded *Session) bool {
+	return stored.MFA == loaded.MFA &&
+		stored.MFASatisfiedAt.Equal(loaded.MFASatisfiedAt) &&
+		stored.AuthenticatedAt.Equal(loaded.AuthenticatedAt) &&
+		stored.PasswordChangePending == loaded.PasswordChangePending &&
+		stored.EnrolmentOriginDeadline.Equal(loaded.EnrolmentOriginDeadline) &&
+		stored.EnrolmentGeneration == loaded.EnrolmentGeneration &&
+		stored.RecoveredAt.Equal(loaded.RecoveredAt) &&
+		stored.AbsoluteExpiresAt.Equal(loaded.AbsoluteExpiresAt)
 }
 
 // liftedConfinement reports whether current, a caller's copy of stored, lifted

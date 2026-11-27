@@ -1369,12 +1369,18 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 				require.NoError(t, m.Save(ctx, old))
 				signedInAt := old.AuthenticatedAt
 
+				// The copy is taken from the session as the store returns
+				// it, as a request loads it, so the rotation compares the
+				// stored record with what the store itself wrote.
+				loaded, err := s.Load(ctx, old.ID)
+				require.NoError(t, err)
+
 				clk.Advance(time.Minute)
-				verified := *old
+				verified := *loaded
 				verified.MFA = session.MFASatisfied
 				verified.MFASatisfiedAt = clk.Now()
 				verified.AuthenticatedAt = clk.Now()
-				successor, _, err := m.RotateWithGrace(ctx, &verified, 30*time.Second, session.WithSuccessorFromCaller())
+				successor, _, err := m.RotateWithGrace(ctx, &verified, 30*time.Second, session.WithSuccessorFromCaller(loaded))
 				require.NoError(t, err)
 
 				got, err := s.Load(ctx, successor.ID)

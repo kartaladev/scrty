@@ -218,6 +218,58 @@ func (enrolmentBehindSecondFactor) Evaluate(_ context.Context, in *policy.Input)
 	return policy.Decision{Outcome: policy.Allow}
 }
 
+// confineMidVerification is a post-authentication policy that, once armed with
+// a session identifier, saves an enrolment confinement on that stored session
+// the first time it is asked with the second factor satisfied, as another
+// request confining the sign-in between the verification's load of the
+// session and its rotation would. It allows every request.
+type confineMidVerification struct {
+	sessions *session.Sessions
+	target   atomic.Pointer[string]
+	saved    atomic.Pointer[error]
+}
+
+func (*confineMidVerification) Name() string { return "test: confine mid-verification" }
+
+func (*confineMidVerification) Phases() []policy.Phase {
+	return []policy.Phase{policy.PostAuthentication}
+}
+
+// arm makes the next satisfied evaluation confine the session id names.
+func (p *confineMidVerification) arm(id string) { p.target.Store(&id) }
+
+// result reports whether the confining save ran, and its error.
+func (p *confineMidVerification) result() (bool, error) {
+	err := p.saved.Load()
+	if err == nil {
+		return false, nil
+	}
+
+	return true, *err
+}
+
+func (p *confineMidVerification) Evaluate(ctx context.Context, in *policy.Input) policy.Decision {
+	if in.MFASatisfied {
+		if id := p.target.Swap(nil); id != nil {
+			err := p.confine(ctx, *id)
+			p.saved.Store(&err)
+		}
+	}
+
+	return policy.Decision{Outcome: policy.Allow}
+}
+
+func (p *confineMidVerification) confine(ctx context.Context, id string) error {
+	s, err := p.sessions.Load(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	p.sessions.MarkEnrolmentPending(s, 15*time.Minute)
+
+	return p.sessions.Save(ctx, s)
+}
+
 // TestSessionCookie_ExistingRotationsGrace pins that on a cookie chain
 // second-factor verification and re-authentication rotate with a grace
 // window: a request already in flight with the old cookie loads the old
@@ -227,8 +279,10 @@ func (enrolmentBehindSecondFactor) Evaluate(_ context.Context, in *policy.Input)
 // superseded session and a renewal that superseded the session first write
 // nothing and expire nothing; a renewal with the old cookie after a
 // re-authentication re-rotates, and the new cookie is then reuse (accepted,
-// fail-closed). An enrolment challenge raised at verification keeps the
-// confinement's lowered deadline on the successor, and with a zero grace both
+// fail-closed). A confinement another request saves while the verification
+// runs is a lost race (409) that writes nothing. An enrolment challenge raised
+// at verification keeps the confinement's lowered deadline on the successor,
+// and with a zero grace both
 // rotate strictly, so an in-flight old cookie is not found and nothing is
 // revoked. A re-proof over mTLS or with a DPoP proof is
 // TestSessionCookie_SignInNeverBinds's.
@@ -525,6 +579,50 @@ func TestSessionCookie_ExistingRotationsGrace(t *testing.T) {
 				assert.Equal(t, signInDeadline, rotated.EnrolmentOriginDeadline, "the sign-in's deadline is the origin")
 			},
 		},
+		func() testCase {
+			confiner := &confineMidVerification{}
+
+			return testCase{
+				// Another request confines the sign-in after the verification
+				// loaded the session and before it rotates: the verified copy,
+				// loaded before the confinement, must not overwrite it.
+				name: "a confinement saved while the verification runs is a lost race that writes nothing",
+				configure: func(t *testing.T, w *browserWorld) {
+					t.Helper()
+					w.enrol(t)
+					confiner.sessions = w.sessions
+					w.policies = append(w.policies, confiner)
+				},
+				assert: func(t *testing.T, w *browserWorld) {
+					t.Helper()
+
+					challenged := w.login(t)
+					require.Error(t, challenged.err)
+
+					pending := cookieNamed(challenged.rec, httpsec.DefaultSessionCookieName)
+					require.NotNil(t, pending)
+
+					code := w.code(t)
+					active := w.active(t)
+					confiner.arm(pending.Value)
+
+					out := w.post(t.Context(), t, testMFAVerifyPath, pending.Value, url.Values{"code": {code}})
+					ran, saveErr := confiner.result()
+					require.True(t, ran, "the confinement was saved during the verification")
+					require.NoError(t, saveErr)
+
+					require.ErrorIs(t, out.err, httpsec.ErrSessionRenewalConflict)
+					assert.Equal(t, http.StatusConflict, httpsec.StatusForError(out.err))
+					noSessionCookie(t, out)
+					assert.Equal(t, active, w.active(t), "nothing was stored")
+
+					stored := loaded(t, w, pending.Value)
+					assert.Equal(t, session.MFAEnrolmentPending, stored.MFA, "the confinement stands")
+					assert.False(t, stored.EnrolmentOriginDeadline.IsZero(), "the confinement stands")
+					assert.True(t, stored.SupersededAt.IsZero(), "nothing was superseded")
+				},
+			}
+		}(),
 		{
 			name: "with a zero grace second-factor verification rotates strictly",
 			configure: func(t *testing.T, w *browserWorld) {
