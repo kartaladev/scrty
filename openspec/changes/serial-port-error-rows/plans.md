@@ -88,7 +88,7 @@ Must not touch: Dispatch A's four files.
 - Produces: `e2eHash(t *testing.T) string` in `httpsec/integration_test.go`. It is backed by a package-level `sync.OnceValues(func() (string, error))` that builds the encoder with `e2eEncoder`'s exact options and encodes `e2ePassword`. It calls `t.Helper()` and `require.NoError(t, err)`.
 
 - [ ] **Step 1 (2.1 and 2.2):**
-  - Run `go test -race -count=1 -cpuprofile <scratch>/cpu-before.out -run '^TestPortErrors_RecoveryCooldown$/^live$/^Unwrap_panicking_with_nil$' ./httpsec`, then `go tool pprof -top` on it. Expected: argon2 dominates. Report the row's elapsed time.
+  - Run `go test -race -count=1 -cpuprofile <scratch>/cpu-before.out -run '^TestPortErrors_RecoveryCooldown$/^live$/^Unwrap_panicking_with_nil$' ./httpsec`, then `go tool pprof -top -cum` on it. Expected: argon2 appears. Report the row's elapsed time, argon2's cumulative share, and the share of `__tsan_read`, which the profiler attributes to `runtime._System` rather than to a Go caller.
   - Then list, with gopls, every `e2eEncoder(t).Encode(e2ePassword)`. For each fixture, check its users for:
     - assertions on hash bytes or salt;
     - needing distinct hashes;
@@ -98,7 +98,7 @@ Must not touch: Dispatch A's four files.
     Report each fixture as switched or kept, with the reason.
 - [ ] **Step 2 (2.3, green):** Add `e2eHash`, and switch the cleared fixtures to it.
 - [ ] **Step 3 (2.3, verify):**
-  - Re-run Step 1's profile. Expected: a lower elapsed time and a lower argon2 share.
+  - Re-run Step 1's profile. Expected: a lower elapsed time. Argon2's share of a one-row profile need not fall, because a one-row process still derives the shared hash once; the saving across rows is measured in 4.2.
   - `go test -race -count=1 -run '^(TestPortErrors_RecoveryCooldown|TestPortErrors_PasswordlessUserLoader|TestPortErrors_TokenGenerator|TestRecovery.*|TestPasskeyLogin.*)$' ./httpsec` passes.
 - [ ] **Step 4 (Review Focus 3, 5):** `go test -race -count=2 -run '^(TestRecovery.*|TestPasskeyLogin.*)$' ./httpsec` passes with no race report.
 - [ ] **Step 5 (3.1, red):** Set `rehashNewMemory = 19 * 1024`.
@@ -113,7 +113,7 @@ Must not touch: Dispatch A's four files.
 
 ### Main session: measurements, gates, CI and review (tasks 4.2–4.5)
 
-- [ ] **4.2:** On an idle machine, `go test -race -count=1 -timeout 300s -json ./httpsec`.
+- [ ] **4.2:** On an idle machine, `go test -race -count=1 -timeout 300s -json ./httpsec`. Record the load average beside the figures; a run under load does not count and is repeated.
   - Record in `design.md`'s Measurements: the package `Elapsed`, the count of rows with a `pause` action, and the time in rows that never paused.
   - Expected: at most 300 s.
 - [ ] **4.3:** `make check` passes. Keep the log.

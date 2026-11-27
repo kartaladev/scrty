@@ -28,7 +28,7 @@ Tasks marked **(main session)** record measurements, push or open pull requests.
 ## 2. One fixture hash per test process (decision 2)
 
 - [x] 2.1 Red: run `go test -race -count=1 -cpuprofile <scratch>/cpu.out -run '^TestPortErrors_RecoveryCooldown$/^live$/^Unwrap_panicking_with_nil$' ./httpsec`.
-  - Verify that `golang.org/x/crypto/argon2` takes most of the profile's CPU.
+  - Verify that `golang.org/x/crypto/argon2` appears in the profile, and record its cumulative share and the share of race-detector reads (`__tsan_read`). The profiler attributes those reads to `runtime._System`, not to a Go caller, so they cannot be pinned on argon2 directly.
   - Record the row's elapsed time.
 - [x] 2.2 Check each fixture that encodes `e2ePassword` for setup, starting with `newRecoveryHarness` and `newPwlDeployment`, and including any other `e2eEncoder(t).Encode(e2ePassword)` found with gopls.
   - Verify that no test using the fixture asserts on the hash's salt or bytes, needs distinct hashes, or lets the encoder rewrite the hash.
@@ -37,7 +37,7 @@ Tasks marked **(main session)** record measurements, push or open pull requests.
   - Add `e2eHash(t *testing.T) string` beside `e2eEncoder` in `httpsec/integration_test.go`. It returns a hash of `e2ePassword` derived once per process with `sync.OnceValues` at `e2eEncoder`'s parameters, and fails the test on the derivation's error.
   - Switch the fixtures 2.2 cleared.
   - Verify:
-    - re-running the 2.1 command shows the row's elapsed time down and argon2's share of the profile reduced;
+    - re-running the 2.1 command shows the row's elapsed time down. A one-row process still derives the shared hash once, so argon2's share of a one-row profile need not fall; the saving across rows is measured in 4.2;
     - `go test -race -count=1 -run '^(TestPortErrors_RecoveryCooldown|TestPortErrors_PasswordlessUserLoader|TestPortErrors_TokenGenerator|TestRecovery.*|TestPasskeyLogin.*)$' ./httpsec` passes.
 
 ## 3. The rehash rig's target drops to 20 MiB (decision 3)
