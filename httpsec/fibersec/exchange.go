@@ -302,6 +302,12 @@ func (r request) DelHeaders(match func(name string) bool) {
 // as sent, so it must never be read cleaned up. A request with no raw block (one
 // built rather than read from a connection) has nothing to read it from, and
 // is read as fasthttp holds it.
+//
+// A middleware that rewrites cookies in the parsed copy, fiber's encryptcookie,
+// is therefore not seen: the chain reads the ciphertext the browser sent, finds
+// no session under it and refuses the request. List the session cookie's name
+// in encryptcookie's Config.Except. The cookie is an opaque random identifier,
+// so encrypting it adds nothing.
 func (r request) HeaderValues(name string) []string {
 	h := &r.c.Request().Header
 

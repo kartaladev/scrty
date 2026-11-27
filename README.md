@@ -161,6 +161,26 @@ One that only verifies access tokens has no built-in endpoint to move, and `With
 it: mount it under a mux prefix and give its resource server `WithPathPrefix` for the same prefix
 (see [Resource server](#resource-server)).
 
+A host-only session cookie name must carry the `__Host-` prefix, which is the default. A name with
+the `__Secure-` prefix is for a cookie that is shared across subdomains, so use it only together
+with `httpsec.WithSessionCookieDomain`.
+
+**On Fiber, keep `encryptcookie` away from the session cookie.** The Fiber adapter reads the
+`Cookie` header as it arrived, so it still sees a duplicated or quoted session cookie that fasthttp's
+parser would clean up. Fiber's `encryptcookie` middleware rewrites cookies in the parsed copy, so the
+chain would read the ciphertext and no sign-in would stick: the request is refused, never
+authenticated. List the session cookie's name in `encryptcookie.Config.Except`:
+
+```go
+app.Use(encryptcookie.New(encryptcookie.Config{
+	Key:    key,
+	Except: []string{httpsec.DefaultSessionCookieName},
+}))
+app.Use(fibersec.Middleware(browsers))
+```
+
+The cookie is already an opaque random identifier, so encrypting it adds nothing.
+
 ### Migrating
 
 Adopting a base path, or upgrading from a build that used the earlier default paths:
