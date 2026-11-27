@@ -378,11 +378,23 @@ Sign-in always creates a new session.
   the whole-branch review). With `session.WithUnusedSuccessorRecovery`, a request carrying a
   superseded identifier whose successor was never used is refused with `ErrRenewalRequired`, and
   the response keeps the cookie: it is the only credential the browser can renew with, and
-  expiring it made the option useless on a cookie chain. Nothing is granted meanwhile, and the
-  family is still revoked as reuse once the window passes. A page that receives this refusal posts
-  to the renewal endpoint. The renewal endpoint's own refusal of the cookie (reuse detected there)
+  expiring it made the option useless on a cookie chain. Nothing is granted meanwhile. An ordinary
+  request never revokes the family; the late cookie posted to the renewal endpoint after its
+  successor was used is reuse, and revokes it. A page that receives this refusal posts to the
+  renewal endpoint. The renewal endpoint's own refusal of the cookie (reuse detected there)
   expires it, as every refusal of a judged reference does (from the same review: the renewal path
   had skipped the expiry).
+  - **Not charged on the cookie transport** (user decision, 2026-11-27, from the C11 review). A
+    kept cookie is re-sent on every request, so charging each renewal-required refusal let one
+    un-renewed tab push a shared address over its allowance and refuse every browser behind it,
+    its own renewal included. The refusal comes only from a genuine superseded identifier inside
+    its recovery window, so it is no guessing signal. The session bearer still charges it, as
+    before.
+  - **Settled during implementation:** The refusal now matches
+    `session.ErrRenewalRequired` beside `ErrAuthenticationRequired` on both the cookie and the
+    bearer, as `EnableSessionRenewal`'s godoc already stated. At the renewal endpoint, a refusal
+    matching `ErrAuthenticationRequired` expires the cookie; throttling, a renewal conflict, a CSRF
+    failure and a dependency failure keep it.
 
 ### 12. The provider's browser sessions end with the sign-in
 
@@ -559,7 +571,10 @@ grant checks or local users, or both. This change reverses that decision (user d
 | Cookie session and provider with CSRF protection opted out | Wiring | Handled, tested | `ErrConfig` from `New` |
 | A role switch in the same request before the provider's resume | State | Accepted | the switch replaces the request's session, so the resume no longer recognises it and refuses with 401: fail-closed; nothing in the library switches before its own resume |
 | Persistent cookie with the password-change rotation turned off on a recovery-pending sign-in | State | Accepted | the cookie keeps the lowered recovery `Max-Age` and is dropped early by the browser: fail-closed; documented on the option |
-| A superseded cookie refused with `ErrRenewalRequired` under unused-successor recovery | State | Handled, tested | 401, the cookie kept, so the page can renew; family revoked as reuse after the window |
+| A superseded cookie refused with `ErrRenewalRequired` under unused-successor recovery | State | Handled, tested | 401, the cookie kept and not charged to the source, so the page can renew; the family is revoked only when the cookie is posted to renewal after its successor was used |
+| A kept renewal-required cookie re-sent on every request from a shared address | Dependency / Security | Handled, tested | not charged, so other browsers behind the address are unaffected |
+| A superseded cookie past its own deadline under recovery | State | Accepted | still refused as renewal-required and kept, as the manager judges recovery before deadlines; the renewal POST answers `ErrExpired` and expires it |
+| A renewal conflict or a dependency failure at the renewal endpoint for a late cookie | State | Handled, tested | the cookie kept |
 | A superseded cookie refused at the renewal endpoint (reuse detected there) | Security | Handled, tested | 401, the family revoked, the cookie expired |
 | Delivery port failing at a role switch or a password change | State | Handled, tested | issuing failure, no `Set-Cookie`, the family revoked; at the password change the consumer's function does not run |
 | Revocation of a cookie sign-in on a chain running the provider | Security | Handled, tested | the provider's browser sessions of that sign-in no longer load |

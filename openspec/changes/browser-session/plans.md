@@ -58,10 +58,11 @@ File ownership: lane S owns `session/` and `store/**` and `test/storetest`; lane
 | C10b | 12.8, C10 review follow-ups | Opus | two construction refusals on security wiring; the binding check reads the provider's binding policy across chains |
 | C10c | 12.8, C10b review follow-up | Sonnet | applies an existing rule (`checkDPoP`) at a second call site, as C10b did for `checkBindings`; the rows are given |
 | C11 | 12.9 | Opus | cookie-expiry decisions on refusal paths (security), and failure tests through delivery and revocation; a mistake passes the tests and still signs users out or keeps a bad cookie |
+| C11b | 12.10 | Opus | changes what the shared pipeline charges to a source (throttling on a security path) and a nested-chain guard on cookie expiry |
 | C7 | 13.1, 13.2 | Sonnet | conformance scenarios and godoc (after C10) |
 | — | 14.1 | main session | final gate |
 
-Reviewers: Opus for C1–C6, S2, C8, C8b, C8c, C8d, C10, C10b and C11; Sonnet for S1, M1, C9, C8e, C10c and C7.
+Reviewers: Opus for C1–C6, S2, C8, C8b, C8c, C8d, C10, C10b, C11 and C11b; Sonnet for S1, M1, C9, C8e, C10c and C7.
 
 **Scoped verification commands** (`test-scope.md`):
 - Lane S: `go test -count=1 ./session/... ./store/... ./internal/... ./httpsec/... ./oidcprovider/... ./policy/... ./recovery/... ./authenticate/...` and, in `test/`, `go test -count=1 ./storetest/... ./sqlstore/... ./pgxstore/... ./gormstore/... ./crossbackend/...` (Docker); plus `go test -count=1 ./...` in `store/pgxstore` and `store/gormstore`; `make generate-check`.
@@ -479,7 +480,22 @@ From the whole-branch review. Reproductions: `/private/tmp/claude-501/review-bra
 - [ ] **Step 2: Run** them focused — expected FAIL on the two refusal rows (as in the reproductions). The delivery and revocation rows may already pass; show each fails once by disabling the branch it pins (`endUndelivered`, the end observer), then restore by editing back.
 - [ ] **Step 3: Implement**: in `Intercept`, when the request is a renewal (`ex.renewal != ""` after resolve), run `next` and expire the cookie when the error is `ErrAuthenticationRequired` (not on `ErrRenewalThrottled`, `ErrSessionRenewalConflict` or `ErrCrossSiteRequest`); classify `ErrRenewalRequired` as not expiring the cookie. Rename the two parameters and keep their godoc accurate.
 - [ ] **Step 4: Run** lanes M/C scoped command with `-race`, plus `go test -count=1 -run TestExportedParametersHaveDescriptiveNames .` at the module root — PASS.
-- [ ] **Step 5: Commit** `fix(httpsec): keep a cookie that needs renewal, and expire one the renewal endpoint refuses`.
+- [ ] **Step 5:** No commit yet; C11b follows (Task 12.10).
+
+### Task 12.10: C11 review follow-ups
+
+User decision, 2026-11-27: a renewal-required refusal is not charged to the source on the cookie transport (design 11, "Not charged on the cookie transport"); the bearer still charges it.
+
+**Files:** Modify `httpsec/session_reference.go` (`resolve`: the charge), `httpsec/session_cookie.go` (`Intercept`: record whether this interceptor let a late cookie through, e.g. `renewalBefore := ex.renewal` before `resolve`, and expire after `next` only when `ex.renewal` was set by this resolve; godoc of `EnableSessionCookie` stating when the cookie is expired or kept, and that a page receiving the renewal-required refusal posts to the renewal endpoint), `httpsec/doc.go` (one paragraph in the cookie section saying the same); Test `httpsec/session_cookie_test.go`, the session-bearer test file holding the renewal-required cases.
+
+- [ ] **Step 1: Write the failing rows**:
+  - `TestSessionCookie_RefusalExpires` "a renewal-required cookie re-sent from one source does not throttle it": the source allowance set to a small limit (e.g. 3) on the chain, a late cookie under recovery presented limit+1 times from `cookieSource` → each 401 renewal-required, cookie kept; then a valid cookie of another sign-in from the same source → 200; then the late cookie's renewal POST from that source → succeeds.
+  - a session-bearer row: under recovery, a late reference in `Authorization` → 401 matching `session.ErrRenewalRequired`, and the source is charged (the bearer is unchanged).
+  - `TestSessionCookie_RefusalExpires` rows "a renewal conflict at the renewal endpoint leaves the late cookie" (`ErrSessionRenewalConflict`, 409) and "a dependency failure at the renewal endpoint leaves the late cookie" (user store failing on reload, 500).
+- [ ] **Step 2: Run** them focused — expected FAIL on the source row (the other sign-in refused as throttled). Rows already passing are shown to fail once by disabling the branch they pin, then restored by editing back.
+- [ ] **Step 3: Implement** the charge exception (`charged := rejected && !(t == transportCookie && errors.Is(err, session.ErrRenewalRequired))`; `resolve` still returns `rejected` for the expiry decision) and the nested-chain guard; write the godoc and package-doc text.
+- [ ] **Step 4: Run** lanes M/C scoped command with `-race`, `go test -count=1 -run TestExportedParametersHaveDescriptiveNames .`, and `make lint` — PASS.
+- [ ] **Step 5: Commit** with 12.9: `fix(httpsec): keep a cookie that needs renewal, and expire one the renewal endpoint refuses`.
 
 ### Task 13.1: Adapter conformance
 
