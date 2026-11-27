@@ -24,7 +24,7 @@ All of them ship in the same PR, so they are fixed there before it leaves draft.
 - An `Accept` quality value of `1.` or `0.` is read as `1` or `0`.
 - A cookie name is matched exactly, after trimming only the space and tab RFC 6265 allows
   around it. A name padded with any other whitespace is a different cookie, and is not read.
-- **BREAKING (pre-tag):** without `WithSessionCookieDomain`, the cookie name must carry the
+- Without `WithSessionCookieDomain`, the cookie name must carry the
   `__Host-` prefix. A name without it fails construction. With a Domain, the `__Secure-` rule is
   unchanged.
 - A cookie chain never binds a session to a sender key. Sign-in, re-proof and renewal there read no
@@ -62,4 +62,7 @@ None.
 - `httpsec/fibersec`: godoc and a test; no change to how the header is read.
 - `README.md`: the Fiber note and the cookie name rule.
 - Consumers who named the cookie without a prefix and without a Domain must rename it. There
-  is no tag yet, so this is free under the compatibility policy, and recorded here.
+  is no release with the cookie session yet (it is new in `[Unreleased]`), so nothing released breaks.
+- Released behaviour that changes, recorded as BREAKING (behaviour) in the CHANGELOG: a strict
+  `Rotate` no longer extends a session or accepts a copy of another user, and MFA verification and
+  re-authentication answer 409 when the stored security state changed since the request loaded it.

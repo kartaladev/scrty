@@ -146,8 +146,8 @@ design are the baseline. Decision numbers below are this change's own.
   must be `__Secure-`, and the godoc states that hosts under that domain can then plant it.
 - **Default:** `__Host-scrty-session`, unchanged.
 - **Override:** any valid `__Host-` name, or a `__Secure-` name together with a Domain.
-- **Compatibility:** there is no tag yet, so this is free (library-design rule 7). It is recorded
-  as BREAKING in the proposal.
+- **Compatibility:** the cookie session is new in `[Unreleased]`, so no released consumer has a
+  custom unprefixed name; nothing released breaks.
 
 ### 6. Fiber's `encryptcookie` must leave the session cookie out
 
@@ -186,7 +186,7 @@ design are the baseline. Decision numbers below are this change's own.
   because `Store.Supersede` conditions only on the successor digest. This is accepted: the window
   is the store round-trip, and closing it needs a new store condition on every backend.
 - **Default / override:** an option the library's own endpoints pass. No consumer default
-  changes. It is a pre-tag API change.
+  changes. The option is new in `[Unreleased]`.
 
 - **Settled from the S2 review (both REPRODUCED):**
   - **False conflict:** the request's `ex.Session` is not the session as loaded. The per-request
@@ -287,7 +287,7 @@ design are the baseline. Decision numbers below are this change's own.
 - [Grace widens the time the old identifier answers] → it answers with the old session's own,
   lower state, and only for the renewal grace the consumer already accepts at the renewal
   endpoint.
-- [Renaming breaks a consumer's custom unprefixed name] → no tag yet; the error names the rule.
+- [Renaming breaks a consumer's custom unprefixed name] → the cookie session is unreleased, and the error names the rule.
 - [The browser half of decision 4 is unverified] → the fix is correct whatever browsers do: the
   name compared is the one the browser will enforce prefixes on.
 
