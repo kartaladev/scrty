@@ -34,4 +34,15 @@
 
 ## 5. Gate
 
-- [ ] 5.1 Whole-branch review of this change, then `make check` and `make spec-check`, output read after the last code edit.
+- [x] 5.1 Whole-branch review of this change, then `make check` and `make spec-check`, output read after the last code edit.
+
+## Verification notes
+
+- **Final gate (2026-11-27), after the last code edit (dc6c9a0e):**
+  - `make check` exited 0: 82 packages ok, 0 lint issues, no vulnerabilities, and `httpsec` took
+    298s under `-race`.
+  - `make spec-check` exited 0.
+  - An earlier run hit the 10-minute test timeout in `httpsec` while a reviewer was running tests at
+    the same time. Run alone, it finished in half that.
+- **Whole-branch review:** every scenario of the three delta specs traced to a test. Its findings are
+  folded in as task 2.8 and as the accepted rows in design.md.
