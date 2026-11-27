@@ -195,6 +195,31 @@ also adds an accepted, fail-closed row: after an MFA rotation, a renewal with th
 inside the window re-rotates. The next request with the new cookie is then reuse, and the family
 is revoked.
 
+**The restored deadline (decided during H2).** H2 also owns `session/reuse.go` and
+`session/reuse_test.go` for these steps.
+
+- [ ] **Step R1: End-to-end row.** Keep `TestSessionCookie_ExistingRotationsGrace/second-factor
+  verification out of an enrolment confinement restores the sign-in's deadline`. It is the
+  reproduced failure: the deadline came back as the enrolment deadline, not the sign-in's.
+- [ ] **Step R2: Red rows in `TestRotateWithGrace_SuccessorFromCaller`.** The stored record is
+  confined (`EnrolmentOriginDeadline` = O, lowered `AbsoluteExpiresAt` = L < O).
+  - **The copy cleared the confinement, with `AbsoluteExpiresAt` = O:** the successor's deadline
+    is O. This row fails before the change, with L.
+  - **The copy cleared it but claims O + 1h:** the successor keeps L.
+  - **The copy keeps the confinement, with `AbsoluteExpiresAt` = O:** the successor keeps L.
+
+  Show that the second and third rows fail by temporarily loosening the condition, then restore
+  it by editing.
+- [ ] **Step R3:** In `successorFromCaller`, take `current.AbsoluteExpiresAt` only when
+  `!stored.EnrolmentOriginDeadline.IsZero()`, `current.EnrolmentOriginDeadline.IsZero()`, and
+  `!current.AbsoluteExpiresAt.After(stored.EnrolmentOriginDeadline)`. Otherwise keep the stored
+  deadline. The family-end cap still applies afterwards. Add the rule to the
+  `WithSuccessorFromCaller` godoc.
+- [ ] **Step R4:** Run `go test -race -count=1 ./session/...`,
+  `(cd test && go test -count=1 -run Session ./storetest/... ./sqlstore/...)` and
+  `golangci-lint run ./session/... ./httpsec/...`, then the H2 scoped verification. Expected: all
+  pass.
+
 **Files:** Modify `httpsec/mfa_verify.go` (around :579) and `httpsec/reauth_resolve.go` (around :66).
 Tests go in `httpsec/session_cookie_rotation_test.go`, extending `TestSessionCookie_ExistingRotationsReset`
 or adding `TestSessionCookie_ExistingRotationsGrace`.

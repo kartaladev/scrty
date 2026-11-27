@@ -55,6 +55,17 @@ design are the baseline. Decision numbers below are this change's own.
     revoke the whole sign-in.
   - It follows the pattern `WithSuccessorRole` set for the role switch. No store changes: a store
     inserts `Supersession.Successor` as given.
+  - Second-factor verification out of an enrolment or recovery confinement restores the sign-in's
+    deadline on its copy (`RestoreEnrolmentDeadlines`). H2 reproduced the bug
+    (`TestSessionCookie_ExistingRotationsGrace`): the option took the stored, lowered absolute
+    deadline, so the unconfined successor still ended at the confinement's deadline. Decision: the
+    successor takes the copy's absolute deadline only when the stored record is confined (non-zero
+    `EnrolmentOriginDeadline`), the copy has cleared the confinement, and the copy's deadline is
+    not after the stored origin deadline. Otherwise the stored deadline stays, so a copy still
+    cannot extend a session past its sign-in's own deadline.
+    - Rejected: saving the restored deadline after the rotation (an extra write, and a failed save
+      leaves the early deadline).
+    - Rejected: `WithSuccessorLifetime(origin - now)` (drifts past the origin by the clock gap).
   - Re-authentication with a key binding: a cookie session bound to a sender key is refused before
     any endpoint runs, so the binding is empty on a cookie chain. A non-empty binding there is a
     contract breach, answered as a dependency failure. It is never silently dropped.
