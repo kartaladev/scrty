@@ -110,6 +110,10 @@ Taken on 2026-11-27 on the maintainer's machine (14 CPUs, Go 1.27.4), with all t
 - Rows with a `pause` action: 9620.
 - Rows that never paused: 2330 leaf rows totalling 50.8 s, against 139.5 s before. The longest are the `TestPortErrors_TokenGenerator/recovery_completion` rows, at about 0.7 s each.
 
+**CI, manual run 46018648963 on commit `37f0333`, 4-CPU runners:**
+- `httpsec` took 278.1 s on the PostgreSQL 15 / Redis 7 leg and 235.5 s on the PostgreSQL 18 / Redis 8 leg. Both are within the 300 s goal, against 335.1 s and 283.9 s in run 45031759267.
+- The PostgreSQL 15 leg has 22 s of headroom. Runner speed drifts, so a later run may come closer to the goal.
+
 **Decision 1, the copies go through the helper:**
 - `TestPortErrors_SourceThrottle` alone ran in 16.2 s with 0 `pause` events before, and 5.0 s with 14 after.
 - The five tests that call a former copy ran in 74.8 s before and 31.5–37.0 s after. 50 child rows now pause: SourceThrottle 14, Redemption 12, TokenGenerator 12, OIDCRedemption 6, BackchannelLinkStore 6.

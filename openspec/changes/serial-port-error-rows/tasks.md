@@ -57,10 +57,10 @@ Tasks marked **(main session)** record measurements, push or open pull requests.
     - the time left in rows that never paused.
   - Verify the package is at most 300 s.
 - [x] 4.3 **(main session)** Run `make check`. Verify it passes, and keep the output.
-- [ ] 4.4 **(main session)** Push the branch and open a pull request. Run CI by hand so `test` runs.
+- [x] 4.4 **(main session)** Push the branch and open a pull request. Run CI by hand so `test` runs.
   - Verify both `test` legs report `httpsec` at no more than 300 s.
   - Record both figures and the run ID in Measurements.
-- [ ] 4.5 A fresh reviewer that wrote none of the change reviews the diff against decisions 1–3 and every row of the failure-modes table. It enumerates how the change fails before judging whether it works, and reports each row as handled, tested or accepted, or as a finding (`REPRODUCED` with a failing run, or `UNREPRODUCED` with the reason).
+- [x] 4.5 A fresh reviewer that wrote none of the change reviews the diff against decisions 1–3 and every row of the failure-modes table. It enumerates how the change fails before judging whether it works, and reports each row as handled, tested or accepted, or as a finding (`REPRODUCED` with a failing run, or `UNREPRODUCED` with the reason).
 
 ## Workflow follow-up
 
