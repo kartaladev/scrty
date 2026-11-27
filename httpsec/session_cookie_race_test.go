@@ -31,7 +31,7 @@ func (w *switchCookieWorld) postAt(ctx context.Context, path, id string, handler
 	req.URL.Path = path
 	out := served{rec: httptest.NewRecorder()}
 
-	run := w.chain.Assemble(func(ex *httpsec.Exchange) error {
+	run := w.chain.Assemble(func(ex *httpsec.Exchange) error { //nolint:contextcheck // the exchange carries the request context, and begin reads it through ex.Context()
 		out.handlerRan = true
 
 		return handler(ex)

@@ -2958,7 +2958,7 @@ func sessionSelectedRoleCases() []suiteCase[session.Store] {
 			// stored role is carried. Either way the caller's copy is told,
 			// and the superseded row keeps its own role.
 			name: "SupersedeNamesSuccessorRole",
-			assert: func(t *testing.T, _ context.Context, s session.Store, _ *clockwork.FakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				named := func(role string) *string { return &role }
 
 				type testCase struct {
@@ -2983,7 +2983,6 @@ func sessionSelectedRoleCases() []suiteCase[session.Store] {
 
 				for i, tc := range cases {
 					t.Run(tc.name, func(t *testing.T) {
-						ctx := t.Context()
 						old := withSelectedRole(sessionRecord(fmt.Sprintf("sess-named-%d", i), "u-1"), "admin")
 						require.NoError(t, s.Create(ctx, old))
 						at := suiteStart.Add(5 * time.Minute)

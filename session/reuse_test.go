@@ -3552,7 +3552,7 @@ func TestSessions_SuccessorRole(t *testing.T) {
 			name: "the session deleted between load and write stores no successor",
 			setup: func(f *fixture) {
 				f.spy.before = func(ctx context.Context, op session.Supersession) {
-					_ = f.spy.Store.Delete(ctx, op.Old)
+					_ = f.spy.Delete(ctx, op.Old)
 				}
 			},
 			act: graceRotation(session.WithSuccessorRole("audit")),
