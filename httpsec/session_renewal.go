@@ -183,7 +183,7 @@ func (r *sessionRenewal) Intercept(ex *Exchange, next Next) error {
 
 	// A proof given beside the session's credential is verified before the
 	// limit is asked and anything is rotated.
-	if err := continuingProof(ex, s); err != nil {
+	if err := r.deliver.continuingProof(ex, s); err != nil {
 		return err
 	}
 
@@ -799,6 +799,11 @@ func WithRenewalPath(path string) SessionRenewalOption {
 // in which a stolen credential works as well as the real one, so it is
 // bounded: a grace below 0 or above session.MaxRenewalGrace (inclusive) is
 // refused with a configuration error. A grace of 0 ends the window at once.
+//
+// On a cookie chain (EnableSessionCookie) the same window applies to the
+// rotation MFA verification and re-authentication make, so the cookie they
+// replace keeps working for grace; a grace of 0 makes them rotate strictly,
+// the replaced cookie ending with the rotation.
 //
 // A renewed credential presented after its window is reuse: the manager
 // revokes the session's whole family. That revocation is a store write, so a

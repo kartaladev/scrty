@@ -86,9 +86,10 @@ const (
 // left at its zero value takes the default its comment names.
 type DPoP struct {
 	// Require refuses an unbound token, and a request to an issuing endpoint
-	// that carries no proof, before any account is looked up. A sign-in or
-	// re-proof on a cookie chain (EnableSessionCookie) is not asked for one:
-	// its session is never bound, and no proof is read for it. Default: false,
+	// that carries no proof, before any account is looked up. It governs the
+	// tokens the chain issues: a cookie chain (EnableSessionCookie) reads no
+	// proof at sign-in, re-proof or renewal, so none is asked for there, and a
+	// proof that is sent is not judged. Its session is never bound. Default: false,
 	// so existing bearer clients keep working while DPoP clients opt in by
 	// sending proofs.
 	Require bool
@@ -972,10 +973,11 @@ func (d credentialDelivery) sessionBinding(ex *Exchange) (session.KeyBinding, er
 	return issuingBinding(ex.Context(), ex.dpop(), ex.certBinding(), ex.Request, ex.bearerCredential)
 }
 
-// continuingProof is continuingProof for a request continuing the sign-in s
-// on this chain: on a cookie chain no DPoP header is read, as sessionBinding
-// reads none, so a proof that does not verify refuses nothing; on any other
-// chain the header is judged as continuingProof judges it.
+// continuingProof verifies the DPoP proof a request continuing the sign-in s
+// (second-factor verification, re-authentication, renewal) carries beside the
+// sign-in's credential. On a cookie chain no DPoP header is read, as
+// sessionBinding reads none, so a proof that does not verify refuses nothing;
+// on any other chain the header is judged by the package-level continuingProof.
 func (d credentialDelivery) continuingProof(ex *Exchange, s *session.Session) error {
 	if d.cookie != nil {
 		return nil
