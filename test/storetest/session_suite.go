@@ -2780,6 +2780,79 @@ func sessionStrictRotationCases() []suiteCase[session.Store] {
 			},
 		},
 		{
+			name: "a supersession stores the successor's second-factor-at-login mark as given",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := secondFactorAtLoginSession("sess-a", "u-1")
+				old.FamilyID = suiteID(3009)
+				old.FamilyCreatedAt = old.CreatedAt
+				require.NoError(t, s.Create(ctx, old))
+
+				at := suiteStart.Add(10 * time.Second)
+				successor := successorOf(old, "sess-b", at)
+				successor.MFA = session.MFASatisfied
+				successor.MFASatisfiedAt = old.MFASatisfiedAt
+				successor.FirstFactor = old.FirstFactor
+				successor.MFAAtFirstFactor = true
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: at.Add(inFlight), RetainUntil: sessionRetainUntil,
+					Successor: successor, Now: at, Strict: true,
+				}))
+
+				got, err := s.Load(ctx, successor.ID)
+				require.NoError(t, err)
+				assert.True(t, got.MFAAtFirstFactor, "the successor keeps the mark the Sessions gave it")
+				oldGot, err := s.Load(ctx, old.ID)
+				require.NoError(t, err)
+				assert.True(t, oldGot.MFAAtFirstFactor, "the superseded record keeps its own mark")
+			},
+		},
+		{
+			name: "a supersession stores a marked successor of an unmarked record as marked",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := sessionRecord("sess-a", "u-1")
+				old.FamilyID = suiteID(3010)
+				old.FamilyCreatedAt = old.CreatedAt
+				require.False(t, old.MFAAtFirstFactor)
+				require.NoError(t, s.Create(ctx, old))
+
+				at := suiteStart.Add(10 * time.Second)
+				successor := successorOf(old, "sess-b", at)
+				successor.MFAAtFirstFactor = true
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: at.Add(inFlight), RetainUntil: sessionRetainUntil,
+					Successor: successor, Now: at, Strict: true,
+				}))
+
+				got, err := s.Load(ctx, successor.ID)
+				require.NoError(t, err)
+				assert.True(t, got.MFAAtFirstFactor, "the successor keeps the mark it was given, not the superseded row's absence")
+			},
+		},
+		{
+			name: "a supersession stores an unmarked successor of a marked record as unmarked",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := secondFactorAtLoginSession("sess-a", "u-1")
+				old.FamilyID = suiteID(3011)
+				old.FamilyCreatedAt = old.CreatedAt
+				require.NoError(t, s.Create(ctx, old))
+
+				at := suiteStart.Add(10 * time.Second)
+				successor := successorOf(old, "sess-b", at)
+				successor.MFAAtFirstFactor = false
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: at.Add(inFlight), RetainUntil: sessionRetainUntil,
+					Successor: successor, Now: at, Strict: true,
+				}))
+
+				got, err := s.Load(ctx, successor.ID)
+				require.NoError(t, err)
+				assert.False(t, got.MFAAtFirstFactor, "the successor keeps the absence it was given, not the superseded row's mark")
+				oldGot, err := s.Load(ctx, old.ID)
+				require.NoError(t, err)
+				assert.True(t, oldGot.MFAAtFirstFactor, "the superseded record keeps its own mark")
+			},
+		},
+		{
 			// Two managers are two replicas over one store: the mark lives in
 			// the store, so a rotation through one is seen by the other.
 			name: "a strict rotation through one manager makes a rotation of the old identifier through another a renewal conflict",

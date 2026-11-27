@@ -786,10 +786,11 @@ func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // accepted, a step-up completed — because a handle someone obtained before
 // that change must not still answer requests after it. Everything except the
 // identifier is carried over: the user, the first factor, both deadlines, the
-// challenge state (including MFAAtFirstFactor), the family (FamilyID and
+// challenge state, the family (FamilyID and
 // FamilyCreatedAt), the federated assurance and the consumer's own data. The
 // family and the sign-in state fixed when the sign-in was built (KeyBinding,
-// CSRFToken, ClientIP and UserAgent) and the selected role (SelectedRole) are
+// CSRFToken, ClientIP and UserAgent), the selected role (SelectedRole) and
+// the second-factor-at-login mark (MFAAtFirstFactor) are
 // taken from the stored record, never from current, so a copy with them
 // cleared or changed cannot move them; they are
 // already set on the successor handed to RotateIssuing's issuing step.
@@ -1024,6 +1025,9 @@ func (m *Sessions) RotateIssuing(
 	keepSignInState(rotated, stored)
 	// So is the persistent-cookie mark, which only the creating write sets.
 	rotated.PersistentCookie = stored.PersistentCookie
+	// So is the second-factor-at-login mark, which only the creating write
+	// sets: a copy may neither claim it nor drop it.
+	rotated.MFAAtFirstFactor = stored.MFAAtFirstFactor
 	// So is the selected role, which only RoleSelector.SelectRole writes: a
 	// copy loaded before a selection must neither drop it nor claim another.
 	// The store's supersession settles it finally, from the record it

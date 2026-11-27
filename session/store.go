@@ -336,7 +336,8 @@ type Store interface {
 	//     Sessions fails the rotation with ErrStoreContract.
 	//     op.Successor's other library-owned marks, MFAAtFirstFactor and
 	//     PersistentCookie, are stored as the caller gives them: only
-	//     SelectedRole is taken from the superseded row.
+	//     SelectedRole is taken from the superseded row. Sessions fills
+	//     MFAAtFirstFactor from the stored record, not the caller's copy.
 	//
 	// It writes those records and no other: no earlier superseded session of
 	// the family, and no session of another family, so its cost does not

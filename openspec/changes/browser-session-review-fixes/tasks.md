@@ -29,9 +29,9 @@ scoped to the changed packages and their dependents (`test-scope.md`). The comma
 
 ## 5. `MFAAtFirstFactor` pinned at every rotation (design 2)
 
-- [ ] 5.1 Red: in `session` tests, a strict `Rotate` of a copy that sets the mark on an unmarked session, and a `RotateWithGrace` with `WithSuccessorFromCaller(loaded)` of a copy that clears it on a marked session; assert the stored successor carries the stored mark; and a row where the unchanged copy keeps the mark; see the first two fail on the unmodified code
-- [ ] 5.2 Green: strict rotation and `successorFromCaller` take `MFAAtFirstFactor` from the stored record; reword the godoc of `Session.MFAAtFirstFactor`, `Rotate` and the store's rotation contract to say so
-- [ ] 5.3 Run the store conformance suite for sessions against the memory, pgx, sql and gorm stores (`test/storetest`) and confirm the mark round-trips through rotation in each
+- [x] 5.1 Red: in `session` tests, a strict `Rotate` of a copy that sets the mark on an unmarked session, and a `RotateWithGrace` with `WithSuccessorFromCaller(loaded)` of a copy that clears it on a marked session; assert the stored successor carries the stored mark; and a row where the unchanged copy keeps the mark; see the first two fail on the unmodified code
+- [x] 5.2 Green: strict rotation and `successorFromCaller` take `MFAAtFirstFactor` from the stored record; reword the godoc of `Session.MFAAtFirstFactor`, `Rotate` and the store's rotation contract to say so
+- [x] 5.3 Run the store conformance suite for sessions against the memory, pgx, sql and gorm stores (`test/storetest`) and confirm the mark round-trips through rotation in each
 
 ## 6. Role switch and the end of its run exclude each other (design 5)
 

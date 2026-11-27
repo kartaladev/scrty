@@ -785,6 +785,9 @@ func successorFromCaller(current, stored *Session, id string) *Session {
 	keepSignInState(next, stored)
 	// So is the persistent-cookie mark, which only the creating write sets.
 	next.PersistentCookie = stored.PersistentCookie
+	// So is the second-factor-at-login mark, which only the creating write
+	// sets: a copy may neither claim it nor drop it.
+	next.MFAAtFirstFactor = stored.MFAAtFirstFactor
 	// So is the first factor: the login that established the session is a
 	// fact of its creation, which a copy may not rewrite.
 	next.FirstFactor = stored.FirstFactor

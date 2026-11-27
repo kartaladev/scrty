@@ -350,3 +350,128 @@ func TestRotate_CallerCopy(t *testing.T) {
 		}
 	}
 }
+
+// TestRotate_KeepsSecondFactorAtLoginMark pins that the second-factor-at-login
+// mark is the stored record's on both rotation paths: a caller's copy that sets
+// it on a session created without it, or clears it on one created with it,
+// changes nothing, and an unchanged copy carries it.
+func TestRotate_KeepsSecondFactorAtLoginMark(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name       string
+		marked     bool
+		grace      bool
+		fromCaller bool
+		mutate     func(c *session.Session)
+		assert     func(t *testing.T, stored *session.Session)
+	}
+
+	cases := []testCase{
+		{
+			name:   "strict rotation ignores a copy that sets the mark",
+			mutate: func(c *session.Session) { c.MFAAtFirstFactor = true },
+			assert: func(t *testing.T, stored *session.Session) {
+				assert.False(t, stored.MFAAtFirstFactor, "the stored successor keeps the record's absent mark")
+			},
+		},
+		{
+			name:   "strict rotation ignores a copy that clears the mark",
+			marked: true,
+			mutate: func(c *session.Session) { c.MFAAtFirstFactor = false },
+			assert: func(t *testing.T, stored *session.Session) {
+				assert.True(t, stored.MFAAtFirstFactor, "the stored successor keeps the record's mark")
+			},
+		},
+		{
+			name:       "caller-built grace rotation ignores a copy that sets the mark",
+			grace:      true,
+			fromCaller: true,
+			mutate:     func(c *session.Session) { c.MFAAtFirstFactor = true },
+			assert: func(t *testing.T, stored *session.Session) {
+				assert.False(t, stored.MFAAtFirstFactor, "the stored successor keeps the record's absent mark")
+			},
+		},
+		{
+			name:   "plain grace rotation ignores a copy that sets the mark",
+			grace:  true,
+			mutate: func(c *session.Session) { c.MFAAtFirstFactor = true },
+			assert: func(t *testing.T, stored *session.Session) {
+				assert.False(t, stored.MFAAtFirstFactor, "the stored successor keeps the record's absent mark")
+			},
+		},
+		{
+			name:       "caller-built grace rotation ignores a copy that clears the mark",
+			marked:     true,
+			grace:      true,
+			fromCaller: true,
+			mutate:     func(c *session.Session) { c.MFAAtFirstFactor = false },
+			assert: func(t *testing.T, stored *session.Session) {
+				assert.True(t, stored.MFAAtFirstFactor, "the stored successor keeps the record's mark")
+			},
+		},
+		{
+			name:   "strict rotation carries the mark",
+			marked: true,
+			mutate: func(*session.Session) {},
+			assert: func(t *testing.T, stored *session.Session) {
+				assert.True(t, stored.MFAAtFirstFactor)
+			},
+		},
+		{
+			name:   "grace rotation carries the mark",
+			marked: true,
+			grace:  true,
+			mutate: func(*session.Session) {},
+			assert: func(t *testing.T, stored *session.Session) {
+				assert.True(t, stored.MFAAtFirstFactor)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(createdAt)
+			store := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
+			m := managerFor(t,
+				session.WithStore(store),
+				session.WithClock(clk),
+				session.WithIdleTimeout(30*time.Minute),
+				session.WithAbsoluteTimeout(8*time.Hour))
+
+			createOpts := []session.CreateOption{session.WithFirstFactor(factor.Passkey)}
+			if tc.marked {
+				createOpts = append(createOpts, session.WithSecondFactorAtLogin())
+			}
+			s, err := m.Create(t.Context(), testUser, createOpts...)
+			require.NoError(t, err)
+			require.Equal(t, tc.marked, s.MFAAtFirstFactor)
+
+			clk.Advance(5 * time.Minute)
+			loaded, err := store.Load(t.Context(), s.ID)
+			require.NoError(t, err)
+			c := copyOf(loaded)
+			tc.mutate(c)
+
+			var opts []session.RotateOption
+			if tc.fromCaller {
+				opts = append(opts, session.WithSuccessorFromCaller(loaded))
+			}
+
+			var got *session.Session
+			if tc.grace {
+				got, _, err = m.RotateWithGrace(t.Context(), c, 30*time.Second, opts...)
+			} else {
+				got, err = m.Rotate(t.Context(), c, opts...)
+			}
+			require.NoError(t, err)
+			require.NotNil(t, got)
+
+			stored, err := store.Load(t.Context(), got.ID)
+			require.NoError(t, err)
+			tc.assert(t, stored)
+		})
+	}
+}
