@@ -794,12 +794,13 @@ func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // cleared or changed cannot move them; they are
 // already set on the successor handed to RotateIssuing's issuing step.
 //
-// Rotate takes one RotateOption, WithReauthenticationBinding, which may bind
-// an unbound session and never rebinds a bound one. WithSuccessorLifetime is
-// refused with ErrConfig, since a strict rotation never extends a session, and
-// so is WithSuccessorRole, since a strict rotation carries the stored role,
-// and WithSuccessorFromCaller, since a strict rotation already builds its
-// successor from current; nothing is stored on any of these refusals.
+// Rotate takes WithReauthenticationBinding, which may bind an unbound session
+// and never rebinds a bound one, and WithSuccessorFromCaller(loaded), which
+// adds the stale-record check against loaded and otherwise builds the
+// successor as without it. WithSuccessorLifetime is refused with ErrConfig,
+// since a strict rotation never extends a session, and so is
+// WithSuccessorRole, since a strict rotation carries the stored role; nothing
+// is stored on either refusal.
 //
 // The old entry is superseded by the new one in one write, through the
 // store's conditional Store.Supersede, marked as rotated without grace

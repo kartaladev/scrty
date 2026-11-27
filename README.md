@@ -3488,13 +3488,17 @@ Once enabled:
   change it, remove or replace the header in a `WithErrorHandler` (or a
   guard's `WithGuardErrorHandler`);
 - a sign-in's binding is fixed when it is created: a second factor and a
-  renewal keep it, and a re-authentication may bind a sign-in that was not.
+  renewal keep it, and a re-authentication may bind a sign-in that was not;
+- one exception: on a chain with the cookie session (`EnableSessionCookie`),
+  sign-in, re-proof and renewal neither read nor bind a proof for the session,
+  which the cookie alone carries. The OpenID Provider's tokens on that chain
+  still bind to the proof's key.
 
 ### Defaults
 
 | Field | Default |
 |---|---|
-| `Require` | `false`: accepted, not required |
+| `Require` | `false`: accepted, not required. It governs issued tokens: a cookie-session chain reads no proof at sign-in or renewal |
 | `ProofMaxAge` | 60 seconds either side of the chain's clock |
 | `Algorithms` | `ES256` only; `none` and HMAC are refused at construction |
 | `MaxProofSize` | 8 KiB, refused before anything is parsed |
@@ -3913,6 +3917,9 @@ Once enabled:
   request presenting the same certificate. Another certificate, or none, is
   refused with `ErrCertificateBinding` (401). The request's certificate is read
   once, in the `OrderMTLS` slot;
+- on a chain with the cookie session (`EnableSessionCookie`), sign-in, re-proof
+  and renewal neither read nor bind a certificate for the session, which the
+  cookie alone carries. The OpenID Provider's tokens on that chain still bind;
 - with DPoP enabled too, a sign-in that carries a valid proof is bound to the
   DPoP key only, whether or not it also presents a certificate. A token carries
   one confirmation, and a DPoP key survives proxies that do not forward

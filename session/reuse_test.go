@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
@@ -3899,6 +3900,7 @@ func TestRotateWithGrace_SuccessorFromCaller(t *testing.T) {
 		assert.Equal(t, f.stored.FamilyID, s.FamilyID, "the family is the stored one")
 		assert.Equal(t, f.stored.FamilyCreatedAt, s.FamilyCreatedAt, "the family start is the stored one")
 		assert.True(t, s.PersistentCookie, "the persistent mark is the stored one")
+		assert.Equal(t, factor.Password, s.FirstFactor, "the first factor is the stored one")
 		assert.Equal(t, f.stored.AbsoluteExpiresAt, s.AbsoluteExpiresAt, "the absolute deadline is the stored one")
 		assert.Equal(t, rotatedAt, s.CreatedAt)
 		assert.Equal(t, rotatedAt, s.LastAccessedAt)
@@ -4018,6 +4020,17 @@ func TestRotateWithGrace_SuccessorFromCaller(t *testing.T) {
 				require.ErrorIs(t, err, session.ErrConfig)
 				assert.Nil(t, got)
 				nothingWritten(t, f)
+			},
+		},
+		{
+			name: "a copy with another first factor keeps the stored one",
+			act:  withGrace(fromCaller),
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				assert.Equal(t, factor.Passkey, f.caller.FirstFactor, "the copy names another factor")
+				assert.Equal(t, factor.Password, got.FirstFactor)
+				assert.Equal(t, factor.Password, load(t, f, got.ID).FirstFactor)
 			},
 		},
 		{
@@ -4447,6 +4460,7 @@ func TestRotateWithGrace_SuccessorFromCaller(t *testing.T) {
 				session.WithKeyBinding(storedKey),
 				session.WithCSRFToken(),
 				session.WithPersistentCookie(),
+				session.WithFirstFactor(factor.Password),
 				session.WithClientMetadata("192.0.2.1", "stored-agent"))
 			require.NoError(t, err)
 			s.MFA = session.MFAPending
@@ -4474,6 +4488,7 @@ func TestRotateWithGrace_SuccessorFromCaller(t *testing.T) {
 			caller.FamilyID = id.ID{}
 			caller.FamilyCreatedAt = rotatedAt
 			caller.PersistentCookie = false
+			caller.FirstFactor = factor.Passkey
 			caller.AbsoluteExpiresAt = stored.AbsoluteExpiresAt.Add(24 * time.Hour)
 
 			f := &fixture{clk: clk, m: m, store: store, stored: stored, caller: caller, loaded: loaded}

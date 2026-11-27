@@ -234,12 +234,12 @@ func WithSuccessorRole(role string) RotateOption {
 // modified.
 //
 // The successor takes from the caller's copy the second-factor state, the
-// authentication time, the first factor, the enrolment and recovery state,
-// the federated and external-session fields and the consumer's data. It takes
-// from the stored record, whatever the copy says: the user, the family and its
-// start, the key binding, the CSRF token, the sign-in metadata (client address
-// and user agent), the persistent-cookie mark and the selected role (unless
-// WithSuccessorRole names one).
+// authentication time, the enrolment and recovery state, the federated and
+// external-session fields and the consumer's data. It takes from the stored
+// record, whatever the copy says: the user, the family and its start, the
+// first factor, the key binding, the CSRF token, the sign-in metadata (client
+// address and user agent), the persistent-cookie mark and the selected role
+// (unless WithSuccessorRole names one).
 //
 // The absolute deadline (unless WithSuccessorLifetime chooses one) is the
 // earlier of the stored record's and the copy's: a copy may lower it, as a
@@ -785,6 +785,9 @@ func successorFromCaller(current, stored *Session, id string) *Session {
 	keepSignInState(next, stored)
 	// So is the persistent-cookie mark, which only the creating write sets.
 	next.PersistentCookie = stored.PersistentCookie
+	// So is the first factor: the login that established the session is a
+	// fact of its creation, which a copy may not rewrite.
+	next.FirstFactor = stored.FirstFactor
 	// So is the selected role, which only RoleSelector.SelectRole and
 	// WithSuccessorRole write; the store's supersession settles it finally.
 	next.SelectedRole = stored.SelectedRole

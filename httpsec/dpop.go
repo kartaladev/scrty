@@ -180,6 +180,11 @@ const optionDPoP = "EnableDPoP"
 // second factor and a renewal keep it and never add one, and a
 // re-authentication binds an unbound sign-in and keeps a bound one.
 //
+// The exception is a chain with the cookie session (EnableSessionCookie): there
+// sign-in, re-proof and renewal neither read nor bind a proof for the session,
+// which the cookie alone carries, and a proof sent with them is ignored. The
+// tokens of the OpenID Provider on that chain still bind to the proof's key.
+//
 // Every refusal is ErrInvalidDPoPProof (401), and the chain answers it with
 // WWW-Authenticate: DPoP error="invalid_dpop_proof", algs="ES256" (the
 // accepted algorithms), naming no check. A request refused for want of a
