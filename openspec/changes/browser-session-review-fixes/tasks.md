@@ -41,7 +41,7 @@ scoped to the changed packages and their dependents (`test-scope.md`). The comma
 
 ## 7. Documentation
 
-- [ ] 7.1 Update the `[Unreleased]` CHANGELOG entries for the canonical prefix rule, the `MFAAtFirstFactor` rotation fix, the CSRF fail-closed fix, the quoted-delivery refusal, the role-switch lock and the bound-session refusal
+- [x] 7.1 Update the `[Unreleased]` CHANGELOG entries for the canonical prefix rule, the `MFAAtFirstFactor` rotation fix, the CSRF fail-closed fix, the quoted-delivery refusal, the role-switch lock and the bound-session refusal
 
 ## 8. Gate
 

@@ -14,14 +14,15 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 
 ### Added
 
-- The browser session cookie: `httpsec.EnableSessionCookie` and its options. A host-only cookie name must carry the `__Host-` prefix.
+- The browser session cookie: `httpsec.EnableSessionCookie` and its options. A host-only cookie name must carry the `__Host-` prefix, and a shared one the `__Secure-` prefix, each spelled exactly so: another letter case is a configuration error.
 - `session.WithSuccessorFromCaller`, which builds a rotation's successor from the caller's copy and refuses one whose stored record changed since it was loaded.
 
 ### Changed
 
-- **BREAKING (behaviour): a strict `session.Sessions.Rotate` never extends a session, never moves it to another user, and keeps the stored first factor.** A copy naming another user is refused with `session.ErrConfig`.
+- **BREAKING (behaviour): a strict `session.Sessions.Rotate` never extends a session, never moves it to another user, and keeps the stored first factor and second-factor-at-login mark.** A copy naming another user is refused with `session.ErrConfig`.
 - **BREAKING (behaviour): MFA verification and re-authentication answer 409 when the session's stored security state changed since the request loaded it**, on every chain.
-- A cookie chain never binds sessions to a sender key (DPoP proof or client certificate); the OpenID Provider's tokens still bind.
+- A cookie chain never binds sessions to a sender key (DPoP proof or client certificate); the OpenID Provider's tokens still bind. Second-factor verification, re-authentication and renewal there refuse a key-bound session a consumer's authenticator published.
+- A request's handler return waits for a `SwitchActiveRole` in progress on it, so its cookie lands on the response and no interceptor after the handler races it; a switch after the handler returned is refused with `ErrConfig`, and one waiting behind another gives up when its context ends.
 - MFA verification and re-authentication rotate with a grace window on a cookie chain.
 
 ### Fixed
@@ -30,6 +31,9 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 - A password change on a cookie chain shortened the session's idle deadline.
 - `Accept` q-values `1.` and `0.` were read as malformed.
 - A sign-in over mTLS or with a DPoP proof on a cookie chain created a session its own cookie was refused with.
+- A CSRF token source refusing with a nil or typed-nil entry in its error admitted the request, or panicked; it is refused as a cross-site request.
+- A `SessionDelivery` that quoted the cookie's value was accepted, and its sign-in never stuck; it is refused as an altered cookie.
+- A rotation took `MFAAtFirstFactor` from the caller's copy, so a copy could set or clear it; every rotation now keeps the stored record's.
 
 ## [0.6.0] - 2026-11-25
 
