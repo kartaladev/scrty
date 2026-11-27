@@ -160,8 +160,8 @@
 //		})
 //	}
 //
-//	mux.Handle("/app/api/", browsers.Middleware()(http.StripPrefix("/app", api)))
-//	mux.Handle("/api/", natives.Middleware()(requireScope("orders:read", api)))
+//	mux.Handle("/app/api/", browsers.Middleware()(http.StripPrefix("/app", apiHandler)))
+//	mux.Handle("/api/", natives.Middleware()(requireScope("orders:read", apiHandler)))
 //
 // # A credential field reads the body, and only the body
 //

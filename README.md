@@ -1170,7 +1170,9 @@ mux.Handle("/api/", api.Middleware()(handler))
 mux.Handle("/", browsers.Middleware()(handler)) // EnableSessionCookie and EnableOIDCProvider
 ```
 
-The token chain must enable DPoP (or certificate binding), since the provider's tokens are bound.
+The token chain must verify every binding the provider's tokens can carry, as the provider's own chain
+must: `EnableDPoP` when the provider is built with DPoP, and `EnableCertificateBinding` when a
+client requires a certificate binding. Otherwise `New` refuses the chain.
 
 One API handler can serve both kinds of caller: mount it at `/app/api/` behind the cookie chain with
 `http.StripPrefix("/app", api)`, and at `/api/` behind the token chain. Check scopes on the token
