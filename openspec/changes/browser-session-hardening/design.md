@@ -12,7 +12,8 @@ design are the baseline. Decision numbers below are this change's own.
 **Non-Goals:**
 - changing the header-bearer chain's rotations;
 - reading Fiber cookies through fasthttp's parsed copy;
-- any new option.
+- any new consumer-facing option. The one new exported symbol, `session.WithSuccessorFromCaller`,
+  is a rotation option for the library's own endpoints and for consumers who rotate themselves.
 
 ## Decisions
 
@@ -37,6 +38,26 @@ design are the baseline. Decision numbers below are this change's own.
 - **Alternatives:** keep the strict rotation and stop expiring the cookie on a not-found refusal.
   Rejected: not found is the commonest judged refusal of a stale or forged cookie, and keeping
   those would leave dead cookies in place everywhere.
+- **Settled during implementation (H2 found the gap; user decision, 2026-11-27):**
+  - A grace rotation builds its successor from the stored record and ignores the caller's copy, so
+    a plain swap would lose the verified state: the second factor would stay pending, and
+    `AuthenticatedAt` would never refresh. `Save` cannot repair it either, because it never
+    rewrites `AuthenticatedAt`.
+  - New `session.RotateOption`: `session.WithSuccessorFromCaller()`, taken by `RotateWithGrace`
+    and `RotateWithGraceIssuing`. The successor is built from the caller's `current` as the strict
+    rotation builds it. The sign-in state (key binding, CSRF token, sign-in metadata) still comes
+    from the stored record (`keepSignInState`), and the grace rotation still sets the identifiers,
+    timestamps and idle deadline. The old record keeps its own lower state through the window.
+  - With the option, a session that is already superseded (a re-rotation inside its window, or a
+    recovery after it) is refused with `session.ErrRenewalConflict` and nothing is stored. This
+    keeps today's 409 when a push-approval poll races a renewal. Without the refusal, the
+    re-rotation would close the renewal successor's window, and the next presentation of it would
+    revoke the whole sign-in.
+  - It follows the pattern `WithSuccessorRole` set for the role switch. No store changes: a store
+    inserts `Supersession.Successor` as given.
+  - Re-authentication with a key binding: a cookie session bound to a sender key is refused before
+    any endpoint runs, so the binding is empty on a cookie chain. A non-empty binding there is a
+    contract breach, answered as a dependency failure. It is never silently dropped.
 
 ### 2. A password change keeps the successor's idle deadline
 
@@ -103,6 +124,9 @@ design are the baseline. Decision numbers below are this change's own.
 |---|---|---|---|
 | Request in flight with the old cookie during MFA verify or re-authentication | Concurrency | Handled, tested | inside the grace window it loads the old session's own state; the new cookie is not expired |
 | The same old cookie presented after the window | Security | Handled, tested | refused as reuse, family revoked, as at the role switch |
+| Grace successor losing the verified state | State / Security | Handled, tested | `WithSuccessorFromCaller` builds the successor from the caller's copy: MFA satisfied, refreshed `AuthenticatedAt`; sign-in state from the stored record |
+| MFA verify or re-authentication on a session a renewal already superseded (push poll racing a renewal) | Concurrency | Handled, tested | `ErrRenewalConflict`, answered 409 as today; nothing stored, nothing revoked |
+| A caller's copy claiming another key binding or CSRF token | Security | Handled, tested | ignored; both come from the stored record |
 | Double-submitted second-factor form | Concurrency | Handled, tested | the second request loads the old session inside the window. A consumed one-time code is refused as an MFA failure, which neither rotates nor expires a cookie. A code that verifies again re-rotates, and the earlier successor's window has ended: whoever presents it next is reuse, so the family is revoked. That fails closed, as a re-rotation does at the renewal endpoint (accepted) |
 | Client hangs up after the MFA or re-authentication rotation committed | Concurrency | Accepted | the old cookie works through the window and is reuse after it, revoking the sign-in, as the archived design accepts for the role switch; `WithUnusedSuccessorRecovery` softens it. Before this change the old cookie was signed out immediately |
 | Password change on a session close to its idle deadline | State | Handled, tested | the saved successor keeps `now + idle` from the rotation |

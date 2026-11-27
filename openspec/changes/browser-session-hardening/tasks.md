@@ -6,7 +6,8 @@
 
 ## 2. Rotation at second-factor verification and re-authentication (decision 1)
 
-- [ ] 2.1 Red: on a cookie chain, a request with the pre-verification cookie after second-factor verification, inside the window, loads the old session with the factor pending and its answer carries no expiring `Set-Cookie`; after the window it is reuse and the family is revoked. Rotate with `RotateWithGraceIssuing` on a cookie chain, with the role switch's grace.
+- [ ] 2.0 Red, in `session`: a grace rotation of a caller's copy with MFA satisfied and a refreshed `AuthenticatedAt` stores a successor with neither, unless `WithSuccessorFromCaller()` is given. Add the option, taken by `RotateWithGrace` and `RotateWithGraceIssuing`. The successor takes the caller's state as the strict rotation does, and the sign-in state from the stored record. A superseded current is refused with `ErrRenewalConflict` and nothing is stored. Strict `Rotate` refuses the option with `ErrConfig`. Pin it on the memory store and in the store conformance suite.
+- [ ] 2.1 Red: on a cookie chain, a request with the pre-verification cookie after second-factor verification, inside the window, loads the old session with the factor pending and its answer carries no expiring `Set-Cookie`; after the window it is reuse and the family is revoked. Rotate with `RotateWithGraceIssuing(..., session.WithSuccessorFromCaller())` on a cookie chain, with the role switch's grace; a session a renewal already superseded answers 409 as today.
 - [ ] 2.2 Red: the same pair of rows for re-authentication (old `AuthenticatedAt` inside the window; reuse after it).
 - [ ] 2.3 Pin that a header-bearer chain still rotates strictly at both endpoints (the old identifier is not found straight after), and that a double-submitted verification with a consumed code is an MFA failure that rotates nothing and expires no cookie.
 

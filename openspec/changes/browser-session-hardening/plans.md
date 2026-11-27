@@ -31,7 +31,8 @@ name must be `__Host-`.
 1. A twin padded cookie beside a real one must not lock the user out (`presentedCookie` counts it
    as a duplicate today). Pinned in Task 1, step 1.
 2. A double-submitted second-factor form inside the new grace window must not expire the cookie or
-   rotate twice silently. Pinned in Task 2, step 4.
+   rotate twice silently. Pinned in Task 2, step 4. A push poll racing a renewal answers 409 and
+   never revokes the sign-in. Pinned in Task 2a, step 1, and Task 2, step 4.
 3. A password-change rollback after a failed save must restore only the fields changed. The
    existing save-failure test is kept, and Task 3 asserts that `IdleExpiresAt` is restored too.
 4. A lower-case `__host-` name must still build, because prefixes match case-insensitively.
@@ -44,11 +45,22 @@ name must be `__Host-`.
 | Dispatch | Tasks | Model | Owns | Must not touch |
 |---|---|---|---|---|
 | H1 | 1.1–1.3 | Sonnet: the fix is stated exactly | `httpsec/session_cookie.go` (`presentedCookie`, `checkAttributes`, `WithSessionCookieName` / `WithSessionCookieDomain` godoc), `httpsec/session_cookie_test.go`, `httpsec/session_cookie_options_test.go`, `httpsec/session_cookie_guard_test.go`, `httpsec/session_cookie_logout_test.go`, `httpsec/session_cookie_nested_resume_test.go`, `httpsec/fibersec/session_cookie_wire_test.go`, any other test naming a host-only cookie without `__Host-` | the H2, H3 and H4 files |
-| H2 | 2.1–2.3 | Opus: rotation ordering under in-flight requests | `httpsec/mfa_verify.go`, `httpsec/reauth_resolve.go`, `httpsec/session_cookie_rotation_test.go`, `httpsec/mfa_verify_test.go`, `httpsec/reauth_resolve_test.go` | `session_cookie.go`, `password_change.go`, `session_cookie_answer.go` |
+| S1 | 2.0 | Opus: a rotation option that carries verified state, written for the first time | `session/reuse.go` (the `rotation` struct, `RotateOption`, the grace successor build at ~:418, the strict path in `session/sessions.go` ~:938 only to refuse the option), `session/reuse_test.go`, `test/storetest/session_suite.go` (one conformance row) | every `httpsec` file |
+| H2 (after S1) | 2.1–2.3 | Opus: rotation ordering under in-flight requests | `httpsec/mfa_verify.go`, `httpsec/reauth_resolve.go`, `httpsec/session_cookie_rotation_test.go`, `httpsec/mfa_verify_test.go`, `httpsec/reauth_resolve_test.go` | `session_cookie.go`, `password_change.go`, `session_cookie_answer.go` |
 | H3 | 3.1–3.2 | Sonnet: the fix is stated exactly | `httpsec/password_change.go`, `httpsec/session_cookie_answer.go`, `httpsec/session_cookie_answer_internal_test.go`, `httpsec/password_change_internal_test.go`, a new `httpsec/session_cookie_password_deadline_test.go` | `session_cookie_rotation_test.go` (H2 owns it) |
 | H4 | 4.1 | Sonnet: doc and adapter test | new `httpsec/fibersec/session_cookie_encryptcookie_test.go`, `httpsec/fibersec/exchange.go` (godoc only), `README.md` (Fiber note and the cookie name rule) | `session_cookie_wire_test.go` (H1 owns it) |
 
-All four run in parallel. The files they own are disjoint.
+H1, H3 and H4 run in parallel. S1 runs alongside them, since it touches only `session` and
+`test/storetest`. H2 starts once S1 is verified and reviewed, because it consumes S1's option.
+
+**S1 scoped verification.** `session` dependents: `httpsec` and its adapters, the stores, `test`.
+
+```sh
+go test -race -count=1 ./session/... ./httpsec/... ./store/...
+(cd store/pgxstore && go test -count=1 ./...); (cd store/gormstore && go test -count=1 ./...)
+(cd test && go test -count=1 ./...)
+go vet ./session/... && gofmt -l session test/storetest
+```
 
 **Scoped verification, every dispatch** (`test-scope.md`). `httpsec` dependents are `httpsec/ginsec`,
 `httpsec/fibersec`, `httpsec/prblmsec`, `test/httpsecconformance` and `test`:
@@ -106,7 +118,53 @@ its signature.
   it replaces, the `__Host-` rule without a Domain).
 - [ ] **Step 7:** Run the scoped verification. Expected: all pass.
 
-### Task 2: Grace rotation at second-factor verification and re-authentication (tasks 2.1–2.3, H2)
+### Task 2a: `session.WithSuccessorFromCaller` (task 2.0, S1)
+
+**Files:** Modify `session/reuse.go`, and `session/sessions.go` for the strict refusal. Test in
+`session/reuse_test.go` and `test/storetest/session_suite.go`.
+
+**Interfaces:** Produces `func WithSuccessorFromCaller() RotateOption`, accepted by
+`RotateWithGrace` and `RotateWithGraceIssuing`. `Rotate` and `RotateIssuing` refuse it with
+`ErrConfig`.
+
+- [ ] **Step 1: Failing table `TestRotateWithGrace_SuccessorFromCaller`.** Store a session with
+  `MFA: MFAPending` and `AuthenticatedAt: 09:00`. The caller's copy has `MFA: MFASatisfied`,
+  `MFASatisfiedAt: 09:01` and `AuthenticatedAt: 09:01`, plus a different `CSRFToken` and
+  `KeyBinding`. Rows:
+  - **with the option:** the successor stored by the memory store has `MFASatisfied`,
+    `MFASatisfiedAt` 09:01 and `AuthenticatedAt` 09:01, and the stored `CSRFToken` and
+    `KeyBinding`. Its `IdleExpiresAt` is `now + idle`. The old identifier, loaded inside the
+    window, still has `MFAPending` and `AuthenticatedAt` 09:00.
+  - **without it:** the successor has `MFAPending` and 09:00. This passes today.
+  - **`RotateWithGraceIssuing` with the option:** the issue step sees the successor with
+    `MFASatisfied`.
+  - **current already superseded inside its window** (rotate it once without the option first):
+    `errors.Is(err, ErrRenewalConflict)`. The store holds one successor, and nothing is revoked.
+  - **`Rotate(ctx, s, WithSuccessorFromCaller())`:** `ErrConfig`, nothing stored.
+- [ ] **Step 2:** Run `go test -run TestRotateWithGrace_SuccessorFromCaller -count=1 ./session/`.
+  Expected: FAIL, because `WithSuccessorFromCaller` is undefined. Add the option as a no-op first,
+  then rerun to see the "with the option" rows fail on the stored `MFA` value. That second run is
+  the real red step.
+- [ ] **Step 3:** Implement. With the option, build `next` as `successorOf(current, id)` and then
+  `keepSignInState(next, old)`, where `current` is the caller's copy, before the grace rotation's
+  `CreatedAt`, `LastAccessedAt`, absolute, idle and role assignments. Refuse a re-rotation or a
+  recovery (`kind != first rotation`) with `ErrRenewalConflict` before anything is written. In the
+  strict path, refuse the option with `ErrConfig`. The godoc names the default (the stored
+  record), what the option takes from where, and the refusals.
+- [ ] **Step 4:** Add a conformance row in `test/storetest/session_suite.go`: a grace rotation with
+  the option stores the successor's `MFA` and `AuthenticatedAt` as given, on every backend. It
+  should pass, since stores insert `Supersession.Successor` as given. Invert its assertion once to
+  see it fail, then restore it.
+- [ ] **Step 5:** Run S1's scoped verification. Expected: all pass.
+
+### Task 2: Grace rotation at second-factor verification and re-authentication (tasks 2.1–2.3, H2, after S1)
+
+Consumes `session.WithSuccessorFromCaller()` from Task 2a. Step 3 below rotates with
+`RotateWithGraceIssuing(ctx, &satisfied, privilegeRotationGrace(renewal), issue, session.WithSuccessorFromCaller())`
+(re-authentication: `&reproved`). `ErrRenewalConflict` keeps today's answer, 409, through
+`rotationRefusal`. A non-empty re-authentication binding on a cookie chain returns an error
+wrapping `session.ErrStoreContract`, never dropped. Step 4 adds a row where a renewal superseded
+the session inside its window before the verify POST: 409, nothing revoked, no `Max-Age=0`.
 
 **Files:** Modify `httpsec/mfa_verify.go` (around :579) and `httpsec/reauth_resolve.go` (around :66).
 Tests go in `httpsec/session_cookie_rotation_test.go`, extending `TestSessionCookie_ExistingRotationsReset`
