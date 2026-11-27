@@ -49,6 +49,7 @@ name must be `__Host-`.
 | S1b (after S1's review) | 2.0, review follow-up | Sonnet: the fix is stated exactly | `session/reuse.go` (`successorFromCaller` and the option godoc), `session/reuse_test.go` | every `httpsec` file |
 | H2b (after H2's review) | 2.4 | Opus: a binding rule across every sign-in path, security-critical | `httpsec/login.go`, `magiclink.go`, `oidc_redeem.go`, `passkey_login.go`, `reauth_resolve.go`, `recovery.go`, `mfa_verify.go`, `dpop.go` (`issuingBinding` and a cookie-chain guard), `session_cookie.go` (godoc), and a new `httpsec/session_cookie_binding_test.go` | `oidc_token.go` (the provider's token endpoint keeps binding its tokens) |
 | S2 (after the H2 and H2b review) | 2.5 | Opus: an optimistic check on security state, plus an API another lane compiles against | `session/reuse.go`, `session/reuse_test.go`, `test/storetest/session_suite.go`, `httpsec/mfa_verify.go`, `httpsec/reauth_resolve.go`, `httpsec/session_cookie_rotation_test.go` | `httpsec/session_renewal.go`, `httpsec/dpop.go` |
+| S3 (after S2 and its review) | 2.7 | Opus: a refactor that must keep the strict callers' behaviour, on security state | `session/sessions.go` (`RotateIssuing` ~:926–1030), `session/reuse.go` (the shared deadline helper), a new `session/rotate_copy_test.go` | every `httpsec` file |
 | H2c (alongside S2) | 2.6 | Sonnet: the rule is stated exactly | `httpsec/session_renewal.go`, `httpsec/dpop.go` (godoc only), new `httpsec/session_cookie_renewal_binding_test.go` | every S2 file |
 | H2 (after S1b) | 2.1–2.3 | Opus: rotation ordering under in-flight requests | `httpsec/mfa_verify.go`, `httpsec/reauth_resolve.go`, `httpsec/session_cookie_rotation_test.go`, `httpsec/mfa_verify_test.go`, `httpsec/reauth_resolve_test.go` | `session_cookie.go`, `password_change.go`, `session_cookie_answer.go` |
 | H3 | 3.1–3.2 | Sonnet: the fix is stated exactly | `httpsec/password_change.go`, `httpsec/session_cookie_answer.go`, `httpsec/session_cookie_answer_internal_test.go`, `httpsec/password_change_internal_test.go`, a new `httpsec/session_cookie_password_deadline_test.go` | `session_cookie_rotation_test.go` (H2 owns it) |
@@ -350,6 +351,45 @@ one `reproved` was copied from.
   written, and no cookie is set.
 - [ ] **Step 4:** Run S1's scoped verification, then `go test -race -count=1 -timeout 30m ./httpsec/...`
   and `golangci-lint run ./session/... ./httpsec/...`. Expected: all pass.
+
+### Task 2e: A strict rotation never extends a session or moves it to another user (task 2.7, S3, decision 9)
+
+**Interfaces:** Produces an unexported helper in `session/reuse.go`,
+`copyDeadlines(stored, current *Session) (absolute, idle time.Time)`. It returns the earlier of each
+pair, or the copy's own when `liftedConfinement(stored, current)` holds, with the absolute deadline
+never past `stored.EnrolmentOriginDeadline`. `successorFromCaller` uses it for the absolute
+deadline. Its idle deadline stays the grace rotation's `now + idle`, capped at the absolute one.
+`RotateIssuing` uses it for both deadlines.
+
+- [ ] **Step 1: Red table `TestRotate_CallerCopy`** in a new `session/rotate_copy_test.go`, covering
+  both `Rotate` and `RotateIssuing`. Rows:
+  - **later deadlines:** a copy with absolute and idle deadlines 24h later. The successor keeps the
+    stored deadlines.
+  - **lower deadline:** a copy with a lowered absolute deadline (`MarkEnrolmentPending`). The
+    successor takes the lower one.
+  - **another user:** a copy naming another user. `ErrConfig`, the issue step never runs, and
+    nothing is stored.
+  - **another first factor:** a copy with another first factor. The successor has the stored one.
+  - **lifted confinement:** the stored record is confined and the copy has
+    `RestoreEnrolmentDeadlines`. The successor takes the restored deadlines.
+  - **lifted, but past the origin:** the same, with the copy claiming a deadline after the origin.
+    The successor gets the stored, lowered deadline.
+
+  Run it with `go test -run TestRotate_CallerCopy -count=1 ./session/`. Before the change, the
+  later-deadline, another-user and first-factor rows fail.
+- [ ] **Step 2: Implement.** In `RotateIssuing`:
+  - refuse `current.UserID != stored.UserID` with `ErrConfig` before the identifier is generated;
+  - set `rotated.FirstFactor = stored.FirstFactor`;
+  - set both deadlines from `copyDeadlines`.
+
+  Extract `copyDeadlines` and use it in `successorFromCaller`, which must keep S2's behaviour. Update
+  the `Rotate` and `RotateIssuing` godoc: the first factor and user come from the stored record, and
+  the deadlines are never extended.
+- [ ] **Step 3:** Run `go test -race -count=1 ./session/...` and the session conformance rows, then
+  `go test -race -count=1 -timeout 30m ./httpsec/...`. The strict callers on header-bearer chains
+  must stay green: MFA verification, re-authentication, and zero-grace cookie rotations. Then run
+  `golangci-lint run ./session/... ./httpsec/...`. Expected: all pass. If a strict caller relied on
+  taking the copy's first factor or a later deadline, stop and report the call site.
 
 ### Task 2d: Renewal reads no DPoP proof on a cookie chain, and the provider still binds (task 2.6, H2c)
 

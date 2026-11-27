@@ -45,3 +45,18 @@ With `WithSuccessorFromCaller`, the successor's absolute deadline SHALL be the e
 #### Scenario: Copy raises the deadline
 - **WHEN** the stored record is not confined and the copy carries a later absolute deadline
 - **THEN** the successor keeps the stored deadline
+
+### Requirement: A strict rotation never extends a session or moves it to another user
+`Rotate` and `RotateIssuing` SHALL refuse a caller's copy that names another user with `ErrConfig`, storing nothing. The successor's first factor SHALL come from the stored record, and its absolute and idle deadlines SHALL each be the earlier of the stored record's and the copy's, unless the copy lifted a stored confinement, when they SHALL be the copy's, never past the stored origin deadline.
+
+#### Scenario: Copy with a later deadline
+- **WHEN** a caller strictly rotates a copy whose absolute and idle deadlines are a day later than the stored record's
+- **THEN** the successor keeps the stored deadlines
+
+#### Scenario: Copy of another user
+- **WHEN** a caller strictly rotates a copy whose user is another user's
+- **THEN** the rotation fails with `ErrConfig`, and nothing is stored
+
+#### Scenario: Verification out of a confinement on a header-bearer chain
+- **WHEN** second-factor verification restores the sign-in's deadlines on its copy and rotates strictly
+- **THEN** the successor takes the restored deadlines

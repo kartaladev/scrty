@@ -187,6 +187,25 @@ design are the baseline. Decision numbers below are this change's own.
 - **Default / override:** an option the library's own endpoints pass. No consumer default
   changes. It is a pre-tag API change.
 
+### 9. A strict rotation never extends a session, and never moves it to another user
+
+- **Problem (S1 review, REPRODUCED by `TestReview_StrictRotateTakesCopyAbsolute`):** `Rotate` and
+  `RotateIssuing` build the successor from the caller's copy and reset only the family, the sign-in
+  state, the persistent mark and the role. The user, first factor and both deadlines come from the
+  copy unchecked. A copy with a later deadline extends the session, against the documented rule
+  that a strict rotation never extends it. A copy naming another user moves the session to them.
+  Only consumer code that edits its copy reaches this. The library's own callers do not.
+- **Decision (user decision, 2026-11-27: fix in this PR):**
+  - A copy naming another user is refused with `ErrConfig` before anything is written, as
+    `WithSuccessorFromCaller` already refuses it.
+  - The first factor comes from the stored record. It is fixed by the sign-in.
+  - The absolute and idle deadlines are each the earlier of the stored record's and the copy's,
+    except when the copy lifted a stored confinement. Then they are the copy's, never past the
+    stored origin deadline. This is the rule `WithSuccessorFromCaller` uses, shared through one
+    helper.
+- **Default / override:** a behaviour fix with no option. Callers that do not edit their copy's
+  user, first factor or deadlines see no change.
+
 ## Failure modes
 
 | Failure | Category | State | What the caller sees |
@@ -207,7 +226,7 @@ design are the baseline. Decision numbers below are this change's own.
 | Renewal with the old cookie inside the window after a re-authentication | Concurrency | Accepted, tested | the renewal re-rotates from the stored record and closes the re-authenticated successor's window; the next request with the new cookie is reuse and the family is revoked. Fails closed, as any re-rotation the archived design accepts |
 | A gate another request saved after the caller's copy was loaded | State / Security | Handled, tested | `PasswordChangePending` is raised if either the stored record or the copy has it, so a concurrent `Save` that raises it is never cleared by the rotation. The other caller-owned fields follow the copy, as a strict rotation does (accepted) |
 | Confinement or second-factor state saved by another request after the caller's copy was loaded (enrolment or recovery pending, enrolment deadlines) | State / Security | Handled, tested (decision 8) | `ErrRenewalConflict` (409) and nothing written, when the stored security state differs from the state the copy was loaded with. A save between the rotation's read and its write is accepted (residual) |
-| Strict `Rotate` takes both deadlines and the user from the caller's copy | State | Accepted here, follow-up | the existing behaviour, reachable only by consumer code that edits the copy; out of scope for this change. `WithSuccessorFromCaller`'s godoc no longer says "as Rotate builds it", and states its own rules |
+| Strict `Rotate` given a copy with a later deadline, another user or another first factor | State / Security | Handled, tested (decision 9) | the deadline is not extended, another user is `ErrConfig` with nothing written, and the first factor stays the stored one |
 | Client hangs up after the MFA or re-authentication rotation committed | Concurrency | Accepted | the old cookie works through the window and is reuse after it, revoking the sign-in, as the archived design accepts for the role switch; `WithUnusedSuccessorRecovery` softens it. Before this change the old cookie was signed out immediately |
 | Password change on a session close to its idle deadline | State | Handled, tested | the saved successor keeps `now + idle` from the rotation |
 | Password change ending a recovery | State | Handled, tested (existing) | the restored deadlines are saved, unchanged |
