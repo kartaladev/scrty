@@ -44,9 +44,11 @@ cover.
    where a single-wrap error unwraps to a typed nil.
 3. **A prefix spelled `__Host-` followed by nothing (`__Host-`).** It must still be refused as an
    invalid name, as today. Task 2 keeps the existing invalid-name rows passing.
-4. **A role switch called twice from two goroutines while the run ends.** Expected: both are
-   serialized, and the end waits for both. Task 6.3 runs `-race -count=20` over the barrier test.
-5. **The lock order of a logout racing a switch, with the run's end.** Expected: no deadlock, and
+4. **A role switch called twice from two goroutines while the handler returns.** Expected: the
+   switches are serialized; the return waits for the one holding the run's lock; the other either
+   completes before the return or is refused with `ErrConfig`, or gives up when its context ends.
+   Task 6 covers the queued and cancelled case.
+5. **The lock order of a logout racing a switch, with the handler's return.** Expected: no deadlock, and
    the existing "Logout during a role switch" scenario still holds. Task 6.3 includes that test.
 
 ---
@@ -58,7 +60,7 @@ cover.
 | A — httpsec refusals | 1.1–1.2, 2.1–2.2, 3.1–3.2 | `httpsec/session_cookie.go`, `httpsec/dpop.go`, `httpsec/session_cookie_test.go`, `httpsec/session_cookie_options_test.go`, a new `httpsec/session_cookie_bound_continuation_test.go` | Opus: security refusal logic and typed-nil error walking |
 | B — delivery quoting | 4.1–4.2 | `httpsec/session_delivery.go`, `httpsec/session_delivery_port_test.go` | Sonnet: one comparison with a stated test |
 | C — session mark | 5.1–5.3 | `session/sessions.go`, `session/reuse.go`, `session/session.go`, `session/store.go`, `session/rotate_copy_test.go` | Sonnet: a pin beside existing pins, test-first |
-| D — run lock | 6.1–6.3 | `httpsec/chain.go`, `httpsec/role_switch.go`, `httpsec/role_switch_test.go` (or a new `httpsec/role_switch_run_end_test.go`) | Opus: a lock across goroutines and a barrier test |
+| D — handler-return lock | 6.1–6.3 | `httpsec/chain.go`, `httpsec/role_switch.go`, `httpsec/role_switch_test.go` (or a new `httpsec/role_switch_run_end_test.go`) | Opus: a lock across goroutines and a barrier test |
 
 Each lane is a single dispatch of no more than six tasks. All four run in parallel, each in its own
 worktree. Reviewers use the same model as the lane: Opus for A and D, Sonnet for B and C. One
@@ -189,34 +191,60 @@ publishes a session created with `session.WithKeyBinding(...)` (DPoP `jkt`).
   suite has no row that rotates a marked session, add one in `test/storetest/session_suite.go`.
   This file is owned by lane C only for this purpose.
 
-### Task 6: Run lock for role switch (tasks 6.1–6.3, lane D)
+### Task 6: Handler-return lock for role switch (tasks 6.1–6.3, lane D, revised)
 
-**Files:** Modify `httpsec/chain.go` (`chainRun` :396, the run's end :325) and
-`httpsec/role_switch.go` (`rotateForSwitch` :326, and the godoc of `SwitchActiveRole` :131). Test
-in a new `httpsec/role_switch_run_end_test.go`.
+**Files:** Modify `httpsec/chain.go`: `chainRun` (:396), `runTerminal` (:679, the innermost step
+that calls the terminal), and the run's end (`run.end()` from the first dispatch). Modify
+`httpsec/role_switch.go` (`rotateForSwitch` and the godoc of `SwitchActiveRole`). Test
+`httpsec/role_switch_run_end_test.go`.
 
-**Interfaces:** `chainRun` gains `mu sync.Mutex`. The run's end becomes `run.mu.Lock();
-run.done.Store(true); run.mu.Unlock()`. `rotateForSwitch` takes `src.run.mu` before `src.mu`.
+**Interfaces:**
+- `chainRun` holds `lock chan struct{}` (capacity 1) and `handled bool`, which is written only
+  while the lock is held. The `done atomic.Bool` stays for the lock-free readers.
+- The lock methods:
+  - `func (r *chainRun) acquire(ctx context.Context) error` blocks until the lock is taken or
+    `ctx` ends; in the second case it returns `ctx.Err()`.
+  - `func (r *chainRun) acquireAlways()` blocks without a context.
+  - `func (r *chainRun) release()` releases the lock.
+- `runTerminal`: after `next(ex)` returns, call `run.acquireAlways()`, set `run.handled = true`,
+  then `run.release()`. The run is the one whose terminal this is. Do it in a `defer`, so a panic
+  or `Goexit` still sets it.
+- `rotateForSwitch`:
+  - Call `src.run.acquire(ctx)` and return its error, storing nothing.
+  - Then take `src.mu`.
+  - If `src.run.handled || src.run.done.Load()`, refuse with `ErrConfig` as today.
+  - Hold both locks through the rotation and the cookie write.
 
-- [ ] **Step 1: Red.**
-  - `TestSwitchActiveRole_RunEndWaitsForSwitch`:
-    - The handler starts a goroutine that calls `chain.SwitchActiveRole(r.Context(), "audit")`,
-      waits until the switch has entered the store's rotation, then returns.
-    - The store is a decorator over the memory store whose rotating write blocks on a channel.
-    - The test releases the channel.
-    - Assert that the recorded response carries a `Set-Cookie` with the successor's identifier,
-      that the switch returned nil, and that the run's end happened after the rotation, recorded
-      by order of events.
-  - `TestSwitchActiveRole_AfterRunEnded`: keep `r.Context()` past the response, then switch.
-    Assert `errors.Is(err, httpsec.ErrConfig)`, that no rotation was stored, and that the old
-    cookie still authenticates.
-- [ ] **Step 2: Run** with `-race -count=1` → the first test FAILS, because the response has no
-  cookie or the end came first. The second test passes already (existing check), and is kept as a
-  guard.
-- [ ] **Step 3: Green** per the Interfaces block. Keep `done` atomic for the lock-free readers in
-  `chain.go:457-507`. Add a sentence to the godoc of `SwitchActiveRole`.
-- [ ] **Step 4: Run** `go test -race -count=20 -run 'TestSwitchActiveRole|RoleSwitch|LogoutDuringSwitch' ./httpsec/`
-  → PASS with no deadlock, then the lane's scoped verification.
+- [ ] **Step 1: Red.** Starting from lane D's current tree:
+  - Extend `TestSwitchActiveRole_RunEndWaitsForSwitch`:
+    - Register `httpsec.RegisterInterceptor(InterceptorFunc{...}, httpsec.OrderSessionTouch)`
+      that, after `next`, records `ex.Session.ID`, reads `ex.Context()`, and calls
+      `ex.Writer.SetHeader("X-After", "1")`.
+    - Snapshot `rec.Header().Values("Set-Cookie")` in the run goroutine right after the run
+      returns, and assert on that snapshot.
+    - Assert the interceptor recorded the successor's ID.
+    - Under `-race`, the current lane code must fail with a race report, or with the interceptor
+      seeing the old ID.
+  - Add `TestSwitchActiveRole_AfterHandlerReturned`: an interceptor after `next` calls
+    `SwitchActiveRole`. Assert `ErrConfig` and that nothing is stored. It fails now, because the
+    switch is accepted.
+  - Add `TestSwitchActiveRole_QueuedSwitchGivesUp`: the first switch is held in the rotation, and
+    a second switch with a cancelled context is queued behind it. Assert `context.Canceled` within
+    a timeout, nothing stored by the second switch, and the first switch completing. It fails now,
+    because the wait ignores its context.
+  - Every wait is bounded by `select` with a timeout, so a failure never hangs.
+- [ ] **Step 2: Run** `go test -race -count=1 -run 'TestSwitchActiveRole' ./httpsec/` and record
+  the failures.
+- [ ] **Step 3: Green** per the Interfaces block. Replace the first dispatch's `sync.Mutex` with
+  the one-slot lock. Godoc of `SwitchActiveRole`:
+  - the handler's return waits for a switch in progress;
+  - a switch after the handler returned is refused;
+  - a queued switch gives up when its context ends;
+  - the rotation is bounded by the store's own timeouts, not by the request context, which
+    `net/http` cancels only after the chain returns.
+- [ ] **Step 4: Run** `go test -race -count=20 -run 'TestSwitchActiveRole|RoleSwitch|TestChain_SwitchActiveRole|TestWithSwitchableRoles|TestSessionCookie_LogoutRacesRoleSwitch' ./httpsec/`.
+  Then run the nested-chain tests (`-run 'Nested|Assemble'`), the ginsec and fibersec module
+  suites, and the lane's scoped verification. Expected: PASS, with no race and no hang.
 
 ### Task 7: CHANGELOG (task 7.1, main session)
 

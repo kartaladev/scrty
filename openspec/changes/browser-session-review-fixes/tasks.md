@@ -33,11 +33,11 @@ scoped to the changed packages and their dependents (`test-scope.md`). The comma
 - [x] 5.2 Green: strict rotation and `successorFromCaller` take `MFAAtFirstFactor` from the stored record; reword the godoc of `Session.MFAAtFirstFactor`, `Rotate` and the store's rotation contract to say so
 - [x] 5.3 Run the store conformance suite for sessions against the memory, pgx, sql and gorm stores (`test/storetest`) and confirm the mark round-trips through rotation in each
 
-## 6. Role switch and the end of its run exclude each other (design 5)
+## 6. Role switch and the handler's return exclude each other (design 5, revised)
 
-- [ ] 6.1 Red: a barrier test where a role switch runs on a goroutine and is held inside the rotation (a store decorator that blocks until released) while the handler returns; assert the run's end waits, the response carries the successor's cookie, and `-race` is clean; and a test that a switch with a context whose run has ended is refused with `ErrConfig`, storing nothing; see the first fail on the unmodified code (the response has no cookie, or the run ended first)
-- [ ] 6.2 Green: `chainRun` gets a mutex that its end takes to set `done`; `rotateForSwitch` holds it, then the role source's lock, checks `done` under it, and keeps it through the rotation and the cookie write; the godoc of `SwitchActiveRole` states that the request's end waits for a switch in progress
-- [ ] 6.3 Run the switch, chain and logout-during-switch tests with `-race -count=20` and confirm no deadlock or race
+- [ ] 6.1 Red: a barrier test where a role switch runs on a goroutine and is held inside the rotation while the handler returns, with an interceptor after `next` that reads `ex.Session`, `ex.Context()` and sets a response header; assert, under `-race`, no data race, the return waits for the switch, the response headers snapshotted right after the run carry the successor's cookie, and the interceptor saw the successor; a test that a switch after the handler returned is refused with `ErrConfig`, storing nothing; and a test that a queued switch whose context is cancelled gives up with that error and stores nothing; see the first and third fail on the current lane code (race report / blocked wait)
+- [ ] 6.2 Green: the run's lock becomes a cancellable one-slot lock with a "handler returned" mark set under it by `runTerminal` after the terminal returns; `rotateForSwitch` acquires it honouring its context, then the role source's lock, checks the mark, and holds it through the rotation and the cookie write; the godoc of `SwitchActiveRole` states the handler's return waits for a switch in progress, that a switch after it is refused, and that the store's own timeouts bound the wait
+- [ ] 6.3 Run the switch, chain, nested-chain and logout-during-switch tests with `-race -count=20`, and the ginsec and fibersec suites, and confirm no deadlock or race
 
 ## 7. Documentation
 

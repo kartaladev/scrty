@@ -40,6 +40,12 @@ through its pointer receiver, which panics.
     pointer is nil, the same rule `internal/errwalk` applies.
   - `csrfAnswer` returns `ErrCrossSiteRequest` whenever the joined remainder is nil. The fallback
     holds even if a future walk returns something unexpected.
+  - After lane A's review, the tree is walked once through `internal/errwalk`, so no consumer
+    `Is` or `Unwrap` method is called outside its recover. Any abort (a panic, a cycle, the
+    budget) is reported and answered as a cross-site refusal.
+  - Consequence: a wrapper whose `Unwrap` returns nothing, beside the sentinel, is not a cause.
+    The answer is a cross-site refusal, not a dependency failure. Telling it apart would need a
+    second call to its `Unwrap`, and refusal is the safe outcome.
 - **Default:** a refusal of any shape is a cross-site refusal (`403`), not charged, with the cookie
   left in place.
 - **Override:** none. The consumer's `CSRFTokens` port stays replaceable. What it cannot do is
@@ -94,26 +100,43 @@ standards, regardless of the prior decision.
 - **Compatibility:** the cookie session is unreleased (`[Unreleased]`), so no released consumer
   breaks. The CHANGELOG entry for the `__Host-` rule is reworded.
 
-### 5. The end of a run and a role switch exclude each other
+### 5. The handler's return and a role switch exclude each other (revised 2026-11-28)
 
-`rotateForSwitch` reads `run.done` before it takes the role source's lock, and nothing stops the
-run from ending while the rotation and the cookie write proceed.
+`rotateForSwitch` reads `run.done` before it takes the role source's lock, so nothing stops the run
+from ending while the rotation and the cookie write proceed.
+
+The first decision put a lock around the run's final step. Lane D's review showed that is not
+enough. A switch on another goroutine still races every interceptor's code that runs after the
+handler returns. The reviewer reproduced three race-detector reports: a concurrent write to the
+response's header map, which crashes a real `net/http` server, and races on `ex.Session` and the
+request context. The user chose to close it at the handler's return.
 
 - **Decision:**
-  - The run (`chainRun`) gets a mutex.
-  - The run's end takes it, sets `done` and releases it.
-  - `rotateForSwitch` takes the run's mutex, then the role source's, and checks `done` under it.
-    It holds the run's mutex through the rotation and the cookie write, so they land on the live
-    response.
-  - A switch that finds the run ended is refused with `ErrConfig`, as today, and stores nothing.
-- **Lock order:** the run's mutex, then the role source's. The run's end takes only the run's.
-  The handler that calls the switch runs inside the run, and the run's end happens only after the
-  handler returns. So a synchronous switch never waits on the end, and the end waits at most for
-  one switch in progress.
-- **Bound:** the rotation is bounded by the request's context and the store's own timeouts, so a
-  run's end waits no longer than its switch.
+  - The run gets a lock and a "handler returned" mark. The innermost step of the run
+    (`runTerminal`), once the terminal handler returns, takes the lock, sets the mark and
+    releases it, before any interceptor's code after `next` runs.
+  - `rotateForSwitch` takes the run's lock, then the role source's lock, and checks the mark under
+    it. It holds the run's lock through the rotation and the cookie write.
+  - A switch that finds the mark set is refused with `ErrConfig`, and stores nothing.
+  - Every write the switch makes (the session store, `ex.Session`, the context, the response
+    headers) therefore happens before the interceptors' code after `next` reads or writes them.
+  - The run's own end keeps its existing `done` mark. A run whose terminal never runs, because an
+    interceptor answered first, is marked at its end, as before.
+- **Waiting is cancellable:** a switch waiting for the run's lock gives up when its context ends,
+  with that context's error, and stores nothing. The lock is a one-slot channel rather than a
+  `sync.Mutex`. The handler's return always waits.
+- **Bound:** once a switch holds the lock, its rotation is bounded by the store's own timeouts and
+  the context the caller gave. Under `net/http` the request context is cancelled only after the
+  handler chain returns, so it does not bound the rotation the handler's return waits for. The
+  godoc of `SwitchActiveRole` says so.
+- **Lock order:** the run's lock, then the role source's. The handler's return takes only the
+  run's lock. A switch called on the handler's own goroutine completes before the handler returns,
+  so it never waits on that return.
 - **Cost:** one uncontended lock and unlock per run, on every chain.
 - **Default / override:** no override. This is a correctness guarantee of `SwitchActiveRole`.
+- **Trade-off:** a switch an interceptor makes after `next` returns is refused with `ErrConfig`.
+  The response's cookie can no longer be relied on there anyway, and no built-in interceptor
+  switches roles.
 
 ### 6. A key-bound session is refused at continuation on a cookie chain
 
@@ -138,9 +161,11 @@ own authenticator would continue there with no proof at all.
 | Copy sets or clears `MFAAtFirstFactor`, then rotates | State | Tested (2) | successor carries the stored mark |
 | Delivery quotes the cookie value | Configuration (port) | Tested (3) | issuing failure, sign-in ended, no cookie |
 | Cookie name with a prefix in another case | Configuration | Tested (4) | configuration error from `New` naming the canonical spelling |
-| Switch after the run ended | Concurrency | Tested (5) | `ErrConfig`, nothing stored |
-| Run ends while a switch is in progress | Concurrency | Tested (5) | the run ends after the switch; the cookie is on the response |
-| Switch blocked on a slow store holds the run's end | Concurrency, time | Handled (5) | bounded by the request's context and the store's timeouts |
+| Switch after the handler returned | Concurrency | Tested (5) | `ErrConfig`, nothing stored |
+| Handler returns while a switch is in progress | Concurrency | Tested (5) | the return waits for the switch; the cookie is on the response; interceptors after `next` see the successor, with no data race |
+| Interceptor code after `next` races a goroutine switch | Concurrency | Tested (5) | impossible: the switch finished first or was refused |
+| A queued switch whose context is cancelled | Concurrency, time | Tested (5) | it gives up with the context's error and stores nothing |
+| Switch blocked on a slow store holds the handler's return | Concurrency, time | Accepted (5) | bounded by the store's own timeouts and the switch's context, not by the request context; documented in the godoc |
 | Switch after the handler began its response | Concurrency | Accepted (non-goal) | the godoc's stated outcome: the cookie is dropped and the old one becomes reuse after the window |
 | Bound session continued on a cookie chain | Security | Tested (6) | `401`, nothing spent or rotated |
 | A red step passes on the unmodified code | Any | Handled | that fix is dropped and the user is told |

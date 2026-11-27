@@ -22,16 +22,20 @@ A consumer's session delivery SHALL set the cookie the chain built, with every a
 - **WHEN** the consumer's delivery sets the chain's session cookie exactly, except that it marks the value as quoted
 - **THEN** the sign-in fails as an issuing failure, the response carries no session cookie, and the session is ended
 
-### Requirement: A role switch after its request has ended is refused
-A role switch on a cookie chain SHALL be refused, storing nothing and setting no cookie, when the request it is made on has ended. A role switch that starts before its request ends SHALL complete, its rotation stored and its cookie set on that request's response, before the request ends.
+### Requirement: A role switch after its handler has returned is refused
+A role switch on a cookie chain SHALL be refused, storing nothing, once its request's handler has returned. A switch in progress SHALL complete before the handler's return completes. A switch waiting behind another SHALL give up when its own context ends.
 
-#### Scenario: Switch after the request ended
-- **WHEN** a role switch is made with the context of a request that has already been answered
+#### Scenario: Switch after the handler returned
+- **WHEN** a role switch is made with the context of a request whose handler has already returned
 - **THEN** it fails with a configuration error, no session is rotated, and the old cookie keeps working
 
-#### Scenario: Request ends while a switch is in progress
-- **WHEN** a role switch is in progress on a request, and the request's handler returns before the switch's rotation is stored
-- **THEN** the request ends only after the switch completes, and the response re-sets the cookie with the successor's identifier
+#### Scenario: Handler returns while a switch is in progress
+- **WHEN** a role switch started by the handler on another goroutine is in progress, and the handler returns before the switch's rotation is stored
+- **THEN** the handler's return completes only after the switch completes, the response re-sets the cookie with the successor's identifier, and an interceptor that reads the request's session after the handler sees the successor
+
+#### Scenario: Queued switch whose context ends
+- **WHEN** a second role switch on the same request waits behind one in progress, and its context is cancelled
+- **THEN** it fails with the context's error and stores nothing
 
 ## MODIFIED Requirements
 
