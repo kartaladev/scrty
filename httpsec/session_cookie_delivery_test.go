@@ -892,3 +892,76 @@ func TestSessionCookie_IssuingEndpointsTakeNoGenerator(t *testing.T) {
 		})
 	}
 }
+
+// TestSessionCookie_SignInSetsCookieAttributes pins the attributes a real form
+// sign-in sets the session cookie with, read as a browser would, from the
+// parsed Set-Cookie: under the default and under a consumer's SameSite.
+func TestSessionCookie_SignInSetsCookieAttributes(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name      string
+		configure func(w *browserWorld)
+		assert    func(t *testing.T, cookies []*http.Cookie)
+	}
+
+	attributes := func(sameSite http.SameSite) func(t *testing.T, cookies []*http.Cookie) {
+		return func(t *testing.T, cookies []*http.Cookie) {
+			t.Helper()
+
+			var named []*http.Cookie
+
+			for _, c := range cookies {
+				if c.Name == httpsec.DefaultSessionCookieName {
+					named = append(named, c)
+				}
+			}
+
+			require.Len(t, named, 1, "exactly one session cookie: %v", cookies)
+
+			c := named[0]
+			assert.Equal(t, "__Host-scrty-session", c.Name)
+			assert.NotEmpty(t, c.Value)
+			assert.Equal(t, "/", c.Path)
+			assert.True(t, c.Secure)
+			assert.True(t, c.HttpOnly)
+			assert.Equal(t, sameSite, c.SameSite)
+			assert.Empty(t, c.Domain, "a __Host- cookie carries no Domain")
+			assert.Zero(t, c.MaxAge, "a session cookie, kept until the browser closes")
+			assert.True(t, c.Expires.IsZero(), "no Expires: %v", c.Expires)
+		}
+	}
+
+	cases := []testCase{
+		{
+			name:   "default",
+			assert: attributes(http.SameSiteLaxMode),
+		},
+		{
+			name: "SameSite=Strict",
+			configure: func(w *browserWorld) {
+				w.cookieOpts = append(w.cookieOpts, httpsec.WithSessionCookieSameSite(http.SameSiteStrictMode))
+			},
+			assert: attributes(http.SameSiteStrictMode),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newBrowserWorld(t)
+			if tc.configure != nil {
+				tc.configure(w)
+			}
+
+			out := w.build(t).login(t)
+			require.NoError(t, out.err)
+
+			resp := out.rec.Result()
+			t.Cleanup(func() { _ = resp.Body.Close() })
+
+			tc.assert(t, resp.Cookies())
+		})
+	}
+}

@@ -16,6 +16,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
@@ -838,53 +839,45 @@ func TestSessionCookie_ExistingRotationsGrace(t *testing.T) {
 				},
 			}
 		}(),
-		{
-			name: "with a zero grace second-factor verification rotates strictly",
-			configure: func(t *testing.T, w *browserWorld) {
-				t.Helper()
-				w.enrol(t)
-				w.renewalOpts = append(w.renewalOpts, httpsec.WithRenewalGrace(0))
-			},
-			assert: func(t *testing.T, w *browserWorld) {
-				t.Helper()
+		func() testCase {
+			watch := &zeroGraceWatch{}
 
-				pending, rotated, _ := verifiedSignIn(t, w)
+			return testCase{
+				name: "with a zero grace second-factor verification rotates strictly",
+				configure: func(t *testing.T, w *browserWorld) {
+					t.Helper()
+					w.enrol(t)
+					w.renewalOpts = append(w.renewalOpts, httpsec.WithRenewalGrace(0))
+					watch.attach(t, w)
+				},
+				assert: func(t *testing.T, w *browserWorld) {
+					t.Helper()
 
-				_, err := w.sessions.Load(t.Context(), pending)
-				require.ErrorIs(t, err, session.ErrNotFound, "the old identifier is gone at once")
+					pending, rotated, _ := verifiedSignIn(t, w)
 
-				late := w.visit(t, pending)
-				require.ErrorIs(t, late.err, httpsec.ErrAuthenticationRequired)
-				assert.NotErrorIs(t, late.err, session.ErrReused, "an in-flight old cookie is not reuse")
+					watch.assertRefusedAsUnknown(t, w, pending, rotated)
+				},
+			}
+		}(),
+		func() testCase {
+			watch := &zeroGraceWatch{}
 
-				next := w.visit(t, rotated)
-				require.NoError(t, next.err, "the family is not revoked: the new cookie is served")
-				assert.True(t, next.handlerRan)
-			},
-		},
-		{
-			name: "with a zero grace re-authentication rotates strictly",
-			configure: func(t *testing.T, w *browserWorld) {
-				t.Helper()
-				w.renewalOpts = append(w.renewalOpts, httpsec.WithRenewalGrace(0))
-			},
-			assert: func(t *testing.T, w *browserWorld) {
-				t.Helper()
+			return testCase{
+				name: "with a zero grace re-authentication rotates strictly",
+				configure: func(t *testing.T, w *browserWorld) {
+					t.Helper()
+					w.renewalOpts = append(w.renewalOpts, httpsec.WithRenewalGrace(0))
+					watch.attach(t, w)
+				},
+				assert: func(t *testing.T, w *browserWorld) {
+					t.Helper()
 
-				old, rotated, _ := reauthenticated(t, w)
+					old, rotated, _ := reauthenticated(t, w)
 
-				_, err := w.sessions.Load(t.Context(), old)
-				require.ErrorIs(t, err, session.ErrNotFound, "the old identifier is gone at once")
-
-				late := w.visit(t, old)
-				require.ErrorIs(t, late.err, httpsec.ErrAuthenticationRequired)
-				assert.NotErrorIs(t, late.err, session.ErrReused, "an in-flight old cookie is not reuse")
-
-				next := w.visit(t, rotated)
-				require.NoError(t, next.err, "the family is not revoked: the new cookie is served")
-				assert.True(t, next.handlerRan)
-			},
-		},
+					watch.assertRefusedAsUnknown(t, w, old, rotated)
+				},
+			}
+		}(),
 	}
 
 	for _, tc := range cases {
@@ -901,6 +894,58 @@ func TestSessionCookie_ExistingRotationsGrace(t *testing.T) {
 			tc.assert(t, w)
 		})
 	}
+}
+
+// zeroGraceWatch measures what a cookie presented after a zero-grace rotation
+// costs: the source's charge and the security events the chain reported.
+type zeroGraceWatch struct {
+	charges *chargeRecorder
+	events  *eventRecorder
+}
+
+// attach wires a recording limiter on the cookie session and a recording sink
+// on the chain, before the world is built.
+func (z *zeroGraceWatch) attach(t *testing.T, w *browserWorld) {
+	t.Helper()
+
+	z.charges = newChargeRecorder(t)
+	z.events = &eventRecorder{}
+
+	w.cookieOpts = append(w.cookieOpts, httpsec.WithSessionCookieLimiter(z.charges))
+	w.extra = append(w.extra, httpsec.EnableSecurityEvents(z.events.sink))
+}
+
+// assertRefusedAsUnknown pins that stale, presented after rotated replaced it
+// with no grace window, is refused as an unknown reference: gone from the
+// store, a 401 that expires the cookie and charges the source once, never
+// reuse (no reuse event, no family revocation), so rotated is still served.
+func (z *zeroGraceWatch) assertRefusedAsUnknown(t *testing.T, w *browserWorld, stale, rotated string) {
+	t.Helper()
+
+	_, err := w.sessions.Load(t.Context(), stale)
+	require.ErrorIs(t, err, session.ErrNotFound, "the old identifier is gone at once")
+
+	before := len(z.charges.recorded())
+
+	late := w.visit(t, stale)
+	require.ErrorIs(t, late.err, httpsec.ErrAuthenticationRequired)
+	assert.NotErrorIs(t, late.err, session.ErrReused, "an in-flight old cookie is not reuse")
+	assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(late.err))
+	assert.False(t, late.handlerRan)
+
+	expired := cookieNamed(late.rec, httpsec.DefaultSessionCookieName)
+	require.NotNil(t, expired, "the refusal expires the session cookie")
+	assert.Negative(t, expired.MaxAge, "the cookie is expired, not re-set")
+
+	charged := z.charges.recorded()
+	require.Len(t, charged, before+1, "a refused reference is one failed guess")
+	assert.Contains(t, charged[len(charged)-1], e2eSource)
+
+	assert.Empty(t, z.events.named(event.AuthnTokenReuse), "an unknown reference is not reuse")
+
+	next := w.visit(t, rotated)
+	require.NoError(t, next.err, "the family is not revoked: the new cookie is served")
+	assert.True(t, next.handlerRan)
 }
 
 // cookiePasswordPath is where the password-change gate's resolve endpoint

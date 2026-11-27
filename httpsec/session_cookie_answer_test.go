@@ -223,6 +223,17 @@ func TestSessionCookie_Answers(t *testing.T) {
 			assert: html("/orders"),
 		},
 		{
+			name: "form login: Accept with an empty q-value fraction prefers HTML",
+			issue: func(t *testing.T) (served, *session.Sessions) {
+				w := newBrowserWorld(t).build(t)
+				req := browserRequest(t, httpsec.DefaultLoginPath, "application/json",
+					loginJSON(t, map[string]any{"next": "/orders"}), "", "text/html;q=1., application/json;q=0.5")
+
+				return serve(t, w.chain, req), w.sessions
+			},
+			assert: html("/orders"),
+		},
+		{
 			name: "form login: JSON preferring HTML",
 			issue: func(t *testing.T) (served, *session.Sessions) {
 				w := newBrowserWorld(t).build(t)

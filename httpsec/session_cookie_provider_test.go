@@ -341,6 +341,22 @@ func TestSessionCookie_ProviderOnCookieChain(t *testing.T) {
 			},
 		},
 		{
+			name: "the provider without CSRF protection is refused, naming it, with browser sessions",
+			assert: func(t *testing.T) {
+				t.Helper()
+
+				_, _, err := newCookieOP(t, func(s *flowSetup) {
+					s.noCSRF = true
+					s.chain = func(*testing.T, *opFlow) []httpsec.Option {
+						return []httpsec.Option{httpsec.WithoutCSRFProtection()}
+					}
+				})
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.Contains(t, err.Error(), "EnableCSRFProtection")
+				assert.Contains(t, err.Error(), "EnableSessionCookie")
+			},
+		},
+		{
 			name: "the cookie session without the provider still opts out of CSRF protection",
 			assert: func(t *testing.T) {
 				t.Helper()

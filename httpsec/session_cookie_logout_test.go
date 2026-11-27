@@ -79,6 +79,16 @@ func TestSessionCookie_LogoutExpires(t *testing.T) {
 		assert.Equal(t, []string{want}, sessionCookieLines(t, out, name),
 			"one expiring cookie, under every attribute the sign-in set it with")
 
+		expired := cookieNamed(out.rec, name)
+		require.NotNil(t, expired, "the logout expires the cookie")
+		assert.Negative(t, expired.MaxAge, "expired, not re-set")
+		assert.Empty(t, expired.Value)
+		assert.Equal(t, set.Path, expired.Path, "the path the sign-in set")
+		assert.Equal(t, set.Domain, expired.Domain, "the domain the sign-in set")
+		assert.Equal(t, set.Secure, expired.Secure)
+		assert.Equal(t, set.HttpOnly, expired.HttpOnly)
+		assert.Equal(t, set.SameSite, expired.SameSite)
+
 		_, err := w.sessions.Load(t.Context(), set.Value)
 		require.Error(t, err, "the session is ended")
 	}
@@ -154,6 +164,7 @@ func TestSessionCookie_LogoutExpires(t *testing.T) {
 				require.ErrorIs(t, a.err, oidcprovider.ErrDependency)
 				assert.Equal(t, http.StatusInternalServerError, a.status)
 				assert.Nil(t, a.cookie(httpsec.DefaultSessionCookieName), "the cookie is not expired")
+				assert.Empty(t, a.header.Values("Set-Cookie"), "the failed logout writes no cookie at all")
 
 				_, err := w.sessions.Load(t.Context(), w.signIn.ID)
 				require.NoError(t, err, "the session stays, so the logout can be retried")
