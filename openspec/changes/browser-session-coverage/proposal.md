@@ -16,7 +16,7 @@ before the PR merges.
   gains the scenario.
 - **End-to-end composition test:** one binary runs the provider on a cookie chain and, under
   `/api`, a token chain whose resource server trusts it through `FromProvider`. A DPoP-bound access
-  token the provider issued through a cookie sign-in is accepted at `/api/orders` as the local
+  token the provider issued after a sign-in on the cookie chain is accepted at `/api/orders` as the local
   user, and refused after its grant is revoked.
 - **Scenario tests completed** (test-only; the code already behaves as specified):
   - a provider on a cookie chain without CSRF protection, with the provider's default browser

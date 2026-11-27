@@ -54,13 +54,18 @@ outcome that distinguishes not-found from reuse: refused as an unknown reference
 against the source, cookie expired), no reuse event, and the family intact, beside the existing
 `ErrNotFound` from a direct store load.
 
-### 4. The composition test uses a real cookie sign-in and a real token
+### 4. The composition test uses a real session sign-in and a real token
 
 The resource-server scenario "Provider on the cookie chain, API on the token chain" is tested with:
-a provider served by a chain with `EnableSessionCookie` and CSRF protection; a second chain under
-`WithBasePath("/api")` with `EnableResourceServer` and `FromProvider` naming the same provider; one
-mux. The access token is obtained through the cookie chain (cookie sign-in, authorization, cookie
-resume, code exchange), bound by DPoP, for the API resource. It reuses the existing helpers
+a provider served by a chain with `EnableSessionCookie` and CSRF protection; a second chain whose
+resource server answers under `/api` (`EnableResourceServer` with `WithPathPrefix("/api/")` and
+`FromProvider` naming the same provider); one mux routing `/api/` to the token chain and `/` to the
+cookie chain. `WithBasePath("/api")` is not used: it moves only built-in endpoints, and a chain
+with none refuses it at construction as a configuration that would move nothing. The access token
+is obtained the way the existing provider-on-cookie-chain tests obtain one: a sign-in recorded in
+the cookie chain's session store, a first-party authorization the provider's `Resume` completes
+with that sign-in, and the code exchange through the cookie chain's token endpoint, bound by DPoP,
+for the API resource. It reuses the existing helpers
 (`newCookieOP`, `cookieAccessToken`, `psWorld`'s DPoP and resource setup) rather than new ones
 where they fit. The scenario "Grant revoked, token checked on the other chain" runs on the same
 composition.

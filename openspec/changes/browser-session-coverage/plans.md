@@ -40,8 +40,8 @@ the design and the scenarios they cover.
    pass for the wrong reason → task 1.1's inversion swaps the trusted provider and must fail.
 2. A revoked-grant test that revokes a different grant than the token's → task 1.2 asserts the first
    call succeeded with the same token and the inversion (no revocation) passes the second call.
-3. A zero-grace assertion that also holds for reuse → task 2.2 asserts no `SessionReused` event and
-   the family intact, which reuse would break.
+3. A zero-grace assertion that also holds for reuse → task 2.2 asserts no `event.AuthnTokenReuse`
+   event and the family intact, which reuse would break.
 4. A mock conversion that drops an assertion (e.g. that the delivery was called once) → task 4.2
    keeps every assertion and sets `.Times(1)` where the old stub's call was implied.
 5. A cross-site row that passes because the request never reached the CSRF check → task 2.5 asserts
@@ -89,12 +89,16 @@ Lane C also runs `make generate-check`.
   `resource_source_provider_test.go`; `httpsec.EnableResourceServer(psAPI,
   httpsec.WithPathPrefix("/api/"), httpsec.FromProvider(p))` as at `resource_source_provider_test.go:138`.
 - Produces: `TestSessionCookie_TwoChainsWithProvider` and its fixture `twoChainWorld` (cookie chain,
-  token chain under `WithBasePath("/api")`, one `http.ServeMux`, the provider, and a way to revoke a
+  token chain whose resource server answers under `/api/` via `WithPathPrefix("/api/")` — not
+  `WithBasePath("/api")`, which `httpsec.New` refuses on a chain with no built-in endpoint —, one
+  `http.ServeMux` routing `/api/` to the token chain and `/` to the cookie chain, the provider, and a way to revoke a
   grant), used by task 1.2.
 
 - [ ] **Step 1: Write the test.** Table test `TestSessionCookie_TwoChainsWithProvider`, row
-  `"a bound token the cookie chain's provider issued is accepted on the token chain"`: sign in on the
-  cookie chain, obtain a DPoP-bound access token for `psAPI` through the cookie resume flow, call
+  `"a bound token the cookie chain's provider issued is accepted on the token chain"`: record a sign-in
+  in the cookie chain's session store, complete a first-party authorization for `psAPI` with the
+  provider's `Resume`, exchange the code at the cookie chain's token endpoint with a DPoP proof (as
+  `accessTokenOf` does, plus `resource` and DPoP), call
   `GET /api/orders` on the mux with the token and a fresh DPoP proof. Assert: status 200, the handler
   ran, the published principal's user ID is the signed-in user's, and the request carried no session
   cookie.
@@ -129,7 +133,9 @@ Lane C also runs `make generate-check`.
   browser sessions"`: as the `:327` row but without `oidcprovider.WithoutBrowserSessions()`. Assert
   `errors.Is(err, httpsec.ErrConfig)` and the same message fragments the `:327` row asserts.
 - [ ] **Step 2: Run → pass. Invert** the provider-on-cookie-chain CSRF check in
-  `httpsec/oidc_provider.go` (around `:1146`/`:1155`) so it does not fire. Run → FAIL with no
+  `httpsec/oidc_provider.go` (`checkCSRF`, around `:1146`/`:1155`) so it does not fire: both
+  branches, the cookie-chain one and the browser-sessions one, since with only one disabled the
+  other still refuses. Run → FAIL with no
   error. Restore. Run → pass.
 
 ### Task 2.2: Zero grace refused as an unknown reference
@@ -141,19 +147,22 @@ re-authentication twin near `:865`)
 - [ ] **Step 1: Extend both rows' `assert`:** the late cookie's answer is 401, carries an expiring
   `Set-Cookie` for the session cookie (parsed: `MaxAge < 0` or `Max-Age=0`), the source was charged
   once (as `refusedCharged(true)` in `session_cookie_test.go` measures it — reuse that helper's
-  approach, not its file), no `event.SessionReused` was emitted, and the next request with the new
+  approach, not its file), no `event.AuthnTokenReuse` was emitted (security events on the same chain), and the next request with the new
   cookie is served (already asserted).
 - [ ] **Step 2: Run → pass. Invert:** make the zero-grace path rotate with the role switch's grace
   (`privilegeRotationGrace`). Run → FAIL (the old cookie is served). Restore. Run → pass.
+  Then a second inversion for the reuse-event assertion: make the late old cookie be judged reused.
+  Run → FAIL on that assertion. Restore. Run → pass.
 
 ### Task 2.3: Q-value with an empty fraction, end to end
 
 **Files:** Modify: `httpsec/session_cookie_answer_test.go` (table in `TestSessionCookie_Answers`,
 `:172`)
 
-- [ ] **Step 1: Add the row** `"an Accept with an empty q-value fraction prefers HTML"`: a form
-  sign-in with `Accept: text/html;q=1., application/json;q=0.5`. Assert 303 and a `Location` header,
-  as the existing HTML-post row does.
+- [ ] **Step 1: Add the row** `"an Accept with an empty q-value fraction prefers HTML"`: a JSON-body
+  sign-in with `Accept: text/html;q=1., application/json;q=0.5` (a form post is HTML by its content
+  type and would never reach `qvalue`). Assert 303 and a `Location` header, as the existing
+  HTML-post row does.
 - [ ] **Step 2: Run → pass. Invert:** remove the empty-fraction handling in `qvalue`
   (`httpsec/session_cookie_answer.go:162`). Run → FAIL (JSON answer). Restore. Run → pass.
 
@@ -188,7 +197,8 @@ re-authentication twin near `:865`)
 - [ ] **Step 1: Extend the row** so it asserts `ErrCrossSiteRequest`, status 403, no `Set-Cookie`,
   and no charge to the source (as `TestSessionCookie_Authenticates`'s `:505` row measures it).
 - [ ] **Step 2: Run → pass. Invert:** make a CSRF refusal expire the cookie. Run → FAIL on
-  `Set-Cookie`. Restore. Run → pass.
+  `Set-Cookie`. Restore. Run → pass. Then invert the charge: make a CSRF refusal count as a
+  refused reference (charged). Run → FAIL on the no-charge assertion. Restore. Run → pass.
 
 ### Task 4.1: Mock directives
 
