@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: A session cookie is judged by the same rules as a session reference
-A request carrying the session cookie SHALL be judged exactly as a session reference presented in the `Authorization` header is judged: the shape check before any lookup, the load by digest, the refusal of a missing or expired session, reuse detection, the user reload, the per-request policy, the throttling of refused references, and the split between a refusal and a dependency failure. A cookie SHALL be read as the session cookie only when its name equals the configured name after trimming space and tab alone.
+A request carrying the session cookie SHALL be judged exactly as a session reference in the `Authorization` header: the shape check before any lookup, the load by digest, the refusal of a missing or expired session, reuse detection, the user reload, the per-request policy, the throttling of refused references, and the split between a refusal and a dependency failure. A cookie SHALL be read as the session cookie only when its name equals the configured name after trimming space and tab alone.
 
 #### Scenario: Unknown cookie value
 - **WHEN** a request carries a well-formed session cookie that names no session
@@ -82,7 +82,7 @@ Building a cookie chain SHALL fail with a configuration error when the cookie na
 - **THEN** construction fails with a configuration error
 
 ### Requirement: Privilege changes rotate the cookie session
-On a cookie chain, the session identifier SHALL change, and the cookie SHALL be re-set, when a second factor is verified, when the user re-authenticates, when the active role is switched, and when the password is changed. Each rotation SHALL keep the previous identifier valid for a grace window, loading only its own state; with a zero grace, verification and re-authentication rotate strictly. The successor SHALL keep the idle deadline its rotation gave it. The CSRF token SHALL stay valid across these rotations.
+On a cookie chain, the session identifier SHALL change, and the cookie SHALL be re-set, when a second factor is verified, when the user re-authenticates, when the active role is switched, and when the password is changed. Each rotation SHALL keep the previous identifier valid for a grace window, loading only its own state; at zero grace, verification and re-authentication rotate strictly. The successor SHALL keep its rotation's idle deadline. The CSRF token SHALL survive these rotations.
 
 #### Scenario: Sign-in over mTLS on a cookie chain
 - **WHEN** a cookie chain that enables certificate binding for its provider signs a user in over mTLS, or re-authenticates them
