@@ -228,6 +228,30 @@ func TestRotate_CallerCopy(t *testing.T) {
 			},
 		},
 		{
+			name: "a pending password change saved after the load is carried by a strict rotation",
+			prepare: func(t *testing.T, f *fixture) {
+				s := load(t, f, f.stored.ID)
+				s.PasswordChangePending = true
+				require.NoError(t, f.store.Save(t.Context(), s))
+			},
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				s := rotatedWith(t, f, got, err)
+				assert.True(t, s.PasswordChangePending, "the stored successor carries the stored record's mark")
+				assert.True(t, got.PasswordChangePending, "the returned successor agrees")
+			},
+		},
+		{
+			name: "a pending password change the copy raised is carried by a strict rotation",
+			prepare: func(_ *testing.T, f *fixture) {
+				f.copy.PasswordChangePending = true
+			},
+			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
+				s := rotatedWith(t, f, got, err)
+				assert.True(t, s.PasswordChangePending, "the copy's mark is kept")
+				assert.True(t, got.PasswordChangePending, "the returned successor agrees")
+			},
+		},
+		{
 			name: "a nil loaded copy is a configuration error",
 			opts: func(*fixture) []session.RotateOption {
 				return []session.RotateOption{session.WithSuccessorFromCaller(nil)}

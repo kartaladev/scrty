@@ -874,6 +874,10 @@ func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // a recovery has no window left, whatever this manager's clock says, and is
 // reuse.
 //
+// A pending password change is never lowered: the successor carries it when
+// either the stored record or the copy given has it raised, so a copy loaded
+// before another request marked the record cannot drop the mark.
+//
 // Rotate runs no step of the caller's between building the successor and
 // storing it; RotateIssuing is the same rotation with one.
 //
@@ -1026,6 +1030,10 @@ func (m *Sessions) RotateIssuing(
 	rotated.SelectedRole = stored.SelectedRole
 	// So is the first factor, which the sign-in fixed.
 	rotated.FirstFactor = stored.FirstFactor
+	// A pending password change is raised from either side, never lowered: a
+	// copy loaded before another request marked the record must not drop the
+	// mark, and one that raised it keeps it.
+	rotated.PasswordChangePending = rotated.PasswordChangePending || stored.PasswordChangePending
 	// A strict rotation never extends the session: each deadline is the
 	// earlier of the stored record's and the copy's, unless the copy lifted
 	// the stored confinement, and then never past the deadline the sign-in

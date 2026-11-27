@@ -3463,6 +3463,30 @@ func TestMFAVerifyComparesTheSessionAsLoaded(t *testing.T) {
 			},
 		},
 		{
+			// The per-request phase marks the password change on the
+			// request's session in memory only. The stored record is compared
+			// with the session as loaded, so the mark is no conflict, and the
+			// strict successor carries it.
+			name: "a password change the per-request phase marks is no conflict and reaches the successor",
+			act: func(t *testing.T, h *mfaHarness, s *session.Session) served {
+				raises := &passwordChangeEveryRequest{}
+				raises.armed.Store(true)
+				h.chainOpts = append(h.chainOpts,
+					httpsec.WithPolicyEngine(engineOf(t, raises)),
+					httpsec.EnablePasswordChangeGate(h.sessions))
+
+				return verify(t, h.bearerChain(t), s)
+			},
+			assert: func(t *testing.T, h *mfaHarness, _ *session.Session, out served) {
+				require.NotErrorIs(t, out.err, httpsec.ErrSessionRenewalConflict)
+				require.NoError(t, out.err)
+
+				rotated := h.stored(t, h.rotatedID(t))
+				assert.Equal(t, session.MFASatisfied, rotated.MFA)
+				assert.True(t, rotated.PasswordChangePending, "the successor carries the marked password change")
+			},
+		},
+		{
 			name: "the same session, loaded afresh and assigned by a consumer, verifies",
 			act: reassigned(func(_ *testing.T, _ *mfaHarness, s *session.Session) string {
 				return s.ID
