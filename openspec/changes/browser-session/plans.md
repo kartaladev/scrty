@@ -59,10 +59,11 @@ File ownership: lane S owns `session/` and `store/**` and `test/storetest`; lane
 | C10c | 12.8, C10b review follow-up | Sonnet | applies an existing rule (`checkDPoP`) at a second call site, as C10b did for `checkBindings`; the rows are given |
 | C11 | 12.9 | Opus | cookie-expiry decisions on refusal paths (security), and failure tests through delivery and revocation; a mistake passes the tests and still signs users out or keeps a bad cookie |
 | C11b | 12.10 | Opus | changes what the shared pipeline charges to a source (throttling on a security path) and a nested-chain guard on cookie expiry |
+| C11c | 12.10, C11b review follow-up | Sonnet | one condition and one row; the rule and the test are given |
 | C7 | 13.1, 13.2 | Sonnet | conformance scenarios and godoc (after C10) |
 | — | 14.1 | main session | final gate |
 
-Reviewers: Opus for C1–C6, S2, C8, C8b, C8c, C8d, C10, C10b, C11 and C11b; Sonnet for S1, M1, C9, C8e, C10c and C7.
+Reviewers: Opus for C1–C6, S2, C8, C8b, C8c, C8d, C10, C10b, C11 and C11b; Sonnet for S1, M1, C9, C8e, C10c, C11c and C7.
 
 **Scoped verification commands** (`test-scope.md`):
 - Lane S: `go test -count=1 ./session/... ./store/... ./internal/... ./httpsec/... ./oidcprovider/... ./policy/... ./recovery/... ./authenticate/...` and, in `test/`, `go test -count=1 ./storetest/... ./sqlstore/... ./pgxstore/... ./gormstore/... ./crossbackend/...` (Docker); plus `go test -count=1 ./...` in `store/pgxstore` and `store/gormstore`; `make generate-check`.
@@ -496,6 +497,12 @@ User decision, 2026-11-27: a renewal-required refusal is not charged to the sour
 - [ ] **Step 3: Implement** the charge exception (`charged := rejected && !(t == transportCookie && errors.Is(err, session.ErrRenewalRequired))`; `resolve` still returns `rejected` for the expiry decision) and the nested-chain guard; write the godoc and package-doc text.
 - [ ] **Step 4: Run** lanes M/C scoped command with `-race`, `go test -count=1 -run TestExportedParametersHaveDescriptiveNames .`, and `make lint` — PASS.
 - [ ] **Step 5: Commit** with 12.9: `fix(httpsec): keep a cookie that needs renewal, and expire one the renewal endpoint refuses`.
+
+**C11b review follow-up (dispatch C11c).** On a cookie chain without the renewal endpoint, a kept renewal-required cookie can never be renewed, so every request is refused until the user signs in again (confirmed by the reviewer with a probe test). Rule (design 11, "Kept only where it can be renewed"): expire it there.
+
+- [ ] **Step 6: Write the failing row** in `TestSessionCookie_RefusalExpires`: a manager with `session.WithUnusedSuccessorRecovery`, a cookie chain without `EnableSessionRenewal`, a late cookie whose successor was never used, a GET → 401 matching `session.ErrRenewalRequired`, and the response expires the cookie (`Max-Age=0`, the cookie's attributes). Run focused — FAIL: no `Set-Cookie`.
+- [ ] **Step 7: Implement** in `sessionCookie.Intercept`: keep a renewal-required cookie only when the chain serves the renewal endpoint (the cookie session's resolver has a renewal, e.g. `resolver.renewal != nil`; find the field); otherwise expire it. Update the `EnableSessionCookie` godoc and the `httpsec/doc.go` paragraph to say the cookie is kept only on a chain with `EnableSessionRenewal`.
+- [ ] **Step 8: Run** lanes M/C scoped command with `-race` and `make lint` — PASS. Commit 12.9 and 12.10 together.
 
 ### Task 13.1: Adapter conformance
 

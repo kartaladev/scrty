@@ -258,11 +258,15 @@ When the session cookie is refused because its session is missing, expired, unre
 - **THEN** it is refused as a cross-site request, the response does not touch the cookie, and nothing is counted against the source
 
 ### Requirement: A cookie that needs renewal is kept for the renewal
-A superseded cookie refused only because its sign-in must be renewed, under unused-successor recovery, SHALL be left in place so the browser can renew with it. A cookie the renewal endpoint itself refuses SHALL be expired.
+A superseded cookie refused only because its sign-in must be renewed, under unused-successor recovery, SHALL be left in place so the browser can renew with it, on a chain that serves the renewal endpoint; without it the cookie SHALL be expired. A cookie the renewal endpoint itself refuses SHALL be expired.
 
 #### Scenario: Renewal required
 - **WHEN** unused-successor recovery is on, and a request carries a superseded cookie whose successor was never used
 - **THEN** it is refused as needing renewal, the response does not touch the cookie, and a renewal posted with that cookie then succeeds
+
+#### Scenario: Renewal required without the renewal endpoint
+- **WHEN** a cookie chain without the renewal endpoint receives a superseded cookie that must be renewed
+- **THEN** it is refused, and the response expires the cookie
 
 #### Scenario: Reuse detected at the renewal endpoint
 - **WHEN** a superseded cookie is posted to the renewal endpoint after its window and its successor was used

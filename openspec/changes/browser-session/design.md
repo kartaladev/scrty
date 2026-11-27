@@ -387,9 +387,11 @@ Sign-in always creates a new session.
   - **Not charged on the cookie transport** (user decision, 2026-11-27, from the C11 review). A
     kept cookie is re-sent on every request, so charging each renewal-required refusal let one
     un-renewed tab push a shared address over its allowance and refuse every browser behind it,
-    its own renewal included. The refusal comes only from a genuine superseded identifier inside
-    its recovery window, so it is no guessing signal. The session bearer still charges it, as
-    before.
+    its own renewal included. Only a stored, genuine superseded identifier gets that answer, so it
+    is no guessing signal. The session bearer still charges it, as before.
+  - **Kept only where it can be renewed.** On a cookie chain without the renewal endpoint
+    (`EnableSessionRenewal`), nothing can renew the kept cookie, so a renewal-required refusal
+    expires it as before (from the C11b review). The user signs in again.
   - **Settled during implementation:** The refusal now matches
     `session.ErrRenewalRequired` beside `ErrAuthenticationRequired` on both the cookie and the
     bearer, as `EnableSessionRenewal`'s godoc already stated. At the renewal endpoint, a refusal
@@ -575,6 +577,10 @@ grant checks or local users, or both. This change reverses that decision (user d
 | A kept renewal-required cookie re-sent on every request from a shared address | Dependency / Security | Handled, tested | not charged, so other browsers behind the address are unaffected |
 | A superseded cookie past its own deadline under recovery | State | Accepted | still refused as renewal-required and kept, as the manager judges recovery before deadlines; the renewal POST answers `ErrExpired` and expires it |
 | A renewal conflict or a dependency failure at the renewal endpoint for a late cookie | State | Handled, tested | the cookie kept |
+| A cookie chain nested inside another chain's late renewal, its endpoint refusing | Security | Handled, tested | the inner chain expires its own cookie only when its own resolve let a late cookie through; it keeps it on the outer chain's verdict |
+| A renewal-required cookie on a cookie chain without the renewal endpoint | State | Handled, tested | expired, since nothing could renew it; the user signs in again |
+| A consumer renewal responder returning `ErrAuthenticationRequired` after a successful renewal | Configuration | Accepted | the successor's cookie is followed by an expiring one: fail-closed, the user signs in again; only a misbehaving responder reaches it |
+| A cookie chain composed inside another cookie chain's late renewal, the endpoint refusing the inner session | State | Accepted | the outer chain may expire its late cookie on a verdict about the inner session: fail-closed, the user signs in again; a composition no built-in setup produces |
 | A superseded cookie refused at the renewal endpoint (reuse detected there) | Security | Handled, tested | 401, the family revoked, the cookie expired |
 | Delivery port failing at a role switch or a password change | State | Handled, tested | issuing failure, no `Set-Cookie`, the family revoked; at the password change the consumer's function does not run |
 | Revocation of a cookie sign-in on a chain running the provider | Security | Handled, tested | the provider's browser sessions of that sign-in no longer load |
