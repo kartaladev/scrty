@@ -187,6 +187,24 @@ design are the baseline. Decision numbers below are this change's own.
 - **Default / override:** an option the library's own endpoints pass. No consumer default
   changes. It is a pre-tag API change.
 
+- **Settled from the S2 review (both REPRODUCED):**
+  - **False conflict:** the request's `ex.Session` is not the session as loaded. The per-request
+    phase marks challenges on it in memory (`challengeMarker.mark`: `PasswordChangePending`, or MFA
+    pending), so with a policy that raises a password change, every MFA verification on a cookie
+    chain answered 409 and spent the code
+    (`TestRepro_PerRequestPasswordChangeMakesMFAVerifyConflict`). The session resolver now keeps a
+    snapshot of the session exactly as the store returned it, taken before the per-request phase,
+    and both endpoints pass that snapshot as `loaded`. The copy still carries the in-memory marks,
+    so the successor keeps them.
+  - **The strict path had the same race:** a strict rotation of a stale copy overwrote a
+    confinement saved after the load (`TestRepro_StrictRotateOverwritesConfinementSavedAfterLoad`).
+    `Rotate` and `RotateIssuing` therefore now accept `WithSuccessorFromCaller(loaded)` too, with
+    the same comparison and refusal. Without it they behave as decision 9 states. The library's
+    strict callers (MFA verification and re-authentication on header-bearer chains, and on a
+    cookie chain at zero grace) pass the snapshot.
+  - `loaded` must be the value the store returned: an in-memory session from `Create` or `Save`
+    carries nanosecond times a microsecond store would not, and compares unequal. The godoc says so.
+
 ### 9. A strict rotation never extends a session, and never moves it to another user
 
 - **Problem (S1 review, REPRODUCED by `TestReview_StrictRotateTakesCopyAbsolute`):** `Rotate` and
@@ -225,7 +243,8 @@ design are the baseline. Decision numbers below are this change's own.
 | Renewal with the old cookie inside the window after an MFA rotation | Concurrency | Handled, tested | the old cookie's session still owes its second factor, so the gate refuses the renewal before it runs; nothing is written and the new cookie keeps working (found by H2) |
 | Renewal with the old cookie inside the window after a re-authentication | Concurrency | Accepted, tested | the renewal re-rotates from the stored record and closes the re-authenticated successor's window; the next request with the new cookie is reuse and the family is revoked. Fails closed, as any re-rotation the archived design accepts |
 | A gate another request saved after the caller's copy was loaded | State / Security | Handled, tested | `PasswordChangePending` is raised if either the stored record or the copy has it, so a concurrent `Save` that raises it is never cleared by the rotation. The other caller-owned fields follow the copy, as a strict rotation does (accepted) |
-| Confinement or second-factor state saved by another request after the caller's copy was loaded (enrolment or recovery pending, enrolment deadlines) | State / Security | Handled, tested (decision 8) | `ErrRenewalConflict` (409) and nothing written, when the stored security state differs from the state the copy was loaded with. A save between the rotation's read and its write is accepted (residual) |
+| Confinement or second-factor state saved by another request after the caller's copy was loaded (enrolment or recovery pending, enrolment deadlines) | State / Security | Handled, tested (decision 8) | `ErrRenewalConflict` (409) and nothing written, when the stored security state differs from the state the copy was loaded with, on the grace and the strict rotation alike. A save between the rotation's read and its write is accepted (residual) |
+| A per-request challenge marked in memory before MFA verification or re-authentication | State | Handled, tested | compared against the resolver's snapshot, so no false conflict; the successor carries the mark |
 | Strict `Rotate` given a copy with a later deadline, another user or another first factor | State / Security | Handled, tested (decision 9) | the deadline is not extended, another user is `ErrConfig` with nothing written, and the first factor stays the stored one |
 | Client hangs up after the MFA or re-authentication rotation committed | Concurrency | Accepted | the old cookie works through the window and is reuse after it, revoking the sign-in, as the archived design accepts for the role switch; `WithUnusedSuccessorRecovery` softens it. Before this change the old cookie was signed out immediately |
 | Password change on a session close to its idle deadline | State | Handled, tested | the saved successor keeps `now + idle` from the rotation |

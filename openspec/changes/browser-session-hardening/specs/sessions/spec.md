@@ -31,9 +31,9 @@
 - **WHEN** a session a renewal superseded inside its window is rotated with the option
 - **THEN** the rotation fails with `ErrRenewalConflict`, and nothing is stored or revoked
 
-#### Scenario: Strict rotation
-- **WHEN** `Rotate` is given the option
-- **THEN** it fails with `ErrConfig`, and nothing is stored
+#### Scenario: Strict rotation with the option
+- **WHEN** another request saves a confinement after the caller loaded the session, and the caller strictly rotates its copy with `WithSuccessorFromCaller(loaded)`
+- **THEN** the rotation fails with `ErrRenewalConflict`, and nothing is stored
 
 ### Requirement: A caller's copy cannot extend a grace successor's deadline
 With `WithSuccessorFromCaller`, the successor's absolute deadline SHALL be the earlier of the stored record's and the caller's copy's, except when the copy lifted a stored confinement: then it SHALL be the copy's, never later than the stored origin deadline.

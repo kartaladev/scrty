@@ -391,6 +391,42 @@ deadline. Its idle deadline stays the grace rotation's `now + idle`, capped at t
   `golangci-lint run ./session/... ./httpsec/...`. Expected: all pass. If a strict caller relied on
   taking the copy's first factor or a later deadline, stop and report the call site.
 
+**S2 review fixes, also in S3.** S3 also owns `httpsec/resolve.go`, `httpsec/exchange.go`,
+`httpsec/mfa_verify.go`, `httpsec/reauth_resolve.go`, `httpsec/session_cookie_rotation_test.go`, and
+a test file for the strict path on a header-bearer chain (for example the existing
+`mfa_verify_test.go` / `reauth_resolve_test.go`).
+
+**Interfaces:** an unexported `Exchange` field, `loadedSession *session.Session`. It holds a clone of
+the session exactly as the store returned it, taken in `sessionResolver.resolve` right after the
+load and before `evaluatePerRequest`. It is cleared wherever `ex.Session` is replaced by another
+sign-in's session. `credentialDelivery.rotateIssuing(loaded, current)` is given
+`ex.loadedSession`, and refuses with an error wrapping `ErrConfig` when it is nil.
+
+- [ ] **Step S1: Red end to end.** Port the reviewer's
+  `TestRepro_PerRequestPasswordChangeMakesMFAVerifyConflict` (from
+  `/private/tmp/claude-501/-Users-zakyalvan-Documents-RND-scrty--claude-worktrees-browser-session/59ffbc3d-5130-49b6-9754-ba6c3f6aca63/scratchpad/reviewS2/repo/httpsec/zz_repro_s2_test.go`)
+  as a row of `TestSessionCookie_ExistingRotationsGrace`. A per-request policy raises
+  `ChallengePasswordChange` with `EnablePasswordChangeGate`. MFA verification answers success, not
+  409, and the stored successor has `PasswordChangePending` true. It fails today with
+  `ErrRenewalConflict`. Implement the snapshot and pass it.
+- [ ] **Step S2: Red, strict path.** Port `TestRepro_StrictRotateOverwritesConfinementSavedAfterLoad`
+  as a `TestRotate_CallerCopy` row: a confinement is saved after the load, then
+  `Rotate(ctx, copy, WithSuccessorFromCaller(loaded))`. The result is `ErrRenewalConflict` and
+  nothing is stored. Add the same row for `RotateIssuing`, where the step does not run.
+  - **Implement:** the strict rotation accepts the option, validates `loaded` as the grace path
+    does, and runs `sameSecurityState` after `judge` and before the identifier is generated. This
+    replaces its `ErrConfig` refusal of the option.
+  - **Callers:** `credentialDelivery.rotateIssuing` passes the option on the strict branch too
+    (header-bearer chains and zero grace).
+  - **End-to-end rows:** a header-bearer MFA verification with a confinement saved mid-request
+    answers 409.
+- [ ] **Step S3: End-to-end 409 for re-authentication.** On a cookie chain, a record changed
+  mid-request (a policy that saves a confinement on the stored session, as `confineMidVerification`
+  does) makes re-authentication answer 409, writing nothing and setting no cookie.
+- [ ] **Step S4: Godoc on `WithSuccessorFromCaller`.** `loaded` must be the value the store
+  returned. An in-memory session from `Create` or `Save` carries finer time precision than some
+  stores keep, and compares unequal. Note that strict rotations accept the option.
+
 ### Task 2d: Renewal reads no DPoP proof on a cookie chain, and the provider still binds (task 2.6, H2c)
 
 - [ ] **Step 1: Red row in the new `TestSessionCookie_RenewalIgnoresDPoP`.** A cookie chain with
