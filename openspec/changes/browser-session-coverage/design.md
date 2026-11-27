@@ -65,9 +65,9 @@ with none refuses it at construction as a configuration that would move nothing.
 is obtained the way the existing provider-on-cookie-chain tests obtain one: a sign-in recorded in
 the cookie chain's session store, a first-party authorization the provider's `Resume` completes
 with that sign-in, and the code exchange through the cookie chain's token endpoint, bound by DPoP,
-for the API resource. It reuses the existing helpers
-(`newCookieOP`, `cookieAccessToken`, `psWorld`'s DPoP and resource setup) rather than new ones
-where they fit. The scenario "Grant revoked, token checked on the other chain" runs on the same
+for the API resource. It builds on `newCookieOP` and the DPoP helpers of the provider-source
+tests, and follows `accessTokenOf`'s park, `Resume` and exchange sequence in its own helper, since
+`accessTokenOf` parks without the `resource` parameter and sends no DPoP proof. The scenario "Grant revoked, token checked on the other chain" runs on the same
 composition.
 
 ### 5. Which test doubles become generated mocks
@@ -101,7 +101,7 @@ test work itself can introduce.
 |---|---|---|---|
 | Bound token from the cookie chain's provider sent to the token chain | Configuration and wiring | Tested (4) | accepted; caller is the local user the token names |
 | Grant revoked through the provider, token re-sent to the token chain | State | Tested (4) | refused as an invalid token |
-| Provider on a cookie chain, CSRF opted out, default browser sessions | Configuration and wiring | Tested (W2a) | construction fails with a configuration error |
+| Provider on a cookie chain, CSRF opted out, default browser sessions | Configuration and wiring | Tested | construction fails with a configuration error |
 | Pre-verification cookie at zero grace | State, time | Tested (3) | 401, charged, cookie expired, no reuse event, family intact |
 | `Accept` q-value `1.` on a sign-in | Input | Tested | `303 See Other` |
 | Default and strict cookie on a real sign-in | Configuration | Tested | `Set-Cookie` with the specified attributes |

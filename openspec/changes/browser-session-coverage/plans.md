@@ -83,8 +83,8 @@ Lane C also runs `make generate-check`.
 
 **Interfaces:**
 - Consumes (existing, read-only): `newCookieOP(t, func(*flowSetup)) (*opFlow, *loadCounter, error)`
-  and `cookieAccessToken(t, w *opFlow, s *session.Session) string`
-  (`session_cookie_provider_test.go:56`, `:182`); `flowSetup.chain` to add options to the cookie
+  (`session_cookie_provider_test.go:56`), and `accessTokenOf`'s sequence (`:153`) as the model for
+  the fixture's own token helper, which adds `resource` and a DPoP proof; `flowSetup.chain` to add options to the cookie
   chain; `psAPI` and the DPoP helpers (`dpopKey`, proof construction) in
   `resource_source_provider_test.go`; `httpsec.EnableResourceServer(psAPI,
   httpsec.WithPathPrefix("/api/"), httpsec.FromProvider(p))` as at `resource_source_provider_test.go:138`.
