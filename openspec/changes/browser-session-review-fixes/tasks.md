@@ -24,8 +24,8 @@ scoped to the changed packages and their dependents (`test-scope.md`). The comma
 
 ## 4. A delivery that quotes the cookie is refused (design 3)
 
-- [ ] 4.1 Red: a `SessionDelivery` that sets the chain's cookie with `Quoted: true`; assert the sign-in fails as an issuing failure, no session cookie on the response, and the session ended; see it fail on the unmodified code (the sign-in succeeds)
-- [ ] 4.2 Green: `sameCookie` compares `Quoted`; the godoc of `SessionDelivery` names quoting among the attributes it must not change
+- [x] 4.1 Red: a `SessionDelivery` that sets the chain's cookie with `Quoted: true`; assert the sign-in fails as an issuing failure, no session cookie on the response, and the session ended; see it fail on the unmodified code (the sign-in succeeds)
+- [x] 4.2 Green: `sameCookie` compares `Quoted`; the godoc of `SessionDelivery` names quoting among the attributes it must not change
 
 ## 5. `MFAAtFirstFactor` pinned at every rotation (design 2)
 

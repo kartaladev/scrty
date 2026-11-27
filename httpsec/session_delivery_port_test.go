@@ -561,6 +561,13 @@ func TestSessionCookie_DeliveryPort(t *testing.T) {
 			assert:     nothingWritten,
 		},
 		{
+			name:       "a delivery that quotes the cookie's value",
+			misbehaves: onPath(httpsec.DefaultLoginPath),
+			misbehave:  breaking(func(c *http.Cookie) { c.Quoted = true }), //nolint:gosec // G124: the case is a delivery breaking the line on purpose
+			act:        login,
+			assert:     nothingWritten,
+		},
+		{
 			name:       "a delivery that changes the cookie's Path",
 			misbehaves: onPath(httpsec.DefaultLoginPath),
 			misbehave:  breaking(func(c *http.Cookie) { c.Path = "/app" }), //nolint:gosec // G124: the case is a delivery breaking the line on purpose

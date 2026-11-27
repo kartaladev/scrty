@@ -166,7 +166,7 @@ var (
 // copied to the response only once it returned nothing for the body, no
 // error, no body of its own, the chain's own session cookie exactly
 // (sessionCookie.cookie: name, value, path, domain, SameSite, Secure,
-// HttpOnly and Max-Age, the last allowed to be one second under; see
+// HttpOnly, quoting and Max-Age, the last allowed to be one second under; see
 // sameCookie), and the identifier nowhere else. Any other outcome is
 // an issuing failure, and the response is left as it was. The identifier is
 // read before the delivery runs, so nothing it does to its copy changes what
@@ -547,7 +547,7 @@ func (w *stagedWriter) check(want *Cookie, id string) error {
 func sameCookie(got, want *Cookie) bool {
 	a, b := got, want
 
-	return a.Name == b.Name && a.Value == b.Value && a.Path == b.Path && a.Domain == b.Domain &&
+	return a.Name == b.Name && a.Value == b.Value && a.Quoted == b.Quoted && a.Path == b.Path && a.Domain == b.Domain &&
 		a.Expires.Equal(b.Expires) && maxAgeWithinASecond(a.MaxAge, b.MaxAge) && a.Secure == b.Secure &&
 		a.HttpOnly == b.HttpOnly && a.SameSite == b.SameSite && a.Partitioned == b.Partitioned
 }
@@ -616,9 +616,9 @@ type SessionDelivery interface {
 	// HttpOnly and Max-Age), record what it needs (an audit entry), and set
 	// headers and other cookies that do not carry credential. What it may not
 	// do, on pain of an issuing failure: change any attribute of the session
-	// cookie, set a cookie through a raw Set-Cookie header, write a body or a
-	// status, or put credential anywhere else, in a header's name or value or
-	// in another cookie's name, value or path.
+	// cookie, its quoting included, set a cookie through a raw Set-Cookie
+	// header, write a body or a status, or put credential anywhere else, in a
+	// header's name or value or in another cookie's name, value or path.
 	//
 	// Max-Age is none for a session whose signIn.PersistentCookie is false, and
 	// otherwise the seconds from the chain's clock to signIn.AbsoluteExpiresAt,
@@ -651,7 +651,7 @@ type SessionDelivery interface {
 // credential, wrote no body (WriteHeader, Write or Stream), set no cookie
 // through a raw Set-Cookie header, set every cookie under this chain's name
 // exactly as the chain would (value the identifier; path, domain, SameSite,
-// Secure, HttpOnly and Max-Age as the chain's), at least one, and put the
+// Secure, HttpOnly, quoting and Max-Age as the chain's), at least one, and put the
 // identifier in no other header or cookie. Anything else is an issuing
 // failure (answered 500 by default, with delivery's own error reachable
 // through errors.Is behind the library's text): nothing delivery wrote, and no
