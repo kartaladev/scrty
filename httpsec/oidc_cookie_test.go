@@ -24,10 +24,14 @@ import (
 var errOIDCCookieDelivery = errors.New("oidc_cookie_test: the delivery failed")
 
 // failingOIDCDelivery is a SessionDelivery that writes nothing and fails.
-type failingOIDCDelivery struct{}
+func failingOIDCDelivery(t *testing.T) *MockSessionDelivery {
+	t.Helper()
 
-func (failingOIDCDelivery) Deliver(*httpsec.Exchange, *session.Session, string) (string, error) {
-	return "", errOIDCCookieDelivery
+	delivery := NewMockSessionDelivery(gomock.NewController(t))
+	delivery.EXPECT().Deliver(gomock.Any(), gomock.Any(), gomock.Any()).Times(1).
+		Return("", errOIDCCookieDelivery)
+
+	return delivery
 }
 
 // oidcCookieChain builds the harness's federated login on a cookie chain whose
@@ -290,7 +294,7 @@ func TestOIDCLogin_CookieChainCallback(t *testing.T) {
 			name: "a delivery that fails ends the sign-in and redirects nowhere",
 			setup: func(t *testing.T, h *oidcHarness) (*httpsec.Chain, *sessionWrites) {
 				chain, err := oidcCookieChain(h, referenceUsers(t),
-					[]httpsec.SessionCookieOption{httpsec.WithSessionDelivery(failingOIDCDelivery{})},
+					[]httpsec.SessionCookieOption{httpsec.WithSessionDelivery(failingOIDCDelivery(t))},
 					httpsec.WithOIDCAllowedRedirects("/orders"))
 				require.NoError(t, err)
 

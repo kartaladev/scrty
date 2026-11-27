@@ -425,6 +425,8 @@ func WithCSRFTokenNames(header, field string) CSRFOption {
 	}
 }
 
+//go:generate mockgen -destination=csrftokens_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/httpsec CSRFTokens
+
 // CSRFTokens is the source of a sign-in's CSRF token: what CSRFToken answers
 // a page, and what a cookie-authenticated unsafe request's token is checked
 // against.

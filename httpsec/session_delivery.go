@@ -579,6 +579,8 @@ func (w *stagedWriter) replay(rw ResponseWriter) {
 	}
 }
 
+//go:generate mockgen -destination=sessiondelivery_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/httpsec SessionDelivery
+
 // SessionDelivery replaces how a cookie chain writes a new session's cookie
 // (WithSessionDelivery).
 //

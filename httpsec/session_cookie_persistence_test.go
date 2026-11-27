@@ -22,7 +22,9 @@ func remembered(*httpsec.Exchange) bool { return true }
 
 // persistentDelivery is a consumer's session delivery that sets the cookie
 // itself, with the Max-Age it works out from the session's absolute deadline
-// and now, or with none when noMaxAge is set.
+// and now, or with none when noMaxAge is set. It is a consumer delivery
+// implementation whose own logic is the test's subject, so it stays
+// hand-written.
 type persistentDelivery struct {
 	now      func() time.Time
 	noMaxAge bool

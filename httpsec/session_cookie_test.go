@@ -553,7 +553,7 @@ func TestSessionCookie_Authenticates(t *testing.T) {
 				return []httpsec.Option{
 					httpsec.WithLogger(slog.New(f.logs)),
 					httpsec.WithClock(f.clk),
-					httpsec.EnableCSRFProtection(httpsec.WithCSRFTokens(authRequiredTokens{})),
+					httpsec.EnableCSRFProtection(httpsec.WithCSRFTokens(authRequiredTokens(t))),
 					httpsec.EnableSessionCookie(f.deps(), httpsec.WithSessionCookieLimiter(f.limiter)),
 				}
 			},
@@ -574,7 +574,7 @@ func TestSessionCookie_Authenticates(t *testing.T) {
 				return []httpsec.Option{
 					httpsec.WithLogger(slog.New(f.logs)),
 					httpsec.WithClock(f.clk),
-					httpsec.EnableCSRFProtection(httpsec.WithCSRFTokens(outageTokens{err: errStoreDown})),
+					httpsec.EnableCSRFProtection(httpsec.WithCSRFTokens(outageTokens(t, errStoreDown))),
 					httpsec.EnableSessionCookie(f.deps(), httpsec.WithSessionCookieLimiter(f.limiter)),
 				}
 			},
@@ -755,22 +755,28 @@ func (f *cookieFixture) serve(
 // authRequiredTokens is a consumer's CSRF token source that breaks its contract:
 // it refuses with the authentication-required error rather than
 // ErrCrossSiteRequest.
-type authRequiredTokens struct{}
+func authRequiredTokens(t *testing.T) *MockCSRFTokens {
+	t.Helper()
 
-func (authRequiredTokens) Token(context.Context, *session.Session) (string, error) { return "t", nil }
+	tokens := NewMockCSRFTokens(gomock.NewController(t))
+	tokens.EXPECT().Token(gomock.Any(), gomock.Any()).AnyTimes().Return("t", nil)
+	tokens.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).Times(1).
+		Return(httpsec.ErrAuthenticationRequired)
 
-func (authRequiredTokens) Verify(context.Context, *session.Session, string) error {
-	return httpsec.ErrAuthenticationRequired
+	return tokens
 }
 
 // outageTokens is a consumer's CSRF token source that fails with err, joined to
 // the authentication-required error.
-type outageTokens struct{ err error }
+func outageTokens(t *testing.T, err error) *MockCSRFTokens {
+	t.Helper()
 
-func (outageTokens) Token(context.Context, *session.Session) (string, error) { return "t", nil }
+	tokens := NewMockCSRFTokens(gomock.NewController(t))
+	tokens.EXPECT().Token(gomock.Any(), gomock.Any()).AnyTimes().Return("t", nil)
+	tokens.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).Times(1).
+		Return(errors.Join(httpsec.ErrAuthenticationRequired, err))
 
-func (o outageTokens) Verify(context.Context, *session.Session, string) error {
-	return errors.Join(httpsec.ErrAuthenticationRequired, o.err)
+	return tokens
 }
 
 // expiredDefaultCookie is the default session cookie expired with the
@@ -1100,7 +1106,15 @@ func TestSessionCookie_RefusalExpires(t *testing.T) {
 			request: func(t *testing.T, f *cookieFixture) *http.Request {
 				return sessionCookieRequest(t.Context(), http.MethodPost, named(f.signIn.ID), nil)
 			},
-			assert: untouched(httpsec.ErrCrossSiteRequest),
+			assert: func(t *testing.T, s served) {
+				t.Helper()
+				untouched(httpsec.ErrCrossSiteRequest)(t, s)
+				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(s.err))
+			},
+			then: func(t *testing.T, f *cookieFixture, _ *httpsec.Chain) {
+				t.Helper()
+				assert.Empty(t, f.limiter.recorded(), "a CSRF refusal is not charged to the source")
+			},
 		},
 		{
 			name: "a CSRF failure of a disabled user's cookie leaves it",

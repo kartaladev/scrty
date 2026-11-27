@@ -18,7 +18,7 @@ are in `plans.md`.
 - [x] 2.2 Strengthen both zero-grace rows (second-factor verification and re-authentication) in `session_cookie_rotation_test.go`: the late pre-verification cookie is refused as an unknown reference is — 401, charged against the source, cookie expired — with no `event.AuthnTokenReuse` event and the family intact; verify it passes, and fails when zero grace rotates with a grace window
 - [x] 2.3 Row in `TestSessionCookie_Answers`: a JSON-body sign-in with `Accept: text/html;q=1., application/json;q=0.5` (a form post is HTML by its content type and never reaches the q-value) is answered `303 See Other`; verify it passes, and fails with the empty-fraction handling in `qvalue` removed
 - [x] 2.4 Assert the session cookie on a real sign-in response, parsed: default chain gives `__Host-scrty-session`, `Path=/`, `Secure`, `HttpOnly`, `SameSite=Lax`, no `Domain`, `Max-Age` or `Expires`; a chain with `SameSite=Strict` gives `SameSite=Strict` and the rest unchanged; verify it passes, and fails with the default same-site changed
-- [ ] 2.5 One row for "Cross-site request": an unsafe cookie request without a CSRF token is refused 403, not charged to the source, and its response has no `Set-Cookie`; verify it passes, and fails when a CSRF refusal expires the cookie
+- [x] 2.5 One row for "Cross-site request": an unsafe cookie request without a CSRF token is refused 403, not charged to the source, and its response has no `Set-Cookie`; verify it passes, and fails when a CSRF refusal expires the cookie
 
 ## 3. Logout spec correction (design 1)
 
@@ -26,9 +26,9 @@ are in `plans.md`.
 
 ## 4. Test doubles to mockgen (design 5)
 
-- [ ] 4.1 Add `//go:generate mockgen -typed` directives for `SessionDelivery` (`httpsec/session_delivery.go`) and `CSRFTokens` (`httpsec/csrf.go`) per `use-mockgen`, and generate `sessiondelivery_mock_test.go` and `csrftokens_mock_test.go`; verify `make generate-check` passes
-- [ ] 4.2 Replace `failingOIDCDelivery` with the `SessionDelivery` mock and `authRequiredTokens` and `outageTokens` with the `CSRFTokens` mock, keeping every assertion of the tests that use them; verify those tests pass, and each still fails when the fault its mock injects is removed
-- [ ] 4.3 Add a comment on `auditDelivery`, `persistentDelivery` and `recordingBrowsers` stating why each stays hand-written (design 5); verify `gofmt -l` and `go vet ./httpsec/...` are clean
+- [x] 4.1 Add `//go:generate mockgen -typed` directives for `SessionDelivery` (`httpsec/session_delivery.go`) and `CSRFTokens` (`httpsec/csrf.go`) per `use-mockgen`, and generate `sessiondelivery_mock_test.go` and `csrftokens_mock_test.go`; verify `make generate-check` passes
+- [x] 4.2 Replace `failingOIDCDelivery` with the `SessionDelivery` mock and `authRequiredTokens` and `outageTokens` with the `CSRFTokens` mock, keeping every assertion of the tests that use them; verify those tests pass, and each still fails when the fault its mock injects is removed
+- [x] 4.3 Add a comment on `auditDelivery`, `persistentDelivery` and `recordingBrowsers` stating why each stays hand-written (design 5); verify `gofmt -l` and `go vet ./httpsec/...` are clean
 
 ## 5. Gate
 

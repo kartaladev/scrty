@@ -34,7 +34,9 @@ type misbehaviour func(d *auditDelivery, ex *httpsec.Exchange, s *session.Sessio
 
 // auditDelivery is a consumer's session delivery: it sets the session cookie
 // with the default attributes and records an audit entry naming the session,
-// and misbehaves as misbehave says on the requests misbehaves selects.
+// and misbehaves as misbehave says on the requests misbehaves selects. It is a
+// consumer delivery implementation whose own logic is the test's subject, so it
+// stays hand-written.
 type auditDelivery struct {
 	mu      sync.Mutex
 	entries []string

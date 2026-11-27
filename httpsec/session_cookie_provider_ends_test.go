@@ -24,7 +24,8 @@ var errBrowsersDown = errors.New("provider_ends_test: the browser-session store 
 
 // recordingBrowsers is the provider's browser-session store, keeping the
 // digest of every record put, so a test can load one back, and failing the
-// end of a sign-in's records when failEnd is set.
+// end of a sign-in's records when failEnd is set. It decorates the real memory
+// browser-session store, which a mock would have to reimplement.
 type recordingBrowsers struct {
 	*oidcprovider.MemoryBrowserSessionStore
 
