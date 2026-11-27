@@ -134,6 +134,36 @@ request context. The user chose to close it at the handler's return.
   so it never waits on that return.
 - **Cost:** one uncontended lock and unlock per run, on every chain.
 - **Default / override:** no override. This is a correctness guarantee of `SwitchActiveRole`.
+- **As implemented (lane D):**
+  - **Where the lock is taken:** at the start of `SwitchActiveRole`, when it rotates a cookie
+    session, before anything takes the role source's lock. `rotateForSwitch` was too late: a
+    queued switch blocks earlier, on the role source's lock, which the first switch holds through
+    its rotation. As a result, the switch's user reload also runs under the run's lock, and the
+    handler's return can wait for the user loader as well. The godoc names the user loader's and
+    the store's own timeouts as the bound.
+  - **A second pass through the handler:** an interceptor that calls `next` twice runs the
+    handler again. Entering the handler clears the mark under the lock, so a switch inside the
+    second pass is not refused. A test row pins this.
+  - **Marking the right run:** each handler entry on the exchange records its run, so the
+    handler's return marks that run even if an interceptor replaced the context.
+  - **Cost:** one small channel per run, which is one allocation.
+  - **Revised after review:**
+    - **One lock and one mark per request, not per run.** With a run per chain, a chain whose
+      handler is another chain left the inner chain's code after `next` racing a goroutine
+      switch. The reviewer reproduced 4 race-detector reports. The mark is therefore the
+      exchange's: it is set when the innermost handler, the consumer's own, returns, and cleared
+      when a handler is entered again. A switch is refused once it is set, so every chain's code
+      after `next` follows the switch.
+    - **Paid only where needed.** The lock exists only on a request on which a chain that can
+      switch roles with a cookie-session rotation is running. Every other request pays nothing.
+      The review measured one allocation and +4% per request on the chain benchmark when every
+      request paid.
+    - **Cost as measured:** chains without such switching match the pre-change benchmarks
+      exactly (`BenchmarkChainRequest/0`: 25 allocs, 6388 B). A chain that rotates on a role
+      switch pays 2 allocations, 128 B and about 56 ns per request.
+    - **Consequence:** a handler that runs another chain on its own exchange, and then switches,
+      is refused. Every handler return on the exchange sets the mark, and that case cannot be
+      told apart from a chain nested as a handler. Refusing is the safe outcome.
 - **Trade-off:** a switch an interceptor makes after `next` returns is refused with `ErrConfig`.
   The response's cookie can no longer be relied on there anyway, and no built-in interceptor
   switches roles.
@@ -168,7 +198,12 @@ own authenticator would continue there with no proof at all.
 | Cookie name with a prefix in another case | Configuration | Tested (4) | configuration error from `New` naming the canonical spelling |
 | Switch after the handler returned | Concurrency | Tested (5) | `ErrConfig`, nothing stored |
 | Handler returns while a switch is in progress | Concurrency | Tested (5) | the return waits for the switch; the cookie is on the response; interceptors after `next` see the successor, with no data race |
-| Interceptor code after `next` races a goroutine switch | Concurrency | Tested (5) | impossible: the switch finished first or was refused |
+| A chain mounted on its own exchange inside the switching chain (an adapter mount) | Concurrency | Tested (5) | its exchange inherits the guard; its code after `next` follows the switch |
+| A `SessionDelivery` runs a chain on its detached copy during a switch | Concurrency | Tested (5) | the copy carries no guard and inherits none; no deadlock, later switches still allowed |
+| A handler runs another chain on its own exchange, then switches | Concurrency | Accepted (5) | `ErrConfig`, nothing stored |
+| An interceptor calls `next` twice, and the handler's second pass switches | Concurrency | Tested (5) | the switch is made |
+| A `SessionDelivery` calls `SwitchActiveRole` (forbidden by the godoc) | Configuration (port) | Accepted (5) | the inner switch waits until its context ends, returns that error and stores nothing; the outer switch completes |
+| Interceptor code after `next` races a goroutine switch, on this chain or on a chain nested inside it | Concurrency | Tested (5) | impossible: the switch finished first or was refused |
 | A queued switch whose context is cancelled | Concurrency, time | Tested (5) | it gives up with the context's error and stores nothing |
 | Switch blocked on a slow store holds the handler's return | Concurrency, time | Accepted (5) | bounded by the store's own timeouts and the switch's context, not by the request context; documented in the godoc |
 | Switch after the handler began its response | Concurrency | Accepted (non-goal) | the godoc's stated outcome: the cookie is dropped and the old one becomes reuse after the window |
@@ -178,9 +213,8 @@ own authenticator would continue there with no proof at all.
 
 ## Risks / Trade-offs
 
-- [The run's mutex adds a lock to every request] → it is uncontended unless a switch is in
-  progress. A benchmark is not required. If the review asks for one, the chain's existing
-  benchmarks are run before and after.
+- [The switch lock adds cost to requests] → it exists only on requests through a chain that rotates
+  on a role switch, and was measured (decision 5). Other chains pay nothing.
 - [Canonical-only prefixes break a consumer who chose `__host-`] → nothing is released, and the
   error names the fix.
 - [Pinning `MFAAtFirstFactor` changes `Rotate`, which is released] → only a caller that edited a

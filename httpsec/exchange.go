@@ -488,6 +488,19 @@ type Exchange struct {
 	terminals [2]runTerminal
 	extra     []runTerminal
 
+	// roleSwitch orders the request's role switches against the return of
+	// its handler. It is nil until a chain that can switch roles with a
+	// cookie-session rotation (Chain.switchRotates) starts a run on the
+	// exchange, so no other request pays for it, and is never cleared once
+	// set: a switch reads it only through its run (chainRun.guard), and the
+	// runs' innermost steps (runTerminal) read it on the chain's goroutine.
+	// An exchange a chain mounts on its own, inside a run that carries a
+	// guard, takes that guard, so its handler's return is ordered against the
+	// same switches; a detached copy (a SessionDelivery's) never carries or
+	// takes one, so a chain the delivery runs cannot wait on the switch that
+	// called it.
+	roleSwitch *roleSwitchGuard
+
 	ctx context.Context
 
 	// runCtx is the context of the outermost run made on this exchange, nil

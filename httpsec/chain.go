@@ -141,6 +141,14 @@ type Chain struct {
 	// it (gatesRunning).
 	gates gateSet
 
+	// switchRotates is whether a switch of the active role on this chain
+	// rotates a cookie session: WithSwitchableRoles is on and the chain's
+	// cookie session rotates at RotateOnRoleSwitch. Only a run of such a
+	// chain gives its exchange the guard that orders a switch against the
+	// handler's return (roleSwitchGuard). It is built with fold and never
+	// written after.
+	switchRotates bool
+
 	// foldOnce builds fold and firstGate. New runs it once construction has
 	// settled the registrations; Assemble runs it too, so a Chain that did not
 	// come from New still gets its fold.
@@ -283,6 +291,14 @@ func (c *Chain) Assemble(terminal Next) Next {
 			ex.refusalReported = false
 			ex.abortReported = false
 			ex.runCtx = nil
+
+			// An exchange run again starts with its handler not yet
+			// returned. Every run of its earlier pass has ended, each
+			// after any switch in progress on it, so the mark is cleared
+			// under the lock only for a switch that is then refused.
+			if ex.roleSwitch != nil && ex.roleSwitch.handled {
+				ex.roleSwitch.mark(false)
+			}
 		}
 
 		// A chain entered again on a request it is already running on, such
@@ -310,7 +326,45 @@ func (c *Chain) Assemble(terminal Next) Next {
 		// (gatesRunning). The gate mark itself is scoped to the first gate's
 		// frame (buildFold), so neither a run of this exchange that has ended
 		// nor an earlier pass of this run leaves it set.
-		run := &chainRun{Context: ex.Context(), chain: c, method: method, path: path, parent: outer}
+		//
+		// A chain that can switch roles with a cookie-session rotation gives
+		// the exchange its guard, if no run has yet, before the run is marked
+		// and so before anything on it can resolve a session or switch: the
+		// only switch that takes the guard is one on a run of such a chain
+		// (roleSource.holdRun), which carries the guard from its start, and
+		// from then on every handler entered or returning on the exchange,
+		// whichever chain's, finds the guard (runTerminal). A terminal
+		// entered before the guard existed had nothing to clear: a new guard
+		// starts with its handler not yet returned.
+		//
+		// An exchange of its own, which an adapter's mount builds over the
+		// same request and writer, takes the guard of the nearest run it is
+		// nested in that carries one, whatever its own chain: its handler's
+		// return then waits for a switch that run's handler started, as one
+		// on the same exchange does, rather than writing the response
+		// alongside it. The copy a consumer's session delivery is handed
+		// (detachedCopy) takes none: it is called inside a switch, under the
+		// guard's lock, which a run on it would then wait for forever.
+		if ex.roleSwitch == nil && !ex.detached {
+			for r := outer; r != nil; r = r.parent {
+				if r.guard != nil {
+					ex.roleSwitch = r.guard
+
+					break
+				}
+			}
+		}
+
+		var guard *roleSwitchGuard
+		if c.switchRotates {
+			if ex.roleSwitch == nil {
+				ex.roleSwitch = &roleSwitchGuard{lock: make(chan struct{}, 1)}
+			}
+
+			guard = ex.roleSwitch
+		}
+
+		run := &chainRun{Context: ex.Context(), chain: c, method: method, path: path, parent: outer, guard: guard}
 		ex.SetContext(run)
 
 		// The outermost run's context outlives its step (runCtx is not put
@@ -322,7 +376,12 @@ func (c *Chain) Assemble(terminal Next) Next {
 			ex.runCtx = run
 		}
 
-		defer run.done.Store(true)
+		// The run is marked over as it returns, a panic included. On a run
+		// that carries the guard it is marked under the guard's lock, so a
+		// role switch in progress on it, which a run whose handler never
+		// returned (an interceptor answered first) has no other way to wait
+		// for, finishes first, and one after is refused (chainRun.end).
+		defer run.end()
 
 		// The exchange is handed the chain's per-request phase before the
 		// first interceptor runs, so a consumer interceptor's
@@ -401,10 +460,19 @@ type chainRun struct {
 	path   string
 	parent *chainRun
 
+	// guard is the exchange's role-switch guard when the run's chain can
+	// switch roles with a cookie-session rotation (Chain.switchRotates), and
+	// nil otherwise. It is set as the run is made and never written after,
+	// so a switch on another goroutine reads it without a race.
+	// It sits before the two flags so the run stays in the allocation size
+	// class it had without it.
+	guard *roleSwitchGuard
+
 	// done is set as the run returns. A context kept past its run, by a
 	// goroutine the handler started or a value detached from the request,
 	// then marks nothing, so a request sent on it later is judged in full.
 	// It is atomic because such a goroutine may read it while the run ends.
+	// It is set only by end.
 	done atomic.Bool
 
 	// gatesBegun is set while the first gate's frame of this run is running,
@@ -446,6 +514,91 @@ func (r *chainRun) Value(key any) any {
 	}
 
 	return r.Context.Value(key)
+}
+
+// end marks the run over: under its guard's lock when it carries one, so a
+// role switch in progress on it finishes first and one after is refused.
+func (r *chainRun) end() {
+	if r.guard == nil {
+		r.done.Store(true)
+
+		return
+	}
+
+	r.guard.acquireAlways()
+	defer r.guard.release()
+
+	r.done.Store(true)
+}
+
+// roleSwitchGuard orders the role switches made on one request against the
+// return of its handler, the innermost one, the consumer's own. It belongs to
+// the exchange, not to a run, so that when chains nest on the exchange every
+// chain's code after its handler, the inner chains' included, follows a
+// switch in progress, and a switch is refused once the consumer's handler has
+// returned to any of them.
+//
+// lock is held by a switch that rotates a cookie session
+// (roleSource.holdRun) from its check of handled and of its run's end
+// through its rotation and the cookie it sets on the response. The handler's
+// entry and return (runTerminal) and a run's end (chainRun.end) take it too,
+// so a switch in progress delays them: every interceptor's code after the
+// handler sees what the switch wrote and races none of it, and a switch that
+// takes the lock after the return is refused. It is a one-slot channel rather
+// than a sync.Mutex so that a switch waiting for it gives up when its context
+// ends (acquire); the chain's own steps always wait (acquireAlways). None of
+// them takes any other lock while holding it, so they wait at most for the
+// switch holding it.
+type roleSwitchGuard struct {
+	lock chan struct{}
+
+	// handled is set, under lock, as a handler on the exchange returns, and
+	// cleared, under lock, as one is entered: by an interceptor that passes
+	// the request on a second time, or by a chain run again on the exchange.
+	// Only the goroutine running the chains writes it, so that goroutine
+	// reads it without the lock; a switch reads it under the lock.
+	//
+	// Every handler's return sets it, whichever chain's, because the
+	// consumer's handler is the innermost terminal: a chain nested as
+	// another's handler returns only after it. A handler that itself runs
+	// another chain on its exchange and then switches is therefore refused.
+	handled bool
+}
+
+// acquire takes g's lock, waiting for it until ctx ends, in which case it
+// returns ctx's error and holds nothing. A ctx already ended takes nothing,
+// even when the lock is free.
+func (g *roleSwitchGuard) acquire(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	select {
+	case g.lock <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// acquireAlways takes g's lock, waiting for it however long the switch
+// holding it takes.
+func (g *roleSwitchGuard) acquireAlways() {
+	g.lock <- struct{}{}
+}
+
+// release releases g's lock.
+func (g *roleSwitchGuard) release() {
+	<-g.lock
+}
+
+// mark records, under g's lock, whether the request's handler has returned:
+// it waits for a role switch in progress on the request.
+func (g *roleSwitchGuard) mark(handled bool) {
+	g.acquireAlways()
+	defer g.release()
+
+	g.handled = handled
 }
 
 // nearestRun returns the run in progress marked nearest on ctx, or nil when
@@ -575,6 +728,12 @@ func (c *Chain) buildFold() {
 		return ok
 	})
 	c.gates = gateSetOf(c.registrations)
+	c.switchRotates = c.perRequest != nil && c.perRequest.roleSwitching &&
+		slices.ContainsFunc(c.registrations, func(r registration) bool {
+			cookie, ok := r.interceptor.(*sessionCookie)
+
+			return ok && cookie.rotatesAt(RotateOnRoleSwitch)
+		})
 
 	next := c.runTerminal
 	for i := len(c.registrations) - 1; i >= 0; i-- {
@@ -664,13 +823,33 @@ func (c *Chain) runTerminal(ex *Exchange) error {
 	next := entry.next
 	entry.running = true
 
+	// A handler entered again, by an interceptor that passes the request on
+	// a second time, may switch roles again while it runs. Without a guard
+	// on the exchange no switch can rotate, and nothing is locked.
+	if g := ex.roleSwitch; g != nil && g.handled {
+		g.mark(false)
+	}
+
 	// The mark is cleared by position, not through entry: a run entered from
 	// inside the terminal can grow the stack and move its spilled entries.
+	//
+	// The handler's return is marked on the exchange's guard, a panic or
+	// Goexit included, before any interceptor's code after next runs, this
+	// chain's or that of a chain this run is nested in: it waits for a role
+	// switch in progress on the request, so that code sees the switch's
+	// writes (the exchange's session and context, the response's cookie) and
+	// races none of them, and every switch after it is refused. The guard is
+	// read again here, since a chain run inside the terminal may have made
+	// it.
 	defer func() {
 		if i < ex.terminalCount() {
 			if e := ex.terminalAt(i); e.chain == c {
 				e.running = false
 			}
+		}
+
+		if g := ex.roleSwitch; g != nil {
+			g.mark(true)
 		}
 	}()
 

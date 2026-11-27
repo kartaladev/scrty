@@ -241,6 +241,13 @@ func detachedCopy(ex *Exchange, staged *stagedWriter) *Exchange {
 
 	port.perRequest = nil
 	port.detached = true
+
+	// The copy has no role-switch guard and takes none from the run it is
+	// nested in (Chain.Assemble): the delivery is called inside a switch's
+	// rotation, under the guard's lock, so a chain it runs on the copy would
+	// wait for that lock and never get it, and its handler's return would
+	// mark the request's own handler as returned.
+	port.roleSwitch = nil
 	port.extra = slices.Clone(ex.extra)
 
 	return &port

@@ -159,7 +159,16 @@ func withRoleSource(ctx context.Context, src *roleSource) context.Context {
 // the successor, so a later switch on the request is made on it. Call it from the handler's own goroutine,
 // before the handler writes its response: a response already begun drops the
 // re-set cookie, and the browser, left with the old identifier, is signed out
-// once the window ends. A rotation that cannot be written stores nothing,
+// once the window ends. The handler's return waits for a switch in progress
+// on the request, so a switch the handler started on another goroutine and
+// did not wait for still stores its rotation and sets its cookie before any
+// interceptor's code after the handler runs, and that code sees the
+// successor. The wait is bounded by the user loader's and the session store's
+// own timeouts and the ctx given to the switch, not by the request's context,
+// which net/http cancels only after the chain has returned. A switch made once
+// the handler has returned, from an interceptor after it or on a context kept
+// past the request, is refused. A switch waiting behind another on the same
+// request gives up when its ctx ends. A rotation that cannot be written stores nothing,
 // switches nothing and sets no cookie. A second switch on the same request
 // rotates the successor of the first. Bearer sessions are not rotated: the
 // credential a bearer client holds cannot be replaced by the response. Neither
@@ -179,15 +188,15 @@ func withRoleSource(ctx context.Context, src *roleSource) context.Context {
 //     resolve itself, such as one a consumer interceptor published, or when
 //     the session ctx carries is no longer the one the chain resolved, as
 //     when an interceptor published another after it, and, for a cookie
-//     session that a switch rotates, when the chain has finished handling the
-//     request;
+//     session that a switch rotates, once the request's handler has returned;
 //   - ErrSessionRenewalConflict when a concurrent rotation of a cookie session
 //     won, and ErrAuthenticationRequired joined to session.ErrReused when its
 //     identifier was already reused;
 //   - ErrRoleNotHeld when the user holds no grant named role in force now, and
 //     for a name over 256 bytes, not valid UTF-8 or holding a NUL byte, which
 //     no store can hold; the session is left unchanged;
-//   - a failure matching ctx's error when the request ended first;
+//   - a failure matching ctx's error when the request ended first, or ctx
+//     ended while the switch waited behind another on the same request;
 //   - otherwise a dependency failure behind fixed text, matching its cause
 //     through errors.Is.
 //
@@ -212,6 +221,28 @@ func (c *Chain) SwitchActiveRole(ctx context.Context, role string) error {
 		}
 
 		return ErrAuthenticationRequired
+	}
+
+	// A switch that rotates a cookie session holds the request's role-switch
+	// lock from here, before anything that waits on a switch in progress (the
+	// source's lock), through its rotation and cookie write, so a switch
+	// queued behind another gives up when ctx ends (holdRun).
+	var held *roleSwitchGuard
+
+	rotates := src.resolver.cookie != nil && src.resolver.cookie.rotatesAt(RotateOnRoleSwitch)
+	if rotates {
+		if err := src.holdRun(ctx); err != nil {
+			return err
+		}
+
+		// Released once the rotation is done, before the event is emitted,
+		// or on any earlier return.
+		held = src.run.guard
+		defer func() {
+			if held != nil {
+				held.release()
+			}
+		}()
 	}
 
 	// The session the request is on now must be the one the chain resolved: a
@@ -256,12 +287,16 @@ func (c *Chain) SwitchActiveRole(ctx context.Context, role string) error {
 		target = principal.ActiveRole.Name
 	}
 
-	if r.cookie != nil && r.cookie.rotatesAt(RotateOnRoleSwitch) {
+	if rotates {
 		// A cookie session records the selection on a new identifier, in the
 		// rotation's own write (session.WithSuccessorRole), so the role never
 		// changes on an identifier that existed before the switch (session
 		// fixation).
 		s, err = src.rotateForSwitch(ctx, role)
+
+		held.release()
+		held = nil
+
 		if err != nil {
 			return err
 		}
@@ -303,9 +338,16 @@ func (c *Chain) SwitchActiveRole(ctx context.Context, role string) error {
 // pending, rather than for the successor's own.
 //
 // It refuses with an error wrapping ErrConfig, and changes nothing, once the
-// chain's run of the request is over (a context kept past its request): the
-// response the cookie would be set on is gone, and a rotation the browser
-// never learns of would turn its next request into reuse.
+// request's handler has returned, to this chain or to a chain nested inside
+// it, or the run is over (a context kept past its request): the interceptors
+// after the handler, and then the response's writer, are past the point the
+// cookie and the request's session can be changed under them, and a rotation
+// the browser never learns of would turn its next request into reuse. A switch begun
+// before the handler's return holds that return off until the rotation is
+// stored and the cookie set, the return then waiting no longer than the
+// switch's reload of the user and its rotation, which the loader's and the
+// store's own timeouts and ctx bound. A switch waiting behind another on the
+// same request gives up when ctx ends, with ctx's error, and changes nothing.
 //
 // A rotation that fails sets no cookie and, but for session.ErrStoreContract
 // below, stores nothing, so the old identifier keeps working, unswitched: a
@@ -324,11 +366,9 @@ func (c *Chain) SwitchActiveRole(ctx context.Context, role string) error {
 // set, and the old identifier keeps working, with the role unchanged, through
 // its grace window only; past it, it is reuse, which revokes the sign-in
 // unless session.WithUnusedSuccessorRecovery recovers it.
+//
+// The caller holds the request's role-switch lock (holdRun).
 func (src *roleSource) rotateForSwitch(ctx context.Context, role string) (*session.Session, error) {
-	if src.ex == nil || src.run == nil || src.run.done.Load() {
-		return nil, newConfigError("SwitchActiveRole: %s", textRoleSwitchAfterRun)
-	}
-
 	src.mu.Lock()
 	defer src.mu.Unlock()
 
@@ -352,6 +392,48 @@ func (src *roleSource) rotateForSwitch(ctx context.Context, role string) (*sessi
 	src.ex.SetContext(withSession(src.ex.Context(), successor)) //nolint:contextcheck // the request's own exchange context, extended, not a new root
 
 	return successor, nil
+}
+
+// holdRun takes the request's role-switch lock (roleSwitchGuard), for a
+// switch that rotates a cookie session, and checks under it that the
+// request's handler has not returned and the run whose response the cookie is
+// re-set on is not over. On success the caller holds the lock and releases it
+// once its rotation and cookie write are done; on any error it holds nothing.
+//
+// The lock is taken before the source's (mu), and held through the switch's
+// reload of the user, its rotation and its cookie write, so no handler on the
+// exchange can return to the interceptors after it, of any chain, and the run
+// cannot end, between the check below and the cookie landing on its
+// response: the handler's return (runTerminal) and the run's end
+// (chainRun.end) wait for the switch. They take only this lock, and a switch
+// made synchronously from the handler completes before the handler returns,
+// so neither waits on the other in a cycle. It is taken before anything else
+// that waits on a switch in progress, the source's lock included, so a switch
+// queued behind another gives up when ctx ends, with ctx's error, having
+// stored nothing.
+//
+// The run is src.run, the run of the chain that resolved the session (runOf
+// in the resolution), and the guard is the one that run carries: a chain
+// whose cookie session rotates at a role switch gave its exchange the guard
+// before that run began (Chain.Assemble). A run without one, which that
+// wiring never makes, is refused rather than switched unguarded.
+func (src *roleSource) holdRun(ctx context.Context) error {
+	if src.ex == nil || src.run == nil || src.run.guard == nil {
+		return newConfigError("SwitchActiveRole: %s", textRoleSwitchAfterRun)
+	}
+
+	g := src.run.guard
+	if err := g.acquire(ctx); err != nil {
+		return err
+	}
+
+	if g.handled || src.run.done.Load() {
+		g.release()
+
+		return newConfigError("SwitchActiveRole: %s", textRoleSwitchAfterRun)
+	}
+
+	return nil
 }
 
 // storableRoleName reports whether role is a name a switch may record: at most
