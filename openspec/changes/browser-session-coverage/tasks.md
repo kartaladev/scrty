@@ -32,4 +32,4 @@ are in `plans.md`.
 
 ## 5. Gate
 
-- [ ] 5.1 Run the scoped checks for `./httpsec` (`go test -race`, `go vet`, `gofmt -l`), then the full gate `make check` and `make spec-check`, and read their output; verify both pass after the last edit
+- [x] 5.1 Run the scoped checks for `./httpsec` (`go test -race`, `go vet`, `gofmt -l`), then the full gate `make check` and `make spec-check`, and read their output; verify both pass after the last edit
