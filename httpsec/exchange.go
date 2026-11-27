@@ -391,6 +391,13 @@ type Exchange struct {
 	// refuse on it.
 	detached bool
 
+	// ownsRoleSwitch is whether roleSwitch was made by a chain run on this
+	// exchange, rather than taken from the runs it is nested in
+	// (inheritedGuard). Only the owning exchange reopens the guard to role
+	// switches as its handler is entered (roleSwitchGuard.handled); it is
+	// set whenever roleSwitch is, and never read while roleSwitch is nil.
+	ownsRoleSwitch bool
+
 	// csrfOptOut is whether the chain this exchange runs through was built
 	// with WithoutCSRFProtection, which CheckCSRFToken reads when no CSRF
 	// layer judged the request.
@@ -499,6 +506,15 @@ type Exchange struct {
 	// same switches; a detached copy (a SessionDelivery's) never carries or
 	// takes one, so a chain the delivery runs cannot wait on the switch that
 	// called it.
+	//
+	// Only the exchange that made the guard (ownsRoleSwitch) clears its
+	// handled mark as a handler is entered on it. An exchange that took the
+	// guard never clears it: its handler's entry only waits for a switch in
+	// progress, and its return sets the mark. A chain the request's handler
+	// left running on a goroutine of its own therefore cannot reopen the
+	// request to switches once the request's handler has returned, and, the
+	// accepted consequence, a switch in the second pass of an interceptor
+	// that runs next twice on such an exchange is refused.
 	roleSwitch *roleSwitchGuard
 
 	ctx context.Context

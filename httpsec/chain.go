@@ -295,8 +295,10 @@ func (c *Chain) Assemble(terminal Next) Next {
 			// An exchange run again starts with its handler not yet
 			// returned. Every run of its earlier pass has ended, each
 			// after any switch in progress on it, so the mark is cleared
-			// under the lock only for a switch that is then refused.
-			if ex.roleSwitch != nil && ex.roleSwitch.handled {
+			// under the lock, never read outside it (roleSwitchGuard). Only
+			// the exchange that made the guard reopens it: one that took it
+			// from the request would reopen the request's (ownsRoleSwitch).
+			if ex.roleSwitch != nil && ex.ownsRoleSwitch {
 				ex.roleSwitch.mark(false)
 			}
 		}
@@ -343,22 +345,20 @@ func (c *Chain) Assemble(terminal Next) Next {
 		// return then waits for a switch that run's handler started, as one
 		// on the same exchange does, rather than writing the response
 		// alongside it. The copy a consumer's session delivery is handed
-		// (detachedCopy) takes none: it is called inside a switch, under the
-		// guard's lock, which a run on it would then wait for forever.
+		// (detachedCopy) takes none, and neither does an exchange built over
+		// its context or one derived from it (inheritedGuard): the delivery
+		// is called inside a switch, under the guard's lock, which a run on
+		// any of them would then wait for forever.
 		if ex.roleSwitch == nil && !ex.detached {
-			for r := outer; r != nil; r = r.parent {
-				if r.guard != nil {
-					ex.roleSwitch = r.guard
-
-					break
-				}
-			}
+			ex.roleSwitch = inheritedGuard(ex.Context(), outer)
+			ex.ownsRoleSwitch = false
 		}
 
 		var guard *roleSwitchGuard
 		if c.switchRotates {
 			if ex.roleSwitch == nil {
 				ex.roleSwitch = &roleSwitchGuard{lock: make(chan struct{}, 1)}
+				ex.ownsRoleSwitch = true
 			}
 
 			guard = ex.roleSwitch
@@ -552,16 +552,35 @@ func (r *chainRun) end() {
 type roleSwitchGuard struct {
 	lock chan struct{}
 
-	// handled is set, under lock, as a handler on the exchange returns, and
-	// cleared, under lock, as one is entered: by an interceptor that passes
-	// the request on a second time, or by a chain run again on the exchange.
-	// Only the goroutine running the chains writes it, so that goroutine
-	// reads it without the lock; a switch reads it under the lock.
+	// handled is set, under lock, as a handler on any exchange sharing the
+	// guard returns, and cleared, under lock, as a handler is entered on the
+	// exchange that made the guard (Exchange.ownsRoleSwitch): by an
+	// interceptor that passes the request on a second time, or by a chain
+	// run again on the exchange. A handler entered on an exchange that took
+	// the guard (inheritedGuard) never clears it; its entry only waits for a
+	// switch in progress. A chain the request's handler left running on a
+	// goroutine of its own, entering its handler after the request's handler
+	// has returned, therefore leaves a switch from the request's code after
+	// next refused. The accepted consequence, in the safe direction: on an
+	// exchange that took the guard, a switch in the second pass of an
+	// interceptor that runs next twice is refused once the first pass has
+	// returned. It is read and written only under lock, by every holder
+	// alike.
 	//
 	// Every handler's return sets it, whichever chain's, because the
 	// consumer's handler is the innermost terminal: a chain nested as
 	// another's handler returns only after it. A handler that itself runs
 	// another chain on its exchange and then switches is therefore refused.
+	//
+	// The guard is shared beyond the goroutine running the request's chains.
+	// A chain the handler runs on a goroutine of its own, on an exchange
+	// built over the request's context, takes the guard too
+	// (inheritedGuard). Its handler's entry and return wait for a switch in
+	// progress on the request, and its return sets handled, so a switch on
+	// the request after it is refused: the safe outcome, accepted rather
+	// than told apart from the request's own handler. The one exchange that
+	// never shares it is a session delivery's detached copy, with every
+	// exchange built under it (detachedBoundary).
 	handled bool
 }
 
@@ -599,6 +618,32 @@ func (g *roleSwitchGuard) mark(handled bool) {
 	defer g.release()
 
 	g.handled = handled
+}
+
+// inheritedGuard returns the role-switch guard an exchange whose context is
+// ctx takes from the runs it is nested in: that of outer or of the nearest run
+// outer began inside that carries one, and nil when none does. A guard carried
+// by a run a session delivery's detached copy was made inside
+// (detachedBoundary), or by a run that run began inside, is not taken: the
+// delivery runs under that guard's lock. A guard carried by a run made under
+// the copy, on the delivery's own chains, is.
+//
+// The boundary is looked up only once a guard is found, so a request whose
+// runs carry none pays nothing for it.
+func inheritedGuard(ctx context.Context, outer *chainRun) *roleSwitchGuard {
+	for r := outer; r != nil; r = r.parent {
+		if r.guard == nil {
+			continue
+		}
+
+		if b, ok := ctx.Value(detachedBoundaryKey{}).(*detachedBoundary); ok && b.covers(r) {
+			return nil
+		}
+
+		return r.guard
+	}
+
+	return nil
 }
 
 // nearestRun returns the run in progress marked nearest on ctx, or nil when
@@ -825,9 +870,20 @@ func (c *Chain) runTerminal(ex *Exchange) error {
 
 	// A handler entered again, by an interceptor that passes the request on
 	// a second time, may switch roles again while it runs. Without a guard
-	// on the exchange no switch can rotate, and nothing is locked.
-	if g := ex.roleSwitch; g != nil && g.handled {
-		g.mark(false)
+	// on the exchange no switch can rotate, and nothing is locked. The mark
+	// is cleared under the guard's lock and never read outside it: chains
+	// on other goroutines may share the guard (roleSwitchGuard). Only the
+	// exchange that made the guard clears it. On one that took it from the
+	// request, the entry only waits for a switch in progress, so a chain left
+	// running after the request's handler returned cannot reopen the request
+	// to switches (ownsRoleSwitch).
+	if g := ex.roleSwitch; g != nil {
+		if ex.ownsRoleSwitch {
+			g.mark(false)
+		} else {
+			g.acquireAlways()
+			g.release()
+		}
 	}
 
 	// The mark is cleared by position, not through entry: a run entered from

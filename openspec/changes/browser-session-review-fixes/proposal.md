@@ -40,15 +40,15 @@ None.
   - an unsafe cookie request is refused whatever shape the token source's refusal takes;
   - a delivery that alters the cookie, quoting included, is refused;
   - cookie name prefixes must use their canonical spelling;
-  - a role switch after its request ended is refused.
+  - a role switch that rotates a cookie session is refused once its request's handler has returned.
 - `sessions`: every rotation takes `MFAAtFirstFactor` from the stored record.
 - `sender-constrained-tokens`: a key-bound session is refused at continuation on a cookie chain.
 
 ## Impact
 
-- `httpsec`: `session_cookie.go` (`csrfAnswer`, `otherCauses`, `checkAttributes`),
-  `session_delivery.go` (`sameCookie`), `chain.go` (the run's lock), `role_switch.go`
-  (`rotateForSwitch`), `dpop.go` (`credentialDelivery.continuingProof`), and their tests.
+- `httpsec`: `session_cookie.go` (`csrfAnswer`, `checkAttributes`),
+  `session_delivery.go` (`sameCookie`), `chain.go` and `exchange.go` (the per-request switch guard), `role_switch.go`
+  (`SwitchActiveRole`), `dpop.go` (`credentialDelivery.continuingProof`), and their tests.
 - `session`: `sessions.go` (strict rotation) and `reuse.go` (`successorFromCaller`), the godoc of
   `Session.MFAAtFirstFactor` and of the store's rotation contract, and their tests.
 - The `[Unreleased]` CHANGELOG entries for the cookie session.

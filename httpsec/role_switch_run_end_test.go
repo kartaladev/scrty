@@ -384,16 +384,24 @@ func TestSwitchActiveRole_QueuedSwitchGivesUp(t *testing.T) {
 
 // chainRunningDelivery is a session delivery that runs a chain of the
 // consumer's own on the exchange copy it is handed, as a delivery that
-// reuses an application's middleware might, before setting the cookie.
+// reuses an application's middleware might, before setting the cookie. With
+// fresh set it runs the chain on an exchange of its own built over the
+// copy's context, request and writer, as an adapter's mount does.
 type chainRunningDelivery struct {
 	run   httpsec.Next
+	fresh bool
 	calls atomic.Int32
 }
 
 func (d *chainRunningDelivery) Deliver(ex *httpsec.Exchange, _ *session.Session, credential string) (string, error) {
 	d.calls.Add(1)
 
-	if err := d.run(ex); err != nil {
+	on := ex
+	if d.fresh {
+		on = httpsec.NewExchange(ex.Context(), ex.Request, ex.Writer)
+	}
+
+	if err := d.run(on); err != nil {
 		return "", err
 	}
 
@@ -403,52 +411,226 @@ func (d *chainRunningDelivery) Deliver(ex *httpsec.Exchange, _ *session.Session,
 }
 
 // TestSwitchActiveRole_DeliveryRunsChainOnItsCopy pins that a consumer's
-// session delivery that runs a chain on the exchange copy it is handed shares
-// nothing with the request's role-switch ordering: called inside a switch's
-// rotation, it neither waits for the switch it is part of, which would never
-// end, nor marks the request's handler as returned, so a second switch on the
-// request is still made.
+// session delivery that runs a chain on the exchange copy it is handed, or on
+// an exchange of its own built over that copy's context, shares nothing with
+// the request's role-switch ordering: called inside a switch's rotation, it
+// neither waits for the switch it is part of, which would never end, nor
+// marks the request's handler as returned, so a second switch on the request
+// is still made.
 func TestSwitchActiveRole_DeliveryRunsChainOnItsCopy(t *testing.T) {
 	t.Parallel()
+
+	tests := []struct {
+		name  string
+		fresh bool
+	}{
+		{name: "on the copy it is handed"},
+		{name: "on an exchange of its own over the copy's context", fresh: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			inner, err := httpsec.New()
+			require.NoError(t, err)
+
+			delivery := &chainRunningDelivery{
+				run:   inner.Assemble(func(*httpsec.Exchange) error { return nil }),
+				fresh: tc.fresh,
+			}
+
+			w := newSwitchCookieWorldWith(t, nil, nil,
+				[]httpsec.SessionCookieOption{httpsec.WithSessionDelivery(delivery)},
+				func(*session.Sessions) []httpsec.Option { return nil })
+
+			var first, second error
+
+			done := make(chan struct{})
+
+			var out served
+
+			go func() {
+				defer close(done)
+
+				out = w.post(t, w.signIn.ID, func(ex *httpsec.Exchange) error {
+					first = w.chain.SwitchActiveRole(ex.Context(), "audit")
+					second = w.chain.SwitchActiveRole(ex.Context(), "")
+
+					return nil
+				})
+			}()
+
+			select {
+			case <-done:
+			case <-time.After(queuedGiveUpBound):
+				// The request is left blocked; the test fails rather than hangs.
+				t.Fatal("the request deadlocked: the delivery's chain waited for the switch that called it")
+			}
+
+			// Every row asserts the same invariants: both switches complete
+			// and each delivers its successor.
+			require.NoError(t, out.err)
+			require.True(t, out.handlerRan)
+			require.NoError(t, first, "the first switch completed")
+			require.NoError(t, second, "the delivery's chain did not mark the request's handler as returned")
+			assert.Equal(t, int32(2), delivery.calls.Load(), "each switch delivered its successor")
+		})
+	}
+}
+
+// TestSwitchActiveRole_FannedOutChainsShareGuard pins that chains a handler
+// runs on goroutines of its own, each on an exchange built over the request's
+// context, share the request's role-switch guard without a data race (run
+// under -race), and that their handlers' returns count as the request's: a
+// switch on the request after they have returned is refused.
+func TestSwitchActiveRole_FannedOutChainsShareGuard(t *testing.T) {
+	t.Parallel()
+
+	const (
+		goroutines = 8
+		runsEach   = 25
+	)
 
 	inner, err := httpsec.New()
 	require.NoError(t, err)
 
-	delivery := &chainRunningDelivery{run: inner.Assemble(func(*httpsec.Exchange) error { return nil })}
+	run := inner.Assemble(func(*httpsec.Exchange) error { return nil })
 
-	w := newSwitchCookieWorldWith(t, nil, nil,
-		[]httpsec.SessionCookieOption{httpsec.WithSessionDelivery(delivery)},
-		func(*session.Sessions) []httpsec.Option { return nil })
+	w := newSwitchCookieWorld(t)
 
-	var first, second error
+	var (
+		switched error
+		runErrs  [goroutines]error
+	)
 
-	done := make(chan struct{})
+	out := w.post(t, w.signIn.ID, func(ex *httpsec.Exchange) error {
+		var wg sync.WaitGroup
 
-	var out served
+		for g := range goroutines {
+			wg.Go(func() {
+				for range runsEach {
+					fan := httpsec.NewExchange(ex.Context(), ex.Request,
+						httpsec.NewHTTPResponseWriter(httptest.NewRecorder()))
+					if err := run(fan); err != nil {
+						runErrs[g] = err
 
-	go func() {
-		defer close(done)
+						return
+					}
+				}
+			})
+		}
 
-		out = w.post(t, w.signIn.ID, func(ex *httpsec.Exchange) error {
-			first = w.chain.SwitchActiveRole(ex.Context(), "audit")
-			second = w.chain.SwitchActiveRole(ex.Context(), "")
+		wg.Wait()
 
-			return nil
-		})
-	}()
+		switched = w.chain.SwitchActiveRole(ex.Context(), "audit")
+
+		return nil
+	})
+
+	require.NoError(t, out.err)
+	require.True(t, out.handlerRan)
+
+	for g, err := range runErrs {
+		require.NoError(t, err, "fanned-out goroutine %d", g)
+	}
+
+	require.ErrorIs(t, switched, httpsec.ErrConfig, "the fanned-out handlers' returns count as the request's")
+	assert.Empty(t, sessionCookiesSet(t, out), "the refused switch set no cookie")
+}
+
+// TestSwitchActiveRole_FannedOutHandlerEntryAfterReturn pins that a chain a
+// handler left running on a goroutine of its own, on an exchange built over
+// the request's context, does not reopen the request to role switches when its
+// own handler is entered after the request's handler has returned. The
+// goroutine's chain enters its handler only once the request's handler has
+// returned, and holds it there while an interceptor after next on the
+// request's chain switches: the switch is refused and stores nothing.
+func TestSwitchActiveRole_FannedOutHandlerEntryAfterReturn(t *testing.T) {
+	t.Parallel()
+
+	fanChain, err := httpsec.New()
+	require.NoError(t, err)
+
+	var (
+		w           *switchCookieWorld
+		switched    error
+		switchMade  bool
+		fanErr      error
+		returned    = make(chan struct{}) // the request's handler has returned
+		fanEntered  = make(chan struct{}) // the goroutine's handler is running
+		switchDone  = make(chan struct{}) // the switch after next has returned
+		fanFinished = make(chan struct{})
+	)
+
+	fanRun := fanChain.Assemble(func(*httpsec.Exchange) error {
+		close(fanEntered)
+
+		select {
+		case <-switchDone:
+		case <-time.After(raceTimeout):
+		}
+
+		return nil
+	})
+
+	w = newSwitchCookieWorld(t, httpsec.RegisterInterceptor(httpsec.InterceptorFunc(
+		func(ex *httpsec.Exchange, next httpsec.Next) error {
+			err := next(ex)
+
+			close(returned)
+
+			select {
+			case <-fanEntered:
+				switched = w.chain.SwitchActiveRole(ex.Context(), "audit")
+				switchMade = true
+			case <-time.After(raceTimeout):
+			}
+
+			close(switchDone)
+
+			return err
+		}), httpsec.OrderSessionTouch))
+
+	out := w.post(t, w.signIn.ID, func(ex *httpsec.Exchange) error {
+		ctx, req := ex.Context(), ex.Request
+
+		go func() {
+			defer close(fanFinished)
+
+			select {
+			case <-returned:
+			case <-time.After(raceTimeout):
+				return
+			}
+
+			fanErr = fanRun(httpsec.NewExchange(ctx, req, httpsec.NewHTTPResponseWriter(httptest.NewRecorder())))
+		}()
+
+		return nil
+	})
 
 	select {
-	case <-done:
-	case <-time.After(queuedGiveUpBound):
-		// The request is left blocked; the test fails rather than hangs.
-		t.Fatal("the request deadlocked: the delivery's chain waited for the switch that called it")
+	case <-fanFinished:
+	case <-time.After(raceTimeout):
+		t.Fatal("the fanned-out chain never finished")
 	}
 
 	require.NoError(t, out.err)
 	require.True(t, out.handlerRan)
-	require.NoError(t, first, "the first switch completed")
-	require.NoError(t, second, "the delivery's chain did not mark the request's handler as returned")
-	assert.Equal(t, int32(2), delivery.calls.Load(), "each switch delivered its successor")
+	require.NoError(t, fanErr)
+	require.True(t, switchMade, "the fanned-out handler was entered before the switch")
+
+	require.ErrorIs(t, switched, httpsec.ErrConfig, "the request's handler had returned")
+	assert.Empty(t, sessionCookiesSet(t, out), "the refused switch set no cookie")
+
+	raw, err := w.store.Load(t.Context(), w.signIn.ID)
+	require.NoError(t, err)
+	assert.True(t, raw.SupersededAt.IsZero(), "nothing was rotated")
+
+	n, err := w.sessions.CountActiveByUser(t.Context(), testUserID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "no successor was stored")
 }
 
 // TestSwitchActiveRole_AfterHandlerReturned pins that a role switch on a
@@ -660,6 +842,52 @@ func TestSwitchActiveRole_AfterHandlerReturned(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, "audit", successor.SelectedRole)
 			},
+		},
+		{
+			// Accepted: only the exchange whose chain made the guard reopens
+			// it as its handler is entered. On an exchange that took the
+			// guard from the request, a second pass through its handler
+			// stays closed once the first pass has returned.
+			name: "second pass through the handler, on an exchange of its own",
+			act: func(t *testing.T) (*switchCookieWorld, served, error) {
+				w := newSwitchCookieWorld(t)
+
+				inner, err := httpsec.New(httpsec.RegisterInterceptor(httpsec.InterceptorFunc(
+					func(ex *httpsec.Exchange, next httpsec.Next) error {
+						if err := next(ex); err != nil {
+							return err
+						}
+
+						return next(ex)
+					}), httpsec.Order(100)))
+				require.NoError(t, err)
+
+				var (
+					passes   int
+					switched error
+				)
+
+				run := inner.Assemble(func(ex *httpsec.Exchange) error {
+					passes++
+					if passes == 2 {
+						switched = w.chain.SwitchActiveRole(ex.Context(), "audit")
+					}
+
+					return nil
+				})
+
+				out := w.post(t, w.signIn.ID, func(ex *httpsec.Exchange) error {
+					own := httpsec.NewExchange(ex.Context(), ex.Request,
+						httpsec.NewHTTPResponseWriter(httptest.NewRecorder()))
+
+					return run(own)
+				})
+				require.NoError(t, out.err)
+				require.Equal(t, 2, passes, "the inner handler ran twice")
+
+				return w, out, switched
+			},
+			assert: refused,
 		},
 	}
 

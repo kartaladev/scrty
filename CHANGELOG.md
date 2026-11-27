@@ -22,7 +22,7 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 - **BREAKING (behaviour): a strict `session.Sessions.Rotate` never extends a session, never moves it to another user, and keeps the stored first factor and second-factor-at-login mark.** A copy naming another user is refused with `session.ErrConfig`.
 - **BREAKING (behaviour): MFA verification and re-authentication answer 409 when the session's stored security state changed since the request loaded it**, on every chain.
 - A cookie chain never binds sessions to a sender key (DPoP proof or client certificate); the OpenID Provider's tokens still bind. Second-factor verification, re-authentication and renewal there refuse a key-bound session a consumer's authenticator published.
-- A request's handler return waits for a `SwitchActiveRole` in progress on it, so its cookie lands on the response and no interceptor after the handler races it; a switch after the handler returned is refused with `ErrConfig`, and one waiting behind another gives up when its context ends.
+- A request's handler return waits for a `SwitchActiveRole` that rotates a cookie session and is in progress on it, so its cookie lands on the response and no interceptor after the handler races it; a switch after the handler returned is refused with `ErrConfig`, and one waiting behind another gives up when its context ends.
 - MFA verification and re-authentication rotate with a grace window on a cookie chain.
 
 ### Fixed

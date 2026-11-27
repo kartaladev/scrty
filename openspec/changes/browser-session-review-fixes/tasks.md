@@ -10,7 +10,7 @@ scoped to the changed packages and their dependents (`test-scope.md`). The comma
 ## 1. CSRF refusal fails closed (design 1)
 
 - [x] 1.1 Red: rows in `TestSessionCookie_RefusalExpires` (or the table that holds the CSRF token-source rows) with a `CSRFTokens` mock whose `Verify` returns `errors.Join(ErrAuthenticationRequired, nil-entry)` via a custom `Unwrap() []error`, and one with a typed-nil child; assert `ErrCrossSiteRequest`, `403`, handler not run, no charge, no `Set-Cookie`, no panic; see both fail on the unmodified code (admitted / panic)
-- [x] 1.2 Green: `otherCauses` skips nil and typed-nil entries, and `csrfAnswer` returns `ErrCrossSiteRequest` when the joined remainder is nil; the 1.1 rows and the existing outage row pass
+- [x] 1.2 Green: `csrfAnswer` walks the error tree once through `internal/errwalk`, classifying nodes by type, and answers `ErrCrossSiteRequest` when no cause remains or the walk aborts (logged); the 1.1 rows and the existing outage row pass
 
 ## 2. Canonical cookie name prefixes (design 4)
 
@@ -36,7 +36,7 @@ scoped to the changed packages and their dependents (`test-scope.md`). The comma
 ## 6. Role switch and the handler's return exclude each other (design 5, revised)
 
 - [x] 6.1 Red: a barrier test where a role switch runs on a goroutine and is held inside the rotation while the handler returns, with an interceptor after `next` that reads `ex.Session`, `ex.Context()` and sets a response header; assert, under `-race`, no data race, the return waits for the switch, the response headers snapshotted right after the run carry the successor's cookie, and the interceptor saw the successor; a test that a switch after the handler returned is refused with `ErrConfig`, storing nothing; and a test that a queued switch whose context is cancelled gives up with that error and stores nothing; see the first and third fail on the current lane code (race report / blocked wait)
-- [x] 6.2 Green: the run's lock becomes a cancellable one-slot lock with a "handler returned" mark set under it by `runTerminal` after the terminal returns; `rotateForSwitch` acquires it honouring its context, then the role source's lock, checks the mark, and holds it through the rotation and the cookie write; the godoc of `SwitchActiveRole` states the handler's return waits for a switch in progress, that a switch after it is refused, and that the store's own timeouts bound the wait
+- [x] 6.2 Green: a per-request guard (a cancellable one-slot lock and a "handler returned" mark set under it by every handler return) is created only by a chain that rotates on a role switch, inherited by exchanges built inside a guarded run, and never by a detached copy; `SwitchActiveRole` takes it at its start honouring its context, then the role source's lock, checks the mark, and holds it through the rotation and the cookie write; the godoc of `SwitchActiveRole` states the handler's return waits for a switch in progress, that a switch after it is refused, and that the store's own timeouts bound the wait
 - [x] 6.3 Run the switch, chain, nested-chain and logout-during-switch tests with `-race -count=20`, and the ginsec and fibersec suites, and confirm no deadlock or race
 
 ## 7. Documentation

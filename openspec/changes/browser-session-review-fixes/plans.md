@@ -86,7 +86,7 @@ go vet ./session/... && gofmt -l session
 
 ### Task 1: CSRF refusal fails closed (tasks 1.1–1.2, lane A)
 
-**Files:** Modify `httpsec/session_cookie.go` (`csrfAnswer` :281, `otherCauses` :309). Test
+**Files:** Modify `httpsec/session_cookie.go` (`csrfAnswer` :281; the original `otherCauses` :309 is replaced by a single errwalk walk after review). Test
 `httpsec/session_cookie_test.go`, in the table that holds the `authRequiredTokens()` /
 `outageTokens()` rows (uses near :556, :577). Those are now `NewMockCSRFTokens` helpers.
 
@@ -106,10 +106,10 @@ go vet ./session/... && gofmt -l session
   FAIL, either the nil-entry row admitted (200 and the handler ran) or the typed-nil row panicked.
   Record the output.
 - [ ] **Step 3: Green.**
-  - `otherCauses(err error, budget *int) ([]error, bool)` skips a nil entry and a typed-nil value,
-    meaning `reflect.ValueOf(e).Kind() == reflect.Pointer && IsNil()`, as `internal/errwalk`
-    defines it, and never calls a method on either.
-  - `csrfAnswer` returns `ErrCrossSiteRequest` when `errors.Join(causes...)` is nil.
+  - As built after review: `csrfAnswer(ctx, err)` flattens the tree once with
+    `errwalk.FlattenInto`, and `csrfRefusalCauses` classifies its nodes by type. It answers
+    `ErrCrossSiteRequest` when no cause remains or the walk aborts, which is logged, and also
+    when the tree exceeds `csrfCauseBudget`. No consumer method is called outside errwalk.
 - [ ] **Step 4: Run** the table, then the outage row. Expected: PASS, and the outage row still
   fails as the dependency failure.
 
@@ -198,7 +198,7 @@ that calls the terminal), and the run's end (`run.end()` from the first dispatch
 `httpsec/role_switch.go` (`rotateForSwitch` and the godoc of `SwitchActiveRole`). Test
 `httpsec/role_switch_run_end_test.go`.
 
-**Interfaces:**
+**Interfaces (as first planned; superseded by design decision 5 "as built": one guard per request on `Exchange.roleSwitch`, taken at the start of `SwitchActiveRole`, inherited by exchanges built inside a guarded run, never by a detached copy):**
 - `chainRun` holds `lock chan struct{}` (capacity 1) and `handled bool`, which is written only
   while the lock is held. The `done atomic.Bool` stays for the lock-free readers.
 - The lock methods:

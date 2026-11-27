@@ -31,21 +31,25 @@ instead, the claim was wrong: that fix is dropped and the user is told.
 ### 1. A CSRF refusal never becomes an admission
 
 `csrfAnswer` keeps the token source's non-verdict causes, such as a store outage, so they surface
-as what they are. Today `otherCauses` returns a nil entry of an `Unwrap() []error` as a leaf.
-`errors.Join(nil)` is nil, so the refusal turns into no error. A typed-nil child is unwrapped
+as what they are. Before this change, a nil entry of an `Unwrap() []error` was taken for a cause:
+`errors.Join(nil)` is nil, so the refusal turned into no error. A typed-nil child was unwrapped
 through its pointer receiver, which panics.
 
 - **Decision:**
-  - `otherCauses` skips nil entries and typed-nil values. A typed nil is a pointer kind whose
-    pointer is nil, the same rule `internal/errwalk` applies.
-  - `csrfAnswer` returns `ErrCrossSiteRequest` whenever the joined remainder is nil. The fallback
-    holds even if a future walk returns something unexpected.
-  - After lane A's review, the tree is walked once through `internal/errwalk`, so no consumer
-    `Is` or `Unwrap` method is called outside its recover. Any abort (a panic, a cycle, the
-    budget) is reported and answered as a cross-site refusal.
+  - `csrfAnswer` walks the token source's error tree once, through `internal/errwalk`. That
+    walk is budgeted, cycle-safe and typed-nil-safe, and it recovers panics. Nodes are
+    classified by type alone (wrappers, leaves, the sentinel), so no consumer `Is` or `Unwrap`
+    method runs outside errwalk's recover.
+  - Any abort (a panic, a cycle, errwalk's budget) and a tree longer than the CSRF walk budget
+    are logged and answered as a cross-site refusal.
+  - When no cause remains, the answer is `ErrCrossSiteRequest`.
   - Consequence: a wrapper whose `Unwrap` returns nothing, beside the sentinel, is not a cause.
     The answer is a cross-site refusal, not a dependency failure. Telling it apart would need a
     second call to its `Unwrap`, and refusal is the safe outcome.
+  - Over HTTP, `CheckCSRFToken`'s `porterr.SanitizeTo` walks the tree first. A tree it cannot
+    walk (a panicking `Unwrap`, a cycle, errwalk's budget) therefore reaches the client as a
+    dependency failure. It is never an admission. `csrfAnswer`'s own abort branches guard
+    callers that skip the sanitizer.
 - **Default:** a refusal of any shape is a cross-site refusal (`403`), not charged, with the cookie
   left in place.
 - **Override:** none. The consumer's `CSRFTokens` port stays replaceable. What it cannot do is
@@ -111,28 +115,32 @@ handler returns. The reviewer reproduced three race-detector reports: a concurre
 response's header map, which crashes a real `net/http` server, and races on `ex.Session` and the
 request context. The user chose to close it at the handler's return.
 
-- **Decision:**
-  - The run gets a lock and a "handler returned" mark. The innermost step of the run
-    (`runTerminal`), once the terminal handler returns, takes the lock, sets the mark and
-    releases it, before any interceptor's code after `next` runs.
-  - `rotateForSwitch` takes the run's lock, then the role source's lock, and checks the mark under
-    it. It holds the run's lock through the rotation and the cookie write.
-  - A switch that finds the mark set is refused with `ErrConfig`, and stores nothing.
+- **Decision (as built):**
+  - One guard per request, held by the exchange (`Exchange.roleSwitch`). It is a cancellable
+    one-slot lock with a "handler returned" mark that is only read and written under it.
+  - Every handler return on the exchange sets the mark under the lock, and entering a handler
+    clears it. A run whose handler never ran sets its end under the lock.
+  - `SwitchActiveRole` takes the guard at its start (`holdRun`) when it rotates a cookie session,
+    honouring its context. It then takes the role source's lock, checks the mark and the run's
+    end, and holds the guard through the user reload, the rotation and the cookie write.
+  - A switch that finds the mark or the end set is refused with `ErrConfig`, and stores nothing.
   - Every write the switch makes (the session store, `ex.Session`, the context, the response
-    headers) therefore happens before the interceptors' code after `next` reads or writes them.
-  - The run's own end keeps its existing `done` mark. A run whose terminal never runs, because an
-    interceptor answered first, is marked at its end, as before.
-- **Waiting is cancellable:** a switch waiting for the run's lock gives up when its context ends,
-  with that context's error, and stores nothing. The lock is a one-slot channel rather than a
-  `sync.Mutex`. The handler's return always waits.
-- **Bound:** once a switch holds the lock, its rotation is bounded by the store's own timeouts and
-  the context the caller gave. Under `net/http` the request context is cancelled only after the
-  handler chain returns, so it does not bound the rotation the handler's return waits for. The
-  godoc of `SwitchActiveRole` says so.
-- **Lock order:** the run's lock, then the role source's. The handler's return takes only the
-  run's lock. A switch called on the handler's own goroutine completes before the handler returns,
-  so it never waits on that return.
-- **Cost:** one uncontended lock and unlock per run, on every chain.
+    headers) therefore happens before any chain's code after `next` reads or writes them.
+- **Waiting is cancellable:** a switch waiting for the guard gives up when its context ends, with
+  that context's error, and stores nothing. A handler's return always waits.
+- **Bound:** a switch holding the guard is bounded by the user loader's and the store's own
+  timeouts and by the context the caller gave. Under `net/http` the request context is cancelled
+  only after the handler chain returns, so it bounds nothing here. The godoc of `SwitchActiveRole`
+  says so.
+- **Lock order:** the guard, then the role source's lock. The chain's own steps take only the
+  guard. A switch called on the handler's own goroutine completes before the handler returns.
+- **Sharing:** chains nested as handlers share the exchange's guard. An exchange a chain builds on
+  its own inside a guarded run inherits it, so adapter mounts and chains a handler runs on other
+  goroutines are covered. Only the exchange that owns the guard clears the mark when its handler is
+  entered. An inheriting exchange waits and sets it, but never clears it. A detached copy (a `SessionDelivery`'s) carries none, and nothing built
+  from its context inherits one.
+- **Cost:** only a chain that rotates on a role switch creates the guard. Every other request
+  pays nothing.
 - **Default / override:** no override. This is a correctness guarantee of `SwitchActiveRole`.
 - **As implemented (lane D):**
   - **Where the lock is taken:** at the start of `SwitchActiveRole`, when it rotates a cookie
@@ -188,7 +196,8 @@ own authenticator would continue there with no proof at all.
 | Token source refusal with a nil entry in its error tree | Input (port), security | Tested (1) | `403` cross-site, not charged, cookie kept |
 | Token source refusal with a typed-nil entry | Input (port) | Tested (1) | `403` cross-site, no panic |
 | Token source refusal joined to an outage | Dependencies | Tested (1, existing) | the dependency failure, as before |
-| Token source refusal whose tree walk aborts (a panicking `Is` or `Unwrap`, a cycle, errwalk's budget) | Input (port) | Tested (1) | `403` cross-site, not charged, cookie kept; the abort is logged |
+| Token source refusal whose `Is` panics | Input (port) | Tested (1) | `403` cross-site, not charged, cookie kept; the abort is logged |
+| Token source refusal with a panicking `Unwrap`, a cycle, or past errwalk's budget | Input (port) | Tested (1) | over HTTP the sanitizer answers a dependency failure first; never an admission. Called directly, `csrfAnswer` answers `403` cross-site and logs the abort |
 | Token source refusal tree longer than the CSRF walk budget | Input (port) | Tested (1) | `403` cross-site, not charged, cookie kept; the abort is logged |
 | A wrapper whose own `Is` claims the sentinel | Input (port) | Tested (1) | over nothing: `403` cross-site; over an outage: the outage |
 | A wrapper that wraps nothing, beside the sentinel | Input (port) | Tested (1) | `403` cross-site, not a dependency failure |
@@ -200,6 +209,9 @@ own authenticator would continue there with no proof at all.
 | Handler returns while a switch is in progress | Concurrency | Tested (5) | the return waits for the switch; the cookie is on the response; interceptors after `next` see the successor, with no data race |
 | A chain mounted on its own exchange inside the switching chain (an adapter mount) | Concurrency | Tested (5) | its exchange inherits the guard; its code after `next` follows the switch |
 | A `SessionDelivery` runs a chain on its detached copy during a switch | Concurrency | Tested (5) | the copy carries no guard and inherits none; no deadlock, later switches still allowed |
+| The handler runs chains on its own goroutines, on exchanges built from the request's context | Concurrency | Tested (5) | they share the guard: their return waits for a switch in progress, and a later switch on the main request is refused |
+| A chain on an exchange that inherited the guard enters its handler after the main handler returned | Concurrency | Tested (5) | it does not clear the mark; only the exchange that owns the guard does. A switch from the main request's code after `next` stays refused. An inherited exchange's second pass through its handler therefore cannot switch (accepted: the safe direction) |
+| A `SessionDelivery` runs a chain on an exchange built from its copy's context | Concurrency | Tested (5) | that exchange inherits no guard; no deadlock |
 | A handler runs another chain on its own exchange, then switches | Concurrency | Accepted (5) | `ErrConfig`, nothing stored |
 | An interceptor calls `next` twice, and the handler's second pass switches | Concurrency | Tested (5) | the switch is made |
 | A `SessionDelivery` calls `SwitchActiveRole` (forbidden by the godoc) | Configuration (port) | Accepted (5) | the inner switch waits until its context ends, returns that error and stores nothing; the outer switch completes |

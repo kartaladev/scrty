@@ -23,7 +23,7 @@ A consumer's session delivery SHALL set the cookie the chain built, with every a
 - **THEN** the sign-in fails as an issuing failure, the response carries no session cookie, and the session is ended
 
 ### Requirement: A role switch after its handler has returned is refused
-A role switch on a cookie chain SHALL be refused, storing nothing, once its request's handler has returned. A switch in progress SHALL complete before the handler's return completes. A switch waiting behind another SHALL give up when its own context ends.
+A role switch that rotates a cookie session SHALL be refused, storing nothing, once its request's handler has returned. A switch in progress SHALL complete before the handler's return completes. A switch waiting behind another SHALL give up when its own context ends.
 
 #### Scenario: Switch after the handler returned
 - **WHEN** a role switch is made with the context of a request whose handler has already returned

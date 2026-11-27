@@ -246,11 +246,60 @@ func detachedCopy(ex *Exchange, staged *stagedWriter) *Exchange {
 	// nested in (Chain.Assemble): the delivery is called inside a switch's
 	// rotation, under the guard's lock, so a chain it runs on the copy would
 	// wait for that lock and never get it, and its handler's return would
-	// mark the request's own handler as returned.
+	// mark the request's own handler as returned. Its context marks the same
+	// boundary for every exchange built over it or a context derived from it
+	// (inheritedGuard), as an adapter's mount builds one.
 	port.roleSwitch = nil
+	port.ctx = newDetachedBoundary(ex.ctx)
 	port.extra = slices.Clone(ex.extra)
 
 	return &port
+}
+
+// detachedBoundaryKey is the context key a detachedBoundary answers to.
+type detachedBoundaryKey struct{}
+
+// detachedBoundary is the context of a session delivery's detached copy. It
+// records the run, finished or not, marked nearest on the context the copy was
+// made from: no exchange whose context derives from the boundary takes a
+// role-switch guard carried by that run or by any run it began inside
+// (inheritedGuard). Every other key, the runs themselves included, is answered
+// by the context it wraps, so a chain run under the boundary is judged as it
+// would be on the request.
+type detachedBoundary struct {
+	context.Context //nolint:containedctx // the boundary marks the context it wraps, and is that context
+
+	run *chainRun
+}
+
+// newDetachedBoundary wraps ctx in a boundary at the run marked nearest on it.
+func newDetachedBoundary(ctx context.Context) *detachedBoundary {
+	r, _ := ctx.Value(chainRunKey{}).(*chainRun)
+
+	return &detachedBoundary{Context: ctx, run: r}
+}
+
+// Value answers detachedBoundaryKey with the boundary, the nearest one when
+// boundaries nest, and every other key from the context it wraps.
+func (b *detachedBoundary) Value(key any) any {
+	if _, ok := key.(detachedBoundaryKey); ok {
+		return b
+	}
+
+	return b.Context.Value(key)
+}
+
+// covers reports whether r is the boundary's run or a run it began inside.
+// The innermost boundary covers every run an outer one does, since its run
+// began inside the outer one's.
+func (b *detachedBoundary) covers(r *chainRun) bool {
+	for a := b.run; a != nil; a = a.parent {
+		if a == r {
+			return true
+		}
+	}
+
+	return false
 }
 
 // copySession returns a session sharing no map or slice with s, nil for nil.
