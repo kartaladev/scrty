@@ -45,4 +45,4 @@ scoped to the changed packages and their dependents (`test-scope.md`). The comma
 
 ## 8. Gate
 
-- [ ] 8.1 Run the scoped checks for every changed package and its dependents, then a whole-branch review against this change's specs, then `make check` and `make spec-check`, and read their output; verify both pass after the last edit
+- [x] 8.1 Run the scoped checks for every changed package and its dependents, then a whole-branch review against this change's specs, then `make check` and `make spec-check`, and read their output; verify both pass after the last edit
