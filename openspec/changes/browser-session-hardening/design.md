@@ -161,6 +161,32 @@ design are the baseline. Decision numbers below are this change's own.
 - **Alternatives:** detect a rewritten header at request time (heuristic, tied to fasthttp's
   parsing rules); read the parsed copy when it differs (reopens the duplicate gap). Both rejected.
 
+- **Settled during implementation (H2b):**
+  - Session renewal on a cookie chain also rotates the session, so it follows the same rule: it
+    does not read a DPoP proof for the session either.
+  - `DPoP.Require` governs the tokens a chain issues, so on a cookie chain it no longer forces a
+    proof at sign-in. The godoc says so.
+  - The provider's token endpoint on a cookie chain still binds its tokens. A test pins it.
+
+### 8. A grace rotation from a caller's copy refuses a record that changed since the copy was loaded
+
+- **Problem (automated security review of 94e70b32):** the copy is loaded at the start of the
+  request. A confinement, a second-factor downgrade or a pending password change that another
+  request saves before the rotation would be overwritten by the copy's older state.
+- **Decision (user decision, 2026-11-27: fix in this PR):** `WithSuccessorFromCaller(loaded *Session)`
+  takes the session as the caller loaded it, before its own changes. Before anything is written,
+  the rotation compares the stored record with `loaded` on the security state: `MFA`,
+  `MFASatisfiedAt`, `AuthenticatedAt`, `PasswordChangePending`, `EnrolmentOriginDeadline`,
+  `EnrolmentGeneration`, `RecoveredAt` and `AbsoluteExpiresAt`. Any difference is refused with
+  `ErrRenewalConflict` (409) and nothing is written. The caller's own changes are the difference
+  between `loaded` and `current`, so the enrolment marks the verification sets are still taken.
+  A nil `loaded`, or one with another identifier, is `ErrConfig`.
+- **Residual:** a `Save` landing between the rotation's read and its supersede write is not caught,
+  because `Store.Supersede` conditions only on the successor digest. This is accepted: the window
+  is the store round-trip, and closing it needs a new store condition on every backend.
+- **Default / override:** an option the library's own endpoints pass. No consumer default
+  changes. It is a pre-tag API change.
+
 ## Failure modes
 
 | Failure | Category | State | What the caller sees |
@@ -177,7 +203,7 @@ design are the baseline. Decision numbers below are this change's own.
 | Renewal with the old cookie inside the window after an MFA rotation | Concurrency | Handled, tested | the old cookie's session still owes its second factor, so the gate refuses the renewal before it runs; nothing is written and the new cookie keeps working (found by H2) |
 | Renewal with the old cookie inside the window after a re-authentication | Concurrency | Accepted, tested | the renewal re-rotates from the stored record and closes the re-authenticated successor's window; the next request with the new cookie is reuse and the family is revoked. Fails closed, as any re-rotation the archived design accepts |
 | A gate another request saved after the caller's copy was loaded | State / Security | Handled, tested | `PasswordChangePending` is raised if either the stored record or the copy has it, so a concurrent `Save` that raises it is never cleared by the rotation. The other caller-owned fields follow the copy, as a strict rotation does (accepted) |
-| Confinement or second-factor state saved by another request after the caller's copy was loaded (enrolment or recovery pending, enrolment deadlines) | State / Security | Planned in this change (user decision, 2026-11-27: fix in PR #160 after H2) | the rotation writes the copy's state, as the strict rotation MFA verification and re-authentication used before this change already did. A stale copy can drop a confinement saved in the narrow window between load and rotation. The fix is an optimistic check against the state the copy was loaded with, which must allow the enrolment marks the verification itself sets. Raised by the automated security review of 94e70b32. Designed and tasked once H2b lands |
+| Confinement or second-factor state saved by another request after the caller's copy was loaded (enrolment or recovery pending, enrolment deadlines) | State / Security | Handled, tested (decision 8) | `ErrRenewalConflict` (409) and nothing written, when the stored security state differs from the state the copy was loaded with. A save between the rotation's read and its write is accepted (residual) |
 | Strict `Rotate` takes both deadlines and the user from the caller's copy | State | Accepted here, follow-up | the existing behaviour, reachable only by consumer code that edits the copy; out of scope for this change. `WithSuccessorFromCaller`'s godoc no longer says "as Rotate builds it", and states its own rules |
 | Client hangs up after the MFA or re-authentication rotation committed | Concurrency | Accepted | the old cookie works through the window and is reuse after it, revoking the sign-in, as the archived design accepts for the role switch; `WithUnusedSuccessorRecovery` softens it. Before this change the old cookie was signed out immediately |
 | Password change on a session close to its idle deadline | State | Handled, tested | the saved successor keeps `now + idle` from the rotation |

@@ -19,6 +19,10 @@
 - **WHEN** the caller's copy carries a later absolute deadline, another selected role, or `PasswordChangePending` false while the stored record has it true
 - **THEN** the successor keeps the stored absolute deadline and role, and `PasswordChangePending` true
 
+#### Scenario: Record changed since the copy was loaded
+- **WHEN** another request saves a confinement or a pending password change on the session after the caller loaded it, and the caller then rotates its copy with `WithSuccessorFromCaller(loaded)`
+- **THEN** the rotation fails with `ErrRenewalConflict`, and nothing is written
+
 #### Scenario: Already superseded
 - **WHEN** a session a renewal superseded inside its window is rotated with the option
 - **THEN** the rotation fails with `ErrRenewalConflict`, and nothing is stored or revoked

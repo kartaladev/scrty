@@ -48,6 +48,8 @@ name must be `__Host-`.
 | S1 | 2.0 | Opus: a rotation option that carries verified state, written for the first time | `session/reuse.go` (the `rotation` struct, `RotateOption`, the grace successor build at ~:418, the strict path in `session/sessions.go` ~:938 only to refuse the option), `session/reuse_test.go`, `test/storetest/session_suite.go` (one conformance row) | every `httpsec` file |
 | S1b (after S1's review) | 2.0, review follow-up | Sonnet: the fix is stated exactly | `session/reuse.go` (`successorFromCaller` and the option godoc), `session/reuse_test.go` | every `httpsec` file |
 | H2b (after H2's review) | 2.4 | Opus: a binding rule across every sign-in path, security-critical | `httpsec/login.go`, `magiclink.go`, `oidc_redeem.go`, `passkey_login.go`, `reauth_resolve.go`, `recovery.go`, `mfa_verify.go`, `dpop.go` (`issuingBinding` and a cookie-chain guard), `session_cookie.go` (godoc), and a new `httpsec/session_cookie_binding_test.go` | `oidc_token.go` (the provider's token endpoint keeps binding its tokens) |
+| S2 (after the H2 and H2b review) | 2.5 | Opus: an optimistic check on security state, plus an API another lane compiles against | `session/reuse.go`, `session/reuse_test.go`, `test/storetest/session_suite.go`, `httpsec/mfa_verify.go`, `httpsec/reauth_resolve.go`, `httpsec/session_cookie_rotation_test.go` | `httpsec/session_renewal.go`, `httpsec/dpop.go` |
+| H2c (alongside S2) | 2.6 | Sonnet: the rule is stated exactly | `httpsec/session_renewal.go`, `httpsec/dpop.go` (godoc only), new `httpsec/session_cookie_renewal_binding_test.go` | every S2 file |
 | H2 (after S1b) | 2.1–2.3 | Opus: rotation ordering under in-flight requests | `httpsec/mfa_verify.go`, `httpsec/reauth_resolve.go`, `httpsec/session_cookie_rotation_test.go`, `httpsec/mfa_verify_test.go`, `httpsec/reauth_resolve_test.go` | `session_cookie.go`, `password_change.go`, `session_cookie_answer.go` |
 | H3 | 3.1–3.2 | Sonnet: the fix is stated exactly | `httpsec/password_change.go`, `httpsec/session_cookie_answer.go`, `httpsec/session_cookie_answer_internal_test.go`, `httpsec/password_change_internal_test.go`, a new `httpsec/session_cookie_password_deadline_test.go` | `session_cookie_rotation_test.go` (H2 owns it) |
 | H4 | 4.1 | Sonnet: doc and adapter test | new `httpsec/fibersec/session_cookie_encryptcookie_test.go`, `httpsec/fibersec/exchange.go` (godoc only), `README.md` (Fiber note and the cookie name rule) | `session_cookie_wire_test.go` (H1 owns it) |
@@ -311,6 +313,59 @@ the sign-in paths. The provider's own token path is not routed through it.
 - [ ] **Step R7:** Run `go test -race -count=1 ./session/...` and the session conformance rows,
   then the H2 scoped verification and `golangci-lint run ./session/... ./httpsec/...`. Expected:
   all pass.
+
+### Task 2c: Refuse a record changed since the copy was loaded (task 2.5, S2, decision 8)
+
+**Interfaces:** Produces `func WithSuccessorFromCaller(loaded *Session) RotateOption`, which replaces
+the no-argument form. The two callers pass the session as the request loaded it, before their own
+changes: in MFA verification the `s` that `satisfied` was copied from, and in re-authentication the
+one `reproved` was copied from.
+
+- [ ] **Step 1: Red rows in `TestRotateWithGrace_SuccessorFromCaller`.** Load `loaded`, make the
+  copy `current` from it, then `Save` one change on the stored record, then grace-rotate with the
+  option. Each row expects `errors.Is(err, ErrRenewalConflict)`, one successor stored, and nothing
+  revoked. One row per field that changes on the stored record:
+  - `MFA` set to `MFAEnrolmentPending` (through `MarkEnrolmentPending`, which also moves
+    `EnrolmentOriginDeadline` and `AbsoluteExpiresAt`);
+  - `PasswordChangePending` true;
+  - `MFA` downgraded from satisfied to pending;
+  - `RecoveredAt` set;
+  - `AuthenticatedAt` changed.
+
+  Add a control row: no stored change, and the copy adds its own enrolment marks
+  (`MarkEnrolmentPending` on `current`). The rotation succeeds and takes the marks. Add wiring
+  rows: a nil `loaded` gives `ErrConfig`, and a `loaded` with another ID gives `ErrConfig`.
+  Before implementing, the change rows fail because the rotation succeeds and writes the copy.
+  Shim the new signature first, so the red step is not a compile error.
+- [ ] **Step 2: Implement.** Compare the stored record with `loaded` on `MFA`, `MFASatisfiedAt`,
+  `AuthenticatedAt`, `PasswordChangePending`, `EnrolmentOriginDeadline`, `EnrolmentGeneration`,
+  `RecoveredAt` and `AbsoluteExpiresAt`, using `time.Equal` for times. Run the comparison after
+  `judge` and before the identifier is generated. Keep the existing raise-only
+  `PasswordChangePending` and `minTime` rules. Godoc: the parameter, the compared fields, and the
+  accepted residual.
+- [ ] **Step 3: Update the callers and the conformance row** to pass `loaded`. Add an end-to-end
+  row to `TestSessionCookie_ExistingRotationsGrace`: between loading the session for the
+  verification POST and the rotation (a store hook, or a policy that saves a confinement on the
+  stored record mid-request), the confinement is saved. The verification answers 409, nothing is
+  written, and no cookie is set.
+- [ ] **Step 4:** Run S1's scoped verification, then `go test -race -count=1 -timeout 30m ./httpsec/...`
+  and `golangci-lint run ./session/... ./httpsec/...`. Expected: all pass.
+
+### Task 2d: Renewal reads no DPoP proof on a cookie chain, and the provider still binds (task 2.6, H2c)
+
+- [ ] **Step 1: Red row in the new `TestSessionCookie_RenewalIgnoresDPoP`.** A cookie chain with
+  `EnableDPoP` and `EnableSessionRenewal`: a renewal POST carrying an invalid DPoP header renews.
+  The successor is unbound and the new cookie works. Today the renewal is refused with
+  `ErrInvalidDPoPProof`.
+- [ ] **Step 2:** In `session_renewal.go`, route the renewal's proof check through the cookie-chain
+  guard H2b added (`credentialDelivery.continuingProof` / `sessionBinding` in `dpop.go`), without
+  editing `dpop.go`'s code. Add godoc: on `DPoP.Require` in `dpop.go`, that it governs issued
+  tokens and a cookie chain reads no proof at sign-in or renewal; on `WithRenewalGrace`, that zero
+  also makes MFA verification and re-authentication rotate strictly on a cookie chain.
+- [ ] **Step 3: Pin `TestSessionCookie_ProviderTokenStillBinds`.** On a cookie chain running the
+  OpenID Provider with `EnableDPoP`, a token request with a valid proof gets a token whose `cnf.jkt`
+  is the proof's key thumbprint. It should pass already; invert it once to see it fail.
+- [ ] **Step 4:** Run the H2 scoped verification and lint. Expected: all pass.
 
 ### Task 3: Password-change deadline and the q-value (tasks 3.1–3.2, H3)
 
