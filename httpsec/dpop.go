@@ -86,7 +86,10 @@ const (
 // left at its zero value takes the default its comment names.
 type DPoP struct {
 	// Require refuses an unbound token, and a request to an issuing endpoint
-	// that carries no proof, before any account is looked up. Default: false,
+	// that carries no proof, before any account is looked up. It governs the
+	// tokens the chain issues: a cookie chain (EnableSessionCookie) reads no
+	// proof at sign-in, re-proof or renewal, so none is asked for there, and a
+	// proof that is sent is not judged. Its session is never bound. Default: false,
 	// so existing bearer clients keep working while DPoP clients opt in by
 	// sending proofs.
 	Require bool
@@ -176,6 +179,11 @@ const optionDPoP = "EnableDPoP"
 // carry as token_type. A sign-in's binding is fixed when it is created: a
 // second factor and a renewal keep it and never add one, and a
 // re-authentication binds an unbound sign-in and keeps a bound one.
+//
+// The exception is a chain with the cookie session (EnableSessionCookie): there
+// sign-in, re-proof and renewal neither read nor bind a proof for the session,
+// which the cookie alone carries, and a proof sent with them is ignored. The
+// tokens of the OpenID Provider on that chain still bind to the proof's key.
 //
 // Every refusal is ErrInvalidDPoPProof (401), and the chain answers it with
 // WWW-Authenticate: DPoP error="invalid_dpop_proof", algs="ES256" (the
@@ -945,6 +953,56 @@ func (ex *Exchange) dpop() *dpopVerifier {
 	}
 
 	return ex.perRequest.dpop
+}
+
+// sessionBinding is the key binding the session a sign-in or a re-proof on ex
+// creates or rotates takes: form login, magic link redemption, handoff
+// redemption, passwordless passkey login, recovery completion and finish, and
+// re-authentication of an unbound session.
+//
+// On a cookie chain it is always the zero value, and neither the request's
+// client certificate nor its DPoP header is read for the session: a cookie
+// carries no proof of a key, so a session bound to one would be refused on
+// the very next request, and the cookie, HttpOnly and guarded by CSRF, is the
+// credential. A proof that does not verify is therefore not refused there
+// either, and DPoP.Require asks no proof of a cookie sign-in. The chain's
+// other features that issue credentials (the OpenID Provider's token
+// endpoint) still bind theirs through issuingBinding.
+//
+// On any other chain it is issuingBinding's answer.
+func (d credentialDelivery) sessionBinding(ex *Exchange) (session.KeyBinding, error) {
+	if d.cookie != nil {
+		return session.KeyBinding{}, nil
+	}
+
+	return issuingBinding(ex.Context(), ex.dpop(), ex.certBinding(), ex.Request, ex.bearerCredential)
+}
+
+// continuingProof verifies the DPoP proof a request continuing the sign-in s
+// (second-factor verification, re-authentication, renewal) carries beside the
+// sign-in's credential. On any other chain than a cookie chain the header is
+// judged by the package-level continuingProof.
+//
+// On a cookie chain no DPoP header and no client certificate is read, as
+// sessionBinding reads none, so a proof that does not verify refuses nothing
+// for an unbound sign-in. A sign-in bound to a sender key is refused with
+// ErrAuthenticationRequired, before anything is spent: such a chain judges no
+// proof, so it cannot tell the key's holder from anyone else who holds the
+// sign-in's reference. A cookie chain never creates a bound sign-in, so only
+// one a consumer's own authenticator published reaches the refusal, which
+// matches the cookie session's own refusal of a bound session presented in
+// the cookie (errBoundSessionInCookie). A consumer that continues bound
+// sign-ins runs them on a token chain, where the proof is judged.
+func (d credentialDelivery) continuingProof(ex *Exchange, s *session.Session) error {
+	if d.cookie != nil {
+		if !s.KeyBinding.IsZero() {
+			return ErrAuthenticationRequired
+		}
+
+		return nil
+	}
+
+	return continuingProof(ex, s)
 }
 
 // issuingBinding verifies the proof a request to an issuing endpoint carries,

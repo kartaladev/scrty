@@ -302,6 +302,17 @@ func WithSecondFactorAtLogin() CreateOption {
 	}
 }
 
+// WithPersistentCookie records that the browser cookie handed out for the
+// session being created persists across browser restarts.
+//
+// The mark is set in the creating write, never by a later one, and every
+// rotation carries it over. The default is a session without the mark, whose
+// cookie ends with the browser session. It is meant for the library's own
+// sign-in tail; a consumer that adds it records the choice on their own word.
+func WithPersistentCookie() CreateOption {
+	return func(s *Session) { s.PersistentCookie = true }
+}
+
 // WithExternalSession records the identity provider a federated login came
 // from: the provider name as the consumer configured it, the issuer the token
 // was verified against, the provider's own session identifier (which may be

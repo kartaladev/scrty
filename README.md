@@ -133,6 +133,54 @@ URL cannot reach the callback (`httpsec.WithoutOIDCRedirectPathCheck`). Each wai
 what it gives up. A base path that repeats a default's first segment, such as `/sso`, answers
 `/sso/sso/login/{provider}`: that is what was configured, and it is not refused.
 
+### Browsers and native clients: two chains
+
+A chain delivers cookies or tokens, never both. `httpsec.EnableSessionCookie` signs a browser in
+with a `__Host-scrty-session` cookie and every sign-in on that chain sets it; a token chain
+(`EnableBearerToken` or `EnableSessionBearer`) returns a credential instead. `httpsec.New` refuses
+a chain that enables both. To serve browsers and native clients, build two chains over one session
+manager, so a sign-in is one session whichever client holds it:
+
+```go
+browsers, err := httpsec.New(
+	httpsec.EnableCSRFProtection(),
+	httpsec.EnableSessionCookie(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),
+)
+natives, err := httpsec.New(
+	httpsec.WithBasePath("/api"), // its sign-in answers at /api/sign-in/password
+	httpsec.EnableFormLogin(loginDeps),
+	httpsec.EnableBearerToken(bearerDeps),
+)
+
+mux.Handle("/api/", natives.Middleware()(handler))
+mux.Handle("/", browsers.Middleware()(handler))
+```
+
+A token chain that serves built-in endpoints (sign-in, renewal) moves them under `WithBasePath`.
+One that only verifies access tokens has no built-in endpoint to move, and `WithBasePath` refuses
+it: mount it under a mux prefix and give its resource server `WithPathPrefix` for the same prefix
+(see [Resource server](#resource-server)).
+
+A host-only session cookie name must carry the `__Host-` prefix, which is the default. A name with
+the `__Secure-` prefix is for a cookie that is shared across subdomains, so use it only together
+with `httpsec.WithSessionCookieDomain`.
+
+**On Fiber, keep `encryptcookie` away from the session cookie.** The Fiber adapter reads the
+`Cookie` header as it arrived, so it still sees a duplicated or quoted session cookie that fasthttp's
+parser would clean up. Fiber's `encryptcookie` middleware rewrites cookies in the parsed copy, so the
+chain would read the ciphertext and no sign-in would stick: the request is refused, never
+authenticated. List the session cookie's name in `encryptcookie.Config.Except`:
+
+```go
+app.Use(encryptcookie.New(encryptcookie.Config{
+	Key:    key,
+	Except: []string{httpsec.DefaultSessionCookieName},
+}))
+app.Use(fibersec.Middleware(browsers))
+```
+
+The cookie is already an opaque random identifier, so encrypting it adds nothing.
+
 ### Migrating
 
 Adopting a base path, or upgrading from a build that used the earlier default paths:
@@ -1115,12 +1163,50 @@ chain, err := httpsec.New(
 )
 ```
 
-`FromProvider` trusts the tokens `provider` issues, JWT and opaque alike. The provider must be the
-one given to `EnableOIDCProvider` on the same chain. The grant is checked on every request, so a
+`FromProvider` trusts the tokens `provider` issues, JWT and opaque alike. On a chain that runs a
+provider it must be that provider; one binary can also run the provider on another chain (below). The grant is checked on every request, so a
 revoked grant, an expired token, or a user who has become inactive is refused on the next request.
 A client whose tokens name the API sets `oidcprovider.Client.DefaultAudience` (or asks for it with
 the `resource` parameter, from `Client.Resources`). A token whose audience is only the issuer is
 meant for UserInfo, and the resource server refuses it.
+
+### A provider on the cookie chain, its API on a token chain
+
+The provider needs the browser's sign-in, so a binary that serves browsers runs it on the cookie
+chain. The API runs on a token chain mounted under a mux prefix, whose resource server trusts that
+provider through `FromProvider`, with no network call and the same checks as on the provider's own
+chain:
+
+```go
+api, err := httpsec.New(
+    httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "https://app.example.com"}),
+    httpsec.EnableResourceServer("https://app.example.com/api",
+        httpsec.WithPathPrefix("/api/"),
+        httpsec.FromProvider(provider), // served by the cookie chain
+    ),
+)
+
+mux.Handle("/api/", api.Middleware()(handler))
+mux.Handle("/", browsers.Middleware()(handler)) // EnableSessionCookie and EnableOIDCProvider
+```
+
+The token chain must verify every binding the provider's tokens can carry, as the provider's own chain
+must: `EnableDPoP` when the provider is built with DPoP, and `EnableCertificateBinding` when a
+client requires a certificate binding. Otherwise `New` refuses the chain.
+
+One API handler can serve both kinds of caller: mount it at `/app/api/` behind the cookie chain with
+`http.StripPrefix("/app", api)`, and at `/api/` behind the token chain. Check scopes on the token
+mount only (`identity.Principal.Scopes`, or `authorize.HasAnyScope`). A third-party token carries
+the grant the user gave that client, so its scopes limit the client; the cookie carries the user,
+who is not limited to a client's grant.
+
+**A cookie plus an `Authorization` header is refused.** On a cookie chain, a request carrying the
+session cookie and any `Authorization` header, of any scheme or value, is refused with
+`ErrAuthenticationRequired` before Basic authentication or a resource server reads it, so neither
+credential silently wins. Only the provider's outer endpoints (authorization, token, userinfo,
+revocation, introspection, end-session, device authorization, discovery and the key set) are
+exempt. An API that takes access tokens from a same-origin page therefore belongs on the token
+chain: the browser attaches the cookie on its own, and the request would carry both.
 
 ### An API that only verifies
 
@@ -3402,13 +3488,17 @@ Once enabled:
   change it, remove or replace the header in a `WithErrorHandler` (or a
   guard's `WithGuardErrorHandler`);
 - a sign-in's binding is fixed when it is created: a second factor and a
-  renewal keep it, and a re-authentication may bind a sign-in that was not.
+  renewal keep it, and a re-authentication may bind a sign-in that was not;
+- one exception: on a chain with the cookie session (`EnableSessionCookie`),
+  sign-in, re-proof and renewal neither read nor bind a proof for the session,
+  which the cookie alone carries. The OpenID Provider's tokens on that chain
+  still bind to the proof's key.
 
 ### Defaults
 
 | Field | Default |
 |---|---|
-| `Require` | `false`: accepted, not required |
+| `Require` | `false`: accepted, not required. It governs issued tokens: a cookie-session chain reads no proof at sign-in or renewal |
 | `ProofMaxAge` | 60 seconds either side of the chain's clock |
 | `Algorithms` | `ES256` only; `none` and HMAC are refused at construction |
 | `MaxProofSize` | 8 KiB, refused before anything is parsed |
@@ -3827,6 +3917,9 @@ Once enabled:
   request presenting the same certificate. Another certificate, or none, is
   refused with `ErrCertificateBinding` (401). The request's certificate is read
   once, in the `OrderMTLS` slot;
+- on a chain with the cookie session (`EnableSessionCookie`), sign-in, re-proof
+  and renewal neither read nor bind a certificate for the session, which the
+  cookie alone carries. The OpenID Provider's tokens on that chain still bind;
 - with DPoP enabled too, a sign-in that carries a valid proof is bound to the
   DPoP key only, whether or not it also presents a certificate. A token carries
   one confirmation, and a DPoP key survives proxies that do not forward

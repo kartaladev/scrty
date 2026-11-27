@@ -33,7 +33,9 @@ const optionProviderCompletion = "WithOIDCProviderCompletion"
 // Completion replays a handoff redemption and a resume, so it needs both: the
 // chain's OpenID Provider, the default handoff manager (the owed-step fallback
 // conveys through it, and a consumer redeemer's contract is the redemption
-// endpoint's, not this one's), and a user loader. It writes the session the
+// endpoint's, not this one's), and a user loader. A cookie chain takes no
+// handoff manager, and its owed-step fallback is the cookie chain's own
+// conveyance (conveyOwed). It writes the session the
 // provider's resume reads, so the login's session manager must be the provider's.
 // The provider's cookies are host-only, so a callback on another origin would
 // never carry them. A login page carrying its own query could never be recognised,
@@ -55,7 +57,10 @@ func (i *oidcInterceptor) checkCompletion(c *config, option string) error {
 			"completion runs the library's own redemption checks", option, optionProviderCompletion)
 	}
 
-	if i.handoffs == nil {
+	// A cookie chain takes no handoff manager: an owed step falls back to the
+	// cookie chain's own conveyance, which completes the sign-in in the
+	// callback (conveyOwed).
+	if i.handoffs == nil && !c.sessionCookie {
 		return newConfigError("%s %s needs OIDCDeps.Handoff: an owed step falls back to the "+
 			"handoff to the login page", option, optionProviderCompletion)
 	}
@@ -194,7 +199,7 @@ func (i *oidcInterceptor) completeProviderSignIn(ex *Exchange, provider string, 
 		return i.refuseCompletion(ex, provider, handle, completionStageUser, oidc.ErrInvalidHandoff)
 	}
 
-	details, err := i.loadCompleting(ex, provider, res.Principal.ID)
+	details, err := i.loadCompleting(ex, provider, i.users, res.Principal.ID)
 	if err != nil {
 		return i.refuseCompletion(ex, provider, handle, completionStageUser, err)
 	}
@@ -238,7 +243,7 @@ func (i *oidcInterceptor) completeProviderSignIn(ex *Exchange, provider string, 
 		// D8: the page finishes the step through the existing redemption, then
 		// resumes the handle as it does today. res.Next is the login page carrying
 		// the handle alone, as parkedHandle has just shown.
-		return i.conveyHandoff(ex, provider, res, res.Next)
+		return i.conveyOwed(ex, provider, res, res.Next)
 	}
 
 	return i.finishProviderSignIn(ex, provider, res, signIn)
@@ -254,6 +259,21 @@ type providerSignIn struct {
 	principal         identity.Principal
 	passwordChangedAt time.Time
 	out               *policyOutcome
+}
+
+// conveyOwed conveys a completion's login that still owes a step to next, the
+// login page carrying the handle alone (D8), and stores nothing of its own.
+// On a chain conveying logins by a handoff code it issues one, which the page
+// redeems; on a cookie chain, which takes no handoff manager, it conveys the
+// login as that chain's callback conveys any (completeCookieSignIn): the
+// sign-in is stored owing its step, its cookie is set, and the browser is sent
+// 303 to next, where the page finishes the step under the cookie.
+func (i *oidcInterceptor) conveyOwed(ex *Exchange, provider string, res oidc.CallbackResult, next string) error {
+	if i.deliver.cookie != nil {
+		return i.completeCookieSignIn(ex, provider, res, next)
+	}
+
+	return i.conveyHandoff(ex, provider, res, next)
 }
 
 // finishProviderSignIn is D7's steps 5 to 9: the session, the per-request
@@ -293,7 +313,13 @@ func (i *oidcInterceptor) finishProviderSignIn(ex *Exchange, provider string, re
 	op := i.provider
 	ctx := ex.Context()
 
-	login := newRedemptionLogin(i.loginTail(session.KeyBinding{}), signIn.out)
+	// The credential is dropped (step 5), so nothing delivers it either: on a
+	// cookie chain no session cookie is set here, and the browser leaves with
+	// the provider's own cookie alone.
+	tail := i.loginTail(session.KeyBinding{})
+	tail.deliver = credentialDelivery{}
+
+	login := newRedemptionLogin(ex, tail, signIn.out)
 
 	in := postAuthenticationInput(&signIn.principal, factor.OIDC, "", signIn.passwordChangedAt, i.now())
 	in.FederatedAssurance = signIn.out.federated
@@ -341,7 +367,7 @@ func (i *oidcInterceptor) finishProviderSignIn(ex *Exchange, provider string, re
 			return err
 		}
 
-		return i.conveyHandoff(ex, provider, res, res.Next)
+		return i.conveyOwed(ex, provider, res, res.Next)
 	}
 
 	if err != nil {
@@ -522,16 +548,20 @@ const (
 // behind.
 const msgCompletionUserUnavailable = "httpsec: the user a federated sign-in completes for could not be loaded"
 
-// loadCompleting is D7's step 3: it loads user through OIDCDeps.Users and refuses
+// loadCompleting is D7's step 3: it loads user through users (OIDCDeps.Users
+// for completion, the cookie session's loader for a cookie chain's callback)
+// and refuses
 // an unknown, missing, disabled or mismatched one with oidc.ErrInvalidHandoff, as
 // a handoff redemption refuses each (F21). The loader is the consumer's, so its
 // error is walked once, bounded, before it is read (porterr.SanitizeTo); a
 // failure is a dependency failure behind fixed text (diag.Wrap), recorded by its
 // reason and Go type, never its text.
-func (i *oidcInterceptor) loadCompleting(ex *Exchange, provider string, user identity.UserID) (*identity.Details, error) {
+func (i *oidcInterceptor) loadCompleting(
+	ex *Exchange, provider string, users identity.UserLoader, user identity.UserID,
+) (*identity.Details, error) {
 	ctx := ex.Context()
 
-	details, err := i.users.LoadByUserID(ctx, user)
+	details, err := users.LoadByUserID(ctx, user)
 	err = porterr.SanitizeTo(ctx, i.log, err, porterr.ErrUnwalkable)
 
 	switch {

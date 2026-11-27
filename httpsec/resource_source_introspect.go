@@ -97,8 +97,9 @@ func WithOpaquePrefix(prefix string) SourceOption {
 // The token is posted with token_type_hint=access_token. It is accepted only when the endpoint
 // reports it active, with a token_type that is absent or names an access token (a refresh token
 // reported active is refused), an audience naming the resource server, an alias or the source's
-// audience (WithSourceAudience), a non-empty sub and an exp in the future. The chain provider's own
-// opaque tokens are never sent here, nor is a JWT or a token typed as the chain's session tokens.
+// audience (WithSourceAudience), a non-empty sub and an exp in the future. The opaque tokens of a
+// provider in this binary, the one the chain serves or one a FromProvider source trusts, are never
+// sent here, nor is a JWT or a token typed as the chain's session tokens.
 //
 // Default: the caller is a claims-only caller (WithClaimsOnly; WithClaimsMapper and WithLinkedUsers
 // replace it). The token must be bound, by the cnf the endpoint reports, to the DPoP key or the

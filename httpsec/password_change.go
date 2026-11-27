@@ -2,9 +2,11 @@ package httpsec
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"reflect"
+	"time"
 
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
@@ -95,6 +97,13 @@ type passwordChangeGate struct {
 	// provider it revokes through, handed over at assembly.
 	revokeGrants bool
 	grants       userGrantRevoker
+
+	// deliver is the chain's credential delivery and grace the window a
+	// rotation keeps the old identifier working for, both handed over at
+	// assembly. On a cookie chain a change rotates the session and re-sets
+	// the cookie through deliver; on any other chain it rotates nothing.
+	deliver credentialDelivery
+	grace   time.Duration
 }
 
 // wirePasswordChange hands every password-change gate the chain's logout path,
@@ -111,6 +120,8 @@ func (c *config) wirePasswordChange() {
 		g.attempts = stores
 		g.log = c.logger
 		g.grants = c.grantRevoker()
+		g.deliver = c.delivery()
+		g.grace = privilegeRotationGrace(c.renewal)
 
 		return nil
 	})
@@ -214,15 +225,30 @@ func (g *passwordChangeGate) isResolveRequest(r Request) bool {
 // On a recovery-pending session a successful change also completes the
 // recovery: the session's deadlines are restored, its second-factor state
 // becomes none, and the security policies decide on the next request what it
-// owes, such as an MFA challenge or an enrolment. The session is saved, not
-// rotated. The consumer's function owns the response, so there is nowhere to
-// hand a new credential back; and nothing is lost by keeping the handle, since
-// the recovery created this session for this caller moments ago and it has
-// had no earlier holder. A change that fails leaves the session
-// recovery-pending. A session already past its lowered deadline is refused
-// before the consumer's function runs, so no password is changed on a request
-// that is then refused; and a session that cannot be saved afterwards is left
-// in memory as it was.
+// owes, such as an MFA challenge or an enrolment. On a chain without the
+// cookie session the session is saved, not rotated: the consumer's function
+// owns the response, so there is nowhere to hand a new credential back. On a
+// cookie chain the session is rotated and the cookie re-set before the
+// consumer's function runs, a recovery-pending one included, and the
+// resolution is saved on the successor. A persistent cookie of a
+// recovery-pending session is set with the Max-Age of the absolute deadline
+// the change restores, not of the lowered recovery deadline, and so is the
+// cookie a role switch inside the consumer's function re-sets. A change that
+// fails leaves the session recovery-pending. A session already past its
+// lowered deadline is refused before the consumer's function runs, so no
+// password is changed on a request that is then refused.
+//
+// The resolution is saved on the latest session of the request's sign-in as
+// the chain holds it in memory: the gate's own session, its rotation's
+// successor, or the successor of the last role switch the consumer's function
+// made. Nothing is loaded to save it, since Save keeps the role the switch
+// recorded in the store. The exchange's Session, which the consumer's
+// function may overwrite, never names the session saved; a target that is not
+// of the sign-in the gate resolved (another user or family) is refused and
+// nothing is saved. A session that cannot be saved afterwards is left in
+// memory as it was, and the error is returned: the password has changed, the
+// session still owes the change, and the caller is answered as for the
+// store's failure.
 //
 // A successful change also clears the caller's lockout failures, at once and
 // before the save, since the password has changed whether or not the save then
@@ -239,6 +265,7 @@ func (g *passwordChangeGate) resolve(ex *Exchange) error {
 	}
 
 	s := ex.Session
+	gated := s
 
 	// What the session becomes is worked out before the consumer's function
 	// runs, so that a recovery-pending session already past its lowered
@@ -246,7 +273,8 @@ func (g *passwordChangeGate) resolve(ex *Exchange) error {
 	// not revived, and the caller is answered as for any session that no
 	// longer loads.
 	resolved := *s
-	if s.MFA == session.MFARecoveryPending {
+	recovering := s.MFA == session.MFARecoveryPending
+	if recovering {
 		if err := g.sessions.RestoreEnrolmentDeadlines(&resolved); err != nil {
 			return ErrAuthenticationRequired
 		}
@@ -255,6 +283,58 @@ func (g *passwordChangeGate) resolve(ex *Exchange) error {
 	}
 
 	resolved.PasswordChangePending = false
+
+	// The role source is read before the consumer's function runs, which may
+	// replace the exchange's context, and only when it is the one that
+	// resolved the session the gate holds. It is where the resolution is saved
+	// from: the exchange's Session is the consumer's to overwrite, so it never
+	// names the session saved.
+	src := requestRoleSource(ex.Context(), s)
+
+	// On a cookie chain a password change is a privilege change, so the
+	// session moves to a new identifier and the cookie is re-set to it. It
+	// happens before anything else changes and before the consumer's function
+	// runs, since that function owns the response and a cookie set once the
+	// response has begun would never reach the browser. A rotation that fails
+	// has stored nothing and set no cookie: no grant is revoked, no password
+	// changed, and the old cookie keeps working.
+	//
+	// A recovery-pending session gets its origin deadlines back once the change
+	// is saved, so a cookie set on this request, by this rotation or a role
+	// switch inside the consumer's function, is set for those, not the lowered
+	// ones the session is stored with; any other session keeps its own.
+	var deadline time.Time
+	if g.deliver.cookie != nil && s.MFA == session.MFARecoveryPending {
+		deadline = resolved.AbsoluteExpiresAt
+	}
+
+	switch {
+	case g.deliver.cookie != nil && !g.deliver.cookie.rotatesAt(RotateOnPasswordChange):
+		// The consumer turned this rotation off (WithoutSessionRotation): the
+		// session keeps its identifier and the cookie is left as it is, but a
+		// switch inside the function still sets its cookie for the deadline
+		// the change restores.
+		if src != nil && !deadline.IsZero() {
+			src.moveTo(s, deadline)
+		}
+	case g.deliver.cookie != nil:
+		rotated, err := g.deliver.rotateCookie(ex.Context(), ex, g.sessions, s, g.grace, deadline,
+			cookieRotationTexts{failed: textChangeNotRotated, ended: textChangeRotationEnded})
+		if err != nil {
+			return err
+		}
+
+		s = rotated
+		ex.Session = rotated
+		ex.SetContext(withSession(ex.Context(), rotated))
+
+		// A role switch the consumer's function makes on this request goes on
+		// from the successor, not from the session the request arrived on,
+		// and sets its cookie for the deadline the change restores.
+		if src != nil {
+			src.moveTo(rotated, deadline)
+		}
+	}
 
 	// Who to clear is read before the consumer's function runs: it may replace
 	// the exchange's context, and what it leaves there is not this caller's
@@ -286,21 +366,82 @@ func (g *passwordChangeGate) resolve(ex *Exchange) error {
 
 	g.clearFailures(ctx, username)
 
-	previous := *s
-	adoptResolution(s, &resolved)
+	// A function that switched the active role rotated the session again, so
+	// the resolution is saved on the latest successor, as the role source holds
+	// it in memory. Save keeps the selection the switch recorded in the store,
+	// so nothing is loaded, and the successor's first presentation is left to
+	// the browser.
+	target, err := resolutionTarget(gated, s, src)
+	if err != nil {
+		return err
+	}
+
+	previous := *target
+	adoptResolution(target, &resolved, recovering)
 
 	// Persisted before the response returns, because the marker is what every
 	// later request is judged on: a change that cleared the flag in memory
 	// alone would be owed again on the next request. A session that cannot be
 	// saved keeps, in memory too, the state it was stored in.
-	if err := g.sessions.Save(ex.Context(), s); err != nil {
-		adoptResolution(s, &previous)
+	if err := g.sessions.Save(ex.Context(), target); err != nil {
+		adoptResolution(target, &previous, recovering)
 
 		return err
 	}
 
 	return nil
 }
+
+// errResolutionNotOwn refuses to save a password change's resolution on a
+// session that is not of the sign-in the gate resolved. Nothing the chain does
+// leads there; it guards the save against a role source that holds another
+// sign-in.
+var errResolutionNotOwn = errors.New("httpsec: the password change's session is not the request's own sign-in")
+
+// requestRoleSource is the role source ctx carries, when it resolved s or
+// rotated it on this request, and nil otherwise: on a chain without
+// switching, or when what the gate holds is not the session the chain
+// resolved.
+func requestRoleSource(ctx context.Context, s *session.Session) *roleSource {
+	src, ok := ctx.Value(roleSourceKey{}).(*roleSource)
+	if !ok || src == nil || src.session == nil || !src.isRequestSession(s.ID) {
+		return nil
+	}
+
+	return src
+}
+
+// resolutionTarget is the session a password change's resolution is saved on:
+// the latest successor src holds, when a role switch rotated s into one, and
+// s itself otherwise, so on a chain that rotates nothing it is the very
+// session the gate resolved. A target that is not of gated's sign-in, the
+// same user and family, is refused with errResolutionNotOwn, and so is a nil
+// gated or s, so that nothing is saved.
+func resolutionTarget(gated, s *session.Session, src *roleSource) (*session.Session, error) {
+	if gated == nil || s == nil {
+		return nil, errResolutionNotOwn
+	}
+
+	target := s
+	if src != nil {
+		if current := src.latest(); current != nil && current.ID != s.ID {
+			target = current
+		}
+	}
+
+	if target.UserID != gated.UserID || target.FamilyID != gated.FamilyID {
+		return nil, errResolutionNotOwn
+	}
+
+	return target, nil
+}
+
+// The fixed texts a cookie chain's rotation at a password change that reached
+// no verdict is answered with.
+const (
+	textChangeNotRotated    = "httpsec: the session could not be rotated for the password change"
+	textChangeRotationEnded = "httpsec: the request ended while its session rotated for the password change"
+)
 
 // msgFailuresNotCleared is the record for a store that could not clear the
 // failures a password change superseded. The change stands; only the
@@ -353,12 +494,21 @@ func (g *passwordChangeGate) clearableUsername(ctx context.Context) string {
 }
 
 // adoptResolution copies onto dst the fields resolve changes, from src: the
-// second-factor state, the password-change marker and the deadlines a
-// recovery-pending session's resolution restores. Every other field is left
-// as dst holds it, including anything the consumer's function set.
-func adoptResolution(dst, src *session.Session) {
+// second-factor state and the password-change marker always, and the
+// deadlines only when deadlines is true, which is when the resolution ended a
+// recovery and so restored them. Otherwise dst's deadlines stay as they are,
+// so a successor the rotation gave a fresh idle deadline keeps it. Every other
+// field is left as dst holds it, including anything the consumer's function
+// set. Passing the same deadlines to restore dst from a copy taken before
+// puts back exactly the fields adopted.
+func adoptResolution(dst, src *session.Session, deadlines bool) {
 	dst.MFA = src.MFA
 	dst.PasswordChangePending = src.PasswordChangePending
+
+	if !deadlines {
+		return
+	}
+
 	dst.AbsoluteExpiresAt = src.AbsoluteExpiresAt
 	dst.IdleExpiresAt = src.IdleExpiresAt
 	dst.EnrolmentOriginDeadline = src.EnrolmentOriginDeadline
@@ -381,6 +531,22 @@ type PasswordChangeOption func(*passwordChangeGate) error
 // ChangePasswordFunc); there is no option to keep them, since they were
 // guesses at a password that no longer exists. It keeps the user's application
 // grants unless WithPasswordChangeGrantRevocation revokes them.
+//
+// On a chain with EnableSessionCookie, a POST to the resolve endpoint is a
+// privilege change: before the grants are revoked and before the consumer's
+// function runs, the session is rotated into a successor in the same sign-in
+// and the session cookie is re-set to it, so the function, which owns the
+// response, sees the successor on the exchange and answers with the cookie
+// already set. The old identifier keeps working for the renewal grace window
+// (WithRenewalGrace, or session.DefaultRenewalGrace without renewal) and is
+// reuse after it, which revokes the sign-in. The rotation happens whether or
+// not the change then succeeds. One that cannot be written stores nothing,
+// sets no cookie and runs no function: the request fails as a dependency
+// failure and the old cookie keeps working. A function that writes its own
+// cookies must not write the session cookie. WithoutSessionRotation
+// (RotateOnPasswordChange) turns the rotation off: the change is then recorded
+// on the session the request arrived on, which keeps its identifier, and no
+// cookie is set.
 //
 // A POST to the chain's logout path always passes, so a caller owing a change
 // can end the session; the path is the one EnableLogout configured, read when

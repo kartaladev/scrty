@@ -78,7 +78,7 @@ func (i *reauthInterceptor) reprove(ex *Exchange) error {
 
 	// Before the password is checked, so a bad proof is never a failed
 	// password and spends nothing.
-	binding, err := reauthBinding(ex, s)
+	binding, err := reauthBinding(ex, s, i.deliver)
 	if err != nil {
 		return err
 	}

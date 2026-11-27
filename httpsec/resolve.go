@@ -41,6 +41,12 @@ type sessionResolver struct {
 	// let through to it, and to nothing else.
 	renewal *sessionRenewal
 
+	// cookie is the chain's cookie session when this core resolves the
+	// session cookie, and nil for a bearer. A role switch on a session it
+	// resolved rotates the session and re-sets the cookie (Chain.
+	// SwitchActiveRole).
+	cookie *sessionCookie
+
 	// admit, when set, judges the loaded session before its user is reloaded
 	// or anything is published; an error it returns is the request's answer.
 	// Both bearers judge the session's key binding here, and the signed bearer
@@ -156,6 +162,13 @@ func (r *sessionResolver) resolve(ex *Exchange, id string) error {
 		return classifyLoad(ctx, err, load)
 	}
 
+	// The session exactly as the store returned it, before anything on this
+	// request marks it in memory (the per-request phase below marks its
+	// challenges on s). Second-factor verification and re-authentication
+	// compare the stored record with it, so a mark of this request's own is
+	// never taken for another request's change.
+	loaded := copySession(s)
+
 	var details *identity.Details
 
 	if r.admit != nil {
@@ -211,8 +224,20 @@ func (r *sessionResolver) resolve(ex *Exchange, id string) error {
 		return err
 	}
 
+	ex.loadedSession = loaded
+
 	if switching != nil {
-		ex.SetContext(withRoleSource(ex.Context(), &roleSource{chain: switching, resolver: r, session: s}))
+		src := &roleSource{chain: switching, resolver: r, session: s, current: s}
+
+		// A cookie session's switch rotates it and re-sets the cookie on this
+		// request's response, so the source keeps the exchange, and the run
+		// that tells whether the response is still being written.
+		if r.cookie != nil {
+			src.ex = ex
+			src.run = runOf(ex.Context(), switching)
+		}
+
+		ex.SetContext(withRoleSource(ex.Context(), src))
 	}
 
 	return ex.evaluatePerRequest(&r.phase, s, principal, details.PasswordChangedAt, now)
@@ -256,7 +281,11 @@ func grantNamed(p *identity.Principal, name string) *identity.AssignedRole {
 //     is joined to the manager's session.ErrReused, so a consumer that rolls
 //     its request transaction back on a refusal can tell this is the one
 //     refusal it must commit, or it would roll the family's revocation back
-//     too. The manager's error names no identifier.
+//     too. The manager's error names no identifier. A superseded identifier
+//     the manager says must be renewed (unused-successor recovery) is joined
+//     to session.ErrRenewalRequired, so a client can tell it should renew
+//     rather than sign in again; only a holder of a real superseded
+//     identifier gets that answer, so it reports nothing a guess could learn.
 //   - a hang-up, when ctx ended and err is that ending, ctx's error or the
 //     cause it was cancelled with (hangup.ByCaller): it matches ctx's error,
 //     and neither ErrAuthenticationRequired nor anything an outage is told
@@ -276,6 +305,11 @@ func classifyLoad(ctx context.Context, err error, load loadFailure) error {
 	switch {
 	case load.reused:
 		return errors.Join(ErrAuthenticationRequired, err)
+	case load.renewalRequired:
+		// Told apart from an ended session, so a client knows to renew and
+		// the cookie session keeps the cookie it renews with. The manager's
+		// sentinel is joined rather than err, which is the consumer store's.
+		return errors.Join(ErrAuthenticationRequired, session.ErrRenewalRequired)
 	case load.notFound, load.expired, load.unreadable:
 		return ErrAuthenticationRequired
 	case hangup.ByCaller(ctx, err):

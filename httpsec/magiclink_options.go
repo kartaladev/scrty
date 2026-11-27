@@ -20,15 +20,17 @@ type MagicLinkOption func(*magicLinkInterceptor) error
 //
 // Defaults: a link is asked for by POST on DefaultMagicLinkRequestPath, which
 // reads "email" and "next" from a form body or a JSON one and always answers
-// 202 with an empty body (WithMagicLinkRequestPath); a link is redeemed by
-// POST on DefaultMagicLinkConsumePath, which reads "token" from the form and
-// the binding from DefaultBindingCookieName (WithMagicLinkConsumePath,
-// WithMagicLinkBindingCookieName); no redirect target is allowed, so every submitted
-// "next" becomes "/" (WithMagicLinkAllowedRedirects, WithMagicLinkAllowedOrigins); every failed
-// redemption counts against the source (WithMagicLinkCountRefusals), at 10 per
+// 202 with an empty body (WithMagicLinkRequestPath, WithMagicLinkParams); a
+// link is redeemed by POST on DefaultMagicLinkConsumePath, which reads "token"
+// from the form (WithMagicLinkParams) and the binding from
+// DefaultBindingCookieName (WithMagicLinkConsumePath,
+// WithMagicLinkBindingCookieName); no redirect target is allowed, so every
+// submitted "next" becomes "/" (WithMagicLinkAllowedRedirects,
+// WithMagicLinkAllowedOrigins); every failed redemption counts against the source (WithMagicLinkCountRefusals), at 10 per
 // 15 minutes through a limiter this flow alone uses (WithMagicLinkLimiter);
 // the built-in redeemer is the manager's own (WithMagicLinkRedeemer) and no
-// consumer refusal checks run (WithMagicLinkChecks).
+// consumer refusal checks run (WithMagicLinkChecks); a body is read up to 64
+// KiB (WithMagicLinkBodyLimit).
 //
 // Whether links are bound to the requesting device is read from the manager,
 // never configured here: an interceptor that could be told one thing while the
@@ -56,7 +58,10 @@ func EnableMagicLink(links *magiclink.Links, opts ...MagicLinkOption) Option {
 			requestPath:   defaultPath(DefaultMagicLinkRequestPath),
 			consumePath:   defaultPath(DefaultMagicLinkConsumePath),
 			cookieName:    DefaultBindingCookieName,
-			bodyLimit:     DefaultLoginBodyLimit,
+			bodyLimit:     defaultMagicLinkBodyLimit,
+			addressParam:  DefaultMagicLinkAddressParam,
+			nextParam:     DefaultMagicLinkNextParam,
+			tokenParam:    DefaultMagicLinkTokenParam,
 			countRefusals: true,
 		}
 
@@ -313,7 +318,10 @@ func WithMagicLinkRedeemer(redeemer Redeemer) MagicLinkOption {
 // With none supplied, the library writes a JSON document carrying the access
 // token, an empty refresh token field, the session's validity and the resolved
 // redirect target — the same document a successful login answers with, plus
-// that target.
+// that target. On a cookie chain (EnableSessionCookie) the default is instead
+// the chain's negotiated answer, sent to that resolved target: 303 See Other
+// for a form post or a request preferring HTML (a redemption is always a form
+// post), else 200 with {"idle_expires_at": ...} and no credential.
 //
 // It is called instead of the downstream handler, because the consume endpoint
 // is the library's own and the application has no route behind it. An error it
@@ -332,6 +340,7 @@ func WithMagicLinkResponder(fn MagicLinkResponder) MagicLinkOption {
 		}
 
 		i.respond = fn
+		i.respondSet = true
 
 		return nil
 	}
@@ -359,6 +368,56 @@ func WithMagicLinkChecks(checks ...magiclink.Check) MagicLinkOption {
 		}
 
 		i.checks = append(i.checks, checks...)
+
+		return nil
+	}
+}
+
+// WithMagicLinkParams reads the address, the redirect target and the token
+// from these names.
+//
+// Default: DefaultMagicLinkAddressParam, DefaultMagicLinkNextParam and
+// DefaultMagicLinkTokenParam. The names are those of form fields at both
+// endpoints and, at the request endpoint, of JSON members. An empty name, or
+// any two identical names, is refused: the endpoint could not tell the values
+// apart, and a value sent under a name nobody reads is silently lost.
+func WithMagicLinkParams(address, next, token string) MagicLinkOption {
+	return func(i *magicLinkInterceptor) error {
+		switch {
+		case address == "" || next == "" || token == "":
+			return newConfigError("WithMagicLinkParams needs all three names, and was given "+
+				"%q, %q and %q", address, next, token)
+		case address == next || address == token || next == token:
+			return newConfigError("WithMagicLinkParams was given %q, %q and %q, and two of "+
+				"them are the same, so they could not carry three values separately",
+				address, next, token)
+		}
+
+		i.addressParam = address
+		i.nextParam = next
+		i.tokenParam = token
+
+		return nil
+	}
+}
+
+// WithMagicLinkBodyLimit reads at most limit bytes of a request body at
+// either endpoint.
+//
+// Default: 64 KiB. The bound applies before anything is parsed, because both
+// endpoints are unauthenticated. A body over it is read as carrying no values,
+// not refused: the request endpoint answers as it does for any request, so the
+// size says nothing about an address, and a redemption fails with its token
+// unspent. A limit of zero or less is refused: it would read every body as
+// empty, so no link could be asked for or redeemed.
+func WithMagicLinkBodyLimit(limit int64) MagicLinkOption {
+	return func(i *magicLinkInterceptor) error {
+		if limit <= 0 {
+			return newConfigError("WithMagicLinkBodyLimit takes a positive bound, and %d would "+
+				"read every body as empty", limit)
+		}
+
+		i.bodyLimit = limit
 
 		return nil
 	}

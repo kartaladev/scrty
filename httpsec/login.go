@@ -116,6 +116,10 @@ type formLogin struct {
 	// handed over at assembly.
 	issue credentialIssuer
 
+	// deliver hands the credential out once the session is stored: as the
+	// session cookie on a cookie chain, unchanged for the body otherwise.
+	deliver credentialDelivery
+
 	// engine and log are handed over once the chain exists, because an option
 	// applied after EnableFormLogin may still replace either.
 	engine *policy.Engine
@@ -171,6 +175,11 @@ type formLogin struct {
 	passwordParam string
 	bodyLimit     int64
 	respond       LoginResponder
+
+	// respondSet is whether the consumer replaced respond
+	// (WithLoginResponder); without it a cookie chain answers a sign-in
+	// itself (signInResponder).
+	respondSet bool
 
 	// lifetime chooses the session's absolute lifetime, and nil keeps the
 	// manager's absolute timeout.
@@ -359,7 +368,7 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	// malformed request is, counted nowhere, and never as a failed password:
 	// it cannot lock the account. With DPoP required, a login without one is
 	// refused before any account is looked up.
-	binding, err := issuingBinding(ctx, ex.dpop(), ex.certBinding(), ex.Request, ex.bearerCredential)
+	binding, err := l.deliver.sessionBinding(ex)
 	if err != nil {
 		return err
 	}
@@ -427,6 +436,7 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 		sessions:          l.sessions,
 		tokens:            l.tokens,
 		issue:             l.issue,
+		deliver:           l.deliver,
 		enrolmentLifetime: l.enrolmentLifetime,
 		enforced:          l.enforced,
 		log:               l.log,

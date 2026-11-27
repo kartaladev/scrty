@@ -54,6 +54,10 @@ type sessionRow struct {
 	RecoveredAt *time.Time `gorm:"column:recovered_at;type:timestamptz"`
 	// MFAAtFirstFactor is written by the insert only; the update omits it.
 	MFAAtFirstFactor bool `gorm:"column:mfa_at_first_factor;type:boolean"`
+	// PersistentCookie marks that the sign-in's browser cookie persists. It is
+	// written by the insert only; the update omits it. NULL, a row written
+	// before the column existed, reads as unset.
+	PersistentCookie *bool `gorm:"column:persistent_cookie;type:boolean"`
 	// FederatedAMR is the identity provider's asserted amr values as a JSON
 	// array of strings, '[]' for none; FederatedACR is the asserted acr, ''
 	// for none. Neither is sealed, and both are replaced by an update.

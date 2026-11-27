@@ -786,17 +786,22 @@ func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // accepted, a step-up completed — because a handle someone obtained before
 // that change must not still answer requests after it. Everything except the
 // identifier is carried over: the user, the first factor, both deadlines, the
-// challenge state (including MFAAtFirstFactor), the family (FamilyID and
+// challenge state, the family (FamilyID and
 // FamilyCreatedAt), the federated assurance and the consumer's own data. The
 // family and the sign-in state fixed when the sign-in was built (KeyBinding,
-// CSRFToken, ClientIP and UserAgent) and the selected role (SelectedRole) are
+// CSRFToken, ClientIP and UserAgent), the selected role (SelectedRole) and
+// the second-factor-at-login mark (MFAAtFirstFactor) are
 // taken from the stored record, never from current, so a copy with them
 // cleared or changed cannot move them; they are
 // already set on the successor handed to RotateIssuing's issuing step.
 //
-// Rotate takes one RotateOption, WithReauthenticationBinding, which may bind
-// an unbound session and never rebinds a bound one. WithSuccessorLifetime is
-// refused with ErrConfig, since a strict rotation never extends a session.
+// Rotate takes WithReauthenticationBinding, which may bind an unbound session
+// and never rebinds a bound one, and WithSuccessorFromCaller(loaded), which
+// adds the stale-record check against loaded and otherwise builds the
+// successor as without it. WithSuccessorLifetime is refused with ErrConfig,
+// since a strict rotation never extends a session, and so is
+// WithSuccessorRole, since a strict rotation carries the stored role; nothing
+// is stored on either refusal.
 //
 // The old entry is superseded by the new one in one write, through the
 // store's conditional Store.Supersede, marked as rotated without grace
@@ -839,10 +844,24 @@ func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 //
 // Rotate never extends the session: the absolute deadline is carried over
 // whatever WithMaxFamilyLifetime allows, because a privilege change must not
-// lengthen it. The successor's deadlines, absolute and idle, are those of the
-// session it is given, because the caller may have restored them (see
-// RestoreEnrolmentDeadlines); only the family fields come from storage. The
-// successor stays in current's family, and none of current's supersession or presentation
+// lengthen it. The successor's deadlines, absolute and idle, are each the
+// earlier of the stored record's and those of the session it is given, so a
+// copy may lower them (MarkEnrolmentPending) but never raise them. The one
+// exception is a copy that lifted the enrolment confinement the stored record
+// carries (RestoreEnrolmentDeadlines): it takes the copy's restored deadlines,
+// which are never past the deadline the sign-in held before the confinement;
+// a copy claiming one past it gets the stored deadlines.
+//
+// The successor is built from current, the caller's copy, apart from what
+// the sign-in fixed, which comes from the stored record whatever the copy
+// says: the user, the first factor, the family, the key binding (except as
+// WithReauthenticationBinding gives one), the CSRF token, the sign-in
+// metadata, the persistent-cookie mark and the selected role. A copy naming
+// another user than the stored record is refused with ErrConfig before
+// anything is written or any step runs. With WithSuccessorFromCaller(loaded),
+// a stored record whose security state is no longer loaded's is refused with
+// ErrRenewalConflict before anything is written, as that option documents.
+// The successor stays in current's family, and none of current's supersession or presentation
 // state is carried over: the successor is recorded as presented at the
 // rotation (FirstPresentedAt), since it goes straight to the caller using it,
 // so WithUnusedSuccessorRecovery can never renew the old identifier into a
@@ -856,6 +875,10 @@ func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // WithUnusedSuccessorRecovery on. A successor knocked out by a re-rotation or
 // a recovery has no window left, whatever this manager's clock says, and is
 // reuse.
+//
+// A pending password change is never lowered: the successor carries it when
+// either the stored record or the copy given has it raised, so a copy loaded
+// before another request marked the record cannot drop the mark.
 //
 // Rotate runs no step of the caller's between building the successor and
 // storing it; RotateIssuing is the same rotation with one.
@@ -887,8 +910,10 @@ func (m *Sessions) Rotate(ctx context.Context, current *Session, opts ...RotateO
 // Rotate refuses it; the credential issue returned names a successor that was
 // never stored, so it authenticates nothing and the caller discards it with
 // the error. A refusal decided before the successor is built, a gone session,
-// a family already ended under this manager's family maximum or a lost race
-// already visible in the stored record, never calls issue.
+// a copy naming another user, a family already ended under this manager's
+// family maximum or a lost race already visible in the stored record (with
+// WithSuccessorFromCaller, a record changed since the copy was loaded), never
+// calls issue.
 //
 // issue is handed the successor as it will be stored, which is also the
 // session returned, and must not modify it. Its SelectedRole alone may still
@@ -901,7 +926,8 @@ func (m *Sessions) Rotate(ctx context.Context, current *Session, opts ...RotateO
 //
 // Every guarantee Rotate documents holds here unchanged: the strict mark and
 // the in-flight window, the renewal conflict for a lost race through any
-// manager sharing the store, the deadlines and family carried over. current is not
+// manager sharing the store, the deadlines never extended, and the user,
+// first factor and family taken from the stored record. current is not
 // modified.
 //
 // The family's end is checked twice. A family that has already ended when the
@@ -933,6 +959,12 @@ func (m *Sessions) RotateIssuing(
 	if r.lifetimeSet {
 		return nil, "", fmt.Errorf("%w: a strict rotation never extends a session, so it takes no new lifetime", ErrConfig)
 	}
+	if r.roleSet {
+		return nil, "", fmt.Errorf("%w: a strict rotation carries the stored role, so it takes no successor role", ErrConfig)
+	}
+	if r.fromCaller && (r.loaded == nil || r.loaded.ID != current.ID) {
+		return nil, "", fmt.Errorf("%w: the loaded session given to build the successor from is missing or another session", ErrConfig)
+	}
 	if r.binding.both() {
 		return nil, "", fmt.Errorf("%w: a key binding names either a DPoP key or a certificate, not both", ErrConfig)
 	}
@@ -944,6 +976,13 @@ func (m *Sessions) RotateIssuing(
 	if err != nil {
 		return nil, "", err
 	}
+
+	// The user is the stored record's: a copy naming another user would move
+	// this sign-in, and the state recorded for its user, to someone else.
+	if current.UserID != stored.UserID {
+		return nil, "", fmt.Errorf("%w: the session given to rotate names another user than the stored one", ErrConfig)
+	}
+
 	now := m.clock.Now()
 	if stored.RotatedStrictly {
 		return nil, "", lostToStrictRotation(stored, now)
@@ -962,6 +1001,15 @@ func (m *Sessions) RotateIssuing(
 		return nil, "", ErrExpired
 	}
 
+	// With WithSuccessorFromCaller, the copy's state is the stored record's
+	// as the caller loaded it, plus the caller's own changes. A record another
+	// request changed since then (a confinement, a downgraded second factor,
+	// a pending password change) would be overwritten by the copy's older
+	// state, so it is refused before anything is written, as a lost race.
+	if r.fromCaller && !sameSecurityState(stored, r.loaded) {
+		return nil, "", ErrRenewalConflict
+	}
+
 	id, err := m.newIdentifier(ctx)
 	if err != nil {
 		return nil, "", err
@@ -975,11 +1023,27 @@ func (m *Sessions) RotateIssuing(
 	// So is what the sign-in fixed when it was built, apart from the binding
 	// a re-authentication may give an unbound session.
 	keepSignInState(rotated, stored)
+	// So is the persistent-cookie mark, which only the creating write sets.
+	rotated.PersistentCookie = stored.PersistentCookie
+	// So is the second-factor-at-login mark, which only the creating write
+	// sets: a copy may neither claim it nor drop it.
+	rotated.MFAAtFirstFactor = stored.MFAAtFirstFactor
 	// So is the selected role, which only RoleSelector.SelectRole writes: a
 	// copy loaded before a selection must neither drop it nor claim another.
 	// The store's supersession settles it finally, from the record it
 	// supersedes, so a selection recorded after this load is kept too.
 	rotated.SelectedRole = stored.SelectedRole
+	// So is the first factor, which the sign-in fixed.
+	rotated.FirstFactor = stored.FirstFactor
+	// A pending password change is raised from either side, never lowered: a
+	// copy loaded before another request marked the record must not drop the
+	// mark, and one that raised it keeps it.
+	rotated.PasswordChangePending = rotated.PasswordChangePending || stored.PasswordChangePending
+	// A strict rotation never extends the session: each deadline is the
+	// earlier of the stored record's and the copy's, unless the copy lifted
+	// the stored confinement, and then never past the deadline the sign-in
+	// held before it.
+	rotated.AbsoluteExpiresAt, rotated.IdleExpiresAt = copyDeadlines(stored, current)
 	if err := checkReauthenticationBinding(r, stored, rotated); err != nil {
 		return nil, "", err
 	}

@@ -157,7 +157,8 @@ func (s *sessionStore) Create(ctx context.Context, sess *session.Session) error 
 
 // insertArgs returns SessionInsert's arguments for sess, under a primary key
 // minted from the store's id generator, or the refusal of a session this
-// store cannot hold without altering it. Only the insert writes the marker,
+// store cannot hold without altering it. Only the insert writes the markers
+// (MFAAtFirstFactor and PersistentCookie),
 // the sign-in state (metadata, key binding and CSRF token) and the family,
 // supersession and presentation columns: SessionUpdate has no column for
 // them. A session is inserted with its RetainUntil as given,
@@ -186,11 +187,13 @@ func (s *sessionStore) insertArgs(op string, sess *session.Session) ([]any, erro
 		nullTs(sess.SupersededAt), nullTs(sess.AcceptUntil), storekit.OptionalDigestArg(sess.SuccessorDigest),
 		nullTs(sess.FirstPresentedAt), storekit.Time(sess.AuthenticatedAt), nullTs(sess.RetainUntil))
 	args = append(args, signIn...)
+	args = append(args, sess.PersistentCookie)
 
 	return append(args, role), nil
 }
 
-// Save replaces the stored session whole, except for MFAAtFirstFactor, the
+// Save replaces the stored session whole, except for MFAAtFirstFactor,
+// PersistentCookie, the
 // sign-in state (ClientIP, UserAgent, KeyBinding and CSRFToken), SelectedRole
 // and the
 // family, supersession (RetainUntil included) and presentation fields, and
@@ -281,7 +284,7 @@ func (r *sessionRow) dest() []any {
 		&r.amr, &r.sess.FederatedACR, &r.family, &r.familyCreated, &r.superseded, &r.acceptUntil,
 		&r.sess.SuccessorDigest, &r.presented, &r.authenticated, &r.retain, &r.sess.RotatedStrictly,
 		&r.sess.ClientIP, &r.sess.UserAgent, &r.bindingKind, &r.thumbprint, &r.sess.CSRFToken,
-		&r.sess.SelectedRole,
+		&r.sess.SelectedRole, &r.sess.PersistentCookie,
 	}
 }
 
@@ -649,17 +652,25 @@ func (s *sessionStore) Supersede(ctx context.Context, op session.Supersession) e
 	if err != nil {
 		return err
 	}
+	// A named role is refused before any statement runs when PostgreSQL text
+	// cannot hold it, as Create refuses it, so nothing is written.
+	if op.SuccessorRole != nil {
+		if _, err := pgschema.SessionSelectedRoleArg(*op.SuccessorRole); err != nil {
+			return failed(name, err)
+		}
+	}
 	q, ambient, err := s.c.conn(ctx)
 	if err != nil {
 		return failed(name, err)
 	}
 
-	u := &supersession{s: s, op: name, insert: args, old: storekit.SessionDigest(op.Old)}
+	u := &supersession{s: s, op: name, insert: args, old: storekit.SessionDigest(op.Old), named: op.SuccessorRole}
 	if err := storekit.Supersede(ctx, u, q, ambient, op); err != nil {
 		return err
 	}
-	// The successor stored took the superseded row's selected role, which
-	// the caller's copy is told, as Store.Supersede documents.
+	// The successor stored took the superseded row's selected role, or the
+	// one op named, which the caller's copy is told, as Store.Supersede
+	// documents.
 	op.Successor.SelectedRole = u.role
 
 	return nil
@@ -680,8 +691,11 @@ type supersession struct {
 	insert []any
 	// old is the digest of the session superseded.
 	old []byte
-	// role is the selected role the successor was inserted with: the one
-	// the superseded row held once locked.
+	// named is the role the supersession named for the successor
+	// (session.Supersession.SuccessorRole), nil when it named none.
+	named *string
+	// role is the selected role the successor was inserted with: named when
+	// set, and otherwise the one the superseded row held once locked.
 	role string
 	// tx is the transaction Begin began, when the store owns the unit.
 	tx pgx.Tx
@@ -743,11 +757,13 @@ func (u *supersession) QueryInt(ctx context.Context, q DBTX, stmt string, args .
 // InsertSuccessor inserts the successor with the selected role the superseded
 // row holds, read on q after storekit.Supersede locked that row, never the
 // one the caller's copy carries: a selection recorded after the caller loaded
-// the session is neither lost nor undone.
+// the session is neither lost nor undone. A role the supersession named is
+// inserted instead, without reading the superseded row's, which is left as it
+// is.
 func (u *supersession) InsertSuccessor(ctx context.Context, q DBTX) (bool, error) {
-	var role string
-	if err := q.QueryRow(ctx, pgschema.SessionSupersededRole, u.old).Scan(&role); err != nil {
-		return false, failed(u.op, err)
+	role, err := u.successorRole(ctx, q)
+	if err != nil {
+		return false, err
 	}
 	arg, err := pgschema.SessionSelectedRoleArg(role)
 	if err != nil {
@@ -762,6 +778,20 @@ func (u *supersession) InsertSuccessor(ctx context.Context, q DBTX) (bool, error
 	}
 
 	return n > 0, nil
+}
+
+// successorRole is the role the successor is inserted with: the named one,
+// or else the superseded row's, read on q.
+func (u *supersession) successorRole(ctx context.Context, q DBTX) (string, error) {
+	if u.named != nil {
+		return *u.named, nil
+	}
+	var role string
+	if err := q.QueryRow(ctx, pgschema.SessionSupersededRole, u.old).Scan(&role); err != nil {
+		return "", failed(u.op, err)
+	}
+
+	return role, nil
 }
 
 func (u *supersession) NullTime(t time.Time) any { return nullTs(t) }

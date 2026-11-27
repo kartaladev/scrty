@@ -123,11 +123,19 @@ type reauthInterceptor struct {
 	tokens token.Generator
 	issue  credentialIssuer
 
+	// deliver hands the credential out once the session is stored: as the
+	// session cookie on a cookie chain, unchanged for the body otherwise.
+	deliver credentialDelivery
+
 	// respond answers a successful re-proof, beginRespond a successful begin
 	// and methodsRespond the listing.
 	respond        ReauthenticationResponder
 	beginRespond   MFABeginResponder
 	methodsRespond ReauthenticationMethodsResponder
+
+	// respondSet is whether the consumer replaced respond
+	// (WithReauthenticationResponder).
+	respondSet bool
 
 	// challengeTTL, challengeCap and challengeStore are what the re-proof
 	// challenges of challenge methods are issued with. A nil store is the

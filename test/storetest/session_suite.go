@@ -226,6 +226,7 @@ func assertSession(t *testing.T, want, got *session.Session) {
 	assert.Equal(t, want.EnrolmentGeneration, got.EnrolmentGeneration, "EnrolmentGeneration")
 	assertTimeEqual(t, want.RecoveredAt, got.RecoveredAt, "RecoveredAt")
 	assert.Equal(t, want.MFAAtFirstFactor, got.MFAAtFirstFactor, "MFAAtFirstFactor")
+	assert.Equal(t, want.PersistentCookie, got.PersistentCookie, "PersistentCookie")
 	assertTimeEqual(t, want.AuthenticatedAt, got.AuthenticatedAt, "AuthenticatedAt")
 	if len(want.FederatedAMR) == 0 {
 		assert.Empty(t, got.FederatedAMR, "a session stored without amr must load with none")
@@ -740,6 +741,63 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Cl
 				got, err := s.Load(ctx, "sess-a")
 				require.NoError(t, err)
 				assert.True(t, got.MFAAtFirstFactor, "a save keeps the stored marker")
+			},
+		},
+		{
+			// The persistent-cookie mark is stored in a column of its own and
+			// comes back unchanged.
+			name: "persistent cookie round trip",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				want := sessionRecord("sess-a", "u-1")
+				want.PersistentCookie = true
+				require.NoError(t, s.Create(ctx, want))
+				require.NoError(t, s.Save(ctx, want))
+
+				got, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				assertSession(t, want, got)
+				assert.True(t, got.PersistentCookie)
+			},
+		},
+		{
+			name: "saved without the persistent cookie mark loads unmarked",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				sess := sessionRecord("sess-a", "u-1")
+				require.NoError(t, s.Create(ctx, sess))
+				require.NoError(t, s.Save(ctx, sess))
+
+				got, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				assert.False(t, got.PersistentCookie)
+			},
+		},
+		{
+			name: "a save does not set the persistent cookie mark",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				sess := sessionRecord("sess-a", "u-1")
+				require.NoError(t, s.Create(ctx, sess))
+
+				sess.PersistentCookie = true
+				require.NoError(t, s.Save(ctx, sess))
+
+				got, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				assert.False(t, got.PersistentCookie, "a save must not set the mark")
+			},
+		},
+		{
+			name: "a save keeps the stored persistent cookie mark",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				sess := sessionRecord("sess-a", "u-1")
+				sess.PersistentCookie = true
+				require.NoError(t, s.Create(ctx, sess))
+
+				sess.PersistentCookie = false
+				require.NoError(t, s.Save(ctx, sess))
+
+				got, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				assert.True(t, got.PersistentCookie, "a save must not clear the mark")
 			},
 		},
 		{
@@ -1295,6 +1353,89 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 				require.NoError(t, err)
 				assert.Equal(t, old.FamilyID, got.FamilyID, "the successor is in the old session's family")
 				assertTimeEqual(t, old.FamilyCreatedAt, got.FamilyCreatedAt, "the successor's FamilyCreatedAt")
+			},
+		},
+		{
+			// WithSuccessorFromCaller hands the store a successor carrying the
+			// caller's verified state; the store inserts it as given, while
+			// the old record keeps its own.
+			name: "a grace rotation built from the caller's copy stores the successor's second factor and authentication time",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
+				m, err := session.New(session.WithStore(s), session.WithClock(clk))
+				require.NoError(t, err)
+				old, err := m.Create(ctx, "u-1")
+				require.NoError(t, err)
+				old.MFA = session.MFAPending
+				require.NoError(t, m.Save(ctx, old))
+				signedInAt := old.AuthenticatedAt
+
+				// The copy is taken from the session as the store returns
+				// it, as a request loads it, so the rotation compares the
+				// stored record with what the store itself wrote.
+				loaded, err := s.Load(ctx, old.ID)
+				require.NoError(t, err)
+
+				clk.Advance(time.Minute)
+				verified := *loaded
+				verified.MFA = session.MFASatisfied
+				verified.MFASatisfiedAt = clk.Now()
+				verified.AuthenticatedAt = clk.Now()
+				successor, _, err := m.RotateWithGrace(ctx, &verified, 30*time.Second, session.WithSuccessorFromCaller(loaded))
+				require.NoError(t, err)
+
+				got, err := s.Load(ctx, successor.ID)
+				require.NoError(t, err)
+				assert.Equal(t, session.MFASatisfied, got.MFA, "the successor's second factor")
+				assertTimeEqual(t, clk.Now(), got.MFASatisfiedAt, "the successor's MFASatisfiedAt")
+				assertTimeEqual(t, clk.Now(), got.AuthenticatedAt, "the successor's AuthenticatedAt")
+				kept, err := s.Load(ctx, old.ID)
+				require.NoError(t, err)
+				assert.Equal(t, session.MFAPending, kept.MFA, "the old record keeps its second factor")
+				assertTimeEqual(t, signedInAt, kept.AuthenticatedAt, "the old record keeps its AuthenticatedAt")
+			},
+		},
+		{
+			// A successor's library-owned marks are stored as the caller gives
+			// them, as Create would; only the selected role is taken from the
+			// superseded row.
+			name: "successor keeps the persistent cookie mark it carries",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				old.PersistentCookie = true
+				require.NoError(t, s.Create(ctx, old))
+				at := suiteStart.Add(time.Minute)
+
+				successor := successorOf(old, "sess-b", at)
+				successor.PersistentCookie = true
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: at.Add(30 * time.Second),
+					RetainUntil: sessionRetainUntil, Successor: successor, Now: at,
+				}))
+
+				got, err := s.Load(ctx, successor.ID)
+				require.NoError(t, err)
+				assert.True(t, got.PersistentCookie, "the successor carries the mark it was given")
+				assertSessionsLoad(ctx, t, s, supersededAs(old, successor.ID, at, at.Add(30*time.Second)), successor)
+			},
+		},
+		{
+			name: "successor stores its own persistent cookie mark when the old row differs",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				old.PersistentCookie = true
+				require.NoError(t, s.Create(ctx, old))
+				at := suiteStart.Add(time.Minute)
+
+				successor := successorOf(old, "sess-b", at)
+				successor.PersistentCookie = false
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: at.Add(30 * time.Second),
+					RetainUntil: sessionRetainUntil, Successor: successor, Now: at,
+				}))
+
+				got, err := s.Load(ctx, successor.ID)
+				require.NoError(t, err)
+				assert.False(t, got.PersistentCookie, "the caller's value is stored, not the old row's")
 			},
 		},
 		{
@@ -2639,6 +2780,79 @@ func sessionStrictRotationCases() []suiteCase[session.Store] {
 			},
 		},
 		{
+			name: "a supersession stores the successor's second-factor-at-login mark as given",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := secondFactorAtLoginSession("sess-a", "u-1")
+				old.FamilyID = suiteID(3009)
+				old.FamilyCreatedAt = old.CreatedAt
+				require.NoError(t, s.Create(ctx, old))
+
+				at := suiteStart.Add(10 * time.Second)
+				successor := successorOf(old, "sess-b", at)
+				successor.MFA = session.MFASatisfied
+				successor.MFASatisfiedAt = old.MFASatisfiedAt
+				successor.FirstFactor = old.FirstFactor
+				successor.MFAAtFirstFactor = true
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: at.Add(inFlight), RetainUntil: sessionRetainUntil,
+					Successor: successor, Now: at, Strict: true,
+				}))
+
+				got, err := s.Load(ctx, successor.ID)
+				require.NoError(t, err)
+				assert.True(t, got.MFAAtFirstFactor, "the successor keeps the mark the Sessions gave it")
+				oldGot, err := s.Load(ctx, old.ID)
+				require.NoError(t, err)
+				assert.True(t, oldGot.MFAAtFirstFactor, "the superseded record keeps its own mark")
+			},
+		},
+		{
+			name: "a supersession stores a marked successor of an unmarked record as marked",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := sessionRecord("sess-a", "u-1")
+				old.FamilyID = suiteID(3010)
+				old.FamilyCreatedAt = old.CreatedAt
+				require.False(t, old.MFAAtFirstFactor)
+				require.NoError(t, s.Create(ctx, old))
+
+				at := suiteStart.Add(10 * time.Second)
+				successor := successorOf(old, "sess-b", at)
+				successor.MFAAtFirstFactor = true
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: at.Add(inFlight), RetainUntil: sessionRetainUntil,
+					Successor: successor, Now: at, Strict: true,
+				}))
+
+				got, err := s.Load(ctx, successor.ID)
+				require.NoError(t, err)
+				assert.True(t, got.MFAAtFirstFactor, "the successor keeps the mark it was given, not the superseded row's absence")
+			},
+		},
+		{
+			name: "a supersession stores an unmarked successor of a marked record as unmarked",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := secondFactorAtLoginSession("sess-a", "u-1")
+				old.FamilyID = suiteID(3011)
+				old.FamilyCreatedAt = old.CreatedAt
+				require.NoError(t, s.Create(ctx, old))
+
+				at := suiteStart.Add(10 * time.Second)
+				successor := successorOf(old, "sess-b", at)
+				successor.MFAAtFirstFactor = false
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: at.Add(inFlight), RetainUntil: sessionRetainUntil,
+					Successor: successor, Now: at, Strict: true,
+				}))
+
+				got, err := s.Load(ctx, successor.ID)
+				require.NoError(t, err)
+				assert.False(t, got.MFAAtFirstFactor, "the successor keeps the absence it was given, not the superseded row's mark")
+				oldGot, err := s.Load(ctx, old.ID)
+				require.NoError(t, err)
+				assert.True(t, oldGot.MFAAtFirstFactor, "the superseded record keeps its own mark")
+			},
+		},
+		{
 			// Two managers are two replicas over one store: the mark lives in
 			// the store, so a rotation through one is seen by the other.
 			name: "a strict rotation through one manager makes a rotation of the old identifier through another a renewal conflict",
@@ -2758,6 +2972,20 @@ func RunSessionRoleUnstorable[S session.Store](t *testing.T, harness Harness[S])
 			require.ErrorIs(t, err, pgschema.ErrSessionRoleUnstorable, "select")
 			assert.NotContains(t, err.Error(), role, "select: the refusal must not echo the role")
 			assertSessionsLoad(ctx, t, s, stored)
+
+			// Named at supersession: refused before anything is written, so
+			// the old session is neither superseded nor given a successor.
+			at := suiteStart.Add(5 * time.Minute)
+			successor := successorOf(stored, "sess-a-next", at)
+			named := role
+			err = s.Supersede(ctx, session.Supersession{
+				Old: stored.ID, AcceptUntil: at.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+				Successor: successor, Now: at, SuccessorRole: &named,
+			})
+			require.ErrorIs(t, err, pgschema.ErrSessionRoleUnstorable, "supersede")
+			assert.NotContains(t, err.Error(), role, "supersede: the refusal must not echo the role")
+			assertSessionsLoad(ctx, t, s, stored)
+			assertSessionsGone(ctx, t, s, successor.ID)
 		})
 	}
 }
@@ -2836,6 +3064,99 @@ func sessionSelectedRoleCases() []suiteCase[session.Store] {
 				assertSessionsLoad(ctx, t, s, supersededAs(old, successor.ID, at, at.Add(30*time.Second)), successor)
 			},
 		},
+		{
+			// A role named at supersession is the successor's, in place of the
+			// superseded row's; the empty name clears it; with none named the
+			// stored role is carried. Either way the caller's copy is told,
+			// and the superseded row keeps its own role.
+			name: "SupersedeNamesSuccessorRole",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				named := func(role string) *string { return &role }
+
+				type testCase struct {
+					name   string
+					named  *string
+					assert func(t *testing.T, successor, loaded, superseded *session.Session)
+				}
+
+				storedWith := func(role string) func(t *testing.T, successor, loaded, superseded *session.Session) {
+					return func(t *testing.T, successor, loaded, superseded *session.Session) {
+						assert.Equal(t, role, successor.SelectedRole, "the role written back to the caller's successor")
+						assert.Equal(t, role, loaded.SelectedRole, "the successor's stored role")
+						assert.Equal(t, "admin", superseded.SelectedRole, "the superseded row keeps its role")
+					}
+				}
+
+				cases := []testCase{
+					{name: "a named role replaces the stored one", named: named("audit"), assert: storedWith("audit")},
+					{name: "the empty name clears the role", named: named(""), assert: storedWith("")},
+					{name: "no name carries the stored role", named: nil, assert: storedWith("admin")},
+				}
+
+				for i, tc := range cases {
+					t.Run(tc.name, func(t *testing.T) {
+						old := withSelectedRole(sessionRecord(fmt.Sprintf("sess-named-%d", i), "u-1"), "admin")
+						require.NoError(t, s.Create(ctx, old))
+						at := suiteStart.Add(5 * time.Minute)
+						// The caller's copy carries the old role, as a successor
+						// built from a load does: the store must not take it.
+						successor := withSelectedRole(successorOf(old, fmt.Sprintf("sess-named-next-%d", i), at), "admin")
+						require.NoError(t, s.Supersede(ctx, session.Supersession{
+							Old: old.ID, AcceptUntil: at.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+							Successor: successor, Now: at, SuccessorRole: tc.named,
+						}))
+
+						loaded, err := s.Load(ctx, successor.ID)
+						require.NoError(t, err)
+						superseded, err := s.Load(ctx, old.ID)
+						require.NoError(t, err)
+						tc.assert(t, successor, loaded, superseded)
+					})
+				}
+			},
+		},
+		{
+			// A refused supersession naming a role writes nothing: the role is
+			// part of the one atomic operation, not a write of its own.
+			name: "SupersedeNamingRoleRefusedWritesNothing",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				role := "audit"
+				old := withSelectedRole(sessionRecord("sess-named-gone", "u-1"), "admin")
+				at := suiteStart.Add(5 * time.Minute)
+				successor := successorOf(old, "sess-named-gone-next", at)
+				err := s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: at.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+					Successor: successor, Now: at, SuccessorRole: &role,
+				})
+				require.ErrorIs(t, err, session.ErrNotFound)
+				assertSessionsGone(ctx, t, s, successor.ID)
+			},
+		},
+		roleCase("SupersedeNamedRoleOverridesLockedRow",
+			func(t *testing.T, ctx context.Context, s session.Store, r session.RoleSelector, _ *clockwork.FakeClock) {
+				// A selection committed on the superseded row after the
+				// caller loaded it does not displace the named role, and the
+				// superseded row keeps it.
+				old := withSelectedRole(sessionRecord("sess-named-race", "u-1"), "admin")
+				require.NoError(t, s.Create(ctx, old))
+				at := suiteStart.Add(5 * time.Minute)
+				successor := withSelectedRole(successorOf(old, "sess-named-race-next", at), "admin")
+				require.NoError(t, r.SelectRole(ctx, old.ID, "other"))
+
+				role := "audit"
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: at.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+					Successor: successor, Now: at, SuccessorRole: &role,
+				}))
+
+				assert.Equal(t, "audit", successor.SelectedRole)
+				loaded, err := s.Load(ctx, successor.ID)
+				require.NoError(t, err)
+				assert.Equal(t, "audit", loaded.SelectedRole)
+				superseded, err := s.Load(ctx, old.ID)
+				require.NoError(t, err)
+				assert.Equal(t, "other", superseded.SelectedRole)
+			}),
 		roleCase("SelectRole",
 			func(t *testing.T, ctx context.Context, s session.Store, r session.RoleSelector, _ *clockwork.FakeClock) {
 				stored := sessionRecord("sess-a", "u-1")

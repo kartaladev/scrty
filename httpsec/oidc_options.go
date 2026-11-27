@@ -29,8 +29,9 @@ type OIDCDeps struct {
 
 	// Handoff issues and redeems the single-use code the callback conveys the
 	// login with. It is required unless WithOIDCCallbackSuccess conveys the
-	// login instead, and must then be nil: that conveyance issues no code, so
-	// there is nothing for a handoff to govern.
+	// login instead, or the chain has EnableSessionCookie on, whose callback
+	// completes the sign-in itself; it must then be nil: neither conveyance
+	// issues a code, so there is nothing for a handoff to govern.
 	Handoff *oidc.Handoff
 
 	// Users loads the user a federated sign-in completed on the server is for
@@ -110,6 +111,21 @@ type OIDCDeps struct {
 // WithOIDCHandoffRedeemer, WithOIDCHandoffLimiter, WithOIDCHandoffRateLimit,
 // WithOIDCHandoffCountRefusals or WithOIDCHandoffPath, since none of them
 // govern anything once no handoff code is issued.
+//
+// On a chain with EnableSessionCookie and no WithOIDCCallbackSuccess, the
+// callback conveys the login itself, and issues no handoff code: it loads the
+// user afresh through the cookie session's user loader by the reference the
+// broker resolved (refusing an unknown, inactive or mismatched one with
+// oidc.ErrInvalidHandoff, as a redemption does), runs the post-authentication
+// policy on the assurance the ID token asserted, creates the session in one
+// write with the oidc first factor, the provider's session and ID token and
+// that assurance, sets the session cookie, and answers 303 See Other to the
+// allowlist-resolved destination. A challenge the policy raises leaves the
+// pending session's cookie and still redirects. A cookie that cannot be
+// delivered ends the sign-in, and the failure is returned with no redirect.
+// Such a chain takes no handoff manager, no token generator, none of the
+// redemption-only options and no role sync (the user's stored roles are
+// reloaded, as by a handoff); each is a configuration error from New.
 func EnableOIDCLogin(deps OIDCDeps, opts ...OIDCOption) Option {
 	const option = "EnableOIDCLogin"
 
@@ -189,11 +205,21 @@ func (i *oidcInterceptor) check(c *config, option string) error {
 			return err
 		}
 
-		if c.sessionBearer {
+		if c.issuesSessionReference() {
 			if err := checkTokenGenerator(c, option, "WithOIDCTokens", i.tokens); err != nil {
 				return err
 			}
 		} else if err := checkIssuingGenerator(c, option, "WithOIDCTokens", i.tokens); err != nil {
+			return err
+		}
+	} else if c.sessionCookie {
+		// The cookie chain's own conveyance (completeCookieSignIn): the
+		// callback completes the sign-in, so no handoff code is issued.
+		if err := i.checkCookieConveyance(option); err != nil {
+			return err
+		}
+
+		if err := checkTokenGenerator(c, option, "WithOIDCTokens", i.tokens); err != nil {
 			return err
 		}
 	} else {
@@ -202,7 +228,7 @@ func (i *oidcInterceptor) check(c *config, option string) error {
 				"WithOIDCCallbackSuccess conveys it instead", option)
 		}
 
-		if c.sessionBearer {
+		if c.issuesSessionReference() {
 			if err := checkTokenGenerator(c, option, "WithOIDCTokens", i.tokens); err != nil {
 				return err
 			}
@@ -216,6 +242,7 @@ func (i *oidcInterceptor) check(c *config, option string) error {
 	}
 
 	i.issue = c.credentialIssuer(i.tokens)
+	i.deliver = c.delivery()
 
 	if i.sessions == nil && c.sessions == nil {
 		return newConfigError("%s needs a session manager, and neither WithOIDCSessions "+
@@ -239,11 +266,17 @@ func (i *oidcInterceptor) check(c *config, option string) error {
 
 	// A handoff reloads the user by reference and rebuilds the principal from
 	// the stored roles, so the roles a sync derived at the callback would be
-	// gone by the time the session exists.
+	// gone by the time the session exists. A cookie chain's own conveyance
+	// reloads the user in the callback the same way.
 	if syncing := i.manager.RoleSyncProviders(); len(syncing) > 0 && i.callbackSuccess == nil {
-		return newConfigError("%s cannot keep role sync for %s with the handoff conveyance, "+
+		conveyance := "the handoff conveyance"
+		if c.sessionCookie {
+			conveyance = "the cookie chain's callback conveyance"
+		}
+
+		return newConfigError("%s cannot keep role sync for %s with %s, "+
 			"which rebuilds the principal from stored roles; convey the login with "+
-			"WithOIDCCallbackSuccess, or turn role sync off", option, strings.Join(syncing, ", "))
+			"WithOIDCCallbackSuccess, or turn role sync off", option, strings.Join(syncing, ", "), conveyance)
 	}
 
 	if !i.redirectCheckWaived {
@@ -298,6 +331,36 @@ func (i *oidcInterceptor) checkConveyance(option string) error {
 			"pass nil for OIDCDeps.Handoff", option)
 	}
 
+	if name, ok := i.redemptionOnlySet(); ok {
+		return newConfigError("%s was given %s and WithOIDCCallbackSuccess, but the "+
+			"conveyance issues no handoff code for %s to govern", option, name, name)
+	}
+
+	return nil
+}
+
+// checkCookieConveyance refuses the redemption-only wiring a cookie chain
+// makes meaningless: its callback completes the sign-in and sets the session
+// cookie (completeCookieSignIn), so no handoff code is ever issued for a
+// handoff manager or any redemption-only option to govern.
+func (i *oidcInterceptor) checkCookieConveyance(option string) error {
+	if i.handoffs != nil {
+		return newConfigError("%s was given OIDCDeps.Handoff, but EnableSessionCookie is on, so the "+
+			"callback completes the sign-in and sets the session cookie, and no handoff code is "+
+			"issued for it to redeem; pass nil for OIDCDeps.Handoff", option)
+	}
+
+	if name, ok := i.redemptionOnlySet(); ok {
+		return newConfigError("%s was given %s, but EnableSessionCookie is on, so the callback "+
+			"completes the sign-in and issues no handoff code for %s to govern", option, name, name)
+	}
+
+	return nil
+}
+
+// redemptionOnlySet names the first redemption-only option the consumer gave,
+// if any.
+func (i *oidcInterceptor) redemptionOnlySet() (string, bool) {
 	redemptionOnly := []struct {
 		name string
 		set  bool
@@ -311,12 +374,11 @@ func (i *oidcInterceptor) checkConveyance(option string) error {
 
 	for _, opt := range redemptionOnly {
 		if opt.set {
-			return newConfigError("%s was given %s and WithOIDCCallbackSuccess, but the "+
-				"conveyance issues no handoff code for %s to govern", option, opt.name, opt.name)
+			return opt.name, true
 		}
 	}
 
-	return nil
+	return "", false
 }
 
 // providerSegment returns the provider name path carries after prefix, or ""
@@ -602,8 +664,12 @@ func WithOIDCAllowedOrigins(origins ...string) OIDCOption {
 //
 // Default: redirect to the allowlisted destination with a single-use handoff
 // code, redeemed through the required handoff manager by the required token
-// generator. It is also the only way to keep role sync, which the default
-// conveyance cannot carry. A nil function is refused.
+// generator; on a chain with EnableSessionCookie, complete the sign-in in the
+// callback, set the session cookie and redirect to the allowlisted
+// destination (EnableOIDCLogin). It is also the only way to keep role sync,
+// which neither default conveyance can carry. On a cookie chain fn writes the
+// whole response as on any other, and sets no session cookie unless it
+// creates and delivers one itself. A nil function is refused.
 func WithOIDCCallbackSuccess(fn CallbackSuccess) OIDCOption {
 	return func(i *oidcInterceptor) error {
 		if fn == nil {
@@ -848,8 +914,15 @@ func WithoutOIDCRedirectPathCheck() OIDCOption {
 // the session is stored) falls back the same way: the stored session is ended
 // first, then the login is handed off to the login URL carrying the handle, so
 // the page answers the challenge and its redemption stores a session of its own.
+// On a chain with EnableSessionCookie, which takes no handoff manager, both fall
+// back to that chain's own conveyance instead: the callback stores the sign-in,
+// sets its session cookie and sends the browser 303 to the login URL carrying the
+// handle, where the page finishes the step under the cookie. A completed login
+// there sets no session cookie: the browser leaves with the provider's
+// browser-session cookie alone.
 //
-// Exclusions. It needs EnableOIDCProvider on the same chain, OIDCDeps.Handoff,
+// Exclusions. It needs EnableOIDCProvider on the same chain, OIDCDeps.Handoff
+// (except on a chain with EnableSessionCookie, which refuses one),
 // OIDCDeps.Users, OIDC login storing sessions in the provider's session manager,
 // every provider's redirect URL on the issuer's origin (where the provider's
 // host-only cookies are sent), and a login URL with no query of its own. It

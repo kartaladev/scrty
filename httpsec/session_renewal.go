@@ -52,7 +52,8 @@ type SessionRenewalDeps struct {
 	// (session.Sessions.LoadForRenewal).
 	//
 	// Default: the manager the chain's bearer resolves sessions through,
-	// whichever bearer mode is enabled and in whatever option order. Given
+	// whichever bearer mode is enabled, the cookie session included, and in
+	// whatever option order. Given
 	// explicitly, it must be that same manager (compared by pointer): any
 	// other is refused with a configuration error naming
 	// SessionRenewalDeps.Sessions, because a successor written through a
@@ -130,6 +131,10 @@ type sessionRenewal struct {
 	// decides, handed over at assembly (config.credentialIssuer).
 	issue credentialIssuer
 
+	// deliver hands the credential out once the session is stored: as the
+	// session cookie on a cookie chain, unchanged for the body otherwise.
+	deliver credentialDelivery
+
 	// engine is the chain's policy engine, handed over at assembly, which
 	// judges a session a late renewal recovers.
 	engine *policy.Engine
@@ -146,6 +151,10 @@ type sessionRenewal struct {
 	path    endpointPath
 	grace   time.Duration
 	respond RenewalResponder
+
+	// respondSet is whether the consumer replaced respond
+	// (WithRenewalResponder).
+	respondSet bool
 
 	// lifetime chooses the successor's absolute lifetime, and nil carries the
 	// predecessor's deadline over.
@@ -174,7 +183,7 @@ func (r *sessionRenewal) Intercept(ex *Exchange, next Next) error {
 
 	// A proof given beside the session's credential is verified before the
 	// limit is asked and anything is rotated.
-	if err := continuingProof(ex, s); err != nil {
+	if err := r.deliver.continuingProof(ex, s); err != nil {
 		return err
 	}
 
@@ -219,7 +228,15 @@ func (r *sessionRenewal) Intercept(ex *Exchange, next Next) error {
 		return rotationFailure(err, issueErr)
 	}
 
-	// The successor is stored by now, and its credential is handed out below.
+	// The successor is stored by now, so its credential is delivered (on a
+	// cookie chain, as the cookie, leaving nothing for the body) before
+	// anything reports it, and handed out below. A delivery that fails has
+	// ended the sign-in.
+	credential, err = r.deliver.deliver(ex, r.sessions, successor, credential)
+	if err != nil {
+		return err
+	}
+
 	emitEvent(ctx, sessionEvent(event.SessionRenewed, event.OutcomeSuccess, successor))
 
 	return r.respond(ex, RenewalResult{
@@ -662,6 +679,9 @@ func EnableSessionRenewal(deps SessionRenewalDeps, opts ...SessionRenewalOption)
 		// chosen once every option has been applied.
 		c.wire(func(ch *Chain) {
 			r.issue = c.credentialIssuer(r.tokens)
+			r.deliver = c.delivery()
+			r.respond = signInResponder(r.deliver, r.respondSet, r.respond,
+				func(res RenewalResult) *session.Session { return res.Session })
 			r.engine = ch.engine
 			r.logger = c.logger
 		})
@@ -672,7 +692,8 @@ func EnableSessionRenewal(deps SessionRenewalDeps, opts ...SessionRenewalOption)
 }
 
 // bearerSessions is the session manager the chain's bearer resolves sessions
-// through, whichever bearer mode is enabled, or nil when neither is. The
+// through, whichever bearer mode is enabled (the session reference, the
+// signed token, or the cookie session), or nil when none is. The
 // bearer may be enabled after the renewal endpoint, so it is read once every
 // option has been applied.
 func bearerSessions(c *config) *session.Sessions {
@@ -685,6 +706,11 @@ func bearerSessions(c *config) *session.Sessions {
 	})
 	_ = eachInterceptor(c, func(b *bearerToken) error {
 		m = b.sessions
+
+		return nil
+	})
+	_ = eachInterceptor(c, func(s *sessionCookie) error {
+		m = s.sessions
 
 		return nil
 	})
@@ -774,6 +800,11 @@ func WithRenewalPath(path string) SessionRenewalOption {
 // bounded: a grace below 0 or above session.MaxRenewalGrace (inclusive) is
 // refused with a configuration error. A grace of 0 ends the window at once.
 //
+// On a cookie chain (EnableSessionCookie) the same window applies to the
+// rotation MFA verification and re-authentication make, so the cookie they
+// replace keeps working for grace; a grace of 0 makes them rotate strictly,
+// the replaced cookie ending with the rotation.
+//
 // A renewed credential presented after its window is reuse: the manager
 // revokes the session's whole family. That revocation is a store write, so a
 // consumer that rolls its request transaction back on a refusal must commit
@@ -797,6 +828,10 @@ func WithRenewalGrace(grace time.Duration) SessionRenewalOption {
 //
 // Default: the login endpoint's default JSON document carrying the
 // successor's credential and validity, with 200 and Cache-Control: no-store.
+// On a cookie chain (EnableSessionCookie) the default is instead the chain's
+// negotiated answer: 303 See Other to the sign-in's destination for a form
+// post or a request preferring HTML, else 200 with {"idle_expires_at": ...}
+// and no credential.
 // A consumer renders its own envelope here, and may write an audit record
 // inside its own transaction. A responder that writes the credential should
 // forbid caching it too. A nil function is refused. The result carries the
@@ -810,6 +845,7 @@ func WithRenewalResponder(fn RenewalResponder) SessionRenewalOption {
 		}
 
 		r.respond = fn
+		r.respondSet = true
 
 		return nil
 	}

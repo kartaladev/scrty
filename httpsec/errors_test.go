@@ -632,6 +632,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"session.ErrNotFound":           session.ErrNotFound,
 		"session.ErrUnreadable":         session.ErrUnreadable,
 		"session.ErrCipherUnavailable":  session.ErrCipherUnavailable,
+		"session.ErrStoreContract":      session.ErrStoreContract,
 		"session.ErrAlreadyCommitted":   session.ErrAlreadyCommitted,
 		"session.ErrRenewalConflict":    session.ErrRenewalConflict,
 		"session.ErrRenewalRequired":    session.ErrRenewalRequired,
@@ -692,6 +693,7 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"session.ErrUnreadable":         "converted to ErrAuthenticationRequired before it leaves the chain",
 		"session.ErrDeleteDidNotSettle": "a store contract failure, answered 500 by default",
 		"session.ErrCipherUnavailable":  "a cipher outage, a dependency failure answered 500 by default",
+		"session.ErrStoreContract":      "a store breaking its contract, a dependency failure answered 500 by default",
 		"session.ErrListUnavailable":    "a session store outage while listing sign-ins, a dependency failure answered 500 by default",
 		"httpsec.ErrChallengeUnavailable": "an automation-challenge verifier outage, a dependency failure answered 500 " +
 			"whatever its cause wraps",

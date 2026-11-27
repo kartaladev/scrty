@@ -557,8 +557,9 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // A chain that could not serve the provider correctly does not build. Each of
 // these is a configuration error naming this option:
 //
-//   - no bearer mode, because a resume needs a sign-in credential;
-//   - built-in bearers over more than one session manager, whatever their schemes,
+//   - no bearer mode (EnableSessionBearer, EnableBearerToken, or EnableSessionCookie,
+//     whose cookie session counts as one), because a resume needs a sign-in credential;
+//   - built-in bearers, the cookie session among them, over more than one session manager, whatever their schemes,
 //     because a live sign-in of any but the one the endpoints read would read as ended
 //     and have its grants ended (see "What the resume endpoint reads");
 //   - no EnableJWKSEndpoint, or one given a *signingkey.Keys other than the
@@ -581,7 +582,10 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 //     binding while EnableCertificateBinding is off. A client of the consumer's own
 //     registry cannot be listed here, and is judged as it is read;
 //   - no EnableCSRFProtection while the provider keeps a browser session, which
-//     oidcprovider.WithoutBrowserSessions turns off;
+//     oidcprovider.WithoutBrowserSessions turns off, or on a chain with
+//     EnableSessionCookie, whatever the provider keeps, since the session cookie
+//     then resumes an authorization; and, on such a chain, a WithCSRFExemption
+//     route covering POST to the resume endpoint;
 //   - no EnableSecurityHeaders, or security headers whose document profile does not
 //     forbid framing: no Content-Security-Policy (removed, or only reported), no
 //     frame-ancestors directive, or one naming any source but 'none', 'self'
@@ -940,17 +944,19 @@ func findInterceptor[T any](c *config) (T, bool) {
 	return zero, false
 }
 
-// checkBearer requires a bearer mode, whichever one: the resume is how a sign-in
-// reaches the provider, and it reads the credential only through one. It requires
-// every built-in bearer to share one manager, for the endpoints read one: a live
-// sign-in of any other would read as ended, and the resume would end its family.
+// checkBearer requires a bearer mode, whichever one, the cookie session counting
+// as one: the resume is how a sign-in reaches the provider, and the provider's
+// sign-in-dependent endpoints read the sign-in only through one. It requires
+// every built-in bearer and the cookie session to share one manager, for the
+// endpoints read one: a live sign-in of any other would read as ended, and the
+// resume would end its family.
 //
 // A bearer given no manager is passed over: its own option refuses it, whichever
 // comes first, and it says what is missing better than this would.
 func (op *oidcEndpoints) checkBearer(c *config) error {
-	if !hasInterceptor[*bearerToken](c) && !hasInterceptor[*sessionBearer](c) {
+	if !hasInterceptor[*bearerToken](c) && !hasInterceptor[*sessionBearer](c) && !hasInterceptor[*sessionCookie](c) {
 		return newConfigError("%s needs a bearer mode, because a resume needs a sign-in credential: "+
-			"enable EnableSessionBearer or EnableBearerToken", optionOIDCProvider)
+			"enable EnableSessionBearer, EnableBearerToken or EnableSessionCookie", optionOIDCProvider)
 	}
 
 	var shared *session.Sessions
@@ -962,9 +968,9 @@ func (op *oidcEndpoints) checkBearer(c *config) error {
 
 		if shared != nil && shared != m {
 			return newConfigError("%s reads every sign-in through one session manager, and the chain's bearers "+
-				"(EnableBearerToken, EnableSessionBearer) were given more than one, so a live sign-in of the "+
-				"other would read as ended and have its grants ended: give them all the same manager",
-				optionOIDCProvider)
+				"(EnableBearerToken, EnableSessionBearer, EnableSessionCookie) were given more than one, so a "+
+				"live sign-in of the other would read as ended and have its grants ended: give them all the "+
+				"same manager", optionOIDCProvider)
 		}
 
 		shared = m
@@ -973,6 +979,14 @@ func (op *oidcEndpoints) checkBearer(c *config) error {
 	}
 
 	if err := eachInterceptor(c, func(b *sessionBearer) error { return same(b.sessions) }); err != nil {
+		return err
+	}
+
+	// Defensive: a chain with the cookie session refuses every bearer mode beside
+	// it (the cookie-plus-bearer rule), so the cookie session's manager is the only
+	// one on such a chain and a mismatch cannot reach this check. It is folded in
+	// all the same, so the one-manager rule does not rest on that other rule.
+	if err := eachInterceptor(c, func(s *sessionCookie) error { return same(s.sessions) }); err != nil {
 		return err
 	}
 
@@ -1014,7 +1028,7 @@ func (op *oidcEndpoints) checkJWKS(c *config) error {
 // cannot be changed once built, so the consumer states it there too.
 func (op *oidcEndpoints) checkDPoP(c *config) error {
 	switch stated := op.provider.DPoPEnabled(); {
-	case stated && !c.dpopEnabled:
+	case dpopUnverified(op.provider, c):
 		return newConfigError("%s was given a provider built with oidcprovider.WithDPoP on a chain "+
 			"without EnableDPoP, so no proof would be verified: add EnableDPoP, or remove WithDPoP",
 			optionOIDCProvider)
@@ -1035,6 +1049,13 @@ func (op *oidcEndpoints) checkDPoP(c *config) error {
 	}
 
 	return nil
+}
+
+// dpopUnverified reports whether p is built with DPoP and chain c does not verify proofs: a
+// DPoP-scheme request would then reach the chain's handlers unverified. It is the rule for a provider
+// the chain serves (checkDPoP) and for one a FromProvider source trusts, whichever is on the chain.
+func dpopUnverified(p *oidcprovider.Provider, c *config) bool {
+	return p.DPoPEnabled() && !c.dpopEnabled
 }
 
 // checkDPoPURL refuses DPoP settings under which no proof naming the published URL of the endpoint
@@ -1078,13 +1099,12 @@ func (op *oidcEndpoints) checkDPoPURL(v *dpopVerifier, served string) error {
 // refused wherever it was presented. The provider answers only for the clients it
 // can list; a client of the consumer's own registry is judged as it is read.
 func (op *oidcEndpoints) checkBindings(c *config) error {
-	if op.provider.RequiresBinding(oidcprovider.BindingDPoP) && !c.dpopEnabled {
+	switch binding, _ := unverifiedBinding(op.provider, c); binding {
+	case bindingNameDPoP:
 		return newConfigError("%s was given a provider with a client requiring DPoP on a chain without "+
 			"EnableDPoP, so no proof would be verified: add EnableDPoP, with oidcprovider.WithDPoP on the "+
 			"provider, or drop the client's RequireBinding", optionOIDCProvider)
-	}
-
-	if op.provider.RequiresBinding(oidcprovider.BindingMTLS) && c.certBinding == nil {
+	case bindingNameCertificate:
 		return newConfigError("%s was given a provider with a client requiring a certificate binding on a "+
 			"chain without EnableCertificateBinding, so no certificate would be verified: add "+
 			"EnableCertificateBinding, or drop the client's RequireBinding", optionOIDCProvider)
@@ -1093,16 +1113,114 @@ func (op *oidcEndpoints) checkBindings(c *config) error {
 	return nil
 }
 
+// The sender constraints unverifiedBinding names.
+const (
+	bindingNameDPoP        = "DPoP"
+	bindingNameCertificate = "a certificate binding"
+)
+
+// unverifiedBinding names a sender constraint a client of p requires that chain c does not verify,
+// and the option that would verify it; both are "" when c verifies every constraint p's clients
+// require. It is the one rule for a provider the chain serves and for one a FromProvider source
+// trusts, as either's tokens are verified on c. Only the clients p can list are judged
+// (oidcprovider.Provider.RequiresBinding): a client of the consumer's own registry is judged as it is
+// read, and a provider built with oidcprovider.WithDPoP whose clients require no DPoP is not refused.
+func unverifiedBinding(p *oidcprovider.Provider, c *config) (binding, enable string) {
+	switch {
+	case p.RequiresBinding(oidcprovider.BindingDPoP) && !c.dpopEnabled:
+		return bindingNameDPoP, "EnableDPoP"
+	case p.RequiresBinding(oidcprovider.BindingMTLS) && c.certBinding == nil:
+		return bindingNameCertificate, "EnableCertificateBinding"
+	default:
+		return "", ""
+	}
+}
+
 // checkCSRF requires CSRF protection while the provider keeps a browser session,
-// because the consent stage may then answer from a cookie.
+// because the consent stage may then answer from a cookie; and on a chain with the
+// cookie session whatever the provider keeps, because the session cookie then
+// drives the resume, which hands authorization codes to clients: a page on another
+// site must not drive it with only SameSite=Lax and the content-type check in its
+// way. A chain with the cookie session and no provider may still opt out. On such
+// a chain no CSRF exemption may cover the resume either (checkResumeJudged).
 func (op *oidcEndpoints) checkCSRF(c *config) error {
-	if !op.provider.BrowserSessionsEnabled() || hasInterceptor[*csrfLayer](c) {
+	cookie := hasInterceptor[*sessionCookie](c)
+
+	if l, protected := findInterceptor[*csrfLayer](c); protected {
+		if cookie {
+			return op.checkResumeJudged(c, l)
+		}
+
+		return nil
+	}
+
+	if cookie {
+		return newConfigError("%s on a chain with EnableSessionCookie resumes an authorization with the "+
+			"session cookie, so it needs EnableCSRFProtection, whether or not the provider keeps browser "+
+			"sessions; WithoutCSRFProtection is available on a cookie chain without the provider",
+			optionOIDCProvider)
+	}
+
+	if !op.provider.BrowserSessionsEnabled() {
 		return nil
 	}
 
 	return newConfigError("%s keeps a browser session, whose cookie can answer a consent, so it needs "+
 		"EnableCSRFProtection; a provider built with oidcprovider.WithoutBrowserSessions needs none",
 		optionOIDCProvider)
+}
+
+// checkResumeJudged refuses any CSRF exemption covering the resume on a chain with the
+// cookie session: the cookie there resumes an authorization, so an exempt resume would
+// let a page on another site post one for a request an attacker parked with their own
+// client, wherever the browser attaches the cookie, and the code would go to the
+// attacker. Every exemption the layer applies is judged (appliedExemptions): the
+// consumer's WithCSRFExemption routes, the provider's own exempt endpoints and the
+// back-channel logout prefix of the chain's OIDC login, so the guarantee does not rest
+// on the endpoint collision check refusing a back-channel prefix placed over the
+// resume. Each is judged against every spelling the router answers at the resume
+// (coversRoute), so a "*" segment, an escape, the base path, a moved prefix and a
+// back-channel prefix followed by the resume's last segment are all caught. No
+// legitimate use needs it: the sign-in page can always obtain the CSRF token.
+func (op *oidcEndpoints) checkResumeJudged(c *config, l *csrfLayer) error {
+	resume := op.paths[OIDCResume]
+	if !op.served(OIDCResume) || resume == "" {
+		return nil
+	}
+
+	exempt, err := l.appliedExemptions(c)
+	if err != nil {
+		return err
+	}
+
+	for i, e := range exempt {
+		if !e.coversRoute(http.MethodPost, resume) {
+			continue
+		}
+
+		// appliedExemptions lists the consumer's WithCSRFExemption routes first.
+		if i < len(l.exemptions) {
+			return newConfigError("WithCSRFExemption(%q, %q) covers %s %s, the resume endpoint of %s, on a "+
+				"chain with EnableSessionCookie, where the session cookie resumes an authorization: a page on "+
+				"another site could then resume a request an attacker parked; drop the exemption, since the "+
+				"sign-in page can always obtain the CSRF token", e.method, e.pattern, http.MethodPost, resume,
+				optionOIDCProvider)
+		}
+
+		if e.prefix != "" {
+			return newConfigError("the CSRF exemption of the OIDC back-channel logout endpoint, %s %s{provider} "+
+				"(WithOIDCBackchannelLogoutPath), covers %s %s, the resume endpoint of %s, on a chain with "+
+				"EnableSessionCookie, where the session cookie resumes an authorization: a page on another site "+
+				"could then resume a request an attacker parked; give the two endpoints paths apart",
+				e.method, e.prefix, http.MethodPost, resume, optionOIDCProvider)
+		}
+
+		return newConfigError("the CSRF exemption of %s %s, an endpoint of %s, covers %s %s, its resume "+
+			"endpoint, on a chain with EnableSessionCookie, where the session cookie resumes an authorization: "+
+			"give the endpoints their own paths", e.method, e.pattern, optionOIDCProvider, http.MethodPost, resume)
+	}
+
+	return nil
 }
 
 // checkAssertionEndpoint refuses an assertion audience the token endpoint is not

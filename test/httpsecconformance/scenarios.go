@@ -582,7 +582,7 @@ func Scenarios() []Scenario {
 		unattributableClientAddress(),
 		storeFailureTextStaysOutOfTheRefusal(),
 		twoCookiesAreBothSent(),
-	}, slices.Concat(proxyScenarios(), reauthScenarios(), oidcScenarios(), oidcAssuranceScenarios(), enrolmentScenarios(), requestScenarios(), recoveryScenarios(), passkeyScenarios(), lockoutScenarios(), holdScenarios(), headerScenarios(), corsScenarios(), sessionManagementScenarios(), csrfScenarios(), dpopScenarios(), resourceServerScenarios(), subjectScenarios(), streamScenarios(), signalsScenarios(), signalsThrottleScenarios(), basePathScenarios())...)
+	}, slices.Concat(proxyScenarios(), reauthScenarios(), oidcScenarios(), oidcAssuranceScenarios(), enrolmentScenarios(), requestScenarios(), recoveryScenarios(), passkeyScenarios(), lockoutScenarios(), holdScenarios(), headerScenarios(), corsScenarios(), sessionManagementScenarios(), csrfScenarios(), dpopScenarios(), resourceServerScenarios(), subjectScenarios(), streamScenarios(), signalsScenarios(), signalsThrottleScenarios(), basePathScenarios(), sessionCookieScenarios())...)
 }
 
 // formLoginOptions is the wiring every login scenario shares.

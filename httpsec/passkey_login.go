@@ -94,6 +94,10 @@ type passwordlessInterceptor struct {
 	// decides, settled at assembly (resolve).
 	issue credentialIssuer
 
+	// deliver hands the credential out once the session is stored: as the
+	// session cookie on a cookie chain, unchanged for the body otherwise.
+	deliver credentialDelivery
+
 	// cancelHeld cancels the user's held account recoveries at login, set at
 	// assembly when the chain's recovery may hold one, and nil otherwise.
 	cancelHeld heldRecoveryCanceller
@@ -283,9 +287,12 @@ func PasswordlessTokens(tokens token.Generator) PasswordlessSetting {
 
 // PasswordlessResponder replaces how a passwordless login is answered.
 //
-// Default: form login's responder (WithLoginResponder), or form login's
-// default document when it has none or the chain has no form login. A nil
-// function is refused; omit the setting to keep the default.
+// Default: form login's responder when the consumer gave one
+// (WithLoginResponder); otherwise form login's default document, or, on a
+// cookie chain (EnableSessionCookie), the chain's negotiated answer: 303 See
+// Other to the sign-in's destination for a request preferring HTML, else 200
+// with {"idle_expires_at": ...} and no credential. A nil function is refused;
+// omit the setting to keep the default.
 func PasswordlessResponder(fn LoginResponder) PasswordlessSetting {
 	return func(cfg *passwordlessConfig) error {
 		if fn == nil {
@@ -368,7 +375,7 @@ func (p *passkeyInterceptor) checkPasswordless(option string) error {
 func (i *passwordlessInterceptor) resolve(option string, c *config) error {
 	l := c.formLogin()
 
-	if c.sessionBearer {
+	if c.issuesSessionReference() {
 		// The credential is the session's identifier, so a generator, given
 		// here or inherited from form login, would mint tokens this chain
 		// refuses. Form login's own check refuses its generator.
@@ -391,11 +398,16 @@ func (i *passwordlessInterceptor) resolve(option string, c *config) error {
 	}
 
 	i.issue = c.credentialIssuer(i.tokens)
+	i.deliver = c.delivery()
 
 	if i.respond == nil {
-		i.respond = writeLoginResult
-		if l != nil && l.respond != nil {
+		switch {
+		case l != nil && l.respondSet:
 			i.respond = l.respond
+		case i.deliver.cookie != nil:
+			i.respond = i.deliver.cookie.answerLogin
+		default:
+			i.respond = writeLoginResult
 		}
 	}
 
@@ -561,7 +573,7 @@ func (i *passwordlessInterceptor) finish(ex *Exchange) error {
 	// The proof is judged before the assertion, so a bad one leaves the
 	// ceremony's challenge unspent and is refused as a malformed response
 	// is, counted nowhere.
-	keyBinding, err := issuingBinding(ctx, ex.dpop(), ex.certBinding(), ex.Request, ex.bearerCredential)
+	keyBinding, err := i.deliver.sessionBinding(ex)
 	if err != nil {
 		return err
 	}
@@ -610,6 +622,7 @@ func (i *passwordlessInterceptor) finish(ex *Exchange) error {
 		sessions:          i.sessions,
 		tokens:            i.tokens,
 		issue:             i.issue,
+		deliver:           i.deliver,
 		enrolmentLifetime: i.enrolmentLifetime,
 		enforced:          i.enforced,
 		log:               i.log,

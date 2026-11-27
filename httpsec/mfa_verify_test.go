@@ -900,8 +900,10 @@ func TestMFAVerify(t *testing.T) {
 		assert.NotEqual(t, s.ID, h.resolved.ID, "the handle is rotated")
 		assert.Equal(t, session.MFASatisfied, h.stored(t, h.resolved.ID).MFA)
 
+		// A header-bearer chain rotates strictly: the client holds both
+		// credentials, and nothing expires the old one, so it has no window.
 		_, err := h.sessions.Load(t.Context(), s.ID)
-		require.Error(t, err, "the previous handle no longer loads")
+		require.ErrorIs(t, err, session.ErrNotFound, "the previous handle no longer loads, straight after the rotation")
 	}
 
 	refusedAs := func(sentinel error, status int) func(*testing.T, *mfaHarness, *session.Session, served) {
@@ -3379,6 +3381,156 @@ func TestMFAVerify_AuthenticatorRefusedUncounted(t *testing.T) {
 			assert.Equal(t, s.ID, still.ID, "the handle is unchanged")
 			assert.Equal(t, session.MFAPending, still.MFA, "the challenge stays pending")
 			assert.True(t, still.MFASatisfiedAt.IsZero())
+		})
+	}
+}
+
+// TestMFAVerifyComparesTheSessionAsLoaded pins, on a header-bearer chain,
+// whose verification rotates strictly, what the stored record is compared with
+// before the rotation: the session as the store returned it. A confinement
+// another request saves after the bearer loaded the session is a lost race
+// (409) that rotates nothing. A session a consumer interceptor assigns to the
+// exchange directly, as the store returned it, verifies: the same session
+// loaded afresh, another of the user's stored sessions, which is the one
+// rotated, and one put there before any bearer resolved it.
+func TestMFAVerifyComparesTheSessionAsLoaded(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// act builds the chain and serves the verification of s.
+		act    func(t *testing.T, h *mfaHarness, s *session.Session) served
+		assert func(t *testing.T, h *mfaHarness, s *session.Session, out served)
+	}
+
+	verify := func(t *testing.T, c *httpsec.Chain, s *session.Session) served {
+		t.Helper()
+
+		return serve(t, c, bearerRequestTo(t.Context(), http.MethodPost, testMFAVerifyPath, mfaTokenFor(s.ID),
+			"code="+testMFACode))
+	}
+	// reassigned verifies s on a bearer chain behind a consumer interceptor
+	// that assigns the stored session target names to the exchange.
+	reassigned := func(target func(t *testing.T, h *mfaHarness, s *session.Session) string) func(
+		*testing.T, *mfaHarness, *session.Session) served {
+		return func(t *testing.T, h *mfaHarness, s *session.Session) served {
+			reloads := &reloadsSession{sessions: h.sessions}
+			id := target(t, h, s)
+			reloads.target.Store(&id)
+			h.chainOpts = append(h.chainOpts, reloads.option())
+
+			return verify(t, h.bearerChain(t), s)
+		}
+	}
+	verified := func(t *testing.T, h *mfaHarness, rotatedFrom string, out served) {
+		t.Helper()
+		require.NoError(t, out.err)
+
+		rotated := h.stored(t, h.rotatedID(t))
+		assert.Equal(t, session.MFASatisfied, rotated.MFA)
+
+		_, err := h.sessions.Load(t.Context(), rotatedFrom)
+		require.ErrorIs(t, err, session.ErrNotFound, "the session verified was rotated strictly")
+	}
+
+	cases := []testCase{
+		{
+			name: "a confinement saved after the bearer loaded the session is a renewal conflict",
+			act: func(t *testing.T, h *mfaHarness, s *session.Session) served {
+				confiner := &confineOnRequest{}
+				confiner.sessions = h.sessions
+				confiner.arm(s.ID)
+				h.chainOpts = append(h.chainOpts, httpsec.WithPolicyEngine(engineOf(t, confiner)))
+
+				out := verify(t, h.bearerChain(t), s)
+
+				ran, saveErr := confiner.result()
+				require.True(t, ran, "the confinement was saved during the verification")
+				require.NoError(t, saveErr)
+
+				return out
+			},
+			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrSessionRenewalConflict)
+				require.ErrorIs(t, out.err, session.ErrRenewalConflict)
+				assert.Equal(t, http.StatusConflict, httpsec.StatusForError(out.err))
+				assert.Nil(t, h.issuedFor.Load(), "no credential was issued")
+
+				stored := h.stored(t, s.ID)
+				assert.Equal(t, session.MFAEnrolmentPending, stored.MFA, "the confinement stands")
+				assert.False(t, stored.EnrolmentOriginDeadline.IsZero(), "the confinement stands")
+				assert.False(t, stored.RotatedStrictly, "nothing was rotated")
+			},
+		},
+		{
+			// The per-request phase marks the password change on the
+			// request's session in memory only. The stored record is compared
+			// with the session as loaded, so the mark is no conflict, and the
+			// strict successor carries it.
+			name: "a password change the per-request phase marks is no conflict and reaches the successor",
+			act: func(t *testing.T, h *mfaHarness, s *session.Session) served {
+				raises := &passwordChangeEveryRequest{}
+				raises.armed.Store(true)
+				h.chainOpts = append(h.chainOpts,
+					httpsec.WithPolicyEngine(engineOf(t, raises)),
+					httpsec.EnablePasswordChangeGate(h.sessions))
+
+				return verify(t, h.bearerChain(t), s)
+			},
+			assert: func(t *testing.T, h *mfaHarness, _ *session.Session, out served) {
+				require.NotErrorIs(t, out.err, httpsec.ErrSessionRenewalConflict)
+				require.NoError(t, out.err)
+
+				rotated := h.stored(t, h.rotatedID(t))
+				assert.Equal(t, session.MFASatisfied, rotated.MFA)
+				assert.True(t, rotated.PasswordChangePending, "the successor carries the marked password change")
+			},
+		},
+		{
+			name: "the same session, loaded afresh and assigned by a consumer, verifies",
+			act: reassigned(func(_ *testing.T, _ *mfaHarness, s *session.Session) string {
+				return s.ID
+			}),
+			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+				verified(t, h, s.ID, out)
+			},
+		},
+		{
+			name: "another stored session assigned by a consumer verifies as itself",
+			act: reassigned(func(t *testing.T, h *mfaHarness, s *session.Session) string {
+				other := h.pendingSession(t, factor.Password)
+				require.NotEqual(t, s.ID, other.ID)
+
+				return other.ID
+			}),
+			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+				require.NoError(t, out.err)
+				assert.NotEqual(t, s.ID, h.rotatedID(t))
+				assert.Equal(t, session.MFAPending, h.stored(t, s.ID).MFA, "the bearer's own session is not rotated")
+			},
+		},
+		{
+			name: "a session a consumer assigns with no bearer, as the store returned it, verifies",
+			act: func(t *testing.T, h *mfaHarness, s *session.Session) served {
+				return serve(t, h.chain(t, h.stored(t, s.ID)), postCode(t.Context(), testMFAVerifyPath))
+			},
+			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+				verified(t, h, s.ID, out)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newMFAHarness(t)
+			h.channel(factor.AuthenticatorApp).allows().accepts().recordsNoFailure()
+
+			s := h.pendingSession(t, factor.Password)
+
+			out := tc.act(t, h, s)
+			tc.assert(t, h, s, out)
 		})
 	}
 }

@@ -74,8 +74,14 @@ type mfaInterceptor struct {
 	// mode decides, settled at assembly (wireMFA).
 	issue credentialIssuer
 
-	// respond writes the response a successful verification answers with.
-	respond MFAResponder
+	// deliver hands the credential out once the session is stored: as the
+	// session cookie on a cookie chain, unchanged for the body otherwise.
+	deliver credentialDelivery
+
+	// respond writes the response a successful verification answers with,
+	// and respondSet is whether the consumer replaced it (WithMFAResponder).
+	respond    MFAResponder
+	respondSet bool
 
 	// throttleOpts are what the consumer's MFA options asked of the throttle.
 	// The throttle itself is built once the chain exists, because its logger
@@ -161,6 +167,9 @@ func (c *config) wireMFA() error {
 		i.throttle = throttle
 		i.sessions = c.sessions
 		i.issue = c.credentialIssuer(i.tokens)
+		i.deliver = c.delivery()
+		i.respond = signInResponder(i.deliver, i.respondSet, i.respond,
+			func(r MFAResult) *session.Session { return r.Session })
 		i.logoutPath = c.logoutPath
 
 		// The chain's sampler is built after every option has been applied,
@@ -290,8 +299,8 @@ func (i *mfaInterceptor) verify(ex *Exchange) error {
 	}
 
 	// A proof given beside the session's credential, before the throttle
-	// counts anything or a challenge is spent.
-	if err := continuingProof(ex, s); err != nil {
+	// counts anything or a challenge is spent. A cookie chain reads none.
+	if err := i.deliver.continuingProof(ex, s); err != nil {
 		return err
 	}
 
@@ -504,8 +513,25 @@ func (i *mfaInterceptor) usable(ctx context.Context, method mfa.Method, s *sessi
 // steps, and it is why this endpoint answers the request rather than passing it
 // on: the handle the caller should now be using is not the one they sent.
 //
+// On a header-bearer chain the rotation is strict: the old handle stops
+// answering at once, since the client holds both credentials and nothing
+// expires the old one. On a cookie chain it keeps the old identifier working
+// for a grace window, the renewal endpoint's (WithRenewalGrace) when the chain
+// has one and session.DefaultRenewalGrace otherwise, so a request already in
+// flight with the old cookie (a double-submitted form, a push-approval poll)
+// is not answered with a refusal that expires the cookie the verification has
+// just set. Inside the window the old identifier loads the old record, with
+// its second factor still pending, so it gains nothing; after it, it is reuse,
+// which revokes the sign-in. The successor is built from the satisfied copy
+// (rotateIssuing), and s, the session as the request loaded it, is what the
+// stored record is checked against: one another request confined or otherwise
+// changed meanwhile is refused as a lost race, ErrSessionRenewalConflict
+// (409), with nothing written. A zero grace (WithRenewalGrace(0)) rotates strictly on a
+// cookie chain too, so the old cookie is then not found, never reuse.
+//
 // The credential is issued against the successor's identifier inside the
-// rotation (session.Sessions.RotateIssuing), before anything is stored. A
+// rotation, strict (session.Sessions.RotateIssuing) or with a grace window
+// (session.Sessions.RotateWithGraceIssuing), before anything is stored. A
 // signed token names its session through its jti, and a session reference is
 // the identifier itself, so it must name the successor; and issuing it before
 // the store is written means a credential that cannot be issued refuses the
@@ -567,7 +593,10 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session, raised policy
 	// returned as the issuer worded it and never read as a session sentinel.
 	var issueErr error
 
-	rotated, tok, err := i.sessions.RotateIssuing(ctx, &satisfied, func(successor *session.Session) (string, error) {
+	// The stored record is compared with the session as the store returned
+	// it, before this request changed it: before the changes above, made on
+	// satisfied, and before the marks the per-request phase made on s.
+	rotated, tok, err := i.deliver.rotateIssuing(ctx, i.sessions, ex.loadedFor(s), &satisfied, func(successor *session.Session) (string, error) {
 		tok, err := i.issue(ctx, successor, principal)
 		issueErr = err
 
@@ -580,8 +609,15 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session, raised policy
 		return rotationRefusal(err)
 	}
 
-	// The rotated session is stored, and its credential is handed out below,
-	// with the challenge error when one is still raised.
+	// The rotated session is stored, so its credential is delivered (on a
+	// cookie chain, as the cookie, leaving nothing for the body) before
+	// anything reports it, and handed out below, with the challenge error when
+	// one is still raised. A delivery that fails has ended the sign-in.
+	tok, err = i.deliver.deliver(ex, i.sessions, rotated, tok)
+	if err != nil {
+		return err
+	}
+
 	emitEvent(ctx, sessionEvent(event.MFAVerified, event.OutcomeSuccess, rotated))
 	emitEvent(ctx, sessionEvent(event.SessionRenewed, event.OutcomeSuccess, rotated))
 
@@ -606,9 +642,62 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session, raised policy
 	return i.respond(ex, MFAResult{Token: tok, Session: rotated, TokenType: tokenTypeOf(rotated)})
 }
 
-// rotationRefusal is what a failed strict rotation is refused with at the
-// endpoint. A session a concurrent renewal superseded inside its window is a
-// lost race, and so is one a concurrent strict rotation rotated away first
+// rotateIssuing moves current, a copy of the request's session carrying the
+// change a second factor or a re-proof records, to a successor in the same
+// sign-in, running issue on the successor before anything is stored, and
+// returns the successor and what issue returned. loaded is the request's
+// session exactly as the store returned it (Exchange.loadedFor), before this
+// request changed it: current is loaded plus the change and any mark the
+// per-request phase made, and loaded itself is never modified. A nil loaded
+// is refused with an error wrapping ErrConfig, and nothing is rotated.
+//
+// Both rotations are given session.WithSuccessorFromCaller(loaded), so a
+// session whose stored security state another request changed since loaded
+// was read (a confinement, a downgraded second factor, a pending password
+// change), which current's older state would otherwise overwrite, is refused
+// with session.ErrRenewalConflict before anything is written or issue runs.
+// On a chain without the cookie session it is the strict rotation
+// (session.Sessions.RotateIssuing). On a cookie
+// chain it rotates with d's grace window
+// (session.Sessions.RotateWithGraceIssuing), building the successor from
+// current, so the recorded change
+// reaches the successor while the old record keeps its own state through the
+// window. A session a renewal or another rotation already superseded is then
+// refused with session.ErrRenewalConflict before anything is written, as the
+// strict rotation refuses one it finds rotated. A cookie chain whose grace is zero
+// (WithRenewalGrace(0)) rotates strictly as well: a window that closes as it
+// opens would make an in-flight request with the old cookie reuse, revoking
+// the sign-in, where the strict rotation leaves it not found. opts are the
+// rotation's own options.
+func (d credentialDelivery) rotateIssuing(
+	ctx context.Context, sessions *session.Sessions, loaded, current *session.Session,
+	issue func(successor *session.Session) (string, error), opts ...session.RotateOption,
+) (*session.Session, string, error) {
+	// Without the session as loaded there is nothing to tell a change of
+	// another request's from this one's, so nothing is rotated.
+	if loaded == nil {
+		return nil, "", newConfigError("the session to rotate was given without the session as it was loaded")
+	}
+
+	opts = append(slices.Clip(opts), session.WithSuccessorFromCaller(loaded))
+
+	// A zero grace (WithRenewalGrace(0)) would close the window as it opens,
+	// so an in-flight old cookie would be reuse and revoke the sign-in: the
+	// strict rotation leaves it not found instead.
+	if d.cookie == nil || d.grace == 0 {
+		return sessions.RotateIssuing(ctx, current, issue, opts...)
+	}
+
+	rotated, _, tok, err := sessions.RotateWithGraceIssuing(ctx, current, d.grace, issue, opts...)
+
+	return rotated, tok, err
+}
+
+// rotationRefusal is what a failed rotation of rotateIssuing, strict or with a
+// grace window, is refused with at the endpoint. A session a concurrent
+// renewal superseded inside its window is a lost race, and so is one changed
+// by another request since it was loaded, and one a concurrent strict
+// rotation rotated away first
 // (two valid codes, or two re-proofs, from one session at once), through this
 // server or any other manager sharing the session store: the store keeps the
 // rotated row, marked, for the winner's in-flight window, so the loser finds

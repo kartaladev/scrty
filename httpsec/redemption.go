@@ -394,12 +394,15 @@ type redemptionLogin struct {
 }
 
 // newRedemptionLogin is the issuing step for a redemption whose policy check
-// records into out. deps are the tail's dependencies; the login acts on the
-// decision the check made (loginTailDeps.decided) and offers the methods the
-// check found, rather than deciding or looking them up again.
-func newRedemptionLogin(deps loginTailDeps, out *policyOutcome) *redemptionLogin {
+// records into out, on the redemption's request ex. deps are the tail's
+// dependencies; the login acts on the decision the check made
+// (loginTailDeps.decided) and offers the methods the check found, rather than
+// deciding or looking them up again. Whether the sign-in's cookie persists is
+// asked here, once, before the redeemer runs any check.
+func newRedemptionLogin(ex *Exchange, deps loginTailDeps, out *policyOutcome) *redemptionLogin {
 	deps.decided = &out.decision
 	deps.challengeMethods = out.challengeMethods(deps.challengeMethods)
+	deps.persistent = deps.deliver.persists(ex)
 
 	return &redemptionLogin{deps: deps, out: out}
 }

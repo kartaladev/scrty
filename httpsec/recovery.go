@@ -67,6 +67,10 @@ type recoveryInterceptor struct {
 	// calls it, through issueRecovered, before it spends anything.
 	issueCredential credentialIssuer
 
+	// deliver hands the credential out once the session is stored: as the
+	// session cookie on a cookie chain, unchanged for the body otherwise.
+	deliver credentialDelivery
+
 	// recoverer is built at assembly (resolve), from deps, coreOpts and the
 	// chain's form login.
 	recoverer *recovery.Recoverer
@@ -98,9 +102,14 @@ type recoveryInterceptor struct {
 
 	countRefusals bool
 	respond       RecoveryResponder
-	respondHold   RecoveryHoldResponder
-	respondCodes  RecoveryCodesResponder
-	respondCount  RecoveryCountResponder
+
+	// respondSet is whether the consumer replaced respond
+	// (WithRecoveryResponder); without it a cookie chain answers a completed
+	// recovery itself (sessionCookie.answerRecovery).
+	respondSet   bool
+	respondHold  RecoveryHoldResponder
+	respondCodes RecoveryCodesResponder
+	respondCount RecoveryCountResponder
 
 	// logInterval is the window the endpoints' own records are sampled over,
 	// and sampler the sampler built from it once the chain's logger is known.
@@ -122,16 +131,18 @@ type recoveryInterceptor struct {
 // signInOptions are the attributes a recovery's sign-in is created with, as
 // every first factor's sign-in is (prepareLogin): the client address and user
 // agent the chain resolved for ctx, which the session manager records only
-// when it records sign-in metadata (signInMetadata), and the CSRF token its
-// unsafe cookie requests must present when the chain issues one. The recovery
-// core applies its own attributes after them.
-func (i *recoveryInterceptor) signInOptions(ctx context.Context) []session.CreateOption {
-	opts := []session.CreateOption{signInMetadata(ctx)}
+// when it records sign-in metadata (signInMetadata), the CSRF token its
+// unsafe cookie requests must present when the chain issues one, and the
+// persistent-cookie mark when the sign-in chose one
+// (WithSessionCookiePersistence, asked here once, on ex). The recovery core
+// applies its own attributes after them.
+func (i *recoveryInterceptor) signInOptions(ex *Exchange) []session.CreateOption {
+	opts := []session.CreateOption{signInMetadata(ex.Context())}
 	if i.csrfToken {
 		opts = append(opts, session.WithCSRFToken())
 	}
 
-	return opts
+	return append(opts, i.deliver.signInOptions(ex)...)
 }
 
 // resolvePaths places the five endpoints under base, from the paths the
@@ -184,7 +195,7 @@ func (i *recoveryInterceptor) check(c *config, option string) error {
 			"recovery-pending session could never become a full one", option)
 	}
 
-	if c.sessionBearer {
+	if c.issuesSessionReference() {
 		return checkTokenGenerator(c, option, "WithRecoveryTokens", i.tokens)
 	}
 
@@ -257,6 +268,11 @@ func (i *recoveryInterceptor) resolve(c *config) error {
 	}
 
 	i.issueCredential = c.credentialIssuer(i.tokens)
+	i.deliver = c.delivery()
+
+	if !i.respondSet && i.deliver.cookie != nil {
+		i.respond = i.deliver.cookie.answerRecovery
+	}
 
 	// The chain's logger, clock and limiter factory first, so a
 	// recovery.WithLogger, recovery.WithClock or limiter option the consumer
@@ -436,13 +452,13 @@ func (i *recoveryInterceptor) complete(ex *Exchange) error {
 
 	// The proof is judged before any recovery proof is looked at, so a bad
 	// one spends none and is counted nowhere, as a malformed request is.
-	req.KeyBinding, err = issuingBinding(ctx, ex.dpop(), ex.certBinding(), ex.Request, ex.bearerCredential)
+	req.KeyBinding, err = i.deliver.sessionBinding(ex)
 	if err != nil {
 		return err
 	}
 
 	req.Source = src.Addr()
-	req.SessionOptions = i.signInOptions(ctx)
+	req.SessionOptions = i.signInOptions(ex)
 
 	res, err := i.recoverer.Recover(ctx, req)
 	if err != nil {
@@ -479,6 +495,15 @@ func (i *recoveryInterceptor) answer(ex *Exchange, res *recovery.Result) error {
 
 	ex.Writer.SetHeader("Cache-Control", "no-store")
 
+	// The core has stored the session, so its credential is delivered (on a
+	// cookie chain, as the cookie, leaving nothing for the body) before
+	// anything publishes or reports it. A delivery that fails has ended the
+	// sign-in, and is answered as the issuing failure it is.
+	credential, err := i.deliver.deliver(ex, i.deps.Sessions, res.Session, res.Credential)
+	if err != nil {
+		return err
+	}
+
 	ex.Session = res.Session
 	ex.SetContext(withSession(ex.Context(), res.Session))
 
@@ -502,7 +527,7 @@ func (i *recoveryInterceptor) answer(ex *Exchange, res *recovery.Result) error {
 	emitEvent(ctx, sessionEvent(event.AuthnTokenCreated, event.OutcomeSuccess, res.Session))
 	emitEvent(ctx, sessionEvent(event.AuthnLoginSuccess, event.OutcomeSuccess, res.Session))
 
-	return i.respond(ex, RecoveryResult{Token: res.Credential, Recovery: res, TokenType: tokenTypeOf(res.Session)})
+	return i.respond(ex, RecoveryResult{Token: credential, Recovery: res, TokenType: tokenTypeOf(res.Session)})
 }
 
 // issueRecovered is the credential issuer the chain gives the recovery core
@@ -835,13 +860,13 @@ func (i *recoveryInterceptor) finish(ex *Exchange) error {
 	}
 
 	// Before the held record is completed, so a bad proof completes nothing.
-	binding, err := issuingBinding(ex.Context(), ex.dpop(), ex.certBinding(), ex.Request, ex.bearerCredential)
+	binding, err := i.deliver.sessionBinding(ex)
 	if err != nil {
 		return err
 	}
 
 	res, err := i.recoverer.Finish(ex.Context(), token,
-		recovery.WithFinishKeyBinding(binding), recovery.WithFinishSessionOptions(i.signInOptions(ex.Context())...))
+		recovery.WithFinishKeyBinding(binding), recovery.WithFinishSessionOptions(i.signInOptions(ex)...))
 	if err != nil {
 		return err
 	}

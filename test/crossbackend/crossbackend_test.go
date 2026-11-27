@@ -566,6 +566,8 @@ func TestCrossBackend(t *testing.T) {
 		{name: "enrolment flow through session.Sessions and mfa.TOTP", run: testEnrolmentDurableFlow},
 		{name: "recovery-pending session shared across backends", run: testRecoveryPendingSessionShared},
 		{name: "second factor at login shared across backends", run: testSecondFactorAtLoginShared},
+		{name: "persistent cookie mark shared across backends", run: testPersistentCookieShared},
+		{name: "successor role named at supersession shared across backends", run: testSuccessorRoleShared},
 		{name: "federated assurance on a session shared across backends", run: testSessionAssuranceShared},
 		{name: "federated assurance on a handoff shared across backends", run: testHandoffAssuranceShared},
 		{name: "a recovery code spent on one backend is refused on the others", run: testRecoveryCodeSpentShared},
@@ -844,6 +846,88 @@ func testSecondFactorAtLoginShared(t *testing.T, b backends) {
 			require.NoError(t, err)
 			assert.True(t, again.MFAAtFirstFactor, "a save through %s must keep the marker", reader)
 		})
+	}
+}
+
+// testPersistentCookieShared proves a session created with the persistent-cookie
+// mark through one backend loads with it set through every other, and that a save
+// through either leaves the mark as it was.
+func testPersistentCookieShared(t *testing.T, b backends) {
+	t.Helper()
+
+	const seed = "persistent-cookie"
+
+	sess := crossBackendSession(seed)
+	sess.PersistentCookie = true
+	require.NoError(t, b.sessionStore(t, "sqlstore").Create(t.Context(), sess))
+
+	for _, reader := range []string{"pgx", "gorm"} {
+		t.Run(reader, func(t *testing.T) {
+			t.Parallel()
+
+			s := b.sessionStore(t, reader)
+			got, err := s.Load(t.Context(), seed)
+			require.NoError(t, err)
+			assert.True(t, got.PersistentCookie)
+
+			got.PersistentCookie = false
+			require.NoError(t, s.Save(t.Context(), got))
+			again, err := s.Load(t.Context(), seed)
+			require.NoError(t, err)
+			assert.True(t, again.PersistentCookie, "a save through %s must keep the mark", reader)
+		})
+	}
+}
+
+// testSuccessorRoleShared proves a successor role named at supersession
+// through one backend is the role every other backend loads for the
+// successor, with the superseded session's stored role unchanged.
+func testSuccessorRoleShared(t *testing.T, b backends) {
+	t.Helper()
+
+	// The empty role is a named role too: it clears the stored one.
+	roles := []struct{ name, role string }{
+		{name: "named", role: "audit"},
+		{name: "empty", role: ""},
+	}
+
+	for _, rc := range roles {
+		for _, writer := range backendNames {
+			for _, reader := range backendNames {
+				if writer == reader {
+					continue
+				}
+
+				t.Run(rc.name+"_"+writer+"_writes_"+reader+"_reads", func(t *testing.T) {
+					t.Parallel()
+
+					seed := "successor-role-" + rc.name + "-" + writer + "-" + reader
+					old := crossBackendSession(seed)
+					old.SelectedRole = "admin"
+					w := b.sessionStore(t, writer)
+					require.NoError(t, w.Create(t.Context(), old))
+
+					successor := *old
+					successor.ID = seed + "-next"
+					at := time.Now().UTC()
+					successor.CreatedAt, successor.LastAccessedAt = at, at
+					role := rc.role
+					require.NoError(t, w.Supersede(t.Context(), session.Supersession{
+						Old: old.ID, AcceptUntil: at.Add(30 * time.Second), RetainUntil: old.AbsoluteExpiresAt,
+						Successor: &successor, Now: at, SuccessorRole: &role,
+					}))
+					assert.Equal(t, rc.role, successor.SelectedRole, "the role written back by %s", writer)
+
+					r := b.sessionStore(t, reader)
+					got, err := r.Load(t.Context(), successor.ID)
+					require.NoError(t, err)
+					assert.Equal(t, rc.role, got.SelectedRole, "the successor's role as %s loads it", reader)
+					superseded, err := r.Load(t.Context(), old.ID)
+					require.NoError(t, err)
+					assert.Equal(t, "admin", superseded.SelectedRole, "the superseded session's role as %s loads it", reader)
+				})
+			}
+		}
 	}
 }
 

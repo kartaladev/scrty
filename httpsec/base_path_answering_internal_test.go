@@ -91,6 +91,7 @@ func TestEndpointAnswering_ClassifiesEveryEnableOption(t *testing.T) {
 		"EnableSecurityEvents":      false,
 		"EnableSecurityHeaders":     false,
 		"EnableSessionBearer":       false,
+		"EnableSessionCookie":       false,
 		"EnableSignInNotice":        false,
 		"EnableTrustedProxies":      false,
 	}

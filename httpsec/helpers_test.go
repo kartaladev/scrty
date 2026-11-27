@@ -3539,6 +3539,14 @@ type recoveryHarness struct {
 	// every credential the chain issues is a session identifier.
 	reference bool
 
+	// cookie builds the chain as a cookie chain: form login is given no token
+	// generator, the cookie session is on (CSRF protection explicitly off), so
+	// every credential the chain issues is the session cookie.
+	cookie bool
+
+	// cookieOpts are the cookie session's options when cookie is set.
+	cookieOpts []httpsec.SessionCookieOption
+
 	chain *httpsec.Chain
 
 	// allow and coreCheckCalls are state a case's consumer hooks share with
@@ -3652,7 +3660,7 @@ func (h *recoveryHarness) options(t *testing.T) []httpsec.Option {
 			Tokens:        h.tokens,
 			Attempts:      h.attempts,
 		}
-		if h.reference {
+		if h.reference || h.cookie {
 			deps.Tokens = nil
 		}
 
@@ -3661,6 +3669,11 @@ func (h *recoveryHarness) options(t *testing.T) []httpsec.Option {
 
 	if h.reference {
 		opts = append(opts, httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: h.sessions, Users: h.users}))
+	}
+
+	if h.cookie {
+		opts = append(opts, httpsec.WithoutCSRFProtection(),
+			httpsec.EnableSessionCookie(httpsec.SessionBearerDeps{Sessions: h.sessions, Users: h.users}, h.cookieOpts...))
 	}
 
 	if !h.noBinding {

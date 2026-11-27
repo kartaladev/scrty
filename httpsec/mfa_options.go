@@ -220,7 +220,7 @@ func EnableMFA(methods []mfa.Method, opts ...MFAOption) Option {
 					"and none of the built-ins enabled on this chain was wired to one", option)
 			}
 
-			if c.sessionBearer {
+			if c.issuesSessionReference() {
 				return checkTokenGenerator(c, option, "WithMFATokens", i.tokens)
 			}
 
@@ -331,6 +331,10 @@ func WithMFATokens(tokens token.Generator) MFAOption {
 // With none supplied, the library writes a JSON document carrying an access
 // token for the rotated session and that session's validity, the same shape a
 // successful login answers with, so a client handles both alike.
+// On a cookie chain (EnableSessionCookie) the default is instead the chain's
+// negotiated answer: 303 See Other to the sign-in's destination for a form
+// post or a request preferring HTML, else 200 with {"idle_expires_at": ...}
+// and no credential.
 //
 // It is called instead of the downstream handler, because the verify endpoint
 // is the library's own and the application has no route behind it. The session
@@ -346,6 +350,7 @@ func WithMFAResponder(fn MFAResponder) MFAOption {
 		}
 
 		i.respond = fn
+		i.respondSet = true
 
 		return nil
 	}

@@ -1640,6 +1640,7 @@ func spiedSessions(t *testing.T) (*session.Sessions, *sessionWrites) {
 		})
 	store.EXPECT().Load(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(mem.Load)
 	store.EXPECT().CountActiveByUser(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(mem.CountActiveByUser)
+	store.EXPECT().MarkPresented(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(mem.MarkPresented)
 
 	m, err := session.New(session.WithStore(store))
 	require.NoError(t, err)

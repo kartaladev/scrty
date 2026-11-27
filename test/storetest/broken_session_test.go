@@ -111,6 +111,14 @@ const (
 	// not carry it, and otherwise keeps the stored one: a save clears it,
 	// never sets it.
 	sessionSaveClearsMarker sessionDefect = "save-clears-second-factor-marker"
+	// Create does not keep the persistent-cookie mark.
+	sessionCreateDropsPersistentMark sessionDefect = "create-drops-persistent-cookie-mark"
+	// Save sets a stored persistent-cookie mark that is unset when the incoming
+	// session carries it, and otherwise keeps the stored one.
+	sessionSaveSetsPersistentMark sessionDefect = "save-sets-persistent-cookie-mark"
+	// Save clears a stored persistent-cookie mark that is set when the incoming
+	// session does not carry it, and otherwise keeps the stored one.
+	sessionSaveClearsPersistentMark sessionDefect = "save-clears-persistent-cookie-mark"
 	// CountActiveByUser counts a user's superseded records too, so a renewed
 	// sign-in counts once for every session it has held.
 	sessionCountSuperseded sessionDefect = "count-superseded"
@@ -187,6 +195,10 @@ const (
 	// Supersede also raises each of the record's own deadlines to the
 	// retention deadline, separately, as the first round's raise did.
 	sessionSupersedeRaisesEachDeadline sessionDefect = "supersede-raises-each-deadline"
+	// Supersede inserts the successor with the role the caller's copy
+	// carries, ignoring a role the supersession named, as an INSERT that
+	// never reads session.Supersession.SuccessorRole would.
+	sessionSupersedeIgnoresSuccessorRole sessionDefect = "supersede-ignores-successor-role"
 	// Supersede also holds the record to one deadline, the later of its
 	// absolute deadline and the retention, as both of its own deadlines: the
 	// first round's raise, which a renewal then read as the session's own
@@ -457,6 +469,9 @@ func (s *sessionStore) Create(_ context.Context, sess *session.Session) error {
 	if s.defect == sessionCreateDropsMarker {
 		stored.MFAAtFirstFactor = false
 	}
+	if s.defect == sessionCreateDropsPersistentMark {
+		stored.PersistentCookie = false
+	}
 	if s.defect == sessionCreateSharesData {
 		stored.Data = sess.Data
 	}
@@ -486,8 +501,17 @@ func (s *sessionStore) Save(_ context.Context, sess *session.Session) error {
 	case s.defect == sessionSaveClearsMarker && marker && !sess.MFAAtFirstFactor:
 		marker = false
 	}
+	// The persistent-cookie mark follows the same rule, with its own defects.
+	persistent := stored.PersistentCookie
+	switch {
+	case s.defect == sessionSaveSetsPersistentMark && !persistent && sess.PersistentCookie:
+		persistent = true
+	case s.defect == sessionSaveClearsPersistentMark && persistent && !sess.PersistentCookie:
+		persistent = false
+	}
 	kept := cloneSession(sess)
 	kept.MFAAtFirstFactor = marker
+	kept.PersistentCookie = persistent
 	keepLibraryState(kept, stored)
 	if s.defect == sessionSaveWritesBinding {
 		kept.KeyBinding = sess.KeyBinding
@@ -934,6 +958,9 @@ func (s *sessionStore) Supersede(_ context.Context, op session.Supersession) err
 		old.RotatedStrictly = op.Strict && s.defect != sessionSupersedeDropsStrictMark
 	}
 	s.retain(old, op)
+	if op.SuccessorRole != nil && s.defect != sessionSupersedeIgnoresSuccessorRole {
+		op.Successor.SelectedRole = *op.SuccessorRole
+	}
 	successor := cloneSession(op.Successor)
 	successor.RotatedStrictly = successor.RotatedStrictly && s.defect == sessionCreateWritesStrictMark
 	if s.defect == sessionSupersedeDropsSignInState {

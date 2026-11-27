@@ -52,6 +52,11 @@ type logout struct {
 	// chain's wiring, and nil for none.
 	provider *oidcprovider.Provider
 
+	// cookie is the chain's cookie session, handed over by the chain's wiring,
+	// and nil on a chain without one. A logout that ended the sign-in expires
+	// its cookie.
+	cookie *sessionCookie
+
 	// endSession is the optional end-session step, nil for none.
 	endSession EndSessionBuilder
 
@@ -121,10 +126,24 @@ func (l *logout) Intercept(ex *Exchange, next Next) error {
 		if err := l.end(ex.Context(), ex.Session); err != nil {
 			return err
 		}
+	}
 
-		// Only a session a federated login created has a provider session to
-		// end, and only once the local one is gone: a provider logout that
-		// ran first would leave a live local session behind a failed delete.
+	// The sign-in is ended, so the browser is told to drop its cookie, with
+	// the attributes it was set with so that it replaces the stored one. Not
+	// before: a logout that failed keeps the session, and the cookie that
+	// names it, for a retry. Only a request that carried the cookie is told:
+	// one that authenticated another way (Basic credentials, a consumer's
+	// authenticator) ended no cookie sign-in, and has no cookie to drop.
+	if l.cookie != nil {
+		if _, carried := presentedCookie(ex.Request, l.cookie.name); carried {
+			ex.Writer.SetCookie(l.cookie.cookie("", -1))
+		}
+	}
+
+	// Only a session a federated login created has a provider session to end,
+	// and only once the local one is gone: a provider logout that ran first
+	// would leave a live local session behind a failed delete.
+	if ex.Session != nil {
 		if l.endSession != nil && ex.Session.ExternalProvider != "" {
 			if target := l.endSessionURL(ex); target != "" {
 				// The URL carries the client's state; no cache may replay it.
@@ -310,6 +329,15 @@ type LogoutOption func(*logout) error
 // that the logout can be retried. A client that could not be told fails nothing. This
 // has no override, because a logout that left an online grant alive would report
 // an end that had not happened.
+//
+// With EnableSessionCookie on the same chain, a logout that ended the sign-in
+// also expires the session cookie (Max-Age=0), under the name, path, domain and
+// attributes the chain sets it with, so the browser drops it. Only a request that
+// carried the session cookie is answered so: a logout authenticated another way,
+// Basic credentials for one, sets no cookie. A logout that is refused, or fails,
+// at the provider's store or the session store, expires nothing: the session
+// stays, and the cookie naming it, for a retry. There is no
+// option to keep the cookie, since it would name a session that has ended.
 func EnableLogout(deps LogoutDeps, opts ...LogoutOption) Option {
 	const option = "EnableLogout"
 
@@ -343,6 +371,8 @@ func EnableLogout(deps LogoutDeps, opts ...LogoutOption) Option {
 			if c.oidcProvider != nil {
 				l.provider = c.oidcProvider.provider
 			}
+
+			l.cookie = c.delivery().cookie
 		})
 		c.register(l, OrderLogout)
 

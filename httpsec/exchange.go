@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 
 	"github.com/kartaladev/scrty/authenticate"
@@ -357,7 +358,24 @@ type Exchange struct {
 
 	// Session is the session this request carries, and nil for a stateless
 	// request and for one that established none.
+	//
+	// An interceptor that sets it, directly or through PublishSession, sets
+	// the session exactly as the session store returned it (Sessions.Load).
+	// Second-factor verification and re-authentication compare the stored
+	// record with it before they rotate, and refuse with
+	// ErrSessionRenewalConflict (409) when they differ. A session built or
+	// returned in memory by Sessions.Create, Save or a rotation carries
+	// times at the clock's full precision, which a store that keeps fewer
+	// digits (a SQL timestamp keeps microseconds) does not, so it compares
+	// unequal there and the request is refused.
 	Session *session.Session
+
+	// loadedSession is a copy of the session as the store returned it, taken
+	// when it was published (publishSession) and, by the session resolver,
+	// before the per-request phase marked anything on it. It is what
+	// second-factor verification and re-authentication compare the stored
+	// record with (loadedFor), and is never modified.
+	loadedSession *session.Session
 
 	// raised is the consumer challenge kind the per-request phase raised on
 	// this request, and ChallengeNone when it raised none.
@@ -366,6 +384,19 @@ type Exchange struct {
 	// perRequest is the chain's per-request phase, set by the chain this
 	// exchange runs through, and nil on one run through none.
 	perRequest *perRequestPhase
+
+	// detached is whether this exchange is the copy a consumer's session
+	// delivery was handed (detachedCopy): it shares no per-request state with
+	// the request's own exchange, and PublishSession and EvaluatePerRequest
+	// refuse on it.
+	detached bool
+
+	// ownsRoleSwitch is whether roleSwitch was made by a chain run on this
+	// exchange, rather than taken from the runs it is nested in
+	// (inheritedGuard). Only the owning exchange reopens the guard to role
+	// switches as its handler is entered (roleSwitchGuard.handled); it is
+	// set whenever roleSwitch is, and never read while roleSwitch is nil.
+	ownsRoleSwitch bool
 
 	// csrfOptOut is whether the chain this exchange runs through was built
 	// with WithoutCSRFProtection, which CheckCSRFToken reads when no CSRF
@@ -428,6 +459,26 @@ type Exchange struct {
 	// DPoP proof beside it carries ath over it.
 	bearerCredential string
 
+	// cookieSession is the session the built-in cookie session
+	// (EnableSessionCookie) last published on this request, and nil when none
+	// published one. cookieMarks is the mark each chain's cookie session set:
+	// the identifier of the session it authenticated in this request, by
+	// chain, nil until the first is set. The mark belongs to the chain that
+	// set it, and each chain keeps its own: the provider's resume endpoint
+	// (resumeSignIn) takes a cookie sign-in as the request's only while
+	// Session is still cookieSession and its own chain's mark names that
+	// session, so a chain whose cookie session authenticated nothing, composed
+	// with a cookie chain on one request, inside it or around it, never takes
+	// that chain's sign-in, while a cookie chain keeps its own resume whatever
+	// other cookie chain runs beside it on the same cookie. The map is never
+	// written in place: a mark is set on a copy (markCookieSession), so a run
+	// that puts back the map it found (restoreScope) puts back every chain's
+	// mark as it was. Only (*sessionCookie).Intercept sets either, and nothing
+	// in the public API can, so a session a consumer's interceptor published,
+	// or assigned to Session in its place, never matches.
+	cookieSession *session.Session
+	cookieMarks   map[*Chain]string
+
 	// accessTokenClaimed records that the resource server accepted the
 	// request's Authorization credential as an access token, so the bearer
 	// modes after it, which read the same header, do not judge it again.
@@ -443,6 +494,28 @@ type Exchange struct {
 	// extra in order.
 	terminals [2]runTerminal
 	extra     []runTerminal
+
+	// roleSwitch orders the request's role switches against the return of
+	// its handler. It is nil until a chain that can switch roles with a
+	// cookie-session rotation (Chain.switchRotates) starts a run on the
+	// exchange, so no other request pays for it, and is never cleared once
+	// set: a switch reads it only through its run (chainRun.guard), and the
+	// runs' innermost steps (runTerminal) read it on the chain's goroutine.
+	// An exchange a chain mounts on its own, inside a run that carries a
+	// guard, takes that guard, so its handler's return is ordered against the
+	// same switches; a detached copy (a SessionDelivery's) never carries or
+	// takes one, so a chain the delivery runs cannot wait on the switch that
+	// called it.
+	//
+	// Only the exchange that made the guard (ownsRoleSwitch) clears its
+	// handled mark as a handler is entered on it. An exchange that took the
+	// guard never clears it: its handler's entry only waits for a switch in
+	// progress, and its return sets the mark. A chain the request's handler
+	// left running on a goroutine of its own therefore cannot reopen the
+	// request to switches once the request's handler has returned, and, the
+	// accepted consequence, a switch in the second pass of an interceptor
+	// that runs next twice on such an exchange is refused.
+	roleSwitch *roleSwitchGuard
 
 	ctx context.Context
 
@@ -679,8 +752,11 @@ func (e *Exchange) otherRunMarkRefusal() error {
 type runScope struct {
 	ctx              context.Context //nolint:containedctx // the context a run found, put back as it returns
 	session          *session.Session
+	loadedSession    *session.Session
 	authentication   *authenticate.Authentication
 	bearerCredential string
+	cookieSession    *session.Session
+	cookieMarks      map[*Chain]string
 	accessToken      bool
 	renewal          string
 	chargeRenewal    func(context.Context)
@@ -695,8 +771,11 @@ func (e *Exchange) saveScope() runScope {
 	return runScope{
 		ctx:              e.ctx,
 		session:          e.Session,
+		loadedSession:    e.loadedSession,
 		authentication:   e.Authentication,
 		bearerCredential: e.bearerCredential,
+		cookieSession:    e.cookieSession,
+		cookieMarks:      e.cookieMarks,
 		accessToken:      e.accessTokenClaimed,
 		renewal:          e.renewal,
 		chargeRenewal:    e.chargeRenewal,
@@ -707,12 +786,28 @@ func (e *Exchange) saveScope() runScope {
 	}
 }
 
+// markCookieSession records sess as the session the cookie session of chain
+// published on this request (cookieSession), and its identifier as chain's
+// mark (cookieMarks). The marks are copied before the write, so a map an
+// enclosing run saved is never changed under it.
+func (e *Exchange) markCookieSession(chain *Chain, sess *session.Session) {
+	marks := make(map[*Chain]string, len(e.cookieMarks)+1)
+	maps.Copy(marks, e.cookieMarks)
+	marks[chain] = sess.ID
+
+	e.cookieSession = sess
+	e.cookieMarks = marks
+}
+
 // restoreScope puts back on e what saveScope recorded.
 func (e *Exchange) restoreScope(s runScope) {
 	e.ctx = s.ctx
 	e.Session = s.session
+	e.loadedSession = s.loadedSession
 	e.Authentication = s.authentication
 	e.bearerCredential = s.bearerCredential
+	e.cookieSession = s.cookieSession
+	e.cookieMarks = s.cookieMarks
 	e.accessTokenClaimed = s.accessToken
 	e.renewal = s.renewal
 	e.chargeRenewal = s.chargeRenewal
@@ -814,6 +909,15 @@ func (f InterceptorFunc) Intercept(ex *Exchange, next Next) error { return f(ex,
 // sess only, with no result, publishes a session no caller owns, which no
 // built-in does.
 //
+// sess is the session exactly as the session store returned it
+// (Sessions.Load), before the interceptor changes anything on it: a copy is
+// kept, and second-factor verification and re-authentication compare the
+// stored record with that copy before they rotate the session, refusing with
+// ErrSessionRenewalConflict (409) when another request changed the record
+// since. A session from Sessions.Create, Save or a rotation, rather than from
+// a load, carries times at the clock's full precision, which a store keeping
+// fewer digits does not, and is refused there the same way.
+//
 // It refuses a non-nil sess that belongs to no family (FamilyID is id.Nil) and
 // publishes nothing, neither authentication nor sess. Every stored session belongs to a
 // family, which is what reuse detection, family revocation and logout act on;
@@ -871,6 +975,10 @@ func (f InterceptorFunc) Intercept(ex *Exchange, next Next) error { return f(ex,
 // proof beside it is judged for its ath. PublishSession is itself the
 // consumer's extension point, so it has no override.
 func (e *Exchange) PublishSession(authentication *authenticate.Authentication, sess *session.Session) error {
+	if e.detached {
+		return errDetachedExchange
+	}
+
 	// A session published once the publishing chain's gates have begun, or
 	// inside the gates of another run on this exchange that the publishing
 	// chain does not cover, reaches the handler and the authorization stage
@@ -887,6 +995,13 @@ func (e *Exchange) PublishSession(authentication *authenticate.Authentication, s
 
 	return e.publishSession(authentication, sess)
 }
+
+// errDetachedExchange is what PublishSession and EvaluatePerRequest return on
+// the exchange copy a consumer's SessionDelivery is handed: it is detached
+// from the request's own exchange, so publishing or judging on it would
+// change nothing the request is served on, or, worse, look as if it had.
+var errDetachedExchange = fmt.Errorf("%w: a session delivery's exchange is a detached copy; "+
+	"it cannot publish a session or evaluate the per-request phase", ErrConfig)
 
 // errLatePublication is what PublishSession returns for a session published
 // once the publishing chain's own gates have begun.
@@ -957,9 +1072,32 @@ func (e *Exchange) publishSession(authentication *authenticate.Authentication, s
 
 	e.Authentication = authentication
 	e.Session = sess
+	// Taken before anything after the publication marks the session in
+	// memory; the session resolver replaces it with the copy it took
+	// straight after its load.
+	e.loadedSession = copySession(sess)
 	e.SetContext(withSession(WithCaller(e.ctx, authentication), sess))
 
 	return nil
+}
+
+// loadedFor is the session s as the store returned it, before this request
+// changed it in memory: the copy taken when it was published, when that copy
+// names s. A session another interceptor put on Session directly, without
+// publishing it, has no such copy, and is taken to be as the store returned
+// it, so s itself is returned; one changed in memory before that compares
+// unequal with the stored record, and the rotation is refused as a conflict
+// (fail-closed). A nil s is nil.
+func (e *Exchange) loadedFor(s *session.Session) *session.Session {
+	if s == nil {
+		return nil
+	}
+
+	if e.loadedSession != nil && e.loadedSession.ID == s.ID {
+		return e.loadedSession
+	}
+
+	return s
 }
 
 // EvaluatePerRequest runs the chain's per-request policy phase for sess, the
@@ -996,6 +1134,10 @@ func (e *Exchange) publishSession(authentication *authenticate.Authentication, s
 // judged as they are. It is itself the consumer's extension point; the
 // policies it runs are the ones given to WithPolicyEngine.
 func (e *Exchange) EvaluatePerRequest(sess *session.Session, principal *identity.Principal) error {
+	if e.detached {
+		return errDetachedExchange
+	}
+
 	if sess == nil || principal == nil {
 		return ErrAuthenticationRequired
 	}

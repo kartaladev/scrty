@@ -680,6 +680,11 @@ func TestReauthResolve(t *testing.T) {
 				old := serve(t, c, bearerRequestTo(t.Context(), http.MethodGet, "/app", s.ID, ""))
 				require.Error(t, old.err, "the old reference is refused")
 				assert.False(t, old.handlerRan)
+
+				// A header-bearer chain rotates strictly: the client holds
+				// both references, so the old one has no window.
+				_, err := f.sessions.Load(t.Context(), s.ID)
+				require.ErrorIs(t, err, session.ErrNotFound, "the old reference is gone straight after the rotation")
 			},
 		},
 		{

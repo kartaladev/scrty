@@ -49,6 +49,10 @@ type certBinding struct{}
 //     the certificate's thumbprint: base64url, without padding, of the
 //     SHA-256 of its DER encoding. A request without one is issued an unbound
 //     token. A second factor and a renewal keep the sign-in's binding.
+//   - On a chain with the cookie session (EnableSessionCookie), sign-in,
+//     re-proof and renewal neither read nor bind a certificate for the
+//     session, which the cookie alone carries; the OpenID Provider's tokens on
+//     that chain still bind.
 //   - When the request also carries a valid DPoP proof (EnableDPoP), the
 //     token is bound to the DPoP key only: a token carries one confirmation,
 //     and a DPoP key survives proxies that do not forward certificates.

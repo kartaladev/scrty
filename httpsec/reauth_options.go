@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -218,6 +219,9 @@ func EnableReauthentication(opts ...ReauthenticationOption) Option {
 		c.wire(func(ch *Chain) {
 			i.sessions = c.sessions
 			i.issue = c.credentialIssuer(i.tokens)
+			i.deliver = c.delivery()
+			i.respond = signInResponder(i.deliver, i.respondSet, i.respond,
+				func(r ReauthenticationResult) *session.Session { return r.Session })
 			i.log = ch.logger
 			i.sampler = ch.sampler
 		})
@@ -263,7 +267,7 @@ func (i *reauthInterceptor) settle(c *config, option string) error {
 		return err
 	}
 
-	if c.sessionBearer {
+	if c.issuesSessionReference() {
 		return checkTokenGenerator(c, option, "WithReauthenticationTokens", i.tokens)
 	}
 
@@ -366,7 +370,10 @@ func WithReauthenticationTokens(gen token.Generator) ReauthenticationOption {
 //
 // Default: 200 with the JSON document a successful login answers with,
 // carrying the rotated session's credential and validity, marked
-// Cache-Control: no-store. A consumer's responder owns its headers. An absent
+// Cache-Control: no-store. On a cookie chain (EnableSessionCookie) the default
+// is instead the chain's negotiated answer: 303 See Other to the sign-in's
+// destination for a form post or a request preferring HTML, else 200 with
+// {"idle_expires_at": ...} and no credential. A consumer's responder owns its headers. An absent
 // function is refused; omit the option to keep the default.
 func WithReauthenticationResponder(fn ReauthenticationResponder) ReauthenticationOption {
 	return func(i *reauthInterceptor) error {
@@ -376,6 +383,7 @@ func WithReauthenticationResponder(fn ReauthenticationResponder) Reauthenticatio
 		}
 
 		i.respond = fn
+		i.respondSet = true
 
 		return nil
 	}

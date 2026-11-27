@@ -1371,7 +1371,9 @@ var errClientLeftWithCause = errors.New("the client closed the connection")
 
 // TestSessionBearerLateRenewals pins that, under unused-successor recovery, a
 // late renewal the endpoint refuses is counted against its source like any
-// refused reference, and one it recovers is not.
+// refused reference, and one it recovers is not; and that a late reference
+// presented anywhere else is refused as needing renewal and, on the session
+// bearer, counted against its source.
 func TestSessionBearerLateRenewals(t *testing.T) {
 	t.Parallel()
 
@@ -1464,6 +1466,31 @@ func TestSessionBearerLateRenewals(t *testing.T) {
 			assert: func(t *testing.T, l *lateRenewals, out []served) {
 				require.ErrorIs(t, out[0].err, session.ErrReused)
 				assert.Len(t, l.recorded(), 1)
+			},
+		},
+		{
+			name: "a late reference elsewhere is refused as needing renewal and recorded against its source",
+			drive: func(t *testing.T, l *lateRenewals) []served {
+				old, _ := l.superseded(t)
+
+				// Past the window, with the successor never used and the old
+				// session inside its own deadlines.
+				l.clk.Advance(31 * time.Second)
+
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders", nil)
+				req.Header.Set("Authorization", "Bearer "+old)
+				req.RemoteAddr = sessionReferenceSource + ":51000"
+
+				return []served{serveIn(t.Context(), t, l.chain, req)}
+			},
+			assert: func(t *testing.T, l *lateRenewals, out []served) {
+				require.ErrorIs(t, out[0].err, httpsec.ErrAuthenticationRequired)
+				require.ErrorIs(t, out[0].err, session.ErrRenewalRequired, "told apart from an ended session")
+				assert.False(t, out[0].handlerRan)
+
+				failures := l.recorded()
+				require.Len(t, failures, 1, "the session bearer charges a renewal-required refusal")
+				assert.Contains(t, failures[0], sessionReferenceSource)
 			},
 		},
 		{
@@ -1721,6 +1748,9 @@ func TestSessionReferenceGuard_ChargesRefusalsOnly(t *testing.T) {
 		// wire wires the store and the loader; loads counts the store loads.
 		wire func(h *authHarness, loads *atomic.Int64)
 
+		// engine is the consumer's policy engine; nil means none.
+		engine func(t *testing.T) *policy.Engine
+
 		assert func(t *testing.T, out []served, charged []string, loads int64)
 	}
 
@@ -1853,6 +1883,32 @@ func TestSessionReferenceGuard_ChargesRefusalsOnly(t *testing.T) {
 			},
 			assert: chargedOnce,
 		},
+		{
+			// The session and its user resolve, so the caller is published
+			// before the policy refuses with the very error a refused
+			// reference carries; a policy decision about a valid session is
+			// not a failed guess.
+			name:          "a policy refusal of a valid session with ErrAuthenticationRequired is not charged",
+			presentations: 1,
+			wire: func(h *authHarness, loads *atomic.Int64) {
+				loading(h, loads, referencedSession, nil)
+				reloading(h, storedUser(), nil)
+				h.acceptsActivityWriteBack()
+			},
+			engine: func(t *testing.T) *policy.Engine {
+				return denyingIn(t, policy.PerRequest, httpsec.ErrAuthenticationRequired)
+			},
+			assert: func(t *testing.T, out []served, charged []string, loads int64) {
+				t.Helper()
+
+				require.Len(t, out, 1)
+				require.ErrorIs(t, out[0].err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out[0].err))
+				assert.False(t, out[0].handlerRan)
+				assert.Equal(t, int64(1), loads, "the reference resolved: the refusal came after it")
+				assert.Empty(t, charged, "a policy decision about a valid session is not a failed guess")
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -1865,10 +1921,15 @@ func TestSessionReferenceGuard_ChargesRefusalsOnly(t *testing.T) {
 			var loads atomic.Int64
 			tc.wire(h, &loads)
 
-			chain, err := httpsec.New(
+			opts := []httpsec.Option{
 				httpsec.WithLogger(h.logger()),
 				httpsec.EnableSessionBearer(h.sessionBearerDeps(), httpsec.WithSessionBearerLimiter(limiter)),
-			)
+			}
+			if tc.engine != nil {
+				opts = append(opts, httpsec.WithPolicyEngine(tc.engine(t)))
+			}
+
+			chain, err := httpsec.New(opts...)
 			require.NoError(t, err)
 
 			out := make([]served, 0, tc.presentations)
@@ -1877,6 +1938,81 @@ func TestSessionReferenceGuard_ChargesRefusalsOnly(t *testing.T) {
 			}
 
 			tc.assert(t, out, limiter.recorded(), loads.Load())
+		})
+	}
+}
+
+// TestSessionBearer_SourceIsCheckedBeforeTheShape pins the order in which a
+// claimed reference is judged: its source is asked first, before the value is
+// even parsed, so a source over its allowance, or one the limiter cannot
+// answer for, is refused with ErrAuthenticationRequired whatever it presents,
+// with no lookup and no further failure counted against it.
+func TestSessionBearer_SourceIsCheckedBeforeTheShape(t *testing.T) {
+	t.Parallel()
+
+	errLimiterDown := errors.New("limiter: connection refused")
+
+	type testCase struct {
+		name   string
+		header string
+
+		// exceeded is the limiter's answer for the source.
+		exceeded func() (bool, error)
+
+		assert func(t *testing.T, s served)
+	}
+
+	// refusedUncounted is a refusal that reached no lookup and recorded
+	// nothing: the store has no expectation, so a load fails the test, and
+	// the limiter fails it on any RecordFailure.
+	refusedUncounted := func(t *testing.T, s served) {
+		t.Helper()
+		require.ErrorIs(t, s.err, httpsec.ErrAuthenticationRequired)
+		assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(s.err))
+		assert.False(t, s.handlerRan)
+	}
+
+	overLimit := func() (bool, error) { return true, nil }
+
+	cases := []testCase{
+		{
+			name:     "a source over its allowance presenting a malformed value is not counted again",
+			header:   "Bearer not-a-reference",
+			exceeded: overLimit,
+			assert:   refusedUncounted,
+		},
+		{
+			name:     "a source over its allowance presenting a well-formed reference is not looked up",
+			header:   "Bearer " + testReference,
+			exceeded: overLimit,
+			assert:   refusedUncounted,
+		},
+		{
+			name:     "a limiter that cannot answer refuses a malformed value without counting it",
+			header:   "Bearer not-a-reference",
+			exceeded: func() (bool, error) { return false, errLimiterDown },
+			assert:   refusedUncounted,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newAuthHarness(t)
+
+			limiter := NewMockLimiter(gomock.NewController(t))
+			limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(context.Context, string) (bool, error) { return tc.exceeded() })
+			limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Times(0)
+
+			chain, err := httpsec.New(
+				httpsec.WithLogger(h.logger()),
+				httpsec.EnableSessionBearer(h.sessionBearerDeps(), httpsec.WithSessionBearerLimiter(limiter)),
+			)
+			require.NoError(t, err)
+
+			tc.assert(t, fromReferenceSource(t, chain, sessionReferenceSource, tc.header))
 		})
 	}
 }

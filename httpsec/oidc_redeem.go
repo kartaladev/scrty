@@ -43,7 +43,7 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 	// the code unspent. An invalid proof is counted against the source as a
 	// request carrying no code is; the nonce round trip and a failure of the
 	// replay store or nonce cipher are not.
-	binding, err := issuingBinding(ctx, ex.dpop(), ex.certBinding(), ex.Request, ex.bearerCredential)
+	binding, err := i.deliver.sessionBinding(ex)
 	if err != nil {
 		if chargesProofRefusal(ex, err) {
 			recordSourceFailure(ctx, i.guard, src)
@@ -61,7 +61,7 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 	// and before the redeemer consumes the code, so a credential that cannot
 	// be issued leaves the code redeemable. The session is stored only once
 	// the code is spent, below.
-	login := newRedemptionLogin(i.loginTail(binding), out)
+	login := newRedemptionLogin(ex, i.loginTail(binding), out)
 
 	// One check, as the redeemer has always been handed: the refusal check,
 	// then, only once it has passed, the issuing step.
@@ -176,6 +176,7 @@ func (i *oidcInterceptor) loginTail(binding session.KeyBinding) loginTailDeps {
 		sessions:          i.sessions,
 		tokens:            i.tokens,
 		issue:             i.issue,
+		deliver:           i.deliver,
 		enrolmentLifetime: i.enrolmentLifetime,
 		enforced:          i.enforced,
 		log:               i.log,
