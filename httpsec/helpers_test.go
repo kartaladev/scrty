@@ -3590,8 +3590,7 @@ func newRecoveryHarness(t *testing.T) *recoveryHarness {
 	h.totp, err = mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example", mfa.WithClock(clk))
 	require.NoError(t, err)
 
-	hash, err := e2eEncoder(t).Encode(e2ePassword)
-	require.NoError(t, err)
+	hash := []byte(e2eHash(t))
 
 	details := func() *identity.Details {
 		return &identity.Details{ID: e2eUser, Name: "Grace Hopper", Username: e2eAddress, Password: hash, Active: true}

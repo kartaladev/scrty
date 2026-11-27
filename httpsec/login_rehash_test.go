@@ -29,7 +29,7 @@ import (
 const (
 	rehashPassword  = "correct-horse-battery-staple"
 	rehashOldMemory = 19 * 1024
-	rehashNewMemory = 46 * 1024
+	rehashNewMemory = 20 * 1024
 )
 
 var errRehashStore = errors.New("rehash store down, dsn=postgres://secret")

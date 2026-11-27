@@ -178,8 +178,7 @@ func newPwlDeployment(t *testing.T) *pwlDeployment {
 	d.totp, err = mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example", mfa.WithClock(d.totpClock))
 	require.NoError(t, err)
 
-	d.hash, err = e2eEncoder(t).Encode(e2ePassword)
-	require.NoError(t, err)
+	d.hash = []byte(e2eHash(t))
 
 	details := func() *identity.Details {
 		return &identity.Details{

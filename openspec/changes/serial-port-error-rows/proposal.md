@@ -9,7 +9,7 @@ After `parallel-port-error-children`, the `httpsec` package runs in 234–262 s 
   - The earlier audit and review took them for thin wrappers around it. A goroutine dump of a 1.03 s `TestPortErrors_SourceThrottle` row shows the parent blocked waiting on its child, while the row's CPU profile shows 10 ms of work.
   - Their rows still run one at a time: about 14.4 s in `SourceThrottle`, 12.4 s in `Redemption`, 6.1 s in `OIDCRedemption`, 6.2 s in `BackchannelLinkStore`, and part of `TokenGenerator`'s 32.8 s.
 - **Row fixtures derive a real Argon2id hash on every row.**
-  - A CPU profile of a 0.99 s `TestPortErrors_RecoveryCooldown` row spends about 90% of its time in `golang.org/x/crypto/argon2` under race instrumentation.
+  - A CPU profile of a 0.99 s `TestPortErrors_RecoveryCooldown` row spends about 90% of its time in `golang.org/x/crypto/argon2` and race instrumentation together. A later profile of the same row splits this: about 20% in argon2's own frames, and about 75% in race-detector reads that the profiler attributes to no Go caller. That those reads come from argon2's memory-bound loop is likely but unverified.
   - `newRecoveryHarness` and `newPwlDeployment` call `e2eEncoder(t).Encode(e2ePassword)` each time a row builds its harness. `e2eEncoder` is already at the cheapest parameters the encoder accepts (19 MiB, 2 iterations, 1 thread), so the cost is how many times the hash is computed, not how expensive each one is.
   - The rehash rig (`newRehashRig`) derives two or three times per row, once at 46 MiB.
 

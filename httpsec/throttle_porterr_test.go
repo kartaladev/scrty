@@ -4,13 +4,11 @@ package httpsec_test
 // them runs in parallel, and each restores the logger it found.
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -304,35 +302,10 @@ func TestPortErrors_SourceThrottle(t *testing.T) { //nolint:paralleltest // it r
 // the row's marker as a whole line: a stack overflow is fatal and only a child
 // can watch for one, and a row name that matched nothing would otherwise pass
 // without running.
+// It goes through limiterPortErrInChild, so it marks t parallel, and its
+// callers are bound by that helper's contract.
 func throttlePortErrInChild(t *testing.T, row string) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
-
-	top, _, _ := strings.Cut(t.Name(), "/")
-
-	//nolint:gosec // G204: re-runs this test binary with this test's own name
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+top+"$", "-test.count=1")
-	cmd.Env = append(os.Environ(), throttlePortErrRowEnv+"="+row)
-
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, ctx.Err(), "the child did not finish within a minute")
-
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	require.NoError(t, err, "the child failed:\n%s", strings.Join(lines[:min(len(lines), 8)], "\n"))
-
-	ran := false
-
-	sc := bufio.NewScanner(strings.NewReader(string(out)))
-	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
-
-	for sc.Scan() {
-		if sc.Text() == throttlePortErrRan+row {
-			ran = true
-		}
-	}
-
-	require.NoError(t, sc.Err())
-	assert.True(t, ran, "the child printed no line %q: it did not run its row", throttlePortErrRan+row)
+	limiterPortErrInChild(t, throttlePortErrRowEnv, throttlePortErrRan, row)
 }

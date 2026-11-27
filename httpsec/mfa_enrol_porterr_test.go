@@ -67,7 +67,7 @@ func limiterPortErrKinds(sentinel error) []loginPortErrKind {
 // limited to row, and fails unless it exits 0 within a minute having printed
 // marker+row as a whole line: a stack overflow is fatal and only a child can
 // watch for one, and a row name that matched nothing would otherwise pass
-// without running.
+// without running. A failing child is quoted by its first 12 lines of output.
 //
 // It marks t parallel before starting the child, so the rows under one parent
 // run their children concurrently, at most -parallel at a time; -parallel 1
@@ -98,7 +98,7 @@ func limiterPortErrInChild(t *testing.T, envName, marker, row string) {
 	require.NoError(t, ctx.Err(), "the child did not finish within a minute")
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	require.NoError(t, err, "the child failed:\n%s", strings.Join(lines[:min(len(lines), 8)], "\n"))
+	require.NoError(t, err, "the child failed:\n%s", strings.Join(lines[:min(len(lines), 12)], "\n"))
 
 	ran := false
 

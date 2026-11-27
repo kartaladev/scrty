@@ -14,14 +14,14 @@ Its godoc carries the contract for callers. The archived `parallel-port-error-ch
 **The three copies.** `throttlePortErrInChild` (`httpsec/throttle_porterr_test.go`), `redemptionPortErrInChild` (`httpsec/redemption_porterr_test.go`) and `backchannelPortErrInChild` (`httpsec/oidc_backchannel_porterr_test.go`) each take only `(t, row)`.
 - Each bakes in its own row environment variable and marker.
 - The bodies match the helper's, except that they have no `t.Parallel()`, and that the redemption and backchannel copies quote 12 lines of a failing child's output against the helper's 8.
-- Their callers, found by grep (gopls confirms them during implementation): `generator_porterr_test.go:267`, `redemption_porterr_test.go:377` and `:639`, `throttle_porterr_test.go:241`, `oidc_backchannel_porterr_test.go:263`.
+- Their callers, confirmed with gopls references after implementation: `generator_porterr_test.go:267`, `redemption_porterr_test.go:374` and `:611`, `throttle_porterr_test.go:239`, `oidc_backchannel_porterr_test.go:261`.
 
-**The fixture hash.** `e2eEncoder(t)` (`httpsec/integration_test.go:1629`) builds Argon2id at the floor the encoder accepts: 19456 KiB, 2 iterations, 1 thread. Two fixtures call `e2eEncoder(t).Encode(e2ePassword)` each time they are built: `newRecoveryHarness` (`httpsec/helpers_test.go:3593`) and `newPwlDeployment` (`httpsec/passkey_login_test.go:181`). Other `e2eEncoder` callers pass the encoder to an authenticator, so it is used to verify, and stays as it is.
+**The fixture hash.** `e2eEncoder(t)` (`httpsec/integration_test.go:1629`) builds Argon2id at the floor the encoder accepts: 19456 KiB, 2 iterations, 1 thread. Two fixtures were found before implementation that call `e2eEncoder(t).Encode(e2ePassword)` each time they are built: `newRecoveryHarness` (`httpsec/helpers_test.go:3593`) and `newPwlDeployment` (`httpsec/passkey_login_test.go:181`). Task 2.2's gopls sweep found four more with the same call: `e2eDeployment.wireUsers`, `newIssuingBaseOver`, `newEventsWorldOf` and `newAuditWorld`. Measurements lists all six. Other `e2eEncoder` callers pass the encoder to an authenticator, so it is used to verify, and stays as it is.
 
 **The rehash rig.** `newRehashRig` (`httpsec/login_rehash_test.go:101`):
 - stores a hash at `rehashOldMemory` (19 MiB, 2 iterations);
 - verifies a login against it;
-- rewrites it with an encoder at `rehashNewMemory` (46 MiB, 2 iterations).
+- rewrites it with an encoder at `rehashNewMemory` (46 MiB before this change, 20 MiB after decision 3; 2 iterations).
 
 `NeedsUpgrade` reports an upgrade only when the stored parameters are below the encoder's (`authenticate/password/argon2id.go`). So the tests need new memory strictly above old, and nothing more.
 
@@ -59,7 +59,7 @@ Its godoc carries the contract for callers. The archived `parallel-port-error-ch
 
 ### 2. One fixture hash per test process
 
-- **What.** A package-level `e2eHash(t)` in `httpsec/integration_test.go` returns a hash of `e2ePassword` from `e2eEncoder`'s parameters, computed once with `sync.OnceValues`. `newRecoveryHarness` and `newPwlDeployment` use it in place of `e2eEncoder(t).Encode(e2ePassword)`.
+- **What.** A package-level `e2eHash(t)` in `httpsec/integration_test.go` returns a hash of `e2ePassword` from `e2eEncoder`'s parameters, computed once with `sync.OnceValues`. Six fixtures use it in place of `e2eEncoder(t).Encode(e2ePassword)`: `newRecoveryHarness`, `newPwlDeployment`, `e2eDeployment.wireUsers`, `newIssuingBaseOver`, `newEventsWorldOf` and `newAuditWorld`. A test that later needs to change or rehash one of these fixtures' stored hash must first switch that fixture back to its own hash.
 - **Why it is safe.**
   - An Argon2id hash is a string that embeds its own salt and parameters. Verifying it reads it and never changes it, so concurrent tests can share it.
   - The fixtures only need some valid hash of `e2ePassword` to log in. None of them asserts on the hash's salt or bytes. Implementation checks each fixture before switching it.
@@ -84,10 +84,10 @@ Its godoc carries the contract for callers. The archived `parallel-port-error-ch
 
 | Failure | State | What is seen |
 |---|---|---|
-| A caller of a former copy breaks the helper's contract: post-loop code, a `t.Setenv`/`t.Chdir` ancestor, or a second call | Tested: task 1 checks each caller before the switch | A second call panics. The other two are accepted in the archived design's terms. Implementation reports any caller that breaks the contract, and stops. |
+| A caller of a former copy breaks the helper's contract: post-loop code, a `t.Setenv`/`t.Chdir` ancestor, or a second call | Accepted: task 1 checks each caller with gopls and a read of each enclosing function; no test provokes a violation, because one would have to break a caller on purpose | A second call panics. The other two are accepted in the archived design's terms. Implementation reports any caller that breaks the contract, and stops. |
 | A former copy's failure output shrinks | Handled by decision 1 | The helper quotes 12 lines. |
 | An induced child failure or wrong marker under a former copy is no longer caught | Tested: task 1 induces both in a `SourceThrottle` row | The row fails, naming itself. |
-| A test relied on its fixture hash being fresh, with a distinct salt or bytes | Tested: task 2 checks each switched fixture; the full package run is the regression check | A test that compared hashes fails. That fixture is reverted to its own hash and the reason recorded. |
+| A test relied on its fixture hash being fresh, with a distinct salt or bytes | Accepted: task 2 checks each switched fixture by reading its users, and the full package run is the regression check; no test provokes the failure, because one would have to add a hash comparison on purpose | A test that compared hashes fails. That fixture is reverted to its own hash and the reason recorded. |
 | The one-time derivation fails | Handled: `require.NoError` in every caller | Every test using `e2eHash` fails with the encoder's error. |
 | The rehash tests lose their upgrade case at 20 MiB | Tested: the rehash tests, which assert an upgrade from 19 MiB and none when current | A failing assertion. 20 MiB at 2 iterations is above the floor, so construction accepts it. |
 | The package still exceeds 300 s on CI | Tested: task 4 measures it | Implementation stops and reports, and the goal is not relaxed without the maintainer's decision. |
@@ -101,6 +101,35 @@ Its godoc carries the contract for callers. The archived `parallel-port-error-ch
 
 That change's Context says every child-process row goes through `limiterPortErrInChild`, and its Measurements count 236 rows in 26 tests. Its audit and review missed the three copies, because each was taken for a thin wrapper. The archive is left as it was written. This design records the correction, and its Measurements give the new counts.
 
+## Measurements
+
+Taken on 2026-11-27 on the maintainer's machine (14 CPUs, Go 1.27.4), with all three decisions applied. Local figures drift.
+
+**Package, `go test -race -count=1 -timeout 300s -json ./httpsec`, on an idle machine (load average 1.0 at the start):**
+- `Elapsed`: **139.0 s**, against 234–262 s before this change and the 300 s goal.
+- Rows with a `pause` action: 9620.
+- Rows that never paused: 2330 leaf rows totalling 52.9 s, against 139.5 s before.
+- An earlier run, at a load average of about 10 from an unrelated system process, took 134.2 s, with 50.8 s in rows that never paused. It does not count for task 4.2, which asks for an idle machine. The longest are the `TestPortErrors_TokenGenerator/recovery_completion` rows, at about 0.7 s each.
+
+**CI, manual run 46018648963 on commit `37f0333`, 4-CPU runners:**
+- `httpsec` took 278.1 s on the PostgreSQL 15 / Redis 7 leg and 235.5 s on the PostgreSQL 18 / Redis 8 leg. Both are within the 300 s goal, against 335.1 s and 283.9 s in run 45031759267.
+- The PostgreSQL 15 leg has 22 s of headroom. Runner speed drifts, so a later run may come closer to the goal.
+
+**Decision 1, the copies go through the helper:**
+- `TestPortErrors_SourceThrottle` alone ran in 16.2 s with 0 `pause` events before, and 5.0 s with 14 after.
+- The five tests that call a former copy ran in 74.8 s before and 31.5–37.0 s after. 50 child rows now pause: SourceThrottle 14, Redemption 12, TokenGenerator 12, OIDCRedemption 6, BackchannelLinkStore 6.
+- With a `t.Fatal` induced in a child row, the row fails with "the child failed:" and the child's output. With a wrong marker printed, it fails with "the child printed no line". Both edits were reverted.
+
+**Decision 2, one fixture hash per process:**
+- `TestPortErrors_RecoveryCooldown/live/Unwrap_panicking_with_nil`, run alone with a CPU profile: 1.06 s before, 0.70 s after.
+- Argon2's own frames rose from 19.6% to 39.4% of that profile, and race-detector reads attributed to `runtime._System` fell from 0.77 s to 0.36 s. Task 2.3 first expected argon2's share to fall; it was reworded after this measurement. A process that runs one row still derives the shared hash once and verifies one login. So a one-row run removes the fixture's other derivations, not the Argon2 work itself. The saving across rows shows in the package figure above.
+- Fixtures switched to `e2eHash`: `newRecoveryHarness`, `newPwlDeployment`, `e2eDeployment.wireUsers`, `newIssuingBaseOver`, `newEventsWorldOf` and `newAuditWorld`. Each was checked: no test compares their hash, changes the password, or rehashes, and every authenticator they wire uses `e2eEncoder`'s parameters.
+- Kept: `password_outage_test.go`, which hashes a different password; the `example_*` tests; and the rehash rig.
+
+**Decision 3, the rehash target:**
+- At `rehashNewMemory = 19 * 1024`, the upgrade cases of `TestLogin_Rehash*` and every `form_login` row of `TestPortErrors_RehashWrite` fail. At `20 * 1024`, they pass.
+- `TestPortErrors_RehashWrite` wall time: 17.7 s before, 11.6 s after.
+
 ## Migration Plan
 
 Test-only. Merge after CI's `test` legs pass within the goal. To roll back, revert the commit.
@@ -112,7 +141,7 @@ Test-only. Merge after CI's `test` legs pass within the goal. To roll back, reve
 **Researched (accessed 2026-11-22):**
 - Per-row times from `go test -race -count=1 -timeout 300s -json ./httpsec` on the maintainer's machine (14 CPUs, Go 1.27.4). Local; it drifts.
 - A CPU profile and a mid-row goroutine dump of `TestPortErrors_SourceThrottle/basic,_the_IPv6_aggregate_limiter's_check/live/self-cycle_through_Unwrap()_[]error`: 1.03 s of wall time, 10 ms of CPU, the parent blocked waiting on its child in `throttlePortErrInChild`.
-- A CPU profile of `TestPortErrors_RecoveryCooldown/live/Unwrap_panicking_with_nil`: about 90% of its CPU in `golang.org/x/crypto/argon2` and race instrumentation.
+- A CPU profile of `TestPortErrors_RecoveryCooldown/live/Unwrap_panicking_with_nil`: about 90% of its CPU in `golang.org/x/crypto/argon2` and race instrumentation together. A profile taken during implementation (2026-11-27) splits this into about 20% in argon2's frames and about 75% in race-detector reads attributed to `runtime._System`; their attribution to argon2 is unverified.
 - A source comparison of the three copies with `limiterPortErrInChild`, and a read-only trace of the fixtures that hash, with file and line references as given under Context.
 
 **Primary documentation:**
