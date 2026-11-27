@@ -107,6 +107,18 @@
 // browser attaches the cookie on its own, so a request from that page carries
 // both.
 //
+// A refused cookie is expired in the response when the pipeline judged the
+// reference it names: missing, expired, unreadable, reused, or refused at the
+// renewal endpoint. It is kept when no verdict was reached: an outage, a
+// throttled source or a limiter that cannot answer, a CSRF failure. Under the
+// manager's unused-successor recovery, a superseded cookie that must be
+// renewed is refused with ErrAuthenticationRequired joined to
+// session.ErrRenewalRequired, kept only on a chain with EnableSessionRenewal
+// (expired otherwise, since nothing can renew it), and not charged to its
+// source; a page that receives that refusal posts to the renewal endpoint,
+// which sets the successor's cookie. See EnableSessionCookie for the full
+// list.
+//
 //	browsers, err := httpsec.New(
 //		httpsec.EnableCSRFProtection(),
 //		httpsec.EnableSessionCookie(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),

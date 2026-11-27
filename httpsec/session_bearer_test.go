@@ -1371,7 +1371,9 @@ var errClientLeftWithCause = errors.New("the client closed the connection")
 
 // TestSessionBearerLateRenewals pins that, under unused-successor recovery, a
 // late renewal the endpoint refuses is counted against its source like any
-// refused reference, and one it recovers is not.
+// refused reference, and one it recovers is not; and that a late reference
+// presented anywhere else is refused as needing renewal and, on the session
+// bearer, counted against its source.
 func TestSessionBearerLateRenewals(t *testing.T) {
 	t.Parallel()
 
@@ -1464,6 +1466,31 @@ func TestSessionBearerLateRenewals(t *testing.T) {
 			assert: func(t *testing.T, l *lateRenewals, out []served) {
 				require.ErrorIs(t, out[0].err, session.ErrReused)
 				assert.Len(t, l.recorded(), 1)
+			},
+		},
+		{
+			name: "a late reference elsewhere is refused as needing renewal and recorded against its source",
+			drive: func(t *testing.T, l *lateRenewals) []served {
+				old, _ := l.superseded(t)
+
+				// Past the window, with the successor never used and the old
+				// session inside its own deadlines.
+				l.clk.Advance(31 * time.Second)
+
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders", nil)
+				req.Header.Set("Authorization", "Bearer "+old)
+				req.RemoteAddr = sessionReferenceSource + ":51000"
+
+				return []served{serveIn(t.Context(), t, l.chain, req)}
+			},
+			assert: func(t *testing.T, l *lateRenewals, out []served) {
+				require.ErrorIs(t, out[0].err, httpsec.ErrAuthenticationRequired)
+				require.ErrorIs(t, out[0].err, session.ErrRenewalRequired, "told apart from an ended session")
+				assert.False(t, out[0].handlerRan)
+
+				failures := l.recorded()
+				require.Len(t, failures, 1, "the session bearer charges a renewal-required refusal")
+				assert.Contains(t, failures[0], sessionReferenceSource)
 			},
 		},
 		{

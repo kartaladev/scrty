@@ -71,13 +71,15 @@ type sessionReference struct {
 // throttled scanner costs one bucket read. A value that cannot be a session
 // identifier is then refused before the store is asked. check, when not nil,
 // runs next. Every refusal of the reference (format, load, user reload) is
-// recorded against the source; a policy decision about a valid session is
-// not, and neither is a dependency failure or a request whose own context
-// ended, which reach no verdict and so do not match ErrAuthenticationRequired.
+// recorded against the source, except a cookie refused as needing renewal
+// (see below); a policy decision about a valid session is not, and neither is
+// a dependency failure or a request whose own context ended, which reach no
+// verdict and so do not match ErrAuthenticationRequired.
 //
 // It returns nil when the request may go on, and otherwise the request's
 // answer. rejected reports whether that answer is a verdict on the reference
-// itself, and is true for exactly the refusals charged to the source: a
+// itself, and is true for the refusals charged to the source, and for a cookie
+// refused as needing renewal, which is a verdict but not charged: a
 // malformed value, a missing, expired, unreadable or reused session, a user
 // refused on reload, and a refusal an admit step returned matching
 // ErrAuthenticationRequired. It is false for every answer reached without
@@ -124,8 +126,20 @@ func (r *sessionReference) resolve(
 		// error after that point is a policy decision about a valid session,
 		// and counting it would let a policy misconfiguration lock out the
 		// very clients it governs.
+		//
+		// A cookie the manager says must be renewed (unused-successor
+		// recovery) is the exception. The cookie session keeps it, so the
+		// browser re-sends it with every request until its page renews it,
+		// and charging each refusal would let one un-renewed tab push a shared
+		// address over its allowance and refuse every browser behind it, its
+		// own renewal included. Only a stored, genuine superseded identifier
+		// gets that answer, so it is no guess. The session
+		// bearer still charges it. Either way the refusal is reported as
+		// rejected, and the cookie session decides what to do with the cookie.
 		rejected := ex.Authentication == nil && errors.Is(err, ErrAuthenticationRequired)
-		if rejected {
+
+		charged := rejected && (t != transportCookie || !errors.Is(err, session.ErrRenewalRequired))
+		if charged {
 			recordSourceFailure(ctx, r.guard, src)
 		}
 

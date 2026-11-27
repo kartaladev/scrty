@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -876,6 +877,119 @@ func TestSessionCookie_DeliveryPortConstruction(t *testing.T) {
 			)
 
 			tc.assert(t, err)
+		})
+	}
+}
+
+// TestSessionCookie_DeliveryPortAtPrivilegeRotations pins that a delivery
+// failing at the rotations a signed-in request makes, an active-role switch
+// and a password change, is the same issuing failure as at a sign-in: 500
+// with the delivery's error reachable, no cookie written, and the sign-in
+// ended, so the identifier the browser holds is refused afterwards. A failed
+// switch leaves the request on the role and session it had, and a failed
+// password change runs no consumer change. The cases run over the role-switch
+// world rather than the browser world, since a switch needs a user holding
+// two roles.
+func TestSessionCookie_DeliveryPortAtPrivilegeRotations(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+
+		// act runs the rotating request on w, presenting the sign-in, and
+		// returns its answer and the error the rotation returned.
+		act func(t *testing.T, w *switchCookieWorld) (served, error)
+
+		// assert receives the error the rotation returned and how many times
+		// the consumer's change function ran.
+		assert func(t *testing.T, rotated error, changed int32)
+	}
+
+	cases := []testCase{
+		{
+			name: "a delivery that fails at an active-role switch",
+			act: func(t *testing.T, w *switchCookieWorld) (served, error) {
+				var switched error
+
+				out := w.post(t, w.signIn.ID, func(ex *httpsec.Exchange) error {
+					switched = w.chain.SwitchActiveRole(ex.Context(), "audit")
+
+					p, ok := identity.PrincipalFromContext(ex.Context())
+					require.True(t, ok)
+					require.NotNil(t, p.ActiveRole)
+					assert.Equal(t, "sales", p.ActiveRole.Name, "the request keeps the role it had")
+					require.NotNil(t, ex.Session)
+					assert.Equal(t, w.signIn.ID, ex.Session.ID, "the request keeps the session it had")
+
+					return switched
+				})
+				require.True(t, out.handlerRan)
+
+				return out, switched
+			},
+			assert: func(t *testing.T, rotated error, _ int32) {
+				t.Helper()
+				require.ErrorIs(t, rotated, errDeliveryDown, "the switch returns the issuing failure")
+			},
+		},
+		{
+			name: "a delivery that fails at a password change",
+			act: func(t *testing.T, w *switchCookieWorld) (served, error) {
+				req := sessionCookieRequest(t.Context(), http.MethodPost, named(w.signIn.ID),
+					map[string]string{"X-CSRF-Token": w.signIn.CSRFToken})
+				req.URL.Path = cookiePasswordPath
+
+				out := serveContext(t.Context(), t, w.chain, req)
+
+				return out, out.err
+			},
+			assert: func(t *testing.T, _ error, changed int32) {
+				t.Helper()
+				assert.Zero(t, changed, "the consumer's change does not run")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var changed atomic.Int32
+
+			d := &auditDelivery{
+				misbehaves: everywhere,
+				misbehave: func(_ *auditDelivery, ex *httpsec.Exchange, _ *session.Session, credential string) (string, error) {
+					ex.Writer.SetCookie(sessionCookieFor(credential))
+
+					return "", errDeliveryDown
+				},
+			}
+
+			w := newSwitchCookieWorldWith(t, nil, nil,
+				[]httpsec.SessionCookieOption{httpsec.WithSessionDelivery(d)},
+				func(sessions *session.Sessions) []httpsec.Option {
+					return []httpsec.Option{httpsec.EnablePasswordChangeGate(sessions,
+						httpsec.WithPasswordChangeEndpoint(cookiePasswordPath, func(*httpsec.Exchange) error {
+							changed.Add(1)
+
+							return nil
+						}))}
+				})
+
+			out, rotated := tc.act(t, w)
+
+			// Every rotation that fails to deliver is an issuing failure that
+			// writes no cookie and ends the sign-in.
+			refusedUndelivered(t, out)
+			require.ErrorIs(t, out.err, errDeliveryDown, "the delivery's failure stays reachable")
+			require.Len(t, d.seen(), 1, "the rotation's delivery was handed the successor")
+			idsEnded(t, w.sessions, w.signIn.ID, d.seen()[0])
+
+			n, err := w.sessions.CountActiveByUser(t.Context(), testUserID)
+			require.NoError(t, err)
+			assert.Zero(t, n, "the sign-in's family is revoked")
+
+			tc.assert(t, rotated, changed.Load())
 		})
 	}
 }

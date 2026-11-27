@@ -127,9 +127,9 @@ func (w *cookieProviderWorld) logout(t *testing.T, id string) flowAnswer {
 
 // TestSessionCookie_EndsProviderBrowserSessions pins that on a chain running
 // the OpenID Provider with the cookie session, every explicit end of a cookie
-// sign-in ends the provider's browser sessions of that sign-in: a logout, and
+// sign-in ends the provider's browser sessions of that sign-in: a logout,
 // reuse detected when a superseded identifier is presented in the cookie after
-// its window.
+// its window, and a revocation of the sign-in's family.
 func TestSessionCookie_EndsProviderBrowserSessions(t *testing.T) {
 	t.Parallel()
 
@@ -165,6 +165,16 @@ func TestSessionCookie_EndsProviderBrowserSessions(t *testing.T) {
 
 				a := w.at(t, http.MethodGet, "/orders", withSessionCookie(w.signIn.ID))
 				require.ErrorIs(t, a.err, session.ErrReused, "the superseded identifier after its window is reuse")
+			},
+		},
+		{
+			name: "revocation",
+			end: func(t *testing.T, w *cookieProviderWorld) {
+				t.Helper()
+
+				n, err := w.sessions.RevokeFamily(t.Context(), w.signIn.FamilyID)
+				require.NoError(t, err)
+				require.Positive(t, n, "the sign-in's family was revoked")
 			},
 		},
 	}

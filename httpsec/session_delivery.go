@@ -584,7 +584,7 @@ func (w *stagedWriter) replay(rw ResponseWriter) {
 // wait on itself.
 type SessionDelivery interface {
 	// Deliver writes the session cookie carrying credential, the identifier of
-	// s, which the chain has just stored, through ex.Writer, and returns what
+	// signIn, which the chain has just stored, through ex.Writer, and returns what
 	// the endpoint may write to the response body, which on a cookie chain is
 	// always "".
 	//
@@ -594,10 +594,10 @@ type SessionDelivery interface {
 	// ErrConfig and change nothing. A Deliver that panics ends the sign-in
 	// like any other failure, and the panic then goes on with its value.
 	//
-	// ex and s are Deliver's own copies: ex.Writer is a staging writer that
+	// ex and signIn are Deliver's own copies: ex.Writer is a staging writer that
 	// the chain judges once Deliver returns and then ignores for good, so a
 	// write made after Deliver returned, on a goroutine it started or through
-	// an exchange it kept, goes nowhere; and changing s changes neither what
+	// an exchange it kept, goes nowhere; and changing signIn changes neither what
 	// the chain judges the delivery against nor the session it stores and
 	// publishes. ex.Authentication is a shallow copy: the principal it points
 	// to is shared with the request, so Deliver must not edit the principal in
@@ -612,19 +612,19 @@ type SessionDelivery interface {
 	// status, or put credential anywhere else, in a header's name or value or
 	// in another cookie's name, value or path.
 	//
-	// Max-Age is none for a session whose s.PersistentCookie is false, and
-	// otherwise the seconds from the chain's clock to s.AbsoluteExpiresAt,
+	// Max-Age is none for a session whose signIn.PersistentCookie is false, and
+	// otherwise the seconds from the chain's clock to signIn.AbsoluteExpiresAt,
 	// rounded up and at least 1, read by the chain just before Deliver runs.
 	// A Deliver that works it out by reading a clock itself reads it later,
 	// and across a second's boundary comes one second short: the chain
 	// accepts a Max-Age equal to that value or exactly one second under it,
 	// never below 1. Any other Max-Age, and a Max-Age on a cookie that has
 	// none, is refused as an altered cookie.
-	Deliver(ex *Exchange, s *session.Session, credential string) (bodyCredential string, err error)
+	Deliver(ex *Exchange, signIn *session.Session, credential string) (bodyCredential string, err error)
 }
 
 // WithSessionDelivery replaces how the cookie chain writes a new session's
-// cookie with d, which every issuing endpoint then hands its stored session
+// cookie with delivery, which every issuing endpoint then hands its stored session
 // to: form login, magic link redemption, the federated callback,
 // passwordless passkey login, second-factor verification, re-authentication,
 // recovery completion, session renewal, and the rotations at an active-role
@@ -638,31 +638,31 @@ type SessionDelivery interface {
 // persistent sign-in is chosen, included), and not whether a script may read
 // the identifier.
 //
-// The line: what d writes is held back and judged once it returns, and it
-// reaches the response only when d returned no error and no body credential,
-// wrote no body (WriteHeader, Write or Stream), set no cookie through a raw
-// Set-Cookie header, set every cookie under this chain's name exactly as the
-// chain would (value the identifier; path, domain, SameSite, Secure, HttpOnly
-// and Max-Age as the chain's), at least one, and put the identifier in no
-// other header or cookie. Anything else is an issuing failure (answered 500
-// by default, with d's own error reachable through errors.Is behind the
-// library's text): nothing d wrote, and no credential, reaches the response,
-// and the sign-in d was handed is ended, so the identifier it saw
-// authenticates nothing. The response is set no-store after d's headers are
-// copied.
+// The line: what delivery writes is held back and judged once it returns, and
+// it reaches the response only when delivery returned no error and no body
+// credential, wrote no body (WriteHeader, Write or Stream), set no cookie
+// through a raw Set-Cookie header, set every cookie under this chain's name
+// exactly as the chain would (value the identifier; path, domain, SameSite,
+// Secure, HttpOnly and Max-Age as the chain's), at least one, and put the
+// identifier in no other header or cookie. Anything else is an issuing
+// failure (answered 500 by default, with delivery's own error reachable
+// through errors.Is behind the library's text): nothing delivery wrote, and no
+// credential, reaches the response, and the sign-in delivery was handed is
+// ended, so the identifier it saw authenticates nothing. The response is set
+// no-store after delivery's headers are copied.
 //
-// d is trusted code. The line is checked literally and guards against d's
-// mistakes, not against a hostile d: an encoded copy of the identifier (base64
-// in a header, say) is not detected.
+// delivery is trusted code. The line is checked literally and guards against
+// its mistakes, not against a hostile delivery: an encoded copy of the
+// identifier (base64 in a header, say) is not detected.
 //
 // A nil delivery, including an interface holding a nil pointer, is refused.
-func WithSessionDelivery(d SessionDelivery) SessionCookieOption {
+func WithSessionDelivery(delivery SessionDelivery) SessionCookieOption {
 	return func(s *sessionCookie) error {
-		if err := requireDep("WithSessionDelivery", "session delivery", d); err != nil {
+		if err := requireDep("WithSessionDelivery", "session delivery", delivery); err != nil {
 			return err
 		}
 
-		s.delivery = d
+		s.delivery = delivery
 
 		return nil
 	}

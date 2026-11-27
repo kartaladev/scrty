@@ -22,6 +22,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -37,13 +38,18 @@ type cookieStore struct {
 	loads atomic.Int64
 	fail  error
 
+	// failFrom, when positive, is the load number from which loads fail with
+	// failFromErr; loads before it reach the store.
+	failFrom    atomic.Int64
+	failFromErr error
+
 	// hangUp, when set, ends the request's context as its session loads, as
 	// a client hanging up mid-request does.
 	hangUp context.CancelFunc
 }
 
 func (s *cookieStore) Load(ctx context.Context, sid string) (*session.Session, error) {
-	s.loads.Add(1)
+	n := s.loads.Add(1)
 
 	if s.hangUp != nil {
 		s.hangUp()
@@ -57,7 +63,19 @@ func (s *cookieStore) Load(ctx context.Context, sid string) (*session.Session, e
 		return nil, s.fail
 	}
 
+	if from := s.failFrom.Load(); from > 0 && n >= from {
+		return nil, s.failFromErr
+	}
+
 	return s.Store.Load(ctx, sid)
+}
+
+// failEndpointLoad makes the loads the renewal endpoint makes of a late cookie
+// fail with err: the cookie session's load, which lets the cookie through, is
+// the first after this call, and the endpoint's are the ones after it.
+func (s *cookieStore) failEndpointLoad(err error) {
+	s.failFromErr = err
+	s.failFrom.Store(s.loads.Load() + 2)
 }
 
 // cookieFixture is a session manager over a counting in-memory store, on a fake
@@ -78,6 +96,9 @@ type cookieFixture struct {
 
 	// hangUpOnLoad ends the request's context as its session loads.
 	hangUpOnLoad bool
+
+	// successor is signIn's successor, when a case rotated it.
+	successor *session.Session
 }
 
 func newCookieFixture(t *testing.T) *cookieFixture {
@@ -654,7 +675,13 @@ const expiredDefaultCookie = "__Host-scrty-session=; Path=/; Max-Age=0; HttpOnly
 // user-store or cipher outage, a request whose context ended, a source over
 // its allowance or a limiter that cannot answer, a CSRF failure, a policy
 // decision about a valid session) leaves it in place. The server's deadlines
-// stay authoritative over a persistent cookie.
+// stay authoritative over a persistent cookie. Under unused-successor
+// recovery, a superseded cookie refused only because it must be renewed is
+// kept for the renewal, is not charged to its source, and one the renewal
+// endpoint refuses is expired, while one the endpoint reaches no verdict on (a
+// throttled renewal, a renewal conflict, a CSRF or dependency failure) is
+// kept. A cookie chain composed inside another's late renewal judges only its
+// own cookie.
 func TestSessionCookie_RefusalExpires(t *testing.T) {
 	t.Parallel()
 
@@ -669,9 +696,19 @@ func TestSessionCookie_RefusalExpires(t *testing.T) {
 		ctx     func(ctx context.Context) context.Context
 
 		assert func(t *testing.T, s served)
+
+		// then, when set, runs after assert on the same fixture and chain.
+		then func(t *testing.T, f *cookieFixture, chain *httpsec.Chain)
 	}
 
 	errStoreDown := errors.New("sessions: connection refused")
+
+	// innerCookieName is the cookie a chain composed inside another reads.
+	const innerCookieName = "inner-sid"
+
+	// smallAllowance is the refused references a source may make per minute
+	// on a chain whose case counts them.
+	const smallAllowance = 3
 
 	get := func(cookie func(f *cookieFixture) string) func(t *testing.T, f *cookieFixture) *http.Request {
 		return func(t *testing.T, f *cookieFixture) *http.Request {
@@ -733,6 +770,51 @@ func TestSessionCookie_RefusalExpires(t *testing.T) {
 
 			return u, nil
 		}
+	}
+
+	// withRenewal is the fixture's cookie chain with the renewal endpoint on.
+	withRenewal := func(_ *testing.T, f *cookieFixture) []httpsec.Option {
+		return f.chainOptions(httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Users: f.users}))
+	}
+
+	// lateUnderRecovery puts the fixture on a manager with unused-successor
+	// recovery and a fresh sign-in, rotates it with a grace window, presents
+	// the successor when used is set, and lets the window pass, so the
+	// sign-in's identifier is superseded and late.
+	lateUnderRecovery := func(used bool) func(t *testing.T, f *cookieFixture) {
+		return func(t *testing.T, f *cookieFixture) {
+			t.Helper()
+
+			const grace = 30 * time.Second
+
+			sessions, err := session.New(session.WithClock(f.clk), session.WithStore(f.store),
+				session.WithIdleTimeout(30*time.Minute), session.WithAbsoluteTimeout(12*time.Hour),
+				session.WithUnusedSuccessorRecovery())
+			require.NoError(t, err)
+
+			f.sessions = sessions
+			f.signIn = f.create(t)
+
+			f.successor, _, err = f.sessions.RotateWithGrace(t.Context(), f.signIn, grace)
+			require.NoError(t, err)
+
+			if used {
+				_, err = f.sessions.Load(t.Context(), f.successor.ID)
+				require.NoError(t, err, "the successor is presented, so it is no longer unused")
+			}
+
+			f.clk.Advance(grace + time.Second)
+		}
+	}
+
+	// lateRenewal posts the sign-in's cookie and CSRF token to the renewal
+	// endpoint.
+	lateRenewal := func(t *testing.T, f *cookieFixture) *http.Request {
+		req := sessionCookieRequest(t.Context(), http.MethodPost, named(f.signIn.ID),
+			map[string]string{"X-CSRF-Token": f.signIn.CSRFToken})
+		req.URL.Path = httpsec.DefaultSessionRenewalPath
+
+		return req
 	}
 
 	cases := []testCase{
@@ -928,6 +1010,202 @@ func TestSessionCookie_RefusalExpires(t *testing.T) {
 			request: get(signedIn),
 			assert:  untouched(httpsec.ErrAuthenticationRequired),
 		},
+		{
+			name:    "a renewal-required cookie on a chain without the renewal endpoint is expired",
+			wire:    lateUnderRecovery(false),
+			request: get(signedIn),
+			assert: func(t *testing.T, s served) {
+				t.Helper()
+				expired(t, s)
+				assert.ErrorIs(t, s.err, session.ErrRenewalRequired, "refused as needing renewal")
+			},
+		},
+		{
+			name:    "a superseded cookie under recovery is kept for the renewal",
+			options: withRenewal,
+			wire:    lateUnderRecovery(false),
+			request: get(signedIn),
+			assert: func(t *testing.T, s served) {
+				t.Helper()
+				untouched(httpsec.ErrAuthenticationRequired)(t, s)
+				assert.ErrorIs(t, s.err, session.ErrRenewalRequired, "refused as needing renewal")
+			},
+			then: func(t *testing.T, f *cookieFixture, chain *httpsec.Chain) {
+				t.Helper()
+
+				renewed := f.serve(t, chain, lateRenewal(t, f), nil)
+				require.NoError(t, renewed.err, "a renewal posted with the kept cookie succeeds")
+
+				c := cookieNamed(renewed.rec, httpsec.DefaultSessionCookieName)
+				require.NotNil(t, c, "the renewal sets the successor's cookie")
+				assert.NotEqual(t, f.signIn.ID, c.Value)
+
+				_, err := f.sessions.Load(t.Context(), c.Value)
+				require.NoError(t, err, "the cookie names the stored successor")
+			},
+		},
+		{
+			name:    "a superseded cookie refused at the renewal endpoint is expired",
+			options: withRenewal,
+			wire:    lateUnderRecovery(true),
+			request: lateRenewal,
+			assert: func(t *testing.T, s served) {
+				t.Helper()
+				expired(t, s)
+				assert.ErrorIs(t, s.err, session.ErrReused, "the successor was used, so this is reuse")
+			},
+			then: func(t *testing.T, f *cookieFixture, _ *httpsec.Chain) {
+				t.Helper()
+
+				_, err := f.sessions.Load(t.Context(), f.successor.ID)
+				require.ErrorIs(t, err, session.ErrNotFound, "the sign-in's family, the successor included, is revoked")
+			},
+		},
+		{
+			name:    "a CSRF failure of a superseded cookie at the renewal endpoint leaves it",
+			options: withRenewal,
+			wire:    lateUnderRecovery(false),
+			request: func(t *testing.T, f *cookieFixture) *http.Request {
+				req := lateRenewal(t, f)
+				req.Header.Del("X-CSRF-Token")
+
+				return req
+			},
+			assert: untouched(httpsec.ErrCrossSiteRequest),
+		},
+		{
+			name: "a throttled renewal of a superseded cookie leaves it",
+			options: func(t *testing.T, f *cookieFixture) []httpsec.Option {
+				return f.chainOptions(httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Users: f.users},
+					httpsec.WithRenewalLimiter(exceededLimiter(t))))
+			},
+			wire:    lateUnderRecovery(false),
+			request: lateRenewal,
+			assert:  untouched(httpsec.ErrRenewalThrottled),
+		},
+		{
+			name:    "a renewal conflict at the renewal endpoint leaves the late cookie",
+			options: withRenewal,
+			wire: func(t *testing.T, f *cookieFixture) {
+				lateUnderRecovery(false)(t, f)
+				f.store.failEndpointLoad(session.ErrRenewalConflict)
+			},
+			request: lateRenewal,
+			assert: func(t *testing.T, s served) {
+				t.Helper()
+				untouched(httpsec.ErrSessionRenewalConflict)(t, s)
+				assert.NotErrorIs(t, s.err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, http.StatusConflict, httpsec.StatusForError(s.err))
+			},
+		},
+		{
+			name:    "a dependency failure at the renewal endpoint leaves the late cookie",
+			options: withRenewal,
+			wire: func(t *testing.T, f *cookieFixture) {
+				lateUnderRecovery(false)(t, f)
+				f.user = func() (*identity.Details, error) { return nil, errStoreDown }
+			},
+			request: lateRenewal,
+			assert: func(t *testing.T, s served) {
+				t.Helper()
+				untouched(nil)(t, s)
+				assert.NotErrorIs(t, s.err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(s.err))
+			},
+		},
+		{
+			// The outer chain lets its late cookie through to its renewal
+			// endpoint; a cookie chain composed after it publishes a sign-in
+			// of its own cookie, which the endpoint then refuses to renew (its
+			// user loader finds the user inactive). That refusal is a decision
+			// about a published session, which never expires the inner cookie;
+			// only the chain that let a late cookie through judges it by the
+			// endpoint's answer.
+			name: "a cookie chain composed inside a late renewal keeps its own cookie",
+			options: func(t *testing.T, f *cookieFixture) []httpsec.Option {
+				inner, err := httpsec.New(
+					httpsec.WithLogger(slog.New(f.logs)),
+					httpsec.WithClock(f.clk),
+					httpsec.WithoutCSRFProtection(),
+					httpsec.EnableSessionCookie(f.deps(), httpsec.WithSessionCookieName(innerCookieName),
+						httpsec.WithSessionCookieLimiter(f.limiter)),
+				)
+				require.NoError(t, err)
+
+				inactive := NewMockUserLoader(gomock.NewController(t))
+				inactive.EXPECT().LoadByUserID(gomock.Any(), gomock.Any()).AnyTimes().
+					DoAndReturn(func(context.Context, identity.UserID) (*identity.Details, error) {
+						u := storedUser()
+						u.Active = false
+
+						return u, nil
+					})
+
+				return f.chainOptions(
+					httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Users: inactive}),
+					composeAround(inner, httpsec.OrderBearerToken+50),
+				)
+			},
+			wire: lateUnderRecovery(false),
+			request: func(t *testing.T, f *cookieFixture) *http.Request {
+				// The endpoint renews the session published, the inner one, so
+				// the request carries that sign-in's CSRF token.
+				other := f.create(t)
+
+				req := lateRenewal(t, f)
+				req.Header.Set("Cookie", named(f.signIn.ID)+"; "+innerCookieName+"="+other.ID)
+				req.Header.Set("X-CSRF-Token", other.CSRFToken)
+
+				return req
+			},
+			assert: func(t *testing.T, s served) {
+				t.Helper()
+				require.ErrorIs(t, s.err, httpsec.ErrAuthenticationRequired, "the endpoint refuses the renewal")
+				assert.False(t, s.handlerRan)
+				for _, c := range s.rec.Result().Cookies() {
+					assert.NotEqual(t, innerCookieName, c.Name, "the inner chain's cookie is kept")
+				}
+			},
+		},
+		{
+			name: "a renewal-required cookie re-sent from one source does not throttle it",
+			options: func(t *testing.T, f *cookieFixture) []httpsec.Option {
+				inner, err := ratelimit.NewMemoryLimiter(smallAllowance, time.Minute,
+					ratelimit.WithMemoryLimiterClock(f.clk),
+					ratelimit.WithMemoryLimiterLogger(slog.New(slog.DiscardHandler)))
+				require.NoError(t, err)
+
+				f.limiter = &chargeRecorder{Limiter: inner}
+
+				return withRenewal(t, f)
+			},
+			wire:    lateUnderRecovery(false),
+			request: get(signedIn),
+			assert:  untouched(session.ErrRenewalRequired),
+			then: func(t *testing.T, f *cookieFixture, chain *httpsec.Chain) {
+				t.Helper()
+
+				// The first presentation is the case's own request; these
+				// bring it to one past the allowance.
+				for i := range smallAllowance {
+					again := f.serve(t, chain, get(signedIn)(t, f), nil)
+					require.ErrorIs(t, again.err, session.ErrRenewalRequired, "presentation %d", i+2)
+					assert.Empty(t, again.rec.Header().Values("Set-Cookie"), "the cookie is kept")
+				}
+
+				assert.Empty(t, f.limiter.recorded(), "a cookie that needs renewal is no failed guess")
+
+				other := f.create(t)
+				valid := f.serve(t, chain, sessionCookieRequest(t.Context(), http.MethodGet, named(other.ID), nil), nil)
+				require.NoError(t, valid.err, "another sign-in from the same source is not throttled")
+				assert.True(t, valid.handlerRan)
+
+				renewed := f.serve(t, chain, lateRenewal(t, f), nil)
+				require.NoError(t, renewed.err, "the late cookie's renewal from that source succeeds")
+				require.NotNil(t, cookieNamed(renewed.rec, httpsec.DefaultSessionCookieName),
+					"the renewal sets the successor's cookie")
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -948,6 +1226,10 @@ func TestSessionCookie_RefusalExpires(t *testing.T) {
 			require.NoError(t, err)
 
 			tc.assert(t, f.serve(t, chain, tc.request(t, f), tc.ctx))
+
+			if tc.then != nil {
+				tc.then(t, f, chain)
+			}
 		})
 	}
 }

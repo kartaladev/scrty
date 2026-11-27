@@ -172,16 +172,27 @@ func (s *sessionCookie) Intercept(ex *Exchange, next Next) error {
 
 	before := ex.Session
 
+	// The renewal mark is noted before the cookie is resolved, so a mark an
+	// enclosing chain set for its own late credential is not taken for this
+	// cookie's: only a resolve that set the mark let this cookie through.
+	renewalBefore := ex.renewal
+
 	rejected, err := s.ref.resolve(ex, presented, transportCookie, admitCookieSession)
 	if err != nil {
 		// Only a cookie the pipeline judged bad is expired. One refused
 		// without being judged (its source throttled, the limiter down) or
 		// one whose session could not be read for an outage may name a live
 		// session, and expiring it would sign out every browser behind a
-		// shared address or a failing store. It is set here, before the
-		// error is answered, so the answer carries it whoever writes it.
-		if rejected {
-			ex.Writer.SetCookie(s.cookie("", -1))
+		// shared address or a failing store. A superseded cookie the manager
+		// says must be renewed (unused-successor recovery) is kept too, and is
+		// not charged to its source: it is the only credential the browser
+		// can renew with, and the browser re-sends it until its page renews
+		// it. That holds only on a chain that serves the renewal endpoint;
+		// with none, nothing can renew it and it is expired like any other
+		// judged refusal. It is set here, before the error is answered, so
+		// the answer carries it whoever writes it.
+		if rejected && (!errors.Is(err, session.ErrRenewalRequired) || s.ref.resolver.renewal == nil) {
+			s.expire(ex)
 		}
 
 		return err
@@ -204,7 +215,28 @@ func (s *sessionCookie) Intercept(ex *Exchange, next Next) error {
 		ex.markCookieSession(s.chain, ex.Session)
 	}
 
-	return next(ex)
+	if ex.renewal == "" || ex.renewal == renewalBefore {
+		return next(ex)
+	}
+
+	// A late cookie let through to the renewal endpoint is judged there, so
+	// its verdict comes back from next: a refusal of the reference (reuse,
+	// which revokes the family; a session ended or refused on reload) expires
+	// the cookie, as one refused here would be. Every other answer keeps it:
+	// a renewal throttled or lost to a concurrent one, a CSRF failure and a
+	// dependency failure reach no verdict on the cookie, and the renewal the
+	// endpoint makes sets the successor's cookie itself.
+	err = next(ex)
+	if errors.Is(err, ErrAuthenticationRequired) {
+		s.expire(ex)
+	}
+
+	return err
+}
+
+// expire sets the expired session cookie on ex's response.
+func (s *sessionCookie) expire(ex *Exchange) {
+	ex.Writer.SetCookie(s.cookie("", -1))
 }
 
 // admitCookieSession is the cookie transport's own check (referenceCheck): it
@@ -431,13 +463,39 @@ func presentedCookie(r Request, name string) (value string, claimed bool) {
 //  6. the caller and the session are published, and the per-request policy
 //     phase runs, as for the session bearer.
 //
-// The refusals of steps 2, 3 and 5 are charged to the source; a CSRF failure,
-// a policy decision about a valid session, a dependency failure (a session,
-// user or cipher store outage, answered 500 by default with the cause
-// reachable through errors.Is) and a request whose own context ended are not.
-// The cookie is never recorded as a presented access token
-// (Exchange.RecordPresentedToken): a DPoP proof on a cookie request carries no
-// ath.
+// The refusals of steps 2, 3 and 5 are charged to the source, except one
+// that needs renewal (below); a CSRF failure, a policy decision about a valid
+// session, a dependency failure (a session, user or cipher store outage,
+// answered 500 by default with the cause reachable through errors.Is) and a
+// request whose own context ended are not. The cookie is never recorded as a
+// presented access token (Exchange.RecordPresentedToken): a DPoP proof on a
+// cookie request carries no ath.
+//
+// A refusal of a reference the pipeline judged expires the cookie in the
+// response: one that is malformed, missing, expired, unreadable, reused or
+// bound to a sender, one whose user is refused, and one the renewal endpoint
+// refuses (below). Every answer that reaches no verdict on the cookie keeps
+// it: a dependency failure, a request whose own context ended, an unjudged
+// refusal (a throttled source, a limiter that cannot answer, a CSRF failure,
+// the cookie beside another credential) and a policy decision about a valid
+// session. The server's deadlines stay authoritative over a persistent cookie.
+//
+// Under unused-successor recovery (session.WithUnusedSuccessorRecovery), a
+// superseded cookie whose successor was never used, presented after its
+// window, is refused with ErrAuthenticationRequired joined to
+// session.ErrRenewalRequired. On a chain with EnableSessionRenewal the cookie
+// is kept, since it is the only credential the browser can renew with; on a
+// chain without it nothing can renew the cookie, so it is expired like any
+// other judged refusal. Either way the refusal is not charged to the source,
+// since only a stored, genuine superseded identifier gets it (the session
+// bearer still charges it). A page that receives this refusal posts
+// to the renewal endpoint (EnableSessionRenewal) with the cookie and the
+// sign-in's CSRF token. That request alone is let through, with nothing
+// published, and the endpoint judges the cookie: its renewal sets the
+// successor's cookie; a refusal of the reference there (reuse, which revokes
+// the sign-in's family; an ended session; a refused user) expires the cookie;
+// a throttled renewal, a renewal conflict, a CSRF failure and a dependency
+// failure keep it.
 //
 // Refusals are logged and sampled under the flow "session-cookie", apart
 // from the session bearer's "session-reference".
