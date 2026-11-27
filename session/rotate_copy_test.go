@@ -419,6 +419,16 @@ func TestRotate_KeepsSecondFactorAtLoginMark(t *testing.T) {
 			},
 		},
 		{
+			name:       "caller-built grace rotation carries the mark",
+			marked:     true,
+			grace:      true,
+			fromCaller: true,
+			mutate:     func(*session.Session) {},
+			assert: func(t *testing.T, stored *session.Session) {
+				assert.True(t, stored.MFAAtFirstFactor)
+			},
+		},
+		{
 			name:   "grace rotation carries the mark",
 			marked: true,
 			grace:  true,
