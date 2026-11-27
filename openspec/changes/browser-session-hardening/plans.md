@@ -288,6 +288,30 @@ the sign-in paths. The provider's own token path is not routed through it.
 - [ ] **Step 5:** Run the H2 scoped verification and `golangci-lint run ./httpsec/...`. Expected:
   all pass.
 
+**H2 review fixes, also in H2b.** H2b also owns `session/reuse.go`, `session/reuse_test.go`,
+`httpsec/session_delivery.go` and `httpsec/session_cookie_rotation_test.go`.
+
+- [ ] **Step R5: Keep the copy's lowered deadline.**
+  - **Red, session row in `TestRotateWithGrace_SuccessorFromCaller`:** the stored record is not
+    confined, with absolute deadline 21:00. The copy has `MarkEnrolmentPending` applied, lowering
+    its deadline to 09:15. The successor's `AbsoluteExpiresAt` is 09:15, and it fails today with
+    21:00.
+  - **Red, end-to-end row in `TestSessionCookie_ExistingRotationsGrace`:** a cookie chain with
+    `EnableMFAEnrolment` (15m lifetime) and a policy that raises `ChallengeMFAEnrolment` once the
+    second factor is satisfied. After verification, the successor ends by now + 15m.
+  - **Implement:** in `successorFromCaller`, set
+    `next.AbsoluteExpiresAt = minTime(stored.AbsoluteExpiresAt, current.AbsoluteExpiresAt)` unless
+    `liftedConfinement` applies. The godoc says a copy may lower the deadline but never raise it.
+- [ ] **Step R6: Zero grace rotates strictly.**
+  - **Red row:** a cookie chain with `WithRenewalGrace(0)`. After MFA verification, the in-flight
+    old cookie is refused as not found (`session.ErrNotFound`, not `ErrReused`), the family is not
+    revoked, and the new cookie authenticates.
+  - **Implement:** `credentialDelivery.rotateIssuing` uses strict `RotateIssuing` when the grace is
+    zero.
+- [ ] **Step R7:** Run `go test -race -count=1 ./session/...` and the session conformance rows,
+  then the H2 scoped verification and `golangci-lint run ./session/... ./httpsec/...`. Expected:
+  all pass.
+
 ### Task 3: Password-change deadline and the q-value (tasks 3.1–3.2, H3)
 
 **Files:** Modify `httpsec/password_change.go` (`adoptResolution` at :499 and its two call sites at

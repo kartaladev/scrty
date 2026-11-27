@@ -69,6 +69,18 @@ design are the baseline. Decision numbers below are this change's own.
   - Re-authentication with a key binding: superseded by decision 7. H2 showed that the binding can
     be non-empty on a cookie chain.
 
+  - From the H2 review:
+    - **Absolute deadline (REPRODUCED, `TestReview_FromCallerConfiningCopyKeepsLoweredDeadline`):**
+      a policy can raise an enrolment challenge during verification, and then the copy's absolute
+      deadline is lowered by `MarkEnrolmentPending`. The successor took the stored, full deadline,
+      so an enrolment-only session outlived its confinement. The successor now takes the earlier of
+      the stored and the copy's absolute deadlines, except under the lifted-confinement rule above.
+      A copy may lower the deadline but never raise it.
+    - **Zero grace:** with `WithRenewalGrace(0)`, a grace rotation's window closes as it opens, so
+      an in-flight old cookie would revoke the whole sign-in. When the grace is zero, both
+      endpoints use the strict rotation as before this change. The old cookie is then not found,
+      not reuse.
+
 ### 7. A cookie chain never binds a session to a sender key
 
 - **Problem (found by H2):** a cookie chain may also enable `EnableCertificateBinding` or
@@ -155,6 +167,9 @@ design are the baseline. Decision numbers below are this change's own.
 |---|---|---|---|
 | Request in flight with the old cookie during MFA verify or re-authentication | Concurrency | Handled, tested | inside the grace window it loads the old session's own state; the new cookie is not expired |
 | The same old cookie presented after the window | Security | Handled, tested | refused as reuse, family revoked, as at the role switch |
+| A policy raising an enrolment challenge during MFA verification | State / Security | Handled, tested | the successor keeps the lowered enrolment deadline (the earlier of the stored and the copy's) |
+| `WithRenewalGrace(0)` on a cookie chain | Wiring | Handled, tested | MFA verification and re-authentication rotate strictly; an in-flight old cookie is refused as not found, and nothing is revoked |
+| The token issuer outlasts the grace window during MFA verification or re-authentication | Dependency | Accepted | a dependency failure after the factor was spent; nothing is written, and the old cookie keeps working |
 | Grace successor losing the verified state | State / Security | Handled, tested | `WithSuccessorFromCaller` builds the successor from the caller's copy: MFA satisfied, refreshed `AuthenticatedAt`; sign-in state from the stored record |
 | MFA verify or re-authentication on a session a renewal already superseded (push poll racing a renewal) | Concurrency | Handled, tested | `ErrRenewalConflict`, answered 409 as today; nothing stored, nothing revoked |
 | A caller's copy claiming another key binding or CSRF token | Security | Handled, tested | ignored; both come from the stored record |
