@@ -192,3 +192,67 @@ func TestSessionCookie_TrustedProxiesKeepRawCookies(t *testing.T) {
 		})
 	}
 }
+
+// TestSessionCookie_PaddedNameIgnored pins that a cookie whose name is padded
+// with a Unicode space (which fasthttp does not trim, and the chain no longer
+// does) is another cookie on Fiber: it is ignored and never refused, alone or
+// beside the real cookie. The padded cookie carries a malformed value, so a
+// chain that took it for the session cookie would refuse the request with an
+// expiring Set-Cookie.
+func TestSessionCookie_PaddedNameIgnored(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		cookie func(id string) string
+	}
+
+	cases := []testCase{
+		{
+			name:   "U+2000 after the name, alone",
+			cookie: func(string) string { return "__Host-scrty-session =not-a-reference" },
+		},
+		{
+			name: "U+00A0 twin beside the real cookie",
+			cookie: func(id string) string {
+				return "__Host-scrty-session =not-a-reference; __Host-scrty-session=" + id
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sessions, err := session.New()
+			require.NoError(t, err)
+
+			live, err := sessions.Create(t.Context(), "u-1",
+				session.WithFirstFactor(factor.Password), session.WithCSRFToken())
+			require.NoError(t, err)
+
+			users := NewMockUserLoader(gomock.NewController(t))
+			users.EXPECT().LoadByUserID(gomock.Any(), gomock.Any()).AnyTimes().Return(&identity.Details{
+				ID: "u-1", Username: "ada", Active: true, PasswordChangedAt: time.Now().Add(-time.Hour),
+			}, nil)
+
+			chain, err := httpsec.New(
+				httpsec.EnableCSRFProtection(),
+				httpsec.EnableSessionCookie(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}))
+			require.NoError(t, err)
+
+			app := fiber.New(fiber.Config{ErrorHandler: fibersec.ErrorHandler})
+			app.Use(fibersec.Middleware(chain))
+			app.Get("/*", func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://app.example.com/x", nil)
+			req.Header.Set("Cookie", tc.cookie(live.ID))
+			req.Header.Set("Sec-Fetch-Site", "same-origin")
+
+			res := serveFrom(t, app, req, "198.51.100.7:51000")
+
+			assert.Equal(t, http.StatusOK, res.status, "the padded cookie is another cookie, never refused")
+			assert.Empty(t, res.header.Values("Set-Cookie"), "nothing is expired")
+		})
+	}
+}

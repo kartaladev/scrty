@@ -100,9 +100,32 @@ func TestSessionCookie_Attributes(t *testing.T) {
 			assert: sets("__Secure-scrty-session=" + id + "; Path=/; Domain=example.com; HttpOnly; Secure; SameSite=Lax"),
 		},
 		{
-			name:   "an unprefixed name is the consumer's choice, still Secure and HttpOnly",
+			name: "an unprefixed name shared across a domain is still refused for its missing __Secure- prefix",
+			opts: []httpsec.SessionCookieOption{
+				httpsec.WithSessionCookieName("sid"),
+				httpsec.WithSessionCookieDomain("example.com"),
+			},
+			assert: misconfigured("sid", "__Secure-"),
+		},
+		{
+			name:   "an unprefixed name with no domain is refused: it names the __Host- rule and the alternative",
 			opts:   []httpsec.SessionCookieOption{httpsec.WithSessionCookieName("sid")},
-			assert: sets("sid=" + id + "; Path=/; HttpOnly; Secure; SameSite=Lax"),
+			assert: misconfigured("sid", "__Host-", "__Secure-", "WithSessionCookieDomain"),
+		},
+		{
+			name:   "a __Secure- name with no domain is refused",
+			opts:   []httpsec.SessionCookieOption{httpsec.WithSessionCookieName("__Secure-sid")},
+			assert: misconfigured("__Secure-sid", "__Host-"),
+		},
+		{
+			name:   "a custom __Host- name with no domain builds",
+			opts:   []httpsec.SessionCookieOption{httpsec.WithSessionCookieName("__Host-app")},
+			assert: sets("__Host-app=" + id + "; Path=/; HttpOnly; Secure; SameSite=Lax"),
+		},
+		{
+			name:   "a __Host- name in another case builds, since prefixes match case-insensitively",
+			opts:   []httpsec.SessionCookieOption{httpsec.WithSessionCookieName("__host-app")},
+			assert: sets("__host-app=" + id + "; Path=/; HttpOnly; Secure; SameSite=Lax"),
 		},
 		{
 			name:   "an empty name is refused",

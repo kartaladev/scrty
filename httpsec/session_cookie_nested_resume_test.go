@@ -392,7 +392,7 @@ func TestSessionCookie_ComposedChainResume(t *testing.T) {
 			assert: func(t *testing.T) {
 				t.Helper()
 
-				const otherCookie = "other-sid"
+				const otherCookie = "__Host-other-sid"
 
 				w, _, err := newCookieOP(t, func(setup *flowSetup) {
 					setup.chain = func(t *testing.T, w *opFlow) []httpsec.Option {

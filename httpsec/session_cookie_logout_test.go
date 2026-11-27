@@ -167,6 +167,22 @@ func TestSessionCookie_LogoutExpires(t *testing.T) {
 			},
 		},
 		{
+			name: "a logout presenting only a padded twin of the cookie name expires nothing",
+			assert: func(t *testing.T) {
+				t.Helper()
+
+				w := newBrowserWorld(t).build(t)
+				id := w.signedIn(t)
+
+				out := w.logoutWith(t, httpsec.DefaultSessionCookieName+"\u2000", id)
+				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				assert.Empty(t, out.rec.Header().Values("Set-Cookie"), "no cookie was presented, so none is expired")
+
+				_, err := w.sessions.Load(t.Context(), id)
+				require.NoError(t, err, "the session is untouched")
+			},
+		},
+		{
 			name: "a logout with no sign-in is refused and touches no cookie",
 			assert: func(t *testing.T) {
 				t.Helper()

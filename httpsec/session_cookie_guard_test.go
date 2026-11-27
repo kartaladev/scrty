@@ -145,6 +145,23 @@ func TestSessionCookie_BothCredentialsRefused(t *testing.T) {
 			},
 		},
 		{
+			// A name padded with a Unicode space is another cookie, so the guard
+			// sees no session cookie beside the header, and refuses nothing.
+			name: "a padded twin of the cookie name and a bearer token is not refused", cookieChain: true,
+			path: guardAPIPath,
+			cookie: func(f *cookieFixture) string {
+				return httpsec.DefaultSessionCookieName + "\u2000=" + f.signIn.ID
+			},
+			authorization: []string{"Bearer " + rsToken},
+			assert: func(t *testing.T, f *cookieFixture, out served, verified int64) {
+				t.Helper()
+				require.NoError(t, out.err)
+				require.True(t, out.handlerRan, "the resource server judged the token")
+				assert.Equal(t, int64(1), verified)
+				assert.Zero(t, f.store.loads.Load(), "the padded cookie was never looked up")
+			},
+		},
+		{
 			name: "a chain without the cookie session has no guard",
 			path: guardAPIPath, cookie: live, authorization: []string{"Bearer " + rsToken},
 			assert: func(t *testing.T, f *cookieFixture, out served, verified int64) {

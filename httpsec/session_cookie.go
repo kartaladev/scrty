@@ -336,12 +336,23 @@ func otherCauses(err error, budget *int) (causes []error, ok bool) {
 	return []error{err}, true
 }
 
+// cookieHeaderPadding is the padding trimmed around a Cookie header's pairs,
+// names and values: space and tab, never another Unicode space.
+const cookieHeaderPadding = " \t"
+
 // presentedCookie reports the value of the one cookie named name the request
 // carries, and whether it carries any. Every Cookie header line is read, and
 // a request carrying the name more than once claims the cookie with no value
 // at all, which the pipeline refuses as malformed: two values are not one
 // identifier, and taking either would let whoever planted the other choose
 // which session the request runs as.
+//
+// A pair, a name and a value are trimmed of space and tab alone, the only
+// padding the Cookie header grammar allows around them. Any other Unicode
+// space (U+00A0, U+0085, U+2000, U+3000 and the like) stays in the name, which
+// is then another cookie, ignored and never refused: refusing it would let
+// anyone who can plant a cookie lock a browser out, and trimming it would
+// make a name the browser, the proxy and the adapter each read differently.
 //
 // The header is read here rather than through Request.Cookie, which answers
 // the first value only, and drops one it cannot parse: a value no identifier
@@ -351,8 +362,8 @@ func presentedCookie(r Request, name string) (value string, claimed bool) {
 
 	for _, line := range r.HeaderValues("Cookie") {
 		for pair := range strings.SplitSeq(line, ";") {
-			n, v, _ := strings.Cut(strings.TrimSpace(pair), "=")
-			if strings.TrimSpace(n) != name {
+			n, v, _ := strings.Cut(strings.Trim(pair, cookieHeaderPadding), "=")
+			if strings.Trim(n, cookieHeaderPadding) != name {
 				continue
 			}
 
@@ -361,7 +372,7 @@ func presentedCookie(r Request, name string) (value string, claimed bool) {
 				return "", true
 			}
 
-			value = strings.TrimSpace(v)
+			value = strings.Trim(v, cookieHeaderPadding)
 		}
 	}
 
@@ -581,6 +592,16 @@ func (s *sessionCookie) checkAttributes() error {
 		}
 	}
 
+	// A host-only cookie must carry the __Host- prefix, so a browser refuses
+	// to let a sibling or plain-HTTP origin overwrite it: an unprefixed or
+	// __Secure- name without a Domain is a cookie another origin can toss.
+	if s.domain == "" && !hasPrefixFold(s.name, cookiePrefixHost) {
+		return newConfigError("the session cookie is named %q and names no Domain, so it must carry the %s "+
+			"prefix, which a browser accepts only from the origin itself; to name it otherwise, share it "+
+			"across subdomains with the %s prefix and WithSessionCookieDomain",
+			s.name, cookiePrefixHost, cookiePrefixSecure)
+	}
+
 	// The probe is the cookie as it will be written, so a name or domain
 	// net/http would refuse, or silently drop when writing it, is refused
 	// here.
@@ -745,8 +766,11 @@ func WithoutSessionRotation(points ...RotationPoint) SessionCookieOption {
 // the one origin that set it. Another name is the consumer's choice, and the
 // cookie is still set Secure, HttpOnly and with Path=/. The line: the name
 // must be a valid cookie name (a non-empty token, with no space, ';', '=' or
-// other separator), and a __Host- name takes no WithSessionCookieDomain; both
-// are configuration errors from New.
+// other separator); a __Host- name takes no WithSessionCookieDomain; and a
+// name without the __Host- prefix needs WithSessionCookieDomain and the
+// __Secure- prefix, because a host-only cookie another origin could overwrite
+// is not one this library sets. Each is a configuration error from New.
+// Prefixes match case-insensitively.
 func WithSessionCookieName(name string) SessionCookieOption {
 	return func(s *sessionCookie) error {
 		if name == "" {
@@ -790,7 +814,9 @@ func WithSessionCookieSameSite(mode http.SameSite) SessionCookieOption {
 // line: a cookie shared across subdomains must be named with the __Secure-
 // prefix (WithSessionCookieName), and a __Host- name, the default included,
 // takes no Domain; either mistake, an empty domain, and one net/http would
-// not write, are configuration errors from New.
+// not write, are configuration errors from New. It is also the only way to
+// use a name other than a __Host- one: with no Domain, WithSessionCookieName
+// must give a __Host- name.
 //
 // A shared Domain trusts every subdomain of it: any HTTPS subdomain, a
 // forgotten staging host or an application a third party runs there, can set

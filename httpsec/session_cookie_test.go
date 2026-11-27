@@ -619,6 +619,115 @@ func TestSessionCookie_Authenticates(t *testing.T) {
 	}
 }
 
+// TestSessionCookie_PaddedNameIgnored pins that the Cookie header's pairs,
+// names and values are trimmed of space and tab alone: a name padded with any
+// other Unicode space is another cookie, which the chain ignores (never
+// refuses, since refusing would let anyone lock a browser out by planting
+// it), whether it arrives alone or beside the real cookie; and that a name or
+// pair padded with space or tab is the cookie.
+func TestSessionCookie_PaddedNameIgnored(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		cookie func(f *cookieFixture) string
+		assert func(t *testing.T, f *cookieFixture, s served)
+	}
+
+	ignored := func(t *testing.T, f *cookieFixture, s served) {
+		t.Helper()
+		require.NoError(t, s.err)
+		require.True(t, s.handlerRan)
+
+		_, ok := authenticate.AuthenticationFromContext(s.handled.Context())
+		assert.False(t, ok, "no caller is published")
+		assert.Zero(t, f.store.loads.Load(), "no session is loaded")
+		assert.Empty(t, f.limiter.recorded(), "nothing is charged to the source")
+		assert.Empty(t, s.rec.Header().Values("Set-Cookie"))
+	}
+
+	authenticated := func(t *testing.T, f *cookieFixture, s served) {
+		t.Helper()
+		require.NoError(t, s.err)
+		require.True(t, s.handlerRan)
+
+		published, ok := httpsec.SessionFromContext(s.handled.Context())
+		require.True(t, ok)
+		assert.Equal(t, f.signIn.ID, published.ID)
+		assert.Empty(t, s.rec.Header().Values("Set-Cookie"), "no refusal, no expiring cookie")
+	}
+
+	var cases []testCase
+
+	for _, pad := range []struct{ name, space string }{
+		{"U+00A0 no-break space", "\u00a0"},
+		{"U+0085 next line", "\u0085"},
+		{"U+2000 en quad", "\u2000"},
+		{"U+205F medium mathematical space", "\u205f"},
+		{"U+3000 ideographic space", "\u3000"},
+	} {
+		cases = append(cases,
+			testCase{
+				name: pad.name + " after the name, alone, is another cookie",
+				cookie: func(f *cookieFixture) string {
+					return httpsec.DefaultSessionCookieName + pad.space + "=" + f.signIn.ID
+				},
+				assert: ignored,
+			},
+			testCase{
+				name: pad.name + " before the name, alone, is another cookie",
+				cookie: func(f *cookieFixture) string {
+					return pad.space + httpsec.DefaultSessionCookieName + "=" + f.signIn.ID
+				},
+				assert: ignored,
+			},
+			testCase{
+				name: pad.name + " twin beside the real cookie leaves the real one authenticating",
+				cookie: func(f *cookieFixture) string {
+					return httpsec.DefaultSessionCookieName + pad.space + "=" + unknownReference(2) + "; " + named(f.signIn.ID)
+				},
+				assert: authenticated,
+			},
+		)
+	}
+
+	cases = append(cases,
+		testCase{
+			name: "space and tab padding of the pair and the name is the cookie",
+			cookie: func(f *cookieFixture) string {
+				return "\t" + httpsec.DefaultSessionCookieName + " =" + f.signIn.ID + " "
+			},
+			assert: authenticated,
+		},
+		testCase{
+			name: "a tab-padded twin and the real cookie are two cookies of the name, refused",
+			cookie: func(f *cookieFixture) string {
+				return named(f.signIn.ID) + "; \t" + httpsec.DefaultSessionCookieName + "\t=" + f.signIn.ID
+			},
+			assert: func(t *testing.T, _ *cookieFixture, s served) {
+				t.Helper()
+				require.ErrorIs(t, s.err, httpsec.ErrAuthenticationRequired)
+				assert.False(t, s.handlerRan)
+			},
+		},
+	)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newCookieFixture(t)
+
+			chain, err := httpsec.New(f.chainOptions()...)
+			require.NoError(t, err)
+
+			req := sessionCookieRequest(t.Context(), http.MethodGet, tc.cookie(f), nil)
+
+			tc.assert(t, f, f.serve(t, chain, req, nil))
+		})
+	}
+}
+
 // serve runs req through chain on t's context, changed by modify when it is
 // not nil, and ended as the session loads when hangUpOnLoad is set.
 func (f *cookieFixture) serve(
@@ -704,7 +813,7 @@ func TestSessionCookie_RefusalExpires(t *testing.T) {
 	errStoreDown := errors.New("sessions: connection refused")
 
 	// innerCookieName is the cookie a chain composed inside another reads.
-	const innerCookieName = "inner-sid"
+	const innerCookieName = "__Host-inner-sid"
 
 	// smallAllowance is the refused references a source may make per minute
 	// on a chain whose case counts them.
