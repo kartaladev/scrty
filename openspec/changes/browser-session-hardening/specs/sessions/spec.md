@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: A grace rotation can carry the caller's verified state
-`RotateWithGrace` and `RotateWithGraceIssuing` SHALL take `WithSuccessorFromCaller()`, which builds the successor's verification state from the caller's session. Its user, family, binding, CSRF token, sign-in metadata and role SHALL come from the stored record, and its absolute deadline SHALL be the earlier of the stored and the caller's. A superseded session SHALL be refused with `ErrRenewalConflict`, storing nothing.
+`RotateWithGrace` and `RotateWithGraceIssuing` SHALL take `WithSuccessorFromCaller()`, which builds the successor's verification state from the caller's session. Its user, family, binding, CSRF token, sign-in metadata and role SHALL come from the stored record, and its absolute deadline SHALL be the earlier of the stored and the caller's, unless the caller lifted a stored confinement, when it is the caller's, never past the stored origin deadline. A superseded session SHALL be refused with `ErrRenewalConflict`, storing nothing.
 
 #### Scenario: Verified state carried
 - **WHEN** a caller grace-rotates its copy of a session with the second factor satisfied and a refreshed authentication time, with `WithSuccessorFromCaller()`
@@ -16,8 +16,12 @@
 - **THEN** the successor carries the stored record's
 
 #### Scenario: Copy cannot extend or clear
-- **WHEN** the caller's copy carries a later absolute deadline, another selected role, or `PasswordChangePending` false while the stored record has it true
+- **WHEN** the stored record is not confined, and the caller's copy carries a later absolute deadline, another selected role, or `PasswordChangePending` false while the stored record has it true
 - **THEN** the successor keeps the stored absolute deadline and role, and `PasswordChangePending` true
+
+#### Scenario: Lifted confinement
+- **WHEN** the stored record is confined, and the caller's copy has cleared the confinement and restored the origin deadline
+- **THEN** the successor takes the restored deadline; a copy claiming a deadline past the origin keeps the stored one
 
 #### Scenario: Record changed since the copy was loaded
 - **WHEN** another request saves a confinement or a pending password change on the session after the caller loaded it, and the caller then rotates its copy with `WithSuccessorFromCaller(loaded)`
