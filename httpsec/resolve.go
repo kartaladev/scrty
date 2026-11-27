@@ -162,6 +162,13 @@ func (r *sessionResolver) resolve(ex *Exchange, id string) error {
 		return classifyLoad(ctx, err, load)
 	}
 
+	// The session exactly as the store returned it, before anything on this
+	// request marks it in memory (the per-request phase below marks its
+	// challenges on s). Second-factor verification and re-authentication
+	// compare the stored record with it, so a mark of this request's own is
+	// never taken for another request's change.
+	loaded := copySession(s)
+
 	var details *identity.Details
 
 	if r.admit != nil {
@@ -216,6 +223,8 @@ func (r *sessionResolver) resolve(ex *Exchange, id string) error {
 	}, s); err != nil {
 		return err
 	}
+
+	ex.loadedSession = loaded
 
 	if switching != nil {
 		src := &roleSource{chain: switching, resolver: r, session: s, current: s}

@@ -593,9 +593,10 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session, raised policy
 	// returned as the issuer worded it and never read as a session sentinel.
 	var issueErr error
 
-	// s is the session as the request loaded it, before the changes above,
-	// which were all made on satisfied.
-	rotated, tok, err := i.deliver.rotateIssuing(ctx, i.sessions, s, &satisfied, func(successor *session.Session) (string, error) {
+	// The stored record is compared with the session as the store returned
+	// it, before this request changed it: before the changes above, made on
+	// satisfied, and before the marks the per-request phase made on s.
+	rotated, tok, err := i.deliver.rotateIssuing(ctx, i.sessions, ex.loadedFor(s), &satisfied, func(successor *session.Session) (string, error) {
 		tok, err := i.issue(ctx, successor, principal)
 		issueErr = err
 
@@ -645,21 +646,25 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session, raised policy
 // change a second factor or a re-proof records, to a successor in the same
 // sign-in, running issue on the successor before anything is stored, and
 // returns the successor and what issue returned. loaded is the request's
-// session as it was loaded, before that change: current is loaded plus the
-// change, and loaded itself is never modified.
+// session exactly as the store returned it (Exchange.loadedFor), before this
+// request changed it: current is loaded plus the change and any mark the
+// per-request phase made, and loaded itself is never modified. A nil loaded
+// is refused with an error wrapping ErrConfig, and nothing is rotated.
 //
+// Both rotations are given session.WithSuccessorFromCaller(loaded), so a
+// session whose stored security state another request changed since loaded
+// was read (a confinement, a downgraded second factor, a pending password
+// change), which current's older state would otherwise overwrite, is refused
+// with session.ErrRenewalConflict before anything is written or issue runs.
 // On a chain without the cookie session it is the strict rotation
-// (session.Sessions.RotateIssuing), which does not read loaded. On a cookie
+// (session.Sessions.RotateIssuing). On a cookie
 // chain it rotates with d's grace window
 // (session.Sessions.RotateWithGraceIssuing), building the successor from
-// current (session.WithSuccessorFromCaller(loaded)), so the recorded change
+// current, so the recorded change
 // reaches the successor while the old record keeps its own state through the
 // window. A session a renewal or another rotation already superseded is then
 // refused with session.ErrRenewalConflict before anything is written, as the
-// strict rotation refuses one it finds rotated, and so is one whose stored
-// security state another request changed since loaded was read (a
-// confinement, a downgraded second factor, a pending password change), which
-// current's older state would otherwise overwrite. A cookie chain whose grace is zero
+// strict rotation refuses one it finds rotated. A cookie chain whose grace is zero
 // (WithRenewalGrace(0)) rotates strictly as well: a window that closes as it
 // opens would make an in-flight request with the old cookie reuse, revoking
 // the sign-in, where the strict rotation leaves it not found. opts are the
@@ -668,14 +673,20 @@ func (d credentialDelivery) rotateIssuing(
 	ctx context.Context, sessions *session.Sessions, loaded, current *session.Session,
 	issue func(successor *session.Session) (string, error), opts ...session.RotateOption,
 ) (*session.Session, string, error) {
+	// Without the session as loaded there is nothing to tell a change of
+	// another request's from this one's, so nothing is rotated.
+	if loaded == nil {
+		return nil, "", newConfigError("the session to rotate was given without the session as it was loaded")
+	}
+
+	opts = append(slices.Clip(opts), session.WithSuccessorFromCaller(loaded))
+
 	// A zero grace (WithRenewalGrace(0)) would close the window as it opens,
 	// so an in-flight old cookie would be reuse and revoke the sign-in: the
 	// strict rotation leaves it not found instead.
 	if d.cookie == nil || d.grace == 0 {
 		return sessions.RotateIssuing(ctx, current, issue, opts...)
 	}
-
-	opts = append(slices.Clip(opts), session.WithSuccessorFromCaller(loaded))
 
 	rotated, _, tok, err := sessions.RotateWithGraceIssuing(ctx, current, d.grace, issue, opts...)
 

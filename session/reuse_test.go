@@ -3734,7 +3734,8 @@ func copyOf(s *session.Session) *session.Session {
 // ErrRenewalConflict before anything is stored or revoked, and so is a stored
 // record whose security state changed since the copy was loaded. A caller
 // copy of another user, and a missing or foreign loaded session, are refused
-// with ErrConfig, and the strict rotations refuse the option.
+// with ErrConfig. The strict rotations take the option too, and never extend
+// the session.
 func TestRotateWithGrace_SuccessorFromCaller(t *testing.T) {
 	t.Parallel()
 
@@ -4392,18 +4393,23 @@ func TestRotateWithGrace_SuccessorFromCaller(t *testing.T) {
 			},
 		},
 		{
-			name: "Rotate refuses the option",
+			name: "Rotate takes the option, building from the copy without extending it",
 			act: func(ctx context.Context, f *fixture) (*session.Session, error) {
 				return f.m.Rotate(ctx, f.caller, session.WithSuccessorFromCaller(f.loaded))
 			},
 			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrConfig)
-				assert.Nil(t, got)
-				nothingWritten(t, f)
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				assert.Equal(t, session.MFASatisfied, got.MFA)
+				assert.True(t, got.AbsoluteExpiresAt.Equal(f.stored.AbsoluteExpiresAt), "the copy's later deadline is not taken")
+				assert.Equal(t, f.stored.FamilyID, got.FamilyID)
 			},
 		},
 		{
-			name: "RotateIssuing refuses the option before its step",
+			name: "RotateIssuing takes the option and refuses a changed record before its step",
+			prepare: func(t *testing.T, f *fixture) {
+				savedOnStored(t, f, func(s *session.Session) { s.PasswordChangePending = true })
+			},
 			act: func(ctx context.Context, f *fixture) (*session.Session, error) {
 				got, _, err := f.m.RotateIssuing(ctx, f.caller, func(*session.Session) (string, error) {
 					f.stepped = true
@@ -4414,7 +4420,7 @@ func TestRotateWithGrace_SuccessorFromCaller(t *testing.T) {
 				return got, err
 			},
 			assert: func(t *testing.T, f *fixture, got *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrConfig)
+				require.ErrorIs(t, err, session.ErrRenewalConflict)
 				assert.Nil(t, got)
 				assert.False(t, f.stepped, "no step runs")
 				nothingWritten(t, f)

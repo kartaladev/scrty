@@ -2479,37 +2479,45 @@ func TestManagerRotateConcurrentDistinctSessions(t *testing.T) {
 	}
 }
 
-// A caller may have restored the deadlines of the session it hands Rotate (as
-// RestoreEnrolmentDeadlines does after an enrolment), so the successor carries
-// the deadlines of the session it is given. Only the family fields come from
-// storage.
+// A caller may have restored the deadlines of the session it hands Rotate
+// (RestoreEnrolmentDeadlines, after an enrolment lifts the stored
+// confinement), so the successor carries the restored deadlines of the
+// session it is given. The family fields come from storage. Deadlines a copy
+// raises without lifting a stored confinement are TestRotate_CallerCopy's.
 // Standalone: it rotates a caller's copy whose deadlines and family differ from the stored record.
 func TestRotate_CarriesTheDeadlinesOfTheSessionItIsGiven(t *testing.T) {
 	t.Parallel()
 
 	clk := clockwork.NewFakeClockAt(createdAt)
-	m, _ := managerOnClock(t, clk)
+	m, store := managerOnClock(t, clk)
 
-	// The stored session is confined: its absolute deadline is 09:15.
-	stored, err := m.Create(t.Context(), testUser, session.WithAbsoluteLifetime(15*time.Minute))
+	created, err := m.Create(t.Context(), testUser)
 	require.NoError(t, err)
-	require.Equal(t, createdAt.Add(15*time.Minute), stored.AbsoluteExpiresAt)
+	origin := created.AbsoluteExpiresAt
 
-	// The caller's copy has had its deadlines restored to 21:00, and carries a
-	// family of its own that storage must override.
+	// The stored session is confined: its absolute deadline is 09:15, and the
+	// one it held is recorded as its origin.
+	m.MarkEnrolmentPending(created, 15*time.Minute)
+	require.NoError(t, m.Save(t.Context(), created))
+	stored, err := store.Load(t.Context(), created.ID)
+	require.NoError(t, err)
+	require.True(t, stored.AbsoluteExpiresAt.Equal(createdAt.Add(15*time.Minute)))
+
+	// The caller's copy has had its deadlines restored, and carries a family
+	// of its own that storage must override.
+	clk.Advance(5 * time.Minute)
 	restored := *stored
-	restored.AbsoluteExpiresAt = createdAt.Add(12 * time.Hour)
-	restored.IdleExpiresAt = createdAt.Add(12 * time.Hour)
+	require.NoError(t, m.RestoreEnrolmentDeadlines(&restored))
 	restored.FamilyID = id.MustParse("01926a4e-0000-7000-8000-0000000000bb")
 	restored.FamilyCreatedAt = createdAt.Add(-time.Hour)
 
-	clk.Advance(5 * time.Minute)
 	successor, err := m.Rotate(t.Context(), &restored)
 
 	require.NoError(t, err)
-	assert.Equal(t, createdAt.Add(12*time.Hour), successor.AbsoluteExpiresAt,
-		"the successor took the stored record's deadlines, not those of the session it was given")
-	assert.Equal(t, createdAt.Add(12*time.Hour), successor.IdleExpiresAt)
+	assert.True(t, successor.AbsoluteExpiresAt.Equal(origin),
+		"the successor took the stored record's deadlines, not the restored ones of the session it was given")
+	assert.True(t, successor.IdleExpiresAt.Equal(restored.IdleExpiresAt))
+	assert.True(t, successor.IdleExpiresAt.After(stored.IdleExpiresAt))
 	assert.Equal(t, stored.FamilyID, successor.FamilyID, "the family comes from storage")
 	assert.Equal(t, stored.FamilyCreatedAt, successor.FamilyCreatedAt)
 }

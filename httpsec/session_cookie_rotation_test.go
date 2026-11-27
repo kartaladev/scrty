@@ -270,6 +270,79 @@ func (p *confineMidVerification) confine(ctx context.Context, id string) error {
 	return p.sessions.Save(ctx, s)
 }
 
+// passwordChangeEveryRequest is a per-request policy that, once armed, raises
+// a password change on every request, as a consumer's "reset required" rule
+// does. The phase marks it on the request's session in memory only.
+type passwordChangeEveryRequest struct{ armed atomic.Bool }
+
+func (*passwordChangeEveryRequest) Name() string { return "test: password change every request" }
+
+func (*passwordChangeEveryRequest) Phases() []policy.Phase {
+	return []policy.Phase{policy.PerRequest}
+}
+
+func (*passwordChangeEveryRequest) Challenges() []policy.ChallengeKind {
+	return []policy.ChallengeKind{policy.ChallengePasswordChange}
+}
+
+func (p *passwordChangeEveryRequest) Evaluate(context.Context, *policy.Input) policy.Decision {
+	if !p.armed.Load() {
+		return policy.Decision{Outcome: policy.Allow}
+	}
+
+	return policy.Decision{Outcome: policy.Challenge, Challenge: policy.ChallengePasswordChange}
+}
+
+// confineOnRequest is a per-request policy that, once armed with a session
+// identifier, saves an enrolment confinement on that stored session the first
+// time a request on it is judged, as another request confining the sign-in
+// after this one loaded it would. The request's own copy is left as it was
+// loaded. It allows every request.
+type confineOnRequest struct {
+	confineMidVerification
+}
+
+func (*confineOnRequest) Name() string { return "test: confine on request" }
+
+func (*confineOnRequest) Phases() []policy.Phase {
+	return []policy.Phase{policy.PerRequest}
+}
+
+func (p *confineOnRequest) Evaluate(ctx context.Context, in *policy.Input) policy.Decision {
+	if in.Session != nil {
+		if id := p.target.Load(); id != nil && *id == in.Session.ID && p.target.CompareAndSwap(id, nil) {
+			err := p.confine(ctx, *id)
+			p.saved.Store(&err)
+		}
+	}
+
+	return policy.Decision{Outcome: policy.Allow}
+}
+
+// reloadsSession is a consumer interceptor that, once armed, puts on the
+// exchange's Session the stored session id names, loaded afresh from the
+// store, by assigning the field directly rather than publishing it.
+type reloadsSession struct {
+	sessions *session.Sessions
+	target   atomic.Pointer[string]
+}
+
+func (r *reloadsSession) option() httpsec.Option {
+	return httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+		if id := r.target.Load(); id != nil && ex.Session != nil {
+			s, err := r.sessions.Load(ex.Context(), *id)
+			if err != nil {
+				return err
+			}
+
+			ex.Session = s
+			ex.SetContext(httpsec.WithSession(ex.Context(), s))
+		}
+
+		return next(ex)
+	}), httpsec.Before(httpsec.OrderMFAChallenge))
+}
+
 // TestSessionCookie_ExistingRotationsGrace pins that on a cookie chain
 // second-factor verification and re-authentication rotate with a grace
 // window: a request already in flight with the old cookie loads the old
@@ -620,6 +693,148 @@ func TestSessionCookie_ExistingRotationsGrace(t *testing.T) {
 					assert.Equal(t, session.MFAEnrolmentPending, stored.MFA, "the confinement stands")
 					assert.False(t, stored.EnrolmentOriginDeadline.IsZero(), "the confinement stands")
 					assert.True(t, stored.SupersededAt.IsZero(), "nothing was superseded")
+				},
+			}
+		}(),
+		func() testCase {
+			raises := &passwordChangeEveryRequest{}
+
+			return testCase{
+				// The per-request phase marks the password change on the
+				// request's session in memory, before the verification: the
+				// stored record is compared with the session as loaded, so
+				// the mark is no conflict, and the successor carries it.
+				name: "a password change the per-request phase marks is carried to the successor, not a conflict",
+				configure: func(t *testing.T, w *browserWorld) {
+					t.Helper()
+					w.enrol(t)
+					w.policies = append(w.policies, raises)
+					w.extra = append(w.extra, httpsec.EnablePasswordChangeGate(w.sessions))
+				},
+				assert: func(t *testing.T, w *browserWorld) {
+					t.Helper()
+
+					challenged := w.login(t)
+					require.Error(t, challenged.err)
+
+					pending := cookieNamed(challenged.rec, httpsec.DefaultSessionCookieName)
+					require.NotNil(t, pending)
+
+					raises.armed.Store(true)
+					out := w.post(t.Context(), t, testMFAVerifyPath, pending.Value, url.Values{"code": {w.code(t)}})
+					require.NotErrorIs(t, out.err, httpsec.ErrSessionRenewalConflict)
+					require.NoError(t, out.err)
+
+					rotated := loaded(t, w, reSetAs(t, w.chain, out, pending.Value))
+					assert.Equal(t, session.MFASatisfied, rotated.MFA)
+					assert.True(t, rotated.PasswordChangePending, "the successor carries the marked password change")
+				},
+			}
+		}(),
+		func() testCase {
+			confiner := &confineOnRequest{}
+
+			return testCase{
+				// Another request confines the sign-in after this one loaded
+				// it and before the re-authentication rotates it.
+				name: "re-authentication on a record changed since it was loaded is a lost race that writes nothing",
+				configure: func(t *testing.T, w *browserWorld) {
+					t.Helper()
+					confiner.sessions = w.sessions
+					w.policies = append(w.policies, confiner)
+				},
+				assert: func(t *testing.T, w *browserWorld) {
+					t.Helper()
+
+					old := w.signedIn(t)
+					active := w.active(t)
+					confiner.arm(old)
+
+					out := w.post(t.Context(), t, reauthPasswordPath, old, url.Values{"password": {e2ePassword}})
+					ran, saveErr := confiner.result()
+					require.True(t, ran, "the confinement was saved during the re-authentication")
+					require.NoError(t, saveErr)
+
+					require.ErrorIs(t, out.err, httpsec.ErrSessionRenewalConflict)
+					assert.Equal(t, http.StatusConflict, httpsec.StatusForError(out.err))
+					noSessionCookie(t, out)
+					assert.Equal(t, active, w.active(t), "nothing was stored")
+
+					stored := loaded(t, w, old)
+					assert.Equal(t, session.MFAEnrolmentPending, stored.MFA, "the confinement stands")
+					assert.True(t, stored.SupersededAt.IsZero(), "nothing was superseded")
+				},
+			}
+		}(),
+		func() testCase {
+			reloads := &reloadsSession{}
+
+			return testCase{
+				// A consumer interceptor that puts the session on the exchange
+				// itself, loaded afresh from the store, rather than publishing
+				// it: it is compared as it was loaded, and verifies.
+				name: "a session a consumer assigns to the exchange, as the store returned it, verifies",
+				configure: func(t *testing.T, w *browserWorld) {
+					t.Helper()
+					w.enrol(t)
+					reloads.sessions = w.sessions
+					w.extra = append(w.extra, reloads.option())
+				},
+				assert: func(t *testing.T, w *browserWorld) {
+					t.Helper()
+
+					challenged := w.login(t)
+					require.Error(t, challenged.err)
+
+					pending := cookieNamed(challenged.rec, httpsec.DefaultSessionCookieName)
+					require.NotNil(t, pending)
+
+					reloads.target.Store(&pending.Value)
+					out := w.post(t.Context(), t, testMFAVerifyPath, pending.Value, url.Values{"code": {w.code(t)}})
+					require.NoError(t, out.err)
+
+					rotated := loaded(t, w, reSetAs(t, w.chain, out, pending.Value))
+					assert.Equal(t, session.MFASatisfied, rotated.MFA)
+				},
+			}
+		}(),
+		func() testCase {
+			reloads := &reloadsSession{}
+
+			return testCase{
+				// The consumer puts another of the user's stored sign-ins on
+				// the exchange: no copy was taken of it, so it is compared as
+				// the consumer gave it, and verifies.
+				name: "another stored session a consumer assigns to the exchange verifies as itself",
+				configure: func(t *testing.T, w *browserWorld) {
+					t.Helper()
+					w.enrol(t)
+					reloads.sessions = w.sessions
+					w.extra = append(w.extra, reloads.option())
+				},
+				assert: func(t *testing.T, w *browserWorld) {
+					t.Helper()
+
+					challenged := w.login(t)
+					require.Error(t, challenged.err)
+
+					pending := cookieNamed(challenged.rec, httpsec.DefaultSessionCookieName)
+					require.NotNil(t, pending)
+
+					other := w.login(t)
+					require.Error(t, other.err)
+					otherPending := cookieNamed(other.rec, httpsec.DefaultSessionCookieName)
+					require.NotNil(t, otherPending)
+					require.NotEqual(t, pending.Value, otherPending.Value)
+
+					reloads.target.Store(&otherPending.Value)
+					out := w.post(t.Context(), t, testMFAVerifyPath, pending.Value, url.Values{"code": {w.code(t)}})
+					require.NoError(t, out.err)
+
+					stored, err := w.sessions.Load(t.Context(), otherPending.Value)
+					require.NoError(t, err, "the other sign-in is superseded inside its window")
+					assert.False(t, stored.SupersededAt.IsZero(), "the session the consumer assigned is the one rotated")
+					assert.True(t, loaded(t, w, pending.Value).SupersededAt.IsZero(), "the cookie's own session is not rotated")
 				},
 			}
 		}(),

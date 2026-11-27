@@ -83,9 +83,10 @@ func (i *reauthInterceptor) resolve(ex *Exchange, s *session.Session, method mfa
 	// returned as the issuer worded it and never read as a session sentinel.
 	var issueErr error
 
-	// s is the session as the request loaded it, before the changes above,
-	// which were all made on reproved.
-	rotated, tok, err := i.deliver.rotateIssuing(ctx, i.sessions, s, &reproved, func(successor *session.Session) (string, error) {
+	// The stored record is compared with the session as the store returned
+	// it, before this request changed it: before the changes above, made on
+	// reproved, and before the marks the per-request phase made on s.
+	rotated, tok, err := i.deliver.rotateIssuing(ctx, i.sessions, ex.loadedFor(s), &reproved, func(successor *session.Session) (string, error) {
 		tok, err := i.issue(ctx, successor, principal)
 		issueErr = err
 

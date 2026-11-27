@@ -358,7 +358,24 @@ type Exchange struct {
 
 	// Session is the session this request carries, and nil for a stateless
 	// request and for one that established none.
+	//
+	// An interceptor that sets it, directly or through PublishSession, sets
+	// the session exactly as the session store returned it (Sessions.Load).
+	// Second-factor verification and re-authentication compare the stored
+	// record with it before they rotate, and refuse with
+	// ErrSessionRenewalConflict (409) when they differ. A session built or
+	// returned in memory by Sessions.Create, Save or a rotation carries
+	// times at the clock's full precision, which a store that keeps fewer
+	// digits (a SQL timestamp keeps microseconds) does not, so it compares
+	// unequal there and the request is refused.
 	Session *session.Session
+
+	// loadedSession is a copy of the session as the store returned it, taken
+	// when it was published (publishSession) and, by the session resolver,
+	// before the per-request phase marked anything on it. It is what
+	// second-factor verification and re-authentication compare the stored
+	// record with (loadedFor), and is never modified.
+	loadedSession *session.Session
 
 	// raised is the consumer challenge kind the per-request phase raised on
 	// this request, and ChallengeNone when it raised none.
@@ -706,6 +723,7 @@ func (e *Exchange) otherRunMarkRefusal() error {
 type runScope struct {
 	ctx              context.Context //nolint:containedctx // the context a run found, put back as it returns
 	session          *session.Session
+	loadedSession    *session.Session
 	authentication   *authenticate.Authentication
 	bearerCredential string
 	cookieSession    *session.Session
@@ -724,6 +742,7 @@ func (e *Exchange) saveScope() runScope {
 	return runScope{
 		ctx:              e.ctx,
 		session:          e.Session,
+		loadedSession:    e.loadedSession,
 		authentication:   e.Authentication,
 		bearerCredential: e.bearerCredential,
 		cookieSession:    e.cookieSession,
@@ -755,6 +774,7 @@ func (e *Exchange) markCookieSession(chain *Chain, sess *session.Session) {
 func (e *Exchange) restoreScope(s runScope) {
 	e.ctx = s.ctx
 	e.Session = s.session
+	e.loadedSession = s.loadedSession
 	e.Authentication = s.authentication
 	e.bearerCredential = s.bearerCredential
 	e.cookieSession = s.cookieSession
@@ -859,6 +879,15 @@ func (f InterceptorFunc) Intercept(ex *Exchange, next Next) error { return f(ex,
 // Publishing authentication only, with no session, is WithCaller and SetContext; publishing
 // sess only, with no result, publishes a session no caller owns, which no
 // built-in does.
+//
+// sess is the session exactly as the session store returned it
+// (Sessions.Load), before the interceptor changes anything on it: a copy is
+// kept, and second-factor verification and re-authentication compare the
+// stored record with that copy before they rotate the session, refusing with
+// ErrSessionRenewalConflict (409) when another request changed the record
+// since. A session from Sessions.Create, Save or a rotation, rather than from
+// a load, carries times at the clock's full precision, which a store keeping
+// fewer digits does not, and is refused there the same way.
 //
 // It refuses a non-nil sess that belongs to no family (FamilyID is id.Nil) and
 // publishes nothing, neither authentication nor sess. Every stored session belongs to a
@@ -1014,9 +1043,32 @@ func (e *Exchange) publishSession(authentication *authenticate.Authentication, s
 
 	e.Authentication = authentication
 	e.Session = sess
+	// Taken before anything after the publication marks the session in
+	// memory; the session resolver replaces it with the copy it took
+	// straight after its load.
+	e.loadedSession = copySession(sess)
 	e.SetContext(withSession(WithCaller(e.ctx, authentication), sess))
 
 	return nil
+}
+
+// loadedFor is the session s as the store returned it, before this request
+// changed it in memory: the copy taken when it was published, when that copy
+// names s. A session another interceptor put on Session directly, without
+// publishing it, has no such copy, and is taken to be as the store returned
+// it, so s itself is returned; one changed in memory before that compares
+// unequal with the stored record, and the rotation is refused as a conflict
+// (fail-closed). A nil s is nil.
+func (e *Exchange) loadedFor(s *session.Session) *session.Session {
+	if s == nil {
+		return nil
+	}
+
+	if e.loadedSession != nil && e.loadedSession.ID == s.ID {
+		return e.loadedSession
+	}
+
+	return s
 }
 
 // EvaluatePerRequest runs the chain's per-request policy phase for sess, the

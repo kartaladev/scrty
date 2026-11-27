@@ -142,8 +142,8 @@ type rotation struct {
 	role    string
 	roleSet bool
 
-	// fromCaller is WithSuccessorFromCaller, which only a rotation with a
-	// grace window takes; loaded is the session as the caller loaded it.
+	// fromCaller is WithSuccessorFromCaller; loaded is the session as the
+	// caller loaded it.
 	fromCaller bool
 	loaded     *Session
 }
@@ -206,10 +206,17 @@ func WithSuccessorRole(role string) RotateOption {
 // copy apart from its identifier. It is for a rotation that records a change
 // of state on the session it rotates, such as a satisfied second factor or a
 // refreshed authentication time, which the store's record does not have yet.
+// A strict rotation (Rotate, RotateIssuing) already builds from the caller's
+// copy; there the option adds the check against loaded described below.
 //
 // loaded is the session as the caller loaded it from the store, before its own
 // changes; the copy given to the rotation is loaded plus those changes. It may
-// be the copy itself when the caller changed nothing. A nil loaded, or one
+// be the copy itself when the caller changed nothing. It must be the value the
+// store returned (Sessions.Load, or the store's own Load), not a session
+// built or returned in memory by Create, Save or a rotation: those carry times
+// at the clock's full precision, while a store may keep fewer digits (a SQL
+// timestamp keeps microseconds), so the stored record would compare unequal
+// and the rotation be refused as a conflict. A nil loaded, or one
 // with another identifier than the copy, is a wiring mistake refused with
 // ErrConfig. Before anything is written, the rotation compares the stored
 // record with loaded on the security state: the second-factor state
@@ -254,9 +261,9 @@ func WithSuccessorRole(role string) RotateOption {
 // superseded record keeps its own stored state through the window, so its
 // identifier gains nothing the successor holds.
 //
-// RotateWithGrace and RotateWithGraceIssuing take it. Rotate and RotateIssuing
-// refuse it with ErrConfig, since a strict rotation already builds from the
-// caller's copy. With it:
+// RotateWithGrace and RotateWithGraceIssuing take it, and so do Rotate and
+// RotateIssuing, which apply the comparison with loaded and its refusal but
+// otherwise build the successor as they do without it (see Rotate). With it:
 //
 //   - a copy naming another user than the stored record is refused with
 //     ErrConfig;
@@ -788,10 +795,7 @@ func successorFromCaller(current, stored *Session, id string) *Session {
 	// copy that lifted an enrolment confinement (RestoreEnrolmentDeadlines): it
 	// carries the deadline the sign-in held before it, which the stored record
 	// names as its origin, and no later.
-	next.AbsoluteExpiresAt = minTime(stored.AbsoluteExpiresAt, current.AbsoluteExpiresAt)
-	if liftedConfinement(current, stored) {
-		next.AbsoluteExpiresAt = current.AbsoluteExpiresAt
-	}
+	next.AbsoluteExpiresAt, _ = copyDeadlines(stored, current)
 	// A pending password change only rises: one saved after the copy was
 	// taken must not be cleared by a copy that predates it, and a copy may
 	// raise it.
@@ -817,6 +821,27 @@ func sameSecurityState(stored, loaded *Session) bool {
 		stored.EnrolmentGeneration == loaded.EnrolmentGeneration &&
 		stored.RecoveredAt.Equal(loaded.RecoveredAt) &&
 		stored.AbsoluteExpiresAt.Equal(loaded.AbsoluteExpiresAt)
+}
+
+// copyDeadlines returns the absolute and idle deadlines a successor built from
+// current, a caller's copy of stored, may carry: each the earlier of the
+// stored record's and the copy's, so a copy may lower a deadline (a
+// confinement it marked, MarkEnrolmentPending) but never raise one. The one
+// exception is a copy that lifted the confinement stored carries
+// (liftedConfinement, after RestoreEnrolmentDeadlines): it carries the
+// deadlines the sign-in held before the confinement, which the stored record
+// names as its origin, and the successor takes them, the absolute one never
+// past that origin and the idle one never past the absolute one.
+func copyDeadlines(stored, current *Session) (absolute, idle time.Time) {
+	if liftedConfinement(current, stored) {
+		absolute = current.AbsoluteExpiresAt
+
+		return absolute, minTime(current.IdleExpiresAt, absolute)
+	}
+
+	absolute = minTime(stored.AbsoluteExpiresAt, current.AbsoluteExpiresAt)
+
+	return absolute, minTime(minTime(stored.IdleExpiresAt, current.IdleExpiresAt), absolute)
 }
 
 // liftedConfinement reports whether current, a caller's copy of stored, lifted
