@@ -1,10 +1,10 @@
 ## ADDED Requirements
 
 ### Requirement: A grace rotation can carry the caller's verified state
-`RotateWithGrace` and `RotateWithGraceIssuing` SHALL take `WithSuccessorFromCaller()`, which builds the successor's verification state from the caller's session. Its user, family, binding, CSRF token, sign-in metadata and role SHALL come from the stored record. A superseded session SHALL be refused with `ErrRenewalConflict`, storing nothing.
+`RotateWithGrace` and `RotateWithGraceIssuing` SHALL take `WithSuccessorFromCaller(loaded)`, which builds the successor's verification state from the caller's session. Its user, family, binding, CSRF token, sign-in metadata and role SHALL come from the stored record. A superseded session SHALL be refused with `ErrRenewalConflict`, and a nil or mismatched `loaded` or a copy of another user with `ErrConfig`, storing nothing.
 
 #### Scenario: Verified state carried
-- **WHEN** a caller grace-rotates its copy of a session with the second factor satisfied and a refreshed authentication time, with `WithSuccessorFromCaller()`
+- **WHEN** a caller grace-rotates its copy of a session with the second factor satisfied and a refreshed authentication time, with `WithSuccessorFromCaller(loaded)`
 - **THEN** the stored successor has the second factor satisfied and the refreshed authentication time, and the old record keeps its own state
 
 #### Scenario: Default unchanged

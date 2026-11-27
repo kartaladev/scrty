@@ -27,6 +27,12 @@ All of them ship in the same PR, so they are fixed there before it leaves draft.
 - **BREAKING (pre-tag):** without `WithSessionCookieDomain`, the cookie name must carry the
   `__Host-` prefix. A name without it fails construction. With a Domain, the `__Secure-` rule is
   unchanged.
+- A cookie chain never binds a session to a sender key. Sign-in, re-proof and renewal there read no
+  DPoP proof or client certificate for the session. The provider's tokens still bind.
+- New `session.WithSuccessorFromCaller(loaded)` rotation option: a rotation carries the verified
+  state of the caller's copy, and refuses with 409 when the stored record changed since the load.
+- A strict `Rotate` never extends a session, never moves it to another user, and keeps the stored
+  first factor.
 - The Fiber adapter documents that Fiber's `encryptcookie` must leave the session cookie out
   (`Config.Except`), and a test pins both that setup and the failure without it.
 
@@ -38,6 +44,8 @@ None.
 
 ### Modified Capabilities
 
+- `sessions`: the caller's-copy rotation option, and the strict rotation's rules for a copy.
+- `sender-constrained-tokens`: a cookie chain's sessions are never sender-bound.
 - `browser-session`: cookie matching ignores Unicode whitespace padding; a cookie name with no
   Domain must be `__Host-`; second-factor verification and re-authentication rotate with a
   grace window on a cookie chain; a password change keeps the rotation's idle deadline; the
@@ -45,8 +53,12 @@ None.
 
 ## Impact
 
-- `httpsec`: `session_cookie.go`, `mfa_verify.go`, `reauth_resolve.go`, `password_change.go`,
-  `session_cookie_answer.go`, and their tests.
+- `session`: `reuse.go` and `sessions.go` (new exported `WithSuccessorFromCaller`), their tests, and
+  the store conformance suite in `test/storetest`.
+- `httpsec`: `session_cookie.go`, `mfa_verify.go`, `reauth_*.go`, `password_change.go`,
+  `session_cookie_answer.go`, `session_renewal.go`, `session_delivery.go`, `resolve.go`, `exchange.go`,
+  `dpop.go`, and the sign-in endpoints (`login.go`, `magiclink.go`, `passkey_login.go`, `recovery.go`,
+  `oidc_redeem.go`), with their tests.
 - `httpsec/fibersec`: godoc and a test; no change to how the header is read.
 - `README.md`: the Fiber note and the cookie name rule.
 - Consumers who named the cookie without a prefix and without a Domain must rename it. There

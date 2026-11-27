@@ -50,6 +50,7 @@ name must be `__Host-`.
 | H2b (after H2's review) | 2.4 | Opus: a binding rule across every sign-in path, security-critical | `httpsec/login.go`, `magiclink.go`, `oidc_redeem.go`, `passkey_login.go`, `reauth_resolve.go`, `recovery.go`, `mfa_verify.go`, `dpop.go` (`issuingBinding` and a cookie-chain guard), `session_cookie.go` (godoc), and a new `httpsec/session_cookie_binding_test.go` | `oidc_token.go` (the provider's token endpoint keeps binding its tokens) |
 | S2 (after the H2 and H2b review) | 2.5 | Opus: an optimistic check on security state, plus an API another lane compiles against | `session/reuse.go`, `session/reuse_test.go`, `test/storetest/session_suite.go`, `httpsec/mfa_verify.go`, `httpsec/reauth_resolve.go`, `httpsec/session_cookie_rotation_test.go` | `httpsec/session_renewal.go`, `httpsec/dpop.go` |
 | S3 (after S2 and its review) | 2.7 | Opus: a refactor that must keep the strict callers' behaviour, on security state | `session/sessions.go` (`RotateIssuing` ~:926–1030), `session/reuse.go` (the shared deadline helper), a new `session/rotate_copy_test.go` | every `httpsec` file |
+| S4 (after the whole-branch review) | 2.8 | Sonnet: the fixes are stated exactly | `session/reuse.go`, `session/reuse_test.go`, `session/sessions.go` (godoc), `httpsec/dpop.go` and `httpsec/certbinding.go` (godoc), `README.md`, `CHANGELOG.md` | everything else |
 | H2c (alongside S2) | 2.6 | Sonnet: the rule is stated exactly | `httpsec/session_renewal.go`, `httpsec/dpop.go` (godoc only), new `httpsec/session_cookie_renewal_binding_test.go` | every S2 file |
 | H2 (after S1b) | 2.1–2.3 | Opus: rotation ordering under in-flight requests | `httpsec/mfa_verify.go`, `httpsec/reauth_resolve.go`, `httpsec/session_cookie_rotation_test.go`, `httpsec/mfa_verify_test.go`, `httpsec/reauth_resolve_test.go` | `session_cookie.go`, `password_change.go`, `session_cookie_answer.go` |
 | H3 | 3.1–3.2 | Sonnet: the fix is stated exactly | `httpsec/password_change.go`, `httpsec/session_cookie_answer.go`, `httpsec/session_cookie_answer_internal_test.go`, `httpsec/password_change_internal_test.go`, a new `httpsec/session_cookie_password_deadline_test.go` | `session_cookie_rotation_test.go` (H2 owns it) |
@@ -426,6 +427,33 @@ sign-in's session. `credentialDelivery.rotateIssuing(loaded, current)` is given
 - [ ] **Step S4: Godoc on `WithSuccessorFromCaller`.** `loaded` must be the value the store
   returned. An in-memory session from `Create` or `Save` carries finer time precision than some
   stores keep, and compares unequal. Note that strict rotations accept the option.
+
+### Task 2f: Whole-branch review follow-ups (task 2.8, S4)
+
+- [ ] **Step 1: Red row in `TestRotateWithGrace_SuccessorFromCaller`.** "A copy with another first
+  factor keeps the stored one": the stored first factor is password, the copy's is passkey, and
+  the successor's must be password. It fails today, with passkey.
+- [ ] **Step 2:** In `successorFromCaller`, set `next.FirstFactor = stored.FirstFactor`, and add it to
+  the godoc's list of stored-record fields. Fix the `Rotate` godoc (`session/sessions.go`
+  ~797–802): it accepts `WithSuccessorFromCaller(loaded)`, and is no longer limited to one option.
+- [ ] **Step 3: Docs.**
+  - The `EnableDPoP` godoc (`httpsec/dpop.go` ~174–181) and the `EnableCertificateBinding` godoc
+    (`httpsec/certbinding.go` ~44–52) state the exception: on a chain with the cookie session,
+    sign-in, re-proof and renewal neither read nor bind a proof or certificate for the session,
+    while the provider's tokens still bind.
+  - The README's DPoP section (~3478), its `Require` defaults row, and its certificate-binding
+    section say the same.
+- [ ] **Step 4: CHANGELOG `[Unreleased]`,** following the file's existing format.
+  - **Added:** the browser session cookie (`EnableSessionCookie`) and its options;
+    `session.WithSuccessorFromCaller`.
+  - **Changed:** a host-only session cookie name must be `__Host-` (BREAKING); a strict `Rotate`
+    never extends a session or moves it to another user; a cookie chain never binds sessions to a
+    sender key; MFA verification and re-authentication rotate with a grace window on a cookie
+    chain.
+  - **Fixed:** Unicode-padded cookie names; the password change's idle deadline; `q=1.`; sign-in
+    over mTLS or DPoP on a cookie chain.
+- [ ] **Step 5:** Run `go test -race -count=1 ./session/...`, `go vet`, `gofmt -l` and
+  `golangci-lint run ./session/... ./httpsec/...`. Expected: all pass.
 
 ### Task 2d: Renewal reads no DPoP proof on a cookie chain, and the provider still binds (task 2.6, H2c)
 

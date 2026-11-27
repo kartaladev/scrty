@@ -10,7 +10,8 @@ design are the baseline. Decision numbers below are this change's own.
 **Goals:** fix the six faults test-first, keeping every guarantee the archived design states.
 
 **Non-Goals:**
-- changing the header-bearer chain's rotations;
+- changing what a header-bearer chain's rotations grant. Decisions 8 and 9 do add refusals to its
+  strict rotation: a stale copy gets a 409, and a copy cannot extend a deadline;
 - reading Fiber cookies through fasthttp's parsed copy;
 - any new consumer-facing option. The one new exported symbol, `session.WithSuccessorFromCaller`,
   is a rotation option for the library's own endpoints and for consumers who rotate themselves.
@@ -70,7 +71,7 @@ design are the baseline. Decision numbers below are this change's own.
     be non-empty on a cookie chain.
 
   - From the H2 review:
-    - **Absolute deadline (REPRODUCED, `TestReview_FromCallerConfiningCopyKeepsLoweredDeadline`):**
+    - **Absolute deadline (REPRODUCED, the row "a copy that lowered its deadline carries the lower one"):**
       a policy can raise an enrolment challenge during verification, and then the copy's absolute
       deadline is lowered by `MarkEnrolmentPending`. The successor took the stored, full deadline,
       so an enrolment-only session outlived its confinement. The successor now takes the earlier of
@@ -192,12 +193,12 @@ design are the baseline. Decision numbers below are this change's own.
     phase marks challenges on it in memory (`challengeMarker.mark`: `PasswordChangePending`, or MFA
     pending), so with a policy that raises a password change, every MFA verification on a cookie
     chain answered 409 and spent the code
-    (`TestRepro_PerRequestPasswordChangeMakesMFAVerifyConflict`). The session resolver now keeps a
+    (the row "a password change the per-request phase marks..."). The session resolver now keeps a
     snapshot of the session exactly as the store returned it, taken before the per-request phase,
     and both endpoints pass that snapshot as `loaded`. The copy still carries the in-memory marks,
     so the successor keeps them.
   - **The strict path had the same race:** a strict rotation of a stale copy overwrote a
-    confinement saved after the load (`TestRepro_StrictRotateOverwritesConfinementSavedAfterLoad`).
+    confinement saved after the load (`TestRotate_CallerCopy`'s loaded-copy rows).
     `Rotate` and `RotateIssuing` therefore now accept `WithSuccessorFromCaller(loaded)` too, with
     the same comparison and refusal. Without it they behave as decision 9 states. The library's
     strict callers (MFA verification and re-authentication on header-bearer chains, and on a
@@ -217,7 +218,7 @@ design are the baseline. Decision numbers below are this change's own.
 
 ### 9. A strict rotation never extends a session, and never moves it to another user
 
-- **Problem (S1 review, REPRODUCED by `TestReview_StrictRotateTakesCopyAbsolute`):** `Rotate` and
+- **Problem (S1 review, REPRODUCED by `TestRotate_CallerCopy` "a copy with later deadlines keeps the stored ones"):** `Rotate` and
   `RotateIssuing` build the successor from the caller's copy and reset only the family, the sign-in
   state, the persistent mark and the role. The user, first factor and both deadlines come from the
   copy unchecked. A copy with a later deadline extends the session, against the documented rule
@@ -273,6 +274,13 @@ design are the baseline. Decision numbers below are this change's own.
 | A name without `__Host-` and no Domain | Wiring | Handled, tested | `ErrConfig` from `New` naming the rule |
 | Fiber `encryptcookie` covering the session cookie | Wiring | Accepted, documented, tested | sign-in never sticks; the godoc names `Config.Except` as the remedy |
 | Another Fiber middleware rewriting the Cookie header | Wiring | Accepted | the chain judges the header as received; the same godoc note covers it |
+
+- **OIDC handoff redemption** uses the same guard. A cookie chain takes no handoff manager, so no
+  test can reach that path there (accepted).
+- **The role switch and password change at zero grace** still grace-rotate, with a window that is
+  already closed, so an in-flight old cookie there is reuse and revokes the sign-in. That behaviour
+  predates this change. It is accepted and recorded here, because the two privilege rotations this
+  change makes strict at zero grace now behave differently from them.
 
 ## Risks / Trade-offs
 

@@ -82,7 +82,7 @@ Building a cookie chain SHALL fail with a configuration error when the cookie na
 - **THEN** construction fails with a configuration error
 
 ### Requirement: Privilege changes rotate the cookie session
-On a cookie chain, the session identifier SHALL change, and the cookie SHALL be re-set, when a second factor is verified, when the user re-authenticates, when the active role is switched, and when the password is changed. Each rotation SHALL keep the previous identifier valid for a grace window, loading only its own state. The successor SHALL keep the idle deadline its rotation gave it. The CSRF token SHALL stay valid across these rotations.
+On a cookie chain, the session identifier SHALL change, and the cookie SHALL be re-set, when a second factor is verified, when the user re-authenticates, when the active role is switched, and when the password is changed. Each rotation SHALL keep the previous identifier valid for a grace window, loading only its own state; with a zero grace, verification and re-authentication rotate strictly. The successor SHALL keep the idle deadline its rotation gave it. The CSRF token SHALL stay valid across these rotations.
 
 #### Scenario: Sign-in over mTLS on a cookie chain
 - **WHEN** a cookie chain that enables certificate binding for its provider signs a user in over mTLS, or re-authenticates them
@@ -107,6 +107,10 @@ On a cookie chain, the session identifier SHALL change, and the cookie SHALL be 
 #### Scenario: Request in flight during re-authentication
 - **WHEN** a request carrying the pre-re-authentication cookie arrives after re-authentication, inside the grace window
 - **THEN** it loads the pre-re-authentication session with its old authentication time, and its answer does not expire the cookie
+
+#### Scenario: Zero grace
+- **WHEN** the chain's renewal grace is zero and a request carrying the pre-verification cookie arrives after second-factor verification
+- **THEN** it is refused as not found, and the sign-in is not revoked
 
 #### Scenario: Old identifier presented late
 - **WHEN** the identifier replaced at the role switch or at second-factor verification is presented after its window has ended
