@@ -107,6 +107,9 @@ var guards = []guard{
 	{defect: defectRenameUnchecked, run: "Users/Rename", failing: "Users/Rename/Username_held_by_a_deleted_user"},
 	{defect: defectRenameUnchecked, run: "Users/Rename", failing: "Users/Rename/Username_equal_to_another_user's_email"},
 	{defect: defectRenamedFalse, run: "Users/Rename", failing: "Users/Rename/Rename"},
+	{defect: defectOffsetTwice, run: "Users/OffsetAndCount/Jump to a page", failing: "Users/OffsetAndCount/Jump_to_a_page"},
+	{defect: defectCountDeleted, run: "Users/OffsetAndCount/Deleted users are not counted", failing: "Users/OffsetAndCount/Deleted_users_are_not_counted"},
+	{defect: defectOffsetOrder, run: "Users/OffsetAndCount/Consecutive offsets cover every user once, in order", failing: "Users/OffsetAndCount/Consecutive_offsets_cover_every_user_once,_in_order"},
 	{defect: defectDeletedWritable + "UpdateUser", run: "Users/DeletedUserWrites", failing: "Users/DeletedUserWrites/UpdateUser"},
 	{defect: defectDeletedWritable + "SetActive", run: "Users/DeletedUserWrites", failing: "Users/DeletedUserWrites/SetActive"},
 	{defect: defectDeletedWritable + "SetPassword", run: "Users/DeletedUserWrites", failing: "Users/DeletedUserWrites/SetPassword"},
@@ -171,6 +174,19 @@ func TestAdminSuiteIsLoadBearing(t *testing.T) {
 						"the gated case %s did not skip on a store without rename support:\n%s", c, output)
 				}
 				assert.Contains(t, output, "admintest: the store does not implement admin.UsernameUpdater; rename cases skipped",
+					"the skip does not name the missing port:\n%s", output)
+			},
+		},
+		{
+			name:  "a store without offset and count support passes the whole suite with those cases skipped",
+			guard: guard{defect: variantNoUserPager},
+			assert: func(t *testing.T, err error, output string) {
+				t.Helper()
+				passes("the suite failed a store that does not implement admin.UserPager, so a consumer "+
+					"store that never pages by offset turns red on upgrade (D14)")(t, err, output)
+				assert.Contains(t, output, "--- SKIP: TestBrokenAdminStore/Users/OffsetAndCount ",
+					"the offset and count cases did not skip on a store without admin.UserPager:\n%s", output)
+				assert.Contains(t, output, "admintest: the store does not implement admin.UserPager; offset and count cases skipped",
 					"the skip does not name the missing port:\n%s", output)
 			},
 		},

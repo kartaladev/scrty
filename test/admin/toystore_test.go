@@ -116,6 +116,17 @@ const (
 	defectRenameUnchecked defect = "rename-unchecked"
 	// UpdateUserRenaming always reports renamed as false.
 	defectRenamedFalse defect = "renamed-false"
+	// The user port does not implement admin.UserPager: a consumer store
+	// that never pages by offset or counts, which must still pass the suite
+	// with the offset and count cases skipped (D14).
+	variantNoUserPager defect = "no-user-pager"
+	// ListUsersFrom skips twice the offset it is given.
+	defectOffsetTwice defect = "offset-twice"
+	// CountUsers counts soft-deleted users too.
+	defectCountDeleted defect = "count-deleted"
+	// ListUsersFrom orders by identifier only, not by the cursor listing's
+	// (lower(username), id).
+	defectOffsetOrder defect = "offset-order"
 )
 
 // defectDeletedWritable is the defect under which one operation, named after
@@ -149,6 +160,10 @@ func (f toyFixture) Users() admin.UserStore {
 		return toyUsersWithoutRename{UserStore: f.s, History: f.s}
 	}
 
+	if f.s.d == variantNoUserPager {
+		return toyUsersWithoutPager{UserStore: f.s, History: f.s, UsernameUpdater: f.s}
+	}
+
 	return f.s
 }
 
@@ -157,6 +172,15 @@ func (f toyFixture) Users() admin.UserStore {
 type toyUsersWithoutRename struct {
 	admin.UserStore
 	password.History
+}
+
+// toyUsersWithoutPager is the toy store's user port, password history and
+// rename without ListUsersFrom and CountUsers: a consumer store that never
+// pages by offset or counts.
+type toyUsersWithoutPager struct {
+	admin.UserStore
+	password.History
+	admin.UsernameUpdater
 }
 
 func (f toyFixture) Importer() admin.ImportStore {
@@ -304,6 +328,7 @@ var (
 	_ identity.UserProvisioner = (*toyStore)(nil)
 	_ password.History         = (*toyStore)(nil)
 	_ admin.UsernameUpdater    = (*toyStore)(nil)
+	_ admin.UserPager          = (*toyStore)(nil)
 )
 
 var errInjected = errors.New("toy store: injected storage failure")
@@ -475,18 +500,13 @@ func listKey(u *toyUser, d defect) string {
 	return fold(u.username)
 }
 
-func (s *toyStore) ListUsers(_ context.Context, q admin.UserQuery) ([]admin.User, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if q.Limit < 1 {
-		return nil, admin.ErrInvalidInput
-	}
-
+// matching returns the users q's filters match, live ones only unless
+// deletedToo, in list order.
+func (s *toyStore) matching(q admin.UserQuery, deletedToo bool) []*toyUser {
 	var picked []*toyUser
 
 	for _, u := range s.users {
-		if u.deleted {
+		if u.deleted && !deletedToo {
 			continue
 		}
 
@@ -519,6 +539,19 @@ func (s *toyStore) ListUsers(_ context.Context, q admin.UserQuery) ([]admin.User
 		return cmp.Or(strings.Compare(listKey(a, s.d), listKey(b, s.d)), strings.Compare(string(a.id), string(b.id)))
 	})
 
+	return picked
+}
+
+func (s *toyStore) ListUsers(_ context.Context, q admin.UserQuery) ([]admin.User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if q.Limit < 1 {
+		return nil, admin.ErrInvalidInput
+	}
+
+	picked := s.matching(q, false)
+
 	honourCursor := q.AfterUsername != "" &&
 		!(s.d == defectIgnoresForgedCursor && !isCanonicalUUID(string(q.AfterID)))
 
@@ -544,6 +577,47 @@ func (s *toyStore) ListUsers(_ context.Context, q admin.UserQuery) ([]admin.User
 	}
 
 	return out, nil
+}
+
+// ListUsersFrom implements admin.UserPager.
+func (s *toyStore) ListUsersFrom(_ context.Context, q admin.UserQuery, offset int) ([]admin.User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if q.Limit < 1 || offset < 0 || q.AfterUsername != "" || q.AfterID != "" {
+		return nil, admin.ErrInvalidInput
+	}
+
+	picked := s.matching(q, false)
+
+	if s.d == defectOffsetOrder {
+		slices.SortFunc(picked, func(a, b *toyUser) int { return strings.Compare(string(a.id), string(b.id)) })
+	}
+
+	if s.d == defectOffsetTwice {
+		offset *= 2
+	}
+
+	if offset >= len(picked) {
+		return []admin.User{}, nil
+	}
+
+	picked = picked[offset:]
+	out := make([]admin.User, 0, min(q.Limit, len(picked)))
+
+	for _, u := range picked[:min(q.Limit, len(picked))] {
+		out = append(out, s.record(u))
+	}
+
+	return out, nil
+}
+
+// CountUsers implements admin.UserPager.
+func (s *toyStore) CountUsers(_ context.Context, q admin.UserQuery) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return int64(len(s.matching(q, s.d == defectCountDeleted))), nil
 }
 
 func (s *toyStore) GetUser(_ context.Context, id identity.UserID) (admin.User, error) {

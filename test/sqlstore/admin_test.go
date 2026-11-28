@@ -34,6 +34,8 @@ func TestAdminStatementsMatchSchema(t *testing.T) {
 		"AdminUserByID":            pgschema.AdminUserByID,
 		"LockAdminUser":            pgschema.LockAdminUser,
 		"ListAdminUsers":           pgschema.ListAdminUsers,
+		"ListAdminUsersFrom":       pgschema.ListAdminUsersFrom,
+		"CountAdminUsers":          pgschema.CountAdminUsers,
 		"GrantsByUsers":            pgschema.GrantsByUsers,
 		"AttributesByUsers":        pgschema.AttributesByUsers,
 		"InsertAdminUser":          pgschema.InsertAdminUser,

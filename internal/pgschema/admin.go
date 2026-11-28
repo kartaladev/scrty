@@ -42,31 +42,55 @@ FROM scrty_users WHERE id = $1 AND deleted_at IS NULL`
 	LockAdminUser = `SELECT version, email, password, active
 FROM scrty_users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`
 
-	// ListAdminUsers reads up to $8 live users ordered by (lower(username),
-	// id), in the columns of adminUserColumns:
+	// adminUserFilter is the WHERE clause every listing and count of users
+	// applies, over scrty_users aliased u, so the cursor listing, the offset
+	// listing and the count match the same users:
+	//   - only live users;
 	//   - $1 is a LIKE pattern (LikePattern) matched with ILIKE against the
 	//     username, the display name and the email; '' matches every user;
 	//   - $2, when not NULL, keeps only users whose active flag equals it;
 	//   - $3, when not '', keeps only users holding a grant of role $3;
-	//   - $4, when not NULL, keeps only users with attribute $4 equal to $5;
-	//   - $6, when not '', keeps only users strictly after the pair
-	//     (lower($6), $7) in the list order.
+	//   - $4, when not NULL, keeps only users with attribute $4 equal to $5.
+	adminUserFilter = `WHERE u.deleted_at IS NULL
+  AND ($1::text = '' OR u.username ILIKE $1 OR u.name ILIKE $1 OR u.email ILIKE $1)
+  AND ($2::boolean IS NULL OR u.active = $2::boolean)
+  AND ($3::text = '' OR EXISTS (SELECT 1 FROM scrty_assigned_roles r
+       WHERE r.user_id = u.id AND r.role_name = $3::text))
+  AND ($4::text IS NULL OR EXISTS (SELECT 1 FROM scrty_user_attributes a
+       WHERE a.user_id = u.id AND a.name = $4::text AND a.value = $5::text))`
+
+	// adminUserOrder is the order of every user listing, (lower(username), id).
+	adminUserOrder = `ORDER BY lower(u.username), u.id`
+
+	// ListAdminUsers reads up to $8 live users matching adminUserFilter's
+	// $1 to $5, ordered by (lower(username), id), in the columns of
+	// adminUserColumns. $6, when not '', keeps only users strictly after the
+	// pair (lower($6), $7) in the list order.
 	//
 	// The order and the cursor comparison fold case with the same lower(), so
 	// they agree for every script; the index scrty_users_username_lower serves
 	// both.
 	ListAdminUsers = `SELECT ` + adminUserColumns + `
 FROM scrty_users u
-WHERE u.deleted_at IS NULL
-  AND ($1::text = '' OR u.username ILIKE $1 OR u.name ILIKE $1 OR u.email ILIKE $1)
-  AND ($2::boolean IS NULL OR u.active = $2::boolean)
-  AND ($3::text = '' OR EXISTS (SELECT 1 FROM scrty_assigned_roles r
-       WHERE r.user_id = u.id AND r.role_name = $3::text))
-  AND ($4::text IS NULL OR EXISTS (SELECT 1 FROM scrty_user_attributes a
-       WHERE a.user_id = u.id AND a.name = $4::text AND a.value = $5::text))
+` + adminUserFilter + `
   AND ($6::text = '' OR (lower(u.username), u.id) > (lower($6::text), $7::uuid))
-ORDER BY lower(u.username), u.id
+` + adminUserOrder + `
 LIMIT $8`
+
+	// ListAdminUsersFrom reads up to $6 live users matching adminUserFilter's
+	// $1 to $5, in the columns and order of ListAdminUsers, after skipping the
+	// first $7 of them. It has no cursor: an offset and a cursor are
+	// alternatives. An offset past the last match reads no row.
+	ListAdminUsersFrom = `SELECT ` + adminUserColumns + `
+FROM scrty_users u
+` + adminUserFilter + `
+` + adminUserOrder + `
+LIMIT $6 OFFSET $7`
+
+	// CountAdminUsers counts the live users matching adminUserFilter's $1 to
+	// $5, the users ListAdminUsers and ListAdminUsersFrom list.
+	CountAdminUsers = `SELECT count(*) FROM scrty_users u
+` + adminUserFilter
 
 	// GrantsByUsers reads every role grant of the users whose ids are in the
 	// uuid[] $1, in the columns of GrantsByUser preceded by user_id, each
@@ -262,9 +286,9 @@ func UpdateAdminUserQuery(columns []string, values []any, now, userArg any) (str
 
 // LikePattern is search as an ILIKE pattern that matches it literally
 // anywhere in the text: its %, _ and \ are escaped with \, PostgreSQL's
-// default LIKE escape, which ListAdminUsers relies on (it names no ESCAPE
+// default LIKE escape, which adminUserFilter relies on (it names no ESCAPE
 // clause), and the result is wrapped in %. An empty search is
-// the empty pattern, which ListAdminUsers reads as "no search".
+// the empty pattern, which adminUserFilter reads as "no search".
 func LikePattern(search string) string {
 	if search == "" {
 		return ""

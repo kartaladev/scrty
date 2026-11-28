@@ -123,6 +123,8 @@ func emptyNull(s string) any {
 	return s
 }
 
+var _ admin.UserPager = (*IdentityStore)(nil)
+
 // ListUsers implements admin.UserStore.
 func (s *IdentityStore) ListUsers(ctx context.Context, query admin.UserQuery) ([]admin.User, error) {
 	const op = "list users"
@@ -130,7 +132,7 @@ func (s *IdentityStore) ListUsers(ctx context.Context, query admin.UserQuery) ([
 	if query.Limit < 1 {
 		return nil, invalidInput(op, "the limit is below one")
 	}
-	if !storekit.Storable(query.Search, query.Role, query.AfterUsername) {
+	if !storekit.Storable(query.AfterUsername) {
 		return nil, invalidInput(op, "a filter holds text that cannot be stored")
 	}
 
@@ -141,6 +143,71 @@ func (s *IdentityStore) ListUsers(ctx context.Context, query admin.UserQuery) ([
 			return nil, invalidInput(op, "the cursor does not name a user")
 		}
 		after = uid
+	}
+
+	args, err := userFilterArgs(op, query)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.listAdminUsers(ctx, op, pgschema.ListAdminUsers,
+		append(args, query.AfterUsername, after, query.Limit)...)
+}
+
+// ListUsersFrom implements admin.UserPager: the users ListUsers lists for
+// query's filters, in its order, after skipping offset of them. A limit below
+// one, a negative offset and a cursor are refused, since an offset and a
+// cursor are alternatives.
+func (s *IdentityStore) ListUsersFrom(ctx context.Context, query admin.UserQuery, offset int) ([]admin.User, error) {
+	const op = "list users from an offset"
+
+	if query.Limit < 1 {
+		return nil, invalidInput(op, "the limit is below one")
+	}
+	if offset < 0 {
+		return nil, invalidInput(op, "the offset is below zero")
+	}
+	if query.AfterUsername != "" || query.AfterID != "" {
+		return nil, invalidInput(op, "an offset listing names no cursor")
+	}
+
+	args, err := userFilterArgs(op, query)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.listAdminUsers(ctx, op, pgschema.ListAdminUsersFrom, append(args, query.Limit, offset)...)
+}
+
+// CountUsers implements admin.UserPager: the number of live users matching
+// query's filters, the users ListUsers lists. Limit and the cursor are
+// ignored.
+func (s *IdentityStore) CountUsers(ctx context.Context, query admin.UserQuery) (int64, error) {
+	const op = "count users"
+
+	args, err := userFilterArgs(op, query)
+	if err != nil {
+		return 0, err
+	}
+
+	q, _, err := s.c.conn(ctx)
+	if err != nil {
+		return 0, failed(op, err)
+	}
+
+	var n int64
+	if err := q.Raw(pgschema.CountAdminUsers, args...).Scan(&n).Error; err != nil {
+		return 0, dbFailed(op, err)
+	}
+
+	return n, nil
+}
+
+// userFilterArgs binds query's filters to the parameters $1 to $5 of
+// pgschema's user listings and count, refusing text a column cannot store.
+func userFilterArgs(op string, query admin.UserQuery) ([]any, error) {
+	if !storekit.Storable(query.Search, query.Role) {
+		return nil, invalidInput(op, "a filter holds text that cannot be stored")
 	}
 
 	var active, attrName, attrValue any
@@ -154,13 +221,18 @@ func (s *IdentityStore) ListUsers(ctx context.Context, query admin.UserQuery) ([
 		attrName, attrValue = a.Name, a.Value
 	}
 
+	return []any{pgschema.LikePattern(query.Search), active, query.Role, attrName, attrValue}, nil
+}
+
+// listAdminUsers runs a user listing statement with args and reads its users,
+// with their grants, attributes and organizations.
+func (s *IdentityStore) listAdminUsers(ctx context.Context, op, stmt string, args ...any) ([]admin.User, error) {
 	q, _, err := s.c.conn(ctx)
 	if err != nil {
 		return nil, failed(op, err)
 	}
 
-	rows, err := q.Raw(pgschema.ListAdminUsers, pgschema.LikePattern(query.Search), active, query.Role,
-		attrName, attrValue, query.AfterUsername, after, query.Limit).Rows()
+	rows, err := q.Raw(stmt, args...).Rows()
 	if err != nil {
 		return nil, dbFailed(op, err)
 	}
