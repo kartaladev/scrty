@@ -99,7 +99,7 @@ context: |
     atomic-code-attempts, limiter-key-bounds, trusted-proxy-client-ip, browser-session
     (browser-session, sessions, security-state-stores, magic-link), api-token-forwarding
     (token-forwarding, oidc-login, sessions, secrets-at-rest,
-    security-state-stores), admin-username-change (security-administration),
+    security-state-stores), admin-user-rename-and-paging (security-administration),
     username-case-folding (security-administration, default-identity-store),
     lockout-by-user-id (security-policy, security-state-stores), chain-time-source (http-security-chain),
     endpoint-inventory-base-path (http-security-chain, oidc-login, oidc-logout,
