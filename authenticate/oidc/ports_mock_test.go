@@ -387,6 +387,45 @@ func (c *MockLinkStoreDeleteByUserCall) DoAndReturn(f func(context.Context, iden
 	return c
 }
 
+// DeleteLink mocks base method.
+func (m *MockLinkStore) DeleteLink(ctx context.Context, link oidc.Link) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteLink", ctx, link)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// DeleteLink indicates an expected call of DeleteLink.
+func (mr *MockLinkStoreMockRecorder) DeleteLink(ctx, link any) *MockLinkStoreDeleteLinkCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteLink", reflect.TypeOf((*MockLinkStore)(nil).DeleteLink), ctx, link)
+	return &MockLinkStoreDeleteLinkCall{Call: call}
+}
+
+// MockLinkStoreDeleteLinkCall wrap *gomock.Call
+type MockLinkStoreDeleteLinkCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockLinkStoreDeleteLinkCall) Return(arg0 bool, arg1 error) *MockLinkStoreDeleteLinkCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockLinkStoreDeleteLinkCall) Do(f func(context.Context, oidc.Link) (bool, error)) *MockLinkStoreDeleteLinkCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockLinkStoreDeleteLinkCall) DoAndReturn(f func(context.Context, oidc.Link) (bool, error)) *MockLinkStoreDeleteLinkCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // FindByExternal mocks base method.
 func (m *MockLinkStore) FindByExternal(ctx context.Context, provider, issuer, subject string) (*oidc.Link, error) {
 	m.ctrl.T.Helper()
@@ -464,32 +503,8 @@ func (c *MockLinkStoreInsertCall) DoAndReturn(f func(context.Context, oidc.Link)
 	return c
 }
 
-// MockLinkLister is a mock of LinkLister interface.
-type MockLinkLister struct {
-	ctrl     *gomock.Controller
-	recorder *MockLinkListerMockRecorder
-	isgomock struct{}
-}
-
-// MockLinkListerMockRecorder is the mock recorder for MockLinkLister.
-type MockLinkListerMockRecorder struct {
-	mock *MockLinkLister
-}
-
-// NewMockLinkLister creates a new mock instance.
-func NewMockLinkLister(ctrl *gomock.Controller) *MockLinkLister {
-	mock := &MockLinkLister{ctrl: ctrl}
-	mock.recorder = &MockLinkListerMockRecorder{mock}
-	return mock
-}
-
-// EXPECT returns an object that allows the caller to indicate expected use.
-func (m *MockLinkLister) EXPECT() *MockLinkListerMockRecorder {
-	return m.recorder
-}
-
 // ListByUser mocks base method.
-func (m *MockLinkLister) ListByUser(ctx context.Context, user identity.UserID) ([]oidc.Link, error) {
+func (m *MockLinkStore) ListByUser(ctx context.Context, user identity.UserID) ([]oidc.Link, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ListByUser", ctx, user)
 	ret0, _ := ret[0].([]oidc.Link)
@@ -498,94 +513,31 @@ func (m *MockLinkLister) ListByUser(ctx context.Context, user identity.UserID) (
 }
 
 // ListByUser indicates an expected call of ListByUser.
-func (mr *MockLinkListerMockRecorder) ListByUser(ctx, user any) *MockLinkListerListByUserCall {
+func (mr *MockLinkStoreMockRecorder) ListByUser(ctx, user any) *MockLinkStoreListByUserCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListByUser", reflect.TypeOf((*MockLinkLister)(nil).ListByUser), ctx, user)
-	return &MockLinkListerListByUserCall{Call: call}
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListByUser", reflect.TypeOf((*MockLinkStore)(nil).ListByUser), ctx, user)
+	return &MockLinkStoreListByUserCall{Call: call}
 }
 
-// MockLinkListerListByUserCall wrap *gomock.Call
-type MockLinkListerListByUserCall struct {
+// MockLinkStoreListByUserCall wrap *gomock.Call
+type MockLinkStoreListByUserCall struct {
 	*gomock.Call
 }
 
 // Return rewrite *gomock.Call.Return
-func (c *MockLinkListerListByUserCall) Return(arg0 []oidc.Link, arg1 error) *MockLinkListerListByUserCall {
+func (c *MockLinkStoreListByUserCall) Return(arg0 []oidc.Link, arg1 error) *MockLinkStoreListByUserCall {
 	c.Call = c.Call.Return(arg0, arg1)
 	return c
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockLinkListerListByUserCall) Do(f func(context.Context, identity.UserID) ([]oidc.Link, error)) *MockLinkListerListByUserCall {
+func (c *MockLinkStoreListByUserCall) Do(f func(context.Context, identity.UserID) ([]oidc.Link, error)) *MockLinkStoreListByUserCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockLinkListerListByUserCall) DoAndReturn(f func(context.Context, identity.UserID) ([]oidc.Link, error)) *MockLinkListerListByUserCall {
-	c.Call = c.Call.DoAndReturn(f)
-	return c
-}
-
-// MockLinkRemover is a mock of LinkRemover interface.
-type MockLinkRemover struct {
-	ctrl     *gomock.Controller
-	recorder *MockLinkRemoverMockRecorder
-	isgomock struct{}
-}
-
-// MockLinkRemoverMockRecorder is the mock recorder for MockLinkRemover.
-type MockLinkRemoverMockRecorder struct {
-	mock *MockLinkRemover
-}
-
-// NewMockLinkRemover creates a new mock instance.
-func NewMockLinkRemover(ctrl *gomock.Controller) *MockLinkRemover {
-	mock := &MockLinkRemover{ctrl: ctrl}
-	mock.recorder = &MockLinkRemoverMockRecorder{mock}
-	return mock
-}
-
-// EXPECT returns an object that allows the caller to indicate expected use.
-func (m *MockLinkRemover) EXPECT() *MockLinkRemoverMockRecorder {
-	return m.recorder
-}
-
-// DeleteLink mocks base method.
-func (m *MockLinkRemover) DeleteLink(ctx context.Context, link oidc.Link) (bool, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DeleteLink", ctx, link)
-	ret0, _ := ret[0].(bool)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// DeleteLink indicates an expected call of DeleteLink.
-func (mr *MockLinkRemoverMockRecorder) DeleteLink(ctx, link any) *MockLinkRemoverDeleteLinkCall {
-	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteLink", reflect.TypeOf((*MockLinkRemover)(nil).DeleteLink), ctx, link)
-	return &MockLinkRemoverDeleteLinkCall{Call: call}
-}
-
-// MockLinkRemoverDeleteLinkCall wrap *gomock.Call
-type MockLinkRemoverDeleteLinkCall struct {
-	*gomock.Call
-}
-
-// Return rewrite *gomock.Call.Return
-func (c *MockLinkRemoverDeleteLinkCall) Return(arg0 bool, arg1 error) *MockLinkRemoverDeleteLinkCall {
-	c.Call = c.Call.Return(arg0, arg1)
-	return c
-}
-
-// Do rewrite *gomock.Call.Do
-func (c *MockLinkRemoverDeleteLinkCall) Do(f func(context.Context, oidc.Link) (bool, error)) *MockLinkRemoverDeleteLinkCall {
-	c.Call = c.Call.Do(f)
-	return c
-}
-
-// DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockLinkRemoverDeleteLinkCall) DoAndReturn(f func(context.Context, oidc.Link) (bool, error)) *MockLinkRemoverDeleteLinkCall {
+func (c *MockLinkStoreListByUserCall) DoAndReturn(f func(context.Context, identity.UserID) ([]oidc.Link, error)) *MockLinkStoreListByUserCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

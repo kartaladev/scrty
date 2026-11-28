@@ -169,8 +169,4 @@ func (s *LinkStore) DeleteLink(ctx context.Context, link oidc.Link) (bool, error
 	return n == 1, nil
 }
 
-var (
-	_ oidc.LinkStore   = (*LinkStore)(nil)
-	_ oidc.LinkLister  = (*LinkStore)(nil)
-	_ oidc.LinkRemover = (*LinkStore)(nil)
-)
+var _ oidc.LinkStore = (*LinkStore)(nil)

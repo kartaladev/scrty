@@ -43,11 +43,7 @@ type MemoryLinkStore struct {
 	links map[linkKey]Link
 }
 
-var (
-	_ LinkStore   = (*MemoryLinkStore)(nil)
-	_ LinkLister  = (*MemoryLinkStore)(nil)
-	_ LinkRemover = (*MemoryLinkStore)(nil)
-)
+var _ LinkStore = (*MemoryLinkStore)(nil)
 
 // NewMemoryLinkStore returns an empty in-memory link store.
 func NewMemoryLinkStore() *MemoryLinkStore {

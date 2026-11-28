@@ -1,10 +1,12 @@
 package oidctest_test
 
 import (
+	"cmp"
 	"context"
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -151,6 +153,48 @@ func (s *brokenLinkStore) DeleteByUser(_ context.Context, user identity.UserID) 
 		return 0, nil
 	}
 	return n, nil
+}
+
+// ListByUser returns the user's links, sorted by provider, issuer and subject.
+// It is correct under every defect: the defects above are not about listing.
+func (s *brokenLinkStore) ListByUser(_ context.Context, user identity.UserID) ([]oidc.Link, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	out := []oidc.Link{}
+	for _, l := range s.links {
+		if l.UserID == user {
+			out = append(out, l)
+		}
+	}
+	slices.SortFunc(out, func(a, b oidc.Link) int {
+		return cmp.Or(
+			strings.Compare(a.Provider, b.Provider),
+			strings.Compare(a.Issuer, b.Issuer),
+			strings.Compare(a.Subject, b.Subject),
+		)
+	})
+	return out, nil
+}
+
+// DeleteLink removes the one link whose id and identity all match link. It is
+// correct under every defect, and never removes a link for a zero id.
+func (s *brokenLinkStore) DeleteLink(_ context.Context, link oidc.Link) (bool, error) {
+	if link.ID.IsZero() {
+		return false, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	k := s.key(link.Provider, link.Issuer, link.Subject)
+	stored, ok := s.links[k]
+	if !ok || stored.ID != link.ID || stored.Provider != link.Provider ||
+		stored.Issuer != link.Issuer || stored.Subject != link.Subject {
+		return false, nil
+	}
+	delete(s.links, k)
+	return true, nil
 }
 
 // TestBrokenLinkStoreConformance runs the suite against a store carrying the

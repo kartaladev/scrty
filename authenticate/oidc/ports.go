@@ -144,43 +144,22 @@ type LinkStore interface {
 
 	// DeleteByUser removes every link to user and returns how many it removed.
 	DeleteByUser(ctx context.Context, user identity.UserID) (int, error)
-}
 
-// LinkLister is implemented by a LinkStore that can also list every link
-// naming one user. It is optional beside LinkStore, so a consumer's existing
-// store keeps compiling: a store without it still serves every broker feature
-// except the one-link rule of a sign-in hook (see WithBrokerSignInHook), whose
-// absence NewBroker refuses unless WithBrokerSignInHookAllowManyLinks lifts the
-// rule. Every link store the library ships implements it.
-//
-// It is discovered by type assertion on the store given to NewBroker, so a
-// wrapper must itself have the method: a struct that embeds only the
-// LinkStore interface hides it, and is treated as a store that cannot list.
-type LinkLister interface {
 	// ListByUser returns every link whose user reference equals user byte for
 	// byte, with their stored fields unchanged, in a slice the caller owns. A
 	// user with no link yields an empty list and a nil error, never
-	// ErrLinkNotFound.
+	// ErrLinkNotFound. A sign-in hook's one-link rule lists through it (see
+	// WithBrokerSignInHook).
 	ListByUser(ctx context.Context, user identity.UserID) ([]Link, error)
-}
 
-// LinkRemover is implemented by a LinkStore that can also remove one link,
-// and only that link. It is optional beside LinkStore, so a consumer's
-// existing store keeps compiling. A sign-in hook's one-link rule needs it with
-// LinkLister: a link inserted while a concurrent sign-in linked the same user
-// is removed again before the login is refused, and LinkStore.DeleteByUser,
-// which removes every link the user holds, cannot do that (see
-// WithBrokerSignInHook). Every link store the library ships implements it.
-//
-// It is discovered by type assertion on the store given to NewBroker, so a
-// wrapper must itself have the method.
-type LinkRemover interface {
 	// DeleteLink removes the stored link whose ID and provider, issuer and
 	// subject all equal link's, and reports whether it removed one. No other
 	// link is touched. The other fields of link are not compared. A link
 	// that is not stored, or is stored under another ID, is no error: it
 	// returns false and a nil error. A store may refuse a zero ID with an
-	// error, as Insert may; it never removes a link for one.
+	// error, as Insert may; it never removes a link for one. A sign-in hook's
+	// one-link rule removes a link it inserted against the rule through it,
+	// which DeleteByUser, removing every link the user holds, cannot do.
 	DeleteLink(ctx context.Context, link Link) (bool, error)
 }
 
