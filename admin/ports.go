@@ -140,6 +140,39 @@ type UsernameUpdater interface {
 	UpdateUserRenaming(ctx context.Context, id identity.UserID, version int64, change UserChange) (updated User, renamed bool, err error)
 }
 
+//go:generate mockgen -destination=userpager_mock_test.go -package=admin_test -typed github.com/kartaladev/scrty/admin UserPager
+
+// UserPager is the optional store capability behind offset listing
+// (UserFilter.Offset) and Users.Count. NewUsers checks once whether the
+// UserStore implements it. Over a store without it, a list that names a
+// non-zero offset, and a count, are refused with an error matching ErrConfig
+// before the store is called; cursor listing and offset zero need nothing
+// more than UserStore.ListUsers. WithMaxListOffset over such a store fails
+// NewUsers.
+//
+// Every user store scrty ships implements it.
+//
+// A consumer store that embeds a scrty store and overrides ListUsers, for
+// example to hide users from a tenant, inherits ListUsersFrom and CountUsers
+// unchanged, so offset pages and counts bypass that override. Override
+// ListUsersFrom and CountUsers too.
+//
+// Default: none; a store opts in by implementing the methods.
+type UserPager interface {
+	// ListUsersFrom lists the users matching query's filters in the order of
+	// UserStore.ListUsers, skipping the first offset of them. query.Limit is
+	// the page size; query's After fields are empty, since an offset and a
+	// cursor are alternatives. offset is at least one and at most the
+	// service's maximum. The service truncates a longer result to the limit.
+	ListUsersFrom(ctx context.Context, query UserQuery, offset int) ([]User, error)
+
+	// CountUsers returns how many live users match query's Search, Active,
+	// Role and Attribute. It ignores Limit and the After fields, which are
+	// empty. A negative count is refused by the service. The count is a read
+	// of its own: it is not taken in the same snapshot as a page.
+	CountUsers(ctx context.Context, query UserQuery) (int64, error)
+}
+
 //go:generate mockgen -destination=sessionrevoker_mock_test.go -package=admin_test -typed github.com/kartaladev/scrty/admin SessionRevoker
 
 // SessionRevoker ends every session of a user. WithSessionRevocation gives

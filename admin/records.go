@@ -65,12 +65,29 @@ type UserFilter struct {
 	PageSize int
 	// Cursor continues a list from the Next of the previous page.
 	Cursor string
+	// Offset is the number of users to skip before the page; zero, the
+	// default, is the first page. It is the alternative to Cursor, and naming
+	// both is ErrInvalidInput, as is a negative offset or one above the
+	// service's maximum (DefaultMaxListOffset, WithMaxListOffset). A non-zero
+	// offset needs a store that implements UserPager; over one that does not,
+	// List fails with an error matching ErrConfig.
+	//
+	// Offset paging lets a caller jump to page n, at a cost: the store reads
+	// and discards the skipped users, and users created or deleted between two
+	// requests make a later page skip or repeat a user. A Cursor continues
+	// after the last user seen and is the consistent way to walk a whole list;
+	// use Offset for a page picker, not for an export.
+	Offset int
 }
 
 // UserPage is one page of a list.
 type UserPage struct {
 	Users []User
-	// Next continues the list. It is empty when the page was not full.
+	// Next continues the list by cursor. It is empty when the page was not
+	// full, and always for a page listed from a non-zero offset, which has no
+	// cursor to continue: a caller that wants the next offset page adds the
+	// page size to the offset. A page from offset zero is the first page of the
+	// default listing and carries Next as usual.
 	// It is opaque, not signed: a caller that edits one only moves where a list starts, in a list
 	// it may already read in full, so it grants nothing and is not an access token.
 	Next string
@@ -125,7 +142,9 @@ type UserChange struct {
 // UserQuery is a UserFilter the service has validated: the page size is the
 // bounded Limit and the cursor is decoded into the last pair of the previous
 // page. A store lists users ordered by (lower(username), id), strictly after
-// (AfterUsername, AfterID) when AfterUsername is not empty.
+// (AfterUsername, AfterID) when AfterUsername is not empty. UserPager's
+// CountUsers receives a query holding the filters only: Limit and the After
+// fields are zero, and a store ignores them.
 type UserQuery struct {
 	// Search is literal text matched as a substring of the username, the
 	// display name and the email, ignoring case; a store escapes its own
