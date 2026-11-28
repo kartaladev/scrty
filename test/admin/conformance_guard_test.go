@@ -107,6 +107,8 @@ var guards = []guard{
 	{defect: defectRenameUnchecked, run: "Users/Rename", failing: "Users/Rename/Username_held_by_a_deleted_user"},
 	{defect: defectRenameUnchecked, run: "Users/Rename", failing: "Users/Rename/Username_equal_to_another_user's_email"},
 	{defect: defectRenamedFalse, run: "Users/Rename", failing: "Users/Rename/Rename"},
+	{defect: defectRenamedTrue, run: "Users/Rename", failing: "Users/Rename/No_username_in_the_update"},
+	{defect: defectRenamedTrue, run: "Users/Rename", failing: "Users/Rename/Same_username_again"},
 	{defect: defectOffsetTwice, run: "Users/OffsetAndCount/Jump to a page", failing: "Users/OffsetAndCount/Jump_to_a_page"},
 	{defect: defectCountDeleted, run: "Users/OffsetAndCount/Deleted users are not counted", failing: "Users/OffsetAndCount/Deleted_users_are_not_counted"},
 	{defect: defectOffsetOrder, run: "Users/OffsetAndCount/Consecutive offsets cover every user once, in order", failing: "Users/OffsetAndCount/Consecutive_offsets_cover_every_user_once,_in_order"},
@@ -161,21 +163,6 @@ func TestAdminSuiteIsLoadBearing(t *testing.T) {
 			guard: guard{defect: variantImportPortsOnly, part: "import"},
 			assert: passes("RunImportSuite required a port only the user or role part uses, so a store " +
 				"implementing the import port alone cannot run it"),
-		},
-		{
-			name:  "a store without rename support passes the whole suite with the rename cases skipped",
-			guard: guard{defect: variantNoUsernameUpdater},
-			assert: func(t *testing.T, err error, output string) {
-				t.Helper()
-				passes("the suite failed a store that does not implement admin.UsernameUpdater, so a "+
-					"consumer store that never renames turns red on upgrade (D8)")(t, err, output)
-				for _, c := range []string{"Users/Rename", "Users/RenameThroughService", "Import/ImportAfterRename"} {
-					assert.Contains(t, output, "--- SKIP: TestBrokenAdminStore/"+c+" ",
-						"the gated case %s did not skip on a store without rename support:\n%s", c, output)
-				}
-				assert.Contains(t, output, "admintest: the store does not implement admin.UsernameUpdater; rename cases skipped",
-					"the skip does not name the missing port:\n%s", output)
-			},
 		},
 		{
 			name:  "a store without offset and count support passes the whole suite with those cases skipped",

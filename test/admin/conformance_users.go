@@ -84,7 +84,7 @@ func arrangeStaleUser(ctx context.Context, t *testing.T, f Fixture) staleFixture
 
 	// A colleague's write moves the version past the one this caller read.
 	name := "Renamed by a colleague"
-	moved, err := f.Users().UpdateUser(ctx, u.ID, set.Version, admin.UserChange{Name: &name})
+	moved, _, err := f.Users().UpdateUser(ctx, u.ID, set.Version, admin.UserChange{Name: &name})
 	require.NoError(t, err, "an update naming the current version must succeed")
 	require.Greater(t, moved.Version, set.Version, "a successful update must increase the version")
 	assert.Equal(t, name, moved.Name, "UpdateUser must return the updated record")
@@ -107,7 +107,7 @@ func runStaleUpdateCases(t *testing.T, newFixture Factory) {
 	cases := []testCase{
 		{"UpdateUser", func(ctx context.Context, f Fixture, s staleFixture) error {
 			name := "Lost update"
-			_, err := f.Users().UpdateUser(ctx, s.ID, s.Stale, admin.UserChange{Name: &name})
+			_, _, err := f.Users().UpdateUser(ctx, s.ID, s.Stale, admin.UserChange{Name: &name})
 
 			return err
 		}},
@@ -175,7 +175,7 @@ func runStaleAfterLoginUpdateCase(t *testing.T, newFixture Factory) {
 			"across it overwrites what the login wrote")
 
 	edited := "Ada from the form"
-	_, err = f.Users().UpdateUser(ctx, read.ID, read.Version, admin.UserChange{Name: &edited})
+	_, _, err = f.Users().UpdateUser(ctx, read.ID, read.Version, admin.UserChange{Name: &edited})
 	require.ErrorIs(t, err, admin.ErrStaleUpdate,
 		"an update naming the version read before a login-time update must be stale (reason matched: %s)",
 		reasonOf(err))
@@ -215,7 +215,7 @@ func runUnknownUserCases(t *testing.T, newFixture Factory) {
 		}},
 		{"UpdateUser", func(ctx context.Context, f Fixture, id identity.UserID) error {
 			name := "x"
-			_, err := f.Users().UpdateUser(ctx, id, 1, admin.UserChange{Name: &name})
+			_, _, err := f.Users().UpdateUser(ctx, id, 1, admin.UserChange{Name: &name})
 
 			return err
 		}},
@@ -278,7 +278,7 @@ func runUpdateKeepsUnnamedFieldsCase(t *testing.T, newFixture Factory) {
 	before := readUserState(ctx, t, f, u.ID)
 
 	name := "Ada Lovelace"
-	updated, err := f.Users().UpdateUser(ctx, u.ID, before.User.Version, admin.UserChange{Name: &name})
+	updated, _, err := f.Users().UpdateUser(ctx, u.ID, before.User.Version, admin.UserChange{Name: &name})
 	require.NoError(t, err)
 
 	after := readUserState(ctx, t, f, u.ID)
@@ -293,7 +293,7 @@ func runUpdateKeepsUnnamedFieldsCase(t *testing.T, newFixture Factory) {
 
 	// A pointer to the zero time clears the verification and nothing else.
 	var zero time.Time
-	_, err = f.Users().UpdateUser(ctx, u.ID, after.User.Version, admin.UserChange{EmailVerifiedAt: &zero})
+	_, _, err = f.Users().UpdateUser(ctx, u.ID, after.User.Version, admin.UserChange{EmailVerifiedAt: &zero})
 	require.NoError(t, err)
 
 	cleared := mustGetUser(ctx, t, f, u.ID)
@@ -432,7 +432,7 @@ func runUpdateEmailVerificationCases(t *testing.T, newFixture Factory) {
 			u := mustCreateUser(ctx, t, f, nu)
 			before := readUserState(ctx, t, f, u.ID)
 
-			_, err := f.Users().UpdateUser(ctx, u.ID, before.User.Version, tc.change(t, before.User.Email))
+			_, _, err := f.Users().UpdateUser(ctx, u.ID, before.User.Version, tc.change(t, before.User.Email))
 
 			tc.assert(t, before, mustGetUser(ctx, t, f, u.ID), err)
 		})
@@ -595,7 +595,7 @@ func runUsernameEmailCollisionCases(t *testing.T, newFixture Factory) {
 			name: "update to an email equal to another user's username",
 			act: func(ctx context.Context, _ *testing.T, f Fixture, bob, other admin.User) (identity.UserID, error) {
 				addr := strings.ToUpper(bob.Username)
-				_, err := f.Users().UpdateUser(ctx, other.ID, other.Version, admin.UserChange{Email: &addr})
+				_, _, err := f.Users().UpdateUser(ctx, other.ID, other.Version, admin.UserChange{Email: &addr})
 
 				return other.ID, err
 			},
@@ -605,7 +605,7 @@ func runUsernameEmailCollisionCases(t *testing.T, newFixture Factory) {
 			name: "update to an email equal to another user's email",
 			act: func(ctx context.Context, _ *testing.T, f Fixture, bob, other admin.User) (identity.UserID, error) {
 				addr := strings.ToUpper(bob.Email)
-				_, err := f.Users().UpdateUser(ctx, other.ID, other.Version, admin.UserChange{Email: &addr})
+				_, _, err := f.Users().UpdateUser(ctx, other.ID, other.Version, admin.UserChange{Email: &addr})
 
 				return other.ID, err
 			},
@@ -678,7 +678,7 @@ func runUsernameEmailRaceCase(t *testing.T, newFixture Factory) {
 				return err
 			}
 
-			_, err := f.Users().UpdateUser(ctx, other.ID, other.Version, admin.UserChange{Email: &addr})
+			_, _, err := f.Users().UpdateUser(ctx, other.ID, other.Version, admin.UserChange{Email: &addr})
 
 			return err
 		})
@@ -828,7 +828,7 @@ func runDeletedUserWriteCases(t *testing.T, newFixture Factory) {
 	cases := []testCase{
 		{"UpdateUser", func(ctx context.Context, f Fixture, id identity.UserID, v int64) error {
 			name := "Renamed after deletion"
-			_, err := f.Users().UpdateUser(ctx, id, v, admin.UserChange{Name: &name})
+			_, _, err := f.Users().UpdateUser(ctx, id, v, admin.UserChange{Name: &name})
 
 			return err
 		}},
@@ -916,16 +916,16 @@ func runAttributesRoundTripCase(t *testing.T, newFixture Factory) {
 
 	replaced := map[string]string{"phone": "+62 21 777"}
 
-	updated, err := f.Users().UpdateUser(ctx, u.ID, got.Version, admin.UserChange{Attributes: replaced})
+	updated, _, err := f.Users().UpdateUser(ctx, u.ID, got.Version, admin.UserChange{Attributes: replaced})
 	require.NoError(t, err)
 	assert.Equal(t, replaced, mustGetUser(ctx, t, f, u.ID).Attributes, "named attributes replace the whole set")
 
 	name := "Renamed"
-	updated, err = f.Users().UpdateUser(ctx, u.ID, updated.Version, admin.UserChange{Name: &name})
+	updated, _, err = f.Users().UpdateUser(ctx, u.ID, updated.Version, admin.UserChange{Name: &name})
 	require.NoError(t, err)
 	assert.Equal(t, replaced, mustGetUser(ctx, t, f, u.ID).Attributes, "nil attributes leave the set unchanged")
 
-	_, err = f.Users().UpdateUser(ctx, u.ID, updated.Version, admin.UserChange{Attributes: map[string]string{}})
+	_, _, err = f.Users().UpdateUser(ctx, u.ID, updated.Version, admin.UserChange{Attributes: map[string]string{}})
 	require.NoError(t, err)
 	assert.Empty(t, mustGetUser(ctx, t, f, u.ID).Attributes, "an empty non-nil map removes every attribute")
 }
@@ -981,19 +981,19 @@ func runOrganizationRoundTripCase(t *testing.T, newFixture Factory) {
 	requireOrganization(t, first, got, "after create")
 
 	ref := &identity.Organization{ID: second.ID}
-	upd, err := f.Users().UpdateUser(ctx, u.ID, got.Version, admin.UserChange{Organization: &ref})
+	upd, _, err := f.Users().UpdateUser(ctx, u.ID, got.Version, admin.UserChange{Organization: &ref})
 	require.NoError(t, err)
 	got = mustGetUser(ctx, t, f, u.ID)
 	requireOrganization(t, second, got, "after an update naming another organization")
 	assert.Greater(t, got.Version, u.Version)
 
 	name := "Renamed"
-	upd, err = f.Users().UpdateUser(ctx, u.ID, upd.Version, admin.UserChange{Name: &name})
+	upd, _, err = f.Users().UpdateUser(ctx, u.ID, upd.Version, admin.UserChange{Name: &name})
 	require.NoError(t, err)
 	requireOrganization(t, second, mustGetUser(ctx, t, f, u.ID), "after an update not naming the organization")
 
 	var none *identity.Organization
-	_, err = f.Users().UpdateUser(ctx, u.ID, upd.Version, admin.UserChange{Organization: &none})
+	_, _, err = f.Users().UpdateUser(ctx, u.ID, upd.Version, admin.UserChange{Organization: &none})
 	require.NoError(t, err)
 	requireOrganization(t, nil, mustGetUser(ctx, t, f, u.ID), "after an update naming no organization")
 
@@ -1331,7 +1331,7 @@ func runForgedIdentifierCases(t *testing.T, newFixture Factory) {
 			u := mustCreateUser(ctx, t, f, admin.NewUser{Username: username(t, 1)})
 			ref := &identity.Organization{ID: forgedID}
 
-			_, err := f.Users().UpdateUser(ctx, u.ID, u.Version, admin.UserChange{Organization: &ref})
+			_, _, err := f.Users().UpdateUser(ctx, u.ID, u.Version, admin.UserChange{Organization: &ref})
 			if err == nil {
 				requireOrganization(t, org, mustGetUser(ctx, t, f, u.ID),
 					"a store that accepts the organization must store it")
@@ -1461,37 +1461,28 @@ func runInactiveUserLoadsCase(t *testing.T, newFixture Factory) {
 	assert.False(t, byID.Active, "loaded by identifier")
 }
 
-// renameSkip is the message the rename cases skip with on a store that does
-// not implement admin.UsernameUpdater (D8).
-const renameSkip = "admintest: the store does not implement admin.UsernameUpdater; rename cases skipped"
-
 // renameEnv is what a rename case starts from: ada, the user it renames, and
 // carol, another live user whose username and email ada must not take.
 type renameEnv struct {
-	f       Fixture
-	renamer admin.UsernameUpdater
-	ada     admin.User
-	carol   admin.User
+	f     Fixture
+	ada   admin.User
+	carol admin.User
 }
 
-// rename calls UpdateUserRenaming on ada at version with change.
+// rename calls UpdateUser on ada at version with change.
 func (e renameEnv) rename(ctx context.Context, version int64, change admin.UserChange) (admin.User, bool, error) {
-	return e.renamer.UpdateUserRenaming(ctx, e.ada.ID, version, change)
+	return e.f.Users().UpdateUser(ctx, e.ada.ID, version, change)
 }
 
-// runRenameCases checks UpdateUserRenaming against the rules of creation: a
+// runRenameCases checks UpdateUser's rename against the rules of creation: a
 // username another user holds, deleted or not, compared exactly, or equal to
 // another live user's email ignoring case, is refused naming the username;
 // the user's own username and email never clash; a username and an email
 // named together are written both or neither; and renamed reports whether the
-// stored username differed, byte for byte. A store that does not implement
-// admin.UsernameUpdater skips these cases (D8).
+// stored username differed, byte for byte, false for a change naming no
+// username. Every store runs them (D8).
 func runRenameCases(t *testing.T, newFixture Factory) {
 	t.Helper()
-
-	if _, ok := newFixture(t).Users().(admin.UsernameUpdater); !ok {
-		t.Skip(renameSkip)
-	}
 
 	type testCase struct {
 		name string
@@ -1536,7 +1527,7 @@ func runRenameCases(t *testing.T, newFixture Factory) {
 			assert.Greater(t, got.Version, before.User.Version, "every successful update increases the version")
 
 			stored := mustGetUser(ctx, t, e.f, e.ada.ID)
-			assert.Equal(t, got, stored, "UpdateUserRenaming must return the record as stored")
+			assert.Equal(t, got, stored, "UpdateUser must return the record as stored")
 			assert.Equal(t, []byte(username(t, e)), []byte(stored.Username), "the username is stored byte for byte as given")
 			assert.Equal(t, email(t, e), stored.Email)
 		}
@@ -1696,6 +1687,18 @@ func runRenameCases(t *testing.T, newFixture Factory) {
 			assert: applied(func(_ *testing.T, e renameEnv) string { return e.ada.Username }, same, false),
 		},
 		{
+			name: "No username in the update",
+			act: func(ctx context.Context, _ *testing.T, e renameEnv) (admin.User, bool, error) {
+				return e.rename(ctx, e.ada.Version, admin.UserChange{Name: str("Ada L.")})
+			},
+			assert: func(ctx context.Context, t *testing.T, e renameEnv, before userState, got admin.User, renamed bool, err error) {
+				t.Helper()
+				applied(func(_ *testing.T, e renameEnv) string { return e.ada.Username }, same, false)(
+					ctx, t, e, before, got, renamed, err)
+				assert.Equal(t, "Ada L.", got.Name, "the named field is written")
+			},
+		},
+		{
 			name: "Normalisation differs",
 			ada: func(t *testing.T) admin.NewUser {
 				t.Helper()
@@ -1715,15 +1718,12 @@ func runRenameCases(t *testing.T, newFixture Factory) {
 			ctx := t.Context()
 			f := newFixture(t)
 
-			renamer, ok := f.Users().(admin.UsernameUpdater)
-			require.True(t, ok, "the fixture's user store must implement admin.UsernameUpdater in every case")
-
 			nu := admin.NewUser{Username: username(t, 0), Name: "Ada", Email: email(t, 0), EmailVerifiedAt: verifiedAt}
 			if tc.ada != nil {
 				nu = tc.ada(t)
 			}
 
-			e := renameEnv{f: f, renamer: renamer}
+			e := renameEnv{f: f}
 			e.ada = mustCreateUser(ctx, t, f, nu)
 			e.carol = mustCreateUser(ctx, t, f, admin.NewUser{Username: username(t, 1), Email: email(t, 1)})
 			e.carol = mustGetUser(ctx, t, f, e.carol.ID)
@@ -1740,18 +1740,13 @@ func runRenameCases(t *testing.T, newFixture Factory) {
 // administration service reaches the store and is applied: the service over
 // the fixture's user store renames ada, returns her under the new username at
 // a higher version, and the store then holds and loads her by that username
-// alone. A store that does not implement admin.UsernameUpdater skips the case
-// (D8), as the service would refuse the rename with admin.ErrConfig.
+// alone. Every store runs it (D8).
 func runRenameThroughServiceCase(t *testing.T, newFixture Factory) {
 	t.Helper()
 	t.Parallel()
 
 	ctx := admin.WithSystemActor(t.Context(), "admintest")
 	f := newFixture(t)
-
-	if _, ok := f.Users().(admin.UsernameUpdater); !ok {
-		t.Skip(renameSkip)
-	}
 
 	users, err := admin.NewUsers(f.Users())
 	require.NoError(t, err, "the service must accept the fixture's user store")
@@ -1940,7 +1935,7 @@ func runPagerFilterCases(t *testing.T, newFixture Factory) {
 	needle := "Zebra-" + key
 	for _, i := range []int{0, 2} {
 		u := mustGetUser(ctx, t, f, ids[i])
-		_, err := f.Users().UpdateUser(ctx, u.ID, u.Version, admin.UserChange{Name: &needle})
+		_, _, err := f.Users().UpdateUser(ctx, u.ID, u.Version, admin.UserChange{Name: &needle})
 		require.NoError(t, err)
 	}
 

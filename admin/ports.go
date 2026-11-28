@@ -56,9 +56,20 @@ type UserStore interface {
 	// represent is ErrInvalidInput.
 	CreateUser(ctx context.Context, user NewUser) (User, error)
 
-	// UpdateUser applies the named fields and increases the version. It never
-	// receives a username: Users.Update sends a change naming one to
-	// UsernameUpdater.UpdateUserRenaming instead.
+	// UpdateUser applies the named fields, in one write under the version
+	// check, and increases the version. Either everything the change names is
+	// written, or nothing is.
+	//
+	// A change naming a username (change.Username) also writes it, under the
+	// rules of CreateUser: a username another user holds, deleted or not,
+	// compared exactly, or equal to another live user's email ignoring case, is
+	// an AlreadyExistsError with FieldUsername. The user's own username and
+	// email never clash. renamed reports whether the stored username differed
+	// from the named one, byte for byte, decided under the row lock; a change of
+	// case only is a rename. Re-sending the current username is still a write
+	// (the version increases) with renamed false, and a change naming no
+	// username reports renamed false. Users.Update revokes sessions
+	// (WithSessionRevocation) only when renamed is true.
 	//
 	// The verification time follows these rules, each decided under the row
 	// lock the version comparison takes, never from an earlier read:
@@ -78,7 +89,7 @@ type UserStore interface {
 	// that another live user has, or that equals another live user's
 	// username, ignoring case, is an AlreadyExistsError with FieldEmail,
 	// decided by the write. An Organization.ID the store cannot represent is ErrInvalidInput.
-	UpdateUser(ctx context.Context, id identity.UserID, version int64, change UserChange) (User, error)
+	UpdateUser(ctx context.Context, id identity.UserID, version int64, change UserChange) (updated User, renamed bool, err error)
 
 	// SetActive sets the active flag and increases the version. The bool
 	// reports whether anything changed; a flag already at the requested value
@@ -101,43 +112,6 @@ type UserStore interface {
 	// history: the password policy's reuse rule retires the replaced hash
 	// through its own history port before this is called.
 	SetPassword(ctx context.Context, id identity.UserID, version int64, hash []byte, at time.Time) (User, error)
-}
-
-//go:generate mockgen -destination=usernameupdater_mock_test.go -package=admin_test -typed github.com/kartaladev/scrty/admin UsernameUpdater
-
-// UsernameUpdater is the optional store capability that lets Users.Update
-// change a username. NewUsers checks once whether the UserStore implements it.
-// Update sends a change naming a username (UserChange.Username) to
-// UpdateUserRenaming, and every other change to UserStore.UpdateUser, which
-// therefore never receives a username: a store written before usernames could
-// change needs no change, and cannot silently ignore one. Over a store without
-// this method, an update naming a username is refused with an error matching
-// ErrConfig before the store is called; callers on such a store leave Username
-// nil unless it changed, since even re-sending the current username is refused.
-//
-// Every user store scrty ships implements it.
-//
-// A consumer store that embeds a scrty store and overrides UpdateUser, for
-// example to add its own checks, inherits UpdateUserRenaming unchanged, so
-// renames bypass that override. Override UpdateUserRenaming too.
-//
-// Default: none; a store opts in by implementing the method.
-type UsernameUpdater interface {
-	// UpdateUserRenaming applies change, which names a username, as
-	// UserStore.UpdateUser applies the other fields, in one write under the
-	// same version check, and also writes the username under the rules of
-	// UserStore.CreateUser: a username another user holds, deleted or not,
-	// compared exactly, or equal to another live user's email ignoring case,
-	// is an AlreadyExistsError with FieldUsername. The user's own username and
-	// email never clash. Either everything the change names is written, or
-	// nothing is.
-	//
-	// renamed reports whether the stored username differed from the named one,
-	// byte for byte, decided under the row lock; a change of case only is a
-	// rename. Re-sending the current username is still a write (the version
-	// increases) with renamed false. Users.Update revokes sessions
-	// (WithSessionRevocation) only when renamed is true.
-	UpdateUserRenaming(ctx context.Context, id identity.UserID, version int64, change UserChange) (updated User, renamed bool, err error)
 }
 
 //go:generate mockgen -destination=userpager_mock_test.go -package=admin_test -typed github.com/kartaladev/scrty/admin UserPager

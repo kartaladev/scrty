@@ -232,8 +232,6 @@ const racingRenameRounds = 50
 func runRacingRename(t *testing.T, h Harness) {
 	t.Parallel()
 
-	r := renamer(t, h)
-
 	for round := range racingRenameRounds {
 		value := uniq("x") + "@example.com"
 		ada := create(t, h, admin.NewUser{Username: uniq("ada")})
@@ -245,10 +243,10 @@ func runRacingRename(t *testing.T, h Harness) {
 
 		errs := race(2, func(i int) error {
 			if i == 0 {
-				_, _, err := r.UpdateUserRenaming(ctx, ada.ID, ada.Version, admin.UserChange{Username: &value})
+				_, _, err := h.Users.UpdateUser(ctx, ada.ID, ada.Version, admin.UserChange{Username: &value})
 				return err
 			}
-			_, err := h.Users.UpdateUser(ctx, bob.ID, bob.Version, admin.UserChange{Email: &value})
+			_, _, err := h.Users.UpdateUser(ctx, bob.ID, bob.Version, admin.UserChange{Email: &value})
 			return err
 		})
 

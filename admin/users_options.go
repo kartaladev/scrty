@@ -200,11 +200,12 @@ func WithIDGenerator(generator id.Generator) UsersOption {
 }
 
 // WithSessionRevocation makes Update end every session of a user whose
-// username it changed: after the store commits an update for which
-// UsernameUpdater.UpdateUserRenaming reports renamed, Update calls
+// username it changed: after the store commits an update that names a username
+// and for which UserStore.UpdateUser reports renamed, Update calls
 // r.DeleteByUser with the user's identifier, on the caller's context. An update
 // that names no username, re-sends the current one byte for byte, or fails or
-// is refused, revokes nothing, so a profile form that sends every field on each
+// is refused, revokes nothing, even when a store reports renamed for an update
+// naming no username, so a profile form that sends every field on each
 // save does not sign the user out.
 //
 // *session.Sessions satisfies SessionRevoker as it is: its DeleteByUser
@@ -224,9 +225,7 @@ func WithIDGenerator(generator id.Generator) UsersOption {
 // for a rename that never happened.
 //
 // A nil revoker, typed nil included, fails NewUsers with an error matching
-// ErrConfig, and so does any revoker over a store that does not implement
-// UsernameUpdater: such a store can never rename, so the option could never
-// take effect.
+// ErrConfig.
 //
 // Default: no revoker; a rename ends no session. Sessions are keyed by the user
 // identifier, which a rename does not change.

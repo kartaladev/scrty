@@ -317,12 +317,13 @@ func (c *MockUserStoreSetPasswordCall) DoAndReturn(f func(context.Context, ident
 }
 
 // UpdateUser mocks base method.
-func (m *MockUserStore) UpdateUser(ctx context.Context, id identity.UserID, version int64, change admin.UserChange) (admin.User, error) {
+func (m *MockUserStore) UpdateUser(ctx context.Context, id identity.UserID, version int64, change admin.UserChange) (admin.User, bool, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "UpdateUser", ctx, id, version, change)
 	ret0, _ := ret[0].(admin.User)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
+	ret1, _ := ret[1].(bool)
+	ret2, _ := ret[2].(error)
+	return ret0, ret1, ret2
 }
 
 // UpdateUser indicates an expected call of UpdateUser.
@@ -338,19 +339,19 @@ type MockUserStoreUpdateUserCall struct {
 }
 
 // Return rewrite *gomock.Call.Return
-func (c *MockUserStoreUpdateUserCall) Return(arg0 admin.User, arg1 error) *MockUserStoreUpdateUserCall {
-	c.Call = c.Call.Return(arg0, arg1)
+func (c *MockUserStoreUpdateUserCall) Return(updated admin.User, renamed bool, err error) *MockUserStoreUpdateUserCall {
+	c.Call = c.Call.Return(updated, renamed, err)
 	return c
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockUserStoreUpdateUserCall) Do(f func(context.Context, identity.UserID, int64, admin.UserChange) (admin.User, error)) *MockUserStoreUpdateUserCall {
+func (c *MockUserStoreUpdateUserCall) Do(f func(context.Context, identity.UserID, int64, admin.UserChange) (admin.User, bool, error)) *MockUserStoreUpdateUserCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockUserStoreUpdateUserCall) DoAndReturn(f func(context.Context, identity.UserID, int64, admin.UserChange) (admin.User, error)) *MockUserStoreUpdateUserCall {
+func (c *MockUserStoreUpdateUserCall) DoAndReturn(f func(context.Context, identity.UserID, int64, admin.UserChange) (admin.User, bool, error)) *MockUserStoreUpdateUserCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

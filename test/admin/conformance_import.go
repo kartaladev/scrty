@@ -586,18 +586,13 @@ func (r *eventRecorder) names() []string {
 // import matching by identifier as before: ada is imported, renamed through
 // the administration service, and her identifier then imported with the new
 // username and every other value as stored. The import reports unchanged,
-// emits no event and writes nothing. A store that does not implement
-// admin.UsernameUpdater skips the case (D8), with the rename cases' message.
+// emits no event and writes nothing.
 func runImportAfterRenameCase(t *testing.T, newFixture Factory) {
 	t.Helper()
 	t.Parallel()
 
 	ctx := admin.WithSystemActor(t.Context(), "admintest")
 	f := newFixture(t)
-
-	if _, ok := f.Users().(admin.UsernameUpdater); !ok {
-		t.Skip(renameSkip)
-	}
 
 	in := importedUser(t, 0)
 	out, err := f.Importer().ImportUser(ctx, cloneImport(in))

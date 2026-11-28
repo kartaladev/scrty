@@ -146,7 +146,7 @@ func TestAudit_Delivers(t *testing.T) {
 				store := NewMockUserStore(ctrl)
 				gomock.InOrder(
 					store.EXPECT().GetUser(gomock.Any(), eventUser).Return(before, nil),
-					store.EXPECT().UpdateUser(gomock.Any(), eventUser, int64(4), gomock.Any()).Return(after, nil),
+					store.EXPECT().UpdateUser(gomock.Any(), eventUser, int64(4), gomock.Any()).Return(after, false, nil),
 				)
 
 				var uo []admin.UsersOption
@@ -453,7 +453,7 @@ func TestAudit_SinkFailureLogged(t *testing.T) {
 			store := NewMockUserStore(gomock.NewController(t))
 			store.EXPECT().GetUser(gomock.Any(), eventUser).Return(admin.User{ID: eventUser, Email: "old@example.com", Version: 4}, nil)
 			store.EXPECT().UpdateUser(gomock.Any(), eventUser, int64(4), gomock.Any()).
-				Return(admin.User{ID: eventUser, Email: secretMail, Version: 5}, nil)
+				Return(admin.User{ID: eventUser, Email: secretMail, Version: 5}, false, nil)
 
 			logs := &syncBuffer{}
 			logger := slog.New(slog.NewJSONHandler(logs, nil))

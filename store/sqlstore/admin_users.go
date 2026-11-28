@@ -342,57 +342,15 @@ func (s *IdentityStore) CreateUser(ctx context.Context, in admin.NewUser) (admin
 	return out, nil
 }
 
-// UpdateUser implements admin.UserStore.
+// UpdateUser implements admin.UserStore. It runs in one transaction under the
+// user's row lock. The named username and a changed email are locked and
+// checked together under the rules of CreateUser; the username, when named,
+// is written alone first (pgschema.RenameAdminUser), so a unique violation
+// there is the username's, and the other fields follow with the version.
+// renamed is whether the stored username differed, byte for byte; a change
+// naming no username takes no username lock, runs no rename statement and
+// reports false.
 func (s *IdentityStore) UpdateUser(
-	ctx context.Context, ref identity.UserID, version int64, change admin.UserChange,
-) (admin.User, error) {
-	const op = "update user"
-
-	uid, ok := storekit.ParseUserID(ref)
-	if !ok {
-		return admin.User{}, notFound(op)
-	}
-
-	upd, err := prepareAdminUpdate(op, change)
-	if err != nil {
-		return admin.User{}, err
-	}
-
-	var out admin.User
-	err = s.atomically(ctx, op, func(q DBTX) error {
-		cur, err := lockAdminUser(ctx, q, op, uid, version)
-		if err != nil {
-			return err
-		}
-		if err := upd.check(ctx, q, op, cur); err != nil {
-			return err
-		}
-
-		if email := upd.changedEmail(cur); email != "" {
-			if err := checkIdentifiers(ctx, q, op, uid, "", email); err != nil {
-				return err
-			}
-		}
-
-		out, err = s.writeAdminUpdate(ctx, q, op, uid, upd)
-
-		return err
-	})
-	if err != nil {
-		return admin.User{}, err
-	}
-
-	return out, nil
-}
-
-// UpdateUserRenaming implements admin.UsernameUpdater. It runs as UpdateUser
-// does, in one transaction under the user's row lock, and also writes the
-// username: both named identifiers are locked and checked together under the
-// rules of CreateUser, the username is written alone first
-// (pgschema.RenameAdminUser), so a unique violation there is the username's,
-// and the other fields follow with the version. renamed is whether the stored
-// username differed, byte for byte.
-func (s *IdentityStore) UpdateUserRenaming(
 	ctx context.Context, ref identity.UserID, version int64, change admin.UserChange,
 ) (admin.User, bool, error) {
 	const op = "update user"
@@ -401,10 +359,10 @@ func (s *IdentityStore) UpdateUserRenaming(
 	if !ok {
 		return admin.User{}, false, notFound(op)
 	}
-	if change.Username == nil || *change.Username == "" {
-		return admin.User{}, false, invalidInput(op, "the change names no username")
+	if change.Username != nil && *change.Username == "" {
+		return admin.User{}, false, invalidInput(op, "the change names an empty username")
 	}
-	if !storekit.Storable(*change.Username) {
+	if change.Username != nil && !storekit.Storable(*change.Username) {
 		return admin.User{}, false, invalidInput(op, "the username holds text that cannot be stored")
 	}
 
@@ -427,26 +385,22 @@ func (s *IdentityStore) UpdateUserRenaming(
 		}
 
 		// One call, so the username and the email are locked in key order
-		// before either is checked.
-		if err := checkIdentifiers(ctx, q, op, uid, *change.Username, upd.changedEmail(cur)); err != nil {
-			return err
+		// before either is checked. Neither named: nothing to lock.
+		var username string
+		if change.Username != nil {
+			username = *change.Username
+		}
+		if email := upd.changedEmail(cur); username != "" || email != "" {
+			if err := checkIdentifiers(ctx, q, op, uid, username, email); err != nil {
+				return err
+			}
 		}
 
-		res, err := q.ExecContext(ctx, pgschema.RenameAdminUser, uid, *change.Username)
-		if err != nil {
-			if isUniqueViolation(err) {
-				return alreadyExists(op, admin.FieldUsername)
+		if change.Username != nil {
+			if renamed, err = renameAdminUser(ctx, q, op, uid, username); err != nil {
+				return err
 			}
-			return dbFailed(op, err)
 		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return dbFailed(op, err)
-		}
-		if n > 1 {
-			return failed(op, errRenameRows)
-		}
-		renamed = n == 1
 
 		out, err = s.writeAdminUpdate(ctx, q, op, uid, upd)
 
@@ -457,6 +411,28 @@ func (s *IdentityStore) UpdateUserRenaming(
 	}
 
 	return out, renamed, nil
+}
+
+// renameAdminUser writes username alone (pgschema.RenameAdminUser), under the
+// row lock the caller holds, and reports whether the stored username differed,
+// byte for byte. A unique violation is the username's.
+func renameAdminUser(ctx context.Context, q DBTX, op string, uid id.ID, username string) (bool, error) {
+	res, err := q.ExecContext(ctx, pgschema.RenameAdminUser, uid, username)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return false, alreadyExists(op, admin.FieldUsername)
+		}
+		return false, dbFailed(op, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, dbFailed(op, err)
+	}
+	if n > 1 {
+		return false, failed(op, errRenameRows)
+	}
+
+	return n == 1, nil
 }
 
 // errRenameRows reports a rename that affected more than the one row its

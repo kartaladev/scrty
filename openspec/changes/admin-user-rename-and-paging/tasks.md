@@ -226,7 +226,7 @@ The stores' offset and count code from the pre-revision work is already on the b
 optional `UserPager` port (commit `8445f0dd`: the shared filter fragment, store methods, gated
 conformance cases and their defects); these tasks move it, and the rename, onto `UserStore`.
 
-- [ ] 6.1 Fold renames into `UserStore.UpdateUser` (D7). `UpdateUser` takes a change that may name a
+- [x] 6.1 Fold renames into `UserStore.UpdateUser` (D7). `UpdateUser` takes a change that may name a
   username and returns `(User, renamed bool, error)`. Remove `UsernameUpdater`, `UpdateUserRenaming`,
   the `renamer` field, the call-time `ErrConfig` refusal, and `NewUsers`'s check of a revoker against
   the store. Every scrty store, the toy store and the package example's store implement the one
@@ -237,6 +237,12 @@ conformance cases and their defects); these tasks move it, and the rename, onto 
   the `UsernameUpdater` mock. Verify:
   - a test that a change naming no username reports `renamed` false on every store, written first
     and seen red against a store stub that reports true;
+  - a toy-store defect that always reports `renamed` true, with a guard row that expects "No
+    username in the update" and "Same username again" to fail, so the over-reporting direction is
+    load-bearing as the under-reporting one is;
+  - a service test that a store reporting `renamed` for a change naming no username does not reach
+    the revoker: `Update` revokes only when the change names a username and the store reports a
+    rename, seen red against today's `Update`;
   - every existing rename, revocation, conformance, race and load-bearing test passes, retargeted
     at `UpdateUser`, on PostgreSQL 18 and 15;
   - the godoc of `UserStore.UpdateUser`, `UserChange.Username`, `WithSessionRevocation` and
@@ -307,7 +313,7 @@ dependents in every workspace module (`test-scope.md`).
   `storetest` family-read and role cases always run. Red first: the `oidcprovider` session wrappers
   that embed `session.Store` answer a family read through the inner store's `ListByFamily`, not its
   listing (spec scenario "A store that can only list"). Also tested: the encrypted store's
-  `ListByFamily` returns opened sessions, and its `SelectRole` error keeps its fixed text.
+  `ListByFamily` reads no sealed field and returns no envelope, and its `SelectRole` error keeps its fixed text.
 - [ ] 8.2 OIDC links: `LinkLister` and `LinkRemover` into `oidc.LinkStore`. Remove the broker's
   construction refusal, `canRecheckFresh`, `errNoLinkLister`, `errNoLinkRemover` and the freshness
   skip, and the link store suite's skips. Pinned: a sign-in hook over a consumer link store, several

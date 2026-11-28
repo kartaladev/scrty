@@ -40,8 +40,6 @@ const (
 // when its store is.
 type Users struct {
 	store UserStore
-	// renamer is the store as a UsernameUpdater, nil when it cannot rename.
-	renamer UsernameUpdater
 	// pager is the store as a UserPager, nil when it cannot list from an
 	// offset or count.
 	pager UserPager
@@ -53,8 +51,7 @@ type Users struct {
 // password policy and Argon2id encoder, the system clock, version 7
 // identifiers, no event sink, no audit sink, no session revocation and the
 // routing logger; each option replaces one of those. It records whether store
-// implements UsernameUpdater, which Update needs to rename a user, and
-// UserPager, which List needs for a non-zero offset (up to
+// implements UserPager, which List needs for a non-zero offset (up to
 // DefaultMaxListOffset) and Count needs.
 //
 // A nil store, or an option that cannot work, fails with an error matching
@@ -113,13 +110,6 @@ func NewUsers(store UserStore, opts ...UsersOption) (*Users, error) {
 		cfg.ids = id.NewV7Generator()
 	}
 
-	renamer, _ := store.(UsernameUpdater)
-
-	if cfg.revoker != nil && renamer == nil {
-		return nil, fmt.Errorf("%w: admin.WithSessionRevocation was given, but the user store does not implement "+
-			"admin.UsernameUpdater, so it can never rename and the revoker would never run", ErrConfig)
-	}
-
 	pager, _ := store.(UserPager)
 
 	if cfg.offsetGiven && pager == nil {
@@ -127,7 +117,7 @@ func NewUsers(store UserStore, opts ...UsersOption) (*Users, error) {
 			"admin.UserPager, so it can never list from an offset and the bound would never apply", ErrConfig)
 	}
 
-	return &Users{store: store, renamer: renamer, pager: pager, cfg: cfg}, nil
+	return &Users{store: store, pager: pager, cfg: cfg}, nil
 }
 
 // List returns a page of live users matching the filter, ordered by
@@ -386,10 +376,9 @@ func (u *Users) validateNew(nu NewUser) error {
 // are ErrInvalidInput; a version that differs from the stored one is
 // ErrStaleUpdate and changes nothing.
 //
-// A change naming a username renames the user through the store's
-// UsernameUpdater (see UserChange.Username); over a store without it, the
-// change is refused with an error matching ErrConfig after the input is
-// validated and before the store is called. The event lists username first.
+// A change naming a username renames the user (see UserChange.Username); the
+// store writes it under the rules of creation and reports whether the stored
+// username changed. The event lists username first.
 // With WithSessionRevocation, a rename the store reports as a change of the
 // stored username then revokes the user's sessions; when that fails, Update
 // returns the renamed user together with an error matching
@@ -410,29 +399,12 @@ func (u *Users) Update(ctx context.Context, userID identity.UserID, version int6
 		return User{}, err
 	}
 
-	// A store without the capability would otherwise be handed a username it
-	// may ignore; refuse before anything is read or written.
-	if change.Username != nil && u.renamer == nil {
-		return User{}, fmt.Errorf("admin: update user: %w: the change names a username, but the user store "+
-			"does not implement admin.UsernameUpdater", ErrConfig)
-	}
-
 	before, err := u.auditBefore(ctx, userID, version)
 	if err != nil {
 		return User{}, fmt.Errorf("admin: update user: %w", err)
 	}
 
-	var (
-		updated User
-		renamed bool
-	)
-
-	if change.Username != nil {
-		updated, renamed, err = u.renamer.UpdateUserRenaming(ctx, userID, version, change)
-	} else {
-		updated, err = u.store.UpdateUser(ctx, userID, version, change)
-	}
-
+	updated, renamed, err := u.store.UpdateUser(ctx, userID, version, change)
 	if err != nil {
 		return User{}, fmt.Errorf("admin: update user: %w", err)
 	}
@@ -449,7 +421,10 @@ func (u *Users) Update(ctx context.Context, userID identity.UserID, version int6
 
 	// The update has committed and been reported; a failed revocation cannot
 	// undo it, so the caller gets the renamed user and an error to retry on.
-	if renamed && u.cfg.revoker != nil {
+	// A store that reports a rename for a change naming no username is wrong,
+	// and ending sessions on its word alone would sign the user out of a
+	// profile edit, so the change must name a username too.
+	if change.Username != nil && renamed && u.cfg.revoker != nil {
 		if err := u.cfg.revoker.DeleteByUser(ctx, userID); err != nil {
 			return updated, fmt.Errorf("%w: %w", ErrSessionsNotRevoked, err)
 		}

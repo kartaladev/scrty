@@ -434,7 +434,7 @@ VALUES ($1, 'Org', now(), now())`, orgID)
 					_, err := h.Users.CreateUser(t.Context(), admin.NewUser{ID: newID(t), Username: value})
 					return err
 				}
-				_, err := h.Users.UpdateUser(t.Context(), other.ID, other.Version, admin.UserChange{Email: &value})
+				_, _, err := h.Users.UpdateUser(t.Context(), other.ID, other.Version, admin.UserChange{Email: &value})
 				return err
 			})
 			ok := 0
@@ -562,7 +562,7 @@ VALUES ($1, 'Org', now(), now())`, orgID)
 					EmailVerifiedAt: time.Now().UTC().Truncate(time.Second), Attributes: map[string]string{"k": "v"},
 				})
 				version, change := tc.change(t, before)
-				_, err := h.Users.UpdateUser(t.Context(), before.ID, version, change)
+				_, _, err := h.Users.UpdateUser(t.Context(), before.ID, version, change)
 				after, gerr := h.Users.GetUser(t.Context(), before.ID)
 				require.NoError(t, gerr)
 				tc.assert(t, before, after, err)
@@ -576,7 +576,7 @@ VALUES ($1, 'Org', now(), now())`, orgID)
 		for _, ref := range []identity.UserID{newID(t), "not-a-uuid"} {
 			_, err := h.Users.GetUser(ctx, ref)
 			require.ErrorIs(t, err, admin.ErrNotFound)
-			_, err = h.Users.UpdateUser(ctx, ref, 1, admin.UserChange{})
+			_, _, err = h.Users.UpdateUser(ctx, ref, 1, admin.UserChange{})
 			require.ErrorIs(t, err, admin.ErrNotFound)
 			_, _, err = h.Users.SetActive(ctx, ref, 1, false)
 			require.ErrorIs(t, err, admin.ErrNotFound)
@@ -637,7 +637,7 @@ VALUES ($1, $2, 'hash-0', now())`, string(newID(t)), string(u.ID))
 		// Every write at the deleted user's current version is not found.
 		current := u.Version + 1
 		name := "x"
-		_, err = h.Users.UpdateUser(ctx, u.ID, current, admin.UserChange{Name: &name})
+		_, _, err = h.Users.UpdateUser(ctx, u.ID, current, admin.UserChange{Name: &name})
 		require.ErrorIs(t, err, admin.ErrNotFound)
 		_, _, err = h.Users.SetActive(ctx, u.ID, current, true)
 		require.ErrorIs(t, err, admin.ErrNotFound)
@@ -719,7 +719,7 @@ VALUES ($1, $2, 'hash-0', now())`, string(newID(t)), string(u.ID))
 				name: "UpdateUser",
 				write: func(t *testing.T, org *identity.Organization) (admin.User, error) {
 					u := create(t, h, admin.NewUser{Username: uniq("org")})
-					_, err := h.Users.UpdateUser(t.Context(), u.ID, u.Version, admin.UserChange{Organization: &org})
+					_, _, err := h.Users.UpdateUser(t.Context(), u.ID, u.Version, admin.UserChange{Organization: &org})
 					after, gerr := h.Users.GetUser(t.Context(), u.ID)
 					require.NoError(t, gerr)
 					assert.Equal(t, u, after, "a refused update changes nothing")
@@ -747,7 +747,7 @@ VALUES ($1, $2, 'hash-0', now())`, string(newID(t)), string(u.ID))
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 		name := "never"
-		_, err := h.Users.UpdateUser(ctx, u.ID, u.Version, admin.UserChange{Name: &name})
+		_, _, err := h.Users.UpdateUser(ctx, u.ID, u.Version, admin.UserChange{Name: &name})
 		require.Error(t, err)
 		got, err := h.Users.GetUser(t.Context(), u.ID)
 		require.NoError(t, err)
@@ -1107,18 +1107,6 @@ func race(n int, f func(i int) error) []error {
 	return errs
 }
 
-// renamer returns the harness's user store as admin.UsernameUpdater. Every
-// scrty SQL store implements it, so a store that lost it fails rather than
-// skips.
-func renamer(t *testing.T, h Harness) admin.UsernameUpdater {
-	t.Helper()
-
-	r, ok := h.Users.(admin.UsernameUpdater)
-	require.True(t, ok, "the identity store implements admin.UsernameUpdater")
-
-	return r
-}
-
 // runRename runs the rename cases only a real database shows.
 func runRename(t *testing.T, h Harness) {
 	t.Run("HitsUniqueIndex", func(t *testing.T) { runRenameHitsUniqueIndex(t, h) })
@@ -1136,7 +1124,6 @@ func runRenameHitsUniqueIndex(t *testing.T, h Harness) {
 	t.Parallel()
 
 	ctx := t.Context()
-	r := renamer(t, h)
 	ada := create(t, h, admin.NewUser{Username: uniq("ada"), Email: uniq("ada") + "@example.com"})
 
 	taken := uniq("collide-7f3a-")
@@ -1160,7 +1147,7 @@ func runRenameHitsUniqueIndex(t *testing.T, h Harness) {
 	ctxA, cancelA := context.WithTimeout(ctx, importQueueBound)
 	defer cancelA()
 	go func() {
-		_, renamed, err := r.UpdateUserRenaming(ctxA, ada.ID, ada.Version, admin.UserChange{Username: &taken})
+		_, renamed, err := h.Users.UpdateUser(ctxA, ada.ID, ada.Version, admin.UserChange{Username: &taken})
 		done <- renameResult{renamed, err}
 	}()
 

@@ -84,8 +84,7 @@
 // ErrAlreadyExists, ErrStillAssigned, ErrStaleUpdate, ErrUnknownPrivilege,
 // ErrInvalidInput, ErrNoActor, ErrConfig and ErrSessionsNotRevoked. ErrConfig
 // is also returned at call time when a call needs a store capability the store
-// lacks, such as a rename asked of a store that does not implement
-// UsernameUpdater, or an offset listing or a count asked of one that does not
+// lacks: an offset listing or a count asked of a store that does not
 // implement UserPager. ErrSessionsNotRevoked reports a committed rename whose
 // opted-in session revocation failed; the error also wraps the revoker's cause,
 // so the change is stored and only the sign-out is in doubt. A storage failure

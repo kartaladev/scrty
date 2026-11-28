@@ -9,11 +9,10 @@ var (
 	// ErrConfig is wrapped by every error a constructor in this package
 	// returns for a wiring mistake. It is also returned at call time, before
 	// the store is called, for an operation the configured store does not
-	// support: Users.Update naming a username (UserChange.Username) over a
-	// store that does not implement UsernameUpdater, and Users.List naming a
-	// non-zero offset (UserFilter.Offset) or Users.Count over a store that
-	// does not implement UserPager. Nothing is written, and an input the caller
-	// got wrong, such as an offset above the maximum, is still ErrInvalidInput.
+	// support: Users.List naming a non-zero offset (UserFilter.Offset) or
+	// Users.Count over a store that does not implement UserPager. Nothing is
+	// written, and an input the caller got wrong, such as an offset above the
+	// maximum, is still ErrInvalidInput.
 	ErrConfig = errors.New("admin: invalid configuration")
 
 	// ErrNotFound reports that no live user, role or assignment has the given

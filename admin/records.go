@@ -101,11 +101,9 @@ type UserChange struct {
 	// MaxTextBytes), and the store refuses one another user holds as
 	// UserStore.CreateUser does. A change naming only a username is a change.
 	//
-	// Only a store implementing UsernameUpdater can rename: Update sends a
-	// change naming a username there, and refuses it with an error matching
-	// ErrConfig, before any store call, over a store that does not.
-	// UserStore.UpdateUser never receives a username. On such a store, leave
-	// Username nil unless it changed.
+	// UserStore.UpdateUser writes it and reports whether the stored username
+	// differed, byte for byte. Re-sending the current username is a write
+	// that renames nothing.
 	//
 	// What a rename leaves behind:
 	//   - Sessions are keyed by the user identifier and survive a rename,

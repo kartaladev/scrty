@@ -105,17 +105,16 @@ const (
 	// A role update changing the super-role flag copies it onto the holders'
 	// grants without increasing their versions.
 	defectSuperRoleKeepsVersions defect = "super-role-keeps-versions"
-	// The user port does not implement admin.UsernameUpdater: a consumer
-	// store that never renames, which must still pass the suite with the
-	// rename cases skipped (D8).
-	variantNoUsernameUpdater defect = "no-username-updater"
-	// UpdateUserRenaming applies every other field but leaves the username as
-	// it was, while still reporting the rename.
+	// UpdateUser applies every other field but leaves the username as it
+	// was, while still reporting the rename.
 	defectRenameIgnored defect = "rename-ignored"
-	// UpdateUserRenaming skips the username clash checks.
+	// UpdateUser skips the username clash checks.
 	defectRenameUnchecked defect = "rename-unchecked"
-	// UpdateUserRenaming always reports renamed as false.
+	// UpdateUser always reports renamed as false.
 	defectRenamedFalse defect = "renamed-false"
+	// UpdateUser always reports renamed as true, even for a change naming no
+	// username or re-sending the current one.
+	defectRenamedTrue defect = "renamed-true"
 	// The user port does not implement admin.UserPager: a consumer store
 	// that never pages by offset or counts, which must still pass the suite
 	// with the offset and count cases skipped (D14).
@@ -156,31 +155,19 @@ func newToyFixture(d defect) toyFixture {
 var _ admintest.Fixture = toyFixture{}
 
 func (f toyFixture) Users() admin.UserStore {
-	if f.s.d == variantNoUsernameUpdater {
-		return toyUsersWithoutRename{UserStore: f.s, History: f.s}
-	}
-
 	if f.s.d == variantNoUserPager {
-		return toyUsersWithoutPager{UserStore: f.s, History: f.s, UsernameUpdater: f.s}
+		return toyUsersWithoutPager{UserStore: f.s, History: f.s}
 	}
 
 	return f.s
 }
 
-// toyUsersWithoutRename is the toy store's user port and password history
-// without UpdateUserRenaming: a consumer store that never renames.
-type toyUsersWithoutRename struct {
-	admin.UserStore
-	password.History
-}
-
-// toyUsersWithoutPager is the toy store's user port, password history and
-// rename without ListUsersFrom and CountUsers: a consumer store that never
-// pages by offset or counts.
+// toyUsersWithoutPager is the toy store's user port and password history
+// without ListUsersFrom and CountUsers: a consumer store that never pages by
+// offset or counts.
 type toyUsersWithoutPager struct {
 	admin.UserStore
 	password.History
-	admin.UsernameUpdater
 }
 
 func (f toyFixture) Importer() admin.ImportStore {
@@ -327,7 +314,6 @@ var (
 	_ identity.EmailLoader     = (*toyStore)(nil)
 	_ identity.UserProvisioner = (*toyStore)(nil)
 	_ password.History         = (*toyStore)(nil)
-	_ admin.UsernameUpdater    = (*toyStore)(nil)
 	_ admin.UserPager          = (*toyStore)(nil)
 )
 
@@ -666,25 +652,6 @@ func (s *toyStore) CreateUser(_ context.Context, in admin.NewUser) (admin.User, 
 	return s.record(u), nil
 }
 
-func (s *toyStore) UpdateUser(_ context.Context, id identity.UserID, version int64, c admin.UserChange) (admin.User, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	u, err := s.liveVersioned("UpdateUser", id, version)
-	if s.d == defectIgnoresVersionOnUpdate {
-		u, err = s.live("UpdateUser", id)
-	}
-	if err != nil {
-		return admin.User{}, err
-	}
-
-	if err := s.applyChange(u, c); err != nil {
-		return admin.User{}, err
-	}
-
-	return s.record(u), nil
-}
-
 // applyChange applies every field of c but the username to u, the locked live
 // user, and increases the version. It refuses before writing anything.
 func (s *toyStore) applyChange(u *toyUser, c admin.UserChange) error {
@@ -743,26 +710,25 @@ func (s *toyStore) applyChange(u *toyUser, c admin.UserChange) error {
 	return nil
 }
 
-// UpdateUserRenaming implements admin.UsernameUpdater. Under the one lock,
-// it checks the version and both named identifiers, applies the other fields
-// as UpdateUser does, and writes the username last, so a refusal writes
-// nothing.
-func (s *toyStore) UpdateUserRenaming(
+// UpdateUser implements admin.UserStore. Under the one lock, it checks the
+// version and, when the change names one, the username, applies the other
+// fields, and writes the username last, so a refusal writes nothing. A change
+// naming no username reports no rename.
+func (s *toyStore) UpdateUser(
 	_ context.Context, id identity.UserID, version int64, c admin.UserChange,
 ) (admin.User, bool, error) {
-	if c.Username == nil {
-		return admin.User{}, false, admin.ErrInvalidInput
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	u, err := s.liveVersioned("UpdateUserRenaming", id, version)
+	u, err := s.liveVersioned("UpdateUser", id, version)
+	if s.d == defectIgnoresVersionOnUpdate {
+		u, err = s.live("UpdateUser", id)
+	}
 	if err != nil {
 		return admin.User{}, false, err
 	}
 
-	if s.d != defectRenameUnchecked && s.renameTaken(*c.Username, id) {
+	if c.Username != nil && s.d != defectRenameUnchecked && s.renameTaken(*c.Username, id) {
 		return admin.User{}, false, admin.AlreadyExistsError{Field: admin.FieldUsername}
 	}
 
@@ -770,13 +736,20 @@ func (s *toyStore) UpdateUserRenaming(
 		return admin.User{}, false, err
 	}
 
-	renamed := u.username != *c.Username
-	if s.d != defectRenameIgnored {
-		u.username = *c.Username
+	renamed := false
+	if c.Username != nil {
+		renamed = u.username != *c.Username
+		if s.d != defectRenameIgnored {
+			u.username = *c.Username
+		}
 	}
 
 	if s.d == defectRenamedFalse {
 		renamed = false
+	}
+
+	if s.d == defectRenamedTrue {
+		renamed = true
 	}
 
 	return s.record(u), renamed, nil

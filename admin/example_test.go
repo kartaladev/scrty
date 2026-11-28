@@ -23,7 +23,7 @@ import (
 
 // exampleUserStore holds users in a map; it implements only what
 // ExampleUsers and ExampleWithSessionRevocation call in full, renames
-// included (admin.UsernameUpdater), and offset listing and counts
+// included, and offset listing and counts
 // (admin.UserPager). It applies no filter, only the order and the page.
 type exampleUserStore struct {
 	users map[identity.UserID]admin.User
@@ -68,29 +68,9 @@ func (s *exampleUserStore) CreateUser(_ context.Context, nu admin.NewUser) (admi
 	return u, nil
 }
 
-func (s *exampleUserStore) UpdateUser(_ context.Context, id identity.UserID, version int64, c admin.UserChange) (admin.User, error) {
-	u, ok := s.users[id]
-	if !ok {
-		return admin.User{}, admin.ErrNotFound
-	}
-
-	if u.Version != version {
-		return admin.User{}, admin.ErrStaleUpdate
-	}
-
-	if c.Name != nil {
-		u.Name = *c.Name
-	}
-
-	u.Version++
-	s.users[id] = u
-
-	return u, nil
-}
-
-// UpdateUserRenaming applies the name and the username. A real store also
-// refuses a username another user holds, under the row lock.
-func (s *exampleUserStore) UpdateUserRenaming(_ context.Context, id identity.UserID, version int64, c admin.UserChange) (admin.User, bool, error) {
+// UpdateUser applies the name and the username. A real store also refuses a
+// username another user holds, under the row lock.
+func (s *exampleUserStore) UpdateUser(_ context.Context, id identity.UserID, version int64, c admin.UserChange) (admin.User, bool, error) {
 	u, ok := s.users[id]
 	if !ok {
 		return admin.User{}, false, admin.ErrNotFound

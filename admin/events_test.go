@@ -105,7 +105,7 @@ func TestEvents_OneAfterCommit(t *testing.T) {
 			name: "email changed", event: event.UserUpdated, target: string(eventUser), user: eventUser,
 			changed: []string{"email", "email_verified_at"},
 			call: usersCall(func(s *MockUserStore) {
-				s.EXPECT().UpdateUser(gomock.Any(), eventUser, int64(4), gomock.Any()).Return(stored, nil)
+				s.EXPECT().UpdateUser(gomock.Any(), eventUser, int64(4), gomock.Any()).Return(stored, false, nil)
 			}, func(ctx context.Context, u *admin.Users) error {
 				_, err := u.Update(ctx, eventUser, 4, admin.UserChange{Email: &mail})
 				return err
@@ -117,7 +117,7 @@ func TestEvents_OneAfterCommit(t *testing.T) {
 			call: usersCall(func(s *MockUserStore) {
 				verified := stored
 				verified.EmailVerifiedAt = testNow
-				s.EXPECT().UpdateUser(gomock.Any(), eventUser, int64(4), gomock.Any()).Return(verified, nil)
+				s.EXPECT().UpdateUser(gomock.Any(), eventUser, int64(4), gomock.Any()).Return(verified, false, nil)
 			}, func(ctx context.Context, u *admin.Users) error {
 				_, err := u.Update(ctx, eventUser, 4, admin.UserChange{Email: &mail})
 				return err
@@ -127,7 +127,7 @@ func TestEvents_OneAfterCommit(t *testing.T) {
 			name: "name and attributes changed", event: event.UserUpdated, target: string(eventUser), user: eventUser,
 			changed: []string{"name", "attributes"},
 			call: usersCall(func(s *MockUserStore) {
-				s.EXPECT().UpdateUser(gomock.Any(), eventUser, int64(4), gomock.Any()).Return(stored, nil)
+				s.EXPECT().UpdateUser(gomock.Any(), eventUser, int64(4), gomock.Any()).Return(stored, false, nil)
 			}, func(ctx context.Context, u *admin.Users) error {
 				_, err := u.Update(ctx, eventUser, 4, admin.UserChange{
 					Name: &name, Attributes: map[string]string{"phone": "+62 21 555"},
@@ -310,7 +310,7 @@ func TestEvents_NoneOnRefusalOrNoop(t *testing.T) {
 		{
 			name: "stale update", assert: fails,
 			call: usersCall(func(s *MockUserStore) {
-				s.EXPECT().UpdateUser(gomock.Any(), eventUser, int64(4), gomock.Any()).Return(admin.User{}, admin.ErrStaleUpdate)
+				s.EXPECT().UpdateUser(gomock.Any(), eventUser, int64(4), gomock.Any()).Return(admin.User{}, false, admin.ErrStaleUpdate)
 			}, func(ctx context.Context, u *admin.Users) error {
 				_, err := u.Update(ctx, eventUser, 4, admin.UserChange{Email: &mail})
 				return err
