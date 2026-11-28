@@ -39,9 +39,9 @@ var errListingAnsweredNotFound = errors.New("session: the store answered a listi
 // identifier it held would stop answering when the sign-in renews.
 //
 // It is one read of the store, and that is the whole of its effect: the store's
-// Store.ListByFamily, never the user's listing. It records no presentation, judges nothing, revokes nothing, reports nothing and
-// opens no sealed field, so it answers under a sealing store whose key was
-// retired. That is what sets it apart from Load. Load is a presentation
+// Store.ListByFamily, never the user's listing. It records no presentation,
+// judges nothing, revokes nothing, reports nothing and opens no sealed field,
+// so it answers under a sealing store whose key was retired. That is what sets it apart from Load. Load is a presentation
 // of an identifier: it marks a first use, and past a renewal's grace window it
 // revokes the family as reuse, so an observer reloading through Load would sign
 // its user out and raise a false theft alarm. For the same reason a family that

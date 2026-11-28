@@ -188,9 +188,10 @@ func WithSuccessorLifetime(lifetime time.Duration) RotateOption {
 // caller's to check first, as for SelectRole.
 //
 // RotateWithGrace and RotateWithGraceIssuing take it; Rotate and
-// RotateIssuing refuse it with ErrConfig and store nothing. Given more than once, the last option wins. A store that supersedes
-// the session but writes the successor with another role fails the rotation
-// with ErrStoreContract, and no successor is returned.
+// RotateIssuing refuse it with ErrConfig and store nothing. Given more than
+// once, the last option wins. A store that supersedes the session but writes
+// the successor with another role fails the rotation with ErrStoreContract,
+// and no successor is returned.
 func WithSuccessorRole(role string) RotateOption {
 	return func(r *rotation) {
 		r.role = role

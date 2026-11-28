@@ -199,6 +199,9 @@ const (
 	// carries, ignoring a role the supersession named, as an INSERT that
 	// never reads session.Supersession.SuccessorRole would.
 	sessionSupersedeIgnoresSuccessorRole sessionDefect = "supersede-ignores-successor-role"
+	// SelectRole reports success and records no role, as a store that never
+	// wrote the selected-role column would.
+	sessionSelectRoleWritesNothing sessionDefect = "select-role-writes-nothing"
 	// Supersede also holds the record to one deadline, the later of its
 	// absolute deadline and the retention, as both of its own deadlines: the
 	// first round's raise, which a renewal then read as the session's own
@@ -1112,7 +1115,9 @@ func (s *sessionStore) SelectRole(_ context.Context, sessionID string, role stri
 	case expiredSession(stored, s.clock.Now()):
 		return session.ErrExpired
 	}
-	stored.SelectedRole = role
+	if s.defect != sessionSelectRoleWritesNothing {
+		stored.SelectedRole = role
+	}
 	return nil
 }
 

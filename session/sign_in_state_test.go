@@ -22,8 +22,8 @@ import (
 // signInStateFixture holds a sign-in's ordinary traffic apart from the read
 // under test. traffic renews and ends through the real store; reader, the
 // manager the read goes through, sees it through a mocked store expecting only
-// its family read, ListByFamily, so a read that reached ListByUser, Load, MarkPresented, DeleteFamily or any other store call fails the
-// case.
+// its family read, ListByFamily, so a read that reached ListByUser, Load,
+// MarkPresented, DeleteFamily or any other store call fails the case.
 type signInStateFixture struct {
 	clk     *clockwork.FakeClock
 	traffic *session.Sessions

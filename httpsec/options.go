@@ -420,9 +420,10 @@ func WithoutPrivilegeMemo() Option {
 //
 // The selection is recorded through the session manager's store
 // (session.Store.SelectRole). A chain with no session manager at all, which
-// could record nothing, is refused by New with a configuration error. The check runs once every option has been
-// applied, so the option's position among the others does not matter. Giving
-// it twice is the same as giving it once.
+// could record nothing, is refused by New with a configuration error. The
+// check runs once every option has been applied, so the option's position
+// among the others does not matter. Giving it twice is the same as giving it
+// once.
 //
 // Default: off. Chain.SwitchActiveRole returns ErrRoleSwitchingDisabled, and a
 // selection a session recorded while switching was on is ignored: the primary

@@ -188,7 +188,7 @@ func signalsThrottledBearerFromWildcard(t *testing.T, listen func(ChainSpec) Str
 }
 
 // failingFamilyStore is a session store whose family read fails while armed. It embeds the memory store
-// itself, so the optional family read stays visible to the chain.
+// itself, so the family read, part of session.Store, reaches the chain.
 type failingFamilyStore struct {
 	*session.MemoryStore
 
