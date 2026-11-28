@@ -314,7 +314,7 @@ dependents in every workspace module (`test-scope.md`).
   that embed `session.Store` answer a family read through the inner store's `ListByFamily`, not its
   listing (spec scenario "A store that can only list"). Also tested: the encrypted store's
   `ListByFamily` reads no sealed field and returns no envelope, and its `SelectRole` error keeps its fixed text.
-- [ ] 8.2 OIDC links: `LinkLister` and `LinkRemover` into `oidc.LinkStore`. Remove the broker's
+- [x] 8.2 OIDC links: `LinkLister` and `LinkRemover` into `oidc.LinkStore`. Remove the broker's
   construction refusal, `canRecheckFresh`, `errNoLinkLister`, `errNoLinkRemover` and the freshness
   skip, and the link store suite's skips. Pinned: a sign-in hook over a consumer link store, several
   links per user not allowed, builds and lists through that store (spec scenario "Link store that
