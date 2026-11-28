@@ -98,7 +98,8 @@ context: |
   user-email (identity-model, default-identity-store, oidc-provider-userinfo),
     atomic-code-attempts, limiter-key-bounds, trusted-proxy-client-ip, browser-session
     (browser-session, sessions, security-state-stores, magic-link), api-token-forwarding
-    (token-forwarding; blocked on Q2, Q3, Q5), chain-time-source (http-security-chain),
+    (token-forwarding, oidc-login, sessions, secrets-at-rest,
+    security-state-stores), chain-time-source (http-security-chain),
     endpoint-inventory-base-path (http-security-chain, oidc-login, oidc-logout,
     oidc-provider-metadata, multi-factor-auth, passkey-authentication, reauthentication,
     account-recovery, csrf-protection, framework-adapters, sender-constrained-tokens)
