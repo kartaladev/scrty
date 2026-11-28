@@ -123,7 +123,9 @@ The transport is built from the same API list. Each API also names one or more b
 
 For each request, the transport:
 
-1. refuses, before sending, a destination under no configured API's base URL;
+1. refuses, before sending, a destination under no configured API's base URL, with
+   `outbound.ErrDestinationNotAllowed`, the confined transport's own refusal, so a caller tells a
+   refused destination apart from a request that may have no token;
 2. resolves the token for the API whose base URL covers the request, and refuses the request when
    it has no token;
 3. sets `Authorization: Bearer <token>`, replacing any value already present;
@@ -139,6 +141,9 @@ The transport does not follow a redirect to another origin, and never re-sends t
   a convenience that enforces RFC 10017 §6.1.3.6, not the only path.
 - **Documented, not enforced:**
   - `Cache-Control: private, no-store` on per-user responses (OWASP Session Management);
+  - on the downstream API, naming the app's key set with `WithJWKSURL`: `FromIssuer` finds the key
+    set from the issuer's metadata by default, and an app that only serves a key set publishes no
+    metadata;
   - pass-through routes that forward browser headers;
   - the TLS requirement of D3.
 

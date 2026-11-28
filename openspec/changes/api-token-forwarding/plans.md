@@ -557,7 +557,7 @@ Re-run the recipe if imports change.
   `httpsec/example_outbound_test.go`
 
 **Interfaces:**
-- Consumes: `outbound.NewTransport`, `OutboundToken`.
+- Consumes: `outbound.NewTransport`, `outbound.ErrDestinationNotAllowed`, `OutboundToken`.
 - Produces:
   ```go
   func (c *Chain) OutboundTransport() (http.RoundTripper, error) // ErrConfig when outbound tokens are not enabled
@@ -571,7 +571,10 @@ Re-run the recipe if imports change.
 
 - [ ] **Step 1: Write failing tests:**
   - `TestOutboundTransport_Destinations`: "Unconfigured destination" and "Prefix is not a segment
-    boundary" (`/orders` vs `/orders-admin/1`). Zero dials, no issuer call.
+    boundary" (`/orders` vs `/orders-admin/1`). Zero dials, no issuer call,
+    `errors.Is(err, outbound.ErrDestinationNotAllowed)` and `!errors.Is(err, ErrNoOutboundToken)`.
+    The path-prefix refusal happens in `httpsec` before delegating, so it returns the same sentinel
+    (wrapped with the URL), not a new one.
   - `TestOutboundTransport_DestinationNormalisation` (Review Focus 2): `HTTPS://API.EXAMPLE:443/orders/1`
     and `https://api.example./orders/1` match. `https://api.example/orders/../admin` is refused.
   - `TestOutboundTransport_Headers`: "Cookie and stale authorization present"; the caller's
@@ -597,11 +600,14 @@ Re-run the recipe if imports change.
   (the downstream API side)
 
 - [ ] **Step 1: Write the example test first:** `ExampleEnableResourceServer_outboundTokens`, where
-  the API verifies a minted token with the binding opt-out. Run it: it fails until the opt-out
-  option is wired in the example. Record the red.
+  the API verifies a minted token with `FromIssuer(issuer, WithJWKSURL(issuer+DefaultJWKSPath),
+  WithUnboundTokens())`, against an app chain that serves only `EnableJWKSEndpoint`. Run it first
+  without `WithJWKSURL`: it fails on key-set discovery (the app publishes no metadata). Then without
+  `WithUnboundTokens`: refused as unbound. Record both reds.
 - [ ] **Step 2: Write the guide.** Sections:
   - enabling (minted, provider, consumer);
-  - the downstream API (verify and opt out of binding);
+  - the downstream API (verify with `WithJWKSURL` naming the app's key set, and opt out of
+    binding);
   - the transport;
   - obligations it cannot enforce: `Cache-Control: private, no-store`, pass-through routes, TLS on
     the hop;
