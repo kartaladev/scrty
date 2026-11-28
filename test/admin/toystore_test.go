@@ -279,6 +279,7 @@ var (
 	_ identity.EmailLoader     = (*toyStore)(nil)
 	_ identity.UserProvisioner = (*toyStore)(nil)
 	_ password.History         = (*toyStore)(nil)
+	_ admin.UsernameUpdater    = (*toyStore)(nil)
 )
 
 var errInjected = errors.New("toy store: injected storage failure")
@@ -352,7 +353,7 @@ func (s *toyStore) usernameTaken(name string, self identity.UserID) bool {
 			continue
 		}
 
-		if fold(u.username) == fold(name) || (!u.deleted && u.email != "" && fold(u.email) == fold(name)) {
+		if u.username == name || (!u.deleted && u.email != "" && fold(u.email) == fold(name)) {
 			return true
 		}
 	}
@@ -579,8 +580,18 @@ func (s *toyStore) UpdateUser(_ context.Context, id identity.UserID, version int
 		return admin.User{}, err
 	}
 
-	if c.Email != nil && s.emailTaken(*c.Email, id) {
-		return admin.User{}, admin.AlreadyExistsError{Field: admin.FieldEmail}
+	if err := s.applyChange(u, c); err != nil {
+		return admin.User{}, err
+	}
+
+	return s.record(u), nil
+}
+
+// applyChange applies every field of c but the username to u, the locked live
+// user, and increases the version. It refuses before writing anything.
+func (s *toyStore) applyChange(u *toyUser, c admin.UserChange) error {
+	if c.Email != nil && s.emailTaken(*c.Email, u.id) {
+		return admin.AlreadyExistsError{Field: admin.FieldEmail}
 	}
 
 	emailLeft := u.email
@@ -589,7 +600,7 @@ func (s *toyStore) UpdateUser(_ context.Context, id identity.UserID, version int
 	}
 
 	if c.EmailVerifiedAt != nil && !c.EmailVerifiedAt.IsZero() && emailLeft == "" && s.d != defectVerifiesNoEmail {
-		return admin.User{}, admin.ErrInvalidInput
+		return admin.ErrInvalidInput
 	}
 
 	if c.Name != nil {
@@ -631,7 +642,57 @@ func (s *toyStore) UpdateUser(_ context.Context, id identity.UserID, version int
 	u.version++
 	u.updated = now()
 
-	return s.record(u), nil
+	return nil
+}
+
+// UpdateUserRenaming implements admin.UsernameUpdater. Under the one lock,
+// it checks the version and both named identifiers, applies the other fields
+// as UpdateUser does, and writes the username last, so a refusal writes
+// nothing.
+func (s *toyStore) UpdateUserRenaming(
+	_ context.Context, id identity.UserID, version int64, c admin.UserChange,
+) (admin.User, bool, error) {
+	if c.Username == nil {
+		return admin.User{}, false, admin.ErrInvalidInput
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	u, err := s.liveVersioned("UpdateUserRenaming", id, version)
+	if err != nil {
+		return admin.User{}, false, err
+	}
+
+	if s.renameTaken(*c.Username, id) {
+		return admin.User{}, false, admin.AlreadyExistsError{Field: admin.FieldUsername}
+	}
+
+	if err := s.applyChange(u, c); err != nil {
+		return admin.User{}, false, err
+	}
+
+	renamed := u.username != *c.Username
+	u.username = *c.Username
+
+	return s.record(u), renamed, nil
+}
+
+// renameTaken reports a username another user holds, deleted or not,
+// compared exactly, or another live user's email, ignoring case: the rule of
+// a rename (D4).
+func (s *toyStore) renameTaken(name string, self identity.UserID) bool {
+	for _, u := range s.users {
+		if u.id == self {
+			continue
+		}
+
+		if u.username == name || (!u.deleted && u.email != "" && fold(u.email) == fold(name)) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (s *toyStore) SetActive(_ context.Context, id identity.UserID, version int64, active bool) (admin.User, bool, error) {

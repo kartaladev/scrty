@@ -42,6 +42,7 @@ func runUserSuite(t *testing.T, newFixture Factory) {
 	t.Run("ForgedIdentifiers", func(t *testing.T) { runForgedIdentifierCases(t, newFixture) })
 	t.Run("CurrentPasswordHash", func(t *testing.T) { runCurrentPasswordHashCase(t, newFixture) })
 	t.Run("SetPasswordRecordsChange", func(t *testing.T) { runSetPasswordRecordsChangeCase(t, newFixture) })
+	t.Run("Rename", func(t *testing.T) { runRenameCases(t, newFixture) })
 }
 
 // userState is everything a refused user write must leave as it was.
@@ -1455,4 +1456,279 @@ func runInactiveUserLoadsCase(t *testing.T, newFixture Factory) {
 	require.NoError(t, err, "an inactive user is returned, not hidden (reason matched: %s)", reasonOf(err))
 	assert.Equal(t, u.ID, byID.ID)
 	assert.False(t, byID.Active, "loaded by identifier")
+}
+
+// renameSkip is the message the rename cases skip with on a store that does
+// not implement admin.UsernameUpdater (D8).
+const renameSkip = "admintest: the store does not implement admin.UsernameUpdater; rename cases skipped"
+
+// renameEnv is what a rename case starts from: ada, the user it renames, and
+// carol, another live user whose username and email ada must not take.
+type renameEnv struct {
+	f       Fixture
+	renamer admin.UsernameUpdater
+	ada     admin.User
+	carol   admin.User
+}
+
+// rename calls UpdateUserRenaming on ada at version with change.
+func (e renameEnv) rename(ctx context.Context, version int64, change admin.UserChange) (admin.User, bool, error) {
+	return e.renamer.UpdateUserRenaming(ctx, e.ada.ID, version, change)
+}
+
+// runRenameCases checks UpdateUserRenaming against the rules of creation: a
+// username another user holds, deleted or not, compared exactly, or equal to
+// another live user's email ignoring case, is refused naming the username;
+// the user's own username and email never clash; a username and an email
+// named together are written both or neither; and renamed reports whether the
+// stored username differed, byte for byte. A store that does not implement
+// admin.UsernameUpdater skips these cases (D8).
+func runRenameCases(t *testing.T, newFixture Factory) {
+	t.Helper()
+
+	if _, ok := newFixture(t).Users().(admin.UsernameUpdater); !ok {
+		t.Skip(renameSkip)
+	}
+
+	type testCase struct {
+		name string
+		// ada is the user the case creates and renames; nil creates her with
+		// username 0 and email 0, the email verified.
+		ada func(t *testing.T) admin.NewUser
+		// act runs the write under test, after any setup of its own.
+		act    func(ctx context.Context, t *testing.T, e renameEnv) (admin.User, bool, error)
+		assert func(ctx context.Context, t *testing.T, e renameEnv, before userState, got admin.User, renamed bool, err error)
+	}
+
+	str := func(s string) *string { return &s }
+
+	// unchanged asserts a refusal naming field that wrote nothing. The error
+	// text must contain none of ada's old username and the values the change
+	// asked for, which asked lists.
+	unchanged := func(field string, asked ...func(t *testing.T, e renameEnv) string,
+	) func(context.Context, *testing.T, renameEnv, userState, admin.User, bool, error) {
+		return func(ctx context.Context, t *testing.T, e renameEnv, before userState, _ admin.User, renamed bool, err error) {
+			t.Helper()
+			requireAlreadyExists(t, err, field, "the clashing rename")
+			assert.False(t, renamed, "a refused rename reports no rename")
+			assert.NotContains(t, err.Error(), e.ada.Username, "error text never contains a username")
+
+			for _, a := range asked {
+				assert.NotContains(t, err.Error(), a(t, e), "error text never contains a requested value")
+			}
+
+			assert.Equal(t, before, readUserState(ctx, t, e.f, e.ada.ID), "a refused rename must change nothing")
+			assert.Equal(t, e.carol, mustGetUser(ctx, t, e.f, e.carol.ID), "the other user must be unchanged")
+		}
+	}
+
+	// applied asserts a successful write storing username and email exactly as
+	// given, reporting renamed, and increasing the version.
+	applied := func(username, email func(t *testing.T, e renameEnv) string, renamed bool,
+	) func(context.Context, *testing.T, renameEnv, userState, admin.User, bool, error) {
+		return func(ctx context.Context, t *testing.T, e renameEnv, before userState, got admin.User, gotRenamed bool, err error) {
+			t.Helper()
+			require.NoError(t, err, "the rename must succeed (reason matched: %s)", reasonOf(err))
+			assert.Equal(t, renamed, gotRenamed, "renamed must report whether the stored username differed")
+			assert.Greater(t, got.Version, before.User.Version, "every successful update increases the version")
+
+			stored := mustGetUser(ctx, t, e.f, e.ada.ID)
+			assert.Equal(t, got, stored, "UpdateUserRenaming must return the record as stored")
+			assert.Equal(t, []byte(username(t, e)), []byte(stored.Username), "the username is stored byte for byte as given")
+			assert.Equal(t, email(t, e), stored.Email)
+		}
+	}
+
+	same := func(t *testing.T, e renameEnv) string { t.Helper(); return e.ada.Email }
+	newName := func(t *testing.T, _ renameEnv) string { t.Helper(); return username(t, 5) }
+	carolEmailUpper := func(t *testing.T, e renameEnv) string { t.Helper(); return strings.ToUpper(e.carol.Email) }
+	carolNameUpper := func(t *testing.T, e renameEnv) string { t.Helper(); return strings.ToUpper(e.carol.Username) }
+
+	cases := []testCase{
+		{
+			name: "Rename",
+			act: func(ctx context.Context, t *testing.T, e renameEnv) (admin.User, bool, error) {
+				return e.rename(ctx, e.ada.Version, admin.UserChange{Username: str(username(t, 5))})
+			},
+			assert: func(ctx context.Context, t *testing.T, e renameEnv, before userState, got admin.User, renamed bool, err error) {
+				t.Helper()
+				applied(func(t *testing.T, _ renameEnv) string { return username(t, 5) }, same, true)(
+					ctx, t, e, before, got, renamed, err)
+
+				_, lerr := e.f.Loader().LoadByUsername(ctx, e.ada.Username)
+				assert.ErrorIs(t, lerr, identity.ErrUserNotFound, "the old username must name no live user")
+
+				d, lerr := e.f.Loader().LoadByUsername(ctx, username(t, 5))
+				require.NoError(t, lerr, "the renamed user must load by the new username")
+				assert.Equal(t, e.ada.ID, d.ID)
+			},
+		},
+		{
+			name: "Username held by a deleted user",
+			act: func(ctx context.Context, t *testing.T, e renameEnv) (admin.User, bool, error) {
+				bob := mustCreateUser(ctx, t, e.f, admin.NewUser{Username: username(t, 2)})
+				require.NoError(t, e.f.Users().DeleteUser(ctx, bob.ID, bob.Version))
+
+				return e.rename(ctx, e.ada.Version, admin.UserChange{Username: str(bob.Username)})
+			},
+			assert: unchanged(admin.FieldUsername, func(t *testing.T, _ renameEnv) string { t.Helper(); return username(t, 2) }),
+		},
+		{
+			name: "Username held by a live user",
+			act: func(ctx context.Context, _ *testing.T, e renameEnv) (admin.User, bool, error) {
+				return e.rename(ctx, e.ada.Version, admin.UserChange{Username: str(e.carol.Username)})
+			},
+			assert: unchanged(admin.FieldUsername, func(_ *testing.T, e renameEnv) string { return e.carol.Username }),
+		},
+		{
+			name: "Case variant of another user's username",
+			act: func(ctx context.Context, t *testing.T, e renameEnv) (admin.User, bool, error) {
+				upper := strings.ToUpper(e.carol.Username)
+				require.NotEqual(t, e.carol.Username, upper, "the variant must differ from the held username")
+				require.NotEqual(t, e.ada.Username, upper, "the variant must differ from the renamed user's own username")
+				require.False(t, strings.EqualFold(upper, e.carol.Email) || strings.EqualFold(upper, e.ada.Email),
+					"the variant must not equal any user's email")
+
+				return e.rename(ctx, e.ada.Version, admin.UserChange{Username: &upper})
+			},
+			assert: applied(carolNameUpper, same, true),
+		},
+		{
+			name: "Username equal to another user's email",
+			act: func(ctx context.Context, _ *testing.T, e renameEnv) (admin.User, bool, error) {
+				return e.rename(ctx, e.ada.Version, admin.UserChange{Username: str(strings.ToUpper(e.carol.Email))})
+			},
+			assert: unchanged(admin.FieldUsername, carolEmailUpper),
+		},
+		{
+			name: "Only the case changes",
+			act: func(ctx context.Context, _ *testing.T, e renameEnv) (admin.User, bool, error) {
+				return e.rename(ctx, e.ada.Version, admin.UserChange{Username: str(strings.ToUpper(e.ada.Username))})
+			},
+			assert: applied(func(_ *testing.T, e renameEnv) string { return strings.ToUpper(e.ada.Username) }, same, true),
+		},
+		{
+			name: "Stale rename",
+			act: func(ctx context.Context, t *testing.T, e renameEnv) (admin.User, bool, error) {
+				_, _, err := e.f.Users().SetActive(ctx, e.ada.ID, e.ada.Version, false)
+				require.NoError(t, err)
+
+				return e.rename(ctx, e.ada.Version, admin.UserChange{Username: str(username(t, 5))})
+			},
+			assert: func(ctx context.Context, t *testing.T, e renameEnv, _ userState, _ admin.User, renamed bool, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, admin.ErrStaleUpdate,
+					"a rename at a version a deactivation moved past must be stale (reason matched: %s)", reasonOf(err))
+				assert.False(t, renamed)
+
+				stored := mustGetUser(ctx, t, e.f, e.ada.ID)
+				assert.False(t, stored.Active, "the deactivation must stay")
+				assert.Equal(t, e.ada.Username, stored.Username, "a stale rename must not write the username")
+			},
+		},
+		{
+			name: "Username follows a new email",
+			ada: func(t *testing.T) admin.NewUser {
+				t.Helper()
+				return admin.NewUser{Username: email(t, 0), Email: email(t, 0), EmailVerifiedAt: verifiedAt}
+			},
+			act: func(ctx context.Context, t *testing.T, e renameEnv) (admin.User, bool, error) {
+				addr := email(t, 5)
+				return e.rename(ctx, e.ada.Version, admin.UserChange{Username: &addr, Email: &addr})
+			},
+			assert: func(ctx context.Context, t *testing.T, e renameEnv, before userState, got admin.User, renamed bool, err error) {
+				t.Helper()
+				addr := func(t *testing.T, _ renameEnv) string { return email(t, 5) }
+				applied(addr, addr, true)(ctx, t, e, before, got, renamed, err)
+				assert.True(t, got.EmailVerifiedAt.IsZero(),
+					"a new address never inherits the old one's verification; got %v", got.EmailVerifiedAt)
+				assert.Equal(t, before.User.Version+1, got.Version, "one change is one write: the version increases once")
+			},
+		},
+		{
+			name: "One field clashes",
+			act: func(ctx context.Context, t *testing.T, e renameEnv) (admin.User, bool, error) {
+				return e.rename(ctx, e.ada.Version, admin.UserChange{
+					Username: str(username(t, 5)), Email: str(strings.ToUpper(e.carol.Email)),
+				})
+			},
+			assert: func(ctx context.Context, t *testing.T, e renameEnv, before userState, got admin.User, renamed bool, err error) {
+				t.Helper()
+				unchanged(admin.FieldEmail, newName, carolEmailUpper)(ctx, t, e, before, got, renamed, err)
+
+				_, lerr := e.f.Loader().LoadByUsername(ctx, username(t, 5))
+				assert.ErrorIs(t, lerr, identity.ErrUserNotFound, "the free username must not have been written")
+			},
+		},
+		{
+			name: "Rename to one's own email in the same change",
+			act: func(ctx context.Context, _ *testing.T, e renameEnv) (admin.User, bool, error) {
+				return e.rename(ctx, e.ada.Version, admin.UserChange{
+					Username: str(strings.ToUpper(e.ada.Email)), Email: str(e.ada.Email),
+				})
+			},
+			assert: func(ctx context.Context, t *testing.T, e renameEnv, before userState, got admin.User, renamed bool, err error) {
+				t.Helper()
+				applied(func(_ *testing.T, e renameEnv) string { return strings.ToUpper(e.ada.Email) }, same, true)(
+					ctx, t, e, before, got, renamed, err)
+				assert.True(t, got.EmailVerifiedAt.Equal(verifiedAt),
+					"the stored address re-sent keeps its verification; got %v", got.EmailVerifiedAt)
+			},
+		},
+		{
+			name: "Username and email equal ignoring case in the same change",
+			act: func(ctx context.Context, t *testing.T, e renameEnv) (admin.User, bool, error) {
+				return e.rename(ctx, e.ada.Version, admin.UserChange{
+					Username: str(strings.ToUpper(email(t, 5))), Email: str(email(t, 5)),
+				})
+			},
+			assert: applied(func(t *testing.T, _ renameEnv) string { return strings.ToUpper(email(t, 5)) },
+				func(t *testing.T, _ renameEnv) string { return email(t, 5) }, true),
+		},
+		{
+			name: "Same username again",
+			act: func(ctx context.Context, _ *testing.T, e renameEnv) (admin.User, bool, error) {
+				return e.rename(ctx, e.ada.Version, admin.UserChange{Username: str(e.ada.Username)})
+			},
+			assert: applied(func(_ *testing.T, e renameEnv) string { return e.ada.Username }, same, false),
+		},
+		{
+			name: "Normalisation differs",
+			ada: func(t *testing.T) admin.NewUser {
+				t.Helper()
+				return admin.NewUser{Username: username(t, 0) + "-caf\u00e9", Email: email(t, 0), EmailVerifiedAt: verifiedAt}
+			},
+			act: func(ctx context.Context, t *testing.T, e renameEnv) (admin.User, bool, error) {
+				return e.rename(ctx, e.ada.Version, admin.UserChange{Username: str(username(t, 0) + "-cafe\u0301")})
+			},
+			assert: applied(func(t *testing.T, _ renameEnv) string { return username(t, 0) + "-cafe\u0301" }, same, true),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			f := newFixture(t)
+
+			renamer, ok := f.Users().(admin.UsernameUpdater)
+			require.True(t, ok, "the fixture's user store must implement admin.UsernameUpdater in every case")
+
+			nu := admin.NewUser{Username: username(t, 0), Name: "Ada", Email: email(t, 0), EmailVerifiedAt: verifiedAt}
+			if tc.ada != nil {
+				nu = tc.ada(t)
+			}
+
+			e := renameEnv{f: f, renamer: renamer}
+			e.ada = mustCreateUser(ctx, t, f, nu)
+			e.carol = mustCreateUser(ctx, t, f, admin.NewUser{Username: username(t, 1), Email: email(t, 1)})
+			e.carol = mustGetUser(ctx, t, f, e.carol.ID)
+			e.ada = mustGetUser(ctx, t, f, e.ada.ID)
+			before := readUserState(ctx, t, f, e.ada.ID)
+
+			got, renamed, err := tc.act(ctx, t, e)
+			tc.assert(ctx, t, e, before, got, renamed, err)
+		})
+	}
 }

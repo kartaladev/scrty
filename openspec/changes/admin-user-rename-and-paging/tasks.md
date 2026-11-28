@@ -81,7 +81,7 @@ so a toy-store red or green step is that case, run as
 
 ## 2. Stores apply the username (`internal/pgschema`, `store/sqlstore`, `store/pgxstore`, `store/gormstore`, `test/admin`, `test/internal/adminfix`, `test/sqlstore`)
 
-- [ ] 2.1 Add rename cases to the `test/admin` conformance suite. They call `UpdateUserRenaming`, run
+- [x] 2.1 Add rename cases to the `test/admin` conformance suite. They call `UpdateUserRenaming`, run
   only when the fixture's store implements `UsernameUpdater`, and are skipped with a message naming
   it otherwise (D8). Implement `UpdateUserRenaming` on the toy store. The cases are:
   - "Rename", asserting `renamed` is true;
@@ -102,7 +102,7 @@ so a toy-store red or green step is that case, run as
   without the method cannot show red). Verify through the toy store's conforming case (see the
   note above): red with the stub, green once the toy store applies the field. Verify that the SQL stores, which do not implement the port yet,
   skip the cases with the message.
-- [ ] 2.2 Add `pgschema.RenameAdminUser`, which writes the username alone where it differs and
+- [x] 2.2 Add `pgschema.RenameAdminUser`, which writes the username alone where it differs and
   reports the change through rows affected (D2), and add it to `TestAdminStatementsMatchSchema`. Then
   in `sqlstore` and `pgxstore`, implement `UpdateUserRenaming`: first as a stub that changes nothing,
   and see the 2.1 cases go red on the unchanged username; then for real, in one transaction under
@@ -116,7 +116,7 @@ so a toy-store red or green step is that case, run as
 
   Verify with the 2.1 cases passing on both, on PostgreSQL 18 and on 15
   (`SCRTY_TEST_POSTGRES_IMAGE=postgres:15.19-alpine`).
-- [ ] 2.3 Do the same in `gormstore`. Verify with the 2.1 cases passing in `test/gormstore`, on both
+- [x] 2.3 Do the same in `gormstore`. Verify with the 2.1 cases passing in `test/gormstore`, on both
   PostgreSQL versions.
 - [ ] 2.4 Pin the field a late unique violation names. Verify with an `adminfix` test on each SQL
   store:

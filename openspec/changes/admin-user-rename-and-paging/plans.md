@@ -475,11 +475,11 @@ Dependents were computed on 2026-11-28 with `go list -test -deps` across every w
     - "negative count": `CountUsers` returns `-1`. The result is 0 with an error matching no
       administration reason;
     - "store error": `errBoom`, matching no administration reason.
-  - `ExamplePagingWithCount` in `admin/example_paging_test.go`: over the example store holding 999
+  - `ExampleUsers_Count` in `admin/example_paging_test.go`: over the example store holding 999
     users, list `Offset: 20, PageSize: 10` and count, then print
     `fmt.Printf("%d of %d records shown (page %d of %d)\n", len(page.Users), total, 3, 100)`, with
     `// Output: 10 of 999 records shown (page 3 of 100)`.
-- [ ] **Step 2: Run** `go test -race -run 'TestCount|ExamplePagingWithCount' -count=1 ./admin/`.
+- [ ] **Step 2: Run** `go test -race -run 'TestCount|ExampleUsers_Count' -count=1 ./admin/`.
   Expected: FAIL on the missing behaviour (a stub `Count` returns 0, nil). Record it.
 - [ ] **Step 3: Implement** `Count`, and write the godoc for task 5.4, as `tasks.md` lists it:
   defaults, the skip-or-repeat trade-off with the cursor as the consistent choice, offset zero

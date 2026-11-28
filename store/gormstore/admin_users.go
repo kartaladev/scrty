@@ -279,82 +279,28 @@ func (s *IdentityStore) UpdateUser(
 		return admin.User{}, notFound(op)
 	}
 
-	var (
-		columns []string
-		values  []any
-		newOrg  any
-	)
-	if change.Name != nil {
-		if !storekit.Storable(*change.Name) {
-			return admin.User{}, invalidInput(op, "the name holds text that cannot be stored")
-		}
-		columns, values = append(columns, pgschema.ColumnName), append(values, *change.Name)
-	}
-	if change.Email != nil {
-		if !storekit.Storable(*change.Email) {
-			return admin.User{}, invalidInput(op, "the email holds text that cannot be stored")
-		}
-		columns, values = append(columns, pgschema.ColumnEmail), append(values, emptyNull(*change.Email))
-		if change.EmailVerifiedAt == nil {
-			// The statement keeps the verification only for the stored
-			// address, compared under the row lock it runs in.
-			columns = append(columns, pgschema.ColumnEmailVerifiedAtIfSameEmail)
-			values = append(values, emptyNull(*change.Email))
-		}
-	}
-	if change.EmailVerifiedAt != nil {
-		columns, values = append(columns, pgschema.ColumnEmailVerifiedAt), append(values, nullTs(*change.EmailVerifiedAt))
-	}
-	if change.Organization != nil {
-		org, err := adminOrgReference(op, *change.Organization)
-		if err != nil {
-			return admin.User{}, err
-		}
-		columns, values = append(columns, pgschema.ColumnOrganization), append(values, org)
-		newOrg = org
-	}
-	if err := checkAttributes(op, change.Attributes); err != nil {
+	upd, err := prepareAdminUpdate(op, change)
+	if err != nil {
 		return admin.User{}, err
 	}
 
 	var out admin.User
-	err := s.atomically(ctx, op, func(q *gorm.DB) error {
+	err = s.atomically(ctx, op, func(q *gorm.DB) error {
 		cur, err := lockAdminUser(q, op, uid, version)
 		if err != nil {
 			return err
 		}
-		if verifiesNoEmail(change, cur) {
-			return invalidInput(op, "an email verification time is set with no email to verify")
-		}
-		if err := checkOrganization(q, op, newOrg); err != nil {
+		if err := upd.check(q, op, cur); err != nil {
 			return err
 		}
 
-		now := storekit.Time(s.c.clock.Now())
-
-		if change.Email != nil && *change.Email != "" && (cur.email == nil || *change.Email != *cur.email) {
-			if err := checkIdentifiers(q, op, uid, "", *change.Email); err != nil {
+		if email := upd.changedEmail(cur); email != "" {
+			if err := checkIdentifiers(q, op, uid, "", email); err != nil {
 				return err
 			}
 		}
 
-		query, args := pgschema.UpdateAdminUserQuery(columns, values, now, uid)
-		if err := q.Exec(query, args...).Error; err != nil {
-			if isUniqueViolation(err) {
-				// The email is the only unique value this update can set.
-				return alreadyExists(op, admin.FieldEmail)
-			}
-
-			return dbFailed(op, err)
-		}
-
-		if change.Attributes != nil {
-			if err := replaceAttributes(q, op, uid, change.Attributes); err != nil {
-				return err
-			}
-		}
-
-		out, err = readAdminUser(q, op, uid)
+		out, err = s.writeAdminUpdate(q, op, uid, upd)
 
 		return err
 	})
@@ -363,6 +309,177 @@ func (s *IdentityStore) UpdateUser(
 	}
 
 	return out, nil
+}
+
+// UpdateUserRenaming implements admin.UsernameUpdater. It runs as UpdateUser
+// does, in one transaction under the user's row lock, and also writes the
+// username: both named identifiers are locked and checked together under the
+// rules of CreateUser, the username is written alone first
+// (pgschema.RenameAdminUser), so a unique violation there is the username's,
+// and the other fields follow with the version. renamed is whether the stored
+// username differed, byte for byte.
+func (s *IdentityStore) UpdateUserRenaming(
+	ctx context.Context, ref identity.UserID, version int64, change admin.UserChange,
+) (admin.User, bool, error) {
+	const op = "update user"
+
+	uid, ok := storekit.ParseUserID(ref)
+	if !ok {
+		return admin.User{}, false, notFound(op)
+	}
+	if change.Username == nil || *change.Username == "" {
+		return admin.User{}, false, invalidInput(op, "the change names no username")
+	}
+	if !storekit.Storable(*change.Username) {
+		return admin.User{}, false, invalidInput(op, "the username holds text that cannot be stored")
+	}
+
+	upd, err := prepareAdminUpdate(op, change)
+	if err != nil {
+		return admin.User{}, false, err
+	}
+
+	var (
+		out     admin.User
+		renamed bool
+	)
+	err = s.atomically(ctx, op, func(q *gorm.DB) error {
+		cur, err := lockAdminUser(q, op, uid, version)
+		if err != nil {
+			return err
+		}
+		if err := upd.check(q, op, cur); err != nil {
+			return err
+		}
+
+		// One call, so the username and the email are locked in key order
+		// before either is checked.
+		if err := checkIdentifiers(q, op, uid, *change.Username, upd.changedEmail(cur)); err != nil {
+			return err
+		}
+
+		res := q.Exec(pgschema.RenameAdminUser, uid, *change.Username)
+		if err := res.Error; err != nil {
+			if isUniqueViolation(err) {
+				return alreadyExists(op, admin.FieldUsername)
+			}
+
+			return dbFailed(op, err)
+		}
+		if res.RowsAffected > 1 {
+			return failed(op, errRenameRows)
+		}
+		renamed = res.RowsAffected == 1
+
+		out, err = s.writeAdminUpdate(q, op, uid, upd)
+
+		return err
+	})
+	if err != nil {
+		return admin.User{}, false, err
+	}
+
+	return out, renamed, nil
+}
+
+// errRenameRows reports a rename that affected more than the one row its
+// primary key names: the schema is not the one this store was written for.
+var errRenameRows = errors.New("the rename affected more than one row")
+
+// adminUpdate is an administrative update's fields other than the username,
+// validated and laid out for pgschema.UpdateAdminUserQuery before the
+// transaction starts.
+type adminUpdate struct {
+	change  admin.UserChange
+	columns []string
+	values  []any
+	newOrg  any
+}
+
+// prepareAdminUpdate validates change's fields other than the username and
+// lays them out as the columns of pgschema.UpdateAdminUserQuery.
+func prepareAdminUpdate(op string, change admin.UserChange) (adminUpdate, error) {
+	u := adminUpdate{change: change}
+	if change.Name != nil {
+		if !storekit.Storable(*change.Name) {
+			return adminUpdate{}, invalidInput(op, "the name holds text that cannot be stored")
+		}
+		u.columns, u.values = append(u.columns, pgschema.ColumnName), append(u.values, *change.Name)
+	}
+	if change.Email != nil {
+		if !storekit.Storable(*change.Email) {
+			return adminUpdate{}, invalidInput(op, "the email holds text that cannot be stored")
+		}
+		u.columns, u.values = append(u.columns, pgschema.ColumnEmail), append(u.values, emptyNull(*change.Email))
+		if change.EmailVerifiedAt == nil {
+			// The statement keeps the verification only for the stored
+			// address, compared under the row lock it runs in.
+			u.columns = append(u.columns, pgschema.ColumnEmailVerifiedAtIfSameEmail)
+			u.values = append(u.values, emptyNull(*change.Email))
+		}
+	}
+	if change.EmailVerifiedAt != nil {
+		u.columns = append(u.columns, pgschema.ColumnEmailVerifiedAt)
+		u.values = append(u.values, nullTs(*change.EmailVerifiedAt))
+	}
+	if change.Organization != nil {
+		org, err := adminOrgReference(op, *change.Organization)
+		if err != nil {
+			return adminUpdate{}, err
+		}
+		u.columns, u.values = append(u.columns, pgschema.ColumnOrganization), append(u.values, org)
+		u.newOrg = org
+	}
+	if err := checkAttributes(op, change.Attributes); err != nil {
+		return adminUpdate{}, err
+	}
+
+	return u, nil
+}
+
+// check refuses the update against cur, the locked row: a verification time
+// with no email left to verify, and an organisation that does not exist.
+func (u adminUpdate) check(q *gorm.DB, op string, cur lockedUser) error {
+	if verifiesNoEmail(u.change, cur) {
+		return invalidInput(op, "an email verification time is set with no email to verify")
+	}
+
+	return checkOrganization(q, op, u.newOrg)
+}
+
+// changedEmail is the email the update sets when it names a non-empty one
+// that differs from cur's, the locked row's, and "" otherwise: only a changed
+// address needs the identifier checks.
+func (u adminUpdate) changedEmail(cur lockedUser) string {
+	if u.change.Email == nil || *u.change.Email == "" || (cur.email != nil && *u.change.Email == *cur.email) {
+		return ""
+	}
+
+	return *u.change.Email
+}
+
+// writeAdminUpdate writes the update's columns, updated_at and the next
+// version, then its attributes, and reads the user back. A unique violation is
+// the email's: the username, when it changes, is written before, alone.
+func (s *IdentityStore) writeAdminUpdate(q *gorm.DB, op string, uid id.ID, u adminUpdate) (admin.User, error) {
+	now := storekit.Time(s.c.clock.Now())
+
+	query, args := pgschema.UpdateAdminUserQuery(u.columns, u.values, now, uid)
+	if err := q.Exec(query, args...).Error; err != nil {
+		if isUniqueViolation(err) {
+			return admin.User{}, alreadyExists(op, admin.FieldEmail)
+		}
+
+		return admin.User{}, dbFailed(op, err)
+	}
+
+	if u.change.Attributes != nil {
+		if err := replaceAttributes(q, op, uid, u.change.Attributes); err != nil {
+			return admin.User{}, err
+		}
+	}
+
+	return readAdminUser(q, op, uid)
 }
 
 // SetActive implements admin.UserStore.

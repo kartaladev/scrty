@@ -157,6 +157,15 @@ FROM scrty_users WHERE id = $1 FOR UPDATE`
 	// already written). Run it holding LockImportUser.
 	SetImportedUsername = `UPDATE scrty_users SET username = $2 WHERE id = $1`
 
+	// RenameAdminUser writes username $2 to user $1, alone, only where the
+	// stored username differs from it byte for byte. One row affected means
+	// the user was renamed; none means the username was already $2. An
+	// administrative rename runs it holding LockAdminUser, after the
+	// identifier checks and before UpdateAdminUserQuery writes the other
+	// fields and the version, so a unique violation here is the username's
+	// and one in the following statement the email's.
+	RenameAdminUser = `UPDATE scrty_users SET username = $2 WHERE id = $1 AND username <> $2`
+
 	// LockHistoryOwner reads whether the user with id $1 is soft-deleted and
 	// locks the row FOR UPDATE until the transaction ends. A password-history
 	// write takes it before it records an entry: a deletion locks the row FOR
