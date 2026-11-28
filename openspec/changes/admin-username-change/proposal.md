@@ -36,19 +36,23 @@ code (UNREPRODUCED: the code is outside this repository).
 - A rename leaves the old username free for another user to take, as an import that changes a
   username already does. Sessions, refresh families and OIDC `sub` are keyed by the user identifier
   and are not touched.
-- **BREAKING** for consumers who implement `admin.UserStore` themselves: `UpdateUser` must apply
-  the new field. A store that ignores it would report a rename that did not happen; how scrty
-  guards against that is an open decision in `design.md`.
+- **Opt-in session revocation:** `WithSessionRevocation` ends every session of a renamed user after
+  the rename commits. It is off by default. A failed revocation is reported with
+  `ErrSessionsNotRevoked`, and the rename stays committed.
+- **BREAKING** for consumers who implement `admin.UserStore` themselves. A store that does not
+  declare `UsernameUpdater` has a rename refused with `ErrConfig` before anything is written. Its
+  other updates are unaffected.
+- Lockout state stays under the old username. This is accepted and documented, with re-keying by
+  user identifier left as a follow-up.
 
 Not in this change:
 
 - a separate `Users.Rename` operation: it could not change the email in the same write;
-- case-insensitive username uniqueness: usernames stay compared exactly, as everywhere else;
-- ending a user's sessions on rename inside `admin`: the services are built from their store alone.
+- case-insensitive username uniqueness: usernames stay compared exactly, as everywhere else. It is a
+  follow-up (`username-case-folding`);
+- moving or clearing lockout state on rename. It is a follow-up (`lockout-by-user-id`).
 
-Open decisions (see `design.md`): the username comparison rule, what happens to lockout state keyed
-by the old username, the default for sessions after a rename, and the guard against a consumer store
-that ignores the field.
+Decided on 2026-11-28: D4 to D7 in `design.md`.
 
 ## Capabilities
 
@@ -64,8 +68,11 @@ None.
 ## Impact
 
 - `admin`: `UserChange`, `Users.Update`, `validateChange`, `changedUserFields`, the `UserStore`
-  contract and package documentation.
-- `store/pgxstore`, `store/gormstore`, `store/sqlstore`, `internal/pgschema`: `UpdateUser` takes the
+  contract, the `UsernameUpdater` marker, `WithSessionRevocation` with its `SessionRevoker` port and
+  `ErrSessionsNotRevoked`, and package documentation. `*session.Sessions` satisfies the port as it
+  is.
+- `store/pgxstore`, `store/gormstore`, `store/sqlstore`, `internal/pgschema`: each store implements
+  `UsernameUpdater`, and `UpdateUser` takes the
   identifier locks for the new username and checks it with the queries the import path already
   uses (`UsernameTaken`, `EmailHeldByLiveUser`, `UsernameHeldByLiveUser`).
 - `test/admin` conformance suites and the in-memory store in `test/`: rename cases for every store.

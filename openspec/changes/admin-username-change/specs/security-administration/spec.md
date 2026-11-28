@@ -61,3 +61,41 @@ Import SHALL keep matching users by identifier and writing the given username, w
 #### Scenario: Import after a rename
 - **WHEN** `ada` is renamed through an update to `ada.lovelace` and her identifier is then imported with the username `ada.lovelace` and otherwise equal values
 - **THEN** the import reports unchanged and emits no event
+
+### Requirement: A rename can end the user's sessions when the consumer opts in
+By default a rename SHALL end no session. When the consumer configures a session revoker, a committed update that changes the username SHALL then revoke every session of the user. A failed revocation SHALL return an error matching the sessions-not-revoked error that wraps the cause, with the update committed and its event emitted. A nil revoker SHALL fail construction.
+
+#### Scenario: Default
+- **WHEN** `ada`, signed in with a live session, is renamed to `ada.lovelace` by a service configured with defaults
+- **THEN** her session still loads
+
+#### Scenario: Consumer opts in
+- **WHEN** the service is configured with a session revoker and `ada`, signed in on two devices, is renamed
+- **THEN** neither session loads after the update returns
+
+#### Scenario: No username in the update
+- **WHEN** the service is configured with a session revoker and an update changes only `ada`'s display name
+- **THEN** the revoker is not called and her sessions still load
+
+#### Scenario: Revocation fails
+- **WHEN** the revoker returns an error after `ada` is renamed
+- **THEN** the call returns an error matching the sessions-not-revoked error and the revoker's error, `ada` loads as `ada.lovelace`, and one user-updated event was emitted
+
+#### Scenario: Nil revoker
+- **WHEN** the service is constructed with a nil session revoker
+- **THEN** construction fails with an error matching the configuration error
+
+### Requirement: A store that cannot change usernames refuses a rename before writing
+An update naming a username SHALL be refused with an error matching the configuration error, before the store is called, when the store does not declare that it updates usernames. Every store the library provides SHALL declare it. Updates that name no username SHALL be unaffected.
+
+#### Scenario: Consumer store without the declaration
+- **WHEN** a consumer store that does not declare username updates is given an update renaming `ada`
+- **THEN** the call fails with an error matching the configuration error, the store's update is not called, and `ada` is unchanged
+
+#### Scenario: Other fields on the same store
+- **WHEN** the same store is given an update changing only `ada`'s display name
+- **THEN** the update succeeds
+
+#### Scenario: Library stores
+- **WHEN** the in-memory, `database/sql`, pgx and GORM user stores are each given a rename
+- **THEN** each applies it
