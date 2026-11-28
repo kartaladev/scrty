@@ -249,7 +249,7 @@ so a toy-store red or green step is that case, run as
 
 ## 7. Documentation
 
-- [ ] 7.1 Add to the existing `## [Unreleased]` section of `CHANGELOG.md`, under `### Added`:
+- [x] 7.1 Add to the existing `## [Unreleased]` section of `CHANGELOG.md`, under `### Added`:
   `UserChange.Username`, `UsernameUpdater`, `WithSessionRevocation`, `SessionRevoker`,
   `ErrSessionsNotRevoked`, `UserFilter.Offset`, `Users.Count`, `UserPager`, `WithMaxListOffset` and
   `DefaultMaxListOffset`. Say that:
