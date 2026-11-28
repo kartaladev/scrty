@@ -77,6 +77,10 @@ By default a rename SHALL end no session. With a session revoker configured, a c
 - **WHEN** the service is configured with a session revoker and an update changes only `ada`'s display name
 - **THEN** the revoker is not called and her sessions still load
 
+#### Scenario: Store reports a rename for an update naming no username
+- **WHEN** the service is configured with a session revoker and its store reports a rename for an update that names no username
+- **THEN** the revoker is not called
+
 #### Scenario: Current username re-sent
 - **WHEN** the service is configured with a session revoker and `ada` is updated with the username `ada` and a new display name
 - **THEN** the update succeeds, the revoker is not called, and her sessions still load
@@ -107,6 +111,10 @@ Every user store SHALL apply a username named in an update, and SHALL report whe
 #### Scenario: Conformance suite on a store that misreports a rename
 - **WHEN** the store conformance suite runs against a store that always reports the username as unchanged
 - **THEN** the rename cases fail
+
+#### Scenario: Conformance suite on a store that reports renames it did not make
+- **WHEN** the store conformance suite runs against a store that always reports the username as changed
+- **THEN** the cases for an update naming no username, and for the current username re-sent, fail
 
 ### Requirement: Users can be listed from an offset
 Listing users SHALL accept an offset: the number of users to skip, in the list's order, before the page starts. The order SHALL match cursor listing, so consecutive offsets of an unchanged list neither overlap nor leave a gap. A non-zero offset SHALL NOT be combined with a cursor, and its page SHALL carry no cursor. An offset of zero SHALL leave the listing as it is without one. An offset past the last match SHALL give an empty page.

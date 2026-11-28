@@ -441,8 +441,8 @@ CountUsers(ctx context.Context, query UserQuery) (int64, error)
     structurally, and the passkey MFA method reports it without being an `mfa.Enroller`. Only its
     dependence on the device-proof port goes: TOTP reports true whatever its store.
   - Folding into a wrapper keeps the wrapper's treatment: the encrypted session store's `SelectRole`
-    keeps its fixed error text and sanitised cause, its `ListByFamily` opens rows, and the sealed MFA
-    store seals the emailed code a device proof records.
+    keeps its fixed error text and sanitised cause, its `ListByFamily` decrypts
+    nothing and returns no sealed envelope (it reads no sealed field), and the sealed MFA store seals the emailed code a device proof records.
   - Test-module helpers that exist only for an optional port (`storetest.RequireDeviceProof`,
     `RunDeviceProofSuite`, `DeviceProofEnrolmentStore`, and the `optionalCase` uses for device
     proofs, family reads and role selection) fold into the base suites, whose cases then always run.
@@ -489,7 +489,8 @@ CountUsers(ctx context.Context, query UserQuery) (int64, error)
 | Rename racing a deactivation | Handled, tested | The later write is `ErrStaleUpdate`; the deactivation stays |
 | No actor | Handled, tested (existing `Update` tests; the rename takes the same path) | `ErrNoActor`, store not called |
 | Store outage | Handled, tested (existing `Update` tests; the rename takes the same path) | Error matching no administration reason |
-| A store's `UpdateUser` ignores the username or misreports `renamed` | Handled, tested (D8) | Its conformance run fails a named case |
+| A store's `UpdateUser` ignores the username or misreports `renamed`, in either direction | Handled, tested (D8) | Its conformance run fails a named case; the guard holds one defect for each direction |
+| A store reports `renamed` for an update that names no username | Handled, tested | `Update` revokes only when the change names a username and the store reports a rename, so no session ends |
 | The commit fails after the store decided `renamed`, its outcome unknown | Accepted | The caller gets the store error and no revocation runs, though the rename may have committed; the caller reads the user again |
 | A consumer store written before this change | Accepted (D15) | It fails to compile until `UpdateUser` takes the username and reports `renamed` |
 | Lockout counts left under the old username | Accepted (D5) | The renamed account starts clean. The next holder of the old name inherits its counts until they age out |
@@ -558,7 +559,7 @@ CountUsers(ctx context.Context, query UserQuery) (int64, error)
 | A consumer MFA method whose `RemoveEnrolment` fails | Handled, tested (existing) | The recovery reset returns the error |
 | A consumer MFA method whose `RemoveEnrolment` reports success without removing | Handled, tested | The kind's re-read finds the enrolment and the reset returns an error |
 | A consumer recovery kind that reports held authenticators as usable | Accepted (D15) | The "another way back in" check trusts the kind, as for scrty's kinds |
-| A wrapper that seals or sanitises loses that treatment on a newly forwarded method | Handled, tested | The encrypted store's `SelectRole` keeps fixed error text, its `ListByFamily` opens rows, and the sealed MFA store seals the emailed code |
+| A wrapper that seals or sanitises loses that treatment on a newly forwarded method | Handled, tested | The encrypted store's `SelectRole` keeps fixed error text, its `ListByFamily` reads no sealed field and returns no envelope, and the sealed MFA store seals the emailed code |
 
 ## Risks / Trade-offs
 

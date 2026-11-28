@@ -69,7 +69,7 @@ Every plan task names the `tasks.md` numbers it carries out. This plan adds no s
 ## Review Focus
 
 1. **Wrappers that embed or wrap a folded interface now forward the folded methods, and must keep
-   their own treatment.** The encrypted session store's `ListByFamily` opens rows, and its
+   their own treatment.** The encrypted session store's `ListByFamily` reads no sealed field and returns no envelope, and its
    `SelectRole` keeps its fixed error text and sanitised cause (`session/store_encrypted.go:177-180`
    today). The sealed MFA store seals the emailed code a device proof records
    (`store/seal/mfa.go:282-300` today). `oidcprovider`'s embedding session wrappers answer a family
@@ -96,7 +96,7 @@ Every plan task names the `tasks.md` numbers it carries out. This plan adds no s
 |---|---|---|---|
 | G1 | 1 (6.1) | `admin/**`; `store/{sqlstore,pgxstore,gormstore}/admin_users.go`; `test/admin/**`; `test/internal/adminfix/**`; `test/gormstore/admin_store_test.go`; `test/sqlstore/rename_sessions_test.go` | Opus: it changes an interface that three modules compile against. |
 | G2 | 2 (6.2, 6.3) | the G1 files; `internal/pgschema/admin*.go`; `test/sqlstore/admin_test.go` | Opus: it merges two SQL statements and must keep cursor paging's behaviour. |
-| H1 | 3 (8.1) | see Task 3 Files | Opus: wrappers, and an encrypted store whose forwarding must open rows and sanitise errors. |
+| H1 | 3 (8.1) | see Task 3 Files | Opus: wrappers, and an encrypted store whose forwarding must read no sealed field and sanitise errors. |
 | H2 | 4 (8.2) | see Task 4 Files | Sonnet: the refusal it removes is already decided. |
 | H3 | 5 (8.3) | see Task 5 Files | Opus: several packages, the test module's public API, sealing, and an interface other code compiles against. |
 | H5 | 7 (8.5) | see Task 7 Files | Opus: wrapper typing across modules, and refusal paths in the chain. |
@@ -140,7 +140,7 @@ MODS=". authenticate/passkey/webauthn expiry/sweep httpsec/fibersec httpsec/gins
 for m in $MODS; do (cd $m && go build ./... && go vet ./... && go vet -tags admin_stub ./... ) || echo "FAIL $m"; done
 # 2. the lane's changed packages ($PKGS, the import paths its Task lists) and every package, in every
 #    module, that imports one of them directly or transitively, under -race
-for m in $MODS; do (cd $m && go list -deps -test -f '{{if not .Standard}}{{.ImportPath}} {{join .Deps " "}}{{end}}' ./...   | awk -v pk="$PKGS" 'BEGIN{n=split(pk,a," ")} {for(i=1;i<=n;i++) if(index(" "$0" "," "a[i]" ")){print $1; break}}'   | grep -v '\.test$' | sort -u | xargs -r go test -race -count=1 -p 2); done
+for m in $MODS; do (cd $m && go list -deps -test -f '{{if not .Standard}}{{.ImportPath}} {{join .Deps " "}}{{end}}' ./...   | awk -v pk="$PKGS" 'BEGIN{n=split(pk,a," ")} {for(i=1;i<=n;i++) if(index(" "$0" "," "a[i]" ")){print $1; break}}'   | grep -v '\.test$' | sed 's/_test$//' | sort -u | xargs -r go test -race -count=1 -p 2); done
 # 3. the database-backed packages of the test module that step 2 selected, again on PostgreSQL 15
 (cd test && SCRTY_TEST_POSTGRES_IMAGE=postgres:15.19-alpine go test -race -count=1 -p 2 <the test-module packages from step 2>)
 # 4. formatting
@@ -183,7 +183,7 @@ The toy store's load-bearing run (Global Constraints) is added for G1 and G2.
   4. the audit "before" record;
   5. `UpdateUser`;
   6. the event and audit;
-  7. revocation, when `renamed`.
+  7. revocation, only when `change.Username != nil && renamed`.
 
   It still returns `(User, error)` to its callers.
 - `NewUsers` no longer type-asserts the store. `WithSessionRevocation` refuses only a nil or typed-nil
@@ -196,9 +196,20 @@ The toy store's load-bearing run (Global Constraints) is added for G1 and G2.
     with `change.Username` set". Delete the cases that expected `ErrConfig`, and the cases that
     expected `UpdateUser` never to see a username.
   - `TestNewUsers_SessionRevocationWiring` loses its "store that cannot rename" case.
+  - In `test/admin/toystore_test.go`, add the defect `renamed-true`: the toy's `UpdateUser` always
+    reports `renamed=true`. In `conformance_guard_test.go`, add its guard row expecting
+    `Users/Rename/No_username_in_the_update` and `Users/Rename/Same_username_again` to fail.
+  - In `TestUpdate_SessionRevocation` (`admin/rename_test.go`), add the case "store reports a rename
+    for a change naming no username": the mocked `UpdateUser` returns `renamed=true` for a change
+    with `Username == nil`; assert the revoker mock gets no `DeleteByUser` call and `Update`
+    returns no error.
 - [ ] **Step 2: Run** the toy's conforming case, with the toy's `UpdateUser` stubbed to always report
   `renamed=true`.
   - Expected: FAIL in "No username in the update", on the `renamed` assertion.
+  - Then the new `TestUpdate_SessionRevocation` case against `Update` still gating on `renamed`
+    alone. Expected: FAIL, with an unexpected call to the revoker.
+  - The `renamed-true` guard row passes once the defect exists, since the cases already assert
+    `renamed == false`. Show it can fail by removing the defect from the toy for one run.
 - [ ] **Step 3: Implement.**
   - Move each store's `UpdateUserRenaming` body into `UpdateUser`. When `change.Username == nil`, skip
     the username's identifier lock and the `RenameAdminUser` statement, and report `renamed=false`.
@@ -313,8 +324,9 @@ The toy store's load-bearing run (Global Constraints) is added for G1 and G2.
   ```
 
 - [ ] **Step 1: Write the failing tests.**
-  - `TestEncryptedStore_ListByFamilyOpensRows`: a family read through `NewEncryptedStore` over a
-    memory store returns opened sessions equal to the ones saved (Review Focus 1).
+  - `TestStore_EncryptedListByFamilyOverMemory`: a family read through `NewEncryptedStore` over a
+    memory store returns the saved sessions with their sealed tokens cleared, and calls no cipher
+    (Review Focus 1; the family read reads no sealed field).
   - `TestLineageWrappersReadOneFamily`, in `oidcprovider`: each embedding wrapper answers a family
     read through the inner store's `ListByFamily`. The inner store holds an undecodable row for
     another family of the same user, which must not cause an error. This is the spec scenario "A
