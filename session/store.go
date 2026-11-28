@@ -76,8 +76,8 @@ var ErrSuccessorAdvanced = errors.New("session: the session's successor has move
 // ErrSuperseded is what a store reports when Store.MarkPresented is
 // asked to record the first presentation of a session that has been
 // superseded, and nothing was written. A superseded session is never marked
-// presented: its presentation state is its successor's to record. A
-// RoleSelector reports it too, for a selection on a superseded session.
+// presented: its presentation state is its successor's to record.
+// Store.SelectRole reports it too, for a selection on a superseded session.
 //
 // The Sessions never returns it: it re-loads the session and judges it, which
 // is how a recovery committed between a load and its mark is caught.
@@ -262,7 +262,7 @@ type Store interface {
 	//
 	// SelectedRole is written by Create, by a supersession's successor (which
 	// takes the superseded record's, see Supersede), and otherwise only by
-	// RoleSelector.SelectRole: Save keeps the stored
+	// SelectRole: Save keeps the stored
 	// value whatever the session handed to it says, so saving a copy loaded
 	// before a selection cannot undo it. A SQL store leaves its column out of
 	// the UPDATE.
@@ -496,8 +496,60 @@ type Store interface {
 	// A listed session's ID may be empty: a store that keeps only a digest of
 	// the identifier cannot return it, and a sign-in is named by its FamilyID.
 	//
-	// A store may also offer FamilyReader, this contract narrowed to one family.
+	// ListByFamily is this contract narrowed to one family.
 	ListByUser(ctx context.Context, user identity.UserID, now time.Time) ([]*Session, error)
+
+	// ListByFamily is ListByUser's contract narrowed to one family: this
+	// user's sessions of family that are not superseded and are before both of
+	// their own deadlines at now, the time the caller passes. The reference is
+	// matched exactly as the consumer supplied it, and no other user's session
+	// is ever returned, even of the same family. No match is an empty result,
+	// not an error, and so is the nil family, which names no family and which
+	// the store need not ask anyone about.
+	//
+	// It is what Sessions.SignInState reads, so a read of one sign-in costs
+	// one family's rows instead of all of the user's, and a row of another
+	// family that the store cannot read cannot fail it. Apart from that, and
+	// from the nil family, which a family read answers with nothing where a
+	// listing may list a row stored in it, a family read at now answers the
+	// sessions of that family that a listing at now answers, as a sign-in
+	// renews, rotates and ends. The conformance suite holds a store to it.
+	//
+	// As with a listing, the order is unspecified, the sessions returned
+	// belong to the caller, an ID may be empty, and no sealed field is opened,
+	// so a sealing store answers with its key retired and its sessions carry
+	// neither token. A store that cannot read one of the family's rows fails
+	// the call rather than skipping the row. A row of another family does not
+	// fail it.
+	//
+	// A store that embeds a concrete store, such as *MemoryStore, and
+	// overrides ListByUser inherits the embedded store's ListByFamily, which
+	// reads the embedded store and not the override, as for any embedding.
+	// Such a store overrides ListByFamily too.
+	ListByFamily(ctx context.Context, user identity.UserID, family id.ID, now time.Time) ([]*Session, error)
+
+	// SelectRole writes role as the SelectedRole of the session with this
+	// identifier, and nothing else: no deadline, no other field. The empty
+	// role clears the selection. It never inserts, so a session that was
+	// deleted is not brought back.
+	//
+	// It writes only to a session that is stored, not superseded and before
+	// both of its deadlines, judged by the store's own clock, in one atomic
+	// conditional write. Otherwise it writes nothing and reports why: a
+	// session that is not stored is ErrNotFound; a superseded one, whether or
+	// not its grace window is open, is ErrSuperseded, since its successor, not
+	// it, carries the family on; and an expired one is ErrExpired.
+	//
+	// The store does not interpret role: it stores the name and returns it
+	// unchanged. Whether the user holds a grant of that name is for the
+	// caller to judge, before it records the choice and again whenever it
+	// acts on it. A durable store may refuse text it cannot hold unchanged,
+	// with an error that does not quote it.
+	//
+	// Save keeps the role SelectRole recorded, and a supersession's successor
+	// takes it (see Save and Supersede), so a store that overrides one of
+	// them overrides the others to match.
+	SelectRole(ctx context.Context, id string, role string) error
 
 	// DeleteExpired removes every expired session and reports how many went:
 	// one that is not superseded once either of its deadlines has passed, and

@@ -113,10 +113,7 @@ func TestStore_MemoryListByFamily(t *testing.T) {
 			store := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clockwork.NewFakeClockAt(createdAt))))
 			seed(t, store)
 
-			reader, ok := any(store).(session.FamilyReader)
-			require.True(t, ok, "the memory store must offer the family read")
-
-			listed, err := reader.ListByFamily(t.Context(), tc.user, tc.family, tc.now)
+			listed, err := store.ListByFamily(t.Context(), tc.user, tc.family, tc.now)
 			tc.assert(t, store, listed, err)
 		})
 	}
@@ -138,19 +135,8 @@ func TestStore_EncryptedListByFamily(t *testing.T) {
 
 	reading := func(answer []*session.Session, failure error) func(*gomock.Controller) session.Store {
 		return func(ctrl *gomock.Controller) session.Store {
-			family := NewMockFamilyReader(ctrl)
-			family.EXPECT().ListByFamily(gomock.Any(), testUser, familyAsked, createdAt).Return(answer, failure)
-
-			return struct {
-				*MockStore
-				*MockFamilyReader
-			}{NewMockStore(ctrl), family}
-		}
-	}
-	listing := func(answer []*session.Session, failure error) func(*gomock.Controller) session.Store {
-		return func(ctrl *gomock.Controller) session.Store {
 			store := NewMockStore(ctrl)
-			store.EXPECT().ListByUser(gomock.Any(), testUser, createdAt).Return(answer, failure)
+			store.EXPECT().ListByFamily(gomock.Any(), testUser, familyAsked, createdAt).Return(answer, failure)
 
 			return store
 		}
@@ -178,43 +164,15 @@ func TestStore_EncryptedListByFamily(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name:   "over a store with a family read: its answer, with no envelope",
+			name:   "the inner store's family read, with no envelope",
 			family: familyAsked,
 			inner:  reading([]*session.Session{familyMember("head", testUser, familyAsked)}, nil),
 			assert: theHeadAlone,
 		},
 		{
-			name:   "over a store with a family read: its failure, behind fixed text",
+			name:   "the inner store's empty answer is an empty answer",
 			family: familyAsked,
-			inner:  reading(nil, errStoreQuotes),
-			assert: aFailure,
-		},
-		{
-			name:   "over a store with a family read: nil in its answer is passed on untouched",
-			family: familyAsked,
-			inner:  reading([]*session.Session{nil}, nil),
-			assert: func(t *testing.T, listed []*session.Session, err error) {
-				t.Helper()
-
-				require.NoError(t, err)
-				assert.Equal(t, []*session.Session{nil}, listed)
-			},
-		},
-		{
-			name:   "over a store with none: the listing narrowed to the family, with no envelope",
-			family: familyAsked,
-			inner: listing([]*session.Session{
-				familyMember("neighbour", testUser, familyOther),
-				familyMember("head", testUser, familyAsked),
-				nil,
-				familyMember("other-neighbour", testUser, familyOther),
-			}, nil),
-			assert: theHeadAlone,
-		},
-		{
-			name:   "over a store with none: no member of the family is an empty answer",
-			family: familyAsked,
-			inner:  listing([]*session.Session{familyMember("neighbour", testUser, familyOther)}, nil),
+			inner:  reading(nil, nil),
 			assert: func(t *testing.T, listed []*session.Session, err error) {
 				t.Helper()
 
@@ -223,10 +181,21 @@ func TestStore_EncryptedListByFamily(t *testing.T) {
 			},
 		},
 		{
-			name:   "over a store with none: the listing's failure, behind fixed text",
+			name:   "the inner store's failure, behind fixed text",
 			family: familyAsked,
-			inner:  listing(nil, errStoreQuotes),
+			inner:  reading(nil, errStoreQuotes),
 			assert: aFailure,
+		},
+		{
+			name:   "nil in the inner store's answer is passed on untouched",
+			family: familyAsked,
+			inner:  reading([]*session.Session{nil}, nil),
+			assert: func(t *testing.T, listed []*session.Session, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				assert.Equal(t, []*session.Session{nil}, listed)
+			},
 		},
 		{
 			name:   "the nil family asks nothing of what it wraps",
@@ -248,13 +217,41 @@ func TestStore_EncryptedListByFamily(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			store := must.Must(session.NewEncryptedStore(tc.inner(ctrl), NewMockCipher(ctrl)))
 
-			reader, ok := store.(session.FamilyReader)
-			require.True(t, ok, "the sealing store must offer the family read, whatever it wraps")
-
-			listed, err := reader.ListByFamily(t.Context(), testUser, tc.family, createdAt)
+			listed, err := store.ListByFamily(t.Context(), testUser, tc.family, createdAt)
 			tc.assert(t, listed, err)
 		})
 	}
+}
+
+// TestStore_EncryptedListByFamilyOverMemory pins the sealing store's family
+// read over a real store: it answers the family's sessions as they were saved,
+// every field but the two sealed tokens, which it never opens and never hands
+// back as envelopes, so a store whose key was retired still answers.
+func TestStore_EncryptedListByFamilyOverMemory(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	memory := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clockwork.NewFakeClockAt(createdAt))))
+	writer := must.Must(session.NewEncryptedStore(memory, fakeCipher{key: 0x2a}))
+	require.NoError(t, writer.Create(ctx, familyMember("head", testUser, familyAsked)))
+	require.NoError(t, writer.Create(ctx, familyMember("neighbour", testUser, familyOther)))
+
+	raw, err := memory.Load(ctx, "head")
+	require.NoError(t, err)
+	require.NotEqual(t, "an-envelope-in-the-column", raw.ExternalIDToken, "the token must have been sealed")
+
+	saved, err := writer.Load(ctx, "head")
+	require.NoError(t, err)
+	require.Equal(t, "an-envelope-in-the-column", saved.ExternalIDToken, "the saved token must open")
+	want := *saved
+	want.ExternalIDToken, want.CSRFToken = "", ""
+
+	// The reader's cipher expects no call: opening anything fails the test.
+	reader := must.Must(session.NewEncryptedStore(memory, NewMockCipher(gomock.NewController(t))))
+	listed, err := reader.ListByFamily(ctx, testUser, familyAsked, createdAt)
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	assert.Equal(t, &want, listed[0])
 }
 
 // BenchmarkSignInState_OneFamily measures what a stream's reload costs against
@@ -265,9 +262,6 @@ func BenchmarkSignInState_OneFamily(b *testing.B) {
 		wrap func(s session.Store) session.Store
 	}{
 		{name: "family read", wrap: func(s session.Store) session.Store { return s }},
-		// Embedding only the Store hides the family read, as a consumer's own
-		// store has none: this is the default's cost.
-		{name: "listing", wrap: func(s session.Store) session.Store { return struct{ session.Store }{s} }},
 	}
 
 	for _, read := range reads {

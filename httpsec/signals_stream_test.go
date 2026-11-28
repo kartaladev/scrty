@@ -338,14 +338,14 @@ func newStreamRig(t *testing.T, setup streamSetup) *streamRig {
 	return r
 }
 
-// streamHookStore is the rig's session store, which sees and can fail each listing.
+// streamHookStore is the rig's session store, which sees and can fail each read of a sign-in (its family read).
 type streamHookStore struct {
 	session.Store
 
 	rig *streamRig
 }
 
-func (s *streamHookStore) ListByUser(ctx context.Context, user identity.UserID, at time.Time) ([]*session.Session, error) {
+func (s *streamHookStore) ListByFamily(ctx context.Context, user identity.UserID, family id.ID, at time.Time) ([]*session.Session, error) {
 	s.rig.lists.Add(1)
 
 	if hook := s.rig.listHook.Load(); hook != nil {
@@ -358,7 +358,7 @@ func (s *streamHookStore) ListByUser(ctx context.Context, user identity.UserID, 
 		return nil, nil
 	}
 
-	return s.Store.ListByUser(ctx, user, at)
+	return s.Store.ListByFamily(ctx, user, family, at)
 }
 
 func (s *streamHookStore) Load(ctx context.Context, sid string) (*session.Session, error) {

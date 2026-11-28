@@ -1028,7 +1028,7 @@ func (m *Sessions) RotateIssuing(
 	// So is the second-factor-at-login mark, which only the creating write
 	// sets: a copy may neither claim it nor drop it.
 	rotated.MFAAtFirstFactor = stored.MFAAtFirstFactor
-	// So is the selected role, which only RoleSelector.SelectRole writes: a
+	// So is the selected role, which only Store.SelectRole writes: a
 	// copy loaded before a selection must neither drop it nor claim another.
 	// The store's supersession settles it finally, from the record it
 	// supersedes, so a selection recorded after this load is kept too.

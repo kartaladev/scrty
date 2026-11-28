@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
@@ -113,14 +112,10 @@ type encryptedStore struct {
 // ListByUser opens nothing: a listing needs no sealed field, so it lists with
 // the cipher's keys unreachable or retired, and the sessions it returns carry
 // neither token, never an envelope in a token's place. ListByFamily is the same
-// read narrowed to one family. The returned store always offers it: it reads
-// through inner's FamilyReader when inner has one, and when inner has none it
-// lists through inner and keeps the one family, so a consumer's own store gains
-// nothing it must implement, and keeps the limit that listing brings (see
-// Sessions.SignInState).
+// read narrowed to one family, through inner's own ListByFamily.
 //
-// The returned store offers RoleSelector exactly when inner does, and passes
-// the selection to inner unchanged: the selected role is not sealed.
+// SelectRole passes the selection to inner unchanged: the selected role is not
+// sealed.
 //
 // A failure of inner or of the cipher is returned behind fixed text of this
 // package — never naming the session identifier, which is the bearer
@@ -151,36 +146,18 @@ func NewEncryptedStore(inner Store, cipher Cipher) (Store, error) {
 		return nil, fmt.Errorf("%w: the cipher must not be nil", ErrConfig)
 	}
 
-	sealing := &encryptedStore{inner: inner, cipher: cipher}
-	if selector, ok := inner.(RoleSelector); ok {
-		return &roleSelectingEncryptedStore{encryptedStore: sealing, selector: selector}, nil
-	}
-
-	return sealing, nil
-}
-
-// roleSelectingEncryptedStore is the sealing store over an inner store that
-// offers RoleSelector. It is a type of its own, rather than a method every
-// sealing store has, so the store NewEncryptedStore returns offers the
-// selection exactly when inner does, and a feature that needs it can refuse a
-// store without it at construction instead of failing at the first switch.
-type roleSelectingEncryptedStore struct {
-	*encryptedStore
-
-	selector RoleSelector
+	return &encryptedStore{inner: inner, cipher: cipher}, nil
 }
 
 // SelectRole passes the selection to inner unchanged: the selected role is
 // not sealed. A failure of inner comes back behind fixed text of this
 // package, never naming the session identifier, and a sentinel inner returns
 // bare comes back as itself.
-func (s *roleSelectingEncryptedStore) SelectRole(ctx context.Context, id string, role string) error {
-	err := porterr.SanitizeTo(ctx, nil, s.selector.SelectRole(ctx, id, role), porterr.ErrUnwalkable)
+func (s *encryptedStore) SelectRole(ctx context.Context, id string, role string) error {
+	err := porterr.SanitizeTo(ctx, nil, s.inner.SelectRole(ctx, id, role), porterr.ErrUnwalkable)
 
 	return storeFailed(err, "session: the inner store could not record the selected role")
 }
-
-var _ RoleSelector = (*roleSelectingEncryptedStore)(nil)
 
 // additionalData is what a session's ID token is sealed against.
 func additionalData(id string) []byte {
@@ -376,33 +353,18 @@ func (s *encryptedStore) ListByUser(ctx context.Context, user identity.UserID, n
 	return withoutSealed(listed), nil
 }
 
-// ListByFamily passes the read on and opens nothing, as ListByUser does: it
-// asks inner's FamilyReader when inner has one, and otherwise lists through
-// inner and keeps the sessions of family, so the answer is the same narrowed
-// read either way. The nil family names none, and asks inner nothing.
+// ListByFamily passes the read on to inner's ListByFamily and opens nothing,
+// as ListByUser does. The nil family names none, and asks inner nothing.
 func (s *encryptedStore) ListByFamily(ctx context.Context, user identity.UserID, family id.ID, now time.Time) ([]*Session, error) {
 	if family.IsZero() {
 		return nil, nil
 	}
 
-	const text = "session: the inner store could not list the sign-in's sessions"
-
-	if reader, ok := s.inner.(FamilyReader); ok {
-		listed, err := reader.ListByFamily(ctx, user, family, now)
-		err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
-		if err != nil {
-			return nil, storeFailed(err, text)
-		}
-
-		return withoutSealed(listed), nil
-	}
-
-	listed, err := s.inner.ListByUser(ctx, user, now)
+	listed, err := s.inner.ListByFamily(ctx, user, family, now)
 	err = porterr.SanitizeTo(ctx, nil, err, porterr.ErrUnwalkable)
 	if err != nil {
-		return nil, storeFailed(err, text)
+		return nil, storeFailed(err, "session: the inner store could not list the sign-in's sessions")
 	}
-	listed = slices.DeleteFunc(listed, func(sess *Session) bool { return sess == nil || sess.FamilyID != family })
 
 	return withoutSealed(listed), nil
 }
@@ -495,7 +457,4 @@ func (s *encryptedStore) SuccessorPresented(ctx context.Context, id string) (boo
 	return used, storeFailed(err, "session: the inner store could not read whether the session's successor was used")
 }
 
-var (
-	_ Store        = (*encryptedStore)(nil)
-	_ FamilyReader = (*encryptedStore)(nil)
-)
+var _ Store = (*encryptedStore)(nil)

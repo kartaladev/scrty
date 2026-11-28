@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -23,8 +22,7 @@ import (
 // signInStateFixture holds a sign-in's ordinary traffic apart from the read
 // under test. traffic renews and ends through the real store; reader, the
 // manager the read goes through, sees it through a mocked store expecting only
-// the one read its mode offers, ListByUser or ListByFamily, so a read that
-// reached Load, MarkPresented, DeleteFamily or any other store call fails the
+// its family read, ListByFamily, so a read that reached ListByUser, Load, MarkPresented, DeleteFamily or any other store call fails the
 // case.
 type signInStateFixture struct {
 	clk     *clockwork.FakeClock
@@ -639,10 +637,9 @@ func TestSessions_SignInState(t *testing.T) {
 		},
 	}
 
-	// Every row runs over each way a store can answer: its listing, the default,
-	// and its family read. The rows do not know which, so the answers are the
-	// same or a row fails. A mode expects only its own read, so reaching the
-	// other fails the row too.
+	// Every row runs over the store's family read, the one read it may make: the
+	// mocked store expects nothing else, so reaching its listing or any other
+	// call fails the row.
 	modes := []struct {
 		name string
 		// reader returns the store the read goes through, whose one expected
@@ -650,32 +647,12 @@ func TestSessions_SignInState(t *testing.T) {
 		reader func(t *testing.T, ctrl *gomock.Controller, f *signInStateFixture, q *query) session.Store
 	}{
 		{
-			name: "over a store's listing",
-			reader: func(t *testing.T, ctrl *gomock.Controller, f *signInStateFixture, _ *query) session.Store {
-				t.Helper()
-
-				store := NewMockStore(ctrl)
-				store.EXPECT().ListByUser(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
-					func(ctx context.Context, u identity.UserID, now time.Time) ([]*session.Session, error) {
-						f.listings.Add(1)
-						assert.True(t, now.Equal(f.clk.Now()), "the listing must be judged at the manager's clock")
-						if f.answer != nil {
-							return f.answer(ctx)
-						}
-
-						return f.through.ListByUser(ctx, u, now)
-					}).AnyTimes()
-
-				return store
-			},
-		},
-		{
 			name: "over a store's family read",
 			reader: func(t *testing.T, ctrl *gomock.Controller, f *signInStateFixture, q *query) session.Store {
 				t.Helper()
 
-				family := NewMockFamilyReader(ctrl)
-				family.EXPECT().ListByFamily(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+				store := NewMockStore(ctrl)
+				store.EXPECT().ListByFamily(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
 					func(ctx context.Context, u identity.UserID, asked id.ID, now time.Time) ([]*session.Session, error) {
 						f.listings.Add(1)
 						assert.True(t, now.Equal(f.clk.Now()), "the family read must be judged at the manager's clock")
@@ -685,16 +662,10 @@ func TestSessions_SignInState(t *testing.T) {
 							return f.answer(ctx)
 						}
 
-						through, ok := f.through.(session.FamilyReader)
-						require.True(t, ok, "this repository's stores all offer the family read")
-
-						return through.ListByFamily(ctx, u, asked, now)
+						return f.through.ListByFamily(ctx, u, asked, now)
 					}).AnyTimes()
 
-				return struct {
-					*MockStore
-					*MockFamilyReader
-				}{NewMockStore(ctrl), family}
+				return store
 			},
 		},
 	}
@@ -757,8 +728,8 @@ func TestSessions_SignInState(t *testing.T) {
 
 // oneUnreadableRowStore is a consumer's own store holding a row it cannot
 // decode, in unreadable: a listing fails on it, as the Store contract asks,
-// whichever of the user's sign-ins was being looked for. It offers no family
-// read.
+// whichever of the user's sign-ins was being looked for, and so does a read of
+// the family holding it. A read of another family does not reach the row.
 type oneUnreadableRowStore struct {
 	session.Store
 
@@ -769,41 +740,41 @@ func (s oneUnreadableRowStore) ListByUser(context.Context, identity.UserID, time
 	return nil, errStoreQuotes
 }
 
-// listingOverrideStore is a consumer's store that embeds the Store interface,
-// not a MemoryStore, and answers a listing from its own source of truth. The
-// interface hides any family read of what it embeds, so SignInState lists, and
-// the listing it overrides is the one it reads.
-type listingOverrideStore struct {
-	session.Store
-
-	truth session.Store
-}
-
-func (s listingOverrideStore) ListByUser(ctx context.Context, user identity.UserID, now time.Time) ([]*session.Session, error) {
-	return s.truth.ListByUser(ctx, user, now)
-}
-
-// familyReadingStore is the same store offering the family read: only a read of
-// the family holding the row fails on it.
-type familyReadingStore struct{ oneUnreadableRowStore }
-
-func (s familyReadingStore) ListByFamily(ctx context.Context, user identity.UserID, family id.ID, now time.Time) ([]*session.Session, error) {
+func (s oneUnreadableRowStore) ListByFamily(ctx context.Context, user identity.UserID, family id.ID, now time.Time) ([]*session.Session, error) {
 	if family == s.unreadable {
 		return nil, errStoreQuotes
 	}
 
-	listed, err := s.Store.ListByUser(ctx, user, now)
-	if err != nil {
-		return nil, err
+	return s.Store.ListByFamily(ctx, user, family, now)
+}
+
+// readOverrideStore is a consumer's store that embeds the Store interface over
+// an empty store and answers its reads from its own source of truth. When
+// family is false it overrides only the listing, and inherits the empty
+// store's family read, as any embedding does.
+type readOverrideStore struct {
+	session.Store
+
+	truth  session.Store
+	family bool
+}
+
+func (s readOverrideStore) ListByUser(ctx context.Context, user identity.UserID, now time.Time) ([]*session.Session, error) {
+	return s.truth.ListByUser(ctx, user, now)
+}
+
+func (s readOverrideStore) ListByFamily(ctx context.Context, user identity.UserID, family id.ID, now time.Time) ([]*session.Session, error) {
+	if !s.family {
+		return s.Store.ListByFamily(ctx, user, family, now)
 	}
 
-	return slices.DeleteFunc(listed, func(l *session.Session) bool { return l.FamilyID != family }), nil
+	return s.truth.ListByFamily(ctx, user, family, now)
 }
 
 // TestSessions_SignInState_ConsumerStore pins what a consumer's own store gets:
-// one with no family read keeps working by listing, and keeps the limit that
-// comes with it; one offering the read loses the limit for its other sign-ins.
-// The sealing decorator gives the same answers over either.
+// the read is answered by the store's read of the one family, never from the
+// user's listing, so a row of another sign-in that the store cannot decode
+// fails nothing. The sealing decorator gives the same answers.
 func TestSessions_SignInState_ConsumerStore(t *testing.T) {
 	t.Parallel()
 
@@ -833,28 +804,32 @@ func TestSessions_SignInState_ConsumerStore(t *testing.T) {
 		assert.False(t, got.IdleDeadline.IsZero())
 	}
 
+	notFound := func(t *testing.T, got session.SignInState, err error) {
+		t.Helper()
+
+		require.ErrorIs(t, err, session.ErrNotFound)
+		assert.Zero(t, got)
+	}
+
 	type testCase struct {
 		name string
 		wrap wrap
-		// familyRead is whether the consumer's store offers the read.
-		familyRead bool
 		// readUnreadable reads the sign-in holding the row, not its neighbour.
 		readUnreadable bool
-		// overridesListing is a store embedding the Store interface, over an
-		// empty store, whose own listing holds the sign-ins.
-		overridesListing bool
-		assert           func(t *testing.T, got session.SignInState, err error)
+		// override is a store embedding the Store interface, over an empty
+		// store, whose own reads hold the sign-ins: overrideFamily is whether
+		// it overrides the family read as well as the listing.
+		override, overrideFamily bool
+		assert                   func(t *testing.T, got session.SignInState, err error)
 	}
 
 	cases := []testCase{
-		{name: "with a family read, another sign-in's unreadable row fails nothing", wrap: plain, familyRead: true, assert: answered},
-		{name: "with a family read, the sign-in holding the row fails", wrap: plain, familyRead: true, readUnreadable: true, assert: unavailable},
-		{name: "without one, the default lists, and the row fails every sign-in", wrap: plain, assert: unavailable},
-		{name: "without one, the sign-in holding the row fails too", wrap: plain, readUnreadable: true, assert: unavailable},
-		{name: "sealed, with a family read, another sign-in's unreadable row fails nothing", wrap: sealed, familyRead: true, assert: answered},
-		{name: "sealed, with a family read, the sign-in holding the row fails", wrap: sealed, familyRead: true, readUnreadable: true, assert: unavailable},
-		{name: "sealed, without one, the decorator lists, and the row fails every sign-in", wrap: sealed, assert: unavailable},
-		{name: "embedding the Store interface, an overridden listing is the read that answers", wrap: plain, overridesListing: true, assert: answered},
+		{name: "another sign-in's unreadable row fails nothing", wrap: plain, assert: answered},
+		{name: "the sign-in holding the row fails", wrap: plain, readUnreadable: true, assert: unavailable},
+		{name: "sealed, another sign-in's unreadable row fails nothing", wrap: sealed, assert: answered},
+		{name: "sealed, the sign-in holding the row fails", wrap: sealed, readUnreadable: true, assert: unavailable},
+		{name: "embedding the Store interface, an overridden family read is the read that answers", wrap: plain, override: true, overrideFamily: true, assert: answered},
+		{name: "embedding the Store interface, an overridden listing alone is not read", wrap: plain, override: true, assert: notFound},
 	}
 
 	for _, tc := range cases {
@@ -870,12 +845,9 @@ func TestSessions_SignInState_ConsumerStore(t *testing.T) {
 			require.NoError(t, err)
 
 			var store session.Store = oneUnreadableRowStore{Store: memory, unreadable: holding.FamilyID}
-			if tc.familyRead {
-				store = familyReadingStore{oneUnreadableRowStore{Store: memory, unreadable: holding.FamilyID}}
-			}
-			if tc.overridesListing {
+			if tc.override {
 				empty := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
-				store = listingOverrideStore{Store: empty, truth: memory}
+				store = readOverrideStore{Store: empty, truth: memory, family: tc.overrideFamily}
 			}
 			reader := managerFor(t, session.WithStore(tc.wrap(t, store)), session.WithClock(clk))
 

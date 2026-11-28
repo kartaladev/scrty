@@ -188,9 +188,7 @@ func WithSuccessorLifetime(lifetime time.Duration) RotateOption {
 // caller's to check first, as for SelectRole.
 //
 // RotateWithGrace and RotateWithGraceIssuing take it; Rotate and
-// RotateIssuing refuse it with ErrConfig and store nothing. So does a manager
-// whose store offers no RoleSelector (Sessions.SelectsRoles), as SelectRole
-// does. Given more than once, the last option wins. A store that supersedes
+// RotateIssuing refuse it with ErrConfig and store nothing. Given more than once, the last option wins. A store that supersedes
 // the session but writes the successor with another role fails the rotation
 // with ErrStoreContract, and no successor is returned.
 func WithSuccessorRole(role string) RotateOption {
@@ -460,9 +458,6 @@ func (m *Sessions) RotateWithGraceIssuing(
 	if r.lifetimeSet && (r.lifetime <= 0 || r.lifetime > m.maxLifetime) {
 		return nil, 0, "", fmt.Errorf("%w: successor lifetime %s is outside 0 to the maximum %s",
 			ErrConfig, r.lifetime, m.maxLifetime)
-	}
-	if r.roleSet && !m.SelectsRoles() {
-		return nil, 0, "", fmt.Errorf("%w: the session store cannot select roles, so it cannot record a successor role", ErrConfig)
 	}
 	if r.fromCaller && (r.loaded == nil || r.loaded.ID != current.ID) {
 		return nil, 0, "", fmt.Errorf("%w: the loaded session given to build the successor from is missing or another session", ErrConfig)
@@ -791,7 +786,7 @@ func successorFromCaller(current, stored *Session, id string) *Session {
 	// So is the first factor: the login that established the session is a
 	// fact of its creation, which a copy may not rewrite.
 	next.FirstFactor = stored.FirstFactor
-	// So is the selected role, which only RoleSelector.SelectRole and
+	// So is the selected role, which only Store.SelectRole and
 	// WithSuccessorRole write; the store's supersession settles it finally.
 	next.SelectedRole = stored.SelectedRole
 	// The absolute deadline is the earlier of the stored one and the copy's: a

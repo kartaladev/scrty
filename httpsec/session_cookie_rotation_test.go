@@ -1089,7 +1089,7 @@ func (s selectingStore) Supersede(ctx context.Context, sup session.Supersession)
 func (s selectingStore) SelectRole(ctx context.Context, id, role string) error {
 	s.hooks.selects.Add(1)
 
-	return s.Store.(session.RoleSelector).SelectRole(ctx, id, role) //nolint:forcetypeassert // the memory store selects roles
+	return s.Store.SelectRole(ctx, id, role)
 }
 
 // switchCookieWorld is a cookie chain with CSRF protection and role switching

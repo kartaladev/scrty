@@ -81,13 +81,6 @@ func (r *portRecorder) count() int {
 
 const portRowEnv = "SCRTY_SESSION_PORTERR_ROW"
 
-// portFamilyStore is a Store that also reads one family, so readFamily takes
-// its family read.
-type portFamilyStore struct {
-	session.Store
-	session.FamilyReader
-}
-
 // portSite is one place the session store's error enters the library.
 type portSite struct {
 	name string
@@ -154,24 +147,11 @@ func portSites() []portSite {
 			},
 		},
 		{
-			name: "SignInState/readFamily/ListByUser", ownLogger: true,
+			name: "SignInState/ListByFamily", ownLogger: true,
 			call: func(ctx context.Context, err error, ctrl *gomock.Controller, opts []session.Option) error {
 				m := mk(ctrl, opts, func(s *MockStore) {
-					s.EXPECT().ListByUser(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, err).AnyTimes()
+					s.EXPECT().ListByFamily(gomock.Any(), gomock.Any(), family, gomock.Any()).Return(nil, err).AnyTimes()
 				})
-				_, got := m.SignInState(ctx, testUser, family)
-
-				return got
-			},
-		},
-		{
-			name: "SignInState/readFamily/ListByFamily", ownLogger: true,
-			call: func(ctx context.Context, err error, ctrl *gomock.Controller, opts []session.Option) error {
-				reader := NewMockFamilyReader(ctrl)
-				reader.EXPECT().ListByFamily(gomock.Any(), gomock.Any(), family, gomock.Any()).Return(nil, err).AnyTimes()
-				m := portMust(session.New(append([]session.Option{
-					session.WithStore(portFamilyStore{Store: NewMockStore(ctrl), FamilyReader: reader}),
-				}, opts...)...))
 				_, got := m.SignInState(ctx, testUser, family)
 
 				return got

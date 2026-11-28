@@ -16,13 +16,12 @@ import (
 	"github.com/kartaladev/scrty/session"
 )
 
-// familyReadCase is a case for session.FamilyReader, which the contract leaves
-// optional: for a store offering none it logs that the case did not run, and
-// passes.
+// familyReadCase is a case for session.Store.ListByFamily. Every store has the
+// family read, so every case runs.
 func familyReadCase(
-	name string, assert func(t *testing.T, ctx context.Context, s session.Store, r session.FamilyReader, clk *clockwork.FakeClock),
+	name string, assert func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock),
 ) suiteCase[session.Store] {
-	return optionalCase[session.Store, session.FamilyReader](false, name, assert)
+	return suiteCase[session.Store]{name: name, assert: assert}
 }
 
 // inOrder sorts sessions by what a sign-in's members differ in, so two reads
@@ -41,7 +40,7 @@ func inOrder(sessions []*session.Session) {
 // answers exactly the sessions of family the listing answers, field by field,
 // and it returns them.
 func assertReadsAgree(
-	ctx context.Context, t *testing.T, s session.Store, r session.FamilyReader,
+	ctx context.Context, t *testing.T, s session.Store,
 	user identity.UserID, family id.ID, now time.Time, moment string,
 ) []*session.Session {
 	t.Helper()
@@ -56,7 +55,7 @@ func assertReadsAgree(
 		}
 	}
 
-	got, err := r.ListByFamily(ctx, user, family, now)
+	got, err := s.ListByFamily(ctx, user, family, now)
 	require.NoError(t, err, moment)
 	for _, g := range got {
 		require.NotNil(t, g, "%s: a family read holds no nil session", moment)
@@ -72,13 +71,13 @@ func assertReadsAgree(
 	return got
 }
 
-// sessionFamilyReadCases are the cases of the optional family read: that it is
+// sessionFamilyReadCases are the cases of the family read: that it is
 // the listing's contract narrowed to one family, and that it never disagrees
 // with the store's own listing.
 func sessionFamilyReadCases() []suiteCase[session.Store] {
 	return []suiteCase[session.Store]{
 		familyReadCase("a family read agrees with the listing across a renewal, a strict rotation and an end",
-			func(t *testing.T, ctx context.Context, s session.Store, r session.FamilyReader, _ *clockwork.FakeClock) {
+			func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				const user = identity.UserID("u-1")
 
 				family := suiteID(2701)
@@ -90,14 +89,14 @@ func sessionFamilyReadCases() []suiteCase[session.Store] {
 				read := func(now time.Time, moment string) []*session.Session {
 					t.Helper()
 
-					return assertReadsAgree(ctx, t, s, r, user, family, now, moment)
+					return assertReadsAgree(ctx, t, s, user, family, now, moment)
 				}
 
 				// A sign-in still owing a second factor is live, and both reads list it.
 				pending := familySession("sess-pending", user, suiteID(2704))
 				pending.MFA = session.MFAPending
 				require.NoError(t, s.Create(ctx, pending))
-				require.Len(t, assertReadsAgree(ctx, t, s, r, user, pending.FamilyID, suiteStart, "pending"), 1,
+				require.Len(t, assertReadsAgree(ctx, t, s, user, pending.FamilyID, suiteStart, "pending"), 1,
 					"a sign-in owing a second factor is live")
 
 				got := read(suiteStart, "created")
@@ -152,18 +151,18 @@ func sessionFamilyReadCases() []suiteCase[session.Store] {
 				require.NoError(t, err)
 				assert.Empty(t, read(rotatedAt, "ended"), "an ended family is read as nothing")
 
-				got = assertReadsAgree(ctx, t, s, r, user, neighbour.FamilyID, rotatedAt, "the neighbour, after the end")
+				got = assertReadsAgree(ctx, t, s, user, neighbour.FamilyID, rotatedAt, "the neighbour, after the end")
 				require.Len(t, got, 1, "ending one family leaves the user's other sign-in")
 			}),
 		familyReadCase("a family read returns only that family, of that user, matching the reference exactly",
-			func(t *testing.T, ctx context.Context, s session.Store, r session.FamilyReader, _ *clockwork.FakeClock) {
+			func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				family := suiteID(2711)
 				upper := familySession("sess-upper", "Alice", family)
 				lower := familySession("sess-lower", "alice", family)
 				neighbour := familySession("sess-neighbour", "Alice", suiteID(2712))
 				createSessions(ctx, t, s, upper, lower, neighbour)
 
-				got, err := r.ListByFamily(ctx, "Alice", family, suiteStart)
+				got, err := s.ListByFamily(ctx, "Alice", family, suiteStart)
 				require.NoError(t, err)
 				require.Len(t, got, 1, "another user's session of the family, or another family of the user, was read")
 				assert.Equal(t, identity.UserID("Alice"), got[0].UserID)
@@ -173,28 +172,28 @@ func sessionFamilyReadCases() []suiteCase[session.Store] {
 					"a user with none of the family": "nobody",
 					"text PostgreSQL cannot hold":    "Alice\x00",
 				} {
-					got, err = r.ListByFamily(ctx, user, family, suiteStart)
+					got, err = s.ListByFamily(ctx, user, family, suiteStart)
 					require.NoError(t, err, "%s: no match is an empty result, not an error", name)
 					assert.Empty(t, got, name)
 				}
 
-				got, err = r.ListByFamily(ctx, "Alice", suiteID(2713), suiteStart)
+				got, err = s.ListByFamily(ctx, "Alice", suiteID(2713), suiteStart)
 				require.NoError(t, err, "a family that is not there is an empty result, not an error")
 				assert.Empty(t, got)
 
-				got, err = r.ListByFamily(ctx, "Alice", id.Nil, suiteStart)
+				got, err = s.ListByFamily(ctx, "Alice", id.Nil, suiteStart)
 				require.NoError(t, err, "the nil family is an empty result, not an error")
 				assert.Empty(t, got, "the nil family names none, so it reads none")
 			}),
 		familyReadCase("a family read judges expiry by the time the caller passes, not the store's clock",
-			func(t *testing.T, ctx context.Context, s session.Store, r session.FamilyReader, _ *clockwork.FakeClock) {
+			func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				idle := idleExpiredSession("sess-b", "u-1") // idle deadline 09:10
 				require.NoError(t, s.Create(ctx, idle))
 
 				read := func(now time.Time) []*session.Session {
 					t.Helper()
 
-					return assertReadsAgree(ctx, t, s, r, "u-1", idle.FamilyID, now, now.String())
+					return assertReadsAgree(ctx, t, s, "u-1", idle.FamilyID, now, now.String())
 				}
 
 				assert.Len(t, read(suiteStart), 1, "before its deadline it is read")
@@ -202,7 +201,7 @@ func sessionFamilyReadCases() []suiteCase[session.Store] {
 
 				live := sessionRecord("sess-c", "u-1")
 				require.NoError(t, s.Create(ctx, live))
-				got, err := r.ListByFamily(ctx, "u-1", live.FamilyID, suiteStart.Add(sessionAbsolute))
+				got, err := s.ListByFamily(ctx, "u-1", live.FamilyID, suiteStart.Add(sessionAbsolute))
 				require.NoError(t, err)
 				assert.Empty(t, got, "at its absolute deadline it is not")
 
@@ -210,15 +209,15 @@ func sessionFamilyReadCases() []suiteCase[session.Store] {
 				pastAbsolute := sessionRecord("sess-d", "u-1")
 				pastAbsolute.IdleExpiresAt = suiteStart.Add(sessionAbsolute + time.Hour)
 				require.NoError(t, s.Create(ctx, pastAbsolute))
-				assert.Empty(t, assertReadsAgree(ctx, t, s, r, "u-1", pastAbsolute.FamilyID, suiteStart.Add(sessionAbsolute), "absolute only"),
+				assert.Empty(t, assertReadsAgree(ctx, t, s, "u-1", pastAbsolute.FamilyID, suiteStart.Add(sessionAbsolute), "absolute only"),
 					"at its absolute deadline, with its idle deadline ahead, it is not")
 			}),
 		familyReadCase("a family read carries a sign-in's deadlines, authentication time and upstream identifiers",
-			func(t *testing.T, ctx context.Context, s session.Store, r session.FamilyReader, _ *clockwork.FakeClock) {
+			func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				want := federatedSession("sess-a", "u-1", "https://idp.example.com", "upstream-session")
 				require.NoError(t, s.Create(ctx, want))
 
-				got, err := r.ListByFamily(ctx, "u-1", want.FamilyID, suiteStart)
+				got, err := s.ListByFamily(ctx, "u-1", want.FamilyID, suiteStart)
 				require.NoError(t, err)
 				require.Len(t, got, 1)
 				assertTimeEqual(t, want.IdleExpiresAt, got[0].IdleExpiresAt, "IdleExpiresAt")
@@ -228,11 +227,11 @@ func sessionFamilyReadCases() []suiteCase[session.Store] {
 				assert.Equal(t, want.ExternalSessionID, got[0].ExternalSessionID, "ExternalSessionID")
 			}),
 		familyReadCase("a session a family read answers is the caller's own copy",
-			func(t *testing.T, ctx context.Context, s session.Store, r session.FamilyReader, _ *clockwork.FakeClock) {
+			func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				want := sessionRecord("sess-a", "u-1")
 				require.NoError(t, s.Create(ctx, want))
 
-				got, err := r.ListByFamily(ctx, "u-1", want.FamilyID, suiteStart)
+				got, err := s.ListByFamily(ctx, "u-1", want.FamilyID, suiteStart)
 				require.NoError(t, err)
 				require.Len(t, got, 1)
 				got[0].Data["tenant"] = "changed by the caller"
@@ -240,74 +239,12 @@ func sessionFamilyReadCases() []suiteCase[session.Store] {
 
 				assertSessionsLoad(ctx, t, s, want)
 			}),
-		familyReadCase("a manager answers the same over the family read and over the listing",
-			func(t *testing.T, ctx context.Context, s session.Store, _ session.FamilyReader, clk *clockwork.FakeClock) {
-				const issuer, upstream = "https://idp.example.com", "upstream-session"
-
-				// Embedding only the Store hides the family read, so listing is
-				// the manager that falls back.
-				reading, err := session.New(session.WithStore(s), session.WithClock(clk))
-				require.NoError(t, err)
-				listing, err := session.New(session.WithStore(struct{ session.Store }{s}), session.WithClock(clk))
-				require.NoError(t, err)
-
-				first, err := reading.Create(ctx, "u-1", session.WithExternalSession("idp", issuer, upstream, "an-id-token"))
-				require.NoError(t, err)
-				_, err = reading.Create(ctx, "u-1")
-				require.NoError(t, err)
-
-				same := func(moment string) session.SignInState {
-					t.Helper()
-
-					viaRead, readErr := reading.SignInState(ctx, "u-1", first.FamilyID)
-					viaList, listErr := listing.SignInState(ctx, "u-1", first.FamilyID)
-					assert.Equal(t, listErr, readErr, "%s: the two reads must fail alike", moment)
-					assertTimeEqual(t, viaList.IdleDeadline, viaRead.IdleDeadline, moment+": IdleDeadline")
-					assertTimeEqual(t, viaList.AbsoluteDeadline, viaRead.AbsoluteDeadline, moment+": AbsoluteDeadline")
-					assertTimeEqual(t, viaList.AuthenticatedAt, viaRead.AuthenticatedAt, moment+": AuthenticatedAt")
-					assert.Equal(t, viaList.ExternalIssuer, viaRead.ExternalIssuer, moment+": ExternalIssuer")
-					assert.Equal(t, viaList.ExternalSessionID, viaRead.ExternalSessionID, moment+": ExternalSessionID")
-
-					return viaRead
-				}
-
-				state := same("created")
-				assert.Equal(t, upstream, state.ExternalSessionID)
-
-				clk.Advance(5 * time.Minute)
-				renewed, _, err := reading.RotateWithGrace(ctx, first, session.DefaultRenewalGrace)
-				require.NoError(t, err)
-				state = same("inside a renewal's window")
-				assertTimeEqual(t, renewed.IdleExpiresAt, state.IdleDeadline, "IdleDeadline after a renewal")
-
-				clk.Advance(session.DefaultRenewalGrace + time.Second)
-				state = same("past a renewal's window")
-				assertTimeEqual(t, renewed.IdleExpiresAt, state.IdleDeadline, "IdleDeadline past a renewal's window")
-
-				clk.Advance(time.Minute)
-				reproved := *renewed
-				reproved.AuthenticatedAt = clk.Now()
-				rotated, err := reading.Rotate(ctx, &reproved)
-				require.NoError(t, err)
-				state = same("after a strict rotation")
-				assertTimeEqual(t, rotated.AuthenticatedAt, state.AuthenticatedAt, "AuthenticatedAt after a strict rotation")
-
-				_, err = reading.Logout(ctx, "u-1", first.FamilyID)
-				require.NoError(t, err)
-				_ = same("ended")
-				_, err = reading.SignInState(ctx, "u-1", first.FamilyID)
-				require.ErrorIs(t, err, session.ErrNotFound, "an ended sign-in, over the family read")
-				_, err = listing.SignInState(ctx, "u-1", first.FamilyID)
-				require.ErrorIs(t, err, session.ErrNotFound, "an ended sign-in, over the listing")
-			}),
 	}
 }
 
-// RunSessionFamilyRead holds a durable session store offering session.FamilyReader
-// to what only a database row can show. A store with no family read fails it at
-// once: it is for a store that claims the read, and a store that lists instead
-// has the portable suite's cases logged as not run. It checks, writing the rows
-// through harness.Raw, that:
+// RunSessionFamilyRead holds a durable session store's family read
+// (session.Store.ListByFamily) to what only a database row can show. It checks,
+// writing the rows through harness.Raw, that:
 //   - a row of another family that will not decode fails neither the family read
 //     nor a manager's SignInState for this family, and does fail a read of the
 //     family holding it, and the listing, as the contract asks;
@@ -323,19 +260,10 @@ func RunSessionFamilyRead[S session.Store](t *testing.T, harness DurableHarness[
 
 	harness.Require(t)
 
-	reader := func(t *testing.T, s S) session.FamilyReader {
-		t.Helper()
-
-		r, ok := any(s).(session.FamilyReader)
-		require.True(t, ok, "the store must offer session.FamilyReader to run this suite")
-
-		return r
-	}
 	now := suiteStart.Add(time.Minute)
 
 	t.Run("a row of another family that will not decode fails only its own family's read", func(t *testing.T) {
 		s := harness.New(t)
-		r := reader(t, s)
 		const user = identity.UserID("family-read-undecodable-user")
 		healthy := familySession("family-read-healthy", user, suiteID(2801))
 		holding := familySession("family-read-holding", user, suiteID(2802))
@@ -348,12 +276,12 @@ func RunSessionFamilyRead[S session.Store](t *testing.T, harness DurableHarness[
 		_, err = s.ListByUser(t.Context(), user, now)
 		require.Error(t, err, "the row was meant not to decode, so this proves nothing")
 
-		got, err := r.ListByFamily(t.Context(), user, healthy.FamilyID, now)
+		got, err := s.ListByFamily(t.Context(), user, healthy.FamilyID, now)
 		require.NoError(t, err, "another family's row must not fail this read")
 		require.Len(t, got, 1)
 		assertListed(t, healthy, got[0])
 
-		_, err = r.ListByFamily(t.Context(), user, holding.FamilyID, now)
+		_, err = s.ListByFamily(t.Context(), user, holding.FamilyID, now)
 		require.Error(t, err, "a read of the family holding the row fails rather than skipping it")
 
 		clk := clockwork.NewFakeClockAt(now)
@@ -368,7 +296,6 @@ func RunSessionFamilyRead[S session.Store](t *testing.T, harness DurableHarness[
 
 	t.Run("a family read opens no sealed field", func(t *testing.T) {
 		s := harness.New(t)
-		r := reader(t, s)
 		const user = identity.UserID("family-read-sealed-user")
 		want := withSignInState(federatedSession("family-read-sealed", user, "https://idp.example.com", "upstream-session"))
 		want.FamilyID = suiteID(2811)
@@ -378,7 +305,7 @@ func RunSessionFamilyRead[S session.Store](t *testing.T, harness DurableHarness[
 			sessionDigest(want.ID))
 		require.NoError(t, err)
 
-		got, err := r.ListByFamily(t.Context(), user, want.FamilyID, now)
+		got, err := s.ListByFamily(t.Context(), user, want.FamilyID, now)
 		require.NoError(t, err, "the read opened a sealed column")
 		require.Len(t, got, 1)
 		assert.Empty(t, got[0].ExternalIDToken, "the read handed back a sealed column")
@@ -388,7 +315,6 @@ func RunSessionFamilyRead[S session.Store](t *testing.T, harness DurableHarness[
 
 	t.Run("the nil family reads nothing, even where a row is stored in it", func(t *testing.T) {
 		s := harness.New(t)
-		r := reader(t, s)
 		const user = identity.UserID("family-read-nil-user")
 		inNone := familySession("family-read-nil", user, suiteID(2821))
 		require.NoError(t, s.Create(t.Context(), inNone))
@@ -401,7 +327,7 @@ func RunSessionFamilyRead[S session.Store](t *testing.T, harness DurableHarness[
 		require.NoError(t, err)
 		require.Len(t, listed, 1, "the row was meant to stay listed, so this proves nothing")
 
-		got, err := r.ListByFamily(t.Context(), user, id.Nil, now)
+		got, err := s.ListByFamily(t.Context(), user, id.Nil, now)
 		require.NoError(t, err, "the nil family is an empty result, not an error")
 		assert.Empty(t, got, "the nil family names none, so it reads none")
 	})
@@ -412,7 +338,7 @@ func RunSessionFamilyRead[S session.Store](t *testing.T, harness DurableHarness[
 		want := familySession("family-read-replica", user, suiteID(2831))
 		require.NoError(t, first.Create(t.Context(), want))
 
-		got, err := reader(t, replica).ListByFamily(t.Context(), user, want.FamilyID, now)
+		got, err := replica.ListByFamily(t.Context(), user, want.FamilyID, now)
 		require.NoError(t, err)
 		require.Len(t, got, 1, "the read must come from the database")
 		assertListed(t, want, got[0])

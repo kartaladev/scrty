@@ -18,6 +18,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -256,7 +257,7 @@ func withSignalsCookie(sid string) func(*http.Request) {
 	return func(req *http.Request) { req.AddCookie(&http.Cookie{Name: signalsCookie, Value: sid}) } //nolint:gosec // a request's cookie in a test: attributes belong to a Set-Cookie, which a client does not send
 }
 
-// listSpyStore is a session store whose listing calls see before it answers, and fail
+// listSpyStore is a session store whose family reads call see before it answers, and fail
 // replaces the answer when it returns an error.
 type listSpyStore struct {
 	session.Store
@@ -264,11 +265,11 @@ type listSpyStore struct {
 	see  func(ctx context.Context)
 	fail func() error
 
-	// empty answers every listing with no sessions.
+	// empty answers every family read with no sessions.
 	empty bool
 }
 
-func (s *listSpyStore) ListByUser(ctx context.Context, user identity.UserID, at time.Time) ([]*session.Session, error) {
+func (s *listSpyStore) ListByFamily(ctx context.Context, user identity.UserID, family id.ID, at time.Time) ([]*session.Session, error) {
 	if s.see != nil {
 		s.see(ctx)
 	}
@@ -283,7 +284,7 @@ func (s *listSpyStore) ListByUser(ctx context.Context, user identity.UserID, at 
 		return nil, nil
 	}
 
-	return s.Store.ListByUser(ctx, user, at)
+	return s.Store.ListByFamily(ctx, user, family, at)
 }
 
 // signalsTenantKey is a value a consumer's middleware puts on the request's context.

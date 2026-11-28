@@ -321,7 +321,7 @@ type Session struct {
 	// choice and grants nothing: whoever reads it checks that the user still
 	// holds a grant of that name before acting on it.
 	//
-	// Only RoleSelector.SelectRole writes it, changing no other field.
+	// Only Store.SelectRole writes it, changing no other field.
 	// Create stores it as given, every successor in the family carries it from
 	// the stored record, and Save keeps the stored value whatever the session
 	// handed to it says, so a copy loaded before a selection cannot undo it.

@@ -23,10 +23,6 @@ import (
 	"github.com/kartaladev/scrty/session"
 )
 
-// noSelectorStore is a session store that does not offer session.RoleSelector:
-// the embedded interface hides the memory store's own SelectRole.
-type noSelectorStore struct{ session.Store }
-
 // failingSelectorStore is a session store whose selection write fails with err.
 type failingSelectorStore struct {
 	session.Store
@@ -536,23 +532,17 @@ func TestChain_SwitchActiveRole(t *testing.T) {
 	}
 }
 
-// TestWithSwitchableRoles pins the option's construction check: every
-// session manager the chain is wired with must record a selection, or the
-// chain is refused before it serves anything.
+// TestWithSwitchableRoles pins the option's construction check: a chain with
+// no session manager to record a selection in is refused before it serves
+// anything.
 func TestWithSwitchableRoles(t *testing.T) {
 	t.Parallel()
 
-	manager := func(t *testing.T, selects bool) *session.Sessions {
+	manager := func(t *testing.T) *session.Sessions {
 		t.Helper()
 
-		var store session.Store = must.Must(session.NewMemoryStore())
-		if !selects {
-			store = noSelectorStore{Store: store}
-		}
-
-		m, err := session.New(session.WithStore(store))
+		m, err := session.New(session.WithStore(must.Must(session.NewMemoryStore())))
 		require.NoError(t, err)
-		require.Equal(t, selects, m.SelectsRoles())
 
 		return m
 	}
@@ -575,7 +565,7 @@ func TestWithSwitchableRoles(t *testing.T) {
 			opts: func(t *testing.T) []httpsec.Option {
 				t.Helper()
 
-				return []httpsec.Option{bearer(manager(t, true)), httpsec.WithSwitchableRoles()}
+				return []httpsec.Option{bearer(manager(t)), httpsec.WithSwitchableRoles()}
 			},
 			assert: func(t *testing.T, chain *httpsec.Chain, err error) {
 				require.NoError(t, err)
@@ -588,7 +578,7 @@ func TestWithSwitchableRoles(t *testing.T) {
 				t.Helper()
 
 				return []httpsec.Option{
-					bearer(manager(t, true)), httpsec.WithSwitchableRoles(), httpsec.WithSwitchableRoles(),
+					bearer(manager(t)), httpsec.WithSwitchableRoles(), httpsec.WithSwitchableRoles(),
 				}
 			},
 			assert: func(t *testing.T, chain *httpsec.Chain, err error) {
@@ -597,31 +587,19 @@ func TestWithSwitchableRoles(t *testing.T) {
 			},
 		},
 		{
-			name: "a manager without a selector is refused",
-			opts: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return []httpsec.Option{httpsec.WithSwitchableRoles(), bearer(manager(t, false))}
-			},
-			assert: func(t *testing.T, chain *httpsec.Chain, err error) {
-				require.ErrorIs(t, err, httpsec.ErrConfig)
-				assert.Nil(t, chain)
-			},
-		},
-		{
-			name: "one manager without a selector among others is refused",
+			name: "the option given before the manager builds",
 			opts: func(t *testing.T) []httpsec.Option {
 				t.Helper()
 
 				return []httpsec.Option{
-					bearer(manager(t, true)),
-					httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: manager(t, false)}),
 					httpsec.WithSwitchableRoles(),
+					bearer(manager(t)),
+					httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: manager(t)}),
 				}
 			},
 			assert: func(t *testing.T, chain *httpsec.Chain, err error) {
-				require.ErrorIs(t, err, httpsec.ErrConfig)
-				assert.Nil(t, chain)
+				require.NoError(t, err)
+				require.NotNil(t, chain)
 			},
 		},
 		{
@@ -634,18 +612,6 @@ func TestWithSwitchableRoles(t *testing.T) {
 			assert: func(t *testing.T, chain *httpsec.Chain, err error) {
 				require.ErrorIs(t, err, httpsec.ErrConfig)
 				assert.Nil(t, chain)
-			},
-		},
-		{
-			name: "without the option a manager without a selector builds",
-			opts: func(t *testing.T) []httpsec.Option {
-				t.Helper()
-
-				return []httpsec.Option{bearer(manager(t, false))}
-			},
-			assert: func(t *testing.T, chain *httpsec.Chain, err error) {
-				require.NoError(t, err)
-				require.NotNil(t, chain)
 			},
 		},
 	}

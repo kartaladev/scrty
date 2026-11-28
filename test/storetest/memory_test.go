@@ -30,9 +30,7 @@ func TestMemorySessionStore(t *testing.T) {
 
 	newStore := func(t *testing.T, clk clock.Clock) session.Store {
 		t.Helper()
-		s := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk.(clock.Timed))))
-		require.Implements(t, (*session.RoleSelector)(nil), s, "the memory store must record a selected role")
-		return s
+		return must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk.(clock.Timed))))
 	}
 	storetest.RunSessionStoreSuite(t, newStore)
 }
@@ -80,28 +78,10 @@ func TestEncryptedSessionStore(t *testing.T) {
 		s, err := session.NewEncryptedStore(
 			must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk.(clock.Timed)))), xorCipher{})
 		require.NoError(t, err)
-		require.Implements(t, (*session.RoleSelector)(nil), s,
-			"the wrapper over a store that records a selected role must record one too")
 
 		return s
 	}
 	storetest.RunSessionStoreSuite(t, newStore)
-}
-
-// The wrapper over a store with no family read still offers one, by listing and
-// narrowing, and must hold to the same suite.
-func TestEncryptedSessionStore_OverAStoreWithNoFamilyRead(t *testing.T) {
-	t.Parallel()
-
-	storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
-		t.Helper()
-
-		memory := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk.(clock.Timed))))
-		s, err := session.NewEncryptedStore(struct{ session.Store }{memory}, xorCipher{})
-		require.NoError(t, err)
-
-		return s
-	})
 }
 
 // The in-memory one-time store carries a reaper, so its run requires one.

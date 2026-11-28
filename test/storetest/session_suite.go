@@ -317,11 +317,10 @@ const (
 // returns the user's live heads, one per family, judged at the time the caller
 // passes and matching the user reference exactly; and the sign-in state
 // (metadata, key binding, CSRF token) round-trips, a save keeps it, and a
-// supersession inserts it with the successor. A store that also offers
-// session.FamilyReader is held to it: the read answers exactly what the store's
-// listing answers of that family, across a renewal and a strict rotation, and a
-// manager's answers are the same over either. For a store offering none, those
-// cases log that they did not run, and pass.
+// supersession inserts it with the successor. The family read answers exactly
+// what the store's listing answers of that family, across a renewal and a
+// strict rotation, and the selected role is recorded alone, on a live session
+// only, and kept across saves and rotations.
 //
 // newStore is called once per case and must return an empty store that reads
 // time from clk. The suite advances clk itself and never waits.
@@ -2964,11 +2963,9 @@ func RunSessionRoleUnstorable[S session.Store](t *testing.T, harness Harness[S])
 			assert.NotContains(t, err.Error(), role, "create: the refusal must not echo the role")
 			assertSessionsGone(ctx, t, s, refused.ID)
 
-			r, ok := any(s).(session.RoleSelector)
-			require.True(t, ok, "a durable store offers session.RoleSelector")
 			stored := withSelectedRole(sessionRecord("sess-a", "u-1"), "audit")
 			require.NoError(t, s.Create(ctx, stored))
-			err = r.SelectRole(ctx, stored.ID, role)
+			err = s.SelectRole(ctx, stored.ID, role)
 			require.ErrorIs(t, err, pgschema.ErrSessionRoleUnstorable, "select")
 			assert.NotContains(t, err.Error(), role, "select: the refusal must not echo the role")
 			assertSessionsLoad(ctx, t, s, stored)
@@ -2990,12 +2987,12 @@ func RunSessionRoleUnstorable[S session.Store](t *testing.T, harness Harness[S])
 	}
 }
 
-// roleCase is a case for session.RoleSelector, which the contract leaves
-// optional: for a store offering none it logs that it did not run, and passes.
+// roleCase is a case for session.Store.SelectRole. Every store records a
+// selected role, so every case runs.
 func roleCase(
-	name string, assert func(t *testing.T, ctx context.Context, s session.Store, r session.RoleSelector, clk *clockwork.FakeClock),
+	name string, assert func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock),
 ) suiteCase[session.Store] {
-	return optionalCase[session.Store, session.RoleSelector](false, name, assert)
+	return suiteCase[session.Store]{name: name, assert: assert}
 }
 
 // withSelectedRole returns a copy of sess with role as its selected role.
@@ -3006,8 +3003,8 @@ func withSelectedRole(sess *session.Session, role string) *session.Session {
 }
 
 // sessionSelectedRoleCases are the cases of the selected role: every store
-// stores it with a session and inserts it with a successor, and a store
-// offering session.RoleSelector records it alone, on a live session only, and
+// stores it with a session and inserts it with a successor, and records it
+// alone through SelectRole, on a live session only, and
 // keeps it across saves and every kind of rotation a manager makes.
 func sessionSelectedRoleCases() []suiteCase[session.Store] {
 	// rotationCase records audit on a session a manager created, rotates it
@@ -3017,13 +3014,13 @@ func sessionSelectedRoleCases() []suiteCase[session.Store] {
 		rotate func(ctx context.Context, t *testing.T, m *session.Sessions, clk *clockwork.FakeClock, current *session.Session) *session.Session,
 	) suiteCase[session.Store] {
 		return roleCase(name,
-			func(t *testing.T, ctx context.Context, s session.Store, r session.RoleSelector, clk *clockwork.FakeClock) {
+			func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
 				m, err := session.New(append([]session.Option{session.WithStore(s), session.WithClock(clk)}, opts...)...)
 				require.NoError(t, err)
 
 				current, err := m.Create(ctx, "u-1")
 				require.NoError(t, err)
-				require.NoError(t, r.SelectRole(ctx, current.ID, "audit"))
+				require.NoError(t, s.SelectRole(ctx, current.ID, "audit"))
 
 				// The caller's copy predates the selection: a rotation must
 				// take the selection from the stored record, not from it.
@@ -3133,7 +3130,7 @@ func sessionSelectedRoleCases() []suiteCase[session.Store] {
 			},
 		},
 		roleCase("SupersedeNamedRoleOverridesLockedRow",
-			func(t *testing.T, ctx context.Context, s session.Store, r session.RoleSelector, _ *clockwork.FakeClock) {
+			func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				// A selection committed on the superseded row after the
 				// caller loaded it does not displace the named role, and the
 				// superseded row keeps it.
@@ -3141,7 +3138,7 @@ func sessionSelectedRoleCases() []suiteCase[session.Store] {
 				require.NoError(t, s.Create(ctx, old))
 				at := suiteStart.Add(5 * time.Minute)
 				successor := withSelectedRole(successorOf(old, "sess-named-race-next", at), "admin")
-				require.NoError(t, r.SelectRole(ctx, old.ID, "other"))
+				require.NoError(t, s.SelectRole(ctx, old.ID, "other"))
 
 				role := "audit"
 				require.NoError(t, s.Supersede(ctx, session.Supersession{
@@ -3158,25 +3155,25 @@ func sessionSelectedRoleCases() []suiteCase[session.Store] {
 				assert.Equal(t, "other", superseded.SelectedRole)
 			}),
 		roleCase("SelectRole",
-			func(t *testing.T, ctx context.Context, s session.Store, r session.RoleSelector, _ *clockwork.FakeClock) {
+			func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				stored := sessionRecord("sess-a", "u-1")
 				other := sessionRecord("sess-b", "u-1")
 				createSessions(ctx, t, s, stored, other)
 
-				require.NoError(t, r.SelectRole(ctx, stored.ID, "audit"))
+				require.NoError(t, s.SelectRole(ctx, stored.ID, "audit"))
 				assertSessionsLoad(ctx, t, s, withSelectedRole(stored, "audit"), other)
 
-				require.NoError(t, r.SelectRole(ctx, stored.ID, "sales"))
+				require.NoError(t, s.SelectRole(ctx, stored.ID, "sales"))
 				assertSessionsLoad(ctx, t, s, withSelectedRole(stored, "sales"), other)
 
-				require.NoError(t, r.SelectRole(ctx, stored.ID, ""), "the empty role clears the selection")
+				require.NoError(t, s.SelectRole(ctx, stored.ID, ""), "the empty role clears the selection")
 				assertSessionsLoad(ctx, t, s, stored, other)
 			}),
 		roleCase("SelectRoleListed",
-			func(t *testing.T, ctx context.Context, s session.Store, r session.RoleSelector, clk *clockwork.FakeClock) {
+			func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
 				stored := sessionRecord("sess-a", "u-1")
 				require.NoError(t, s.Create(ctx, stored))
-				require.NoError(t, r.SelectRole(ctx, stored.ID, "audit"))
+				require.NoError(t, s.SelectRole(ctx, stored.ID, "audit"))
 
 				listed, err := s.ListByUser(ctx, "u-1", clk.Now())
 				require.NoError(t, err)
@@ -3184,19 +3181,19 @@ func sessionSelectedRoleCases() []suiteCase[session.Store] {
 				assertListed(t, withSelectedRole(stored, "audit"), listed[0])
 			}),
 		roleCase("SelectRoleDeleted",
-			func(t *testing.T, ctx context.Context, s session.Store, r session.RoleSelector, _ *clockwork.FakeClock) {
+			func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				stored := sessionRecord("sess-a", "u-1")
 				require.NoError(t, s.Create(ctx, stored))
 				require.NoError(t, s.Delete(ctx, stored.ID))
 
-				require.ErrorIs(t, r.SelectRole(ctx, stored.ID, "audit"), session.ErrNotFound)
+				require.ErrorIs(t, s.SelectRole(ctx, stored.ID, "audit"), session.ErrNotFound)
 				assertSessionsGone(ctx, t, s, stored.ID)
 
-				require.ErrorIs(t, r.SelectRole(ctx, "sess-never", "audit"), session.ErrNotFound)
+				require.ErrorIs(t, s.SelectRole(ctx, "sess-never", "audit"), session.ErrNotFound)
 				assertSessionsGone(ctx, t, s, "sess-never")
 			}),
 		roleCase("SelectRoleSuperseded",
-			func(t *testing.T, ctx context.Context, s session.Store, r session.RoleSelector, _ *clockwork.FakeClock) {
+			func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				for _, strict := range []bool{false, true} {
 					old := sessionRecord(fmt.Sprintf("sess-a-%t", strict), "u-1")
 					require.NoError(t, s.Create(ctx, old))
@@ -3207,7 +3204,7 @@ func sessionSelectedRoleCases() []suiteCase[session.Store] {
 						Successor: successor, Now: at, Strict: strict,
 					}))
 
-					require.ErrorIs(t, r.SelectRole(ctx, old.ID, "audit"), session.ErrSuperseded,
+					require.ErrorIs(t, s.SelectRole(ctx, old.ID, "audit"), session.ErrSuperseded,
 						"strict %t: a superseded session takes no selection", strict)
 					got, err := s.Load(ctx, old.ID)
 					require.NoError(t, err)
@@ -3216,7 +3213,7 @@ func sessionSelectedRoleCases() []suiteCase[session.Store] {
 				}
 			}),
 		roleCase("SelectRoleExpired",
-			func(t *testing.T, ctx context.Context, s session.Store, r session.RoleSelector, clk *clockwork.FakeClock) {
+			func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
 				// Each session reaches one deadline exactly while its other
 				// deadline is still open, so a store judging only one is
 				// caught. The second is stored with its idle deadline after
@@ -3228,12 +3225,12 @@ func sessionSelectedRoleCases() []suiteCase[session.Store] {
 				createSessions(ctx, t, s, atIdle, atAbsolute)
 
 				clk.Advance(sessionIdle - 10*time.Minute)
-				require.ErrorIs(t, r.SelectRole(ctx, atAbsolute.ID, "audit"), session.ErrExpired,
+				require.ErrorIs(t, s.SelectRole(ctx, atAbsolute.ID, "audit"), session.ErrExpired,
 					"a session at its absolute deadline, its idle one open, takes no selection")
-				require.NoError(t, r.SelectRole(ctx, atIdle.ID, "audit"), "a session before both deadlines takes it")
+				require.NoError(t, s.SelectRole(ctx, atIdle.ID, "audit"), "a session before both deadlines takes it")
 
 				clk.Advance(10 * time.Minute)
-				require.ErrorIs(t, r.SelectRole(ctx, atIdle.ID, "sales"), session.ErrExpired,
+				require.ErrorIs(t, s.SelectRole(ctx, atIdle.ID, "sales"), session.ErrExpired,
 					"a session at its idle deadline, its absolute one open, takes no selection")
 				got, err := s.Load(ctx, atAbsolute.ID)
 				if !errors.Is(err, session.ErrExpired) {
@@ -3242,14 +3239,14 @@ func sessionSelectedRoleCases() []suiteCase[session.Store] {
 				}
 			}),
 		roleCase("SaveKeepsSelectedRole",
-			func(t *testing.T, ctx context.Context, s session.Store, r session.RoleSelector, _ *clockwork.FakeClock) {
+			func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				stored := sessionRecord("sess-a", "u-1")
 				require.NoError(t, s.Create(ctx, stored))
 
 				// A copy loaded before the selection, saved after it.
 				stale, err := s.Load(ctx, stored.ID)
 				require.NoError(t, err)
-				require.NoError(t, r.SelectRole(ctx, stored.ID, "audit"))
+				require.NoError(t, s.SelectRole(ctx, stored.ID, "audit"))
 
 				stale.LastAccessedAt = stale.LastAccessedAt.Add(time.Minute)
 				require.NoError(t, s.Save(ctx, stale))
@@ -3261,13 +3258,13 @@ func sessionSelectedRoleCases() []suiteCase[session.Store] {
 				assertSessionsLoad(ctx, t, s, want)
 			}),
 		roleCase("SelectRoleKeepsDeadlinesAndActivity",
-			func(t *testing.T, ctx context.Context, s session.Store, r session.RoleSelector, clk *clockwork.FakeClock) {
+			func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
 				stored := sessionRecord("sess-a", "u-1")
 				require.NoError(t, s.Create(ctx, stored))
 
 				clk.Advance(10 * time.Minute)
 				require.NoError(t, s.RecordActivity(ctx, stored.ID, clk.Now(), clk.Now().Add(sessionIdle), clk.Now()))
-				require.NoError(t, r.SelectRole(ctx, stored.ID, "audit"))
+				require.NoError(t, s.SelectRole(ctx, stored.ID, "audit"))
 
 				want := withSelectedRole(stored, "audit")
 				want.LastAccessedAt = clk.Now()
@@ -3275,7 +3272,7 @@ func sessionSelectedRoleCases() []suiteCase[session.Store] {
 				assertSessionsLoad(ctx, t, s, want)
 			}),
 		roleCase("SupersedeTakesSelectedRoleFromLockedRow",
-			func(t *testing.T, ctx context.Context, s session.Store, r session.RoleSelector, _ *clockwork.FakeClock) {
+			func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				// A selection committed after the successor was built from a
 				// load, and before the supersession, must be the successor's:
 				// switching up must not be lost, and switching down must not
@@ -3289,7 +3286,7 @@ func sessionSelectedRoleCases() []suiteCase[session.Store] {
 					at := suiteStart.Add(5 * time.Minute)
 					successor := withSelectedRole(successorOf(old, fmt.Sprintf("sess-next-%d", i), at), tc.before)
 
-					require.NoError(t, r.SelectRole(ctx, old.ID, tc.selected))
+					require.NoError(t, s.SelectRole(ctx, old.ID, tc.selected))
 					require.NoError(t, s.Supersede(ctx, session.Supersession{
 						Old: old.ID, AcceptUntil: at.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
 						Successor: successor, Now: at,
@@ -3304,7 +3301,7 @@ func sessionSelectedRoleCases() []suiteCase[session.Store] {
 				}
 			}),
 		roleCase("RotationTakesSelectionMadeDuringStep",
-			func(t *testing.T, ctx context.Context, s session.Store, r session.RoleSelector, clk *clockwork.FakeClock) {
+			func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
 				m, err := session.New(session.WithStore(s), session.WithClock(clk))
 				require.NoError(t, err)
 
@@ -3326,14 +3323,14 @@ func sessionSelectedRoleCases() []suiteCase[session.Store] {
 					} {
 						current, err := m.Create(ctx, "u-1")
 						require.NoError(t, err)
-						require.NoError(t, r.SelectRole(ctx, current.ID, tc.before))
+						require.NoError(t, s.SelectRole(ctx, current.ID, tc.before))
 						clk.Advance(time.Second)
 
 						// The step runs after the rotation loaded the
 						// session and before it writes: a selection made
 						// there is the race the store must settle.
 						next, err := rot(current, func(*session.Session) (string, error) {
-							return "tok", r.SelectRole(ctx, current.ID, tc.selected)
+							return "tok", s.SelectRole(ctx, current.ID, tc.selected)
 						})
 						require.NoError(t, err)
 						assert.Equal(t, tc.selected, next.SelectedRole,

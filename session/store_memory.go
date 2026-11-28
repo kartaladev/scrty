@@ -511,7 +511,7 @@ func (s *MemoryStore) ListByUser(_ context.Context, user identity.UserID, now ti
 	return listed, nil
 }
 
-// ListByFamily is ListByUser narrowed to family, as FamilyReader states it. The
+// ListByFamily is ListByUser narrowed to family, as Store states it. The
 // nil family names none and lists nothing. It scans the store under its read
 // lock, once per call, as ListByUser does, and copies only the family's
 // sessions, so what it saves over a listing is the copies of the user's other
@@ -801,8 +801,6 @@ func (s *MemoryStore) SelectRole(_ context.Context, id string, role string) erro
 	return nil
 }
 
-var _ RoleSelector = (*MemoryStore)(nil)
-
 // SuccessorPresented reports whether the current successor of the session
 // with this identifier was used, under the store's read lock, writing
 // nothing: true when that successor is stored and was presented or has been
@@ -828,10 +826,7 @@ func (s *MemoryStore) SuccessorPresented(_ context.Context, id string) (bool, er
 	return !successor.FirstPresentedAt.IsZero() || successor.superseded(), nil
 }
 
-var (
-	_ Store        = (*MemoryStore)(nil)
-	_ FamilyReader = (*MemoryStore)(nil)
-)
+var _ Store = (*MemoryStore)(nil)
 
 // MemoryStoreOption configures a MemoryStore.
 type MemoryStoreOption func(*MemoryStore)
