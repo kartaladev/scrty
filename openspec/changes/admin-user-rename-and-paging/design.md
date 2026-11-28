@@ -453,6 +453,9 @@ type UserPager interface {
 | ID tokens already issued carry the old `preferred_username` | Accepted | Stale until the client next receives an ID token; `sub` is unchanged |
 | Password context words include the old username | Accepted | The current password is not checked again; the new username applies from the next password change |
 | Event or audit delivery lost after commit | Accepted (existing) | As for every administrative write (`admin` package documentation) |
+| The session revoker panics | Accepted (D6) | The panic reaches the caller after the update committed and its event was emitted, as a panicking store does; the revoker is consumer code and is not recovered |
+| The revoker's error itself wraps an administration reason (for example `ErrNotFound`) | Accepted (D6) | The error matches `ErrSessionsNotRevoked` and, through the wrapped cause, that reason too; the spec requires the cause to stay matchable, so `ErrSessionsNotRevoked` is checked first |
+| The revoker's error text names the user | Accepted (D6) | The cause's text is passed through unchanged, as a store's error is; scrty adds no identifier, and the consumer's revoker owns its own text |
 
 ### Offset paging and counting
 

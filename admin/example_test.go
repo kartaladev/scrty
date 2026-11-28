@@ -21,7 +21,8 @@ import (
 // ports.
 
 // exampleUserStore holds users in a map; it implements only what
-// ExampleUsers calls in full.
+// ExampleUsers and ExampleWithSessionRevocation call in full, renames
+// included (admin.UsernameUpdater).
 type exampleUserStore struct {
 	users map[identity.UserID]admin.User
 }
@@ -64,6 +65,33 @@ func (s *exampleUserStore) UpdateUser(_ context.Context, id identity.UserID, ver
 	s.users[id] = u
 
 	return u, nil
+}
+
+// UpdateUserRenaming applies the name and the username. A real store also
+// refuses a username another user holds, under the row lock.
+func (s *exampleUserStore) UpdateUserRenaming(_ context.Context, id identity.UserID, version int64, c admin.UserChange) (admin.User, bool, error) {
+	u, ok := s.users[id]
+	if !ok {
+		return admin.User{}, false, admin.ErrNotFound
+	}
+
+	if u.Version != version {
+		return admin.User{}, false, admin.ErrStaleUpdate
+	}
+
+	renamed := c.Username != nil && *c.Username != u.Username
+	if c.Username != nil {
+		u.Username = *c.Username
+	}
+
+	if c.Name != nil {
+		u.Name = *c.Name
+	}
+
+	u.Version++
+	s.users[id] = u
+
+	return u, renamed, nil
 }
 
 func (s *exampleUserStore) SetActive(_ context.Context, id identity.UserID, version int64, active bool) (admin.User, bool, error) {

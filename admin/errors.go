@@ -7,7 +7,10 @@ import "errors"
 // a username, an email, an attribute value or a password hash.
 var (
 	// ErrConfig is wrapped by every error a constructor in this package
-	// returns for a wiring mistake.
+	// returns for a wiring mistake. It is also returned at call time, before
+	// the store is called, for an operation the configured store does not
+	// support: Users.Update naming a username (UserChange.Username) over a
+	// store that does not implement UsernameUpdater. Nothing is written.
 	ErrConfig = errors.New("admin: invalid configuration")
 
 	// ErrNotFound reports that no live user, role or assignment has the given
@@ -37,6 +40,14 @@ var (
 	// ErrNoActor reports a write whose context carries neither a principal nor
 	// a system actor.
 	ErrNoActor = errors.New("admin: no actor")
+
+	// ErrSessionsNotRevoked reports that a rename committed but the session
+	// revocation WithSessionRevocation configured then failed. It wraps the
+	// revoker's error, or the context's when the context was cancelled after
+	// the store committed. Users.Update returns it together with the renamed
+	// user, and the update's event and audit record were delivered: only the
+	// revocation needs retrying.
+	ErrSessionsNotRevoked = errors.New("admin: the renamed user's sessions were not revoked")
 )
 
 // The fields an AlreadyExistsError names.

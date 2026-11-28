@@ -19,7 +19,8 @@ var errStorage = errors.New("connection reset by peer")
 
 // reasons lists every administration reason; a storage failure matches none.
 var reasons = []error{admin.ErrNotFound, admin.ErrAlreadyExists, admin.ErrStillAssigned,
-	admin.ErrStaleUpdate, admin.ErrUnknownPrivilege, admin.ErrInvalidInput, admin.ErrNoActor}
+	admin.ErrStaleUpdate, admin.ErrUnknownPrivilege, admin.ErrInvalidInput, admin.ErrNoActor,
+	admin.ErrSessionsNotRevoked}
 
 func TestNewUsers(t *testing.T) {
 	t.Parallel()

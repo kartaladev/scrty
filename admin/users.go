@@ -40,14 +40,17 @@ const (
 // when its store is.
 type Users struct {
 	store UserStore
-	cfg   usersConfig
+	// renamer is the store as a UsernameUpdater, nil when it cannot rename.
+	renamer UsernameUpdater
+	cfg     usersConfig
 }
 
 // NewUsers returns a Users over store. With only a store it works: pages of 50
 // up to 500, the attribute bounds of the Default constants, the default
 // password policy and Argon2id encoder, the system clock, version 7
-// identifiers, no event sink, no audit sink and the routing logger; each
-// option replaces one of those.
+// identifiers, no event sink, no audit sink, no session revocation and the
+// routing logger; each option replaces one of those. It records whether store
+// implements UsernameUpdater, which Update needs to rename a user.
 //
 // A nil store, or an option that cannot work, fails with an error matching
 // ErrConfig. A nil option is ignored.
@@ -105,7 +108,14 @@ func NewUsers(store UserStore, opts ...UsersOption) (*Users, error) {
 		cfg.ids = id.NewV7Generator()
 	}
 
-	return &Users{store: store, cfg: cfg}, nil
+	renamer, _ := store.(UsernameUpdater)
+
+	if cfg.revoker != nil && renamer == nil {
+		return nil, fmt.Errorf("%w: admin.WithSessionRevocation was given, but the user store does not implement "+
+			"admin.UsernameUpdater, so it can never rename and the revoker would never run", ErrConfig)
+	}
+
+	return &Users{store: store, renamer: renamer, cfg: cfg}, nil
 }
 
 // List returns a page of live users matching the filter, ordered by
@@ -280,6 +290,15 @@ func (u *Users) validateNew(nu NewUser) error {
 // named for a user with no email, and an empty change, or a version below one,
 // are ErrInvalidInput; a version that differs from the stored one is
 // ErrStaleUpdate and changes nothing.
+//
+// A change naming a username renames the user through the store's
+// UsernameUpdater (see UserChange.Username); over a store without it, the
+// change is refused with an error matching ErrConfig after the input is
+// validated and before the store is called. The event lists username first.
+// With WithSessionRevocation, a rename the store reports as a change of the
+// stored username then revokes the user's sessions; when that fails, Update
+// returns the renamed user together with an error matching
+// ErrSessionsNotRevoked.
 func (u *Users) Update(ctx context.Context, userID identity.UserID, version int64, change UserChange) (User, error) {
 	actor, err := ActorFrom(ctx)
 	if err != nil {
@@ -296,12 +315,29 @@ func (u *Users) Update(ctx context.Context, userID identity.UserID, version int6
 		return User{}, err
 	}
 
+	// A store without the capability would otherwise be handed a username it
+	// may ignore; refuse before anything is read or written.
+	if change.Username != nil && u.renamer == nil {
+		return User{}, fmt.Errorf("admin: update user: %w: the change names a username, but the user store "+
+			"does not implement admin.UsernameUpdater", ErrConfig)
+	}
+
 	before, err := u.auditBefore(ctx, userID, version)
 	if err != nil {
 		return User{}, fmt.Errorf("admin: update user: %w", err)
 	}
 
-	updated, err := u.store.UpdateUser(ctx, userID, version, change)
+	var (
+		updated User
+		renamed bool
+	)
+
+	if change.Username != nil {
+		updated, renamed, err = u.renamer.UpdateUserRenaming(ctx, userID, version, change)
+	} else {
+		updated, err = u.store.UpdateUser(ctx, userID, version, change)
+	}
+
 	if err != nil {
 		return User{}, fmt.Errorf("admin: update user: %w", err)
 	}
@@ -316,12 +352,26 @@ func (u *Users) Update(ctx context.Context, userID identity.UserID, version int6
 
 	u.cfg.report(ctx, report)
 
+	// The update has committed and been reported; a failed revocation cannot
+	// undo it, so the caller gets the renamed user and an error to retry on.
+	if renamed && u.cfg.revoker != nil {
+		if err := u.cfg.revoker.DeleteByUser(ctx, userID); err != nil {
+			return updated, fmt.Errorf("%w: %w", ErrSessionsNotRevoked, err)
+		}
+	}
+
 	return updated, nil
 }
 
 func (u *Users) validateChange(c UserChange) error {
-	if c.Name == nil && c.Email == nil && c.EmailVerifiedAt == nil && c.Attributes == nil && c.Organization == nil {
+	if c.Username == nil && c.Name == nil && c.Email == nil && c.EmailVerifiedAt == nil && c.Attributes == nil && c.Organization == nil {
 		return invalid("the change names no field")
+	}
+
+	if c.Username != nil {
+		if err := exactName("username", *c.Username, MaxTextBytes); err != nil {
+			return err
+		}
 	}
 
 	if c.Name != nil {
@@ -566,6 +616,7 @@ func (l *attributeLimits) attributeName(name string) error {
 
 // The field names a user event's Changed lists.
 const (
+	userFieldUsername        = "username"
 	userFieldName            = "name"
 	userFieldEmail           = "email"
 	userFieldEmailVerifiedAt = "email_verified_at"
@@ -578,6 +629,10 @@ const (
 // changedUserFields names the fields a change sets, never their values.
 func changedUserFields(c UserChange, updated User) []string {
 	var changed []string
+
+	if c.Username != nil {
+		changed = append(changed, userFieldUsername)
+	}
 
 	if c.Name != nil {
 		changed = append(changed, userFieldName)

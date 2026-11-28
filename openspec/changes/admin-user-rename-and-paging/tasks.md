@@ -20,7 +20,7 @@ so a toy-store red or green step is that case, run as
 
 ## 1. Service: rename through `Users.Update` (`admin`)
 
-- [ ] 1.1 Add `Username *string` to `admin.UserChange`. Count it in `validateChange`'s "names no
+- [x] 1.1 Add `Username *string` to `admin.UserChange`. Count it in `validateChange`'s "names no
   field" check, and validate it with `exactName` as `Create` does. Verify with a table test in
   `admin`:
   - blank, padded, NUL, other control character, invalid UTF-8 and over-`MaxTextBytes` usernames
@@ -28,7 +28,7 @@ so a toy-store red or green step is that case, run as
     white space");
   - a change naming only a username reaches the store, over a store that implements
     `UsernameUpdater` (spec scenario "Rename", service side).
-- [ ] 1.2 Add the `UsernameUpdater` port with `UpdateUserRenaming(ctx, id, version, change) (User,
+- [x] 1.2 Add the `UsernameUpdater` port with `UpdateUserRenaming(ctx, id, version, change) (User,
   bool, error)` (D7). `NewUsers` records whether the store implements it. `Update` sends a change
   naming a username to `UpdateUserRenaming`, every other change to `UpdateUser`, and refuses a
   change naming a username with an error matching `ErrConfig`, after validation and before the
@@ -39,12 +39,12 @@ so a toy-store red or green step is that case, run as
   - "Other fields on the same store": the update succeeds through `UpdateUser`;
   - a rename on a store with the port calls `UpdateUserRenaming` once and `UpdateUser` never;
   - an invalid username on a store without the port gives `ErrInvalidInput`, not `ErrConfig`.
-- [ ] 1.3 Report a rename. `changedUserFields` adds `username`, first in the list, the audit sink
+- [x] 1.3 Report a rename. `changedUserFields` adds `username`, first in the list, the audit sink
   receives the before and after records, a refused rename emits nothing, and no error text contains
   either username. Verify with the scenarios "Rename event" and "Refused rename". The expected
   fields account for `email_verified_at`, which appears when the returned user has no verification
   time.
-- [ ] 1.4 Add `WithSessionRevocation(SessionRevoker)`, off by default. A nil or typed-nil revoker,
+- [x] 1.4 Add `WithSessionRevocation(SessionRevoker)`, off by default. A nil or typed-nil revoker,
   or any revoker over a store without `UsernameUpdater`, fails `NewUsers` with `ErrConfig`. The
   revoker runs only after a committed update for which the store reported `renamed`. A revoker
   failure returns the updated user together with an error matching `ErrSessionsNotRevoked` and the
@@ -59,7 +59,7 @@ so a toy-store red or green step is that case, run as
     context's error (a wrapping check: the revoker runs on the caller's context, D6);
   - "Nil revoker", including the typed-nil case;
   - "Revoker with a store that cannot rename".
-- [ ] 1.5 Write the godoc for `UserChange.Username`, `UsernameUpdater`, `WithSessionRevocation`,
+- [x] 1.5 Write the godoc for `UserChange.Username`, `UsernameUpdater`, `WithSessionRevocation`,
   `SessionRevoker`, `ErrSessionsNotRevoked` and `ErrConfig`. It names:
   - the default for each;
   - the accepted lockout behaviour (D5): counts age out, a hold never expires, and an administrator

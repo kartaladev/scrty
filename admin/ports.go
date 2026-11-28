@@ -56,7 +56,9 @@ type UserStore interface {
 	// represent is ErrInvalidInput.
 	CreateUser(ctx context.Context, user NewUser) (User, error)
 
-	// UpdateUser applies the named fields and increases the version.
+	// UpdateUser applies the named fields and increases the version. It never
+	// receives a username: Users.Update sends a change naming one to
+	// UsernameUpdater.UpdateUserRenaming instead.
 	//
 	// The verification time follows these rules, each decided under the row
 	// lock the version comparison takes, never from an earlier read:
@@ -99,6 +101,58 @@ type UserStore interface {
 	// history: the password policy's reuse rule retires the replaced hash
 	// through its own history port before this is called.
 	SetPassword(ctx context.Context, id identity.UserID, version int64, hash []byte, at time.Time) (User, error)
+}
+
+//go:generate mockgen -destination=usernameupdater_mock_test.go -package=admin_test -typed github.com/kartaladev/scrty/admin UsernameUpdater
+
+// UsernameUpdater is the optional store capability that lets Users.Update
+// change a username. NewUsers checks once whether the UserStore implements it.
+// Update sends a change naming a username (UserChange.Username) to
+// UpdateUserRenaming, and every other change to UserStore.UpdateUser, which
+// therefore never receives a username: a store written before usernames could
+// change needs no change, and cannot silently ignore one. Over a store without
+// this method, an update naming a username is refused with an error matching
+// ErrConfig before the store is called; callers on such a store leave Username
+// nil unless it changed, since even re-sending the current username is refused.
+//
+// Every user store scrty ships implements it.
+//
+// A consumer store that embeds a scrty store and overrides UpdateUser, for
+// example to add its own checks, inherits UpdateUserRenaming unchanged, so
+// renames bypass that override. Override UpdateUserRenaming too.
+//
+// Default: none; a store opts in by implementing the method.
+type UsernameUpdater interface {
+	// UpdateUserRenaming applies change, which names a username, as
+	// UserStore.UpdateUser applies the other fields, in one write under the
+	// same version check, and also writes the username under the rules of
+	// UserStore.CreateUser: a username another user holds, deleted or not,
+	// compared exactly, or equal to another live user's email ignoring case,
+	// is an AlreadyExistsError with FieldUsername. The user's own username and
+	// email never clash. Either everything the change names is written, or
+	// nothing is.
+	//
+	// renamed reports whether the stored username differed from the named one,
+	// byte for byte, decided under the row lock; a change of case only is a
+	// rename. Re-sending the current username is still a write (the version
+	// increases) with renamed false. Users.Update revokes sessions
+	// (WithSessionRevocation) only when renamed is true.
+	UpdateUserRenaming(ctx context.Context, id identity.UserID, version int64, change UserChange) (updated User, renamed bool, err error)
+}
+
+//go:generate mockgen -destination=sessionrevoker_mock_test.go -package=admin_test -typed github.com/kartaladev/scrty/admin SessionRevoker
+
+// SessionRevoker ends every session of a user. WithSessionRevocation gives
+// one to Users, which calls it after a committed rename. *session.Sessions
+// satisfies it as it is, so this package needs no import of session and no
+// adapter.
+//
+// Default: none; Users revokes no session unless WithSessionRevocation gives
+// a revoker.
+type SessionRevoker interface {
+	// DeleteByUser removes every session of the user. It runs on the context
+	// Users.Update was called with.
+	DeleteByUser(ctx context.Context, user identity.UserID) error
 }
 
 //go:generate mockgen -destination=importstore_mock_test.go -package=admin_test -typed github.com/kartaladev/scrty/admin ImportStore

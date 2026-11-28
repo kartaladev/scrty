@@ -51,6 +51,7 @@ type usersConfig struct {
 	encoder              password.Encoder
 	policy               *password.Policy
 	ids                  id.Generator
+	revoker              SessionRevoker
 }
 
 // attributeLimits are the bounds on profile attributes Users and Importer
@@ -186,6 +187,49 @@ func WithIDGenerator(generator id.Generator) UsersOption {
 		}
 
 		c.ids = generator
+
+		return nil
+	})
+}
+
+// WithSessionRevocation makes Update end every session of a user whose
+// username it changed: after the store commits an update for which
+// UsernameUpdater.UpdateUserRenaming reports renamed, Update calls
+// r.DeleteByUser with the user's identifier, on the caller's context. An update
+// that names no username, re-sends the current one byte for byte, or fails or
+// is refused, revokes nothing, so a profile form that sends every field on each
+// save does not sign the user out.
+//
+// *session.Sessions satisfies SessionRevoker as it is: its DeleteByUser
+// removes the user's sessions and the refresh families kept with them. Give
+// NewUsers the same *session.Sessions the application signs users in with.
+//
+// When the revocation fails, the update stays committed and its event and
+// audit record are delivered: Update returns the renamed user together with an
+// error matching ErrSessionsNotRevoked that wraps the cause (the revoker's
+// error, or the context's when it was cancelled after the store committed), so
+// the caller can retry the revocation.
+//
+// The revoker runs when the store returns, not when a transaction the caller
+// holds commits. A caller that wraps updates in its own transaction, which
+// scrty's stores join, leaves this option out and revokes the sessions itself
+// after its own commit; otherwise a later rollback leaves the sessions ended
+// for a rename that never happened.
+//
+// A nil revoker, typed nil included, fails NewUsers with an error matching
+// ErrConfig, and so does any revoker over a store that does not implement
+// UsernameUpdater: such a store can never rename, so the option could never
+// take effect.
+//
+// Default: no revoker; a rename ends no session. Sessions are keyed by the user
+// identifier, which a rename does not change.
+func WithSessionRevocation(r SessionRevoker) UsersOption {
+	return usersOption(func(c *usersConfig) error {
+		if nilcheck.IsNil(r) {
+			return fmt.Errorf("%w: session revoker is nil; leave admin.WithSessionRevocation out to revoke nothing", ErrConfig)
+		}
+
+		c.revoker = r
 
 		return nil
 	})

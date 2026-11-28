@@ -78,8 +78,35 @@ type UserPage struct {
 
 // UserChange names the fields an update changes; a nil field is unchanged.
 type UserChange struct {
-	Name  *string
-	Email *string
+	// Username renames the user when non-nil. Nil, the default, leaves it
+	// unchanged. It is validated as NewUser.Username is (not blank, no leading
+	// or trailing white space, valid UTF-8 without control characters, at most
+	// MaxTextBytes), and the store refuses one another user holds as
+	// UserStore.CreateUser does. A change naming only a username is a change.
+	//
+	// Only a store implementing UsernameUpdater can rename: Update sends a
+	// change naming a username there, and refuses it with an error matching
+	// ErrConfig, before any store call, over a store that does not.
+	// UserStore.UpdateUser never receives a username. On such a store, leave
+	// Username nil unless it changed.
+	//
+	// What a rename leaves behind:
+	//   - Sessions are keyed by the user identifier and survive a rename,
+	//     unless WithSessionRevocation is given.
+	//   - Lockout state (failure counts and holds) is keyed by the username
+	//     and stays under the old one. The renamed account starts clean. The
+	//     next holder of the old username inherits what it carries: counts
+	//     age out of their window, but a hold never expires. An administrator
+	//     who renames a user should call the lockout policy's Reset with the
+	//     old username to release it.
+	//   - The standalone JWTAuthenticator in username-subject mode keeps
+	//     accepting tokens naming the old username until they expire, and once
+	//     another user takes that username they name that user. Consumers of
+	//     that mode keep token lifetimes short or do not reuse released
+	//     usernames.
+	Username *string
+	Name     *string
+	Email    *string
 	// EmailVerifiedAt is set when non-nil; a pointer to the zero time clears it.
 	// When Email is named and EmailVerifiedAt is nil, the store keeps the
 	// stored verification time if Email equals the stored email ignoring case,

@@ -46,7 +46,9 @@
 // under the scrty_ prefix otherwise (event.UserReactivated,
 // event.UserImported). The event names the actor, the target and the changed
 // fields, never a value. A refused or failed call, and a call that changed
-// nothing, reports nothing. The default is no sink; on a request whose chain
+// nothing, reports nothing. A committed change whose follow-up session
+// revocation fails is the exception: it still emits its event and returns
+// ErrSessionsNotRevoked. The default is no sink; on a request whose chain
 // reports security events, the services report through the chain.
 //
 // WithAudit adds an audit sink that receives each committed change with the
@@ -67,9 +69,14 @@
 //
 // Every failure an application can act on matches exactly one of ErrNotFound,
 // ErrAlreadyExists, ErrStillAssigned, ErrStaleUpdate, ErrUnknownPrivilege,
-// ErrInvalidInput and ErrNoActor. A storage failure matches none of them. Error
-// text never contains a username, an email, an attribute value or a password
-// hash.
+// ErrInvalidInput, ErrNoActor, ErrConfig and ErrSessionsNotRevoked. ErrConfig
+// is also returned at call time when a call needs a store capability the store
+// lacks, such as a rename asked of a store that does not implement
+// UsernameUpdater. ErrSessionsNotRevoked reports a committed rename whose
+// opted-in session revocation failed; the error also wraps the revoker's cause,
+// so the change is stored and only the sign-out is in doubt. A storage failure
+// matches none of them. Error text never contains a username, an email, an
+// attribute value or a password hash.
 //
 // # Stores
 //
