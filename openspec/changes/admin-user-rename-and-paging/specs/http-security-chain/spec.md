@@ -41,7 +41,7 @@ Building a chain SHALL fail with a configuration error, naming the aggregate opt
 - **THEN** construction fails with an error naming the aggregate option
 
 #### Scenario: Explicit aggregate over a limiter that reports no policy
-- **WHEN** a chain configured with an explicit /48 aggregate gives the API-key flow its own consumer limiter reporting 50 failures per minute
+- **WHEN** a chain configured with an explicit /48 aggregate with a multiplier of 2 gives the API-key flow its own consumer limiter reporting 50 failures per minute
 - **THEN** construction succeeds and the API-key aggregate allows 100 failures per minute
 
 #### Scenario: Consumer limiter reports an unusable policy

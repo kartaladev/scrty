@@ -142,6 +142,8 @@ change naming only the username is a change: the "names no field" refusal counts
 `name`. As today, `email_verified_at` also appears when a named email leaves the user unverified. The audit "before" and "after" records already carry `Username`. Error text never contains
 the username (the `security-administration` error requirement).
 
+- **Default / override:** none; the event's field names are a contract every caller relies on.
+
 ### D4: Usernames are compared exactly on rename, as on creation
 
 - **Decision:** a rename uses `Create`'s rule. Usernames are compared exactly, deleted users
@@ -270,6 +272,7 @@ OWASP describe failure limits per account, not per name.
   collision live in `test/internal/adminfix`, which runs only against scrty's SQL stores.
 - **Superseded draft:** the cases ran only for stores implementing the optional rename port and were
   skipped, with a message, otherwise. Dropped with D7.
+- **Default / override:** none; the suite is the contract every store is held to.
 
 ### D9: Offset paging beside the cursor, which stays the default
 
@@ -343,6 +346,9 @@ CountUsers(ctx context.Context, query UserQuery) (int64, error)
   non-zero `Offset` it skips that many users, in the same order, and the service sets no cursor.
 - **The service does not trust the store's results blindly:** a result longer than the page size is
   truncated, as it already is, and a negative count is an error.
+- **The store validates what it is given:** a negative offset, or a non-zero offset together with a
+  cursor, is refused by the store with `ErrInvalidInput`, as the earlier offset method did, so a
+  direct caller never reaches the database with them.
 - **Why in `UserStore`:** an optional port existed only so that a consumer store written before this
   change kept compiling (D15). One listing method also removes the hazard of a store overriding
   `ListUsers` while an embedded offset method bypassed the override.
@@ -364,6 +370,7 @@ CountUsers(ctx context.Context, query UserQuery) (int64, error)
 - **Accepted:** the count scans the matching rows. A substring search already scans the users table
   for the listing (D16 of the archived design accepted that); the count costs the same. The caller's
   context deadline bounds it.
+- **Default / override:** none; the statements are internal to scrty's stores.
 
 ### D14: The public conformance suite runs the offset and count cases against every store
 
@@ -371,6 +378,7 @@ CountUsers(ctx context.Context, query UserQuery) (int64, error)
 - **Load-bearing proof:** `TestAdminSuiteIsLoadBearing` carries defects: an offset applied twice, a
   count that includes deleted users, and an offset listing in a different order from the cursor
   listing.
+- **Default / override:** none; the suite is the contract every store is held to.
 
 ### D15: Every compatibility-only optional port folds into its base interface
 
@@ -389,39 +397,73 @@ CountUsers(ctx context.Context, query UserQuery) (int64, error)
   | `admin.UsernameUpdater`, `admin.UserPager` | `admin.UserStore` (D7, D12) | call-time `ErrConfig`, two `NewUsers` checks, conformance skips |
   | `session.FamilyReader`, `session.RoleSelector` | `session.Store` | the listing fallback, `roleSelectingEncryptedStore`, `Sessions.SelectsRoles` and its refusals |
   | `oidc.LinkLister`, `oidc.LinkRemover` | `oidc.LinkStore` | the broker's construction refusal, the freshness-check skip, conformance skips |
-  | `mfa.DeviceProofStore` | `mfa.EnrolmentStore` | the seal variant `provingEnrolmentStore`, `Enroller.SupportsEnrolmentPath`, the proof-store refusal |
-  | `mfa.EnrolmentRemover` | `mfa.Method` | the recovery kind's construction refusal; `ResetDeps.Enrolments` takes `[]mfa.Method` |
+  | `mfa.DeviceProofStore` | `mfa.EnrolmentStore` | the seal variant `provingEnrolmentStore` (its sealing moves onto the one sealed store), the proof-store refusal |
+  | `mfa.EnrolmentRemover` | `mfa.Method` | the recovery kind's construction refusal; `ResetDeps.Enrolments` takes `[]mfa.Method`; the kind re-reads enrolments after removing |
   | `ratelimit.RecentFailureReporter`, `ratelimit.PolicyReporter` | `ratelimit.Limiter` | the "cannot report" answers, the chain's warning and refusal for a limiter without a policy |
   | `password.Recognizer`, `password.Upgrader` | `password.Encoder` (embedded) | "an encoder that cannot report recognises everything" and "never upgrades" |
-  | `lockout.FailureStreakStore` | `policy.AttemptStore` | the cap's construction refusal; `FailureStreak` moves to `policy` |
+  | `lockout.FailureStreakStore` | a new `lockout.Store`, which embeds `policy.AttemptStore` and is what `lockout.New` takes | the cap's construction refusal; `policy.AttemptStore` and the chain's attempt view are unchanged |
   | `oidcprovider.PendingRequestCounter` | `oidcprovider.PendingRequestStore` | the ceiling's construction refusal and the "cannot count" refusal |
   | `recovery.UsableLister` | `recovery.AuthenticatorKind` | the fallback that counts every held authenticator as usable |
 
-- **Kept optional (genuine capabilities):** `authenticate.DecoyVerifier`, `IdentifierResolver`,
-  `password.InputLimiter`, `mfa.Enroller`, `mfa.ChallengeMethod`, `oidc.UpstreamBroker`,
-  `policy.UnreportedAttemptRecorder`, the policy engine's marker interfaces, `lockout.AttemptReaper`,
-  `onetime.Reaper`, `identity.EmailLoader`, `logsample.Flusher`, `signingkey.LifetimeReporter`,
-  `token.ConfirmingGenerator`, `notify.NonBlocking`, `ratelimit.Verifier`, `clock.Timed`.
+- **Kept optional (genuine capabilities), among them:** `authenticate.DecoyVerifier` and the
+  `OffersDecoy` marker, `IdentifierResolver`, `password.InputLimiter`, `mfa.Enroller`,
+  `mfa.ChallengeMethod`, the enrolment-path marker `SupportsEnrolmentPath` (below),
+  `oidc.UpstreamBroker` and the relying party's provider-scoped, role-syncing and link-backed markers,
+  `authorize.PrivilegeInspector`, `policy.UnreportedAttemptRecorder`, the policy engine's marker
+  interfaces, `lockout.AttemptReaper` and `onetime.Reaper` (purging may be left to a database job),
+  `identity.EmailLoader`, `logsample.Flusher`, `signingkey.LifetimeReporter`,
+  `token.ConfirmingGenerator` and a verifier that also generates, `notify.NonBlocking`,
+  `clock.Timed`. Each is either implemented by only some of scrty's own types, or describes a choice
+  a consumer may legitimately not make.
 - **How each non-mechanical point is settled:**
-  - `lockout.FailureStreak` moves to package `policy`, because `policy.AttemptStore` cannot import
-    `lockout`. No alias is kept. Every attempt store carries the streak methods, even when its
-    consumer never sets a cap.
+  - The streak methods fold into a new `lockout.Store`, which embeds `policy.AttemptStore` and adds
+    `AddStreakFailure`, `FailureStreak` and `DeleteStreaksBefore`; `lockout.New` takes it.
+    `policy.AttemptStore`, the attempt view `Policy.Attempts()` hands the chain, and
+    `lockout.FailureStreak` stay where they are, so no holder of the view can advance or purge a
+    streak behind the observer. Every store `lockout.New` is given carries the streak methods, even
+    when its consumer never sets a cap. The policy still calls them only when a cap is set: the
+    "cap is set" gate is the cap option, not the store's type. Decided with the user on 2026-11-28.
+    Streak purging is part of the cap's retention contract and so required; attempt purging stays
+    the optional `AttemptReaper`.
   - `mfa.Method` gains `RemoveEnrolment`, so every method, a consumer's email-code method included,
-    implements it, and `mfa.ResetDeps.Enrolments` takes `[]mfa.Method`.
+    implements it, and `mfa.ResetDeps.Enrolments` takes `[]mfa.Method`. Because a method that
+    reports success without removing would leave an attacker's second factor in place, the recovery
+    kind reads the user's enrolments again after removing and fails the reset when the method still
+    holds one. Decided with the user on 2026-11-28.
   - `password.Recognizer` and `password.Upgrader` stay as named interfaces that `password.Encoder`
     embeds, so `admin.NewImporter` still asks only for recognition. They are no longer optional.
-  - `internal/unavailable.Wrap` answers `Policy()` from the limit and window it already holds; its
-    backend type stays narrow and internal.
-  - `Sessions.SelectsRoles` and `mfa.Enroller.SupportsEnrolmentPath` would always answer true, so they
-    are removed, with the refusals that consulted them.
+  - `internal/unavailable.Wrap` gains the limit and window it was built for as two fields and answers
+    `Policy()` from them, also while its backend is down; its backend type stays narrow and
+    internal.
+  - `Sessions.SelectsRoles` would always answer true, so it is removed, with the refusals that
+    consulted it.
+  - `SupportsEnrolmentPath` stays. `policy` cannot import `authenticate/mfa` and matches it
+    structurally, and the passkey MFA method reports it without being an `mfa.Enroller`. Only its
+    dependence on the device-proof port goes: TOTP reports true whatever its store.
+  - Folding into a wrapper keeps the wrapper's treatment: the encrypted session store's `SelectRole`
+    keeps its fixed error text and sanitised cause, its `ListByFamily` opens rows, and the sealed MFA
+    store seals the emailed code a device proof records.
   - Test-module helpers that exist only for an optional port (`storetest.RequireDeviceProof`,
     `RunDeviceProofSuite`, `DeviceProofEnrolmentStore`, and the `optionalCase` uses for device
     proofs, family reads and role selection) fold into the base suites, whose cases then always run.
     `optionalCase` stays for the reapers.
-- **Behaviour changes a consumer sees:** a consumer implementation of any folded base fails to
-  compile until it adds the methods. Just-in-time provisioning always runs the link freshness check.
-  An encoder always answers recognition; a consumer encoder is no longer trusted with every
-  non-empty hash.
+- **Behaviour changes a consumer sees:**
+  - a consumer implementation of any folded base fails to compile until it adds the methods;
+  - just-in-time provisioning always runs the link freshness check;
+  - an encoder always answers recognition; a consumer encoder is no longer trusted with every
+    non-empty hash;
+  - a consumer encoder's upgrade report now drives a rehash at login, where it never upgraded before;
+  - a flow given a consumer limiter now gets the default IPv6 aggregate from the policy that limiter
+    reports, where it got none and a warning before;
+  - the automation challenge trusts a consumer limiter's recent-failures answer, where such a limiter
+    always counted as having failures before; an answer that fails still counts as failures;
+  - a recovery reset fails when an MFA method reports a removal that did not happen.
+- **Scenario names:** OpenSpec keeps a modified requirement's scenarios by name, so scenarios that
+  described the case without the port ("Store cannot count", "Link store that cannot list", "Method
+  without a remover", "Store that cannot record a device proof", "Store without consecutive counts",
+  "A store that can only list", "Consumer limiter that reports no policy", "Explicit aggregate over a
+  limiter that reports no policy") keep their names and now state how a consumer's implementation is
+  served.
 - **Compatibility:** these ports were released in v0.6.0, so this is a breaking change to released
   API (`library-design.md` rule 7). The owner accepted it; the CHANGELOG carries a BREAKING section
   naming each folded port and its migration.
@@ -448,6 +490,7 @@ CountUsers(ctx context.Context, query UserQuery) (int64, error)
 | No actor | Handled, tested (existing `Update` tests; the rename takes the same path) | `ErrNoActor`, store not called |
 | Store outage | Handled, tested (existing `Update` tests; the rename takes the same path) | Error matching no administration reason |
 | A store's `UpdateUser` ignores the username or misreports `renamed` | Handled, tested (D8) | Its conformance run fails a named case |
+| The commit fails after the store decided `renamed`, its outcome unknown | Accepted | The caller gets the store error and no revocation runs, though the rename may have committed; the caller reads the user again |
 | A consumer store written before this change | Accepted (D15) | It fails to compile until `UpdateUser` takes the username and reports `renamed` |
 | Lockout counts left under the old username | Accepted (D5) | The renamed account starts clean. The next holder of the old name inherits its counts until they age out |
 | Lockout hold left under the old username | Accepted (D5) | The next holder of the old name is refused until a password change through the chain or the lockout `Reset`; the godoc tells administrators to call `Reset` on the old username |
@@ -474,6 +517,7 @@ CountUsers(ctx context.Context, query UserQuery) (int64, error)
 | Failure | State | What the caller sees |
 |---|---|---|
 | Negative offset | Handled, tested | `ErrInvalidInput`, store not called |
+| Negative offset, or offset with a cursor, sent to a store directly | Handled, tested (D12) | The store refuses with `ErrInvalidInput`; the database is not queried |
 | Non-zero offset with a cursor | Handled, tested | `ErrInvalidInput`, store not called |
 | Offset above the maximum | Handled, tested | `ErrInvalidInput`, store not called; exactly the maximum is accepted |
 | Offset past the last match | Handled, tested | Empty page, no error |
@@ -498,14 +542,23 @@ CountUsers(ctx context.Context, query UserQuery) (int64, error)
 | A consumer implementation of a folded base interface | Accepted (D15) | Compile error naming the missing method; the BREAKING changelog entry gives the migration |
 | A wrapper that embeds a folded base interface (for example `oidcprovider`'s session wrappers) | Handled, tested | The folded methods are promoted and forwarded; a wrapper no longer hides a family read or role selection |
 | A wrapper that overrides one method of a folded base and inherits the folded one | Accepted (D15) | The inherited method bypasses the override, as for any embedding; godoc on each folded method names its siblings |
-| A consumer session store whose family read is wrong | Handled, tested | The session store conformance suite's family-read cases fail; they now always run |
-| A consumer link store that cannot really list or remove | Handled, tested | The link store conformance cases fail; they now always run. Just-in-time provisioning always runs its freshness check |
+| A consumer implementation that stubs a folded method with zero values or no effect | Accepted (D15) | The library trusts it, as it trusts scrty's own; the effect per port is in the rows below. The public conformance suites catch it for a consumer who runs them |
+| A consumer session store whose family read is wrong | Accepted (D15) | Sign-in state reads answer wrongly; the session store suite's family-read cases, which now always run, fail on such a store |
+| A consumer session store whose `SelectRole` does nothing | Accepted (D15) | A role switch reports success and the session keeps its role; the role cases of the session suite fail on such a store |
+| A consumer link store that cannot really list or remove | Accepted (D15) | The one-link rule and the freshness check act on what it reports; the link store suite, which now always runs its list and remove cases, fails on such a store |
 | A consumer encoder that reports it recognises nothing | Handled, tested | Every stored hash is unusable; each login costs one reference verification and fails, as for an unknown user |
+| A consumer encoder whose upgrade report is always true | Accepted (D15) | The password is re-encoded at every successful login, with the write cost that implies |
 | A consumer limiter that reports an unusable policy | Handled, tested (existing) | Construction fails naming the flow |
-| A consumer attempt store that keeps no real streaks | Handled, tested | The streak store conformance cases fail; a cap is no longer refused at construction |
-| A consumer pending-request store that miscounts | Accepted | The ceiling trusts the count, as for scrty's stores; a negative count is already refused as a dependency failure |
+| A consumer limiter whose reported policy differs from what it counts | Accepted (D15) | The aggregate is sized from the reported policy |
+| A consumer limiter that answers "no recent failures" when it has some | Accepted (D15) | The verifier is not asked for those requests, as with a scrty limiter that loses its records |
+| A limiter whose recent-failures answer fails | Handled, tested | The verifier is told the source has recent failures |
+| The shared limiter's backend is down when its policy is asked | Handled, tested | It reports the limit and window it was built with |
+| A consumer attempt store whose streak methods do nothing, with a cap set | Accepted (D15) | The cap never holds; the streak suite, which now always runs, fails on such a store. A policy without a cap never calls the streak methods |
+| A consumer pending-request store that miscounts | Accepted (D15) | The ceiling trusts the count, as for scrty's stores; a negative count is already refused as a dependency failure |
 | A consumer MFA method whose `RemoveEnrolment` fails | Handled, tested (existing) | The recovery reset returns the error |
-| A consumer recovery kind that reports held authenticators as usable | Accepted | The "another way back in" check trusts the kind, as for scrty's kinds |
+| A consumer MFA method whose `RemoveEnrolment` reports success without removing | Handled, tested | The kind's re-read finds the enrolment and the reset returns an error |
+| A consumer recovery kind that reports held authenticators as usable | Accepted (D15) | The "another way back in" check trusts the kind, as for scrty's kinds |
+| A wrapper that seals or sanitises loses that treatment on a newly forwarded method | Handled, tested | The encrypted store's `SelectRole` keeps fixed error text, its `ListByFamily` opens rows, and the sealed MFA store seals the emailed code |
 
 ## Risks / Trade-offs
 
@@ -579,7 +632,7 @@ CHANGELOG's BREAKING section lists them.
 D15, and the revised D7, D8, D12 and D14, are reasoned from scrty's own settled specs and code: a
 survey of every optional port, its implementations and its fallbacks, taken on 2026-11-28.
 
-D1 to D3, D7, D8, D12 and D14, and D5's description of holds and `Reset`, are reasoned from scrty's
+D1 to D3, and D5's description of holds and `Reset`, are reasoned from scrty's
 own settled specs (`security-administration`, `sessions`, `authentication`), the archived
 `security-administration` design, its code (the `policy/lockout` package documentation, the
 `admintest` suite), and the project's library-design and defensive-coding rules. The established

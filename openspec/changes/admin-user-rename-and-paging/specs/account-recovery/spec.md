@@ -54,6 +54,10 @@ Linked identities SHALL be read through a lookup the consumer supplies. With non
 - **WHEN** issued codes are enabled and `u-1` has no password, no saved codes, and only an MFA method whose codes are sent by email
 - **THEN** the check reports no
 
+#### Scenario: Consumer kind reports only usable authenticators
+- **WHEN** issued codes are enabled, `u-1` has no password and no saved codes, and a consumer's kind holds one authenticator for `u-1` and reports none usable
+- **THEN** the check reports no
+
 #### Scenario: Loader returns no user
 - **WHEN** the user loader returns no user and no error for `u-1`
 - **THEN** the check reports from the remaining lookups and does not panic

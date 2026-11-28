@@ -162,7 +162,7 @@ The service SHALL count the live users that match a filter's search, active, rol
 - **THEN** the count is 2
 
 ### Requirement: Every user store lists from an offset and counts
-Every user store SHALL list users from an offset, in the order of the cursor listing, and SHALL count the live users a filter matches, by the same filters as the listing. The store conformance suite SHALL run its offset and count cases against every store.
+Every user store SHALL list users from an offset, in the order of the cursor listing, and SHALL count the live users a filter matches, by the same filters as the listing. A store SHALL refuse a negative offset, or a non-zero offset together with a cursor, with the invalid-input error. The store conformance suite SHALL run its offset and count cases against every store.
 
 #### Scenario: Library stores
 - **WHEN** the `database/sql`, pgx and GORM user stores are each asked to list from an offset and to count
@@ -170,6 +170,14 @@ Every user store SHALL list users from an offset, in the order of the cursor lis
 
 #### Scenario: Conformance suite on a store that applies the offset wrongly
 - **WHEN** the store conformance suite runs against a store that skips twice the asked offset
+- **THEN** the offset cases fail
+
+#### Scenario: Store asked for a negative offset
+- **WHEN** a user store is asked directly to list from offset -1
+- **THEN** it refuses with the invalid-input error
+
+#### Scenario: Conformance suite on a store that orders offset pages differently
+- **WHEN** the store conformance suite runs against a store whose offset listing orders users by identifier only
 - **THEN** the offset cases fail
 
 #### Scenario: Conformance suite on a store that counts deleted users

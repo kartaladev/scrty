@@ -87,11 +87,12 @@ maintained in one place.
   `oidc.LinkRemover` into `oidc.LinkStore`; `mfa.DeviceProofStore` into `mfa.EnrolmentStore`;
   `mfa.EnrolmentRemover` into `mfa.Method`; `ratelimit.RecentFailureReporter` and
   `ratelimit.PolicyReporter` into `ratelimit.Limiter`; `password.Recognizer` and `password.Upgrader`
-  into `password.Encoder`; `lockout.FailureStreakStore` into `policy.AttemptStore`;
+  into `password.Encoder`; `lockout.FailureStreakStore` into a new `lockout.Store` that `lockout.New` takes;
   `oidcprovider.PendingRequestCounter` into `oidcprovider.PendingRequestStore`;
   `recovery.UsableLister` into `recovery.AuthenticatorKind`.
-- Their fallbacks, construction refusals, forwarding wrappers and conformance skips go, and so do
-  `Sessions.SelectsRoles` and `mfa.Enroller.SupportsEnrolmentPath`, which would always answer true.
+- Their fallbacks, construction refusals, forwarding wrappers and conformance skips go, and so does
+  `Sessions.SelectsRoles`, which would always answer true. A recovery reset re-reads MFA enrolments
+  after removing them and fails when a method did not remove.
 - Ports some implementations genuinely cannot provide stay optional (design D15 lists them).
 
 Not in this change:
@@ -118,11 +119,11 @@ None.
   - updates may change the username, under the version check and the uniqueness rules of creation;
     the update event names the username field;
   - listing users may page by offset as well as by cursor, and matching users can be counted;
-  - the error-reasons requirement gains the configuration reason (rename or offset asked of a store
-    without support) and the sessions-not-revoked reason;
+  - the error-reasons requirement gains the sessions-not-revoked reason;
   - the event requirement says a committed change keeps its event when a follow-up step fails.
 - `sessions`, `identity-linking`, `multi-factor-auth`, `account-recovery`, `http-security-chain`,
-  `authentication`, `password-encoding`, `security-policy`, `oidc-provider-authorization`: what used
+  `authentication`, `password-encoding`, `security-policy`, `oidc-provider-authorization`,
+  `rate-limiting`, `automation-challenge`, `store-conformance`, `security-state-stores`: what used
   to be optional for a store, limiter, encoder, method or kind becomes required, and the refusals and
   fallbacks for implementations without it are removed.
 

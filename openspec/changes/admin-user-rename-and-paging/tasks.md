@@ -84,6 +84,9 @@ so a toy-store red or green step is that case, run as
 
 ## 2. Stores apply the username (`internal/pgschema`, `store/sqlstore`, `store/pgxstore`, `store/gormstore`, `test/admin`, `test/internal/adminfix`, `test/sqlstore`)
 
+> Done before the 2026-11-28 revision; group 6 retargets its tests at `UserStore.UpdateUser` and
+> removes their `UsernameUpdater` gate (design D7, D8 revised, D15).
+
 - [x] 2.1 Add rename cases to the `test/admin` conformance suite. They call `UpdateUserRenaming`, run
   only when the fixture's store implements `UsernameUpdater`, and are skipped with a message naming
   it otherwise (D8). Implement `UpdateUserRenaming` on the toy store. The cases are:
@@ -149,6 +152,9 @@ so a toy-store red or green step is that case, run as
 
 ## 3. Sessions end on rename when opted in (`test/sqlstore`)
 
+> Done before the 2026-11-28 revision; group 6 retargets its tests at `UserStore.UpdateUser` and
+> removes their `UsernameUpdater` gate (design D7, D8 revised, D15).
+
 - [x] 3.1 Add the scenario "Consumer opts in" in an untagged test in `test/sqlstore`, over the real
   `sqlstore` identity store, so CI runs it. `ada` is signed in on two devices through
   `*session.Sessions` on its `MemoryStore`, the service is configured with
@@ -156,6 +162,9 @@ so a toy-store red or green step is that case, run as
   afterwards, and that it was red with the revoker call disabled in a scratch copy.
 
 ## 4. Import after a rename (`test/admin`)
+
+> Done before the 2026-11-28 revision; group 6 retargets its tests at `UserStore.UpdateUser` and
+> removes their `UsernameUpdater` gate (design D7, D8 revised, D15).
 
 - [x] 4.1 Add the scenario "Import after a rename", gated on `UsernameUpdater` as the rename cases
   are (D8): rename `ada`, then import her identifier with `ada.lovelace` and every other value equal to what is stored for her.
@@ -214,13 +223,15 @@ so a toy-store red or green step is that case, run as
 ## 6. Fold the admin ports into `UserStore` (`admin`, `internal/pgschema`, `store/sqlstore`, `store/pgxstore`, `store/gormstore`, `test/admin`, `test/internal/adminfix`, `test/sqlstore`)
 
 The stores' offset and count code from the pre-revision work is already on the branch behind the
-optional `UserPager` port; these tasks move it, and the rename, onto `UserStore`.
+optional `UserPager` port (commit `8445f0dd`: the shared filter fragment, store methods, gated
+conformance cases and their defects); these tasks move it, and the rename, onto `UserStore`.
 
 - [ ] 6.1 Fold renames into `UserStore.UpdateUser` (D7). `UpdateUser` takes a change that may name a
   username and returns `(User, renamed bool, error)`. Remove `UsernameUpdater`, `UpdateUserRenaming`,
   the `renamer` field, the call-time `ErrConfig` refusal, and `NewUsers`'s check of a revoker against
-  the store. Every scrty store, the toy store, the package example's store and `test/identity`'s
-  in-memory store implement the one method, sharing the existing helpers. The rename cases, the
+  the store. Every scrty store, the toy store and the package example's store implement the one
+  method, sharing the existing helpers; every caller of `UpdateUser` follows (including
+  `test/gormstore/admin_store_test.go`). The rename cases, the
   `adminfix` tests and "Import after a rename" call `UpdateUser` and run for every store: remove
   `renameSkip`, `variantNoUsernameUpdater` and its guard case. Regenerate the `admin` mocks and delete
   the `UsernameUpdater` mock. Verify:
@@ -231,7 +242,9 @@ optional `UserPager` port; these tasks move it, and the rename, onto `UserStore`
   - the godoc of `UserStore.UpdateUser`, `UserChange.Username`, `WithSessionRevocation` and
     `ErrConfig` no longer mentions an optional port or a call-time refusal.
 - [ ] 6.2 Fold offset and count into `UserStore` (D12, D13). `UserQuery` gains `Offset`, honoured by
-  `ListUsers`; `UserStore` gains `CountUsers`. Remove `UserPager`, `ListUsersFrom`, the `pager` field,
+  `ListUsers`; `UserStore` gains `CountUsers`. Each store's `ListUsers` refuses a negative offset, and
+  a non-zero offset together with a cursor, with `ErrInvalidInput`, as `ListUsersFrom` did. Remove
+  `UserPager`, `ListUsersFrom`, the `pager` field,
   the call-time `ErrConfig` refusals in `List` and `Count`, and `NewUsers`'s check of
   `WithMaxListOffset` against the store. In `pgschema`, one listing statement serves both modes (the
   cursor comparison plus `OFFSET`), built on the shared filter fragment, and `ListAdminUsersFrom` is
@@ -240,6 +253,8 @@ optional `UserPager` port; these tasks move it, and the rename, onto `UserStore`
     fields, written first and seen red;
   - a store test, on each SQL store and the toy, that one statement answers a cursor page and an
     offset page in the same order, seen red against a store that ignores `Offset`;
+  - a conformance case "Offset zero with a cursor equals the cursor page", and the conformance case
+    "Store asked for a negative offset" (spec), each on every store;
   - every existing offset, count and listing test passes on PostgreSQL 18 and 15.
 - [ ] 6.3 Run the offset and count conformance cases for every store (D14): remove `pagerSkip`,
   `variantNoUserPager`, `toyUsersWithoutPager` and its guard case. Keep the defects (offset applied
@@ -248,6 +263,8 @@ optional `UserPager` port; these tasks move it, and the rename, onto `UserStore`
   and that `TestAdminSuiteIsLoadBearing` lists no skip.
 
 ## 7. Documentation
+
+> 7.1 was done before the 2026-11-28 revision; 7.2 rewrites its entry.
 
 - [x] 7.1 Add to the existing `## [Unreleased]` section of `CHANGELOG.md`, under `### Added`:
   `UserChange.Username`, `UsernameUpdater`, `WithSessionRevocation`, `SessionRevoker`,
@@ -267,64 +284,82 @@ optional `UserPager` port; these tasks move it, and the rename, onto `UserStore`
   opt-in wording, and name `UserStore.UpdateUser`'s `renamed` result, `UserQuery.Offset` and
   `UserStore.CountUsers` instead of `UsernameUpdater` and `UserPager`. Add a `### BREAKING` subsection
   to `## [Unreleased]` naming every port folded by D15, its base interface, and the methods a
-  consumer implementation adds, and every removed API (`Sessions.SelectsRoles`,
-  `Enroller.SupportsEnrolmentPath`, `storetest.RequireDeviceProof`, `RunDeviceProofSuite`,
-  `DeviceProofEnrolmentStore`). Update the `README.md` passages that describe a folded port as
+  consumer implementation adds (with `lockout.Store` as the new type `lockout.New` takes), and every
+  removed API (`Sessions.SelectsRoles`, `storetest.RequireDeviceProof`, `RunDeviceProofSuite`,
+  `DeviceProofEnrolmentStore`), and the reset's new refusal when an MFA method does not remove. Update the `README.md` passages that describe a folded port as
   optional. Verify that each folded port and removed API is named, and that no passage still calls a
   folded port optional (`rg` over `README.md`, `CHANGELOG.md`'s Unreleased section and every godoc).
 
 ## 8. Fold the library's compatibility-only ports (D15)
 
 Each task removes the port's type assertions, fallbacks, construction or call-time refusals,
-forwarding wrappers, conformance skips and "absent" tests, and regenerates the affected mocks. A
-fold is a mechanical change covered by existing tests (`golang-tdd.md`); where behaviour changes, the
-task names the test written first and seen red. Every task verifies its packages and their
-transitive dependents (`test-scope.md`).
+forwarding wrappers, conformance skips and "absent" tests, and regenerates the affected mocks. Most
+folds change no behaviour for any implementation that compiles before and after: they are mechanical
+changes covered by existing tests (`golang-tdd.md`), and the spec scenario each one rewrites is
+pinned by a test written with the fold, not claimed as a red step. Where behaviour does change, the
+task names the test written first and seen red. Every task verifies its packages and their transitive
+dependents in every workspace module (`test-scope.md`).
 
 - [ ] 8.1 Sessions: `FamilyReader` and `RoleSelector` into `session.Store`. Remove `readFamily`'s
-  listing fallback, `roleSelectingEncryptedStore` (the encrypted store gains `SelectRole`), the inner
-  fallback in `encryptedStore.ListByFamily`, `Sessions.SelectsRoles` and the refusals that consulted
-  it in `session` and `httpsec`. The `storetest` family-read and role cases always run. Red first: the
-  `oidcprovider` session wrappers that embed `session.Store` answer a family read through the inner
-  store's `ListByFamily`, not its listing (spec scenario "A store that can only list").
+  listing fallback, `roleSelectingEncryptedStore` (the encrypted store gains `SelectRole`, keeping its
+  fixed error text and sanitised cause), the inner fallback in `encryptedStore.ListByFamily`,
+  `Sessions.SelectsRoles` and the refusals that consulted it in `session` and `httpsec`. The
+  `storetest` family-read and role cases always run. Red first: the `oidcprovider` session wrappers
+  that embed `session.Store` answer a family read through the inner store's `ListByFamily`, not its
+  listing (spec scenario "A store that can only list"). Also tested: the encrypted store's
+  `ListByFamily` returns opened sessions, and its `SelectRole` error keeps its fixed text.
 - [ ] 8.2 OIDC links: `LinkLister` and `LinkRemover` into `oidc.LinkStore`. Remove the broker's
   construction refusal, `canRecheckFresh`, `errNoLinkLister`, `errNoLinkRemover` and the freshness
-  skip, and the link store suite's skips. Red first: a sign-in hook over a consumer link store with
-  several links per user not allowed builds the broker (spec scenario "Link store that cannot list").
-- [ ] 8.3 MFA device proofs: `DeviceProofStore` into `mfa.EnrolmentStore`. Remove `provingEnrolmentStore`
-  in `store/seal`, `errNoDeviceProofStore`, `Enroller.SupportsEnrolmentPath` and the checks that
-  consult it in `httpsec` and `policy`; fold `storetest.RequireDeviceProof`, `RunDeviceProofSuite`,
-  `DeviceProofEnrolmentStore` and the proof `optionalCase`s into the MFA store suite. Red first: the
-  enrolment interceptor over a sealed consumer enrolment store assembles (spec scenario "Store that
-  cannot record a device proof").
+  skip, and the link store suite's skips. Pinned: a sign-in hook over a consumer link store, several
+  links per user not allowed, builds and lists through that store (spec scenario "Link store that
+  cannot list").
+- [ ] 8.3 MFA device proofs: `DeviceProofStore` into `mfa.EnrolmentStore`. Fold
+  `provingEnrolmentStore` into the one sealed store in `store/seal`, keeping the sealing of the
+  emailed code a proof records; remove `errNoDeviceProofStore` and the proof-store refusal. Fold
+  `storetest.RequireDeviceProof`, `RunDeviceProofSuite`, `DeviceProofEnrolmentStore` and the proof
+  `optionalCase`s into the MFA store suite. `SupportsEnrolmentPath` stays (D15); TOTP reports it
+  whatever its store. Pinned: the enrolment interceptor over a sealed consumer enrolment store
+  assembles and completes an enrolment (spec scenario "Store that cannot record a device proof"),
+  and the sealed store's recorded emailed code is sealed at rest.
 - [ ] 8.4 MFA enrolment removal: `EnrolmentRemover` into `mfa.Method`; `mfa.ResetDeps.Enrolments`
-  takes `[]mfa.Method`. Remove the recovery kind's construction refusal and its `removers` map. Red
-  first: the kind over a consumer method resets through that method (spec scenario "Method without a
-  remover").
+  takes `[]mfa.Method`. Remove the recovery kind's construction refusal and its `removers` map. After
+  removing, the kind reads the user's enrolments again and fails the reset when the method still
+  holds one. Red first: a consumer method whose `RemoveEnrolment` reports success without removing
+  makes the reset return an error (spec scenario "Method that does not remove"). Pinned: the kind
+  over a consumer method resets through that method (spec scenario "Method without a remover").
 - [ ] 8.5 Rate limiting: `RecentFailureReporter` and `PolicyReporter` into `ratelimit.Limiter`.
-  `internal/unavailable.Wrap` answers `Policy()` from its limit and window; its backend type stays
-  narrow. Remove the guard's "cannot report" answers, the chain's warning and refusal for a limiter
-  without a policy, and `limiterWindow`'s zero fallback. Red first: an explicit aggregate over a
-  consumer limiter reporting 50 per minute allows 100 per minute (spec scenario "Explicit aggregate
-  over a limiter that reports no policy").
+  `internal/unavailable.Wrap` gains the limit and window as fields and answers `Policy()` from them;
+  its backend type stays narrow. Remove the guard's "cannot report" branch (an answer that fails still
+  counts as recent failures), the chain's warning and refusal for a limiter without a policy, and
+  `limiterWindow`'s zero fallback. Add `test/ratelimittest` cases for `Policy` and
+  `HasRecentFailures` on every limiter. Red first: the shared limiter reports its built limit and
+  window while its backend is down (spec scenario "Shared limiter with its backend down"), seen red
+  against a `Policy()` stub that returns zero. Pinned: an explicit /48 aggregate with a multiplier of
+  2 over a consumer limiter reporting 50 per minute allows 100 per minute; the default aggregate over
+  a consumer limiter is built from its reported policy; a limiter whose recent-failures answer fails
+  is reported to the verifier as having failures.
 - [ ] 8.6 Password encoders: `Recognizer` and `Upgrader` embedded in `password.Encoder`, kept as named
   interfaces for `admin.NewImporter`. Remove the "recognises every non-empty hash" and "never needs
-  an upgrade" fallbacks. Red first: a consumer encoder that reports it does not recognise a stored
-  hash makes the login cost one reference verification and fail (spec scenario "Consumer encoder
-  that does not recognise a hash").
-- [ ] 8.7 Lockout streaks: `FailureStreakStore` into `policy.AttemptStore`; `FailureStreak` moves to
-  `policy` with no alias. Remove the cap's construction refusal and the `streaks` field. Red first: a
-  cap over a consumer attempt store is enforced from that store's streaks (spec scenario "Store
-  without consecutive counts").
+  an upgrade" fallbacks. Pinned: a consumer encoder that reports it does not recognise a stored hash
+  makes the login cost one reference verification and fail (spec scenario "Consumer encoder that does
+  not recognise a hash").
+- [ ] 8.7 Lockout streaks: `FailureStreakStore` into a new `lockout.Store`, which embeds
+  `policy.AttemptStore`; `lockout.New` takes it. `policy.AttemptStore`, the attempt view and
+  `lockout.FailureStreak` are unchanged. Remove the cap's construction refusal and the `streaks`
+  field; the streak calls stay gated on a cap being set. First, a regression guard: a policy without a
+  cap, over a mock store with no streak expectations, records failures and resets without calling a
+  streak method. Pinned: a cap over a consumer store is enforced from that store's streaks (spec
+  scenario "Store without consecutive counts").
 - [ ] 8.8 OpenID provider: `PendingRequestCounter` into `oidcprovider.PendingRequestStore`. Remove the
-  ceiling's construction refusal and `errNoCounter`. Red first: a ceiling over a consumer
-  pending-request store is enforced from its count (spec scenario "Store cannot count").
+  ceiling's construction refusal and `errNoCounter`. Pinned: a ceiling over a consumer pending-request
+  store is enforced from its count (spec scenario "Store cannot count").
 - [ ] 8.9 Recovery: `UsableLister` into `recovery.AuthenticatorKind`. Remove the `usable` helper's
-  fallback to `Held`. Red first: a consumer kind that holds a suspended authenticator and reports
-  none usable makes the "another way back in" check report no.
-- [ ] 8.10 Sweep: no type assertion, `Supports…`/`Selects…` helper, skip message or `optionalCase`
-  remains for a folded port (`rg` for each port name and `go vet ./...` across every module), and the
-  mocks regenerate with no diff (`go generate` over the touched packages).
+  fallback to `Held`. Pinned: a consumer kind that holds one authenticator and reports none usable
+  makes the "another way back in" check report no (spec scenario "Consumer kind reports only usable
+  authenticators").
+- [ ] 8.10 Sweep: no type assertion, skip message or `optionalCase` remains for a folded port (`rg`
+  for each port name and `go vet ./...` across every module), and the mocks regenerate with no diff
+  (`go generate` over the touched packages). A diff goes back to the lane that owns the package.
 
 ## 9. Final gate and review
 
@@ -338,6 +373,6 @@ transitive dependents (`test-scope.md`).
 
 - Archive the change after the project's review requirements are satisfied.
 - Verify that the archived `security-administration` spec carries the ten added requirements and
-  the three modified ones, and that the nine other capabilities carry their modified requirements.
+  the three modified ones, and that the thirteen other capabilities carry their modified requirements.
 - Propose the follow-ups `username-case-folding` and `lockout-by-user-id`.
 - Explore sharing the logic the three SQL stores each write out (`/opsx:explore`).

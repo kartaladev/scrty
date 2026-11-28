@@ -40,15 +40,21 @@ Every plan task names the `tasks.md` numbers it carries out. This plan adds no s
 - **Test-first** (`golang-tdd.md`):
   - The red step is a behavioural failure seen in a focused run. A compile error is never a red step;
     add a stub so the test compiles first.
-  - A fold with no behaviour change is a mechanical change that existing tests cover. Its proof is the
-    existing suite staying green, plus deleting the tests of the "absent" path.
+  - A fold with no behaviour change, for any implementation that compiles both before and after, is a
+    mechanical change that existing tests cover. Its proof is the existing suite staying green, plus
+    deleting the tests of the "absent" path. The spec scenario it rewrites is **pinned** by a test
+    written with the fold, never presented as a red step: such a test passes on today's code,
+    because today's code already honours an implementation that has the method.
+  - A red step is claimed only where behaviour really changes: the session wrappers (Task 3), the
+    reset's re-read (Task 9), `Wrap.Policy` (Task 7), and the admin tasks.
 - **No compatibility shims.** A folded port gets no type alias, no deprecated wrapper and no
   kept-but-unused method (D15).
-- **These stay optional; do not touch them:** `DecoyVerifier`, `IdentifierResolver`, `InputLimiter`,
-  `mfa.Enroller`, `mfa.ChallengeMethod`, `oidc.UpstreamBroker`, `UnreportedAttemptRecorder`, the
-  policy marker interfaces, `AttemptReaper`, `onetime.Reaper`, `identity.EmailLoader`,
-  `logsample.Flusher`, `signingkey.LifetimeReporter`, `token.ConfirmingGenerator`,
-  `notify.NonBlocking`, `ratelimit.Verifier` and `clock.Timed`.
+- **These stay optional; do not touch them:** every port design D15 lists as kept optional, among
+  them `DecoyVerifier`, `IdentifierResolver`, `InputLimiter`, `mfa.Enroller`, `SupportsEnrolmentPath`,
+  `mfa.ChallengeMethod`, `oidc.UpstreamBroker`, `authorize.PrivilegeInspector`,
+  `UnreportedAttemptRecorder`, the policy marker interfaces, `AttemptReaper`, `onetime.Reaper`,
+  `identity.EmailLoader`, `logsample.Flusher`, `signingkey.LifetimeReporter`,
+  `token.ConfirmingGenerator`, `notify.NonBlocking` and `clock.Timed`.
 - **Mocks:** regenerate with each `//go:generate` the lane touches. Delete the mock file of an
   interface that no longer exists (`use-mockgen`).
 - **The toy store** needs `-tags admin_stub`. Its load-bearing run is
@@ -62,20 +68,25 @@ Every plan task names the `tasks.md` numbers it carries out. This plan adds no s
 
 ## Review Focus
 
-1. **Wrappers that embed a folded interface now forward the folded methods.** Where a wrapper
-   changes rows, as the encrypted session store does, the forwarded method must apply the same
-   treatment. Task 3 tests that the encrypted store's `ListByFamily` returns opened sessions, and
-   that `oidcprovider`'s embedding wrappers answer a family read through the inner store's
-   `ListByFamily`.
-2. **One listing statement for both modes must leave cursor paging exactly as it was.** Task 2 pins
-   that cursor pages are unchanged (`TestListAdminUsersUnchanged` and the existing listing cases),
-   and that offset 0 with a cursor equals the cursor page.
-3. **A consumer encoder that recognises nothing makes every login cost the same and fail.** Task 6
-   tests it.
-4. **`unavailable.Wrap` answers `Policy()` while its backend is down.** It returns the configured
+1. **Wrappers that embed or wrap a folded interface now forward the folded methods, and must keep
+   their own treatment.** The encrypted session store's `ListByFamily` opens rows, and its
+   `SelectRole` keeps its fixed error text and sanitised cause (`session/store_encrypted.go:177-180`
+   today). The sealed MFA store seals the emailed code a device proof records
+   (`store/seal/mfa.go:282-300` today). `oidcprovider`'s embedding session wrappers answer a family
+   read through the inner store's `ListByFamily`. Tasks 3 and 5 test all of these.
+2. **One listing statement for both modes must leave cursor paging exactly as it was, and the store
+   still refuses what the old offset method refused.** Task 2 pins:
+   - cursor pages unchanged;
+   - offset 0 with a cursor equals the cursor page;
+   - a negative offset, and an offset with a cursor, sent directly to a store are `ErrInvalidInput`,
+     never a database error.
+3. **An MFA method that reports a removal it did not make must not let a recovery reset succeed.**
+   Task 9 tests it, with a no-op remover.
+4. **`unavailable.Wrap` answers `Policy()` while its backend is down.** It answers the configured
    limit and window, never an error or zero. Task 7 tests it.
-5. **`FailureStreak` moves to `policy`, and `Held()` must behave as before on every store.** Task 8
-   runs the streak suite on the memory store and the three SQL stores, on PostgreSQL 18 and 15.
+5. **Lockout keeps calling the streak methods only when a cap is set.** Task 8 guards it with a mock
+   store holding no streak expectations, and runs the streak suite on the memory store and the three
+   SQL stores, on PostgreSQL 18 and 15.
 
 ---
 
@@ -83,47 +94,60 @@ Every plan task names the `tasks.md` numbers it carries out. This plan adds no s
 
 | Lane | Plan task (tasks.md) | Owns | Model (reason) |
 |---|---|---|---|
-| G1 | 1 (6.1) | `admin/**`, `store/{sqlstore,pgxstore,gormstore}/admin_users.go`, `test/admin/**`, `test/internal/adminfix/**`, `test/identity/inmem.go`, `test/sqlstore/rename_sessions_test.go` | Opus: it changes an interface that three modules compile against. |
-| G2 | 2 (6.2, 6.3) | the G1 files, `internal/pgschema/admin*.go`, `test/sqlstore/admin_test.go` | Opus: it merges two SQL statements and must keep cursor paging's behaviour. |
-| H1 | 3 (8.1) | `session/**`, `oidcprovider/{lineage,exchange,refresh}.go`, `internal/oplineage/**`, `store/*/session.go`, `httpsec` role-switch files, `test/storetest/session*` | Opus: wrappers, and an encrypted store whose forwarding must open rows. |
-| H2 | 4 (8.2) | `authenticate/oidc/**`, `store/*/oidc_link.go`, `test/oidc/**`, `httpsec/oidc_backchannel.go` mocks | Sonnet: the refusal it removes is already decided. |
-| H3 | 5 (8.3) | `authenticate/mfa/{store,totp,enroller,doc}.go`, `store/seal/mfa*.go`, `store/*/mfa.go`, `httpsec/mfa_enrol*.go`, `policy/mfa_requirement_enrolment.go`, `authenticate/passkey/mfa_method.go`, `test/storetest/{mfa_suite,deviceproof_suite}.go`, `test/{sqlstore,pgxstore,gormstore}/mfa_test.go` | Opus: several packages, the test module's public API, and an interface other code compiles against. |
-| H4 | 6 (8.6) | `authenticate/password/**`, `authenticate/password*.go`, `admin/importer.go` (godoc only), `httpsec/login_rehash_test.go`, `httpsec/reauth_password_test.go` | Sonnet: mechanical embedding plus one behaviour test. |
-| H5 | 7 (8.5) | `ratelimit/**`, `internal/unavailable/**`, `internal/pglimiter/**`, `store/*/limiter*.go`, `httpsec/{throttle,oidc_client_auth}.go` and their tests, limiter test doubles across packages | Opus: wrapper typing across modules, and refusal paths in the chain. |
-| H6 | 8 (8.7) | `policy/attempt_views.go`, `policy/lockout/**`, `store/*/attempts.go`, `test/storetest/{streak_suite,attempts_suite}.go`, `httpsec` attempt-store doubles | Opus: a public type moves across packages and modules. |
-| H7 | 9 (8.4, 8.9) | `authenticate/mfa/{mfa,reset}.go`, `recovery/**`, `authenticate/passkey/recovery_kind*.go`, MFA method stubs in `httpsec` tests | Sonnet: two small mechanical folds in one package family. |
-| H8 | 10 (8.8) | `oidcprovider/{store,store_memory,pending,options}.go`, `store/*/oidcprovider_stores.go`, `test/storetest/oidcprovider_pending_suite.go` | Sonnet: mechanical. |
+| G1 | 1 (6.1) | `admin/**`; `store/{sqlstore,pgxstore,gormstore}/admin_users.go`; `test/admin/**`; `test/internal/adminfix/**`; `test/gormstore/admin_store_test.go`; `test/sqlstore/rename_sessions_test.go` | Opus: it changes an interface that three modules compile against. |
+| G2 | 2 (6.2, 6.3) | the G1 files; `internal/pgschema/admin*.go`; `test/sqlstore/admin_test.go` | Opus: it merges two SQL statements and must keep cursor paging's behaviour. |
+| H1 | 3 (8.1) | see Task 3 Files | Opus: wrappers, and an encrypted store whose forwarding must open rows and sanitise errors. |
+| H2 | 4 (8.2) | see Task 4 Files | Sonnet: the refusal it removes is already decided. |
+| H3 | 5 (8.3) | see Task 5 Files | Opus: several packages, the test module's public API, sealing, and an interface other code compiles against. |
+| H5 | 7 (8.5) | see Task 7 Files | Opus: wrapper typing across modules, and refusal paths in the chain. |
+| H6 | 8 (8.7) | see Task 8 Files | Opus: a new store type taken by a constructor that several modules call. |
+| H4 | 6 (8.6) | see Task 6 Files | Sonnet: mechanical embedding plus one pinned scenario. |
+| H7 | 9 (8.4, 8.9) | see Task 9 Files | Opus: the reset's re-read is security-relevant refusal logic written for the first time. |
+| H8 | 10 (8.8) | see Task 10 Files | Sonnet: mechanical. |
 | F | 11 (7.2) | `CHANGELOG.md`, `README.md` | Sonnet: documentation text. |
 
-**Shared files.** Several lanes touch generated mocks in `httpsec` and test doubles in `httpsec`
-tests.
-- Each lane regenerates only the mocks of its own interfaces and edits only the doubles of its own
-  interfaces.
-- At integration, any conflict is in regenerated mocks. Resolve it by running `go generate` again.
+**Waves.**
+- G lanes run in the main tree. Each H lane runs in its own git worktree, branched from the tip of
+  `feat/admin-user-rename-and-paging` only after the previous wave has merged.
+- The main session merges a wave's lanes one at a time and runs each lane's verification after its
+  merge.
 
-**Waves.** Each H lane runs in its own git worktree, branched from the tip of
-`feat/admin-user-rename-and-paging` at launch. The main session merges the lanes back one at a time
-and runs each lane's verification after its merge.
-1. G1 in the main tree; H1, H2 and H4 in worktrees.
-2. G2 in the main tree; H3, H5 and H6 in worktrees.
-3. H7 and H8 in worktrees.
+1. G1 (main tree); H1 and H2 (worktrees).
+2. G2 (main tree); H3, H5 and H6 (worktrees).
+3. H4, H7 and H8 (worktrees). H4 waits for G2 because it edits `admin/importer.go` and regenerates
+   `admin/limitedencoder_mock_test.go` and the `Recognizer` mock from `admin/ports.go:195`.
 4. Task 12 (8.10 sweep) in the main session, then F, then Task 13 (9.1 and 9.2).
 
-**Reviewers:** Opus for G1, G2, H1, H3, H5 and H6; Sonnet for H2, H4, H7, H8 and F.
+**Files two lanes of one wave edit.** Rule 4 of `subagent-delegation.md` applies: separate
+worktrees, integrated by the main session. Each lane edits only its named hunks:
+- `test/storetest/memory_test.go`: H3 owns the device-proof suite wiring (around line 154); H6 owns
+  the streak and isolation wiring (around lines 130–135).
+- `httpsec/helpers_test.go`: H3 owns `enrollableLookup` (around line 477); H5 owns the limiter mock
+  expectations; H7 (wave 3) owns `challengeStub` (around line 1784).
+- Regenerated mocks shared by lanes: re-run `go generate` after the merge, never hand-merge.
 
-### Scoped verification (every lane)
+**Reviewers:** Opus for G1, G2, H1, H3, H5, H6 and H7; Sonnet for H2, H4, H8 and F.
+
+### Scoped verification
+
+The workspace modules are `.`, `authenticate/passkey/webauthn`, `expiry/sweep`, `httpsec/fibersec`,
+`httpsec/ginsec`, `httpsec/prblmsec`, `ratelimit/redisstore`, `store/gormstore`, `store/pgxstore` and
+`test`. Every lane runs:
 
 ```sh
-# every module builds and vets
-for m in . store/pgxstore store/gormstore ratelimit/redisstore test httpsec/ginsec httpsec/fibersec; do (cd $m && go build ./... && go vet ./...); done
-# the changed packages and their in-module dependents (repeat per module; see test-scope.md)
-go list -f '{{.ImportPath}} {{join .Imports " "}} {{join .TestImports " "}} {{join .XTestImports " "}}' ./... \
-  | awk '/github.com\/kartaladev\/scrty\/<changed>( |$)/{print $1}' | xargs go test -race -count=1
-# database-backed dependents, on PostgreSQL 18 and 15
-(cd test && go test -race -count=1 -p 2 <db packages>)
-(cd test && SCRTY_TEST_POSTGRES_IMAGE=postgres:15.19-alpine go test -race -count=1 -p 2 <db packages>)
-gofmt -l <touched dirs>
+MODS=". authenticate/passkey/webauthn expiry/sweep httpsec/fibersec httpsec/ginsec httpsec/prblmsec ratelimit/redisstore store/gormstore store/pgxstore test"
+# 1. every module builds and vets (a folded interface breaks implementers anywhere)
+for m in $MODS; do (cd $m && go build ./... && go vet ./... && go vet -tags admin_stub ./... ) || echo "FAIL $m"; done
+# 2. the lane's changed packages ($PKGS, the import paths its Task lists) and every package, in every
+#    module, that imports one of them directly or transitively, under -race
+for m in $MODS; do (cd $m && go list -deps -test -f '{{if not .Standard}}{{.ImportPath}} {{join .Deps " "}}{{end}}' ./...   | awk -v pk="$PKGS" 'BEGIN{n=split(pk,a," ")} {for(i=1;i<=n;i++) if(index(" "$0" "," "a[i]" ")){print $1; break}}'   | grep -v '\.test$' | sort -u | xargs -r go test -race -count=1 -p 2); done
+# 3. the database-backed packages of the test module that step 2 selected, again on PostgreSQL 15
+(cd test && SCRTY_TEST_POSTGRES_IMAGE=postgres:15.19-alpine go test -race -count=1 -p 2 <the test-module packages from step 2>)
+# 4. formatting
+gofmt -l $(git diff --name-only --diff-filter=AM | grep '\.go$')
 ```
+
+The toy store's load-bearing run (Global Constraints) is added for G1 and G2.
 
 ---
 
@@ -137,8 +161,10 @@ gofmt -l <touched dirs>
   - `admin/example_test.go`.
   - `store/{sqlstore,pgxstore,gormstore}/admin_users.go`.
   - `test/admin/{toystore_test.go,conformance_users.go,conformance_import.go,conformance_guard_test.go}`.
-  - `test/internal/adminfix/{userstore.go,races.go}`.
-  - `test/identity/inmem.go`.
+  - `test/internal/adminfix/{userstore.go,races.go,ambient.go}`, `test/admin/conformance_roles.go`.
+  - `test/gormstore/admin_store_test.go` (four `UpdateUser` calls).
+  - `admin/{users_test,audit_test,audit_stale_test,events_test,rename_test}.go` (mocked `UpdateUser`
+    returns three values).
 - Delete: `admin/usernameupdater_mock_test.go`.
 - Test: `admin/rename_test.go` and the `test/admin` conformance cases.
 
@@ -215,7 +241,9 @@ gofmt -l <touched dirs>
 
 - `List` sends `UserQuery{..., Offset: filter.Offset}` to `ListUsers` for any offset. It truncates the
   result to `Limit`, and sets `Next` only when `Offset == 0`.
-- `Count` calls `CountUsers`. `WithMaxListOffset` refuses only `n < 0`.
+- `Count` calls `CountUsers`. `WithMaxListOffset` refuses only `n < 0`; delete `usersConfig.offsetGiven`.
+- Each store's `ListUsers` (and the toy's) refuses `query.Offset < 0`, and `query.Offset != 0` with a
+  non-empty `AfterUsername` or `AfterID`, with an error matching `ErrInvalidInput`, before querying.
 
 - [ ] **Step 1: Write the failing tests.**
   - `admin/offset_test.go`:
@@ -224,8 +252,13 @@ gofmt -l <touched dirs>
     - keep the validation, truncation and store-error cases.
   - `test/admin/conformance_users.go`: add "Offset zero with a cursor equals the cursor page" (Review
     Focus 2).
-  - `internal/pgschema/admin_test.go`: `TestListAdminUsersUnchanged` now asserts the cursor
-    comparison and `OFFSET $9`.
+  - `internal/pgschema/admin_test.go`: rename `TestListAdminUsersUnchanged` to
+    `TestListAdminUsersBindsCursorAndOffset` and assert the cursor comparison on `$1`–`$8` and
+    `OFFSET $9`. Drop `ListAdminUsersFrom` from `TestAdminUserListingStatements`.
+  - `test/admin/conformance_users.go`: "Store asked for a negative offset", which calls the store
+    directly with `Offset: -1` and with `Offset: 5` plus a cursor, and expects `ErrInvalidInput` both
+    times.
+  - `admin/count_test.go`: drop `pagerStore` and `storeFor`.
 - [ ] **Step 2: Run** the failing tests.
   - First, `go test -race -run 'TestList_Offset' -count=1 ./admin/` against `List` still calling a
     stub `ListUsersFrom`. Expected: FAIL, because `ListUsers` was not called with the offset.
@@ -253,7 +286,14 @@ gofmt -l <touched dirs>
   - `httpsec/options.go`, around line 448.
   - `oidcprovider/{lineage,exchange,refresh}.go`: comments only, if no code is needed.
   - `store/{sqlstore,pgxstore,gormstore}/session.go`: assertions.
-  - `test/storetest/{session_family_read_suite.go,session_suite.go}`.
+  - `session/store_memory.go` (assertions at 804, 833).
+  - `test/storetest/{session_family_read_suite.go,session_suite.go,broken_session_test.go,memory_test.go}`.
+  - `test/{sqlstore,pgxstore,gormstore}/session_test.go` (42–44).
+  - `httpsec/session_cookie_rotation_test.go` (1092).
+  - `session/{role_selector,sign_in_state,signins_porterr,store_encrypted,store_encrypted_porterr}_test.go`.
+- Regenerate: `session/store.go:204`, `session/store_encrypted.go:51`, `oidcprovider/exchange.go:26`,
+  `httpsec/complete.go:24`, `test/httpsecconformance/internal/mocks/doc.go:10`. Delete the mocks
+  generated from `family_reader.go:37` and `role_selector.go:17`.
 - Delete or rewrite the listing-only and selector-hiding tests the survey named:
   - `session/store_family_read_test.go:270`;
   - `test/storetest/session_family_read_suite.go:251`;
@@ -284,8 +324,8 @@ gofmt -l <touched dirs>
   - The encrypted-store test may already pass. If it does, invert the open step once to show it can
     fail.
 - [ ] **Step 3: Implement** the fold.
-  - The encrypted store's `SelectRole` forwards to the inner store unchanged, because the role is not
-    sealed.
+  - The encrypted store's `SelectRole` forwards the role unchanged, because it is not sealed, but keeps
+    today's fixed error text and sanitised cause. A test asserts the text on an inner failure.
   - Delete every refusal that consulted `SelectsRoles`.
 - [ ] **Step 4: Run** the scoped verification for `session`, `oidcprovider`, `httpsec` and the session
   store suites, on PostgreSQL 18 and 15.
@@ -310,13 +350,12 @@ gofmt -l <touched dirs>
 - Deleted: `LinkLister`, `LinkRemover`, `canRecheckFresh`, `errNoLinkLister`, `errNoLinkRemover` and
   the `checkSignInHooks` refusal.
 
-- [ ] **Step 1: Write the failing test** `TestNewBroker_HookOverConsumerLinkStore`.
+- [ ] **Step 1: Pin the scenario** with `TestNewBroker_HookOverConsumerLinkStore`.
   - A sign-in hook over a consumer `LinkStore` double, with several links per user not allowed,
-    builds without error.
-  - Its one-link rule calls the double's `ListByUser`.
-  - This is the spec scenario "Link store that cannot list".
-- [ ] **Step 2: Run** it with a double that implements only the old base interface.
-  - Expected: FAIL with the construction refusal.
+    builds, and its one-link rule calls the double's `ListByUser`. This is the spec scenario "Link
+    store that cannot list".
+  - This is a mechanical fold (Global Constraints): the test passes on today's code too.
+- [ ] **Step 2: Run** it, and the link store suite. Expected: PASS before the fold.
 - [ ] **Step 3: Implement** the fold. In `linkstore_suite.go`, remove the four port skips and keep the
   zero-ID skip.
 - [ ] **Step 4: Run** the scoped verification for `authenticate/oidc`, `httpsec` and `test/oidc`, on
@@ -334,34 +373,37 @@ gofmt -l <touched dirs>
   - `policy/mfa_requirement_enrolment.go`.
   - `authenticate/passkey/mfa_method.go`.
   - `test/storetest/{mfa_suite.go,deviceproof_suite.go}`.
-  - `test/{sqlstore,pgxstore,gormstore}/mfa_test.go`.
+  - `test/{sqlstore,pgxstore,gormstore}/mfa_test.go`, `test/gormstore/statements_test.go`.
+  - `test/internal/storefix/{races.go,sealed.go}`, `test/storetest/{race.go,broken_race_test.go,broken_mfa_test.go,memory_test.go}` (its hunk only),
+    `test/crossbackend/crossbackend_test.go`.
+  - `httpsec/{helpers_test.go,passkey_test.go}` (their hunks only), `policy/{helpers_test.go,mfa_requirement_test.go}`,
+    `authenticate/mfa/store_memory.go`.
 - Regenerate:
   - `authenticate/mfa/store.go:3`;
   - `store/seal/mfa.go:32-33`, now one generation;
-  - `httpsec/mfa_verify.go:47`.
+  - `httpsec/mfa_verify.go:47`, `httpsec/mfa_enrol.go:29`, `store/seal/mfa.go:31`.
 
 **Interfaces:**
 - Produces: `mfa.EnrolmentStore` gains:
   - `ProveDevice(ctx, user identity.UserID, gen id.ID, step int64, code []byte, codeUntil, at time.Time) (bool, error)`
   - `Complete(ctx, user identity.UserID, gen id.ID, at time.Time) (bool, error)`
   - `ChargeEmailCode(ctx, user identity.UserID, gen id.ID, at time.Time) (int, bool, error)`
-- `mfa.Enroller` loses `SupportsEnrolmentPath`.
+- `SupportsEnrolmentPath` stays on `mfa.Enroller` and on the passkey MFA method, because `policy` matches
+  it structurally (D15). TOTP's no longer consults a proof store.
 - Deleted: `DeviceProofStore`, `errNoDeviceProofStore` and `provingEnrolmentStore`.
 - The test module's `storetest.RequireDeviceProof`, `RunDeviceProofSuite` and
   `DeviceProofEnrolmentStore` are deleted. Their proof cases move into the MFA store suite and always
   run.
-- "Can enrol through the path" now means the method implements `mfa.Enroller`.
 
-- [ ] **Step 1: Write the failing test** `TestEnrolmentPath_OverSealedConsumerStore`, in `httpsec`.
-  - The enrolment interceptor is built over TOTP with a `seal.NewEnrolmentStore` that wraps a
-    consumer double. The double implements the old base interface plus the proof methods.
-  - The interceptor assembles and completes one enrolment through the path.
-  - This is the spec scenario "Store that cannot record a device proof".
-- [ ] **Step 2: Run** it.
-  - Expected: FAIL. The sealed wrapper hides the proof methods unless it picks the proving variant,
-    so assembly refuses.
-- [ ] **Step 3: Implement** the fold. The enrolment-path checks in `httpsec` and `policy` keep refusing
-  a named method that is not an `mfa.Enroller`.
+- [ ] **Step 1: Pin the scenario and the sealing.**
+  - `TestEnrolmentPath_OverSealedConsumerStore` in `httpsec`: the enrolment interceptor, over TOTP with
+    a `seal.NewEnrolmentStore` wrapping a consumer double, assembles and completes one enrolment
+    through the path. This is the spec scenario "Store that cannot record a device proof".
+  - `TestSealedEnrolmentStore_SealsEmailedCode` in `store/seal`: the emailed code a device proof
+    records reaches the inner store sealed, and reads back opened.
+  - Both pass on today's code (mechanical fold, Global Constraints).
+- [ ] **Step 2: Implement** the fold.
+- [ ] **Step 3: Run** both tests again. Expected: PASS.
 - [ ] **Step 4: Run** the scoped verification for `authenticate/mfa`, `store/seal`, `httpsec`, `policy`,
   `authenticate/passkey` and the MFA store suites, on PostgreSQL 18 and 15.
   - Expected: PASS, with the proof cases running on every store.
@@ -387,8 +429,8 @@ gofmt -l <touched dirs>
 
   ```go
   type Encoder interface {
-      Encode(raw []byte) ([]byte, error) // unchanged signatures; check encoder.go
-      Match(raw, encoded []byte) (bool, error)
+      Encode(input string) ([]byte, error) // unchanged
+      Match(input string, encoded []byte) bool // unchanged
       Recognizer // Recognizes(encoded []byte) bool
       Upgrader   // NeedsUpgrade(encoded []byte) bool
   }
@@ -397,16 +439,13 @@ gofmt -l <touched dirs>
 - Deleted: `usableHash`'s fallback for an encoder that cannot recognise, and the "never upgrades"
   fallback for an encoder that cannot report upgrades.
 
-- [ ] **Step 1: Write the failing test** `TestPassword_ConsumerEncoderThatRecognisesNothing`.
-  - The provider uses a consumer encoder double whose `Recognizes` returns false, and which counts
-    calls to `Match`.
+- [ ] **Step 1: Pin the scenario** with `TestPassword_ConsumerEncoderThatRecognisesNothing`.
+  - The provider is built with a consumer encoder double whose `Recognizes` returns false, and which
+    counts calls to `Match`.
   - A known user with a stored hash logs in with the right password.
-  - Assert that the login fails, and that `Match` ran exactly once, against the reference hash.
-  - This covers Review Focus 3 and the spec scenario "Consumer encoder that does not recognise a
-    hash".
-- [ ] **Step 2: Run** it with a double that does not yet implement `Recognizes`. Wrap an old-base
-  double so it compiles.
-  - Expected: FAIL, because the login succeeds.
+  - Assert that the login fails, and that `Match` ran exactly once, against the reference hash. This
+    is the spec scenario "Consumer encoder that does not recognise a hash".
+- [ ] **Step 2: Run** it. Expected: PASS on today's code (mechanical fold).
 - [ ] **Step 3: Implement** the embedding. Delete both fallbacks, and the encoders' redundant
   `var _ Recognizer` and `var _ Upgrader` lines.
 - [ ] **Step 4: Run** the scoped verification for `authenticate/password`, `authenticate`, `httpsec`
@@ -421,7 +460,14 @@ gofmt -l <touched dirs>
   - `internal/unavailable/wrap.go` and `internal/pglimiter/runner.go`.
   - `store/{sqlstore,pgxstore}/limiter.go`.
   - `httpsec/{throttle.go,oidc_client_auth.go}`.
-  - The limiter test doubles in the packages the survey listed.
+  - The limiter test doubles: `test/ratelimittest/doubles_test.go`, `test/pg_ratelimit_fault_test.go`,
+    `ratelimit/{recent_test,guard_porterr_test}.go`, `internal/unavailable/recent_test.go`,
+    `httpsec/{challenge_test,throttle_test,oidc_client_throttle_test}.go` and `httpsec/helpers_test.go`
+    (its hunk only).
+  - The godoc that names `ratelimit.PolicyReporter`: `httpsec/{apikey.go,basic.go,doc.go,login_options.go,magiclink_options.go,oidc_options.go,oidc_provider_options.go,passkey_login.go,recovery_options.go,session_bearer.go,options.go,challenge.go}`.
+  - `test/ratelimittest/` suite: new `Policy` and `HasRecentFailures` cases on every limiter.
+  - Every OIDC client-auth test whose gomock limiter now receives a `Policy()` call from
+    `limiterWindow`.
 - Regenerate:
   - `ratelimit/limiter.go:12`;
   - `internal/unavailable/wrap.go:15`;
@@ -432,73 +478,78 @@ gofmt -l <touched dirs>
 - Produces: `ratelimit.Limiter` gains:
   - `Policy() (limit int, window time.Duration)`
   - `HasRecentFailures(ctx context.Context, key string) (bool, error)`
-- `unavailable.Wrap` returns a `ratelimit.Limiter` whose `Policy()` answers the limit and window it was
-  built with. Its backend parameter is an internal interface without `Policy`.
+- `unavailable.Wrap` gains `limit int` and `window time.Duration` fields on its `limiter` struct
+  (`internal/unavailable/wrap.go:216-231` today holds neither). It returns a `ratelimit.Limiter` whose
+  `Policy()` answers them. Its backend parameter is an internal interface without `Policy`.
+- The guard keeps reporting "has recent failures" when `HasRecentFailures` returns an error.
 - Deleted:
   - `PolicyReporter`, `RecentFailureReporter` and `errNoReport`;
   - the chain's warning and refusal for a limiter that reports no policy;
   - `limiterWindow`'s zero fallback.
 
-- [ ] **Step 1: Write the failing tests.**
-  - `TestChain_ExplicitAggregateOverConsumerLimiter`: an explicit /48 aggregate with multiplier 2,
-    over a consumer limiter reporting 50 per minute, builds. Its aggregate limiter is asked for 100
-    per minute. This is the spec scenario "Explicit aggregate over a limiter that reports no policy".
-  - `TestWrap_PolicyWhileBackendDown`: `Policy()` returns the configured limit and window while the
-    backend errors (Review Focus 4).
-- [ ] **Step 2: Run** both.
-  - Expected: the chain test FAILS with the current refusal.
-  - If the wrap test already passes, prove it can fail by returning zero once.
+- [ ] **Step 1: Write the failing test** `TestWrap_PolicyWhileBackendDown`.
+  - `Policy()` returns the configured limit and window while the backend errors (Review Focus 4; spec
+    scenario "Shared limiter with its backend down").
+  - Add `Policy()` to the wrapper as a stub returning zeros, so the test compiles.
+- [ ] **Step 2: Run** it. Expected: FAIL with `0` and `0s`.
+- [ ] **Step 2b: Pin, with the fold,** these:
+  - `TestChain_ExplicitAggregateOverConsumerLimiter`: an explicit /48 aggregate with a multiplier of
+    2, over a consumer limiter reporting 50 per minute, asks for 100 per minute.
+  - `TestChain_DefaultAggregateOverConsumerLimiter`: spec scenario "Consumer limiter that reports no
+    policy".
+  - `TestGuard_RecentFailuresErrorCountsAsSuspicious`: spec scenario "Limiter whose answer fails".
+  - The `ratelimittest` cases.
 - [ ] **Step 3: Implement** the fold.
 - [ ] **Step 4: Run** the scoped verification for `ratelimit`, `ratelimit/redisstore`,
   `internal/unavailable`, `internal/pglimiter`, the limiter stores, `httpsec` and
   `test/ratelimittest`, on PostgreSQL 18 and 15. Expected: PASS.
 - [ ] **Step 5: Commit** in the worktree as `refactor(ratelimit)!: every limiter reports recent failures and its policy`.
 
-### Task 8 (tasks 8.7): Attempt stores keep failure streaks
+### Task 8 (tasks 8.7): Lockout's store keeps failure streaks
 
 **Files:**
 - Modify:
-  - `policy/attempt_views.go`.
   - `policy/lockout/{attempts.go,lockout.go,lockout_observer.go,lockout_events.go,lockout_options.go}`.
-  - `store/{sqlstore,pgxstore,gormstore}/attempts.go`.
-  - `test/storetest/streak_suite.go`.
-  - The attempt-store doubles in `policy/lockout`, `httpsec`, `httpsec/ginsec`, `httpsec/fibersec`
-    and `test/storetest`.
-- Regenerate: `policy/attempt_views.go:32`, `policy/lockout/attempts.go:59-60` and
-  `httpsec/login.go:31`.
+  - `store/{sqlstore,pgxstore,gormstore}/attempts.go` (assertions).
+  - `test/storetest/{streak_suite.go,isolation_suite.go,memory_test.go}` (its hunk only).
+  - `test/internal/storefix/ambients.go`, `test/crossbackend/streak_test.go`, `test/expirytasks_test.go`.
+  - `test/{sqlstore,pgxstore,gormstore}/{attempts,isolation}_test.go`, `test/pgxstore/isolation_broken_test.go`.
+  - Every caller of `lockout.New`, and the attempt-store doubles passed to it, in `policy/lockout`,
+    `httpsec`, `httpsec/ginsec` and `httpsec/fibersec`.
+- Regenerate: `policy/lockout/attempts.go:59-60`.
 
 **Interfaces:**
 - Produces:
 
   ```go
-  // package policy (moved from lockout, no alias):
-  type FailureStreak struct{ /* fields as lockout.FailureStreak today */ }
-  func (s FailureStreak) Held() bool
-  // policy.AttemptStore gains:
-  AddStreakFailure(ctx context.Context, username string, at, since time.Time, limit int) (streak FailureStreak, setHold bool, err error)
-  FailureStreak(ctx context.Context, username string, since time.Time) (FailureStreak, error)
-  DeleteStreaksBefore(ctx context.Context, retainSince time.Time) (int, error)
+  // package lockout
+  type Store interface {
+      policy.AttemptStore
+      AddStreakFailure(ctx context.Context, username string, at, since time.Time, limit int) (streak FailureStreak, setHold bool, err error)
+      FailureStreak(ctx context.Context, username string, since time.Time) (FailureStreak, error)
+      DeleteStreaksBefore(ctx context.Context, retainSince time.Time) (int, error)
+  }
+  func New(store Store, opts ...Option) (*Policy, error) // the store parameter's type changes; options unchanged
   ```
 
-- Deleted: `lockout.FailureStreakStore`, `lockout.FailureStreak`, the `streaks` field and the cap's
-  store refusal.
-- **Name clash:** the method `FailureStreak` and the type `policy.FailureStreak` can both exist,
-  because a method is not a package-level identifier. Keep both names as shown.
+- Unchanged: `policy.AttemptStore`, the `Policy.Attempts()` view, `lockout.FailureStreak` and
+  `AttemptReaper`.
+- Deleted: `FailureStreakStore`, the `streaks` field and the cap's store refusal.
+- Every streak call is gated on the cap being set (`capLimit > 0`), never on the store's type.
 
-- [ ] **Step 1: Write the failing test** `TestLockout_CapOverConsumerAttemptStore`.
-  - A policy with a cap of 10 is built over a consumer attempt-store double whose streak methods
-    report a held streak.
-  - It builds, and refuses the next attempt as held.
-  - This is the spec scenario "Store without consecutive counts".
-- [ ] **Step 2: Run** it against the current code. Expected: FAIL with the construction refusal.
-- [ ] **Step 3: Implement** the move and the fold.
-- [ ] **Step 4: Run** the scoped verification:
-  - `policy`, `policy/lockout`, `httpsec`, `httpsec/ginsec` and `httpsec/fibersec`;
-  - the attempt and streak suites on the memory store and the three SQL stores, on PostgreSQL 18 and
-    15 (Review Focus 5).
-
-  Expected: PASS.
-- [ ] **Step 5: Commit** in the worktree as `refactor(policy)!: every attempt store keeps failure streaks`.
+- [ ] **Step 1: Write the regression guard** `TestLockout_NoCapCallsNoStreakMethod`. A policy with no
+  cap, over a `MockStore` with no streak expectations, records failures, checks and resets. Expected:
+  PASS on today's code. It guards Step 3.
+- [ ] **Step 2: Pin the scenario** with `TestLockout_CapOverConsumerStore`. A cap of 10, over a
+  consumer double whose streak methods report a held streak, builds and refuses the next attempt as
+  held. This is the spec scenario "Store without consecutive counts". Expected: PASS on today's code
+  (mechanical fold).
+- [ ] **Step 3: Implement** the new type and the fold. Replace `p.streaks != nil` with the cap gate at
+  every site (`lockout.go:363,510,693`, `lockout_observer.go:349,471`, `lockout_events.go:85`).
+- [ ] **Step 4: Run** the scoped verification for `policy/lockout`, `httpsec`, `httpsec/ginsec` and
+  `httpsec/fibersec`, and the attempt, streak and isolation suites on the memory store and the three
+  SQL stores, on PostgreSQL 18 and 15 (Review Focus 5). Expected: PASS.
+- [ ] **Step 5: Commit** in the worktree as `refactor(lockout)!: lockout's store keeps failure streaks`.
 
 ### Task 9 (tasks 8.4, 8.9): MFA methods remove enrolments; recovery kinds list usable authenticators
 
@@ -507,9 +558,13 @@ gofmt -l <touched dirs>
   - `authenticate/mfa/{mfa.go,reset.go}`.
   - `recovery/{mfa_kind.go,reset.go,wayback.go}`.
   - `authenticate/passkey/{mfa_method.go,recovery_kind.go}`.
-  - The `Method` and `AuthenticatorKind` stubs the survey listed.
+  - The `Method` and `AuthenticatorKind` stubs: `authenticate/mfa/mfa_test.go`, `httpsec/helpers_test.go`
+    (its hunk only), `httpsec/{resource_server_assurance_test,passkey_test}.go`,
+    `recovery/{helpers_test,mfa_kind_test,wayback_test,sanitize_logroute_test,mfa_wayback_porterr_test}.go`,
+    `authenticate/passkey/recovery_kind_test.go`, `httpsec/events_emitted_test.go:351` (builds
+    `[]mfa.EnrolmentRemover`).
 - Regenerate:
-  - `authenticate/mfa/reset.go:3`, `recovery/mfa_kind.go:3` and `recovery/reset.go:3`;
+  - `authenticate/mfa/reset.go:3`, `recovery/mfa_kind.go:3` (drop `EnrolmentRemover`) and `recovery/reset.go:3`;
   - the `Method`, `ChallengeMethod` and `Enroller` mocks in `httpsec` and `recovery`;
   - `httpsec/signals_sources_test.go:3`.
 
@@ -520,16 +575,20 @@ gofmt -l <touched dirs>
   - `recovery.AuthenticatorKind` gains `Usable(ctx context.Context, user identity.UserID) ([]AuthenticatorRef, error)`.
 - Deleted: `EnrolmentRemover`, `UsableLister`, the kind's `removers` map and its refusal, and
   `wayback.go`'s `usable` fallback.
+- After `RemoveEnrolment` succeeds, the MFA kind reads the user's enrolments again. When the method
+  still holds one, the reset fails with an error that names the method kind, never the user.
 
-- [ ] **Step 1: Write the failing tests.**
-  - `TestMFAKind_ResetsThroughConsumerMethod`: the kind over a consumer method double builds, and a
-    reset calls that method's `RemoveEnrolment` for `u-1`. This is the spec scenario "Method without
-    a remover".
-  - `TestAnotherWayBack_ConsumerKindWithOnlySuspended`: issued codes are enabled and the user has no
-    password. A consumer kind holds one authenticator and reports none usable. The check reports no.
-- [ ] **Step 2: Run** both against the current code.
-  - Expected: the first FAILS with the construction refusal.
-  - The second FAILS because the fallback counts the held authenticator.
+- [ ] **Step 1: Write the failing test** `TestMFAKind_ResetFailsWhenMethodDoesNotRemove`.
+  - A consumer method double's `RemoveEnrolment` returns nil but the enrolment lookup still reports
+    `u-1` enrolled. The reset returns an error. This is the spec scenario "Method that does not
+    remove".
+- [ ] **Step 2: Run** it. Expected: FAIL, because the reset succeeds.
+- [ ] **Step 2b: Pin, with the fold,** these:
+  - `TestMFAKind_ResetsThroughConsumerMethod`: spec scenario "Method without a remover".
+  - `TestAnotherWayBack_ConsumerKindWithOnlySuspended`: spec scenario "Consumer kind reports only usable
+    authenticators".
+
+  Both pass on today's code with doubles that have the methods.
 - [ ] **Step 3: Implement** both folds.
 - [ ] **Step 4: Run** the scoped verification for `authenticate/mfa`, `authenticate/passkey`,
   `recovery` and `httpsec`. Expected: PASS.
@@ -549,11 +608,11 @@ gofmt -l <touched dirs>
 - Produces: `oidcprovider.PendingRequestStore` gains `CountLive(ctx context.Context, now time.Time) (int, error)`.
 - Deleted: `PendingRequestCounter`, `errNoCounter` and the ceiling's store refusal.
 
-- [ ] **Step 1: Write the failing test** `TestPendingCeiling_OverConsumerStore`.
+- [ ] **Step 1: Pin the scenario** with `TestPendingCeiling_OverConsumerStore`.
   - A provider with a ceiling of 1, over a consumer double whose `CountLive` reports 1, builds.
   - It answers the next request to be parked with `temporarily_unavailable`.
-  - This is the spec scenario "Store cannot count".
-- [ ] **Step 2: Run** it against the current code. Expected: FAIL with the construction refusal.
+  - This is the spec scenario "Store cannot count". Expected: PASS on today's code (mechanical fold).
+- [ ] **Step 2: Run** it, and the pending suite.
 - [ ] **Step 3: Implement** the fold.
 - [ ] **Step 4: Run** the scoped verification for `oidcprovider`, `httpsec` and the pending suite, on
   PostgreSQL 18 and 15. Expected: PASS.
@@ -570,7 +629,7 @@ gofmt -l <touched dirs>
   - Add one BREAKING bullet per D15 fold. Each names the base interface, the methods to add, and the
     removed API.
   - Follow the file's existing style.
-- [ ] **Step 2: Verify** with `rg -n 'UsernameUpdater|UserPager|FamilyReader|RoleSelector|LinkLister|LinkRemover|DeviceProofStore|EnrolmentRemover|RecentFailureReporter|PolicyReporter|FailureStreakStore|PendingRequestCounter|UsableLister|SelectsRoles|SupportsEnrolmentPath|RequireDeviceProof' README.md`.
+- [ ] **Step 2: Verify** with `rg -n 'UsernameUpdater|UserPager|FamilyReader|RoleSelector|LinkLister|LinkRemover|DeviceProofStore|EnrolmentRemover|RecentFailureReporter|PolicyReporter|FailureStreakStore|PendingRequestCounter|UsableLister|SelectsRoles|RequireDeviceProof' README.md`.
   - It prints only text that describes a removal.
   - Every one of those names appears in the BREAKING section.
 - [ ] **Step 3: Commit** as `docs: changelog and README for the admin additions and the folded ports`.
@@ -601,6 +660,6 @@ gofmt -l <touched dirs>
 
 - `/opsx:archive admin-user-rename-and-paging`. Then check two things:
   - `security-administration` carries ten added and three modified requirements;
-  - each of the other nine capabilities carries its modified requirements.
+  - each of the other thirteen capabilities carries its modified requirements.
 - Propose `username-case-folding` and `lockout-by-user-id`.
 - `/opsx:explore` sharing the three SQL stores' duplicated logic.

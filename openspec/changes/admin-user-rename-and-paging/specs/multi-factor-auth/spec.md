@@ -39,7 +39,7 @@ It SHALL also fail when the chain side is on and no MFA method is enabled, or no
 - **THEN** chain assembly succeeds, and that store records the device proof of each enrolment through the path
 
 ### Requirement: MFA enrolments take part in the authenticator reset of a recovery
-The library SHALL provide an authenticator kind for the recovery reset port over a set of MFA methods. It SHALL list, as the authenticators a user holds, the methods the user is enrolled on, and SHALL remove an enrolment through the method that holds it. Every MFA method SHALL be able to remove a user's enrolments. A failed enrolment lookup SHALL be returned as an error, never as holding nothing. An MFA method used as a proof in a recovery SHALL count as proven, so the default reset keeps it.
+The library SHALL provide an authenticator kind for the recovery reset port over a set of MFA methods. It SHALL list, as the authenticators a user holds, the methods the user is enrolled on, and SHALL remove an enrolment through the method that holds it. Every MFA method SHALL be able to remove a user's enrolments. After removing, the kind SHALL read the user's enrolments again, and a method that still holds an enrolment SHALL fail the reset with an error, never report it removed. A failed enrolment lookup SHALL be returned as an error, never as holding nothing. An MFA method used as a proof in a recovery SHALL count as proven, so the default reset keeps it.
 
 #### Scenario: Listing
 - **WHEN** TOTP and `email-code` are configured and `u-1` is enrolled on TOTP only
@@ -48,6 +48,10 @@ The library SHALL provide an authenticator kind for the recovery reset port over
 #### Scenario: Method without a remover
 - **WHEN** the kind is constructed over a consumer's MFA method and `u-1`'s enrolments are reset
 - **THEN** construction succeeds, and the reset removes `u-1`'s enrolment through that method
+
+#### Scenario: Method that does not remove
+- **WHEN** a consumer's MFA method reports success removing `u-1`'s enrolment but `u-1` is still enrolled on it
+- **THEN** the reset returns an error
 
 #### Scenario: Lookup failure
 - **WHEN** the TOTP enrolment lookup fails while `u-1`'s authenticators are listed
