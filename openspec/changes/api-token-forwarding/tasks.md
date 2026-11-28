@@ -148,8 +148,10 @@ the changed packages and their transitive dependents. The full suite runs once, 
 ## 6. Outbound transport (`httpsec`, `outbound`)
 
 - [ ] 6.1 Refuse destinations outside the configured APIs, with segment-bounded prefixes, before
-  any connection. Verify with the scenarios "Unconfigured destination" and "Prefix is not a segment
-  boundary", using a dialer that records connections.
+  any connection, returning `outbound.ErrDestinationNotAllowed`. Verify with the scenarios
+  "Unconfigured destination" and "Prefix is not a segment boundary", using a dialer that records
+  connections, and assert the error matches `outbound.ErrDestinationNotAllowed` and not
+  `ErrNoOutboundToken`.
 - [ ] 6.2 Attach the API's token, replace any existing `Authorization` header, remove every
   `Cookie` header, and refuse with the accessor's error when there is no token. Verify with the
   scenarios "Cookie and stale authorization present" and "No token for this request".
@@ -168,7 +170,8 @@ the changed packages and their transitive dependents. The full suite runs once, 
   - the obligations the transport cannot enforce: `Cache-Control: private, no-store` on per-user
     responses, pass-through routes, and TLS on the app-to-API hop;
   - how a downstream API verifies minted tokens with `EnableResourceServer` and opts its source out
-    of binding;
+    of binding, naming the app's key set with `WithJWKSURL`, because `FromIssuer` discovers keys
+    from issuer metadata by default and an app that only serves a key set publishes none;
   - the 5-minute revocation window, and introspection for APIs that need it;
   - `offline_access` for provider refresh;
   - the accepted failures F4, F20, F21 and F22.

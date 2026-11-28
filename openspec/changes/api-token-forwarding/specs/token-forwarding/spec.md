@@ -203,15 +203,15 @@ A refresh that fails by transport error, timeout, a 5xx answer or a malformed re
 - **THEN** the handler receives a dependency error and the session still holds its refresh token
 
 ### Requirement: The outbound transport sends only to configured APIs
-The library SHALL offer an HTTP transport built from the configured APIs, each of which names one or more base URLs. The transport SHALL refuse, before sending, a request whose URL is under no configured API's base URL, where a base URL's path prefix matches whole segments.
+The library SHALL offer an HTTP transport built from the configured APIs, each of which names one or more base URLs. The transport SHALL refuse, before sending, a request whose URL is under no configured API's base URL, where a base URL's path prefix matches whole segments, and SHALL return the destination-not-allowed error of the confined outbound client, distinct from the no-outbound-token error.
 
 #### Scenario: Unconfigured destination
 - **WHEN** a request to `https://evil.example/x` is sent through the transport
-- **THEN** it is refused before any connection is made, and no token is minted or loaded
+- **THEN** it is refused before any connection is made, no token is minted or loaded, and the caller receives the destination-not-allowed error
 
 #### Scenario: Prefix is not a segment boundary
 - **WHEN** an API's base URL is `https://api.example/orders` and a request goes to `https://api.example/orders-admin/1`
-- **THEN** it is refused before sending
+- **THEN** it is refused before sending, and the caller receives the destination-not-allowed error
 
 ### Requirement: The outbound transport attaches the API's token and removes cookies
 For a request under a configured API's base URL, the transport SHALL set `Authorization` to `Bearer` and that API's token, replacing any value present, SHALL remove every `Cookie` header, and SHALL refuse the request without sending it when no token can be obtained, returning that error.
