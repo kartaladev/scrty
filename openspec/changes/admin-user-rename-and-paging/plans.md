@@ -324,7 +324,7 @@ Dependents were computed on 2026-11-28 with `go list -test -deps` across every w
     `admin.NewUsers(f.Users())` and `Update` applies.
   - "Import after a rename" (tasks 4.1) in `conformance_import.go`, gated on
     `admin.UsernameUpdater` with the same skip message. Rename `ada` to `ada.lovelace`, then import
-    her identifier with `ada.lovelace` and otherwise equal values. The import reports unchanged and
+    her identifier with `ada.lovelace` and every other value equal to what is stored for her. The import reports unchanged and
     emits no event.
 - [ ] **Step 2: Prove each test can fail.** These pin behaviour Task 2 already built, so they may
   pass at once. For each, break the behaviour it pins in a scratch copy, see it fail, and restore:

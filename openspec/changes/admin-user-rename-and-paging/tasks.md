@@ -118,7 +118,7 @@ so a toy-store red or green step is that case, run as
   (`SCRTY_TEST_POSTGRES_IMAGE=postgres:15.19-alpine`).
 - [x] 2.3 Do the same in `gormstore`. Verify with the 2.1 cases passing in `test/gormstore`, on both
   PostgreSQL versions.
-- [ ] 2.4 Pin the field a late unique violation names. Verify with an `adminfix` test on each SQL
+- [x] 2.4 Pin the field a late unique violation names. Verify with an `adminfix` test on each SQL
   store:
   - a raw transaction inserts a user with username `collide-7f3a` without the advisory locks and
     stays open;
@@ -126,13 +126,13 @@ so a toy-store red or green step is that case, run as
   - the raw transaction commits;
   - the rename fails with `AlreadyExistsError{FieldUsername}`, and its text does not contain
     `collide-7f3a`.
-- [ ] 2.5 Add the race test "Racing rename" to `test/internal/adminfix`. A barrier releases a
+- [x] 2.5 Add the race test "Racing rename" to `test/internal/adminfix`. A barrier releases a
   rename of `ada` to `x@example.com` and an email update of another user to `x@example.com`
   together. Verify that at most one write succeeds on each SQL store, run with `-race`, and that the
   test fails in a scratch copy whose rename skips the advisory lock.
-- [ ] 2.6 Add the rename "Library stores" scenario: the toy, `sqlstore`, `pgxstore` and `gormstore`
+- [x] 2.6 Add the rename "Library stores" scenario: the toy, `sqlstore`, `pgxstore` and `gormstore`
   stores each apply a rename through `Users.Update`. Verify that it passes on all four.
-- [ ] 2.7 Make the rename cases load-bearing in `TestAdminSuiteIsLoadBearing` (D8):
+- [x] 2.7 Make the rename cases load-bearing in `TestAdminSuiteIsLoadBearing` (D8):
   - a variant whose toy store does not implement `UsernameUpdater` passes, with the rename cases
     skipped ("Conformance suite on a store without rename support");
   - a defect whose `UpdateUserRenaming` ignores the username is caught by "Rename" ("Conformance
@@ -154,8 +154,8 @@ so a toy-store red or green step is that case, run as
 
 ## 4. Import after a rename (`test/admin`)
 
-- [ ] 4.1 Add the scenario "Import after a rename", gated on `UsernameUpdater` as the rename cases
-  are (D8): rename `ada`, then import her identifier with `ada.lovelace` and otherwise equal values.
+- [x] 4.1 Add the scenario "Import after a rename", gated on `UsernameUpdater` as the rename cases
+  are (D8): rename `ada`, then import her identifier with `ada.lovelace` and every other value equal to what is stored for her.
   Verify that the import reports unchanged and emits no event, on the toy store and every SQL store.
 
 ## 5. Service: offset listing and counting (`admin`)

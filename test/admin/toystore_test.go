@@ -105,6 +105,17 @@ const (
 	// A role update changing the super-role flag copies it onto the holders'
 	// grants without increasing their versions.
 	defectSuperRoleKeepsVersions defect = "super-role-keeps-versions"
+	// The user port does not implement admin.UsernameUpdater: a consumer
+	// store that never renames, which must still pass the suite with the
+	// rename cases skipped (D8).
+	variantNoUsernameUpdater defect = "no-username-updater"
+	// UpdateUserRenaming applies every other field but leaves the username as
+	// it was, while still reporting the rename.
+	defectRenameIgnored defect = "rename-ignored"
+	// UpdateUserRenaming skips the username clash checks.
+	defectRenameUnchecked defect = "rename-unchecked"
+	// UpdateUserRenaming always reports renamed as false.
+	defectRenamedFalse defect = "renamed-false"
 )
 
 // defectDeletedWritable is the defect under which one operation, named after
@@ -133,7 +144,20 @@ func newToyFixture(d defect) toyFixture {
 
 var _ admintest.Fixture = toyFixture{}
 
-func (f toyFixture) Users() admin.UserStore { return f.s }
+func (f toyFixture) Users() admin.UserStore {
+	if f.s.d == variantNoUsernameUpdater {
+		return toyUsersWithoutRename{UserStore: f.s, History: f.s}
+	}
+
+	return f.s
+}
+
+// toyUsersWithoutRename is the toy store's user port and password history
+// without UpdateUserRenaming: a consumer store that never renames.
+type toyUsersWithoutRename struct {
+	admin.UserStore
+	password.History
+}
 
 func (f toyFixture) Importer() admin.ImportStore {
 	if f.s.d == variantUserPortsOnly {
@@ -664,7 +688,7 @@ func (s *toyStore) UpdateUserRenaming(
 		return admin.User{}, false, err
 	}
 
-	if s.renameTaken(*c.Username, id) {
+	if s.d != defectRenameUnchecked && s.renameTaken(*c.Username, id) {
 		return admin.User{}, false, admin.AlreadyExistsError{Field: admin.FieldUsername}
 	}
 
@@ -673,7 +697,13 @@ func (s *toyStore) UpdateUserRenaming(
 	}
 
 	renamed := u.username != *c.Username
-	u.username = *c.Username
+	if s.d != defectRenameIgnored {
+		u.username = *c.Username
+	}
+
+	if s.d == defectRenamedFalse {
+		renamed = false
+	}
 
 	return s.record(u), renamed, nil
 }

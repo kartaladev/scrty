@@ -43,6 +43,7 @@ func runUserSuite(t *testing.T, newFixture Factory) {
 	t.Run("CurrentPasswordHash", func(t *testing.T) { runCurrentPasswordHashCase(t, newFixture) })
 	t.Run("SetPasswordRecordsChange", func(t *testing.T) { runSetPasswordRecordsChangeCase(t, newFixture) })
 	t.Run("Rename", func(t *testing.T) { runRenameCases(t, newFixture) })
+	t.Run("RenameThroughService", func(t *testing.T) { runRenameThroughServiceCase(t, newFixture) })
 }
 
 // userState is everything a refused user write must leave as it was.
@@ -1731,4 +1732,44 @@ func runRenameCases(t *testing.T, newFixture Factory) {
 			tc.assert(ctx, t, e, before, got, renamed, err)
 		})
 	}
+}
+
+// runRenameThroughServiceCase checks that a rename asked of the
+// administration service reaches the store and is applied: the service over
+// the fixture's user store renames ada, returns her under the new username at
+// a higher version, and the store then holds and loads her by that username
+// alone. A store that does not implement admin.UsernameUpdater skips the case
+// (D8), as the service would refuse the rename with admin.ErrConfig.
+func runRenameThroughServiceCase(t *testing.T, newFixture Factory) {
+	t.Helper()
+	t.Parallel()
+
+	ctx := admin.WithSystemActor(t.Context(), "admintest")
+	f := newFixture(t)
+
+	if _, ok := f.Users().(admin.UsernameUpdater); !ok {
+		t.Skip(renameSkip)
+	}
+
+	users, err := admin.NewUsers(f.Users())
+	require.NoError(t, err, "the service must accept the fixture's user store")
+
+	ada := mustCreateUser(ctx, t, f, admin.NewUser{Username: username(t, 0), Name: "Ada", Email: email(t, 0)})
+	newName := username(t, 5)
+
+	got, err := users.Update(ctx, ada.ID, ada.Version, admin.UserChange{Username: &newName})
+	require.NoError(t, err, "the service must rename through the store (reason matched: %s)", reasonOf(err))
+	assert.Equal(t, newName, got.Username, "Update must return the renamed user")
+	assert.Greater(t, got.Version, ada.Version, "a rename increases the version")
+
+	stored := mustGetUser(ctx, t, f, ada.ID)
+	assert.Equal(t, newName, stored.Username, "the store must hold the new username")
+	assert.Equal(t, ada.Email, stored.Email, "a rename leaves the email as it was")
+
+	_, err = f.Loader().LoadByUsername(ctx, ada.Username)
+	assert.ErrorIs(t, err, identity.ErrUserNotFound, "the old username must name no live user")
+
+	d, err := f.Loader().LoadByUsername(ctx, newName)
+	require.NoError(t, err, "the renamed user must load by the new username")
+	assert.Equal(t, ada.ID, d.ID)
 }

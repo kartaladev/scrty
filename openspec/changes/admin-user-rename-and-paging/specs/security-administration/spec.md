@@ -59,7 +59,7 @@ A committed rename SHALL emit one user-updated event naming the actor, the targe
 Import SHALL keep matching users by identifier and writing the given username, with the rules it has today. A rename through an update SHALL NOT change how a later import of the same identifier behaves.
 
 #### Scenario: Import after a rename
-- **WHEN** `ada` is renamed through an update to `ada.lovelace` and her identifier is then imported with the username `ada.lovelace` and otherwise equal values
+- **WHEN** `ada` is renamed through an update to `ada.lovelace` and her identifier is then imported with the username `ada.lovelace` and every other value equal to what is stored for her
 - **THEN** the import reports unchanged and emits no event
 
 ### Requirement: A rename can end the user's sessions when the consumer opts in

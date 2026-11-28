@@ -123,6 +123,7 @@ func Run(t *testing.T, h Harness) {
 	if h.Grants != nil {
 		t.Run("Grants", func(t *testing.T) { runGrants(t, h) })
 	}
+	t.Run("Rename", func(t *testing.T) { runRename(t, h) })
 	if h.Ambient != nil {
 		t.Run("RetireRacesDelete", func(t *testing.T) { runRetireRacesDelete(t, h) })
 		t.Run("RetireThenSetPassword", func(t *testing.T) { runRetireThenSetPassword(t, h) })
@@ -1104,4 +1105,80 @@ func race(n int, f func(i int) error) []error {
 	wg.Wait()
 
 	return errs
+}
+
+// renamer returns the harness's user store as admin.UsernameUpdater. Every
+// scrty SQL store implements it, so a store that lost it fails rather than
+// skips.
+func renamer(t *testing.T, h Harness) admin.UsernameUpdater {
+	t.Helper()
+
+	r, ok := h.Users.(admin.UsernameUpdater)
+	require.True(t, ok, "the identity store implements admin.UsernameUpdater")
+
+	return r
+}
+
+// runRename runs the rename cases only a real database shows.
+func runRename(t *testing.T, h Harness) {
+	t.Run("HitsUniqueIndex", func(t *testing.T) { runRenameHitsUniqueIndex(t, h) })
+	t.Run("Racing", func(t *testing.T) { runRacingRename(t, h) })
+}
+
+// runRenameHitsUniqueIndex checks that a rename whose username collision is
+// seen only by the unique index names the username (D2): caller B, a writer
+// that takes none of the store's identifier locks (the consumer's own SQL),
+// inserts a user holding the username and leaves it uncommitted, so the
+// rename's check does not see it and its username statement waits on the
+// index. B commits, and the rename fails on the username, without the value
+// in its text, and writes nothing.
+func runRenameHitsUniqueIndex(t *testing.T, h Harness) {
+	t.Parallel()
+
+	ctx := t.Context()
+	r := renamer(t, h)
+	ada := create(t, h, admin.NewUser{Username: uniq("ada"), Email: uniq("ada") + "@example.com"})
+
+	taken := uniq("collide-7f3a-")
+
+	txB, err := h.DB.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = txB.Rollback() })
+	var pidB int
+	require.NoError(t, txB.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&pidB))
+	_, err = txB.ExecContext(ctx, `INSERT INTO scrty_users (id, name, username, password, role, email, created_at,
+  updated_at) VALUES ($1, 'Collider', $2, '\x01', '', $3, now(), now())`, string(newID(t)), taken,
+		uniq("collider")+"@example.com")
+	require.NoError(t, err)
+
+	type renameResult struct {
+		renamed bool
+		err     error
+	}
+
+	done := make(chan renameResult, 1)
+	ctxA, cancelA := context.WithTimeout(ctx, importQueueBound)
+	defer cancelA()
+	go func() {
+		_, renamed, err := r.UpdateUserRenaming(ctxA, ada.ID, ada.Version, admin.UserChange{Username: &taken})
+		done <- renameResult{renamed, err}
+	}()
+
+	waitBlockedBy(t, h.DB, pidB, done)
+	require.NoError(t, txB.Commit())
+
+	select {
+	case a := <-done:
+		requireExists(t, a.err, admin.FieldUsername)
+		assert.False(t, a.renamed, "a refused rename reports no rename")
+		assert.NotContains(t, a.err.Error(), "collide-7f3a", "error text never contains the username")
+		noValues(t, a.err, taken, ada.Username)
+	case <-time.After(importQueueBound):
+		require.Fail(t, "the waiting rename never finished")
+	}
+
+	got, err := h.Users.GetUser(ctx, ada.ID)
+	require.NoError(t, err)
+	assert.Equal(t, ada.Username, got.Username, "the refused rename changed nothing")
+	assert.Equal(t, ada.Version, got.Version, "the refused rename changed nothing")
 }
