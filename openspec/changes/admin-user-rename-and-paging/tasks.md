@@ -146,7 +146,7 @@ so a toy-store red or green step is that case, run as
 
 ## 3. Sessions end on rename when opted in (`test/sqlstore`)
 
-- [ ] 3.1 Add the scenario "Consumer opts in" in an untagged test in `test/sqlstore`, over the real
+- [x] 3.1 Add the scenario "Consumer opts in" in an untagged test in `test/sqlstore`, over the real
   `sqlstore` identity store, so CI runs it. `ada` is signed in on two devices through
   `*session.Sessions` on its `MemoryStore`, the service is configured with
   `WithSessionRevocation(sessions)`, and `ada` is renamed. Verify that neither session loads
