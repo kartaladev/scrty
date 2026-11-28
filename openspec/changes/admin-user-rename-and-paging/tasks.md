@@ -160,7 +160,7 @@ so a toy-store red or green step is that case, run as
 
 ## 5. Service: offset listing and counting (`admin`)
 
-- [ ] 5.1 Add `UserFilter.Offset`, `DefaultMaxListOffset` (10 000) and `WithMaxListOffset(n)`.
+- [x] 5.1 Add `UserFilter.Offset`, `DefaultMaxListOffset` (10 000) and `WithMaxListOffset(n)`.
   Validate the offset in the filter-to-query step. Verify with a table test in `admin`, the mocked
   store never called on a refusal:
   - "Negative offset", "Offset and cursor together" and "Offset beyond the maximum" give
@@ -170,7 +170,7 @@ so a toy-store red or green step is that case, run as
   - "Negative maximum": `WithMaxListOffset(-1)` fails `NewUsers` with `ErrConfig`;
   - `WithMaxListOffset` over a store without `UserPager` fails `NewUsers` with `ErrConfig`;
   - an offset above the maximum on a store without `UserPager` gives `ErrInvalidInput`.
-- [ ] 5.2 Add the `UserPager` port. `NewUsers` records whether the store implements it. `List` with a
+- [x] 5.2 Add the `UserPager` port. `NewUsers` records whether the store implements it. `List` with a
   non-zero offset calls `ListUsersFrom` and returns a page with an empty `Next`. Offset zero calls
   `ListUsers` and returns its `Next` as today. Verify with the generated mocks:
   - "Jump to a page", service side: `ListUsersFrom` receives the offset and the validated query, and
@@ -182,7 +182,7 @@ so a toy-store red or green step is that case, run as
   - "Cursor listing on the same store": the page is returned as before;
   - a `ListUsersFrom` that returns more than the page size is truncated to it, as `ListUsers` is;
   - a store error from `ListUsersFrom` matches no administration reason.
-- [ ] 5.3 Add `Users.Count`. It validates search, role and attribute as `List` does, ignores page
+- [x] 5.3 Add `Users.Count`. It validates search, role and attribute as `List` does, ignores page
   size, offset and cursor, and calls `CountUsers`. Verify:
   - "Count beside a page", service side: a filter carrying a page size, an offset and a cursor is
     counted, and `CountUsers` receives its filters only;
@@ -190,7 +190,7 @@ so a toy-store red or green step is that case, run as
   - "Consumer store without support", for a count: `ErrConfig`, store not called;
   - a negative count from the store is refused as an error matching no administration reason;
   - a store error matches no administration reason.
-- [ ] 5.4 Write the godoc for `UserFilter.Offset`, `DefaultMaxListOffset`, `WithMaxListOffset`,
+- [x] 5.4 Write the godoc for `UserFilter.Offset`, `DefaultMaxListOffset`, `WithMaxListOffset`,
   `Users.Count` and `UserPager`, rewrite the godoc of `Users.List` and `UserPage.Next` for offset
   mode, and extend `ErrConfig`'s with the call-time offset and count case (D12). It names:
   - the defaults;
