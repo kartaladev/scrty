@@ -306,7 +306,7 @@ pinned by a test written with the fold, not claimed as a red step. Where behavio
 task names the test written first and seen red. Every task verifies its packages and their transitive
 dependents in every workspace module (`test-scope.md`).
 
-- [ ] 8.1 Sessions: `FamilyReader` and `RoleSelector` into `session.Store`. Remove `readFamily`'s
+- [x] 8.1 Sessions: `FamilyReader` and `RoleSelector` into `session.Store`. Remove `readFamily`'s
   listing fallback, `roleSelectingEncryptedStore` (the encrypted store gains `SelectRole`, keeping its
   fixed error text and sanitised cause), the inner fallback in `encryptedStore.ListByFamily`,
   `Sessions.SelectsRoles` and the refusals that consulted it in `session` and `httpsec`. The
