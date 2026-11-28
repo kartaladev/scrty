@@ -392,6 +392,45 @@ func (c *MockLineageSessionStoreDeleteFamilyCall) DoAndReturn(f func(context.Con
 	return c
 }
 
+// ListByFamily mocks base method.
+func (m *MockLineageSessionStore) ListByFamily(ctx context.Context, user identity.UserID, family id.ID, now time.Time) ([]*session.Session, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListByFamily", ctx, user, family, now)
+	ret0, _ := ret[0].([]*session.Session)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListByFamily indicates an expected call of ListByFamily.
+func (mr *MockLineageSessionStoreMockRecorder) ListByFamily(ctx, user, family, now any) *MockLineageSessionStoreListByFamilyCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListByFamily", reflect.TypeOf((*MockLineageSessionStore)(nil).ListByFamily), ctx, user, family, now)
+	return &MockLineageSessionStoreListByFamilyCall{Call: call}
+}
+
+// MockLineageSessionStoreListByFamilyCall wrap *gomock.Call
+type MockLineageSessionStoreListByFamilyCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockLineageSessionStoreListByFamilyCall) Return(arg0 []*session.Session, arg1 error) *MockLineageSessionStoreListByFamilyCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockLineageSessionStoreListByFamilyCall) Do(f func(context.Context, identity.UserID, id.ID, time.Time) ([]*session.Session, error)) *MockLineageSessionStoreListByFamilyCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockLineageSessionStoreListByFamilyCall) DoAndReturn(f func(context.Context, identity.UserID, id.ID, time.Time) ([]*session.Session, error)) *MockLineageSessionStoreListByFamilyCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // ListByUser mocks base method.
 func (m *MockLineageSessionStore) ListByUser(ctx context.Context, user identity.UserID, now time.Time) ([]*session.Session, error) {
 	m.ctrl.T.Helper()
@@ -580,6 +619,44 @@ func (c *MockLineageSessionStoreSaveCall) Do(f func(context.Context, *session.Se
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockLineageSessionStoreSaveCall) DoAndReturn(f func(context.Context, *session.Session) error) *MockLineageSessionStoreSaveCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// SelectRole mocks base method.
+func (m *MockLineageSessionStore) SelectRole(ctx context.Context, arg1, role string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SelectRole", ctx, arg1, role)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SelectRole indicates an expected call of SelectRole.
+func (mr *MockLineageSessionStoreMockRecorder) SelectRole(ctx, arg1, role any) *MockLineageSessionStoreSelectRoleCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SelectRole", reflect.TypeOf((*MockLineageSessionStore)(nil).SelectRole), ctx, arg1, role)
+	return &MockLineageSessionStoreSelectRoleCall{Call: call}
+}
+
+// MockLineageSessionStoreSelectRoleCall wrap *gomock.Call
+type MockLineageSessionStoreSelectRoleCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockLineageSessionStoreSelectRoleCall) Return(arg0 error) *MockLineageSessionStoreSelectRoleCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockLineageSessionStoreSelectRoleCall) Do(f func(context.Context, string, string) error) *MockLineageSessionStoreSelectRoleCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockLineageSessionStoreSelectRoleCall) DoAndReturn(f func(context.Context, string, string) error) *MockLineageSessionStoreSelectRoleCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

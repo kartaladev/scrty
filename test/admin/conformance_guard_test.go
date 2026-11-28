@@ -103,6 +103,15 @@ var guards = []guard{
 	{defect: defectDeleteKeepsHistory, run: "Users/SoftDelete", failing: "Users/SoftDelete"},
 	{defect: defectBlindEmailLoader, run: "Users/SoftDelete", failing: "Users/SoftDelete"},
 	{defect: defectExactResourceOnReplace, run: "Roles/GrantNames", failing: "Roles/GrantNames/an_empty_list_for_another_spelling_of_a_resource_removes_its_grants"},
+	{defect: defectRenameIgnored, run: "Users/Rename", failing: "Users/Rename/Rename"},
+	{defect: defectRenameUnchecked, run: "Users/Rename", failing: "Users/Rename/Username_held_by_a_deleted_user"},
+	{defect: defectRenameUnchecked, run: "Users/Rename", failing: "Users/Rename/Username_equal_to_another_user's_email"},
+	{defect: defectRenamedFalse, run: "Users/Rename", failing: "Users/Rename/Rename"},
+	{defect: defectRenamedTrue, run: "Users/Rename", failing: "Users/Rename/No_username_in_the_update"},
+	{defect: defectRenamedTrue, run: "Users/Rename", failing: "Users/Rename/Same_username_again"},
+	{defect: defectOffsetTwice, run: "Users/OffsetAndCount/Jump to a page", failing: "Users/OffsetAndCount/Jump_to_a_page"},
+	{defect: defectCountDeleted, run: "Users/OffsetAndCount/Deleted users are not counted", failing: "Users/OffsetAndCount/Deleted_users_are_not_counted"},
+	{defect: defectOffsetOrder, run: "Users/OffsetAndCount/Consecutive offsets cover every user once, in order", failing: "Users/OffsetAndCount/Consecutive_offsets_cover_every_user_once,_in_order"},
 	{defect: defectDeletedWritable + "UpdateUser", run: "Users/DeletedUserWrites", failing: "Users/DeletedUserWrites/UpdateUser"},
 	{defect: defectDeletedWritable + "SetActive", run: "Users/DeletedUserWrites", failing: "Users/DeletedUserWrites/SetActive"},
 	{defect: defectDeletedWritable + "SetPassword", run: "Users/DeletedUserWrites", failing: "Users/DeletedUserWrites/SetPassword"},
@@ -156,6 +165,19 @@ func TestAdminSuiteIsLoadBearing(t *testing.T) {
 				"implementing the import port alone cannot run it"),
 		},
 		{
+			name:  "a store without offset and count support passes the whole suite with those cases skipped",
+			guard: guard{defect: variantNoUserPager},
+			assert: func(t *testing.T, err error, output string) {
+				t.Helper()
+				passes("the suite failed a store that does not implement admin.UserPager, so a consumer "+
+					"store that never pages by offset turns red on upgrade (D14)")(t, err, output)
+				assert.Contains(t, output, "--- SKIP: TestBrokenAdminStore/Users/OffsetAndCount ",
+					"the offset and count cases did not skip on a store without admin.UserPager:\n%s", output)
+				assert.Contains(t, output, "admintest: the store does not implement admin.UserPager; offset and count cases skipped",
+					"the skip does not name the missing port:\n%s", output)
+			},
+		},
+		{
 			name:  "the role part refuses a fixture without role ports at the preflight",
 			guard: guard{defect: variantUserPortsOnly, part: "roles"},
 			assert: func(t *testing.T, err error, output string) {
@@ -176,7 +198,7 @@ func TestAdminSuiteIsLoadBearing(t *testing.T) {
 				require.Error(t, err, "the suite passed a store whose %s defect breaks a contract:\n%s", g.defect, output)
 				assert.NotContains(t, output, "admintest: required hook",
 					"the %s defect stopped the run at the preflight, so no case was shown to catch it", g.defect)
-				assert.Contains(t, output, "--- FAIL: TestBrokenAdminStore/"+g.failing,
+				assert.Contains(t, output, "--- FAIL: TestBrokenAdminStore/"+g.failing+" (",
 					"the case written for the %s defect did not fail by assertion:\n%s", g.defect, output)
 				assert.NotContains(t, output, "panic:", "the run panicked rather than failing by assertion")
 			},

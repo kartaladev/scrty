@@ -230,12 +230,6 @@ func peFlows() []peFlow {
 	return append(peSealingFlows(), peForwardFlows()...)
 }
 
-// peFamilyStore is an inner store that also offers the narrowed family read.
-type peFamilyStore struct {
-	*MockStore
-	*MockFamilyReader
-}
-
 // peForwardFlows are the inner-store calls the decorator only forwards: each
 // answers a hostile error as it answers a plain outage.
 func peForwardFlows() []peFlow {
@@ -283,25 +277,21 @@ func peForwardFlows() []peFlow {
 
 				return got
 			}},
-		{name: "ListByFamily on the inner family reader", unavailable: porterr.ErrUnwalkable,
+		{name: "ListByFamily on the inner store", unavailable: porterr.ErrUnwalkable,
 			run: func(t *testing.T, ctx context.Context, ctrl *gomock.Controller, err error) error {
-				inner := peFamilyStore{NewMockStore(ctrl), NewMockFamilyReader(ctrl)}
-				sealing, serr := session.NewEncryptedStore(inner, NewMockCipher(ctrl))
-				require.NoError(t, serr)
-				inner.MockFamilyReader.EXPECT().ListByFamily(gomock.Any(), user, storedFamily, gomock.Any()).Return(nil, err)
+				sealing, inner := peStore(t, ctrl, NewMockCipher(ctrl))
+				inner.EXPECT().ListByFamily(gomock.Any(), user, storedFamily, gomock.Any()).Return(nil, err)
 
-				_, got := sealing.(session.FamilyReader).ListByFamily(ctx, user, storedFamily, createdAt)
+				_, got := sealing.ListByFamily(ctx, user, storedFamily, createdAt)
 
 				return got
 			}},
-		{name: "ListByFamily through the inner listing", unavailable: porterr.ErrUnwalkable,
+		{name: "SelectRole on the inner store", unavailable: porterr.ErrUnwalkable,
 			run: func(t *testing.T, ctx context.Context, ctrl *gomock.Controller, err error) error {
 				sealing, inner := peStore(t, ctrl, NewMockCipher(ctrl))
-				inner.EXPECT().ListByUser(gomock.Any(), user, gomock.Any()).Return(nil, err)
+				inner.EXPECT().SelectRole(gomock.Any(), "pe-role", "auditor").Return(err)
 
-				_, got := sealing.(session.FamilyReader).ListByFamily(ctx, user, storedFamily, createdAt)
-
-				return got
+				return sealing.SelectRole(ctx, "pe-role", "auditor")
 			}},
 		{name: "DeleteExpired on the inner store", unavailable: porterr.ErrUnwalkable,
 			run: func(t *testing.T, ctx context.Context, ctrl *gomock.Controller, err error) error {

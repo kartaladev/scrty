@@ -46,7 +46,9 @@
 // under the scrty_ prefix otherwise (event.UserReactivated,
 // event.UserImported). The event names the actor, the target and the changed
 // fields, never a value. A refused or failed call, and a call that changed
-// nothing, reports nothing. The default is no sink; on a request whose chain
+// nothing, reports nothing. A committed change whose follow-up session
+// revocation fails is the exception: it still emits its event and returns
+// ErrSessionsNotRevoked. The default is no sink; on a request whose chain
 // reports security events, the services report through the chain.
 //
 // WithAudit adds an audit sink that receives each committed change with the
@@ -63,13 +65,31 @@
 // crash between the commit and the delivery loses them. A consumer that needs
 // them transactionally puts an outbox behind the audit sink.
 //
+// # Paging
+//
+// Users.List pages by cursor: each full page carries Next, which continues the
+// list after the last user seen, so a walk of the whole list is consistent
+// while users come and go. A page picker jumps to page n instead with
+// UserFilter.Offset, up to DefaultMaxListOffset (WithMaxListOffset), and shows
+// the total from Users.Count. Offset zero is the first page and carries Next; a
+// page from a non-zero offset does not. Offset pages and counts are separate
+// reads and can skip or repeat a user, or disagree with each other, when users
+// are created or deleted in between. Both need a store that implements
+// UserPager, which scrty's stores do; over one that does not, they fail with an
+// error matching ErrConfig and cursor listing works as before.
+//
 // # Errors
 //
 // Every failure an application can act on matches exactly one of ErrNotFound,
 // ErrAlreadyExists, ErrStillAssigned, ErrStaleUpdate, ErrUnknownPrivilege,
-// ErrInvalidInput and ErrNoActor. A storage failure matches none of them. Error
-// text never contains a username, an email, an attribute value or a password
-// hash.
+// ErrInvalidInput, ErrNoActor, ErrConfig and ErrSessionsNotRevoked. ErrConfig
+// is also returned at call time when a call needs a store capability the store
+// lacks: an offset listing or a count asked of a store that does not
+// implement UserPager. ErrSessionsNotRevoked reports a committed rename whose
+// opted-in session revocation failed; the error also wraps the revoker's cause,
+// so the change is stored and only the sign-out is in doubt. A storage failure
+// matches none of them. Error text never contains a username, an email, an
+// attribute value or a password hash.
 //
 // # Stores
 //

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -42,6 +43,9 @@ func runUserSuite(t *testing.T, newFixture Factory) {
 	t.Run("ForgedIdentifiers", func(t *testing.T) { runForgedIdentifierCases(t, newFixture) })
 	t.Run("CurrentPasswordHash", func(t *testing.T) { runCurrentPasswordHashCase(t, newFixture) })
 	t.Run("SetPasswordRecordsChange", func(t *testing.T) { runSetPasswordRecordsChangeCase(t, newFixture) })
+	t.Run("Rename", func(t *testing.T) { runRenameCases(t, newFixture) })
+	t.Run("RenameThroughService", func(t *testing.T) { runRenameThroughServiceCase(t, newFixture) })
+	t.Run("OffsetAndCount", func(t *testing.T) { runPagerCases(t, newFixture) })
 }
 
 // userState is everything a refused user write must leave as it was.
@@ -80,7 +84,7 @@ func arrangeStaleUser(ctx context.Context, t *testing.T, f Fixture) staleFixture
 
 	// A colleague's write moves the version past the one this caller read.
 	name := "Renamed by a colleague"
-	moved, err := f.Users().UpdateUser(ctx, u.ID, set.Version, admin.UserChange{Name: &name})
+	moved, _, err := f.Users().UpdateUser(ctx, u.ID, set.Version, admin.UserChange{Name: &name})
 	require.NoError(t, err, "an update naming the current version must succeed")
 	require.Greater(t, moved.Version, set.Version, "a successful update must increase the version")
 	assert.Equal(t, name, moved.Name, "UpdateUser must return the updated record")
@@ -103,7 +107,7 @@ func runStaleUpdateCases(t *testing.T, newFixture Factory) {
 	cases := []testCase{
 		{"UpdateUser", func(ctx context.Context, f Fixture, s staleFixture) error {
 			name := "Lost update"
-			_, err := f.Users().UpdateUser(ctx, s.ID, s.Stale, admin.UserChange{Name: &name})
+			_, _, err := f.Users().UpdateUser(ctx, s.ID, s.Stale, admin.UserChange{Name: &name})
 
 			return err
 		}},
@@ -171,7 +175,7 @@ func runStaleAfterLoginUpdateCase(t *testing.T, newFixture Factory) {
 			"across it overwrites what the login wrote")
 
 	edited := "Ada from the form"
-	_, err = f.Users().UpdateUser(ctx, read.ID, read.Version, admin.UserChange{Name: &edited})
+	_, _, err = f.Users().UpdateUser(ctx, read.ID, read.Version, admin.UserChange{Name: &edited})
 	require.ErrorIs(t, err, admin.ErrStaleUpdate,
 		"an update naming the version read before a login-time update must be stale (reason matched: %s)",
 		reasonOf(err))
@@ -211,7 +215,7 @@ func runUnknownUserCases(t *testing.T, newFixture Factory) {
 		}},
 		{"UpdateUser", func(ctx context.Context, f Fixture, id identity.UserID) error {
 			name := "x"
-			_, err := f.Users().UpdateUser(ctx, id, 1, admin.UserChange{Name: &name})
+			_, _, err := f.Users().UpdateUser(ctx, id, 1, admin.UserChange{Name: &name})
 
 			return err
 		}},
@@ -274,7 +278,7 @@ func runUpdateKeepsUnnamedFieldsCase(t *testing.T, newFixture Factory) {
 	before := readUserState(ctx, t, f, u.ID)
 
 	name := "Ada Lovelace"
-	updated, err := f.Users().UpdateUser(ctx, u.ID, before.User.Version, admin.UserChange{Name: &name})
+	updated, _, err := f.Users().UpdateUser(ctx, u.ID, before.User.Version, admin.UserChange{Name: &name})
 	require.NoError(t, err)
 
 	after := readUserState(ctx, t, f, u.ID)
@@ -289,7 +293,7 @@ func runUpdateKeepsUnnamedFieldsCase(t *testing.T, newFixture Factory) {
 
 	// A pointer to the zero time clears the verification and nothing else.
 	var zero time.Time
-	_, err = f.Users().UpdateUser(ctx, u.ID, after.User.Version, admin.UserChange{EmailVerifiedAt: &zero})
+	_, _, err = f.Users().UpdateUser(ctx, u.ID, after.User.Version, admin.UserChange{EmailVerifiedAt: &zero})
 	require.NoError(t, err)
 
 	cleared := mustGetUser(ctx, t, f, u.ID)
@@ -428,7 +432,7 @@ func runUpdateEmailVerificationCases(t *testing.T, newFixture Factory) {
 			u := mustCreateUser(ctx, t, f, nu)
 			before := readUserState(ctx, t, f, u.ID)
 
-			_, err := f.Users().UpdateUser(ctx, u.ID, before.User.Version, tc.change(t, before.User.Email))
+			_, _, err := f.Users().UpdateUser(ctx, u.ID, before.User.Version, tc.change(t, before.User.Email))
 
 			tc.assert(t, before, mustGetUser(ctx, t, f, u.ID), err)
 		})
@@ -591,7 +595,7 @@ func runUsernameEmailCollisionCases(t *testing.T, newFixture Factory) {
 			name: "update to an email equal to another user's username",
 			act: func(ctx context.Context, _ *testing.T, f Fixture, bob, other admin.User) (identity.UserID, error) {
 				addr := strings.ToUpper(bob.Username)
-				_, err := f.Users().UpdateUser(ctx, other.ID, other.Version, admin.UserChange{Email: &addr})
+				_, _, err := f.Users().UpdateUser(ctx, other.ID, other.Version, admin.UserChange{Email: &addr})
 
 				return other.ID, err
 			},
@@ -601,7 +605,7 @@ func runUsernameEmailCollisionCases(t *testing.T, newFixture Factory) {
 			name: "update to an email equal to another user's email",
 			act: func(ctx context.Context, _ *testing.T, f Fixture, bob, other admin.User) (identity.UserID, error) {
 				addr := strings.ToUpper(bob.Email)
-				_, err := f.Users().UpdateUser(ctx, other.ID, other.Version, admin.UserChange{Email: &addr})
+				_, _, err := f.Users().UpdateUser(ctx, other.ID, other.Version, admin.UserChange{Email: &addr})
 
 				return other.ID, err
 			},
@@ -674,7 +678,7 @@ func runUsernameEmailRaceCase(t *testing.T, newFixture Factory) {
 				return err
 			}
 
-			_, err := f.Users().UpdateUser(ctx, other.ID, other.Version, admin.UserChange{Email: &addr})
+			_, _, err := f.Users().UpdateUser(ctx, other.ID, other.Version, admin.UserChange{Email: &addr})
 
 			return err
 		})
@@ -824,7 +828,7 @@ func runDeletedUserWriteCases(t *testing.T, newFixture Factory) {
 	cases := []testCase{
 		{"UpdateUser", func(ctx context.Context, f Fixture, id identity.UserID, v int64) error {
 			name := "Renamed after deletion"
-			_, err := f.Users().UpdateUser(ctx, id, v, admin.UserChange{Name: &name})
+			_, _, err := f.Users().UpdateUser(ctx, id, v, admin.UserChange{Name: &name})
 
 			return err
 		}},
@@ -912,16 +916,16 @@ func runAttributesRoundTripCase(t *testing.T, newFixture Factory) {
 
 	replaced := map[string]string{"phone": "+62 21 777"}
 
-	updated, err := f.Users().UpdateUser(ctx, u.ID, got.Version, admin.UserChange{Attributes: replaced})
+	updated, _, err := f.Users().UpdateUser(ctx, u.ID, got.Version, admin.UserChange{Attributes: replaced})
 	require.NoError(t, err)
 	assert.Equal(t, replaced, mustGetUser(ctx, t, f, u.ID).Attributes, "named attributes replace the whole set")
 
 	name := "Renamed"
-	updated, err = f.Users().UpdateUser(ctx, u.ID, updated.Version, admin.UserChange{Name: &name})
+	updated, _, err = f.Users().UpdateUser(ctx, u.ID, updated.Version, admin.UserChange{Name: &name})
 	require.NoError(t, err)
 	assert.Equal(t, replaced, mustGetUser(ctx, t, f, u.ID).Attributes, "nil attributes leave the set unchanged")
 
-	_, err = f.Users().UpdateUser(ctx, u.ID, updated.Version, admin.UserChange{Attributes: map[string]string{}})
+	_, _, err = f.Users().UpdateUser(ctx, u.ID, updated.Version, admin.UserChange{Attributes: map[string]string{}})
 	require.NoError(t, err)
 	assert.Empty(t, mustGetUser(ctx, t, f, u.ID).Attributes, "an empty non-nil map removes every attribute")
 }
@@ -977,19 +981,19 @@ func runOrganizationRoundTripCase(t *testing.T, newFixture Factory) {
 	requireOrganization(t, first, got, "after create")
 
 	ref := &identity.Organization{ID: second.ID}
-	upd, err := f.Users().UpdateUser(ctx, u.ID, got.Version, admin.UserChange{Organization: &ref})
+	upd, _, err := f.Users().UpdateUser(ctx, u.ID, got.Version, admin.UserChange{Organization: &ref})
 	require.NoError(t, err)
 	got = mustGetUser(ctx, t, f, u.ID)
 	requireOrganization(t, second, got, "after an update naming another organization")
 	assert.Greater(t, got.Version, u.Version)
 
 	name := "Renamed"
-	upd, err = f.Users().UpdateUser(ctx, u.ID, upd.Version, admin.UserChange{Name: &name})
+	upd, _, err = f.Users().UpdateUser(ctx, u.ID, upd.Version, admin.UserChange{Name: &name})
 	require.NoError(t, err)
 	requireOrganization(t, second, mustGetUser(ctx, t, f, u.ID), "after an update not naming the organization")
 
 	var none *identity.Organization
-	_, err = f.Users().UpdateUser(ctx, u.ID, upd.Version, admin.UserChange{Organization: &none})
+	_, _, err = f.Users().UpdateUser(ctx, u.ID, upd.Version, admin.UserChange{Organization: &none})
 	require.NoError(t, err)
 	requireOrganization(t, nil, mustGetUser(ctx, t, f, u.ID), "after an update naming no organization")
 
@@ -1327,7 +1331,7 @@ func runForgedIdentifierCases(t *testing.T, newFixture Factory) {
 			u := mustCreateUser(ctx, t, f, admin.NewUser{Username: username(t, 1)})
 			ref := &identity.Organization{ID: forgedID}
 
-			_, err := f.Users().UpdateUser(ctx, u.ID, u.Version, admin.UserChange{Organization: &ref})
+			_, _, err := f.Users().UpdateUser(ctx, u.ID, u.Version, admin.UserChange{Organization: &ref})
 			if err == nil {
 				requireOrganization(t, org, mustGetUser(ctx, t, f, u.ID),
 					"a store that accepts the organization must store it")
@@ -1455,4 +1459,630 @@ func runInactiveUserLoadsCase(t *testing.T, newFixture Factory) {
 	require.NoError(t, err, "an inactive user is returned, not hidden (reason matched: %s)", reasonOf(err))
 	assert.Equal(t, u.ID, byID.ID)
 	assert.False(t, byID.Active, "loaded by identifier")
+}
+
+// renameEnv is what a rename case starts from: ada, the user it renames, and
+// carol, another live user whose username and email ada must not take.
+type renameEnv struct {
+	f     Fixture
+	ada   admin.User
+	carol admin.User
+}
+
+// rename calls UpdateUser on ada at version with change.
+func (e renameEnv) rename(ctx context.Context, version int64, change admin.UserChange) (admin.User, bool, error) {
+	return e.f.Users().UpdateUser(ctx, e.ada.ID, version, change)
+}
+
+// runRenameCases checks UpdateUser's rename against the rules of creation: a
+// username another user holds, deleted or not, compared exactly, or equal to
+// another live user's email ignoring case, is refused naming the username;
+// the user's own username and email never clash; a username and an email
+// named together are written both or neither; and renamed reports whether the
+// stored username differed, byte for byte, false for a change naming no
+// username. Every store runs them (D8).
+func runRenameCases(t *testing.T, newFixture Factory) {
+	t.Helper()
+
+	type testCase struct {
+		name string
+		// ada is the user the case creates and renames; nil creates her with
+		// username 0 and email 0, the email verified.
+		ada func(t *testing.T) admin.NewUser
+		// act runs the write under test, after any setup of its own.
+		act    func(ctx context.Context, t *testing.T, e renameEnv) (admin.User, bool, error)
+		assert func(ctx context.Context, t *testing.T, e renameEnv, before userState, got admin.User, renamed bool, err error)
+	}
+
+	str := func(s string) *string { return &s }
+
+	// unchanged asserts a refusal naming field that wrote nothing. The error
+	// text must contain none of ada's old username and the values the change
+	// asked for, which asked lists.
+	unchanged := func(field string, asked ...func(t *testing.T, e renameEnv) string,
+	) func(context.Context, *testing.T, renameEnv, userState, admin.User, bool, error) {
+		return func(ctx context.Context, t *testing.T, e renameEnv, before userState, _ admin.User, renamed bool, err error) {
+			t.Helper()
+			requireAlreadyExists(t, err, field, "the clashing rename")
+			assert.False(t, renamed, "a refused rename reports no rename")
+			assert.NotContains(t, err.Error(), e.ada.Username, "error text never contains a username")
+
+			for _, a := range asked {
+				assert.NotContains(t, err.Error(), a(t, e), "error text never contains a requested value")
+			}
+
+			assert.Equal(t, before, readUserState(ctx, t, e.f, e.ada.ID), "a refused rename must change nothing")
+			assert.Equal(t, e.carol, mustGetUser(ctx, t, e.f, e.carol.ID), "the other user must be unchanged")
+		}
+	}
+
+	// applied asserts a successful write storing username and email exactly as
+	// given, reporting renamed, and increasing the version.
+	applied := func(username, email func(t *testing.T, e renameEnv) string, renamed bool,
+	) func(context.Context, *testing.T, renameEnv, userState, admin.User, bool, error) {
+		return func(ctx context.Context, t *testing.T, e renameEnv, before userState, got admin.User, gotRenamed bool, err error) {
+			t.Helper()
+			require.NoError(t, err, "the rename must succeed (reason matched: %s)", reasonOf(err))
+			assert.Equal(t, renamed, gotRenamed, "renamed must report whether the stored username differed")
+			assert.Greater(t, got.Version, before.User.Version, "every successful update increases the version")
+
+			stored := mustGetUser(ctx, t, e.f, e.ada.ID)
+			assert.Equal(t, got, stored, "UpdateUser must return the record as stored")
+			assert.Equal(t, []byte(username(t, e)), []byte(stored.Username), "the username is stored byte for byte as given")
+			assert.Equal(t, email(t, e), stored.Email)
+		}
+	}
+
+	same := func(t *testing.T, e renameEnv) string { t.Helper(); return e.ada.Email }
+	newName := func(t *testing.T, _ renameEnv) string { t.Helper(); return username(t, 5) }
+	carolEmailUpper := func(t *testing.T, e renameEnv) string { t.Helper(); return strings.ToUpper(e.carol.Email) }
+	carolNameUpper := func(t *testing.T, e renameEnv) string { t.Helper(); return strings.ToUpper(e.carol.Username) }
+
+	cases := []testCase{
+		{
+			name: "Rename",
+			act: func(ctx context.Context, t *testing.T, e renameEnv) (admin.User, bool, error) {
+				return e.rename(ctx, e.ada.Version, admin.UserChange{Username: str(username(t, 5))})
+			},
+			assert: func(ctx context.Context, t *testing.T, e renameEnv, before userState, got admin.User, renamed bool, err error) {
+				t.Helper()
+				applied(func(t *testing.T, _ renameEnv) string { return username(t, 5) }, same, true)(
+					ctx, t, e, before, got, renamed, err)
+
+				_, lerr := e.f.Loader().LoadByUsername(ctx, e.ada.Username)
+				assert.ErrorIs(t, lerr, identity.ErrUserNotFound, "the old username must name no live user")
+
+				d, lerr := e.f.Loader().LoadByUsername(ctx, username(t, 5))
+				require.NoError(t, lerr, "the renamed user must load by the new username")
+				assert.Equal(t, e.ada.ID, d.ID)
+			},
+		},
+		{
+			name: "Username held by a deleted user",
+			act: func(ctx context.Context, t *testing.T, e renameEnv) (admin.User, bool, error) {
+				bob := mustCreateUser(ctx, t, e.f, admin.NewUser{Username: username(t, 2)})
+				require.NoError(t, e.f.Users().DeleteUser(ctx, bob.ID, bob.Version))
+
+				return e.rename(ctx, e.ada.Version, admin.UserChange{Username: str(bob.Username)})
+			},
+			assert: unchanged(admin.FieldUsername, func(t *testing.T, _ renameEnv) string { t.Helper(); return username(t, 2) }),
+		},
+		{
+			name: "Username held by a live user",
+			act: func(ctx context.Context, _ *testing.T, e renameEnv) (admin.User, bool, error) {
+				return e.rename(ctx, e.ada.Version, admin.UserChange{Username: str(e.carol.Username)})
+			},
+			assert: unchanged(admin.FieldUsername, func(_ *testing.T, e renameEnv) string { return e.carol.Username }),
+		},
+		{
+			name: "Case variant of another user's username",
+			act: func(ctx context.Context, t *testing.T, e renameEnv) (admin.User, bool, error) {
+				upper := strings.ToUpper(e.carol.Username)
+				require.NotEqual(t, e.carol.Username, upper, "the variant must differ from the held username")
+				require.NotEqual(t, e.ada.Username, upper, "the variant must differ from the renamed user's own username")
+				require.False(t, strings.EqualFold(upper, e.carol.Email) || strings.EqualFold(upper, e.ada.Email),
+					"the variant must not equal any user's email")
+
+				return e.rename(ctx, e.ada.Version, admin.UserChange{Username: &upper})
+			},
+			assert: applied(carolNameUpper, same, true),
+		},
+		{
+			name: "Username equal to another user's email",
+			act: func(ctx context.Context, _ *testing.T, e renameEnv) (admin.User, bool, error) {
+				return e.rename(ctx, e.ada.Version, admin.UserChange{Username: str(strings.ToUpper(e.carol.Email))})
+			},
+			assert: unchanged(admin.FieldUsername, carolEmailUpper),
+		},
+		{
+			name: "Only the case changes",
+			act: func(ctx context.Context, _ *testing.T, e renameEnv) (admin.User, bool, error) {
+				return e.rename(ctx, e.ada.Version, admin.UserChange{Username: str(strings.ToUpper(e.ada.Username))})
+			},
+			assert: applied(func(_ *testing.T, e renameEnv) string { return strings.ToUpper(e.ada.Username) }, same, true),
+		},
+		{
+			name: "Stale rename",
+			act: func(ctx context.Context, t *testing.T, e renameEnv) (admin.User, bool, error) {
+				_, _, err := e.f.Users().SetActive(ctx, e.ada.ID, e.ada.Version, false)
+				require.NoError(t, err)
+
+				return e.rename(ctx, e.ada.Version, admin.UserChange{Username: str(username(t, 5))})
+			},
+			assert: func(ctx context.Context, t *testing.T, e renameEnv, _ userState, _ admin.User, renamed bool, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, admin.ErrStaleUpdate,
+					"a rename at a version a deactivation moved past must be stale (reason matched: %s)", reasonOf(err))
+				assert.False(t, renamed)
+
+				stored := mustGetUser(ctx, t, e.f, e.ada.ID)
+				assert.False(t, stored.Active, "the deactivation must stay")
+				assert.Equal(t, e.ada.Username, stored.Username, "a stale rename must not write the username")
+			},
+		},
+		{
+			name: "Username follows a new email",
+			ada: func(t *testing.T) admin.NewUser {
+				t.Helper()
+				return admin.NewUser{Username: email(t, 0), Email: email(t, 0), EmailVerifiedAt: verifiedAt}
+			},
+			act: func(ctx context.Context, t *testing.T, e renameEnv) (admin.User, bool, error) {
+				addr := email(t, 5)
+				return e.rename(ctx, e.ada.Version, admin.UserChange{Username: &addr, Email: &addr})
+			},
+			assert: func(ctx context.Context, t *testing.T, e renameEnv, before userState, got admin.User, renamed bool, err error) {
+				t.Helper()
+				addr := func(t *testing.T, _ renameEnv) string { return email(t, 5) }
+				applied(addr, addr, true)(ctx, t, e, before, got, renamed, err)
+				assert.True(t, got.EmailVerifiedAt.IsZero(),
+					"a new address never inherits the old one's verification; got %v", got.EmailVerifiedAt)
+				assert.Equal(t, before.User.Version+1, got.Version, "one change is one write: the version increases once")
+			},
+		},
+		{
+			name: "One field clashes",
+			act: func(ctx context.Context, t *testing.T, e renameEnv) (admin.User, bool, error) {
+				return e.rename(ctx, e.ada.Version, admin.UserChange{
+					Username: str(username(t, 5)), Email: str(strings.ToUpper(e.carol.Email)),
+				})
+			},
+			assert: func(ctx context.Context, t *testing.T, e renameEnv, before userState, got admin.User, renamed bool, err error) {
+				t.Helper()
+				unchanged(admin.FieldEmail, newName, carolEmailUpper)(ctx, t, e, before, got, renamed, err)
+
+				_, lerr := e.f.Loader().LoadByUsername(ctx, username(t, 5))
+				assert.ErrorIs(t, lerr, identity.ErrUserNotFound, "the free username must not have been written")
+			},
+		},
+		{
+			name: "Rename to one's own email in the same change",
+			act: func(ctx context.Context, _ *testing.T, e renameEnv) (admin.User, bool, error) {
+				return e.rename(ctx, e.ada.Version, admin.UserChange{
+					Username: str(strings.ToUpper(e.ada.Email)), Email: str(e.ada.Email),
+				})
+			},
+			assert: func(ctx context.Context, t *testing.T, e renameEnv, before userState, got admin.User, renamed bool, err error) {
+				t.Helper()
+				applied(func(_ *testing.T, e renameEnv) string { return strings.ToUpper(e.ada.Email) }, same, true)(
+					ctx, t, e, before, got, renamed, err)
+				assert.True(t, got.EmailVerifiedAt.Equal(verifiedAt),
+					"the stored address re-sent keeps its verification; got %v", got.EmailVerifiedAt)
+			},
+		},
+		{
+			name: "Username and email equal ignoring case in the same change",
+			act: func(ctx context.Context, t *testing.T, e renameEnv) (admin.User, bool, error) {
+				return e.rename(ctx, e.ada.Version, admin.UserChange{
+					Username: str(strings.ToUpper(email(t, 5))), Email: str(email(t, 5)),
+				})
+			},
+			assert: applied(func(t *testing.T, _ renameEnv) string { return strings.ToUpper(email(t, 5)) },
+				func(t *testing.T, _ renameEnv) string { return email(t, 5) }, true),
+		},
+		{
+			name: "Same username again",
+			act: func(ctx context.Context, _ *testing.T, e renameEnv) (admin.User, bool, error) {
+				return e.rename(ctx, e.ada.Version, admin.UserChange{Username: str(e.ada.Username)})
+			},
+			assert: applied(func(_ *testing.T, e renameEnv) string { return e.ada.Username }, same, false),
+		},
+		{
+			name: "No username in the update",
+			act: func(ctx context.Context, _ *testing.T, e renameEnv) (admin.User, bool, error) {
+				return e.rename(ctx, e.ada.Version, admin.UserChange{Name: str("Ada L.")})
+			},
+			assert: func(ctx context.Context, t *testing.T, e renameEnv, before userState, got admin.User, renamed bool, err error) {
+				t.Helper()
+				applied(func(_ *testing.T, e renameEnv) string { return e.ada.Username }, same, false)(
+					ctx, t, e, before, got, renamed, err)
+				assert.Equal(t, "Ada L.", got.Name, "the named field is written")
+			},
+		},
+		{
+			name: "Normalisation differs",
+			ada: func(t *testing.T) admin.NewUser {
+				t.Helper()
+				return admin.NewUser{Username: username(t, 0) + "-caf\u00e9", Email: email(t, 0), EmailVerifiedAt: verifiedAt}
+			},
+			act: func(ctx context.Context, t *testing.T, e renameEnv) (admin.User, bool, error) {
+				return e.rename(ctx, e.ada.Version, admin.UserChange{Username: str(username(t, 0) + "-cafe\u0301")})
+			},
+			assert: applied(func(t *testing.T, _ renameEnv) string { return username(t, 0) + "-cafe\u0301" }, same, true),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			f := newFixture(t)
+
+			nu := admin.NewUser{Username: username(t, 0), Name: "Ada", Email: email(t, 0), EmailVerifiedAt: verifiedAt}
+			if tc.ada != nil {
+				nu = tc.ada(t)
+			}
+
+			e := renameEnv{f: f}
+			e.ada = mustCreateUser(ctx, t, f, nu)
+			e.carol = mustCreateUser(ctx, t, f, admin.NewUser{Username: username(t, 1), Email: email(t, 1)})
+			e.carol = mustGetUser(ctx, t, f, e.carol.ID)
+			e.ada = mustGetUser(ctx, t, f, e.ada.ID)
+			before := readUserState(ctx, t, f, e.ada.ID)
+
+			got, renamed, err := tc.act(ctx, t, e)
+			tc.assert(ctx, t, e, before, got, renamed, err)
+		})
+	}
+}
+
+// runRenameThroughServiceCase checks that a rename asked of the
+// administration service reaches the store and is applied: the service over
+// the fixture's user store renames ada, returns her under the new username at
+// a higher version, and the store then holds and loads her by that username
+// alone. Every store runs it (D8).
+func runRenameThroughServiceCase(t *testing.T, newFixture Factory) {
+	t.Helper()
+	t.Parallel()
+
+	ctx := admin.WithSystemActor(t.Context(), "admintest")
+	f := newFixture(t)
+
+	users, err := admin.NewUsers(f.Users())
+	require.NoError(t, err, "the service must accept the fixture's user store")
+
+	ada := mustCreateUser(ctx, t, f, admin.NewUser{Username: username(t, 0), Name: "Ada", Email: email(t, 0)})
+	newName := username(t, 5)
+
+	got, err := users.Update(ctx, ada.ID, ada.Version, admin.UserChange{Username: &newName})
+	require.NoError(t, err, "the service must rename through the store (reason matched: %s)", reasonOf(err))
+	assert.Equal(t, newName, got.Username, "Update must return the renamed user")
+	assert.Greater(t, got.Version, ada.Version, "a rename increases the version")
+
+	stored := mustGetUser(ctx, t, f, ada.ID)
+	assert.Equal(t, newName, stored.Username, "the store must hold the new username")
+	assert.Equal(t, ada.Email, stored.Email, "a rename leaves the email as it was")
+
+	_, err = f.Loader().LoadByUsername(ctx, ada.Username)
+	assert.ErrorIs(t, err, identity.ErrUserNotFound, "the old username must name no live user")
+
+	d, err := f.Loader().LoadByUsername(ctx, newName)
+	require.NoError(t, err, "the renamed user must load by the new username")
+	assert.Equal(t, ada.ID, d.ID)
+}
+
+// pagerSkip is the message the offset and count cases skip with on a store
+// that does not implement admin.UserPager (D14).
+const pagerSkip = "admintest: the store does not implement admin.UserPager; offset and count cases skipped"
+
+// runPagerCases checks admin.UserPager: an offset listing gives the users of
+// the cursor listing, in its order, from the offset on, and a count gives how
+// many live users the same filters match. A store that does not implement
+// admin.UserPager skips these cases (D14).
+func runPagerCases(t *testing.T, newFixture Factory) {
+	t.Helper()
+
+	if _, ok := newFixture(t).Users().(admin.UserPager); !ok {
+		t.Skip(pagerSkip)
+	}
+
+	t.Run("Jump to a page", func(t *testing.T) { runJumpToPageCase(t, newFixture) })
+	t.Run("Consecutive offsets cover every user once, in order", func(t *testing.T) {
+		runConsecutiveOffsetsCase(t, newFixture)
+	})
+	t.Run("Offset past the end", func(t *testing.T) { runOffsetPastEndCase(t, newFixture) })
+	t.Run("Offset and count honour the filters", func(t *testing.T) { runPagerFilterCases(t, newFixture) })
+	t.Run("Count beside a page", func(t *testing.T) { runCountBesidePageCase(t, newFixture) })
+	t.Run("Deleted users are not counted", func(t *testing.T) { runDeletedNotCountedCase(t, newFixture) })
+	t.Run("Library stores", func(t *testing.T) { runPagerThroughServiceCase(t, newFixture) })
+}
+
+// pagerOf returns the fixture's user store as an admin.UserPager.
+func pagerOf(t *testing.T, f Fixture) admin.UserPager {
+	t.Helper()
+
+	p, ok := f.Users().(admin.UserPager)
+	require.True(t, ok, "the fixture's user store stopped implementing admin.UserPager between fixtures")
+
+	return p
+}
+
+// seedPagerUsers creates n users whose usernames hold key and mix case and
+// scripts, so a store whose offset order differs from its cursor order
+// (lower(username), id) lists them differently.
+func seedPagerUsers(ctx context.Context, t *testing.T, f Fixture, key string, n int) {
+	t.Helper()
+
+	stems := []string{"Émile", "éclair", "Zed", "alpha", "ÖSTER", "beta", "Ärger", "zulu", "ÉTÉ", "Mañana"}
+	for i := range n {
+		mustCreateUser(ctx, t, f, admin.NewUser{Username: stems[i%len(stems)] + "-" + key + "-" + itoa3(i)})
+	}
+}
+
+// listAll lists every user matching q in one page of 500, by cursor listing.
+func listAll(ctx context.Context, t *testing.T, f Fixture, q admin.UserQuery) []admin.User {
+	t.Helper()
+
+	q.Limit = 500
+	all, err := f.Users().ListUsers(ctx, q)
+	require.NoError(t, err)
+
+	return all
+}
+
+// runJumpToPageCase checks that offset 100 at page size 50 over 120 users
+// gives exactly the third cursor page, in order.
+func runJumpToPageCase(t *testing.T, newFixture Factory) {
+	t.Helper()
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newFixture(t)
+	key := tag(t)
+	seedPagerUsers(ctx, t, f, key, 120)
+
+	paged, sizes := pageAll(ctx, t, f, admin.UserQuery{Search: key, Limit: 50}, 4)
+	require.Equal(t, []int{50, 50, 20}, sizes, "the cursor listing pages 120 users as 50, 50 and 20")
+
+	got, err := pagerOf(t, f).ListUsersFrom(ctx, admin.UserQuery{Search: key, Limit: 50}, 100)
+	require.NoError(t, err)
+	assert.Equal(t, userIDs(paged[100:]), userIDs(got), "offset 100 must give the third cursor page, in order")
+}
+
+// runConsecutiveOffsetsCase checks that offsets 0, 7, 57 and 107 at page size
+// 50, one of them not a multiple of the page size, give 7, 50, 50 and 13
+// users that together are the cursor listing, each once, in its order.
+func runConsecutiveOffsetsCase(t *testing.T, newFixture Factory) {
+	t.Helper()
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newFixture(t)
+	key := tag(t)
+	seedPagerUsers(ctx, t, f, key, 120)
+
+	all := listAll(ctx, t, f, admin.UserQuery{Search: key})
+	require.Len(t, all, 120, "one large page lists every matching user")
+
+	pager := pagerOf(t, f)
+	spans := []struct{ offset, limit int }{{0, 7}, {7, 50}, {57, 50}, {107, 50}}
+
+	var (
+		joined []admin.User
+		sizes  []int
+	)
+
+	for _, s := range spans {
+		page, err := pager.ListUsersFrom(ctx, admin.UserQuery{Search: key, Limit: s.limit}, s.offset)
+		require.NoError(t, err, "offset %d", s.offset)
+
+		sizes = append(sizes, len(page))
+		joined = append(joined, page...)
+	}
+
+	assert.Equal(t, []int{7, 50, 50, 13}, sizes, "120 users from offsets 0, 7, 57 and 107")
+	assert.Equal(t, userIDs(all), userIDs(joined),
+		"consecutive offsets must give every user exactly once, in the order of the cursor listing")
+}
+
+// runOffsetPastEndCase checks that an offset at or past the last match is an
+// empty result and no error.
+func runOffsetPastEndCase(t *testing.T, newFixture Factory) {
+	t.Helper()
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newFixture(t)
+	key := tag(t)
+	seedPagerUsers(ctx, t, f, key, 3)
+
+	for _, offset := range []int{3, 500} {
+		got, err := pagerOf(t, f).ListUsersFrom(ctx, admin.UserQuery{Search: key, Limit: 50}, offset)
+		require.NoError(t, err, "offset %d past the end is not an error", offset)
+		assert.Empty(t, got, "offset %d past the end lists no user", offset)
+	}
+}
+
+// runPagerFilterCases checks that the offset listing and the count apply the
+// search, active, role and attribute filters as the cursor listing does. The
+// role filter needs the role ports, so it is skipped when the fixture has
+// none (RunUserSuite alone).
+func runPagerFilterCases(t *testing.T, newFixture Factory) {
+	t.Helper()
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newFixture(t)
+	key := tag(t)
+	attr := "job_title-" + key
+	withRoles := f.Roles() != nil && f.Assignments() != nil
+
+	role := ""
+	if withRoles {
+		role = roleName(t, "sales")
+		mustCreateRole(ctx, t, f, role)
+	}
+
+	ids := seedListUsers(ctx, t, f, role, []listSeed{
+		{attrs: map[string]string{attr: "Manager"}, active: true, role: withRoles}, // 0
+		{attrs: map[string]string{attr: "Manager"}},                                // 1: inactive
+		{attrs: map[string]string{attr: "Other"}, active: true},                    // 2
+		{active: true, role: withRoles},                                            // 3
+		{attrs: map[string]string{attr: "Manager"}, active: true},                  // 4
+	})
+
+	// Users 0 and 2 also carry a display name the search case looks for.
+	needle := "Zebra-" + key
+	for _, i := range []int{0, 2} {
+		u := mustGetUser(ctx, t, f, ids[i])
+		_, _, err := f.Users().UpdateUser(ctx, u.ID, u.Version, admin.UserChange{Name: &needle})
+		require.NoError(t, err)
+	}
+
+	yes, no := true, false
+
+	type testCase struct {
+		name      string
+		query     admin.UserQuery
+		needRoles bool
+		assert    func(t *testing.T, all, fromOne []admin.User, count int64)
+	}
+
+	matches := func(want ...int) func(t *testing.T, all, fromOne []admin.User, count int64) {
+		return func(t *testing.T, all, fromOne []admin.User, count int64) {
+			t.Helper()
+
+			wantIDs := make([]identity.UserID, 0, len(want))
+			for _, i := range want {
+				wantIDs = append(wantIDs, ids[i])
+			}
+
+			require.ElementsMatch(t, wantIDs, userIDs(all), "the cursor listing applies the filter")
+			assert.Equal(t, userIDs(all[1:]), userIDs(fromOne),
+				"offset 1 must give the cursor listing's users after the first, in its order")
+			assert.Equal(t, int64(len(want)), count, "the count must match the filtered users")
+		}
+	}
+
+	cases := []testCase{
+		{name: "search", query: admin.UserQuery{Search: strings.ToUpper(needle)}, assert: matches(0, 2)},
+		{name: "active", query: admin.UserQuery{Search: key, Active: &no}, assert: matches(1)},
+		{name: "role", query: admin.UserQuery{Role: role}, needRoles: true, assert: matches(0, 3)},
+		{
+			name:   "attribute",
+			query:  admin.UserQuery{Attribute: &admin.AttributeMatch{Name: attr, Value: "Manager"}},
+			assert: matches(0, 1, 4),
+		},
+		{
+			name:   "attribute and active",
+			query:  admin.UserQuery{Active: &yes, Attribute: &admin.AttributeMatch{Name: attr, Value: "Manager"}},
+			assert: matches(0, 4),
+		},
+	}
+
+	pager := pagerOf(t, f)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.needRoles && !withRoles {
+				t.Skip("admintest: the fixture has no role ports; the role filter is checked by RunRoleSuite's fixtures")
+			}
+
+			all := listAll(ctx, t, f, tc.query)
+
+			q := tc.query
+			q.Limit = 500
+			fromOne, err := pager.ListUsersFrom(ctx, q, 1)
+			require.NoError(t, err)
+
+			// The count gets the filters only, as admin.Users.Count sends them.
+			count, err := pager.CountUsers(ctx, tc.query)
+			require.NoError(t, err)
+
+			tc.assert(t, all, fromOne, count)
+		})
+	}
+}
+
+// runCountBesidePageCase checks that 999 matching users count 999, whether
+// the query names a page size or not: CountUsers ignores the limit.
+func runCountBesidePageCase(t *testing.T, newFixture Factory) {
+	t.Helper()
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newFixture(t)
+	key := tag(t)
+
+	for i := range 999 {
+		mustCreateUser(ctx, t, f, admin.NewUser{Username: "c-" + key + "-" + strconv.Itoa(i)})
+	}
+
+	pager := pagerOf(t, f)
+
+	for _, limit := range []int{0, 50} {
+		n, err := pager.CountUsers(ctx, admin.UserQuery{Search: key, Limit: limit})
+		require.NoError(t, err)
+		assert.Equal(t, int64(999), n, "999 matching users count 999 (limit %d)", limit)
+	}
+}
+
+// runDeletedNotCountedCase checks that a soft-deleted user is neither counted
+// nor listed from an offset. The users are matched by a username search,
+// because deletion releases the email but keeps the username.
+func runDeletedNotCountedCase(t *testing.T, newFixture Factory) {
+	t.Helper()
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newFixture(t)
+
+	var users []admin.User
+	for i := range 3 {
+		users = append(users, mustCreateUser(ctx, t, f, admin.NewUser{Username: username(t, i)}))
+	}
+
+	require.NoError(t, f.Users().DeleteUser(ctx, users[1].ID, users[1].Version))
+
+	pager := pagerOf(t, f)
+	q := admin.UserQuery{Search: "u-" + tag(t) + "-"}
+
+	n, err := pager.CountUsers(ctx, q)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), n, "a deleted user is not counted")
+
+	q.Limit = 50
+	got, err := pager.ListUsersFrom(ctx, q, 0)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []identity.UserID{users[0].ID, users[2].ID}, userIDs(got),
+		"a deleted user is not listed from an offset")
+}
+
+// runPagerThroughServiceCase checks that the administration service lists
+// from an offset and counts through the fixture's store: with 120 users,
+// List from offset 50 gives 50 users, those of the cursor listing from the
+// 51st, and Count gives 120.
+func runPagerThroughServiceCase(t *testing.T, newFixture Factory) {
+	t.Helper()
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newFixture(t)
+	key := tag(t)
+	seedPagerUsers(ctx, t, f, key, 120)
+
+	all := listAll(ctx, t, f, admin.UserQuery{Search: key})
+	require.Len(t, all, 120, "one large page lists every matching user")
+
+	users, err := admin.NewUsers(f.Users())
+	require.NoError(t, err, "the service must accept the fixture's user store")
+
+	page, err := users.List(ctx, admin.UserFilter{Search: key, Offset: 50, PageSize: 50})
+	require.NoError(t, err, "the service must list from an offset (reason matched: %s)", reasonOf(err))
+	assert.Equal(t, userIDs(all[50:100]), userIDs(page.Users), "offset 50 gives the users from the 51st, in order")
+	assert.Empty(t, page.Next, "a page from a non-zero offset carries no cursor")
+
+	n, err := users.Count(ctx, admin.UserFilter{Search: key, Offset: 50, PageSize: 50})
+	require.NoError(t, err, "the service must count (reason matched: %s)", reasonOf(err))
+	assert.Equal(t, int64(120), n, "the service counts every matching user")
 }

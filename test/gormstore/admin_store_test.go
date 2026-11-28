@@ -89,7 +89,7 @@ func TestAdminUnknownOrganization(t *testing.T) {
 			write: func(ctx context.Context, org *identity.Organization) error {
 				u := newAdminUser(ctx, t, store, "")
 				ref := org
-				_, err := store.UpdateUser(ctx, u.ID, u.Version, admin.UserChange{Organization: &ref})
+				_, _, err := store.UpdateUser(ctx, u.ID, u.Version, admin.UserChange{Organization: &ref})
 
 				return err
 			},
@@ -184,7 +184,7 @@ func TestAdminAmbientTransaction(t *testing.T) {
 
 			done := make(chan error, 1)
 			go func() {
-				_, err := store.UpdateUser(ctx, first.ID, first.Version, admin.UserChange{Email: &email})
+				_, _, err := store.UpdateUser(ctx, first.ID, first.Version, admin.UserChange{Email: &email})
 				done <- err
 			}()
 			waitForLockWait(t, d)
@@ -231,7 +231,7 @@ func TestAdminRacedUniqueViolation(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := store.UpdateUser(ctx, victim.ID, victim.Version, admin.UserChange{Email: &email})
+		_, _, err := store.UpdateUser(ctx, victim.ID, victim.Version, admin.UserChange{Email: &email})
 		done <- err
 	}()
 	waitForLockWait(t, d)
@@ -272,7 +272,7 @@ func TestAdminCancelledMidWrite(t *testing.T) {
 	name := "changed"
 	done := make(chan error, 1)
 	go func() {
-		_, err := store.UpdateUser(cctx, u.ID, u.Version, admin.UserChange{Name: &name})
+		_, _, err := store.UpdateUser(cctx, u.ID, u.Version, admin.UserChange{Name: &name})
 		done <- err
 	}()
 	waitForLockWait(t, d)

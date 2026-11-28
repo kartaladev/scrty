@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/porterr"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -38,11 +39,9 @@ var errListingAnsweredNotFound = errors.New("session: the store answered a listi
 // identifier it held would stop answering when the sign-in renews.
 //
 // It is one read of the store, and that is the whole of its effect: the store's
-// FamilyReader when it has one, and otherwise Store.ListByUser, the default,
-// which a consumer's own store needs nothing more to answer. Either way it
-// records no presentation, judges nothing, revokes nothing, reports nothing and
-// opens no sealed field, so it answers under a sealing store whose key was
-// retired. That is what sets it apart from Load. Load is a presentation
+// Store.ListByFamily, never the user's listing. It records no presentation,
+// judges nothing, revokes nothing, reports nothing and opens no sealed field,
+// so it answers under a sealing store whose key was retired. That is what sets it apart from Load. Load is a presentation
 // of an identifier: it marks a first use, and past a renewal's grace window it
 // revokes the family as reuse, so an observer reloading through Load would sign
 // its user out and raise a false theft alarm. For the same reason a family that
@@ -67,18 +66,16 @@ var errListingAnsweredNotFound = errors.New("session: the store answered a listi
 // ErrListUnavailable, the store's error reachable through errors.Is and errors.As
 // behind that fixed text. A failure caused by ctx ending first, a caller that
 // hung up or a read that timed out, is returned matching ctx's error instead, and
-// not ErrListUnavailable. A listing has no "not found" of its own, since no match
-// is an empty result (see Store.ListByUser), so a store failing with ErrNotFound
+// not ErrListUnavailable. A family read has no "not found" of its own, since no
+// match is an empty result (see Store.ListByFamily), so a store failing with ErrNotFound
 // is a failure too, and comes back as ErrListUnavailable without it.
 //
 // Two limits follow from what the store reads. Neither read shows a superseded
 // session, so where a successor dies before its predecessor, under a successor
 // lifetime shorter than the grace window or idle timeout, the answer is
 // ErrNotFound while the predecessor can still load or renew. And a store fails a
-// read it cannot answer in full. Over a FamilyReader, one unreadable session
-// fails only a read of its own family, ended or not, until the row is repaired.
-// Over the default it fails this read for all of that user's sign-ins, ended
-// ones included.
+// read it cannot answer in full: one unreadable session fails a read of its own
+// family, ended or not, until the row is repaired, and only that family's.
 //
 // The answer says only that the sign-in is live. It does not say the sign-in has
 // finished what it owes, such as a second factor (see ListSignIns), or that its
@@ -89,7 +86,8 @@ func (m *Sessions) SignInState(ctx context.Context, user identity.UserID, family
 	}
 
 	now := m.clock.Now()
-	listed, err := readFamily(ctx, m.logger, m.store, user, family, now)
+	listed, err := m.store.ListByFamily(ctx, user, family, now)
+	err = porterr.SanitizeTo(ctx, m.logger, err, ErrListUnavailable)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			err = errListingAnsweredNotFound

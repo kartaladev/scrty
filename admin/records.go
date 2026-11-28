@@ -65,12 +65,29 @@ type UserFilter struct {
 	PageSize int
 	// Cursor continues a list from the Next of the previous page.
 	Cursor string
+	// Offset is the number of users to skip before the page; zero, the
+	// default, is the first page. It is the alternative to Cursor, and naming
+	// both is ErrInvalidInput, as is a negative offset or one above the
+	// service's maximum (DefaultMaxListOffset, WithMaxListOffset). A non-zero
+	// offset needs a store that implements UserPager; over one that does not,
+	// List fails with an error matching ErrConfig.
+	//
+	// Offset paging lets a caller jump to page n, at a cost: the store reads
+	// and discards the skipped users, and users created or deleted between two
+	// requests make a later page skip or repeat a user. A Cursor continues
+	// after the last user seen and is the consistent way to walk a whole list;
+	// use Offset for a page picker, not for an export.
+	Offset int
 }
 
 // UserPage is one page of a list.
 type UserPage struct {
 	Users []User
-	// Next continues the list. It is empty when the page was not full.
+	// Next continues the list by cursor. It is empty when the page was not
+	// full, and always for a page listed from a non-zero offset, which has no
+	// cursor to continue: a caller that wants the next offset page adds the
+	// page size to the offset. A page from offset zero is the first page of the
+	// default listing and carries Next as usual.
 	// It is opaque, not signed: a caller that edits one only moves where a list starts, in a list
 	// it may already read in full, so it grants nothing and is not an access token.
 	Next string
@@ -78,8 +95,33 @@ type UserPage struct {
 
 // UserChange names the fields an update changes; a nil field is unchanged.
 type UserChange struct {
-	Name  *string
-	Email *string
+	// Username renames the user when non-nil. Nil, the default, leaves it
+	// unchanged. It is validated as NewUser.Username is (not blank, no leading
+	// or trailing white space, valid UTF-8 without control characters, at most
+	// MaxTextBytes), and the store refuses one another user holds as
+	// UserStore.CreateUser does. A change naming only a username is a change.
+	//
+	// UserStore.UpdateUser writes it and reports whether the stored username
+	// differed, byte for byte. Re-sending the current username is a write
+	// that renames nothing.
+	//
+	// What a rename leaves behind:
+	//   - Sessions are keyed by the user identifier and survive a rename,
+	//     unless WithSessionRevocation is given.
+	//   - Lockout state (failure counts and holds) is keyed by the username
+	//     and stays under the old one. The renamed account starts clean. The
+	//     next holder of the old username inherits what it carries: counts
+	//     age out of their window, but a hold never expires. An administrator
+	//     who renames a user should call the lockout policy's Reset with the
+	//     old username to release it.
+	//   - The standalone JWTAuthenticator in username-subject mode keeps
+	//     accepting tokens naming the old username until they expire, and once
+	//     another user takes that username they name that user. Consumers of
+	//     that mode keep token lifetimes short or do not reuse released
+	//     usernames.
+	Username *string
+	Name     *string
+	Email    *string
 	// EmailVerifiedAt is set when non-nil; a pointer to the zero time clears it.
 	// When Email is named and EmailVerifiedAt is nil, the store keeps the
 	// stored verification time if Email equals the stored email ignoring case,
@@ -98,7 +140,9 @@ type UserChange struct {
 // UserQuery is a UserFilter the service has validated: the page size is the
 // bounded Limit and the cursor is decoded into the last pair of the previous
 // page. A store lists users ordered by (lower(username), id), strictly after
-// (AfterUsername, AfterID) when AfterUsername is not empty.
+// (AfterUsername, AfterID) when AfterUsername is not empty. UserPager's
+// CountUsers receives a query holding the filters only: Limit and the After
+// fields are zero, and a store ignores them.
 type UserQuery struct {
 	// Search is literal text matched as a substring of the username, the
 	// display name and the email, ignoring case; a store escapes its own

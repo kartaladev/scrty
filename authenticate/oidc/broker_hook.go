@@ -60,15 +60,12 @@ type SignInDecision struct {
 	// this provider or any other. A user that another identity's link names
 	// is refused as ErrNoLinkedAccount, whether or not it exists yet, since
 	// provisioning would give this identity access to what that identity
-	// reaches. A link store that implements LinkLister is checked before
-	// anything is written, and, when it also implements LinkRemover, again
-	// after this sign-in's own link is inserted: of two identities racing to
-	// provision one reference, a sign-in that then finds the other's link
-	// removes its own and is refused, so at most one keeps a link (both may
-	// be refused; the next sign-in succeeds). A store that does not
-	// (possible only under WithBrokerSignInHookAllowManyLinks) is not
-	// checked, or not re-checked, so a hook there must choose references
-	// that are fresh. Freshness is checked on a first provisioning, and
+	// reaches. The link store is checked before
+	// anything is written, and again after this sign-in's own link is
+	// inserted: of two identities racing to provision one reference, a
+	// sign-in that then finds the other's link removes its own and is
+	// refused, so at most one keeps a link (both may be refused; the next
+	// sign-in succeeds). Freshness is checked on a first provisioning, and
 	// on a resume only while the user does not load: once the identity's own
 	// link names the reference, provisioning it again resumes, and when the
 	// user exists a link another identity gained to it since, such as another
@@ -197,10 +194,7 @@ type SignInHook func(ctx context.Context, ext ExternalIdentity, up Upstream, lin
 // WithBrokerNameClaim, WithBrokerPasswordClaim, WithBrokerRoleClaim,
 // WithBrokerRoleMapping, WithBrokerAllowedRoles,
 // WithBrokerJITAllowUnverifiedEmail or WithBrokerJITEmailDomains also names,
-// since the hooked login never applies them; and a hook over a link store that
-// does not implement both LinkLister and LinkRemover, which the
-// one-link-per-user rule needs, unless WithBrokerSignInHookAllowManyLinks
-// lifts that rule for provider. A
+// since the hooked login never applies them. A
 // provider the relying party's registry does not hold is refused by
 // NewRelyingParty.
 func WithBrokerSignInHook(provider string, hook SignInHook) BrokerOption {
@@ -222,9 +216,7 @@ func WithBrokerSignInHook(provider string, hook SignInHook) BrokerOption {
 
 // WithBrokerSignInHookAllowManyLinks lets provider's sign-in hook link one
 // user to more than one identity of the same provider and issuer. The default
-// refuses a decision that would give a user a second such link. Allowing many
-// links also removes the hook's need for a link store that implements
-// LinkLister and LinkRemover. Identities of other providers and issuers never
+// refuses a decision that would give a user a second such link. Identities of other providers and issuers never
 // count against the rule. Switching it off again, by omitting this option,
 // refuses every user who already holds several links from one provider and
 // issuer, through any of them, until the extra links are removed. An empty provider, or one with no
@@ -247,8 +239,6 @@ func WithBrokerSignInHookAllowManyLinks(provider string) BrokerOption {
 // store cannot enforce, or an allowance for a provider with no hook. Providers
 // are checked in the order options named them, so the error is stable.
 func (b *Broker) checkSignInHooks() error {
-	_, lists := b.links.(LinkLister)
-	_, removes := b.links.(LinkRemover)
 	for _, p := range b.providers {
 		if _, hooked := b.hooks[p]; !hooked {
 			if b.hookManyLinks[p] {
@@ -273,17 +263,6 @@ func (b *Broker) checkSignInHooks() error {
 		if unapplied := b.unappliedOption(p); unapplied != "" {
 			return fmt.Errorf("%w: %s names provider %q, whose WithBrokerSignInHook login never applies it",
 				ErrConfig, unapplied, p)
-		}
-		if b.hookManyLinks[p] {
-			continue
-		}
-		if !lists {
-			return fmt.Errorf("%w: WithBrokerSignInHook for provider %q needs a link store with ListByUser (LinkLister) "+
-				"to keep one link per user, or WithBrokerSignInHookAllowManyLinks(%q)", ErrConfig, p, p)
-		}
-		if !removes {
-			return fmt.Errorf("%w: WithBrokerSignInHook for provider %q needs a link store with DeleteLink (LinkRemover) "+
-				"to keep one link per user, or WithBrokerSignInHookAllowManyLinks(%q)", ErrConfig, p, p)
 		}
 	}
 	return nil
@@ -504,15 +483,8 @@ func (b *Broker) acceptDecision(ctx context.Context, ext ExternalIdentity, up Up
 //
 // listed reports that the links were listed and none of ext's provider and
 // issuer but its own was found, so the one-link check need not list again.
-// A store that cannot list skips the check, unchecked (F52): that wiring is
-// possible only with WithBrokerSignInHookAllowManyLinks, and the one-link
-// rule's own check is not made either.
 func (b *Broker) checkFresh(ctx context.Context, ext ExternalIdentity, user identity.UserID, values identifying) (listed bool, err error) {
-	lister, ok := b.links.(LinkLister)
-	if !ok {
-		return false, nil
-	}
-	links, err := lister.ListByUser(ctx, user)
+	links, err := b.links.ListByUser(ctx, user)
 	err = porterr.SanitizeTo(ctx, b.log, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return false, fmt.Errorf("oidc: listing the user to provision's links: %w", redact(err, values))
@@ -583,10 +555,7 @@ func (b *Broker) checkProvisioned(ctx context.Context, ext ExternalIdentity, use
 // its own insert each re-lists the reference's links, and one that finds a
 // link of another identity removes its own and is refused. Of two such
 // sign-ins at most one keeps its link; both may be refused. The re-check is a
-// superset of the one-link re-check, which it replaces. It needs a store that
-// both lists and removes links; over one that does not (possible only under
-// WithBrokerSignInHookAllowManyLinks) it is skipped, accepted under F52, and
-// the hook's references must be fresh values.
+// superset of the one-link re-check, which it replaces.
 func (b *Broker) linkDecided(ctx context.Context, ext ExternalIdentity, user identity.UserID, username string,
 	provision, listed bool, values identifying,
 ) (*Link, error) {
@@ -620,7 +589,7 @@ func (b *Broker) linkDecided(ctx context.Context, ext ExternalIdentity, user ide
 	// ErrLinkExists re-read belongs to the login that inserted it, which
 	// re-checks it itself.
 	switch {
-	case provision && b.canRecheckFresh():
+	case provision:
 		if _, err := b.checkFresh(ctx, ext, user, values); err != nil {
 			return nil, b.undoLink(ctx, link, values, err)
 		}
@@ -630,15 +599,6 @@ func (b *Broker) linkDecided(ctx context.Context, ext ExternalIdentity, user ide
 		}
 	}
 	return &link, nil
-}
-
-// canRecheckFresh reports whether the link store can both list a user's links
-// and remove one, which re-checking a provisioned reference after the insert
-// needs (F52).
-func (b *Broker) canRecheckFresh() bool {
-	_, lists := b.links.(LinkLister)
-	_, removes := b.links.(LinkRemover)
-	return lists && removes
 }
 
 // rereadLink reads the link of ext after an insert found it already linked,
@@ -678,12 +638,7 @@ func (b *Broker) rereadLink(ctx context.Context, ext ExternalIdentity, user iden
 // ext's provider and issuer for another subject (D11). A listing fault is a
 // broker failure.
 func (b *Broker) checkOneLink(ctx context.Context, ext ExternalIdentity, user identity.UserID, values identifying) error {
-	lister, ok := b.links.(LinkLister)
-	if !ok {
-		// NewBroker refuses this wiring; reaching it is a defect, refused.
-		return errNoLinkLister
-	}
-	links, err := lister.ListByUser(ctx, user)
+	links, err := b.links.ListByUser(ctx, user)
 	err = porterr.SanitizeTo(ctx, b.log, err, porterr.ErrUnwalkable)
 	if err != nil {
 		return fmt.Errorf("oidc: listing the decided user's links: %w", redact(err, values))
@@ -716,14 +671,9 @@ const linkUndoTimeout = 5 * time.Second
 // linkUndoTimeout: a client that disconnects just after the insert must not
 // leave the duplicate behind.
 func (b *Broker) undoLink(ctx context.Context, link Link, values identifying, cause error) error {
-	remover, ok := b.links.(LinkRemover)
-	if !ok {
-		// NewBroker refuses this wiring; reaching it is a defect, refused.
-		return errNoLinkRemover
-	}
 	undoCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), linkUndoTimeout)
 	defer cancel()
-	_, err := remover.DeleteLink(undoCtx, link)
+	_, err := b.links.DeleteLink(undoCtx, link)
 	err = porterr.SanitizeTo(undoCtx, b.log, err, porterr.ErrUnwalkable)
 	if err != nil {
 		b.log.LogAttrs(ctx, slog.LevelError,
@@ -796,14 +746,6 @@ func (b *Broker) loadDecided(ctx context.Context, ext ExternalIdentity, user ide
 // insert as already linked, then returned neither a link nor an error for the
 // identity.
 var errLinkNilFound = errors.New("oidc: the link store reported the identity linked, then returned no link and no error")
-
-// errNoLinkLister and errNoLinkRemover are the broker failures of a one-link
-// check over a store that cannot list or remove one link, which NewBroker
-// refuses; they are reached only if that check is bypassed.
-var (
-	errNoLinkLister  = errors.New("oidc: the link store cannot list a user's links")
-	errNoLinkRemover = errors.New("oidc: the link store cannot remove one link")
-)
 
 // errProvisionWithoutApply is the broker failure of a provisioning decision
 // with no apply step to create its user (F33). Nothing is written.

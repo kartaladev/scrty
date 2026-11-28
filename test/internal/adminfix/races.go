@@ -219,3 +219,50 @@ func runRetireThenSetPassword(t *testing.T, h Harness) {
 	require.NoError(t, err)
 	assert.Equal(t, []byte("$hash-a"), hash, "caller A's password is the one stored")
 }
+
+// racingRenameRounds is how many times runRacingRename releases its pair.
+const racingRenameRounds = 50
+
+// runRacingRename checks that a rename and an email update claiming one value
+// serialise on the identifier lock (D2): a rename of ada to x@example.com and
+// an email update of bob to x@example.com, released together, never both
+// succeed, since no unique index spans a username and an email. Exactly one
+// succeeds, as nobody else holds the value, and the other is refused naming
+// its own field.
+func runRacingRename(t *testing.T, h Harness) {
+	t.Parallel()
+
+	for round := range racingRenameRounds {
+		value := uniq("x") + "@example.com"
+		ada := create(t, h, admin.NewUser{Username: uniq("ada")})
+		bob := create(t, h, admin.NewUser{Username: uniq("bob")})
+
+		// A bounded round: a stuck lock fails the round rather than hanging
+		// the run until the test timeout.
+		ctx, cancel := context.WithTimeout(t.Context(), importQueueBound)
+
+		errs := race(2, func(i int) error {
+			if i == 0 {
+				_, _, err := h.Users.UpdateUser(ctx, ada.ID, ada.Version, admin.UserChange{Username: &value})
+				return err
+			}
+			_, _, err := h.Users.UpdateUser(ctx, bob.ID, bob.Version, admin.UserChange{Email: &value})
+			return err
+		})
+
+		cancel()
+
+		fields := [2]string{admin.FieldUsername, admin.FieldEmail}
+		ok := 0
+		for i, err := range errs {
+			if err == nil {
+				ok++
+				continue
+			}
+			requireExists(t, err, fields[i])
+			noValues(t, err, value)
+		}
+		require.Equal(t, 1, ok, "round %d: a rename and an email update claiming one value must not both "+
+			"succeed, nor both fail when nobody else holds it", round)
+	}
+}

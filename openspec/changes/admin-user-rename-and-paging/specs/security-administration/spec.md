@@ -59,11 +59,11 @@ A committed rename SHALL emit one user-updated event naming the actor, the targe
 Import SHALL keep matching users by identifier and writing the given username, with the rules it has today. A rename through an update SHALL NOT change how a later import of the same identifier behaves.
 
 #### Scenario: Import after a rename
-- **WHEN** `ada` is renamed through an update to `ada.lovelace` and her identifier is then imported with the username `ada.lovelace` and otherwise equal values
+- **WHEN** `ada` is renamed through an update to `ada.lovelace` and her identifier is then imported with the username `ada.lovelace` and every other value equal to what is stored for her
 - **THEN** the import reports unchanged and emits no event
 
 ### Requirement: A rename can end the user's sessions when the consumer opts in
-By default a rename SHALL end no session. With a session revoker configured, a committed update that changed the stored username SHALL then revoke every session of the user; any other update SHALL revoke nothing. A failed revocation SHALL return the updated user with an error matching the sessions-not-revoked error and its cause, the update committed and its event emitted. A nil revoker, or one given over a store that cannot change usernames, SHALL fail construction.
+By default a rename SHALL end no session. With a session revoker configured, a committed update that changed the stored username SHALL then revoke every session of the user; any other update SHALL revoke nothing. A failed revocation SHALL return the updated user with an error matching the sessions-not-revoked error and its cause, the update committed and its event emitted. A nil revoker SHALL fail construction.
 
 #### Scenario: Default
 - **WHEN** `ada`, signed in with a live session, is renamed to `ada.lovelace` by a service configured with defaults
@@ -76,6 +76,10 @@ By default a rename SHALL end no session. With a session revoker configured, a c
 #### Scenario: No username in the update
 - **WHEN** the service is configured with a session revoker and an update changes only `ada`'s display name
 - **THEN** the revoker is not called and her sessions still load
+
+#### Scenario: Store reports a rename for an update naming no username
+- **WHEN** the service is configured with a session revoker and its store reports a rename for an update that names no username
+- **THEN** the revoker is not called
 
 #### Scenario: Current username re-sent
 - **WHEN** the service is configured with a session revoker and `ada` is updated with the username `ada` and a new display name
@@ -93,32 +97,24 @@ By default a rename SHALL end no session. With a session revoker configured, a c
 - **WHEN** the service is constructed with a nil session revoker
 - **THEN** construction fails with an error matching the configuration error
 
-#### Scenario: Revoker with a store that cannot rename
-- **WHEN** the service is constructed with a session revoker over a store that does not support username changes
-- **THEN** construction fails with an error matching the configuration error
-
-### Requirement: A store that cannot change usernames refuses a rename before writing
-An update naming a username SHALL be refused with an error matching the configuration error, before the store is called, when the store does not support username changes. Every user store scrty ships SHALL support them. Updates that name no username SHALL be unaffected. The store conformance suite SHALL run its rename cases against every store that supports them, and SHALL skip them, saying why, for a store that does not.
-
-#### Scenario: Consumer store without support
-- **WHEN** a consumer store that does not support username changes is given an update renaming `ada`
-- **THEN** the call fails with an error matching the configuration error, the store's update is not called, and `ada` is unchanged
-
-#### Scenario: Other fields on the same store
-- **WHEN** the same store is given an update changing only `ada`'s display name
-- **THEN** the update succeeds
+### Requirement: Every user store applies renames
+Every user store SHALL apply a username named in an update, and SHALL report whether the stored username changed, decided under the update's row lock. The store conformance suite SHALL run its rename cases against every store.
 
 #### Scenario: Library stores
 - **WHEN** the `database/sql`, pgx and GORM user stores are each given a rename
 - **THEN** each applies it
 
-#### Scenario: Conformance suite on a store without rename support
-- **WHEN** the store conformance suite runs against a store that does not support username changes
-- **THEN** the rename cases are skipped with a message naming the capability, and the rest of the suite runs
-
-#### Scenario: Conformance suite on a store that claims but ignores renames
-- **WHEN** the store conformance suite runs against a store that claims username changes but leaves the username unchanged
+#### Scenario: Conformance suite on a store that ignores renames
+- **WHEN** the store conformance suite runs against a store that leaves the username unchanged
 - **THEN** the rename cases fail
+
+#### Scenario: Conformance suite on a store that misreports a rename
+- **WHEN** the store conformance suite runs against a store that always reports the username as unchanged
+- **THEN** the rename cases fail
+
+#### Scenario: Conformance suite on a store that reports renames it did not make
+- **WHEN** the store conformance suite runs against a store that always reports the username as changed
+- **THEN** the cases for an update naming no username, and for the current username re-sent, fail
 
 ### Requirement: Users can be listed from an offset
 Listing users SHALL accept an offset: the number of users to skip, in the list's order, before the page starts. The order SHALL match cursor listing, so consecutive offsets of an unchanged list neither overlap nor leave a gap. A non-zero offset SHALL NOT be combined with a cursor, and its page SHALL carry no cursor. An offset of zero SHALL leave the listing as it is without one. An offset past the last match SHALL give an empty page.
@@ -144,7 +140,7 @@ Listing users SHALL accept an offset: the number of users to skip, in the list's
 - **THEN** the call fails with the invalid-input error
 
 ### Requirement: Offsets are bounded
-An offset above the maximum of 10 000 SHALL be refused with the invalid-input error; an offset equal to the maximum SHALL be accepted. A consumer SHALL be able to change the maximum at construction. A maximum below zero, or a maximum given with a store that cannot list from an offset, SHALL fail construction.
+An offset above the maximum of 10 000 SHALL be refused with the invalid-input error; an offset equal to the maximum SHALL be accepted. A consumer SHALL be able to change the maximum at construction. A maximum below zero SHALL fail construction.
 
 #### Scenario: Offset beyond the maximum
 - **WHEN** a list asks for offset 10 001 from a service built with defaults
@@ -173,24 +169,28 @@ The service SHALL count the live users that match a filter's search, active, rol
 - **WHEN** 3 users match a search and one of them is soft-deleted
 - **THEN** the count is 2
 
-### Requirement: Offset listing and counting need a store that supports them
-A listing from a non-zero offset, and every count, SHALL be refused with an error matching the configuration error, after input validation and before the store is called, when the store does not support them. Cursor listing SHALL be unaffected. Every user store scrty ships SHALL support them. The store conformance suite SHALL run its offset and count cases against every store that supports them, and skip them, saying why, otherwise.
-
-#### Scenario: Consumer store without support
-- **WHEN** a consumer store without offset support is asked to list from offset 50, or to count
-- **THEN** the call fails with an error matching the configuration error and the store is not called
-
-#### Scenario: Cursor listing on the same store
-- **WHEN** the same store is asked for a cursor listing
-- **THEN** the page is returned as before
+### Requirement: Every user store lists from an offset and counts
+Every user store SHALL list users from an offset, in the order of the cursor listing, and SHALL count the live users a filter matches, by the same filters as the listing. A store SHALL refuse a negative offset, or a non-zero offset together with a cursor, with the invalid-input error. The store conformance suite SHALL run its offset and count cases against every store.
 
 #### Scenario: Library stores
 - **WHEN** the `database/sql`, pgx and GORM user stores are each asked to list from an offset and to count
 - **THEN** each answers by the same rules as the cursor listing
 
-#### Scenario: Conformance suite on a store without support
-- **WHEN** the store conformance suite runs against a store without offset support
-- **THEN** the offset and count cases are skipped with a message naming the capability, and the rest of the suite runs
+#### Scenario: Conformance suite on a store that applies the offset wrongly
+- **WHEN** the store conformance suite runs against a store that skips twice the asked offset
+- **THEN** the offset cases fail
+
+#### Scenario: Store asked for a negative offset
+- **WHEN** a user store is asked directly to list from offset -1
+- **THEN** it refuses with the invalid-input error
+
+#### Scenario: Conformance suite on a store that orders offset pages differently
+- **WHEN** the store conformance suite runs against a store whose offset listing orders users by identifier only
+- **THEN** the offset cases fail
+
+#### Scenario: Conformance suite on a store that counts deleted users
+- **WHEN** the store conformance suite runs against a store whose count includes soft-deleted users
+- **THEN** the count cases fail
 
 ## MODIFIED Requirements
 
@@ -210,7 +210,7 @@ Listing users SHALL accept a search text, an active filter, a role filter, an at
 - **THEN** three pages are returned in a stable order, and the third holds 20 users and no cursor
 
 ### Requirement: Administration errors carry one reason each
-Every administration failure the application can act on SHALL be identifiable by exactly one reason: not found, already exists (naming the field), still assigned, stale update, unknown privilege, invalid input, no actor, configuration (for a rename asked of a store that does not support username changes, and for an offset listing or a count asked of a store that does not support them), or sessions not revoked (for a committed rename whose opted-in session revocation failed). A storage failure SHALL match none of them. Error text SHALL NOT contain a username, email, attribute value or password hash.
+Every administration failure the application can act on SHALL be identifiable by exactly one reason: not found, already exists (naming the field), still assigned, stale update, unknown privilege, invalid input, no actor, or sessions not revoked (for a committed rename whose opted-in session revocation failed). A storage failure SHALL match none of them. Error text SHALL NOT contain a username, email, attribute value or password hash.
 
 #### Scenario: Storage outage
 - **WHEN** the store's connection fails during an update

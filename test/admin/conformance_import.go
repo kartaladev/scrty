@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/admin"
+	"github.com/kartaladev/scrty/authenticate/password"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 )
 
@@ -25,6 +28,7 @@ func runImportSuite(t *testing.T, newFixture Factory) {
 	t.Run("ImportTakeoverRefused", func(t *testing.T) { runImportTakeoverRefusedCases(t, newFixture) })
 	t.Run("ImportDeletedUserRefused", func(t *testing.T) { runImportDeletedUserRefusedCase(t, newFixture) })
 	t.Run("ImportIdentifierAsGiven", func(t *testing.T) { runImportIdentifierAsGivenCases(t, newFixture) })
+	t.Run("ImportAfterRename", func(t *testing.T) { runImportAfterRenameCase(t, newFixture) })
 }
 
 // importHashes are two password hashes an import stores as given.
@@ -550,4 +554,79 @@ func runImportIdentifierAsGivenCases(t *testing.T, newFixture Factory) {
 			}
 		})
 	}
+}
+
+// eventRecorder collects the events a service reports. The sink may be called
+// concurrently, so the slice is guarded.
+type eventRecorder struct {
+	mu     sync.Mutex
+	events []event.Event
+}
+
+func (r *eventRecorder) sink(_ context.Context, e event.Event) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.events = append(r.events, e)
+}
+
+func (r *eventRecorder) names() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	names := make([]string, 0, len(r.events))
+	for _, e := range r.events {
+		names = append(names, e.Name)
+	}
+
+	return names
+}
+
+// runImportAfterRenameCase checks that a rename through an update leaves
+// import matching by identifier as before: ada is imported, renamed through
+// the administration service, and her identifier then imported with the new
+// username and every other value as stored. The import reports unchanged,
+// emits no event and writes nothing.
+func runImportAfterRenameCase(t *testing.T, newFixture Factory) {
+	t.Helper()
+	t.Parallel()
+
+	ctx := admin.WithSystemActor(t.Context(), "admintest")
+	f := newFixture(t)
+
+	in := importedUser(t, 0)
+	out, err := f.Importer().ImportUser(ctx, cloneImport(in))
+	require.NoError(t, err)
+	require.Equal(t, admin.ImportCreated, out)
+
+	users, err := admin.NewUsers(f.Users())
+	require.NoError(t, err)
+
+	ada := mustGetUser(ctx, t, f, in.ID)
+	newName := username(t, 5)
+	_, err = users.Update(ctx, ada.ID, ada.Version, admin.UserChange{Username: &newName})
+	require.NoError(t, err, "the rename must succeed (reason matched: %s)", reasonOf(err))
+
+	renamed := mustGetUser(ctx, t, f, in.ID)
+	assert.Equal(t, newName, renamed.Username, "the rename must be stored before the import")
+
+	recognizer, err := password.NewBcryptEncoder()
+	require.NoError(t, err)
+
+	var rec eventRecorder
+	importer, err := admin.NewImporter(f.Importer(), recognizer, admin.WithEventSink(rec.sink))
+	require.NoError(t, err)
+
+	again := cloneImport(in)
+	again.Username = newName
+	again.UpdatedAt = renamed.UpdatedAt
+
+	out, err = importer.Import(ctx, again)
+	require.NoError(t, err, "the import after a rename must succeed (reason matched: %s)", reasonOf(err))
+	assert.Equal(t, admin.ImportUnchanged, out,
+		"an import equal to the renamed user, the new username included, changes nothing")
+	assert.Empty(t, rec.names(), "an unchanged import emits no event")
+
+	after := mustGetUser(ctx, t, f, in.ID)
+	assert.Equal(t, renamed, after, "an unchanged import writes nothing")
 }

@@ -124,6 +124,8 @@ func emptyNull(s string) any {
 	return s
 }
 
+var _ admin.UserPager = (*IdentityStore)(nil)
+
 // ListUsers implements admin.UserStore.
 func (s *IdentityStore) ListUsers(ctx context.Context, query admin.UserQuery) ([]admin.User, error) {
 	const op = "list users"
@@ -131,7 +133,7 @@ func (s *IdentityStore) ListUsers(ctx context.Context, query admin.UserQuery) ([
 	if query.Limit < 1 {
 		return nil, invalidInput(op, "the limit is below one")
 	}
-	if !storekit.Storable(query.Search, query.Role, query.AfterUsername) {
+	if !storekit.Storable(query.AfterUsername) {
 		return nil, invalidInput(op, "a filter holds text that cannot be stored")
 	}
 
@@ -142,6 +144,71 @@ func (s *IdentityStore) ListUsers(ctx context.Context, query admin.UserQuery) ([
 			return nil, invalidInput(op, "the cursor does not name a user")
 		}
 		after = uid
+	}
+
+	args, err := userFilterArgs(op, query)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.listAdminUsers(ctx, op, pgschema.ListAdminUsers,
+		append(args, query.AfterUsername, after, query.Limit)...)
+}
+
+// ListUsersFrom implements admin.UserPager: the users ListUsers lists for
+// query's filters, in its order, after skipping offset of them. A limit below
+// one, a negative offset and a cursor are refused, since an offset and a
+// cursor are alternatives.
+func (s *IdentityStore) ListUsersFrom(ctx context.Context, query admin.UserQuery, offset int) ([]admin.User, error) {
+	const op = "list users from an offset"
+
+	if query.Limit < 1 {
+		return nil, invalidInput(op, "the limit is below one")
+	}
+	if offset < 0 {
+		return nil, invalidInput(op, "the offset is below zero")
+	}
+	if query.AfterUsername != "" || query.AfterID != "" {
+		return nil, invalidInput(op, "an offset listing names no cursor")
+	}
+
+	args, err := userFilterArgs(op, query)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.listAdminUsers(ctx, op, pgschema.ListAdminUsersFrom, append(args, query.Limit, offset)...)
+}
+
+// CountUsers implements admin.UserPager: the number of live users matching
+// query's filters, the users ListUsers lists. Limit and the cursor are
+// ignored.
+func (s *IdentityStore) CountUsers(ctx context.Context, query admin.UserQuery) (int64, error) {
+	const op = "count users"
+
+	args, err := userFilterArgs(op, query)
+	if err != nil {
+		return 0, err
+	}
+
+	q, _, err := s.c.conn(ctx)
+	if err != nil {
+		return 0, failed(op, err)
+	}
+
+	var n int64
+	if err := q.QueryRow(ctx, pgschema.CountAdminUsers, args...).Scan(&n); err != nil {
+		return 0, dbFailed(op, err)
+	}
+
+	return n, nil
+}
+
+// userFilterArgs binds query's filters to the parameters $1 to $5 of
+// pgschema's user listings and count, refusing text a column cannot store.
+func userFilterArgs(op string, query admin.UserQuery) ([]any, error) {
+	if !storekit.Storable(query.Search, query.Role) {
+		return nil, invalidInput(op, "a filter holds text that cannot be stored")
 	}
 
 	var active, attrName, attrValue any
@@ -155,13 +222,18 @@ func (s *IdentityStore) ListUsers(ctx context.Context, query admin.UserQuery) ([
 		attrName, attrValue = a.Name, a.Value
 	}
 
+	return []any{pgschema.LikePattern(query.Search), active, query.Role, attrName, attrValue}, nil
+}
+
+// listAdminUsers runs a user listing statement with args and reads its users,
+// with their grants, attributes and organizations.
+func (s *IdentityStore) listAdminUsers(ctx context.Context, op, stmt string, args ...any) ([]admin.User, error) {
 	q, _, err := s.c.conn(ctx)
 	if err != nil {
 		return nil, failed(op, err)
 	}
 
-	rows, err := q.Query(ctx, pgschema.ListAdminUsers, pgschema.LikePattern(query.Search), active,
-		query.Role, attrName, attrValue, query.AfterUsername, after, query.Limit)
+	rows, err := q.Query(ctx, stmt, args...)
 	if err != nil {
 		return nil, dbFailed(op, err)
 	}
@@ -265,100 +337,195 @@ func (s *IdentityStore) CreateUser(ctx context.Context, in admin.NewUser) (admin
 	return out, nil
 }
 
-// UpdateUser implements admin.UserStore.
+// UpdateUser implements admin.UserStore. It runs in one transaction under the
+// user's row lock. The named username and a changed email are locked and
+// checked together under the rules of CreateUser; the username, when named,
+// is written alone first (pgschema.RenameAdminUser), so a unique violation
+// there is the username's, and the other fields follow with the version.
+// renamed is whether the stored username differed, byte for byte; a change
+// naming no username takes no username lock, runs no rename statement and
+// reports false.
 func (s *IdentityStore) UpdateUser(
 	ctx context.Context, ref identity.UserID, version int64, change admin.UserChange,
-) (admin.User, error) {
+) (admin.User, bool, error) {
 	const op = "update user"
 
 	uid, ok := storekit.ParseUserID(ref)
 	if !ok {
-		return admin.User{}, notFound(op)
+		return admin.User{}, false, notFound(op)
+	}
+	if change.Username != nil && *change.Username == "" {
+		return admin.User{}, false, invalidInput(op, "the change names an empty username")
+	}
+	if change.Username != nil && !storekit.Storable(*change.Username) {
+		return admin.User{}, false, invalidInput(op, "the username holds text that cannot be stored")
+	}
+
+	upd, err := prepareAdminUpdate(op, change)
+	if err != nil {
+		return admin.User{}, false, err
 	}
 
 	var (
-		columns []string
-		values  []any
+		out     admin.User
+		renamed bool
 	)
-	if change.Name != nil {
-		if !storekit.Storable(*change.Name) {
-			return admin.User{}, invalidInput(op, "the name holds text that cannot be stored")
-		}
-		columns, values = append(columns, pgschema.ColumnName), append(values, *change.Name)
-	}
-	if change.Email != nil {
-		if !storekit.Storable(*change.Email) {
-			return admin.User{}, invalidInput(op, "the email holds text that cannot be stored")
-		}
-		columns, values = append(columns, pgschema.ColumnEmail), append(values, emptyNull(*change.Email))
-		if change.EmailVerifiedAt == nil {
-			// The statement keeps the verification only for the stored
-			// address, compared under the row lock it runs in.
-			columns = append(columns, pgschema.ColumnEmailVerifiedAtIfSameEmail)
-			values = append(values, emptyNull(*change.Email))
-		}
-	}
-	if change.EmailVerifiedAt != nil {
-		columns, values = append(columns, pgschema.ColumnEmailVerifiedAt), append(values, nullTs(*change.EmailVerifiedAt))
-	}
-	var newOrg any
-	if change.Organization != nil {
-		org, err := adminOrgReference(op, *change.Organization)
-		if err != nil {
-			return admin.User{}, err
-		}
-		columns, values = append(columns, pgschema.ColumnOrganization), append(values, org)
-		newOrg = org
-	}
-	if err := checkAttributes(op, change.Attributes); err != nil {
-		return admin.User{}, err
-	}
-
-	var out admin.User
-	err := s.atomically(ctx, op, func(q DBTX) error {
+	err = s.atomically(ctx, op, func(q DBTX) error {
 		cur, err := lockAdminUser(ctx, q, op, uid, version)
 		if err != nil {
 			return err
 		}
-		if verifiesNoEmail(change, cur) {
-			return invalidInput(op, "an email verification time is set with no email to verify")
-		}
-		if err := checkOrganization(ctx, q, op, newOrg); err != nil {
+		if err := upd.check(ctx, q, op, cur); err != nil {
 			return err
 		}
 
-		now := storekit.Time(s.c.clock.Now())
-
-		if change.Email != nil && *change.Email != "" && *change.Email != cur.email.String {
-			if err := checkIdentifiers(ctx, q, op, uid, "", *change.Email); err != nil {
+		// One call, so the username and the email are locked in key order
+		// before either is checked. Neither named: nothing to lock.
+		var username string
+		if change.Username != nil {
+			username = *change.Username
+		}
+		if email := upd.changedEmail(cur); username != "" || email != "" {
+			if err := checkIdentifiers(ctx, q, op, uid, username, email); err != nil {
 				return err
 			}
 		}
 
-		query, args := pgschema.UpdateAdminUserQuery(columns, values, now, uid)
-		if _, err := q.Exec(ctx, query, args...); err != nil {
-			if isUniqueViolation(err) {
-				// The email is the only unique value this update can set.
-				return alreadyExists(op, admin.FieldEmail)
-			}
-			return dbFailed(op, err)
-		}
-
-		if change.Attributes != nil {
-			if err := replaceAttributes(ctx, q, op, uid, change.Attributes); err != nil {
+		if change.Username != nil {
+			if renamed, err = renameAdminUser(ctx, q, op, uid, username); err != nil {
 				return err
 			}
 		}
 
-		out, err = s.readAdminUser(ctx, q, op, uid)
+		out, err = s.writeAdminUpdate(ctx, q, op, uid, upd)
 
 		return err
 	})
 	if err != nil {
-		return admin.User{}, err
+		return admin.User{}, false, err
 	}
 
-	return out, nil
+	return out, renamed, nil
+}
+
+// renameAdminUser writes username alone (pgschema.RenameAdminUser), under the
+// row lock the caller holds, and reports whether the stored username differed,
+// byte for byte. A unique violation is the username's.
+func renameAdminUser(ctx context.Context, q DBTX, op string, uid id.ID, username string) (bool, error) {
+	tag, err := q.Exec(ctx, pgschema.RenameAdminUser, uid, username)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return false, alreadyExists(op, admin.FieldUsername)
+		}
+		return false, dbFailed(op, err)
+	}
+	n := tag.RowsAffected()
+	if n > 1 {
+		return false, failed(op, errRenameRows)
+	}
+
+	return n == 1, nil
+}
+
+// errRenameRows reports a rename that affected more than the one row its
+// primary key names: the schema is not the one this store was written for.
+var errRenameRows = errors.New("the rename affected more than one row")
+
+// adminUpdate is an administrative update's fields other than the username,
+// validated and laid out for pgschema.UpdateAdminUserQuery before the
+// transaction starts.
+type adminUpdate struct {
+	change  admin.UserChange
+	columns []string
+	values  []any
+	newOrg  any
+}
+
+// prepareAdminUpdate validates change's fields other than the username and
+// lays them out as the columns of pgschema.UpdateAdminUserQuery.
+func prepareAdminUpdate(op string, change admin.UserChange) (adminUpdate, error) {
+	u := adminUpdate{change: change}
+	if change.Name != nil {
+		if !storekit.Storable(*change.Name) {
+			return adminUpdate{}, invalidInput(op, "the name holds text that cannot be stored")
+		}
+		u.columns, u.values = append(u.columns, pgschema.ColumnName), append(u.values, *change.Name)
+	}
+	if change.Email != nil {
+		if !storekit.Storable(*change.Email) {
+			return adminUpdate{}, invalidInput(op, "the email holds text that cannot be stored")
+		}
+		u.columns, u.values = append(u.columns, pgschema.ColumnEmail), append(u.values, emptyNull(*change.Email))
+		if change.EmailVerifiedAt == nil {
+			// The statement keeps the verification only for the stored
+			// address, compared under the row lock it runs in.
+			u.columns = append(u.columns, pgschema.ColumnEmailVerifiedAtIfSameEmail)
+			u.values = append(u.values, emptyNull(*change.Email))
+		}
+	}
+	if change.EmailVerifiedAt != nil {
+		u.columns = append(u.columns, pgschema.ColumnEmailVerifiedAt)
+		u.values = append(u.values, nullTs(*change.EmailVerifiedAt))
+	}
+	if change.Organization != nil {
+		org, err := adminOrgReference(op, *change.Organization)
+		if err != nil {
+			return adminUpdate{}, err
+		}
+		u.columns, u.values = append(u.columns, pgschema.ColumnOrganization), append(u.values, org)
+		u.newOrg = org
+	}
+	if err := checkAttributes(op, change.Attributes); err != nil {
+		return adminUpdate{}, err
+	}
+
+	return u, nil
+}
+
+// check refuses the update against cur, the locked row: a verification time
+// with no email left to verify, and an organisation that does not exist.
+func (u adminUpdate) check(ctx context.Context, q DBTX, op string, cur lockedUser) error {
+	if verifiesNoEmail(u.change, cur) {
+		return invalidInput(op, "an email verification time is set with no email to verify")
+	}
+
+	return checkOrganization(ctx, q, op, u.newOrg)
+}
+
+// changedEmail is the email the update sets when it names a non-empty one
+// that differs from cur's, the locked row's, and "" otherwise: only a changed
+// address needs the identifier checks.
+func (u adminUpdate) changedEmail(cur lockedUser) string {
+	if u.change.Email == nil || *u.change.Email == "" || *u.change.Email == cur.email.String {
+		return ""
+	}
+
+	return *u.change.Email
+}
+
+// writeAdminUpdate writes the update's columns, updated_at and the next
+// version, then its attributes, and reads the user back. A unique violation is
+// the email's: the username, when it changes, is written before, alone.
+func (s *IdentityStore) writeAdminUpdate(
+	ctx context.Context, q DBTX, op string, uid id.ID, u adminUpdate,
+) (admin.User, error) {
+	now := storekit.Time(s.c.clock.Now())
+
+	query, args := pgschema.UpdateAdminUserQuery(u.columns, u.values, now, uid)
+	if _, err := q.Exec(ctx, query, args...); err != nil {
+		if isUniqueViolation(err) {
+			return admin.User{}, alreadyExists(op, admin.FieldEmail)
+		}
+		return admin.User{}, dbFailed(op, err)
+	}
+
+	if u.change.Attributes != nil {
+		if err := replaceAttributes(ctx, q, op, uid, u.change.Attributes); err != nil {
+			return admin.User{}, err
+		}
+	}
+
+	return s.readAdminUser(ctx, q, op, uid)
 }
 
 // SetActive implements admin.UserStore.

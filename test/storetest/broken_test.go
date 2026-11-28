@@ -128,6 +128,7 @@ var portableVariants = []brokenVariant{
 	sessionVariant(sessionSaveMovesAuthenticatedAt, "save keeps the authentication time"),
 	sessionVariant(sessionSupersedeLowersDeadline, "a supersession never lowers a retention deadline"),
 	sessionVariant(sessionSupersedeIgnoresSuccessorRole, "SupersedeNamesSuccessorRole"),
+	sessionVariant(sessionSelectRoleWritesNothing, "SelectRole"),
 	sessionVariant(sessionSupersedeRaisesEachDeadline,
 		"a supersession keeps the record's own deadlines apart from its retention"),
 	sessionVariant(sessionSupersedeRaisesDeadlines,
@@ -191,16 +192,6 @@ var portableVariants = []brokenVariant{
 	sessionVariant(sessionFamilyReadSharesRecord, "a session a family read answers is the caller's own copy"),
 	sessionVariant(sessionFamilyReadIgnoresAbsolute, "a family read judges expiry by the time the caller passes, not the store's clock"),
 	sessionVariant(sessionFamilyReadSkipsPendingMFA, "a family read agrees with the listing across a renewal, a strict rotation and an end"),
-	{
-		// The family read is optional: a store offering none passes the suite.
-		name: "session-without-a-family-read",
-		run: func(t *testing.T) {
-			storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
-				t.Helper()
-				return struct{ session.Store }{newSessionStore(sessionConforming, clk)}
-			})
-		},
-	},
 	sessionVariant(sessionSaveWritesMetadata, "a save keeps the sign-in metadata and the CSRF token"),
 	sessionVariant(sessionSaveWritesCSRFToken, "a save keeps the sign-in metadata and the CSRF token"),
 	sessionVariant(sessionSupersedeDropsSignInState,

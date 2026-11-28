@@ -21,6 +21,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/clock"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -389,19 +390,19 @@ func (s stubUsers) LoadByUserID(ctx context.Context, _ identity.UserID) (*identi
 	return s.load(ctx)
 }
 
-// listFailingStore is a session store whose listing, the stream's own read, fails once armed.
+// listFailingStore is a session store whose family read, the stream's own read, fails once armed.
 type listFailingStore struct {
 	session.Store
 
 	armed atomic.Bool
 }
 
-func (s *listFailingStore) ListByUser(ctx context.Context, user identity.UserID, now time.Time) ([]*session.Session, error) {
+func (s *listFailingStore) ListByFamily(ctx context.Context, user identity.UserID, family id.ID, now time.Time) ([]*session.Session, error) {
 	if s.armed.Load() {
 		return nil, errors.New(firstReadSecret)
 	}
 
-	return s.Store.ListByUser(ctx, user, now)
+	return s.Store.ListByFamily(ctx, user, family, now)
 }
 
 // TestSessionSignals_Caps_FirstReadReturnsNoDependencyText is each way the stream's first read of the

@@ -40,14 +40,19 @@ const (
 // when its store is.
 type Users struct {
 	store UserStore
+	// pager is the store as a UserPager, nil when it cannot list from an
+	// offset or count.
+	pager UserPager
 	cfg   usersConfig
 }
 
 // NewUsers returns a Users over store. With only a store it works: pages of 50
 // up to 500, the attribute bounds of the Default constants, the default
 // password policy and Argon2id encoder, the system clock, version 7
-// identifiers, no event sink, no audit sink and the routing logger; each
-// option replaces one of those.
+// identifiers, no event sink, no audit sink, no session revocation and the
+// routing logger; each option replaces one of those. It records whether store
+// implements UserPager, which List needs for a non-zero offset (up to
+// DefaultMaxListOffset) and Count needs.
 //
 // A nil store, or an option that cannot work, fails with an error matching
 // ErrConfig. A nil option is ignored.
@@ -58,7 +63,7 @@ func NewUsers(store UserStore, opts ...UsersOption) (*Users, error) {
 
 	cfg := usersConfig{
 		pageDefault: DefaultPageSize, pageMax: DefaultMaxPageSize,
-		attributeLimits: defaultAttributeLimits(),
+		attributeLimits: defaultAttributeLimits(), offsetMax: DefaultMaxListOffset,
 	}
 
 	for _, opt := range opts {
@@ -105,7 +110,14 @@ func NewUsers(store UserStore, opts ...UsersOption) (*Users, error) {
 		cfg.ids = id.NewV7Generator()
 	}
 
-	return &Users{store: store, cfg: cfg}, nil
+	pager, _ := store.(UserPager)
+
+	if cfg.offsetGiven && pager == nil {
+		return nil, fmt.Errorf("%w: admin.WithMaxListOffset was given, but the user store does not implement "+
+			"admin.UserPager, so it can never list from an offset and the bound would never apply", ErrConfig)
+	}
+
+	return &Users{store: store, pager: pager, cfg: cfg}, nil
 }
 
 // List returns a page of live users matching the filter, ordered by
@@ -113,6 +125,16 @@ func NewUsers(store UserStore, opts ...UsersOption) (*Users, error) {
 // maximum, or below zero, is ErrInvalidInput, as is a search or filter beyond
 // its bound and a cursor that does not decode. Next is set when the page is
 // full and continues the list.
+//
+// A filter may instead name an Offset, to jump to a page. A negative offset,
+// one above the maximum (default DefaultMaxListOffset, WithMaxListOffset) and
+// one together with a Cursor are ErrInvalidInput, decided before the store is
+// called. A non-zero offset over a store that does not implement UserPager is
+// an error matching ErrConfig. Offset zero is the first page: it lists as
+// above and carries Next, while a page from a non-zero offset has an empty
+// Next. Offset paging can skip or repeat a user when users are created or
+// deleted between two requests; walk a whole list by cursor, which is
+// consistent. A count and a page are separate reads (Count).
 func (u *Users) List(ctx context.Context, filter UserFilter) (UserPage, error) {
 	if filter.Attribute != nil {
 		m := *filter.Attribute
@@ -122,6 +144,10 @@ func (u *Users) List(ctx context.Context, filter UserFilter) (UserPage, error) {
 	q, err := u.query(filter)
 	if err != nil {
 		return UserPage{}, err
+	}
+
+	if filter.Offset > 0 {
+		return u.listFrom(ctx, q, filter.Offset)
 	}
 
 	users, err := u.store.ListUsers(ctx, q)
@@ -147,6 +173,66 @@ func (u *Users) List(ctx context.Context, filter UserFilter) (UserPage, error) {
 	return page, nil
 }
 
+// listFrom lists a page that starts offset users in. Such a page carries no
+// Next: the cursor continues a keyed list, not a position.
+func (u *Users) listFrom(ctx context.Context, q UserQuery, offset int) (UserPage, error) {
+	if u.pager == nil {
+		return UserPage{}, fmt.Errorf("admin: list users: %w: the filter names an offset, but the user store "+
+			"does not implement admin.UserPager", ErrConfig)
+	}
+
+	users, err := u.pager.ListUsersFrom(ctx, q, offset)
+	if err != nil {
+		return UserPage{}, fmt.Errorf("admin: list users: %w", err)
+	}
+
+	if len(users) > q.Limit {
+		users = users[:q.Limit]
+	}
+
+	return UserPage{Users: users}, nil
+}
+
+// Count returns how many live users match the filter's Search, Active, Role
+// and Attribute, validated as List validates them. PageSize, Offset and Cursor
+// describe a page, not a match, so they are ignored and never refuse a count.
+// A store without UserPager is an error matching ErrConfig, and a store
+// answering below zero is an error matching no administration reason. The
+// count and a page are separate reads: users created or deleted between them
+// make the two disagree, so treat the count as an estimate while a list is
+// being walked.
+func (u *Users) Count(ctx context.Context, filter UserFilter) (int64, error) {
+	if filter.Attribute != nil {
+		m := *filter.Attribute
+		filter.Attribute = &m
+	}
+
+	filter.PageSize, filter.Offset, filter.Cursor = 0, 0, ""
+
+	q, err := u.query(filter)
+	if err != nil {
+		return 0, err
+	}
+
+	// A count has no page: the store receives the filters alone.
+	q.Limit = 0
+
+	if u.pager == nil {
+		return 0, fmt.Errorf("admin: count users: %w: the user store does not implement admin.UserPager", ErrConfig)
+	}
+
+	n, err := u.pager.CountUsers(ctx, q)
+	if err != nil {
+		return 0, fmt.Errorf("admin: count users: %w", err)
+	}
+
+	if n < 0 {
+		return 0, errors.New("admin: count users: the user store returned a negative count")
+	}
+
+	return n, nil
+}
+
 // query validates a filter and turns it into the store's query.
 func (u *Users) query(f UserFilter) (UserQuery, error) {
 	limit := f.PageSize
@@ -156,6 +242,15 @@ func (u *Users) query(f UserFilter) (UserQuery, error) {
 		limit = u.cfg.pageDefault
 	case limit < 0 || limit > u.cfg.pageMax:
 		return UserQuery{}, invalid("page size must be between 1 and %d", u.cfg.pageMax)
+	}
+
+	switch {
+	case f.Offset < 0:
+		return UserQuery{}, invalid("offset must not be negative")
+	case f.Offset > u.cfg.offsetMax:
+		return UserQuery{}, invalid("offset must be at most %d", u.cfg.offsetMax)
+	case f.Offset != 0 && f.Cursor != "":
+		return UserQuery{}, invalid("offset and cursor are alternatives; give one")
 	}
 
 	if err := noNUL("search", f.Search, MaxSearchBytes); err != nil {
@@ -280,6 +375,14 @@ func (u *Users) validateNew(nu NewUser) error {
 // named for a user with no email, and an empty change, or a version below one,
 // are ErrInvalidInput; a version that differs from the stored one is
 // ErrStaleUpdate and changes nothing.
+//
+// A change naming a username renames the user (see UserChange.Username); the
+// store writes it under the rules of creation and reports whether the stored
+// username changed. The event lists username first.
+// With WithSessionRevocation, a rename the store reports as a change of the
+// stored username then revokes the user's sessions; when that fails, Update
+// returns the renamed user together with an error matching
+// ErrSessionsNotRevoked.
 func (u *Users) Update(ctx context.Context, userID identity.UserID, version int64, change UserChange) (User, error) {
 	actor, err := ActorFrom(ctx)
 	if err != nil {
@@ -301,7 +404,7 @@ func (u *Users) Update(ctx context.Context, userID identity.UserID, version int6
 		return User{}, fmt.Errorf("admin: update user: %w", err)
 	}
 
-	updated, err := u.store.UpdateUser(ctx, userID, version, change)
+	updated, renamed, err := u.store.UpdateUser(ctx, userID, version, change)
 	if err != nil {
 		return User{}, fmt.Errorf("admin: update user: %w", err)
 	}
@@ -316,12 +419,29 @@ func (u *Users) Update(ctx context.Context, userID identity.UserID, version int6
 
 	u.cfg.report(ctx, report)
 
+	// The update has committed and been reported; a failed revocation cannot
+	// undo it, so the caller gets the renamed user and an error to retry on.
+	// A store that reports a rename for a change naming no username is wrong,
+	// and ending sessions on its word alone would sign the user out of a
+	// profile edit, so the change must name a username too.
+	if change.Username != nil && renamed && u.cfg.revoker != nil {
+		if err := u.cfg.revoker.DeleteByUser(ctx, userID); err != nil {
+			return updated, fmt.Errorf("%w: %w", ErrSessionsNotRevoked, err)
+		}
+	}
+
 	return updated, nil
 }
 
 func (u *Users) validateChange(c UserChange) error {
-	if c.Name == nil && c.Email == nil && c.EmailVerifiedAt == nil && c.Attributes == nil && c.Organization == nil {
+	if c.Username == nil && c.Name == nil && c.Email == nil && c.EmailVerifiedAt == nil && c.Attributes == nil && c.Organization == nil {
 		return invalid("the change names no field")
+	}
+
+	if c.Username != nil {
+		if err := exactName("username", *c.Username, MaxTextBytes); err != nil {
+			return err
+		}
 	}
 
 	if c.Name != nil {
@@ -566,6 +686,7 @@ func (l *attributeLimits) attributeName(name string) error {
 
 // The field names a user event's Changed lists.
 const (
+	userFieldUsername        = "username"
 	userFieldName            = "name"
 	userFieldEmail           = "email"
 	userFieldEmailVerifiedAt = "email_verified_at"
@@ -578,6 +699,10 @@ const (
 // changedUserFields names the fields a change sets, never their values.
 func changedUserFields(c UserChange, updated User) []string {
 	var changed []string
+
+	if c.Username != nil {
+		changed = append(changed, userFieldUsername)
+	}
 
 	if c.Name != nil {
 		changed = append(changed, userFieldName)

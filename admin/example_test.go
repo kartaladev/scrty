@@ -7,6 +7,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/kartaladev/scrty/admin"
@@ -21,13 +22,34 @@ import (
 // ports.
 
 // exampleUserStore holds users in a map; it implements only what
-// ExampleUsers calls in full.
+// ExampleUsers and ExampleWithSessionRevocation call in full, renames
+// included, and offset listing and counts
+// (admin.UserPager). It applies no filter, only the order and the page.
 type exampleUserStore struct {
 	users map[identity.UserID]admin.User
 }
 
 func (s *exampleUserStore) ListUsers(context.Context, admin.UserQuery) ([]admin.User, error) {
 	return slices.Collect(maps.Values(s.users)), nil
+}
+
+// ListUsersFrom lists in username order, skipping offset users.
+func (s *exampleUserStore) ListUsersFrom(_ context.Context, q admin.UserQuery, offset int) ([]admin.User, error) {
+	all := slices.SortedFunc(maps.Values(s.users), func(a, b admin.User) int {
+		return strings.Compare(a.Username, b.Username)
+	})
+
+	if offset >= len(all) {
+		return nil, nil
+	}
+
+	all = all[offset:]
+
+	return all[:min(q.Limit, len(all))], nil
+}
+
+func (s *exampleUserStore) CountUsers(context.Context, admin.UserQuery) (int64, error) {
+	return int64(len(s.users)), nil
 }
 
 func (s *exampleUserStore) GetUser(_ context.Context, id identity.UserID) (admin.User, error) {
@@ -46,14 +68,21 @@ func (s *exampleUserStore) CreateUser(_ context.Context, nu admin.NewUser) (admi
 	return u, nil
 }
 
-func (s *exampleUserStore) UpdateUser(_ context.Context, id identity.UserID, version int64, c admin.UserChange) (admin.User, error) {
+// UpdateUser applies the name and the username. A real store also refuses a
+// username another user holds, under the row lock.
+func (s *exampleUserStore) UpdateUser(_ context.Context, id identity.UserID, version int64, c admin.UserChange) (admin.User, bool, error) {
 	u, ok := s.users[id]
 	if !ok {
-		return admin.User{}, admin.ErrNotFound
+		return admin.User{}, false, admin.ErrNotFound
 	}
 
 	if u.Version != version {
-		return admin.User{}, admin.ErrStaleUpdate
+		return admin.User{}, false, admin.ErrStaleUpdate
+	}
+
+	renamed := c.Username != nil && *c.Username != u.Username
+	if c.Username != nil {
+		u.Username = *c.Username
 	}
 
 	if c.Name != nil {
@@ -63,7 +92,7 @@ func (s *exampleUserStore) UpdateUser(_ context.Context, id identity.UserID, ver
 	u.Version++
 	s.users[id] = u
 
-	return u, nil
+	return u, renamed, nil
 }
 
 func (s *exampleUserStore) SetActive(_ context.Context, id identity.UserID, version int64, active bool) (admin.User, bool, error) {

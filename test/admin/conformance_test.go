@@ -76,8 +76,8 @@ func (stubStore) CreateUser(context.Context, admin.NewUser) (admin.User, error) 
 	return admin.User{}, admin.ErrNotFound
 }
 
-func (stubStore) UpdateUser(context.Context, identity.UserID, int64, admin.UserChange) (admin.User, error) {
-	return admin.User{}, admin.ErrNotFound
+func (stubStore) UpdateUser(context.Context, identity.UserID, int64, admin.UserChange) (admin.User, bool, error) {
+	return admin.User{}, false, admin.ErrNotFound
 }
 
 func (stubStore) SetActive(context.Context, identity.UserID, int64, bool) (admin.User, bool, error) {

@@ -105,6 +105,27 @@ const (
 	// A role update changing the super-role flag copies it onto the holders'
 	// grants without increasing their versions.
 	defectSuperRoleKeepsVersions defect = "super-role-keeps-versions"
+	// UpdateUser applies every other field but leaves the username as it
+	// was, while still reporting the rename.
+	defectRenameIgnored defect = "rename-ignored"
+	// UpdateUser skips the username clash checks.
+	defectRenameUnchecked defect = "rename-unchecked"
+	// UpdateUser always reports renamed as false.
+	defectRenamedFalse defect = "renamed-false"
+	// UpdateUser always reports renamed as true, even for a change naming no
+	// username or re-sending the current one.
+	defectRenamedTrue defect = "renamed-true"
+	// The user port does not implement admin.UserPager: a consumer store
+	// that never pages by offset or counts, which must still pass the suite
+	// with the offset and count cases skipped (D14).
+	variantNoUserPager defect = "no-user-pager"
+	// ListUsersFrom skips twice the offset it is given.
+	defectOffsetTwice defect = "offset-twice"
+	// CountUsers counts soft-deleted users too.
+	defectCountDeleted defect = "count-deleted"
+	// ListUsersFrom orders by identifier only, not by the cursor listing's
+	// (lower(username), id).
+	defectOffsetOrder defect = "offset-order"
 )
 
 // defectDeletedWritable is the defect under which one operation, named after
@@ -133,7 +154,21 @@ func newToyFixture(d defect) toyFixture {
 
 var _ admintest.Fixture = toyFixture{}
 
-func (f toyFixture) Users() admin.UserStore { return f.s }
+func (f toyFixture) Users() admin.UserStore {
+	if f.s.d == variantNoUserPager {
+		return toyUsersWithoutPager{UserStore: f.s, History: f.s}
+	}
+
+	return f.s
+}
+
+// toyUsersWithoutPager is the toy store's user port and password history
+// without ListUsersFrom and CountUsers: a consumer store that never pages by
+// offset or counts.
+type toyUsersWithoutPager struct {
+	admin.UserStore
+	password.History
+}
 
 func (f toyFixture) Importer() admin.ImportStore {
 	if f.s.d == variantUserPortsOnly {
@@ -279,6 +314,7 @@ var (
 	_ identity.EmailLoader     = (*toyStore)(nil)
 	_ identity.UserProvisioner = (*toyStore)(nil)
 	_ password.History         = (*toyStore)(nil)
+	_ admin.UserPager          = (*toyStore)(nil)
 )
 
 var errInjected = errors.New("toy store: injected storage failure")
@@ -352,7 +388,7 @@ func (s *toyStore) usernameTaken(name string, self identity.UserID) bool {
 			continue
 		}
 
-		if fold(u.username) == fold(name) || (!u.deleted && u.email != "" && fold(u.email) == fold(name)) {
+		if u.username == name || (!u.deleted && u.email != "" && fold(u.email) == fold(name)) {
 			return true
 		}
 	}
@@ -450,18 +486,13 @@ func listKey(u *toyUser, d defect) string {
 	return fold(u.username)
 }
 
-func (s *toyStore) ListUsers(_ context.Context, q admin.UserQuery) ([]admin.User, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if q.Limit < 1 {
-		return nil, admin.ErrInvalidInput
-	}
-
+// matching returns the users q's filters match, live ones only unless
+// deletedToo, in list order.
+func (s *toyStore) matching(q admin.UserQuery, deletedToo bool) []*toyUser {
 	var picked []*toyUser
 
 	for _, u := range s.users {
-		if u.deleted {
+		if u.deleted && !deletedToo {
 			continue
 		}
 
@@ -494,6 +525,19 @@ func (s *toyStore) ListUsers(_ context.Context, q admin.UserQuery) ([]admin.User
 		return cmp.Or(strings.Compare(listKey(a, s.d), listKey(b, s.d)), strings.Compare(string(a.id), string(b.id)))
 	})
 
+	return picked
+}
+
+func (s *toyStore) ListUsers(_ context.Context, q admin.UserQuery) ([]admin.User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if q.Limit < 1 {
+		return nil, admin.ErrInvalidInput
+	}
+
+	picked := s.matching(q, false)
+
 	honourCursor := q.AfterUsername != "" &&
 		!(s.d == defectIgnoresForgedCursor && !isCanonicalUUID(string(q.AfterID)))
 
@@ -519,6 +563,47 @@ func (s *toyStore) ListUsers(_ context.Context, q admin.UserQuery) ([]admin.User
 	}
 
 	return out, nil
+}
+
+// ListUsersFrom implements admin.UserPager.
+func (s *toyStore) ListUsersFrom(_ context.Context, q admin.UserQuery, offset int) ([]admin.User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if q.Limit < 1 || offset < 0 || q.AfterUsername != "" || q.AfterID != "" {
+		return nil, admin.ErrInvalidInput
+	}
+
+	picked := s.matching(q, false)
+
+	if s.d == defectOffsetOrder {
+		slices.SortFunc(picked, func(a, b *toyUser) int { return strings.Compare(string(a.id), string(b.id)) })
+	}
+
+	if s.d == defectOffsetTwice {
+		offset *= 2
+	}
+
+	if offset >= len(picked) {
+		return []admin.User{}, nil
+	}
+
+	picked = picked[offset:]
+	out := make([]admin.User, 0, min(q.Limit, len(picked)))
+
+	for _, u := range picked[:min(q.Limit, len(picked))] {
+		out = append(out, s.record(u))
+	}
+
+	return out, nil
+}
+
+// CountUsers implements admin.UserPager.
+func (s *toyStore) CountUsers(_ context.Context, q admin.UserQuery) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return int64(len(s.matching(q, s.d == defectCountDeleted))), nil
 }
 
 func (s *toyStore) GetUser(_ context.Context, id identity.UserID) (admin.User, error) {
@@ -567,20 +652,11 @@ func (s *toyStore) CreateUser(_ context.Context, in admin.NewUser) (admin.User, 
 	return s.record(u), nil
 }
 
-func (s *toyStore) UpdateUser(_ context.Context, id identity.UserID, version int64, c admin.UserChange) (admin.User, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	u, err := s.liveVersioned("UpdateUser", id, version)
-	if s.d == defectIgnoresVersionOnUpdate {
-		u, err = s.live("UpdateUser", id)
-	}
-	if err != nil {
-		return admin.User{}, err
-	}
-
-	if c.Email != nil && s.emailTaken(*c.Email, id) {
-		return admin.User{}, admin.AlreadyExistsError{Field: admin.FieldEmail}
+// applyChange applies every field of c but the username to u, the locked live
+// user, and increases the version. It refuses before writing anything.
+func (s *toyStore) applyChange(u *toyUser, c admin.UserChange) error {
+	if c.Email != nil && s.emailTaken(*c.Email, u.id) {
+		return admin.AlreadyExistsError{Field: admin.FieldEmail}
 	}
 
 	emailLeft := u.email
@@ -589,7 +665,7 @@ func (s *toyStore) UpdateUser(_ context.Context, id identity.UserID, version int
 	}
 
 	if c.EmailVerifiedAt != nil && !c.EmailVerifiedAt.IsZero() && emailLeft == "" && s.d != defectVerifiesNoEmail {
-		return admin.User{}, admin.ErrInvalidInput
+		return admin.ErrInvalidInput
 	}
 
 	if c.Name != nil {
@@ -631,7 +707,69 @@ func (s *toyStore) UpdateUser(_ context.Context, id identity.UserID, version int
 	u.version++
 	u.updated = now()
 
-	return s.record(u), nil
+	return nil
+}
+
+// UpdateUser implements admin.UserStore. Under the one lock, it checks the
+// version and, when the change names one, the username, applies the other
+// fields, and writes the username last, so a refusal writes nothing. A change
+// naming no username reports no rename.
+func (s *toyStore) UpdateUser(
+	_ context.Context, id identity.UserID, version int64, c admin.UserChange,
+) (admin.User, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	u, err := s.liveVersioned("UpdateUser", id, version)
+	if s.d == defectIgnoresVersionOnUpdate {
+		u, err = s.live("UpdateUser", id)
+	}
+	if err != nil {
+		return admin.User{}, false, err
+	}
+
+	if c.Username != nil && s.d != defectRenameUnchecked && s.renameTaken(*c.Username, id) {
+		return admin.User{}, false, admin.AlreadyExistsError{Field: admin.FieldUsername}
+	}
+
+	if err := s.applyChange(u, c); err != nil {
+		return admin.User{}, false, err
+	}
+
+	renamed := false
+	if c.Username != nil {
+		renamed = u.username != *c.Username
+		if s.d != defectRenameIgnored {
+			u.username = *c.Username
+		}
+	}
+
+	if s.d == defectRenamedFalse {
+		renamed = false
+	}
+
+	if s.d == defectRenamedTrue {
+		renamed = true
+	}
+
+	return s.record(u), renamed, nil
+}
+
+// renameTaken reports a username another user holds, deleted or not,
+// compared exactly, or another live user's email, ignoring case: the rule of
+// a rename (D4).
+func (s *toyStore) renameTaken(name string, self identity.UserID) bool {
+	for _, u := range s.users {
+		if u.id == self {
+			continue
+		}
+
+		if u.username == name || (!u.deleted && u.email != "" && fold(u.email) == fold(name)) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (s *toyStore) SetActive(_ context.Context, id identity.UserID, version int64, active bool) (admin.User, bool, error) {

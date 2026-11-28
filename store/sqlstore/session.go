@@ -402,7 +402,7 @@ func (s *sessionStore) ListByUser(ctx context.Context, user identity.UserID, now
 	return s.list(ctx, "list user's sessions", pgschema.SessionListByUser, user, now)
 }
 
-// ListByFamily is ListByUser narrowed to family, as session.FamilyReader states
+// ListByFamily is ListByUser narrowed to family, as session.Store states
 // it, in one query. A row of the family that will not decode fails the call,
 // and a row of another family is never read. The sealing store NewSessionStore
 // wraps this one in answers the nil family before asking here.
@@ -890,11 +890,7 @@ func (s *sessionStore) SelectRole(ctx context.Context, sessionID string, role st
 	return nil
 }
 
-var (
-	_ session.Store        = (*sessionStore)(nil)
-	_ session.FamilyReader = (*sessionStore)(nil)
-	_ session.RoleSelector = (*sessionStore)(nil)
-)
+var _ session.Store = (*sessionStore)(nil)
 
 // SuccessorPresented reports whether the current successor of the session
 // with this identifier was used, in one read that writes nothing: true when

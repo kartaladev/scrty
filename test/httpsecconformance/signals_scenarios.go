@@ -28,6 +28,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -1257,7 +1258,7 @@ func signalsCapReached(t *testing.T, listen func(ChainSpec) StreamServer) {
 
 // failingStore is a session store that fails a read while its switch is set. loadFails is the read
 // that authenticates a request (Load); listFails is the read of the sign-in's state the stream's
-// own endpoint makes at admission (ListByUser). Everything else is the wrapped store's.
+// own endpoint makes at admission (ListByFamily). Everything else is the wrapped store's.
 type failingStore struct {
 	session.Store
 
@@ -1272,12 +1273,12 @@ func (f *failingStore) Load(ctx context.Context, id string) (*session.Session, e
 	return f.Store.Load(ctx, id)
 }
 
-func (f *failingStore) ListByUser(ctx context.Context, user identity.UserID, now time.Time) ([]*session.Session, error) {
+func (f *failingStore) ListByFamily(ctx context.Context, user identity.UserID, family id.ID, now time.Time) ([]*session.Session, error) {
 	if f.listFails.Load() {
 		return nil, errAdmissionStoreDown
 	}
 
-	return f.Store.ListByUser(ctx, user, now)
+	return f.Store.ListByFamily(ctx, user, family, now)
 }
 
 // signalsDependencyFailureAtAdmission fails the session store while a stream is being admitted,

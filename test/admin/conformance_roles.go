@@ -802,7 +802,7 @@ func arrangeStaleGrants(ctx context.Context, t *testing.T, f Fixture) staleGrant
 
 	// A colleague's write moves the version past the one this caller read.
 	name := "Renamed by a colleague"
-	moved, err := f.Users().UpdateUser(ctx, u.ID, v, admin.UserChange{Name: &name})
+	moved, _, err := f.Users().UpdateUser(ctx, u.ID, v, admin.UserChange{Name: &name})
 	require.NoError(t, err, "an update naming the current version must succeed")
 	require.Greater(t, moved.Version, v, "a successful update must increase the version")
 
@@ -1003,7 +1003,7 @@ func runUserWritesKeepGrantsCase(t *testing.T, newFixture Factory) {
 	writes := []write{
 		{"UpdateUser", func(version int64) (int64, error) {
 			name := "Ada Lovelace"
-			got, err := f.Users().UpdateUser(ctx, u.ID, version, admin.UserChange{Name: &name})
+			got, _, err := f.Users().UpdateUser(ctx, u.ID, version, admin.UserChange{Name: &name})
 
 			return got.Version, err
 		}},

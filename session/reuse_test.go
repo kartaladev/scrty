@@ -3393,12 +3393,8 @@ func (s *roleSpyStore) Supersede(ctx context.Context, op session.Supersession) e
 func (s *roleSpyStore) SelectRole(ctx context.Context, id, role string) error {
 	s.selects.Add(1)
 
-	return s.Store.(session.RoleSelector).SelectRole(ctx, id, role)
+	return s.Store.SelectRole(ctx, id, role)
 }
-
-// hidesSelector wraps a store so that it offers only session.Store, hiding
-// any RoleSelector the wrapped store has.
-type hidesSelector struct{ session.Store }
 
 func (s *roleSpyStore) lastSuccessorID() string {
 	s.mu.Lock()
@@ -3435,12 +3431,9 @@ func TestSessions_SuccessorRole(t *testing.T) {
 	type testCase struct {
 		name   string
 		sealed bool
-		// noSelector runs the rotation on a manager whose store hides
-		// RoleSelector; the session is prepared before it is hidden.
-		noSelector bool
-		setup      func(f *fixture)
-		act        func(ctx context.Context, f *fixture) (*session.Session, error)
-		assert     func(t *testing.T, f *fixture, got *session.Session, err error)
+		setup  func(f *fixture)
+		act    func(ctx context.Context, f *fixture) (*session.Session, error)
+		assert func(t *testing.T, f *fixture, got *session.Session, err error)
 	}
 
 	graceRotation := func(opts ...session.RotateOption) func(context.Context, *fixture) (*session.Session, error) {
@@ -3595,18 +3588,6 @@ func TestSessions_SuccessorRole(t *testing.T) {
 			},
 		},
 		{
-			name:       "a store that cannot select roles refuses the rotation",
-			noSelector: true,
-			act:        graceRotation(session.WithSuccessorRole("audit")),
-			assert:     refusedAsConfig,
-		},
-		{
-			name:       "a store that cannot select roles refuses the issuing rotation",
-			noSelector: true,
-			act:        issuingRotation(session.WithSuccessorRole("audit")),
-			assert:     refusedAsConfig,
-		},
-		{
 			name: "a strict rotation refuses the option",
 			act: func(ctx context.Context, f *fixture) (*session.Session, error) {
 				return f.m.Rotate(ctx, f.o, session.WithSuccessorRole("audit"))
@@ -3644,10 +3625,6 @@ func TestSessions_SuccessorRole(t *testing.T) {
 			require.NoError(t, f.m.SelectRole(t.Context(), o.ID, "admin"))
 			f.o = o
 			f.spy.selects.Store(0)
-			if tc.noSelector {
-				f.m = managerFor(t, session.WithStore(hidesSelector{f.spy}), session.WithClock(clk))
-				require.False(t, f.m.SelectsRoles())
-			}
 			if tc.setup != nil {
 				tc.setup(f)
 			}

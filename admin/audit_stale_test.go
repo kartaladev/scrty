@@ -32,7 +32,7 @@ func TestAudit_BeforeIsTheVersionTheWriteReplaced(t *testing.T) {
 			store := NewMockUserStore(ctrl)
 			store.EXPECT().GetUser(gomock.Any(), eventUser).Return(admin.User{ID: eventUser, Version: 4}, nil)
 			store.EXPECT().UpdateUser(gomock.Any(), eventUser, int64(5), gomock.Any()).
-				Return(admin.User{ID: eventUser, Version: 6}, nil).AnyTimes()
+				Return(admin.User{ID: eventUser, Version: 6}, false, nil).AnyTimes()
 			store.EXPECT().SetActive(gomock.Any(), eventUser, int64(5), gomock.Any()).
 				Return(admin.User{ID: eventUser, Version: 6}, true, nil).AnyTimes()
 			store.EXPECT().DeleteUser(gomock.Any(), eventUser, int64(5)).Return(nil).AnyTimes()

@@ -199,6 +199,9 @@ const (
 	// carries, ignoring a role the supersession named, as an INSERT that
 	// never reads session.Supersession.SuccessorRole would.
 	sessionSupersedeIgnoresSuccessorRole sessionDefect = "supersede-ignores-successor-role"
+	// SelectRole reports success and records no role, as a store that never
+	// wrote the selected-role column would.
+	sessionSelectRoleWritesNothing sessionDefect = "select-role-writes-nothing"
 	// Supersede also holds the record to one deadline, the later of its
 	// absolute deadline and the retention, as both of its own deadlines: the
 	// first round's raise, which a renewal then read as the session's own
@@ -390,10 +393,7 @@ type sessionStore struct {
 	strayMembers map[id.ID]int
 }
 
-var (
-	_ session.Store        = (*sessionStore)(nil)
-	_ session.FamilyReader = (*sessionStore)(nil)
-)
+var _ session.Store = (*sessionStore)(nil)
 
 func newSessionStore(defect sessionDefect, clk clock.Clock) *sessionStore {
 	return &sessionStore{
@@ -426,6 +426,7 @@ func keepLibraryState(sess, stored *session.Session) {
 	sess.RotatedStrictly = stored.RotatedStrictly
 	sess.SuccessorDigest = slices.Clone(stored.SuccessorDigest)
 	sess.FirstPresentedAt = stored.FirstPresentedAt
+	sess.SelectedRole = stored.SelectedRole
 	if !stored.SupersededAt.IsZero() {
 		sess.IdleExpiresAt, sess.AbsoluteExpiresAt = stored.IdleExpiresAt, stored.AbsoluteExpiresAt
 	}
@@ -958,6 +959,7 @@ func (s *sessionStore) Supersede(_ context.Context, op session.Supersession) err
 		old.RotatedStrictly = op.Strict && s.defect != sessionSupersedeDropsStrictMark
 	}
 	s.retain(old, op)
+	op.Successor.SelectedRole = old.SelectedRole
 	if op.SuccessorRole != nil && s.defect != sessionSupersedeIgnoresSuccessorRole {
 		op.Successor.SelectedRole = *op.SuccessorRole
 	}
@@ -1097,6 +1099,25 @@ func (s *sessionStore) MarkPresented(_ context.Context, sessionID string, at tim
 		return nil
 	}
 	stored.FirstPresentedAt = at
+	return nil
+}
+
+func (s *sessionStore) SelectRole(_ context.Context, sessionID string, role string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	stored, exists := s.records[sessionID]
+	switch {
+	case !exists:
+		return session.ErrNotFound
+	case !stored.SupersededAt.IsZero():
+		return session.ErrSuperseded
+	case expiredSession(stored, s.clock.Now()):
+		return session.ErrExpired
+	}
+	if s.defect != sessionSelectRoleWritesNothing {
+		stored.SelectedRole = role
+	}
 	return nil
 }
 

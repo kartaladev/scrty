@@ -19,7 +19,8 @@ var errStorage = errors.New("connection reset by peer")
 
 // reasons lists every administration reason; a storage failure matches none.
 var reasons = []error{admin.ErrNotFound, admin.ErrAlreadyExists, admin.ErrStillAssigned,
-	admin.ErrStaleUpdate, admin.ErrUnknownPrivilege, admin.ErrInvalidInput, admin.ErrNoActor}
+	admin.ErrStaleUpdate, admin.ErrUnknownPrivilege, admin.ErrInvalidInput, admin.ErrNoActor,
+	admin.ErrSessionsNotRevoked}
 
 func TestNewUsers(t *testing.T) {
 	t.Parallel()
@@ -642,7 +643,7 @@ func TestUsers_Update(t *testing.T) {
 				s.EXPECT().UpdateUser(gomock.Any(), identity.UserID("u-1"), int64(3),
 					admin.UserChange{Name: &name, Email: &email, EmailVerifiedAt: &verified,
 						Attributes: map[string]string{"a": "b"}, Organization: &noOrg}).
-					Return(admin.User{ID: "u-1", Version: 4}, nil)
+					Return(admin.User{ID: "u-1", Version: 4}, false, nil)
 			},
 			assert: func(t *testing.T, u admin.User, err error) {
 				require.NoError(t, err)
@@ -653,7 +654,7 @@ func TestUsers_Update(t *testing.T) {
 			name: "clearing the email and the attributes is allowed", id: "u-1", version: 1,
 			change: func() admin.UserChange { e := ""; return admin.UserChange{Email: &e, Attributes: map[string]string{}} }(),
 			setup: func(s *MockUserStore) {
-				s.EXPECT().UpdateUser(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(admin.User{}, nil)
+				s.EXPECT().UpdateUser(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(admin.User{}, false, nil)
 			},
 			assert: func(t *testing.T, _ admin.User, err error) { require.NoError(t, err) },
 		},
@@ -683,21 +684,21 @@ func TestUsers_Update(t *testing.T) {
 		{
 			name: "stale update passes through", id: "u-1", version: 1, change: admin.UserChange{Name: &name},
 			setup: func(s *MockUserStore) {
-				s.EXPECT().UpdateUser(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(admin.User{}, admin.ErrStaleUpdate)
+				s.EXPECT().UpdateUser(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(admin.User{}, false, admin.ErrStaleUpdate)
 			},
 			assert: func(t *testing.T, _ admin.User, err error) { assert.ErrorIs(t, err, admin.ErrStaleUpdate) },
 		},
 		{
 			name: "not found passes through", id: "u-1", version: 1, change: admin.UserChange{Name: &name},
 			setup: func(s *MockUserStore) {
-				s.EXPECT().UpdateUser(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(admin.User{}, admin.ErrNotFound)
+				s.EXPECT().UpdateUser(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(admin.User{}, false, admin.ErrNotFound)
 			},
 			assert: func(t *testing.T, _ admin.User, err error) { assert.ErrorIs(t, err, admin.ErrNotFound) },
 		},
 		{
 			name: "taken email passes through", id: "u-1", version: 1, change: admin.UserChange{Email: &email},
 			setup: func(s *MockUserStore) {
-				s.EXPECT().UpdateUser(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(admin.User{}, admin.AlreadyExistsError{Field: admin.FieldEmail})
+				s.EXPECT().UpdateUser(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(admin.User{}, false, admin.AlreadyExistsError{Field: admin.FieldEmail})
 			},
 			assert: func(t *testing.T, _ admin.User, err error) {
 				assert.ErrorIs(t, err, admin.ErrAlreadyExists)
@@ -707,7 +708,7 @@ func TestUsers_Update(t *testing.T) {
 		{
 			name: "storage failure matches no reason", id: "u-1", version: 1, change: admin.UserChange{Name: &name},
 			setup: func(s *MockUserStore) {
-				s.EXPECT().UpdateUser(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(admin.User{}, errStorage)
+				s.EXPECT().UpdateUser(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(admin.User{}, false, errStorage)
 			},
 			assert: func(t *testing.T, _ admin.User, err error) {
 				assert.ErrorIs(t, err, errStorage)
@@ -862,11 +863,11 @@ func TestUsers_InputIsCopied(t *testing.T) {
 			call: func(t *testing.T, store *MockUserStore, u *admin.Users) {
 				attrs := map[string]string{"phone": "1"}
 				store.EXPECT().UpdateUser(gomock.Any(), identity.UserID("u-1"), int64(1), gomock.Any()).DoAndReturn(
-					func(_ context.Context, _ identity.UserID, _ int64, c admin.UserChange) (admin.User, error) {
+					func(_ context.Context, _ identity.UserID, _ int64, c admin.UserChange) (admin.User, bool, error) {
 						attrs["phone"] = strings.Repeat("x", 5000)
 						assert.Equal(t, map[string]string{"phone": "1"}, c.Attributes)
 
-						return admin.User{}, nil
+						return admin.User{}, false, nil
 					})
 
 				_, err := u.Update(actorCtx(t), "u-1", 1, admin.UserChange{Attributes: attrs})
@@ -950,10 +951,10 @@ func TestUsers_UpdateEmailVerification(t *testing.T) {
 			var got admin.UserChange
 			store := NewMockUserStore(gomock.NewController(t))
 			store.EXPECT().UpdateUser(gomock.Any(), identity.UserID("u-1"), int64(1), gomock.Any()).DoAndReturn(
-				func(_ context.Context, _ identity.UserID, _ int64, c admin.UserChange) (admin.User, error) {
+				func(_ context.Context, _ identity.UserID, _ int64, c admin.UserChange) (admin.User, bool, error) {
 					got = c
 
-					return admin.User{}, nil
+					return admin.User{}, false, nil
 				})
 
 			_, err := newUsers(t, store).Update(actorCtx(t), "u-1", 1, tc.change)

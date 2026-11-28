@@ -16,6 +16,7 @@ minor release only, as [SECURITY.md](SECURITY.md) states.
 
 - The browser session cookie: `httpsec.EnableSessionCookie` and its options. A host-only cookie name must carry the `__Host-` prefix, and a shared one the `__Secure-` prefix, each spelled exactly so: another letter case is a configuration error.
 - `session.WithSuccessorFromCaller`, which builds a rotation's successor from the caller's copy and refuses one whose stored record changed since it was loaded.
+- Renaming a user, and listing users by offset with a total count: `UserChange.Username` (a rename under the same rules as creating a user), `UsernameUpdater` (the store port a rename needs), `UserFilter.Offset` and `Users.Count` (an offset page and the number of users a filter matches), and `UserPager` (the store port those two need). Ending a renamed user's sessions is opt-in with `WithSessionRevocation` and a `SessionRevoker`, which `*session.Sessions` satisfies; when the update commits but the revocation fails, `Update` returns the user together with `ErrSessionsNotRevoked`. The offset is bounded by `WithMaxListOffset`, default `DefaultMaxListOffset` (10 000). Consumer stores keep working unchanged and opt in by implementing `UsernameUpdater` and `UserPager`; until then a rename, an offset or a count is `ErrConfig`, and the conformance suite skips their cases. A consumer store that embeds a scrty store and overrides `UpdateUser` or `ListUsers` must override the matching new methods too: `UpdateUserRenaming`, and `ListUsersFrom` and `CountUsers`. Cursor listing is unchanged.
 
 ### Changed
 

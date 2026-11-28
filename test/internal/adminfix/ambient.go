@@ -157,7 +157,7 @@ func runImportKeySpace(t *testing.T, h Harness, newImported func(t *testing.T, r
 	require.NoError(t, err)
 
 	name := "Renamed"
-	user, err = h.Users.UpdateUser(ctxB, in.ID, user.Version, admin.UserChange{Name: &name})
+	user, _, err = h.Users.UpdateUser(ctxB, in.ID, user.Version, admin.UserChange{Name: &name})
 	require.NoError(t, err)
 
 	changed := in
@@ -176,7 +176,7 @@ func runImportKeySpace(t *testing.T, h Harness, newImported func(t *testing.T, r
 	email := "scrty-import:" + string(in.ID)
 	ctxB2, cancelB := context.WithTimeout(ctxB, importQueueBound)
 	defer cancelB()
-	_, err = h.Users.UpdateUser(ctxB2, in.ID, user.Version, admin.UserChange{Email: &email})
+	_, _, err = h.Users.UpdateUser(ctxB2, in.ID, user.Version, admin.UserChange{Email: &email})
 	require.NoError(t, err, "an email that spells the import lock's text must not deadlock with the waiting import")
 
 	rollbackB()

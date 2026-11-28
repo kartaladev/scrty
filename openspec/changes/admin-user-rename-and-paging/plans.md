@@ -1,600 +1,677 @@
-# Admin User Rename and Paging Implementation Plan
+# Admin User Rename, Paging and Port Fold Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** `admin.Users` gains two abilities:
-- **Rename.** `Update` can change a user's username, together with the email and under one version
-  check, by the uniqueness rules of creation. It comes with opt-in session revocation, which runs
-  only when the username actually changed, and a refusal before writing on stores that cannot
-  rename.
-- **Numbered pages.** `List` can page from any offset and `Count` reports how many users match, so a
-  screen can show "10 of 999 records shown" and jump to any page. Cursor listing stays the default
-  and is unchanged.
+**Goal:** finish the change with one shape for every contract:
+- `admin.UserStore` renames through `UpdateUser`, which reports `renamed`; it pages through
+  `ListUsers` with `UserQuery.Offset` and counts through `CountUsers`;
+- every compatibility-only optional port in the library is folded into its base interface (D15).
 
 **Architecture:**
-- **Rename:** `UserChange.Username` goes to an optional store method,
-  `UsernameUpdater.UpdateUserRenaming`, which also reports whether the stored username changed.
-  `UserStore.UpdateUser` is unchanged and never sees a username. `WithSessionRevocation` takes a
-  `SessionRevoker`, which `*session.Sessions` satisfies.
-- **Paging:** `UserFilter.Offset` and `Users.Count` go through an optional store port, `UserPager`.
-- **SQL stores:** a rename writes the username alone first (`pgschema.RenameAdminUser`, as import
-  does), then the other fields. The cursor listing, the offset listing and the count share one
-  filter fragment.
-- **Conformance:** the public suite runs the rename cases only for stores implementing
-  `UsernameUpdater`, and the offset and count cases only for stores implementing `UserPager`.
+- **Admin fold:** the optional `UsernameUpdater` and `UserPager` ports already built on this branch
+  move into `UserStore`. The SQL stores keep their shared helpers and serve both listing modes from
+  one statement.
+- **Library fold:** each folded port's methods join the base interface. The type assertions,
+  fallbacks, refusals, variant wrappers and conformance skips that existed for the absent case are
+  deleted.
+- **Lanes:** areas are independent. They run in their own git worktrees and are integrated one by
+  one.
 
 **Tech Stack:** Go 1.27, testify, mockgen (`use-mockgen`), testcontainers PostgreSQL 18 and 15
 (`use-testcontainers`).
 
-**Spec:** `openspec/changes/admin-user-rename-and-paging/{proposal.md,design.md,specs/security-administration/spec.md,tasks.md}`.
+**Spec:** `openspec/changes/admin-user-rename-and-paging/{proposal.md,design.md,specs/**,tasks.md}`.
 Every plan task names the `tasks.md` numbers it carries out. This plan adds no scope beyond
 `tasks.md`.
 
+## Done before the revision (record)
+
+| tasks.md | Commit | What |
+|---|---|---|
+| 1.1–1.5 | `04415fe2` | Service rename, routing, events, opt-in revocation and godoc, behind `UsernameUpdater`. |
+| 2.1–2.7, 4.1 | `0e8d9fba`, `8c235de8` | Stores apply renames, plus the collision, the race, library stores, load-bearing cases and import after a rename. |
+| 3.1 | `3b8874b8` | Opted-in revocation over the real `sqlstore`. |
+| 5.1–5.4 | `808724b5` | Service offset, `Count` and godoc, behind `UserPager`. |
+| (6.x, before the revision) | `8445f0dd` | The stores' offset and count behind `UserPager`, the shared filter fragment, and the gated cases and defects. |
+| 7.1 | `9c74355a` | The changelog `Added` entry. Task 7.2 rewrites it. |
+
 ## Global Constraints
 
-- **Test-first** (`golang-tdd.md`): see the focused red step fail for the intended reason before
-  implementing. A compile error, a skipped test or a test that never compiled is not red. If a new
-  name has to exist for a test to compile, add a stub first.
-- **The toy store needs a build tag.** `test/admin` toy-store tests carry `//go:build admin_stub`.
-  Every command that exercises them passes `-tags admin_stub`. The toy store runs the suite only in
-  `TestAdminSuiteIsLoadBearing`'s case "a conforming store passes the whole suite".
-- **Table tests** use the `table-test` skill: an `assert` closure and `t.Context()`.
-- **Usernames** are compared exactly, byte for byte, deleted users included. A username clashes
-  with another *live* user's email when they are equal ignoring case. The user's own username and
-  email never clash.
-- **Username validation** is `exactName("username", s, MaxTextBytes)`, as `Create` uses.
-- **Clashes** give `AlreadyExistsError{Field: FieldUsername}` or `FieldEmail`. Error and event text
-  never contain a username or an email.
-- **`renamed`** is true when the stored username differed byte for byte. A case-only change counts.
-  Re-sending the current username is still a write (the version increases, `username` is reported)
-  with `renamed` false, and no revocation.
-- **The lockout key is not touched.** D5 is accepted, so no code moves or clears lockout state.
-- **List order** is `(lower(username), id)` for every listing, offset included.
-- **Offsets:** 0 to `DefaultMaxListOffset` (10 000) inclusive, configurable with
-  `WithMaxListOffset`. Offset 0 is the first page of the default listing and carries `Next`; a
-  non-zero offset carries none. Page size stays 1 to 500, default 50.
-- **Refusal order:** input validation (`ErrInvalidInput`), then store capability (`ErrConfig`),
-  before any store call. Options that can never take effect on the store fail `NewUsers` with
-  `ErrConfig`.
-- **Agents** never edit `openspec/`, never run `git checkout --`, `restore`, `reset --hard`,
-  `stash` or `clean`, and never cite the predecessor reference.
+- **Test-first** (`golang-tdd.md`):
+  - The red step is a behavioural failure seen in a focused run. A compile error is never a red step;
+    add a stub so the test compiles first.
+  - A fold with no behaviour change, for any implementation that compiles both before and after, is a
+    mechanical change that existing tests cover. Its proof is the existing suite staying green, plus
+    deleting the tests of the "absent" path. The spec scenario it rewrites is **pinned** by a test
+    written with the fold, never presented as a red step: such a test passes on today's code,
+    because today's code already honours an implementation that has the method.
+  - A red step is claimed only where behaviour really changes: the session wrappers (Task 3), the
+    reset's re-read (Task 9), `Wrap.Policy` (Task 7), and the admin tasks.
+- **No compatibility shims.** A folded port gets no type alias, no deprecated wrapper and no
+  kept-but-unused method (D15).
+- **These stay optional; do not touch them:** every port design D15 lists as kept optional, among
+  them `DecoyVerifier`, `IdentifierResolver`, `InputLimiter`, `mfa.Enroller`, `SupportsEnrolmentPath`,
+  `mfa.ChallengeMethod`, `oidc.UpstreamBroker`, `authorize.PrivilegeInspector`,
+  `UnreportedAttemptRecorder`, the policy marker interfaces, `AttemptReaper`, `onetime.Reaper`,
+  `identity.EmailLoader`, `logsample.Flusher`, `signingkey.LifetimeReporter`,
+  `token.ConfirmingGenerator`, `notify.NonBlocking` and `clock.Timed`.
+- **Mocks:** regenerate with each `//go:generate` the lane touches. Delete the mock file of an
+  interface that no longer exists (`use-mockgen`).
+- **The toy store** needs `-tags admin_stub`. Its load-bearing run is
+  `(cd test && go test -race -count=1 -tags admin_stub -run '^(TestAdminSuiteIsLoadBearing|TestBrokenAdminStore)$' ./admin/)`.
+- **Agents:**
+  - never edit `openspec/`;
+  - never run `git checkout --`, `restore`, `reset --hard`, `stash` or `clean`;
+  - never read or cite `.claude/.legacy/`;
+  - commit only in their own worktree, and only when the dispatch says to.
+- **Error text** never contains a username, email, attribute value or password hash.
 
 ## Review Focus
 
-Each line is pinned by a test `tasks.md` already lists. None needed scope beyond it.
-
-1. **A profile save that re-sends the current username, with revocation on.** No sign-out. Task 1,
-   case "current username re-sent" (tasks 1.4), and Task 2, case "same username again"
-   asserting `renamed` false (tasks 2.1).
-2. **A context cancelled after the store commits, before the revoker runs.** The error matches
-   `ErrSessionsNotRevoked` and `context.Canceled`, never a silent success. Task 1 (tasks 1.4).
-3. **A store that claims a capability but does not honour it.** Renames: the ignored-username and
-   always-false-`renamed` defects (Task 4, tasks 2.7). Paging: the offset-twice and count-deleted
-   defects (Task 9, tasks 6.5).
-4. **An offset at the maximum, offset zero, and an over-maximum offset on a store without
-   `UserPager`.** Accepted, first page with `Next`, and `ErrInvalidInput` respectively. Task 6
-   (tasks 5.1, 5.2).
-5. **A store returning a negative count or too many rows.** An error, or truncation; never "-1
-   records". Tasks 6 and 7 (tasks 5.2, 5.3).
+1. **Wrappers that embed or wrap a folded interface now forward the folded methods, and must keep
+   their own treatment.** The encrypted session store's `ListByFamily` reads no sealed field and returns no envelope, and its
+   `SelectRole` keeps its fixed error text and sanitised cause (`session/store_encrypted.go:177-180`
+   today). The sealed MFA store seals the emailed code a device proof records
+   (`store/seal/mfa.go:282-300` today). `oidcprovider`'s embedding session wrappers answer a family
+   read through the inner store's `ListByFamily`. Tasks 3 and 5 test all of these.
+2. **One listing statement for both modes must leave cursor paging exactly as it was, and the store
+   still refuses what the old offset method refused.** Task 2 pins:
+   - cursor pages unchanged;
+   - offset 0 with a cursor equals the cursor page;
+   - a negative offset, and an offset with a cursor, sent directly to a store are `ErrInvalidInput`,
+     never a database error.
+3. **An MFA method that reports a removal it did not make must not let a recovery reset succeed.**
+   Task 9 tests it, with a no-op remover.
+4. **`unavailable.Wrap` answers `Policy()` while its backend is down.** It answers the configured
+   limit and window, never an error or zero. Task 7 tests it.
+5. **Lockout keeps calling the streak methods only when a cap is set.** Task 8 guards it with a mock
+   store holding no streak expectations, and runs the streak suite on the memory store and the three
+   SQL stores, on PostgreSQL 18 and 15.
 
 ---
 
 ## Lanes, waves and models
 
-| Lane | Plan tasks (tasks.md) | Owns | Model (reason) |
+| Lane | Plan task (tasks.md) | Owns | Model (reason) |
 |---|---|---|---|
-| A | 1 (1.1–1.5) | `admin/**`, including `userstore_mock_test.go`, the new `usernameupdater_mock_test.go` and `sessionrevoker_mock_test.go`, and `example_test.go` | Opus. The routing guard and the post-commit revocation are refusal logic where a mistake can pass the tests and still be wrong. |
-| B1 | 2 (2.1–2.3) | `internal/pgschema/admin.go` and its test, `store/{sqlstore,pgxstore,gormstore}/admin_users.go`, `test/admin/**`, `test/{sqlstore,pgxstore,gormstore}/admin*_test.go` | Opus. Lock ordering and a two-statement conditional write across three stores, and a public-suite gate. |
-| B2 | 3, 4 (2.4–2.7, 4.1) | the B1 files, `test/internal/adminfix/**` | Opus. Unique-index blocking, a barrier race and load-bearing defects. |
-| C | 5 (3.1) | `test/sqlstore/rename_sessions_test.go` | Sonnet. A wiring test over a real store. |
-| D | 6, 7 (5.1–5.4) | `admin/**`, including the new `userpager_mock_test.go` | Sonnet. Signatures and tests are given here; the validation and routing are small, decided logic. |
-| E | 8, 9 (6.1–6.5) | the B1 and B2 files | Opus. It extracts a shared SQL fragment while keeping the cursor listing's behaviour, across three stores, and adds load-bearing defects. |
-| F | 10 (7.1) | `CHANGELOG.md` | Sonnet. Changelog text. |
+| G1 | 1 (6.1) | `admin/**`; `store/{sqlstore,pgxstore,gormstore}/admin_users.go`; `test/admin/**`; `test/internal/adminfix/**`; `test/gormstore/admin_store_test.go`; `test/sqlstore/rename_sessions_test.go` | Opus: it changes an interface that three modules compile against. |
+| G2 | 2 (6.2, 6.3) | the G1 files; `internal/pgschema/admin*.go`; `test/sqlstore/admin_test.go` | Opus: it merges two SQL statements and must keep cursor paging's behaviour. |
+| H1 | 3 (8.1) | see Task 3 Files | Opus: wrappers, and an encrypted store whose forwarding must read no sealed field and sanitise errors. |
+| H2 | 4 (8.2) | see Task 4 Files | Sonnet: the refusal it removes is already decided. |
+| H3 | 5 (8.3) | see Task 5 Files | Opus: several packages, the test module's public API, sealing, and an interface other code compiles against. |
+| H5 | 7 (8.5) | see Task 7 Files | Opus: wrapper typing across modules, and refusal paths in the chain. |
+| H6 | 8 (8.7) | see Task 8 Files | Opus: a new store type taken by a constructor that several modules call. |
+| H4 | 6 (8.6) | see Task 6 Files | Sonnet: mechanical embedding plus one pinned scenario. |
+| H7 | 9 (8.4, 8.9) | see Task 9 Files | Opus: the reset's re-read is security-relevant refusal logic written for the first time. |
+| H8 | 10 (8.8) | see Task 10 Files | Sonnet: mechanical. |
+| F | 11 (7.2) | `CHANGELOG.md`, `README.md` | Sonnet: documentation text. |
 
-Waves:
+**Waves.**
+- G lanes run in the main tree. Each H lane runs in its own git worktree, branched from the tip of
+  `feat/admin-user-rename-and-paging` only after the previous wave has merged.
+- The main session merges a wave's lanes one at a time and runs each lane's verification after its
+  merge.
 
-1. **A.**
-2. **B1 and D at the same time.** D runs in its own git worktree, because it edits `admin/**`,
-   which B1 compiles against. B1 owns nothing D touches, so D's branch merges cleanly after both
-   pass.
-3. **B2.**
-4. **C.** It compiles in package `test/sqlstore` beside files E edits, so it runs first.
-5. **E.** It needs D's `UserPager` and B2's store files.
-6. **F.**
-7. **Final gate** in the main session (Task 11).
+1. G1 (main tree); H1 and H2 (worktrees).
+2. G2 (main tree); H3, H5 and H6 (worktrees).
+3. H4, H7 and H8 (worktrees). H4 waits for G2 because it edits `admin/importer.go` and regenerates
+   `admin/limitedencoder_mock_test.go` and the `Recognizer` mock from `admin/ports.go:195`.
+4. Task 12 (8.10 sweep) in the main session, then F, then Task 13 (9.1 and 9.2).
 
-Reviewers: Opus for A, B1, B2 and E; Sonnet for C, D and F.
+**Files two lanes of one wave edit.** Rule 4 of `subagent-delegation.md` applies: separate
+worktrees, integrated by the main session. Each lane edits only its named hunks:
+- `test/storetest/memory_test.go`: H3 owns the device-proof suite wiring (around line 154); H6 owns
+  the streak and isolation wiring (around lines 130–135).
+- `httpsec/helpers_test.go`: H3 owns `enrollableLookup` (around line 477); H5 owns the limiter mock
+  expectations; H7 (wave 3) owns `challengeStub` (around line 1784).
+- Regenerated mocks shared by lanes: re-run `go generate` after the merge, never hand-merge.
+
+**Reviewers:** Opus for G1, G2, H1, H3, H5, H6 and H7; Sonnet for H2, H4, H8 and F.
 
 ### Scoped verification
 
-Dependents were computed on 2026-11-28 with `go list -test -deps` across every workspace module.
-`admin` and `internal/pgschema` have dependents only in the root, `store/pgxstore`,
-`store/gormstore` and `test` modules.
+The workspace modules are `.`, `authenticate/passkey/webauthn`, `expiry/sweep`, `httpsec/fibersec`,
+`httpsec/ginsec`, `httpsec/prblmsec`, `ratelimit/redisstore`, `store/gormstore`, `store/pgxstore` and
+`test`. Every lane runs:
 
-- **Service scope** (lanes A and D):
+```sh
+MODS=". authenticate/passkey/webauthn expiry/sweep httpsec/fibersec httpsec/ginsec httpsec/prblmsec ratelimit/redisstore store/gormstore store/pgxstore test"
+# 1. every module builds and vets (a folded interface breaks implementers anywhere)
+for m in $MODS; do (cd $m && go build ./... && go vet ./... && go vet -tags admin_stub ./... ) || echo "FAIL $m"; done
+# 2. the lane's changed packages ($PKGS, the import paths its Task lists) and every package, in every
+#    module, that imports one of them directly or transitively, under -race
+for m in $MODS; do (cd $m && go list -deps -test -f '{{if not .Standard}}{{.ImportPath}} {{join .Deps " "}}{{end}}' ./...   | awk -v pk="$PKGS" 'BEGIN{n=split(pk,a," ")} {for(i=1;i<=n;i++) if(index(" "$0" "," "a[i]" ")){print $1; break}}'   | grep -v '\.test$' | sed 's/_test$//' | sort -u | xargs -r go test -race -count=1 -p 2); done
+# 3. the database-backed packages of the test module that step 2 selected, again on PostgreSQL 15
+(cd test && SCRTY_TEST_POSTGRES_IMAGE=postgres:15.19-alpine go test -race -count=1 -p 2 <the test-module packages from step 2>)
+# 4. formatting
+gofmt -l $(git diff --name-only --diff-filter=AM | grep '\.go$')
+```
 
-  ```sh
-  go test -race -count=1 ./admin/... ./authenticate/passkey/... ./store/sqlstore/...
-  (cd test && go test -race -count=1 . ./admin/... ./crossbackend/... ./gormstore/... ./httpsecconformance/... \
-      ./internal/adminfix/... ./internal/storefix/... ./oidc/... ./pgxstore/... ./ratelimittest/... ./sqlstore/... ./storetest/...)
-  (cd test && go test -race -count=1 -tags admin_stub -run '^(TestAdminSuiteIsLoadBearing|TestBrokenAdminStore)$' ./admin/)
-  (cd store/pgxstore && go test -race -count=1 ./...)
-  (cd store/gormstore && go test -race -count=1 ./...)
-  ```
-- **Store scope** (lanes B1, B2, C and E): the service scope, plus
-  `go test -race -count=1 ./internal/pgschema/... ./internal/storekit/... ./internal/pglimiter/... ./session/...`.
-  Then repeat the `test` module's database-backed dependents (`. ./sqlstore/... ./pgxstore/...
-  ./gormstore/... ./crossbackend/... ./storetest/...`) with
-  `SCRTY_TEST_POSTGRES_IMAGE=postgres:15.19-alpine`, because the helper defaults to 18.6.
-  (`internal/adminfix` holds the shared cases these packages run; it has no tests of its own.)
-- **Every lane:** `go vet` and `gofmt -l` on the packages it touched.
+The toy store's load-bearing run (Global Constraints) is added for G1 and G2.
 
 ---
 
-### Task 1 (tasks 1.1–1.5): The service accepts, routes, guards and reports a rename
+### Task 1 (tasks 6.1): Renames fold into `UserStore.UpdateUser`
 
 **Files:**
-- Modify: `admin/records.go` (`UserChange`), `admin/users.go` (`NewUsers`, `Update`,
-  `validateChange`, `changedUserFields`), `admin/users_options.go`, `admin/ports.go`
-  (`UsernameUpdater`, `SessionRevoker`, their `//go:generate`), `admin/errors.go` (`ErrConfig`
-  godoc, `ErrSessionsNotRevoked`), `admin/example_test.go` (`exampleUserStore` implements
-  `UpdateUserRenaming`)
-- Create: `admin/rename_test.go`, `admin/usernameupdater_mock_test.go`,
-  `admin/sessionrevoker_mock_test.go`, `admin/example_rename_test.go`
+- Modify:
+  - `admin/ports.go`: change `UserStore.UpdateUser`; delete `UsernameUpdater` and its `//go:generate`.
+  - `admin/users.go`: `NewUsers` and `Update`.
+  - `admin/users_options.go`, `admin/errors.go`, `admin/records.go`: godoc.
+  - `admin/example_test.go`.
+  - `store/{sqlstore,pgxstore,gormstore}/admin_users.go`.
+  - `test/admin/{toystore_test.go,conformance_users.go,conformance_import.go,conformance_guard_test.go}`.
+  - `test/internal/adminfix/{userstore.go,races.go,ambient.go}`, `test/admin/conformance_roles.go`.
+  - `test/gormstore/admin_store_test.go` (four `UpdateUser` calls).
+  - `admin/{users_test,audit_test,audit_stale_test,events_test,rename_test}.go` (mocked `UpdateUser`
+    returns three values).
+- Delete: `admin/usernameupdater_mock_test.go`.
+- Test: `admin/rename_test.go` and the `test/admin` conformance cases.
 
 **Interfaces:**
 - Produces:
 
   ```go
-  // UserChange gains, as its first field:
-  Username *string // nil = unchanged
-
-  type UsernameUpdater interface {
-      UpdateUserRenaming(ctx context.Context, id identity.UserID, version int64,
-          change UserChange) (updated User, renamed bool, err error)
-  }
-
-  type SessionRevoker interface {
-      DeleteByUser(ctx context.Context, user identity.UserID) error
-  }
-
-  func WithSessionRevocation(r SessionRevoker) UsersOption // nil, typed-nil, or store without UsernameUpdater → NewUsers fails with ErrConfig
-
-  var ErrSessionsNotRevoked = errors.New("admin: the renamed user's sessions were not revoked")
-
-  const userFieldUsername = "username" // first in changedUserFields' output
+  // in admin.UserStore, replacing UpdateUser and UsernameUpdater.UpdateUserRenaming:
+  UpdateUser(ctx context.Context, id identity.UserID, version int64, change UserChange) (updated User, renamed bool, err error)
   ```
 
-- Update order:
+- `Users.Update` keeps this order:
   1. actor;
   2. id and version;
-  3. `validateChange`, whose "names no field" check counts `Username`;
-  4. if `change.Username != nil` and the store is not a `UsernameUpdater`, return an error
-     matching `ErrConfig`;
-  5. the audit "before" record;
-  6. `UpdateUserRenaming` when `change.Username != nil`, else `UpdateUser`;
-  7. the event and audit;
-  8. if `renamed` and a revoker is set, call `DeleteByUser(ctx, userID)`. On error, return
-     `updated, fmt.Errorf("%w: %w", ErrSessionsNotRevoked, err)`.
+  3. validation;
+  4. the audit "before" record;
+  5. `UpdateUser`;
+  6. the event and audit;
+  7. revocation, only when `change.Username != nil && renamed`.
 
-- [ ] **Step 1: Write the failing tests** in `admin/rename_test.go`. A renaming store is a test type
-  embedding `*MockUserStore` and `*MockUsernameUpdater`.
-  - `TestUpdate_UsernameValidation` (table):
-    - `""`, `" ada"`, `"ada\x00"`, `"ada\x07"`, `"ada\xff"` and
-      `strings.Repeat("a", MaxTextBytes+1)` each give `ErrInvalidInput`, with no store method
-      called;
-    - `UserChange{Username: ptr("ada.lovelace")}` alone, on the renaming store, reaches
-      `UpdateUserRenaming` once.
-  - `TestUpdate_RenameRouting` (table):
-    - "store without support": the plain `MockUserStore` with an audit sink. A rename gives
-      `errors.Is(err, ErrConfig)`, and `GetUser` and `UpdateUser` get `.Times(0)`;
-    - "invalid username without support": `" ada"` gives `ErrInvalidInput`, not `ErrConfig`;
-    - "other fields": a `Name` change calls `UpdateUser` and succeeds;
-    - "rename routes": on the renaming store, a rename calls `UpdateUserRenaming` once and
-      `UpdateUser` at `.Times(0)`.
-  - `TestUpdate_RenameReported`: `UpdateUserRenaming` returns the user with the new username and a
-    verification time set.
-    - The event names `["username","email"]`, and its text contains neither `ada`, `ada.lovelace`
-      nor the email.
-    - The audit receives before and after.
-    - A store `AlreadyExistsError{FieldUsername}` gives no event, and the error text has no
-      username.
-  - `TestUpdate_SessionRevocation` (table, with a mockgen `MockSessionRevoker`, on the renaming
-    store):
-    - default: no revoker, and nothing is called;
-    - renamed: `UpdateUserRenaming` returns `renamed=true`, and `DeleteByUser(ctx, "u-ada")` is
-      called once;
-    - current username re-sent: `renamed=false`, `.Times(0)`;
-    - `Name` only: `.Times(0)`;
-    - refused rename (the store returns `AlreadyExistsError`): `.Times(0)`;
-    - revoker error `errBoom`: matches `ErrSessionsNotRevoked` and `errBoom`, the text contains
-      no username, the returned user has the new username, and one event is emitted (spec
-      scenarios "Revocation fails", "Sessions not revoked", "Committed change with a failed
-      follow-up");
-    - context cancelled after commit: the store mock cancels `ctx` and succeeds with
-      `renamed=true`, and the revoker returns `ctx.Err()`. The error matches
-      `ErrSessionsNotRevoked` and `context.Canceled`. This checks the wrapping only; the revoker
-      runs on the caller's context by design (D6).
-  - `TestNewUsers_SessionRevocationWiring` (table), each giving `ErrConfig`:
-    `WithSessionRevocation(nil)`, `WithSessionRevocation((*MockSessionRevoker)(nil))`, and a valid
-    revoker over the plain `MockUserStore`.
-  - `ExampleWithSessionRevocation` in `admin/example_rename_test.go`:
-    `session.NewMemoryStore()`, `session.New(session.WithStore(store))`, then
-    `admin.NewUsers(&exampleUserStore{...}, admin.WithSessionRevocation(sessions))`, with `// Output:`.
-- [ ] **Step 2: Run** `go test -race -run 'TestUpdate_|TestNewUsers_SessionRevocationWiring|ExampleWithSessionRevocation' -count=1 ./admin/`.
-  Expected: behavioural failures, recorded. For example, the username-only change is refused as
-  naming no field, `UpdateUser` is called for a rename, and no `username` field is reported.
-- [ ] **Step 3: Implement** the interfaces above. Write the godoc for task 1.5, as `tasks.md` lists
-  it: defaults, D5 lockout (counts age out, holds never expire, call the lockout `Reset` on the old
-  username), the standalone `JWTAuthenticator` caveat, `UpdateUser` never receiving a username, the
-  embedding warning on `UsernameUpdater`, the user returned with `ErrSessionsNotRevoked`, the
-  caller's-transaction caveat on `WithSessionRevocation`, leaving `Username` nil on stores without
-  the port, and `ErrConfig`'s call-time rename case.
-- [ ] **Step 4: Run** the service scope, `go doc ./admin UsernameUpdater`, `go doc ./admin UserChange`
-  and `go vet ./admin`. Expected: PASS, with the godoc shown.
-- [ ] **Step 5: Commit** with the message `feat(admin): updates may rename a user through stores
-  that support it, with opt-in session revocation`.
-
-### Task 2 (tasks 2.1–2.3): The stores apply the username
-
-**Files:**
-- Modify: `test/admin/conformance_users.go` (new `renameCases`, gated on the port),
-  `test/admin/toystore_test.go` (`UpdateUserRenaming`), `internal/pgschema/admin.go`
-  (`RenameAdminUser`), `test/sqlstore/admin_test.go` (`TestAdminStatementsMatchSchema` entry), and
-  the `admin_users.go` of `store/sqlstore`, `store/pgxstore` and `store/gormstore`.
-
-**Interfaces:**
-- Consumes: `admin.UserChange.Username` and `admin.UsernameUpdater` (Task 1).
-- Produces:
-  `pgschema.RenameAdminUser = "UPDATE scrty_users SET username = $2 WHERE id = $1 AND username <> $2"`,
-  and `UpdateUserRenaming` on each store's `IdentityStore`.
-- `UpdateUserRenaming`, in one transaction:
-  1. `lockAdminUser` (version check);
-  2. the existing verification and organisation checks, as `UpdateUser`;
-  3. one `checkIdentifiers(…, uid, *change.Username, email)` call, where `email` is the named email
-     when it is non-empty and differs from the stored one, else `""` (gorm's variant takes no ctx);
-  4. `RenameAdminUser`: a unique violation is `FieldUsername`, and one row affected is
-     `renamed = true`;
-  5. `UpdateAdminUserQuery` over the other fields (it always bumps the version): a unique violation
-     is `FieldEmail`;
-  6. attributes and the read-back, as `UpdateUser`.
-
-  Share steps 2, 5 and 6 with `UpdateUser` through a helper, not a copy.
+  It still returns `(User, error)` to its callers.
+- `NewUsers` no longer type-asserts the store. `WithSessionRevocation` refuses only a nil or typed-nil
+  revoker.
 
 - [ ] **Step 1: Write the failing tests.**
-  - `renameCases` runs only when `f.Users()` implements `admin.UsernameUpdater`, otherwise
-    `t.Skip("admintest: the store does not implement admin.UsernameUpdater; rename cases skipped")`.
-    It calls `UpdateUserRenaming` directly. The cases:
-    - "Rename": `ada` → `ada.lovelace`, no other field. `renamed` is true, she loads with it, the
-      version increased, and no live user is named `ada`.
-    - "Username held by a deleted user": `FieldUsername`, nothing written.
-    - "Username equal to another user's email": `CAROL@example.com` gives `FieldUsername`.
-    - "Only the case changes": `Ada` is stored, and `renamed` is true.
-    - "Stale rename": deactivate, then rename at the old version. `ErrStaleUpdate`; she stays
-      inactive with the old username.
-    - "Username follows a new email": both set to `ada@lovelace.dev`. The email is unverified, and
-      the version increased by exactly 1.
-    - "One field clashes": a free username with a taken email gives `FieldEmail`, and neither field
-      changes.
-    - "own email in the same change": succeeds.
-    - "username and email equal ignoring case": `Ada@x.dev` and `ada@x.dev` succeed.
-    - "same username again": the version increases, and `renamed` is false.
-    - "normalisation differs": `"café"` → `"café"` succeeds, the bytes are stored as
-      given, and `renamed` is true.
-  - `TestAdminStatementsMatchSchema` gains `"RenameAdminUser": pgschema.RenameAdminUser`.
-- [ ] **Step 2: Run**
-  `(cd test && go test -tags admin_stub -run '^TestAdminSuiteIsLoadBearing$/conforming' -count=1 -v ./admin/)`.
-  First give the toy store a stub `UpdateUserRenaming` that changes nothing and returns
-  `renamed=false`; the conforming case passes on skipped cases, so without the stub the gated cases
-  would skip and nothing could go red. Expected: the conforming-store case fails on the rename
-  cases with the stub, then passes once the toy store applies the field. Then
-  `(cd test && go test -run 'Admin' -count=1 -v ./sqlstore/ ./pgxstore/ ./gormstore/ | grep -i 'rename cases skipped')`
-  shows the skip on each SQL store. Record both.
-- [ ] **Step 3: Implement** in `sqlstore`, then `pgxstore`, then `gormstore`. For each store, first
-  add a stub `UpdateUserRenaming` that returns the stored user unchanged with `renamed=false`, and
-  see its rename cases fail on the unchanged username (the red step). Then implement the sequence
-  above.
-- [ ] **Step 4: Run** the store scope, on PostgreSQL 18 and 15. Expected: PASS.
-- [ ] **Step 5: Commit** with the message `feat(store): user stores rename under the creation clash
-  rules and report the change`.
+  - In `test/admin/conformance_users.go`, add the case "No username in the update". A change naming
+    only `Name` returns `renamed == false` and leaves the username unchanged.
+  - In `admin/rename_test.go`, `TestUpdate_RenameRouting` becomes "a rename calls `UpdateUser` once
+    with `change.Username` set". Delete the cases that expected `ErrConfig`, and the cases that
+    expected `UpdateUser` never to see a username.
+  - `TestNewUsers_SessionRevocationWiring` loses its "store that cannot rename" case.
+  - In `test/admin/toystore_test.go`, add the defect `renamed-true`: the toy's `UpdateUser` always
+    reports `renamed=true`. In `conformance_guard_test.go`, add its guard row expecting
+    `Users/Rename/No_username_in_the_update` and `Users/Rename/Same_username_again` to fail.
+  - In `TestUpdate_SessionRevocation` (`admin/rename_test.go`), add the case "store reports a rename
+    for a change naming no username": the mocked `UpdateUser` returns `renamed=true` for a change
+    with `Username == nil`; assert the revoker mock gets no `DeleteByUser` call and `Update`
+    returns no error.
+- [ ] **Step 2: Run** the toy's conforming case, with the toy's `UpdateUser` stubbed to always report
+  `renamed=true`.
+  - Expected: FAIL in "No username in the update", on the `renamed` assertion.
+  - Then the new `TestUpdate_SessionRevocation` case against `Update` still gating on `renamed`
+    alone. Expected: FAIL, with an unexpected call to the revoker.
+  - The `renamed-true` guard row passes once the defect exists, since the cases already assert
+    `renamed == false`. Show it can fail by removing the defect from the toy for one run.
+- [ ] **Step 3: Implement.**
+  - Move each store's `UpdateUserRenaming` body into `UpdateUser`. When `change.Username == nil`, skip
+    the username's identifier lock and the `RenameAdminUser` statement, and report `renamed=false`.
+  - Steps 2, 5 and 6 go through the existing shared helpers. Delete the old `UpdateUser`.
+  - Remove `renameSkip`, `variantNoUsernameUpdater` and its guard case, and the `renamer` helpers.
+  - Regenerate the `admin` mocks.
+- [ ] **Step 4: Run** the service scope, then the store scope on PostgreSQL 18 and 15, then the toy
+  load-bearing run.
+  - Expected: PASS, and a verbose run shows no "rename cases skipped".
+- [ ] **Step 5:** `rg -n 'UsernameUpdater|UpdateUserRenaming' --glob '!openspec/**' --glob '!.claude/**'` prints nothing.
+- [ ] **Step 6: Commit** as `refactor(admin)!: UserStore.UpdateUser renames and reports the change`.
 
-### Task 3 (tasks 2.4, 2.5, 2.6, 4.1): Collisions, races, every store, and import after a rename
+### Task 2 (tasks 6.2, 6.3): Offset and count fold into `UserStore`
 
 **Files:**
-- Modify: `test/internal/adminfix/userstore.go` and `races.go`, `test/admin/conformance_users.go`,
-  `test/admin/conformance_import.go`, and `test/{sqlstore,pgxstore,gormstore}/admin*_test.go` where a
-  harness field is needed.
+- Modify:
+  - `admin/ports.go`: `UserStore` gains `CountUsers`; delete `UserPager` and its `//go:generate`.
+  - `admin/records.go`: `UserQuery.Offset`.
+  - `admin/users.go`: `NewUsers`, `List` and `Count`.
+  - `admin/users_options.go`.
+  - `internal/pgschema/admin.go` and `internal/pgschema/admin_test.go`.
+  - `store/{sqlstore,pgxstore,gormstore}/admin_users.go`.
+  - `test/admin/{toystore_test.go,conformance_users.go,conformance_guard_test.go}`.
+  - `test/sqlstore/admin_test.go`.
+  - `admin/example_test.go`.
+- Delete: `admin/userpager_mock_test.go`.
 
 **Interfaces:**
-- Consumes: Task 2's store behaviour; `adminfix.Harness{Users, DB, ...}`.
+- Consumes: Task 1's `UserStore`.
+- Produces:
 
-- [ ] **Step 1: Write the tests.**
-  - `runRenameHitsUniqueIndex` in `adminfix` (tasks 2.4):
-    1. Transaction T opens on `h.DB`, inserts a `scrty_users` row with username `collide-7f3a`
-       without any advisory lock, and stays open.
-    2. A goroutine renames `ada` to `collide-7f3a` through `UpdateUserRenaming`. It blocks on the unique
-       index; wait until `pg_stat_activity` shows it waiting.
-    3. Commit T.
-    4. Assert `AlreadyExistsError` with `Field == FieldUsername`, and that the error text does not
-       contain `collide-7f3a`.
-  - `runRacingRename` in `adminfix/races.go` (tasks 2.5): a barrier releases a rename of `ada` to
-    `x@example.com` and an email update of `bob` to `x@example.com`. At most one returns nil, and
-    every other returns `ErrAlreadyExists`. Run 50 iterations.
-  - "Library stores" (tasks 2.6) in `conformance_users.go`, gated as in Task 2: a rename through
-    `admin.NewUsers(f.Users())` and `Update` applies.
-  - "Import after a rename" (tasks 4.1) in `conformance_import.go`, gated on
-    `admin.UsernameUpdater` with the same skip message. Rename `ada` to `ada.lovelace`, then import
-    her identifier with `ada.lovelace` and otherwise equal values. The import reports unchanged and
-    emits no event.
-- [ ] **Step 2: Prove each test can fail.** These pin behaviour Task 2 already built, so they may
-  pass at once. For each, break the behaviour it pins in a scratch copy, see it fail, and restore:
-  - unique index: swap the two statements' field mapping;
-  - race: remove the advisory-lock call from `checkIdentifiers` (both writes then succeed, because
-    no unique index spans username and email);
-  - library stores: return before the rename write;
-  - import: rename without updating the stored username.
+  ```go
+  // admin.UserQuery gains:
+  Offset int // users to skip in list order; non-zero only when AfterUsername and AfterID are empty
+  // admin.UserStore gains (ListUsersFrom is deleted):
+  CountUsers(ctx context.Context, query UserQuery) (int64, error)
+  // pgschema: ListAdminUsers binds its existing $1-$8 plus $9 = OFFSET; ListAdminUsersFrom is deleted;
+  // CountAdminUsers is unchanged.
+  ```
 
-  Record each failure (`golang-tdd.md`).
-- [ ] **Step 3: Fix** anything the tests expose.
-- [ ] **Step 4: Run** the store scope with `-race`, on PostgreSQL 18 and 15. Expected: PASS.
-- [ ] **Step 5: Commit** with the message `test(admin): renames collide, race and import safely on
-  every store`.
+- `List` sends `UserQuery{..., Offset: filter.Offset}` to `ListUsers` for any offset. It truncates the
+  result to `Limit`, and sets `Next` only when `Offset == 0`.
+- `Count` calls `CountUsers`. `WithMaxListOffset` refuses only `n < 0`; delete `usersConfig.offsetGiven`.
+- Each store's `ListUsers` (and the toy's) refuses `query.Offset < 0`, and `query.Offset != 0` with a
+  non-empty `AfterUsername` or `AfterID`, with an error matching `ErrInvalidInput`, before querying.
 
-### Task 4 (tasks 2.7): The rename cases are load-bearing
+- [ ] **Step 1: Write the failing tests.**
+  - `admin/offset_test.go`:
+    - "jump to a page" expects `ListUsers` with `Offset: 100`, `Limit: 50` and empty After fields;
+    - delete the `ErrConfig`, plain-store and `storeFor` cases;
+    - keep the validation, truncation and store-error cases.
+  - `test/admin/conformance_users.go`: add "Offset zero with a cursor equals the cursor page" (Review
+    Focus 2).
+  - `internal/pgschema/admin_test.go`: rename `TestListAdminUsersUnchanged` to
+    `TestListAdminUsersBindsCursorAndOffset` and assert the cursor comparison on `$1`–`$8` and
+    `OFFSET $9`. Drop `ListAdminUsersFrom` from `TestAdminUserListingStatements`.
+  - `test/admin/conformance_users.go`: "Store asked for a negative offset", which calls the store
+    directly with `Offset: -1` and with `Offset: 5` plus a cursor, and expects `ErrInvalidInput` both
+    times.
+  - `admin/count_test.go`: drop `pagerStore` and `storeFor`.
+- [ ] **Step 2: Run** the failing tests.
+  - First, `go test -race -run 'TestList_Offset' -count=1 ./admin/` against `List` still calling a
+    stub `ListUsersFrom`. Expected: FAIL, because `ListUsers` was not called with the offset.
+  - Then the toy's conforming case, with a toy `ListUsers` that ignores `Offset`. Expected: FAIL in
+    "Jump to a page".
+- [ ] **Step 3: Implement.**
+  - Build `ListAdminUsers` from the filter fragment, with `OFFSET $9`, and delete
+    `ListAdminUsersFrom`.
+  - In each store, bind `query.Offset` as `$9` in its `listAdminUsers` helper, delete
+    `ListUsersFrom`, and keep `CountUsers`.
+  - Delete `pagerSkip`, `variantNoUserPager`, `toyUsersWithoutPager` and its guard case. Keep the
+    offset-twice, count-deleted and offset-order defects.
+  - Regenerate the mocks.
+- [ ] **Step 4: Run** the service scope, the store scope on PostgreSQL 18 and 15, and the toy
+  load-bearing run.
+  - Expected: PASS, with every existing listing case green and no "offset and count cases skipped".
+- [ ] **Step 5:** `rg -n 'UserPager|ListUsersFrom|ListAdminUsersFrom|pagerSkip' --glob '!openspec/**' --glob '!.claude/**'` prints nothing.
+- [ ] **Step 6: Commit** as `refactor(admin)!: UserStore lists from an offset and counts`.
 
-**Files:**
-- Modify: `test/admin/toystore_test.go` (new defects), `test/admin/conformance_guard_test.go`.
-
-**Interfaces:**
-- Produces, in the `defect` constants:
-  - `variantNoUsernameUpdater defect = "no-username-updater"`: the toy store hides
-    `UpdateUserRenaming`;
-  - `defectRenameIgnored defect = "rename-ignored"`: it leaves the username unchanged;
-  - `defectRenameUnchecked defect = "rename-unchecked"`: it skips the username clash checks;
-  - `defectRenamedFalse defect = "renamed-false"`: it always reports `renamed` false.
-
-- [ ] **Step 1: Write the guard cases.**
-  - In `TestAdminSuiteIsLoadBearing`'s fixed cases: `variantNoUsernameUpdater` on part `users`
-    passes, and its output contains the skip message.
-  - In `guards`:
-    - `defectRenameIgnored` failing in "Rename";
-    - `defectRenameUnchecked` failing in "Username held by a deleted user" and in "Username equal
-      to another user's email";
-    - `defectRenamedFalse` failing in "Rename".
-- [ ] **Step 2: Run**
-  `(cd test && go test -tags admin_stub -run '^TestAdminSuiteIsLoadBearing$' -count=1 ./admin/)`
-  before the defects exist. Expected: the new guard cases fail, because the defect changes nothing.
-  Record it.
-- [ ] **Step 3: Implement** the defects in the toy store.
-- [ ] **Step 4: Run** the same command, then the store scope. Expected: PASS.
-- [ ] **Step 5: Commit** with the message `test(admin): prove the rename conformance cases catch
-  broken stores`.
-
-### Task 5 (tasks 3.1): Sessions end on an opted-in rename
+### Task 3 (tasks 8.1): Sessions fold `FamilyReader` and `RoleSelector`
 
 **Files:**
-- Create: `test/sqlstore/rename_sessions_test.go` (untagged, so `make test` and CI run it)
-
-- [ ] **Step 1: Write the failing test** `TestRename_RevokesSessionsWhenOptedIn`.
-  - Use the package's existing migrated-database helper for an `sqlstore.IdentityStore`, and
-    create `ada`.
-  - Set up `store, err := session.NewMemoryStore()` and
-    `sessions, err := session.New(session.WithStore(store))`, failing on either error. Create two
-    sessions for `ada`'s identifier with `sessions.Create`.
-  - Build `admin.NewUsers(identityStore, admin.WithSessionRevocation(sessions))` and rename `ada`.
-  - Assert that `sessions.Load` returns `session.ErrNotFound` for both.
-  - Disable the revoker call in a scratch copy, see the test fail, then restore it.
-- [ ] **Step 2: Run** `(cd test && go test -run TestRename_RevokesSessionsWhenOptedIn -count=1 ./sqlstore/)`.
-  Expected: red as described, then green.
-- [ ] **Step 3: Run** the store scope. Expected: PASS.
-- [ ] **Step 4: Commit** with the message `test(admin): opted-in session revocation ends every
-  session of a renamed user`.
-
-### Task 6 (tasks 5.1, 5.2): Offset validation and routing in `List`
-
-**Files:**
-- Modify: `admin/records.go` (`UserFilter.Offset`), `admin/users.go` (`List`, `query`, `NewUsers`),
-  `admin/users_options.go` (`WithMaxListOffset`, `DefaultMaxListOffset`, `usersConfig.offsetMax`,
-  and whether the option was given), `admin/ports.go` (`UserPager`, its `//go:generate`)
-- Create: `admin/offset_test.go`, `admin/userpager_mock_test.go` (generated)
+- Modify:
+  - `session/{store.go,family_reader.go,role_selector.go,store_encrypted.go,sign_in_state.go,reuse.go}`.
+  - `httpsec/options.go`, around line 448.
+  - `oidcprovider/{lineage,exchange,refresh}.go`: comments only, if no code is needed.
+  - `store/{sqlstore,pgxstore,gormstore}/session.go`: assertions.
+  - `session/store_memory.go` (assertions at 804, 833).
+  - `test/storetest/{session_family_read_suite.go,session_suite.go,broken_session_test.go,memory_test.go}`.
+  - `test/{sqlstore,pgxstore,gormstore}/session_test.go` (42–44).
+  - `httpsec/session_cookie_rotation_test.go` (1092).
+  - `session/{role_selector,sign_in_state,signins_porterr,store_encrypted,store_encrypted_porterr}_test.go`.
+- Regenerate: `session/store.go:204`, `session/store_encrypted.go:51`, `oidcprovider/exchange.go:26`,
+  `httpsec/complete.go:24`, `test/httpsecconformance/internal/mocks/doc.go:10`. Delete the mocks
+  generated from `family_reader.go:37` and `role_selector.go:17`.
+- Delete or rewrite the listing-only and selector-hiding tests the survey named:
+  - `session/store_family_read_test.go:270`;
+  - `test/storetest/session_family_read_suite.go:251`;
+  - `test/storetest/memory_test.go:100`;
+  - `test/storetest/broken_test.go:200`;
+  - `session/reuse_test.go` (`hidesSelector`);
+  - `httpsec/role_switch_test.go` (`noSelectorStore`).
 
 **Interfaces:**
 - Produces:
 
   ```go
-  // UserFilter gains, after Cursor:
-  Offset int // users to skip; 0 = the first page of the default listing. Not with Cursor.
+  // session.Store gains:
+  ListByFamily(ctx context.Context, user identity.UserID, family id.ID, now time.Time) ([]*Session, error)
+  SelectRole(ctx context.Context, id string, role string) error
+  // deleted: FamilyReader, RoleSelector, (*Sessions).SelectsRoles, roleSelectingEncryptedStore, readFamily's fallback
+  ```
 
-  const DefaultMaxListOffset = 10_000
+- [ ] **Step 1: Write the failing tests.**
+  - `TestStore_EncryptedListByFamilyOverMemory`: a family read through `NewEncryptedStore` over a
+    memory store returns the saved sessions with their sealed tokens cleared, and calls no cipher
+    (Review Focus 1; the family read reads no sealed field).
+  - `TestLineageWrappersReadOneFamily`, in `oidcprovider`: each embedding wrapper answers a family
+    read through the inner store's `ListByFamily`. The inner store holds an undecodable row for
+    another family of the same user, which must not cause an error. This is the spec scenario "A
+    store that can only list".
+- [ ] **Step 2: Run** both, focused.
+  - Expected: the wrapper test FAILS on the current code, which falls back to `ListByUser`.
+  - The encrypted-store test may already pass. If it does, invert the open step once to show it can
+    fail.
+- [ ] **Step 3: Implement** the fold.
+  - The encrypted store's `SelectRole` forwards the role unchanged, because it is not sealed, but keeps
+    today's fixed error text and sanitised cause. A test asserts the text on an inner failure.
+  - Delete every refusal that consulted `SelectsRoles`.
+- [ ] **Step 4: Run** the scoped verification for `session`, `oidcprovider`, `httpsec` and the session
+  store suites, on PostgreSQL 18 and 15.
+  - Expected: PASS, with the `storetest` family-read and role cases running on every store.
+- [ ] **Step 5: Commit** in the worktree as `refactor(session)!: every session store reads one family and records a role`.
 
-  func WithMaxListOffset(n int) UsersOption // n < 0, or a store without UserPager → NewUsers fails with ErrConfig
+### Task 4 (tasks 8.2): OIDC links fold `LinkLister` and `LinkRemover`
 
-  type UserPager interface {
-      ListUsersFrom(ctx context.Context, query UserQuery, offset int) ([]User, error)
-      CountUsers(ctx context.Context, query UserQuery) (int64, error)
+**Files:**
+- Modify:
+  - `authenticate/oidc/{ports.go,broker_hook.go,link.go}`.
+  - `store/{sqlstore,pgxstore,gormstore}/oidc_link.go`: assertions.
+  - `test/oidc/linkstore_suite.go`.
+  - The `LinkStore` test doubles: `broker_hook_*_test.go`, `httpsec/resource_server_dependency_test.go`
+    and `test/oidc/linkstore_guard_test.go`.
+- Regenerate: `authenticate/oidc/ports.go:11` and `httpsec/oidc_backchannel.go:17`.
+
+**Interfaces:**
+- Produces: `oidc.LinkStore` gains:
+  - `ListByUser(ctx, user identity.UserID) ([]Link, error)`
+  - `DeleteLink(ctx, link Link) (bool, error)`
+- Deleted: `LinkLister`, `LinkRemover`, `canRecheckFresh`, `errNoLinkLister`, `errNoLinkRemover` and
+  the `checkSignInHooks` refusal.
+
+- [ ] **Step 1: Pin the scenario** with `TestNewBroker_HookOverConsumerLinkStore`.
+  - A sign-in hook over a consumer `LinkStore` double, with several links per user not allowed,
+    builds, and its one-link rule calls the double's `ListByUser`. This is the spec scenario "Link
+    store that cannot list".
+  - This is a mechanical fold (Global Constraints): the test passes on today's code too.
+- [ ] **Step 2: Run** it, and the link store suite. Expected: PASS before the fold.
+- [ ] **Step 3: Implement** the fold. In `linkstore_suite.go`, remove the four port skips and keep the
+  zero-ID skip.
+- [ ] **Step 4: Run** the scoped verification for `authenticate/oidc`, `httpsec` and `test/oidc`, on
+  PostgreSQL 18 and 15. Expected: PASS.
+- [ ] **Step 5: Commit** in the worktree as `refactor(oidc)!: every link store lists and removes one link`.
+
+### Task 5 (tasks 8.3): MFA enrolment stores record device proofs
+
+**Files:**
+- Modify:
+  - `authenticate/mfa/{store.go,totp.go,enroller.go,doc.go}`.
+  - `store/seal/mfa.go`: fold `provingEnrolmentStore` into `enrolmentStore`.
+  - `store/{sqlstore,pgxstore,gormstore}/mfa.go`.
+  - `httpsec/{mfa_enrol.go,mfa_enrol_options.go}`.
+  - `policy/mfa_requirement_enrolment.go`.
+  - `authenticate/passkey/mfa_method.go`.
+  - `test/storetest/{mfa_suite.go,deviceproof_suite.go}`.
+  - `test/{sqlstore,pgxstore,gormstore}/mfa_test.go`, `test/gormstore/statements_test.go`.
+  - `test/internal/storefix/{races.go,sealed.go}`, `test/storetest/{race.go,broken_race_test.go,broken_mfa_test.go,memory_test.go}` (its hunk only),
+    `test/crossbackend/crossbackend_test.go`.
+  - `httpsec/{helpers_test.go,passkey_test.go}` (their hunks only), `policy/{helpers_test.go,mfa_requirement_test.go}`,
+    `authenticate/mfa/store_memory.go`.
+- Regenerate:
+  - `authenticate/mfa/store.go:3`;
+  - `store/seal/mfa.go:32-33`, now one generation;
+  - `httpsec/mfa_verify.go:47`, `httpsec/mfa_enrol.go:29`, `store/seal/mfa.go:31`.
+
+**Interfaces:**
+- Produces: `mfa.EnrolmentStore` gains:
+  - `ProveDevice(ctx, user identity.UserID, gen id.ID, step int64, code []byte, codeUntil, at time.Time) (bool, error)`
+  - `Complete(ctx, user identity.UserID, gen id.ID, at time.Time) (bool, error)`
+  - `ChargeEmailCode(ctx, user identity.UserID, gen id.ID, at time.Time) (int, bool, error)`
+- `SupportsEnrolmentPath` stays on `mfa.Enroller` and on the passkey MFA method, because `policy` matches
+  it structurally (D15). TOTP's no longer consults a proof store.
+- Deleted: `DeviceProofStore`, `errNoDeviceProofStore` and `provingEnrolmentStore`.
+- The test module's `storetest.RequireDeviceProof`, `RunDeviceProofSuite` and
+  `DeviceProofEnrolmentStore` are deleted. Their proof cases move into the MFA store suite and always
+  run.
+
+- [ ] **Step 1: Pin the scenario and the sealing.**
+  - `TestEnrolmentPath_OverSealedConsumerStore` in `httpsec`: the enrolment interceptor, over TOTP with
+    a `seal.NewEnrolmentStore` wrapping a consumer double, assembles and completes one enrolment
+    through the path. This is the spec scenario "Store that cannot record a device proof".
+  - `TestSealedEnrolmentStore_SealsEmailedCode` in `store/seal`: the emailed code a device proof
+    records reaches the inner store sealed, and reads back opened.
+  - Both pass on today's code (mechanical fold, Global Constraints).
+- [ ] **Step 2: Implement** the fold.
+- [ ] **Step 3: Run** both tests again. Expected: PASS.
+- [ ] **Step 4: Run** the scoped verification for `authenticate/mfa`, `store/seal`, `httpsec`, `policy`,
+  `authenticate/passkey` and the MFA store suites, on PostgreSQL 18 and 15.
+  - Expected: PASS, with the proof cases running on every store.
+- [ ] **Step 5: Commit** in the worktree as `refactor(mfa)!: every enrolment store records device proofs`.
+
+### Task 6 (tasks 8.6): Password encoders always recognise and report upgrades
+
+**Files:**
+- Modify:
+  - `authenticate/password/encoder.go`, `authenticate/password.go` and
+    `authenticate/password_upgrade.go`.
+  - The encoder test doubles the survey named.
+  - `admin/importer.go`: godoc only; the parameter stays `password.Recognizer`.
+- Regenerate:
+  - `authenticate/password.go:23`;
+  - `httpsec/login.go:32`;
+  - `authenticate/oidc/integration_test.go:3`;
+  - `admin/limitedencoder_test.go:5`;
+  - `admin/ports.go:195`.
+
+**Interfaces:**
+- Produces:
+
+  ```go
+  type Encoder interface {
+      Encode(input string) ([]byte, error) // unchanged
+      Match(input string, encoded []byte) bool // unchanged
+      Recognizer // Recognizes(encoded []byte) bool
+      Upgrader   // NeedsUpgrade(encoded []byte) bool
   }
   ```
 
-- `List` routing, after `query` validates (validation errors come first):
-  - `Offset == 0`: `ListUsers`, as today, with `Next` on a full page;
-  - `Offset > 0` and the store is not a `UserPager`: an error matching `ErrConfig`;
-  - `Offset > 0`: `ListUsersFrom(ctx, q, filter.Offset)`, truncated to `q.Limit`, with `Next` empty.
+- Deleted: `usableHash`'s fallback for an encoder that cannot recognise, and the "never upgrades"
+  fallback for an encoder that cannot report upgrades.
 
-- [ ] **Step 1: Write the failing tests** in `admin/offset_test.go`. The pager store is a test type
-  embedding `*MockUserStore` and `*MockUserPager`.
-  - `TestList_OffsetValidation` (table; every store method `.Times(0)` on refusals):
-    - `Offset: -1` gives `ErrInvalidInput`;
-    - `Offset: 10, Cursor: <valid cursor>` gives `ErrInvalidInput`;
-    - `Offset: 10_001` gives `ErrInvalidInput`, on the pager store and on the plain store;
-    - `Offset: 10_000` reaches `ListUsersFrom` with offset 10 000;
-    - with `WithMaxListOffset(50_000)`, `Offset: 40_000` reaches `ListUsersFrom`.
-  - `TestNewUsers_MaxListOffset` (table), each giving `ErrConfig`: `WithMaxListOffset(-1)` on the
-    pager store, and `WithMaxListOffset(100)` on the plain store.
-  - `TestList_OffsetRouting` (table):
-    - "jump to a page": `Offset: 100, PageSize: 50` calls `ListUsersFrom(ctx, q, 100)` with
-      `q.Limit == 50` and empty `AfterUsername`. The page holds its users, and `Next == ""`;
-    - "offset zero with a cursor": `Offset: 0` with a valid cursor calls `ListUsers` with the
-      cursor's pair;
-    - "offset zero": on both stores, `Offset: 0` calls `ListUsers`, and a full page has a
-      non-empty `Next`;
-    - "store without support": the plain store with `Offset: 50` gives `ErrConfig`, with
-      `ListUsers` at `.Times(0)`;
-    - "cursor listing on the same store": the plain store with a cursor returns its page;
-    - "oversized result": `ListUsersFrom` returns 51 users for `PageSize: 50`, and the page holds
-      50;
-    - "store error": `errBoom` matches none of `ErrNotFound`, `ErrAlreadyExists`,
-      `ErrStaleUpdate`, `ErrInvalidInput`, `ErrNoActor` or `ErrConfig`.
-- [ ] **Step 2: Run** `go test -race -run 'TestList_Offset|TestNewUsers_MaxListOffset' -count=1 ./admin/`.
-  Expected: behavioural failures, recorded.
-- [ ] **Step 3: Implement** the interfaces above.
-- [ ] **Step 4: Run** the focused command, then the service scope. Expected: PASS.
-- [ ] **Step 5: Commit** with the message `feat(admin): list users from an offset, bounded, on stores
-  that support it`.
+- [ ] **Step 1: Pin the scenario** with `TestPassword_ConsumerEncoderThatRecognisesNothing`.
+  - The provider is built with a consumer encoder double whose `Recognizes` returns false, and which
+    counts calls to `Match`.
+  - A known user with a stored hash logs in with the right password.
+  - Assert that the login fails, and that `Match` ran exactly once, against the reference hash. This
+    is the spec scenario "Consumer encoder that does not recognise a hash".
+- [ ] **Step 2: Run** it. Expected: PASS on today's code (mechanical fold).
+- [ ] **Step 3: Implement** the embedding. Delete both fallbacks, and the encoders' redundant
+  `var _ Recognizer` and `var _ Upgrader` lines.
+- [ ] **Step 4: Run** the scoped verification for `authenticate/password`, `authenticate`, `httpsec`
+  and `admin`. Expected: PASS.
+- [ ] **Step 5: Commit** in the worktree as `refactor(password)!: every encoder recognises hashes and reports upgrades`.
 
-### Task 7 (tasks 5.3, 5.4): `Users.Count`, godoc and example
+### Task 7 (tasks 8.5): Limiters always report recent failures and their policy
 
 **Files:**
-- Modify: `admin/users.go` (`Count`, `List` godoc), `admin/records.go` (`UserPage.Next` and
-  `UserFilter.Offset` godoc), `admin/users_options.go` (godoc), `admin/errors.go` (`ErrConfig`
-  godoc), `admin/ports.go` (`UserPager` godoc), `admin/doc.go` (paging), `admin/example_test.go`
-  (`exampleUserStore` implements `UserPager`)
-- Create: `admin/count_test.go`, `admin/example_paging_test.go`
+- Modify:
+  - `ratelimit/{limiter.go,guard.go,memory.go}` and `ratelimit/redisstore/limiter.go`.
+  - `internal/unavailable/wrap.go` and `internal/pglimiter/runner.go`.
+  - `store/{sqlstore,pgxstore}/limiter.go`.
+  - `httpsec/{throttle.go,oidc_client_auth.go}`.
+  - The limiter test doubles: `test/ratelimittest/doubles_test.go`, `test/pg_ratelimit_fault_test.go`,
+    `ratelimit/{recent_test,guard_porterr_test}.go`, `internal/unavailable/recent_test.go`,
+    `httpsec/{challenge_test,throttle_test,oidc_client_throttle_test}.go` and `httpsec/helpers_test.go`
+    (its hunk only).
+  - The godoc that names `ratelimit.PolicyReporter`: `httpsec/{apikey.go,basic.go,doc.go,login_options.go,magiclink_options.go,oidc_options.go,oidc_provider_options.go,passkey_login.go,recovery_options.go,session_bearer.go,options.go,challenge.go}`.
+  - `test/ratelimittest/` suite: new `Policy` and `HasRecentFailures` cases on every limiter.
+  - Every OIDC client-auth test whose gomock limiter now receives a `Policy()` call from
+    `limiterWindow`.
+- Regenerate:
+  - `ratelimit/limiter.go:12`;
+  - `internal/unavailable/wrap.go:15`;
+  - the reflect-mode `Limiter` mocks in `oidcprovider`, `recovery`, `httpsec`, `authenticate/mfa` and
+    `authenticate/passkey`.
 
 **Interfaces:**
-- Consumes: `UserPager` and the filter validation from Task 6.
-- Produces: `func (u *Users) Count(ctx context.Context, filter UserFilter) (int64, error)`. It
-  validates as `List` does, on a copy of the filter with `PageSize`, `Offset` and `Cursor` zeroed.
+- Produces: `ratelimit.Limiter` gains:
+  - `Policy() (limit int, window time.Duration)`
+  - `HasRecentFailures(ctx context.Context, key string) (bool, error)`
+- `unavailable.Wrap` gains `limit int` and `window time.Duration` fields on its `limiter` struct
+  (`internal/unavailable/wrap.go:216-231` today holds neither). It returns a `ratelimit.Limiter` whose
+  `Policy()` answers them. Its backend parameter is an internal interface without `Policy`.
+- The guard keeps reporting "has recent failures" when `HasRecentFailures` returns an error.
+- Deleted:
+  - `PolicyReporter`, `RecentFailureReporter` and `errNoReport`;
+  - the chain's warning and refusal for a limiter that reports no policy;
+  - `limiterWindow`'s zero fallback.
 
-- [ ] **Step 1: Write the failing tests** in `admin/count_test.go`.
-  - `TestCount` (table):
-    - "count beside a page": `Search: "ada", PageSize: 10, Offset: 20, Cursor: "x"` calls
-      `CountUsers` once with `Search == "ada"` and empty cursor fields, returning 999;
-    - "invalid search": a search of `MaxSearchBytes+1` bytes gives `ErrInvalidInput`, with
-      `CountUsers` at `.Times(0)`;
-    - "store without support": the plain store gives `ErrConfig`;
-    - "negative count": `CountUsers` returns `-1`. The result is 0 with an error matching no
-      administration reason;
-    - "store error": `errBoom`, matching no administration reason.
-  - `ExamplePagingWithCount` in `admin/example_paging_test.go`: over the example store holding 999
-    users, list `Offset: 20, PageSize: 10` and count, then print
-    `fmt.Printf("%d of %d records shown (page %d of %d)\n", len(page.Users), total, 3, 100)`, with
-    `// Output: 10 of 999 records shown (page 3 of 100)`.
-- [ ] **Step 2: Run** `go test -race -run 'TestCount|ExamplePagingWithCount' -count=1 ./admin/`.
-  Expected: FAIL on the missing behaviour (a stub `Count` returns 0, nil). Record it.
-- [ ] **Step 3: Implement** `Count`, and write the godoc for task 5.4, as `tasks.md` lists it:
-  defaults, the skip-or-repeat trade-off with the cursor as the consistent choice, offset zero
-  carrying `Next` and a non-zero offset not, the count as a separate read, the embedding warning on
-  `UserPager`, and `ErrConfig`'s offset and count case.
-- [ ] **Step 4: Run** the service scope, `go doc ./admin Users.Count`, `go doc ./admin UserPage` and
-  `go vet ./admin`. Expected: PASS, with the godoc shown.
-- [ ] **Step 5: Commit** with the message `feat(admin): count the users a filter matches`.
+- [ ] **Step 1: Write the failing test** `TestWrap_PolicyWhileBackendDown`.
+  - `Policy()` returns the configured limit and window while the backend errors (Review Focus 4; spec
+    scenario "Shared limiter with its backend down").
+  - Add `Policy()` to the wrapper as a stub returning zeros, so the test compiles.
+- [ ] **Step 2: Run** it. Expected: FAIL with `0` and `0s`.
+- [ ] **Step 2b: Pin, with the fold,** these:
+  - `TestChain_ExplicitAggregateOverConsumerLimiter`: an explicit /48 aggregate with a multiplier of
+    2, over a consumer limiter reporting 50 per minute, asks for 100 per minute.
+  - `TestChain_DefaultAggregateOverConsumerLimiter`: spec scenario "Consumer limiter that reports no
+    policy".
+  - `TestGuard_RecentFailuresErrorCountsAsSuspicious`: spec scenario "Limiter whose answer fails".
+  - The `ratelimittest` cases.
+- [ ] **Step 3: Implement** the fold.
+- [ ] **Step 4: Run** the scoped verification for `ratelimit`, `ratelimit/redisstore`,
+  `internal/unavailable`, `internal/pglimiter`, the limiter stores, `httpsec` and
+  `test/ratelimittest`, on PostgreSQL 18 and 15. Expected: PASS.
+- [ ] **Step 5: Commit** in the worktree as `refactor(ratelimit)!: every limiter reports recent failures and its policy`.
 
-### Task 8 (tasks 6.1, 6.2, 6.3): Stores page by offset and count
+### Task 8 (tasks 8.7): Lockout's store keeps failure streaks
 
 **Files:**
-- Modify: `test/admin/conformance_users.go` (new `pagerCases`), `test/admin/toystore_test.go`
-  (`ListUsersFrom`, `CountUsers`), `internal/pgschema/admin.go`, `internal/pgschema/admin_test.go`,
-  `test/sqlstore/admin_test.go` (`TestAdminStatementsMatchSchema`), and the `admin_users.go` of
-  `store/sqlstore`, `store/pgxstore` and `store/gormstore`.
+- Modify:
+  - `policy/lockout/{attempts.go,lockout.go,lockout_observer.go,lockout_events.go,lockout_options.go}`.
+  - `store/{sqlstore,pgxstore,gormstore}/attempts.go` (assertions).
+  - `test/storetest/{streak_suite.go,isolation_suite.go,memory_test.go}` (its hunk only).
+  - `test/internal/storefix/ambients.go`, `test/crossbackend/streak_test.go`, `test/expirytasks_test.go`.
+  - `test/{sqlstore,pgxstore,gormstore}/{attempts,isolation}_test.go`, `test/pgxstore/isolation_broken_test.go`.
+  - Every caller of `lockout.New`, and the attempt-store doubles passed to it, in `policy/lockout`,
+    `httpsec`, `httpsec/ginsec` and `httpsec/fibersec`.
+- Regenerate: `policy/lockout/attempts.go:59-60`.
 
 **Interfaces:**
-- Consumes: `admin.UserPager` (Task 6).
-- Produces in `pgschema`:
-  - an unexported `adminUserFilter` fragment holding today's `WHERE` filters `$1`–`$5`;
-  - `ListAdminUsers`: the same parameters and behaviour, built from the fragment;
-  - `ListAdminUsersFrom`: the same columns and order, `LIMIT $6 OFFSET $7`, with no cursor
-    comparison;
-  - `CountAdminUsers`: `SELECT count(*) FROM scrty_users u WHERE` the fragment, over `$1`–`$5`.
-- Each store gains `ListUsersFrom` and `CountUsers`, reusing its listing's argument binding and row
-  reading.
+- Produces:
 
-- [ ] **Step 1: Write the failing tests.**
-  - `pagerCases` runs only when `f.Users()` implements `admin.UserPager`, otherwise
-    `t.Skip("admintest: the store does not implement admin.UserPager; offset and count cases skipped")`.
-    The cases:
-    - "Jump to a page": with 120 matching users, `ListUsersFrom(q{Limit:50}, 100)` equals the third
-      cursor page, by identifier and order;
-    - "consecutive offsets": offsets 0, 7, 57 and 107 at limit 50 partition the 120 users in order
-      (7, then 50, 50 and 13);
-    - "Offset past the end": offset 500 gives an empty slice and a nil error;
-    - "offset honours filters": search, active, role and attribute each narrow the offset listing
-      as they narrow the cursor listing;
-    - "Count beside a page": 999 matching users count 999;
-    - "Deleted users are not counted": three users matched by a search on their common username
-      prefix, one soft-deleted, count 2;
-    - "count honours filters": the same four filters.
-  - `pgschema`: `TestListAdminUsersUnchanged` asserts that `ListAdminUsers` still binds `$1`–`$8`
-    with the cursor comparison.
-  - `TestAdminStatementsMatchSchema` gains `ListAdminUsersFrom` and `CountAdminUsers`.
-  - The toy store first gets stub `ListUsersFrom` and `CountUsers` returning nothing and zero, so
-    the gated cases run rather than skip.
-- [ ] **Step 2: Run**
-  `(cd test && go test -tags admin_stub -run '^TestAdminSuiteIsLoadBearing$/conforming' -count=1 -v ./admin/)`.
-  Expected: red with the stubs, then green once the toy store implements the methods. Then the SQL stores'
-  packages show the `UserPager` skip message. Record both.
-- [ ] **Step 3: Implement** the `pgschema` statements, then each store. For each store, first add
-  stubs returning an empty result and zero, and see its cases fail for that reason (the red step).
-  Then implement.
-- [ ] **Step 4: Run** the store scope, on PostgreSQL 18 and 15. Expected: PASS, including every
-  existing listing case and the schema test.
-- [ ] **Step 5: Commit** with the message `feat(store): user stores list from an offset and count
-  matches`.
+  ```go
+  // package lockout
+  type Store interface {
+      policy.AttemptStore
+      AddStreakFailure(ctx context.Context, username string, at, since time.Time, limit int) (streak FailureStreak, setHold bool, err error)
+      FailureStreak(ctx context.Context, username string, since time.Time) (FailureStreak, error)
+      DeleteStreaksBefore(ctx context.Context, retainSince time.Time) (int, error)
+  }
+  func New(store Store, opts ...Option) (*Policy, error) // the store parameter's type changes; options unchanged
+  ```
 
-### Task 9 (tasks 6.4, 6.5): Every store through the service, and load-bearing cases
+- Unchanged: `policy.AttemptStore`, the `Policy.Attempts()` view, `lockout.FailureStreak` and
+  `AttemptReaper`.
+- Deleted: `FailureStreakStore`, the `streaks` field and the cap's store refusal.
+- Every streak call is gated on the cap being set (`capLimit > 0`), never on the store's type.
+
+- [ ] **Step 1: Write the regression guard** `TestLockout_NoCapCallsNoStreakMethod`. A policy with no
+  cap, over a `MockStore` with no streak expectations, records failures, checks and resets. Expected:
+  PASS on today's code. It guards Step 3.
+- [ ] **Step 2: Pin the scenario** with `TestLockout_CapOverConsumerStore`. A cap of 10, over a
+  consumer double whose streak methods report a held streak, builds and refuses the next attempt as
+  held. This is the spec scenario "Store without consecutive counts". Expected: PASS on today's code
+  (mechanical fold).
+- [ ] **Step 3: Implement** the new type and the fold. Replace `p.streaks != nil` with the cap gate at
+  every site (`lockout.go:363,510,693`, `lockout_observer.go:349,471`, `lockout_events.go:85`).
+- [ ] **Step 4: Run** the scoped verification for `policy/lockout`, `httpsec`, `httpsec/ginsec` and
+  `httpsec/fibersec`, and the attempt, streak and isolation suites on the memory store and the three
+  SQL stores, on PostgreSQL 18 and 15 (Review Focus 5). Expected: PASS.
+- [ ] **Step 5: Commit** in the worktree as `refactor(lockout)!: lockout's store keeps failure streaks`.
+
+### Task 9 (tasks 8.4, 8.9): MFA methods remove enrolments; recovery kinds list usable authenticators
 
 **Files:**
-- Modify: `test/admin/conformance_users.go`, `test/admin/toystore_test.go` (defects),
-  `test/admin/conformance_guard_test.go`.
+- Modify:
+  - `authenticate/mfa/{mfa.go,reset.go}`.
+  - `recovery/{mfa_kind.go,reset.go,wayback.go}`.
+  - `authenticate/passkey/{mfa_method.go,recovery_kind.go}`.
+  - The `Method` and `AuthenticatorKind` stubs: `authenticate/mfa/mfa_test.go`, `httpsec/helpers_test.go`
+    (its hunk only), `httpsec/{resource_server_assurance_test,passkey_test}.go`,
+    `recovery/{helpers_test,mfa_kind_test,wayback_test,sanitize_logroute_test,mfa_wayback_porterr_test}.go`,
+    `authenticate/passkey/recovery_kind_test.go`, `httpsec/events_emitted_test.go:351` (builds
+    `[]mfa.EnrolmentRemover`).
+- Regenerate:
+  - `authenticate/mfa/reset.go:3`, `recovery/mfa_kind.go:3` (drop `EnrolmentRemover`) and `recovery/reset.go:3`;
+  - the `Method`, `ChallengeMethod` and `Enroller` mocks in `httpsec` and `recovery`;
+  - `httpsec/signals_sources_test.go:3`.
 
 **Interfaces:**
-- Produces, in the `defect` constants:
-  - `variantNoUserPager defect = "no-user-pager"`: the toy store hides `UserPager`;
-  - `defectOffsetTwice defect = "offset-twice"`: it skips `2*offset`;
-  - `defectCountDeleted defect = "count-deleted"`: it counts soft-deleted users;
-  - `defectOffsetOrder defect = "offset-order"`: its offset listing orders by identifier only.
+- Produces:
+  - `mfa.Method` gains `RemoveEnrolment(ctx context.Context, user identity.UserID) error`.
+  - `mfa.ResetDeps.Enrolments` becomes `[]mfa.Method`.
+  - `recovery.AuthenticatorKind` gains `Usable(ctx context.Context, user identity.UserID) ([]AuthenticatorRef, error)`.
+- Deleted: `EnrolmentRemover`, `UsableLister`, the kind's `removers` map and its refusal, and
+  `wayback.go`'s `usable` fallback.
+- After `RemoveEnrolment` succeeds, the MFA kind reads the user's enrolments again. When the method
+  still holds one, the reset fails with an error that names the method kind, never the user.
 
-- [ ] **Step 1: Write the failing tests.**
-  - "Library stores" in `pagerCases`, gated as in Task 8: with 120 users,
-    `admin.NewUsers(f.Users())` then `List(Offset: 50, PageSize: 50)` and `Count` give 50 users and
-    120.
-  - In `TestAdminSuiteIsLoadBearing`: a fixed case where `variantNoUserPager` on part `users`
-    passes, with the skip message in its output. In `guards`: `defectOffsetTwice` failing in "Jump
-    to a page", `defectCountDeleted` in "Deleted users are not counted", and `defectOffsetOrder` in
-    "consecutive offsets".
-- [ ] **Step 2: Run**
-  `(cd test && go test -tags admin_stub -run '^TestAdminSuiteIsLoadBearing$' -count=1 ./admin/)`
-  before the defects exist. Expected: the guard cases fail, because the defect changes nothing.
-  Record it.
-- [ ] **Step 3: Implement** the four defects in the toy store.
-- [ ] **Step 4: Run** the same command, then the store scope. Expected: PASS.
-- [ ] **Step 5: Commit** with the message `test(admin): offset and count cases run on every store and
-  catch broken ones`.
+- [ ] **Step 1: Write the failing test** `TestMFAKind_ResetFailsWhenMethodDoesNotRemove`.
+  - A consumer method double's `RemoveEnrolment` returns nil but the enrolment lookup still reports
+    `u-1` enrolled. The reset returns an error. This is the spec scenario "Method that does not
+    remove".
+- [ ] **Step 2: Run** it. Expected: FAIL, because the reset succeeds.
+- [ ] **Step 2b: Pin, with the fold,** these:
+  - `TestMFAKind_ResetsThroughConsumerMethod`: spec scenario "Method without a remover".
+  - `TestAnotherWayBack_ConsumerKindWithOnlySuspended`: spec scenario "Consumer kind reports only usable
+    authenticators".
 
-### Task 10 (tasks 7.1): Changelog
+  Both pass on today's code with doubles that have the methods.
+- [ ] **Step 3: Implement** both folds.
+- [ ] **Step 4: Run** the scoped verification for `authenticate/mfa`, `authenticate/passkey`,
+  `recovery` and `httpsec`. Expected: PASS.
+- [ ] **Step 5: Commit** in the worktree as `refactor(recovery)!: MFA methods remove enrolments and kinds list usable authenticators`.
+
+### Task 10 (tasks 8.8): Pending-request stores count live requests
 
 **Files:**
-- Modify: `CHANGELOG.md`, the existing `## [Unreleased]` and its `### Added`.
+- Modify:
+  - `oidcprovider/{store.go,store_memory.go,pending.go,options.go}`.
+  - `store/{sqlstore,pgxstore,gormstore}/oidcprovider_stores.go`.
+  - `test/storetest/oidcprovider_pending_suite.go`.
+  - The pending-store doubles the survey listed.
+- Regenerate: `oidcprovider/pending.go:19` (drop the counter) and `httpsec/oidc_cancel.go:7`.
 
-- [ ] **Step 1: Write the entry** as `tasks.md` 7.1 lists it. It names the ten identifiers, says that
-  consumer stores keep working and opt in through `UsernameUpdater` and `UserPager`, gives the
-  embedding warning, and says cursor listing is unchanged. No BREAKING label. Follow the style of
-  the current entries.
-- [ ] **Step 2:** `grep` the entry for each of the ten identifiers. Expected: all found.
-- [ ] **Step 3: Commit** with the message `docs: changelog for admin renames, offset paging and user
-  counts`.
+**Interfaces:**
+- Produces: `oidcprovider.PendingRequestStore` gains `CountLive(ctx context.Context, now time.Time) (int, error)`.
+- Deleted: `PendingRequestCounter`, `errNoCounter` and the ceiling's store refusal.
 
-### Task 11 (tasks 8.1, 8.2): Final gate (main session only)
+- [ ] **Step 1: Pin the scenario** with `TestPendingCeiling_OverConsumerStore`.
+  - A provider with a ceiling of 1, over a consumer double whose `CountLive` reports 1, builds.
+  - It answers the next request to be parked with `temporarily_unavailable`.
+  - This is the spec scenario "Store cannot count". Expected: PASS on today's code (mechanical fold).
+- [ ] **Step 2: Run** it, and the pending suite.
+- [ ] **Step 3: Implement** the fold.
+- [ ] **Step 4: Run** the scoped verification for `oidcprovider`, `httpsec` and the pending suite, on
+  PostgreSQL 18 and 15. Expected: PASS.
+- [ ] **Step 5: Commit** in the worktree as `refactor(oidcprovider)!: every pending-request store counts live requests`.
 
-- [ ] **Step 1:** Run `make check` and `make spec-check` after the last code edit. The main session
-  reads the output. Expected: both green, with the output recorded in the PR.
-- [ ] **Step 2:** Dispatch a whole-branch Opus reviewer. It first enumerates how the change fails.
-  Then it checks the ten added requirements, the three modified ones and every failure-mode row in
-  both tables. Each claimed defect is marked REPRODUCED or UNREPRODUCED. Findings go to a fresh
-  dispatch of their lane, followed by a re-run of Step 1.
-- [ ] **Step 3:** Tick 8.1 and 8.2 in `tasks.md` (main session), then commit.
+### Task 11 (tasks 7.2): Changelog and README
+
+**Files:**
+- Modify:
+  - `CHANGELOG.md`, under `## [Unreleased]`: rewrite the 7.1 entry and add `### BREAKING`.
+  - `README.md`.
+
+- [ ] **Step 1: Rewrite the 7.1 entry** as `tasks.md` 7.2 describes.
+  - Add one BREAKING bullet per D15 fold. Each names the base interface, the methods to add, and the
+    removed API.
+  - Follow the file's existing style.
+- [ ] **Step 2: Verify** with `rg -n 'UsernameUpdater|UserPager|FamilyReader|RoleSelector|LinkLister|LinkRemover|DeviceProofStore|EnrolmentRemover|RecentFailureReporter|PolicyReporter|FailureStreakStore|PendingRequestCounter|UsableLister|SelectsRoles|RequireDeviceProof' README.md`.
+  - It prints only text that describes a removal.
+  - Every one of those names appears in the BREAKING section.
+- [ ] **Step 3: Commit** as `docs: changelog and README for the admin additions and the folded ports`.
+
+### Task 12 (tasks 8.10): Sweep (main session)
+
+- [ ] **Step 1:** Run Task 11's pattern over `*.go`, excluding `openspec/` and `.claude/`.
+  - Expected: no type assertion, interface or skip message for a folded port.
+- [ ] **Step 2:** Run `go generate` over every package Tasks 1–10 touched.
+  - Expected: `git status --short` shows no diff.
+- [ ] **Step 3:** Run the build-and-vet loop from "Scoped verification" over every module.
+  - Expected: clean.
+- [ ] **Step 4:** Tick 8.10.
+
+### Task 13 (tasks 9.1, 9.2): Final gate (main session only)
+
+- [ ] **Step 1:** Run `make check` and `make spec-check` after the last code edit.
+  - The main session reads the output and records it in the PR.
+  - Expected: both green.
+- [ ] **Step 2:** Dispatch a whole-branch Opus reviewer.
+  - It first enumerates how the change fails.
+  - Then it checks every requirement in every spec delta and every failure-mode row in `design.md`.
+  - It marks each claimed defect REPRODUCED or UNREPRODUCED.
+  - Findings go to a fresh dispatch of their lane, followed by Step 1 again.
+- [ ] **Step 3:** Tick 9.1 and 9.2, commit, and push.
 
 ## Workflow follow-up
 
-- `/opsx:archive admin-user-rename-and-paging`. Then check that `security-administration` carries
-  the ten added and three modified requirements.
+- `/opsx:archive admin-user-rename-and-paging`. Then check two things:
+  - `security-administration` carries ten added and three modified requirements;
+  - each of the other thirteen capabilities carries its modified requirements.
 - Propose `username-case-folding` and `lockout-by-user-id`.
+- `/opsx:explore` sharing the three SQL stores' duplicated logic.

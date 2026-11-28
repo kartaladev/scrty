@@ -392,6 +392,45 @@ func (c *MockStoreDeleteFamilyCall) DoAndReturn(f func(context.Context, id.ID) (
 	return c
 }
 
+// ListByFamily mocks base method.
+func (m *MockStore) ListByFamily(ctx context.Context, user identity.UserID, family id.ID, now time.Time) ([]*session.Session, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListByFamily", ctx, user, family, now)
+	ret0, _ := ret[0].([]*session.Session)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListByFamily indicates an expected call of ListByFamily.
+func (mr *MockStoreMockRecorder) ListByFamily(ctx, user, family, now any) *MockStoreListByFamilyCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListByFamily", reflect.TypeOf((*MockStore)(nil).ListByFamily), ctx, user, family, now)
+	return &MockStoreListByFamilyCall{Call: call}
+}
+
+// MockStoreListByFamilyCall wrap *gomock.Call
+type MockStoreListByFamilyCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockStoreListByFamilyCall) Return(arg0 []*session.Session, arg1 error) *MockStoreListByFamilyCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockStoreListByFamilyCall) Do(f func(context.Context, identity.UserID, id.ID, time.Time) ([]*session.Session, error)) *MockStoreListByFamilyCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockStoreListByFamilyCall) DoAndReturn(f func(context.Context, identity.UserID, id.ID, time.Time) ([]*session.Session, error)) *MockStoreListByFamilyCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // ListByUser mocks base method.
 func (m *MockStore) ListByUser(ctx context.Context, user identity.UserID, now time.Time) ([]*session.Session, error) {
 	m.ctrl.T.Helper()
@@ -580,6 +619,44 @@ func (c *MockStoreSaveCall) Do(f func(context.Context, *session.Session) error) 
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockStoreSaveCall) DoAndReturn(f func(context.Context, *session.Session) error) *MockStoreSaveCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// SelectRole mocks base method.
+func (m *MockStore) SelectRole(ctx context.Context, arg1, role string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SelectRole", ctx, arg1, role)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SelectRole indicates an expected call of SelectRole.
+func (mr *MockStoreMockRecorder) SelectRole(ctx, arg1, role any) *MockStoreSelectRoleCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SelectRole", reflect.TypeOf((*MockStore)(nil).SelectRole), ctx, arg1, role)
+	return &MockStoreSelectRoleCall{Call: call}
+}
+
+// MockStoreSelectRoleCall wrap *gomock.Call
+type MockStoreSelectRoleCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockStoreSelectRoleCall) Return(arg0 error) *MockStoreSelectRoleCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockStoreSelectRoleCall) Do(f func(context.Context, string, string) error) *MockStoreSelectRoleCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockStoreSelectRoleCall) DoAndReturn(f func(context.Context, string, string) error) *MockStoreSelectRoleCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

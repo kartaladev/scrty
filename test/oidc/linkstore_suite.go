@@ -189,11 +189,6 @@ func RunLinkStoreSuite(t *testing.T, newStore func(t *testing.T) oidc.LinkStore)
 		{
 			name: "listing a user's links returns exactly theirs, sorted, byte for byte",
 			assert: func(t *testing.T, ctx context.Context, s oidc.LinkStore) {
-				lister, ok := s.(oidc.LinkLister)
-				if !ok {
-					t.Skip("the store does not implement oidc.LinkLister")
-				}
-
 				// Inserted out of order, with subjects that sort differently by
 				// byte and by a locale's collation ("B" before "a" by byte).
 				social := linkSuiteLink("https://social.example", "s-9", "u-7")
@@ -207,31 +202,31 @@ func RunLinkStoreSuite(t *testing.T, newStore func(t *testing.T) oidc.LinkStore)
 					require.NoError(t, s.Insert(ctx, l))
 				}
 
-				got, err := lister.ListByUser(ctx, "u-7")
+				got, err := s.ListByUser(ctx, "u-7")
 				require.NoError(t, err)
 				assert.Equal(t, []oidc.Link{first, second, social}, got,
 					"every link of u-7 and no other, by provider, issuer and subject")
 
-				got, err = lister.ListByUser(ctx, "U-7 \u00e9\u4e16")
+				got, err = s.ListByUser(ctx, "U-7 \u00e9\u4e16")
 				require.NoError(t, err)
 				assert.Equal(t, []oidc.Link{exotic}, got, "a reference matches byte for byte")
 
-				got, err = lister.ListByUser(ctx, "u-9")
+				got, err = s.ListByUser(ctx, "u-9")
 				require.NoError(t, err)
 				assert.NotNil(t, got, "no link is an empty list, not nil")
 				assert.Empty(t, got)
 
-				got, err = lister.ListByUser(ctx, "")
+				got, err = s.ListByUser(ctx, "")
 				require.NoError(t, err)
 				assert.Empty(t, got, "an empty reference lists nothing")
 
-				got, err = lister.ListByUser(ctx, "u-7\x00")
+				got, err = s.ListByUser(ctx, "u-7\x00")
 				require.NoError(t, err, "a reference that cannot be stored matches nothing")
 				assert.Empty(t, got, "a reference that cannot be stored lists nothing")
 
 				cancelled, cancel := context.WithCancel(ctx)
 				cancel()
-				_, err = lister.ListByUser(cancelled, "u-7")
+				_, err = s.ListByUser(cancelled, "u-7")
 				if err != nil {
 					assert.ErrorIs(t, err, context.Canceled)
 				}
@@ -240,11 +235,6 @@ func RunLinkStoreSuite(t *testing.T, newStore func(t *testing.T) oidc.LinkStore)
 		{
 			name: "deleting one link removes only the link whose id and identity all match",
 			assert: func(t *testing.T, ctx context.Context, s oidc.LinkStore) {
-				remover, ok := s.(oidc.LinkRemover)
-				if !ok {
-					t.Skip("the store does not implement DeleteLink")
-				}
-
 				corp := linkSuiteLink(linkSuiteIssuer, "s-1", "u-7")
 				partner := linkSuiteLink(linkSuiteIssuer, "p-1", "u-7")
 				partner.Provider = "partner"
@@ -253,13 +243,13 @@ func RunLinkStoreSuite(t *testing.T, newStore func(t *testing.T) oidc.LinkStore)
 
 				wrongSubject := corp
 				wrongSubject.Subject = "s-2"
-				removed, err := remover.DeleteLink(ctx, wrongSubject)
+				removed, err := s.DeleteLink(ctx, wrongSubject)
 				require.NoError(t, err)
 				assert.False(t, removed, "the id alone does not name the link")
 				_, err = s.FindByExternal(ctx, "corp", linkSuiteIssuer, "s-1")
 				require.NoError(t, err, "nothing was removed")
 
-				removed, err = remover.DeleteLink(ctx, corp)
+				removed, err = s.DeleteLink(ctx, corp)
 				require.NoError(t, err)
 				assert.True(t, removed)
 				_, err = s.FindByExternal(ctx, "corp", linkSuiteIssuer, "s-1")
@@ -268,7 +258,7 @@ func RunLinkStoreSuite(t *testing.T, newStore func(t *testing.T) oidc.LinkStore)
 				require.NoError(t, err, "the user's other link remains")
 				assert.Equal(t, partner.ID, kept.ID)
 
-				removed, err = remover.DeleteLink(ctx, corp)
+				removed, err = s.DeleteLink(ctx, corp)
 				require.NoError(t, err, "an absent link is not an error")
 				assert.False(t, removed)
 			},
@@ -276,18 +266,13 @@ func RunLinkStoreSuite(t *testing.T, newStore func(t *testing.T) oidc.LinkStore)
 		{
 			name: "a stored zero-ID link survives a zero-ID delete",
 			assert: func(t *testing.T, ctx context.Context, s oidc.LinkStore) {
-				remover, ok := s.(oidc.LinkRemover)
-				if !ok {
-					t.Skip("the store does not implement DeleteLink")
-				}
-
 				zero := linkSuiteLink(linkSuiteIssuer, "s-1", "u-7")
 				zero.ID = id.ID{}
 				if err := s.Insert(ctx, zero); err != nil {
 					t.Skip("the store refuses a zero-ID link")
 				}
 
-				removed, err := remover.DeleteLink(ctx, zero)
+				removed, err := s.DeleteLink(ctx, zero)
 				if err == nil {
 					assert.False(t, removed, "a zero id names no link")
 				}
@@ -298,11 +283,6 @@ func RunLinkStoreSuite(t *testing.T, newStore func(t *testing.T) oidc.LinkStore)
 		{
 			name: "deleting one link refuses a link that differs in id, identity or is unnamed, and removes nothing",
 			assert: func(t *testing.T, ctx context.Context, s oidc.LinkStore) {
-				remover, ok := s.(oidc.LinkRemover)
-				if !ok {
-					t.Skip("the store does not implement DeleteLink")
-				}
-
 				corp := linkSuiteLink(linkSuiteIssuer, "s-1", "u-7")
 				require.NoError(t, s.Insert(ctx, corp))
 
@@ -312,11 +292,9 @@ func RunLinkStoreSuite(t *testing.T, newStore func(t *testing.T) oidc.LinkStore)
 					kept, err := s.FindByExternal(ctx, "corp", linkSuiteIssuer, "s-1")
 					require.NoError(t, err, "nothing was removed")
 					assert.Equal(t, corp, *kept, "the stored link is unchanged")
-					if lister, ok := s.(oidc.LinkLister); ok {
-						got, err := lister.ListByUser(ctx, "u-7")
-						require.NoError(t, err)
-						assert.Equal(t, []oidc.Link{corp}, got, "the user's links are unchanged")
-					}
+					got, err := s.ListByUser(ctx, "u-7")
+					require.NoError(t, err)
+					assert.Equal(t, []oidc.Link{corp}, got, "the user's links are unchanged")
 				}
 
 				otherID := linkSuiteLink(linkSuiteIssuer, "s-1", "u-7").ID
@@ -363,7 +341,7 @@ func RunLinkStoreSuite(t *testing.T, newStore func(t *testing.T) oidc.LinkStore)
 					t.Run(tt.name, func(t *testing.T) {
 						probe := corp
 						tt.mutate(&probe)
-						removed, err := remover.DeleteLink(ctx, probe)
+						removed, err := s.DeleteLink(ctx, probe)
 						tt.assert(t, removed, err)
 						intact(t)
 					})

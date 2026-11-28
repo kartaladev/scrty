@@ -324,10 +324,10 @@ func TestBroker_HookLinksThenApplies(t *testing.T) {
 		assert func(t *testing.T, e env, p *identity.Principal, err error)
 	}
 
-	faultyStore := func(expect func(s *MockLinkStore, l *MockLinkLister, r *MockLinkRemover)) func(*testing.T, *gomock.Controller) oidc.LinkStore {
+	faultyStore := func(expect func(s *MockLinkStore)) func(*testing.T, *gomock.Controller) oidc.LinkStore {
 		return func(_ *testing.T, ctrl *gomock.Controller) oidc.LinkStore {
-			s := hookLinkStore{MockLinkStore: NewMockLinkStore(ctrl), MockLinkLister: NewMockLinkLister(ctrl), MockLinkRemover: NewMockLinkRemover(ctrl)}
-			expect(s.MockLinkStore, s.MockLinkLister, s.MockLinkRemover)
+			s := NewMockLinkStore(ctrl)
+			expect(s)
 			return s
 		}
 	}
@@ -512,7 +512,7 @@ func TestBroker_HookLinksThenApplies(t *testing.T) {
 		},
 		{
 			name: "a FindByExternal fault is a redacted broker failure, and the hook is not reached",
-			links: faultyStore(func(s *MockLinkStore, _ *MockLinkLister, _ *MockLinkRemover) {
+			links: faultyStore(func(s *MockLinkStore) {
 				s.EXPECT().FindByExternal(gomock.Any(), "corp", brokerCorpIssuer, "s-1").Return(nil, leak)
 			}),
 			assert: func(t *testing.T, e env, p *identity.Principal, err error) {
@@ -526,43 +526,43 @@ func TestBroker_HookLinksThenApplies(t *testing.T) {
 		},
 		{
 			name: "a ListByUser fault before the insert is a redacted broker failure, and nothing is written",
-			links: faultyStore(func(s *MockLinkStore, l *MockLinkLister, _ *MockLinkRemover) {
+			links: faultyStore(func(s *MockLinkStore) {
 				notFound(s)
-				l.EXPECT().ListByUser(gomock.Any(), identity.UserID("u-7")).Return(nil, leak)
+				s.EXPECT().ListByUser(gomock.Any(), identity.UserID("u-7")).Return(nil, leak)
 				s.EXPECT().Insert(gomock.Any(), gomock.Any()).Times(0)
 			}),
 			assert: storeFault,
 		},
 		{
 			name: "an Insert fault is a redacted broker failure",
-			links: faultyStore(func(s *MockLinkStore, l *MockLinkLister, _ *MockLinkRemover) {
+			links: faultyStore(func(s *MockLinkStore) {
 				notFound(s)
-				l.EXPECT().ListByUser(gomock.Any(), identity.UserID("u-7")).Return([]oidc.Link{}, nil)
+				s.EXPECT().ListByUser(gomock.Any(), identity.UserID("u-7")).Return([]oidc.Link{}, nil)
 				s.EXPECT().Insert(gomock.Any(), gomock.Any()).Return(leak)
 			}),
 			assert: storeFault,
 		},
 		{
 			name: "a fault re-reading the link after ErrLinkExists is a redacted broker failure",
-			links: faultyStore(func(s *MockLinkStore, l *MockLinkLister, _ *MockLinkRemover) {
+			links: faultyStore(func(s *MockLinkStore) {
 				gomock.InOrder(
 					notFound(s),
 					s.EXPECT().Insert(gomock.Any(), gomock.Any()).Return(oidc.ErrLinkExists),
 					s.EXPECT().FindByExternal(gomock.Any(), "corp", brokerCorpIssuer, "s-1").Return(nil, leak),
 				)
-				l.EXPECT().ListByUser(gomock.Any(), identity.UserID("u-7")).Return([]oidc.Link{}, nil)
+				s.EXPECT().ListByUser(gomock.Any(), identity.UserID("u-7")).Return([]oidc.Link{}, nil)
 			}),
 			assert: storeFault,
 		},
 		{
 			name: "a re-read that finds no link after ErrLinkExists is a lost race, refused without Apply",
-			links: faultyStore(func(s *MockLinkStore, l *MockLinkLister, _ *MockLinkRemover) {
+			links: faultyStore(func(s *MockLinkStore) {
 				gomock.InOrder(
 					notFound(s),
 					s.EXPECT().Insert(gomock.Any(), gomock.Any()).Return(oidc.ErrLinkExists),
 					s.EXPECT().FindByExternal(gomock.Any(), "corp", brokerCorpIssuer, "s-1").Return(nil, oidc.ErrLinkNotFound),
 				)
-				l.EXPECT().ListByUser(gomock.Any(), identity.UserID("u-7")).Return([]oidc.Link{}, nil)
+				s.EXPECT().ListByUser(gomock.Any(), identity.UserID("u-7")).Return([]oidc.Link{}, nil)
 			}),
 			assert: func(t *testing.T, e env, p *identity.Principal, err error) {
 				require.ErrorIs(t, err, oidc.ErrNoLinkedAccount)
@@ -572,13 +572,13 @@ func TestBroker_HookLinksThenApplies(t *testing.T) {
 		},
 		{
 			name: "a re-read that returns neither a link nor an error after ErrLinkExists is a broker failure",
-			links: faultyStore(func(s *MockLinkStore, l *MockLinkLister, _ *MockLinkRemover) {
+			links: faultyStore(func(s *MockLinkStore) {
 				gomock.InOrder(
 					notFound(s),
 					s.EXPECT().Insert(gomock.Any(), gomock.Any()).Return(oidc.ErrLinkExists),
 					s.EXPECT().FindByExternal(gomock.Any(), "corp", brokerCorpIssuer, "s-1").Return(nil, nil),
 				)
-				l.EXPECT().ListByUser(gomock.Any(), identity.UserID("u-7")).Return([]oidc.Link{}, nil)
+				s.EXPECT().ListByUser(gomock.Any(), identity.UserID("u-7")).Return([]oidc.Link{}, nil)
 			}),
 			assert: func(t *testing.T, e env, p *identity.Principal, err error) {
 				assertBrokerFailure(t, p, err)
@@ -587,17 +587,17 @@ func TestBroker_HookLinksThenApplies(t *testing.T) {
 		},
 		{
 			name: "a ListByUser fault on the re-check after the insert removes this link and is a redacted broker failure",
-			links: faultyStore(func(s *MockLinkStore, l *MockLinkLister, r *MockLinkRemover) {
+			links: faultyStore(func(s *MockLinkStore) {
 				var inserted oidc.Link
 				notFound(s)
 				gomock.InOrder(
-					l.EXPECT().ListByUser(gomock.Any(), identity.UserID("u-7")).Return([]oidc.Link{}, nil),
+					s.EXPECT().ListByUser(gomock.Any(), identity.UserID("u-7")).Return([]oidc.Link{}, nil),
 					s.EXPECT().Insert(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, link oidc.Link) error {
 						inserted = link
 						return nil
 					}),
-					l.EXPECT().ListByUser(gomock.Any(), identity.UserID("u-7")).Return(nil, leak),
-					r.EXPECT().DeleteLink(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, link oidc.Link) (bool, error) {
+					s.EXPECT().ListByUser(gomock.Any(), identity.UserID("u-7")).Return(nil, leak),
+					s.EXPECT().DeleteLink(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, link oidc.Link) (bool, error) {
 						if link != inserted {
 							return false, errors.New("DeleteLink was not given the inserted link")
 						}
@@ -610,16 +610,16 @@ func TestBroker_HookLinksThenApplies(t *testing.T) {
 		},
 		{
 			name: "a DeleteLink fault undoing a duplicate link is a redacted broker failure",
-			links: faultyStore(func(s *MockLinkStore, l *MockLinkLister, r *MockLinkRemover) {
+			links: faultyStore(func(s *MockLinkStore) {
 				notFound(s)
 				gomock.InOrder(
-					l.EXPECT().ListByUser(gomock.Any(), identity.UserID("u-7")).Return([]oidc.Link{}, nil),
+					s.EXPECT().ListByUser(gomock.Any(), identity.UserID("u-7")).Return([]oidc.Link{}, nil),
 					s.EXPECT().Insert(gomock.Any(), gomock.Any()).Return(nil),
-					l.EXPECT().ListByUser(gomock.Any(), identity.UserID("u-7")).DoAndReturn(
+					s.EXPECT().ListByUser(gomock.Any(), identity.UserID("u-7")).DoAndReturn(
 						func(context.Context, identity.UserID) ([]oidc.Link, error) {
 							return []oidc.Link{corpLink("s-1", "u-7"), corpLink("s-2", "u-7")}, nil
 						}),
-					r.EXPECT().DeleteLink(gomock.Any(), gomock.Any()).Return(false, leak),
+					s.EXPECT().DeleteLink(gomock.Any(), gomock.Any()).Return(false, leak),
 				)
 				s.EXPECT().DeleteByUser(gomock.Any(), gomock.Any()).Times(0)
 			}),

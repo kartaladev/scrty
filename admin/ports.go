@@ -56,7 +56,20 @@ type UserStore interface {
 	// represent is ErrInvalidInput.
 	CreateUser(ctx context.Context, user NewUser) (User, error)
 
-	// UpdateUser applies the named fields and increases the version.
+	// UpdateUser applies the named fields, in one write under the version
+	// check, and increases the version. Either everything the change names is
+	// written, or nothing is.
+	//
+	// A change naming a username (change.Username) also writes it, under the
+	// rules of CreateUser: a username another user holds, deleted or not,
+	// compared exactly, or equal to another live user's email ignoring case, is
+	// an AlreadyExistsError with FieldUsername. The user's own username and
+	// email never clash. renamed reports whether the stored username differed
+	// from the named one, byte for byte, decided under the row lock; a change of
+	// case only is a rename. Re-sending the current username is still a write
+	// (the version increases) with renamed false, and a change naming no
+	// username reports renamed false. Users.Update revokes sessions
+	// (WithSessionRevocation) only when renamed is true.
 	//
 	// The verification time follows these rules, each decided under the row
 	// lock the version comparison takes, never from an earlier read:
@@ -76,7 +89,7 @@ type UserStore interface {
 	// that another live user has, or that equals another live user's
 	// username, ignoring case, is an AlreadyExistsError with FieldEmail,
 	// decided by the write. An Organization.ID the store cannot represent is ErrInvalidInput.
-	UpdateUser(ctx context.Context, id identity.UserID, version int64, change UserChange) (User, error)
+	UpdateUser(ctx context.Context, id identity.UserID, version int64, change UserChange) (updated User, renamed bool, err error)
 
 	// SetActive sets the active flag and increases the version. The bool
 	// reports whether anything changed; a flag already at the requested value
@@ -99,6 +112,54 @@ type UserStore interface {
 	// history: the password policy's reuse rule retires the replaced hash
 	// through its own history port before this is called.
 	SetPassword(ctx context.Context, id identity.UserID, version int64, hash []byte, at time.Time) (User, error)
+}
+
+//go:generate mockgen -destination=userpager_mock_test.go -package=admin_test -typed github.com/kartaladev/scrty/admin UserPager
+
+// UserPager is the optional store capability behind offset listing
+// (UserFilter.Offset) and Users.Count. NewUsers checks once whether the
+// UserStore implements it. Over a store without it, a list that names a
+// non-zero offset, and a count, are refused with an error matching ErrConfig
+// before the store is called; cursor listing and offset zero need nothing
+// more than UserStore.ListUsers. WithMaxListOffset over such a store fails
+// NewUsers.
+//
+// Every user store scrty ships implements it.
+//
+// A consumer store that embeds a scrty store and overrides ListUsers, for
+// example to hide users from a tenant, inherits ListUsersFrom and CountUsers
+// unchanged, so offset pages and counts bypass that override. Override
+// ListUsersFrom and CountUsers too.
+//
+// Default: none; a store opts in by implementing the methods.
+type UserPager interface {
+	// ListUsersFrom lists the users matching query's filters in the order of
+	// UserStore.ListUsers, skipping the first offset of them. query.Limit is
+	// the page size; query's After fields are empty, since an offset and a
+	// cursor are alternatives. offset is at least one and at most the
+	// service's maximum. The service truncates a longer result to the limit.
+	ListUsersFrom(ctx context.Context, query UserQuery, offset int) ([]User, error)
+
+	// CountUsers returns how many live users match query's Search, Active,
+	// Role and Attribute. It ignores Limit and the After fields, which are
+	// empty. A negative count is refused by the service. The count is a read
+	// of its own: it is not taken in the same snapshot as a page.
+	CountUsers(ctx context.Context, query UserQuery) (int64, error)
+}
+
+//go:generate mockgen -destination=sessionrevoker_mock_test.go -package=admin_test -typed github.com/kartaladev/scrty/admin SessionRevoker
+
+// SessionRevoker ends every session of a user. WithSessionRevocation gives
+// one to Users, which calls it after a committed rename. *session.Sessions
+// satisfies it as it is, so this package needs no import of session and no
+// adapter.
+//
+// Default: none; Users revokes no session unless WithSessionRevocation gives
+// a revoker.
+type SessionRevoker interface {
+	// DeleteByUser removes every session of the user. It runs on the context
+	// Users.Update was called with.
+	DeleteByUser(ctx context.Context, user identity.UserID) error
 }
 
 //go:generate mockgen -destination=importstore_mock_test.go -package=admin_test -typed github.com/kartaladev/scrty/admin ImportStore
