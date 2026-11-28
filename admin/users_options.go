@@ -17,6 +17,9 @@ const (
 	DefaultPageSize = 50
 	// DefaultMaxPageSize is the largest page a list may ask for (WithPageSize).
 	DefaultMaxPageSize = 500
+	// DefaultMaxListOffset is the largest offset a list may skip
+	// (WithMaxListOffset).
+	DefaultMaxListOffset = 10_000
 	// DefaultAttributeNameBytes bounds an attribute name (WithAttributeLimits).
 	DefaultAttributeNameBytes = 64
 	// DefaultAttributeValueBytes bounds an attribute value (WithAttributeLimits).
@@ -48,10 +51,14 @@ type usersConfig struct {
 	attributeLimits
 
 	pageDefault, pageMax int
-	encoder              password.Encoder
-	policy               *password.Policy
-	ids                  id.Generator
-	revoker              SessionRevoker
+	// offsetMax bounds UserFilter.Offset; offsetGiven records that
+	// WithMaxListOffset set it, which a store without UserPager cannot honour.
+	offsetMax   int
+	offsetGiven bool
+	encoder     password.Encoder
+	policy      *password.Policy
+	ids         id.Generator
+	revoker     SessionRevoker
 }
 
 // attributeLimits are the bounds on profile attributes Users and Importer
@@ -230,6 +237,27 @@ func WithSessionRevocation(r SessionRevoker) UsersOption {
 		}
 
 		c.revoker = r
+
+		return nil
+	})
+}
+
+// WithMaxListOffset sets the largest UserFilter.Offset a list may name,
+// inclusive; a larger offset is refused with ErrInvalidInput before the store
+// is called. The bound limits the cost of a deep offset page, which a store
+// reads and discards row by row. Zero allows only the first page; a negative
+// bound fails NewUsers with an error matching ErrConfig, and so does giving the
+// option over a store that does not implement UserPager, since the bound could
+// never apply there.
+//
+// Default: DefaultMaxListOffset.
+func WithMaxListOffset(n int) UsersOption {
+	return usersOption(func(c *usersConfig) error {
+		if n < 0 {
+			return fmt.Errorf("%w: the maximum list offset must not be negative", ErrConfig)
+		}
+
+		c.offsetMax, c.offsetGiven = n, true
 
 		return nil
 	})

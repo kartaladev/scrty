@@ -7,6 +7,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/kartaladev/scrty/admin"
@@ -22,13 +23,33 @@ import (
 
 // exampleUserStore holds users in a map; it implements only what
 // ExampleUsers and ExampleWithSessionRevocation call in full, renames
-// included (admin.UsernameUpdater).
+// included (admin.UsernameUpdater), and offset listing and counts
+// (admin.UserPager). It applies no filter, only the order and the page.
 type exampleUserStore struct {
 	users map[identity.UserID]admin.User
 }
 
 func (s *exampleUserStore) ListUsers(context.Context, admin.UserQuery) ([]admin.User, error) {
 	return slices.Collect(maps.Values(s.users)), nil
+}
+
+// ListUsersFrom lists in username order, skipping offset users.
+func (s *exampleUserStore) ListUsersFrom(_ context.Context, q admin.UserQuery, offset int) ([]admin.User, error) {
+	all := slices.SortedFunc(maps.Values(s.users), func(a, b admin.User) int {
+		return strings.Compare(a.Username, b.Username)
+	})
+
+	if offset >= len(all) {
+		return nil, nil
+	}
+
+	all = all[offset:]
+
+	return all[:min(q.Limit, len(all))], nil
+}
+
+func (s *exampleUserStore) CountUsers(context.Context, admin.UserQuery) (int64, error) {
+	return int64(len(s.users)), nil
 }
 
 func (s *exampleUserStore) GetUser(_ context.Context, id identity.UserID) (admin.User, error) {
